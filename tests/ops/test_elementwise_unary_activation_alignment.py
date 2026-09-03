@@ -185,7 +185,6 @@ def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
     assert torch.allclose(y, expected, rtol=1e-2, atol=1e-2)
 
 
-# Frozen ``__init__`` signatures for every unary activation Op. The
-# refactor pulling shared ``__init__`` / ``forward`` / ``_eager_forward``
-# logic up into a base or mixin must keep these byte-identical, because
-# downstream code (tests, benches, codegen) relies on them.
+# Frozen ``__init__`` signatures for every unary activation Op. Tests, benches
+# and codegen read them, so pulling shared ``__init__`` / ``forward`` /
+# ``_eager_forward`` logic into a base or mixin must keep them byte-identical.

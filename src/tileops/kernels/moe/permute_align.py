@@ -63,7 +63,6 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
                 tx = T.get_thread_binding()
                 num_warps = threads // 32
 
-                # --- Shared memory ---
                 s_counts = T.alloc_shared([num_experts], "int32")
                 s_vals = T.alloc_shared([threads], "int32")
                 s_warp_sum = T.alloc_shared([num_warps], "int32")

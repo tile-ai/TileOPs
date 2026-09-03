@@ -19,9 +19,6 @@ class MoePermuteAlignTest(MoePermuteAlignWorkload, TestBase):
     pass
 
 
-# Fixture
-
-
 class MoePermuteAlignFixture(FixtureBase):
     PARAMS = [
         (
@@ -45,9 +42,6 @@ class MoePermuteAlignFixture(FixtureBase):
             ],
         ),
     ]
-
-
-# TestBase subclass
 
 
 # Custom comparator
@@ -114,9 +108,6 @@ def _permute_align_compare(
     assert (sorted_ids[:n].cpu()[padding_mask] == numel).all(), (
         "Padding slots must equal sentinel (numel)"
     )
-
-
-# Tests
 
 
 @MoePermuteAlignFixture

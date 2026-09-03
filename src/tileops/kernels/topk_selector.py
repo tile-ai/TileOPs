@@ -125,7 +125,6 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                         bin_id = convert_to_uint16(index_score[bx, seq_row, input_idx, g])
                         l_bin_id32 = T.Cast(T.int32, bin_id)
                         if l_bin_id32 > l_threshold_bin_id:
-                            # need a pos = T.atomic_add(s_histogram[bin_id32+1], 1)
                             l_pos = T.atomic_add(s_histogram[l_bin_id32 + 1], 1, return_prev=True)
                             if l_pos < topk:
                                 index[bx, seq_row, g, l_pos] = input_idx

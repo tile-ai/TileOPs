@@ -23,8 +23,6 @@ from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
 from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
 from workloads.reduction import InfNormWorkload, L1NormWorkload, L2NormWorkload
 
-# Op name constants
-
 
 def _flaggems_vector_norm(ord_value, dim, keepdim: bool):
     """flag_gems' ``vector_norm``, which accumulates in fp32 as the reference does."""
@@ -45,9 +43,6 @@ def _functors(op, baseline_fn, flaggems_fn, inputs, dtype: torch.dtype) -> dict:
         "torch": baseline_fn,
         TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
     }
-
-
-# L1 Norm benchmarks
 
 
 @pytest.mark.parametrize(
@@ -82,9 +77,6 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
         raise
 
 
-# L2 Norm benchmarks
-
-
 @pytest.mark.parametrize(
     "shape, dtype, op_params",
     workloads_to_params(L2NormFwdOp, include_extra=True),
@@ -115,9 +107,6 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
         if "No configurations to tune" in str(exc):
             pytest.skip(f"Kernel does not support this shape: {exc}")
         raise
-
-
-# Inf Norm benchmarks
 
 
 @pytest.mark.parametrize(

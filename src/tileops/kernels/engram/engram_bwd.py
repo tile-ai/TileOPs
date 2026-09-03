@@ -212,7 +212,6 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 dk_local = T.alloc_fragment((d_padded,), accum_dtype)
                 dv_local = T.alloc_fragment((d_padded,), accum_dtype)
 
-                # 2D fragments for reduce_sum
                 dalpha_2d = T.alloc_fragment((1, d_padded), accum_dtype)
                 dalpha_sum = T.alloc_fragment((1,), accum_dtype)
                 dot_h_2d = T.alloc_fragment((1, d_padded), accum_dtype)
@@ -290,7 +289,6 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                         ddot_val * h_norm_local[j] * k_local[j] * rrms_k_val,
                     )
 
-                # Write outputs
                 for j in T.Parallel(d_padded):
                     dH[bid, tid, j] = T.cast(dh_local[j], dtype)
                     dk[bid, tid, j] = T.cast(dk_local[j], dtype)

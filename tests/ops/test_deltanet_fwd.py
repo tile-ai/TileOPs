@@ -10,9 +10,6 @@ class DeltaNetFwdTest(DeltaNetFwdWorkload, TestBase):
     pass
 
 
-# Forward correctness tests
-
-
 def _get_tolerances(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:
         return {"atol": 1e-3, "rtol": 1e-3}

@@ -78,7 +78,6 @@ def _bwd_parallel_tl(
             dh_local: T.Tensor([batch, head, num_chunks, dim_k, dim_v], dtype),
         ):
             with T.Kernel(num_chunks, batch, head, threads=threads) as (tid, bid, hid):
-                # Shared buffers
                 q_c = T.alloc_shared([block_C, dim_k], dtype)
                 k_c = T.alloc_shared([block_C, dim_k], dtype)
                 g_c = T.alloc_shared([block_C], dtype)
@@ -89,18 +88,15 @@ def _bwd_parallel_tl(
                 v_new_c = T.alloc_shared([block_C, dim_v], dtype)
                 o_part = T.alloc_shared([block_C, dim_v], dtype)
                 attn = T.alloc_shared([block_C, block_C], dtype)
-                # Gradients
                 d_q_c = T.alloc_shared([block_C, dim_k], dtype)
                 d_k_c = T.alloc_shared([block_C, dim_k], dtype)
                 dg_c = T.alloc_shared([block_C], dtype)
                 d_w_c = T.alloc_shared([block_C, dim_k], dtype)
                 d_v_new_c = T.alloc_shared([block_C, dim_v], dtype)
                 d_attn = T.alloc_shared([block_C, block_C], dtype)
-                # Working
                 exp_g = T.alloc_shared([block_C], dtype)
                 P = T.alloc_shared([block_C, dim_k], dtype)
                 dP = T.alloc_shared([block_C, dim_k], dtype)
-                # Fragments
                 ws_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
                 attn_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
                 d_v_new_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
@@ -110,7 +106,6 @@ def _bwd_parallel_tl(
                 dP_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 dh_frag = T.alloc_fragment([dim_k, dim_v], accum_dtype)
 
-                # Load chunk data
                 T.copy(q[bid, hid, tid * block_C : (tid + 1) * block_C, :], q_c, disable_tma=True)
                 T.copy(k[bid, hid, tid * block_C : (tid + 1) * block_C, :], k_c, disable_tma=True)
                 T.copy(g[bid, hid, tid * block_C : (tid + 1) * block_C], g_c, disable_tma=True)
@@ -207,7 +202,6 @@ def _bwd_parallel_tl(
                 T.gemm(P, d_v_new_c, dh_sub_frag, transpose_A=True)
                 for i, j in T.Parallel(dim_k, dim_v):
                     dh_frag[i, j] -= dh_sub_frag[i, j]
-                # dw
                 for i, j in T.Parallel(block_C, dim_k):
                     d_w_c[i, j] = dP[i, j] * T.exp2((g_c[i] + g_c[block_C - 1]) * LOG2E)
                 # dg from P*dP
@@ -221,7 +215,6 @@ def _bwd_parallel_tl(
                     dg_c[i] += dg_step5_tmp[i]
                 dg_c[block_C - 1] = dg_c[block_C - 1] + dg_step5_total[0]
 
-                # Write outputs
                 T.copy(
                     d_q_c, dq[bid, hid, tid * block_C : (tid + 1) * block_C, :], disable_tma=True
                 )
@@ -400,7 +393,6 @@ def _dh_recurrence_bwd_tl(
             dw_corr_partial: T.Tensor([batch, head, num_v_tiles, seq_len, dim_k], dtype),
         ):
             with T.Kernel(num_v_tiles, batch, head, threads=threads) as (vid, bid, hid):
-                # Shared buffers
                 g_c = T.alloc_shared([block_C], dtype)
                 k_c = T.alloc_shared([block_C, dim_k], dtype)
                 v_new_c = T.alloc_shared([block_C, BV], dtype)
@@ -417,7 +409,6 @@ def _dh_recurrence_bwd_tl(
                 d_g_last_partial = T.alloc_shared([dim_k], dtype)
                 d_g_last_scalar1 = T.alloc_shared([1], accum_dtype)
                 d_g_last_scalar2 = T.alloc_shared([1], accum_dtype)
-                # Fragments
                 dh_frag = T.alloc_fragment([dim_k, BV], accum_dtype)
                 du_corr_frag = T.alloc_fragment([block_C, BV], accum_dtype)
                 dP_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
@@ -429,7 +420,6 @@ def _dh_recurrence_bwd_tl(
 
                 for t in T.Pipelined(num_chunks, num_stages=num_stages):
                     t_bwd = num_chunks - 1 - t
-                    # Load data
                     T.copy(
                         g[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C], g_c, disable_tma=True
                     )

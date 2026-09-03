@@ -280,17 +280,14 @@ def _gla_fwd_o_kernel(
                 # h cast to native dtype for tensor core
                 h_cast_s = T.alloc_shared([dim_k, dim_v], dtype)
 
-                # Input buffers
                 q_s = T.alloc_shared([chunk_size, dim_k], dtype)
                 k_s = T.alloc_shared([chunk_size, dim_k], dtype)
                 v_s = T.alloc_shared([chunk_size, dim_v], dtype)
                 g_cumsum_s = T.alloc_shared([chunk_size, dim_k], accum_dtype)
 
-                # Compute buffers
                 q_gated_s = T.alloc_shared([chunk_size, dim_k], dtype)
                 A_s = T.alloc_shared([chunk_size, chunk_size], dtype)
 
-                # Load inputs via T.copy
                 T.copy(
                     q[i_b, chunk_start : chunk_start + chunk_size, i_h, :], q_s, disable_tma=True
                 )
@@ -527,7 +524,6 @@ class GLAFwdKernel(Kernel):
         B, T, H, K, V = (self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v)
         dtype_torch = getattr(torch, self.dtype_name)
 
-        # Generate representative inputs
         q = torch.randn(B, T, H, K, device="cuda", dtype=dtype_torch) * 0.1
         k = torch.randn(B, T, H, K, device="cuda", dtype=dtype_torch) * 0.1
         v = torch.randn(B, T, H, V, device="cuda", dtype=dtype_torch) * 0.1

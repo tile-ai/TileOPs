@@ -545,9 +545,6 @@ def _(
     return torch.empty_like(Q)
 
 
-# Kernel class
-
-
 class MHADecodePagedKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
     # The implementation behind the specialised one for this key: it serves any

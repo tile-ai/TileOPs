@@ -49,7 +49,6 @@ def test_moe_gate_up_bench(
     op = MoeGateUpFwdOp(numel, num_experts, ffn, k)
     bm = ManifestBenchmark(op, workload)
 
-    # Warmup: trigger JIT compilation before timed profiling.
     op(a, b, true_sizes, true_offsets)
     torch.cuda.synchronize()
 

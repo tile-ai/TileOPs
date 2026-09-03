@@ -161,9 +161,9 @@ def _grouped_matmul_kernel(
         last_problem_end = last_problem_end + num_tiles
 
 
-# Trimmed from the full BLOCK_M×BLOCK_N×BLOCK_K×stages×warps grid to a handful of
-# representative Hopper configs: the full sweep added minutes of cold-start
-# autotune JIT with no measurable win on these grouped-GEMM shapes.
+# A handful of representative Hopper configs rather than the full
+# BLOCK_M×BLOCK_N×BLOCK_K×stages×warps grid, which costs minutes of cold-start
+# autotune JIT on these grouped-GEMM shapes without finding a faster config.
 _TMA_CONFIGS = [
     triton.Config(
         {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": bn, "BLOCK_SIZE_K": 64}, num_stages=s, num_warps=8
@@ -326,8 +326,8 @@ def _deepgemm_launch(A, B, D, m_indices, tries=8):
 # output before its timing is recorded — a layout bug or a future torch/Triton
 # behavior change would otherwise produce plausible TFLOPS for a wrong result.
 # The comparison is row-blocked in fp32: a single ``.float()`` on the largest
-# cases (numel up to ~2M x N) would itself OOM, which is why correctness was
-# dropped before; blocking keeps the peak to one chunk.
+# cases (numel up to ~2M x N) would itself OOM, and blocking keeps the peak to
+# one chunk.
 _RTOL, _ATOL = 2e-2, 2e-2
 
 

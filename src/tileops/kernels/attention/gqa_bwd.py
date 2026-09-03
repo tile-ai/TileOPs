@@ -93,9 +93,6 @@ class FlashAttnBwdPreprocessKernel(Kernel):
         return self.kernel(o, do)
 
 
-# GQA
-
-
 @functools.lru_cache(maxsize=32)
 def _gqa_bwd_wgmma_pipelined_kernel(
     batch: int,

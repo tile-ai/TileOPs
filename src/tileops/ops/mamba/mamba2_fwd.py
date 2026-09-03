@@ -269,8 +269,8 @@ class Mamba2FwdOp(Op):
 
         # ── 4. SSDStatePassing ───────────────────────────────────────────────
         chunk_states_flat = chunk_states.reshape(batch, num_chunks, n_heads, d_head * d_state)
-        # Extract last dA value per chunk - use contiguous() to ensure a contiguous layout
-        # Note: since this is a slice of a 4D tensor, it is non-contiguous and will always copy
+        # Last dA value per chunk. The slice of a 4D tensor is non-contiguous, so
+        # contiguous() always copies.
         dA_chunk_cumsum = dA_cumsum[..., chunk_size - 1].contiguous()  # (B, H, C)
 
         init_flat = (
@@ -287,7 +287,7 @@ class Mamba2FwdOp(Op):
 
         # Unflatten to (B, C, H, P, N) in float32 (accum_dtype) for chunk_scan.
         prev_states = prev_states_flat.reshape(batch, num_chunks, n_heads, d_head, d_state)
-        # dt_out is now in dtype (no cast needed) - DaCumsum outputs typed dt directly
+        # DaCumsum outputs dt_out already typed, so chunk_scan takes it uncast.
 
         # ── 5. SSDChunkScan ──────────────────────────────────────────────────
         y = self._chunk_scan_op.forward(x, cb, dA_cumsum, C, prev_states, dt_out)

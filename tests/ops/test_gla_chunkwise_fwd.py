@@ -15,9 +15,6 @@ except ImportError:
     chunk_gla = None
 
 
-# Forward correctness tests
-
-
 class GLAFwdFixture(FixtureBase):
     PARAMS = [
         (
@@ -65,7 +62,6 @@ def test_gla_fwd(
         print(f"  FLA vs ref o: cosine={cos:.6f}")
         assert cos > 0.99, f"FLA vs ref o cosine too low: {cos:.6f}"
 
-    # --- TileOPs ---
     fwd_op = GLAFwdOp(
         chunk_size=BC,
         scale=scale,

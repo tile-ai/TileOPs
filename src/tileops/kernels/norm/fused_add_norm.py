@@ -95,7 +95,6 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
                         i
                     ] * T.cast(weight[j], "float32") + T.cast(bias[j], "float32")
 
-                # Write y
                 T.copy(r_local, shared_x)
                 T.copy(shared_x, y[pid_m * block_m, 0])
 
@@ -246,7 +245,6 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype):
                         x_local[i, j], "float32"
                     )
 
-                # Sum of squares
                 T.reduce_sum(xsq_f32, sumsq, dim=1)
 
                 # rrms = rsqrt(mean(sq) + eps)
@@ -259,7 +257,6 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype):
                         T.cast(x_local[i, j], "float32") * rrms[i] * T.cast(weight[j], "float32")
                     )
 
-                # Write y
                 T.copy(r_local, shared_x)
                 T.copy(shared_x, y[pid_m * block_m, 0])
 

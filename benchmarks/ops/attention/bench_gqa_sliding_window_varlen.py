@@ -182,7 +182,6 @@ def test_gqa_sliding_window_varlen_fwd_bench(
     op.max_seqlen_k = max(seqlens_k)
     bm = ManifestBenchmark(op, test)
 
-    # Warmup: trigger JIT compilation before timed profiling
     op(*inputs)
     torch.cuda.synchronize()
 

@@ -62,9 +62,6 @@ __all__ = [
 ]
 
 
-# Shared base class for all reduce ops
-
-
 class _ReduceOpBase(Op):
     """Common base for all reduce ops (simple, Welford, argreduce, logical, vector_norm).
 

@@ -67,7 +67,6 @@ def _collect_node_count(test_file: str, *, ref: str | None = None) -> int | None
             timeout=120,
         )
     finally:
-        # Clean up temp file regardless of success/failure
         if ref is not None:
             Path(target).unlink(missing_ok=True)
 

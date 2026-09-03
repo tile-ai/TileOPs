@@ -14,8 +14,6 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from workloads.workload_base import RandnWorkload
 
-# Test helpers
-
 
 class WelfordNonAlignedTest(RandnWorkload, TestBase):
     def __init__(self, shape: tuple, dtype, op_kind: str, correction: int = 1):

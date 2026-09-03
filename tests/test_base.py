@@ -114,7 +114,7 @@ class TestBase(WorkloadBase):
             f"outputs: {len(outputs)} and outputs_ref: {len(outputs_ref)} have different size"
         )
 
-        # Compute error metrics before comparison (so we report even on failure).
+        # Error metrics before the comparison, so a failing case still reports them.
         max_abs_err = 0.0
         for output, output_ref in zip(outputs, outputs_ref, strict=True):
             if output_ref is not None:

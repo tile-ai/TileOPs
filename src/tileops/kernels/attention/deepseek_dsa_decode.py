@@ -239,7 +239,6 @@ def _sparse_mla_kernel(
                     T.fill(acc_o_l, 0)
 
                     for i_i in T.serial(T.ceildiv(n_i, 2)):
-                        # Buffer 0
                         T.barrier_wait(bar_k_0_ready[0], (i_i & 1))
 
                         for h_i, bi_i in T.Parallel(h_per_block, i_block):
@@ -264,7 +263,7 @@ def _sparse_mla_kernel(
                             acc_s[h_i, bi_i] = T.exp2(
                                 acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale
                             )
-                        T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
+                        T.reduce_sum(acc_s, sumexp_i, dim=1)
                         for h_i in T.Parallel(h_per_block):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
                         for h_i, d_i in T.Parallel(h_per_block, d // 2):
@@ -277,7 +276,6 @@ def _sparse_mla_kernel(
                         T.barrier_arrive(bar_s_scale_and_s_ready)
                         T.barrier_arrive(bar_k_0_free[0])
 
-                        # Buffer 1
                         T.barrier_wait(bar_k_1_ready[0], (i_i & 1))
 
                         for h_i, bi_i in T.Parallel(h_per_block, i_block):
@@ -301,7 +299,7 @@ def _sparse_mla_kernel(
                             acc_s[h_i, bi_i] = T.exp2(
                                 acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale
                             )
-                        T.reduce_sum(acc_s, sumexp_i, dim=1)  # is this a accumulate operator?
+                        T.reduce_sum(acc_s, sumexp_i, dim=1)
                         for h_i in T.Parallel(h_per_block):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
                         for h_i, d_i in T.Parallel(h_per_block, d // 2):
@@ -314,7 +312,6 @@ def _sparse_mla_kernel(
                         T.barrier_arrive(bar_s_scale_and_s_ready)
                         T.barrier_arrive(bar_k_1_free[0])
 
-                    # Rescale
                     for h_i in T.Parallel(h_per_block):
                         sum_exp_shared[h_i] = sumexp[h_i]
                     for h_i, d_i in T.Parallel(h_per_block, d // 2):
@@ -328,7 +325,6 @@ def _sparse_mla_kernel(
                     T.set_max_nreg(168, 1)
                     T.fill(acc_o_r, 0)
                     for i_i in T.serial(T.ceildiv(n_i, 2)):
-                        # Buffer 0
                         T.barrier_arrive(bar_s_scale_and_s_ready)
                         T.barrier_wait(bar_s_scale_and_s_ready, ((i_i * 2) & 1))
                         for h_i, d_i in T.Parallel(h_per_block, d // 2):
@@ -337,7 +333,6 @@ def _sparse_mla_kernel(
                         T.barrier_arrive(bar_k_0_free[0])
                         T.barrier_arrive(bar_s_scale_and_s_free)
 
-                        # Buffer 1
                         T.barrier_arrive(bar_s_scale_and_s_ready)
                         T.barrier_wait(bar_s_scale_and_s_ready, ((i_i * 2 + 1) & 1))
                         for h_i, d_i in T.Parallel(h_per_block, d // 2):
@@ -347,7 +342,6 @@ def _sparse_mla_kernel(
                         if i_i != T.ceildiv(n_i, 2) - 1:
                             T.barrier_arrive(bar_s_scale_and_s_free)
 
-                    # Rescale
                     for h_i, d_i in T.Parallel(h_per_block, d // 2):
                         acc_o_r[h_i, d_i] /= sum_exp_shared[h_i]
 
@@ -355,10 +349,8 @@ def _sparse_mla_kernel(
                     T.copy(o_shared_r, output[b_i, s_i, h0:h1, d // 2 : d])
 
                 elif tx >= 256:
-                    # producer
                     T.set_max_nreg(80, 0)
                     for i_i in T.serial(T.ceildiv(n_i, 2)):
-                        # Buffer 0
                         T.barrier_wait(bar_k_0_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(4):
                             indices_local[0] = indices[
@@ -396,7 +388,6 @@ def _sparse_mla_kernel(
                                         ]
                         T.cp_async_barrier_noinc(bar_k_0_ready[0])
 
-                        # Buffer 1
                         T.barrier_wait(bar_k_1_free[0], ((i_i & 1) ^ 1))
                         for r in T.serial(4):
                             indices_local[0] = indices[
@@ -632,8 +623,6 @@ class SparseMlaKernel(Kernel):
             indices,
         )
 
-    # @property
-    # params unused
     def supply_prog(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Generates synthetic data for the kernel program.
@@ -677,7 +666,7 @@ class SparseMlaKernel(Kernel):
 
         return q, kv, indices
 
-    def autotune(self, warmup: int = 10, rep: int = 10) -> None:  # Removed supply_prog parameter
+    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """
         Performs autotuning by evaluating different kernel configurations.
 
@@ -707,6 +696,5 @@ class SparseMlaKernel(Kernel):
 
         tuned_kernel = self._call_autotuned_kernel(autotuned_kernel_fn, self.kernel)
 
-        # Extract and store the best config
         self.config = tuned_kernel.config
         print(f"Best config: {self.config}")

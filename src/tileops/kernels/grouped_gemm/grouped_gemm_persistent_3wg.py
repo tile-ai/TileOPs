@@ -52,8 +52,8 @@ _DEFAULT_CONFIG = {
     "num_stages": 3,
     "threads": 384,
     # Threadblock swizzle: group this many consecutive m-tiles so concurrent
-    # CTAs in a wave share B[e] columns in L2. 8 is the robust Triton-standard
-    # default (~5% over 1 on compute-bound MoE shapes); autotune sweeps it.
+    # CTAs in a wave share B[e] columns in L2. 8 is the Triton-standard default;
+    # autotune sweeps it.
     "group_size_m": 8,
 }
 

@@ -38,7 +38,6 @@ def test_moe_grouped_gemm_nopad_bench(
     op = MoeGroupedGemmNopadFwdOp(numel, num_experts, n, k)
     bm = ManifestBenchmark(op, workload)
 
-    # Warmup: trigger JIT compilation before timed profiling.
     op(a, b, true_sizes, true_offsets)
     torch.cuda.synchronize()
 

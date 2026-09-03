@@ -93,7 +93,7 @@ from .pool import (
     MeanPoolingFwdOp,
 )
 
-# --- Reduction ops (uncomment as sub-category PRs land) ---
+# --- Reduction ops ---
 from .reduction import (
     AllFwdOp,
     AmaxFwdOp,  # ReduceMaxOp

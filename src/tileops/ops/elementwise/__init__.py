@@ -284,5 +284,4 @@ for _cls in [
 ]:
     _register_unary_inplace_custom_op(_cls)
 
-# Clean up loop variable
 del _cls

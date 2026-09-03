@@ -48,11 +48,10 @@ def _make_unpermute_kernel(
     threads -> 28 elems/thread = 3.5x VEC). Accumulation is in float32, cast to
     dtype on store.
     """
-    # Cap threads at 256 (the sweep optimum at H=7168: 512 is ~3% slower and
-    # 1024 spills the fp32 acc[H] accumulator to local memory) but scale with
-    # hidden_size // VEC and keep power-of-2 alignment, so small hidden sizes
-    # retain 128-bit (VEC=8) vectorized load/store instead of slow scalar 16-bit
-    # ops (e.g. H=512 -> 64 threads of 8 elems each, ~14% faster than 256).
+    # Cap threads at 256: 1024 spills the fp32 acc[H] accumulator to local
+    # memory. Below the cap, scale with hidden_size // VEC and keep power-of-2
+    # alignment so small hidden sizes retain 128-bit (VEC=8) vectorized
+    # load/store instead of scalar 16-bit ops (e.g. H=512 -> 64 threads of 8).
     VEC = 8  # 8 x bf16/fp16 = 128 bits
     threads = min(256, hidden_size // VEC)
     if threads > 0:

@@ -18,9 +18,6 @@ class DeltaNetDecodeTest(DeltaNetDecodeWorkload, TestBase):
     pass
 
 
-# Correctness tests
-
-
 def _get_tolerances(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:
         return {"atol": 5e-4, "rtol": 5e-4}

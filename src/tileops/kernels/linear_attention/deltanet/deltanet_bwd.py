@@ -78,7 +78,6 @@ def _bwd_parallel_tl(
             dh_local: T.Tensor([batch, head, num_chunks, dim_k, dim_v], accum_dtype),
         ):
             with T.Kernel(num_chunks, batch, head, threads=threads) as (tid, bid, hid):
-                # Shared buffers
                 q_c = T.alloc_shared([block_C, dim_k], dtype)
                 k_c = T.alloc_shared([block_C, dim_k], dtype)
                 w_c = T.alloc_shared([block_C, dim_k], dtype)
@@ -88,15 +87,12 @@ def _bwd_parallel_tl(
                 v_new_c = T.alloc_shared([block_C, dim_v], dtype)
                 o_part = T.alloc_shared([block_C, dim_v], dtype)
                 attn = T.alloc_shared([block_C, block_C], dtype)
-                # Gradients
                 d_q_c = T.alloc_shared([block_C, dim_k], dtype)
                 d_k_c = T.alloc_shared([block_C, dim_k], dtype)
                 d_w_c = T.alloc_shared([block_C, dim_k], dtype)
                 d_v_new_c = T.alloc_shared([block_C, dim_v], dtype)
                 d_attn = T.alloc_shared([block_C, block_C], dtype)
-                # Working
                 dP = T.alloc_shared([block_C, dim_k], dtype)
-                # Fragments
                 ws_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
                 attn_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
                 d_v_new_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
@@ -106,7 +102,6 @@ def _bwd_parallel_tl(
                 dP_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 dh_frag = T.alloc_fragment([dim_k, dim_v], accum_dtype)
 
-                # Load chunk data
                 T.copy(q[bid, hid, tid * block_C : (tid + 1) * block_C, :], q_c, disable_tma=True)
                 T.copy(k[bid, hid, tid * block_C : (tid + 1) * block_C, :], k_c, disable_tma=True)
                 T.copy(w[bid, hid, tid * block_C : (tid + 1) * block_C, :], w_c, disable_tma=True)
@@ -179,7 +174,6 @@ def _bwd_parallel_tl(
                 for i, j in T.Parallel(block_C, dim_k):
                     d_w_c[i, j] = dP[i, j]
 
-                # Write outputs
                 T.copy(
                     d_q_c, dq[bid, hid, tid * block_C : (tid + 1) * block_C, :], disable_tma=True
                 )
@@ -255,14 +249,12 @@ def _dh_recurrence_bwd_tl(
             du_corr: T.Tensor([batch, head, seq_len, dim_v], dtype),
         ):
             with T.Kernel(batch, head, threads=threads) as (bid, hid):
-                # Shared buffers
                 k_c = T.alloc_shared([block_C, dim_k], dtype)
                 w_c = T.alloc_shared([block_C, dim_k], dtype)
                 v_new_c = T.alloc_shared([block_C, dim_v], dtype)
                 dh_loc = T.alloc_shared([dim_k, dim_v], accum_dtype)
                 dP = T.alloc_shared([block_C, dim_k], dtype)
                 dh_buf = T.alloc_shared([dim_k, dim_v], dtype)
-                # Fragments
                 dh_fp32 = T.alloc_fragment([dim_k, dim_v], accum_dtype)
                 du_corr_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
                 dP_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
@@ -484,7 +476,6 @@ class DeltaNetBwdKernel(Kernel):
         B, H, S, BC = self.batch, self.head, self.seq_len, self.chunk_size
         DK, DV, dt = self.dim_k, self.dim_v, self.dtype_str
 
-        # --- Tune bwd_parallel ---
         parallel_configs = [{"threads": t} for t in [128, 256]]
         print(f"Autotuning bwd_parallel ({len(parallel_configs)} configs)...")
         parallel_jit = _bwd_parallel_tl(B, H, S, BC, DK, DV, dt)
@@ -502,7 +493,6 @@ class DeltaNetBwdKernel(Kernel):
         parallel_best = tuned_parallel.config
         print(f"  Best: {parallel_best}")
 
-        # --- Tune dh_recurrence_bwd ---
         recurrence_configs = [{"num_stages": ns, "threads": t} for ns in [1, 2] for t in [128, 256]]
         print(f"Autotuning dh_recurrence_bwd ({len(recurrence_configs)} configs)...")
         recurrence_jit = _dh_recurrence_bwd_tl(B, H, S, BC, DK, DV, dt)
@@ -520,7 +510,6 @@ class DeltaNetBwdKernel(Kernel):
         recurrence_best = tuned_recurrence.config
         print(f"  Best: {recurrence_best}")
 
-        # --- Tune compute_w_u_bwd ---
         wu_bwd_configs = [{"num_stages": ns, "threads": t} for ns in [1, 2] for t in [128, 256]]
         print(f"Autotuning compute_w_u_bwd ({len(wu_bwd_configs)} configs)...")
         wu_bwd_jit = compute_w_u_bwd_tl(B, H, S, BC, DK, DV, dt)

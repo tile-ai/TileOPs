@@ -31,7 +31,6 @@ def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat
             x_out: T.Tensor([batch, n_expand * c_x], x_dtype),
         ):
             with T.Kernel(batch, c_x // block_C, threads=threads) as (bx, by):
-                # copy the h_post matrix into fragment
                 h_post_shared = T.alloc_shared([n_expand], dtype)
                 x_layer_out_shared = T.alloc_shared([block_C], dtype)
                 x_res_shared = T.alloc_shared([n_expand, block_C], dtype)

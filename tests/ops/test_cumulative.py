@@ -11,8 +11,6 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from workloads.reduction import CumulativeWorkload
 
-# Fixtures
-
 
 class CumulativeBasicFixture(FixtureBase):
     PARAMS = [
@@ -83,9 +81,6 @@ class Cumulative1DFixture(FixtureBase):
     ]
 
 
-# TestBase helpers
-
-
 class CumulativeTest(CumulativeWorkload, TestBase):
     """Parameterized test helper for cumulative ops."""
 
@@ -112,9 +107,6 @@ def _cumprod_tol(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:
         return {"atol": 1e-3, "rtol": 1e-3}
     return {"atol": 5e-2, "rtol": 5e-2}
-
-
-# CumsumFwdOp tests
 
 
 @CumulativeBasicFixture
@@ -189,9 +181,6 @@ def test_cumsum_dynamic_shape_kernel_cache() -> None:
     assert len(list(op.iter_kernels())) == 1
     op(x2)
     assert len(list(op.iter_kernels())) == 2
-
-
-# CumprodFwdOp tests
 
 
 @CumulativeBasicFixture

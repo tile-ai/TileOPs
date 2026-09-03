@@ -379,9 +379,6 @@ def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str):
     return _func
 
 
-# CumulativeKernel class
-
-
 class CumulativeKernel(Kernel):
     """Inclusive prefix scan kernel (cumsum / cumprod).
 

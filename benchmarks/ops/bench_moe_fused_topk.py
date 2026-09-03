@@ -22,8 +22,6 @@ from tileops.manifest import load_workloads
 from tileops.ops.moe import FusedTopKOp
 from workloads.moe import FusedTopKWorkload
 
-# Benchmark test
-
 
 @pytest.mark.parametrize(
     "num_tokens, num_experts, top_k, scoring_func, renormalize, with_correction_bias, dtype",
@@ -61,7 +59,6 @@ def test_fused_topk_bench(
     inputs = test.gen_inputs()
     gating_output = inputs[0]
 
-    # TileOPs
     op = FusedTopKOp(
         top_k=top_k,
         scoring_func=scoring_func,

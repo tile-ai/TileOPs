@@ -6,9 +6,6 @@ This package will host stateless dispatchers for reduction operators
 kernels are implemented.
 """
 
-# Placeholder imports for reduction ops.
-# Each sub-category PR uncomments its own lines.
-
 # --- LogicalReduceKernel ops ---
 # --- ArgreduceKernel ops ---
 from .argreduce import ArgmaxFwdOp, ArgminFwdOp

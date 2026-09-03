@@ -91,14 +91,12 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                         T.clear(C_local)
 
                         for k in T.Pipelined(T.ceildiv(K, block_k), num_stages=num_stages):
-                            # Load A block (same for NT and NN)
                             for i, j in T.Parallel(block_m, block_k):
                                 A_shared[i, j] = T.if_then_else(
                                     i < actual_rows and j < K - k * block_k,
                                     A[m_start + i, k * block_k + j],
                                     0,
                                 )
-                            # Load B block
                             if transpose_b:
                                 for i, j in T.Parallel(block_n, block_k):
                                     B_shared[i, j] = T.if_then_else(
@@ -114,7 +112,6 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                                         0,
                                     )
                             T.gemm(A_shared, B_shared, C_local, transpose_B=transpose_b)
-                        # Store result
                         for i, j in T.Parallel(block_m, block_n):
                             if i < actual_rows and j < actual_cols:
                                 C[m_start + i, n_start + j] = C_local[i, j]
@@ -161,12 +158,10 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                     for m in T.Pipelined(T.ceildiv(batch_size, block_m), num_stages=num_stages):
                         m_start = batch_start + m * block_m
                         actual_rows = T.min(block_m, batch_size - m * block_m)
-                        # Load A block (same for TN and TT)
                         for i, j in T.Parallel(block_m, block_n):
                             A_shared[i, j] = T.if_then_else(
                                 i < actual_rows and j < actual_N, A[m_start + i, n_start + j], 0
                             )
-                        # Load B block
                         if transpose_b:
                             for i, j in T.Parallel(block_k, block_m):
                                 B_shared[i, j] = T.if_then_else(
@@ -180,7 +175,6 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                         T.gemm(
                             A_shared, B_shared, C_local, transpose_A=True, transpose_B=transpose_b
                         )
-                    # Store result
                     for i, j in T.Parallel(block_n, block_k):
                         if i < actual_N and j < actual_K:
                             C[bx, n_start + i, k_start + j] = C_local[i, j]

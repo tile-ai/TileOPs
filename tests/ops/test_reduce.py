@@ -14,8 +14,6 @@ from workloads.reduction import (
     SumWorkload,
 )
 
-# Fixtures
-
 
 class ReduceBasicFixture(FixtureBase):
     PARAMS = [
@@ -119,9 +117,6 @@ class BesselFixture(FixtureBase):
     ]
 
 
-# TestBase helpers — inherit gen_inputs() from workload classes
-
-
 class ReduceTest(SumWorkload, TestBase):
     """Parameterized test helper for simple reduce ops (sum/mean/amax/amin)."""
 
@@ -183,9 +178,6 @@ def _tol(dtype: torch.dtype) -> dict:
     if dtype == torch.float32:
         return {"atol": 1e-4, "rtol": 1e-4}
     return {"atol": 1e-2, "rtol": 1e-2}
-
-
-# SumFwdOp tests
 
 
 @ReduceBasicFixture
@@ -356,9 +348,6 @@ def test_sum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     assert torch.allclose(y, ref, **tol), f"4D max err: {(y - ref).abs().max()}"
 
 
-# MeanFwdOp tests
-
-
 @ReduceBasicFixture
 def test_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import MeanFwdOp
@@ -366,9 +355,6 @@ def test_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = ReduceTest(m, n, dtype, "mean")
     op = MeanFwdOp(dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
-
-
-# AminFwdOp tests
 
 
 @ReduceBasicFixture
@@ -380,9 +366,6 @@ def test_amin_op(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
-# AmaxFwdOp tests
-
-
 @ReduceBasicFixture
 def test_amax_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import AmaxFwdOp
@@ -390,9 +373,6 @@ def test_amax_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = ReduceTest(m, n, dtype, "amax")
     op = AmaxFwdOp(dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
-
-
-# ProdFwdOp tests
 
 
 @ReduceBasicFixture
@@ -404,9 +384,6 @@ def test_prod_op(m: int, n: int, dtype: torch.dtype) -> None:
     # Prod is more numerically sensitive
     tol = {"atol": 5e-2, "rtol": 5e-2} if dtype != torch.float32 else {"atol": 1e-3, "rtol": 1e-3}
     test.check(op, *test.gen_inputs(), **tol)
-
-
-# StdFwdOp tests
 
 
 @ReduceBasicFixture
@@ -427,9 +404,6 @@ def test_std_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
 
-# VarFwdOp tests
-
-
 @ReduceBasicFixture
 def test_var_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarFwdOp
@@ -446,9 +420,6 @@ def test_var_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None
     test = WelfordTest(m, n, dtype, "var", correction=correction)
     op = VarFwdOp(correction=correction, dim=-1)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
-
-
-# VarMeanFwdOp tests
 
 
 @ReduceBasicFixture

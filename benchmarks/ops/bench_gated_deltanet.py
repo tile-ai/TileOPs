@@ -43,9 +43,6 @@ def _to_fla_layout(q, k, v, g, beta):
     )
 
 
-# Forward benchmark
-
-
 def _gdn_bhtd_args(workload: dict) -> tuple[int, int, int, int, int, int]:
     """Constructor arguments for one manifest workload row, head-major."""
     batch, heads, seq_len, dim_k = workload["q_shape"]
@@ -115,9 +112,6 @@ def test_gated_deltanet_bhtd_vs_fla_fwd(
         return chunk_gated_delta_rule(*bthd, scale=1.0)
 
     bm.compare({"tileops": (op, inputs), "fla": (fla_fwd, ())})
-
-
-# Backward benchmark
 
 
 @pytest.mark.parametrize(

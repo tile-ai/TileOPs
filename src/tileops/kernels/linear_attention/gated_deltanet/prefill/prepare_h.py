@@ -153,25 +153,19 @@ def _build_prepare_h_kernel(
             if tx < 128:
                 T.set_max_nreg(CONSUMER_S_NREG, 1)
 
-                # Initialize S
                 if use_initial_state:
                     T.copy(h0[bb, bh, 0:DK, 0:DV], h_fragment)
                 else:
                     T.clear(h_fragment)
 
-                # Main Loop
                 for i_s in T.serial(num_iters):
-                    # [STAGE = i_s % num_stages]
                     T.barrier_wait(data_is_ready[i_s % num_stages], (i_s // num_stages + 0) % 2)
                     T.barrier_arrive(bar_0)
 
-                    # [STAGE = i_s % num_stages] 0
                     T.barrier_wait(bar_0, i_s % 2)
-                    # S4[1] S
                     T.copy(h_fragment, h_shared)
                     T.barrier_arrive(bar_1)
 
-                    # [STAGE = i_s % num_stages] 1
                     T.barrier_wait(bar_1, i_s % 2)
                     # S = g_last * S
                     g_last_local_S[0] = T.exp2(g_shared[i_s % num_stages, block_S - 1] * LOG2E)
@@ -179,7 +173,6 @@ def _build_prepare_h_kernel(
                         h_fragment[j_k, j_v] *= g_last_local_S[0]
                     T.barrier_arrive(bar_2)
 
-                    # [STAGE = i_s % num_stages] 2
                     T.barrier_wait(bar_2, i_s % 2)
                     # S += X^T @ Y
                     T.gemm_v1(
@@ -193,7 +186,6 @@ def _build_prepare_h_kernel(
 
                     T.barrier_arrive(data_is_free[i_s % num_stages])
 
-                # Store final S
                 if store_final_state:
                     T.copy(h_fragment, ht[bb, bh, 0:DK, 0:DV])
 
@@ -208,13 +200,10 @@ def _build_prepare_h_kernel(
                             m_fragment_R[j_k, j_v] = 0
                     g_prod_X[0] = 0
 
-                # Main Loop
                 for i_s in T.serial(num_iters):
-                    # [STAGE = i_s % num_stages]
                     T.barrier_wait(data_is_ready[i_s % num_stages], (i_s // num_stages + 0) % 2)
                     T.barrier_arrive(bar_0)
 
-                    # [STAGE = i_s % num_stages] 0
                     T.barrier_wait(bar_0, i_s % 2)
                     # X = A^T @ K
                     T.gemm_v1(
@@ -229,17 +218,13 @@ def _build_prepare_h_kernel(
                     # X = - b * X
                     for j_s, j_k in T.Parallel(block_S, DK):
                         x_fragment[j_s, j_k] *= -b_shared[i_s % num_stages, j_s]
-                    # S2[1] X
                     T.copy(x_fragment, x_shared)
                     T.barrier_arrive(bar_2)
 
                     if calc_mt:
-                        # [STAGE = i_s % num_stages] 2
                         g_prod_X[0] += g_shared[i_s % num_stages, block_S - 1]
-                        # S4[2] M
                         T.copy(m_fragment_R, m_shared_R)
 
-                        # [STAGE = i_s % num_stages] 3
                         T.barrier_wait(bar_3, i_s % 2)
                         # Z = K @ M
                         T.gemm_v1(
@@ -248,7 +233,6 @@ def _build_prepare_h_kernel(
                             z_fragment_R,
                             clear_accum=True,
                         )
-                        # S4[2] Z
                         T.copy(z_fragment_R, z_shared_R)
                         # M += X^T @ Z
                         T.gemm_v1(
@@ -278,13 +262,10 @@ def _build_prepare_h_kernel(
                             m_fragment_L[j_k, j_v] = 0
                     g_prod_Y[0] = 0
 
-                # Main Loop
                 for i_s in T.serial(num_iters):
-                    # [STAGE = i_s % num_stages]
                     T.barrier_wait(data_is_ready[i_s % num_stages], (i_s // num_stages + 0) % 2)
                     T.barrier_arrive(bar_0)
 
-                    # [STAGE = i_s % num_stages] 0
                     T.barrier_wait(bar_0, i_s % 2)
                     # Precompute g_last/g
                     g_last_local_Y[0] = g_shared[i_s % num_stages, block_S - 1]
@@ -295,7 +276,6 @@ def _build_prepare_h_kernel(
                     g_last_local_Y[0] = T.exp2(g_last_local_Y[0] * LOG2E)
                     T.barrier_arrive(bar_1)
 
-                    # [STAGE = i_s % num_stages] 1
                     T.barrier_wait(bar_1, i_s % 2)
                     # U = K @ S
                     T.gemm_v1(
@@ -311,17 +291,13 @@ def _build_prepare_h_kernel(
                         y_fragment[j_s, j_v] -= (
                             v_shared[i_s % num_stages, j_s, j_v] * g_rev_exp_shared[j_s]
                         )
-                    # S2[2] Y
                     T.copy(y_fragment, y_shared)
                     T.barrier_arrive(bar_2)
 
                     if calc_mt:
-                        # [STAGE = i_s % num_stages] 2
                         g_prod_Y[0] += g_shared[i_s % num_stages, block_S - 1]
-                        # S4[2] M
                         T.copy(m_fragment_L, m_shared_L)
 
-                        # [STAGE = i_s % num_stages] 3
                         T.barrier_wait(bar_3, i_s % 2)
                         # Z = K @ M
                         T.gemm_v1(
@@ -330,7 +306,6 @@ def _build_prepare_h_kernel(
                             z_fragment_L,
                             clear_accum=True,
                         )
-                        # S4[2] Z
                         T.copy(z_fragment_L, z_shared_L)
                         # M += X^T @ Z
                         T.gemm_v1(
@@ -358,7 +333,6 @@ def _build_prepare_h_kernel(
                         left = seq_start_idx + i_s * block_S
                         right = left + block_S
 
-                        # Load K
                         T.tma_copy(
                             k[batch_idx, left:right, bhg, 0:DK],
                             k_shared[i_s % num_stages, :, :],
@@ -373,13 +347,12 @@ def _build_prepare_h_kernel(
                         left = seq_start_idx + i_s * block_S
                         right = left + block_S
 
-                        # Load V
                         T.tma_copy(
                             v[batch_idx, left:right, bh, 0:DV],
                             v_shared[i_s % num_stages, :, :],
                             barrier=data_is_ready[i_s % num_stages],
                         )
-                        # Load A  TODO: Mask A for the last chunk
+                        # TODO: mask A for the last chunk
                         T.tma_copy(
                             a[batch_idx, left:right, bh, 0:block_S],
                             a_shared[i_s % num_stages, :, :],
@@ -394,7 +367,6 @@ def _build_prepare_h_kernel(
                         left = seq_start_idx + i_s * block_S
                         right = left + block_S
 
-                        # Load gamma
                         if right <= seq_end_idx:
                             for j_s in T.Parallel(block_S):
                                 g_shared[i_s % num_stages, j_s] = g[batch_idx, left + j_s, bh]
@@ -406,7 +378,6 @@ def _build_prepare_h_kernel(
                                     g_shared[i_s % num_stages, j_s] = g[
                                         batch_idx, seq_end_idx - 1, bh
                                     ]
-                        # Load beta
                         if right <= seq_end_idx:
                             for j_s in T.Parallel(block_S):
                                 b_shared[i_s % num_stages, j_s] = b[batch_idx, left + j_s, bh]
@@ -425,7 +396,6 @@ def _build_prepare_h_kernel(
 
                         T.barrier_wait(bar_0, i_s % 2)
                         T.barrier_wait(bar_1, i_s % 2)
-                        # Store S
                         if store_h:
                             T.copy(
                                 h_shared,

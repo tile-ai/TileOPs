@@ -46,8 +46,6 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-# Helpers
-
 
 def _setup_vllm_distributed(tp_size: int) -> tuple[int, int]:
     """Initialize torch.distributed + vLLM model parallel groups.
@@ -99,9 +97,6 @@ def _teardown_vllm_distributed():
             cleanup_dist_env_and_memory()
     if dist.is_initialized():
         dist.destroy_process_group()
-
-
-# Fixtures
 
 
 class TPFixture:

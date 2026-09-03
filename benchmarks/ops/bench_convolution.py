@@ -267,8 +267,6 @@ def _profile_conv(
     bm.compare({"tileops": op, **baselines}, *inputs)
 
 
-# Conv1d
-
 _CONV1D_KERNEL_KEYS = ("kW",)
 
 
@@ -292,8 +290,6 @@ def test_conv1d_bench(case: ConvCase) -> None:
     _run_conv(op, bm, F.conv1d, case, rank=1, with_bias=case.with_bias, static_weight=True)
 
 
-# Conv2d
-
 _CONV2D_KERNEL_KEYS = ("kH", "kW")
 
 
@@ -316,8 +312,6 @@ def test_conv2d_bench(case: ConvCase) -> None:
     bm = ManifestBenchmark(op, case)
     _run_conv(op, bm, F.conv2d, case, rank=2, with_bias=case.with_bias)
 
-
-# Conv3d
 
 _CONV3D_KERNEL_KEYS = ("kD", "kH", "kW")
 

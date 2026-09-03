@@ -645,7 +645,6 @@ class GLABwdKernel(Kernel):
         NT = T // BT
         dtype_torch = self.dtype
 
-        # Generate representative inputs
         q = torch.randn(B, T, H, K, device="cuda", dtype=dtype_torch) * 0.1
         k = torch.randn(B, T, H, K, device="cuda", dtype=dtype_torch) * 0.1
         v = torch.randn(B, T, H, V, device="cuda", dtype=dtype_torch) * 0.1

@@ -130,13 +130,11 @@ def _nsa_fwd_varlen_kernel(
                             policy=T.GemmWarpPolicy.FullRow,
                         )
 
-                        # Softmax
                         online_softmax(
                             acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
                         )
                         T.copy(acc_s, acc_s_cast)
 
-                        # Rescale
                         rescale(acc_o, scores_scale)
 
                         # V * softmax(Q * K)

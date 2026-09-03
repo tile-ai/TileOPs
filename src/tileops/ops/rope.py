@@ -336,9 +336,6 @@ def _longrope_freqs(
     )
 
 
-# Base Op class for RoPE
-
-
 class _RopeOpBase(Op):
     """Base class for all RoPE ops.
 
@@ -937,5 +934,4 @@ for _cls in [RopeNeoxFwdOp, RopeNonNeoxFwdOp, RopeLlama31FwdOp, RopeYarnFwdOp, R
 
 _register_rope_position_ids_custom_op(RopeNeoxPositionIdsFwdOp)
 
-# Clean up loop variable
 del _cls

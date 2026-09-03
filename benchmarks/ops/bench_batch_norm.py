@@ -23,11 +23,6 @@ from tileops.manifest import load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.normalization import BatchNormBwdWorkload, BatchNormFwdWorkload
 
-# Benchmark classes
-
-
-# Benchmark helpers
-
 
 def _make_inputs(N, C, spatial, dtype, device="cuda"):
     shape = (N, C, *spatial)
@@ -109,9 +104,6 @@ def _aten_bn_bwd(grad_out, x, weight, mean, rstd):
     )
 
 
-# Manifest-driven params
-
-
 def _fwd_args(w: dict, dtype: torch.dtype) -> tuple:
     n, c, *spatial = w["x_shape"]
     return (n, c, tuple(spatial), dtype, True, False)
@@ -120,9 +112,6 @@ def _fwd_args(w: dict, dtype: torch.dtype) -> tuple:
 def _bwd_args(w: dict, dtype: torch.dtype) -> tuple:
     n, c, *spatial = w["x_shape"]
     return (n, c, tuple(spatial), dtype)
-
-
-# Benchmark tests
 
 
 @pytest.mark.parametrize(

@@ -54,7 +54,6 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str):
                         input_local[i, j] / scale_local[i], fp8_min, fp8_max
                     )
 
-                # Write back scale and output
                 for i in T.Parallel(block_m):
                     scale_tensor[bx, pid_m * block_m + i, g] = scale_local[i]
                 for i, j in T.Parallel(block_m, index_dim):

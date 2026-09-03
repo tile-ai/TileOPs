@@ -284,7 +284,6 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str, partial: bo
                     for i in T.Parallel(block_m):
                         out_local[i] = T.cast(result[i] > 0.5, "int8")
 
-                # Write output
                 T.copy(out_local, out[pid_m * block_m])
 
         @T.prim_func
@@ -391,7 +390,6 @@ def _logical_reduce_kernel_tiled(
                     for i in T.Parallel(block_m):
                         out_local[i] = T.cast(acc[i] > 0.5, "int8")
 
-                # Write output
                 T.copy(out_local, out[pid_m * block_m])
 
         @T.prim_func

@@ -311,9 +311,9 @@ class InstanceNormFwdOp(Op):
 
         if not self.use_input_stats:
             # Eval-mode path: y = (x - running_mean[c]) / sqrt(running_var[c] + eps).
-            # Pure elementwise per-channel; matches torch.nn.functional.instance_norm
-            # (use_input_stats=False) numerics bit-for-bit (verified) by computing in
-            # fp32 then casting to x.dtype.
+            # Pure elementwise per-channel. Computing in fp32 and casting to x.dtype
+            # matches torch.nn.functional.instance_norm(use_input_stats=False)
+            # bit-for-bit.
             mean_b = running_mean.reshape(self._running_stats_broadcast_shape)
             var_b = running_var.reshape(self._running_stats_broadcast_shape)
             y = (x.float() - mean_b) * torch.rsqrt(var_b + self.eps)

@@ -19,7 +19,6 @@ def test_fft_bench(shape: tuple, dtype: torch.dtype) -> None:
 
     op = FFTC2CFwdOp(tune=True)
 
-    # Warmup: trigger JIT compilation before timed profiling
     op(*inputs)
     torch.cuda.synchronize()
 

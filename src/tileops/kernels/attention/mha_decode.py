@@ -245,7 +245,6 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, is_causal, 
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = T.ceildiv(split_length_shared[sid], block_N)
-                # move it to input var...
                 for k in T.Pipelined(loop_range, num_stages=2):
                     MMA0(K, Q_shared, K_shared, real_seqlen_kv, acc_s, k, mid, hid, bid, sid)
                     online_softmax(
@@ -453,9 +452,6 @@ def _(
     split_length: torch.Tensor,
 ) -> torch.Tensor:
     return torch.empty_like(Q)
-
-
-# Kernel class
 
 
 class MHADecodeKernel(Kernel):

@@ -52,7 +52,6 @@ class CBProducerFwdOp(Op):
         self.d_state = d_state
         self.tune = tune
 
-        # Use standard Op dispatch pattern
         self.dispatch_kernel(kernel_map)
 
     def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:

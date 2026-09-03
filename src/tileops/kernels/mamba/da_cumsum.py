@@ -203,10 +203,8 @@ def _da_cumsum_fwd_kernel(
                     safe_bh = T.min(bh, H - 1)
                     safe_seq_idx = T.min(seq_idx, S - 1)
 
-                    # Load dt; zero-pad out-of-bounds positions.
                     val = T.if_then_else(in_b, dt[bb, safe_seq_idx, safe_bh], T.float32(0.0))
 
-                    # Optional bias addition.
                     if has_dt_bias:
                         bias = T.if_then_else(bh < H, dt_bias[safe_bh], T.float32(0.0))
                         val = val + bias
@@ -219,7 +217,6 @@ def _da_cumsum_fwd_kernel(
                             val,
                         )
 
-                    # Clamp to [dt_min, dt_max].
                     val = T.min(T.max(val, T.float32(dt_min)), T.float32(dt_max))
 
                     # Re-apply out-of-bounds zero mask after nonlinearities.
@@ -299,7 +296,6 @@ def _(
     A: torch.Tensor,
     dt_bias: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    # Convert dtype string to torch.dtype
     dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
     torch_dtype = dtype_map.get(dtype, torch.float16)
     dt_out = dt.new_empty((batch, n_heads, num_chunks, chunk_len), dtype=torch_dtype)
@@ -380,9 +376,8 @@ class DaCumsumFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Triton autotune selects one head for the small 780M shape and two for
-        # the larger rows. Match that measured choice while keeping the
-        # analysis-derived ownership kernel structural rather than config-only.
+        # One head per tile on the narrowest shape, two elsewhere: a wider tile
+        # spends threads a single-row batch has no work for.
         block_h = 1 if self.batch == 1 and self.n_heads == 48 else 2
         return {"block_h": block_h, "threads": min(block_h * self.chunk_len, 1024)}
 

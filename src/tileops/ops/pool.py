@@ -465,7 +465,7 @@ class _AvgPoolFwdOpBase(Op):
     def _use_spatial_fast_path(self) -> bool:
         # Strict 1d/3d policy: an explicit generic-kernel override opts out of
         # the spatial fast path unless the spatial kernel is also explicit.
-        # AvgPool2dFwdOp overrides this with its laxer historical policy.
+        # AvgPool2dFwdOp overrides this with a laxer 2d policy.
         return (
             not self.ceil_mode
             and self.count_include_pad
@@ -705,8 +705,8 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
         }
 
     def _use_spatial_fast_path(self) -> bool:
-        # Laxer historical 2d policy: an explicit generic-kernel override does
-        # not opt out of the spatial fast path (asymmetric with 1d/3d).
+        # Laxer 2d policy: an explicit generic-kernel override does not opt out
+        # of the spatial fast path (asymmetric with 1d/3d).
         return (
             not self.ceil_mode
             and self.count_include_pad

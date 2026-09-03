@@ -581,8 +581,7 @@ def make_reduce_epilogue(op_kind: str):
             f"Expected one of {sorted(_REDUCE_KINDS)}."
         )
 
-    # All reduce epilogues currently use a simple copy; sub-category PRs
-    # will specialize the bodies (e.g. abs for L1 norm, noop for max/min).
+    # Every reduce kind shares one epilogue: a copy of the reduced fragment.
     @T.macro
     def epilogue(result, output):
         T.copy(result, output)
@@ -945,9 +944,9 @@ class RowTiledAutotuneMixin:
                             continue
                         configs.append({"block_m": bm, "threads": t, "tile_n": 0})
             else:
-                # Tiled regime: use block_m=1 with each tile_n candidate.
-                # Each distinct tile_n triggers a kernel recompilation, so
-                # we only vary threads within each tile_n regime.
+                # Tiled regime: block_m=1 with each tile_n candidate. Each
+                # distinct tile_n triggers a kernel recompilation, so only
+                # threads vary within a tile_n regime.
                 for t in threads_list:
                     configs.append({"block_m": 1, "threads": t, "tile_n": tile_n})
 

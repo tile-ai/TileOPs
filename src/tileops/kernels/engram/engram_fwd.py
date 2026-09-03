@@ -61,7 +61,6 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
         ):
             # ======== Pass 1: RMSNorm + gate -> vhat ========
             with T.Kernel(seq_len, M, threads=threads) as (bx, by):
-                # 2D fragments for reduce_sum compatibility
                 h_2d = T.alloc_fragment((1, d_padded), accum_dtype)
                 k_2d = T.alloc_fragment((1, d_padded), accum_dtype)
                 v_1d = T.alloc_fragment((d_padded,), accum_dtype)
@@ -91,7 +90,6 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
                     ksq[0, j] = k_2d[0, j] * k_2d[0, j]
                 T.reduce_sum(ksq, sumsq_k, dim=1)
 
-                # rrms values
                 rrms_h_val = T.rsqrt(sumsq_h[0] / float(d) + eps)
                 rrms_k_val = T.rsqrt(sumsq_k[0] / float(d) + eps)
                 rrms_h_buf[bid, tid] = rrms_h_val

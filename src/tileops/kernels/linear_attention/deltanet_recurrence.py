@@ -579,7 +579,6 @@ def _deltanet_decode_fp32_tl(
 
                 beta_val = T.cast(beta[bid, hid], accum_dtype)
 
-                # Zero-init fragment accumulators
                 T.fill(sk_frag, 0.0)
                 T.fill(sq_frag, 0.0)
 
@@ -592,7 +591,6 @@ def _deltanet_decode_fp32_tl(
                         sk_frag[j] = sk_frag[j] + k_val * h_val
                         sq_frag[j] = sq_frag[j] + q_val * h_val
 
-                # q . k dot product
                 qk_dot[0] = 0.0
                 for kk in T.Serial(dim_k):
                     qk_dot[0] += q[bid, hid, kk] * k[bid, hid, kk]

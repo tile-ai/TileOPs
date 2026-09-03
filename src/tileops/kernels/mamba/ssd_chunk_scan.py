@@ -116,8 +116,8 @@ def _ssd_chunk_scan_fwd_kernel(
             dt: T.Tensor(dt_shape, dtype),  # type: ignore
             out: T.Tensor(out_shape, accum_dtype),  # type: ignore
         ):
-            # Grid redesign: separate H dimension for better load balancing
-            # New layout: (L_tiles × P_tiles, B × C, H)
+            # Grid: (L_tiles × P_tiles, B × C, H). H gets its own axis so the
+            # load balances across heads.
             with T.Kernel(
                 T.ceildiv(Q, block_l) * T.ceildiv(P, block_p),
                 B * C,
@@ -135,7 +135,6 @@ def _ssd_chunk_scan_fwd_kernel(
                 l0 = bl * block_l
                 p0 = bp * block_p
 
-                # output accumulator [block_l, block_p]
                 acc = T.alloc_fragment((block_l, block_p), accum_dtype)
                 T.clear(acc)
 
@@ -156,7 +155,6 @@ def _ssd_chunk_scan_fwd_kernel(
                     }
                 )
 
-                # trace c_tile loading
                 for n_blk in T.Pipelined(T.ceildiv(N, block_n), num_stages=num_stages):
                     n0 = n_blk * block_n
 
@@ -172,7 +170,6 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # trace state_tile loading
                     # prev_states[b, c, h, p, n]  layout: [B, C, H, P, N]  float32
                     # Iterate (block_p, block_n) so consecutive threads vary nn (the contiguous N
                     # dim), giving coalesced 128-byte loads instead of strided-by-N accesses.
@@ -187,7 +184,6 @@ def _ssd_chunk_scan_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # trace gemm
                     # hist_acc += c_tile @ state_tile
                     T.gemm(c_tile, state_tile, hist_acc)
 
@@ -595,7 +591,6 @@ class SSDChunkScanFwdKernel(Kernel):
     def default_config(self) -> dict:
         # threads=128 (4 warps) balances parallelism with register pressure.
         # block_n=64 keeps occupancy high for typical d_state sizes (64-128).
-        # num_stages=3 optimal based on full-kernel benchmarking.
         return {
             "block_l": 64,
             "block_p": 64,
@@ -607,19 +602,11 @@ class SSDChunkScanFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # Focused search around the known-good default (block_l=64, block_p=64,
-        # block_n=128, block_s=64, threads=128, num_stages=3).
-        #
-        # NCU evidence:
-        #   - block_l=64, block_p=64 anchors GEMM tile efficiency; smaller tiles
-        #     hurt more than they help (tested: shape-aware default was slower).
-        #   - block_n only affects the history-path loop count; vary minimally.
-        #   - block_s and threads are the primary levers: block_s controls causal
-        #     GEMM tile size and s-loop iteration count; threads controls warps/block
-        #     and latency-hiding capacity.
-        #   - num_stages=3 is optimal (tested: stages=5 is 13% slower)
-        #
-        # 6–8 configs total (2 block_n entries dropped when d_state <= 32 or 64).
+        # Search around the default, holding the axes that carry little:
+        # block_l and block_p set GEMM tile efficiency, block_n only the
+        # history-path loop count, num_stages the pipeline depth. block_s (causal
+        # GEMM tile size and s-loop count) and threads (warps per block) are the
+        # two the sweep varies.
         block_n = min(128, self.d_state)
         return (
             [
@@ -648,8 +635,7 @@ class SSDChunkScanFwdKernel(Kernel):
                 if bn <= self.d_state
             ]
             + [
-                # threads=64 (2 warps/block) — more blocks/SM at cost of less ILP
-                # Include block_n=64 to cover the optimal config found via AKO tuning
+                # threads=64 (2 warps/block): more blocks per SM, less ILP.
                 {
                     "block_l": 64,
                     "block_p": 64,

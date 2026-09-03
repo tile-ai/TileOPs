@@ -36,9 +36,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RECLAIM_SCRIPT = REPO_ROOT / ".github" / "actions" / "reclaim-runner-disk" / "reclaim_cache.sh"
 
 
-# Test helpers
-
-
 def _age_path(path: Path, *, days: float) -> None:
     """Backdate mtime+atime of every file under ``path`` by ``days`` days."""
     past = time.time() - days * 86400

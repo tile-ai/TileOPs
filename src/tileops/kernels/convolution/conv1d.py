@@ -84,7 +84,7 @@ def _conv1d_kernel(
                         ol = bx * block_n + j
                         # k runs over (kernel_l, c_in): one k tile then covers a single
                         # tap across every input channel, which is one rectangle of x.
-                        # Laying it out the other way costs 50% on c_in=128, kernel 10.
+                        # The other order splits each tap across k tiles.
                         kw = k_idx // c_in
                         ci = k_idx % c_in
                         il = ol * stride_l + kw * dilation_l - pad_left

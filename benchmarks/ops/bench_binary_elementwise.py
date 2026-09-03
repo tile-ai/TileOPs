@@ -95,7 +95,6 @@ class BinaryArithBenchFixture(FixtureBase):
         (
             "op_name, shape, dtype, output_dtype, op_cls, baseline_fn, gen_inputs",
             [
-                # sub
                 pytest.param(
                     "sub",
                     _SHAPES[0],
@@ -126,7 +125,6 @@ class BinaryArithBenchFixture(FixtureBase):
                     "normal",
                     marks=pytest.mark.full,
                 ),
-                # mul
                 pytest.param(
                     "mul",
                     _SHAPES[0],
@@ -157,7 +155,6 @@ class BinaryArithBenchFixture(FixtureBase):
                     "normal",
                     marks=pytest.mark.full,
                 ),
-                # div
                 pytest.param(
                     "div",
                     _SHAPES[0],
@@ -188,7 +185,6 @@ class BinaryArithBenchFixture(FixtureBase):
                     "positive",
                     marks=pytest.mark.full,
                 ),
-                # remainder
                 pytest.param(
                     "remainder",
                     _SHAPES[0],
@@ -209,7 +205,6 @@ class BinaryArithBenchFixture(FixtureBase):
                     "positive",
                     marks=pytest.mark.full,
                 ),
-                # pow
                 pytest.param(
                     "pow",
                     _SHAPES[0],
@@ -230,7 +225,6 @@ class BinaryArithBenchFixture(FixtureBase):
                     "positive",
                     marks=pytest.mark.full,
                 ),
-                # floor_divide
                 pytest.param(
                     "floor_divide",
                     _SHAPES[0],
@@ -272,7 +266,6 @@ class BinaryArithBenchFixture(FixtureBase):
                     "normal",
                     marks=pytest.mark.full,
                 ),
-                # maximum
                 pytest.param(
                     "maximum",
                     _SHAPES[0],
@@ -303,7 +296,6 @@ class BinaryArithBenchFixture(FixtureBase):
                     "normal",
                     marks=pytest.mark.full,
                 ),
-                # minimum
                 pytest.param(
                     "minimum",
                     _SHAPES[0],
@@ -695,8 +687,7 @@ class FusedGatedStrategyBenchFixture(FixtureBase):
 
 
 # How far behind the fastest strategy the default may sit before the choice is
-# stale. Measured at 1024x4096 fp16, the two are 8.4us and 16.2us apart, so this
-# margin flags a flip without firing on run-to-run spread.
+# stale. Wide enough to clear run-to-run spread, narrow enough to flag a flip.
 _STRATEGY_MARGIN = 1.25
 
 
@@ -748,7 +739,6 @@ class BroadcastBenchFixture(FixtureBase):
         (
             "op_name, a_shape, b_shape, dtype, op_cls, baseline_fn, gen_inputs",
             [
-                # sub — bias-add pattern
                 pytest.param(
                     "sub",
                     *_BROADCAST_SHAPES[0],
@@ -776,7 +766,6 @@ class BroadcastBenchFixture(FixtureBase):
                     "normal",
                     marks=pytest.mark.full,
                 ),
-                # mul — bias-add pattern
                 pytest.param(
                     "mul",
                     *_BROADCAST_SHAPES[0],
@@ -804,7 +793,6 @@ class BroadcastBenchFixture(FixtureBase):
                     "normal",
                     marks=pytest.mark.full,
                 ),
-                # div — bias-add pattern
                 pytest.param(
                     "div",
                     *_BROADCAST_SHAPES[0],

@@ -354,9 +354,6 @@ def _(
     return torch.empty_like(Q)
 
 
-# Kernel class
-
-
 class MHADecodePagedWsKernel(Kernel):
     """Hopper paged MHA decode: hand-written warp specialization, no MMA."""
 

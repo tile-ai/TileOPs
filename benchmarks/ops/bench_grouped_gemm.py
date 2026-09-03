@@ -32,8 +32,6 @@ from workloads.grouped_gemm import (
 _TUNE = True
 
 
-# Test functions
-
 _GROUPED_GEMM_PARAMS = workload_params(
     load_workloads(GroupedGemmFwdOp),
     fields("batch_sum", "batch_count", "n", "k", "dtype", "transpose_a", "transpose_b"),
