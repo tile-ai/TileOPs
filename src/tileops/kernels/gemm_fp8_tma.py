@@ -70,6 +70,42 @@ _FP8_1D2D_H200_CONFIGS: dict[tuple[int, int, int], dict[str, object]] = {
 }
 
 
+def _shape_refusal(m: int, n: int, k: int, *, shared_epilogue: bool) -> Optional[str]:
+    """Why this schedule cannot address these shapes, or ``None`` when it can.
+
+    Every operand and the A scale arrive through TMA, whose descriptors address
+    the innermost (contiguous) dimension in 16-byte units: ``k`` for the fp8
+    ``a`` / ``b``, and ``m`` for the ``[K // 128, M]`` fp32 ``scale_a``. The
+    epilogue adds its own unit — two BF16 columns per packed global store, or a
+    descriptor row stride of 16 bytes for the shared-memory path.
+
+    Undeclared, an unaligned shape reaches TileLang's descriptor check and dies
+    as "Check failed: (result.supported) is false", naming nothing to change.
+    """
+    if m < 128:
+        return "M >= 128 is required; dispatch smaller M to a GEMV/small-M kernel"
+    store_unit = 8 if shared_epilogue else 2
+    offenders = [
+        f"{name}={value} is not a multiple of {unit} ({what})"
+        for name, value, unit, what in (
+            ("k", k, 16, "a and b are read K-major through TMA, 16 fp8 per 16 bytes"),
+            ("m", m, 4, "scale_a is read M-major through TMA, 4 fp32 per 16 bytes"),
+            (
+                "n",
+                n,
+                store_unit,
+                "the TMA epilogue needs a 16-byte row stride in c"
+                if shared_epilogue
+                else "the epilogue writes c two BF16 columns at a time",
+            ),
+        )
+        if value % unit
+    ]
+    if not offenders:
+        return None
+    return "; ".join(offenders)
+
+
 @functools.lru_cache(maxsize=32)
 def _gemm_fp8_block_scaled_tma_coop_kernel(
     m: int,
@@ -107,6 +143,20 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
     ) -> Callable:
         if block_n not in (16, 32, 56, 64, 128):
             raise ValueError(f"block_n must be one of 16/32/56/64/128, got {block_n}")
+        if shared_epilogue and block_n % 16:
+            # ``fp8_gemm_raw_acc_stsm_bf16`` stages the tile through STSM, whose
+            # atom writes a 16x16 patch per iteration. A block_n leaving a
+            # partial patch would drop those columns from shared memory and
+            # publish whatever the previous wave left there, so refuse rather
+            # than store a tile the epilogue cannot cover.
+            raise ValueError(
+                f"the shared-memory epilogue stores 16 columns per STSM atom, so it "
+                f"needs block_n divisible by 16; got {block_n}"
+            )
+        if group_size_m < 1:
+            raise ValueError(f"group_size_m must be positive, got {group_size_m}")
+        if num_stages < 1:
+            raise ValueError(f"num_stages must be positive, got {num_stages}")
         uniform_scale_b = 128 % block_n == 0
         wgmma_helper = f"tl::fp8_gemm_wgmma_64x128_by_128x{block_n}"
         promotion_1d2d_shared_ab = f"tl::fp8_gemm_1d2d_promote_shared_ab_64x{block_n}"
@@ -118,6 +168,11 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
         num_pid_n = -(-n // block_n)
         total_tiles = num_pid_m * num_pid_n
         max_waves = -(-total_tiles // sm_count)
+        # One wave stages the whole B-scale column in shared memory before the
+        # mainloop; several waves cannot, because the tile — and with it the
+        # scale row — changes per wave, so they stage two rows per K step into
+        # the ring instead. The two forms are mutually exclusive, which is why
+        # ``not stage_1d2d_b_per_k`` reads as ``max_waves == 1`` below.
         stage_1d2d_b_per_k = max_waves > 1
         effective_unroll = mainloop_unroll or num_stages
 
@@ -178,11 +233,7 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
                             decode(flat_id, mt, nt)
                             m_start = mt[0] * block_m
                             n_start = nt[0] * block_n
-                            if wave > 0 and not stage_1d2d_b_per_k:
-                                T.sync_threads(barrier_id=15, arrive_count=384)
-                            if not stage_1d2d_b_per_k and (
-                                not uniform_scale_b or scale_k < 16 or max_waves > 1
-                            ):
+                            if not stage_1d2d_b_per_k and (not uniform_scale_b or scale_k < 16):
                                 for i in T.Parallel((1 if uniform_scale_b else 2) * scale_k):
                                     scale_row = T.min(
                                         n_start // 128 + i // scale_k,
@@ -259,11 +310,7 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
                             decode(flat_id, mt, nt)
                             m_start = mt[0] * block_m
                             n_start = nt[0] * block_n
-                            if wave > 0 and not stage_1d2d_b_per_k:
-                                T.sync_threads(barrier_id=15, arrive_count=384)
-                            if not stage_1d2d_b_per_k and (
-                                not uniform_scale_b or scale_k < 16 or max_waves > 1
-                            ):
+                            if not stage_1d2d_b_per_k and (not uniform_scale_b or scale_k < 16):
                                 T.sync_threads(barrier_id=10, arrive_count=384)
                             T.clear(final_0)
                             for kk in T.unroll(scale_k, unroll_factor=effective_unroll):
@@ -370,11 +417,7 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
                             decode(flat_id, mt, nt)
                             m_start = mt[0] * block_m
                             n_start = nt[0] * block_n
-                            if wave > 0 and not stage_1d2d_b_per_k:
-                                T.sync_threads(barrier_id=15, arrive_count=384)
-                            if not stage_1d2d_b_per_k and (
-                                not uniform_scale_b or scale_k < 16 or max_waves > 1
-                            ):
+                            if not stage_1d2d_b_per_k and (not uniform_scale_b or scale_k < 16):
                                 T.sync_threads(barrier_id=10, arrive_count=384)
                             T.clear(final_1)
                             for kk in T.unroll(scale_k, unroll_factor=effective_unroll):
@@ -458,6 +501,16 @@ class GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(Kernel):
     ``scale_a`` is physically contiguous ``[K // 128, M]`` and ``scale_b``
     is contiguous ``[ceildiv(N, 128), K // 128]``.  The kernel uses a
     persistent 384-thread TMA/WGMMA pipeline and returns BF16 output.
+
+    Args:
+        m: Rows of ``a``; must be at least 128.
+        n: Rows of ``b``, columns of the output.
+        k: Contraction dim.
+        dtype: Operand dtype; only ``torch.float8_e4m3fn``.
+        out_dtype: Output dtype; only ``torch.bfloat16``.
+        config: Kernel config override; unset keys take their default.
+        tune: Accepted for interface parity. This kernel declares no
+            ``autotune_configs``, so its schedule comes from the measured table.
     """
 
     supported_archs = [90]
@@ -472,17 +525,12 @@ class GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(Kernel):
         config: Optional[dict] = None,
         tune: bool = False,
     ) -> None:
-        if m < 128:
-            raise ValueError(
-                "1D2D cooperative TMA GEMM requires M >= 128; "
-                "dispatch smaller M to a GEMV/small-M kernel"
-            )
+        super().__init__()
         if dtype != torch.float8_e4m3fn:
             raise NotImplementedError("1D2D cooperative TMA GEMM only supports torch.float8_e4m3fn")
         if out_dtype != torch.bfloat16:
             raise NotImplementedError("1D2D cooperative TMA GEMM only supports BF16 output")
 
-        super().__init__()
         self.m = m
         self.n = n
         self.k = k
@@ -496,6 +544,10 @@ class GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(Kernel):
             self.shared_epilogue = bool(tuned["shared_epilogue"])
             if "sm_count" in tuned:
                 self.sm_count = int(tuned["sm_count"])
+
+        refusal = _shape_refusal(m, n, k, shared_epilogue=self.shared_epilogue)
+        if refusal is not None:
+            raise ValueError(f"1D2D cooperative TMA GEMM cannot serve m={m} n={n} k={k}: {refusal}")
 
         self.kernel = _gemm_fp8_block_scaled_tma_coop_kernel(
             m,
