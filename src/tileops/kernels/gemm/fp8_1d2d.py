@@ -338,6 +338,15 @@ def _gemm_fp8_1d2d_kernel(
                                 )
                                 consumer_index_0 = consumer_index_0 + 1
                             if shared_epilogue:
+                                # The previous tile's TMA store may still be reading
+                                # shared_c; its issuing thread waits for that read to
+                                # finish, then both consumer warp-groups align before
+                                # anyone writes the next tile into it. Deferring the
+                                # wait to here lets the store overlap this tile's
+                                # mainloop instead of stalling the last one.
+                                if tx == 128:
+                                    T.tma_store_wait(0)
+                                T.sync_threads(barrier_id=13, arrive_count=256)
                                 T.call_extern(
                                     "handle",
                                     smem_store_helper,
@@ -345,7 +354,7 @@ def _gemm_fp8_1d2d_kernel(
                                     T.address_of(shared_c[0, 0]),
                                 )
                                 T.fence_proxy_async()
-                                T.sync_threads(barrier_id=13, arrive_count=256)
+                                T.sync_threads(barrier_id=14, arrive_count=256)
                                 if tx == 128:
                                     output_desc = T.create_tma_descriptor(
                                         _TMA_BFLOAT16,
@@ -366,13 +375,13 @@ def _gemm_fp8_1d2d_kernel(
                                     )
                                     T.call_extern(
                                         "handle",
-                                        "tl::fp8_tma_store_2d_ptx",
+                                        "tl::fp8_tma_store_2d_issue",
                                         output_desc,
                                         T.address_of(shared_c[0, 0]),
                                         n_start,
                                         m_start,
                                     )
-                                T.sync_threads(barrier_id=14, arrive_count=256)
+                                    T.tma_store_arrive()
                             else:
                                 T.call_extern(
                                     "handle",
@@ -385,6 +394,10 @@ def _gemm_fp8_1d2d_kernel(
                                     m,
                                     n,
                                 )
+                    # Drain the last tile's store before this CTA's shared memory
+                    # is released with it.
+                    if shared_epilogue and tx == 128:
+                        T.tma_store_wait(0)
 
                 else:
                     T.inc_max_nreg(240)
@@ -430,6 +443,7 @@ def _gemm_fp8_1d2d_kernel(
                                 )
                                 consumer_index_1 = consumer_index_1 + 1
                             if shared_epilogue:
+                                T.sync_threads(barrier_id=13, arrive_count=256)
                                 T.call_extern(
                                     "handle",
                                     smem_store_helper,
@@ -437,7 +451,6 @@ def _gemm_fp8_1d2d_kernel(
                                     T.address_of(shared_c[half_m, 0]),
                                 )
                                 T.fence_proxy_async()
-                                T.sync_threads(barrier_id=13, arrive_count=256)
                                 T.sync_threads(barrier_id=14, arrive_count=256)
                             else:
                                 T.call_extern(
