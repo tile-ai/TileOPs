@@ -4,8 +4,8 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.gemm import GemmKernel, SmallBatchGemmKernel
 from tileops.kernels.gemm.dense import GemmFp8BlockScaledKernel
+from tileops.kernels.gemm.fp8_1d2d import GemmFp81D2DKernel
 from tileops.kernels.gemm.heuristics import best_config
-from tileops.kernels.gemm_fp8_tma import GemmFp8BlockScaled1D2DTMAKMajorScaleKernel
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload, quantize_weight_int4
 
@@ -558,9 +558,7 @@ def test_gemm_fp8_1d2d_tma_matches_reference() -> None:
         pytest.skip("1D2D FP8 GEMM requires SM90")
     m, n, k = 128, 256, 256
     inputs = _fp8_1d2d_inputs(m, n, k)
-    kernel = GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(
-        m, n, k, torch.float8_e4m3fn, torch.bfloat16
-    )
+    kernel = GemmFp81D2DKernel(m, n, k, torch.float8_e4m3fn, torch.bfloat16)
     actual = kernel(*inputs)
     torch.testing.assert_close(actual, _fp8_1d2d_reference(*inputs), atol=2e-2, rtol=2e-2)
 
@@ -574,9 +572,7 @@ def test_gemm_fp8_1d2d_tma_multiwave_preserves_scale_b() -> None:
         pytest.skip("1D2D FP8 GEMM requires SM90")
     m, n, k = 512, 8576, 256
     inputs = _fp8_1d2d_inputs(m, n, k)
-    kernel = GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(
-        m, n, k, torch.float8_e4m3fn, torch.bfloat16
-    )
+    kernel = GemmFp81D2DKernel(m, n, k, torch.float8_e4m3fn, torch.bfloat16)
     actual = kernel(*inputs)
     torch.testing.assert_close(actual, _fp8_1d2d_reference(*inputs), atol=2e-2, rtol=2e-2)
 
@@ -591,7 +587,7 @@ def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
         pytest.skip("1D2D FP8 GEMM requires SM90")
     m, n, k = 128, 256, 256
     inputs = _fp8_1d2d_inputs(m, n, k)
-    kernel = GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(
+    kernel = GemmFp81D2DKernel(
         m,
         n,
         k,
@@ -617,7 +613,7 @@ def test_gemm_fp8_1d2d_refuses_a_block_n_outside_the_supported_set() -> None:
 
     if get_sm_version() != 90:
         pytest.skip("1D2D FP8 GEMM requires SM90")
-    kernel = GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(
+    kernel = GemmFp81D2DKernel(
         128,
         256,
         256,
@@ -647,7 +643,7 @@ def test_gemm_fp8_1d2d_refuses_a_block_n_outside_the_supported_set() -> None:
 @pytest.mark.smoke
 def test_gemm_fp8_1d2d_default_config(shape: tuple[int, int, int], expected: dict) -> None:
     """A measured shape takes its table row; any other takes the block_n band."""
-    kernel = object.__new__(GemmFp8BlockScaled1D2DTMAKMajorScaleKernel)
+    kernel = object.__new__(GemmFp81D2DKernel)
     kernel.m, kernel.n, kernel.k = shape
     kernel.sm_count = 132
     assert kernel.default_config == expected
@@ -672,7 +668,7 @@ def test_gemm_fp8_1d2d_refuses_unaddressable_shapes() -> None:
         ((130, 256, 2048), "m=130"),
     ):
         with pytest.raises(ValueError, match=reason):
-            GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(*shape, torch.float8_e4m3fn, torch.bfloat16)
+            GemmFp81D2DKernel(*shape, torch.float8_e4m3fn, torch.bfloat16)
 
 
 @pytest.mark.parametrize(

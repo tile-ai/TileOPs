@@ -14,7 +14,7 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from benchmarks.timing import bench_kernel, median_busy_ms
-from tileops.kernels.gemm_fp8_tma import GemmFp8BlockScaled1D2DTMAKMajorScaleKernel
+from tileops.kernels.gemm.fp8_1d2d import GemmFp81D2DKernel
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload
@@ -543,9 +543,7 @@ def test_gemm_fp8_1d2d_bench(m: int, n: int, k: int) -> None:
     scale_a_k_major = scale_a.T.contiguous()
     scale_a_flashinfer = scale_a_k_major.view_as(scale_a)
     scale_b = 0.5 + torch.rand(scale_n, q, device="cuda")
-    kernel = GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(
-        m, n, k, torch.float8_e4m3fn, torch.bfloat16
-    )
+    kernel = GemmFp81D2DKernel(m, n, k, torch.float8_e4m3fn, torch.bfloat16)
 
     def reference() -> torch.Tensor:
         return (
