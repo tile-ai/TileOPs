@@ -8,7 +8,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
-from .online_softmax import make_log2e_scale
+from .online_softmax import LOG2E, make_apply_softcap
 
 __all__ = [
     "GQASlidingWindowFwdWgmmaPipelinedKernel",
@@ -25,11 +25,13 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
     is_causal: bool,
     window_size_left: int,
     window_size_right: int,
+    sm_scale: Optional[float] = None,
+    softcap: float = 0.0,
     dtype: str = "float16",
 ) -> Callable:
-    scale = make_log2e_scale(dim)
-    if heads % heads_kv != 0:
-        raise ValueError("heads must be divisible by heads_kv")
+    score_scale = dim**-0.5 if sm_scale is None else sm_scale
+    use_softcap = softcap > 0.0
+    scale = LOG2E if use_softcap else score_scale * LOG2E
     groups = heads // heads_kv
     accum_dtype = "float"
     has_window = window_size_left >= 0 or window_size_right >= 0
@@ -42,6 +44,11 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
     def _gqa_sw_fwd_wgmma_pipelined_func(block_m, block_n, num_stages, threads):
         q_shape = (batch, seq_len, heads, dim)
         kv_shape = (batch, seq_len, heads_kv, dim)
+        apply_softcap = (
+            make_apply_softcap(score_scale, softcap, accum_dtype, block_m, block_n)
+            if use_softcap
+            else None
+        )
 
         @T.macro
         def mma0(
@@ -148,6 +155,8 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
                 for k_offset in T.Pipelined(loop_count, num_stages=num_stages):
                     k_idx = k_start + k_offset
                     mma0(k, q_shared, k_shared, acc_s, k_idx, bx, by, bz)
+                    if use_softcap:
+                        apply_softcap(acc_s)
                     # Online softmax with scores_max clamping.
                     # Clamping prevents exp2(+inf) when all block scores are -inf.
                     T.copy(scores_max, scores_max_prev)
@@ -200,6 +209,8 @@ def _gqa_sw_fwd_wgmma_pipelined_wrapped_kernel(
     is_causal: bool,
     window_size_left: int,
     window_size_right: int,
+    sm_scale: float,
+    softcap: float,
     dtype: str,
     block_m: int,
     block_n: int,
@@ -210,7 +221,17 @@ def _gqa_sw_fwd_wgmma_pipelined_wrapped_kernel(
     v: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     return _gqa_sw_fwd_wgmma_pipelined_kernel(
-        batch, heads, heads_kv, seq_len, dim, is_causal, window_size_left, window_size_right, dtype
+        batch,
+        heads,
+        heads_kv,
+        seq_len,
+        dim,
+        is_causal,
+        window_size_left,
+        window_size_right,
+        sm_scale,
+        softcap,
+        dtype,
     )(block_m, block_n, num_stages, threads)(q, k, v)
 
 
@@ -224,6 +245,8 @@ def _(
     is_causal,
     window_size_left,
     window_size_right,
+    sm_scale,
+    softcap,
     dtype,
     block_m,
     block_n,
@@ -237,6 +260,8 @@ def _(
 
 
 class GQASlidingWindowFwdWgmmaPipelinedKernel(Kernel):
+    """SM90 Dense sliding-window kernel with a native BSHD ABI."""
+
     supported_archs: list[int] = [90]
 
     def __init__(
@@ -250,14 +275,16 @@ class GQASlidingWindowFwdWgmmaPipelinedKernel(Kernel):
         window_size_left: int,
         window_size_right: int,
         dtype: torch.dtype,
+        sm_scale: Optional[float] = None,
+        softcap: float = 0.0,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.heads = heads
-        if heads % heads_kv != 0:
-            raise ValueError("heads must be divisible by heads_kv")
         self.heads_kv = heads_kv
         self.seq_len = seq_len
         self.dim = dim
@@ -265,6 +292,8 @@ class GQASlidingWindowFwdWgmmaPipelinedKernel(Kernel):
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
         self.dtype = dtype
+        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
+        self.softcap = softcap
 
         self.kernel = _gqa_sw_fwd_wgmma_pipelined_kernel(
             self.batch,
@@ -275,6 +304,8 @@ class GQASlidingWindowFwdWgmmaPipelinedKernel(Kernel):
             self.is_causal,
             self.window_size_left,
             self.window_size_right,
+            self.sm_scale,
+            self.softcap,
             self.dtype_str,
         )
 
@@ -296,7 +327,18 @@ class GQASlidingWindowFwdWgmmaPipelinedKernel(Kernel):
             {"block_m": c[0], "block_n": c[1], "num_stages": c[2], "threads": c[3]} for c in configs
         ]
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        self._require_cuda(q=q, k=k, v=v)
         output, _ = _gqa_sw_fwd_wgmma_pipelined_wrapped_kernel(
             self.batch,
             self.heads,
@@ -306,6 +348,8 @@ class GQASlidingWindowFwdWgmmaPipelinedKernel(Kernel):
             self.is_causal,
             self.window_size_left,
             self.window_size_right,
+            self.sm_scale,
+            self.softcap,
             self.dtype_str,
             self.config["block_m"],
             self.config["block_n"],
