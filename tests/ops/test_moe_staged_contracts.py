@@ -8,6 +8,7 @@ import torch
 import tileops.ops.moe.staged as staged_module
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
+from tileops.kernels.moe.permute_contiguous import _fused_tight_plan
 from tileops.ops import moe as public_moe
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
@@ -27,6 +28,21 @@ from tileops.ops.moe.contracts import (
 )
 
 pytestmark = pytest.mark.smoke
+
+
+@pytest.mark.parametrize(
+    "num_tokens,numel,hidden_size,expected",
+    [
+        (32, 64, 128, True),
+        (512, 1024, 128, False),
+        (512, 4096, 7168, True),
+        (4096, 32768, 7168, False),
+    ],
+)
+def test_fused_tight_plan_keeps_only_measured_wins(
+    num_tokens: int, numel: int, hidden_size: int, expected: bool
+) -> None:
+    assert _fused_tight_plan(num_tokens, numel, hidden_size) is expected
 
 
 def _physical_layout(rows: int = 2, experts: int = 2) -> MaterializedExpertLayout:
