@@ -12,9 +12,6 @@ from tileops.kernels.moe.call_spec import PrePermuteCall
 
 __all__ = ["MoePrePermuteContiguousKernel"]
 
-_SCAN_THREADS = 1024
-_SUPPORTED_LAYOUTS = frozenset(("tight_physical_psum", "aligned_per_row"))
-
 
 def _fused_tight_plan(num_tokens: int, numel: int, hidden_size: int) -> bool:
     """Whether one cooperative tight launch beats the scan/gather pair.
@@ -330,13 +327,14 @@ class MoePrePermuteContiguousKernel(Kernel):
     """Build one contiguous PrePermute specialization from ``call.layout``."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    _SUPPORTED_LAYOUT_KEYS = frozenset(("tight_physical_psum", "aligned_per_row"))
 
     @classmethod
     def applies(cls, call: PrePermuteCall) -> bool:
         layout = call.layout
         return getattr(
             layout, "selection_key", None
-        ) in _SUPPORTED_LAYOUTS and call.input_dtype in (torch.bfloat16, torch.float16)
+        ) in cls._SUPPORTED_LAYOUT_KEYS and call.input_dtype in (torch.bfloat16, torch.float16)
 
     def __init__(
         self,
@@ -347,7 +345,7 @@ class MoePrePermuteContiguousKernel(Kernel):
         super().__init__()
         layout = call.layout
         self.layout_key = getattr(layout, "selection_key", "")
-        if self.layout_key not in _SUPPORTED_LAYOUTS:
+        if self.layout_key not in self._SUPPORTED_LAYOUT_KEYS:
             raise ValueError(f"unsupported contiguous PrePermute layout: {self.layout_key!r}")
         self.num_tokens = call.num_tokens
         self.top_k = call.top_k
@@ -386,7 +384,9 @@ class MoePrePermuteContiguousKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {"threads": _SCAN_THREADS}
+        # One CTA owns count, prefix sum, and scatter. Callers may override this
+        # kernel-local default through ``config``.
+        return {"threads": 1024}
 
     def forward(
         self,
