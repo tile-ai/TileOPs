@@ -454,8 +454,8 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         if rope_cos.shape != rope_sin.shape:
             raise ValueError("rope_cos and rope_sin must have the same shape")
 
-    def _validate_supported_call(self, q: torch.Tensor) -> None:
-        """Reject features not implemented by the currently installed Dense kernel."""
+    def _validate_builtin_call(self, q: torch.Tensor) -> None:
+        """Reject features not implemented by the in-tree Dense kernel."""
         if not self.is_causal:
             raise ValueError("Dense GQA currently supports causal attention only")
         if q.shape[-1] != 128:
@@ -495,6 +495,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         role = "gqa_dense"
 
         def build() -> Kernel:
+            self._validate_builtin_call(q)
             return self.kernel_map[role](
                 batch=batch,
                 heads=heads,
@@ -561,7 +562,6 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                 combinations violate the contract above.
         """
         self._validate_forward_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
-        self._validate_supported_call(q)
         inputs = self._canonicalize_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
         kernel = self._get_kernel(inputs)
         return kernel(*inputs)
