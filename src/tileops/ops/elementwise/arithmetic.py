@@ -130,8 +130,8 @@ class PowFwdOp(BinaryOp):
     the manifest-declared name ``exponent`` rather than the generic
     ``other`` so the L1 signature check matches the manifest.
 
-    **Accuracy grows with the exponent, unlike torch's.** The power is raised
-    as ``exp2(exponent * log2|input|)``, and the error of that form scales with
+    Accuracy differs from ``torch.pow``: the power is computed as
+    ``exp2(exponent * log2|input|)``, whose error scales with
     ``|exponent * log2(input)|`` rather than staying flat. Measured against a
     float64 reference, in units of a float32 ulp:
 
@@ -143,11 +143,9 @@ class PowFwdOp(BinaryOp):
     | 0.01 to 100 | -3 to 3 | 10.6 | 0.6 |
     | 1e-6 to 1e6 | -2 to 2 | 22.5 | 0.6 |
 
-    A few ulp is below what a float16 or bfloat16 result can hold and is
-    what a network's activations and normalisations sit in. Callers raising
-    a base far from one to a large exponent, or comparing results for
-    equality, should know that the bound is the table above and not a
-    constant.
+    The bound is the table above, not a constant. Callers raising a base far
+    from one to a large exponent, or comparing results for equality, need to
+    account for it.
     """
 
     _op_name = "pow"

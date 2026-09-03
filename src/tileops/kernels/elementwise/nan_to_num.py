@@ -28,8 +28,8 @@ def _make_nan_to_num_kernel(
     -> fragment store for coalesced memory access.
     """
     out_dtype = output_dtype or dtype
-    # A clamp stands in for the two tests and the selects they feed only when
-    # the infinities go to the dtype's own ends.
+    # A clamp replaces the infinity tests only when the replacements are the
+    # dtype's own ends; otherwise it would move finite values too.
     _info = torch.finfo(str2dtype[dtype]) if dtype in str2dtype else None
     clamps = bool(_info is not None and posinf_val == _info.max and neginf_val == _info.min)
 

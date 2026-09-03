@@ -153,12 +153,8 @@ class RemainderFwdKernel(BinaryKernel):
 class PowFwdKernel(BinaryKernel):
     """Element-wise power: y = a ** b.
 
-    Raised as ``exp2(b * log2|a|)``, two hardware instructions where ``powf``
-    is a series, with the sign a negative base carries put back afterwards.
-
-    The error of that form scales with ``|b * log2(a)|`` where ``powf`` holds
-    a flat 0.6 ulp of float32; ``PowFwdOp`` tabulates what that costs across
-    the input range.
+    Computed as ``exp2(b * log2|a|)`` with the sign of a negative base
+    restored. Error scales with ``|b * log2(a)|``; ``PowFwdOp`` tabulates it.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -169,29 +165,25 @@ class PowFwdKernel(BinaryKernel):
         expo = T.Cast("float32", b)
         zero = T.cast(0.0, "float32")
         one = T.cast(1.0, "float32")
-        # log2 of zero and of infinity carry through exp2 to the answers pow
-        # gives there. A base of one is the exception: its log is zero, and
-        # zero times an infinite exponent is NaN where pow answers one.
+        # |a| == 1 is the exception: log2 is zero, and 0 * inf is NaN where
+        # pow answers one.
         magnitude = T.if_then_else(T.abs(base) == one, one, T.exp2(expo * T.log2(T.abs(base))))
         whole = T.round(expo)
-        # A negative base turns the sign on an odd whole exponent, and answers
-        # NaN on a fractional one -- unless it is infinite, where every
-        # exponent is defined.
+        # A negative base flips the sign on an odd whole exponent.
         signed = T.if_then_else(
             T.fmod(T.abs(whole), T.cast(2.0, "float32")) == one, -magnitude, magnitude
         )
-        # Only a finite nonzero negative base answers NaN on a fractional
-        # exponent. Zero and infinity are defined for every exponent.
+        # Only a finite nonzero negative base is NaN on a fractional exponent.
         defined = T.Or(whole == expo, T.Or(T.isinf(base), base == zero))
-        # The sign bit, not ``base < 0``: pow carries the sign of a negative
-        # zero into its result, and ``-0.0 < 0`` is false.
+        # Sign bit, not ``base < 0``: pow carries the sign of -0.0, and
+        # ``-0.0 < 0`` is false.
         negative = T.copysign(one, base) < zero
         out = T.if_then_else(
             negative,
             T.if_then_else(defined, signed, T.cast(float("nan"), "float32")),
             magnitude,
         )
-        # Every base to the zeroth is one, which the magnitude misses at zero.
+        # x ** 0 is one; the magnitude gives NaN at base zero.
         return T.Cast(a.dtype, T.if_then_else(expo == zero, one, out))
 
 
