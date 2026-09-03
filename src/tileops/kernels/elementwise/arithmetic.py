@@ -151,15 +151,40 @@ class RemainderFwdKernel(BinaryKernel):
 
 
 class PowFwdKernel(BinaryKernel):
-    """Element-wise power: y = a ** b."""
+    """Element-wise power: y = a ** b.
+
+    Computed as ``exp2(b * log2|a|)`` with the sign of a negative base
+    restored. Error scales with ``|b * log2(a)|``; ``PowFwdOp`` tabulates it.
+    """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        a_f32 = T.Cast("float32", a)
-        b_f32 = T.Cast("float32", b)
-        return T.Cast(a.dtype, T.pow(a_f32, b_f32))
+        base = T.Cast("float32", a)
+        expo = T.Cast("float32", b)
+        zero = T.cast(0.0, "float32")
+        one = T.cast(1.0, "float32")
+        # |a| == 1 is the exception: log2 is zero, and 0 * inf is NaN where
+        # pow answers one.
+        magnitude = T.if_then_else(T.abs(base) == one, one, T.exp2(expo * T.log2(T.abs(base))))
+        whole = T.round(expo)
+        # A negative base flips the sign on an odd whole exponent.
+        signed = T.if_then_else(
+            T.fmod(T.abs(whole), T.cast(2.0, "float32")) == one, -magnitude, magnitude
+        )
+        # Only a finite nonzero negative base is NaN on a fractional exponent.
+        defined = T.Or(whole == expo, T.Or(T.isinf(base), base == zero))
+        # Sign bit, not ``base < 0``: pow carries the sign of -0.0, and
+        # ``-0.0 < 0`` is false.
+        negative = T.copysign(one, base) < zero
+        out = T.if_then_else(
+            negative,
+            T.if_then_else(defined, signed, T.cast(float("nan"), "float32")),
+            magnitude,
+        )
+        # x ** 0 is one; the magnitude gives NaN at base zero.
+        return T.Cast(a.dtype, T.if_then_else(expo == zero, one, out))
 
 
 class FloorDivideFwdKernel(BinaryKernel):

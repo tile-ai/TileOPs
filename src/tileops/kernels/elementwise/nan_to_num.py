@@ -4,6 +4,9 @@ import functools
 
 import tilelang
 import tilelang.language as T
+import torch
+
+from tileops.utils import str2dtype
 
 from ._base import (
     ParametricUnaryKernel,
@@ -25,6 +28,10 @@ def _make_nan_to_num_kernel(
     -> fragment store for coalesced memory access.
     """
     out_dtype = output_dtype or dtype
+    # A clamp replaces the infinity tests only when the replacements are the
+    # dtype's own ends; otherwise it would move finite values too.
+    _info = torch.finfo(str2dtype[dtype]) if dtype in str2dtype else None
+    clamps = bool(_info is not None and posinf_val == _info.max and neginf_val == _info.min)
 
     if is_fp8:
 
@@ -75,16 +82,28 @@ def _make_nan_to_num_kernel(
                         nan_r = T.cast(nan_val, val.dtype)
                         pos_r = T.cast(posinf_val, val.dtype)
                         neg_r = T.cast(neginf_val, val.dtype)
-                        result = T.if_then_else(
-                            T.isnan(v32),
-                            nan_r,
-                            T.if_then_else(
-                                T.isinf(v32),
-                                T.if_then_else(v32 > T.cast(0, "float32"), pos_r, neg_r),
-                                val,
-                            ),
-                        )
-                        y_reg[k] = result
+                        if clamps:
+                            y_reg[k] = T.if_then_else(
+                                T.isnan(v32),
+                                nan_r,
+                                T.cast(
+                                    T.min(
+                                        T.max(v32, T.cast(neginf_val, "float32")),
+                                        T.cast(posinf_val, "float32"),
+                                    ),
+                                    val.dtype,
+                                ),
+                            )
+                        else:
+                            y_reg[k] = T.if_then_else(
+                                T.isnan(v32),
+                                nan_r,
+                                T.if_then_else(
+                                    T.isinf(v32),
+                                    T.if_then_else(v32 > T.cast(0, "float32"), pos_r, neg_r),
+                                    val,
+                                ),
+                            )
                     T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
             return main
