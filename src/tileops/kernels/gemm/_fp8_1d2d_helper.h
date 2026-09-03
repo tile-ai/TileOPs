@@ -55,17 +55,16 @@ TL_DEVICE void fp8_tma_store_2d_ptx(const CUtensorMap& descriptor,
 // Promote one 64xNx128 WGMMA partial directly in its native per-thread
 // accumulator layout.  This deliberately avoids materialising the fragment as
 // a logical 2-D TileLang array between every K block.
+//
+// The three scales arrive by value: the caller reads them out of shared
+// memory before the WGMMA and releases the stage to the producer before this
+// runs, so nothing here may touch the stage's shared memory.
 template <int BlockN>
-__device__ __forceinline__ void fp8_gemm_1d2d_promote_shared_ab_uniform(
-    float* partial, float* final_accum, const float* scale_a,
-    const float* scale_b, int scale_k_idx) {
-  int const lane = static_cast<int>(threadIdx.x) & 31;
-  int const warp_in_group = (static_cast<int>(threadIdx.x) >> 5) & 3;
-  int const row0 = warp_in_group * 16 + lane / 4;
-  int const row1 = row0 + 8;
-  float const sb = scale_b[scale_k_idx];
-  float const scale0 = scale_a[row0] * sb;
-  float const scale1 = scale_a[row1] * sb;
+__device__ __forceinline__ void fp8_gemm_1d2d_promote(
+    float* partial, float* final_accum, float scale_a_row0, float scale_a_row1,
+    float scale_b) {
+  float const scale0 = scale_a_row0 * scale_b;
+  float const scale1 = scale_a_row1 * scale_b;
 #pragma unroll
   for (int i = 0; i < BlockN / 8; ++i) {
     final_accum[i * 4 + 0] += scale0 * partial[i * 4 + 0];
@@ -147,9 +146,9 @@ __device__ __forceinline__ void fp8_gemm_raw_acc_store_global_64x##N##_v2(      
     float* acc, OutT* out, int ld, int ms, int ns, int m, int n) {               \
   fp8_gemm_raw_acc_store_global_vec2<N>(acc, out, ld, ms, ns, m, n);             \
 }                                                                                \
-__device__ __forceinline__ void fp8_gemm_1d2d_promote_shared_ab_uniform_64x##N(  \
-    float* p, float* f, const float* sa, const float* sb, int sk) {               \
-  fp8_gemm_1d2d_promote_shared_ab_uniform<N>(p, f, sa, sb, sk);                  \
+__device__ __forceinline__ void fp8_gemm_1d2d_promote_64x##N(                    \
+    float* p, float* f, float sa0, float sa1, float sb) {                         \
+  fp8_gemm_1d2d_promote<N>(p, f, sa0, sa1, sb);                                  \
 }
 
 TL_DEFINE_FP8_GEMM_1D2D_HELPERS(16)
