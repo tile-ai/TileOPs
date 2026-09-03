@@ -514,6 +514,42 @@ def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
     assert op.kernel.__class__.__name__ == "GemmFp8BlockScaledKernel"
 
 
+# FIXME(staged-rollout): the 1D2D scale mode has no manifest entry yet, so it
+# has no `workloads/gemm.py` workload to take its inputs and reference from.
+#
+# Broken invariant: input construction and the reference belong to the
+#   workloads layer, not to a test (.claude/domain-rules/testing-budget.md).
+# Why: `GemmFp8FwdOp`'s manifest signature admits per-tensor and 1D1D scales
+#   only; a workload cannot be declared for a mode no op accepts.
+# Cleanup: remove once the 1D2D mode is declared in the manifest and
+#   `GemmFp81D2DWorkload` carries these two helpers.
+def _fp8_1d2d_inputs(
+    m: int, n: int, k: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return ``(a, b, scale_a_k_major, scale_b)`` for the 1D2D contract."""
+    q = (k + 127) // 128
+    a = (torch.randn(m, k, device="cuda") * 0.25).to(torch.float8_e4m3fn)
+    b = (torch.randn(n, k, device="cuda") * 0.25).to(torch.float8_e4m3fn)
+    scale_a = (0.5 + torch.rand(q, m, device="cuda")).contiguous()
+    scale_b = (0.5 + torch.rand((n + 127) // 128, q, device="cuda")).contiguous()
+    return a, b, scale_a, scale_b
+
+
+def _fp8_1d2d_reference(
+    a: torch.Tensor, b: torch.Tensor, scale_a: torch.Tensor, scale_b: torch.Tensor
+) -> torch.Tensor:
+    """Scale each 128-wide K block by A's row scale and B's 128x128 block scale."""
+    m, k = a.shape
+    n = b.shape[0]
+    out = torch.zeros(m, n, device=a.device, dtype=torch.float32)
+    for kb in range(scale_a.shape[0]):
+        lo, hi = kb * 128, min((kb + 1) * 128, k)
+        row = scale_a[kb].view(m, 1)
+        col = scale_b[:, kb].repeat_interleave(128)[:n].view(1, n)
+        out += (a[:, lo:hi].float() @ b[:, lo:hi].float().T) * row * col
+    return out.to(torch.bfloat16)
+
+
 @pytest.mark.smoke
 def test_gemm_fp8_1d2d_tma_matches_reference() -> None:
     from tileops.utils import get_sm_version
@@ -521,20 +557,12 @@ def test_gemm_fp8_1d2d_tma_matches_reference() -> None:
     if get_sm_version() != 90:
         pytest.skip("1D2D FP8 GEMM requires SM90")
     m, n, k = 128, 256, 256
-    q = k // 128
-    a = (torch.randn(m, k, device="cuda") * 0.25).to(torch.float8_e4m3fn)
-    b = (torch.randn(n, k, device="cuda") * 0.25).to(torch.float8_e4m3fn)
-    scale_a = 0.5 + torch.rand(m, q, device="cuda")
-    scale_b = 0.5 + torch.rand(n // 128, q, device="cuda")
+    inputs = _fp8_1d2d_inputs(m, n, k)
     kernel = GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(
         m, n, k, torch.float8_e4m3fn, torch.bfloat16
     )
-    actual = kernel(a, b, scale_a.T.contiguous(), scale_b)
-    expected = (
-        (a.float() * scale_a.repeat_interleave(128, dim=1))
-        @ (b.float() * scale_b.repeat_interleave(128, dim=0).repeat_interleave(128, dim=1)).T
-    ).to(torch.bfloat16)
-    torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)
+    actual = kernel(*inputs)
+    torch.testing.assert_close(actual, _fp8_1d2d_reference(*inputs), atol=2e-2, rtol=2e-2)
 
 
 @pytest.mark.smoke
@@ -545,44 +573,78 @@ def test_gemm_fp8_1d2d_tma_multiwave_preserves_scale_b() -> None:
     if get_sm_version() != 90:
         pytest.skip("1D2D FP8 GEMM requires SM90")
     m, n, k = 512, 8576, 256
-    q = k // 128
-    a = (torch.randn(m, k, device="cuda") * 0.25).to(torch.float8_e4m3fn)
-    b = (torch.randn(n, k, device="cuda") * 0.25).to(torch.float8_e4m3fn)
-    scale_a = 0.5 + torch.rand(m, q, device="cuda")
-    scale_b = 0.5 + torch.rand((n + 127) // 128, q, device="cuda")
+    inputs = _fp8_1d2d_inputs(m, n, k)
     kernel = GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(
         m, n, k, torch.float8_e4m3fn, torch.bfloat16
     )
+    actual = kernel(*inputs)
+    torch.testing.assert_close(actual, _fp8_1d2d_reference(*inputs), atol=2e-2, rtol=2e-2)
 
-    actual = kernel(a, b, scale_a.T.contiguous(), scale_b)
-    expected = (
-        (a.float() * scale_a.repeat_interleave(128, dim=1))
-        @ (b.float() * scale_b.repeat_interleave(128, dim=0)[:n].repeat_interleave(128, dim=1)).T
-    ).to(torch.bfloat16)
-    torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)
+
+@pytest.mark.smoke
+def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
+    """The STSM/TMA epilogue must publish the whole tile, not the columns one
+    STSM atom happens to cover."""
+    from tileops.utils import get_sm_version
+
+    if get_sm_version() != 90:
+        pytest.skip("1D2D FP8 GEMM requires SM90")
+    m, n, k = 128, 256, 256
+    inputs = _fp8_1d2d_inputs(m, n, k)
+    kernel = GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(
+        m,
+        n,
+        k,
+        torch.float8_e4m3fn,
+        torch.bfloat16,
+        config={"block_n": 128, "num_stages": 3, "group_size_m": 16, "mainloop_unroll": 3},
+        shared_epilogue=True,
+    )
+    actual = kernel(*inputs)
+    torch.testing.assert_close(actual, _fp8_1d2d_reference(*inputs), atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.smoke
+def test_gemm_fp8_1d2d_shared_epilogue_refuses_partial_stsm_tile() -> None:
+    """block_n=56 leaves a partial STSM patch, which would drop columns 48-55."""
+    from tileops.utils import get_sm_version
+
+    if get_sm_version() != 90:
+        pytest.skip("1D2D FP8 GEMM requires SM90")
+    kernel = GemmFp8BlockScaled1D2DTMAKMajorScaleKernel(
+        128,
+        256,
+        256,
+        torch.float8_e4m3fn,
+        torch.bfloat16,
+        config={"block_n": 56, "num_stages": 3, "group_size_m": 16, "mainloop_unroll": 3},
+        shared_epilogue=True,
+    )
+    with pytest.raises(ValueError, match="block_n divisible by 16"):
+        kernel(*_fp8_1d2d_inputs(128, 256, 256))
 
 
 @pytest.mark.parametrize(
     ("shape", "expected"),
     [
-        (
+        pytest.param(
             (128, 2112, 7168),
             {"block_n": 16, "num_stages": 8, "group_size_m": 16, "mainloop_unroll": 8},
+            id="measured-table-hit",
         ),
-        (
-            (128, 7168, 2048),
-            {"block_n": 64, "num_stages": 8, "group_size_m": 16, "mainloop_unroll": 16},
-        ),
-        (
-            (4096, 24576, 1536),
-            {"block_n": 128, "num_stages": 4, "group_size_m": 32, "mainloop_unroll": 12},
+        pytest.param(
+            (4096, 128, 2048),
+            {"block_n": 32, "num_stages": 3, "group_size_m": 16, "mainloop_unroll": 3},
+            id="untuned-heuristic-band",
         ),
     ],
 )
 @pytest.mark.smoke
-def test_gemm_fp8_1d2d_tuned_config(shape: tuple[int, int, int], expected: dict) -> None:
+def test_gemm_fp8_1d2d_default_config(shape: tuple[int, int, int], expected: dict) -> None:
+    """A measured shape takes its table row; any other takes the block_n band."""
     kernel = object.__new__(GemmFp8BlockScaled1D2DTMAKMajorScaleKernel)
     kernel.m, kernel.n, kernel.k = shape
+    kernel.sm_count = 132
     assert kernel.default_config == expected
 
 
