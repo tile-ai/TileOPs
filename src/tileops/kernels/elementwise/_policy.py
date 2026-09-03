@@ -41,7 +41,7 @@ def default_launch_config(
     """Return the default launch config for one elementwise specialization.
 
     *bytes_per_thread* is how much each thread carries and *min_num_per_thread*
-    how few elements the shrink below may leave it; see
+    how few elements the shrink below leaves it; see
     ``_ElementwiseKernel.BYTES_PER_THREAD`` and ``MIN_NUM_PER_THREAD``.
     *row_broadcast_inner* is the row extent a broadcast block walks, or
     ``None``; see ``_tail_dominated``.
@@ -102,9 +102,8 @@ def elementwise_autotune_configs(
     """Return the launch configs to time for one elementwise specialization.
 
     The swept elements-per-thread brackets the default the same *bytes_per_thread*
-    produces, so a kernel can always land back on its shipped config. A kernel
-    whose *min_num_per_thread* lets the grid shrink further is swept that far
-    down for the same reason.
+    produces, so a kernel can always land back on its shipped config, and reaches
+    *min_num_per_thread* where a kernel lowers it.
     """
     # A direct body takes no num_per_thread: the key would name no parameter to bind,
     # and the sweep would time one kernel three times over.

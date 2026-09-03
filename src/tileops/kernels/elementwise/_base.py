@@ -60,10 +60,8 @@ class _ElementwiseKernel(Kernel):
     # is one vector load. A body the memory pipe waits on sets 32, keeping a
     # second load in flight while the first element's arithmetic runs.
     BYTES_PER_THREAD: int = 16
-    # How few elements the grid-filling shrink may leave a thread. Four keeps a
-    # staged copy at a useful width, which is what a body cheaper than its own
-    # access wants. A body that costs more than that has latency the extra
-    # blocks can hide, and says so by lowering this.
+    # The floor of the grid-filling shrink. Four keeps a staged copy wide; a body
+    # costing more than its own access lowers it, for the blocks that buys.
     MIN_NUM_PER_THREAD: int = 4
     # Input dtypes admitted; ``None`` admits every dtype the builder handles.
     SUPPORTED_DTYPES = None

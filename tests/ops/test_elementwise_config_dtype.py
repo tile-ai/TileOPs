@@ -152,11 +152,10 @@ def test_fused_gated_kernel_sets_output_dtype_in_init():
 def test_fused_gated_explicit_config_follows_the_work():
     """Fused-gated explicit_parallel sizes its block from the work, not the dtype.
 
-    A row wide enough to fill the device keeps the widest thread the dtype
-    allows. A row that does not gives the width back until the grid reaches the
-    device, and silu stops at two elements a thread rather than four. The direct
-    strategy keeps the dtype-driven npt, and 256 threads: one element per thread
-    makes the thread count the whole block, so 128 would halve it.
+    A row that fills the device keeps the widest thread its dtype allows; one
+    that does not gives width back until the grid reaches the device, and silu
+    stops at two. The direct strategy keeps 256 threads: one element a thread
+    makes the thread count the whole block.
     """
     with (
         patch.object(SiluAndMulFwdKernel, "_build_kernel", return_value=None),
@@ -209,14 +208,13 @@ def test_fused_gated_explicit_config_follows_the_work():
         "threads": 128,
         "num_per_thread": 2,
     }
-    # float32 takes the shared 128 threads rather than the 256 it used to state.
+    # float32 takes the shared thread count, not the 256 this family stated.
     assert wide_fp32.default_config == {
         "strategy": "explicit_parallel",
         "threads": 128,
         "num_per_thread": 4,
     }
-    # The sweep reaches whatever the default is, or a tuned kernel could not
-    # land back on its shipped config.
+    # A tuned kernel must be able to land back on its shipped config.
     for kernel in (wide_fp16, wide_bf16, decode_bf16, wide_fp32):
         cfg = kernel.default_config
         assert any(
