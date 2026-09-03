@@ -24,6 +24,7 @@ class _FakeBatchNormFwdInferKernel(Kernel):
         dtype: torch.dtype,
         eps: float,
         tune: bool = False,
+        S: int | None = None,
     ) -> None:
         super().__init__()
         self.C = C
@@ -31,6 +32,7 @@ class _FakeBatchNormFwdInferKernel(Kernel):
         self.dtype = dtype
         self.eps = eps
         self.tune = tune
+        self.S = L if S is None else S
 
     def forward(
         self,
@@ -55,8 +57,9 @@ class _FakeBatchNormFwdTrainKernel(_FakeBatchNormFwdInferKernel):
         eps: float,
         momentum: float,
         tune: bool = False,
+        S: int | None = None,
     ) -> None:
-        super().__init__(C, L, dtype, eps, tune=tune)
+        super().__init__(C, L, dtype, eps, tune=tune, S=S)
         self.momentum = momentum
 
     def forward(
