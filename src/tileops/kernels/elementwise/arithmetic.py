@@ -74,17 +74,37 @@ class MulFwdKernel(BinaryKernel):
         return a * b
 
 
+def _approx_fdiv(num, den):
+    """CUDA's ``__fdividef``: one ``div.approx.f32``, two ulp, defined for a
+    divisor in ``[2**-126, 2**126]``.
+
+    float16 spans ``[2**-24, 2**16]`` and rounds its result to eleven bits, so
+    it meets both bounds. bfloat16 carries float32's exponent and a float32
+    result keeps all 24 bits.
+    """
+    return T.call_extern("float32", "__fdividef", num, den)
+
+
 class DivFwdKernel(BinaryKernel):
     """Element-wise division: y = a / b.
 
     Divides in float32 and rounds once at the store, which is what torch does.
+    float16 takes ``_approx_fdiv``.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
+    @property
+    def stage_broadcast(self) -> bool:
+        """The extern call scalarises the copies, so keep them off its loop."""
+        return self.dtype == torch.float16 or super().stage_broadcast
+
     @staticmethod
     def op_func(a, b):
-        return T.Cast(a.dtype, T.Cast("float32", a) / T.Cast("float32", b))
+        num, den = T.Cast("float32", a), T.Cast("float32", b)
+        if str(a.dtype) == "float16":
+            return T.Cast(a.dtype, _approx_fdiv(num, den))
+        return T.Cast(a.dtype, num / den)
 
 
 class DivTruncFwdKernel(BinaryKernel):
