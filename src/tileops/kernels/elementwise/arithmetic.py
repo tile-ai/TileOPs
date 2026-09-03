@@ -75,12 +75,12 @@ class MulFwdKernel(BinaryKernel):
 
 
 def _approx_fdiv(num, den):
-    """CUDA's ``__fdividef``: one ``div.approx.f32`` where ``/`` is a Newton sequence.
+    """CUDA's ``__fdividef``: one ``div.approx.f32``, two ulp, defined for a
+    divisor in ``[2**-126, 2**126]``.
 
-    Two ulp of float32, and defined for a divisor in ``[2**-126, 2**126]``.
-    Only float16 meets both: its magnitudes span ``[2**-24, 2**16]``, and two
-    ulp of float32 cannot reach the eleventh mantissa bit its result rounds to.
-    bfloat16 carries float32's exponent, and a float32 result keeps all 24 bits.
+    float16 spans ``[2**-24, 2**16]`` and rounds its result to eleven bits, so
+    it meets both bounds. bfloat16 carries float32's exponent and a float32
+    result keeps all 24 bits.
     """
     return T.call_extern("float32", "__fdividef", num, den)
 
@@ -89,7 +89,7 @@ class DivFwdKernel(BinaryKernel):
     """Element-wise division: y = a / b.
 
     Divides in float32 and rounds once at the store, which is what torch does.
-    A float16 result takes ``_approx_fdiv``, which that rounding absorbs.
+    float16 takes ``_approx_fdiv``.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
