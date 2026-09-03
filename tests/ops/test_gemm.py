@@ -605,8 +605,14 @@ def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
 
 
 @pytest.mark.smoke
-def test_gemm_fp8_1d2d_shared_epilogue_refuses_partial_stsm_tile() -> None:
-    """block_n=56 leaves a partial STSM patch, which would drop columns 48-55."""
+def test_gemm_fp8_1d2d_refuses_a_block_n_outside_the_supported_set() -> None:
+    """``block_n`` must divide 128 and be a multiple of 16; 56 is neither.
+
+    Dividing 128 keeps a tile inside one B-scale block, so the promotion reads a
+    single scale. Being a multiple of 16 is what the STSM epilogue atom needs --
+    56 left columns 48-55 unwritten and published whatever the previous wave had
+    put in shared memory, an all-NaN tile. Re-adding it needs both paths back.
+    """
     from tileops.utils import get_sm_version
 
     if get_sm_version() != 90:
@@ -618,9 +624,8 @@ def test_gemm_fp8_1d2d_shared_epilogue_refuses_partial_stsm_tile() -> None:
         torch.float8_e4m3fn,
         torch.bfloat16,
         config={"block_n": 56, "num_stages": 3, "group_size_m": 16, "mainloop_unroll": 3},
-        shared_epilogue=True,
     )
-    with pytest.raises(ValueError, match="block_n divisible by 16"):
+    with pytest.raises(ValueError, match="block_n must be one of"):
         kernel(*_fp8_1d2d_inputs(128, 256, 256))
 
 

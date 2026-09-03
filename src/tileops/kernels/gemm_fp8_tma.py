@@ -141,25 +141,20 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
         group_size_m: int = 16,
         mainloop_unroll: int = 0,
     ) -> Callable:
-        if block_n not in (16, 32, 56, 64, 128):
-            raise ValueError(f"block_n must be one of 16/32/56/64/128, got {block_n}")
-        if shared_epilogue and block_n % 16:
-            # ``fp8_gemm_raw_acc_stsm_bf16`` stages the tile through STSM, whose
-            # atom writes a 16x16 patch per iteration. A block_n leaving a
-            # partial patch would drop those columns from shared memory and
-            # publish whatever the previous wave left there, so refuse rather
-            # than store a tile the epilogue cannot cover.
-            raise ValueError(
-                f"the shared-memory epilogue stores 16 columns per STSM atom, so it "
-                f"needs block_n divisible by 16; got {block_n}"
-            )
+        # Every value divides 128 and is a multiple of 16, and both matter.
+        # Dividing 128 keeps a tile inside one 128-wide B-scale block, so the
+        # promotion reads a single scale; a value that straddled two would need
+        # the mainloop to stage a second scale row for every K step. Being a
+        # multiple of 16 is what ``fp8_gemm_raw_acc_stsm_bf16`` needs: its STSM
+        # atom writes a 16x16 patch, and a partial patch would leave columns
+        # unwritten in shared memory, publishing whatever the last wave left.
+        if block_n not in (16, 32, 64, 128):
+            raise ValueError(f"block_n must be one of 16/32/64/128, got {block_n}")
         if group_size_m < 1:
             raise ValueError(f"group_size_m must be positive, got {group_size_m}")
         if num_stages < 1:
             raise ValueError(f"num_stages must be positive, got {num_stages}")
-        uniform_scale_b = 128 % block_n == 0
         wgmma_helper = f"tl::fp8_gemm_wgmma_64x128_by_128x{block_n}"
-        promotion_1d2d_shared_ab = f"tl::fp8_gemm_1d2d_promote_shared_ab_64x{block_n}"
         promotion_1d2d_uniform = f"tl::fp8_gemm_1d2d_promote_shared_ab_uniform_64x{block_n}"
         global_store_helper = f"tl::fp8_gemm_raw_acc_store_global_64x{block_n}_v2"
         smem_store_helper = f"tl::fp8_gemm_raw_acc_stsm_bf16_64x{block_n}"
@@ -170,9 +165,9 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
         max_waves = -(-total_tiles // sm_count)
         # One wave stages the whole B-scale column in shared memory before the
         # mainloop; several waves cannot, because the tile — and with it the
-        # scale row — changes per wave, so they stage two rows per K step into
-        # the ring instead. The two forms are mutually exclusive, which is why
-        # ``not stage_1d2d_b_per_k`` reads as ``max_waves == 1`` below.
+        # scale row — changes per wave, so they stage that row's scale per K
+        # step into the ring instead. The two forms are mutually exclusive,
+        # which is why ``not stage_1d2d_b_per_k`` reads as ``max_waves == 1``.
         stage_1d2d_b_per_k = max_waves > 1
         effective_unroll = mainloop_unroll or num_stages
 
@@ -204,11 +199,9 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
                     shared_c = T.alloc_shared((block_m, block_n), out_dtype)
                 one_scale_a = T.alloc_shared((num_stages, block_m), accum_dtype)
                 if stage_1d2d_b_per_k:
-                    one_scale_b = T.alloc_shared((num_stages, 2), accum_dtype)
+                    one_scale_b = T.alloc_shared((num_stages, 1), accum_dtype)
                 else:
-                    one_scale_b = T.alloc_shared(
-                        (1 if uniform_scale_b else 2, scale_k), accum_dtype
-                    )
+                    one_scale_b = T.alloc_shared((1, scale_k), accum_dtype)
                 T.annotate_layout(
                     {
                         a_shared: tilelang.layout.make_swizzled_layout(a_shared),
@@ -233,15 +226,10 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
                             decode(flat_id, mt, nt)
                             m_start = mt[0] * block_m
                             n_start = nt[0] * block_n
-                            if not stage_1d2d_b_per_k and (not uniform_scale_b or scale_k < 16):
-                                for i in T.Parallel((1 if uniform_scale_b else 2) * scale_k):
-                                    scale_row = T.min(
-                                        n_start // 128 + i // scale_k,
-                                        (n + 127) // 128 - 1,
-                                    )
-                                    one_scale_b[i // scale_k, i % scale_k] = scale_b[
-                                        scale_row, i % scale_k
-                                    ]
+                            if not stage_1d2d_b_per_k and scale_k < 16:
+                                for i in T.Parallel(scale_k):
+                                    scale_row = T.min(n_start // 128, (n + 127) // 128 - 1)
+                                    one_scale_b[0, i] = scale_b[scale_row, i]
                                 T.sync_threads(barrier_id=10, arrive_count=384)
                             producer_steps = (
                                 T.if_then_else(tx == 0, scale_k, 0)
@@ -254,16 +242,8 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
                                     empty[slot], ((producer_index // num_stages) & 1) ^ 1
                                 )
                                 if stage_1d2d_b_per_k and tx == 0:
-                                    scale_row = T.min(
-                                        n_start // 128,
-                                        (n + 127) // 128 - 1,
-                                    )
-                                    next_scale_row = T.min(
-                                        scale_row + 1,
-                                        (n + 127) // 128 - 1,
-                                    )
+                                    scale_row = T.min(n_start // 128, (n + 127) // 128 - 1)
                                     one_scale_b[slot, 0] = scale_b[scale_row, kk]
-                                    one_scale_b[slot, 1] = scale_b[next_scale_row, kk]
                                 T.tma_copy(
                                     a[
                                         m_start : m_start + block_m,
@@ -280,7 +260,7 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
                                     one_scale_a[slot, :],
                                     barrier=full[slot],
                                 )
-                                if uniform_scale_b and scale_k >= 16 and max_waves == 1 and kk == 0:
+                                if scale_k >= 16 and max_waves == 1 and kk == 0:
                                     scale_row = T.min(
                                         n_start // 128,
                                         (n + 127) // 128 - 1,
@@ -310,7 +290,7 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
                             decode(flat_id, mt, nt)
                             m_start = mt[0] * block_m
                             n_start = nt[0] * block_n
-                            if not stage_1d2d_b_per_k and (not uniform_scale_b or scale_k < 16):
+                            if not stage_1d2d_b_per_k and scale_k < 16:
                                 T.sync_threads(barrier_id=10, arrive_count=384)
                             T.clear(final_0)
                             for kk in T.unroll(scale_k, unroll_factor=effective_unroll):
@@ -327,16 +307,14 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
                                 if stage_1d2d_b_per_k:
                                     T.call_extern(
                                         "handle",
-                                        promotion_1d2d_shared_ab,
+                                        promotion_1d2d_uniform,
                                         partial_0.data,
                                         final_0.data,
                                         T.address_of(one_scale_a[slot, 0]),
                                         T.address_of(one_scale_b[slot, 0]),
-                                        1,
-                                        n_start,
                                         0,
                                     )
-                                elif uniform_scale_b:
+                                else:
                                     T.call_extern(
                                         "handle",
                                         promotion_1d2d_uniform,
@@ -344,18 +322,6 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
                                         final_0.data,
                                         T.address_of(one_scale_a[slot, 0]),
                                         T.address_of(one_scale_b[0, 0]),
-                                        kk,
-                                    )
-                                else:
-                                    T.call_extern(
-                                        "handle",
-                                        promotion_1d2d_shared_ab,
-                                        partial_0.data,
-                                        final_0.data,
-                                        T.address_of(one_scale_a[slot, 0]),
-                                        T.address_of(one_scale_b[0, 0]),
-                                        scale_k,
-                                        n_start,
                                         kk,
                                     )
                                 T.barrier_arrive(empty[slot])
@@ -417,7 +383,7 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
                             decode(flat_id, mt, nt)
                             m_start = mt[0] * block_m
                             n_start = nt[0] * block_n
-                            if not stage_1d2d_b_per_k and (not uniform_scale_b or scale_k < 16):
+                            if not stage_1d2d_b_per_k and scale_k < 16:
                                 T.sync_threads(barrier_id=10, arrive_count=384)
                             T.clear(final_1)
                             for kk in T.unroll(scale_k, unroll_factor=effective_unroll):
@@ -434,16 +400,14 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
                                 if stage_1d2d_b_per_k:
                                     T.call_extern(
                                         "handle",
-                                        promotion_1d2d_shared_ab,
+                                        promotion_1d2d_uniform,
                                         partial_1.data,
                                         final_1.data,
                                         T.address_of(one_scale_a[slot, half_m]),
                                         T.address_of(one_scale_b[slot, 0]),
-                                        1,
-                                        n_start,
                                         0,
                                     )
-                                elif uniform_scale_b:
+                                else:
                                     T.call_extern(
                                         "handle",
                                         promotion_1d2d_uniform,
@@ -451,18 +415,6 @@ def _gemm_fp8_block_scaled_tma_coop_kernel(
                                         final_1.data,
                                         T.address_of(one_scale_a[slot, half_m]),
                                         T.address_of(one_scale_b[0, 0]),
-                                        kk,
-                                    )
-                                else:
-                                    T.call_extern(
-                                        "handle",
-                                        promotion_1d2d_shared_ab,
-                                        partial_1.data,
-                                        final_1.data,
-                                        T.address_of(one_scale_a[slot, half_m]),
-                                        T.address_of(one_scale_b[0, 0]),
-                                        scale_k,
-                                        n_start,
                                         kk,
                                     )
                                 T.barrier_arrive(empty[slot])

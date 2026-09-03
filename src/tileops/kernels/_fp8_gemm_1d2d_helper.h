@@ -56,33 +56,6 @@ TL_DEVICE void fp8_tma_store_2d_ptx(const CUtensorMap& descriptor,
 // accumulator layout.  This deliberately avoids materialising the fragment as
 // a logical 2-D TileLang array between every K block.
 template <int BlockN>
-__device__ __forceinline__ void fp8_gemm_1d2d_promote_shared_ab(
-    float* partial, float* final_accum, const float* scale_a,
-    const float* scale_b, int scale_stride, int n_start, int scale_k_idx) {
-  int const lane = static_cast<int>(threadIdx.x) & 31;
-  int const warp_in_group = (static_cast<int>(threadIdx.x) >> 5) & 3;
-  int const row0 = warp_in_group * 16 + lane / 4;
-  int const row1 = row0 + 8;
-  float const sb0 = scale_b[scale_k_idx];
-  float const sb1 = scale_b[scale_stride + scale_k_idx];
-  int const former = min(BlockN, 128 - n_start % 128);
-#pragma unroll
-  for (int i = 0; i < BlockN / 8; ++i) {
-    float const sb = i * 8 < former ? sb0 : sb1;
-    float const scale0 = scale_a[row0] * sb;
-    final_accum[i * 4 + 0] += scale0 * partial[i * 4 + 0];
-    final_accum[i * 4 + 1] += scale0 * partial[i * 4 + 1];
-  }
-#pragma unroll
-  for (int i = 0; i < BlockN / 8; ++i) {
-    float const sb = i * 8 < former ? sb0 : sb1;
-    float const scale1 = scale_a[row1] * sb;
-    final_accum[i * 4 + 2] += scale1 * partial[i * 4 + 2];
-    final_accum[i * 4 + 3] += scale1 * partial[i * 4 + 3];
-  }
-}
-
-template <int BlockN>
 __device__ __forceinline__ void fp8_gemm_1d2d_promote_shared_ab_uniform(
     float* partial, float* final_accum, const float* scale_a,
     const float* scale_b, int scale_k_idx) {
@@ -174,11 +147,6 @@ __device__ __forceinline__ void fp8_gemm_raw_acc_store_global_64x##N##_v2(      
     float* acc, OutT* out, int ld, int ms, int ns, int m, int n) {               \
   fp8_gemm_raw_acc_store_global_vec2<N>(acc, out, ld, ms, ns, m, n);             \
 }                                                                                \
-__device__ __forceinline__ void fp8_gemm_1d2d_promote_shared_ab_64x##N(          \
-    float* p, float* f, const float* sa, const float* sb, int ss, int ns,        \
-    int sk) {                                                                     \
-  fp8_gemm_1d2d_promote_shared_ab<N>(p, f, sa, sb, ss, ns, sk);                  \
-}                                                                                \
 __device__ __forceinline__ void fp8_gemm_1d2d_promote_shared_ab_uniform_64x##N(  \
     float* p, float* f, const float* sa, const float* sb, int sk) {               \
   fp8_gemm_1d2d_promote_shared_ab_uniform<N>(p, f, sa, sb, sk);                  \
@@ -186,7 +154,6 @@ __device__ __forceinline__ void fp8_gemm_1d2d_promote_shared_ab_uniform_64x##N( 
 
 TL_DEFINE_FP8_GEMM_1D2D_HELPERS(16)
 TL_DEFINE_FP8_GEMM_1D2D_HELPERS(32)
-TL_DEFINE_FP8_GEMM_1D2D_HELPERS(56)
 TL_DEFINE_FP8_GEMM_1D2D_HELPERS(64)
 TL_DEFINE_FP8_GEMM_1D2D_HELPERS(128)
 
