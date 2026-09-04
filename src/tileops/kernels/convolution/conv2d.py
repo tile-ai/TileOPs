@@ -1161,9 +1161,15 @@ class Conv2d1x1Kernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        # A 32-wide n tile, which the rest of the family does not reach: the block
+        # count is C_out * H * W / (block_m * block_n), and a pointwise row over a
+        # small map has no other way to fill the device. It costs nothing because
+        # 256 threads and a 256-wide m tile win no row measured.
         return conv_autotune_configs(
             self.dtype,
-            block_m=[64, 128, 256],
+            block_m=[64, 128],
+            block_n=[32, 64, 128, 256],
+            threads=[128],
         )
 
     def forward(
