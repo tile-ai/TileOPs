@@ -732,6 +732,20 @@ def test_conv2d_dispatches_5x5_kernel() -> None:
     torch.testing.assert_close(out, ref.contiguous(), atol=1e-3, rtol=1e-3)
 
 
+@pytest.mark.smoke
+def test_conv2d_batch_with_partial_tile_leaves_the_symmetric_kernel() -> None:
+    # out_h * out_w is 49 here, a multiple of no m tile the symmetric kernel builds,
+    # so an m tile would span two images and its implicit GEMM would take the wrong
+    # image for the tail. More than one image therefore goes elsewhere.
+    op = Conv2dFwdOp()
+    x = torch.randn(5, 96, 9, 9, device="cuda", dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 96, 3, 3, device="cuda", dtype=torch.float16).contiguous()
+    out = op(x, weight)
+    assert not isinstance(op.kernel, Conv2dSymmetricKernel)
+    ref = F.conv2d(x, weight, bias=None)
+    torch.testing.assert_close(out, ref.contiguous(), atol=1e-2, rtol=1e-2)
+
+
 class Conv3dFixture(FixtureBase):
     PARAMS = [
         (
