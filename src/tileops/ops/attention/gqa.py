@@ -9,12 +9,12 @@ from tileops.kernels.attention import (
     GQABwdWgmmaPipelinedKernel,
     GQADecodePagedBs1Kernel,
     GQADecodePagedKernel,
-    GQADensePrefillCausalWsKernel,
+    GQADenseCausalWsKernel,
+    GQADenseSlidingWindowKernel,
     GQAPrefillPagedWithFP8KVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
     GQAPrefillVarlenFwdKernel,
-    GQASlidingWindowFwdWgmmaPipelinedKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel_base import Kernel
@@ -290,8 +290,8 @@ class GroupedQueryAttentionDenseFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "gqa_dense": GQADensePrefillCausalWsKernel,
-            "gqa_dense_sliding_window": GQASlidingWindowFwdWgmmaPipelinedKernel,
+            "gqa_dense": GQADenseCausalWsKernel,
+            "gqa_dense_sliding_window": GQADenseSlidingWindowKernel,
         }
 
     def _infer_output_shapes(
@@ -426,8 +426,6 @@ class GroupedQueryAttentionDenseFwdOp(Op):
             raise ValueError("Dense GQA currently requires head dimension 128")
         if q.dtype not in (torch.float16, torch.bfloat16):
             raise ValueError("Dense GQA currently supports float16 and bfloat16 inputs only")
-        if self.pos_encoding_mode != "none":
-            raise ValueError("Dense GQA does not yet support fused RoPE")
         uses_window = self.window_size_left != -1 or self.window_size_right != -1
         if uses_window and q.shape[1] != k.shape[1]:
             raise ValueError("Dense sliding-window GQA currently requires equal Q and KV lengths")
@@ -453,12 +451,19 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         self, inputs: tuple[Optional[torch.Tensor], ...]
     ) -> Callable[..., torch.Tensor]:
         """Resolve the implementation stored in the Op's single cache layer."""
-        q, k = inputs[:2]
+        q, k, _v, _q_scale, _k_scale, _v_scale, rope_cos, _rope_sin = inputs
         assert q is not None and k is not None
         batch, seq_len_q, heads, dim = q.shape
         _, seq_len_kv, heads_kv, _ = k.shape
         uses_window = self.window_size_left != -1 or self.window_size_right != -1
         role = "gqa_dense_sliding_window" if uses_window else "gqa_dense"
+        rope_on = self.pos_encoding_mode == "rope"
+        rope_kwargs = {
+            "fuse_rope": rope_on,
+            "max_position": rope_cos.shape[0] if rope_cos is not None else 1,
+            "rotary_dim": _rope_rotary_dim(dim, self.rotary_dim) if rope_on else 0,
+            "rope_layout": self.rope_layout,
+        }
 
         def build() -> Kernel:
             self._validate_builtin_call(q, k)
@@ -475,6 +480,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                     dtype=q.dtype,
                     sm_scale=self.sm_scale,
                     softcap=self.softcap,
+                    **rope_kwargs,
                     device_index=q.device.index,
                 )
             return self.kernel_map[role](
@@ -487,10 +493,16 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                 dtype=q.dtype,
                 sm_scale=self.sm_scale,
                 softcap=self.softcap,
+                **rope_kwargs,
                 device_index=q.device.index,
             )
 
-        key = (q.dtype, tuple(q.shape), tuple(k.shape))
+        key = (
+            q.dtype,
+            tuple(q.shape),
+            tuple(k.shape),
+            None if rope_cos is None else tuple(rope_cos.shape),
+        )
         return self.get_or_build_kernel(role, inputs, key=key, build=build)
 
     def forward(
