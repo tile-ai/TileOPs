@@ -119,12 +119,10 @@ GroupedQueryAttentionDenseFwdOp:
     func: "tileops.perf.formulas.gqa_fwd_roofline"
 
   source:
-    kernel:
-      - tileops/kernels/attention/gqa_prefill_fwd_ws.py
-      - tileops/kernels/attention/gqa_sliding_window_fwd.py
+    kernel: tileops/kernels/attention/gqa_dense.py
     kernel_map:
-      gqa_dense: GQADensePrefillCausalWsKernel
-      gqa_dense_sliding_window: GQASlidingWindowFwdWgmmaPipelinedKernel
+      gqa_dense: GQADenseCausalWsKernel
+      gqa_dense_sliding_window: GQADenseSlidingWindowKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
