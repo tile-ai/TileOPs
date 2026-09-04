@@ -553,39 +553,69 @@ def _conv2d_symmetric_kernel(
         threads: int,
         enable_rasterization: bool,
     ):
+        # One kernel stages both operands: each is the same transpose over a plane of
+        # (channel, spatial), and the block index selects which one a block serves.
+        # Both walk c_in in the same channel block, so one block count over the
+        # channel axis serves both.
+        channel_block = 32
+        x_lanes, x_spatial_block = 8, 32
+        w_lanes, w_spatial_block = 16, 16
+        assert x_spatial_block * x_lanes == 256 and w_spatial_block * w_lanes == 256, (
+            "each operand's tile must occupy the 256 threads the staging kernel launches"
+        )
+        assert channel_block % x_lanes == 0 and channel_block % w_lanes == 0, (
+            "a thread's channel stride must divide the channel block it walks"
+        )
+        channel_blocks = -(-c_in // channel_block)
+        x_spatial_blocks = -(-(h * w) // x_spatial_block)
+        w_spatial_blocks = -(-(kernel_size * kernel_size) // w_spatial_block)
+        x_blocks = x_spatial_blocks * channel_blocks * n
+        w_blocks = w_spatial_blocks * channel_blocks * c_out
+
         @T.macro
-        def nchw_to_nhwc(
+        def plane_to_channel_last(
             src: T.Tensor,
             dst: T.Tensor,
-            batch_size: int,
+            block: T.int32,
             spatial_size: int,
-            channel_size: int,
-            width: int,
             spatial_block: int,
-            channel_block: int,
+            spatial_blocks: int,
             channel_lanes: int,
         ):
-            assert spatial_block * channel_lanes == 256, (
-                "spatial_block * channel_lanes must equal 256"
-            )
-            assert channel_block % channel_lanes == 0, "channel_lanes must divide channel_block"
+            """One block's share of ``src[p, c, s] -> dst[p, s, c]``."""
+            spatial_base = (block % spatial_blocks) * spatial_block
+            channel_base = ((block // spatial_blocks) % channel_blocks) * channel_block
+            plane = block // (spatial_blocks * channel_blocks)
+            for spatial_inner, channel_lane in T.Parallel(spatial_block, channel_lanes):
+                spatial = spatial_base + spatial_inner
+                for channel_offset in T.serial(channel_block // channel_lanes):
+                    c = channel_base + channel_offset * channel_lanes + channel_lane
+                    if (spatial < spatial_size) & (c < c_in):
+                        dst[plane, spatial, c] = src[plane, c, spatial]
 
-            with T.Kernel(
-                T.ceildiv(spatial_size, spatial_block),
-                T.ceildiv(channel_size, channel_block),
-                batch_size,
-                threads=256,
-            ) as (bx, by, bz):
-                values_per_thread = channel_block // channel_lanes
-                for spatial_inner, channel_lane in T.Parallel(spatial_block, channel_lanes):
-                    spatial = bx * spatial_block + spatial_inner
-                    h_idx = spatial // width
-                    w_idx = spatial - h_idx * width
-                    channel_base = by * channel_block
-                    for channel_offset in T.serial(values_per_thread):
-                        c = channel_base + channel_offset * channel_lanes + channel_lane
-                        if (spatial < spatial_size) & (c < channel_size):
-                            dst[bz, h_idx, w_idx, c] = src[bz, c, h_idx, w_idx]
+        @T.macro
+        def stage_operands(x, weight, x_nhwc, weight_krsc):
+            with T.Kernel(x_blocks + w_blocks, threads=256) as block:
+                if block < x_blocks:
+                    plane_to_channel_last(
+                        T.Tensor((n, c_in, h * w), dtype, x.data),
+                        T.Tensor((n, h * w, c_in), dtype, x_nhwc.data),
+                        block,
+                        spatial_size=h * w,
+                        spatial_block=x_spatial_block,
+                        spatial_blocks=x_spatial_blocks,
+                        channel_lanes=x_lanes,
+                    )
+                else:
+                    plane_to_channel_last(
+                        T.Tensor((c_out, c_in, kernel_size * kernel_size), dtype, weight.data),
+                        T.Tensor((c_out, kernel_size * kernel_size, c_in), dtype, weight_krsc.data),
+                        block - x_blocks,
+                        spatial_size=kernel_size * kernel_size,
+                        spatial_block=w_spatial_block,
+                        spatial_blocks=w_spatial_blocks,
+                        channel_lanes=w_lanes,
+                    )
 
         @T.macro
         def conv_nhwc_implicit_gemm(x_nhwc, weight_krsc, out, bias):
@@ -628,28 +658,7 @@ def _conv2d_symmetric_kernel(
 
         @T.macro
         def _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, bias):
-            nchw_to_nhwc(
-                x,
-                x_nhwc,
-                batch_size=n,
-                spatial_size=h * w,
-                channel_size=c_in,
-                width=w,
-                spatial_block=32,
-                channel_block=32,
-                channel_lanes=8,
-            )
-            nchw_to_nhwc(
-                weight,
-                weight_krsc,
-                batch_size=c_out,
-                spatial_size=kernel_size * kernel_size,
-                channel_size=c_in,
-                width=kernel_size,
-                spatial_block=16,
-                channel_block=32,
-                channel_lanes=16,
-            )
+            stage_operands(x, weight, x_nhwc, weight_krsc)
             conv_nhwc_implicit_gemm(x_nhwc, weight_krsc, out, bias)
 
         if has_bias:
