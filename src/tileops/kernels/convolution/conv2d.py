@@ -778,10 +778,12 @@ class Conv2dSymmetricKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        # No block_k of 16: it wins no row measured, and the region already requires
+        # c_in to be a multiple of 32, so a 32-wide k tile always divides it.
         configs = conv_autotune_configs(
             self.dtype,
             block_m=list(self.block_m_candidates),
-            block_k=[16, 32, 64],
+            block_k=[32, 64],
         )
         out_hw = self.out_h * self.out_w
         return [
@@ -1066,8 +1068,14 @@ class GroupConv2dKernel(Kernel):
     @property
     def autotune_configs(self) -> list[dict]:
         if self.use_direct:
-            return [self.default_config]
-        return conv_autotune_configs(self.dtype)
+            # One tile shape, since there is no GEMM to tile. The swizzle is still a
+            # choice, and a depthwise row reads 1.19x faster with it off.
+            return [
+                {**self.default_config, "enable_rasterization": value} for value in (False, True)
+            ]
+        # No 256-thread block: it wins no grouped row measured, and dropping it pays
+        # for searching the rasterization swizzle instead.
+        return conv_autotune_configs(self.dtype, threads=[128])
 
     def forward(
         self,

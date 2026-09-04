@@ -721,9 +721,12 @@ class Conv3dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        # No 256-thread block: it wins no conv3d row measured, and dropping it pays
+        # for searching the rasterization swizzle instead.
         return conv_autotune_configs(
             self.dtype,
             block_n=[32, 64, 128],
+            threads=[128],
         )
 
     def forward(
@@ -860,9 +863,12 @@ class GroupConv3dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        # No 256-thread block: it wins no conv3d row measured, and dropping it pays
+        # for searching the rasterization swizzle instead.
         return conv_autotune_configs(
             self.dtype,
             block_n=[32, 64, 128],
+            threads=[128],
         )
 
     def forward(
@@ -994,10 +1000,13 @@ class Conv3dNdhwcKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        # No 256-thread block: it wins no conv3d row measured, and dropping it pays
+        # for searching the rasterization swizzle instead.
         configs = conv_autotune_configs(
             self.dtype,
             block_m=[64, 128],
             block_k=[16, 32, 64, 128, 256],
+            threads=[128],
         )
         return [c for c in configs if self.c_in % c["block_k"] == 0]
 

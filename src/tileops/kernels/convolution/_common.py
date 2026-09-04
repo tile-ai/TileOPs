@@ -16,16 +16,23 @@ def conv_autotune_configs(
     block_k=(32, 64, 128),
     num_stages=(2, 3),
     threads=(128, 256),
+    enable_rasterization=(False, True),
 ) -> list[dict]:
-    """Search space filtered to combinations that fit in shared memory."""
+    """Search space filtered to combinations that fit in shared memory.
+
+    ``enable_rasterization`` turns on a swizzle that orders blocks for L2 locality,
+    and is searched rather than fixed because a convolution row's reuse depends on
+    its grid: of the manifest's 55 rows, 50 read faster with it off and 5 with it on.
+    """
     limit = get_shared_memory_limit_bytes()
     valid = []
-    for bm, bn, bk, ns, th in itertools.product(
+    for bm, bn, bk, ns, th, rast in itertools.product(
         block_m,
         block_n,
         block_k,
         num_stages,
         threads,
+        enable_rasterization,
     ):
         if conv_shared_memory_bytes(bm, bn, bk, ns, dtype) > limit:
             continue
@@ -36,7 +43,7 @@ def conv_autotune_configs(
                 "block_k": bk,
                 "num_stages": ns,
                 "threads": th,
-                "enable_rasterization": True,
+                "enable_rasterization": rast,
             }
         )
     return valid

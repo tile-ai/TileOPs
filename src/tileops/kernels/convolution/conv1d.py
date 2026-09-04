@@ -620,7 +620,9 @@ class Conv1dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return conv_autotune_configs(self.dtype)
+        # No 256-wide n tile: it wins no row measured, and dropping it pays for
+        # searching the rasterization swizzle instead.
+        return conv_autotune_configs(self.dtype, block_n=[64, 128])
 
     def _get_weight_flat(self, weight: torch.Tensor) -> torch.Tensor:
         """Return the weight laid out as the prim_func's ``(c_out, k_total)``.
