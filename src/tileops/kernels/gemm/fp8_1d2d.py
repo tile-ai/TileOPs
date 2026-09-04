@@ -169,6 +169,7 @@ def _gemm_fp8_1d2d_kernel(
         # step into the ring instead. The two forms are mutually exclusive,
         # which is why ``not stage_1d2d_b_per_k`` reads as ``max_waves == 1``.
         stage_1d2d_b_per_k = max_waves > 1
+        producer_threads = 32 if max_waves == 1 else 128
         effective_unroll = mainloop_unroll or num_stages
 
         @T.macro
@@ -243,56 +244,60 @@ def _gemm_fp8_1d2d_kernel(
                                     scale_row = T.min(n_start // 128, (n + 127) // 128 - 1)
                                     one_scale_b[0, i] = scale_b[scale_row, i]
                                 T.sync_threads(barrier_id=10, arrive_count=384)
-                            producer_steps = (
-                                T.if_then_else(tx == 0, scale_k, 0)
-                                if scale_k <= 16 and max_waves == 1
-                                else scale_k
-                            )
-                            for kk in T.unroll(producer_steps, unroll_factor=effective_unroll):
-                                slot = producer_index % num_stages
-                                T.barrier_wait(
-                                    empty[slot], ((producer_index // num_stages) & 1) ^ 1
-                                )
-                                if stage_1d2d_b_per_k and tx == 0:
-                                    scale_row = T.min(n_start // 128, (n + 127) // 128 - 1)
-                                    one_scale_b[slot, 0] = scale_b[scale_row, kk]
-                                T.tma_copy(
-                                    a[
-                                        m_start : m_start + block_m,
-                                        kk * block_k : (kk + 1) * block_k,
-                                    ],
-                                    a_shared[slot, :, :],
-                                    barrier=full[slot],
-                                )
-                                T.tma_copy(
-                                    scale_a[
-                                        kk : kk + 1,
-                                        m_start : m_start + block_m,
-                                    ],
-                                    one_scale_a[slot, :],
-                                    barrier=full[slot],
-                                )
-                                if scale_k >= 16 and max_waves == 1 and kk == 0:
-                                    scale_row = T.min(
-                                        n_start // 128,
-                                        (n + 127) // 128 - 1,
+                            # TileLang elects one lane to issue each TMA, so the rest of
+                            # the producer warp-group only polls ``empty`` and evaluates
+                            # guards. On a single-wave tile that polling is the producer's
+                            # whole life and 128 pollers contend with the consumer warps
+                            # for the SM's issue slots, so one warp drives the pipeline
+                            # (a whole warp, not a lone thread: the elect is a warp
+                            # collective). Across several waves the same narrowing
+                            # measured 2% slower, so the warp-group stays whole there.
+                            if tx < producer_threads:
+                                for kk in T.unroll(scale_k, unroll_factor=effective_unroll):
+                                    slot = producer_index % num_stages
+                                    T.barrier_wait(
+                                        empty[slot], ((producer_index // num_stages) & 1) ^ 1
                                     )
+                                    if stage_1d2d_b_per_k and tx == 0:
+                                        scale_row = T.min(n_start // 128, (n + 127) // 128 - 1)
+                                        one_scale_b[slot, 0] = scale_b[scale_row, kk]
                                     T.tma_copy(
-                                        scale_b[scale_row : scale_row + 1, 0:scale_k],
-                                        one_scale_b[:, :],
+                                        a[
+                                            m_start : m_start + block_m,
+                                            kk * block_k : (kk + 1) * block_k,
+                                        ],
+                                        a_shared[slot, :, :],
                                         barrier=full[slot],
                                     )
-                                T.tma_copy(
-                                    b[
-                                        n_start : n_start + block_n,
-                                        kk * block_k : (kk + 1) * block_k,
-                                    ],
-                                    b_shared[slot, :, :],
-                                    barrier=full[slot],
-                                )
-                                if tx == 0:
-                                    T.barrier_arrive(full[slot])
-                                producer_index = producer_index + 1
+                                    T.tma_copy(
+                                        scale_a[
+                                            kk : kk + 1,
+                                            m_start : m_start + block_m,
+                                        ],
+                                        one_scale_a[slot, :],
+                                        barrier=full[slot],
+                                    )
+                                    if scale_k >= 16 and max_waves == 1 and kk == 0:
+                                        scale_row = T.min(
+                                            n_start // 128,
+                                            (n + 127) // 128 - 1,
+                                        )
+                                        T.tma_copy(
+                                            scale_b[scale_row : scale_row + 1, 0:scale_k],
+                                            one_scale_b[:, :],
+                                            barrier=full[slot],
+                                        )
+                                    T.tma_copy(
+                                        b[
+                                            n_start : n_start + block_n,
+                                            kk * block_k : (kk + 1) * block_k,
+                                        ],
+                                        b_shared[slot, :, :],
+                                        barrier=full[slot],
+                                    )
+                                    if tx == 0:
+                                        T.barrier_arrive(full[slot])
+                                    producer_index = producer_index + 1
 
                 elif tx < 256:
                     T.inc_max_nreg(240)
