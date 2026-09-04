@@ -169,6 +169,39 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
     assert isinstance(next(iter(op.iter_kernels())), GQADenseCausalWsKernel)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("batch", [1, 2])
+def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None:
+    if not torch.cuda.is_available() or get_sm_version() != 90:
+        pytest.skip("Dense warp-specialized prefill requires SM90")
+    heads, heads_kv, dim = 8, 2, 128
+    op = GroupedQueryAttentionDenseFwdOp()
+
+    for seq_len_q, seq_len_kv in (
+        (1, 270),
+        (1, 271),
+        (160, 270),
+        (896, 896),
+        (1, 270),
+    ):
+        q = torch.randn(
+            batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16
+        )
+        k = torch.randn(
+            batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16
+        )
+        v = torch.randn_like(k)
+        output = op(q, k, v)
+        torch.testing.assert_close(
+            output,
+            _gqa_prefill_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
+            atol=5e-3,
+            rtol=1e-5,
+        )
+
+    assert len(list(op.iter_kernels())) == 1
+
+
 @pytest.mark.parametrize("use_rope", [False, True])
 @pytest.mark.smoke
 def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(use_rope: bool) -> None:

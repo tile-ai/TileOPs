@@ -497,12 +497,23 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                 device_index=q.device.index,
             )
 
-        key = (
-            q.dtype,
-            tuple(q.shape),
-            tuple(k.shape),
-            None if rope_cos is None else tuple(rope_cos.shape),
-        )
+        if uses_window or rope_on:
+            # Sliding and RoPE still compile exact sequence lengths. The plain
+            # causal WS kernel accepts its sequence extents at runtime.
+            key = (
+                q.dtype,
+                tuple(q.shape),
+                tuple(k.shape),
+                None if rope_cos is None else tuple(rope_cos.shape),
+            )
+        else:
+            key = (
+                q.dtype,
+                batch,
+                heads,
+                heads_kv,
+                dim,
+            )
         return self.get_or_build_kernel(role, inputs, key=key, build=build)
 
     def forward(

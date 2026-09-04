@@ -226,8 +226,6 @@ def _gqa_dense_causal_ws_kernel(
     B,
     H,
     Hkv,
-    Sq,
-    Skv,
     D,
     sm_scale,
     softcap,
@@ -243,10 +241,11 @@ def _gqa_dense_causal_ws_kernel(
     use_softcap = softcap > 0.0
     scale = LOG2E if use_softcap else score_scale * LOG2E
     groups = H // Hkv
-    co = Skv - Sq
     accum = "float"
     half = block_M // 2
     Pol = T.GemmWarpPolicy.FullRow
+    seq_len_q = T.dynamic("seq_len_q")
+    seq_len_kv = T.dynamic("seq_len_kv")
 
     @T.macro
     def apply_softcap(acc_s, rows, cols):
@@ -260,12 +259,12 @@ def _gqa_dense_causal_ws_kernel(
 
     @T.prim_func
     def main(
-        Q: T.Tensor([B, Sq, H, D], dtype),
-        K: T.Tensor([B, Skv, Hkv, D], dtype),
-        V: T.Tensor([B, Skv, Hkv, D], dtype),
-        O: T.Tensor([B, Sq, H, D], dtype),
+        Q: T.Tensor([B, seq_len_q, H, D], dtype),
+        K: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+        V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+        O: T.Tensor([B, seq_len_q, H, D], dtype),
     ):
-        with T.Kernel(T.ceildiv(Sq, block_M), H, B, threads=threads) as (bx, by, bz):
+        with T.Kernel(T.ceildiv(seq_len_q, block_M), H, B, threads=threads) as (bx, by, bz):
             Qs = T.alloc_shared([2, half, D], dtype)
             Ks = T.alloc_shared([nsK, block_N, D], dtype)
             Vs = T.alloc_shared([nsV, block_N, D], dtype)
@@ -288,7 +287,14 @@ def _gqa_dense_causal_ws_kernel(
 
             cv = by // groups
             q0 = bx * block_M
-            eff = T.min(T.ceildiv(Skv, block_N), T.ceildiv(q0 + block_M + co, block_N))
+            causal_offset = T.alloc_var("int32", init=seq_len_kv - seq_len_q)
+            eff = T.alloc_var(
+                "int32",
+                init=T.min(
+                    T.ceildiv(seq_len_kv, block_N),
+                    T.ceildiv(q0 + block_M + causal_offset, block_N),
+                ),
+            )
             tx = T.get_thread_binding()
 
             if tx >= 256:  # ================= producer =================
@@ -345,8 +351,8 @@ def _gqa_dense_causal_ws_kernel(
                 T.named_barrier_arrive(nxt_bar, NMMA)
                 T.wait_wgmma(0)
                 T.mbarrier_arrive(kfree[0])
-                if q0 + r0 + co < block_N - 1:
-                    mask_limit = q0 + r0 + co
+                if q0 + r0 + causal_offset < block_N - 1:
+                    mask_limit = q0 + r0 + causal_offset
                     for i, j in T.Parallel(half, block_N):
                         acc_s[i, j] = T.if_then_else(
                             mask_limit + i >= j, acc_s[i, j], -T.infinity(accum)
@@ -361,7 +367,12 @@ def _gqa_dense_causal_ws_kernel(
                     logsum[i] = ss[i]
                 T.copy(acc_s, pcast)
 
-                nu = T.max(1, T.min(eff, T.floordiv(q0 + r0 + co + 1, block_N)))
+                nu = T.alloc_var(
+                    "int32",
+                    init=T.max(
+                        1, T.min(eff, T.floordiv(q0 + r0 + causal_offset + 1, block_N))
+                    ),
+                )
                 for k in T.serial(1, nu):
                     sk = k % nsK
                     svp = (k - 1) % nsV
@@ -416,7 +427,7 @@ def _gqa_dense_causal_ws_kernel(
                     T.named_barrier_arrive(nxt_bar, NMMA)
                     T.wait_wgmma(1)
                     T.mbarrier_arrive(kfree[sk])
-                    mask_limit_tail = q0 + r0 + co - k * block_N
+                    mask_limit_tail = q0 + r0 + causal_offset - k * block_N
                     for i, j in T.Parallel(half, block_N):
                         acc_s[i, j] = T.if_then_else(
                             mask_limit_tail + i >= j, acc_s[i, j], -T.infinity(accum)
@@ -480,8 +491,8 @@ def _gqa_dense_causal_ws_kernel(
                 T.named_barrier_arrive(nxt_bar, NMMA)
                 T.wait_wgmma(0)
                 T.mbarrier_arrive(kfree[0])
-                if q0 + r0 + co < block_N - 1:
-                    mask_limit_wg1 = q0 + r0 + co
+                if q0 + r0 + causal_offset < block_N - 1:
+                    mask_limit_wg1 = q0 + r0 + causal_offset
                     for i, j in T.Parallel(half, block_N):
                         acc_s[i, j] = T.if_then_else(
                             mask_limit_wg1 + i >= j, acc_s[i, j], -T.infinity(accum)
@@ -496,7 +507,12 @@ def _gqa_dense_causal_ws_kernel(
                     logsum[i] = ss[i]
                 T.copy(acc_s, pcast)
 
-                nu_wg1 = T.max(1, T.min(eff, T.floordiv(q0 + r0 + co + 1, block_N)))
+                nu_wg1 = T.alloc_var(
+                    "int32",
+                    init=T.max(
+                        1, T.min(eff, T.floordiv(q0 + r0 + causal_offset + 1, block_N))
+                    ),
+                )
                 for k in T.serial(1, nu_wg1):
                     sk = k % nsK
                     svp_wg1 = (k - 1) % nsV
@@ -553,7 +569,7 @@ def _gqa_dense_causal_ws_kernel(
                     T.named_barrier_arrive(nxt_bar, NMMA)
                     T.wait_wgmma(1)
                     T.mbarrier_arrive(kfree[sk])
-                    mask_limit_wg1_tail = q0 + r0 + co - k * block_N
+                    mask_limit_wg1_tail = q0 + r0 + causal_offset - k * block_N
                     for i, j in T.Parallel(half, block_N):
                         acc_s[i, j] = T.if_then_else(
                             mask_limit_wg1_tail + i >= j, acc_s[i, j], -T.infinity(accum)
@@ -621,8 +637,6 @@ class GQADenseCausalWsKernel(Kernel):
             batch,
             heads,
             heads_kv,
-            seq_len_q,
-            seq_len_kv,
             dim,
             dim**-0.5 if sm_scale is None else sm_scale,
             softcap,
