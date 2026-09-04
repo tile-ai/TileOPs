@@ -176,6 +176,7 @@ Conv2dFwdOp:
     kernel_map:
       conv2d_kernel: Conv2dKernel
       conv2d_1x1_kernel: Conv2d1x1Kernel
+      conv2d_symmetric_kernel: Conv2dSymmetricKernel
       group_conv2d_kernel: GroupConv2dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
@@ -262,6 +263,7 @@ Conv3dFwdOp:
     kernel: tileops/kernels/convolution/conv3d.py
     kernel_map:
       conv3d_kernel: Conv3dKernel
+      conv3d_ndhwc_kernel: Conv3dNdhwcKernel
       group_conv3d_kernel: GroupConv3dKernel
     op: tileops/ops/convolution.py
     test: tests/ops/test_convolution.py
