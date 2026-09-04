@@ -16,51 +16,6 @@ def gqa_qkv_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int, boo
     return batch, seq_len, heads, heads_kv, dim, workload.get("is_causal", True)
 
 
-def gqa_prefill_args(
-    workload: dict[str, Any],
-) -> tuple[int, int, int, int, int, int, bool, str, bool, float | None, float | None]:
-    if "q_shape" in workload:
-        batch, seq_len_q, heads, dim = workload["q_shape"]
-        _, seq_len_kv, heads_kv, _ = workload["kv_shape"]
-        return (
-            batch,
-            seq_len_q,
-            seq_len_kv,
-            heads,
-            heads_kv,
-            dim,
-            workload.get("is_causal", True),
-            workload.get("backend", "auto"),
-            workload.get("validate_uniform_cu_seqlens", True),
-            workload.get("sm_scale"),
-            workload.get("softcap"),
-        )
-
-    batch = workload["batch"]
-    q_lens = list(workload.get("q_lens") or [workload["total_q"] // batch] * batch)
-    kv_lens = list(workload.get("kv_lens") or [workload["total_kv"] // batch] * batch)
-    if len(set(q_lens)) != 1 or len(set(kv_lens)) != 1:
-        raise ValueError("gqa_prefill_args currently expects uniform prefill workloads")
-    seq_len_q = q_lens[0]
-    seq_len_kv = kv_lens[0]
-    heads = workload["heads"]
-    heads_kv = workload["heads_kv"]
-    dim = workload["dim"]
-    return (
-        batch,
-        seq_len_q,
-        seq_len_kv,
-        heads,
-        heads_kv,
-        dim,
-        workload.get("is_causal", True),
-        workload.get("backend", "auto"),
-        workload.get("validate_uniform_cu_seqlens", True),
-        workload.get("sm_scale"),
-        workload.get("softcap"),
-    )
-
-
 def gqa_prefill_paged_args(
     workload: dict[str, Any],
 ) -> tuple[

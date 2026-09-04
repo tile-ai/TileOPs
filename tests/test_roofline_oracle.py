@@ -190,34 +190,6 @@ class TestBytesOracle:
             )
             assert op.eval_roofline()[1] == oracle, f"has_bias={has_bias}"
 
-    def test_gqa_varlen_prefill_counts_packed_qkv_and_cu_seqlens(self):
-        from tileops.ops.attention.gqa import GroupedQueryAttentionPrefillFwdOp
-
-        heads, heads_kv, dim = 32, 8, 128
-        q_lens, kv_lens = [512, 1024], [2048, 4096]
-        total_q, total_kv = sum(q_lens), sum(kv_lens)
-        cu = lambda lens: torch.tensor([0, *torch.tensor(lens).cumsum(0).tolist()])  # noqa: E731
-        op = GroupedQueryAttentionPrefillFwdOp.__new__(GroupedQueryAttentionPrefillFwdOp)
-        op._roofline_kwargs = {
-            "q_shape": (total_q, heads, dim),
-            "k_shape": (total_kv, heads_kv, dim),
-            "batch": 2,
-            "max_seqlen_q": max(q_lens),
-            "max_seqlen_kv": max(kv_lens),
-            "cu_seqlens_q": cu(q_lens),
-            "cu_seqlens_kv": cu(kv_lens),
-            "is_causal": True,
-            "dtype": torch.float16,
-        }
-        oracle = _nbytes(
-            ((total_q, heads, dim), torch.float16),  # q
-            ((total_kv, heads_kv, dim), torch.float16),  # k
-            ((total_kv, heads_kv, dim), torch.float16),  # v
-            ((total_q, heads, dim), torch.float16),  # o
-            ((2, 3), torch.int32),  # cu_seqlens_q + cu_seqlens_kv, [batch+1] each
-        )
-        assert op.eval_roofline()[1] == oracle
-
 
 # Classification registry: every implemented op appears in exactly one of
 # AUDITED (has a bytes-oracle case above), EXEMPT (traffic depends on tensor
@@ -231,7 +203,6 @@ AUDITED = frozenset(
         "FusedMoeFwdOp",
         "GemmFp8FwdOp",
         "GemmW4A16FwdOp",
-        "GroupedQueryAttentionPrefillFwdOp",
         "MoePostPermuteFwdOp",
         "MoePrePermuteFwdOp",
         "RMSNormFwdOp",

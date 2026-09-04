@@ -215,40 +215,6 @@ class GroupedQueryAttentionDecodePagedWorkload(WorkloadBase):
         return q, k, v, real_seqlen_kv, block_table
 
 
-class GQAPrefillFwdWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        seq_len_q: int,
-        seq_len_kv: int,
-        dim: int,
-        is_causal: bool,
-        dtype: torch.dtype,
-    ) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.seq_len_q = seq_len_q
-        self.seq_len_kv = seq_len_kv
-        self.dim = dim
-        self.is_causal = is_causal
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        q = torch.randn(
-            self.batch, self.seq_len_q, self.heads, self.dim, device="cuda", dtype=self.dtype
-        ).contiguous()
-        k = torch.randn(
-            self.batch, self.seq_len_kv, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
-        ).contiguous()
-        v = torch.randn(
-            self.batch, self.seq_len_kv, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
-        ).contiguous()
-        return q, k, v
-
-
 class GQAPrefillVarlenFwdWorkload(WorkloadBase):
     def __init__(
         self,
@@ -449,36 +415,3 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(WorkloadBase):
         max_seqlen_q = max(self.seqlens_q)
 
         return q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q
-
-
-def uniform_packed_prefill_inputs(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-]:
-    batch, seq_len_q, _, _ = q.shape
-    _, seq_len_kv, heads_kv, _ = k.shape
-    cu_q = torch.arange(batch + 1, device=q.device, dtype=torch.int32) * seq_len_q
-    cu_kv = torch.arange(batch + 1, device=q.device, dtype=torch.int32) * seq_len_kv
-    q_scale = torch.ones((batch, heads_kv), device=q.device, dtype=torch.float32)
-    k_scale = torch.ones_like(q_scale)
-    v_scale = torch.ones_like(q_scale)
-    return (
-        q.reshape(batch * seq_len_q, q.shape[2], q.shape[3]).contiguous(),
-        k.reshape(batch * seq_len_kv, heads_kv, k.shape[3]).contiguous(),
-        v.reshape(batch * seq_len_kv, heads_kv, v.shape[3]).contiguous(),
-        cu_q,
-        cu_kv,
-        q_scale,
-        k_scale,
-        v_scale,
-    )

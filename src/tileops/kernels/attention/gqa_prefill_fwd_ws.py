@@ -24,17 +24,10 @@ from tilelang.layout import make_swizzled_layout
 from tileops.kernels.constants import LOG2E
 
 from ..kernel_base import Kernel
-from .call_spec import (
-    ATTENTION_DTYPES,
-    WS_ARCH,
-    causal_ws_prefill_region,
-    square_ws_prefill_region,
-)
-from .packed_prefill import PackedPrefillKernel
+from .call_spec import WS_ARCH
 
 __all__ = [
     "GQADensePrefillCausalWsKernel",
-    "GQAPrefillFwdWsPersistentCausalKernel",
 ]
 
 BLOCK_M = 128
@@ -437,68 +430,6 @@ def _gqa_prefill_fwd_fa3_kernel(
                 )  # smem -> global (coalesced)
 
     return main
-
-
-class GQAPrefillFwdWsPersistentCausalKernel(PackedPrefillKernel):
-    """Faithful FlashInfer FA3 GQA-prefill kernel (causal, dim==128, sm90).
-
-    Warp-specialized 2-warpgroup ping-pong port matching FlashInfer's
-    ``single_prefill_sm90``. Selected by the prefill op on Hopper for the
-    fp16/bf16 causal dim-128 path; other cases fall back to ``GQAPrefillFwdKernel``. Causal
-    uses bottom-right alignment (``co = seq_len_kv - seq_len_q``).
-
-    Note: like FlashInfer's forward inference kernel, this emits output only. A
-    backward pass that needs log-sum-exp must compute it separately.
-    """
-
-    supported_archs: list[int] = [WS_ARCH]
-
-    @classmethod
-    def applies(cls, call) -> bool:
-        # The H200 square causal kernel owns its sub-region; excluding it here
-        # keeps the two disjoint, so selection never breaks a tie by ordering.
-        return causal_ws_prefill_region(call) and not square_ws_prefill_region(call)
-
-    def _validate_spec(self) -> None:
-        if not self.is_causal:
-            raise ValueError("GQAPrefillFwdWsPersistentCausalKernel only supports causal prefill.")
-        if self.dim != 128:
-            raise ValueError("GQAPrefillFwdWsPersistentCausalKernel currently requires dim == 128.")
-        if self.dtype not in ATTENTION_DTYPES:
-            raise ValueError(
-                "GQAPrefillFwdWsPersistentCausalKernel currently supports float16 and bfloat16 only."
-            )
-
-    def _build_program(self) -> None:
-        self.kernel = _gqa_prefill_fwd_fa3_kernel(
-            self.batch,
-            self.heads,
-            self.heads_kv,
-            self.max_seqlen_q,
-            self.max_seqlen_kv,
-            self.dim,
-            self.sm_scale,
-            self.softcap,
-            self.dtype_str,
-        )
-
-    @property
-    def default_config(self) -> dict:
-        return {}
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
-        return self.kernel(q_bshd, k_bshd, v_bshd).reshape(q.shape)
 
 
 class GQADensePrefillCausalWsKernel(Kernel):

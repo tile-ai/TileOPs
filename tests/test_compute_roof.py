@@ -39,18 +39,3 @@ class TestComputeRoofContract:
         op = GemmFwdOp.__new__(GemmFwdOp)
         op.dtype = torch.bfloat16
         assert op.compute_roof() == "tensor_core.bf16"
-
-    def test_gqa_prefill_prices_the_call_that_ran(self):
-        from tileops.ops.attention.gqa import GroupedQueryAttentionPrefillFwdOp
-
-        op = GroupedQueryAttentionPrefillFwdOp.__new__(GroupedQueryAttentionPrefillFwdOp)
-        op.dtype = torch.float16
-        op.backend = "fp8"
-        assert op.compute_roof() == "tensor_core.fp8"
-        op.backend = "dense"
-        assert op.compute_roof() == "tensor_core.fp16"
-        # backend="auto" dispatches by the tensors the call passed, so the
-        # recorded call dtype outranks the constructed one.
-        op.backend = "auto"
-        op._roofline_kwargs = {"dtype": torch.float8_e4m3fn}
-        assert op.compute_roof() == "tensor_core.fp8"
