@@ -834,12 +834,26 @@ def _binary_broadcast_roofline(
     return flops, nbytes
 
 
+def _alpha_scaled_flops_per_elem(op: "Op") -> int:
+    """1 for the default ``alpha``, 2 when the scale multiply is real.
+
+    ``torch.add``/``torch.sub`` compute ``input + alpha * other``. At
+    ``alpha == 1`` the kernel emits no multiply and roofline.md §1.3 prices one
+    basic arithmetic op at 1; any other ``alpha`` adds it.
+    """
+    return 1 if op.alpha == 1 else 2
+
+
 def add_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=2, bool_output=False)
+    return _binary_broadcast_roofline(
+        op, flops_per_elem=_alpha_scaled_flops_per_elem(op), bool_output=False
+    )
 
 
 def sub_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=2, bool_output=False)
+    return _binary_broadcast_roofline(
+        op, flops_per_elem=_alpha_scaled_flops_per_elem(op), bool_output=False
+    )
 
 
 def mul_fwd_roofline(op: "Op") -> tuple[int, int]:
