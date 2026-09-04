@@ -17,7 +17,6 @@ __all__ = [
     "ATTENTION_DTYPES",
     "WS_ARCH",
     "AttentionCall",
-    "causal_ws_prefill_region",
     "decode_bs1_region",
     "dense_prefill_region",
     "fp8_dtype",
@@ -121,21 +120,6 @@ def square_ws_prefill_region(call: AttentionCall) -> bool:
     groups = call.heads // call.heads_kv
     work_items = call.batch * call.heads_kv * (m_blocks // 2) * groups
     return work_items >= _H200_SMS
-
-
-def causal_ws_prefill_region(call: AttentionCall) -> bool:
-    """The warp-specialized causal packed-prefill region: head dim 128, 16-bit.
-
-    Owned by ``GQAPrefillFwdWsPersistentCausalKernel``. Architecture is not part
-    of it: ``Kernel.refusal`` settles ``supported_archs`` before it asks
-    ``applies``, so a region never repeats what the class already declares.
-    """
-    return (
-        dense_prefill_region(call)
-        and call.is_causal
-        and call.dim == 128
-        and call.dtype in ATTENTION_DTYPES
-    )
 
 
 # Tile heights the warp-specialized paged decode kernel can pick from. A tile

@@ -2,7 +2,6 @@ import pytest
 import torch
 
 from tileops.kernels.attention import GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
-from tileops.ops import GroupedQueryAttentionPrefillFwdOp
 from workloads.gqa_fp8_utils import (
     quantize_kv_fa3_descale,
     quantize_q_fa3_gqa_descale,
@@ -13,7 +12,7 @@ def _has_sm90() -> bool:
     return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9
 
 
-def _run_canonical_fp8_prefill(
+def _run_fp8_prefill_kernel(
     *,
     batch: int,
     seq_len: int,
@@ -29,18 +28,10 @@ def _run_canonical_fp8_prefill(
     v_scale: torch.Tensor,
 ) -> torch.Tensor:
     cu = torch.tensor([0, seq_len], device=q_fp8.device, dtype=torch.int32)
-    op = GroupedQueryAttentionPrefillFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        dim=dim,
-        max_seqlen_q=seq_len,
-        max_seqlen_kv=seq_len,
-        dtype=out_dtype,
-        is_causal=False,
-        backend="fp8",
+    kernel = GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(
+        batch, heads, heads_kv, seq_len, seq_len, dim, False, out_dtype
     )
-    return op(
+    return kernel(
         q_fp8.reshape(batch * seq_len, heads, dim).contiguous(),
         k_fp8.reshape(batch * seq_len, heads_kv, dim).contiguous(),
         v_fp8.reshape(batch * seq_len, heads_kv, dim).contiguous(),
@@ -100,7 +91,7 @@ def test_gqa_fp8_bn224_kernel_accepts_fa3_descale_contract() -> None:
     ],
 )
 @pytest.mark.smoke
-def test_gqa_prefill_canonical_fp8_accepts_fa3_descale_contract(
+def test_gqa_prefill_fp8_kernel_accepts_fa3_descale_contract(
     seq_len: int,
     out_dtype: torch.dtype,
     input_scale: float,
@@ -114,7 +105,7 @@ def test_gqa_prefill_canonical_fp8_accepts_fa3_descale_contract(
     k_fp8, k_descale = quantize_kv_fa3_descale(k)
     v_fp8, v_descale = quantize_kv_fa3_descale(v)
 
-    out = _run_canonical_fp8_prefill(
+    out = _run_fp8_prefill_kernel(
         batch=batch,
         seq_len=seq_len,
         heads=heads,
@@ -131,46 +122,6 @@ def test_gqa_prefill_canonical_fp8_accepts_fa3_descale_contract(
 
     assert out.shape == (batch * seq_len, heads, dim)
     assert out.dtype == out_dtype
-    assert torch.isfinite(out.float()).all()
-
-
-@pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
-@pytest.mark.skipif(not _has_sm90(), reason="requires Hopper FP8 WGMMA")
-@pytest.mark.smoke
-def test_gqa_prefill_canonical_op_dispatches_fp8_tensor_core_path() -> None:
-    batch, seq_len, heads, heads_kv, dim = 1, 896, 8, 2, 128
-    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16) * 0.25
-    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16) * 0.25
-    v = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16) * 0.25
-
-    q_fp8, q_scale = quantize_q_fa3_gqa_descale(q, heads_kv)
-    k_fp8, k_scale = quantize_kv_fa3_descale(k)
-    v_fp8, v_scale = quantize_kv_fa3_descale(v)
-    cu = torch.tensor([0, seq_len], device="cuda", dtype=torch.int32)
-
-    op = GroupedQueryAttentionPrefillFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        dim=dim,
-        max_seqlen_q=seq_len,
-        max_seqlen_kv=seq_len,
-        dtype=torch.float16,
-        is_causal=False,
-    )
-    out = op(
-        q_fp8.reshape(batch * seq_len, heads, dim).contiguous(),
-        k_fp8.reshape(batch * seq_len, heads_kv, dim).contiguous(),
-        v_fp8.reshape(batch * seq_len, heads_kv, dim).contiguous(),
-        cu,
-        cu,
-        q_scale,
-        k_scale,
-        v_scale,
-    )
-
-    assert out.shape == (batch * seq_len, heads, dim)
-    assert out.dtype == torch.float16
     assert torch.isfinite(out.float()).all()
 
 
@@ -198,7 +149,7 @@ def test_gqa_prefill_fp8_tensor_core_matches_dequantized_reference() -> None:
     k_fp8, k_descale = quantize_kv_fa3_descale(k)
     v_fp8, v_descale = quantize_kv_fa3_descale(v)
 
-    out = _run_canonical_fp8_prefill(
+    out = _run_fp8_prefill_kernel(
         batch=batch,
         seq_len=seq_len,
         heads=heads,
