@@ -304,7 +304,18 @@ def _max_pool3d_with_indices_kernel(
     out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
     out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
     out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-    total_output = n * c_in * out_d * out_h * out_w
+    spatial_output = out_d * out_h * out_w
+    total_output = n * c_in * spatial_output
+    # Static specialization: with zero padding and no ceil overshoot every window
+    # lies fully inside the input, so the per-element bounds check can be dropped.
+    always_in_bounds = (
+        pad_d == 0
+        and pad_h == 0
+        and pad_w == 0
+        and (out_d - 1) * stride_d + (kernel_d - 1) * dilation_d < d_in
+        and (out_h - 1) * stride_h + (kernel_h - 1) * dilation_h < h_in
+        and (out_w - 1) * stride_w + (kernel_w - 1) * dilation_w < w_in
+    )
 
     @tilelang.jit(out_idx=[1, 2], compile_flags=["-O3", "-DENABLE_BF16"])
     def _max_pool3d_with_indices_func(block_m: int, threads: int):
@@ -329,21 +340,55 @@ def _max_pool3d_with_indices_kernel(
 
                         max_val = T.alloc_var(T.float32)
                         has_nan = T.alloc_var(T.bool)
-                        max_idx = T.alloc_var(T.int64)
-                        nan_idx = T.alloc_var(T.int64)
+                        max_idx = T.alloc_var(T.int32)
+                        nan_idx = T.alloc_var(T.int32)
                         first_valid = T.alloc_var(T.bool)
+                        # Loop-invariant window corner and flat base, materialized so the
+                        # decode is not re-inlined into every window element.
+                        id0 = T.alloc_var(T.int32)
+                        ih0 = T.alloc_var(T.int32)
+                        iw0 = T.alloc_var(T.int32)
+                        base_flat = T.alloc_var(T.int32)
                         max_val = T.cast(float("-inf"), accum_dtype)
                         has_nan = False
-                        max_idx = T.cast(0, "int64")
-                        nan_idx = T.cast(0, "int64")
                         first_valid = True
+                        id0 = od * stride_d - pad_d
+                        ih0 = oh * stride_h - pad_h
+                        iw0 = ow * stride_w - pad_w
+                        base_flat = (id0 * h_in + ih0) * w_in + iw0
+                        if always_in_bounds:
+                            # Window element (0, 0, 0) is in bounds here, so its flat
+                            # index is the correct seed: an all--inf window reports the
+                            # first position, matching PyTorch, and first_valid is
+                            # unneeded.
+                            max_idx = base_flat
+                            nan_idx = base_flat
+                        else:
+                            max_idx = 0
+                            nan_idx = 0
                         for kd in T.serial(kernel_d):
                             for kh in T.serial(kernel_h):
                                 for kw in T.serial(kernel_w):
-                                    id_ = od * stride_d - pad_d + kd * dilation_d
-                                    ih = oh * stride_h - pad_h + kh * dilation_h
-                                    iw = ow * stride_w - pad_w + kw * dilation_w
-                                    if (
+                                    id_ = id0 + kd * dilation_d
+                                    ih = ih0 + kh * dilation_h
+                                    iw = iw0 + kw * dilation_w
+                                    if always_in_bounds:
+                                        val = T.cast(x[batch, c_idx, id_, ih, iw], accum_dtype)
+                                        flat_idx = base_flat + (
+                                            kd * (dilation_d * h_in * w_in)
+                                            + kh * (dilation_h * w_in)
+                                            + kw * dilation_w
+                                        )
+                                        is_nan = T.isnan(val)
+                                        # Branch-free update. Strict > keeps the first
+                                        # maximum; NaN never touches max_val/max_idx and
+                                        # records the last NaN visited, matching PyTorch.
+                                        take = (not is_nan) and (val > max_val)
+                                        max_val = T.if_then_else(take, val, max_val)
+                                        max_idx = T.if_then_else(take, flat_idx, max_idx)
+                                        nan_idx = T.if_then_else(is_nan, flat_idx, nan_idx)
+                                        has_nan = has_nan or is_nan
+                                    elif (
                                         id_ >= 0
                                         and id_ < d_in
                                         and ih >= 0
@@ -352,20 +397,18 @@ def _max_pool3d_with_indices_kernel(
                                         and iw < w_in
                                     ):
                                         val = T.cast(x[batch, c_idx, id_, ih, iw], accum_dtype)
-                                        flat_idx = T.cast((id_ * h_in + ih) * w_in + iw, "int64")
+                                        flat_idx = base_flat + (
+                                            kd * (dilation_d * h_in * w_in)
+                                            + kh * (dilation_h * w_in)
+                                            + kw * dilation_w
+                                        )
                                         is_nan = T.isnan(val)
-                                        if is_nan:
-                                            # PyTorch records the last NaN visited in
-                                            # a pooling window.
-                                            nan_idx = flat_idx
-                                            has_nan = True
-                                        elif first_valid:
-                                            max_val = val
-                                            max_idx = flat_idx
-                                            first_valid = False
-                                        elif val > max_val:
-                                            max_val = val
-                                            max_idx = flat_idx
+                                        take = (not is_nan) and (first_valid or (val > max_val))
+                                        max_val = T.if_then_else(take, val, max_val)
+                                        max_idx = T.if_then_else(take, flat_idx, max_idx)
+                                        first_valid = first_valid and is_nan
+                                        nan_idx = T.if_then_else(is_nan, flat_idx, nan_idx)
+                                        has_nan = has_nan or is_nan
 
                         result = T.if_then_else(
                             has_nan,
@@ -373,10 +416,13 @@ def _max_pool3d_with_indices_kernel(
                             max_val,
                         )
                         out[batch, c_idx, od, oh, ow] = T.cast(result, dtype)
-                        indices[batch, c_idx, od, oh, ow] = T.if_then_else(
-                            has_nan,
-                            nan_idx,
-                            max_idx,
+                        indices[batch, c_idx, od, oh, ow] = T.cast(
+                            T.if_then_else(
+                                has_nan,
+                                nan_idx,
+                                max_idx,
+                            ),
+                            "int64",
                         )
 
         return _max_pool3d_with_indices_main
