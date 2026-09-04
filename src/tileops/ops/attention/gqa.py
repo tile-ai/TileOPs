@@ -27,8 +27,10 @@ from .selection import PAGED_DECODE_KEYS, PAGED_PREFILL_KEYS, AttentionCall, fp8
 __all__ = [
     "GroupedQueryAttentionBwdOp",
     "GroupedQueryAttentionDenseFwdOp",
+    "GroupedQueryAttentionPagedFwdOp",
     "GroupedQueryAttentionPrefillVarlenFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
+    "GroupedQueryAttentionVarlenFwdOp",
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
 ]
@@ -545,6 +547,531 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         self._validate_forward_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
         inputs = self._canonicalize_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
         kernel = self._get_kernel(inputs)
+        return kernel(*inputs)
+
+
+class GroupedQueryAttentionVarlenFwdOp(Op):
+    """Grouped-query attention over packed THD tensors.
+
+    ``cu_seqlens_q`` and ``cu_seqlens_kv`` delimit each request. The interface
+    covers both prefill and decode; tensor geometry and sequence metadata come
+    from each call, while mask, score, dtype, and RoPE semantics are fixed at
+    construction. This spec-only shell intentionally has no BUILTIN kernel.
+    """
+
+    def __init__(
+        self,
+        is_causal: bool = True,
+        window_size_left: int = -1,
+        window_size_right: int = -1,
+        sm_scale: Optional[float] = None,
+        softcap: Optional[float] = None,
+        pos_encoding_mode: str = "none",
+        rotary_dim: Optional[int] = None,
+        rope_layout: str = "neox",
+        dtype: Optional[torch.dtype] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Target = None,
+    ) -> None:
+        if window_size_left < -1:
+            raise ValueError("window_size_left must be -1 (unlimited) or >= 0")
+        if window_size_right < -1:
+            raise ValueError("window_size_right must be -1 (unlimited) or >= 0")
+        if sm_scale is not None and not math.isfinite(sm_scale):
+            raise ValueError(f"sm_scale must be finite, got {sm_scale}")
+        if pos_encoding_mode not in ("none", "rope"):
+            raise ValueError("pos_encoding_mode must be 'none' or 'rope'")
+        if rotary_dim is not None and pos_encoding_mode != "rope":
+            raise ValueError("rotary_dim requires pos_encoding_mode='rope'")
+        if rotary_dim is not None and (rotary_dim <= 0 or rotary_dim % 2):
+            raise ValueError("rotary_dim must be a positive even integer")
+        if rope_layout not in ("neox", "interleaved"):
+            raise ValueError("rope_layout must be 'neox' or 'interleaved'")
+        if dtype is not None:
+            _validate_attention_dtype(dtype)
+
+        self.is_causal = is_causal
+        self.sm_scale = sm_scale
+        self.softcap = _score_softcap(softcap)
+        self.window_size_left = window_size_left
+        self.window_size_right = window_size_right
+        self.dtype = dtype
+        self.pos_encoding_mode = pos_encoding_mode
+        self.rotary_dim = rotary_dim
+        self.rope_layout = rope_layout
+        self.target = target
+        self.dispatch_kernel(kernel_map)
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {}
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_shape: tuple[int, ...],
+        v_shape: tuple[int, ...],
+        cu_seqlens_q_shape: tuple[int, ...],
+        cu_seqlens_kv_shape: tuple[int, ...],
+        q_scale_shape: Optional[tuple[int, ...]] = None,
+        k_scale_shape: Optional[tuple[int, ...]] = None,
+        v_scale_shape: Optional[tuple[int, ...]] = None,
+        rope_cos_shape: Optional[tuple[int, ...]] = None,
+        rope_sin_shape: Optional[tuple[int, ...]] = None,
+    ) -> Dict[str, tuple[int, ...]]:
+        return {"o": tuple(q_shape)}
+
+    def _validate_dtypes(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> None:
+        allowed = {torch.float16, torch.bfloat16, fp8_dtype()}
+        if q.dtype not in allowed:
+            raise ValueError("q must have float16, bfloat16, or float8_e4m3fn dtype")
+        if k.dtype != q.dtype or v.dtype != q.dtype:
+            raise ValueError("q, k, and v must have the same dtype")
+        if cu_seqlens_q.dtype != torch.int32 or cu_seqlens_kv.dtype != torch.int32:
+            raise ValueError("cu_seqlens_q and cu_seqlens_kv must have int32 dtype")
+        for name, tensor in (
+            ("q_scale", q_scale),
+            ("k_scale", k_scale),
+            ("v_scale", v_scale),
+        ):
+            if tensor is not None and tensor.dtype != torch.float32:
+                raise ValueError(f"{name} must have float32 dtype")
+        for name, tensor in (("rope_cos", rope_cos), ("rope_sin", rope_sin)):
+            if tensor is not None and tensor.dtype not in (torch.float16, torch.bfloat16):
+                raise ValueError(f"{name} must have float16 or bfloat16 dtype")
+
+    def eval_roofline(self) -> tuple[int, int]:
+        raise NotImplementedError("Varlen GQA has no in-tree implementation yet")
+
+    def _validate_forward_inputs(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+        q_scale: Optional[torch.Tensor],
+        k_scale: Optional[torch.Tensor],
+        v_scale: Optional[torch.Tensor],
+        rope_cos: Optional[torch.Tensor],
+        rope_sin: Optional[torch.Tensor],
+    ) -> None:
+        for name, tensor in (("q", q), ("k", k), ("v", v)):
+            if tensor.ndim != 3:
+                raise ValueError(f"{name} must be a rank-3 THD tensor")
+        if k.shape != v.shape:
+            raise ValueError("k and v must have the same shape")
+
+        _, heads, dim = q.shape
+        _, heads_kv, dim_kv = k.shape
+        if dim_kv != dim:
+            raise ValueError("q and k/v must have the same head dimension")
+        _validate_gqa_dims(heads, heads_kv, dim)
+
+        if cu_seqlens_q.ndim != 1 or cu_seqlens_q.shape[0] < 2:
+            raise ValueError("cu_seqlens_q must be rank 1 with at least two entries")
+        if cu_seqlens_kv.shape != cu_seqlens_q.shape:
+            raise ValueError("cu_seqlens_q and cu_seqlens_kv must have the same shape")
+        batch = cu_seqlens_q.shape[0] - 1
+
+        self._validate_dtypes(
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_kv,
+            q_scale,
+            k_scale,
+            v_scale,
+            rope_cos,
+            rope_sin,
+        )
+
+        output_dtype = self.dtype or q.dtype
+        is_fp8 = q.dtype == fp8_dtype()
+        if is_fp8 and self.dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError("FP8 input requires a 16-bit output dtype")
+        if not is_fp8 and output_dtype != q.dtype:
+            raise ValueError("16-bit output dtype must match q, k, and v")
+
+        scales = (q_scale, k_scale, v_scale)
+        has_scales = tuple(scale is not None for scale in scales)
+        if any(has_scales) and not all(has_scales):
+            raise ValueError("q_scale, k_scale, and v_scale must be supplied together")
+        if is_fp8 and not all(has_scales):
+            raise ValueError("FP8 input requires q_scale, k_scale, and v_scale")
+        if not is_fp8 and all(has_scales):
+            raise ValueError("q_scale, k_scale, and v_scale are only valid for FP8 input")
+
+        tensors = (
+            ("k", k),
+            ("v", v),
+            ("cu_seqlens_q", cu_seqlens_q),
+            ("cu_seqlens_kv", cu_seqlens_kv),
+        )
+        for name, tensor in tensors:
+            if tensor.device != q.device:
+                raise ValueError(f"{name} must be on the same device as q")
+        for name, scale in zip(("q_scale", "k_scale", "v_scale"), scales, strict=True):
+            if scale is None:
+                continue
+            if scale.device != q.device:
+                raise ValueError(f"{name} must be on the same device as q")
+            if tuple(scale.shape) != (batch, heads_kv):
+                raise ValueError(f"{name} must have shape {(batch, heads_kv)}")
+
+        if (rope_cos is None) != (rope_sin is None):
+            raise ValueError("rope_cos and rope_sin must be supplied together")
+        if self.pos_encoding_mode != "rope":
+            if rope_cos is not None:
+                raise ValueError("RoPE tables require pos_encoding_mode='rope'")
+            return
+        if rope_cos is None or rope_sin is None:
+            raise ValueError("pos_encoding_mode='rope' requires rope_cos and rope_sin")
+
+        expected_columns = _rope_rotary_dim(dim, self.rotary_dim) // 2
+        for name, table in (("rope_cos", rope_cos), ("rope_sin", rope_sin)):
+            if table.device != q.device:
+                raise ValueError(f"{name} must be on the same device as q")
+            if table.dtype != output_dtype:
+                raise ValueError(f"{name} must have dtype {output_dtype}")
+            if table.ndim != 2 or table.shape[0] < 1 or table.shape[1] != expected_columns:
+                raise ValueError(f"{name} must have shape [max_position, {expected_columns}]")
+        if rope_cos.shape != rope_sin.shape:
+            raise ValueError("rope_cos and rope_sin must have the same shape")
+
+    @staticmethod
+    def _canonicalize_inputs(
+        *inputs: Optional[torch.Tensor],
+    ) -> tuple[Optional[torch.Tensor], ...]:
+        return tuple(tensor.contiguous() if tensor is not None else None for tensor in inputs)
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Run packed Varlen GQA; Q/K/V use ``[total_tokens, heads, dim]``."""
+        self._validate_forward_inputs(
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_kv,
+            q_scale,
+            k_scale,
+            v_scale,
+            rope_cos,
+            rope_sin,
+        )
+        inputs = self._canonicalize_inputs(
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_kv,
+            q_scale,
+            k_scale,
+            v_scale,
+            rope_cos,
+            rope_sin,
+        )
+        kernel = self.get_or_build_kernel("gqa_varlen", inputs)
+        return kernel(*inputs)
+
+
+class GroupedQueryAttentionPagedFwdOp(Op):
+    """Grouped-query attention over a caller-owned paged KV cache.
+
+    Packed Q and its cumulative sequence lengths cover both prefill and decode.
+    ``page_table`` maps logical pages to physical entries in ``k_pages`` and
+    ``v_pages``. This Op reads the cache only: allocation, append, and mutation
+    remain runtime responsibilities. The shell has no BUILTIN kernel yet.
+    """
+
+    def __init__(
+        self,
+        is_causal: bool = True,
+        window_size_left: int = -1,
+        window_size_right: int = -1,
+        sm_scale: Optional[float] = None,
+        softcap: Optional[float] = None,
+        pos_encoding_mode: str = "none",
+        rotary_dim: Optional[int] = None,
+        rope_layout: str = "neox",
+        dtype: Optional[torch.dtype] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Target = None,
+    ) -> None:
+        if window_size_left < -1:
+            raise ValueError("window_size_left must be -1 (unlimited) or >= 0")
+        if window_size_right < -1:
+            raise ValueError("window_size_right must be -1 (unlimited) or >= 0")
+        if sm_scale is not None and not math.isfinite(sm_scale):
+            raise ValueError(f"sm_scale must be finite, got {sm_scale}")
+        if pos_encoding_mode not in ("none", "rope"):
+            raise ValueError("pos_encoding_mode must be 'none' or 'rope'")
+        if rotary_dim is not None and pos_encoding_mode != "rope":
+            raise ValueError("rotary_dim requires pos_encoding_mode='rope'")
+        if rotary_dim is not None and (rotary_dim <= 0 or rotary_dim % 2):
+            raise ValueError("rotary_dim must be a positive even integer")
+        if rope_layout not in ("neox", "interleaved"):
+            raise ValueError("rope_layout must be 'neox' or 'interleaved'")
+        if dtype is not None:
+            _validate_attention_dtype(dtype)
+
+        self.is_causal = is_causal
+        self.sm_scale = sm_scale
+        self.softcap = _score_softcap(softcap)
+        self.window_size_left = window_size_left
+        self.window_size_right = window_size_right
+        self.dtype = dtype
+        self.pos_encoding_mode = pos_encoding_mode
+        self.rotary_dim = rotary_dim
+        self.rope_layout = rope_layout
+        self.target = target
+        self.dispatch_kernel(kernel_map)
+
+    @property
+    def default_kernel_map(self) -> Dict[str, Kernel]:
+        return {}
+
+    def _infer_output_shapes(
+        self,
+        q_shape: tuple[int, ...],
+        k_pages_shape: tuple[int, ...],
+        v_pages_shape: tuple[int, ...],
+        page_table_shape: tuple[int, ...],
+        cache_seqlens_shape: tuple[int, ...],
+        cu_seqlens_q_shape: tuple[int, ...],
+        q_scale_shape: Optional[tuple[int, ...]] = None,
+        k_scale_shape: Optional[tuple[int, ...]] = None,
+        v_scale_shape: Optional[tuple[int, ...]] = None,
+        rope_cos_shape: Optional[tuple[int, ...]] = None,
+        rope_sin_shape: Optional[tuple[int, ...]] = None,
+    ) -> Dict[str, tuple[int, ...]]:
+        return {"o": tuple(q_shape)}
+
+    def _validate_dtypes(
+        self,
+        q: torch.Tensor,
+        k_pages: torch.Tensor,
+        v_pages: torch.Tensor,
+        page_table: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> None:
+        fp8 = fp8_dtype()
+        if q.dtype not in (torch.float16, torch.bfloat16, fp8):
+            raise ValueError("q must have float16, bfloat16, or float8_e4m3fn dtype")
+        if k_pages.dtype not in (torch.float16, torch.bfloat16, fp8):
+            raise ValueError("k_pages must have a supported attention dtype")
+        if v_pages.dtype != k_pages.dtype:
+            raise ValueError("k_pages and v_pages must have the same dtype")
+        if q.dtype != fp8 and k_pages.dtype != fp8 and k_pages.dtype != q.dtype:
+            raise ValueError("16-bit q and KV pages must have the same dtype")
+        if q.dtype == fp8 and k_pages.dtype != fp8:
+            raise ValueError("FP8 q requires FP8 KV pages")
+
+        for name, tensor in (
+            ("page_table", page_table),
+            ("cache_seqlens", cache_seqlens),
+            ("cu_seqlens_q", cu_seqlens_q),
+        ):
+            if tensor.dtype != torch.int32:
+                raise ValueError(f"{name} must have int32 dtype")
+        for name, tensor in (("q_scale", q_scale), ("k_scale", k_scale), ("v_scale", v_scale)):
+            if tensor is not None and tensor.dtype != torch.float32:
+                raise ValueError(f"{name} must have float32 dtype")
+        for name, tensor in (("rope_cos", rope_cos), ("rope_sin", rope_sin)):
+            if tensor is not None and tensor.dtype not in (torch.float16, torch.bfloat16):
+                raise ValueError(f"{name} must have float16 or bfloat16 dtype")
+
+    def eval_roofline(self) -> tuple[int, int]:
+        raise NotImplementedError("Paged GQA has no in-tree implementation yet")
+
+    def _validate_forward_inputs(
+        self,
+        q: torch.Tensor,
+        k_pages: torch.Tensor,
+        v_pages: torch.Tensor,
+        page_table: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        q_scale: Optional[torch.Tensor],
+        k_scale: Optional[torch.Tensor],
+        v_scale: Optional[torch.Tensor],
+        rope_cos: Optional[torch.Tensor],
+        rope_sin: Optional[torch.Tensor],
+    ) -> None:
+        if q.ndim != 3:
+            raise ValueError("q must be a rank-3 THD tensor")
+        if k_pages.ndim != 4 or v_pages.shape != k_pages.shape:
+            raise ValueError("k_pages and v_pages must share rank-4 paged layout")
+        if page_table.ndim != 2:
+            raise ValueError("page_table must be rank 2")
+        if cache_seqlens.ndim != 1:
+            raise ValueError("cache_seqlens must be rank 1")
+        batch = cache_seqlens.shape[0]
+        if page_table.shape[0] != batch:
+            raise ValueError("page_table and cache_seqlens must have the same batch size")
+        if cu_seqlens_q.shape != (batch + 1,):
+            raise ValueError(f"cu_seqlens_q must have shape {(batch + 1,)}")
+
+        _, heads, dim = q.shape
+        _, page_size, heads_kv, dim_kv = k_pages.shape
+        if page_size <= 0:
+            raise ValueError("KV page size must be positive")
+        if dim_kv != dim:
+            raise ValueError("q and KV pages must have the same head dimension")
+        _validate_gqa_dims(heads, heads_kv, dim)
+
+        self._validate_dtypes(
+            q,
+            k_pages,
+            v_pages,
+            page_table,
+            cache_seqlens,
+            cu_seqlens_q,
+            q_scale,
+            k_scale,
+            v_scale,
+            rope_cos,
+            rope_sin,
+        )
+
+        fp8 = fp8_dtype()
+        q_is_fp8 = q.dtype == fp8
+        output_dtype = self.dtype or q.dtype
+        if q_is_fp8 and self.dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError("FP8 q requires a 16-bit output dtype")
+        if not q_is_fp8 and output_dtype != q.dtype:
+            raise ValueError("16-bit output dtype must match q")
+
+        if q_is_fp8 != (q_scale is not None):
+            raise ValueError("q_scale is required exactly when q is FP8")
+        if (k_scale is None) != (v_scale is None):
+            raise ValueError("k_scale and v_scale must be supplied together")
+        kv_is_fp8 = k_pages.dtype == fp8
+        if kv_is_fp8 != (k_scale is not None):
+            raise ValueError("k_scale and v_scale are required exactly when KV pages are FP8")
+
+        tensors = (
+            ("k_pages", k_pages),
+            ("v_pages", v_pages),
+            ("page_table", page_table),
+            ("cache_seqlens", cache_seqlens),
+            ("cu_seqlens_q", cu_seqlens_q),
+        )
+        for name, tensor in tensors:
+            if tensor.device != q.device:
+                raise ValueError(f"{name} must be on the same device as q")
+        if q_scale is not None and (
+            q_scale.device != q.device or tuple(q_scale.shape) != (batch, heads_kv)
+        ):
+            raise ValueError(f"q_scale must have shape {(batch, heads_kv)} on q.device")
+        for name, scale in (("k_scale", k_scale), ("v_scale", v_scale)):
+            if scale is None:
+                continue
+            valid_shape = tuple(scale.shape) in ((1,), (batch, heads_kv))
+            if scale.device != q.device or not valid_shape:
+                raise ValueError(f"{name} must have shape (1,) or {(batch, heads_kv)} on q.device")
+
+        if (rope_cos is None) != (rope_sin is None):
+            raise ValueError("rope_cos and rope_sin must be supplied together")
+        if self.pos_encoding_mode != "rope":
+            if rope_cos is not None:
+                raise ValueError("RoPE tables require pos_encoding_mode='rope'")
+            return
+        if rope_cos is None or rope_sin is None:
+            raise ValueError("pos_encoding_mode='rope' requires rope_cos and rope_sin")
+
+        expected_columns = _rope_rotary_dim(dim, self.rotary_dim) // 2
+        for name, table in (("rope_cos", rope_cos), ("rope_sin", rope_sin)):
+            if table.device != q.device:
+                raise ValueError(f"{name} must be on the same device as q")
+            if table.dtype != output_dtype:
+                raise ValueError(f"{name} must have dtype {output_dtype}")
+            if table.ndim != 2 or table.shape[0] < 1 or table.shape[1] != expected_columns:
+                raise ValueError(f"{name} must have shape [max_position, {expected_columns}]")
+        if rope_cos.shape != rope_sin.shape:
+            raise ValueError("rope_cos and rope_sin must have the same shape")
+
+    @staticmethod
+    def _canonicalize_inputs(
+        *inputs: Optional[torch.Tensor],
+    ) -> tuple[Optional[torch.Tensor], ...]:
+        return tuple(tensor.contiguous() if tensor is not None else None for tensor in inputs)
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k_pages: torch.Tensor,
+        v_pages: torch.Tensor,
+        page_table: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Run read-only paged GQA over packed Q and rank-4 KV pages."""
+        self._validate_forward_inputs(
+            q,
+            k_pages,
+            v_pages,
+            page_table,
+            cache_seqlens,
+            cu_seqlens_q,
+            q_scale,
+            k_scale,
+            v_scale,
+            rope_cos,
+            rope_sin,
+        )
+        inputs = self._canonicalize_inputs(
+            q,
+            k_pages,
+            v_pages,
+            page_table,
+            cache_seqlens,
+            cu_seqlens_q,
+            q_scale,
+            k_scale,
+            v_scale,
+            rope_cos,
+            rope_sin,
+        )
+        kernel = self.get_or_build_kernel("gqa_paged", inputs)
         return kernel(*inputs)
 
 
