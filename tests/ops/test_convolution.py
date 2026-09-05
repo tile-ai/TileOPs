@@ -746,6 +746,15 @@ def test_conv2d_batch_with_partial_tile_leaves_the_symmetric_kernel() -> None:
     torch.testing.assert_close(out, ref.contiguous(), atol=1e-2, rtol=1e-2)
 
 
+@pytest.mark.smoke
+def test_conv2d_symmetric_kernel_refuses_a_tile_that_spans_two_images() -> None:
+    # applies() keeps the dispatcher off this shape, so only a direct construction
+    # reaches the kernel with a tile that would run off the end of an image. It has to
+    # be told, rather than left to write the wrong rows.
+    with pytest.raises(ValueError, match="spans two of this call's 5 images"):
+        Conv2dSymmetricKernel(5, 96, 9, 9, 64, 3, 1, 0, 1, torch.float16)
+
+
 class Conv3dFixture(FixtureBase):
     PARAMS = [
         (

@@ -10,7 +10,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
-from ._common import _launch, conv_autotune_configs
+from ._common import CONV_SWIZZLE_PANEL, _launch, conv_autotune_configs
 from .call_spec import (
     Conv2dCall,
     conv2d_dense_region,
@@ -70,7 +70,7 @@ def _conv2d_1x1_kernel(
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
 
-                T.use_swizzle(10, enable=enable_rasterization)
+                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(c_in, block_k), num_stages=num_stages):
@@ -177,7 +177,7 @@ def _conv2d_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
                 out_flat = T.Tensor((n, c_out, out_hw), dtype, out.data)
 
-                T.use_swizzle(10, enable=enable_rasterization)
+                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
@@ -316,7 +316,7 @@ def _conv2d_group_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
                 out_flat = T.Tensor((n, c_out, out_hw), dtype, out.data)
 
-                T.use_swizzle(10, enable=enable_rasterization)
+                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 batch_id = bz // groups
@@ -456,7 +456,7 @@ def _conv2d_depthwise_kernel(
                 threads=threads,
             ) as (bx, by, bz):
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
-                T.use_swizzle(10, enable=enable_rasterization)
+                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for kh, kw in T.grid(kernel_h, kernel_w):
@@ -557,12 +557,14 @@ def _conv2d_symmetric_kernel(
         # (channel, spatial), and the block index selects which one a block serves.
         # Both walk c_in in the same channel block, so one block count over the
         # channel axis serves both.
+        staging_threads = 256
         channel_block = 32
         x_lanes, x_spatial_block = 8, 32
         w_lanes, w_spatial_block = 16, 16
-        assert x_spatial_block * x_lanes == 256 and w_spatial_block * w_lanes == 256, (
-            "each operand's tile must occupy the 256 threads the staging kernel launches"
-        )
+        assert (
+            x_spatial_block * x_lanes == staging_threads
+            and w_spatial_block * w_lanes == staging_threads
+        ), "each operand's tile must occupy the threads the staging kernel launches"
         assert channel_block % x_lanes == 0 and channel_block % w_lanes == 0, (
             "a thread's channel stride must divide the channel block it walks"
         )
@@ -595,7 +597,7 @@ def _conv2d_symmetric_kernel(
 
         @T.macro
         def stage_operands(x, weight, x_nhwc, weight_krsc):
-            with T.Kernel(x_blocks + w_blocks, threads=256) as block:
+            with T.Kernel(x_blocks + w_blocks, threads=staging_threads) as block:
                 if block < x_blocks:
                     plane_to_channel_last(
                         T.Tensor((n, c_in, h * w), dtype, x.data),
@@ -634,7 +636,7 @@ def _conv2d_symmetric_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight_krsc.data)
                 out_nchw = T.Tensor((n, c_out, out_hw), dtype, out.data)
 
-                T.use_swizzle(10, enable=enable_rasterization)
+                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
@@ -754,6 +756,13 @@ class Conv2dSymmetricKernel(Kernel):
             self.dtype_str,
         )
         self.init_config(config, tune)
+        block_m = self.config["block_m"]
+        if not self.tile_stays_in_one_image(n, self.out_h * self.out_w, block_m):
+            raise ValueError(
+                f"block_m={block_m} spans two of this call's {n} images, whose output is "
+                f"{self.out_h * self.out_w} elements each. applies() and autotune_configs "
+                f"both reject such a tile, and a config passed in has to as well."
+            )
 
     @staticmethod
     def tile_stays_in_one_image(n: int, out_hw: int, block_m: int) -> bool:
@@ -778,8 +787,8 @@ class Conv2dSymmetricKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # No block_k of 16: it wins no row measured, and the region already requires
-        # c_in to be a multiple of 32, so a 32-wide k tile always divides it.
+        # No block_k of 16: the region already requires c_in to be a multiple of 32,
+        # so a 32-wide k tile always divides it.
         configs = conv_autotune_configs(
             self.dtype,
             block_m=list(self.block_m_candidates),
@@ -1069,12 +1078,10 @@ class GroupConv2dKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         if self.use_direct:
             # One tile shape, since there is no GEMM to tile. The swizzle is still a
-            # choice, and a depthwise row reads 1.19x faster with it off.
+            # choice, so both ways are searched.
             return [
                 {**self.default_config, "enable_rasterization": value} for value in (False, True)
             ]
-        # No 256-thread block: it wins no grouped row measured, and dropping it pays
-        # for searching the rasterization swizzle instead.
         return conv_autotune_configs(self.dtype, threads=[128])
 
     def forward(
@@ -1171,8 +1178,7 @@ class Conv2d1x1Kernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         # A 32-wide n tile, which the rest of the family does not reach: the block
         # count is C_out * H * W / (block_m * block_n), and a pointwise row over a
-        # small map has no other way to fill the device. It costs nothing because
-        # 256 threads and a 256-wide m tile win no row measured.
+        # small map has no other way to fill the device.
         return conv_autotune_configs(
             self.dtype,
             block_m=[64, 128],

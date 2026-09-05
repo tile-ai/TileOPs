@@ -6,6 +6,20 @@ from typing import Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_sm_version
+
+# Panel width handed to ``T.use_swizzle``: the number of blocks along the grid's fast
+# axis reordered together so their tiles share L2. Whether to swizzle is a searched
+# config; the panel is the same for every conv kernel.
+CONV_SWIZZLE_PANEL = 10
+
+# Targets whose shared memory holds a third pipeline stage.
+_THREE_STAGE_ARCHS = frozenset({90})
+
+
+def conv_num_stages() -> int:
+    """Pipeline depth this target's shared memory holds: three on Hopper, two before."""
+    return 3 if get_sm_version() in _THREE_STAGE_ARCHS else 2
 
 
 def conv_autotune_configs(
@@ -20,9 +34,10 @@ def conv_autotune_configs(
 ) -> list[dict]:
     """Search space filtered to combinations that fit in shared memory.
 
-    ``enable_rasterization`` turns on a swizzle that orders blocks for L2 locality,
-    and is searched rather than fixed because a convolution row's reuse depends on
-    its grid: of the manifest's 55 rows, 50 read faster with it off and 5 with it on.
+    ``enable_rasterization`` turns on a swizzle that orders blocks for L2 locality. It
+    is searched rather than fixed because which way wins follows the grid a shape
+    produces, and both ways win on some shapes. Callers narrow the other axes to keep
+    the search the size it was before this one joined it.
     """
     limit = get_shared_memory_limit_bytes()
     valid = []
