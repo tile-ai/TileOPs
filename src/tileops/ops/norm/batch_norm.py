@@ -190,8 +190,8 @@ class BatchNormFwdOp(Op):
         kernel = self.get_or_build_kernel(
             "batch_norm_fwd",
             (x, running_mean, running_var, weight, bias),
-            # Both paths index the caller's own layout, so the spatial extent
-            # is part of what they are built for.
+            # Both paths index the caller's layout, so the spatial extent
+            # changes the kernel that is built.
             key=(C, L, dtype, self.training, spatial),  # this instance's in-tree cache key
             build=lambda: (
                 self.kernel_map[slot](
