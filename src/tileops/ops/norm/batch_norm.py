@@ -20,6 +20,7 @@ $[C \\times L]$ layout. ``L = N * prod(spatial)`` must be divisible by the kerne
 (chosen automatically by the kernel's default_config).
 """
 
+import math
 from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
@@ -181,17 +182,23 @@ class BatchNormFwdOp(Op):
         stats = (running_mean, running_var)
         running_mean, running_var = (stat.contiguous() for stat in stats)
 
+        spatial = math.prod(x.shape[2:])
+
         # ``training`` decides which implementation serves the call, so it belongs in the
         # key; both are fetched under one name, which is what a target is asked to serve.
         slot = "fwd_train_kernel" if self.training else "fwd_infer_kernel"
         kernel = self.get_or_build_kernel(
             "batch_norm_fwd",
             (x, running_mean, running_var, weight, bias),
-            key=(C, L, dtype, self.training),  # this instance's in-tree cache key
+            # Both paths index the caller's layout, so the spatial extent
+            # changes the kernel that is built.
+            key=(C, L, dtype, self.training, spatial),  # this instance's in-tree cache key
             build=lambda: (
-                self.kernel_map[slot](C, L, dtype, self.eps, self.momentum, tune=self.tune)
+                self.kernel_map[slot](
+                    C, L, dtype, self.eps, self.momentum, tune=self.tune, S=spatial
+                )
                 if self.training
-                else self.kernel_map[slot](C, L, dtype, self.eps, tune=self.tune)
+                else self.kernel_map[slot](C, L, dtype, self.eps, tune=self.tune, S=spatial)
             ),
         )
         self.kernel = kernel
