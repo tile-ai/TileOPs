@@ -6,6 +6,19 @@ from typing import Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_sm_version
+
+# Panel width handed to ``T.use_swizzle``: the number of blocks along the grid's fast
+# axis reordered together so their tiles share L2. A power of two, because the block
+# remap divides by it and a divide the compiler cannot turn into a shift shows on a
+# short kernel; the narrowest one, because the long 1d grids lose monotonically as it
+# widens. Whether to swizzle at all is a searched config.
+CONV_SWIZZLE_PANEL = 2
+
+
+def conv_num_stages() -> int:
+    """Pipeline depth this target's shared memory holds: three on Hopper, two before."""
+    return 3 if get_sm_version() == 90 else 2
 
 
 def conv_autotune_configs(
@@ -16,16 +29,24 @@ def conv_autotune_configs(
     block_k=(32, 64, 128),
     num_stages=(2, 3),
     threads=(128, 256),
+    enable_rasterization=(False, True),
 ) -> list[dict]:
-    """Search space filtered to combinations that fit in shared memory."""
+    """Search space filtered to combinations that fit in shared memory.
+
+    ``enable_rasterization`` turns on a swizzle that orders blocks for L2 locality. It
+    is searched rather than fixed because which way wins follows the grid a shape
+    produces, and both ways win on some shapes. Callers narrow the other axes to keep
+    the search the size it was before this one joined it.
+    """
     limit = get_shared_memory_limit_bytes()
     valid = []
-    for bm, bn, bk, ns, th in itertools.product(
+    for bm, bn, bk, ns, th, rast in itertools.product(
         block_m,
         block_n,
         block_k,
         num_stages,
         threads,
+        enable_rasterization,
     ):
         if conv_shared_memory_bytes(bm, bn, bk, ns, dtype) > limit:
             continue
@@ -36,7 +57,7 @@ def conv_autotune_configs(
                 "block_k": bk,
                 "num_stages": ns,
                 "threads": th,
-                "enable_rasterization": True,
+                "enable_rasterization": rast,
             }
         )
     return valid

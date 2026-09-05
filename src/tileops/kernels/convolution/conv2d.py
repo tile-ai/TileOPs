@@ -10,7 +10,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
-from ._common import _launch, conv_autotune_configs
+from ._common import CONV_SWIZZLE_PANEL, _launch, conv_autotune_configs
 from .call_spec import (
     Conv2dCall,
     conv2d_dense_region,
@@ -70,7 +70,7 @@ def _conv2d_1x1_kernel(
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
 
-                T.use_swizzle(10, enable=enable_rasterization)
+                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(c_in, block_k), num_stages=num_stages):
@@ -177,7 +177,7 @@ def _conv2d_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
                 out_flat = T.Tensor((n, c_out, out_hw), dtype, out.data)
 
-                T.use_swizzle(10, enable=enable_rasterization)
+                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
@@ -316,7 +316,7 @@ def _conv2d_group_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
                 out_flat = T.Tensor((n, c_out, out_hw), dtype, out.data)
 
-                T.use_swizzle(10, enable=enable_rasterization)
+                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 batch_id = bz // groups
@@ -456,7 +456,7 @@ def _conv2d_depthwise_kernel(
                 threads=threads,
             ) as (bx, by, bz):
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
-                T.use_swizzle(10, enable=enable_rasterization)
+                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for kh, kw in T.grid(kernel_h, kernel_w):
@@ -541,7 +541,7 @@ def _conv2d_symmetric_kernel(
     k_total = c_in * kernel_size * kernel_size
 
     @tilelang.jit(
-        out_idx=[5],
+        out_idx=[4],
         compile_flags=["-O3", "-DENABLE_BF16"],
         pass_configs={"tl.enable_async_copy": False},
     )
@@ -553,63 +553,74 @@ def _conv2d_symmetric_kernel(
         threads: int,
         enable_rasterization: bool,
     ):
+        # One kernel stages both operands: each is the same transpose over a plane of
+        # (channel, spatial), and the block index selects which one a block serves.
+        # Both walk c_in in the same channel block, so one block count over the
+        # channel axis serves both.
+        staging_threads = 256
+        channel_block = 32
+        x_lanes, x_spatial_block = 8, 32
+        w_lanes, w_spatial_block = 16, 16
+        assert (
+            x_spatial_block * x_lanes == staging_threads
+            and w_spatial_block * w_lanes == staging_threads
+        ), "each operand's tile must occupy the threads the staging kernel launches"
+        assert channel_block % x_lanes == 0 and channel_block % w_lanes == 0, (
+            "a thread's channel stride must divide the channel block it walks"
+        )
+        channel_blocks = -(-c_in // channel_block)
+        x_spatial_blocks = -(-(h * w) // x_spatial_block)
+        w_spatial_blocks = -(-(kernel_size * kernel_size) // w_spatial_block)
+        x_blocks = x_spatial_blocks * channel_blocks * n
+        w_blocks = w_spatial_blocks * channel_blocks * c_out
+
         @T.macro
-        def transpose_spatial_channel(
+        def plane_to_channel_last(
             src: T.Tensor,
             dst: T.Tensor,
-            batch_size: int,
+            block: T.int32,
             spatial_size: int,
-            channel_size: int,
-            width: int,
             spatial_block: int,
-            channel_block: int,
+            spatial_blocks: int,
             channel_lanes: int,
-            channel_fastest: bool,
-            is_nchw_to_nhwc: bool,
         ):
-            assert spatial_block * channel_lanes == 256, (
-                "spatial_block * channel_lanes must equal 256"
-            )
-            assert channel_block % channel_lanes == 0, "channel_lanes must divide channel_block"
-            if not channel_fastest:
-                assert channel_block * spatial_block == 256, (
-                    "channel_block * spatial_block must equal 256 when channel_fastest=False"
-                )
-
-            with T.Kernel(
-                T.ceildiv(spatial_size, spatial_block),
-                T.ceildiv(channel_size, channel_block),
-                batch_size,
-                threads=256,
-            ) as (bx, by, bz):
-                if channel_fastest:
-                    values_per_thread = channel_block // channel_lanes
-                    for spatial_inner, channel_lane in T.Parallel(spatial_block, channel_lanes):
-                        spatial = bx * spatial_block + spatial_inner
-                        h_idx = spatial // width
-                        w_idx = spatial - h_idx * width
-                        channel_base = by * channel_block
-                        for channel_offset in T.serial(values_per_thread):
-                            c = channel_base + channel_offset * channel_lanes + channel_lane
-                            if (spatial < spatial_size) & (c < channel_size):
-                                if is_nchw_to_nhwc:
-                                    dst[bz, h_idx, w_idx, c] = src[bz, c, h_idx, w_idx]
-                                else:
-                                    dst[bz, c, h_idx, w_idx] = src[bz, h_idx, w_idx, c]
-                else:
-                    for channel_inner, spatial_inner in T.Parallel(channel_block, spatial_block):
-                        spatial = bx * spatial_block + spatial_inner
-                        h_idx = spatial // width
-                        w_idx = spatial - h_idx * width
-                        c = by * channel_block + channel_inner
-                        if (spatial < spatial_size) & (c < channel_size):
-                            if is_nchw_to_nhwc:
-                                dst[bz, h_idx, w_idx, c] = src[bz, c, h_idx, w_idx]
-                            else:
-                                dst[bz, c, h_idx, w_idx] = src[bz, h_idx, w_idx, c]
+            """One block's share of ``src[p, c, s] -> dst[p, s, c]``."""
+            spatial_base = (block % spatial_blocks) * spatial_block
+            channel_base = ((block // spatial_blocks) % channel_blocks) * channel_block
+            plane = block // (spatial_blocks * channel_blocks)
+            for spatial_inner, channel_lane in T.Parallel(spatial_block, channel_lanes):
+                spatial = spatial_base + spatial_inner
+                for channel_offset in T.serial(channel_block // channel_lanes):
+                    c = channel_base + channel_offset * channel_lanes + channel_lane
+                    if (spatial < spatial_size) & (c < c_in):
+                        dst[plane, spatial, c] = src[plane, c, spatial]
 
         @T.macro
-        def conv_nhwc_implicit_gemm(x_nhwc, weight_krsc, out_nhwc, bias):
+        def stage_operands(x, weight, x_nhwc, weight_krsc):
+            with T.Kernel(x_blocks + w_blocks, threads=staging_threads) as block:
+                if block < x_blocks:
+                    plane_to_channel_last(
+                        T.Tensor((n, c_in, h * w), dtype, x.data),
+                        T.Tensor((n, h * w, c_in), dtype, x_nhwc.data),
+                        block,
+                        spatial_size=h * w,
+                        spatial_block=x_spatial_block,
+                        spatial_blocks=x_spatial_blocks,
+                        channel_lanes=x_lanes,
+                    )
+                else:
+                    plane_to_channel_last(
+                        T.Tensor((c_out, c_in, kernel_size * kernel_size), dtype, weight.data),
+                        T.Tensor((c_out, kernel_size * kernel_size, c_in), dtype, weight_krsc.data),
+                        block - x_blocks,
+                        spatial_size=kernel_size * kernel_size,
+                        spatial_block=w_spatial_block,
+                        spatial_blocks=w_spatial_blocks,
+                        channel_lanes=w_lanes,
+                    )
+
+        @T.macro
+        def conv_nhwc_implicit_gemm(x_nhwc, weight_krsc, out, bias):
             with T.Kernel(
                 T.ceildiv(c_out, block_n),
                 T.ceildiv(n * out_h * out_w, block_m),
@@ -618,12 +629,14 @@ def _conv2d_symmetric_kernel(
                 data_shared = T.alloc_shared((block_m, block_k), dtype)
                 weight_shared = T.alloc_shared((block_n, block_k), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
-                out_shared = T.alloc_shared((block_m, block_n), dtype)
+                # Channel-major, so the store walks the spatial axis -- the contiguous
+                # one in NCHW.
+                out_shared = T.alloc_shared((block_n, block_m), dtype)
 
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight_krsc.data)
-                out_flat = T.Tensor((n * out_h * out_w, c_out), dtype, out_nhwc.data)
+                out_nchw = T.Tensor((n, c_out, out_hw), dtype, out.data)
 
-                T.use_swizzle(10, enable=enable_rasterization)
+                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
@@ -632,65 +645,23 @@ def _conv2d_symmetric_kernel(
                     T.gemm(data_shared, weight_shared, out_local, transpose_B=True)
 
                 for i, j in T.Parallel(block_m, block_n):
-                    spatial_idx = by * block_m + i
                     oc = bx * block_n + j
                     if has_bias:
-                        out_shared[i, j] = T.if_then_else(
-                            (spatial_idx < n * out_hw) & (oc < c_out),
-                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
-                            T.cast(0.0, dtype),
+                        out_shared[j, i] = T.cast(
+                            out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype
                         )
                     else:
-                        out_shared[i, j] = T.if_then_else(
-                            (spatial_idx < n * out_hw) & (oc < c_out),
-                            T.cast(out_local[i, j], dtype),
-                            T.cast(0.0, dtype),
-                        )
+                        out_shared[j, i] = T.cast(out_local[i, j], dtype)
 
-                T.copy(out_shared, out_flat[by * block_m, bx * block_n])
+                # The region predicate and the config filter keep an m tile inside one
+                # image, so the whole tile is one 2-D region of ``out[image]``.
+                m_base = by * block_m
+                T.copy(out_shared, out_nchw[m_base // out_hw, bx * block_n, m_base % out_hw])
 
         @T.macro
-        def _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out_nhwc, out, bias):
-            transpose_spatial_channel(
-                x,
-                x_nhwc,
-                batch_size=n,
-                spatial_size=h * w,
-                channel_size=c_in,
-                width=w,
-                spatial_block=32,
-                channel_block=32,
-                channel_lanes=8,
-                channel_fastest=True,
-                is_nchw_to_nhwc=True,
-            )
-            transpose_spatial_channel(
-                weight,
-                weight_krsc,
-                batch_size=c_out,
-                spatial_size=kernel_size * kernel_size,
-                channel_size=c_in,
-                width=kernel_size,
-                spatial_block=16,
-                channel_block=32,
-                channel_lanes=16,
-                channel_fastest=True,
-                is_nchw_to_nhwc=True,
-            )
-            conv_nhwc_implicit_gemm(x_nhwc, weight_krsc, out_nhwc, bias)
-            transpose_spatial_channel(
-                out_nhwc,
-                out,
-                batch_size=n,
-                spatial_size=out_h * out_w,
-                channel_size=c_out,
-                width=out_w,
-                spatial_block=128,
-                channel_block=2,
-                channel_lanes=2,
-                channel_fastest=False,
-                is_nchw_to_nhwc=False,
-            )
+        def _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, bias):
+            stage_operands(x, weight, x_nhwc, weight_krsc)
+            conv_nhwc_implicit_gemm(x_nhwc, weight_krsc, out, bias)
 
         if has_bias:
 
@@ -700,11 +671,10 @@ def _conv2d_symmetric_kernel(
                 weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
                 x_nhwc: T.Tensor((n, h, w, c_in), dtype),
                 weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
-                out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
                 out: T.Tensor((n, c_out, out_h, out_w), dtype),
                 bias: T.Tensor((c_out,), dtype),
             ):
-                _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out_nhwc, out, bias)
+                _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, bias)
 
             return _conv2d_symmetric_bias_main
 
@@ -714,10 +684,9 @@ def _conv2d_symmetric_kernel(
             weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
             x_nhwc: T.Tensor((n, h, w, c_in), dtype),
             weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
-            out_nhwc: T.Tensor((n, out_h, out_w, c_out), dtype),
             out: T.Tensor((n, c_out, out_h, out_w), dtype),
         ):
-            _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out_nhwc, out, None)
+            _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, None)
 
         return _conv2d_symmetric_main
 
@@ -727,9 +696,18 @@ def _conv2d_symmetric_kernel(
 class Conv2dSymmetricKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
 
+    # The m tiles this kernel builds. One tuple serves the region, the default
+    # configuration and the autotune filter, so widening it cannot leave the three
+    # disagreeing about what an m tile can be.
+    block_m_candidates: tuple[int, ...] = (64, 128)
+
     @classmethod
     def applies(cls, call: Conv2dCall) -> bool:
-        return conv2d_symmetric_region(call)
+        # The tile question is asked of this class, so a kernel_map override answers
+        # for its own tiling rather than for the shipped one.
+        return conv2d_symmetric_region(call) and cls.tile_stays_in_one_image(
+            call.n, call.out_h * call.out_w, min(cls.block_m_candidates)
+        )
 
     def __init__(
         self,
@@ -778,11 +756,28 @@ class Conv2dSymmetricKernel(Kernel):
             self.dtype_str,
         )
         self.init_config(config, tune)
+        block_m = self.config["block_m"]
+        if not self.tile_stays_in_one_image(n, self.out_h * self.out_w, block_m):
+            raise ValueError(
+                f"block_m={block_m} spans two of this call's {n} images, whose output is "
+                f"{self.out_h * self.out_w} elements each. applies() and autotune_configs "
+                f"both reject such a tile, and a config passed in has to as well."
+            )
+
+    @staticmethod
+    def tile_stays_in_one_image(n: int, out_hw: int, block_m: int) -> bool:
+        """Whether an m tile of *block_m* rows never spans two of *n* images.
+
+        The m axis runs over ``n * out_h * out_w``, and both ``T.im2col`` and the
+        epilogue read the image index off the tile's first row. A tile that starts in
+        one image and ends in the next would take the wrong image for its tail.
+        """
+        return n == 1 or out_hw % block_m == 0
 
     @property
     def default_config(self) -> dict:
         return {
-            "block_m": 64,
+            "block_m": min(self.block_m_candidates),
             "block_n": 256,
             "block_k": 32,
             "num_stages": 3,
@@ -792,12 +787,20 @@ class Conv2dSymmetricKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        # No block_k of 16: the region already requires c_in to be a multiple of 32,
+        # so a 32-wide k tile always divides it.
         configs = conv_autotune_configs(
             self.dtype,
-            block_m=[64, 128],
-            block_k=[16, 32, 64],
+            block_m=list(self.block_m_candidates),
+            block_k=[32, 64],
         )
-        return [c for c in configs if self.c_in % c["block_k"] == 0]
+        out_hw = self.out_h * self.out_w
+        return [
+            c
+            for c in configs
+            if self.c_in % c["block_k"] == 0
+            and self.tile_stays_in_one_image(self.n, out_hw, c["block_m"])
+        ]
 
     def forward(
         self,
@@ -815,12 +818,7 @@ class Conv2dSymmetricKernel(Kernel):
             device=weight.device,
             dtype=weight.dtype,
         )
-        out_nhwc = torch.empty(
-            (self.n, self.out_h, self.out_w, self.c_out),
-            device=x.device,
-            dtype=x.dtype,
-        )
-        return _launch(self, x, weight, x_nhwc, weight_krsc, out_nhwc, bias=bias)
+        return _launch(self, x, weight, x_nhwc, weight_krsc, bias=bias)
 
 
 class Conv2dKernel(Kernel):
@@ -1079,8 +1077,12 @@ class GroupConv2dKernel(Kernel):
     @property
     def autotune_configs(self) -> list[dict]:
         if self.use_direct:
-            return [self.default_config]
-        return conv_autotune_configs(self.dtype)
+            # One tile shape, since there is no GEMM to tile. The swizzle is still a
+            # choice, so both ways are searched.
+            return [
+                {**self.default_config, "enable_rasterization": value} for value in (False, True)
+            ]
+        return conv_autotune_configs(self.dtype, threads=[128])
 
     def forward(
         self,
@@ -1174,9 +1176,14 @@ class Conv2d1x1Kernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        # A 32-wide n tile, which the rest of the family does not reach: the block
+        # count is C_out * H * W / (block_m * block_n), and a pointwise row over a
+        # small map has no other way to fill the device.
         return conv_autotune_configs(
             self.dtype,
-            block_m=[64, 128, 256],
+            block_m=[64, 128],
+            block_n=[32, 64, 128, 256],
+            threads=[128],
         )
 
     def forward(

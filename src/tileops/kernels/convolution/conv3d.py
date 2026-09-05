@@ -8,9 +8,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_version
 
-from ._common import _launch, conv_autotune_configs
+from ._common import CONV_SWIZZLE_PANEL, _launch, conv_autotune_configs, conv_num_stages
 from .call_spec import Conv3dCall, conv3d_dense_region, conv3d_group_region, conv3d_ndhwc_region
 
 __all__ = [
@@ -81,7 +80,7 @@ def _conv3d_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
                 out_flat = T.Tensor((n, c_out, out_dhw), dtype, out.data)
 
-                T.use_swizzle(10, enable=enable_rasterization)
+                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
@@ -230,7 +229,7 @@ def _conv3d_group_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
                 out_flat = T.Tensor((n, c_out, out_dhw), dtype, out.data)
 
-                T.use_swizzle(10, enable=enable_rasterization)
+                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 batch_id = bz // groups
@@ -481,7 +480,7 @@ def _conv3d_ndhwc_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight_kdrsc.data)
                 out_flat = T.Tensor((n * out_dhw, c_out), dtype, out_ndhwc.data)
 
-                T.use_swizzle(10, enable=enable_rasterization)
+                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
@@ -700,21 +699,11 @@ class Conv3dKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        sm_version = get_sm_version()
-        if sm_version in {90}:
-            return {
-                "block_m": 64,
-                "block_n": 64,
-                "block_k": 64,
-                "num_stages": 3,
-                "threads": 128,
-                "enable_rasterization": True,
-            }
         return {
             "block_m": 64,
             "block_n": 64,
             "block_k": 64,
-            "num_stages": 2,
+            "num_stages": conv_num_stages(),
             "threads": 128,
             "enable_rasterization": True,
         }
@@ -724,6 +713,7 @@ class Conv3dKernel(Kernel):
         return conv_autotune_configs(
             self.dtype,
             block_n=[32, 64, 128],
+            threads=[128],
         )
 
     def forward(
@@ -839,21 +829,11 @@ class GroupConv3dKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        sm_version = get_sm_version()
-        if sm_version in {90}:
-            return {
-                "block_m": 64,
-                "block_n": 64,
-                "block_k": 64,
-                "num_stages": 3,
-                "threads": 128,
-                "enable_rasterization": True,
-            }
         return {
             "block_m": 64,
             "block_n": 64,
             "block_k": 64,
-            "num_stages": 2,
+            "num_stages": conv_num_stages(),
             "threads": 128,
             "enable_rasterization": True,
         }
@@ -863,6 +843,7 @@ class GroupConv3dKernel(Kernel):
         return conv_autotune_configs(
             self.dtype,
             block_n=[32, 64, 128],
+            threads=[128],
         )
 
     def forward(
@@ -998,6 +979,7 @@ class Conv3dNdhwcKernel(Kernel):
             self.dtype,
             block_m=[64, 128],
             block_k=[16, 32, 64, 128, 256],
+            threads=[128],
         )
         return [c for c in configs if self.c_in % c["block_k"] == 0]
 
