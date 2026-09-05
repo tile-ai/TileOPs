@@ -25,15 +25,15 @@ __all__ = [
     "BatchNormFwdTrainKernel",
 ]
 
-# L threshold for the persistent (single global read) training path, read by
-# both the training-forward and the backward kernel.
-# x_shared uses L * sizeof(dtype) bytes per block:
-#   L=8192, fp16 → 16 KB — well within H100 shared memory limits.
-_PERSISTENT_THRESHOLD = 8192
+# Length at or below which one block holds a whole channel: x_shared costs
+# L * sizeof(dtype), 16 KB at L=8192 in fp16, and backward holds two of them.
+_PERSISTENT_MAX_L = 8192
 
-# Block widths the split path's sums are tuned over. Powers of two only:
-# T.reduce_sum lowers to an XOR butterfly.
-_SPLIT_CANDIDATE_THREADS = (128, 256, 512, 1024)
+# TileLang's AllReduce template needs a power-of-two thread count.
+_REDUCE_THREADS = (256, 128, 64, 32)
+
+# Widest tile one block takes, bounding register pressure.
+_MAX_BLOCK_L = 512
 
 
 def _vector_elements(dtype: torch.dtype) -> int:
@@ -46,57 +46,43 @@ def _widths_down_to_one(widest: int) -> tuple[int, ...]:
     return tuple(widest >> k for k in range(widest.bit_length()))
 
 
-def _find_best_threads(L: int) -> int:
-    """Largest power-of-2 t in [256, 128, 64, 32] that evenly divides L.
+def _tiled_configs(L: int) -> list[dict]:
+    """The (block_l, threads) pairs the tiled builders accept for *L*, best first.
 
-    TileLang's AllReduce template requires a power-of-2 thread count.
+    Element zero is what an untuned kernel launches. The training forward and the
+    backward kernel both read this: different prim_funcs, same reduction, same two
+    parameters.
     """
-    for t in [256, 128, 64, 32]:
-        if L % t == 0:
-            return t
-    return 32  # fallback
+    configs: list[dict] = []
 
+    # One tile per channel: the whole channel is the tile.
+    if L <= _PERSISTENT_MAX_L:
+        configs += [{"block_l": L, "threads": t} for t in _REDUCE_THREADS if L % t == 0]
 
-def _find_best_block_l(L: int) -> dict:
-    """Find best non-persistent block_l config for given L.
+    # Several tiles per channel. block_l need not be a power of two, only the
+    # thread count must, so 448 is available at L=3136 where 512 is not. No pair
+    # repeats: threads separates these, and the entry above has block_l == L,
+    # which this loop excludes.
+    for threads in _REDUCE_THREADS:
+        for k in range(_MAX_BLOCK_L // threads, 0, -1):
+            block_l = threads * k
+            if block_l < L and L % block_l == 0:
+                configs.append({"block_l": block_l, "threads": threads})
 
-    Uses power-of-2 thread counts only (required by TileLang's AllReduce).
-    Block_l can be any multiple of `threads` that divides L — including
-    non-power-of-2 values such as 448 for L=3136 — giving more tiles per
-    channel and better GPU utilization than the strict power-of-2 search.
-    block_l is capped at 512 to limit register pressure.
-    """
-    for threads in [256, 128, 64, 32]:
-        for k in range(512 // threads, 0, -1):
-            bl = threads * k
-            if bl >= L:
-                continue
-            if L % bl == 0:
-                return {"block_l": bl, "num_stages": 0, "threads": threads}
-    # Fallback (should rarely be reached).
-    for bl in [512, 256, 128, 64, 32, 16]:
-        if L % bl == 0:
-            return {"block_l": bl, "num_stages": 0, "threads": min(256, bl)}
+    if configs:
+        return configs
+
+    # No reduce width divides L. Below the threshold the channel is still one
+    # tile, at the narrowest width; above it, the widest tile that does divide L.
+    if L <= _PERSISTENT_MAX_L:
+        return [{"block_l": L, "threads": _REDUCE_THREADS[-1]}]
+    for block_l in (512, 256, 128, 64, 32, 16):
+        if L % block_l == 0:
+            return [{"block_l": block_l, "threads": min(256, block_l)}]
     raise ValueError(
         f"L={L} is not divisible by any supported block_l. "
         "L must be divisible by at least 16 for the current kernel implementation."
     )
-
-
-# Training forward
-
-
-def _to_cl(t: torch.Tensor) -> torch.Tensor:
-    """Move (N, C, *spatial) into the (C, L) layout the prim_funcs read."""
-    channels = t.shape[1]
-    return t.permute(1, 0, *range(2, t.ndim)).reshape(channels, -1).contiguous()
-
-
-def _from_cl(t: torch.Tensor, original_shape: torch.Size) -> torch.Tensor:
-    """Move a (C, L) result back to the caller's shape."""
-    batch, channels, *spatial = original_shape
-    restored = t.reshape(channels, batch, *spatial)
-    return restored.permute(1, 0, *range(2, restored.ndim)).contiguous()
 
 
 @functools.lru_cache(maxsize=32)
@@ -631,6 +617,10 @@ class BatchNormFwdTrainKernel(Kernel):
 
     supported_archs: list[int] = [80, 89, 90]
 
+    # Block widths the split path's sums are tuned over. Powers of two only:
+    # T.reduce_sum lowers to an XOR butterfly.
+    _SPLIT_SUM_THREADS = (128, 256, 512, 1024)
+
     # The thresholds below are measured crossovers, not derived bounds.
 
     # Blocks the split path aims for, as a multiple of the channel count. Above
@@ -739,42 +729,11 @@ class BatchNormFwdTrainKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        if self.L <= _PERSISTENT_THRESHOLD:
-            # Persistent path: block_l = L, single global read.
-            t = _find_best_threads(self.L)
-            return {"block_l": self.L, "threads": t}
-        # Non-persistent path: find best block_l with non-power-of-2 thread counts.
-        cfg = _find_best_block_l(self.L)
-        return {"block_l": cfg["block_l"], "threads": cfg["threads"]}
+        return _tiled_configs(self.L)[0]
 
     @property
     def autotune_configs(self) -> list[dict]:
-        seen: set = set()
-        configs = []
-
-        def _add(cfg: dict) -> None:
-            key = (cfg["block_l"], cfg["threads"])
-            if key not in seen:
-                seen.add(key)
-                configs.append(cfg)
-
-        # Persistent configs (block_l = L); power-of-2 threads only.
-        if self.L <= _PERSISTENT_THRESHOLD:
-            for t in [256, 128, 64, 32]:
-                if self.L % t == 0:
-                    _add({"block_l": self.L, "threads": t})
-
-        # Non-persistent configs: power-of-2 threads, block_l can be non-power-of-2.
-        # num_stages=0 disables T.Pipelined's async prefetch, which multi-tile
-        # loops need for correctness.
-        for threads in [256, 128, 64, 32]:
-            for k in range(512 // threads, 0, -1):
-                bl = threads * k
-                if bl >= self.L or self.L % bl != 0:
-                    continue
-                _add({"block_l": bl, "threads": threads})
-
-        return configs if configs else [self.default_config]
+        return _tiled_configs(self.L)
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         """Tune the kernel this shape's path actually launches.
@@ -791,7 +750,7 @@ class BatchNormFwdTrainKernel(Kernel):
             num_per_thread = _vector_elements(self.dtype)
             configs = [
                 {"splits": self.launch, "threads": t, "num_per_thread": num_per_thread}
-                for t in _SPLIT_CANDIDATE_THREADS
+                for t in self._SPLIT_SUM_THREADS
             ]
             # A candidate seeds it, not default_config: that describes the
             # tiled kernel and names none of the sums builder's parameters.
@@ -1103,6 +1062,19 @@ class BatchNormFwdInferKernel(Kernel):
 # Backward
 
 
+def _to_cl(t: torch.Tensor) -> torch.Tensor:
+    """Move (N, C, *spatial) into the (C, L) layout the backward prim_func reads."""
+    channels = t.shape[1]
+    return t.permute(1, 0, *range(2, t.ndim)).reshape(channels, -1).contiguous()
+
+
+def _from_cl(t: torch.Tensor, original_shape: torch.Size) -> torch.Tensor:
+    """Move a (C, L) backward result back to the caller's shape."""
+    batch, channels, *spatial = original_shape
+    restored = t.reshape(channels, batch, *spatial)
+    return restored.permute(1, 0, *range(2, restored.ndim)).contiguous()
+
+
 @functools.lru_cache(maxsize=32)
 def _batch_norm_bwd_kernel(
     C: int,
@@ -1252,41 +1224,11 @@ class BatchNormBwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        if self.L <= _PERSISTENT_THRESHOLD:
-            # Persistent path: block_l = L, single global read.
-            # go_shared and x_shared together use 2 * L * sizeof(dtype) SMEM.
-            t = _find_best_threads(self.L)
-            return {"block_l": self.L, "threads": t}
-        cfg = _find_best_block_l(self.L)
-        return {"block_l": cfg["block_l"], "threads": cfg["threads"]}
+        return _tiled_configs(self.L)[0]
 
     @property
     def autotune_configs(self) -> list[dict]:
-        seen: set = set()
-        configs = []
-
-        def _add(cfg: dict) -> None:
-            key = (cfg["block_l"], cfg["threads"])
-            if key not in seen:
-                seen.add(key)
-                configs.append(cfg)
-
-        # Persistent configs (block_l = L); power-of-2 threads only.
-        if self.L <= _PERSISTENT_THRESHOLD:
-            for t in [256, 128, 64, 32]:
-                if self.L % t == 0:
-                    _add({"block_l": self.L, "threads": t})
-
-        # Non-persistent configs: power-of-2 threads, block_l can be non-power-of-2.
-        # num_stages=0 disables pipelining for correctness in multi-tile loops.
-        for threads in [256, 128, 64, 32]:
-            for k in range(512 // threads, 0, -1):
-                bl = threads * k
-                if bl >= self.L or self.L % bl != 0:
-                    continue
-                _add({"block_l": bl, "threads": threads})
-
-        return configs if configs else [self.default_config]
+        return _tiled_configs(self.L)
 
     def forward(
         self,
