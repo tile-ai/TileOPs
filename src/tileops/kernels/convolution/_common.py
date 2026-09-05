@@ -13,13 +13,10 @@ from tileops.utils import get_sm_version
 # config; the panel is the same for every conv kernel.
 CONV_SWIZZLE_PANEL = 10
 
-# Targets whose shared memory holds a third pipeline stage.
-_THREE_STAGE_ARCHS = frozenset({90})
-
 
 def conv_num_stages() -> int:
     """Pipeline depth this target's shared memory holds: three on Hopper, two before."""
-    return 3 if get_sm_version() in _THREE_STAGE_ARCHS else 2
+    return 3 if get_sm_version() == 90 else 2
 
 
 def conv_autotune_configs(
