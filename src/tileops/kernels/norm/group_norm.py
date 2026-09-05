@@ -32,9 +32,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.tiling import ALIGNMENT, align_up
 
-from ._config import select_row_config, select_row_configs
+from ._config import row_padding, select_row_config_by_width, select_row_configs
 
 __all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
 
@@ -116,7 +115,7 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
         channels_per_group: C / G. Row ``m`` covers channels
             ``(m % G) * channels_per_group`` onwards.
     """
-    D_padded = align_up(D, ALIGNMENT)
+    D_padded = row_padding(D, 4 if dtype == "float32" else 2)
     spatial_size = D // channels_per_group
     C = num_groups * channels_per_group
 
@@ -241,13 +240,13 @@ class GroupNormKernel(Kernel):
         self.dtype = dtype
         self.num_groups = num_groups
         self.channels_per_group = channels_per_group
-        self.D_padded = align_up(D, ALIGNMENT)
+        self.D_padded = row_padding(D, self.dtype.itemsize)
         self._tune_pending = tune  # tuning needs a program, so it waits for the first call
         self.init_config(config, tune=False)
 
     @property
     def default_config(self) -> dict:
-        return select_row_config(self.D_padded)
+        return select_row_config_by_width(self.D_padded)
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -316,7 +315,7 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
         eps: Epsilon for numerical stability.
         dtype: TileLang dtype string.
     """
-    D_padded = align_up(D, ALIGNMENT)
+    D_padded = row_padding(D, 4 if dtype == "float32" else 2)
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
@@ -412,13 +411,13 @@ class GroupNormNoAffineKernel(Kernel):
         self.D = D
         self.eps = eps
         self.dtype = dtype
-        self.D_padded = align_up(D, ALIGNMENT)
+        self.D_padded = row_padding(D, self.dtype.itemsize)
         self._tune_pending = tune  # tuning needs a program, so it waits for the first call
         self.init_config(config, tune=False)
 
     @property
     def default_config(self) -> dict:
-        return select_row_config(self.D_padded)
+        return select_row_config_by_width(self.D_padded)
 
     @property
     def autotune_configs(self) -> list[dict]:

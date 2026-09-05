@@ -29,6 +29,12 @@ class FusedAddRMSNormFixture(FixtureBase):
                 # Tail-M: M not divisible by block_m
                 pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+                # A row long enough for the split path, at the row counts
+                # around which it turns on: one row takes it, a few rows do
+                # not, and a full grid does not.
+                pytest.param(1, 16384, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2, 16384, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(4, 16384, torch.float16, False, marks=pytest.mark.full),
             ],
         ),
     ]

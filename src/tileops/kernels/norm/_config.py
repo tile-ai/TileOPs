@@ -18,8 +18,9 @@ measured runtime.
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
+from tileops.kernels.tiling import ALIGNMENT
 
-__all__ = ["select_row_config", "select_row_configs"]
+__all__ = ["row_padding", "select_row_config_by_width", "select_row_config", "select_row_configs"]
 
 # Powers of two only (tl::AllReduce is an XOR butterfly) that also divide
 # N_padded, or layout inference reports "no available layout". CUDA caps at 1024.
@@ -29,6 +30,40 @@ _CANDIDATE_THREADS = (128, 256, 512, 1024)
 _CANDIDATE_BLOCK_M = (1, 2, 4, 8)
 
 _DEFAULT_THREADS = 128  # measured optimum; see the module docstring
+
+_ROW_SMEM_BUDGET_BYTES = 48 * 1024
+
+
+def row_padding(n: int, elem_bytes: int) -> int:
+    """Row width to pad *n* to: the next power of two while it fits in shared.
+
+    Only a power of two is divided by every entry of :data:`_CANDIDATE_THREADS`;
+    the 256-element alignment leaves an odd factor that caps a block at eight
+    warps. Rounding to 1024 instead measured 3% slower (7168 against 8192).
+    Never below :data:`ALIGNMENT`, which the 128-thread default needs.
+    """
+    pow2 = 1 << (n - 1).bit_length()
+    if pow2 * elem_bytes <= _ROW_SMEM_BUDGET_BYTES:
+        return max(pow2, ALIGNMENT)
+    return -(-n // ALIGNMENT) * ALIGNMENT
+
+
+# Row elements a thread carries. Measured across the group-norm rows: 32 wins.
+_TARGET_ELEMENTS_PER_THREAD = 32
+
+
+def select_row_config_by_width(n_padded: int) -> dict:
+    """``{block_m, threads}`` for a row reduction, sized by the row itself.
+
+    For a row padded to a power of two, which admits every candidate width.
+    ``select_row_config`` pins 128 because the aligned padding often admits
+    nothing wider.
+    """
+    threads = n_padded // _TARGET_ELEMENTS_PER_THREAD
+    for candidate in sorted(_CANDIDATE_THREADS, reverse=True):
+        if candidate <= threads and n_padded % candidate == 0:
+            return {"block_m": 1, "threads": candidate}
+    return {"block_m": 1, "threads": _DEFAULT_THREADS}
 
 
 def _feasible_threads(n_padded: int, dtype: torch.dtype = torch.float16) -> list[int]:
