@@ -631,40 +631,29 @@ class BatchNormFwdTrainKernel(Kernel):
 
     supported_archs: list[int] = [80, 89, 90]
 
-    # Every threshold below sits on a measured crossover. Each path was forced
-    # over a sweep of the shape it selects on, timed through CUPTI on one H200
-    # (sm_90) in fp16 and fp32, and read as the floor of three runs.
+    # The thresholds below are measured crossovers, not derived bounds.
 
-    # Block count the split path aims for, as a multiple of the channel count.
-    # Runtime is flat from here on: at (4, 128, 1024, 1024) 8 splits cost
-    # 0.845 ms against 0.811 for 64, and at (2, 512, 512, 512) anything past 2
-    # splits costs 2% more. 1024 blocks is the target on both plateaus.
+    # Blocks the split path aims for, as a multiple of the channel count. Above
+    # this the runtime is flat.
     _SPLIT_TARGET_BLOCKS = 1024
 
     # Per-channel length above which one block per channel is too narrow a grid,
     # whatever the tile size, and the split path takes over.
     _SPLIT_MIN_L = 1 << 16
 
-    # A channel goes to one thread only where it is a single element per batch
-    # item. At S = 2 the channel-per-block path already wins for C = 256 (1.79
-    # against 2.05 us in fp16, 1.79 against 2.21 in fp32), and by S = 16 it wins
-    # by 3-6x at every C.
+    # A channel goes to one thread only where it is one element per batch item.
+    # Past that the channel-per-block path wins at every channel count.
     _WHOLE_MAX_S = 1
 
-    # Longest channel one thread holds. L = 32 is the last length that beats the
-    # channel-per-block path at every C measured; L = 64 loses it for C = 64.
+    # Longest channel one thread holds, and the width of the block holding them.
+    # That block is wider than the channels it covers when there are few, so it
+    # still launches enough warps to cover load latency.
     _WHOLE_MAX_L = 32
-
-    # Block width for the channel-per-thread path, fixed rather than sized to
-    # the channel count, so a block short of channels still launches enough
-    # warps to cover load latency.
     _WHOLE_BLOCK_THREADS = 256
 
     # The register-held path's block width, and the most elements one thread may
-    # hold across all its steps. 256 is the last value that beats both of the
-    # alternatives -- at L = 65536 it is 20-35% faster than the split path and
-    # 27-35% faster than the tiled one -- and 512 is where the spills reverse
-    # that, by 16-39%.
+    # hold across all its steps. Past this the spills cost more than the second
+    # global read the other paths pay.
     _WIDE_BLOCK_THREADS = 256
     _WIDE_MAX_HELD = 256
 
@@ -790,11 +779,9 @@ class BatchNormFwdTrainKernel(Kernel):
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         """Tune the kernel this shape's path actually launches.
 
-        ``autotune_configs`` describes the tiled kernel, which the base class
-        reads off ``self.kernel``. The whole and wide paths take their launch
-        from the shape and read nothing off the config, so there is nothing to
-        search. The split path reads one value, the block width, and reads it
-        in the sums, so the sums are what it tunes.
+        The base class tunes ``self.kernel``, the tiled builder. The whole and
+        wide paths take their launch from the shape and read nothing off the
+        config. The split path reads only the block width, in the sums.
         """
         if self.path in ("whole", "wide"):
             self.config = self.default_config
@@ -806,9 +793,8 @@ class BatchNormFwdTrainKernel(Kernel):
                 {"splits": self.launch, "threads": t, "num_per_thread": num_per_thread}
                 for t in _SPLIT_CANDIDATE_THREADS
             ]
-            # Every parameter of the sums builder must be seeded, so the seed is
-            # a candidate rather than default_config, which describes the tiled
-            # kernel and names none of them.
+            # A candidate seeds it, not default_config: that describes the
+            # tiled kernel and names none of the sums builder's parameters.
             tuned = self.tune_jit_kernel(
                 self.stages[0], configs, warmup=warmup, rep=rep, seed_config=configs[0]
             )
@@ -945,8 +931,8 @@ def _batch_norm_fwd_infer_kernel(
         # channel's run divides it; otherwise each element picks its own.
         vector_holds_one_channel = S % num_per_thread == 0
         span = threads * num_per_thread * steps
-        # Derived here rather than passed in, so every parameter of this builder
-        # is a key of the config the autotuner binds by name.
+        # Derived, not a parameter: the autotuner binds by name, and every
+        # parameter of this builder must therefore be a config key.
         blocks = -(-total // span)
 
         @T.prim_func
@@ -977,10 +963,7 @@ def _batch_norm_fwd_infer_kernel(
                 v = T.alloc_local([num_per_thread], dtype)
                 o = T.alloc_local([num_per_thread], dtype)
                 # A block walks its span in *steps* vectors per thread, each
-                # step contiguous across the block. The table above is built
-                # once per block, so its cost follows the block count rather
-                # than the vector width, and a narrower vector no longer buys
-                # its alignment by launching more blocks.
+                # step contiguous across the block.
                 for k in T.serial(steps):
                     base = bx * span + (k * threads + tx) * num_per_thread
                     if base + num_per_thread <= total:
@@ -1029,12 +1012,10 @@ class BatchNormFwdInferKernel(Kernel):
 
     supported_archs: list[int] = [80, 89, 90]
 
-    # Elements one block covers, and its width. Every block builds the whole
-    # per-channel scale and shift table before touching its own elements, so
-    # that prologue is paid per block. Holding the span and the width fixed
-    # keeps the block count and the prologue where they are while the
-    # per-thread vector narrows to whatever the dtype makes a single 128-bit
-    # access; the step count takes up the difference.
+    # Elements one block covers, and its width. Each block builds the whole
+    # per-channel table first, so that prologue is paid per block; fixing the
+    # span fixes the block count, and the step count absorbs whatever the
+    # per-thread vector gives up to stay a single 128-bit access.
     _BLOCK_SPAN = 2048
     _BLOCK_THREADS = 256
 
