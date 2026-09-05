@@ -9,9 +9,11 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_version
 
 # Panel width handed to ``T.use_swizzle``: the number of blocks along the grid's fast
-# axis reordered together so their tiles share L2. Whether to swizzle is a searched
-# config; the panel is the same for every conv kernel.
-CONV_SWIZZLE_PANEL = 10
+# axis reordered together so their tiles share L2. A power of two, because the block
+# remap divides by it and a divide the compiler cannot turn into a shift shows on a
+# short kernel; the narrowest one, because the long 1d grids lose monotonically as it
+# widens. Whether to swizzle at all is a searched config.
+CONV_SWIZZLE_PANEL = 2
 
 
 def conv_num_stages() -> int:
