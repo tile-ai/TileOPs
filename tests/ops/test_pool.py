@@ -1012,6 +1012,22 @@ _MAX_POOL1D_PARAMS = [
         marks=pytest.mark.full,
         id="full-ceil-k5-s3-p2-bf16",
     ),
+    # Short output: sends max_pool1d down the shared-memory staged read.
+    pytest.param(
+        2,
+        32,
+        64,
+        (8,),
+        (8,),
+        (0,),
+        (1,),
+        False,
+        torch.float16,
+        False,
+        True,
+        marks=pytest.mark.full,
+        id="full-staged-short-output-fp16",
+    ),
 ]
 
 
