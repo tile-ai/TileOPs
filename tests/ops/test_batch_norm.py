@@ -190,3 +190,26 @@ def test_training_updates_a_non_contiguous_running_stat() -> None:
     expected_mean = op.momentum * x.float().transpose(0, 1).reshape(C, -1).mean(dim=1)
     torch.testing.assert_close(rm, expected_mean, atol=1e-3, rtol=1e-3)
     assert not torch.equal(rv, torch.ones_like(rv)), "running_var was not written either"
+
+
+@pytest.mark.smoke
+def test_training_rejects_one_value_per_channel() -> None:
+    """Bessel's correction divides by L - 1; torch refuses the same call.
+
+    Inference applies no correction and takes the shape, as torch does.
+    """
+    C = 4
+    x = torch.randn(1, C, 1, 1, device="cuda", dtype=torch.float32)
+    weight = torch.ones(C, device="cuda", dtype=torch.float32)
+    bias = torch.zeros(C, device="cuda", dtype=torch.float32)
+    rm = torch.zeros(C, device="cuda", dtype=torch.float32)
+    rv = torch.ones(C, device="cuda", dtype=torch.float32)
+
+    with pytest.raises(ValueError, match="more than 1 value per channel"):
+        BatchNormFwdOp(training=True)(x, rm, rv, weight, bias)
+
+    y = BatchNormFwdOp(training=False)(x, rm, rv, weight, bias)
+    expected = torch.nn.functional.batch_norm(
+        x, rm, rv, weight, bias, training=False, eps=BatchNormFwdOp(training=False).eps
+    )
+    torch.testing.assert_close(y, expected, atol=1e-3, rtol=1e-3)

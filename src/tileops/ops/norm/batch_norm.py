@@ -134,7 +134,14 @@ class BatchNormFwdOp(Op):
         if x.dtype not in (torch.float32, torch.float16, torch.bfloat16):
             raise ValueError(f"x.dtype must be float32, float16, or bfloat16, got {x.dtype}")
         C = x.shape[1]
-        return C, x.numel() // C, x.dtype
+        L = x.numel() // C
+        if self.training and L < 2:
+            # Bessel's correction divides by L - 1. torch refuses the same call.
+            raise ValueError(
+                f"Expected more than 1 value per channel when training, got input size "
+                f"{tuple(x.shape)}"
+            )
+        return C, L, x.dtype
 
     @staticmethod
     def _validate_channel_tensor(
