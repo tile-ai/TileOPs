@@ -1,9 +1,5 @@
 # Copyright (c) Tile-AI. All rights reserved.
-"""Reduction kernels, one module per sub-category.
-
-The row layout, launch planning and shared-memory arithmetic every one of them
-builds on are in ``_primitives``.
-"""
+"""Reduction kernels, one module per sub-category."""
 
 from ._primitives import (
     DEFAULT_ALIGNMENT,

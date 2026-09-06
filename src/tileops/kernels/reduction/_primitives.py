@@ -81,12 +81,7 @@ def ceildiv_int(x: int, y: int) -> int:
 
 
 def identity_for(op_kind: str) -> float:
-    """The value a masked lane contributes, leaving the reduction unchanged.
-
-    Covers every op_kind the reduction kernels mask for: a product and an
-    ``all`` take one, the extrema take the infinity they cannot beat, and the
-    additive kinds take zero.
-    """
+    """The value a masked lane contributes, leaving the reduction unchanged."""
     if op_kind in ("prod", "all"):
         return 1.0
     if op_kind == "amin":
@@ -120,11 +115,9 @@ class BlockConfigPlanner:
     whether a row fits in shared memory, which config to run untuned, and which
     candidates to offer the autotuner.
 
-    ``autotune_configs`` here serves the kernels that sweep by calling forward
-    through ``tune_by_forward``, where a candidate costs one call. A kernel that
-    bakes ``tile_n`` into the PrimFunc pays a recompilation per distinct value
-    and sweeps a narrower list of its own; see `RowTiledAutotuneMixin`. The two
-    lists differ at every width, so they are not interchangeable.
+    ``autotune_configs`` here serves the ``tune_by_forward`` sweeps. A kernel
+    baking ``tile_n`` into the PrimFunc sweeps `RowTiledAutotuneMixin`'s list
+    instead, which differs at every width.
 
     Args:
         num_buffers: ``(block_m, tile_n)`` shared buffers alive at once.
@@ -638,19 +631,12 @@ class RowTiledAutotuneMixin:
     """
 
     def _build_row_kernel(self, tile_n: int):
-        """Return the JIT kernel this class builds for *tile_n*."""
         raise NotImplementedError
 
     def _row_forward(self, x):
-        """Run the row-level entry point, for the split pair's timing."""
         raise NotImplementedError
 
     def _sweep_applies(self) -> bool:
-        """Whether the candidate sweep has anything to vary.
-
-        False where the kernel bakes its whole launch shape in at build time,
-        leaving the default config to stand.
-        """
         return True
 
     def _tile_n_for_block_m(self, block_m: int) -> int:
@@ -736,11 +722,9 @@ class RowTiledAutotuneMixin:
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Sweep the candidates, rebuilding per tile_n, then judge the split pair.
 
-        Configs are grouped by tile_n because each distinct value is a different
-        kernel; every group is swept with its own build and the best latency
-        across groups wins. The split pair has nothing for the sweep to vary, so
-        it is timed against that winner on device kernel time: paths launching
-        different kernel counts are judged by GPU work, not host-launch gaps.
+        The split pair is timed on device kernel time: paths launching different
+        kernel counts cannot be compared on wall time, which carries the
+        host-launch gaps.
         """
         from tilelang.autotuner import autotune as tl_autotune
 
