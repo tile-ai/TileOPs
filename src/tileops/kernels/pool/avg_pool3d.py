@@ -12,6 +12,14 @@ from tileops.kernels.pool.common import pool_output_dim
 __all__ = ["AvgPool3dKernel", "AvgPool3dSpatialKernel"]
 
 
+def _axis_inside(size_in: int, size_out: int, kernel: int, stride: int, pad: int) -> bool:
+    """Whether every window on this axis lies inside the input.
+
+    True makes the axis's bounds test a compile-time truth, and it drops out.
+    """
+    return pad == 0 and (size_out - 1) * stride + kernel <= size_in
+
+
 @functools.lru_cache(maxsize=64)
 def _avg_pool3d_kernel(
     n: int,
@@ -38,75 +46,117 @@ def _avg_pool3d_kernel(
     out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode)
     out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode)
     out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode)
-    total_output = n * c_in * out_d * out_h * out_w
+    rows = n * c_in
+    total = rows * out_d * out_h * out_w
+    window_inside = (
+        _axis_inside(d_in, out_d, kernel_d, stride_d, pad_d)
+        and _axis_inside(h_in, out_h, kernel_h, stride_h, pad_h)
+        and _axis_inside(w_in, out_w, kernel_w, stride_w, pad_w)
+    )
+    # Without ceil mode the last window on an axis ends at `size + pad` at the
+    # furthest, so counting the padding gives the whole kernel for every output.
+    # Ceil mode can push a window past that, and not counting the padding
+    # shortens the windows that overhang, so both take the divisor from the
+    # window's own extent.
+    whole_window_divides = window_inside or (count_include_pad and not ceil_mode)
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _avg_pool3d_func(block_m: int, threads: int):
+        tile_full = total % block_m == 0
+
         @T.prim_func
         def _avg_pool3d_main(
-            x: T.Tensor((n, c_in, d_in, h_in, w_in), dtype),  # type: ignore
-            out: T.Tensor((n, c_in, out_d, out_h, out_w), dtype),  # type: ignore
+            x: T.Tensor((rows, d_in, h_in, w_in), dtype),  # type: ignore
+            out: T.Tensor((rows, out_d, out_h, out_w), dtype),  # type: ignore
         ):
-            with T.Kernel(T.ceildiv(total_output, block_m), threads=threads) as bx:
-                T.use_swizzle(10)
+            with T.Kernel(T.ceildiv(total, block_m), threads=threads) as tile:
                 for i in T.Parallel(block_m):
-                    out_idx = bx * block_m + i
-                    if out_idx < total_output:
-                        ow = out_idx % out_w
-                        spatial_idx = out_idx // out_w
-                        oh = spatial_idx % out_h
-                        od_spatial_idx = spatial_idx // out_h
-                        od = od_spatial_idx % out_d
-                        nc_idx = od_spatial_idx // out_d
-                        c_idx = nc_idx % c_in
-                        batch = nc_idx // c_in
-
-                        sum_val = T.alloc_var(T.float32)
-                        sum_val = T.cast(0.0, accum_dtype)
+                    idx = tile * block_m + i
+                    if tile_full or idx < total:
+                        # Three divisions, not five: the remainders come back as
+                        # multiplies.
+                        plane_row = idx // out_w
+                        ow = idx - plane_row * out_w
+                        depth_row = plane_row // out_h
+                        oh = plane_row - depth_row * out_h
+                        row = depth_row // out_d
+                        od = depth_row - row * out_d
+                        front = od * stride_d - pad_d
+                        top = oh * stride_h - pad_h
+                        left = ow * stride_w - pad_w
+                        total_val = T.alloc_var(T.float32)
+                        total_val = T.cast(0.0, accum_dtype)
                         for kd in T.serial(kernel_d):
                             for kh in T.serial(kernel_h):
                                 for kw in T.serial(kernel_w):
-                                    id_ = od * stride_d + kd - pad_d
-                                    ih = oh * stride_h + kh - pad_h
-                                    iw = ow * stride_w + kw - pad_w
-                                    if (
-                                        id_ >= 0
-                                        and id_ < d_in
-                                        and ih >= 0
-                                        and ih < h_in
-                                        and iw >= 0
-                                        and iw < w_in
+                                    id_ = front + kd
+                                    ih = top + kh
+                                    iw = left + kw
+                                    # One predicate for the whole window position.
+                                    # Splitting it per axis, or trading it for a
+                                    # select over a clamped address, both measured
+                                    # slower here: skipping the tap is worth more
+                                    # than the branch costs.
+                                    if window_inside or (
+                                        (id_ >= 0)
+                                        and (id_ < d_in)
+                                        and (ih >= 0)
+                                        and (ih < h_in)
+                                        and (iw >= 0)
+                                        and (iw < w_in)
                                     ):
-                                        sum_val += T.cast(
-                                            x[batch, c_idx, id_, ih, iw],
-                                            accum_dtype,
-                                        )
-
-                        start_d = od * stride_d - pad_d
-                        start_h = oh * stride_h - pad_h
-                        start_w = ow * stride_w - pad_w
-                        end_d = start_d + kernel_d
-                        end_h = start_h + kernel_h
-                        end_w = start_w + kernel_w
-                        valid_d = T.max(T.min(end_d, d_in) - T.max(start_d, 0), 0)
-                        valid_h = T.max(T.min(end_h, h_in) - T.max(start_h, 0), 0)
-                        valid_w = T.max(T.min(end_w, w_in) - T.max(start_w, 0), 0)
-                        valid_count = valid_d * valid_h * valid_w
-                        padded_d = T.max(T.min(end_d, d_in + pad_d) - T.max(start_d, -pad_d), 0)
-                        padded_h = T.max(T.min(end_h, h_in + pad_h) - T.max(start_h, -pad_h), 0)
-                        padded_w = T.max(T.min(end_w, w_in + pad_w) - T.max(start_w, -pad_w), 0)
-                        padded_count = padded_d * padded_h * padded_w
-                        auto_divisor = T.max(
-                            T.if_then_else(count_include_pad, padded_count, valid_count),
-                            1,
-                        )
-                        divisor = T.if_then_else(
-                            use_divisor_override,
-                            divisor_override,
-                            auto_divisor,
-                        )
-                        out[batch, c_idx, od, oh, ow] = T.cast(
-                            sum_val / T.cast(divisor, accum_dtype),
+                                        total_val += T.cast(x[row, id_, ih, iw], accum_dtype)
+                        # An explicit divisor is used as given, negative
+                        # included; only a divisor read off the window needs a
+                        # floor, and there because an empty window would divide
+                        # by zero.
+                        if use_divisor_override:
+                            divisor = T.cast(divisor_override, accum_dtype)
+                        elif whole_window_divides:
+                            divisor = T.cast(kernel_d * kernel_h * kernel_w, accum_dtype)
+                        elif count_include_pad:
+                            divisor = T.cast(
+                                T.max(
+                                    T.max(
+                                        T.max(T.min(front + kernel_d, d_in + pad_d), 0)
+                                        - T.max(front, -pad_d),
+                                        0,
+                                    )
+                                    * T.max(
+                                        T.max(T.min(top + kernel_h, h_in + pad_h), 0)
+                                        - T.max(top, -pad_h),
+                                        0,
+                                    )
+                                    * T.max(
+                                        T.max(T.min(left + kernel_w, w_in + pad_w), 0)
+                                        - T.max(left, -pad_w),
+                                        0,
+                                    ),
+                                    1,
+                                ),
+                                accum_dtype,
+                            )
+                        else:
+                            divisor = T.cast(
+                                T.max(
+                                    T.max(
+                                        T.max(T.min(front + kernel_d, d_in), 0) - T.max(front, 0),
+                                        0,
+                                    )
+                                    * T.max(
+                                        T.max(T.min(top + kernel_h, h_in), 0) - T.max(top, 0),
+                                        0,
+                                    )
+                                    * T.max(
+                                        T.max(T.min(left + kernel_w, w_in), 0) - T.max(left, 0),
+                                        0,
+                                    ),
+                                    1,
+                                ),
+                                accum_dtype,
+                            )
+                        out[row, od, oh, ow] = T.cast(
+                            total_val / divisor,
                             dtype,
                         )
 
@@ -115,7 +165,6 @@ def _avg_pool3d_kernel(
     return _avg_pool3d_func
 
 
-@functools.lru_cache(maxsize=64)
 def _avg_pool3d_spatial_kernel(
     n: int,
     c_in: int,
@@ -133,62 +182,33 @@ def _avg_pool3d_spatial_kernel(
     pad_w: int,
     dtype: str = "float16",
 ):
-    accum_dtype = "float"
-    out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, False)
-    out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, False)
-    out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, False)
-    total_output = n * c_in * out_d * out_h * out_w
+    """Zero-padded, floor-mode 3d average pooling with no divisor override.
 
-    @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
-    def _avg_pool3d_spatial_func(block_m: int, threads: int):
-        @T.prim_func
-        def _avg_pool3d_spatial_main(
-            x: T.Tensor((n, c_in, d_in, h_in, w_in), dtype),  # type: ignore
-            out: T.Tensor((n, c_in, out_d, out_h, out_w), dtype),  # type: ignore
-        ):
-            with T.Kernel(T.ceildiv(total_output, block_m), threads=threads) as bx:
-                T.use_swizzle(10)
-                for i in T.Parallel(block_m):
-                    out_idx = bx * block_m + i
-                    if out_idx < total_output:
-                        ow = out_idx % out_w
-                        spatial_idx = out_idx // out_w
-                        oh = spatial_idx % out_h
-                        od_spatial_idx = spatial_idx // out_h
-                        od = od_spatial_idx % out_d
-                        nc_idx = od_spatial_idx // out_d
-                        c_idx = nc_idx % c_in
-                        batch = nc_idx // c_in
-
-                        sum_val = T.alloc_var(T.float32)
-                        sum_val = T.cast(0.0, accum_dtype)
-                        for kd in T.serial(kernel_d):
-                            for kh in T.serial(kernel_h):
-                                for kw in T.serial(kernel_w):
-                                    id_ = od * stride_d + kd - pad_d
-                                    ih = oh * stride_h + kh - pad_h
-                                    iw = ow * stride_w + kw - pad_w
-                                    if (
-                                        id_ >= 0
-                                        and id_ < d_in
-                                        and ih >= 0
-                                        and ih < h_in
-                                        and iw >= 0
-                                        and iw < w_in
-                                    ):
-                                        sum_val += T.cast(
-                                            x[batch, c_idx, id_, ih, iw],
-                                            accum_dtype,
-                                        )
-
-                        out[batch, c_idx, od, oh, ow] = T.cast(
-                            sum_val / T.cast(kernel_d * kernel_h * kernel_w, accum_dtype),
-                            dtype,
-                        )
-
-        return _avg_pool3d_spatial_main
-
-    return _avg_pool3d_spatial_func
+    Every window then spans the full kernel once the padding is counted, which is
+    what ``_avg_pool3d_kernel`` emits for ``ceil_mode=False``,
+    ``count_include_pad=True`` and no override.
+    """
+    return _avg_pool3d_kernel(
+        n,
+        c_in,
+        d_in,
+        h_in,
+        w_in,
+        kernel_d,
+        kernel_h,
+        kernel_w,
+        stride_d,
+        stride_h,
+        stride_w,
+        pad_d,
+        pad_h,
+        pad_w,
+        False,
+        True,
+        False,
+        0,
+        dtype,
+    )
 
 
 def _launch_avg_pool3d_spatial(
@@ -211,7 +231,7 @@ def _launch_avg_pool3d_spatial(
     threads: int,
     x: torch.Tensor,
 ) -> torch.Tensor:
-    return _avg_pool3d_spatial_kernel(
+    return _launch_avg_pool3d(
         n,
         c_in,
         d_in,
@@ -226,8 +246,15 @@ def _launch_avg_pool3d_spatial(
         pad_d,
         pad_h,
         pad_w,
+        False,
+        True,
+        False,
+        0,
         dtype,
-    )(block_m, threads)(x)
+        block_m,
+        threads,
+        x,
+    )
 
 
 def _launch_avg_pool3d(
@@ -254,7 +281,10 @@ def _launch_avg_pool3d(
     threads: int,
     x: torch.Tensor,
 ) -> torch.Tensor:
-    return _avg_pool3d_kernel(
+    out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode)
+    out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode)
+    out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode)
+    kernel = _avg_pool3d_kernel(
         n,
         c_in,
         d_in,
@@ -274,7 +304,10 @@ def _launch_avg_pool3d(
         use_divisor_override,
         divisor_override,
         dtype,
-    )(block_m, threads)(x)
+    )(block_m, threads)
+    # The kernel addresses one volume per (batch, channel) pair, so the two
+    # leading extents are folded away on the way in and restored on the way out.
+    return kernel(x.reshape(n * c_in, d_in, h_in, w_in)).view(n, c_in, out_d, out_h, out_w)
 
 
 class AvgPool3dSpatialKernel(Kernel):
