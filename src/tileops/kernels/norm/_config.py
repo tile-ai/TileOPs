@@ -42,8 +42,7 @@ _CANDIDATE_THREADS = (128, 256, 512, 1024)
 
 # Row width at or below which a block narrower than 128 is offered. Above it a
 # narrow block hands one thread hundreds of elements, and layout inference
-# answers that with the replicated layout this module's docstring describes:
-# a 7200-wide row measures 5.7 us against 3.2 us that way.
+# answers that with the replicated layout this module's docstring describes.
 NARROW_ROW = 2048
 
 # The widths a row sized by :data:`_TARGET_ELEMENTS_PER_THREAD` can land on.
@@ -80,9 +79,8 @@ def row_padding(n: int, elem_bytes: int) -> int:
     return -(-n // ALIGNMENT) * ALIGNMENT
 
 
-# Row elements a thread carries. Enough of them keep loads in flight to cover the
-# latency the row is bound by: a 1024-wide row split across 128 threads leaves 8
-# each and measures 12% slower than the same row across one warp.
+# Row elements a thread carries. Enough of them keep loads in flight to cover
+# the latency the row is bound by.
 _TARGET_ELEMENTS_PER_THREAD = 32
 
 
