@@ -33,3 +33,27 @@ python scripts/test_node_delta.py --base upstream/main tests/ops/test_<name>.py
 What to do with the output is in [`docs/design/testing.md` § Test node growth detection](../../docs/design/testing.md#test-node-growth-detection).
 
 **SOFT GATE:** does not block PR creation. Missing justification is flagged during review, per [`.claude/domain-rules/testing-budget.md`](../../.claude/domain-rules/testing-budget.md).
+
+## 3. PR body
+
+Two checks CI does not make. Run them against the body you are about to pass to `gh pr create`.
+
+```bash
+BODY_FILE=/tmp/pr-body.md   # the file you will pass as --body-file
+ok=1
+
+grep -q '## Summary' "$BODY_FILE" || { echo "BLOCKED: PR body needs a ## Summary section"; ok=0; }
+if grep -q '\\n' "$BODY_FILE"; then
+  echo 'BLOCKED: PR body contains a literal \n — write actual newlines'
+  ok=0
+fi
+[ "$ok" = 1 ] || exit 1
+```
+
+**HARD GATE.** A `BLOCKED` line means do not call `gh pr create`; fix the body and re-run.
+
+A literal `\n` reaches the body when it is passed as a JSON string rather than as a file. Pass
+`--body-file`, or a quoted heredoc, and it cannot happen.
+
+Labels need no check here: [`auto-label.yml`](../../.github/workflows/auto-label.yml) derives them
+from the title once the PR exists.
