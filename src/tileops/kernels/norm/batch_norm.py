@@ -35,6 +35,11 @@ _REDUCE_THREADS = (256, 128, 64, 32)
 # Widest tile one block takes, bounding register pressure.
 _MAX_BLOCK_L = 512
 
+# Spread within which two split candidates are one answer. Event timing runs the
+# launches back to back while the benchmark clears L2 between them, so a candidate
+# this close is not measurably different and the choice is settled by rule.
+_SPLIT_TIE_BAND = 0.02
+
 
 def _vector_elements(dtype: torch.dtype) -> int:
     """Elements one thread accesses at once for a 128-bit vector in *dtype*."""
@@ -631,6 +636,9 @@ class BatchNormFwdTrainKernel(Kernel):
     # several times over, and the longer piece each block walks reads faster.
     _SPLIT_TARGET_BLOCKS = 512
 
+    # How far either side of the seed the split count is offered to the tuner.
+    _SPLIT_SEARCH_REACH = 4
+
     # Per-channel length above which one block per channel is too narrow a grid,
     # whatever the tile size, and the split path takes over.
     _SPLIT_MIN_L = 1 << 16
@@ -712,8 +720,29 @@ class BatchNormFwdTrainKernel(Kernel):
         if wide is not None:
             return "wide", wide
         if C < cls._SPLIT_MAX_C and L >= cls._SPLIT_MIN_L:
-            return "split", max(1, min(L, -(-cls._SPLIT_TARGET_BLOCKS // C)))
+            return "split", cls._split_seed(C, L)
         return "tiled", None
+
+    @classmethod
+    def _split_seed(cls, C: int, L: int) -> int:
+        """Pieces a channel is cut into before anything is measured."""
+        return max(1, min(L, -(-cls._SPLIT_TARGET_BLOCKS // C)))
+
+    @classmethod
+    def _split_candidates(cls, C: int, L: int) -> list[int]:
+        """Split counts to offer the tuner: powers of two either side of the seed.
+
+        The seed is always a member, which is why tuning raises rather than
+        falling back when every candidate refuses: the count path selection
+        chose was among them, so nothing is left to fall back to.
+        """
+        widest = min(L, cls._split_seed(C, L) * cls._SPLIT_SEARCH_REACH)
+        counts, count = [], 1
+        while count <= widest:
+            counts.append(count)
+            count *= 2
+        counts.append(cls._split_seed(C, L))
+        return sorted({c for c in counts if c <= L})
 
     @classmethod
     def _wide_launch(cls, L: int, S: int, dtype: torch.dtype) -> Optional[tuple[int, int]]:
@@ -749,27 +778,84 @@ class BatchNormFwdTrainKernel(Kernel):
 
         The base class tunes ``self.kernel``, the tiled builder. The whole and
         wide paths take their launch from the shape and read nothing off the
-        config. The split path reads only the block width, in the sums.
+        config. The split path reads both the split count and the block width,
+        and both decide three launches, so all three are timed together.
         """
         if self.path in ("whole", "wide"):
             self.config = self.default_config
             return
         if self.path == "split":
-            print(f"Start autotuning {type(self).__name__} (split sums)...")
-            num_per_thread = _vector_elements(self.dtype)
-            configs = [
-                {"splits": self.launch, "threads": t, "num_per_thread": num_per_thread}
-                for t in self._SPLIT_SUM_THREADS
-            ]
-            # A candidate seeds it, not default_config: that describes the
-            # tiled kernel and names none of the sums builder's parameters.
-            tuned = self.tune_jit_kernel(
-                self.stages[0], configs, warmup=warmup, rep=rep, seed_config=configs[0]
-            )
-            self.config = dict(self.default_config, threads=tuned.config["threads"])
-            print(f"Best config: {self.config}")
+            self._tune_split(warmup=warmup, rep=rep)
             return
         super().autotune(warmup=warmup, rep=rep)
+
+    def _tune_split(self, warmup: int, rep: int) -> None:
+        """Pick the split count and block width by timing sum, merge and map.
+
+        All three read the same pair, and they do not want the same one: the
+        width that reads a channel fastest costs the map pass more than it saves,
+        because the map writes the tensor the sums only read. Timing one stage
+        settles the other two against it, so the three are timed together.
+
+        Runs on tensors of its own, so nothing a caller holds is touched, and
+        settles the config before returning -- a caller that asks for tuning and
+        then reads ``config`` sees what will run.
+        """
+        print(f"Start autotuning {type(self).__name__} (split, three launches)...")
+        device = torch.cuda.current_device()
+        # A private generator: tuning is a measurement, and a caller's next random
+        # number must not depend on whether its kernel was tuned.
+        seed = torch.Generator(device=device)
+        seed.manual_seed(0)
+        flat = torch.randn(self.C * self.L, device=device, dtype=self.dtype, generator=seed)
+        weight = torch.ones(self.C, device=device, dtype=torch.float32)
+        bias = torch.zeros(self.C, device=device, dtype=torch.float32)
+        stat = functools.partial(torch.empty, self.C, device=device, dtype=torch.float32)
+        timed: list[tuple[float, int, int]] = []
+        refused: list[str] = []
+        args: tuple = ()
+        try:
+            for splits in self._split_candidates(self.C, self.L):
+                for threads in self._SPLIT_SUM_THREADS:
+                    args = (flat, stat(), stat(), weight, bias, stat(), stat(), splits, threads)
+                    try:
+                        for _ in range(warmup):
+                            self._run_split(*args)
+                        torch.cuda.synchronize()
+                        start = torch.cuda.Event(enable_timing=True)
+                        end = torch.cuda.Event(enable_timing=True)
+                        start.record()
+                        for _ in range(rep):
+                            self._run_split(*args)
+                        end.record()
+                        torch.cuda.synchronize()
+                    except Exception as exc:  # a pair this shape's layout refuses
+                        refused.append(f"splits={splits} threads={threads}: {exc}")
+                        continue
+                    timed.append((start.elapsed_time(end) / rep, splits, threads))
+        finally:
+            # The argument tuple references the input and the last candidate's
+            # scratch, so it goes too; the cache cannot reclaim what it holds.
+            del args, flat, weight, bias
+            torch.cuda.empty_cache()
+        if not timed:
+            raise RuntimeError(
+                f"{type(self).__name__} split tuning built no candidate for "
+                f"C={self.C} L={self.L}: " + "; ".join(refused)
+            )
+        # Candidates within the guard band of the fastest are a tie. The tie is
+        # broken by distance from the seed the shape derives, then the narrower
+        # block, then the smaller count -- a total order, so a seed equidistant
+        # from two counts still resolves the same way every time.
+        floor = min(timed)[0]
+        seed_splits = self._split_seed(self.C, self.L)
+        best = min(
+            (c for c in timed if c[0] <= floor * (1.0 + _SPLIT_TIE_BAND)),
+            key=lambda c: (abs(c[1] - seed_splits), c[2], c[1]),
+        )
+        self.launch = best[1]
+        self.config = dict(self.default_config, threads=best[2])
+        print(f"Best config: {self.config} splits={self.launch} ({best[0]:.4f} ms)")
 
     def _forward_split(
         self,
@@ -781,10 +867,33 @@ class BatchNormFwdTrainKernel(Kernel):
         mean_out: torch.Tensor,
         rstd_out: torch.Tensor,
     ) -> torch.Tensor:
+        """Sum, merge, then map, at the split count and width tuning settled."""
+        return self._run_split(
+            flat,
+            running_mean,
+            running_var,
+            weight,
+            bias,
+            mean_out,
+            rstd_out,
+            self.launch,
+            self.config["threads"],
+        )
+
+    def _run_split(
+        self,
+        flat: torch.Tensor,
+        running_mean: torch.Tensor,
+        running_var: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+        mean_out: torch.Tensor,
+        rstd_out: torch.Tensor,
+        splits: int,
+        threads: int,
+    ) -> torch.Tensor:
         """Sum, merge, then map -- three launches over an element-wide grid."""
         stats, finalize, apply_ = self.stages
-        splits = self.launch
-        threads = self.config["threads"]
         num_per_thread = _vector_elements(self.dtype)
         empty = functools.partial(torch.empty, device=flat.device, dtype=torch.float32)
         partial_sum = empty((self.C, splits))
