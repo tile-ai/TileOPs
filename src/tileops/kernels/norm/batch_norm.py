@@ -18,6 +18,7 @@ import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_sm_count
 
 __all__ = [
     "BatchNormBwdKernel",
@@ -659,6 +660,13 @@ class BatchNormFwdTrainKernel(Kernel):
     _WIDE_BLOCK_THREADS = 256
     _WIDE_MAX_HELD = 256
 
+    # The widest block the register-held path may grow to for a channel its
+    # default width leaves a partial step of. A grid that already covers the
+    # device stops at the narrower one: past it a block's warps compete for one
+    # SM instead of filling an idle one.
+    _WIDE_MAX_BLOCK_THREADS = 1024
+    _WIDE_MAX_BLOCK_THREADS_FULL_GRID = 512
+
     def __init__(
         self,
         C: int,
@@ -716,7 +724,7 @@ class BatchNormFwdTrainKernel(Kernel):
         """
         if S <= cls._WHOLE_MAX_S and L <= cls._WHOLE_MAX_L:
             return "whole", cls._WHOLE_BLOCK_THREADS
-        wide = cls._wide_launch(L, S, dtype)
+        wide = cls._wide_launch(L, S, dtype, C)
         if wide is not None:
             return "wide", wide
         if C < cls._SPLIT_MAX_C and L >= cls._SPLIT_MIN_L:
@@ -745,12 +753,18 @@ class BatchNormFwdTrainKernel(Kernel):
         return sorted({c for c in counts if c <= L})
 
     @classmethod
-    def _wide_launch(cls, L: int, S: int, dtype: torch.dtype) -> Optional[tuple[int, int]]:
+    def _wide_launch(cls, L: int, S: int, dtype: torch.dtype, C: int) -> Optional[tuple[int, int]]:
         """The ``(threads, num_per_thread)`` a register-held channel needs, or None.
 
         The vector must not straddle two batch items, and the channel must fit
-        in the widest block the device allows.
+        in the widest block the device allows. *C* is the grid: it decides how
+        wide a block may grow.
         """
+        widest = (
+            cls._WIDE_MAX_BLOCK_THREADS_FULL_GRID
+            if get_sm_count() <= C
+            else cls._WIDE_MAX_BLOCK_THREADS
+        )
         for num_per_thread in _widths_down_to_one(_vector_elements(dtype)):
             if S % num_per_thread:
                 continue
@@ -761,6 +775,22 @@ class BatchNormFwdTrainKernel(Kernel):
             while threads > 32 and threads * num_per_thread >= L * 2:
                 threads //= 2
             steps = -(-L // (threads * num_per_thread))
+            # A step the channel does not fill still costs a whole pass of the
+            # load loop and of the store loop, with a guarded tail in each, so
+            # widen while such a step is left and a wider block takes fewer of
+            # them: on a 6272-element channel that is 2.78 us against 3.62 us.
+            # A channel whose length the block already divides is left alone,
+            # and so is one a thread reads an element at a time -- there a
+            # wider block issues more scattered requests rather than more
+            # vectors, and measures 1.92 us against 1.73 us.
+            while (
+                num_per_thread > 1
+                and threads < widest
+                and steps > 1
+                and steps * threads * num_per_thread != L
+            ):
+                threads *= 2
+                steps = -(-L // (threads * num_per_thread))
             if steps * num_per_thread <= cls._WIDE_MAX_HELD:
                 return threads, num_per_thread
         return None
