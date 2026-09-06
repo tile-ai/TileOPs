@@ -623,9 +623,13 @@ class BatchNormFwdTrainKernel(Kernel):
 
     # The thresholds below are measured crossovers, not derived bounds.
 
-    # Blocks the split path aims for, as a multiple of the channel count. Above
-    # this the runtime is flat.
-    _SPLIT_TARGET_BLOCKS = 1024
+    # Channel counts below this take the split path: above it, one block per
+    # channel already fills the device and the split has nothing to add.
+    _SPLIT_MAX_C = 1024
+
+    # Blocks the split path aims for. A grid this size still covers the device
+    # several times over, and the longer piece each block walks reads faster.
+    _SPLIT_TARGET_BLOCKS = 512
 
     # Per-channel length above which one block per channel is too narrow a grid,
     # whatever the tile size, and the split path takes over.
@@ -707,7 +711,7 @@ class BatchNormFwdTrainKernel(Kernel):
         wide = cls._wide_launch(L, S, dtype)
         if wide is not None:
             return "wide", wide
-        if C < cls._SPLIT_TARGET_BLOCKS and L >= cls._SPLIT_MIN_L:
+        if C < cls._SPLIT_MAX_C and L >= cls._SPLIT_MIN_L:
             return "split", max(1, min(L, -(-cls._SPLIT_TARGET_BLOCKS // C)))
         return "tiled", None
 
