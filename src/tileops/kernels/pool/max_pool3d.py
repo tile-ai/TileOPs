@@ -80,11 +80,8 @@ def _max_pool3d_kernel(
                         front = od * stride_d - pad_d
                         top = oh * stride_h - pad_h
                         left = ow * stride_w - pad_w
-                        # A local array, not a scalar: an accumulator written under
-                        # interleaved loops and predicates does not carry across
-                        # iterations as a scalar here.
-                        run = T.alloc_local((1,), accum_dtype)
-                        run[0] = -T.infinity(accum_dtype)
+                        run = T.alloc_var(T.float32)
+                        run = -T.infinity(accum_dtype)
                         for kd in T.serial(kernel_d):
                             for kh in T.serial(kernel_h):
                                 for kw in T.serial(kernel_w):
@@ -108,10 +105,8 @@ def _max_pool3d_kernel(
                                         # NaN enters `run` and never leaves: a later
                                         # value fails `v > NaN`, which is how PyTorch
                                         # propagates it.
-                                        run[0] = T.if_then_else(
-                                            T.isnan(v) or (v > run[0]), v, run[0]
-                                        )
-                        out[row, od, oh, ow] = T.cast(run[0], dtype)
+                                        run = T.if_then_else(T.isnan(v) or (v > run), v, run)
+                        out[row, od, oh, ow] = T.cast(run, dtype)
 
         return _max_pool3d_main
 
@@ -225,31 +220,28 @@ def _max_pool3d_with_indices_kernel(
                         row = depth_row // out_d
                         od = depth_row - row * out_d
 
-                        # Local arrays, not scalars: a value written under
-                        # interleaved loops and predicates does not carry across
-                        # iterations as a scalar here.
-                        max_val = T.alloc_local((1,), accum_dtype)
-                        has_nan = T.alloc_local((1,), "bool")
-                        max_idx = T.alloc_local((1,), "int32")
-                        nan_idx = T.alloc_local((1,), "int32")
-                        first_valid = T.alloc_local((1,), "bool")
+                        max_val = T.alloc_var(T.float32)
+                        has_nan = T.alloc_var(T.bool)
+                        max_idx = T.alloc_var(T.int32)
+                        nan_idx = T.alloc_var(T.int32)
+                        first_valid = T.alloc_var(T.bool)
                         front = od * stride_d - pad_d
                         top = oh * stride_h - pad_h
                         left = ow * stride_w - pad_w
                         base_flat = (front * h_in + top) * w_in + left
-                        max_val[0] = -T.infinity(accum_dtype)
-                        has_nan[0] = False
-                        first_valid[0] = True
+                        max_val = -T.infinity(accum_dtype)
+                        has_nan = False
+                        first_valid = True
                         if window_inside:
                             # Window element (0, 0, 0) is in bounds here, so its flat
                             # index is the correct seed: an all--inf window reports
                             # the first position, matching PyTorch, and first_valid
                             # is unneeded.
-                            max_idx[0] = base_flat
-                            nan_idx[0] = base_flat
+                            max_idx = base_flat
+                            nan_idx = base_flat
                         else:
-                            max_idx[0] = 0
-                            nan_idx[0] = 0
+                            max_idx = 0
+                            nan_idx = 0
                         for kd in T.serial(kernel_d):
                             for kh in T.serial(kernel_h):
                                 for kw in T.serial(kernel_w):
@@ -283,22 +275,20 @@ def _max_pool3d_with_indices_kernel(
                                         # max_val from element (0, 0, 0), so it has
                                         # no first-valid case to carry; the
                                         # comparison still decides.
-                                        seed = False if window_inside else first_valid[0]
-                                        take = (not is_nan) and (seed or (val > max_val[0]))
-                                        max_val[0] = T.if_then_else(take, val, max_val[0])
-                                        max_idx[0] = T.if_then_else(take, flat_idx, max_idx[0])
-                                        first_valid[0] = first_valid[0] and is_nan
-                                        nan_idx[0] = T.if_then_else(is_nan, flat_idx, nan_idx[0])
-                                        has_nan[0] = has_nan[0] or is_nan
+                                        seed = False if window_inside else first_valid
+                                        take = (not is_nan) and (seed or (val > max_val))
+                                        max_val = T.if_then_else(take, val, max_val)
+                                        max_idx = T.if_then_else(take, flat_idx, max_idx)
+                                        first_valid = first_valid and is_nan
+                                        nan_idx = T.if_then_else(is_nan, flat_idx, nan_idx)
+                                        has_nan = has_nan or is_nan
 
                         out[row, od, oh, ow] = T.cast(
-                            T.if_then_else(
-                                has_nan[0], T.cast(float("nan"), accum_dtype), max_val[0]
-                            ),
+                            T.if_then_else(has_nan, T.cast(float("nan"), accum_dtype), max_val),
                             dtype,
                         )
                         indices[row, od, oh, ow] = T.cast(
-                            T.if_then_else(has_nan[0], nan_idx[0], max_idx[0]), "int64"
+                            T.if_then_else(has_nan, nan_idx, max_idx), "int64"
                         )
 
         return _max_pool3d_with_indices_main
