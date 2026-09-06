@@ -118,6 +118,8 @@ Three time points: (1) manifest — constraint structure; (2) `__init__` — use
 - **Op with dynamic dims:** `_infer_output_shapes` called once dynamic dims resolve, and by the fake while tracing.
 - **Kernel construction:** in `_eager_forward`, through `get_or_build_kernel` — never in the traced `forward`, which is one call to the op's operator ([Compile Dispatch Boundary](ops-design.md#compile-dispatch-boundary)). See [Slot S16](op-slot-rules.md#slot-s16).
 - **`_validate_dtypes`:** runs on every call, and is the only place an op rejects a dtype.
+- **Empty outputs:** a call whose every declared output would hold no elements is refused with a `ValueError` naming the op, the input and its shape. TileOPs kernels do not serve one; the launch asserts on `grid_dim` or divides by zero, which says nothing about what is unsupported. The refusal is in `get_or_build_kernel`, so both the eager and the traced path reach it. What decides is the output, not the input: a zero-length axis on an input is legitimate where the op still produces something — a decode reading an empty state, an empty scratch buffer — and those calls are not refused.
+- **Precedence:** a call invalid for more than one reason is refused for whichever check it reaches first. The op's own validation in `_eager_forward` precedes the empty-output refusal, which precedes the kernel build and everything the kernel itself states — so an empty call on a device the kernel does not serve is reported as empty.
 - **Non-runtime consumers** (validator, graph compiler): call `_infer_output_shapes` with concrete shape tuples without constructing tensors. Roofline consumers use interfaces in [`roofline.md`](roofline.md).
 
 ### Inheritance in family-base hierarchies
