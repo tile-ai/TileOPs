@@ -21,8 +21,8 @@ def _make_where_kernel(N, dtype, threads=256, npt=8):
     Each uint8 element is 0 or 1; the kernel loads it into a register fragment
     and unpacks per-element with a != 0 comparison.
 
-    The result is written back into ``x``'s register fragment, so the fourth
-    data-typed fragment a separate output would need is never allocated.
+    The result is written back into ``x``'s register fragment rather than a
+    fourth data-typed one.
     """
 
     @tilelang.jit(out_idx=[3])

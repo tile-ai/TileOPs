@@ -26,8 +26,8 @@ def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
     Each uint8 element is 0 or 1; the kernel loads it into a register fragment
     and unpacks per-element with a != 0 comparison.
 
-    The result is written back into ``x``'s register fragment, so the third
-    data-typed fragment a separate output would need is never allocated.
+    The result is written back into ``x``'s register fragment rather than a
+    third data-typed one.
     """
 
     @tilelang.jit(out_idx=[2])

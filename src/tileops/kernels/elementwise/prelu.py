@@ -72,7 +72,7 @@ class PreluFwdKernel(MultiInputElementwiseKernel):
         """Run the kernel.
 
         ``weight`` is per-channel, not per element, so it is passed flat rather
-        than broadcast against ``x``; ``_run`` does not apply.
+        than broadcast against ``x``.
         """
         self._require_cuda(x=x, weight=weight)
         return self._compiled_fn(_flat(x), _flat(weight)).reshape(x.shape)

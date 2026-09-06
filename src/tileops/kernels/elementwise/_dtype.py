@@ -24,8 +24,7 @@ _BITWISE_DTYPES = (
 )
 
 
-# The dtypes every elementwise kernel refuses. No kernel here declares one in
-# ``SUPPORTED_DTYPES``, so this is a rejection list, not a code path.
+# The dtypes every elementwise kernel refuses.
 _FP8_DTYPES = (
     torch.float8_e4m3fn,
     torch.float8_e5m2,

@@ -634,8 +634,8 @@ class ScalarParamUnaryKernel(UnaryKernel):
     every distinct value is its own specialization. Subclasses implement
     ``_make_op_func`` and ``_param_key``; ``op_func`` is never called.
 
-    Only ``register_copy`` is offered. The wider strategy axis ``UnaryKernel``
-    carries has never been measured for these bodies.
+    Only ``register_copy`` is offered; a ``config`` naming another strategy
+    raises.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
@@ -677,8 +677,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
     ``value``   a 0-dim scalar reshaped to a length-one buffer
     =========== =============================================================
 
-    An argument the call leaves as ``None`` names no PrimFunc parameter, which
-    is how an optional bound drops out of the signature.
+    An argument the call leaves as ``None`` names no PrimFunc parameter.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]

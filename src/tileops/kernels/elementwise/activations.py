@@ -270,10 +270,8 @@ class HardtanhFwdKernel(ScalarParamUnaryKernel):
 def _make_softplus_kernel(N, dtype, beta, threshold, threads=256, npt=8):
     """Build softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x.
 
-    Written out rather than bound through ``ScalarParamUnaryKernel``: the
-    statement binding ``softplus`` lifts the exponential and the logarithm out
-    of the guard, which an op body returning one expression cannot do, and a
-    float16 row is 1.2% slower with them inside it.
+    Binding ``softplus`` as a statement lifts the exponential and the logarithm
+    out of the guard. float16 rows are 1.2% slower with them inside it.
     """
 
     @tilelang.jit(out_idx=[1])

@@ -43,9 +43,8 @@ class NanToNumFwdKernel(ScalarParamUnaryKernel):
                 return T.if_then_else(T.isnan(wide), nan_r, T.cast(bounded, x.dtype))
             pos_r = T.cast(posinf_val, x.dtype)
             neg_r = T.cast(neginf_val, x.dtype)
-            # ``|x| == inf`` rather than ``T.isinf(x)``: the NaN case is already
-            # taken, and ``isinf`` lowers to that comparison plus a NaN test
-            # this branch has no argument for.
+            # ``T.isinf`` lowers to this comparison plus a NaN test, which the
+            # branch above has already taken.
             infinite = T.abs(wide) == T.cast(float("inf"), "float32")
             return T.if_then_else(
                 T.isnan(wide),

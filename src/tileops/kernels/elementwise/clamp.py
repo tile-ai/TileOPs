@@ -51,11 +51,10 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
 
     Inputs are flat and of length *N*; ``ClampTensorFwdKernel.forward``
     broadcasts them. ``has_min`` / ``has_max`` select the three forms the
-    Tensor clamp, clamp_min and clamp_max ops take. One bound and the other
-    read the same two-operand PrimFunc, which one being decided here.
+    Tensor clamp, clamp_min and clamp_max ops take.
 
-    The result is written back into ``x``'s fragment, so the third data-typed
-    fragment a separate output would need is never allocated.
+    The result is written back into ``x``'s fragment rather than a third
+    data-typed one.
     """
     if not (has_min or has_max):
         raise ValueError("_make_clamp_tensor_kernel requires has_min or has_max to be True")
@@ -86,9 +85,9 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
                         lo32 = T.cast(lo_reg[k], "float32")
                         hi32 = T.cast(hi_reg[k], "float32")
                         r = T.min(T.max(x32, lo32), hi32)
-                        # fmaxf / fminf return their non-NaN operand; torch
-                        # returns NaN. Put it back, after both bounds, so a
-                        # bound's NaN is not clamped away by the other.
+                        # fmaxf / fminf return their non-NaN operand where torch
+                        # returns NaN. Restored after both bounds, so one bound's
+                        # NaN is not clamped away by the other.
                         r = T.if_then_else(T.isnan(hi32), hi32, r)
                         r = T.if_then_else(T.isnan(lo32), lo32, r)
                         r = T.if_then_else(T.isnan(x32), x32, r)
