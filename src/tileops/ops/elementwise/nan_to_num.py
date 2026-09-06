@@ -35,11 +35,9 @@ class NanToNumFwdOp(_PerDtypeKernels, Op):
             nan: Replacement for NaN (default 0.0).
             posinf: Replacement for +Inf. Manifest default ``None`` resolves
                 to the largest finite value representable in the element type of the
-                call (matches ``torch.nan_to_num``). Explicit values
-                must also be representable in that dtype end-to-end; values
-                that fit only in the kernel's intermediate dtype (e.g. fp16
-                for fp8_e5m2) are rejected so the post-cast cannot resurface
-                them as Inf.
+                call (matches ``torch.nan_to_num``). An explicit value outside
+                that element type's finite range is rejected rather than stored
+                as Inf.
             neginf: Replacement for -Inf. Manifest default ``None`` resolves
                 to the smallest (most negative) finite value representable
                 in the element type of the call.
@@ -63,9 +61,8 @@ class NanToNumFwdOp(_PerDtypeKernels, Op):
 
         A ``None`` bound means "this dtype's largest finite value", so it
         cannot be resolved before the element type is known. Picking
-        ``finfo(dtype).max`` keeps the replacement finite end-to-end and
-        matches ``torch.nan_to_num``; forwarding ``+inf`` would resolve to
-        fp16's 65504.0 and resurface as ``+Inf`` after an e5m2 post-cast.
+        ``finfo(dtype).max`` matches ``torch.nan_to_num``; forwarding ``+inf``
+        would write back the infinity the op was called to replace.
         """
         _validate_scalar_param_repr("nan", self.nan, dtype, self._op_name)
         if self.posinf is None:

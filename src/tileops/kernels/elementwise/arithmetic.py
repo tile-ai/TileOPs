@@ -234,11 +234,10 @@ def _is_float_dtype_str(dtype_str: str) -> bool:
     """Return True for floating-point TileLang dtype strings.
 
     TileLang IR exposes operand dtypes only as strings (``"float16"``,
-    ``"bfloat16"``, ``"float32"``, ``"float8_e4m3fn"`` ...), so prefix
-    matching is the established convention for float detection inside
-    ``op_func`` kernel bodies. All TileLang float dtype names start
-    with ``"float"`` or ``"bfloat"``; integer / bool dtype names
-    (``"int*"``, ``"uint*"``, ``"bool"``) do not.
+    ``"bfloat16"``, ``"float32"``), so prefix matching is the established
+    convention for float detection inside ``op_func`` kernel bodies. All
+    TileLang float dtype names start with ``"float"`` or ``"bfloat"``;
+    integer / bool dtype names (``"int*"``, ``"uint*"``, ``"bool"``) do not.
     """
     return dtype_str.startswith(("float", "bfloat"))
 

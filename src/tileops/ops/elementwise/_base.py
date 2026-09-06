@@ -58,9 +58,9 @@ def _validate_scalar_param_repr(
 ) -> None:
     """Reject scalar params that cannot be represented in the user dtype.
 
-    Validates against the *user-facing* ``dtype``, not the kernel's fp16
-    intermediate: an fp8 kernel computes in fp16, so a value that only fits in
-    fp16 would surface as ``+/-Inf`` after the fp8 post-cast.
+    Validated against the dtype the caller passes, which is the dtype the result
+    is stored in. A kernel widening an operand for the arithmetic does not widen
+    what the scalar has to fit in.
 
     Integer and bool mirror PyTorch ``Tensor.masked_fill`` coercion:
 
