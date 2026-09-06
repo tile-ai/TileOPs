@@ -32,7 +32,7 @@
 
 - Roofline `vars` maps variable names to Python expressions over tensor shapes and params. Required for arbitrary-rank ops.
 
-- `status` is required: `implemented` or `spec-only`.
+- `status` is required: `implemented` or `spec-only`. A new entry lands as `spec-only` whatever existing code claims, and the PR that flips it to `implemented` changes `status` and the `source.*` pointers only — an entry needing spec edits to match the implementation is reverse-engineering from code, and those fields are re-derived from `ref_api` in their own PR.
 
 - `torch_compile_fullgraph`: literal `true` only; omit for no promise; invalid on `spec-only`. Declare only ops with a registered cold `fullgraph=True` compile test. Semantics: [manifest.md](../../docs/design/manifest.md#torch_compile_fullgraph).
 

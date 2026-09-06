@@ -67,8 +67,6 @@ secrets.yaml
 secrets.yml
 
 docs/plans/
-.foundry/runs/
-.foundry/config.local.json
 
 CLAUDE.local.md
 .claude/worktrees/

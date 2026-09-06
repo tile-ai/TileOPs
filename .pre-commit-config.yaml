@@ -81,6 +81,12 @@ repos:
         language: python
         files: ^src/tileops/ops/.*\.py$
 
+      - id: tilelang-idioms-lint
+        name: TileLang idiom lint
+        entry: python scripts/lint/tilelang_idioms_lint.py
+        language: python
+        files: ^(src/tileops|tests|benchmarks|workloads)/.*\.py$
+
   - repo: https://github.com/executablebooks/mdformat
     rev: 0.7.22
     hooks:

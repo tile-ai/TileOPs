@@ -8,7 +8,7 @@ This project follows **design-first, spec-driven** development: design docs and 
 
 ## Development Environment
 
-Activate a virtual environment, then `pip install -e '.[dev]' -c constraints.txt && pre-commit install`. See [docs/development.md](docs/development.md).
+Activate a virtual environment, then `pip install -e '.[dev]' -c constraints.txt && pre-commit install`. See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/development.md](docs/development.md).
 
 ## Key References
 
@@ -49,6 +49,8 @@ Read the relevant context file **before** modifying files in that domain. Do not
 | `workloads/`                                                      | [docs/design/trust-model.md](docs/design/trust-model.md)                                 |
 | `docs/design/`                                                    | [.claude/domain-rules/design-docs.md](.claude/domain-rules/design-docs.md)               |
 
-## Reviewing a PR
+## Contributing
 
-Load [pre-review.md](.claude/review-checklists/pre-review.md) plus the domain rules the diff touches, per the table above. A PR that adds, patches, or flips the `status` of a manifest entry also loads [review-checklists/manifest.md](.claude/review-checklists/manifest.md). Run [approval-gate.md](.claude/review-checklists/approval-gate.md) before calling any PR clean.
+Naming, PR body shape, and what a review checks: [CONTRIBUTING.md](CONTRIBUTING.md). A rule that
+can be checked mechanically is a `pre-commit` hook, not a line in a document — run
+`pre-commit run --all-files` and read what it says rather than re-deriving the rule.

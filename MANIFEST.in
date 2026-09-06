@@ -7,7 +7,6 @@ prune assets
 prune workloads
 prune .github
 prune .claude
-prune .foundry
 prune scripts
 
 # Same rule, for root files rather than trees.

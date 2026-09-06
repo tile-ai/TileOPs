@@ -38,6 +38,7 @@ SDIST_ALLOWED_FILES = frozenset(
     {
         "LICENSE",
         "README.md",
+        "CONTRIBUTING.md",
         "MANIFEST.in",
         "pyproject.toml",
         "PKG-INFO",

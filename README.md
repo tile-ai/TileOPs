@@ -115,6 +115,7 @@ build troubleshooting.
 
 |                                                |                                                  |
 | ---------------------------------------------- | ------------------------------------------------ |
+| [CONTRIBUTING.md](CONTRIBUTING.md)             | Naming, PR shape, what a review checks           |
 | [development.md](docs/development.md)          | Build, test, benchmark, dev image                |
 | [architecture.md](docs/design/architecture.md) | Module map and the agent production loop         |
 | [manifest.md](docs/design/manifest.md)         | The spec format every operator starts from       |

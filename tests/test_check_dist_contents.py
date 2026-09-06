@@ -36,7 +36,14 @@ def _in_src(entries: list[str]) -> list[str]:
 
 
 WHEEL_OK = [*RESOURCES, *SOURCES]
-SDIST_OK = [*_in_src(RESOURCES), *_in_src(SOURCES), "LICENSE", "README.md", "pyproject.toml"]
+SDIST_OK = [
+    *_in_src(RESOURCES),
+    *_in_src(SOURCES),
+    "LICENSE",
+    "README.md",
+    "CONTRIBUTING.md",
+    "pyproject.toml",
+]
 
 
 def make_repo(tmp_path: Path) -> Path:
@@ -143,6 +150,14 @@ def test_sdist_missing_license_fails(tmp_path):
     result = run_check(repo, dist)
     assert result.returncode == 1
     assert "LICENSE" in result.stdout
+
+
+def test_sdist_without_contributing_passes(tmp_path):
+    """CONTRIBUTING.md may ship, but the release does not depend on it existing."""
+    kept = [e for e in SDIST_OK if e != "CONTRIBUTING.md"]
+    repo, dist = build_dist(tmp_path, WHEEL_OK, kept)
+    result = run_check(repo, dist)
+    assert result.returncode == 0, result.stdout
 
 
 @pytest.mark.parametrize(

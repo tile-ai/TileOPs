@@ -1,16 +1,12 @@
+Rules a reader has to apply by hand. The deprecated `T.Buffer` annotation, a dtype-first
+`T.reinterpret`, a literal cast to a narrow float, and a file-level `noqa` are checked by
+`scripts/lint/tilelang_idioms_lint.py`; that file states why each one is wrong.
+
 - Every `src/tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from .module import Symbol` re-exports.
 
 - Intra-package imports: relative (`from .op import Op`). Cross-package: absolute (`tileops.foo.bar`).
 
-- No file-level lint suppressions (`# ruff: noqa`, `# flake8: noqa`). Use targeted inline `# noqa: XXXX` only.
-
-- TIR parameter type: `T.Tensor(shape, dtype)`, never the deprecated `T.Buffer`.
-
-- Reinterpret cast: `T.reinterpret(value, dtype)` (value first), never the deprecated dtype-first form.
-
 - Each TileLang kernel is one `@T.prim_func` whose body opens `with T.Kernel(...)`; sub-routines use `@T.macro`, never nested `prim_func`.
-
-- No narrow-type literal casts (`T.cast(1.0, "float16")`). Reference `x.dtype`, or compute in a wider intermediate and cast at the boundary.
 
 - Promote overflow-prone fp16/bf16 math (cubic, division, `exp`, softmax accumulators) to fp32; cast back to storage dtype at the boundary.
 
