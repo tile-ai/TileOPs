@@ -595,6 +595,8 @@ workloads:
 
 `spec-only` ops → L0 only. `implemented` ops → all levels. `--check-op <name>` forces L0-L4 on the targeted entry. L2 and L3 additionally run parity extensions against the implemented Op's `_infer_output_shapes` / `_validate_dtypes` methods; see [ops-design.md](ops-design.md).
 
+Those parity extensions block only under `--strict`, which is how CI runs the validator. A default run reports them as warnings and says so — its first lines name the `parity-mode:` in force, so a green default run is not the same claim as a green CI run.
+
 ```bash
 python scripts/validate_manifest.py
 python scripts/validate_manifest.py --check-op SoftmaxFwdOp

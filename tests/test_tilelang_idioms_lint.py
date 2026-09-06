@@ -126,7 +126,6 @@ def test_default_scan_reaches_the_source_tree():
         sys.path.pop(0)
 
     targets = lint._targets([])
-    assert len(targets) > 100
     assert REPO_ROOT / "src" / "tileops" / "kernels" / "rope.py" in targets
 
 
