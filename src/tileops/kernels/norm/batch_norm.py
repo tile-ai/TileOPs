@@ -147,9 +147,9 @@ def _batch_norm_fwd_train_kernel(
                     # Persistent path has exactly one tile, so a pipelined loop
                     # cannot overlap producer/consumer work.
                     for _i, j in T.Parallel(1, block_l):
-                        x_shared[j] = x[(j // S) * plane + bc * S + j % S]
-                    for _i, j in T.Parallel(1, block_l):
-                        xval = T.cast(x_shared[j], accum_dtype)
+                        v = x[(j // S) * plane + bc * S + j % S]
+                        x_shared[j] = v
+                        xval = T.cast(v, accum_dtype)
                         xsum_frag[_i, j] += xval
                         xsq_frag[_i, j] += xval * xval
                 else:
