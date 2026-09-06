@@ -24,6 +24,8 @@ _BITWISE_DTYPES = (
 )
 
 
+# The dtypes every elementwise kernel refuses. No kernel here declares one in
+# ``SUPPORTED_DTYPES``, so this is a rejection list, not a code path.
 _FP8_DTYPES = (
     torch.float8_e4m3fn,
     torch.float8_e5m2,
@@ -50,24 +52,9 @@ _BINARY_FULL_DTYPES = _BITWISE_DTYPES + (
 _BINARY_NO_BOOL_DTYPES = tuple(dt for dt in _BINARY_FULL_DTYPES if dt is not torch.bool)
 
 
-def _is_fp8(dtype: torch.dtype) -> bool:
-    """Check if a torch dtype is an fp8 variant."""
-    return dtype in _FP8_DTYPES
-
-
 def _torch_dtype_nbytes(dtype: torch.dtype) -> int:
     """Return the byte width of a torch dtype."""
     return torch.empty(0, dtype=dtype).element_size()
-
-
-def _fp8_needs_nonsaturating_cast(dtype: torch.dtype) -> bool:
-    """Return True if the fp8 format supports Inf/NaN and needs non-saturating output."""
-    return dtype == torch.float8_e5m2
-
-
-def _fp8_accum_dtype_str() -> str:
-    """Return the TileLang dtype string used for fp8 intermediate accumulation."""
-    return "float16"
 
 
 def _clamp_to_dtype_range(value, dtype: torch.dtype):
@@ -91,7 +78,5 @@ def _clamp_to_dtype_range(value, dtype: torch.dtype):
         return fvalue
     finfo = torch.finfo(dtype)
     if math.isinf(fvalue):
-        if dtype in _FP8_DTYPES and not _fp8_needs_nonsaturating_cast(dtype):
-            return finfo.max if fvalue > 0 else finfo.min
         return fvalue
     return max(finfo.min, min(finfo.max, fvalue))

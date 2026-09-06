@@ -8,11 +8,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
-from ._base import (
-    _FLOAT_DTYPES,
-    _get_fp8_output_dtypes,
-    _is_fp8,
-)
+from ._dtype import _FLOAT_DTYPES
 
 __all__ = [
     "AlibiFwdKernel",
@@ -89,12 +85,12 @@ class AlibiFwdKernel(Kernel):
         self.seq_len = seq_len
         self.num_heads = num_heads
         self.dtype = dtype
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
+        self.output_dtype = dtype
         cfg = self.default_config
         self.kernel = _make_alibi_kernel(
             seq_len,
             num_heads,
-            self.dtype_to_str(self.output_dtype),
+            self.dtype_str,
             cfg["threads"],
             cfg["num_per_thread"],
         )
@@ -102,8 +98,7 @@ class AlibiFwdKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
-        return {"threads": 256, "num_per_thread": npt}
+        return {"threads": 256, "num_per_thread": 4 if self.dtype == torch.float32 else 8}
 
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""

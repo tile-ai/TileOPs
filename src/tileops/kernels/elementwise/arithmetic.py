@@ -10,18 +10,10 @@ import tvm.tirx as tirx
 from ._base import (
     _FLOAT_DTYPES,
     BinaryKernel,
-    ParametricUnaryKernel,
+    MultiInputElementwiseKernel,
     _AlphaScaledBinaryKernel,
-    _make_binary_direct,
-    _make_binary_explicit,
-    _make_binary_register_copy,
 )
-from ._broadcast import BroadcastPlan, _broadcast_target, _expand_flat, register_broadcast_plan
-from ._dtype import _BINARY_FULL_DTYPES, _BINARY_NO_BOOL_DTYPES, _fp8_accum_dtype_str
-from ._op_body import (
-    _wrap_fp8_accumulation,
-    register_op_func,
-)
+from ._dtype import _BINARY_FULL_DTYPES, _BINARY_NO_BOOL_DTYPES
 
 __all__ = [
     "AddFwdKernel",
@@ -209,7 +201,7 @@ class LerpFwdKernel(BinaryKernel):
     """Element-wise lerp: y = a + weight * (b - a).
 
     PyTorch lerp is ternary (a, b, weight). Here weight is a compile-time
-    constant passed at kernel construction, keeping the binary kernel template.
+    constant bound at kernel construction, keeping the binary kernel template.
 
     Args:
         weight: Scalar interpolation weight (default 0.5). Keyword-only so the
@@ -220,74 +212,22 @@ class LerpFwdKernel(BinaryKernel):
 
     @staticmethod
     def op_func(a, b):
-        raise NotImplementedError("Use _make_lerp_op_func(weight) instead")
+        raise NotImplementedError(
+            "LerpFwdKernel builds its body from weight; use the kernel through "
+            "__init__ instead of calling op_func."
+        )
 
     def __init__(self, a_shape, b_shape, dtype, config=None, tune=False, *, weight=0.5):
         self._weight = weight
         super().__init__(a_shape, b_shape, dtype, config=config, tune=tune)
 
-    def _build_kernel(self, strategy):
-        """Override to inject compile-time weight into op_func."""
-        w = self._weight
+    def _get_effective_op_func(self):
+        weight = self._weight
 
         def lerp_func(a, b):
-            return a + T.cast(w, a.dtype) * (b - a)
+            return a + T.cast(weight, a.dtype) * (b - a)
 
-        effective_op = register_op_func(
-            f"{self._op_func_name()}|weight={w!r}",
-            _wrap_fp8_accumulation(
-                lerp_func,
-                self.dtype,
-                self.dtype_str,
-                arity=2,
-            ),
-        )
-        plan = register_broadcast_plan(
-            BroadcastPlan(self.coalesced_shape, self.a_strides, self.b_strides)
-        )
-
-        # For e5m2: kernel output is fp16 (non-saturating path)
-        kernel_output_dtype = (
-            self.dtype_to_str(self.OUTPUT_DTYPE) if self.OUTPUT_DTYPE is not None else None
-        )
-        if self._fp8_output_dtype is not None:
-            kernel_output_dtype = _fp8_accum_dtype_str()
-
-        cfg = self.default_config
-        if strategy == "direct":
-            return _make_binary_direct(
-                self.N_total,
-                self.dtype_str,
-                effective_op,
-                plan,
-                self.a_numel,
-                self.b_numel,
-                output_dtype=kernel_output_dtype,
-                threads=cfg["threads"],
-            )
-        elif strategy == "explicit_parallel":
-            return _make_binary_explicit(
-                self.N_total,
-                self.dtype_str,
-                effective_op,
-                plan,
-                self.a_numel,
-                self.b_numel,
-                output_dtype=kernel_output_dtype,
-                threads=cfg["threads"],
-                num_per_thread=cfg["num_per_thread"],
-            )
-        elif strategy == "register_copy":
-            return _make_binary_register_copy(
-                self.N_total,
-                self.dtype_str,
-                effective_op,
-                output_dtype=kernel_output_dtype,
-                threads=cfg["threads"],
-                num_per_thread=cfg["num_per_thread"],
-            )
-        else:
-            raise ValueError(f"Unknown strategy: {strategy}")
+        return f"{self._op_func_name()}|weight={weight!r}", lerp_func
 
 
 def _is_float_dtype_str(dtype_str: str) -> bool:
@@ -422,22 +362,16 @@ class MinimumFwdKernel(BinaryKernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_lerp_tensor_kernel(N, dtype, output_dtype=None, is_fp8=False, threads=256, npt=8):
+def _make_lerp_tensor_kernel(N, dtype, threads=256, npt=8):
     """Build Tensor-weight lerp kernel: out = a + weight * (b - a).
 
     ``LerpTensorFwdKernel.forward`` broadcasts ``input`` / ``end`` / ``weight``
-        to the output shape and flattens them, so this PrimFunc sees three
-        contiguous 1-D tensors of size ``N``. Computation is performed in the input dtype for fp16 /
-        bfloat16 / float32 (the only dtypes the manifest declares); the fp8
-        path is unreachable here because the kernel's ``SUPPORTED_DTYPES``
-        excludes fp8.
+    to the output shape and flattens them, so this PrimFunc sees three
+    contiguous 1-D tensors of size ``N``, and computes in the input dtype.
 
-        Uses the register-fragment load -> compute -> fragment store strategy
-        (matches the non-fp8 ``_make_where_kernel`` layout) so all three
-        inputs and the output share the same vectorized memory access path.
+    All three inputs move through register fragments so they share one
+    vectorized access path; the result is written back into ``a``'s fragment.
     """
-    del is_fp8  # fp8 is not in the manifest contract for this op
-    out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
@@ -448,7 +382,7 @@ def _make_lerp_tensor_kernel(N, dtype, output_dtype=None, is_fp8=False, threads=
             a: T.Tensor((N,), dtype),
             b: T.Tensor((N,), dtype),
             w: T.Tensor((N,), dtype),
-            out: T.Tensor((N,), out_dtype),
+            out: T.Tensor((N,), dtype),
         ):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
                 a_reg = T.alloc_fragment((block_size,), dtype)
@@ -467,33 +401,22 @@ def _make_lerp_tensor_kernel(N, dtype, output_dtype=None, is_fp8=False, threads=
     return kernel
 
 
-class LerpTensorFwdKernel(ParametricUnaryKernel):
+class LerpTensorFwdKernel(MultiInputElementwiseKernel):
     """Tensor-weight lerp: out = input + weight * (end - input).
 
-        Implements the Tensor-weight overload of ``torch.lerp`` —
-        ``torch.lerp(input, end, weight: Tensor)`` — where all three operands
-    are float tensors of the same dtype, broadcast together and flattened
-        by ``forward``.
-
-        Manifest declares ``float16 | bfloat16 | float32``; fp8 is rejected
-        at construction. ``forward`` takes the manifest shapes and broadcasts
-        them to ``N_total`` itself.
+    Implements the Tensor-weight overload of ``torch.lerp`` --
+    ``torch.lerp(input, end, weight: Tensor)`` -- where all three operands are
+    float tensors of the same dtype, broadcast together and flattened by
+    ``forward``.
     """
 
     SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
-    _DEFAULT_THREADS = 512
-    _skip_fp8_output = True
+    DEFAULT_THREADS = 512
+    INPUTS = (("a", "tile"), ("b", "tile"), ("w", "tile"))
 
     @staticmethod
     def _builder_fn():
         return _make_lerp_tensor_kernel
 
     def forward(self, a, b, w):
-        self._require_cuda(a=a, b=b, w=w)
-        out_shape = _broadcast_target(a, b, w)
-        result = self._compiled_fn(
-            _expand_flat(a, out_shape),
-            _expand_flat(b, out_shape),
-            _expand_flat(w, out_shape),
-        )
-        return result.reshape(out_shape)
+        return self._run(a=a, b=b, w=w)

@@ -8,12 +8,7 @@ from typing import Callable
 
 import tilelang.language as T
 
-from ._dtype import (
-    BOOL_STORAGE_DTYPE,
-    _fp8_accum_dtype_str,
-    _fp8_needs_nonsaturating_cast,
-    _is_fp8,
-)
+from ._dtype import BOOL_STORAGE_DTYPE
 
 __all__ = ["op_func_for", "register_op_func"]
 
@@ -62,29 +57,3 @@ def _store_unary_bool_as_int8(op_func):
 
 def _store_binary_bool_as_int8(op_func):
     return _store_bool_as_int8(op_func, arity=2)
-
-
-def _wrap_fp8_accumulation(base_op, dtype, dtype_str, arity=1):
-    if not _is_fp8(dtype):
-        return base_op
-
-    accum = _fp8_accum_dtype_str()
-    if _fp8_needs_nonsaturating_cast(dtype):
-        if arity == 1:
-
-            def fp8_accum_op(x):
-                return base_op(T.cast(x, accum))
-        else:
-
-            def fp8_accum_op(a, b):
-                return base_op(T.cast(a, accum), T.cast(b, accum))
-    elif arity == 1:
-
-        def fp8_accum_op(x):
-            return T.Cast(dtype_str, base_op(T.cast(x, accum)))
-    else:
-
-        def fp8_accum_op(a, b):
-            return T.Cast(dtype_str, base_op(T.cast(a, accum), T.cast(b, accum)))
-
-    return fp8_accum_op

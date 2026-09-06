@@ -11,9 +11,10 @@ from ._base import (
     _FLOAT_DTYPES,
     FloatUnaryKernel,
     FusedGatedKernel,
-    ParametricUnaryKernel,
+    MultiInputElementwiseKernel,
+    ScalarParamUnaryKernel,
 )
-from ._dtype import _fp8_accum_dtype_str, log_for_output_precision
+from ._dtype import log_for_output_precision
 from ._erf import erf
 
 __all__ = [
@@ -198,206 +199,51 @@ class SeluFwdKernel(FloatUnaryKernel):
         return scale * T.if_then_else(x32 > zero, x32, alpha * (T.exp(x32) - one))
 
 
-@functools.lru_cache(maxsize=32)
-def _make_leaky_relu_kernel(
-    N, dtype, negative_slope, output_dtype=None, is_fp8=False, threads=256, npt=8
-):
-    """Build leaky_relu kernel: y = x if x > 0 else negative_slope * x.
-
-    For non-fp8 dtypes, uses register_copy strategy: fragment load -> compute
-    -> fragment store for coalesced memory access.
-
-    For fp8 dtypes, uses explicit_parallel with fp16 accumulation (register_copy
-    is unreliable for 8-bit fragments).
-    """
-    out_dtype = output_dtype or dtype
-
-    if is_fp8:
-        accum = _fp8_accum_dtype_str()
-
-        @tilelang.jit(out_idx=[1])
-        def kernel(threads_arg, npt_arg):
-            block_size = threads_arg * npt_arg
-
-            @T.prim_func
-            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        idx = (bx * threads_arg + i) * npt_arg + j
-                        if idx < N:
-                            val = x[idx]
-                            v = T.cast(val, accum)
-                            zero = T.cast(0, accum)
-                            slope = T.cast(negative_slope, accum)
-                            result = T.if_then_else(v > zero, v, slope * v)
-                            y[idx] = T.Cast(out_dtype, result)
-
-            return main
-    else:
-
-        @tilelang.jit(out_idx=[1])
-        def kernel(threads_arg, npt_arg):
-            block_size = threads_arg * npt_arg
-
-            @T.prim_func
-            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
-                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                    x_reg = T.alloc_fragment((block_size,), dtype)
-                    y_reg = T.alloc_fragment((block_size,), dtype)
-                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        val = x_reg[i * npt_arg + j]
-                        zero = T.cast(0, val.dtype)
-                        slope = T.cast(negative_slope, val.dtype)
-                        y_reg[i * npt_arg + j] = T.if_then_else(val > zero, val, slope * val)
-                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
-
-            return main
-
-    return kernel
-
-
-class LeakyReluFwdKernel(ParametricUnaryKernel):
+class LeakyReluFwdKernel(ScalarParamUnaryKernel):
     """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
 
     def __init__(self, N_total, dtype, negative_slope=0.01, config=None, tune=False):
         self.negative_slope = negative_slope
         super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @staticmethod
-    def _builder_fn():
-        return _make_leaky_relu_kernel
+    def _param_key(self):
+        return f"negative_slope={self.negative_slope!r}"
 
-    def _builder_args(self):
-        return (self.negative_slope,)
+    def _make_op_func(self):
+        negative_slope = self.negative_slope
 
+        def op_func(x):
+            zero = T.cast(0, x.dtype)
+            slope = T.cast(negative_slope, x.dtype)
+            return T.if_then_else(x > zero, x, slope * x)
 
-@functools.lru_cache(maxsize=32)
-def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False, threads=256, npt=8):
-    """Build ELU kernel: y = x if x > 0 else alpha * (exp(x) - 1)."""
-    out_dtype = output_dtype or dtype
-
-    if is_fp8:
-
-        @tilelang.jit(out_idx=[1])
-        def kernel(threads_arg, npt_arg):
-            block_size = threads_arg * npt_arg
-
-            @T.prim_func
-            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        idx = (bx * threads_arg + i) * npt_arg + j
-                        if idx < N:
-                            val = x[idx]
-                            zero = T.cast(0, "float32")
-                            a = T.cast(alpha, "float32")
-                            one = T.cast(1.0, "float32")
-                            v32 = T.cast(val, "float32")
-                            y[idx] = T.if_then_else(
-                                v32 > zero,
-                                T.Cast(out_dtype, v32),
-                                T.Cast(out_dtype, a * (T.exp(v32) - one)),
-                            )
-
-            return main
-    else:
-
-        @tilelang.jit(out_idx=[1])
-        def kernel(threads_arg, npt_arg):
-            block_size = threads_arg * npt_arg
-
-            @T.prim_func
-            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
-                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                    x_reg = T.alloc_fragment((block_size,), dtype)
-                    y_reg = T.alloc_fragment((block_size,), dtype)
-                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        val = x_reg[i * npt_arg + j]
-                        zero = T.cast(0, "float32")
-                        a = T.cast(alpha, "float32")
-                        one = T.cast(1.0, "float32")
-                        v32 = T.cast(val, "float32")
-                        y_reg[i * npt_arg + j] = T.if_then_else(
-                            v32 > zero,
-                            val,
-                            T.Cast(val.dtype, a * (T.exp(v32) - one)),
-                        )
-                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
-
-            return main
-
-    return kernel
+        return op_func
 
 
-class EluFwdKernel(ParametricUnaryKernel):
+class EluFwdKernel(ScalarParamUnaryKernel):
     """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
 
     def __init__(self, N_total, dtype, alpha=1.0, config=None, tune=False):
         self.alpha = alpha
         super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @staticmethod
-    def _builder_fn():
-        return _make_elu_kernel
+    def _param_key(self):
+        return f"alpha={self.alpha!r}"
 
-    def _builder_args(self):
-        return (self.alpha,)
+    def _make_op_func(self):
+        alpha = self.alpha
 
+        def op_func(x):
+            zero = T.cast(0, "float32")
+            one = T.cast(1.0, "float32")
+            a = T.cast(alpha, "float32")
+            wide = T.cast(x, "float32")
+            return T.if_then_else(wide > zero, x, T.Cast(x.dtype, a * (T.exp(wide) - one)))
 
-@functools.lru_cache(maxsize=32)
-def _make_hardtanh_kernel(
-    N, dtype, min_val, max_val, output_dtype=None, is_fp8=False, threads=256, npt=8
-):
-    """Build hardtanh kernel: y = clamp(x, min_val, max_val)."""
-    out_dtype = output_dtype or dtype
-
-    if is_fp8:
-
-        @tilelang.jit(out_idx=[1])
-        def kernel(threads_arg, npt_arg):
-            block_size = threads_arg * npt_arg
-
-            @T.prim_func
-            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        idx = (bx * threads_arg + i) * npt_arg + j
-                        if idx < N:
-                            val = x[idx]
-                            lo = T.cast(min_val, "float32")
-                            hi = T.cast(max_val, "float32")
-                            v32 = T.cast(val, "float32")
-                            y[idx] = T.Cast(out_dtype, T.min(T.max(v32, lo), hi))
-
-            return main
-    else:
-
-        @tilelang.jit(out_idx=[1])
-        def kernel(threads_arg, npt_arg):
-            block_size = threads_arg * npt_arg
-
-            @T.prim_func
-            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
-                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                    x_reg = T.alloc_fragment((block_size,), dtype)
-                    y_reg = T.alloc_fragment((block_size,), dtype)
-                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        val = x_reg[i * npt_arg + j]
-                        lo = T.cast(min_val, "float32")
-                        hi = T.cast(max_val, "float32")
-                        v32 = T.cast(val, "float32")
-                        y_reg[i * npt_arg + j] = T.Cast(val.dtype, T.min(T.max(v32, lo), hi))
-                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
-
-            return main
-
-    return kernel
+        return op_func
 
 
-class HardtanhFwdKernel(ParametricUnaryKernel):
+class HardtanhFwdKernel(ScalarParamUnaryKernel):
     """Hardtanh: y = clamp(x, min_val, max_val)."""
 
     def __init__(self, N_total, dtype, min_val=-1.0, max_val=1.0, config=None, tune=False):
@@ -405,79 +251,65 @@ class HardtanhFwdKernel(ParametricUnaryKernel):
         self.max_val = max_val
         super().__init__(N_total, dtype, config=config, tune=tune)
 
-    @staticmethod
-    def _builder_fn():
-        return _make_hardtanh_kernel
+    def _param_key(self):
+        return f"min_val={self.min_val!r}|max_val={self.max_val!r}"
 
-    def _builder_args(self):
-        return (self.min_val, self.max_val)
+    def _make_op_func(self):
+        min_val, max_val = self.min_val, self.max_val
+
+        def op_func(x):
+            lo = T.cast(min_val, "float32")
+            hi = T.cast(max_val, "float32")
+            wide = T.cast(x, "float32")
+            return T.Cast(x.dtype, T.min(T.max(wide, lo), hi))
+
+        return op_func
 
 
 @functools.lru_cache(maxsize=32)
-def _make_softplus_kernel(
-    N, dtype, beta, threshold, output_dtype=None, is_fp8=False, threads=256, npt=8
-):
-    """Build softplus kernel: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
-    out_dtype = output_dtype or dtype
+def _make_softplus_kernel(N, dtype, beta, threshold, threads=256, npt=8):
+    """Build softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x.
 
-    if is_fp8:
+    Written out rather than bound through ``ScalarParamUnaryKernel``: the
+    statement binding ``softplus`` lifts the exponential and the logarithm out
+    of the guard, which an op body returning one expression cannot do, and a
+    float16 row is 1.2% slower with them inside it.
+    """
 
-        @tilelang.jit(out_idx=[1])
-        def kernel(threads_arg, npt_arg):
-            block_size = threads_arg * npt_arg
+    @tilelang.jit(out_idx=[1])
+    def kernel(threads_arg, npt_arg):
+        block_size = threads_arg * npt_arg
 
-            @T.prim_func
-            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
-                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        idx = (bx * threads_arg + i) * npt_arg + j
-                        if idx < N:
-                            val = x[idx]
-                            v32 = T.cast(val, "float32")
-                            b = T.cast(beta, "float32")
-                            t = T.cast(threshold, "float32")
-                            one = T.cast(1.0, "float32")
-                            scaled = v32 * b
-                            sp = log_for_output_precision(val, one + T.exp(scaled)) / b
-                            y[idx] = T.if_then_else(
-                                scaled > t, T.Cast(out_dtype, v32), T.Cast(out_dtype, sp)
-                            )
+        @T.prim_func
+        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                y_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    val = x_reg[i * npt_arg + j]
+                    v32 = T.cast(val, "float32")
+                    b = T.cast(beta, "float32")
+                    t = T.cast(threshold, "float32")
+                    one = T.cast(1.0, "float32")
+                    scaled = v32 * b
+                    softplus = log_for_output_precision(val, one + T.exp(scaled)) / b
+                    y_reg[i * npt_arg + j] = T.if_then_else(
+                        scaled > t,
+                        val,
+                        T.Cast(val.dtype, softplus),
+                    )
+                T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
-            return main
-    else:
-
-        @tilelang.jit(out_idx=[1])
-        def kernel(threads_arg, npt_arg):
-            block_size = threads_arg * npt_arg
-
-            @T.prim_func
-            def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
-                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                    x_reg = T.alloc_fragment((block_size,), dtype)
-                    y_reg = T.alloc_fragment((block_size,), dtype)
-                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        val = x_reg[i * npt_arg + j]
-                        v32 = T.cast(val, "float32")
-                        b = T.cast(beta, "float32")
-                        t = T.cast(threshold, "float32")
-                        one = T.cast(1.0, "float32")
-                        scaled = v32 * b
-                        sp = log_for_output_precision(val, one + T.exp(scaled)) / b
-                        y_reg[i * npt_arg + j] = T.if_then_else(
-                            scaled > t,
-                            val,
-                            T.Cast(val.dtype, sp),
-                        )
-                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
-
-            return main
+        return main
 
     return kernel
 
 
-class SoftplusFwdKernel(ParametricUnaryKernel):
+class SoftplusFwdKernel(MultiInputElementwiseKernel):
     """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
+
+    INPUTS = (("x", "tile"),)
 
     def __init__(self, N_total, dtype, beta=1.0, threshold=20.0, config=None, tune=False):
         self.beta = beta
@@ -490,6 +322,9 @@ class SoftplusFwdKernel(ParametricUnaryKernel):
 
     def _builder_args(self):
         return (self.beta, self.threshold)
+
+    def forward(self, x):
+        return self._run(x=x)
 
 
 class SiluAndMulFwdKernel(FusedGatedKernel):

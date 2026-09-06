@@ -55,6 +55,10 @@ def test_parametric_unary_honours_a_non_default_config(threads: int, npt: int) -
 INDEPENDENT_KERNELS_SIMPLE = [LeakyReluFwdKernel, EluFwdKernel, HardtanhFwdKernel]
 
 
+# Big enough that the grid-filling shrink leaves the dtype-driven width alone.
+_WIDE_N = 1 << 24
+
+
 @pytest.mark.full
 @pytest.mark.parametrize(
     ("dtype", "expected_npt"),
@@ -62,16 +66,18 @@ INDEPENDENT_KERNELS_SIMPLE = [LeakyReluFwdKernel, EluFwdKernel, HardtanhFwdKerne
         (torch.float32, 4),
         (torch.float16, 8),
         (torch.bfloat16, 8),
-        (torch.float8_e4m3fn, 16),
-        (torch.float8_e5m2, 16),
     ],
 )
 @pytest.mark.parametrize("kernel_cls", INDEPENDENT_KERNELS_SIMPLE)
 def test_independent_kernels_use_expected_default_npt(kernel_cls, dtype, expected_npt):
     """Representative independent kernels should preserve dtype-driven npt defaults."""
-    kernel = kernel_cls.__new__(kernel_cls)
-    kernel.dtype = dtype
+    with (
+        patch.object(kernel_cls, "_build_kernel", return_value=None),
+        patch.object(kernel_cls, "init_config"),
+    ):
+        kernel = kernel_cls(_WIDE_N, dtype)
     assert kernel.default_config["num_per_thread"] == expected_npt
+    assert kernel.default_config["threads"] == 256
 
 
 @pytest.mark.full
@@ -81,8 +87,6 @@ def test_independent_kernels_use_expected_default_npt(kernel_cls, dtype, expecte
         (torch.float32, 4),
         (torch.float16, 8),
         (torch.bfloat16, 8),
-        (torch.float8_e4m3fn, 16),
-        (torch.float8_e5m2, 16),
     ],
 )
 def test_prelu_preserves_dtype_driven_default_npt(dtype, expected_npt):

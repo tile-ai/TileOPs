@@ -569,16 +569,15 @@ def _make_binary_explicit(
 
 
 @functools.lru_cache(maxsize=32)
-def _make_fused_gated_direct(M, N, dtype, op_name, threads=256, output_dtype=None):
+def _make_fused_gated_direct(M, N, dtype, op_name, threads=256):
     """FusedGated direct: 1 element per thread."""
-    out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg):
         op_func = op_func_for(op_name)
 
         @T.prim_func
-        def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), out_dtype)):
+        def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), dtype)):
             with T.Kernel(T.ceildiv(N, threads_arg), M, threads=threads_arg) as (bx, by):
                 for i in T.Parallel(threads_arg):
                     col = bx * threads_arg + i
@@ -592,11 +591,8 @@ def _make_fused_gated_direct(M, N, dtype, op_name, threads=256, output_dtype=Non
 
 
 @functools.lru_cache(maxsize=32)
-def _make_fused_gated_explicit(
-    M, N, dtype, op_name, threads=256, num_per_thread=8, output_dtype=None
-):
+def _make_fused_gated_explicit(M, N, dtype, op_name, threads=256, num_per_thread=8):
     """FusedGated explicit_parallel: N elements per thread."""
-    out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
@@ -604,7 +600,7 @@ def _make_fused_gated_explicit(
         block_N = threads_arg * npt_arg
 
         @T.prim_func
-        def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), out_dtype)):
+        def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), dtype)):
             with T.Kernel(T.ceildiv(N, block_N), M, threads=threads_arg) as (bx, by):
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     col = (bx * threads_arg + i) * npt_arg + j

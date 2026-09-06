@@ -9,6 +9,8 @@ from tileops.kernels.kernel_base import Kernel
 
 from ._broadcast import (
     BroadcastPlan,
+    _broadcast_target,
+    _expand_flat,
     _flat,
     _is_contiguous_same_shape,
     coalesce_broadcast_dims,
@@ -25,16 +27,14 @@ from ._builders import (
     _make_unary_explicit,
     _make_unary_regcopy,
 )
-from ._dtype import _BITWISE_DTYPES, _FLOAT_DTYPES, _LOGICAL_DTYPES, _is_fp8
+from ._dtype import _BITWISE_DTYPES, _FLOAT_DTYPES, _LOGICAL_DTYPES
 from ._op_body import (
     _store_binary_bool_as_int8,
     _store_unary_bool_as_int8,
-    _wrap_fp8_accumulation,
     register_op_func,
 )
 from ._policy import (
     _DEFAULT_THREADS,
-    _get_fp8_output_dtypes,
     choose_binary_strategy,
     choose_unary_strategy,
     default_launch_config,
@@ -48,7 +48,8 @@ __all__ = [
     "FloatUnaryKernel",
     "FusedGatedKernel",
     "LogicalUnaryKernel",
-    "ParametricUnaryKernel",
+    "MultiInputElementwiseKernel",
+    "ScalarParamUnaryKernel",
     "UnaryKernel",
 ]
 
@@ -65,26 +66,14 @@ class _ElementwiseKernel(Kernel):
     MIN_NUM_PER_THREAD: int = 4
     # Input dtypes admitted; ``None`` admits every dtype the builder handles.
     SUPPORTED_DTYPES = None
+    # Thread count this family launches with, or ``None`` to take the strategy's.
+    DEFAULT_THREADS: int | None = None
     # Whether bool results are stored through an int8 buffer.
     _bool_via_int8: bool = False
-    # Dtype the result is cast back to when the kernel writes a wider one.
-    _fp8_output_dtype = None
 
     # Extent of the row a broadcast block walks, or ``None`` where blocks are not
     # cut from rows. Only the binary families lay a grid out that way.
     row_broadcast_inner: int | None = None
-
-    @property
-    def stage_broadcast(self) -> bool:
-        """Whether a broadcast block reads and writes through fragments.
-
-        A body TileLang cannot vectorise -- a predicate, whose ``boolx<N>`` has no
-        CUDA type -- drags the loads and stores to its own width when they share
-        its loop. Staging keeps the copies wide, at the cost of a round trip
-        through registers. A body that scalarises for another reason overrides
-        this.
-        """
-        return self.output_dtype == torch.bool
 
     def _validate_supported_dtype(self, dtype) -> None:
         if self.SUPPORTED_DTYPES is None or dtype in self.SUPPORTED_DTYPES:
@@ -93,11 +82,7 @@ class _ElementwiseKernel(Kernel):
         raise ValueError(f"{type(self).__name__} only supports dtypes [{supported}], got {dtype}")
 
     def _restore_output_dtype(self, result):
-        if self._bool_via_int8:
-            result = result.view(torch.bool)
-        if self._fp8_output_dtype is not None:
-            result = result.to(self._fp8_output_dtype)
-        return result
+        return result.view(torch.bool) if self._bool_via_int8 else result
 
 
 class _StrategyKernel(_ElementwiseKernel):
@@ -117,6 +102,7 @@ class _StrategyKernel(_ElementwiseKernel):
             bytes_per_thread=self.BYTES_PER_THREAD,
             min_num_per_thread=self.MIN_NUM_PER_THREAD,
             row_broadcast_inner=self.row_broadcast_inner,
+            default_threads=self.DEFAULT_THREADS,
         )
 
     @property
@@ -185,7 +171,6 @@ class UnaryKernel(_StrategyKernel):
             bool_storage=True,
         )
         self.output_dtype = self.output_plan.logical_dtype
-        self._fp8_output_dtype = self.output_plan.post_cast_dtype
         self._bool_via_int8 = self.output_plan.bool_via_int8
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
@@ -195,13 +180,19 @@ class UnaryKernel(_StrategyKernel):
         name = self._op_func_name()
         if self._bool_via_int8:
             return name, _store_unary_bool_as_int8(self.op_func)
-        if self.OUTPUT_DTYPE is not None:
-            return name, self.op_func
-        return name, _wrap_fp8_accumulation(self.op_func, self.dtype, self.dtype_str, arity=1)
+        return name, self.op_func
 
     def _op_func_name(self) -> str:
-        """Name every input that changes the op body: see ``register_op_func``."""
-        return f"{type(self).__qualname__}|{self.dtype_str}|{self.output_dtype_str}|{self.strategy}"
+        """Name every input that changes the op body: see ``register_op_func``.
+
+        Module included: ``_OP_FUNCS`` is one dict for the whole package, and two
+        classes sharing a qualname would otherwise overwrite each other's body.
+        """
+        cls = type(self)
+        return (
+            f"{cls.__module__}.{cls.__qualname__}"
+            f"|{self.dtype_str}|{self.output_dtype_str}|{self.strategy}"
+        )
 
     def _build_kernel(self, strategy):
         cfg = self.default_config
@@ -320,19 +311,28 @@ class BinaryKernel(_StrategyKernel):
             bool_storage=True,
         )
         self.output_dtype = self.output_plan.logical_dtype
-        self._fp8_output_dtype = self.output_plan.post_cast_dtype
         self._bool_via_int8 = self.output_plan.bool_via_int8
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
+
+    @property
+    def stage_broadcast(self) -> bool:
+        """Whether a broadcast block reads and writes through fragments.
+
+        A body TileLang cannot vectorise -- a predicate, whose ``boolx<N>`` has no
+        CUDA type -- drags the loads and stores to its own width when they share
+        its loop. Staging keeps the copies wide, at the cost of a round trip
+        through registers. A body that scalarises for another reason overrides
+        this.
+        """
+        return self.output_dtype == torch.bool
 
     def _get_effective_op_func(self):
         """The op body this kernel builds with, and the name that identifies it."""
         name = self._op_func_name()
         if self._bool_via_int8:
             return name, _store_binary_bool_as_int8(self.op_func)
-        if self.OUTPUT_DTYPE is not None:
-            return name, self.op_func
-        return name, _wrap_fp8_accumulation(self.op_func, self.dtype, self.dtype_str, arity=2)
+        return name, self.op_func
 
     def _op_func_name(self) -> str:
         cls = type(self)
@@ -347,7 +347,7 @@ class BinaryKernel(_StrategyKernel):
         )
         kernel_output_dtype = (
             self.output_plan.kernel_output_dtype
-            if self.OUTPUT_DTYPE is not None or self._bool_via_int8 or self._fp8_output_dtype
+            if self.OUTPUT_DTYPE is not None or self._bool_via_int8
             else None
         )
         if strategy == "direct":
@@ -432,12 +432,7 @@ class FusedGatedKernel(_StrategyKernel):
             raise ValueError(
                 f"Unknown strategy '{self.strategy}', expected one of {self.STRATEGIES}"
             )
-        self.output_plan = elementwise_output_plan(dtype)
-        self.output_dtype = self.output_plan.logical_dtype
-        self._fp8_output_dtype = self.output_plan.post_cast_dtype
-        self._kernel_output_dtype = (
-            self.output_plan.kernel_output_dtype if self.output_plan.post_cast_dtype else None
-        )
+        self.output_dtype = dtype
         self.kernel = self._build_kernel(self.strategy)
         self.init_config(config, tune)
 
@@ -450,7 +445,7 @@ class FusedGatedKernel(_StrategyKernel):
 
         cls = type(self)
         name = f"{cls.__module__}.{cls.__qualname__}|{self.dtype_str}|{self.strategy}"
-        return name, _wrap_fp8_accumulation(fused_op, self.dtype, self.dtype_str, arity=2)
+        return name, fused_op
 
     def _build_kernel(self, strategy):
         cfg = self.default_config
@@ -462,7 +457,6 @@ class FusedGatedKernel(_StrategyKernel):
                 self.dtype_str,
                 effective_op,
                 threads=cfg["threads"],
-                output_dtype=self._kernel_output_dtype,
             )
         elif strategy == "explicit_parallel":
             return _make_fused_gated_explicit(
@@ -472,7 +466,6 @@ class FusedGatedKernel(_StrategyKernel):
                 effective_op,
                 cfg["threads"],
                 cfg["num_per_thread"],
-                output_dtype=self._kernel_output_dtype,
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
@@ -631,93 +624,101 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
 
     def _get_effective_op_func(self):
         """Inject the alpha-baked op_func into the parent build pipeline."""
-        op_func = self._alpha_op_func()
-        name = f"{self._op_func_name()}|alpha={self._alpha!r}"
-        if self.OUTPUT_DTYPE is not None:
-            return name, op_func
-        return name, _wrap_fp8_accumulation(op_func, self.dtype, self.dtype_str, arity=2)
+        return f"{self._op_func_name()}|alpha={self._alpha!r}", self._alpha_op_func()
 
 
-class ParametricUnaryKernel(_ElementwiseKernel):
-    """Shared base for independent parametric elementwise kernels.
+class ScalarParamUnaryKernel(UnaryKernel):
+    """A unary kernel whose op body is built from construction-time scalars.
 
-    Subclasses must define:
-    - ``_builder_fn``: a ``@staticmethod`` returning the ``@lru_cache``-d
-      builder function (e.g. ``_make_leaky_relu_kernel``).
-    - ``_builder_args(self) -> tuple``: positional args for the builder
-      *between* ``N_total`` and the common ``output_dtype, is_fp8, threads,
-      npt`` suffix.
+    The scalars are bound into the body rather than passed to the PrimFunc, so
+    every distinct value is its own specialization. Subclasses implement
+    ``_make_op_func`` and ``_param_key``; ``op_func`` is never called.
 
-    Optional overrides:
-    - ``_DEFAULT_THREADS``: class-level default thread count (default 256).
-    - ``_NPT_FP8``: npt when dtype is fp8 but not fp32 (default 16).
-    - ``_NPT_NON_FP32``: npt for non-fp32, non-fp8 (default 8).
-    - ``_skip_fp8_output``: set to ``True`` if the kernel should *not*
-      use ``_get_fp8_output_dtypes`` (e.g. Where, which is a pure selection
-      op). When True, ``_fp8_output_dtype`` is ``None``.
+    Only ``register_copy`` is offered. The wider strategy axis ``UnaryKernel``
+    carries has never been measured for these bodies.
+    """
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    STRATEGIES = ["register_copy"]
+    DEFAULT_STRATEGY = "register_copy"
+    DEFAULT_THREADS = 256
+
+    def _make_op_func(self):
+        """Return the op body for this specialization's scalars."""
+        raise NotImplementedError
+
+    def _param_key(self) -> str:
+        """Return the scalar values, spelled out for the op body's name."""
+        raise NotImplementedError
+
+    @staticmethod
+    def op_func(x):
+        raise NotImplementedError(
+            "ScalarParamUnaryKernel builds its body from construction parameters; "
+            "use the kernel through __init__ instead of calling op_func."
+        )
+
+    def _get_effective_op_func(self):
+        return f"{self._op_func_name()}|{self._param_key()}", self._make_op_func()
+
+
+class MultiInputElementwiseKernel(_ElementwiseKernel):
+    """Several inputs broadcast to one shape, read as fragments, one output.
+
+    Subclasses define ``_builder_fn`` (the ``@lru_cache``-d builder) and
+    ``_builder_args`` (its positional arguments after ``N_total`` and the dtype
+    string), and describe their forward arguments in ``INPUTS`` as
+    ``(name, kind)`` pairs in PrimFunc parameter order:
+
+    =========== =============================================================
+    ``tile``    broadcast to the output shape and flattened
+    ``mask``    the same, reinterpreted as uint8 -- this backend has no
+                vectorised bool
+    ``value``   a 0-dim scalar reshaped to a length-one buffer
+    =========== =============================================================
+
+    An argument the call leaves as ``None`` names no PrimFunc parameter, which
+    is how an optional bound drops out of the signature.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
     SUPPORTED_DTYPES = _FLOAT_DTYPES
+    DEFAULT_THREADS = 256
+    INPUTS: tuple = ()
 
-    _DEFAULT_THREADS: int = 256
-    _NPT_FP8: int = 16
-    _NPT_NON_FP32: int = 8
-    _skip_fp8_output: bool = False
+    # Elements per thread for a dtype narrower than float32. A float32 thread
+    # takes four, which is one vector.
+    NPT_NON_FP32: int = 8
 
     def __init__(self, N_total, dtype, config=None, tune=False):
         super().__init__()
         self._validate_supported_dtype(dtype)
         self.N_total = N_total
         self.dtype = dtype
-        if self._skip_fp8_output:
-            self._fp8_output_dtype = None
-        else:
-            self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        self._post_init_params()
+        self.output_dtype = dtype
         cfg = self.default_config
-        builder_kwargs = {
-            "is_fp8": _is_fp8(dtype),
-            "threads": cfg["threads"],
-            "npt": cfg["num_per_thread"],
-        }
-        if not self._skip_fp8_output:
-            builder_kwargs["output_dtype"] = self.dtype_to_str(self.output_dtype)
         self.kernel = self._builder_fn()(
-            *self._builder_positional_args(),
-            **builder_kwargs,
+            self.N_total,
+            self.dtype_str,
+            *self._builder_args(),
+            threads=cfg["threads"],
+            npt=cfg["num_per_thread"],
         )
         self.init_config(config, tune)
 
     @staticmethod
     def _builder_fn():
-        """Return the @lru_cache builder function for this kernel."""
+        """Return the ``@lru_cache``-d builder function for this kernel."""
         raise NotImplementedError
 
-    def _builder_positional_args(self) -> tuple:
-        """Return all positional args for the builder function.
-
-        Default: ``(N_total, dtype_str, *_builder_args())``.
-        Override if the builder has a different parameter order (e.g. PReLU).
-        """
-        return (self.N_total, self.dtype_str, *self._builder_args())
-
     def _builder_args(self) -> tuple:
-        """Return op-specific positional args (after N_total, dtype_str)."""
+        """Return the builder's positional args after ``N_total`` and the dtype."""
         return ()
-
-    def _post_init_params(self):
-        """Hook called after fp8 output dtypes are set, before kernel build."""
 
     @property
     def default_config(self):
-        if self.dtype == torch.float32:
-            npt = 4
-        elif _is_fp8(self.dtype):
-            npt = self._NPT_FP8
-        else:
-            npt = self._NPT_NON_FP32
-        return {"threads": self._DEFAULT_THREADS, "num_per_thread": npt}
+        npt = 4 if self.dtype == torch.float32 else self.NPT_NON_FP32
+        return {"threads": self.DEFAULT_THREADS, "num_per_thread": npt}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -728,7 +729,27 @@ class ParametricUnaryKernel(_ElementwiseKernel):
         cfg = self.config
         self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
-    def forward(self, x):
-        self._require_cuda(x=x)
-        result = self._compiled_fn(_flat(x))
-        return self._restore_output_dtype(result).reshape(x.shape)
+    def _run(self, **tensors):
+        """Broadcast the named inputs together, run, and restore the call's shape.
+
+        The first ``tile`` input carries the semantic dtype: a bool one is
+        computed in uint8 storage, and the result is viewed back to bool.
+        """
+        self._require_cuda(**tensors)
+        present = [(name, kind) for name, kind in self.INPUTS if tensors.get(name) is not None]
+        out_shape = _broadcast_target(*(tensors[n] for n, kind in present if kind != "value"))
+        as_bool = tensors[next(n for n, kind in present if kind == "tile")].dtype == torch.bool
+
+        args = []
+        for name, kind in present:
+            tensor = tensors[name]
+            if kind == "value":
+                tensor = tensor.contiguous().reshape(1)
+                args.append(tensor.view(torch.uint8) if as_bool else tensor)
+                continue
+            if kind == "mask" or as_bool:
+                tensor = tensor.view(torch.uint8)
+            args.append(_expand_flat(tensor, out_shape))
+
+        result = self._compiled_fn(*args).reshape(out_shape)
+        return result.view(torch.bool) if as_bool else result

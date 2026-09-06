@@ -8,13 +8,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 
 from ._broadcast import row_tile_leaves_tail
-from ._dtype import (
-    BOOL_STORAGE_DTYPE,
-    _fp8_accum_dtype_str,
-    _fp8_needs_nonsaturating_cast,
-    _is_fp8,
-    _torch_dtype_nbytes,
-)
+from ._dtype import BOOL_STORAGE_DTYPE, _torch_dtype_nbytes
 
 _AUTOTUNE_THREADS = (128, 256, 512)
 _DEFAULT_THREADS = 128
@@ -24,7 +18,6 @@ _MIN_NUM_PER_THREAD = 4
 _BOOL_OUTPUT_MAX_NPT = 4
 _MAX_THREADS = 1024
 _TARGET_BLOCKS = 256
-_FP8_NPT = 16
 
 
 def default_launch_config(
@@ -37,6 +30,7 @@ def default_launch_config(
     bytes_per_thread: int = _BYTES_PER_THREAD,
     min_num_per_thread: int = _MIN_NUM_PER_THREAD,
     row_broadcast_inner: int | None = None,
+    default_threads: int | None = None,
 ) -> dict:
     """Return the default launch config for one elementwise specialization.
 
@@ -44,14 +38,13 @@ def default_launch_config(
     how few elements the shrink below leaves it; see
     ``_ElementwiseKernel.BYTES_PER_THREAD`` and ``MIN_NUM_PER_THREAD``.
     *row_broadcast_inner* is the row extent a broadcast block walks, or
-    ``None``; see ``_tail_dominated``.
+    ``None``; see ``_tail_dominated``. *default_threads* replaces the
+    strategy's thread count; see ``_ElementwiseKernel.DEFAULT_THREADS``.
     """
     # A direct block covers ``threads`` elements where a vectorized one covers
     # ``threads * num_per_thread``: the elements per block, not the thread count,
     # are what has to stay wide enough to keep the memory pipe busy.
-    threads = _DIRECT_THREADS if strategy == "direct" else _DEFAULT_THREADS
-    if _is_fp8(input_dtype):
-        return {"strategy": strategy, "threads": threads, "num_per_thread": _FP8_NPT}
+    threads = default_threads or (_DIRECT_THREADS if strategy == "direct" else _DEFAULT_THREADS)
 
     elem_bytes = _torch_dtype_nbytes(input_dtype)
     npt = max(_MIN_NUM_PER_THREAD, bytes_per_thread // elem_bytes)
@@ -109,23 +102,17 @@ def elementwise_autotune_configs(
     # and the sweep would time one kernel three times over.
     if strategy == "direct":
         return [{"threads": t} for t in _AUTOTUNE_THREADS]
-    if _is_fp8(dtype):
-        npts = (_FP8_NPT, _FP8_NPT * 2)
-    else:
-        default = max(_MIN_NUM_PER_THREAD, bytes_per_thread // _torch_dtype_nbytes(dtype))
-        npts = tuple(
-            sorted(
-                {min_num_per_thread, max(min_num_per_thread, default // 2), default, default * 2}
-            )
-        )
+    default = max(_MIN_NUM_PER_THREAD, bytes_per_thread // _torch_dtype_nbytes(dtype))
+    npts = tuple(
+        sorted({min_num_per_thread, max(min_num_per_thread, default // 2), default, default * 2})
+    )
     return [{"threads": t, "num_per_thread": n} for t in _AUTOTUNE_THREADS for n in npts]
 
 
 @dataclass(frozen=True)
 class ElementwiseOutputPlan:
     logical_dtype: torch.dtype
-    kernel_output_dtype: str | None
-    post_cast_dtype: torch.dtype | None = None
+    kernel_output_dtype: str
     bool_via_int8: bool = False
 
 
@@ -136,26 +123,15 @@ def elementwise_output_plan(
     strategy: str | None = None,
     bool_storage: bool = False,
 ) -> ElementwiseOutputPlan:
-    post_cast_dtype = None
+    """Return the dtype the kernel writes, and the dtype the caller sees."""
     logical_dtype = declared_output_dtype or input_dtype
-    if (
-        declared_output_dtype is None
-        and _is_fp8(input_dtype)
-        and _fp8_needs_nonsaturating_cast(input_dtype)
-    ):
-        logical_dtype, post_cast_dtype = torch.float16, input_dtype
-
     # Every strategy but `direct` can store the result through an int8 buffer, and
     # wants to: a bool store lowers to one byte per lane, where int8 vectorises.
     bool_via_int8 = bool_storage and declared_output_dtype == torch.bool and strategy != "direct"
-    if bool_via_int8:
-        kernel_output_dtype = BOOL_STORAGE_DTYPE
-    elif post_cast_dtype is not None:
-        kernel_output_dtype = _fp8_accum_dtype_str()
-    else:
-        kernel_output_dtype = Kernel.dtype_to_str(logical_dtype)
-
-    return ElementwiseOutputPlan(logical_dtype, kernel_output_dtype, post_cast_dtype, bool_via_int8)
+    kernel_output_dtype = (
+        BOOL_STORAGE_DTYPE if bool_via_int8 else Kernel.dtype_to_str(logical_dtype)
+    )
+    return ElementwiseOutputPlan(logical_dtype, kernel_output_dtype, bool_via_int8)
 
 
 def _bool_output_needs_scalar(
@@ -167,12 +143,6 @@ def _bool_output_needs_scalar(
         torch.int8,
         torch.int16,
     )
-
-
-def _get_fp8_output_dtypes(dtype: torch.dtype):
-    if _is_fp8(dtype) and _fp8_needs_nonsaturating_cast(dtype):
-        return dtype, torch.float16
-    return None, dtype
 
 
 def _validate_strategy(requested: str | None, strategies: list[str]) -> None:
@@ -210,8 +180,6 @@ def choose_unary_strategy(
     if _bool_output_needs_scalar(input_dtype, declared_output_dtype):
         _warn_direct_override(requested, "UnaryKernel", input_dtype)
         return "direct"
-    if requested is None and _is_fp8(input_dtype):
-        return "explicit_parallel"
     return requested or default_strategy
 
 

@@ -7,10 +7,7 @@ import tilelang.language as T
 
 from tileops.kernels.kernel_base import Kernel
 
-from ._base import (
-    _FLOAT_DTYPES,
-    _get_fp8_output_dtypes,
-)
+from ._dtype import _FLOAT_DTYPES
 
 __all__ = [
     "SinusoidalFwdKernel",
@@ -102,10 +99,8 @@ class SinusoidalFwdKernel(Kernel):
         self.seq_len = seq_len
         self.d_model = d_model
         self.dtype = dtype
-        self._fp8_output_dtype, self.output_dtype = _get_fp8_output_dtypes(dtype)
-        self.kernel = _make_sinusoidal_kernel(
-            seq_len, d_model, self.dtype_to_str(self.output_dtype)
-        )
+        self.output_dtype = dtype
+        self.kernel = _make_sinusoidal_kernel(seq_len, d_model, self.dtype_str)
         self.init_config(config, tune)
 
     @property
