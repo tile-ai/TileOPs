@@ -12,25 +12,30 @@ from tileops.kernels.pool.common import fits_static_shared, pool_output_dim
 __all__ = ["MaxPool1dKernel", "MaxPool1dWithIndicesKernel"]
 
 
-# One warp's width. At or below it a warp spans more than one (batch, channel)
-# row, so neighbouring threads read global memory `l_in` elements apart.
-_STAGE_MAX_OUT_L = 32
-# Pad the shared row off a whole number of banks, or the staged rows collide.
-# The width is measured, on an H200; re-measure it on other hardware.
-_STAGE_ROW_PAD = 8
+def _stage_rows(
+    block_m: int, out_l: int, c_in: int, l_in: int, dtype: str
+) -> Optional[Tuple[int, int]]:
+    """Rows of one image a block stages, and the pad between them, or None.
 
+    None means the block reads global instead, which every shape does unless its
+    outputs form whole rows of one image and those rows fit in shared memory.
+    """
+    # A warp's width. At or below it a warp spans more than one (batch, channel)
+    # row, so neighbouring threads read global memory `l_in` elements apart.
+    max_out_l = 32
+    # Pad the shared row off a whole number of banks, or the staged rows collide.
+    # The width is measured, on an H200; re-measure it on other hardware.
+    row_pad = 8
 
-def _stage_rows(block_m: int, out_l: int, c_in: int, l_in: int, dtype: str) -> Optional[int]:
-    """Rows of one image a block stages in shared memory, or None to read global."""
-    if out_l > _STAGE_MAX_OUT_L or block_m % out_l:
+    if out_l > max_out_l or block_m % out_l:
         return None
     rows = block_m // out_l
     # Dividing c_in leaves no ragged last block, so the staged body needs no test.
     if rows > c_in or c_in % rows:
         return None
-    if not fits_static_shared(rows * (l_in + _STAGE_ROW_PAD), dtype):
+    if not fits_static_shared(rows * (l_in + row_pad), dtype):
         return None
-    return rows
+    return rows, row_pad
 
 
 @functools.lru_cache(maxsize=32)
@@ -48,32 +53,59 @@ def _max_pool1d_kernel(
     accum_dtype = "float"
     out_l = pool_output_dim(l_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
     total_output = n * c_in * out_l
+    always_in_bounds = pad_w == 0 and (out_l - 1) * stride_w + (kernel_w - 1) * dilation_w < l_in
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _max_pool1d_func(block_m: int, threads: int):
-        stage_rows = _stage_rows(block_m, out_l, c_in, l_in, dtype)
+        staged = _stage_rows(block_m, out_l, c_in, l_in, dtype)
 
         @T.macro
-        def _reduce_window(src, src_c, src_row, ow, out, out_c, out_row):
-            """Store the max over one window of ``src[src_c, src_row]``."""
+        def _reduce_window_global(src, src_c, src_row, ow, out, out_c, out_row):
+            """Store the max over one window, for taps that come from global.
+
+            ``src`` is indexed with a leading axis so the staged tile and ``x`` are
+            read the same way.
+
+            NaN enters ``max_val`` and never leaves: a later value fails
+            ``val > NaN``, which is how PyTorch propagates it. Spending a select per
+            tap to save the accumulator's register is the trade a scan that waits on
+            memory wants.
+            """
+            max_val = T.alloc_var(T.float32)
+            max_val = T.cast(float("-inf"), accum_dtype)
+            for kw in T.serial(kernel_w):
+                iw = ow * stride_w - pad_w + kw * dilation_w
+                if always_in_bounds or (iw >= 0 and iw < l_in):
+                    val = T.cast(src[src_c, src_row, iw], accum_dtype)
+                    max_val = T.if_then_else(T.isnan(val) or (val > max_val), val, max_val)
+
+            out[out_c, out_row, ow] = T.cast(max_val, dtype)
+
+        @T.macro
+        def _reduce_window_shared(src, src_c, src_row, ow, out, out_c, out_row):
+            """Store the max over one window, for taps that come from shared.
+
+            ``src`` is indexed with a leading axis so the staged tile and ``x`` are
+            read the same way.
+
+            Resident taps make the scan arithmetic-bound, which wants the opposite
+            trade: ``T.max`` drops NaN, so NaN rides in an accumulator instead of
+            costing a select per tap.
+            """
             max_val = T.alloc_var(T.float32)
             has_nan = T.alloc_var(T.bool)
             max_val = T.cast(float("-inf"), accum_dtype)
             has_nan = False
             for kw in T.serial(kernel_w):
                 iw = ow * stride_w - pad_w + kw * dilation_w
-                if iw >= 0 and iw < l_in:
+                if always_in_bounds or (iw >= 0 and iw < l_in):
                     val = T.cast(src[src_c, src_row, iw], accum_dtype)
-                    if T.isnan(val):
-                        has_nan = True
+                    has_nan = has_nan | T.isnan(val)
                     max_val = T.max(max_val, val)
 
-            result = T.if_then_else(
-                has_nan,
-                T.cast(float("nan"), accum_dtype),
-                max_val,
+            out[out_c, out_row, ow] = T.cast(
+                T.if_then_else(has_nan, T.cast(float("nan"), accum_dtype), max_val), dtype
             )
-            out[out_c, out_row, ow] = T.cast(result, dtype)
 
         @T.prim_func
         def _max_pool1d_main(
@@ -81,33 +113,25 @@ def _max_pool1d_kernel(
             out: T.Tensor((n, c_in, out_l), dtype),  # type: ignore
         ):
             with T.Kernel(T.ceildiv(total_output, block_m), threads=threads) as bx:
-                for i in T.Parallel(block_m):
-                    out_idx = bx * block_m + i
-                    if out_idx < total_output:
-                        ow = out_idx % out_l
-                        channel_batch_idx = out_idx // out_l
-                        c_idx = channel_batch_idx % c_in
-                        batch = channel_batch_idx // c_in
-                        _reduce_window(x, batch, c_idx, ow, out, batch, c_idx)
-
-        if stage_rows is not None:
-            # Leading axis of 1 so the macro indexes the tile and x alike.
-            @T.prim_func
-            def _max_pool1d_staged_main(
-                x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-                out: T.Tensor((n, c_in, out_l), dtype),  # type: ignore
-            ):
-                with T.Kernel(T.ceildiv(total_output, block_m), threads=threads) as bx:
-                    tile = T.alloc_shared((1, stage_rows, l_in + _STAGE_ROW_PAD), dtype)
+                if staged is None:
+                    for i in T.Parallel(block_m):
+                        out_idx = bx * block_m + i
+                        if out_idx < total_output:
+                            ow = out_idx % out_l
+                            channel_batch_idx = out_idx // out_l
+                            c_idx = channel_batch_idx % c_in
+                            batch = channel_batch_idx // c_in
+                            _reduce_window_global(x, batch, c_idx, ow, out, batch, c_idx)
+                else:
+                    stage_rows, row_pad = staged
+                    tile = T.alloc_shared((1, stage_rows, l_in + row_pad), dtype)
                     batch = bx * stage_rows // c_in
                     c_base = bx * stage_rows % c_in
                     T.copy(x[batch, c_base : c_base + stage_rows, 0:l_in], tile[0, :, 0:l_in])
                     for i in T.Parallel(block_m):
                         ow = i % out_l
                         row = i // out_l
-                        _reduce_window(tile, 0, row, ow, out, batch, c_base + row)
-
-            return _max_pool1d_staged_main
+                        _reduce_window_shared(tile, 0, row, ow, out, batch, c_base + row)
 
         return _max_pool1d_main
 
@@ -256,7 +280,7 @@ def _max_pool1d_with_indices_kernel(
 
     @tilelang.jit(out_idx=[1, 2], compile_flags=["-O3", "-DENABLE_BF16"])
     def _max_pool1d_with_indices_func(block_m: int, threads: int):
-        stage_rows = _stage_rows(block_m, out_l, c_in, l_in, dtype)
+        staged = _stage_rows(block_m, out_l, c_in, l_in, dtype)
 
         @T.macro
         def _reduce_window(src, src_c, src_row, ow, out, indices, out_c, out_row):
@@ -320,25 +344,18 @@ def _max_pool1d_with_indices_kernel(
             indices: T.Tensor((n, c_in, out_l), "int64"),  # type: ignore
         ):
             with T.Kernel(T.ceildiv(total_output, block_m), threads=threads) as bx:
-                for i in T.Parallel(block_m):
-                    out_idx = bx * block_m + i
-                    if out_idx < total_output:
-                        ow = out_idx % out_l
-                        channel_batch_idx = out_idx // out_l
-                        c_idx = channel_batch_idx % c_in
-                        batch = channel_batch_idx // c_in
-                        _reduce_window(x, batch, c_idx, ow, out, indices, batch, c_idx)
-
-        if stage_rows is not None:
-            # Leading axis of 1 so the macro indexes the tile and x alike.
-            @T.prim_func
-            def _max_pool1d_with_indices_staged_main(
-                x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
-                out: T.Tensor((n, c_in, out_l), dtype),  # type: ignore
-                indices: T.Tensor((n, c_in, out_l), "int64"),  # type: ignore
-            ):
-                with T.Kernel(T.ceildiv(total_output, block_m), threads=threads) as bx:
-                    tile = T.alloc_shared((1, stage_rows, l_in + _STAGE_ROW_PAD), dtype)
+                if staged is None:
+                    for i in T.Parallel(block_m):
+                        out_idx = bx * block_m + i
+                        if out_idx < total_output:
+                            ow = out_idx % out_l
+                            channel_batch_idx = out_idx // out_l
+                            c_idx = channel_batch_idx % c_in
+                            batch = channel_batch_idx // c_in
+                            _reduce_window(x, batch, c_idx, ow, out, indices, batch, c_idx)
+                else:
+                    stage_rows, row_pad = staged
+                    tile = T.alloc_shared((1, stage_rows, l_in + row_pad), dtype)
                     batch = bx * stage_rows // c_in
                     c_base = bx * stage_rows % c_in
                     T.copy(x[batch, c_base : c_base + stage_rows, 0:l_in], tile[0, :, 0:l_in])
@@ -346,8 +363,6 @@ def _max_pool1d_with_indices_kernel(
                         ow = i % out_l
                         row = i // out_l
                         _reduce_window(tile, 0, row, ow, out, indices, batch, c_base + row)
-
-            return _max_pool1d_with_indices_staged_main
 
         return _max_pool1d_with_indices_main
 
