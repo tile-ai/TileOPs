@@ -32,6 +32,7 @@ from tileops.kernels.reduction._primitives import (
     device_smem_budget,
     edge_axis_plan,
     edge_axis_split,
+    identity_for,
     reduce_down_rows,
     restore_reduced,
     rows_for_axes,
@@ -93,13 +94,6 @@ def to_logical_storage(x: torch.Tensor) -> torch.Tensor:
     return ((x.real != 0) | (x.imag != 0)).to(torch.float32)
 
 
-def _pad_value_for_op(op_kind: str) -> float:
-    """Return the identity value for masked padding."""
-    if op_kind == "all":
-        return 1.0
-    return 0.0
-
-
 # Logical reduce kernel
 
 
@@ -151,7 +145,7 @@ def _logical_reduce_edge_fused(lead: int, kept: int, trail: int, op_kind: str, d
     """
     trail_padded = align_up(trail, DEFAULT_ALIGNMENT)
     needs_pad = trail_padded != trail
-    pad_val = _pad_value_for_op(op_kind)
+    pad_val = identity_for(op_kind)
     out_dtype = _logical_out_dtype(op_kind, partial=False)
     # any is a max and all is a min over 0/1, so each starts from its identity;
     # a count sums from zero. The column-wise fold starts from the same value a
@@ -231,7 +225,7 @@ def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str, partial: bo
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     _needs_pad = N_padded != N
-    _pad_val = _pad_value_for_op(op_kind)
+    _pad_val = identity_for(op_kind)
     out_dtype = _logical_out_dtype(op_kind, partial)
 
     @tilelang.jit(out_idx=[1])
@@ -310,7 +304,7 @@ def _logical_reduce_kernel_tiled(
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     num_tiles = (N_padded + tile_n - 1) // tile_n
-    _pad_val = _pad_value_for_op(op_kind)
+    _pad_val = identity_for(op_kind)
     _past_n = num_tiles * tile_n > N
     out_dtype = _logical_out_dtype(op_kind, partial)
 

@@ -33,6 +33,7 @@ from tileops.kernels.reduction._primitives import (
     device_smem_budget,
     restore_same_shape,
     rows_for_axes,
+    torch_dtype_nbytes,
 )
 from tileops.kernels.reduction._split_softmax import (
     fused_split_plan,
@@ -41,7 +42,6 @@ from tileops.kernels.reduction._split_softmax import (
     split_seg_n,
     split_target_blocks,
 )
-from tileops.utils import device_busy_of
 
 # These two kernels bake tile_n in at build time and default to the wider
 # thread block; AUTOTUNE_THREADS still bounds what the sweep explores.
@@ -601,20 +601,6 @@ def _softmax_fused_split_kernel(M: int, N: int, op_kind: str, dtype: str, seg_n:
     return _func
 
 
-def _compute_padded_cols(N: int, tile_n: int) -> int:
-    """Compute the total column count (may exceed N_padded for tiled path)."""
-    N_padded = align_up(N, DEFAULT_ALIGNMENT)
-    if tile_n == 0:
-        return N_padded
-    num_tiles = (N_padded + tile_n - 1) // tile_n
-    return num_tiles * tile_n
-
-
-def _elem_bytes(dtype: torch.dtype) -> int:
-    """Return bytes per element for the given dtype."""
-    return torch.tensor([], dtype=dtype).element_size()
-
-
 class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
     """Softmax / log-softmax forward kernel.
 
@@ -668,7 +654,7 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         self.dtype = dtype
         self.norm_axis = norm_axis
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        self._elem_bytes = _elem_bytes(dtype)
+        self._elem_bytes = torch_dtype_nbytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
         self._split_target = split_target_blocks(device_index)
         self._planner = BlockConfigPlanner(
@@ -792,88 +778,11 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
             "split": bool(split_seg_n(self.M, self.N, best_bm, self._split_target)),
         }
 
-    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """Autotune across tile_n candidates by rebuilding the kernel per regime.
+    def _build_row_kernel(self, tile_n: int):
+        return _softmax_kernel(self.M, self.N, self.op_kind, self.dtype_str, tile_n)
 
-        Groups configs by tile_n, benchmarks each group with its own kernel,
-        and picks the overall best (block_m, threads, tile_n) config.
-        """
-        from tilelang.autotuner import autotune as tl_autotune
-
-        default = self.default_config
-        split_eligible = bool(split_seg_n(self.M, self.N, default["block_m"], self._split_target))
-
-        configs = self.autotune_configs
-        if not configs:
-            self.config = default
-            return
-
-        # Group configs by tile_n
-        by_tile_n: dict[int, list[dict]] = {}
-        for cfg in configs:
-            tn = cfg["tile_n"]
-            by_tile_n.setdefault(tn, []).append(
-                {"block_m": cfg["block_m"], "threads": cfg["threads"]}
-            )
-
-        best_time = float("inf")
-        best_config = None
-
-        for tile_n, group_cfgs in by_tile_n.items():
-            kernel = _softmax_kernel(
-                self.M,
-                self.N,
-                self.op_kind,
-                self.dtype_str,
-                tile_n,
-            )
-            tunable_params = list(self._autotune_initial_kwargs(kernel, group_cfgs[0]).keys())
-            autotune_kwargs: dict = dict(
-                configs=group_cfgs,
-                warmup=warmup,
-                rep=rep,
-            )
-            if tunable_params:
-                autotune_kwargs["do_not_specialize"] = tunable_params
-            if self.autotune_supply_prog is not None:
-                autotune_kwargs["supply_prog"] = self.autotune_supply_prog
-            autotuned = tl_autotune(**autotune_kwargs)(kernel)
-            tuned = self._call_autotuned_kernel(autotuned, kernel, group_cfgs[0])
-            latency = tuned.latency
-            if latency < best_time:
-                best_time = latency
-                best_config = {**tuned.config, "tile_n": tile_n}
-
-        if best_config is not None:
-            self.config = best_config
-            # Rebuild kernel for the winning tile_n
-            winning_tile_n = best_config["tile_n"]
-            if winning_tile_n != self._tile_n:
-                self._tile_n = winning_tile_n
-                self.kernel = _softmax_kernel(
-                    self.M,
-                    self.N,
-                    self.op_kind,
-                    self.dtype_str,
-                    self._tile_n,
-                )
-
-        # The split pair has nothing for the sweep to vary, so it is timed
-        # against the sweep's winner on device kernel time: paths launching
-        # different kernel counts are judged by GPU work, not host-launch gaps.
-        if split_eligible and best_config is not None:
-            device = torch.device(
-                "cuda",
-                self.device_index if self.device_index is not None else torch.cuda.current_device(),
-            )
-            probe = torch.randn(self.M, self.N, dtype=self.dtype, device=device)
-            swept_config = dict(self.config, split=False)
-            self.config = swept_config
-            swept_ms = device_busy_of(lambda: self._normalize_rows(probe), device)
-            self.config = default
-            split_ms = device_busy_of(lambda: self._normalize_rows(probe), device)
-            if split_ms > swept_ms:
-                self.config = swept_config
+    def _row_forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self._normalize_rows(x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize *x* over *norm_axis*.

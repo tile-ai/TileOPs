@@ -21,6 +21,7 @@ from tileops.kernels.reduction._primitives import (
     device_smem_budget,
     edge_axis_plan,
     edge_axis_split,
+    identity_for,
     reduce_down_rows,
     restore_reduced,
     rows_for_axes,
@@ -59,18 +60,6 @@ _PROD_POLICY = ProductReducePolicy()
 
 
 # Simple reduce kernel
-
-
-def _pad_value_for_op(op_kind: str) -> float:
-    """Return the identity element for padding columns of the given op."""
-    if op_kind == "prod":
-        return 1.0
-    if op_kind == "amin":
-        return float("inf")
-    if op_kind == "amax":
-        return float("-inf")
-    # sum, mean, std, var, var_mean: zero padding
-    return 0.0
 
 
 _LEADING_AXIS_KINDS = frozenset({"sum", "mean", "amax", "amin"})
@@ -466,7 +455,7 @@ class ReduceKernel(Kernel):
         """
         N_padded = align_up(N, DEFAULT_ALIGNMENT)
         _needs_pad = N_padded != N
-        _pad_val = _pad_value_for_op(op_kind)
+        _pad_val = identity_for(op_kind)
         out_dtype = out_dtype or dtype
 
         @tilelang.jit(out_idx=[1])
@@ -542,7 +531,7 @@ class ReduceKernel(Kernel):
         num_tiles = (N_padded + tile_n - 1) // tile_n
         total_cols = num_tiles * tile_n
         _needs_mask = total_cols > N
-        _pad_val = _pad_value_for_op(op_kind)
+        _pad_val = identity_for(op_kind)
         out_dtype = out_dtype or dtype
 
         @tilelang.jit(out_idx=[1])

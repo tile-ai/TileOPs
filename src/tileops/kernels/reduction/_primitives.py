@@ -1,8 +1,8 @@
 """Shared reduction primitives for reduction kernels.
 
-Provides reusable utility functions, constants, and T.macro factories
-used across all reduction sub-category kernels (sum, max, softmax,
-variance, prefix-scan, etc.), plus the row layout every one of them wants.
+Launch planning, shared-memory arithmetic and the row layout the reduction
+kernels build on, plus the engine that reduces an ``(A, B)`` buffer down its
+rows.
 
 A reduction kernel reduces the trailing axis of a 2-D ``(M, N)`` buffer, while an op
 declares an arbitrary-rank tensor and the axes to reduce; the permute and flatten between
@@ -23,6 +23,7 @@ import torch
 
 from tileops.kernels.constants import SHARED_BANK_SPAN_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.tiling import ALIGNMENT, align_up
+from tileops.utils import device_busy_of
 
 __all__ = [
     "AUTOTUNE_THREADS",
@@ -42,11 +43,7 @@ __all__ = [
     "device_smem_budget",
     "edge_axis_plan",
     "edge_axis_split",
-    "make_cumulative_scan",
-    "make_reduce_epilogue",
-    "make_softmax_epilogue",
-    "make_welford_update",
-    "reduce_column_alignment",
+    "identity_for",
     "reduce_down_rows",
     "restore_reduced",
     "restore_same_shape",
@@ -83,6 +80,22 @@ def ceildiv_int(x: int, y: int) -> int:
     return -(-x // y)
 
 
+def identity_for(op_kind: str) -> float:
+    """The value a masked lane contributes, leaving the reduction unchanged.
+
+    Covers every op_kind the reduction kernels mask for: a product and an
+    ``all`` take one, the extrema take the infinity they cannot beat, and the
+    additive kinds take zero.
+    """
+    if op_kind in ("prod", "all"):
+        return 1.0
+    if op_kind == "amin":
+        return float("inf")
+    if op_kind == "amax":
+        return float("-inf")
+    return 0.0
+
+
 def torch_dtype_nbytes(dtype: torch.dtype | str) -> int:
     """Return element size for a torch dtype object or dtype-name string."""
     if isinstance(dtype, str):
@@ -103,10 +116,15 @@ def reduce_column_alignment(elem_bytes: int, threads: int) -> int:
 class BlockConfigPlanner:
     """Derives ``block_m`` / ``threads`` / ``tile_n`` for a row-wise reduction.
 
-    Every reduction kernel that maps one row per ``block_m`` slot makes the same
-    three decisions -- whether a row fits in shared memory, which config to run
-    untuned, and which candidates to offer the autotuner.  Derived here once so
-    the kernels cannot answer them differently.
+    Answers three questions for a kernel that maps one row per ``block_m`` slot:
+    whether a row fits in shared memory, which config to run untuned, and which
+    candidates to offer the autotuner.
+
+    ``autotune_configs`` here serves the kernels that sweep by calling forward
+    through ``tune_by_forward``, where a candidate costs one call. A kernel that
+    bakes ``tile_n`` into the PrimFunc pays a recompilation per distinct value
+    and sweeps a narrower list of its own; see `RowTiledAutotuneMixin`. The two
+    lists differ at every width, so they are not interchangeable.
 
     Args:
         num_buffers: ``(block_m, tile_n)`` shared buffers alive at once.
@@ -495,12 +513,6 @@ def compute_tile_n(
     return tile_n_max
 
 
-# Supported op_kind values for each macro factory
-_REDUCE_KINDS = {"sum", "max", "min"}
-_SOFTMAX_KINDS = {"softmax", "log_softmax"}
-_SCAN_KINDS = {"sum", "prod"}
-
-
 def tune_by_forward(
     kernel,
     *probe_inputs,
@@ -554,214 +566,6 @@ def tune_by_forward(
 
     kernel.config = best_config
     print(f"Best config: {kernel.config}")
-
-
-def make_reduce_epilogue(op_kind: str):
-    """Create a post-reduce processing T.macro.
-
-    The returned macro applies a final element-wise transformation to the
-    reduced result depending on *op_kind*.
-
-    Supported op_kind values: ``"sum"``, ``"max"``, ``"min"``.
-
-    Args:
-        op_kind: The reduction operation kind.
-
-    Returns:
-        A ``T.macro`` that performs the post-reduce epilogue step.
-        The macro signature is ``epilogue(result, output)`` where both
-        are 1-D fragments of the same shape.
-
-    Raises:
-        ValueError: If *op_kind* is not supported.
-    """
-    if op_kind not in _REDUCE_KINDS:
-        raise ValueError(
-            f"Unsupported op_kind '{op_kind}' for reduce epilogue. "
-            f"Expected one of {sorted(_REDUCE_KINDS)}."
-        )
-
-    # Every reduce kind shares one epilogue: a copy of the reduced fragment.
-    @T.macro
-    def epilogue(result, output):
-        T.copy(result, output)
-
-    return epilogue
-
-
-def make_welford_update(block_m: int, N_padded: int):
-    """Create a single-pass Welford mean+variance update T.macro.
-
-    Uses a two-phase approach that is safe under ``T.Parallel``:
-      1. **Parallel phase**: compute per-row sum and sum-of-squares via
-         ``T.reduce_sum`` (hardware-accelerated, no data races).
-      2. **Per-row phase**: derive mean and M2 from the aggregated sums
-         using the standard Welford combination formula.
-
-    This avoids the race condition inherent in naively updating shared
-    accumulators (mean, m2, count) inside a ``T.Parallel`` loop.
-
-    Args:
-        block_m: Number of rows per thread block.
-        N_padded: Padded hidden dimension (aligned to DEFAULT_ALIGNMENT).
-
-    Returns:
-        A ``T.macro`` with signature
-        ``welford_update(x, mean, m2, count)`` where:
-
-        - *x*: input fragment ``(block_m, N_padded)`` in fp32.
-        - *mean*: running mean ``(block_m,)`` in fp32 (updated in-place).
-        - *m2*: running M2 ``(block_m,)`` in fp32 (updated in-place).
-        - *count*: running element count ``(block_m,)`` in fp32 (updated).
-    """
-
-    @T.macro
-    def welford_update(x, mean, m2, count):
-        # Phase 1: parallel reduction -- safe because T.reduce_sum handles
-        # the intra-row reduction internally without user-level races.
-        row_sum = T.alloc_fragment((block_m,), "float32")
-        sq_diff = T.alloc_fragment((block_m, N_padded), "float32")
-        row_sq_sum = T.alloc_fragment((block_m,), "float32")
-
-        T.reduce_sum(x, row_sum, dim=1)
-
-        # Phase 2: per-row combination (no j dimension, no race).
-        batch_mean = T.alloc_fragment((block_m,), "float32")
-        new_count = T.alloc_fragment((block_m,), "float32")
-        new_mean = T.alloc_fragment((block_m,), "float32")
-        for i in T.Parallel(block_m):
-            batch_mean[i] = row_sum[i] / float(N_padded)
-            new_count[i] = count[i] + float(N_padded)
-            new_mean[i] = (mean[i] * count[i] + row_sum[i]) / new_count[i]
-
-        # Compute M2_b = sum((x[j] - batch_mean)^2) -- deviations from
-        # the *batch's own mean*, not the combined mean.  The parallel
-        # Welford merge formula requires this to be correct.
-        for i in T.serial(block_m):
-            for j in T.Parallel(N_padded):
-                dev = x[i, j] - batch_mean[i]
-                sq_diff[i, j] = dev * dev
-        T.reduce_sum(sq_diff, row_sq_sum, dim=1)
-
-        # Combine with existing M2 using parallel Welford merge formula:
-        #   M2_combined = M2_a + M2_b + delta^2 * (n_a * n_b / n_combined)
-        # Here M2_b = row_sq_sum and delta = batch_mean - mean (old).
-        for i in T.Parallel(block_m):
-            delta = batch_mean[i] - mean[i]
-            m2[i] = (
-                m2[i] + row_sq_sum[i] + delta * delta * (count[i] * float(N_padded) / new_count[i])
-            )
-            mean[i] = new_mean[i]
-            count[i] = new_count[i]
-
-    return welford_update
-
-
-def make_softmax_epilogue(op_kind: str):
-    """Create a softmax family post-processing T.macro.
-
-    The returned macro applies the final normalization step for softmax
-    or log-softmax.
-
-    Supported op_kind values: ``"softmax"``, ``"log_softmax"``.
-
-    Args:
-        op_kind: The softmax variant.
-
-    Returns:
-        A ``T.macro`` with signature
-        ``epilogue(row_exp, row_sum, block_rows, block_cols, output)``
-        where:
-
-        - *row_exp*: exponentiated scores ``(block_rows, block_cols)``.
-        - *row_sum*: per-row sums ``(block_rows,)`` in fp32.
-        - *block_rows*: number of rows (compile-time constant).
-        - *block_cols*: number of columns (compile-time constant).
-        - *output*: destination fragment ``(block_rows, block_cols)``.
-
-    Raises:
-        ValueError: If *op_kind* is not supported.
-    """
-    if op_kind not in _SOFTMAX_KINDS:
-        raise ValueError(
-            f"Unsupported op_kind '{op_kind}' for softmax epilogue. "
-            f"Expected one of {sorted(_SOFTMAX_KINDS)}."
-        )
-
-    if op_kind == "softmax":
-
-        @T.macro
-        def epilogue(row_exp, row_sum, block_rows, block_cols, output):
-            """Normalize exponentials: output[i,j] = row_exp[i,j] / row_sum[i]."""
-            for i, j in T.Parallel(block_rows, block_cols):
-                output[i, j] = row_exp[i, j] / row_sum[i]
-
-    else:  # log_softmax
-
-        @T.macro
-        def epilogue(row_exp, row_sum, block_rows, block_cols, output):
-            """Log-normalize: output[i,j] = log(row_exp[i,j] / row_sum[i])."""
-            for i, j in T.Parallel(block_rows, block_cols):
-                output[i, j] = T.log(row_exp[i, j] / row_sum[i])
-
-    return epilogue
-
-
-def make_cumulative_scan(op_kind: str):
-    """Create an inclusive prefix scan T.macro.
-
-    The returned macro performs an inclusive scan (prefix sum or prefix
-    product) along the last dimension using a sequential loop
-    (``T.Serial``) to maintain the correct data dependency chain.
-
-    Supported op_kind values: ``"sum"``, ``"prod"``.
-
-    Args:
-        op_kind: The scan operation kind.
-
-    Returns:
-        A ``T.macro`` with signature
-        ``scan(input_buf, block_rows, block_cols, output_buf)`` where:
-
-        - *input_buf*: source fragment ``(block_rows, block_cols)``.
-        - *block_rows*: number of rows (compile-time constant).
-        - *block_cols*: number of columns (compile-time constant).
-        - *output_buf*: destination fragment ``(block_rows, block_cols)``.
-
-    Raises:
-        ValueError: If *op_kind* is not supported.
-    """
-    if op_kind not in _SCAN_KINDS:
-        raise ValueError(
-            f"Unsupported op_kind '{op_kind}' for cumulative scan. "
-            f"Expected one of {sorted(_SCAN_KINDS)}."
-        )
-
-    if op_kind == "sum":
-
-        @T.macro
-        def scan(input_buf, block_rows, block_cols, output_buf):
-            """Inclusive prefix sum along the last dimension."""
-            # First column is copied as-is.
-            for i in T.Parallel(block_rows):
-                output_buf[i, 0] = input_buf[i, 0]
-            # Sequential scan across columns to maintain dependency.
-            for j in T.Serial(1, block_cols):
-                for i in T.Parallel(block_rows):
-                    output_buf[i, j] = output_buf[i, j - 1] + input_buf[i, j]
-
-    else:  # prod
-
-        @T.macro
-        def scan(input_buf, block_rows, block_cols, output_buf):
-            """Inclusive prefix product along the last dimension."""
-            for i in T.Parallel(block_rows):
-                output_buf[i, 0] = input_buf[i, 0]
-            for j in T.Serial(1, block_cols):
-                for i in T.Parallel(block_rows):
-                    output_buf[i, j] = output_buf[i, j - 1] * input_buf[i, j]
-
-    return scan
 
 
 # The row layout a reduction kernel reduces, and the shape its caller declared.
@@ -829,8 +633,25 @@ class RowTiledAutotuneMixin:
 
     A subclass must set, before autotuning: ``_planner`` (a
     `BlockConfigPlanner`), ``_smem_budget``, ``N_padded``, ``_elem_bytes``,
-    and ``_MAX_TILE_N_CANDIDATES``.
+    ``_MAX_TILE_N_CANDIDATES``, ``_tile_n`` and ``_split_target``, and implement
+    ``_build_row_kernel`` and ``_row_forward``.
     """
+
+    def _build_row_kernel(self, tile_n: int):
+        """Return the JIT kernel this class builds for *tile_n*."""
+        raise NotImplementedError
+
+    def _row_forward(self, x):
+        """Run the row-level entry point, for the split pair's timing."""
+        raise NotImplementedError
+
+    def _sweep_applies(self) -> bool:
+        """Whether the candidate sweep has anything to vary.
+
+        False where the kernel bakes its whole launch shape in at build time,
+        leaving the default config to stand.
+        """
+        return True
 
     def _tile_n_for_block_m(self, block_m: int) -> int:
         """Return tile_n for a given block_m (0 means no tiling needed).
@@ -911,6 +732,73 @@ class RowTiledAutotuneMixin:
         # Cap to avoid excessive compilation time.
         sorted_candidates = sorted(candidates, reverse=True)
         return sorted_candidates[: self._MAX_TILE_N_CANDIDATES]
+
+    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
+        """Sweep the candidates, rebuilding per tile_n, then judge the split pair.
+
+        Configs are grouped by tile_n because each distinct value is a different
+        kernel; every group is swept with its own build and the best latency
+        across groups wins. The split pair has nothing for the sweep to vary, so
+        it is timed against that winner on device kernel time: paths launching
+        different kernel counts are judged by GPU work, not host-launch gaps.
+        """
+        from tilelang.autotuner import autotune as tl_autotune
+
+        from ._split_softmax import split_seg_n
+
+        if not self._sweep_applies():
+            self.config = self.default_config
+            return
+
+        default = self.default_config
+        split_eligible = bool(split_seg_n(self.M, self.N, default["block_m"], self._split_target))
+
+        configs = self.autotune_configs
+        if not configs:
+            self.config = default
+            return
+
+        by_tile_n: dict[int, list[dict]] = {}
+        for cfg in configs:
+            by_tile_n.setdefault(cfg["tile_n"], []).append(
+                {"block_m": cfg["block_m"], "threads": cfg["threads"]}
+            )
+
+        best_time = float("inf")
+        best_config = None
+        for tile_n, group_cfgs in by_tile_n.items():
+            kernel = self._build_row_kernel(tile_n)
+            tunable_params = list(self._autotune_initial_kwargs(kernel, group_cfgs[0]).keys())
+            autotune_kwargs: dict = dict(configs=group_cfgs, warmup=warmup, rep=rep)
+            if tunable_params:
+                autotune_kwargs["do_not_specialize"] = tunable_params
+            if self.autotune_supply_prog is not None:
+                autotune_kwargs["supply_prog"] = self.autotune_supply_prog
+            autotuned = tl_autotune(**autotune_kwargs)(kernel)
+            tuned = self._call_autotuned_kernel(autotuned, kernel, group_cfgs[0])
+            if tuned.latency < best_time:
+                best_time = tuned.latency
+                best_config = {**tuned.config, "tile_n": tile_n}
+
+        if best_config is not None:
+            self.config = best_config
+            if best_config["tile_n"] != self._tile_n:
+                self._tile_n = best_config["tile_n"]
+                self.kernel = self._build_row_kernel(self._tile_n)
+
+        if split_eligible and best_config is not None:
+            device = torch.device(
+                "cuda",
+                self.device_index if self.device_index is not None else torch.cuda.current_device(),
+            )
+            probe = torch.randn(self.M, self.N, dtype=self.dtype, device=device)
+            swept_config = dict(self.config, split=False)
+            self.config = swept_config
+            swept_ms = device_busy_of(lambda: self._row_forward(probe), device)
+            self.config = default
+            split_ms = device_busy_of(lambda: self._row_forward(probe), device)
+            if split_ms > swept_ms:
+                self.config = swept_config
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -1043,15 +931,6 @@ def _leading_row_splits(reduced: int, kept: int, threads: int) -> int:
     return max(1, min(reduced, ceildiv_int(_LEADING_POLICY.target_blocks, column_blocks)))
 
 
-def _down_rows_identity(op_kind: str) -> float:
-    """The identity element a masked lane contributes."""
-    if op_kind == "amin":
-        return float("inf")
-    if op_kind == "amax":
-        return float("-inf")
-    return 0.0
-
-
 def _make_down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: str):
     """Create the per-op macros used by the down-rows reduction."""
 
@@ -1165,7 +1044,7 @@ def _down_rows_kernel(
                             val = T.if_then_else(
                                 T.And(row < A, col < B),
                                 T.cast(x[row, col], "float32"),
-                                T.cast(_down_rows_identity(op_kind), "float32"),
+                                T.cast(identity_for(op_kind), "float32"),
                             )
                             combine(acc, j, val)
 
