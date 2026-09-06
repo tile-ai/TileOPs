@@ -612,20 +612,13 @@ class Op(ABC):
     def _refuse_empty_input(self, inputs: "Sequence[torch.Tensor | None]") -> None:
         """Raise for a call whose every declared output would hold no elements.
 
-        Such a call leaves a TileLang launch with a zero-sized grid, which reports itself
-        as an internal assertion on ``grid_dim`` — or, where the op divides by an extent
-        first, as a divide by zero. Neither says what is unsupported.
+        Such a call leaves the launch a zero-sized grid, which reports itself as an
+        internal assertion saying nothing about what is unsupported.
 
-        Both the eager and the traced path reach kernel selection, so both are refused
-        here. Which problem a call carrying several is refused for follows from the order
-        the checks sit in: the op's own validation in ``_eager_forward`` precedes this, and
-        the kernel build and everything the kernel states come after.
+        Kernel selection hosts this because both the eager and the traced path reach it.
 
-        What decides is the output, not the input. A zero-length axis on an input is
-        legitimate in more places than a shape rule can distinguish:
-        ``EngramDecodeFwdOp`` decodes from an empty ``conv_state`` when no history has
-        accumulated, and ``FusedMoEExpertsNopadPersistent3WGFwdOp`` runs with an empty
-        scratch buffer. Both produce a non-empty output, so neither is refused.
+        The output decides, not the input: a zero-length axis on an input is legitimate
+        wherever the op still produces something.
 
         Raises:
             ValueError: The op cannot produce the empty output this call asks for.

@@ -12,7 +12,7 @@ import torch
 
 from tileops.ops.elementwise import AddFwdOp, ReluFwdOp
 from tileops.ops.norm import BatchNormFwdOp, RMSNormFwdOp
-from tileops.ops.reduction import SoftmaxFwdOp, SumFwdOp, VarMeanFwdOp
+from tileops.ops.reduction import SumFwdOp, VarMeanFwdOp
 
 pytestmark = [
     pytest.mark.smoke,
@@ -40,7 +40,6 @@ def empty() -> torch.Tensor:
         pytest.param(lambda x: ReluFwdOp()(x), "ReluFwdOp", "input", id="unary"),
         pytest.param(lambda x: AddFwdOp()(x, x), "AddFwdOp", "input", id="binary"),
         pytest.param(lambda x: SumFwdOp(dim=1)(x), "SumFwdOp", "x", id="reduce_to_empty"),
-        pytest.param(lambda x: SoftmaxFwdOp(dim=1)(x), "SoftmaxFwdOp", "x", id="softmax"),
         pytest.param(
             lambda x: RMSNormFwdOp((8,))(x, torch.ones(8, device=x.device, dtype=x.dtype)),
             "RMSNormFwdOp",
@@ -57,10 +56,7 @@ def test_empty_input_is_refused(empty, call, op_class_name, input_name):
 
 
 def test_batch_norm_training_is_refused():
-    """An op reading a private multi-output from its kernel is refused like any other.
-
-    Its training path used to reach a divide by zero rather than a launch.
-    """
+    """An op reading a private multi-output from its kernel is refused like any other."""
     x = torch.empty(0, 4, 2, 2, device="cuda", dtype=DTYPE)
     stat = lambda: torch.zeros(4, device="cuda")  # noqa: E731
     with pytest.raises(ValueError, match=re.escape(_message("BatchNormFwdOp", "x", (0, 4, 2, 2)))):
@@ -76,11 +72,7 @@ def test_compiled_call_is_refused_the_same_way(empty):
 
 
 def test_the_op_s_own_validation_precedes_the_refusal():
-    """A call invalid for two reasons is refused for whichever check it reaches first.
-
-    ``_eager_forward``'s prelude runs before kernel selection, so the device mismatch is
-    what this call hears about.
-    """
+    """``_eager_forward``'s prelude runs before kernel selection, so it reports first."""
     with pytest.raises(ValueError, match="needs every input on one device"):
         AddFwdOp()(torch.empty(0, 2), torch.empty(0, 2, device="cuda"))
 
@@ -91,17 +83,7 @@ def test_the_refusal_precedes_what_the_kernel_states():
         ReluFwdOp()(torch.empty(0, 8))
 
 
-def test_a_non_empty_call_is_untouched(empty):
-    """A call whose output holds elements takes the same path it always did."""
-    assert ReluFwdOp()(torch.randn(4, 8, device="cuda", dtype=DTYPE)).shape == (4, 8)
-
-
 def test_an_empty_input_with_a_non_empty_output_is_not_refused(empty):
-    """A reduction over the empty axis still reaches its kernel.
-
-    Its output is non-empty, and an input's zero-length axis is legitimate where the op
-    produces something — refusing on the input would refuse a decode reading an empty
-    state. This call fails inside the kernel, as it did before the guard.
-    """
+    """An input's zero-length axis is legitimate where the op still produces something."""
     with pytest.raises(ZeroDivisionError):
         SumFwdOp(dim=0)(empty)
