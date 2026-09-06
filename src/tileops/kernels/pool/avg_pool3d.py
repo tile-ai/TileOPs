@@ -55,9 +55,9 @@ def _avg_pool3d_kernel(
         and _axis_inside(h_in, out_h, kernel_h, stride_h, pad_h)
         and _axis_inside(w_in, out_w, kernel_w, stride_w, pad_w)
     )
-    # Without ceil mode a window ends at `size + pad` at the furthest, so counting
-    # the padding gives the whole kernel for every output. Ceil mode can push a
-    # window past that, and an uncounted padding shortens the ones that overhang.
+    # Without ceil mode a window reaches `size + pad` at the furthest, so counting
+    # the padding gives every output the whole kernel. Ceil mode can overhang that,
+    # and uncounted padding shortens the windows that do.
     whole_window_divides = window_inside or (count_include_pad and not ceil_mode)
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -102,8 +102,8 @@ def _avg_pool3d_kernel(
                                     ):
                                         total_val += T.cast(x[row, id_, ih, iw], accum_dtype)
                         # An explicit divisor is used as given, negative included.
-                        # Only a divisor read off the window takes a floor, because
-                        # an empty window would otherwise divide by zero.
+                        # Only a divisor read off the window takes a floor, or an
+                        # empty window divides by zero.
                         if use_divisor_override:
                             divisor = T.cast(divisor_override, accum_dtype)
                         elif whole_window_divides:
@@ -299,8 +299,6 @@ def _launch_avg_pool3d(
         divisor_override,
         dtype,
     )(block_m, threads)
-    # One volume per (batch, channel) pair: the two leading extents fold away
-    # here and are restored on the result.
     return kernel(x.reshape(n * c_in, d_in, h_in, w_in)).view(n, c_in, out_d, out_h, out_w)
 
 

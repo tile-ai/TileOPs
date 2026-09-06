@@ -11,8 +11,8 @@ from tileops.kernels.pool.common import pool_output_dim
 
 __all__ = ["MaxPool2dKernel", "MaxPool2dWithIndicesKernel"]
 
-# Accumulators one thread may hold for its output tile: the band row it is
-# reading plus the row maxima the column pass consumes.
+# Accumulators one thread holds for its output tile: the band row plus the row
+# maxima the column pass consumes.
 _MAX_TILE_REGISTERS = 64
 
 
@@ -61,9 +61,8 @@ def _max_pool2d_kernel(
         tile_full = total % block_m == 0
         tile_exact = out_h % tile_h == 0 and out_w % tile_w == 0
         window_inside = rows_inside and cols_inside
-        # Every tile starts the same distance into its row, so whether the band
-        # is a whole number of 16-byte runs on a 16-byte boundary is one
-        # question for all of them.
+        # Every tile starts the same distance into its row, so one check settles
+        # 16-byte alignment for all of them.
         vector_width = 16 // torch.empty((), dtype=getattr(torch, dtype)).element_size()
         vector_band = (
             window_inside and band_w % vector_width == 0 and (tile_w * stride_w) % vector_width == 0
@@ -106,18 +105,17 @@ def _max_pool2d_kernel(
                                     if window_inside:
                                         band[t] = x[row, ih, iw]
                                     else:
-                                        # A position outside the input is read from
-                                        # a clamped address and replaced, so every
-                                        # thread walks the same band.
+                                        # A position outside the input is read
+                                        # from a clamped address and replaced, so
+                                        # every thread walks the same band.
                                         band[t] = T.if_then_else(
                                             (rows_inside or ((ih >= 0) and (ih < h_in)))
                                             and (cols_inside or ((iw >= 0) and (iw < w_in))),
                                             x[row, safe_h(ih), safe_w(iw)],
                                             -T.infinity(dtype),
                                         )
-                            # The band is read once per output column, so the row's
-                            # maxima are taken here and the column pass below reads
-                            # each of them kernel_h times.
+                            # Row maxima: the column pass below reads each one
+                            # kernel_h times, so the band is read once.
                             for j in T.serial(tile_w):
                                 run = T.alloc_var(T.float32)
                                 run = T.cast(band[j * stride_w], accum_dtype)
@@ -126,8 +124,8 @@ def _max_pool2d_kernel(
                                         band[j * stride_w + (kw + 1) * dilation_w],
                                         accum_dtype,
                                     )
-                                    # NaN enters `run` and never leaves: a later
-                                    # value fails `v > NaN`, as PyTorch propagates it.
+                                    # NaN enters `run` and never leaves, since a
+                                    # later value fails `v > NaN`.
                                     run = T.if_then_else(T.isnan(v) or (v > run), v, run)
                                 across[r * tile_w + j] = run
                         for a in T.serial(tile_h):
@@ -183,8 +181,6 @@ def _launch_max_pool2d(
         ceil_mode,
         dtype,
     )(**config)
-    # One plane per (batch, channel) pair: the two leading extents fold away
-    # here and are restored on the result.
     return kernel(x.reshape(n * c_in, h_in, w_in)).view(n, c_in, out_h, out_w)
 
 
@@ -241,10 +237,8 @@ def _max_pool2d_with_indices_kernel(
                         run = T.alloc_var(T.float32)
                         best = T.alloc_var(T.int32)
                         run = -T.infinity(accum_dtype)
-                        # The position starts at the window's first tap inside the
-                        # input, reached by advancing the corner one dilation step
-                        # at a time, so a window holding nothing but -inf reports
-                        # that tap as PyTorch does.
+                        # Seeded at the window's first tap inside the input, so a
+                        # window of nothing but -inf reports that tap.
                         best = (top + T.max(0, T.ceildiv(-top, dilation_h)) * dilation_h) * w_in + (
                             left + T.max(0, T.ceildiv(-left, dilation_w)) * dilation_w
                         )
@@ -253,14 +247,13 @@ def _max_pool2d_with_indices_kernel(
                             if rows_inside or ((ih >= 0) and (ih < h_in)):
                                 for kw in T.serial(kernel_w):
                                     iw = left + kw * dilation_w
-                                    # Why: a branch on the column splits the warp at
-                                    # the row edges, so the test rides the update.
+                                    # Why: a branch on the column splits the warp
+                                    # at the row edges; the test rides the update.
                                     live = cols_inside or ((iw >= 0) and (iw < w_in))
                                     v = T.cast(x[row, ih, safe_w(iw)], accum_dtype)
-                                    # PyTorch's own predicate: strict > keeps the
-                                    # first maximum, and a NaN takes the position
-                                    # and holds it, so the last NaN in the window
-                                    # wins as it does there.
+                                    # Strict > keeps the first maximum; a NaN takes
+                                    # the position and holds it, so the last NaN in
+                                    # the window wins.
                                     take = live and (T.isnan(v) or (v > run))
                                     run = T.if_then_else(take, v, run)
                                     best = T.if_then_else(take, ih * w_in + iw, best)

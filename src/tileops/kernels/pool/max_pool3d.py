@@ -97,9 +97,8 @@ def _max_pool3d_kernel(
                                         and (iw < w_in)
                                     ):
                                         v = T.cast(x[row, id_, ih, iw], accum_dtype)
-                                        # NaN enters `run` and never leaves: a
-                                        # later value fails `v > NaN`, as PyTorch
-                                        # propagates it.
+                                        # NaN enters `run` and never leaves,
+                                        # since a later value fails `v > NaN`.
                                         run = T.if_then_else(T.isnan(v) or (v > run), v, run)
                         out[row, od, oh, ow] = T.cast(run, dtype)
 
@@ -155,8 +154,6 @@ def _launch_max_pool3d(
         ceil_mode,
         dtype,
     )(**config)
-    # One volume per (batch, channel) pair: the two leading extents fold away
-    # here and are restored on the result.
     return kernel(x.reshape(n * c_in, d_in, h_in, w_in)).view(n, c_in, out_d, out_h, out_w)
 
 
@@ -220,10 +217,8 @@ def _max_pool3d_with_indices_kernel(
                         run = T.alloc_var(T.float32)
                         best = T.alloc_var(T.int32)
                         run = -T.infinity(accum_dtype)
-                        # The position starts at the window's first tap inside the
-                        # input, reached by advancing the corner one dilation step
-                        # at a time, so a window holding nothing but -inf reports
-                        # that tap as PyTorch does.
+                        # Seeded at the window's first tap inside the input, so a
+                        # window of nothing but -inf reports that tap.
                         best = (
                             (front + T.max(0, T.ceildiv(-front, dilation_d)) * dilation_d) * h_in
                             + (top + T.max(0, T.ceildiv(-top, dilation_h)) * dilation_h)
@@ -234,8 +229,6 @@ def _max_pool3d_with_indices_kernel(
                                     id_ = front + kd * dilation_d
                                     ih = top + kh * dilation_h
                                     iw = left + kw * dilation_w
-                                    # Why: over this many taps, skipping the tap
-                                    # beats keeping the warp together.
                                     if window_inside or (
                                         (id_ >= 0)
                                         and (id_ < d_in)
@@ -245,10 +238,9 @@ def _max_pool3d_with_indices_kernel(
                                         and (iw < w_in)
                                     ):
                                         v = T.cast(x[row, id_, ih, iw], accum_dtype)
-                                        # PyTorch's own predicate: strict > keeps
-                                        # the first maximum, and a NaN takes the
-                                        # position and holds it, so the last NaN in
-                                        # the window wins as it does there.
+                                        # Strict > keeps the first maximum; a NaN
+                                        # takes the position and holds it, so the
+                                        # last NaN in the window wins.
                                         take = T.isnan(v) or (v > run)
                                         run = T.if_then_else(take, v, run)
                                         best = T.if_then_else(
