@@ -194,10 +194,7 @@ def test_training_updates_a_non_contiguous_running_stat() -> None:
 
 @pytest.mark.smoke
 def test_training_rejects_one_value_per_channel() -> None:
-    """Bessel's correction divides by L - 1; torch refuses the same call.
-
-    Inference applies no correction and takes the shape, as torch does.
-    """
+    """Bessel's correction divides by L - 1; torch refuses the same call."""
     C = 4
     x = torch.randn(1, C, 1, 1, device="cuda", dtype=torch.float32)
     weight = torch.ones(C, device="cuda", dtype=torch.float32)

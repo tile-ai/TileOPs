@@ -90,8 +90,7 @@ def select_row_config() -> dict:
     """Structurally collapse-free default ``{block_m, threads}`` for a row reduction.
 
     Takes no width: a row is padded to a multiple of the 256-element alignment,
-    which 128 threads always divide. `select_row_config_by_width` is the sibling
-    that does size itself from the row.
+    which 128 threads always divide.
     """
     return {"block_m": 1, "threads": _DEFAULT_THREADS}
 
