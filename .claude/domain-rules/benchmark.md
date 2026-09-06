@@ -1,18 +1,12 @@
-- **MUST NOT**: import from `tests/`, or author `gen_inputs` — take the op's workload from `workloads/`, adding it there if the op has none.
-- Time the workload's `ref_program` for the torch baseline. Override it in a subclass only when the baseline is deliberately not the reference, and say so in its docstring.
-- Another implementation of the same computation takes its own tag beside `ref_program` instead of overriding it, and is asserted against the reference before the case is timed. Time a library's kernel where it has one; where it cannot express the case, drop the tag and say why.
-- A library a row selects raises when it is missing: a degraded environment must fail the row rather than report torch under a library's tag. One a row merely prefers keeps its guarded import and drops the tag.
+→ [testing.md §Benchmarks](../../docs/design/testing.md#benchmarks) states the file checklist, the metrics and the reporting rules. What follows is what those leave open.
+
+- A benchmark asserts only what it needs to trust its own numbers: that an implementation it is about to time matches the reference, or that a comparison which decides something came out the way the code assumes. It never becomes the place an op's behaviour is established.
+- A library a row *selects* raises when it is missing — a degraded environment fails the row rather than reporting torch under a library's tag. One a row merely *prefers* keeps its guarded import and drops the tag.
+- Where a library cannot express the case at all, drop its tag and say why.
+- A subclass that overrides `ref_program` because the baseline is deliberately not the reference says so in the subclass docstring, not only in the PR.
 - A baseline that overwrites its inputs gets private copies. Sharing them silently feeds every later tag something the reference never read.
-
-→ [trust-model.md §Benchmark](../../docs/design/trust-model.md#benchmark) | [testing.md §Benchmarks](../../docs/design/testing.md#benchmarks)
-
-______________________________________________________________________
-
-- Every benchmark records ≥1 non-`tileops` baseline.
 - A timed callable launches its own work. Gradients come from `backward_of`, never `Tensor.backward`: autograd's engine thread carries no iteration id, so the timer cannot attribute what it launches.
-- Name the scenario (`serving-130m-4k`), not the parameters; a `label` omits the dtype, the case id appends it.
-- Tag names: lowercase, hyphen-separated. A `tileops` prefix marks a TileOPs entry; everything else is a baseline.
-- A benchmark takes its op at construction and publishes every row under it. What distinguishes one case from another belongs to the case, never to the row's name.
-- The report tracks ops. A comparison whose subject is something else decides a question rather than tracking one, and states its conclusion as an assertion instead of publishing a row.
-- A benchmark takes its roofline off the op. Writing the arithmetic by hand is what an op with no roofline of its own falls back to.
-- Benchmark shapes reflect real DNN workloads (LLaMA-family by default). Annotate shape constants with the model/scenario; never arbitrary flat numbers (262K, 1M, 4M).
+- Name the scenario (`serving-130m-4k`), not the parameters. A `label` omits the dtype; the case id appends it.
+- Tag names: lowercase, hyphen-separated. A `tileops` prefix marks a TileOPs entry; everything else is a baseline. Exactly one `tileops`-prefixed entry per config — a variant tag like `tileops-lut` is that one entry, not an extra.
+- Cover every dtype in `SUPPORTED_DTYPES`, and ≥3 shapes per op including a non-power-of-2 where the op supports one.
+- Shapes come from real DNN workloads, LLaMA-family by default: hidden ∈ {4096, 5120, 8192}, intermediate ∈ {10240, 11008, 14336, 20480, 28672}, seq_len ∈ {2048, 4096}. Annotate every shape constant with the model or scenario it represents; never a bare flat number (262K, 1M, 4M).

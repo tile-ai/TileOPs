@@ -1,38 +1,28 @@
-For `[Maintain]`, `[Refactor][Manifest]`, and any PR that flips a manifest entry's `status`. The manifest is the authoritative spec for op interfaces — every check below exists to keep that authority real.
+For any PR that adds a `src/tileops/manifest/` entry, patches one, or flips one's `status`. The rules the entry must satisfy are in [manifest-spec.md](../domain-rules/manifest-spec.md); what follows is what a reviewer does with them.
 
-Load `.claude/domain-rules/manifest-spec.md` before reviewing.
-
-Two non-negotiable principles cut across every event:
-
-- **Reference semantic alignment.** Any change to an op's spec (signature, shape rules, dtype combos, roofline vars) must map back to an authoritative reference — PyTorch public API for `torch.nn.*` / `torch.nn.functional.*` names; the paper or vendor docs otherwise. Reverse-engineering from current TileOps code is forbidden — spec is upstream of code.
-- **`status` field truthfulness.** `status: implemented` is a hard claim that code conforms to the entry. The reviewer's job is to *disprove* it, not to take it on faith. A status flip that does not reflect actual conformance makes the spec unreliable for every reader downstream.
+The reviewer's job on `status: implemented` is to **disprove** it. It is a hard claim that the code conforms to the entry, and a flip that does not reflect conformance makes the spec unreliable for every reader downstream.
 
 #### New entry
 
-Any PR that adds a previously-absent op entry.
+- [ ] **Reference cited and authoritative.** `ref_api` points at PyTorch, the paper, or vendor docs, and the shape and dtype rules are derivable from that link alone.
+- [ ] **Required fields present.** `signature`, `shape_rules`, `dtype_combos`, `roofline`; `kernel_map` and `static_dims` where the op's family requires them.
+- [ ] **Lands as `spec-only`.** A new entry never lands as `implemented`, whatever existing code claims.
+- [ ] **Validator green.** `scripts/validate_manifest.py` passes with no check disabled.
 
-- [ ] **Reference cited and authoritative.** Entry's `source` field points to PyTorch / paper / vendor docs. Reviewer can derive shape and dtype rules from that link alone.
-- [ ] **Signature matches reference exactly.** For `torch.nn.*` / `torch.nn.functional.*` names: parameter names, order, and defaults all match PyTorch's public API. No invented parameters.
-- [ ] **Required fields present.** `signature`, `shape_rules`, `dtype_combos`, `roofline`; `kernel_map` and `static_dims` where the family requires them.
-- [ ] **Lands as `spec-only`.** New entries never land as `implemented`, regardless of any existing code claiming to be ready.
-- [ ] **Validator green.** `scripts/validate_manifest.py` passes with no checks disabled.
+#### Patch to an existing entry
 
-#### Structural-field patch (existing entry)
-
-A PR that fills one missing structural field (`kernel_map`, `static_dims`) on an existing entry.
-
-- [ ] **Scope is one structural field.** Diff modifies exactly one missing field. Edits to `signature`, `shape_rules`, `dtype_combos`, or `roofline` are a reference-derived spec change, not a structural patch — reject and split.
-- [ ] **Reference still aligns.** Other reference-derivable fields (`signature`, `shape_rules`, `dtype_combos`) on the same entry have not silently drifted from the source URL. Spot-check at least one.
+- [ ] **Nothing spec-shaped rides along.** Filling `source.kernel_map` or `signature.static_dims` is derived from the code on disk. An edit to `signature`, `shape_rules`, `dtype_combos` or `roofline` in the same diff is a reference-derived spec change; reject and split.
+- [ ] **The reference has not silently drifted.** Spot-check at least one reference-derivable field on the entry against `ref_api`.
 - [ ] **Validator green.**
 
-#### Status flip (`spec-only` ↔ `implemented`)
+#### Status flip
 
-Often bundled with a `[Refactor][Ops]` op-migration PR.
+Often bundled with an op-migration PR.
 
-- [ ] **Conformance verified, not asserted.** Reviewer diffs the op's `__init__` and `forward` against the manifest entry field-by-field — names, types, defaults, shapes.
-- [ ] **Spec tests actually run.** No `pytest.skip`, `xfail`, or weakened assertion left from the `spec-only` era. Grep the test file before approving.
+- [ ] **Conformance verified, not asserted.** Diff the op's `__init__` and `forward` against the entry field by field — names, types, defaults, shapes.
+- [ ] **Spec tests actually run.** No `pytest.skip`, `xfail`, or weakened assertion left over from the `spec-only` era. Grep the test file.
 - [ ] **`FIXME(staged-rollout)` markers tied to this op removed.**
-- [ ] **Flip back to `spec-only`** is legitimate only when implementation is removed or known-broken. Challenge any other rationale.
-- [ ] **Pure flip.** This PR changes `status` only — no rewrite of `signature` / `shape_rules` / `roofline`. If the entry needs spec edits to match implementation, that is reverse-engineering from code; reject and require a separate spec PR derived from the reference.
-- [ ] **`source.kernel_map` present.** `status: implemented` requires the Op→Kernel dispatch map. The validator currently emits a *warning* for missing `kernel_map`; the human reviewer escalates that to a blocker on a flipped entry.
-- [ ] **`workloads` non-empty and tensor-input shapes complete.** `status: implemented` requires at least 2 workloads (`test_every_op_has_at_least_two_workloads`). Each row must declare a shape for *every* tensor input in `signature.inputs` — `input_shape` alone is not enough when the op has additional tensor inputs (e.g. `mask_shape`, `value_shape: []`, `min_shape`, `max_shape`). Empty `workloads: []` or a row missing any required tensor-input shape on a flipped entry is a blocker — copy from the sibling variant or derive from the op's typical usage shapes.
+- [ ] **Pure flip.** The PR changes `status` only. An entry needing spec edits to match the implementation is reverse-engineering from code; reject it and require a separate PR deriving those fields from the reference.
+- [ ] **`source.kernel_map` present.** The validator only warns on a missing map; on a flipped entry the reviewer escalates that to a blocker.
+- [ ] **`workloads` non-empty and tensor-input shapes complete.** At least 2 workloads (`test_every_op_has_at_least_two_workloads`), each declaring a shape for *every* tensor input in `signature.inputs` — `input_shape` alone is not enough when the op takes more (`mask_shape`, `value_shape: []`, `min_shape`, `max_shape`). Copy from the sibling variant or derive from the op's typical usage shapes.
+- [ ] **Flip back to `spec-only`** is legitimate only when the implementation is removed or known-broken. Challenge any other rationale.

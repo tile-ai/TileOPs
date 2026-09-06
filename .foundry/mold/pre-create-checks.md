@@ -17,25 +17,19 @@ fi
 
 ## 2. Test node delta
 
-**Skip entirely** if PR does not modify files under `tests/`.
-
-If PR adds or modifies test files:
+**Skip entirely** if the PR does not modify files under `tests/`.
 
 ```bash
 git fetch upstream main --quiet
 python scripts/test_node_delta.py --base upstream/main
 ```
 
-The script auto-detects changed test files via `git diff`. If auto-detect fails (e.g. in a worktree), pass files explicitly:
+The script auto-detects changed test files via `git diff`. Where auto-detect fails — in a worktree, for instance — pass them explicitly:
 
 ```bash
 python scripts/test_node_delta.py --base upstream/main tests/ops/test_<name>.py
 ```
 
-**Interpreting output:**
+What to do with the output is in [`docs/design/testing.md` § Test node growth detection](../../docs/design/testing.md#test-node-growth-detection).
 
-- **No growth on existing files** → nothing to report.
-- **Growth on existing files** → include script output and one-line justification in PR body under `## Test node delta`.
-- **New test files only** (delta shows "all N nodes from new files") → no delta report needed.
-
-**SOFT GATE:** Does not block PR creation, but missing justification will be flagged during review (per [`.claude/domain-rules/testing-budget.md`](../../.claude/domain-rules/testing-budget.md)).
+**SOFT GATE:** does not block PR creation. Missing justification is flagged during review, per [`.claude/domain-rules/testing-budget.md`](../../.claude/domain-rules/testing-budget.md).

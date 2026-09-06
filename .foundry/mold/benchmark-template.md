@@ -1,11 +1,13 @@
 <!--
 INSTRUCTIONS FOR THE AGENT (do not copy into the PR body).
 
+This file is the PR-body table format only. Rules for writing the benchmark
+itself — baselines, tags, shapes, dtypes, what may be asserted — are in
+.claude/domain-rules/benchmark.md.
+
 Layout principle: one section per op, one table per section, TileOPs and
 baseline side-by-side on the same row so readers can compare without
 mentally joining two tables.
-
-Filling in the template below:
 
 - One row per measurement (shape × dtype) within an op's table.
 - Baseline column header names the baseline (`torch (ms)`, `FA3 (ms)`,
@@ -32,22 +34,6 @@ Filling in the template below:
 - Environment block goes once at the top, not per op.
 - Takeaways = conclusions, not data repetition. Wins, losses with a brief
   reason (not blocking), dtype/shape patterns.
-
-Bench-file authoring rules (apply when writing benchmarks/ops/*.py, NOT
-copied into the PR body):
-
-- All dtypes in `SUPPORTED_DTYPES`; ≥3 shapes per op, include non-pow2
-  if supported.
-- Shapes must map to real model geometry. Default LLaMA sizes:
-  hidden ∈ {4096, 5120, 8192}, intermediate ∈ {10240, 11008, 14336,
-  20480, 28672}, seq_len ∈ {2048, 4096}.
-- Every benchmark must record at least one baseline. Tags: `tileops`
-  (TileOPs implementation; required exactly once per config; variants
-  like `tileops-lut` also count) and `torch` / `FA3` / `fla` / `triton`
-  (baselines for comparison). External baselines may be conditional,
-  but the else branch must fall back to torch — never silently skip.
-- `BenchmarkReport.record()` first arg must be the Op object, never a
-  string literal.
 -->
 
 ## Benchmark

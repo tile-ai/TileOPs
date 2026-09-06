@@ -51,4 +51,4 @@ Read the relevant context file **before** modifying files in that domain. Do not
 
 ## Reviewing a PR
 
-Load [pre-review.md](.claude/review-checklists/pre-review.md) for every review, plus each file under [.claude/review-checklists/](.claude/review-checklists/) whose opening line names a PR type or a path this diff matches. Run [approval-gate.md](.claude/review-checklists/approval-gate.md) before calling any PR clean.
+Load [pre-review.md](.claude/review-checklists/pre-review.md) plus the domain rules the diff touches, per the table above. A PR that adds, patches, or flips the `status` of a manifest entry also loads [review-checklists/manifest.md](.claude/review-checklists/manifest.md). Run [approval-gate.md](.claude/review-checklists/approval-gate.md) before calling any PR clean.

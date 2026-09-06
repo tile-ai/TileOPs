@@ -1,4 +1,4 @@
-Common rules for every checklist in this folder. Load before any title-specific checklist.
+Applies to every review. Load it alongside the domain rules for whatever the diff touches — the table in [CLAUDE.md](../../CLAUDE.md) maps path to rule file.
 
 ## Correctness criteria
 
@@ -20,4 +20,4 @@ Cite the failing criterion by name.
 
 ## Scope
 
-Checklists are the floor. Add PR-specific checks when the diff warrants them.
+These are the floor. Add PR-specific checks when the diff warrants them.

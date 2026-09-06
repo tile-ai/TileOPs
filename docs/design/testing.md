@@ -151,4 +151,4 @@ class — so a workload needs nothing beyond the fields its own benchmark reads.
 - Run the targeted correctness suite on the same GPU before reporting benchmark numbers.
 - Every row of the report is one op's measurement: `BenchmarkReport.record()` takes the Op, and the benchmark names it once, at construction. A comparison that measures something else — a kernel strategy, a field of library implementations — asserts, or lives in `benchmarks/studies/`, which the nightly sweep does not reach.
 - `calculate_flops()` and `calculate_memory()` should return numeric values when the metric is available; return `None` only if the metric is not applicable, in which case it will be omitted from the report.
-- Every benchmark must record at least one non-`"tileops"` baseline. Use existing tags (`"baseline"`, `"torch"`, `"fa3"`, `"fla"`, `"triton"`) and avoid introducing ad-hoc tags without updating downstream consumers.
+- Use existing baseline tags (`"baseline"`, `"torch"`, `"fa3"`, `"fla"`, `"triton"`); introducing an ad-hoc tag means updating the downstream consumers with it.
