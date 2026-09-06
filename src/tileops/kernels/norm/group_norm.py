@@ -33,7 +33,12 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
-from ._config import row_padding, select_row_config_by_width, select_row_configs
+from ._config import (
+    make_row_reduce,
+    row_padding,
+    select_row_config_by_width,
+    select_row_configs,
+)
 
 __all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
 
@@ -56,45 +61,6 @@ def _channel_of(row, col, num_groups: int, channels_per_group: int, spatial_size
         Index into the length-C weight / bias vectors.
     """
     return (row % num_groups) * channels_per_group + col // spatial_size
-
-
-def _make_row_reduce(block_m, D, D_padded, eps):
-    """Create the macro reducing a loaded fp32 row block to mean and rstd.
-
-    Consumes ``x_f32`` and overwrites it with the centered squares. The load
-    stays at the call sites: pulling it in here makes TileLang insert a
-    ``__syncthreads()`` between the global-to-shared and shared-to-register
-    copies, which measures 2% slower on an aligned row.
-
-    Args:
-        block_m: Rows per block.
-        D: Row length.
-        D_padded: *D* rounded up to :data:`ALIGNMENT`.
-        eps: Epsilon for numerical stability.
-
-    Returns:
-        A ``@T.macro`` taking ``(x_f32, acc, mean_val, rstd)``.
-    """
-    pad_count = D_padded - D
-
-    @T.macro
-    def row_reduce(x_f32, acc, mean_val, rstd):
-        T.reduce_sum(x_f32, acc, dim=1)
-        for i in T.Parallel(block_m):
-            mean_val[i] = acc[i] / float(D)
-
-        # Rewrite x_f32 in-place with (x - mean)^2. Padded positions (x=0)
-        # contribute mean^2, subtracted back out below.
-        for i, j in T.Parallel(block_m, D_padded):
-            x_f32[i, j] = (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i])
-
-        T.reduce_sum(x_f32, acc, dim=1)
-        for i in T.Parallel(block_m):
-            rstd[i] = T.rsqrt(
-                (acc[i] - float(pad_count) * mean_val[i] * mean_val[i]) / float(D) + eps
-            )
-
-    return row_reduce
 
 
 @functools.lru_cache(maxsize=32)
@@ -123,7 +89,7 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
     def _func(block_m, threads):
         # A non-aligned D would read and write columns >= D unless masked.
         masked = D_padded != D
-        row_reduce = _make_row_reduce(block_m, D, D_padded, eps)
+        row_reduce = make_row_reduce(block_m, D, D_padded, eps)
 
         @T.prim_func
         def main(
@@ -321,7 +287,7 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
     def _func(block_m, threads):
         # A non-aligned D would read and write columns >= D unless masked.
         masked = D_padded != D
-        row_reduce = _make_row_reduce(block_m, D, D_padded, eps)
+        row_reduce = make_row_reduce(block_m, D, D_padded, eps)
 
         @T.prim_func
         def main(

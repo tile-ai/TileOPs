@@ -29,7 +29,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
 
-from ._config import select_row_config, select_row_configs
+from ._config import make_row_reduce, select_row_config, select_row_configs
 
 __all__ = ["AdaLayerNormKernel"]
 
@@ -51,7 +51,6 @@ def _should_use_cp_async(
 def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False):
     N_padded = align_up(N, ALIGNMENT)
     needs_pad = N_padded != N
-    pad_count = N_padded - N  # number of zero-padded elements per row
     # The async policy guarantees that each source row is a whole number of
     # 4-byte cp.async transactions.
     async_copy_elems = 1 if dtype == "float32" else 2
@@ -75,20 +74,7 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
             for i, j in T.Parallel(block_m, N_padded):
                 x_f32[i, j] = T.cast(x_local[i, j], "float32")
 
-        @T.macro
-        def compute_mean_rstd(x_f32, acc, mean_val, rstd):
-            T.reduce_sum(x_f32, acc, dim=1)
-            for i in T.Parallel(block_m):
-                mean_val[i] = acc[i] / float(N)
-
-            for i, j in T.Parallel(block_m, N_padded):
-                x_f32[i, j] = (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i])
-
-            T.reduce_sum(x_f32, acc, dim=1)
-            for i in T.Parallel(block_m):
-                rstd[i] = T.rsqrt(
-                    (acc[i] - float(pad_count) * mean_val[i] * mean_val[i]) / float(N) + eps
-                )
+        compute_mean_rstd = make_row_reduce(block_m, N, N_padded, eps)
 
         @T.macro
         def prefetch_modulation(src, dst, pid_m):
@@ -270,7 +256,7 @@ class AdaLayerNormKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return select_row_config(self.N_padded)
+        return select_row_config()
 
     @property
     def autotune_configs(self) -> list[dict]:

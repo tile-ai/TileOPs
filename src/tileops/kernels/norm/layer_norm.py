@@ -189,7 +189,7 @@ class LayerNormKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return select_row_config(self.N_padded)
+        return select_row_config()
 
     @property
     def autotune_configs(self) -> list[dict]:

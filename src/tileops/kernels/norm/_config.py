@@ -1,4 +1,4 @@
-"""Tile-config selection shared by the row-wise norm kernels.
+"""What the row-wise norm kernels share: tile-config selection and the row reduction.
 
 These kernels hold a ``(block_m, N_padded)`` row block in register fragments and
 reduce along the row. When ``N_padded`` is not a power of two, TileLang's layout
@@ -15,12 +15,19 @@ knob so the kernel interface is not narrowed; configs that collapse lose on thei
 measured runtime.
 """
 
+import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.tiling import ALIGNMENT
 
-__all__ = ["row_padding", "select_row_config_by_width", "select_row_config", "select_row_configs"]
+__all__ = [
+    "make_row_reduce",
+    "row_padding",
+    "select_row_config",
+    "select_row_config_by_width",
+    "select_row_configs",
+]
 
 # Powers of two only (tl::AllReduce is an XOR butterfly) that also divide
 # N_padded, or layout inference reports "no available layout". CUDA caps at 1024.
@@ -79,9 +86,13 @@ def _feasible_threads(n_padded: int, dtype: torch.dtype = torch.float16) -> list
     return vectorizable or candidates
 
 
-def select_row_config(n_padded: int) -> dict:
-    """Structurally collapse-free default ``{block_m, threads}`` for a row reduction."""
-    # N_padded is a multiple of the 256-element alignment, so 128 always divides it.
+def select_row_config() -> dict:
+    """Structurally collapse-free default ``{block_m, threads}`` for a row reduction.
+
+    Takes no width: a row is padded to a multiple of the 256-element alignment,
+    which 128 threads always divide. `select_row_config_by_width` is the sibling
+    that does size itself from the row.
+    """
     return {"block_m": 1, "threads": _DEFAULT_THREADS}
 
 
@@ -104,7 +115,46 @@ def select_row_configs(
         if block_m <= max_block_m
         for t in threads
     ]
-    default = select_row_config(n_padded)
+    default = select_row_config()
     if default not in configs:
         configs.insert(0, default)
     return configs
+
+
+def make_row_reduce(block_m, n, n_padded, eps):
+    """Create the macro reducing a loaded fp32 row block to mean and rstd.
+
+    Consumes ``x_f32`` and overwrites it with the centered squares. The load
+    stays at the call sites: pulling it in here makes TileLang insert a
+    ``__syncthreads()`` between the global-to-shared and shared-to-register
+    copies, which measures 2% slower on an aligned row.
+
+    Args:
+        block_m: Rows per block.
+        n: Row length.
+        n_padded: *n* rounded up to :data:`ALIGNMENT`.
+        eps: Epsilon for numerical stability.
+
+    Returns:
+        A ``@T.macro`` taking ``(x_f32, acc, mean_val, rstd)``.
+    """
+    pad_count = n_padded - n
+
+    @T.macro
+    def row_reduce(x_f32, acc, mean_val, rstd):
+        T.reduce_sum(x_f32, acc, dim=1)
+        for i in T.Parallel(block_m):
+            mean_val[i] = acc[i] / float(n)
+
+        # Rewrite x_f32 in-place with (x - mean)^2. Padded positions (x=0)
+        # contribute mean^2, subtracted back out below.
+        for i, j in T.Parallel(block_m, n_padded):
+            x_f32[i, j] = (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i])
+
+        T.reduce_sum(x_f32, acc, dim=1)
+        for i in T.Parallel(block_m):
+            rstd[i] = T.rsqrt(
+                (acc[i] - float(pad_count) * mean_val[i] * mean_val[i]) / float(n) + eps
+            )
+
+    return row_reduce

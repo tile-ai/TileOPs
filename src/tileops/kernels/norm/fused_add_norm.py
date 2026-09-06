@@ -22,7 +22,7 @@ import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
-from tileops.utils import get_sm_count
+from tileops.utils import WARP_LANES, get_sm_count
 
 from ._config import select_row_config, select_row_configs
 
@@ -144,7 +144,7 @@ class FusedAddLayerNormKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return select_row_config(self.N_padded)
+        return select_row_config()
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -206,7 +206,7 @@ class FusedAddLayerNormKernel(Kernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _fused_add_rms_norm_kernel(M, N, eps, dtype):
+def _fused_add_rms_norm_kernel(M, N, eps, dtype, sm_count):
     N_padded = align_up(N, ALIGNMENT)
 
     @tilelang.jit(out_idx=[3, 4])
@@ -214,7 +214,7 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype):
         # Forming the sum in shared rather than a second row-wide fragment keeps
         # bfloat16 off the register limit, but only pays when the registers it
         # frees buy resident blocks: a single-row call measured 0.94x.
-        sum_in_shared = -(-M // block_m) >= get_sm_count()
+        sum_in_shared = -(-M // block_m) >= sm_count
 
         @T.prim_func
         def main(
@@ -314,8 +314,6 @@ _SPLIT_BLOCKS = 16
 _SPLIT_THREADS = 128
 _SPLIT_PER_THREAD = 8
 
-_WARP_LANES = 32
-
 
 @functools.lru_cache(maxsize=32)
 def _fused_add_rms_norm_split_kernel(N, eps, dtype):
@@ -336,7 +334,7 @@ def _fused_add_rms_norm_split_kernel(N, eps, dtype):
     @tilelang.jit
     def _stats(splits, threads, per):
         chunk = N // splits
-        n_warps = max(threads // _WARP_LANES, 1)
+        n_warps = max(threads // WARP_LANES, 1)
 
         @T.prim_func
         def main(
@@ -367,8 +365,8 @@ def _fused_add_rms_norm_split_kernel(N, eps, dtype):
                 for step in T.serial(5):
                     acc[0] += T.shfl_xor(acc[0], T.shift_left(1, step))
                 warp_totals = T.alloc_shared([n_warps], accum)
-                if tx % _WARP_LANES == 0:
-                    warp_totals[tx // _WARP_LANES] = acc[0]
+                if tx % WARP_LANES == 0:
+                    warp_totals[tx // WARP_LANES] = acc[0]
                 T.sync_threads()
                 if tx == 0:
                     acc[0] = T.cast(0, accum)
@@ -469,7 +467,7 @@ class FusedAddRMSNormKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return select_row_config(self.N_padded)
+        return select_row_config()
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -517,7 +515,14 @@ class FusedAddRMSNormKernel(Kernel):
             return [y.reshape(original_shape), residual_out.reshape(original_shape)]
 
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _fused_add_rms_norm_kernel(rows.shape[0], self.N, self.eps, self.dtype_str)
+        self.kernel = _fused_add_rms_norm_kernel(
+            rows.shape[0],
+            self.N,
+            self.eps,
+            self.dtype_str,
+            # The device the input is on, not whichever is current.
+            get_sm_count(rows.device.index),
+        )
         if self._tune_pending:
             self._tune_pending = False
             self.autotune()
