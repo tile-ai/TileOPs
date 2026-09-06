@@ -5,7 +5,7 @@
 #   source .claude/conventions/types.sh
 #   # Now use $COMMIT_MSG_PATTERN, $BRANCH_NAME_PATTERN, TYPE_TO_LABEL, etc.
 #
-# This file is sourced by validation scripts, CI workflows, and skill docs.
+# This file is sourced by validation scripts and CI workflows.
 # Update HERE first, then all consumers pick up the change automatically.
 
 # ---------------------------------------------------------------------------

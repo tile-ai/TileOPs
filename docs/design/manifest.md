@@ -434,7 +434,7 @@ are defined in [roofline.md](roofline.md).
 
 #### kernel_map
 
-Op→Kernel dispatch registration table. Declares which Kernels an Op uses so agents know what to implement. Does not describe dispatch strategy (runtime concern). Format: `dispatch_key: KernelClassName`. See [ops-design-reference.md § S14 `default_kernel_map`](../../.claude/skills/scaffold-op/slot-rules.md#slot-s14).
+Op→Kernel dispatch registration table. Declares which Kernels an Op uses so agents know what to implement. Does not describe dispatch strategy (runtime concern). Format: `dispatch_key: KernelClassName`. See [op-slot-rules.md § Slot S14 `default_kernel_map`](op-slot-rules.md#slot-s14).
 
 ```yaml
 # Single-kernel op

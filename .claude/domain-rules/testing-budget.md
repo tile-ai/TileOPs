@@ -8,4 +8,3 @@
 - Before committing: drop scaffolding tests that guarded intermediate implementation steps and don't guard any final code path.
 - Run `scripts/test_node_delta.py` on PRs touching test files. Growth on existing files → include the script output + a one-line justification in the PR body. New test files only → no delta report.
 - Binary-op tests cover broadcast semantics: bias-add `(B,S,D)+(1,1,D)`, row `(B,S,D)+(B,S,1)`, scalar `(M,N)+(1,1)`. Applies to arithmetic, comparison, logical, bitwise.
-- Skill development tests stay local — never commit anything under `.claude/skills/`.

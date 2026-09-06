@@ -2,7 +2,7 @@
 
 - Class names: PascalCase `{Name}{Direction}Op` (Op layer) or `{Name}{Direction}Kernel` (Kernel layer); direction suffix mandatory. Manifest author chooses `{Name}`. Builder functions stay snake_case.
 
-- `kernel_map` is the Op→Kernel dispatch registration table: snake_case dispatch keys (decoupled from class names) → Kernel class names. Manifest declares it; agents implement the listed Kernels. See [scaffold-op § Slot S14](../skills/scaffold-op/slot-rules.md#slot-s14).
+- `kernel_map` is the Op→Kernel dispatch registration table: snake_case dispatch keys (decoupled from class names) → Kernel class names. Manifest declares it; agents implement the listed Kernels. See [op-slot-rules.md § Slot S14](../../docs/design/op-slot-rules.md#slot-s14).
 
 - Op `__init__` takes manifest parameters positionally, in manifest order — `shape` dim names (fixed-rank), `static_dims` keys (arbitrary-rank), `params` keys — and a param declaring `kw_only: true` after `*`. `target`, `kernel_map` and `tune` are keyword-only. Only manifest-declared information belongs in `__init__`.
 

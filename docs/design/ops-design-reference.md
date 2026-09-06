@@ -5,7 +5,7 @@ The contracts an op is built against: base-class attributes, family protocol var
 ## Slot Rules
 
 The per-slot codegen rules live with their consumer:
-[`.claude/skills/scaffold-op/slot-rules.md`](../../.claude/skills/scaffold-op/slot-rules.md).
+[`op-slot-rules.md`](op-slot-rules.md).
 This document holds the contracts those rules emit against.
 
 ## Family-Base Protocol (Appendix) <a id="base-class-protocol"></a>
@@ -20,7 +20,7 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 | `_op_name`    | elementwise | `torch.library.custom_op` registration key                                                                       |
 | `kernel_cls`  | elementwise | Kernel class reference                                                                                           |
 
-**The `scaffold-op` skill does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); Adding a new protocol variable requires updating the L2 base, all concrete ops, and the manifest schema if applicable.
+**The scaffolding playbook does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); Adding a new protocol variable requires updating the L2 base, all concrete ops, and the manifest schema if applicable.
 
 ### `Op` base class attributes ([`src/tileops/ops/op_base.py`](../../src/tileops/ops/op_base.py))
 
@@ -65,7 +65,7 @@ Abstract interface: `forward()`. Key methods: `init_config(config, tune)`, `auto
 
 ## Optional Hooks (Appendix)
 
-Hooks family bases expose for op-specific semantics. The `scaffold-op` skill does NOT emit these.
+Hooks family bases expose for op-specific semantics. The scaffolding playbook does NOT emit these.
 
 | Hook              | Family    | Default                     | Override example                                      |
 | ----------------- | --------- | --------------------------- | ----------------------------------------------------- |
@@ -88,9 +88,9 @@ class RMSNormFwdOp(Op):
 
 ## Naming Conventions (Appendix) <a id="naming-conventions"></a>
 
-- **Op class:** `{PascalCaseName}{Direction}Op`. `Direction` ∈ {`Fwd`, `Bwd`}, mandatory. Manifest key must equal `cls.__name__`. Abbreviation casing: `RMSNormFwdOp`, `SSDDecodeFwdOp` — fully uppercase per `.claude/rules/code-style.md`. Slot [S6](#slot-s6).
+- **Op class:** `{PascalCaseName}{Direction}Op`. `Direction` ∈ {`Fwd`, `Bwd`}, mandatory. Manifest key must equal `cls.__name__`. Abbreviation casing: `RMSNormFwdOp`, `SSDDecodeFwdOp` — fully uppercase per `.claude/rules/code-style.md`. Slot [S6](op-slot-rules.md#slot-s6).
 - **Kernel class:** `{PascalCaseName}{Direction}Kernel`. Same direction-suffix rule.
-- **`kernel_map` keys:** `snake_case`, decoupled from Kernel class names. Values must match the Kernel `cls.__name__`. The table does not describe dispatch strategy. Slot [S14](#slot-s14).
+- **`kernel_map` keys:** `snake_case`, decoupled from Kernel class names. Values must match the Kernel `cls.__name__`. The table does not describe dispatch strategy. Slot [S14](op-slot-rules.md#slot-s14).
 - **Builder functions:** `snake_case`, e.g. `def rms_norm_fwd(M, N, dtype, ...): ...`.
 - **Filenames:** all-lowercase with underscores. Multi-word abbreviations stay fully lowercase (`rms_norm.py`, `ssd_decode.py`; never `RMSNorm.py` or `Ssd_decode.py`). Norm-related names never contract (`rms_norm`, not `rmsnorm`).
 
@@ -116,7 +116,7 @@ Three time points: (1) manifest — constraint structure; (2) `__init__` — use
 
 - **Fully static op:** `_infer_output_shapes` called once in `__init__`, result stored as an instance attribute.
 - **Op with dynamic dims:** `_infer_output_shapes` called once dynamic dims resolve, and by the fake while tracing.
-- **Kernel construction:** in `_eager_forward`, through `get_or_build_kernel` — never in the traced `forward`, which is one call to the op's operator ([Compile Dispatch Boundary](ops-design.md#compile-dispatch-boundary)). See [Slot S16](#slot-s16).
+- **Kernel construction:** in `_eager_forward`, through `get_or_build_kernel` — never in the traced `forward`, which is one call to the op's operator ([Compile Dispatch Boundary](ops-design.md#compile-dispatch-boundary)). See [Slot S16](op-slot-rules.md#slot-s16).
 - **`_validate_dtypes`:** runs on every call, and is the only place an op rejects a dtype.
 - **Non-runtime consumers** (validator, graph compiler): call `_infer_output_shapes` with concrete shape tuples without constructing tensors. Roofline consumers use interfaces in [`roofline.md`](roofline.md).
 

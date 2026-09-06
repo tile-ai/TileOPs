@@ -17,6 +17,7 @@ Activate a virtual environment, then `pip install -e '.[dev]' -c constraints.txt
 - [architecture.md](docs/design/architecture.md) — system modules (M1-M8), data flow, agent production loop, directory structure
 - [ops-design.md](docs/design/ops-design.md) — Op interface execution guide (how to add a new op)
 - [ops-design-reference.md](docs/design/ops-design-reference.md) — Op interface detail reference (interface tables, codegen, naming, protocol)
+- [op-slot-rules.md](docs/design/op-slot-rules.md) — per-slot rules for a T2 op file (S1-S7, S12-S21), with examples and common mistakes
 - [manifest.md](docs/design/manifest.md) — `src/tileops/manifest/` spec format (signature, workloads, roofline, source)
 - [roofline.md](docs/design/roofline.md) — `src/tileops/manifest/` `roofline` field spec: performance model, authoring, and per-consumer contracts (validator / benchmark / M5 / codegen)
 
@@ -24,7 +25,6 @@ Activate a virtual environment, then `pip install -e '.[dev]' -c constraints.txt
 
 - [trust-model.md](docs/design/trust-model.md) — trust boundaries (manifest → test → implementation → benchmark), workloads layer contract
 - [testing.md](docs/design/testing.md) — test/benchmark framework, core abstractions, tolerances, reporting rules
-- [tileops-skills.md](docs/tileops-skills.md) — developer decision guide: which repo-provided skill to use for which task
 
 ## Reading the ops manifest
 
@@ -48,3 +48,7 @@ Read the relevant context file **before** modifying files in that domain. Do not
 | `benchmarks/`                                                     | [.claude/domain-rules/benchmark.md](.claude/domain-rules/benchmark.md)                   |
 | `workloads/`                                                      | [docs/design/trust-model.md](docs/design/trust-model.md)                                 |
 | `docs/design/`                                                    | [.claude/domain-rules/design-docs.md](.claude/domain-rules/design-docs.md)               |
+
+## Reviewing a PR
+
+Load [pre-review.md](.claude/review-checklists/pre-review.md) for every review, plus each file under [.claude/review-checklists/](.claude/review-checklists/) whose opening line names a PR type or a path this diff matches. Run [approval-gate.md](.claude/review-checklists/approval-gate.md) before calling any PR clean.

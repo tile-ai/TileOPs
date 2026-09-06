@@ -49,7 +49,7 @@ The kernel is dtype-specialized, so this makes kernel construction uniformly def
 
 **Order decides nothing.** Selection takes the implementation that applies; the one declared general runs where no specialised one does. Nothing applicable is an error, and two specialised implementations claiming one call is an ambiguity error rather than a silent preference. A replacement the caller supplies answers the same question as the class it replaces.
 
-The rule is implementation choice within one slot. Choosing the slot sits above it, dtype specialization beside it; neither goes through it. See [S13](ops-design-reference.md#slot-s13).
+The rule is implementation choice within one slot. Choosing the slot sits above it, dtype specialization beside it; neither goes through it. See [S13](op-slot-rules.md#slot-s13).
 
 ### Kernel caching and enumeration
 
@@ -63,7 +63,7 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 
 ## Scaffolding an Op from a Manifest Entry
 
-The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`slot-rules.md`](../../.claude/skills/scaffold-op/slot-rules.md). Examples scaffold the fictional `ExampleCumsumFwdOp` (cumulative-sum semantics) in T2 (L1-direct) form from an equally fictional manifest entry; nothing in them mirrors a shipped file.
+The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`op-slot-rules.md`](op-slot-rules.md). Examples scaffold the fictional `ExampleCumsumFwdOp` (cumulative-sum semantics) in T2 (L1-direct) form from an equally fictional manifest entry; nothing in them mirrors a shipped file.
 
 ### Step 1: File header + imports
 
@@ -91,7 +91,7 @@ from ..op_base import Op
 
 **Validation.** Every concrete-Kernel import matches one `source.kernel_map` value verbatim. The `Kernel` base import and `..op_base` relative import are fixed.
 
-**Reference.** [Slot S1](../../.claude/skills/scaffold-op/slot-rules.md#slot-s1), [S2](../../.claude/skills/scaffold-op/slot-rules.md#slot-s2), [S3](../../.claude/skills/scaffold-op/slot-rules.md#slot-s3), [S4](../../.claude/skills/scaffold-op/slot-rules.md#slot-s4).
+**Reference.** [Slot S1](op-slot-rules.md#slot-s1), [S2](op-slot-rules.md#slot-s2), [S3](op-slot-rules.md#slot-s3), [S4](op-slot-rules.md#slot-s4).
 
 ### Step 2: Class declaration + docstring + `__all__`
 
@@ -119,7 +119,7 @@ class ExampleCumsumFwdOp(Op):
 
 **Validation.** Class name ≡ manifest entry key, byte-exact (`ExampleCumsumFwdOp`). Every `Args:` entry appears as an `__init__` kwarg in Step 3; no extras.
 
-**Reference.** [Slot S5](../../.claude/skills/scaffold-op/slot-rules.md#slot-s5), [S6](../../.claude/skills/scaffold-op/slot-rules.md#slot-s6), [S7](../../.claude/skills/scaffold-op/slot-rules.md#slot-s7).
+**Reference.** [Slot S5](op-slot-rules.md#slot-s5), [S6](op-slot-rules.md#slot-s6), [S7](op-slot-rules.md#slot-s7).
 
 ### Step 3: `_static_axes` + `__init__` signature and body
 
@@ -153,7 +153,7 @@ class ExampleCumsumFwdOp(Op):
 
 **Validation.** Every `__init__` parameter has a manifest source (`static_dims` or `signature.params`); no extras except `target` / `kernel_map` / `tune`. `dtype` is not a kwarg — it is read from the input in `forward()`. In particular, `M` is NOT a ctor kwarg — `ExampleCumsumFwdOp.static_dims` declares only `N`, so `M` is derived at forward time. Manifest parameters keep manifest order; a param declaring `kw_only: true` goes after `*`, and `static_dims` entries take no defaults. `_static_axes` matches the manifest axis form (literal-int axis → populated class-level frozenset; param-dependent axis → empty class-level default, bound at forward after `dim % x.ndim` normalization).
 
-**Reference.** [Slot S21](../../.claude/skills/scaffold-op/slot-rules.md#slot-s21), [S12](../../.claude/skills/scaffold-op/slot-rules.md#slot-s12), [S13](../../.claude/skills/scaffold-op/slot-rules.md#slot-s13).
+**Reference.** [Slot S21](op-slot-rules.md#slot-s21), [S12](op-slot-rules.md#slot-s12), [S13](op-slot-rules.md#slot-s13).
 
 ### Step 4: `default_kernel_map` + `forward`
 
@@ -208,7 +208,7 @@ class ExampleCumsumFwdOp(Op):
   - `inputs=` is the tensors the kernel is handed, which is what an external target's builder is described with. A new op passes it; an op not yet migrated omits it and stays in-tree only.
 - The op never trims kernel output, and never reshapes its input for the kernel: a kernel that pads or permutes internally takes and returns the shapes the manifest declares.
 
-**Reference.** [Slot S14](../../.claude/skills/scaffold-op/slot-rules.md#slot-s14), [S15](../../.claude/skills/scaffold-op/slot-rules.md#slot-s15), [S16](../../.claude/skills/scaffold-op/slot-rules.md#slot-s16).
+**Reference.** [Slot S14](op-slot-rules.md#slot-s14), [S15](op-slot-rules.md#slot-s15), [S16](op-slot-rules.md#slot-s16).
 
 ### Step 5: `_infer_output_shapes` + `_validate_dtypes`
 
@@ -230,7 +230,7 @@ class ExampleCumsumFwdOp(Op):
 
 **Validation.** `python scripts/validate_manifest.py` exercises both methods at CI on every op with `status: implemented`; `spec-only` entries skip L2/L3. **L2 parity:** `_infer_output_shapes(mock_inputs)` must agree with `shape_rules`. **L3 parity:** `_validate_dtypes` must accept exactly the declared `dtype` union / `dtype_combos` and reject everything else. Parity disagreements route to `strict_errors`; advisory mode (default) reports them as warnings, `--strict` / `MANIFEST_STRICT_BLOCKING=1` makes them blocking.
 
-**Reference.** [Slot S17](../../.claude/skills/scaffold-op/slot-rules.md#slot-s17), [S18](../../.claude/skills/scaffold-op/slot-rules.md#slot-s18).
+**Reference.** [Slot S17](op-slot-rules.md#slot-s17), [S18](op-slot-rules.md#slot-s18).
 
 ### Step 6: `eval_roofline`
 
@@ -250,7 +250,7 @@ class ExampleCumsumFwdOp(Op):
 
 **Validation.** The body is **plain Python** reading `self.*` attributes. Those attributes — `self.M` and `self.dtype` here — are bound by `forward()`, so `eval_roofline` is callable only after at least one forward; there is no ctor-time dtype to read. No class-level roofline expression strings, no `ast.parse`, no shared L1 evaluator — prohibited by [`roofline.md §4.4.6` Evaluator Surface Boundary](roofline.md#446-evaluator-surface-boundary). Return type is `tuple[int, int]`, not `float` or `numpy`. Expressions derive directly from `roofline.vars` bindings + `roofline.flops` + `roofline.bytes`; see [`roofline.md §4.4` Op Codegen](roofline.md#44-op-codegen).
 
-**Reference.** [Slot S19](../../.claude/skills/scaffold-op/slot-rules.md#slot-s19).
+**Reference.** [Slot S19](op-slot-rules.md#slot-s19).
 
 **Compute roof.** `Op.compute_roof()` names the GPU-profile unit that prices the FLOPs `eval_roofline()` counts; the base default `"cuda_core.fp32"` covers CUDA-core fp32 arithmetic. An op whose FLOPs are matmul contractions overrides it — normally `return tensor_core_roof(self.dtype)`, branching on instance state (a backend switch) where the contraction dtype differs from the input dtype. Contract and rationale: [`roofline.md §1.4`](roofline.md#14-compute-roof).
 
@@ -275,7 +275,7 @@ from .ops.reduction import ExampleCumsumFwdOp
 
 **Validation.** The implementation import sits under its family's grouping comment block, and both files carry a matching `__all__` entry — miss the second and the op is unreachable from `tileops.reduction`.
 
-**Reference.** [Slot S20](../../.claude/skills/scaffold-op/slot-rules.md#slot-s20).
+**Reference.** [Slot S20](op-slot-rules.md#slot-s20).
 
 ### Slot coverage
 
@@ -303,7 +303,7 @@ This playbook emits exactly the 17 slots above. The following are **not** produc
 
 ## Implementing a Kernel
 
-Kernel implementation is not covered by the scaffold-op skill. The device-side interface a scaffolded Op depends on — required `__init__` / `forward` / `kernel`, optional `default_config` / `autotune_configs` / `supported_archs` — is specified in [Kernel base class attributes](ops-design-reference.md#base-class-protocol).
+Kernel implementation is not covered by this playbook. The device-side interface a scaffolded Op depends on — required `__init__` / `forward` / `kernel`, optional `default_config` / `autotune_configs` / `supported_archs` — is specified in [Kernel base class attributes](ops-design-reference.md#base-class-protocol).
 
 ## Compile Dispatch Boundary
 
@@ -359,11 +359,11 @@ satisfy the cold-call contract.
 
 ## Family-Base Refactoring
 
-The scaffold emits T2 (L1-direct) ops only; once a family accumulates 2-3 ops sharing an identical `forward()` flow, a separate family-specific refactoring (not scaffold-op) extracts an L2 base and rewrites the concrete ops as T1 thin wrappers — see [Development Path](ops-design-reference.md#development-path) for when to extract and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the process. Family bases MUST NOT normalize genuine per-op behavior differences.
+The scaffold emits T2 (L1-direct) ops only; once a family accumulates 2-3 ops sharing an identical `forward()` flow, a separate family-specific refactoring, outside this playbook, extracts an L2 base and rewrites the concrete ops as T1 thin wrappers — see [Development Path](ops-design-reference.md#development-path) for when to extract and [Adding a New Family Base](ops-design-reference.md#adding-a-new-family-base) for the process. Family bases MUST NOT normalize genuine per-op behavior differences.
 
 ## Further Reference
 
-- [Slot Rules](../../.claude/skills/scaffold-op/slot-rules.md) — full Rule / Derivation / Example / Common mistakes per slot
+- [Slot Rules](op-slot-rules.md) — full Rule / Derivation / Example / Common mistakes per slot
 - [Codegen Details](ops-design-reference.md#codegen) — calling conventions, inheritance rules, consistency enforcement
 - [Base Class Protocol](ops-design-reference.md#base-class-protocol) — `Op` and `Kernel` base class attributes
 - [Naming Conventions](ops-design-reference.md#naming-conventions) — class / `kernel_map` / builder function rules

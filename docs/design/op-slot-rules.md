@@ -1,12 +1,15 @@
-# Scaffold Slot Rules
+# Op Slot Rules
 
-The 17 slots `scaffold-op` emits: S1-S7, S12-S21. S8-S11 are reserved for T1 thin-wrapper
-subclasses and never emitted here. Examples scaffold the fictional `ExampleCumsumFwdOp`; none
-mirrors a shipped file.
+The authoritative rule for each slot of a T2 (L1-direct) op file: S1-S7 and S12-S21. Slots S8-S11
+belong to T1 thin-wrapper subclasses and are not covered here. Each entry gives the rule, an
+example, and the mistakes that rule prevents. [`ops-design.md § Scaffolding an Op from a Manifest Entry`](./ops-design.md#scaffolding-an-op-from-a-manifest-entry) walks the same slots in the order
+you write them.
+
+Examples use the fictional `ExampleCumsumFwdOp`; none mirrors a shipped file.
 
 Contracts these rules emit against — base-class attributes, protocol variables, naming, parameter
 design, calling conventions — live in
-[`docs/design/ops-design-reference.md`](../../../docs/design/ops-design-reference.md).
+[`ops-design-reference.md`](./ops-design-reference.md).
 
 ### Slot S1: <a id="slot-s1"></a> Module docstring
 
@@ -39,7 +42,7 @@ design, calling conventions — live in
 
 - **Rule.** `from ..op_base import Op`, or `from .op_base import Op` for ops directly under
   `src/tileops/ops/`. Absolute `tileops.ops.op_base` violates the relative-import rule in
-  [`code-style.md`](../../rules/code-style.md).
+  [`code-style.md`](../../.claude/rules/code-style.md).
 
 ### Slot S5: <a id="slot-s5"></a> `__all__`
 
@@ -51,7 +54,7 @@ design, calling conventions — live in
 - **Rule.** `{PascalCaseName}{Direction}Op`, `Direction` ∈ {`Fwd`, `Bwd`}, no exceptions. The
   manifest entry key IS the class name, verbatim.
 - **Common mistakes.** Missing direction suffix; mis-cased abbreviation (see
-  [Naming Conventions](../../../docs/design/ops-design-reference.md#naming-conventions-appendix)).
+  [Naming Conventions](./ops-design-reference.md#naming-conventions)).
 
 ### Slot S7: <a id="slot-s7"></a> Class docstring
 
@@ -82,7 +85,7 @@ design, calling conventions — live in
   (2) `signature.params` entries in manifest key order; then `*` and (3) any param declaring
   `kw_only: true`, followed by `target`, `kernel_map`, `tune`. Give `dtype` a parameter only when
   the inputs do not determine every output dtype — see
-  [Parameter design](../../../docs/design/ops-design-reference.md#parameter-design).
+  [Parameter design](./ops-design-reference.md#parameter-design).
 - **Example.**
   ```python
   def __init__(
@@ -104,7 +107,7 @@ design, calling conventions — live in
   `self.dispatch_kernel(kernel_map)`, which resolves the kernel *class* and needs no tensor.
   **Construct no kernel and declare no cache here**: the kernel is dtype-specialized and no dtype
   exists until a call arrives, and L1 owns get-or-build
-  ([Kernel caching](../../../docs/design/ops-design.md#kernel-caching-and-enumeration)).
+  ([Kernel caching](./ops-design.md#kernel-caching-and-enumeration)).
   A fully-static op — every `signature.inputs` axis is a manifest `shape` dim or a ctor-resolvable
   `static_dims` key — may precompute `self._infer_output_shapes(<input>_shape=(...))` for callers
   that need the output shape before the first call; anything else defers it.
@@ -153,13 +156,13 @@ design, calling conventions — live in
   An op that declares `torch_compile_fullgraph` keeps this body under the name `_eager_forward`,
   and its `forward` becomes one call to the operator it registers — that operator is outside the
   scaffold's scope, see
-  [Compile Dispatch Boundary](../../../docs/design/ops-design.md#compile-dispatch-boundary).
+  [Compile Dispatch Boundary](./ops-design.md#compile-dispatch-boundary).
 - **Derivation.** Validation expressions come from each `static_dims` entry's
   `<tensor>.shape[<axis>]` RHS; the role is the `kernel_map` dispatch key whose kernel the factory
   builds. A specialization that implies more than a dtype — a compute dtype differing from the
   semantic one, an output dtype no input supplies — makes the entry one frozen record rather than a
   bare kernel, and those fields never live in `self.*`
-  ([Forward keying](../../../docs/design/ops-design-reference.md#base-class-protocol)).
+  ([Forward keying](./ops-design-reference.md#base-class-protocol)).
 - **What the op does not do.** It states no device requirement — the kernel it fetched does that —
   and it does not reshape for the kernel: rank reduction, padding and their inverses belong to the
   kernel's own call wrapper, so a backend is handed the shapes the manifest declares.
@@ -193,7 +196,7 @@ design, calling conventions — live in
 ### Slot S17: <a id="slot-s17"></a> `_infer_output_shapes` method body
 
 - **Rule.** Take one `<input>_shape: tuple` per manifest `signature.inputs`; return `Dict[str, tuple]` keyed by output name. Derive from manifest `shape_rules` (see
-  [manifest.md § Rules](../../../docs/design/manifest.md#rules)). The L1 base raises
+  [manifest.md § Rules](./manifest.md#rules)). The L1 base raises
   `NotImplementedError`; every op the manifest calls `implemented` supplies a body, which the
   validator's C9 check requires. CI exercises the method with mock inputs and reports disagreement with `shape_rules` as a hard L2
   error.
@@ -226,7 +229,7 @@ design, calling conventions — live in
 - **Rule.** Codegen emits a complete plain-Python body over `self.*` attributes that `forward()`
   binds, `self.dtype` among them — so `eval_roofline` is defined only after at least one
   `forward()`. Derive from manifest `roofline.vars` / `.flops` / `.bytes`; see
-  [`roofline.md` §4.4](../../../docs/design/roofline.md#44-op-codegen). L1 stub raises
+  [`roofline.md` §4.4](./roofline.md#44-op-codegen). L1 stub raises
   `NotImplementedError`; check C6 requires the override.
 - **Example.**
   ```python
@@ -237,7 +240,7 @@ design, calling conventions — live in
   ```
 - **Common mistakes.** Class-level roofline expression strings parsed at runtime (`_flops_str`,
   `_bytes_str`, `_roofline_vars`), any `ast.parse` or shared `_safe_eval` path — all prohibited by
-  [`roofline.md` §4.4.6](../../../docs/design/roofline.md#446-evaluator-surface-boundary), which
+  [`roofline.md` §4.4.6](./roofline.md#446-evaluator-surface-boundary), which
   rules out a shared evaluator on L1; returning `float` or `numpy` types when the contract is
   `tuple[int, int]`; assuming `self.dtype` is set on a freshly-constructed op.
 
@@ -273,7 +276,7 @@ design, calling conventions — live in
     and project inline instead.
   - No `static_dims` (a reduction taking `dim=None`) → `frozenset()`, and override `_cache_key`
     unless a once-per-type `UserWarning` is acceptable. See
-    [manifest.md § Empty static_dims](../../../docs/design/manifest.md#empty-static_dims).
+    [manifest.md § Empty static_dims](./manifest.md#empty-static_dims).
 
 - **Example.**
 

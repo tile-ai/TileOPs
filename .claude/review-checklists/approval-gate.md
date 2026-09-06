@@ -2,7 +2,7 @@ Run before approving any PR. Apply each item if its scope matches the diff.
 
 ## Tests
 
-- [ ] **Per-case verdict.** Triage every added/modified test case as `keep` / `shrink` / `delete`. Inline only on blockers; clean test PRs stay clean (`criteria.md §3`).
+- [ ] **Per-case verdict.** Triage every added/modified test case as `keep` / `shrink` / `delete`. Raise a comment only on blockers; a clean test PR stays clean.
 
   | Verdict                        | When                                                                         | Inline?     |
   | ------------------------------ | ---------------------------------------------------------------------------- | ----------- |
@@ -17,7 +17,3 @@ Run before approving any PR. Apply each item if its scope matches the diff.
 - [ ] **Critical-path floor.** Never remove the last test on an output-distinguishing input: tile boundary, vectorization alignment, degenerate dimension (size = 1), or a dispatch branch carrying observable behavior. Tests with no output-distinguishing input are removable.
 
 - [ ] **No AC defense.** Reject "AC-N required this matrix" — AC text does not bind the merged suite.
-
-## Scope-specific
-
-- [ ] **Skill edits (`.claude/skills/**`).** Require a tightening pass before APPROVE — condense wording without changing what the skill instructs. Verify: semantics preserved, every step has exactly one valid execution path, no example included unless load-bearing, retained examples reference durable concepts rather than implementation details that age out.

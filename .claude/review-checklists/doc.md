@@ -13,7 +13,7 @@ TileOps is a design-first project. Design docs guide agent development; tight sc
 
 #### Other docs
 
-Covers READMEs, `CLAUDE.md` family, agent-facing skill docs, and source comments. Lighter bar — only consistency and drift matter.
+Covers READMEs, the `CLAUDE.md` family, agent-facing rule and checklist files, and source comments. Lighter bar — only consistency and drift matter.
 
 - [ ] **No contradictions** with current code, manifest, or design docs. Cite file:line on both sides.
 - [ ] **Drift-free.** Implied code or manifest change is included in the PR or linked as a follow-up issue.
