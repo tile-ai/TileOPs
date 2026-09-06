@@ -34,7 +34,6 @@ from ._op_body import (
     register_op_func,
 )
 from ._policy import (
-    _DEFAULT_THREADS,
     choose_binary_strategy,
     choose_unary_strategy,
     default_launch_config,
@@ -513,10 +512,6 @@ class _Uint8StorageUnaryKernel(UnaryKernel):
     DEFAULT_STRATEGY = "register_copy"
     SUPPORTED_DTYPES = (torch.uint8,)
 
-    @property
-    def default_config(self) -> dict:
-        return {"strategy": self.strategy, "threads": _DEFAULT_THREADS, "num_per_thread": 16}
-
     def forward(self, x):
         as_bool = x.dtype == torch.bool
         if as_bool:
@@ -530,10 +525,6 @@ class _Uint8StorageBinaryKernel(BinaryKernel):
 
     DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = (torch.uint8,)
-
-    @property
-    def default_config(self) -> dict:
-        return {"strategy": self.strategy, "threads": _DEFAULT_THREADS, "num_per_thread": 16}
 
     def forward(self, a, b):
         as_bool = a.dtype == torch.bool
