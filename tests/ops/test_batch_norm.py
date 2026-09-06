@@ -7,10 +7,13 @@ Run:
     conda run -n tileops python -m pytest tests/ops/test_batch_norm.py -vvs
 """
 
+import re
+
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.norm import BatchNormFwdTrainKernel
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.normalization import (
     BatchNormBwdWorkload,
@@ -195,6 +198,9 @@ def test_training_updates_a_non_contiguous_running_stat() -> None:
 @pytest.mark.smoke
 def test_training_rejects_one_value_per_channel() -> None:
     """Bessel's correction divides by L - 1; torch refuses the same call."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for forward call")
+
     C = 4
     x = torch.randn(1, C, 1, 1, device="cuda", dtype=torch.float32)
     weight = torch.ones(C, device="cuda", dtype=torch.float32)
@@ -202,11 +208,24 @@ def test_training_rejects_one_value_per_channel() -> None:
     rm = torch.zeros(C, device="cuda", dtype=torch.float32)
     rv = torch.ones(C, device="cuda", dtype=torch.float32)
 
-    with pytest.raises(ValueError, match="more than 1 value per channel"):
+    torch_message = ""
+    try:
+        torch.nn.functional.batch_norm(x, rm, rv, weight, bias, training=True)
+    except ValueError as exc:
+        torch_message = str(exc)
+    assert torch_message, "torch accepted L=1 in training; the guard's premise is gone"
+
+    with pytest.raises(ValueError, match=re.escape(torch_message)):
         BatchNormFwdOp(training=True)(x, rm, rv, weight, bias)
 
-    y = BatchNormFwdOp(training=False)(x, rm, rv, weight, bias)
+    # The kernel refuses on its own: it is exported, so a caller can reach it directly.
+    with pytest.raises(ValueError, match="more than one value per channel"):
+        BatchNormFwdTrainKernel(C, 1, torch.float32, S=1)
+
+    # Inference applies no correction; torch normalizes the same shape.
+    infer = BatchNormFwdOp(training=False)
+    y = infer(x, rm, rv, weight, bias)
     expected = torch.nn.functional.batch_norm(
-        x, rm, rv, weight, bias, training=False, eps=BatchNormFwdOp(training=False).eps
+        x, rm, rv, weight, bias, training=False, eps=infer.eps
     )
     torch.testing.assert_close(y, expected, atol=1e-3, rtol=1e-3)

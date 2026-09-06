@@ -659,6 +659,11 @@ class BatchNormFwdTrainKernel(Kernel):
         S: Optional[int] = None,
     ) -> None:
         super().__init__()
+        if L == 1:
+            # Every path folds Bessel's correction, whose divisor is L - 1.
+            raise ValueError(
+                "BatchNormFwdTrainKernel needs more than one value per channel, got L=1"
+            )
         self.C = C
         self.L = L
         self.S = L if S is None else S

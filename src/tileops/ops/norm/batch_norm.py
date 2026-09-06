@@ -135,11 +135,10 @@ class BatchNormFwdOp(Op):
             raise ValueError(f"x.dtype must be float32, float16, or bfloat16, got {x.dtype}")
         C = x.shape[1]
         L = x.numel() // C
-        if self.training and L < 2:
+        if self.training and L == 1:
             # Bessel's correction divides by L - 1. torch refuses the same call.
             raise ValueError(
-                f"Expected more than 1 value per channel when training, got input size "
-                f"{tuple(x.shape)}"
+                f"Expected more than 1 value per channel when training, got input size {x.shape}"
             )
         return C, L, x.dtype
 
