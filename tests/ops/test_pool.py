@@ -2611,6 +2611,19 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-partial-none-fp16",
                 ),
+                # Shape coverage: an output wider than the input gives bins of 1 and 2,
+                # so the widest bin exceeds ceil(in/out), and the other axis is ragged.
+                pytest.param(
+                    1,
+                    8,
+                    8,
+                    8,
+                    (12, 3),
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-expanding-bins-fp16",
+                ),
             ],
         ),
     ]

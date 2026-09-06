@@ -76,13 +76,10 @@ def _launch_adaptive_avg_pool2d(
     out_h: int,
     out_w: int,
     dtype: str,
-    block_m: int,
-    threads: int,
+    config: dict,
     x: torch.Tensor,
 ) -> torch.Tensor:
-    return _adaptive_avg_pool2d_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(block_m, threads)(
-        x
-    )
+    return _adaptive_avg_pool2d_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(**config)(x)
 
 
 class AdaptiveAvgPool2dKernel(AdaptivePool2dKernelBase):

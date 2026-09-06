@@ -1,5 +1,5 @@
 import functools
-from typing import Optional, Tuple
+from typing import Tuple
 
 import tilelang
 import tilelang.language as T
@@ -14,22 +14,90 @@ from .common import (
 
 __all__ = ["AdaptiveMaxPool2dKernel", "AdaptiveMaxPool2dWithIndicesKernel"]
 
+# Staged bytes a block aims for. Small keeps the grid longer than the device has
+# multiprocessors, which is what these shapes are short of: the whole input is a
+# megabyte or two, so a block that takes more planes only empties the grid.
+_TILE_BYTES = 4096
 
-def _stage_planes(
-    block_m: int, out_h: int, out_w: int, c_in: int, h_in: int, w_in: int, dtype: str
-) -> Optional[int]:
-    """(batch, channel) planes a block stages in shared, or None to read global.
+# Elements one thread carries in the staging copy. The copy is the kernel's whole
+# memory cost, so the block width follows from it rather than from the output count.
+_COPY_RUN = 8
 
-    Neighbouring outputs read bins that start ``w_in // out_w`` apart. A block
-    holding whole planes reads each plane once instead.
+# Widest staged tile the tuned space offers. Past this a block holds more shared memory
+# and the grid holds fewer blocks, which is the wrong direction for a shape whose whole
+# input is a megabyte or two, so those plane counts are not worth a tuning run.
+_TUNE_TILE_BYTES = 4 * _TILE_BYTES
+
+
+def _divisors(value: int) -> Tuple[int, ...]:
+    return tuple(d for d in range(1, value + 1) if value % d == 0)
+
+
+def _spread(values: Tuple[int, ...], limit: int) -> Tuple[int, ...]:
+    """At most ``limit`` of ``values``, both ends kept and the rest evenly spaced."""
+    if len(values) <= limit:
+        return values
+    step = (len(values) - 1) / (limit - 1)
+    return tuple(sorted({values[round(i * step)] for i in range(limit)}))
+
+
+def _plane_counts(rows: int, plane: int, dtype: str) -> Tuple[int, ...]:
+    """Planes a block may take at once: divisors of ``rows`` whose tile fits shared.
+
+    A run of planes is contiguous in the flat ``(rows, h_in, w_in)`` view whatever the
+    batch and channel extents are, so the only constraints are the shared budget and an
+    even split of the grid. Every divisor is offered when one plane alone will not fit,
+    where the reduction reads global memory instead.
     """
-    planes = max(1, block_m // (out_h * out_w))
-    # Dividing c_in keeps every block inside one image, so the copy is one slice.
-    if planes > c_in or c_in % planes:
-        return None
-    if not fits_static_shared(planes * h_in * w_in, dtype):
-        return None
-    return planes
+    if not fits_static_shared(plane, dtype):
+        return _divisors(rows)
+    return tuple(d for d in _divisors(rows) if fits_static_shared(d * plane, dtype))
+
+
+def _check_planes(planes: int, rows: int) -> None:
+    """Refuse a plane count the grid cannot cover.
+
+    The grid is ``rows // planes`` blocks of ``planes`` planes each, so a count that does
+    not divide ``rows`` would leave the last planes unwritten. Both config sources draw
+    from :func:`_plane_counts`, which offers divisors only; this catches a hand-written
+    config before it returns uninitialized output.
+    """
+    if rows % planes:
+        raise ValueError(f"planes={planes} must divide rows={rows}")
+
+
+def _block_threads(planes: int, plane: int) -> int:
+    width = 1 << max(0, (planes * plane // _COPY_RUN - 1).bit_length())
+    return min(512, max(128, width))
+
+
+def _default_config(rows: int, h_in: int, w_in: int, dtype: str) -> dict:
+    plane = h_in * w_in
+    itemsize = 4 if dtype in ("float", "float32") else 2
+    counts = _plane_counts(rows, plane, dtype)
+    fitting = [p for p in counts if p * plane * itemsize <= _TILE_BYTES]
+    planes = max(fitting) if fitting else min(counts)
+    return {"planes": planes, "threads": _block_threads(planes, plane)}
+
+
+def _autotune_configs(rows: int, h_in: int, w_in: int, dtype: str) -> list[dict]:
+    plane = h_in * w_in
+    itemsize = 4 if dtype in ("float", "float32") else 2
+    counts = _plane_counts(rows, plane, dtype)
+    worth = tuple(p for p in counts if p * plane * itemsize <= _TUNE_TILE_BYTES)
+    return [
+        {"planes": planes, "threads": threads}
+        for planes in _spread(worth or counts[:1], 4)
+        for threads in (128, 256, 512)
+    ]
+
+
+def _bin_extent(size_in: int, size_out: int) -> Tuple[int, bool]:
+    """The widest bin on this axis, and whether every bin on it is that wide."""
+    extent = max_adaptive_bin_extent(size_in, size_out)
+    return extent, all(
+        e - s == extent for s, e in (adaptive_bin(o, size_in, size_out) for o in range(size_out))
+    )
 
 
 @functools.lru_cache(maxsize=32)
@@ -43,53 +111,57 @@ def _adaptive_max_pool2d_kernel(
     dtype: str = "float16",
 ):
     accum_dtype = "float"
-    total_output = n * c_in * out_h * out_w
-    max_kh = max_adaptive_bin_extent(h_in, out_h)
-    max_kw = max_adaptive_bin_extent(w_in, out_w)
+    rows = n * c_in
+    plane = h_in * w_in
+    out_plane = out_h * out_w
+    max_kh, uniform_h = _bin_extent(h_in, out_h)
+    max_kw, uniform_w = _bin_extent(w_in, out_w)
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
-    def _adaptive_max_pool2d_func(block_m: int, threads: int):
+    def _adaptive_max_pool2d_func(planes: int, threads: int):
+        _check_planes(planes, rows)
+        staged = fits_static_shared(planes * plane, dtype)
+
+        @T.macro
+        def _max_bin(src, src_plane, dst, dst_plane, oh, ow):
+            """Store the max over one adaptive bin of ``src[src_plane]``."""
+            ih_start, ih_end = adaptive_bin(oh, h_in, out_h)
+            iw_start, iw_end = adaptive_bin(ow, w_in, out_w)
+            run = T.alloc_var(T.float32)
+            run = -T.infinity(accum_dtype)
+            # Static-bound loops: TileLang rejects a dynamic T.serial bound, so the
+            # widest bin sets the trip count and a short bin skips its missing taps.
+            for kh in T.serial(max_kh):
+                ih = ih_start + kh
+                if uniform_h or ih < ih_end:
+                    for kw in T.serial(max_kw):
+                        iw = iw_start + kw
+                        if uniform_w or iw < iw_end:
+                            v = T.cast(src[src_plane, ih, iw], accum_dtype)
+                            # NaN enters `run` and never leaves, since a later value
+                            # fails `v > NaN`.
+                            run = T.if_then_else(T.isnan(v) or (v > run), v, run)
+            dst[dst_plane, oh, ow] = T.cast(run, dtype)
+
         @T.prim_func
         def _adaptive_max_pool2d_main(
-            x: T.Tensor((n, c_in, h_in, w_in), dtype),  # type: ignore
-            out: T.Tensor((n, c_in, out_h, out_w), dtype),  # type: ignore
+            x: T.Tensor((rows, h_in, w_in), dtype),  # type: ignore
+            out: T.Tensor((rows, out_h, out_w), dtype),  # type: ignore
         ):
-            with T.Kernel(T.ceildiv(total_output, block_m), threads=threads) as bx:
-                for i in T.Parallel(block_m):
-                    out_idx = bx * block_m + i
-                    if out_idx < total_output:
-                        ow = out_idx % out_w
-                        spatial_idx = out_idx // out_w
-                        oh = spatial_idx % out_h
-                        channel_batch_idx = spatial_idx // out_h
-                        c_idx = channel_batch_idx % c_in
-                        batch = channel_batch_idx // c_in
-
-                        ih_start, ih_end = adaptive_bin(oh, h_in, out_h)
-                        iw_start, iw_end = adaptive_bin(ow, w_in, out_w)
-
-                        max_val = T.alloc_var(T.float32)
-                        has_nan = T.alloc_var(T.bool)
-                        max_val = T.cast(float("-inf"), accum_dtype)
-                        has_nan = False
-                        # Static-bound loops (TileLang rejects dynamic T.serial
-                        # bounds); guard skips lanes outside this output's bin.
-                        for kh in T.serial(max_kh):
-                            for kw in T.serial(max_kw):
-                                if ih_start + kh < ih_end and iw_start + kw < iw_end:
-                                    val = T.cast(
-                                        x[batch, c_idx, ih_start + kh, iw_start + kw],
-                                        accum_dtype,
-                                    )
-                                    has_nan = has_nan | T.isnan(val)
-                                    max_val = T.max(max_val, val)
-
-                        result = T.if_then_else(
-                            has_nan,
-                            T.cast(float("nan"), accum_dtype),
-                            max_val,
-                        )
-                        out[batch, c_idx, oh, ow] = T.cast(result, dtype)
+            with T.Kernel(rows // planes, threads=threads) as bx:
+                base = bx * planes
+                if staged:
+                    tile = T.alloc_shared((planes, h_in, w_in), dtype)
+                    T.copy(x[base : base + planes, :, :], tile)
+                for i in T.Parallel(planes * out_plane):
+                    p = i // out_plane
+                    o = i - p * out_plane
+                    oh = o // out_w
+                    ow = o - oh * out_w
+                    if staged:
+                        _max_bin(tile, p, out, base + p, oh, ow)
+                    else:
+                        _max_bin(x, base + p, out, base + p, oh, ow)
 
         return _adaptive_max_pool2d_main
 
@@ -104,20 +176,11 @@ def _launch_adaptive_max_pool2d(
     out_h: int,
     out_w: int,
     dtype: str,
-    block_m: int,
-    threads: int,
+    config: dict,
     x: torch.Tensor,
 ) -> torch.Tensor:
-    return _adaptive_max_pool2d_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(block_m, threads)(
-        x
-    )
-
-
-class AdaptiveMaxPool2dKernel(AdaptivePool2dKernelBase):
-    """Adaptive max pooling forward kernel for NCHW inputs."""
-
-    _build = staticmethod(_adaptive_max_pool2d_kernel)
-    _dispatch = staticmethod(_launch_adaptive_max_pool2d)
+    kernel = _adaptive_max_pool2d_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(**config)
+    return kernel(x.reshape(n * c_in, h_in, w_in)).view(n, c_in, out_h, out_w)
 
 
 @functools.lru_cache(maxsize=32)
@@ -131,105 +194,67 @@ def _adaptive_max_pool2d_with_indices_kernel(
     dtype: str = "float16",
 ):
     accum_dtype = "float"
-    total_output = n * c_in * out_h * out_w
-    max_kh = max_adaptive_bin_extent(h_in, out_h)
-    max_kw = max_adaptive_bin_extent(w_in, out_w)
+    rows = n * c_in
+    plane = h_in * w_in
+    out_plane = out_h * out_w
+    max_kh, uniform_h = _bin_extent(h_in, out_h)
+    max_kw, uniform_w = _bin_extent(w_in, out_w)
+    # The flat index spans one h_in * w_in plane. Carrying it as int32 keeps the
+    # arithmetic on the update path off the 64-bit path; the stored index is int64 to
+    # match PyTorch.
+    idx_dtype = "int32" if plane < 2**31 else "int64"
 
     @tilelang.jit(out_idx=[1, 2], compile_flags=["-O3", "-DENABLE_BF16"])
-    def _adaptive_max_pool2d_with_indices_func(block_m: int, threads: int):
-        stage_planes = _stage_planes(block_m, out_h, out_w, c_in, h_in, w_in, dtype)
-        # The flat index spans one h_in * w_in plane. Carrying it as int32
-        # keeps the div/mod the compiler sinks into the update path off the
-        # 64-bit path; the stored index stays int64 to match PyTorch.
-        idx_dtype = "int32" if h_in * w_in < 2**31 else "int64"
+    def _adaptive_max_pool2d_with_indices_func(planes: int, threads: int):
+        _check_planes(planes, rows)
+        staged = fits_static_shared(planes * plane, dtype)
 
         @T.macro
-        def _reduce_bin(src, src_c, src_p, oh, ow, out, indices, out_c, out_p):
-            """Store the max and its index over one adaptive bin of ``src[src_c, src_p]``."""
+        def _argmax_bin(src, src_plane, dst, indices, dst_plane, oh, ow):
+            """Store the max and its flat position over one adaptive bin of ``src``."""
             ih_start, ih_end = adaptive_bin(oh, h_in, out_h)
             iw_start, iw_end = adaptive_bin(ow, w_in, out_w)
-
-            max_val = T.alloc_var(T.float32)
-            has_nan = T.alloc_var(T.bool)
-            max_idx = T.alloc_var(idx_dtype)
-            nan_idx = T.alloc_var(idx_dtype)
-            first_valid = T.alloc_var(T.bool)
-            max_val = T.cast(float("-inf"), accum_dtype)
-            has_nan = False
-            max_idx = T.cast(0, idx_dtype)
-            nan_idx = T.cast(0, idx_dtype)
-            first_valid = True
-            # Static-bound loops (TileLang rejects dynamic T.serial
-            # bounds); guard skips lanes outside this output's bin.
+            run = T.alloc_var(T.float32)
+            best = T.alloc_var(idx_dtype)
+            run = -T.infinity(accum_dtype)
+            # Bins are never empty, so the first tap is in range and seeds the
+            # position: a bin holding nothing but -inf reports that tap.
+            best = T.cast(ih_start * w_in + iw_start, idx_dtype)
             for kh in T.serial(max_kh):
-                for kw in T.serial(max_kw):
-                    if ih_start + kh < ih_end and iw_start + kw < iw_end:
-                        ih = ih_start + kh
+                ih = ih_start + kh
+                if uniform_h or ih < ih_end:
+                    for kw in T.serial(max_kw):
                         iw = iw_start + kw
-                        val = T.cast(src[src_c, src_p, ih, iw], accum_dtype)
-                        flat_idx = T.cast(ih * w_in + iw, idx_dtype)
-                        is_nan = T.isnan(val)
-                        has_nan = has_nan | is_nan
-                        # PyTorch records the last NaN visited in a window.
-                        nan_idx = T.if_then_else(is_nan, flat_idx, nan_idx)
-                        # first_valid: an all--inf window still takes its first element.
-                        take = (not is_nan) and (first_valid or val > max_val)
-                        max_val = T.if_then_else(take, val, max_val)
-                        max_idx = T.if_then_else(take, flat_idx, max_idx)
-                        first_valid = first_valid and is_nan
-
-            result = T.if_then_else(
-                has_nan,
-                T.cast(float("nan"), accum_dtype),
-                max_val,
-            )
-            out[out_c, out_p, oh, ow] = T.cast(result, dtype)
-            indices[out_c, out_p, oh, ow] = T.cast(
-                T.if_then_else(has_nan, nan_idx, max_idx), "int64"
-            )
+                        if uniform_w or iw < iw_end:
+                            v = T.cast(src[src_plane, ih, iw], accum_dtype)
+                            # Strict > keeps the first maximum; a NaN takes the position
+                            # and holds it, so the last NaN in the bin wins.
+                            take = T.isnan(v) or (v > run)
+                            run = T.if_then_else(take, v, run)
+                            best = T.if_then_else(take, T.cast(ih * w_in + iw, idx_dtype), best)
+            dst[dst_plane, oh, ow] = T.cast(run, dtype)
+            indices[dst_plane, oh, ow] = T.cast(best, "int64")
 
         @T.prim_func
         def _adaptive_max_pool2d_with_indices_main(
-            x: T.Tensor((n, c_in, h_in, w_in), dtype),  # type: ignore
-            out: T.Tensor((n, c_in, out_h, out_w), dtype),  # type: ignore
-            indices: T.Tensor((n, c_in, out_h, out_w), "int64"),  # type: ignore
+            x: T.Tensor((rows, h_in, w_in), dtype),  # type: ignore
+            out: T.Tensor((rows, out_h, out_w), dtype),  # type: ignore
+            indices: T.Tensor((rows, out_h, out_w), "int64"),  # type: ignore
         ):
-            with T.Kernel(T.ceildiv(total_output, block_m), threads=threads) as bx:
-                for i in T.Parallel(block_m):
-                    out_idx = bx * block_m + i
-                    if out_idx < total_output:
-                        ow = out_idx % out_w
-                        spatial_idx = out_idx // out_w
-                        oh = spatial_idx % out_h
-                        channel_batch_idx = spatial_idx // out_h
-                        c_idx = channel_batch_idx % c_in
-                        batch = channel_batch_idx // c_in
-                        _reduce_bin(x, batch, c_idx, oh, ow, out, indices, batch, c_idx)
-
-        if stage_planes is not None:
-            # Leading axis of 1 so the macro indexes the tile and x alike.
-            @T.prim_func
-            def _adaptive_max_pool2d_with_indices_staged_main(
-                x: T.Tensor((n, c_in, h_in, w_in), dtype),  # type: ignore
-                out: T.Tensor((n, c_in, out_h, out_w), dtype),  # type: ignore
-                indices: T.Tensor((n, c_in, out_h, out_w), "int64"),  # type: ignore
-            ):
-                with T.Kernel(T.ceildiv(n * c_in, stage_planes), threads=threads) as bx:
-                    tile = T.alloc_shared((1, stage_planes, h_in, w_in), dtype)
-                    batch = bx * stage_planes // c_in
-                    c_base = bx * stage_planes % c_in
-                    T.copy(
-                        x[batch, c_base : c_base + stage_planes, 0:h_in, 0:w_in],
-                        tile[0, :, 0:h_in, 0:w_in],
-                    )
-                    for i in T.Parallel(stage_planes * out_h * out_w):
-                        ow = i % out_w
-                        spatial_idx = i // out_w
-                        oh = spatial_idx % out_h
-                        plane = spatial_idx // out_h
-                        _reduce_bin(tile, 0, plane, oh, ow, out, indices, batch, c_base + plane)
-
-            return _adaptive_max_pool2d_with_indices_staged_main
+            with T.Kernel(rows // planes, threads=threads) as bx:
+                base = bx * planes
+                if staged:
+                    tile = T.alloc_shared((planes, h_in, w_in), dtype)
+                    T.copy(x[base : base + planes, :, :], tile)
+                for i in T.Parallel(planes * out_plane):
+                    p = i // out_plane
+                    o = i - p * out_plane
+                    oh = o // out_w
+                    ow = o - oh * out_w
+                    if staged:
+                        _argmax_bin(tile, p, out, indices, base + p, oh, ow)
+                    else:
+                        _argmax_bin(x, base + p, out, indices, base + p, oh, ow)
 
         return _adaptive_max_pool2d_with_indices_main
 
@@ -244,16 +269,36 @@ def _launch_adaptive_max_pool2d_with_indices(
     out_h: int,
     out_w: int,
     dtype: str,
-    block_m: int,
-    threads: int,
+    config: dict,
     x: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    return _adaptive_max_pool2d_with_indices_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(
-        block_m, threads
-    )(x)
+    kernel = _adaptive_max_pool2d_with_indices_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(
+        **config
+    )
+    values, indices = kernel(x.reshape(n * c_in, h_in, w_in))
+    return values.view(n, c_in, out_h, out_w), indices.view(n, c_in, out_h, out_w)
 
 
-class AdaptiveMaxPool2dWithIndicesKernel(AdaptivePool2dKernelBase):
+class _AdaptiveMaxPool2dKernelBase(AdaptivePool2dKernelBase):
+    """Plane-staged config policy shared by the two adaptive max-pool kernels."""
+
+    @property
+    def default_config(self) -> dict:
+        return _default_config(self.n * self.c_in, self.h_in, self.w_in, self.dtype_str)
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return _autotune_configs(self.n * self.c_in, self.h_in, self.w_in, self.dtype_str)
+
+
+class AdaptiveMaxPool2dKernel(_AdaptiveMaxPool2dKernelBase):
+    """Adaptive max pooling forward kernel for NCHW inputs."""
+
+    _build = staticmethod(_adaptive_max_pool2d_kernel)
+    _dispatch = staticmethod(_launch_adaptive_max_pool2d)
+
+
+class AdaptiveMaxPool2dWithIndicesKernel(_AdaptiveMaxPool2dKernelBase):
     """Adaptive max pooling forward kernel returning values and int64 indices."""
 
     _build = staticmethod(_adaptive_max_pool2d_with_indices_kernel)

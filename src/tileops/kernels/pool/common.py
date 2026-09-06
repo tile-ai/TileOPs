@@ -124,7 +124,6 @@ class AdaptivePool2dKernelBase(Kernel):
             self.out_h,
             self.out_w,
             self.dtype_str,
-            self.config["block_m"],
-            self.config["threads"],
+            self.config,
             x,
         )
