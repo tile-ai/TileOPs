@@ -67,8 +67,6 @@ def _max_pool2d_kernel(
                 for i in T.Parallel(block_m):
                     idx = tile * block_m + i
                     if tile_full or idx < total:
-                        # Two divisions, not three: the remainders come back as
-                        # multiplies.
                         plane_row = idx // out_w
                         ow = idx - plane_row * out_w
                         row = plane_row // out_h
@@ -79,19 +77,17 @@ def _max_pool2d_kernel(
                         run = -T.infinity(accum_dtype)
                         for kh in T.serial(kernel_h):
                             ih = top + kh * dilation_h
-                            # One test per window row, and the load below needs no
-                            # clamp on that axis because the test already proved it.
+                            # The row test proves the index, so the load below
+                            # needs no clamp on that axis.
                             if rows_inside or ((ih >= 0) and (ih < h_in)):
                                 for kw in T.serial(kernel_w):
                                     iw = left + kw * dilation_w
-                                    # Neighbouring threads hold neighbouring columns,
-                                    # so a branch here splits the warp at the row
-                                    # edges. The column test rides the update instead.
+                                    # Why: a branch on the column splits the warp at
+                                    # the row edges, so the test rides the update.
                                     v = T.cast(x[row, ih, safe_w(iw)], accum_dtype)
                                     live = cols_inside or ((iw >= 0) and (iw < w_in))
                                     # NaN enters `run` and never leaves: a later
-                                    # value fails `v > NaN`, which is how PyTorch
-                                    # propagates it.
+                                    # value fails `v > NaN`, as PyTorch propagates it.
                                     run = T.if_then_else(live and (T.isnan(v) or (v > run)), v, run)
                         out[row, oh, ow] = T.cast(run, dtype)
 
@@ -136,8 +132,8 @@ def _launch_max_pool2d(
         ceil_mode,
         dtype,
     )(**config)
-    # The kernel addresses one plane per (batch, channel) pair, so the two leading
-    # extents are folded away on the way in and restored on the way out.
+    # One plane per (batch, channel) pair: the two leading extents fold away
+    # here and are restored on the result.
     return kernel(x.reshape(n * c_in, h_in, w_in)).view(n, c_in, out_h, out_w)
 
 
@@ -206,10 +202,9 @@ def _max_pool2d_with_indices_kernel(
                         left = ow * stride_w - pad_w
                         base_flat = top * w_in + left
                         if window_inside:
-                            # Window element (0, 0) is in bounds here, so its flat
-                            # index is the correct seed: an all--inf window reports the
-                            # first position, matching PyTorch, and first_valid is
-                            # unneeded.
+                            # Element (0, 0) is in bounds here, so its flat index is
+                            # the right seed: an all--inf window then reports the first
+                            # position, as PyTorch does, and first_valid is unneeded.
                             max_idx = base_flat
                             nan_idx = base_flat
                         else:
@@ -220,9 +215,8 @@ def _max_pool2d_with_indices_kernel(
                             if rows_inside or ((ih >= 0) and (ih < h_in)):
                                 for kw in T.serial(kernel_w):
                                     iw = left + kw * dilation_w
-                                    # Neighbouring threads hold neighbouring columns,
-                                    # so a branch here splits the warp at the row
-                                    # edges. The column test rides the update instead.
+                                    # Why: a branch on the column splits the warp at
+                                    # the row edges, so the test rides the update.
                                     live = cols_inside or ((iw >= 0) and (iw < w_in))
                                     val = T.cast(x[row, ih, safe_w(iw)], accum_dtype)
                                     flat_idx = (
@@ -232,10 +226,10 @@ def _max_pool2d_with_indices_kernel(
                                     # Branch-free update. Strict > keeps the first
                                     # maximum; NaN never touches max_val/max_idx and
                                     # records the last NaN visited, matching PyTorch.
-                                    # A window wholly inside the input seeds
-                                    # max_val from element (0, 0), so it has no
-                                    # first-valid case to carry; the comparison
-                                    # still decides.
+                                    # A window wholly inside the input has no
+                                    # first-valid case to carry, and the claim decides
+                                    # a value rather than a disjunct so that the
+                                    # comparison below survives.
                                     seed = False if window_inside else first_valid
                                     take = live and (not is_nan) and (seed or (val > max_val))
                                     max_val = T.if_then_else(take, val, max_val)

@@ -20,6 +20,8 @@ def _axis_inside(size_in: int, size_out: int, kernel: int, stride: int, pad: int
     return pad == 0 and (size_out - 1) * stride + kernel <= size_in
 
 
+# Wider than the 32 a single entry point needs: this cache now serves both, since
+# _avg_pool3d_spatial_kernel resolves to an entry here rather than holding its own.
 @functools.lru_cache(maxsize=64)
 def _avg_pool3d_kernel(
     n: int,
@@ -53,11 +55,9 @@ def _avg_pool3d_kernel(
         and _axis_inside(h_in, out_h, kernel_h, stride_h, pad_h)
         and _axis_inside(w_in, out_w, kernel_w, stride_w, pad_w)
     )
-    # Without ceil mode the last window on an axis ends at `size + pad` at the
-    # furthest, so counting the padding gives the whole kernel for every output.
-    # Ceil mode can push a window past that, and not counting the padding
-    # shortens the windows that overhang, so both take the divisor from the
-    # window's own extent.
+    # Without ceil mode a window ends at `size + pad` at the furthest, so counting
+    # the padding gives the whole kernel for every output. Ceil mode can push a
+    # window past that, and an uncounted padding shortens the ones that overhang.
     whole_window_divides = window_inside or (count_include_pad and not ceil_mode)
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -73,8 +73,6 @@ def _avg_pool3d_kernel(
                 for i in T.Parallel(block_m):
                     idx = tile * block_m + i
                     if tile_full or idx < total:
-                        # Three divisions, not five: the remainders come back as
-                        # multiplies.
                         plane_row = idx // out_w
                         ow = idx - plane_row * out_w
                         depth_row = plane_row // out_h
@@ -92,11 +90,8 @@ def _avg_pool3d_kernel(
                                     id_ = front + kd
                                     ih = top + kh
                                     iw = left + kw
-                                    # One predicate for the whole window position.
-                                    # Splitting it per axis, or trading it for a
-                                    # select over a clamped address, both measured
-                                    # slower here: skipping the tap is worth more
-                                    # than the branch costs.
+                                    # Why: over this many taps, skipping the tap
+                                    # beats keeping the warp together.
                                     if window_inside or (
                                         (id_ >= 0)
                                         and (id_ < d_in)
@@ -106,10 +101,9 @@ def _avg_pool3d_kernel(
                                         and (iw < w_in)
                                     ):
                                         total_val += T.cast(x[row, id_, ih, iw], accum_dtype)
-                        # An explicit divisor is used as given, negative
-                        # included; only a divisor read off the window needs a
-                        # floor, and there because an empty window would divide
-                        # by zero.
+                        # An explicit divisor is used as given, negative included.
+                        # Only a divisor read off the window takes a floor, because
+                        # an empty window would otherwise divide by zero.
                         if use_divisor_override:
                             divisor = T.cast(divisor_override, accum_dtype)
                         elif whole_window_divides:
@@ -305,8 +299,8 @@ def _launch_avg_pool3d(
         divisor_override,
         dtype,
     )(block_m, threads)
-    # The kernel addresses one volume per (batch, channel) pair, so the two
-    # leading extents are folded away on the way in and restored on the way out.
+    # One volume per (batch, channel) pair: the two leading extents fold away
+    # here and are restored on the result.
     return kernel(x.reshape(n * c_in, d_in, h_in, w_in)).view(n, c_in, out_d, out_h, out_w)
 
 

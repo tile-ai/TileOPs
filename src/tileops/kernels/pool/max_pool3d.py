@@ -69,8 +69,6 @@ def _max_pool3d_kernel(
                 for i in T.Parallel(block_m):
                     idx = tile * block_m + i
                     if tile_full or idx < total:
-                        # Three divisions, not five: the remainders come back as
-                        # multiplies.
                         plane_row = idx // out_w
                         ow = idx - plane_row * out_w
                         depth_row = plane_row // out_h
@@ -88,11 +86,8 @@ def _max_pool3d_kernel(
                                     id_ = front + kd * dilation_d
                                     ih = top + kh * dilation_h
                                     iw = left + kw * dilation_w
-                                    # One predicate for the whole window position.
-                                    # Splitting it per axis, or trading it for a
-                                    # select over a clamped address, both measured
-                                    # slower on a 27-tap window: skipping the tap
-                                    # is worth more than the branch costs.
+                                    # Why: over this many taps, skipping the tap
+                                    # beats keeping the warp together.
                                     if window_inside or (
                                         (id_ >= 0)
                                         and (id_ < d_in)
@@ -102,8 +97,8 @@ def _max_pool3d_kernel(
                                         and (iw < w_in)
                                     ):
                                         v = T.cast(x[row, id_, ih, iw], accum_dtype)
-                                        # NaN enters `run` and never leaves: a later
-                                        # value fails `v > NaN`, which is how PyTorch
+                                        # NaN enters `run` and never leaves: a
+                                        # later value fails `v > NaN`, as PyTorch
                                         # propagates it.
                                         run = T.if_then_else(T.isnan(v) or (v > run), v, run)
                         out[row, od, oh, ow] = T.cast(run, dtype)
@@ -160,8 +155,8 @@ def _launch_max_pool3d(
         ceil_mode,
         dtype,
     )(**config)
-    # The kernel addresses one volume per (batch, channel) pair, so the two
-    # leading extents are folded away on the way in and restored on the way out.
+    # One volume per (batch, channel) pair: the two leading extents fold away
+    # here and are restored on the result.
     return kernel(x.reshape(n * c_in, d_in, h_in, w_in)).view(n, c_in, out_d, out_h, out_w)
 
 
@@ -233,10 +228,9 @@ def _max_pool3d_with_indices_kernel(
                         has_nan = False
                         first_valid = True
                         if window_inside:
-                            # Window element (0, 0, 0) is in bounds here, so its flat
-                            # index is the correct seed: an all--inf window reports
-                            # the first position, matching PyTorch, and first_valid
-                            # is unneeded.
+                            # Element (0, 0, 0) is in bounds here, so its flat index
+                            # is the right seed: an all--inf window then reports the
+                            # first position, as PyTorch does.
                             max_idx = base_flat
                             nan_idx = base_flat
                         else:
@@ -248,9 +242,6 @@ def _max_pool3d_with_indices_kernel(
                                     id_ = front + kd * dilation_d
                                     ih = top + kh * dilation_h
                                     iw = left + kw * dilation_w
-                                    # One predicate for the whole window position;
-                                    # see the value-only kernel for why it is not
-                                    # split per axis.
                                     if window_inside or (
                                         (id_ >= 0)
                                         and (id_ < d_in)
@@ -269,12 +260,9 @@ def _max_pool3d_with_indices_kernel(
                                         # Branch-free update. Strict > keeps the
                                         # first maximum; NaN never touches
                                         # max_val/max_idx and records the last NaN
-                                        # visited, matching PyTorch.
-                                        #
-                                        # A window wholly inside the input seeds
-                                        # max_val from element (0, 0, 0), so it has
-                                        # no first-valid case to carry; the
-                                        # comparison still decides.
+                                        # visited, matching PyTorch. The claim
+                                        # decides a value rather than a disjunct so
+                                        # that the comparison survives.
                                         seed = False if window_inside else first_valid
                                         take = (not is_nan) and (seed or (val > max_val))
                                         max_val = T.if_then_else(take, val, max_val)
