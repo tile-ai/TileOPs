@@ -27,6 +27,7 @@ __all__ = [
     "select_row_config",
     "select_row_config_by_width",
     "select_row_configs",
+    "use_per_thread_partial",
 ]
 
 # Powers of two only (tl::AllReduce is an XOR butterfly) that also divide
@@ -118,6 +119,23 @@ def select_row_configs(
     if default not in configs:
         configs.insert(0, default)
     return configs
+
+
+def use_per_thread_partial(
+    m: int, block_m: int, n_padded: int, threads: int, sm_count: int, min_elements: int
+) -> bool:
+    """Whether a row reduction should accumulate a per-thread partial first.
+
+    The partial trades the fp32 fragment's ``n_padded / threads`` registers, which cap the
+    resident warps, for a serial walk of shared memory. Only a grid that oversubscribes the
+    device is paid back for the walk, and a thread count that does not divide the row would
+    truncate it.
+    """
+    return (
+        -(-m // block_m) > sm_count
+        and n_padded % threads == 0
+        and n_padded // threads >= min_elements
+    )
 
 
 def make_row_reduce(block_m, n, n_padded, eps):

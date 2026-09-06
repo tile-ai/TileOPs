@@ -21,7 +21,12 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
 from tileops.utils import get_sm_count
 
-from ._config import select_row_config, select_row_configs
+from ._config import (
+    make_row_reduce,
+    select_row_config,
+    select_row_configs,
+    use_per_thread_partial,
+)
 
 __all__ = ["LayerNormKernel"]
 
@@ -34,15 +39,10 @@ def _layer_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
 
     @tilelang.jit(out_idx=[3])
     def _func(block_m, threads):
-        # A partial per thread trades the fp32 fragment's N/threads registers,
-        # which cap the resident warps, for a serial walk of shared memory. Only
-        # a grid that oversubscribes the device is paid back for the walk.
-        per_thread_partial = (
-            -(-M // block_m) > sm_count
-            # A thread count that does not divide the row truncates the walk.
-            and N_padded % threads == 0
-            and N_padded // threads >= partial_min_elements
+        per_thread_partial = use_per_thread_partial(
+            M, block_m, N_padded, threads, sm_count, partial_min_elements
         )
+        row_reduce = make_row_reduce(block_m, N, N_padded, eps)
 
         @T.prim_func
         def main(
@@ -113,19 +113,7 @@ def _layer_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
                         for i, j in T.Parallel(block_m, N_padded):
                             x_f32[i, j] = T.cast(x_local[i, j], "float32")
 
-                    T.reduce_sum(x_f32, acc, dim=1)
-                    for i in T.Parallel(block_m):
-                        mean_val[i] = acc[i] / float(N)
-
-                    # Padded positions (x=0) contribute mean^2; corrected below.
-                    for i, j in T.Parallel(block_m, N_padded):
-                        x_f32[i, j] = (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i])
-
-                    T.reduce_sum(x_f32, acc, dim=1)
-                    for i in T.Parallel(block_m):
-                        rstd[i] = T.rsqrt(
-                            (acc[i] - float(pad_count) * mean_val[i] * mean_val[i]) / float(N) + eps
-                        )
+                    row_reduce(x_f32, acc, mean_val, rstd)
 
                 # --- Output: y = (x - mean) * rstd * weight + bias ---
                 if needs_pad:

@@ -19,7 +19,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
 from tileops.utils import get_sm_count
 
-from ._config import select_row_config, select_row_configs
+from ._config import select_row_config, select_row_configs, use_per_thread_partial
 
 __all__ = ["RMSNormKernel"]
 
@@ -30,14 +30,8 @@ def _rms_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
 
     @tilelang.jit(out_idx=[2])
     def _func(block_m, threads):
-        # A partial per thread trades the fp32 fragment's N/threads registers,
-        # which cap the resident warps, for a serial walk of shared memory. Only
-        # a grid that oversubscribes the device is paid back for the walk.
-        per_thread_partial = (
-            -(-M // block_m) > sm_count
-            # A thread count that does not divide the row truncates the walk.
-            and N_padded % threads == 0
-            and N_padded // threads >= partial_min_elements
+        per_thread_partial = use_per_thread_partial(
+            M, block_m, N_padded, threads, sm_count, partial_min_elements
         )
 
         @T.prim_func
