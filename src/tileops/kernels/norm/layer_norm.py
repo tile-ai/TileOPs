@@ -2,12 +2,15 @@
 
 y = (x - mean(x)) / sqrt(var(x) + eps) * weight + bias
 
-256-element alignment (512 bytes for fp16/bf16) is required by T.copy() shared
-memory instructions. Boundary handling for non-aligned N is performed inside
-the kernel, eliminating host-side padding allocations and copies. Padding zeros
-contribute 0 to the mean reduction; the centered two-pass variance computation
-subtracts their exact contribution to remain numerically stable for large-offset
-inputs.
+The row is held in a register fragment from the load through the store. Shared memory
+is left to the partial reduction, whose threads each walk a strided run of the row and
+so must reach slots the reader does not own.
+
+256-element alignment (512 bytes for fp16/bf16) is required by the T.copy() that fills
+that shared buffer. Boundary handling for non-aligned N is performed inside the kernel,
+eliminating host-side padding allocations and copies. Padding zeros contribute 0 to the
+mean reduction; the centered two-pass variance computation subtracts their exact
+contribution to remain numerically stable for large-offset inputs.
 """
 
 import functools
@@ -37,6 +40,8 @@ def _layer_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
         # A partial per thread trades the fp32 fragment's N/threads registers,
         # which cap the resident warps, for a serial walk of shared memory. Only
         # a grid that oversubscribes the device is paid back for the walk.
+        # A tail row block runs past the end unless every index is guarded.
+        row_guard = M % block_m != 0
         per_thread_partial = (
             -(-M // block_m) > sm_count
             # A thread count that does not divide the row truncates the walk.
@@ -52,7 +57,10 @@ def _layer_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
             y: T.Tensor[(M, N), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                shared_buf = T.alloc_shared((block_m, N_padded), dtype)
+                # Only the strided walk needs shared memory: a thread can reach
+                # another thread's shared slot and cannot reach its registers.
+                if per_thread_partial:
+                    shared_buf = T.alloc_shared((block_m, N_padded), dtype)
                 x_local = T.alloc_fragment((block_m, N_padded), dtype)
                 reduce_width = threads if per_thread_partial else N_padded
                 x_f32 = T.alloc_fragment((block_m, reduce_width), "float32")
@@ -96,22 +104,27 @@ def _layer_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
                     if not needs_pad:
                         T.copy(shared_buf, x_local)
                 else:
+                    # The fragment holds the row for the output pass while the
+                    # fp32 copy below is reduced and overwritten.
                     if needs_pad:
-                        # Retain the original values in shared memory for the
-                        # output pass while the fp32 fragment is reduced below.
                         for i, j in T.Parallel(block_m, N_padded):
-                            shared_buf[i, j] = T.if_then_else(
+                            x_local[i, j] = T.if_then_else(
                                 T.And(pid_m * block_m + i < M, j < N),
                                 x[pid_m * block_m + i, j],
                                 T.cast(0.0, dtype),
                             )
-                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-                    else:
-                        # Preserve the vectorized copy fast path for aligned N.
-                        T.copy(x[pid_m * block_m, 0], shared_buf)
-                        T.copy(shared_buf, x_local)
+                    elif row_guard:
                         for i, j in T.Parallel(block_m, N_padded):
-                            x_f32[i, j] = T.cast(x_local[i, j], "float32")
+                            x_local[i, j] = T.if_then_else(
+                                pid_m * block_m + i < M,
+                                x[pid_m * block_m + i, j],
+                                T.cast(0.0, dtype),
+                            )
+                    else:
+                        for i, j in T.Parallel(block_m, N_padded):
+                            x_local[i, j] = x[pid_m * block_m + i, j]
+                    for i, j in T.Parallel(block_m, N_padded):
+                        x_f32[i, j] = T.cast(x_local[i, j], "float32")
 
                     T.reduce_sum(x_f32, acc, dim=1)
                     for i in T.Parallel(block_m):
@@ -128,7 +141,9 @@ def _layer_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
                         )
 
                 # --- Output: y = (x - mean) * rstd * weight + bias ---
-                if needs_pad:
+                # A padded row under the partial walk is the one case the fragment
+                # never received: its values are still only in shared memory.
+                if needs_pad and per_thread_partial:
                     # Store only real columns.  Returning the natural shape
                     # avoids allocating and writing an M x N_padded output
                     # merely to slice it in the Op layer.
@@ -137,15 +152,22 @@ def _layer_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
                             y[pid_m * block_m + i, j] = (
                                 T.cast(shared_buf[i, j], "float32") - mean_val[i]
                             ) * rstd[i] * T.cast(weight[j], "float32") + T.cast(bias[j], "float32")
-                else:
-                    # Re-cast from x_local (original dtype) to avoid a second
-                    # fp32 buffer, then retain the vectorized copy fast path.
+                elif needs_pad:
                     for i, j in T.Parallel(block_m, N_padded):
-                        x_local[i, j] = (T.cast(x_local[i, j], "float32") - mean_val[i]) * rstd[
-                            i
-                        ] * T.cast(weight[j], "float32") + T.cast(bias[j], "float32")
-                    T.copy(x_local, shared_buf)
-                    T.copy(shared_buf, y[pid_m * block_m, 0])
+                        if T.And(pid_m * block_m + i < M, j < N):
+                            y[pid_m * block_m + i, j] = (
+                                T.cast(x_local[i, j], "float32") - mean_val[i]
+                            ) * rstd[i] * T.cast(weight[j], "float32") + T.cast(bias[j], "float32")
+                else:
+                    for i, j in T.Parallel(block_m, N_padded):
+                        if (not row_guard) or pid_m * block_m + i < M:
+                            y[pid_m * block_m + i, j] = T.cast(
+                                (T.cast(x_local[i, j], "float32") - mean_val[i])
+                                * rstd[i]
+                                * T.cast(weight[j], "float32")
+                                + T.cast(bias[j], "float32"),
+                                dtype,
+                            )
 
         return main
 
@@ -156,8 +178,8 @@ class LayerNormKernel(Kernel):
     """LayerNorm kernel.
 
     Supports SM80+ architectures. Uses 256-element alignment (512 bytes for
-    fp16/bf16) for shared memory copies. Single shared buffer reused for
-    input load and output store.
+    fp16/bf16) for the shared buffer the partial reduction walks; every other
+    path holds the row in a register fragment from the load through the store.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
