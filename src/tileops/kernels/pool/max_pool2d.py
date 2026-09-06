@@ -61,6 +61,13 @@ def _max_pool2d_kernel(
         tile_full = total % block_m == 0
         tile_exact = out_h % tile_h == 0 and out_w % tile_w == 0
         window_inside = rows_inside and cols_inside
+        # Every tile starts the same distance into its row, so whether the band
+        # is a whole number of 16-byte runs on a 16-byte boundary is one
+        # question for all of them.
+        vector_width = 16 // torch.empty((), dtype=getattr(torch, dtype)).element_size()
+        vector_band = (
+            window_inside and band_w % vector_width == 0 and (tile_w * stride_w) % vector_width == 0
+        )
 
         def safe_h(ih):
             return ih if rows_inside else T.max(0, T.min(ih, h_in - 1))
@@ -83,32 +90,42 @@ def _max_pool2d_kernel(
                         th = plane_tile - row * tiles_h
                         top = th * tile_h * stride_h - pad_h
                         left = tw * tile_w * stride_w - pad_w
-                        band = T.alloc_local((band_w,), accum_dtype)
+                        band = T.alloc_local((band_w,), dtype)
                         across = T.alloc_local((band_h * tile_w,), accum_dtype)
                         for r in T.serial(band_h):
                             ih = top + r
-                            for t in T.serial(band_w):
-                                iw = left + t
-                                if window_inside:
-                                    band[t] = T.cast(x[row, ih, iw], accum_dtype)
-                                else:
-                                    # A position outside the input is read from a
-                                    # clamped address and replaced, so every thread
-                                    # walks the same band.
-                                    band[t] = T.if_then_else(
-                                        (rows_inside or ((ih >= 0) and (ih < h_in)))
-                                        and (cols_inside or ((iw >= 0) and (iw < w_in))),
-                                        T.cast(x[row, safe_h(ih), safe_w(iw)], accum_dtype),
-                                        -T.infinity(accum_dtype),
-                                    )
+                            if vector_band:
+                                for run in T.serial(band_w // vector_width):
+                                    for t in T.vectorized(vector_width):
+                                        band[run * vector_width + t] = x[
+                                            row, ih, left + run * vector_width + t
+                                        ]
+                            else:
+                                for t in T.serial(band_w):
+                                    iw = left + t
+                                    if window_inside:
+                                        band[t] = x[row, ih, iw]
+                                    else:
+                                        # A position outside the input is read from
+                                        # a clamped address and replaced, so every
+                                        # thread walks the same band.
+                                        band[t] = T.if_then_else(
+                                            (rows_inside or ((ih >= 0) and (ih < h_in)))
+                                            and (cols_inside or ((iw >= 0) and (iw < w_in))),
+                                            x[row, safe_h(ih), safe_w(iw)],
+                                            -T.infinity(dtype),
+                                        )
                             # The band is read once per output column, so the row's
                             # maxima are taken here and the column pass below reads
                             # each of them kernel_h times.
                             for j in T.serial(tile_w):
                                 run = T.alloc_var(T.float32)
-                                run = band[j * stride_w]
+                                run = T.cast(band[j * stride_w], accum_dtype)
                                 for kw in T.serial(kernel_w - 1):
-                                    v = band[j * stride_w + (kw + 1) * dilation_w]
+                                    v = T.cast(
+                                        band[j * stride_w + (kw + 1) * dilation_w],
+                                        accum_dtype,
+                                    )
                                     # NaN enters `run` and never leaves: a later
                                     # value fails `v > NaN`, as PyTorch propagates it.
                                     run = T.if_then_else(T.isnan(v) or (v > run), v, run)
