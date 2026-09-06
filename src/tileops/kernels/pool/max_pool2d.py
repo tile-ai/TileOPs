@@ -11,6 +11,10 @@ from tileops.kernels.pool.common import pool_output_dim
 
 __all__ = ["MaxPool2dKernel", "MaxPool2dWithIndicesKernel"]
 
+# Accumulators one thread may hold for its output tile: the band row it is
+# reading plus the row maxima the column pass consumes.
+_MAX_TILE_REGISTERS = 64
+
 
 def _axis_inside(
     size_in: int, size_out: int, kernel: int, stride: int, pad: int, dilation: int
@@ -43,19 +47,25 @@ def _max_pool2d_kernel(
     out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
     out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
     rows = n * c_in
-    plane = out_h * out_w
-    total = rows * plane
     rows_inside = _axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
     cols_inside = _axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
-    def _max_pool2d_func(block_m: int, threads: int):
+    def _max_pool2d_func(block_m: int, threads: int, tile_h: int, tile_w: int):
+        # Input extent one thread's outputs span on each axis.
+        band_h = (tile_h - 1) * stride_h + (kernel_h - 1) * dilation_h + 1
+        band_w = (tile_w - 1) * stride_w + (kernel_w - 1) * dilation_w + 1
+        tiles_h = -(-out_h // tile_h)
+        tiles_w = -(-out_w // tile_w)
+        total = rows * tiles_h * tiles_w
         tile_full = total % block_m == 0
+        tile_exact = out_h % tile_h == 0 and out_w % tile_w == 0
+        window_inside = rows_inside and cols_inside
+
+        def safe_h(ih):
+            return ih if rows_inside else T.max(0, T.min(ih, h_in - 1))
 
         def safe_w(iw):
-            """*iw* as an index that is always in range, clamping only when the
-            window can reach past the row. The clamped value is discarded by the
-            update below, so which column it names does not matter."""
             return iw if cols_inside else T.max(0, T.min(iw, w_in - 1))
 
         @T.prim_func
@@ -67,29 +77,53 @@ def _max_pool2d_kernel(
                 for i in T.Parallel(block_m):
                     idx = tile * block_m + i
                     if tile_full or idx < total:
-                        plane_row = idx // out_w
-                        ow = idx - plane_row * out_w
-                        row = plane_row // out_h
-                        oh = plane_row - row * out_h
-                        top = oh * stride_h - pad_h
-                        left = ow * stride_w - pad_w
-                        run = T.alloc_var(T.float32)
-                        run = -T.infinity(accum_dtype)
-                        for kh in T.serial(kernel_h):
-                            ih = top + kh * dilation_h
-                            # The row test proves the index, so the load below
-                            # needs no clamp on that axis.
-                            if rows_inside or ((ih >= 0) and (ih < h_in)):
-                                for kw in T.serial(kernel_w):
-                                    iw = left + kw * dilation_w
-                                    # Why: a branch on the column splits the warp at
-                                    # the row edges, so the test rides the update.
-                                    v = T.cast(x[row, ih, safe_w(iw)], accum_dtype)
-                                    live = cols_inside or ((iw >= 0) and (iw < w_in))
+                        plane_tile = idx // tiles_w
+                        tw = idx - plane_tile * tiles_w
+                        row = plane_tile // tiles_h
+                        th = plane_tile - row * tiles_h
+                        top = th * tile_h * stride_h - pad_h
+                        left = tw * tile_w * stride_w - pad_w
+                        band = T.alloc_local((band_w,), accum_dtype)
+                        across = T.alloc_local((band_h * tile_w,), accum_dtype)
+                        for r in T.serial(band_h):
+                            ih = top + r
+                            for t in T.serial(band_w):
+                                iw = left + t
+                                if window_inside:
+                                    band[t] = T.cast(x[row, ih, iw], accum_dtype)
+                                else:
+                                    # A position outside the input is read from a
+                                    # clamped address and replaced, so every thread
+                                    # walks the same band.
+                                    band[t] = T.if_then_else(
+                                        (rows_inside or ((ih >= 0) and (ih < h_in)))
+                                        and (cols_inside or ((iw >= 0) and (iw < w_in))),
+                                        T.cast(x[row, safe_h(ih), safe_w(iw)], accum_dtype),
+                                        -T.infinity(accum_dtype),
+                                    )
+                            # The band is read once per output column, so the row's
+                            # maxima are taken here and the column pass below reads
+                            # each of them kernel_h times.
+                            for j in T.serial(tile_w):
+                                run = T.alloc_var(T.float32)
+                                run = band[j * stride_w]
+                                for kw in T.serial(kernel_w - 1):
+                                    v = band[j * stride_w + (kw + 1) * dilation_w]
                                     # NaN enters `run` and never leaves: a later
                                     # value fails `v > NaN`, as PyTorch propagates it.
-                                    run = T.if_then_else(live and (T.isnan(v) or (v > run)), v, run)
-                        out[row, oh, ow] = T.cast(run, dtype)
+                                    run = T.if_then_else(T.isnan(v) or (v > run), v, run)
+                                across[r * tile_w + j] = run
+                        for a in T.serial(tile_h):
+                            for j in T.serial(tile_w):
+                                run = T.alloc_var(T.float32)
+                                run = across[(a * stride_h) * tile_w + j]
+                                for kh in T.serial(kernel_h - 1):
+                                    v = across[(a * stride_h + (kh + 1) * dilation_h) * tile_w + j]
+                                    run = T.if_then_else(T.isnan(v) or (v > run), v, run)
+                                oh_ = th * tile_h + a
+                                ow_ = tw * tile_w + j
+                                if tile_exact or ((oh_ < out_h) and (ow_ < out_w)):
+                                    out[row, oh_, ow_] = T.cast(run, dtype)
 
         return _max_pool2d_main
 
@@ -162,7 +196,6 @@ def _max_pool2d_with_indices_kernel(
     total = rows * plane
     rows_inside = _axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
     cols_inside = _axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
-    window_inside = rows_inside and cols_inside
 
     @tilelang.jit(out_idx=[1, 2], compile_flags=["-O3", "-DENABLE_BF16"])
     def _max_pool2d_with_indices_func(block_m: int, threads: int):
@@ -186,30 +219,18 @@ def _max_pool2d_with_indices_kernel(
                         ow = idx - plane_row * out_w
                         row = plane_row // out_h
                         oh = plane_row - row * out_h
-
-                        max_val = T.alloc_var(T.float32)
-                        has_nan = T.alloc_var(T.bool)
-                        max_idx = T.alloc_var(T.int32)
-                        nan_idx = T.alloc_var(T.int32)
-                        first_valid = T.alloc_var(T.bool)
-                        top = T.alloc_var(T.int32)
-                        left = T.alloc_var(T.int32)
-                        base_flat = T.alloc_var(T.int32)
-                        max_val = -T.infinity(accum_dtype)
-                        has_nan = False
-                        first_valid = True
                         top = oh * stride_h - pad_h
                         left = ow * stride_w - pad_w
-                        base_flat = top * w_in + left
-                        if window_inside:
-                            # Element (0, 0) is in bounds here, so its flat index is
-                            # the right seed: an all--inf window then reports the first
-                            # position, as PyTorch does, and first_valid is unneeded.
-                            max_idx = base_flat
-                            nan_idx = base_flat
-                        else:
-                            max_idx = 0
-                            nan_idx = 0
+                        run = T.alloc_var(T.float32)
+                        best = T.alloc_var(T.int32)
+                        run = -T.infinity(accum_dtype)
+                        # The position starts at the window's first tap inside the
+                        # input, reached by advancing the corner one dilation step
+                        # at a time, so a window holding nothing but -inf reports
+                        # that tap as PyTorch does.
+                        best = (top + T.max(0, T.ceildiv(-top, dilation_h)) * dilation_h) * w_in + (
+                            left + T.max(0, T.ceildiv(-left, dilation_w)) * dilation_w
+                        )
                         for kh in T.serial(kernel_h):
                             ih = top + kh * dilation_h
                             if rows_inside or ((ih >= 0) and (ih < h_in)):
@@ -218,33 +239,16 @@ def _max_pool2d_with_indices_kernel(
                                     # Why: a branch on the column splits the warp at
                                     # the row edges, so the test rides the update.
                                     live = cols_inside or ((iw >= 0) and (iw < w_in))
-                                    val = T.cast(x[row, ih, safe_w(iw)], accum_dtype)
-                                    flat_idx = (
-                                        base_flat + kh * (dilation_h * w_in) + (kw * dilation_w)
-                                    )
-                                    is_nan = live and T.isnan(val)
-                                    # Branch-free update. Strict > keeps the first
-                                    # maximum; NaN never touches max_val/max_idx and
-                                    # records the last NaN visited, matching PyTorch.
-                                    # A window wholly inside the input has no
-                                    # first-valid case to carry, and the claim decides
-                                    # a value rather than a disjunct so that the
-                                    # comparison below survives.
-                                    seed = False if window_inside else first_valid
-                                    take = live and (not is_nan) and (seed or (val > max_val))
-                                    max_val = T.if_then_else(take, val, max_val)
-                                    max_idx = T.if_then_else(take, flat_idx, max_idx)
-                                    first_valid = first_valid and ((not live) or is_nan)
-                                    nan_idx = T.if_then_else(is_nan, flat_idx, nan_idx)
-                                    has_nan = has_nan or is_nan
-
-                        out[row, oh, ow] = T.cast(
-                            T.if_then_else(has_nan, T.cast(float("nan"), accum_dtype), max_val),
-                            dtype,
-                        )
-                        indices[row, oh, ow] = T.cast(
-                            T.if_then_else(has_nan, nan_idx, max_idx), "int64"
-                        )
+                                    v = T.cast(x[row, ih, safe_w(iw)], accum_dtype)
+                                    # PyTorch's own predicate: strict > keeps the
+                                    # first maximum, and a NaN takes the position
+                                    # and holds it, so the last NaN in the window
+                                    # wins as it does there.
+                                    take = live and (T.isnan(v) or (v > run))
+                                    run = T.if_then_else(take, v, run)
+                                    best = T.if_then_else(take, ih * w_in + iw, best)
+                        out[row, oh, ow] = T.cast(run, dtype)
+                        indices[row, oh, ow] = T.cast(best, "int64")
 
         return _max_pool2d_with_indices_main
 
@@ -401,12 +405,74 @@ class _MaxPool2dKernelBase(Kernel):
 class MaxPool2dKernel(_MaxPool2dKernelBase):
     """Max pooling forward kernel (return_indices=False).
 
-    One thread owns one output position and folds its window into a register, so
-    an output is written once and the window never leaves the thread.
+    One thread owns a ``tile_h`` by ``tile_w`` block of outputs. The input band
+    those outputs share is read once into registers, and the window separates:
+    each band row gives its row maxima, and the column pass takes the maximum
+    down them. A tile of 1 by 1 is the plain one-output-per-thread schedule.
     """
 
     _build = staticmethod(_max_pool2d_kernel)
     _dispatch = staticmethod(_launch_max_pool2d)
+
+    def _tiles(self, axis: str) -> tuple[int, ...]:
+        """Tile extents worth trying on one axis.
+
+        A tile only pays where the band it reads is the band its outputs use.
+        Once the stride outruns the kernel, or the dilation outruns the stride,
+        the band holds positions no window reaches and the extra reads are lost.
+        """
+        if axis == "h":
+            extent, stride, kernel, dilation = (
+                self.out_h,
+                self.stride_h,
+                self.kernel_h,
+                self.dilation_h,
+            )
+        else:
+            extent, stride, kernel, dilation = (
+                self.out_w,
+                self.stride_w,
+                self.kernel_w,
+                self.dilation_w,
+            )
+        if not (dilation <= stride <= kernel):
+            return (1,)
+        return tuple(t for t in (1, 2, 4, 8) if t <= extent)
+
+    @property
+    def default_config(self) -> dict:
+        tiles_h = self._tiles("h")
+        tiles_w = self._tiles("w")
+        return {
+            "block_m": 256,
+            "threads": 256,
+            "tile_h": max(t for t in tiles_h if t <= 4),
+            "tile_w": max(t for t in tiles_w if t <= 2),
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        space = itertools.product(
+            (64, 128, 256, 512), (64, 128, 256), self._tiles("h"), self._tiles("w")
+        )
+        configs = [
+            {
+                "block_m": block_m,
+                "threads": threads,
+                "tile_h": tile_h,
+                "tile_w": tile_w,
+            }
+            for block_m, threads, tile_h, tile_w in space
+            if threads <= block_m
+            and self._band(tile_h, self.stride_h, self.kernel_h, self.dilation_h) * tile_w
+            + self._band(tile_w, self.stride_w, self.kernel_w, self.dilation_w)
+            <= _MAX_TILE_REGISTERS
+        ]
+        return configs or [self.default_config]
+
+    @staticmethod
+    def _band(tile: int, stride: int, kernel: int, dilation: int) -> int:
+        return (tile - 1) * stride + (kernel - 1) * dilation + 1
 
 
 class MaxPool2dWithIndicesKernel(_MaxPool2dKernelBase):
