@@ -59,14 +59,24 @@ def _mean_pooling_kernel(
                 start_dim = i_d * bdim
                 end_dim = T.min(start_dim + bdim, dim)
 
-                T.clear(x_shared)
-                # disable_tma=True: the copy extent is a runtime value
-                # (ragged chunks), which the TMA lowering cannot express.
-                T.copy(
-                    x[i_b, start_token:end_token, i_h, start_dim:end_dim],
-                    x_shared[0 : end_token - start_token, : end_dim - start_dim],
-                    disable_tma=True,
-                )
+                # Static fast path: a uniform split with no tail chunk and a `dim`
+                # exactly tiled by `bdim` makes every extent a compile-time constant,
+                # so the copy lowers to vectorized TMA loads instead of the guarded
+                # scalar path below, and the full tile it writes needs no T.clear.
+                if use_offsets == 0 and seq_len % chunk_size == 0 and dim % bdim == 0:
+                    T.copy(
+                        x[i_b, start_token : start_token + chunk_size, i_h, start_dim:end_dim],
+                        x_shared,
+                    )
+                else:
+                    T.clear(x_shared)
+                    # disable_tma=True: the copy extent is a runtime value
+                    # (ragged chunks), which the TMA lowering cannot express.
+                    T.copy(
+                        x[i_b, start_token:end_token, i_h, start_dim:end_dim],
+                        x_shared[0 : end_token - start_token, : end_dim - start_dim],
+                        disable_tma=True,
+                    )
                 T.copy(x_shared, x_local)
                 T.reduce_sum(x_local, output_local, dim=0)
                 for d_idx in T.Parallel(bdim):
