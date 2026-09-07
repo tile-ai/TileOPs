@@ -21,7 +21,19 @@ __all__ = ["GQADecodeKernel"]
 
 
 @functools.lru_cache(maxsize=32)
-def _gqa_decode_no_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype):
+def _gqa_decode_no_split_kernel(
+    batch,
+    heads,
+    groups,
+    dim,
+    sm_scale,
+    softcap,
+    dtype,
+    fuse_rope=False,
+    max_position=1,
+    rotary_dim=0,
+    rope_layout="neox",
+):
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
     scale = LOG2E if use_softcap else score_scale * LOG2E
@@ -40,6 +52,7 @@ def _gqa_decode_no_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dt
         shape_k = [batch, seqlen_kv, groups, dim]
         shape_v = [batch, seqlen_kv, groups, dim]
         shape_o = [batch, heads, dim]
+        rope_shape = [max_position, rotary_dim // 2]
         kv_group_num = heads // groups
 
         valid_block_H = min(block_H, kv_group_num)
@@ -52,13 +65,8 @@ def _gqa_decode_no_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dt
         )
         rescale = make_rescale(block_H, dim)
 
-        @T.prim_func
-        def gqa_decode_no_split(
-            Q: T.Tensor(shape_q, dtype),
-            K: T.Tensor(shape_k, dtype),
-            V: T.Tensor(shape_v, dtype),
-            Output: T.Tensor(shape_o, dtype),
-        ):
+        @T.macro
+        def compute(Q, K, V, rope_cos, rope_sin, Output):
             with T.Kernel(batch, heads // valid_block_H, 1, threads=threads) as (bx, by, bz):
                 Q_shared = T.alloc_shared([block_H, dim], dtype)
                 K_shared = T.alloc_shared([block_N, dim], dtype)
@@ -77,14 +85,83 @@ def _gqa_decode_no_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dt
                 hid = by
                 cur_kv_head = hid // (kv_group_num // valid_block_H)
 
-                T.copy(Q[bid, hid * valid_block_H : hid * valid_block_H + block_H, :], Q_shared)
+                if fuse_rope:
+                    for i, j in T.Parallel(block_H, dim):
+                        if i < valid_block_H:
+                            if j < rotary_dim:
+                                if rope_layout == "neox":
+                                    freq = T.if_then_else(
+                                        j < rotary_dim // 2, j, j - rotary_dim // 2
+                                    )
+                                    partner = T.if_then_else(
+                                        j < rotary_dim // 2,
+                                        j + rotary_dim // 2,
+                                        j - rotary_dim // 2,
+                                    )
+                                    sign = T.if_then_else(j < rotary_dim // 2, -1.0, 1.0)
+                                else:
+                                    freq = j // 2
+                                    partner = T.if_then_else(j % 2 == 0, j + 1, j - 1)
+                                    sign = T.if_then_else(j % 2 == 0, -1.0, 1.0)
+                                x = T.cast(Q[bid, hid * valid_block_H + i, j], "float")
+                                x_partner = T.cast(
+                                    Q[bid, hid * valid_block_H + i, partner], "float"
+                                )
+                                cos = T.cast(rope_cos[seqlen_kv - 1, freq], "float")
+                                sin = T.cast(rope_sin[seqlen_kv - 1, freq], "float")
+                                Q_shared[i, j] = T.cast(x * cos + sign * x_partner * sin, dtype)
+                            else:
+                                Q_shared[i, j] = Q[bid, hid * valid_block_H + i, j]
+                        else:
+                            Q_shared[i, j] = 0
+                    T.sync_threads(3, threads)
+                else:
+                    T.copy(
+                        Q[bid, hid * valid_block_H : hid * valid_block_H + block_H, :],
+                        Q_shared,
+                    )
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = T.ceildiv(seqlen_kv, block_N)
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
-                    T.copy(K[bid, k * block_N : (k + 1) * block_N, cur_kv_head, :], K_shared)
+                    if fuse_rope:
+                        for i, j in T.Parallel(block_N, dim):
+                            position = k * block_N + i
+                            if position < seqlen_kv:
+                                if j < rotary_dim:
+                                    if rope_layout == "neox":
+                                        freq = T.if_then_else(
+                                            j < rotary_dim // 2, j, j - rotary_dim // 2
+                                        )
+                                        partner = T.if_then_else(
+                                            j < rotary_dim // 2,
+                                            j + rotary_dim // 2,
+                                            j - rotary_dim // 2,
+                                        )
+                                        sign = T.if_then_else(j < rotary_dim // 2, -1.0, 1.0)
+                                    else:
+                                        freq = j // 2
+                                        partner = T.if_then_else(j % 2 == 0, j + 1, j - 1)
+                                        sign = T.if_then_else(j % 2 == 0, -1.0, 1.0)
+                                    x = T.cast(K[bid, position, cur_kv_head, j], "float")
+                                    x_partner = T.cast(
+                                        K[bid, position, cur_kv_head, partner], "float"
+                                    )
+                                    cos = T.cast(rope_cos[position, freq], "float")
+                                    sin = T.cast(rope_sin[position, freq], "float")
+                                    K_shared[i, j] = T.cast(x * cos + sign * x_partner * sin, dtype)
+                                else:
+                                    K_shared[i, j] = K[bid, position, cur_kv_head, j]
+                            else:
+                                K_shared[i, j] = 0
+                        T.sync_threads(3, threads)
+                    else:
+                        T.copy(
+                            K[bid, k * block_N : (k + 1) * block_N, cur_kv_head, :],
+                            K_shared,
+                        )
                     T.clear(acc_s)
                     T.gemm(
                         Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
@@ -111,6 +188,30 @@ def _gqa_decode_no_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dt
 
                 T.copy(acc_o[:valid_block_H, :], O_shared)
                 T.copy(O_shared, Output[bid, hid * valid_block_H : (hid + 1) * valid_block_H, :])
+
+        if fuse_rope:
+
+            @T.prim_func
+            def gqa_decode_no_split_rope(
+                Q: T.Tensor(shape_q, dtype),
+                K: T.Tensor(shape_k, dtype),
+                V: T.Tensor(shape_v, dtype),
+                rope_cos: T.Tensor(rope_shape, dtype),
+                rope_sin: T.Tensor(rope_shape, dtype),
+                Output: T.Tensor(shape_o, dtype),
+            ):
+                compute(Q, K, V, rope_cos, rope_sin, Output)
+
+            return gqa_decode_no_split_rope
+
+        @T.prim_func
+        def gqa_decode_no_split(
+            Q: T.Tensor(shape_q, dtype),
+            K: T.Tensor(shape_k, dtype),
+            V: T.Tensor(shape_v, dtype),
+            Output: T.Tensor(shape_o, dtype),
+        ):
+            compute(Q, K, V, Q, Q, Output)
 
         return gqa_decode_no_split
 
@@ -348,6 +449,68 @@ def _(
     return torch.empty_like(Q)
 
 
+@torch.library.custom_op("tileops::gqa_decode_no_split_rope_op", mutates_args=())
+def _gqa_decode_no_split_rope_op(
+    batch: int,
+    heads: int,
+    groups: int,
+    dim: int,
+    sm_scale: float,
+    softcap: float,
+    dtype: str,
+    max_position: int,
+    rotary_dim: int,
+    rope_layout: str,
+    block_H: int,
+    block_N: int,
+    num_stages: int,
+    threads: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    rope_cos: torch.Tensor,
+    rope_sin: torch.Tensor,
+) -> torch.Tensor:
+    return _gqa_decode_no_split_kernel(
+        batch,
+        heads,
+        groups,
+        dim,
+        sm_scale,
+        softcap,
+        dtype,
+        True,
+        max_position,
+        rotary_dim,
+        rope_layout,
+    )(block_H, block_N, num_stages, threads)(Q, K, V, rope_cos, rope_sin)
+
+
+@_gqa_decode_no_split_rope_op.register_fake
+def _(
+    batch: int,
+    heads: int,
+    groups: int,
+    dim: int,
+    sm_scale: float,
+    softcap: float,
+    dtype: str,
+    max_position: int,
+    rotary_dim: int,
+    rope_layout: str,
+    block_H: int,
+    block_N: int,
+    num_stages: int,
+    threads: int,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    rope_cos: torch.Tensor,
+    rope_sin: torch.Tensor,
+) -> torch.Tensor:
+    return torch.empty_like(Q)
+
+
 @torch.library.custom_op("tileops::gqa_decode_split_op", mutates_args=())
 def _gqa_decode_split_op(
     batch: int,
@@ -421,6 +584,11 @@ class GQADecodeKernel(Kernel):
         softcap: float = 0.0,
         config: Optional[dict] = None,
         tune=False,
+        *,
+        fuse_rope: bool = False,
+        max_position: int = 1,
+        rotary_dim: int = 0,
+        rope_layout: str = "neox",
         device_index: Optional[int] = None,
     ):
         super().__init__(device_index=device_index)
@@ -432,6 +600,16 @@ class GQADecodeKernel(Kernel):
         self.dtype = dtype
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
+        self.fuse_rope = fuse_rope
+        self.max_position = max_position
+        self.rotary_dim = rotary_dim
+        self.rope_layout = rope_layout
+        from tileops.utils import get_sm_version
+
+        arch = get_sm_version(device_index)
+        if fuse_rope and arch != 90:
+            raise ValueError("fused RoPE decode currently requires SM90")
+        self.use_ws_rope = fuse_rope
         if self.groups <= 0:
             raise ValueError("heads_kv must be positive")
         if self.heads % self.groups != 0:
@@ -457,7 +635,6 @@ class GQADecodeKernel(Kernel):
             self.softcap,
             self.dtype_str,
         )
-
         # autotune targets the split kernel
         self.kernel = self.split_jit
         self._supply_prog = self._make_supply_prog()
@@ -549,7 +726,9 @@ class GQADecodeKernel(Kernel):
         rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._require_cuda(q=q, k=k, v=v)
-        del q_scale, k_scale, v_scale, rope_cos, rope_sin
+        del q_scale, k_scale, v_scale
+        if self.fuse_rope and (rope_cos is None or rope_sin is None):
+            raise ValueError("fused RoPE requires rope_cos and rope_sin")
         Q = q.squeeze(1)
         K = k
         V = v
@@ -563,6 +742,29 @@ class GQADecodeKernel(Kernel):
         # Dispatch: use no-split for short sequences where splitting is not beneficial
         threshold = num_split * block_N
         if real_seqlen_kv < threshold:
+            if self.fuse_rope:
+                output = _gqa_decode_no_split_rope_op(
+                    self.batch,
+                    self.heads,
+                    self.groups,
+                    self.dim,
+                    self.sm_scale,
+                    self.softcap,
+                    self.dtype_str,
+                    self.max_position,
+                    self.rotary_dim,
+                    self.rope_layout,
+                    block_H,
+                    block_N,
+                    num_stages,
+                    threads,
+                    Q,
+                    K,
+                    V,
+                    rope_cos,
+                    rope_sin,
+                )
+                return output.unsqueeze(1)
             output = _gqa_decode_no_split_op(
                 self.batch,
                 self.heads,
@@ -578,6 +780,46 @@ class GQADecodeKernel(Kernel):
                 Q,
                 K,
                 V,
+            )
+            return output.unsqueeze(1)
+
+        if self.use_ws_rope:
+            # The Hopper producer/consumer kernel supports arbitrary batch
+            # sizes; use it here so RoPE stays fused without replacing TMA and
+            # WGMMA with scalar global-memory loads.
+            from .gqa_decode_bs1 import _gqa_decode_bs1_ctx_op
+
+            glse = torch.empty(
+                (self.batch, self.heads, num_split), dtype=torch.float32, device=Q.device
+            )
+            Output_partial = torch.empty(
+                (self.batch, self.heads, num_split, self.dim),
+                dtype=torch.float32,
+                device=Q.device,
+            )
+            output = _gqa_decode_bs1_ctx_op(
+                self.batch,
+                self.heads,
+                self.groups,
+                self.dim,
+                self.sm_scale,
+                self.softcap,
+                self.dtype_str,
+                True,
+                self.max_position,
+                self.rotary_dim,
+                self.rope_layout,
+                64,
+                block_N,
+                num_split,
+                160,
+                Q,
+                K,
+                V,
+                rope_cos,
+                rope_sin,
+                glse,
+                Output_partial,
             )
             return output.unsqueeze(1)
 

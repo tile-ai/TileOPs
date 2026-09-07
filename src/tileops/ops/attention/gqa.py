@@ -474,7 +474,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         _, seq_len_kv, heads_kv, _ = k.shape
         uses_window = self.window_size_left != -1 or self.window_size_right != -1
         rope_on = self.pos_encoding_mode == "rope"
-        uses_decode = seq_len_q == 1 and not uses_window and not rope_on
+        uses_decode = seq_len_q == 1 and not uses_window
         uses_bs1_decode = (
             uses_decode
             and batch == 1
@@ -510,6 +510,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                     dtype=q.dtype,
                     sm_scale=self.sm_scale,
                     softcap=self.softcap,
+                    **rope_kwargs,
                     device_index=q.device.index,
                 )
             if uses_window:

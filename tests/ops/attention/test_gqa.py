@@ -202,12 +202,14 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
 
 
 @pytest.mark.parametrize(
-    "batch, dtype, seq_lens_kv, kernel_type",
+    "batch, dtype, seq_lens_kv, rope_layout, rotary_dim, kernel_type",
     [
         pytest.param(
             1,
             torch.float16,
             (257, 1057),
+            None,
+            None,
             GQADecodeBs1Kernel,
             id="bs1-fp16",
         ),
@@ -215,8 +217,37 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             2,
             torch.bfloat16,
             (257, 2051),
+            None,
+            None,
             GQADecodeKernel,
             id="batched-bf16",
+        ),
+        pytest.param(
+            1,
+            torch.float16,
+            (271,),
+            "neox",
+            64,
+            GQADecodeBs1Kernel,
+            id="bs1-fp16-neox-partial",
+        ),
+        pytest.param(
+            1,
+            torch.float16,
+            (1057,),
+            "neox",
+            128,
+            GQADecodeBs1Kernel,
+            id="bs1-fp16-neox-full-ctx-tail",
+        ),
+        pytest.param(
+            2,
+            torch.bfloat16,
+            (257,),
+            "interleaved",
+            128,
+            GQADecodeKernel,
+            id="batched-bf16-interleaved-full",
         ),
     ],
 )
@@ -225,21 +256,50 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
     batch: int,
     dtype: torch.dtype,
     seq_lens_kv: tuple[int, ...],
+    rope_layout: Optional[str],
+    rotary_dim: Optional[int],
     kernel_type: type[Kernel],
 ) -> None:
     if not torch.cuda.is_available() or get_sm_version() != 90:
         pytest.skip("Dense decode requires SM90")
     heads, heads_kv, dim = 8, 2, 128
-    op = GroupedQueryAttentionDenseFwdOp()
+    op = GroupedQueryAttentionDenseFwdOp(
+        pos_encoding_mode="rope" if rope_layout is not None else "none",
+        rotary_dim=rotary_dim,
+        rope_layout="neox" if rope_layout is None else rope_layout,
+    )
 
     for seq_len_kv in seq_lens_kv:
         q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=dtype)
         k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
         v = torch.randn_like(k)
-        output = op(q, k, v)
+        if rope_layout is None:
+            rope_cos = rope_sin = None
+            q_ref, k_ref = q, k
+        else:
+            assert rotary_dim is not None
+            angles = torch.randn(seq_len_kv, rotary_dim // 2, device="cuda") * 0.1
+            rope_cos, rope_sin = angles.cos().to(dtype), angles.sin().to(dtype)
+            q_ref = _apply_dense_rope(
+                q,
+                torch.tensor([seq_len_kv - 1], device="cuda"),
+                rope_cos,
+                rope_sin,
+                rotary_dim=rotary_dim,
+                layout=rope_layout,
+            )
+            k_ref = _apply_dense_rope(
+                k,
+                torch.arange(seq_len_kv, device="cuda"),
+                rope_cos,
+                rope_sin,
+                rotary_dim=rotary_dim,
+                layout=rope_layout,
+            )
+        output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
         torch.testing.assert_close(
             output,
-            _gqa_prefill_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
+            _gqa_prefill_ref(q_ref, k_ref, v, heads=heads, heads_kv=heads_kv, is_causal=True),
             atol=1.6e-2 if dtype == torch.bfloat16 else 5e-3,
             rtol=1.6e-2 if dtype == torch.bfloat16 else 1e-5,
         )
