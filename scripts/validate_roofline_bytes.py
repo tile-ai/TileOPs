@@ -2,20 +2,26 @@
 """Audit manifest ``bytes`` formulas against NCU DRAM counters.
 
 Spec: docs/design/roofline.md §4.5. For each audited op, one ``forward()``
-runs under Nsight Compute with cache control on; the sum of
-``dram__bytes_read.sum + dram__bytes_write.sum`` over the call's kernels is
-compared against ``op.eval_roofline()``:
+runs under Nsight Compute with cache control on, and ``dram__bytes_read.sum``
+over the call's kernels is compared against the formula's read half:
 
-- measured < formula × (1 − EPS)  → FAIL  (formula overestimates; SOL inflates)
-- measured > formula × OVER       → WARN  (multi-pass / replay inflation)
-- missing metric or empty range   → ERROR (never a verdict)
+- measured_read < read_bytes × (1 − EPS)  → FAIL  (read-side overestimate)
+- measured_read > read_bytes × OVER       → WARN  (multi-pass / replay inflation)
+- missing metric, empty range, or a
+  declared read half of zero              → ERROR (never a verdict)
+- read half undeclared                    → NO-VERDICT (not a pass)
+
+Write traffic is measured and reported, never judged: lines still dirty in L2
+when the kernel ends are written back outside the profiled range, so
+``dram__bytes_write.sum`` undercounts by up to the L2 capacity.
 
 Coverage: ops reachable through the manifest single-tensor-input contract run
 generically; multi-input ops run through ``INPUT_BUILDERS``; everything else
 is reported SKIPPED with the reason — silent gaps would read as audited.
 
 Usage:
-    python scripts/validate_roofline_bytes.py [--op OpName] [--out DIR]
+    python scripts/validate_roofline_bytes.py [--op OpName] [--family NAME] [--out DIR]
+    python scripts/validate_roofline_bytes.py --check-counters
     python scripts/validate_roofline_bytes.py --child OpName --row JSON --dtype bf16
 """
 
@@ -127,6 +133,26 @@ def _pick_workloads(entry: dict, cap: int = 6) -> list[tuple[dict, str]]:
     return [({k: v for k, v in r.items() if k != "__size"}, d) for r, d in ranked[:cap]]
 
 
+def _declared_read_bytes(op, inputs) -> int | None:
+    """The formula's read half, or None when the op declares none.
+
+    An op §4.7 routes to this audit declares the half itself. The fallback is
+    the logical extent of the call's distinct input tensors, which matches the
+    formula's read half only for ops that read each input once at its own
+    shape — the ops the oracle already covers exactly.
+    """
+    import torch
+
+    declared = getattr(op, "eval_roofline_read_bytes", None)
+    if callable(declared):
+        return int(declared())
+    seen: dict[int, int] = {}
+    for value in inputs:
+        if isinstance(value, torch.Tensor):
+            seen[value.data_ptr()] = value.numel() * value.element_size()
+    return sum(seen.values()) or None
+
+
 def run_child(op_name: str, row_json: str, dtype_str: str) -> None:
     """Run one op's forward inside an NVTX range; print the formula values."""
     import torch
@@ -144,15 +170,28 @@ def run_child(op_name: str, row_json: str, dtype_str: str) -> None:
         op(*inputs)  # bind input-inferred roofline vars; build kernels
         torch.cuda.synchronize()
         flops, nbytes = op.eval_roofline()
+        read_bytes = _declared_read_bytes(op, inputs)
         torch.cuda.nvtx.range_push(NVTX_RANGE)
         op(*inputs)
         torch.cuda.nvtx.range_pop()
         torch.cuda.synchronize()
-    print(json.dumps({"formula_flops": int(flops), "formula_bytes": int(nbytes)}))
+    print(
+        json.dumps(
+            {
+                "formula_flops": int(flops),
+                "formula_bytes": int(nbytes),
+                "read_bytes": None if read_bytes is None else int(read_bytes),
+            }
+        )
+    )
 
 
-def _parse_ncu_csv(path: Path) -> tuple[float | None, int]:
-    """(summed dram bytes over profiled kernels, kernel count); None on gaps."""
+def _parse_ncu_csv(path: Path) -> tuple[tuple[float, float] | None, int]:
+    """((read bytes, write bytes) over profiled kernels, kernel count).
+
+    The two directions stay apart: only the read side carries a verdict
+    (§4.5). None on any gap — an absent metric is never read as zero.
+    """
     text = path.read_text(errors="replace")
     lines = [ln for ln in text.splitlines() if ln.startswith('"')]
     if not lines:
@@ -174,8 +213,22 @@ def _parse_ncu_csv(path: Path) -> tuple[float | None, int]:
     for metrics in per_kernel.values():
         if len(metrics) != 2:
             return None, len(per_kernel)
-    total = sum(sum(m.values()) for m in per_kernel.values())
-    return total, len(per_kernel)
+    read = sum(m["dram__bytes_read.sum"] for m in per_kernel.values())
+    write = sum(m["dram__bytes_write.sum"] for m in per_kernel.values())
+    return (read, write), len(per_kernel)
+
+
+def read_side_verdict(measured_read: float, read_bytes: int | None) -> str:
+    """§4.5's verdict table. Write traffic never reaches it."""
+    if read_bytes is None:
+        return "NO-VERDICT"
+    if read_bytes <= 0:
+        return "ERROR"  # a declaration of zero reads is a broken one
+    if measured_read < read_bytes * (1 - EPS):
+        return "FAIL"
+    if measured_read > read_bytes * OVER:
+        return "WARN"
+    return "PASS"
 
 
 def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
@@ -210,7 +263,9 @@ def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
             results.append({**base, "verdict": "ERROR", "reason": reason[0][:200]})
             continue
         try:
-            formula = json.loads(proc.stdout.strip().splitlines()[-1])["formula_bytes"]
+            emitted = json.loads(proc.stdout.strip().splitlines()[-1])
+            formula = emitted["formula_bytes"]
+            read_bytes = emitted["read_bytes"]
         except (ValueError, KeyError, IndexError):
             results.append({**base, "verdict": "ERROR", "reason": "child emitted no formula"})
             continue
@@ -220,32 +275,77 @@ def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
                 {**base, "verdict": "ERROR", "reason": f"metric missing (kernels={n_kernels})"}
             )
             continue
-        ratio = measured / formula if formula else float("inf")
-        if measured < formula * (1 - EPS):
-            verdict = "FAIL"
-        elif measured > formula * OVER:
-            verdict = "WARN"
+        measured_read, measured_write = measured
+        verdict = read_side_verdict(measured_read, read_bytes)
+        row_out = {
+            **base,
+            "verdict": verdict,
+            "formula_bytes": int(formula),
+            "read_bytes": read_bytes,
+            "measured_read_bytes": int(measured_read),
+            "measured_write_bytes": int(measured_write),  # reported, never judged (§4.5)
+            "kernels": n_kernels,
+            "note": "small workload" if formula < SMALL_WORKLOAD_BYTES else "",
+        }
+        if verdict == "NO-VERDICT":
+            row_out["reason"] = "read half undeclared"
+        elif verdict == "ERROR":
+            row_out["reason"] = f"declared read half is {read_bytes}"
         else:
-            verdict = "PASS"
-        note = "small workload" if formula < SMALL_WORKLOAD_BYTES else ""
-        results.append(
-            {
-                **base,
-                "verdict": verdict,
-                "formula_bytes": int(formula),
-                "measured_bytes": int(measured),
-                "ratio": round(ratio, 4),
-                "kernels": n_kernels,
-                "note": note,
-            }
-        )
+            row_out["read_ratio"] = round(measured_read / read_bytes, 4)
+        results.append(row_out)
     return results
+
+
+def check_counters() -> int:
+    """Profile a trivial kernel; report whether GPU counters are readable.
+
+    A job that skips this reports an empty audit as a passed one.
+    """
+    probe = (
+        "import torch;"
+        "a=torch.zeros(256,256,device='cuda');torch.cuda.synchronize();"
+        f"torch.cuda.nvtx.range_push('{NVTX_RANGE}');b=a+1;torch.cuda.nvtx.range_pop();"
+        "torch.cuda.synchronize()"
+    )
+    cmd = [
+        "ncu", "--nvtx", f"--nvtx-include={NVTX_RANGE}/",
+        "--metrics", "dram__bytes_read.sum", "--csv",
+        sys.executable, "-c", probe,
+    ]  # fmt: skip
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"ncu unavailable: {exc}")
+        return 1
+    if proc.returncode == 0 and "dram__bytes_read.sum" in proc.stdout:
+        print("GPU performance counters readable.")
+        return 0
+    print((proc.stdout + proc.stderr).strip()[-800:])
+    print(
+        "\nGPU performance counters unavailable. Any of these satisfies the audit:\n"
+        "  - run as root on the host;\n"
+        "  - a rootful container running as root (a rootless daemon cannot, however\n"
+        "    the container is privileged: its root maps into a subuid namespace);\n"
+        "  - load the driver with NVreg_RestrictProfilingToAdminUsers=0."
+    )
+    return 1
+
+
+def _family(entry: dict) -> str:
+    return entry.get("family") or ""
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--op", help="Audit a single op (default: every implemented op)")
+    parser.add_argument("--family", help="Audit one manifest family")
     parser.add_argument("--out", default="roofline_bytes_audit", help="Output directory")
+    parser.add_argument(
+        "--check-counters",
+        action="store_true",
+        help="Exit 0 if GPU performance counters are readable, 1 otherwise",
+    )
     parser.add_argument("--child", metavar="OP", help=argparse.SUPPRESS)
     parser.add_argument("--row", help=argparse.SUPPRESS)
     parser.add_argument("--dtype", help=argparse.SUPPRESS)
@@ -254,15 +354,22 @@ def main() -> None:
     if args.child:
         run_child(args.child, args.row, args.dtype)
         return
+    if args.check_counters:
+        sys.exit(check_counters())
 
     from tileops.manifest import load_manifest
 
     manifest = load_manifest()
-    targets = (
-        {args.op: manifest[args.op]}
-        if args.op
-        else {k: v for k, v in manifest.items() if v.get("status") == "implemented"}
-    )
+    implemented = {k: v for k, v in manifest.items() if v.get("status") == "implemented"}
+    if args.op:
+        targets = {args.op: manifest[args.op]}
+    elif args.family:
+        targets = {k: v for k, v in implemented.items() if _family(v) == args.family}
+        if not targets:
+            families = sorted({_family(v) for v in implemented.values()})
+            parser.error(f"no implemented op in family {args.family!r}; have {families}")
+    else:
+        targets = implemented
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -272,8 +379,9 @@ def main() -> None:
         all_results.extend(rows)
         for r in rows:
             print(
-                f"{r['verdict']:7} {r['op']:40} {r.get('workload', '-'):28} "
-                f"{r.get('dtype', '-'):9} ratio={r.get('ratio', '-')} {r.get('reason', '')}"
+                f"{r['verdict']:10} {r['op']:40} {r.get('workload', '-'):28} "
+                f"{r.get('dtype', '-'):9} read_ratio={r.get('read_ratio', '-')} "
+                f"{r.get('reason', '')}"
             )
 
     (out_dir / "results.json").write_text(json.dumps(all_results, indent=2))
@@ -281,8 +389,10 @@ def main() -> None:
     for r in all_results:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
     print(f"\nSummary: {counts} → {out_dir}/results.json")
-    # An ERROR is a broken audit, not a passed one; only SKIPPED stays green.
-    sys.exit(1 if counts.get("FAIL") or counts.get("ERROR") else 0)
+    # A row the audit ran without reaching a verdict is not a passed one.
+    # SKIPPED (never run, reason stated) and WARN stay green.
+    failed = ("FAIL", "ERROR", "NO-VERDICT")
+    sys.exit(1 if any(counts.get(v) for v in failed) else 0)
 
 
 if __name__ == "__main__":
