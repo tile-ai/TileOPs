@@ -32,14 +32,13 @@ def _mean_pooling_kernel(
             offsets: T.Tensor((seq_num + 1,), T.int32),
             indices: T.Tensor(
                 (chunks_per_batch, 2), T.int32
-            ),  # [chunks_per_batch, 2] (seq_id, chunk_id in sequence)
+            ),  # columns are (seq_id, chunk_id within that sequence)
         ) -> None:
             with T.Kernel(
                 T.ceildiv(dim, bdim), chunks_per_batch, batch_size * heads, threads=threads
             ) as (i_d, i_t, i_bh):
                 i_b = i_bh // heads
                 i_h = i_bh % heads
-                # load data [chunk_size, D]
                 x_shared = T.alloc_shared((chunk_size, bdim), dtype)
                 x_local = T.alloc_fragment((chunk_size, bdim), dtype)
                 output_local = T.alloc_fragment((bdim,), accum_dtype)
@@ -59,10 +58,9 @@ def _mean_pooling_kernel(
                 start_dim = i_d * bdim
                 end_dim = T.min(start_dim + bdim, dim)
 
-                # Static fast path: a uniform split with no tail chunk and a `dim`
-                # exactly tiled by `bdim` makes every extent a compile-time constant,
-                # so the copy lowers to vectorized TMA loads instead of the guarded
-                # scalar path below, and the full tile it writes needs no T.clear.
+                # Every extent is a compile-time constant here, so the copy
+                # lowers to vectorized TMA loads and the full tile it writes
+                # needs no T.clear.
                 if use_offsets == 0 and seq_len % chunk_size == 0 and dim % bdim == 0:
                     T.copy(
                         x[i_b, start_token : start_token + chunk_size, i_h, start_dim:end_dim],
@@ -137,7 +135,6 @@ def _(
     threads: int,
     *inputs: tuple[Any],
 ) -> torch.Tensor:
-    # Output shape is [batch_size, chunks_per_batch, heads, dim]
     _ = (seq_len, chunk_size, seq_num, bdim, use_offsets, dtype, accum_dtype, threads)
     x = inputs[0]
     return torch.empty(

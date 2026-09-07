@@ -37,16 +37,13 @@ class _PlaneStaging:
     # A block staging more than this leaves the grid shorter than the device has
     # multiprocessors, and these shapes hold a megabyte or two in total.
     _TILE_BYTES = 4096
-    # The tuned space reaches four times the default and no further, the trade above
-    # only continuing in the wrong direction.
     _TUNE_TILE_BYTES = 4 * _TILE_BYTES
     # Elements one thread carries in the staging copy. That copy is the kernel's whole
     # memory cost, so the block width follows from it and not from the output count.
     _COPY_RUN = 8
     # Block widths offered, narrowest and widest also clamping the derived width.
     _THREAD_CHOICES = (128, 256, 512)
-    # Plane counts a tuning run tries. With the widths above that is at most twelve
-    # builds, and the ceiling above has already dropped the counts that cannot win.
+    # Plane counts a tuning run tries.
     _TUNED_PLANE_COUNTS = 4
 
     def __init__(self, rows: int, h_in: int, w_in: int, dtype: str) -> None:

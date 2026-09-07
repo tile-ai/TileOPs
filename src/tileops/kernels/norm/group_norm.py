@@ -19,9 +19,13 @@ whole row, and the derivation collapses to ``c = m % C``.
 
 256-element alignment (512 bytes for fp16/bf16) is required by T.copy() shared
 memory instructions. Both kernels here handle a non-aligned D and a tail row
-block inside the prim_func, so neither needs a host-side padding copy. Padding
-zeros contribute 0 to the mean; the centered two-pass variance computation
-subtracts their exact contribution.
+block inside the prim_func, so neither needs a host-side padding copy.
+
+A row held in registers is walked once: the load writes both ``x - shift`` and
+its square, and the reduction reads the two. A row wide enough to stage through
+shared memory has room for one fp32 row instead and takes the centered
+two-pass, where the padding zeros contribute a mean-squared term that reduction
+subtracts back out.
 """
 
 import functools
@@ -36,6 +40,7 @@ from tileops.kernels.kernel_base import Kernel
 from ._config import (
     NARROW_ROW,
     make_row_reduce,
+    make_shifted_row_reduce,
     row_padding,
     select_row_config_by_width,
     select_row_configs,
@@ -43,6 +48,93 @@ from ._config import (
 )
 
 __all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
+
+
+def _holds_row_in_registers(D: int, D_padded: int) -> bool:
+    """Whether a row of this width is read from global memory into fragments.
+
+    A row whose width the block divides is. A padded one loses the vectorized
+    copy to a per-element guard, so it only stays in registers while it is narrow
+    enough that staging through shared memory would cost more.
+
+    Args:
+        D: Row length.
+        D_padded: *D* rounded up to a width the block divides.
+    """
+    return D_padded == D or D_padded <= NARROW_ROW
+
+
+class _RowNormKernel(Kernel):
+    """What both kernels here share: the row's tiling and the config space for it.
+
+    Whether the row is read from global memory straight into register fragments
+    decides which reduction the program uses and which block widths are worth
+    offering, so both follow from one predicate rather than from either caller.
+
+    Args:
+        D: Row length = (C / G) * spatial_size.
+        eps: Epsilon for numerical stability.
+        dtype: Data type (float32, float16, or bfloat16).
+        config: Optional tile config dict.
+        tune: If True, autotune tile config.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    # Columns one thread carries, for a row held in register fragments. Below the
+    # floor it has too few accesses in flight to cover the row's latency; above
+    # the ceiling the two fp32 fragments outgrow what it can hold.
+    _ELEMENTS_PER_THREAD_BAND = (16, 64)
+
+    # A padded row takes one width rather than a band: every column a thread
+    # carries there also pays the per-element bounds guard.
+    _GUARDED_ELEMENTS_PER_THREAD = 16
+
+    def __init__(
+        self,
+        D: int,
+        eps: float,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ):
+        super().__init__()
+        self.D = D
+        self.eps = eps
+        self.dtype = dtype
+        self.D_padded = row_padding(D, dtype.itemsize)
+        self._tune_pending = tune  # tuning needs a program, so it waits for the first call
+        self.init_config(config, tune=False)
+
+    @property
+    def _row_widths(self) -> tuple:
+        """Block widths this row admits, narrowed while it is held in registers."""
+        widths = widths_for_row(self.D_padded)
+        if not _holds_row_in_registers(self.D, self.D_padded):
+            return widths
+        if self.D_padded != self.D:
+            low = high = self._GUARDED_ELEMENTS_PER_THREAD
+        else:
+            low, high = self._ELEMENTS_PER_THREAD_BAND
+        banded = tuple(
+            t for t in widths if self.D_padded % t == 0 and low <= self.D_padded // t <= high
+        )
+        return banded or widths
+
+    @property
+    def default_config(self) -> dict:
+        return select_row_config_by_width(self.D_padded, self._row_widths)
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        if _holds_row_in_registers(self.D, self.D_padded):
+            # One row per block, pinned rather than swept: a row this narrow runs
+            # in under three microseconds, which the autotuner cannot rank, and
+            # more rows per block only measure slower.
+            return select_row_configs(
+                self.D_padded, self.dtype, widths=self._row_widths, block_ms=(1,)
+            )
+        return select_row_configs(self.D_padded, self.dtype, widths=self._row_widths)
 
 
 def _channel_of(row, col, num_groups: int, channels_per_group: int, spatial_size: int):
@@ -93,14 +185,13 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
         masked = D_padded != D
         # One channel owns the whole row exactly when a group holds one channel.
         row_constant_affine = channels_per_group == 1
-        # A row whose width the block divides is read from global memory straight
-        # into the register fragment. A padded row loses the vectorized copy to a
-        # per-element guard, so above NARROW_ROW it stages through shared memory,
-        # the only path that allocates it.
-        register_direct = not masked or D_padded <= NARROW_ROW
+        register_direct = _holds_row_in_registers(D, D_padded)
         # A tail row block runs past the end unless every index is guarded.
         guarded = masked or M % block_m != 0
-        row_reduce = make_row_reduce(block_m, D, D_padded, eps)
+        if register_direct:
+            row_reduce = make_shifted_row_reduce(block_m, D, eps)
+        else:
+            row_reduce = make_row_reduce(block_m, D, D_padded, eps)
 
         @T.prim_func
         def main(
@@ -110,10 +201,14 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
             y: T.Tensor[(M, D), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                if not register_direct:
+                if register_direct:
+                    centered_row = T.alloc_fragment((block_m, D_padded), "float32")
+                    squares = T.alloc_fragment((block_m, D_padded), "float32")
+                    shift = T.alloc_fragment((block_m,), "float32")
+                    acc_squares = T.alloc_fragment((block_m,), "float32")
+                else:
                     shared_buf = T.alloc_shared((block_m, D_padded), dtype)
-                x_local = T.alloc_fragment((block_m, D_padded), dtype)
-                x_f32 = T.alloc_fragment((block_m, D_padded), "float32")
+                    x_f32 = T.alloc_fragment((block_m, D_padded), "float32")
                 acc = T.alloc_fragment((block_m,), "float32")
                 mean_val = T.alloc_fragment((block_m,), "float32")
                 rstd = T.alloc_fragment((block_m,), "float32")
@@ -121,20 +216,34 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
                     scale = T.alloc_fragment((block_m,), "float32")
                     bias_row = T.alloc_fragment((block_m,), "float32")
 
-                if register_direct and guarded:
-                    for i, j in T.Parallel(block_m, D_padded):
-                        v = T.if_then_else(
-                            T.And(pid_m * block_m + i < M, j < D),
-                            x[pid_m * block_m + i, j],
-                            T.cast(0.0, dtype),
-                        )
-                        x_local[i, j] = v
-                        x_f32[i, j] = T.cast(v, "float32")
-                elif register_direct:
-                    for i, j in T.Parallel(block_m, D_padded):
-                        v = x[pid_m * block_m + i, j]
-                        x_local[i, j] = v
-                        x_f32[i, j] = T.cast(v, "float32")
+                # Ahead of the row load, so the two reads are in flight while
+                # it runs. ``scale`` holds the weight until rstd exists.
+                if row_constant_affine:
+                    for i in T.Parallel(block_m):
+                        c = (pid_m * block_m + i) % num_groups
+                        scale[i] = T.cast(weight[c], "float32")
+                        bias_row[i] = T.cast(bias[c], "float32")
+
+                if register_direct:
+                    # The shift the one-pass reduction needs. A tail block's
+                    # row index is clamped to stay inside the tensor.
+                    for i in T.Parallel(block_m):
+                        shift[i] = T.cast(x[T.min(pid_m * block_m + i, M - 1), 0], "float32")
+                    if guarded:
+                        for i, j in T.Parallel(block_m, D_padded):
+                            v = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, j < D),
+                                T.cast(x[pid_m * block_m + i, j], "float32") - shift[i],
+                                T.cast(0.0, "float32"),
+                            )
+                            centered_row[i, j] = v
+                            squares[i, j] = v * v
+                    else:
+                        for i, j in T.Parallel(block_m, D_padded):
+                            v = T.cast(x[pid_m * block_m + i, j], "float32") - shift[i]
+                            centered_row[i, j] = v
+                            squares[i, j] = v * v
+                    row_reduce(centered_row, squares, acc, acc_squares, mean_val, rstd)
                 else:
                     # A padded wide row keeps its input in shared memory for the
                     # output pass: the reduction overwrites the fp32 copy with
@@ -146,25 +255,20 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
                             T.cast(0.0, dtype),
                         )
                         x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-
-                row_reduce(x_f32, acc, mean_val, rstd)
+                    row_reduce(x_f32, acc, mean_val, rstd)
 
                 # --- Output: y = (x - mean) * rstd * weight[c] + bias[c] ---
                 if row_constant_affine:
                     # A group of one channel gives the whole row one weight and
-                    # one bias, so the channel derivation and the two gathers
-                    # leave the element loop. Centering stays in it: folding it
-                    # into a shift term subtracts two large products.
+                    # one bias, so the two gathers leave the element loop.
                     for i in T.Parallel(block_m):
-                        c = (pid_m * block_m + i) % num_groups
-                        scale[i] = rstd[i] * T.cast(weight[c], "float32")
-                        bias_row[i] = T.cast(bias[c], "float32")
+                        scale[i] = scale[i] * rstd[i]
                     for i, j in T.Parallel(block_m, D_padded):
                         if (not guarded) or T.And(pid_m * block_m + i < M, j < D):
                             y[pid_m * block_m + i, j] = T.cast(
                                 (
                                     T.cast(
-                                        x_local[i, j] if register_direct else shared_buf[i, j],
+                                        centered_row[i, j] if register_direct else shared_buf[i, j],
                                         "float32",
                                     )
                                     - mean_val[i]
@@ -185,12 +289,13 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
                             )
                             y[pid_m * block_m + i, j] = (
                                 T.cast(
-                                    x_local[i, j] if register_direct else shared_buf[i, j],
+                                    centered_row[i, j] if register_direct else shared_buf[i, j],
                                     "float32",
                                 )
                                 - mean_val[i]
                             ) * rstd[i] * T.cast(weight[c], "float32") + T.cast(bias[c], "float32")
                 else:
+                    # Not guarded means D_padded == D, which is a register-held row.
                     for i, j in T.Parallel(block_m, D_padded):
                         c = _channel_of(
                             pid_m * block_m + i,
@@ -199,16 +304,16 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
                             channels_per_group,
                             spatial_size,
                         )
-                        y[pid_m * block_m + i, j] = (
-                            T.cast(x_local[i, j], "float32") - mean_val[i]
-                        ) * rstd[i] * T.cast(weight[c], "float32") + T.cast(bias[c], "float32")
+                        y[pid_m * block_m + i, j] = (centered_row[i, j] - mean_val[i]) * rstd[
+                            i
+                        ] * T.cast(weight[c], "float32") + T.cast(bias[c], "float32")
 
         return main
 
     return _func
 
 
-class GroupNormKernel(Kernel):
+class GroupNormKernel(_RowNormKernel):
     """GroupNorm forward kernel with a per-channel affine.
 
     Normalizes each group's (C/G, *spatial) slice independently and applies
@@ -232,8 +337,6 @@ class GroupNormKernel(Kernel):
         tune: If True, autotune tile config.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-
     def __init__(
         self,
         D: int,
@@ -249,23 +352,9 @@ class GroupNormKernel(Kernel):
         The program for a given row count is resolved in ``forward``, memoized by
         ``_group_norm_kernel``.
         """
-        super().__init__()
-        self.D = D
-        self.eps = eps
-        self.dtype = dtype
         self.num_groups = num_groups
         self.channels_per_group = channels_per_group
-        self.D_padded = row_padding(D, self.dtype.itemsize)
-        self._tune_pending = tune  # tuning needs a program, so it waits for the first call
-        self.init_config(config, tune=False)
-
-    @property
-    def default_config(self) -> dict:
-        return select_row_config_by_width(self.D_padded)
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return select_row_configs(self.D_padded, self.dtype, widths=widths_for_row(self.D_padded))
+        super().__init__(D, eps, dtype, config=config, tune=tune)
 
     def forward(
         self,
@@ -336,12 +425,13 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
     def _func(block_m, threads):
         # A non-aligned D would read and write columns >= D unless masked.
         masked = D_padded != D
-        # A row whose width the block divides is read straight into the register
-        # fragment; a padded one only while it is narrow.
-        register_direct = not masked or D_padded <= NARROW_ROW
+        register_direct = _holds_row_in_registers(D, D_padded)
         # A tail row block runs past the end unless every index is guarded.
         guarded = masked or M % block_m != 0
-        row_reduce = make_row_reduce(block_m, D, D_padded, eps)
+        if register_direct:
+            row_reduce = make_shifted_row_reduce(block_m, D, eps)
+        else:
+            row_reduce = make_row_reduce(block_m, D, D_padded, eps)
 
         @T.prim_func
         def main(
@@ -349,28 +439,38 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
             y: T.Tensor[(M, D), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                if not register_direct:
+                if register_direct:
+                    centered_row = T.alloc_fragment((block_m, D_padded), "float32")
+                    squares = T.alloc_fragment((block_m, D_padded), "float32")
+                    shift = T.alloc_fragment((block_m,), "float32")
+                    acc_squares = T.alloc_fragment((block_m,), "float32")
+                else:
                     shared_buf = T.alloc_shared((block_m, D_padded), dtype)
-                x_local = T.alloc_fragment((block_m, D_padded), dtype)
-                x_f32 = T.alloc_fragment((block_m, D_padded), "float32")
+                    x_f32 = T.alloc_fragment((block_m, D_padded), "float32")
                 acc = T.alloc_fragment((block_m,), "float32")
                 mean_val = T.alloc_fragment((block_m,), "float32")
                 rstd = T.alloc_fragment((block_m,), "float32")
 
-                if register_direct and guarded:
-                    for i, j in T.Parallel(block_m, D_padded):
-                        v = T.if_then_else(
-                            T.And(pid_m * block_m + i < M, j < D),
-                            x[pid_m * block_m + i, j],
-                            T.cast(0.0, dtype),
-                        )
-                        x_local[i, j] = v
-                        x_f32[i, j] = T.cast(v, "float32")
-                elif register_direct:
-                    for i, j in T.Parallel(block_m, D_padded):
-                        v = x[pid_m * block_m + i, j]
-                        x_local[i, j] = v
-                        x_f32[i, j] = T.cast(v, "float32")
+                if register_direct:
+                    # The shift the one-pass reduction needs. A tail block's
+                    # row index is clamped to stay inside the tensor.
+                    for i in T.Parallel(block_m):
+                        shift[i] = T.cast(x[T.min(pid_m * block_m + i, M - 1), 0], "float32")
+                    if guarded:
+                        for i, j in T.Parallel(block_m, D_padded):
+                            v = T.if_then_else(
+                                T.And(pid_m * block_m + i < M, j < D),
+                                T.cast(x[pid_m * block_m + i, j], "float32") - shift[i],
+                                T.cast(0.0, "float32"),
+                            )
+                            centered_row[i, j] = v
+                            squares[i, j] = v * v
+                    else:
+                        for i, j in T.Parallel(block_m, D_padded):
+                            v = T.cast(x[pid_m * block_m + i, j], "float32") - shift[i]
+                            centered_row[i, j] = v
+                            squares[i, j] = v * v
+                    row_reduce(centered_row, squares, acc, acc_squares, mean_val, rstd)
                 else:
                     # A padded wide row keeps its input in shared memory for the
                     # output pass: the reduction overwrites the fp32 copy with
@@ -382,8 +482,7 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
                             T.cast(0.0, dtype),
                         )
                         x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-
-                row_reduce(x_f32, acc, mean_val, rstd)
+                    row_reduce(x_f32, acc, mean_val, rstd)
 
                 # No-affine output: y = (x - mean) * rstd.
                 if guarded:
@@ -392,7 +491,7 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
                             y[pid_m * block_m + i, j] = T.cast(
                                 (
                                     T.cast(
-                                        x_local[i, j] if register_direct else shared_buf[i, j],
+                                        centered_row[i, j] if register_direct else shared_buf[i, j],
                                         "float32",
                                     )
                                     - mean_val[i]
@@ -401,10 +500,10 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
                                 dtype,
                             )
                 else:
+                    # Not guarded means D_padded == D, which is a register-held row.
                     for i, j in T.Parallel(block_m, D_padded):
                         y[pid_m * block_m + i, j] = T.cast(
-                            (T.cast(x_local[i, j], "float32") - mean_val[i]) * rstd[i],
-                            dtype,
+                            (centered_row[i, j] - mean_val[i]) * rstd[i], dtype
                         )
 
         return main
@@ -412,7 +511,7 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
     return _func
 
 
-class GroupNormNoAffineKernel(Kernel):
+class GroupNormNoAffineKernel(_RowNormKernel):
     """GroupNorm forward kernel without affine scale/shift.
 
     Computes ``y = (x - mean) * rstd`` row-wise for shape $[M \\times D]$ reshaped
@@ -428,37 +527,6 @@ class GroupNormNoAffineKernel(Kernel):
         config: Optional tile config dict.
         tune: If True, autotune tile config.
     """
-
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    def __init__(
-        self,
-        D: int,
-        eps: float,
-        dtype: torch.dtype,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ):
-        """Build for a row length and dtype.
-
-        The program for a given row count is resolved in ``forward``, memoized by
-        ``_group_norm_no_affine_kernel``.
-        """
-        super().__init__()
-        self.D = D
-        self.eps = eps
-        self.dtype = dtype
-        self.D_padded = row_padding(D, self.dtype.itemsize)
-        self._tune_pending = tune  # tuning needs a program, so it waits for the first call
-        self.init_config(config, tune=False)
-
-    @property
-    def default_config(self) -> dict:
-        return select_row_config_by_width(self.D_padded)
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return select_row_configs(self.D_padded, self.dtype, widths=widths_for_row(self.D_padded))
 
     def forward(
         self,
