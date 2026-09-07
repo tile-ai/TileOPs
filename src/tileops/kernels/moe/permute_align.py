@@ -36,9 +36,8 @@ __all__ = ["MoePermuteAlignKernel"]
 _THREADS = 1024
 _SCATTER_THREADS = 256
 _SMALL_NUMEL_THRESHOLD = 1024
-# Keep <= 32: the small-batch kernel allocates (worker_threads+1)*num_experts
-# int32s in shared memory.  At num_experts=64 this becomes 4160 entries and
-# causes TileLang JIT to hang during compilation.
+# Keep <= 32: the small-batch kernel's (worker_threads+1)*num_experts int32s of
+# shared memory hang the TileLang JIT at num_experts=64.
 _SMALL_EXPERTS_THRESHOLD = 32
 _FILL_THREADS = 256
 
@@ -67,27 +66,22 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
                 s_vals = T.alloc_shared([threads], "int32")
                 s_warp_sum = T.alloc_shared([num_warps], "int32")
                 s_warp_excl = T.alloc_shared([num_warps], "int32")
-                # s_total is a running accumulator used only by tx==0 to build
-                # s_warp_excl during the inter-warp scan; its final value (grand
-                # total) is derived independently at line 135 and not re-read.
+                # s_total only feeds the inter-warp scan; the total comes from s_vals.
                 s_total = T.alloc_shared([1], "int32")
                 s_cumsum = T.alloc_shared([num_experts + 1], "int32")
 
-                # Step 1: zero s_counts
                 for i in T.serial(T.ceildiv(num_experts, threads)):
                     idx = i * threads + tx
                     if idx < num_experts:
                         s_counts[idx] = T.int32(0)
                 T.sync_threads()
 
-                # Step 1: count tokens per expert
                 for i in T.serial(T.ceildiv(numel, threads)):
                     idx = i * threads + tx
                     if idx < numel:
                         T.atomic_add(s_counts[flat[idx]], 1)
                 T.sync_threads()
 
-                # Step 2: warp-scan prefix-sum on padded counts
                 lane = tx % 32
                 warp_id = tx // 32
 
@@ -98,8 +92,7 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
                 )
                 T.sync_threads()
 
-                # Intra-warp inclusive scan via shuffle_up
-                # 5 rounds = log2(warp_size=32): each round doubles the scan distance
+                # log2(32) rounds, each doubling the scan distance.
                 for d in T.serial(5):
                     stride = 1 << d
                     up_val = T.tvm_warp_shuffle_up(T.uint32(0xFFFFFFFF), s_vals[tx], stride, 32, 32)
@@ -107,12 +100,11 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
                         s_vals[tx] = s_vals[tx] + up_val
                 T.sync_threads()
 
-                # Last lane of each warp records warp sum
                 if lane == 31:
                     s_warp_sum[warp_id] = s_vals[tx]
                 T.sync_threads()
 
-                # Inter-warp exclusive scan (for->if pattern to write shared)
+                # Nesting is deliberate: the loop stays outside the tx == 0 guard.
                 for w in T.serial(num_warps):
                     if tx == 0:
                         if w == 0:
@@ -121,7 +113,6 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
                         s_total[0] = s_total[0] + s_warp_sum[w]
                 T.sync_threads()
 
-                # Convert inclusive scan -> exclusive cumsum entry
                 own_padded = (
                     T.ceildiv(s_counts[tx], block_size) * block_size
                     if tx < num_experts
@@ -139,10 +130,8 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
                     num_tokens_post_pad[0] = total
                 T.sync_threads()
 
-                # Step 3: fill expert_ids linearly — no binary search.
-                # Each thread tx < num_experts owns blocks [e_start, e_end).
-                # Loop bound is max_num_blocks (worst case: all tokens to one
-                # expert), guarded by `blk < e_end` to skip non-owned blocks.
+                # The bound covers all tokens on one expert; the guard picks the
+                # blocks this thread owns.
                 if tx < num_experts:
                     e_start = s_cumsum[tx] // block_size
                     e_end = s_cumsum[tx + 1] // block_size
@@ -151,7 +140,6 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
                         if blk < e_end:
                             expert_ids[blk] = tx
 
-                # Step 4: fill sentinel
                 for i in T.serial(T.ceildiv(max_padded, threads)):
                     idx = i * threads + tx
                     if idx < max_padded:
@@ -191,8 +179,8 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
                     idx = gid + i * total_scatter_threads
                     if idx < numel:
                         eid = flat[idx]
-                        # Store the returned slot before indexing with it, so
-                        # TileLang's bounds-check lowering cannot duplicate the atomic.
+                        # Store the slot before indexing with it: bounds-check
+                        # lowering can otherwise duplicate the atomic.
                         slot_buf[0] = T.atomic_add(cumsum[eid], T.int32(1), return_prev=True)
                         slot = slot_buf[0]
                         sorted_token_ids[slot] = idx
@@ -219,9 +207,7 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
     max_num_blocks = math.ceil(max_padded / block_size)
     worker_threads = max(num_experts, 32)
     total_threads = _FILL_THREADS + worker_threads
-    # tokens_cnts layout: (worker_threads+1) rows × num_experts cols (0-indexed).
-    # Row k (k>=1): worker k-1's private counts per expert (0-indexed).
-    # Row 0: reduce accumulator, initialised to 0 by expert threads.
+    # tokens_cnts: row k+1 is worker k's private counts, row 0 the accumulator.
     cnts_size = (worker_threads + 1) * num_experts
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3"])
@@ -239,20 +225,16 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
                 cumsum_s = T.alloc_shared([num_experts + 1], "int32")
                 tokens_cnts = T.alloc_shared([cnts_size], "int32")
 
-                # fill_threads group: fill sentinel (concurrent with worker Phase 0)
                 if tx < _FILL_THREADS:
                     for i in T.serial(T.ceildiv(max_padded, _FILL_THREADS)):
                         idx = i * _FILL_THREADS + tx
                         if idx < max_padded:
                             sorted_token_ids[idx] = numel
 
-                # worker_threads group: Phase 0 — init private count row + count tokens
                 if tx >= _FILL_THREADS:
                     wid = tx - _FILL_THREADS  # 0-indexed worker id
-                    # Init row wid+1 (private row for this worker)
                     for i in T.serial(num_experts):
                         tokens_cnts[(wid + 1) * num_experts + i] = T.int32(0)
-                    # Count tokens owned by this worker (grid-stride over numel)
                     for i in T.serial(T.ceildiv(numel, worker_threads)):
                         idx = wid + i * worker_threads
                         if idx < numel:
@@ -263,8 +245,6 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
 
                 T.sync_threads()  # sync 1
 
-                # worker_threads group: Phase 1 — column-wise inclusive prefix-sum reduce
-                # Thread wid handles column wid (expert wid's counts across all workers)
                 if tx >= _FILL_THREADS:
                     wid = tx - _FILL_THREADS
                     if wid < num_experts:
@@ -274,11 +254,9 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
                                 tokens_cnts[(k + 1) * num_experts + wid]
                                 + tokens_cnts[k * num_experts + wid]
                             )
-                        # After loop: tokens_cnts[worker_threads*E + wid] = total for expert wid
 
                 T.sync_threads()  # sync 2
 
-                # worker_threads group: Phase 2 — wid==0 builds exclusive prefix-sum cumsum
                 if tx >= _FILL_THREADS:
                     wid = tx - _FILL_THREADS
                     if wid == 0:
@@ -290,7 +268,6 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
 
                 T.sync_threads()  # sync 3
 
-                # worker_threads group: Phase 3a — expert_ids fill (0-indexed)
                 if tx >= _FILL_THREADS:
                     wid = tx - _FILL_THREADS
                     if wid < num_experts:
@@ -301,9 +278,6 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
                             if blk < e_end:
                                 expert_ids[blk] = wid  # 0-indexed expert id
 
-                    # Phase 3b: scatter (no atomics — per-worker private rows)
-                    # tokens_cnts[wid*E + eid] holds the running offset for worker wid
-                    # into expert eid's slot range (starts at cumsum_s[eid])
                     for i in T.serial(T.ceildiv(numel, worker_threads)):
                         idx = wid + i * worker_threads
                         if idx < numel:

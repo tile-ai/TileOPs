@@ -129,15 +129,12 @@ class SharedExpertMLPKernel(Kernel):
         T_dim = self.num_tokens
         F = self.ffn_size
 
-        # [T, H] @ [2F, H]^T -> [T, 2F]
         gate_up_out = self._gemm_gate_up(hidden, w_gate_up)
 
-        # SiLU + Mul in FP32: kernel reads gate=[:, :F] and up=[:, F:] via index offset,
-        # avoiding intermediate buffer allocations for the split.
+        # The kernel splits gate and up by index offset, allocating nothing.
         silu_mul_fn = _silu_mul_fused_kernel(T_dim, F, self.dtype_str)(
             self.config["block_m"], self.config["block_n"], self.config["threads"]
         )
         gate_up = silu_mul_fn(gate_up_out)
 
-        # [T, F] @ [H, F]^T -> [T, H]
         return self._gemm_down(gate_up, w_down)

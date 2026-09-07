@@ -13,16 +13,10 @@ from tileops.kernels.moe.call_spec import PrePermuteCall
 __all__ = ["MoePrePermuteContiguousKernel"]
 
 
-def _fused_tight_plan(num_tokens: int, numel: int, hidden_size: int) -> bool:
-    """Whether one cooperative tight launch beats the scan/gather pair.
-
-    Tiny routing problems benefit directly from losing a launch.  At production
-    widths, decode benefits as well, while prefill spends more time holding the
-    cooperative grid across the barrier than the removed launch costs.  The
-    thresholds are the H200 sweep boundary, following the measured planner style
-    used by the fused split-row softmax path.
-    """
-    return numel <= 64 or (num_tokens <= 512 and hidden_size >= 2048)
+# Past this many routed rows the fused launch loses: merged, the gather loop
+# compiles at 32 registers against the standalone 46, so it holds far fewer loads
+# in flight -- 73 us against 28 us at T=512, H=7168, and 779 against 253 at T=4096.
+_FUSED_TIGHT_MAX_NUMEL = 64
 
 
 def _make_tight_scan_body(numel: int, num_experts: int, top_k: int, threads: int):
@@ -384,8 +378,6 @@ class MoePrePermuteContiguousKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # One CTA owns count, prefix sum, and scatter. Callers may override this
-        # kernel-local default through ``config``.
         return {"threads": 1024}
 
     def forward(
@@ -414,7 +406,7 @@ class MoePrePermuteContiguousKernel(Kernel):
         use_fused_tight = (
             self.layout_key == "tight_physical_psum"
             and self.h200
-            and _fused_tight_plan(self.num_tokens, self.numel, self.hidden_size)
+            and self.numel <= _FUSED_TIGHT_MAX_NUMEL
         )
         if use_fused_tight:
             rows_per_block = max(1, (self.numel + self.sm_count - 1) // self.sm_count)

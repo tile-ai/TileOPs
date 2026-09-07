@@ -29,7 +29,6 @@ class MoeGroupedGemmSeparateActKernel(Kernel):
     general = True
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    # Gated activations this kernel can launch after the GEMM.
     SUPPORTED_ACTIVATIONS = tuple(sorted(_ACTIVATIONS))
 
     @classmethod
@@ -60,14 +59,12 @@ class MoeGroupedGemmSeparateActKernel(Kernel):
         self.K = K
         self.dtype = dtype
         self.activation = activation
-        # Composing two launches, each of which carries its own schedule.
         self.init_config(config, tune=False)
         self._gemm = gemm_cls(numel, num_experts, 2 * N, K, dtype=dtype, tune=tune)
         self._act = _ACTIVATIONS[activation](numel, N, dtype, tune=tune)
 
     @property
     def default_config(self) -> dict:
-        # Both launches carry their own schedule.
         return {}
 
     @property

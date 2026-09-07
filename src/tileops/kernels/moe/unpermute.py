@@ -48,10 +48,8 @@ def _make_unpermute_kernel(
     threads -> 28 elems/thread = 3.5x VEC). Accumulation is in float32, cast to
     dtype on store.
     """
-    # Cap threads at 256: 1024 spills the fp32 acc[H] accumulator to local
-    # memory. Below the cap, scale with hidden_size // VEC and keep power-of-2
-    # alignment so small hidden sizes retain 128-bit (VEC=8) vectorized
-    # load/store instead of scalar 16-bit ops (e.g. H=512 -> 64 threads of 8).
+    # 1024 threads spill the fp32 acc[H] accumulator to local memory, and a count
+    # that is not hidden_size // VEC drops the 128-bit load/store for scalar ops.
     VEC = 8  # 8 x bf16/fp16 = 128 bits
     threads = min(256, hidden_size // VEC)
     if threads > 0:
@@ -70,17 +68,13 @@ def _make_unpermute_kernel(
             output: T.Tensor([num_tokens, hidden_size], dtype),
         ):
             with T.Kernel(num_tokens, threads=threads) as (token_idx,):
-                # float32 accumulator for this token's H slice
                 acc = T.alloc_fragment([hidden_size], "float32")
                 src = T.alloc_fragment([hidden_size], dtype)
 
-                # zero accumulator
                 T.fill(acc, 0.0)
 
-                # accumulate K expert contributions. Software-pipeline the
-                # gathers (num_stages=2) so each scattered row load overlaps the
-                # previous slot's accumulate — the K loads are latency-bound.
-                # Serial fallback when top_k < 2 (pipeline depth > trip count).
+                # num_stages=2 overlaps the latency-bound gathers; top_k < 2 leaves
+                # the pipeline deeper than the trip count, so it runs serial.
                 for k in T.Pipelined(top_k, num_stages=2) if top_k >= 2 else T.serial(top_k):
                     flat_idx = token_idx * T.int32(top_k) + k
                     slot = inverse_indices[flat_idx]
@@ -89,7 +83,6 @@ def _make_unpermute_kernel(
                     for j in T.Parallel(hidden_size):
                         acc[j] = acc[j] + T.Cast("float32", src[j]) * weight
 
-                # cast (and scale) then store
                 out_frag = T.alloc_fragment([hidden_size], dtype)
                 if scaling != 1.0:
                     for j in T.Parallel(hidden_size):
@@ -196,16 +189,13 @@ class MoeUnpermuteKernel(Kernel):
                 )
             if out.dtype != self.dtype:
                 raise ValueError(f"out dtype must be {self.dtype}, got {out.dtype}")
-            # The kernel writes ``out`` on expert_output's device as a row-major compact
-            # tensor; a cross-device or non-contiguous ``out`` would scatter the
-            # store to the wrong memory. Reject rather than corrupt silently.
+            # A cross-device or non-contiguous ``out`` would scatter the store.
             if out.device != dev:
                 raise ValueError(f"out device must be {dev}, got {out.device}")
             if not out.is_contiguous():
                 raise ValueError("out must be contiguous")
-            # The kernel reads ``expert_output`` while writing
-            # ``out`` concurrently, so an ``out`` overlapping ``expert_output`` in
-            # memory races. Disjoint slices of one workspace buffer are allowed.
+            # Overlap races with the concurrent read; disjoint slices of one
+            # workspace buffer are fine.
             if tensors_overlap(out, expert_output):
                 raise ValueError("out must not overlap expert_output in memory")
             output = out
