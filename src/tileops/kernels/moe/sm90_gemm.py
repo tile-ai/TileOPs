@@ -325,23 +325,30 @@ def _make_prim_func(
 
     @T.macro
     def store_tile(C, C_src, C_s, group, row0, col0, rows, wg):
-        """TMA-store one warp-group's rows; a tight group's ragged tail is masked."""
+        """Store one warp-group's rows of a tile from its shared staging buffer.
+
+        Every tile is staged fragment -> shared first; the previous tile's TMA store
+        may still be reading ``C_s``, hence the barrier before. A full tile then
+        goes out through TMA. A tight group's ragged last tile cannot: TMA clips
+        against the tensor, not the group, and would overwrite the next group's
+        rows, so its valid rows are written back with row-predicated vector stores.
+        (Writing the accumulator fragment straight from registers scattered 4-byte
+        stores across the tile and cost 12% to 24% on short-K grouped GEMMs.)
+        """
+        T.sync_threads(barrier_id=_EPILOGUE_BARRIER_BASE + wg, arrive_count=128)
+        T.copy(C_src, C_s)
         if tight_psum:
             if rows < T.int32(wg_rows):
+                T.sync_threads(barrier_id=_EPILOGUE_BARRIER_BASE + wg, arrive_count=128)
                 if rows > 0:
                     for i, j in T.Parallel(wg_rows, block_n):
                         if i < rows:
-                            C[row0 + i, col0 + j] = C_src[i, j]
+                            C[row0 + i, col0 + j] = C_s[i, j]
             else:
-                T.sync_threads(barrier_id=_EPILOGUE_BARRIER_BASE + wg, arrive_count=128)
-                T.copy(C_src, C_s)
                 T.fence_proxy_async()
                 T.sync_threads(barrier_id=_EPILOGUE_BARRIER_BASE + wg, arrive_count=128)
                 T.copy(C_s, C[row0, col0])
         else:
-            # The previous tile's TMA store may still be reading C_s.
-            T.sync_threads(barrier_id=_EPILOGUE_BARRIER_BASE + wg, arrive_count=128)
-            T.copy(C_src, C_s)
             T.fence_proxy_async()
             T.sync_threads(barrier_id=_EPILOGUE_BARRIER_BASE + wg, arrive_count=128)
             if a_has_group:
