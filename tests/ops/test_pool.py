@@ -24,6 +24,7 @@ from tileops.kernels.pool import (
     MaxPool3dKernel,
     MaxPool3dWithIndicesKernel,
 )
+from tileops.kernels.pool.avg_pool1d import _block_ol_choices, _staging
 from tileops.ops import (
     AdaptiveAvgPool2dFwdOp,
     AdaptiveMaxPool2dFwdOp,
@@ -560,6 +561,41 @@ def test_avg_pool3d(
         dtype,
         tune,
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "l_in, kernel_l, stride_l, pad_l, dtype",
+    [
+        (4096, 3, 2, 1, "float16"),
+        (32000, 5, 4, 2, "float16"),
+        (2048, 4, 2, 1, "bfloat16"),
+        (28000, 12000, 4001, 0, "float16"),
+        (127, 7, 3, 3, "bfloat16"),
+        (30, 4, 4, 2, "bfloat16"),
+        (33, 3, 2, 1, "float16"),
+        (64, 1, 1, 0, "float16"),
+    ],
+)
+def test_avg_pool1d_staged_span_stays_aligned(
+    l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype: str
+) -> None:
+    """Every span start a launch can take sits on a multiple of the access width.
+
+    The staging load is vectorized and unguarded, so a start off that multiple reads the
+    wrong elements. A start moves by ``block_ol * stride_l`` per block and lands on
+    ``l_in - span`` where the span slides back inside the row, so the width has to divide
+    both. Only a window too wide to stage at 128 outputs selects a width that can break
+    it, which is why no benchmarked shape reaches this.
+    """
+    for block_ol in _block_ol_choices(l_in, kernel_l, stride_l, pad_l, dtype):
+        staged = _staging(block_ol, l_in, kernel_l, stride_l, pad_l, dtype)
+        assert (block_ol * stride_l) % staged.vector_elems == 0
+        assert (l_in - staged.span) % staged.vector_elems == 0
+        assert staged.span % staged.vector_elems == 0
+        assert staged.head % staged.vector_elems == 0
+        assert staged.head >= pad_l
+        assert staged.span >= min(staged.head + (block_ol - 1) * stride_l + kernel_l, l_in)
 
 
 @pytest.mark.smoke
