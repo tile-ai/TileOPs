@@ -13,11 +13,9 @@ from tileops.kernels.moe.call_spec import PrePermuteCall
 __all__ = ["MoePrePermuteContiguousKernel"]
 
 
-# Above this many routed rows the cooperative fused launch loses to the
-# scan/gather pair: the merged prim_func compiles the gather loop at 32
-# registers where the standalone gather gets 46, so the copy holds far fewer
-# loads in flight. At T=512, H=7168 the fused launch takes 73 us of device time
-# against 28 us for the pair, and at T=4096 779 us against 253 us.
+# Past this many routed rows the fused launch loses: merged, the gather loop
+# compiles at 32 registers against the standalone 46, so it holds far fewer loads
+# in flight -- 73 us against 28 us at T=512, H=7168, and 779 against 253 at T=4096.
 _FUSED_TIGHT_MAX_NUMEL = 64
 
 
@@ -380,8 +378,6 @@ class MoePrePermuteContiguousKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # One CTA owns count, prefix sum, and scatter. Callers may override this
-        # kernel-local default through ``config``.
         return {"threads": 1024}
 
     def forward(

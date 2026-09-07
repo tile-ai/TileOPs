@@ -95,15 +95,12 @@ def _tile_scheduler_kernel(num_experts: int, max_tiles: int, block_m: int):
 
                 tx = T.get_thread_binding()
 
-                # Sub-phase (a): thread 0 computes exclusive prefix sum of
-                # ceildiv(true_sizes[e], block_m) into SMEM.
                 if tx == 0:
                     _tiling.cumsum(true_sizes, s_cum)
                     if bx == 0:
                         total_tiles[0] = s_cum[num_experts]
                 T.sync_threads()
 
-                # Sub-phase (b): each thread assigns one tile via binary search.
                 tile_id = bx * threads + tx
                 if tile_id < max_tiles:
                     if tile_id < s_cum[num_experts]:
@@ -159,15 +156,10 @@ def _moe_grouped_gemm_kernel(
         A_shared_shape = (block_m, block_k)
         B_shared_shape = (block_n, block_k)
 
-        # Compile-time constants (all Python ints, baked in at JIT time).
         _k_aligned = K % block_k == 0
-        # _b_copy_ok: use T.copy (TMA-eligible) for both A and B inside T.Pipelined.
-        # Requires K alignment so there are no partial K-tiles to predicate.
-        # N boundary is handled by TMA zero-fill OOB; epilogue guards the C store.
-        # A is declared with block_m extra rows so the last tile's T.copy is in-bounds.
+        # T.copy needs K alignment so no partial K-tile is predicated; TMA zero-fills
+        # past N and A carries block_m extra rows for the last tile's copy.
         _b_copy_ok = _k_aligned
-        # A_shape includes block_m padding rows (used only in _b_copy_ok path so that
-        # T.copy on the last M-tile does not read past the end of the tensor).
         A_shape = (numel + block_m, K) if _b_copy_ok else (numel, K)
         _num_pid_n = math.ceil(N / block_n)  # N-tile count
         _total_ctas = max_tiles * _num_pid_n  # 1-D grid size
@@ -195,10 +187,7 @@ def _moe_grouped_gemm_kernel(
                     }
                 )
 
-                # M-major tile ordering: each M-tile processes all N-tiles
-                # before moving to the next M-tile, maximising A-tile reuse.
-                # For group_size_m=1 (default) this simplifies to a direct
-                # pid → (bx, by) mapping with compile-time constant divisor.
+                # M-major: an M-tile's N-tiles all run before the next, reusing A.
                 if group_size_m == 1:
                     bx = pid // T.int32(_num_pid_n)
                     by = pid % T.int32(_num_pid_n)
@@ -221,9 +210,8 @@ def _moe_grouped_gemm_kernel(
 
                     for k in T.Pipelined(T.ceildiv(K, block_k), num_stages=num_stages):
                         if _b_copy_ok:
-                            # T.copy lets TileLang's WarpSpecialized pass split threads into
-                            # producer (TMA-eligible) and consumer (WGMMA) warpgroups when
-                            # threads=256 on SM90.  No predicates here; epilogue guards writes.
+                            # T.copy is what lets WarpSpecialized split producer and
+                            # consumer warpgroups; the epilogue guards the writes.
                             T.copy(
                                 A[m_start : m_start + block_m, k * block_k : (k + 1) * block_k],
                                 A_shared,
@@ -365,23 +353,15 @@ class MoeGroupedGemmNopadKernel(Kernel):
         block_k = self.config["block_k"]
         max_tiles = self._max_tiles(block_m)
 
-        # When K is block_k-aligned the fast path uses T.copy (TMA-eligible) with no
-        # row predicate on A.  The last M-tile of the last expert reads up to block_m
-        # rows starting at numel — past the end of A.  Pad with block_m zero rows so
-        # the T.copy lands in valid memory; the epilogue guard prevents writing those
-        # zeros to C.  Overhead: block_m × K elements (e.g. 64×2048×bf16 = 256 KB).
-        #
-        # TODO: replace F.pad with TMA's built-in OOB zero-fill once TileLang
-        # exposes that knob via T.copy.  The extra copy here is O(block_m × K),
-        # small vs the O(numel × K) main tensor but still worth eliminating.
+        # The last M-tile's unpredicated T.copy reads up to block_m rows past numel.
+        # Removable once TileLang exposes TMA's OOB zero-fill through T.copy.
         if self.K % block_k == 0:
             A = torch.nn.functional.pad(A, (0, 0, 0, block_m))
 
-        # Phase 1: build tile schedule — total_tiles stays on GPU (no .item())
+        # total_tiles stays on the device: no .item(), so no host sync.
         sched_fn = _tile_scheduler_kernel(self.num_experts, max_tiles, block_m)(_SCHED_THREADS)
         tile_expert_ids, tile_row_offsets, total_tiles_t = sched_fn(true_sizes)
 
-        # Phase 2: GEMM with dead-CTA early-exit — 1D grid with GROUP_SIZE_M reordering
         gemm_fn = _moe_grouped_gemm_kernel(
             self.numel, max_tiles, self.num_experts, self.N, self.K, self.dtype_str
         )(
