@@ -17,8 +17,10 @@ Layouts:
 - 1D: (seq_len, head_dim) — single-head or pre-reshaped
 - 2D: (batch, seq_len, num_heads, head_dim) — multi-head batched
 
-Each kernel class uses the ``explicit_parallel`` strategy:
-    Global → Register → Compute → Register → Global
+Schedules:
+- Walked: operands are read from global memory into registers and stored straight back.
+- Staged: a block moves a contiguous span through shared memory, so its global read and
+  its write are one run apiece. A block that cannot cover a whole span walks instead.
 """
 
 import functools
@@ -55,7 +57,6 @@ def _make_rope_neox_1d(
     """
     half = head_dim // 2
     n_pairs = seq_len * half
-    block_size = threads * num_per_thread
 
     @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
@@ -66,7 +67,7 @@ def _make_rope_neox_1d(
             sin_table: T.Tensor((seq_len, half), dtype),
             y: T.Tensor((seq_len, head_dim), dtype),
         ):
-            with T.Kernel(T.ceildiv(n_pairs, block_size), threads=threads_arg) as bx:
+            with T.Kernel(T.ceildiv(n_pairs, threads_arg * npt_arg), threads=threads_arg) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     pair_idx = (bx * threads_arg + i) * npt_arg + j
                     if pair_idx < n_pairs:
@@ -98,14 +99,20 @@ def _make_rope_neox_2d(
 
     cos/sin are of shape (seq_len, head_dim // 2), broadcast over batch and heads.
     One thread per pair ``(c, c + half)``; the arithmetic is f32 and rounds once.
+
+    A pair spans ``half`` columns, so a span of whole head rows holds both members of
+    every pair in it and the block can stage it. A partial span walks instead.
     """
     half = head_dim // 2
     n_total = batch * seq_len * num_heads * head_dim
     n_pairs = batch * seq_len * num_heads * half
-    block_size = threads * num_per_thread
 
     @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
+        block = threads_arg * npt_arg
+        span = (block // half) * head_dim
+        staged = block % half == 0 and n_total % span == 0
+
         @T.prim_func
         def main(
             x: T.Tensor((n_total,), dtype),
@@ -113,20 +120,40 @@ def _make_rope_neox_2d(
             sin_table: T.Tensor((seq_len, half), dtype),
             y: T.Tensor((n_total,), dtype),
         ):
-            with T.Kernel(T.ceildiv(n_pairs, block_size), threads=threads_arg) as bx:
-                for i, j in T.Parallel(threads_arg, npt_arg):
-                    pair_idx = (bx * threads_arg + i) * npt_arg + j
-                    if pair_idx < n_pairs:
-                        head = pair_idx // half
-                        col = pair_idx % half
-                        s_idx = (head // num_heads) % seq_len
-                        low = head * head_dim + col
+            if staged:
+                with T.Kernel(n_total // span, threads=threads_arg) as bx:
+                    xs = T.alloc_shared((span,), dtype)
+                    ys = T.alloc_shared((span,), dtype)
+                    at = bx * span
+                    T.copy(x[at : at + span], xs)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        pair = i * npt_arg + j
+                        local = pair // half
+                        col = pair % half
+                        s_idx = ((at // head_dim + local) // num_heads) % seq_len
+                        slot = local * head_dim + col
                         c = T.Cast("float32", cos_table[s_idx, col])
                         s = T.Cast("float32", sin_table[s_idx, col])
-                        x_low = T.Cast("float32", x[low])
-                        x_high = T.Cast("float32", x[low + half])
-                        y[low] = T.Cast(dtype, x_low * c - x_high * s)
-                        y[low + half] = T.Cast(dtype, x_high * c + x_low * s)
+                        x_low = T.Cast("float32", xs[slot])
+                        x_high = T.Cast("float32", xs[slot + half])
+                        ys[slot] = T.Cast(dtype, x_low * c - x_high * s)
+                        ys[slot + half] = T.Cast(dtype, x_high * c + x_low * s)
+                    T.copy(ys, y[at : at + span])
+            else:
+                with T.Kernel(T.ceildiv(n_pairs, block), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        pair_idx = (bx * threads_arg + i) * npt_arg + j
+                        if pair_idx < n_pairs:
+                            head = pair_idx // half
+                            col = pair_idx % half
+                            s_idx = (head // num_heads) % seq_len
+                            low = head * head_dim + col
+                            c = T.Cast("float32", cos_table[s_idx, col])
+                            s = T.Cast("float32", sin_table[s_idx, col])
+                            x_low = T.Cast("float32", x[low])
+                            x_high = T.Cast("float32", x[low + half])
+                            y[low] = T.Cast(dtype, x_low * c - x_high * s)
+                            y[low + half] = T.Cast(dtype, x_high * c + x_low * s)
 
         return main
 
@@ -141,20 +168,21 @@ def _make_rope_non_neox_1d(
 
     cos/sin shape: (seq_len, head_dim // 2), one entry per pair.
     The arithmetic is f32 and rounds once.
+
+    A thread owns ``num_per_thread`` consecutive columns, so both members of every pair
+    it rotates arrive in one access and the rotation runs in registers. The run has to
+    stay inside one row; a width that leaves it straddling two walks the pairs instead.
     """
     half = head_dim // 2
     n_pairs = seq_len * half
-    block_size = threads * num_per_thread
-    rows_per_block = block_size // head_dim
-    staged = (
-        num_per_thread % 2 == 0
-        and rows_per_block > 0
-        and block_size % head_dim == 0
-        and seq_len % rows_per_block == 0
-    )
 
     @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
+        block = threads_arg * npt_arg
+        vectorized = (
+            npt_arg % 2 == 0 and head_dim % npt_arg == 0 and (seq_len * head_dim) % block == 0
+        )
+
         @T.prim_func
         def main(
             x: T.Tensor((seq_len, head_dim), dtype),
@@ -162,26 +190,33 @@ def _make_rope_non_neox_1d(
             sin_table: T.Tensor((seq_len, half), dtype),
             y: T.Tensor((seq_len, head_dim), dtype),
         ):
-            if staged:
-                with T.Kernel(seq_len // rows_per_block, threads=threads_arg) as bx:
-                    xs = T.alloc_shared((rows_per_block, head_dim), dtype)
-                    ys = T.alloc_shared((rows_per_block, head_dim), dtype)
-                    row0 = bx * rows_per_block
-                    T.copy(x[row0 : row0 + rows_per_block, :], xs)
-                    for i, j in T.Parallel(threads_arg, npt_arg // 2):
-                        slot = i * npt_arg + j * 2
-                        row = slot // head_dim
-                        col = slot % head_dim
-                        pair = col // 2
-                        c = T.Cast("float32", cos_table[row0 + row, pair])
-                        s = T.Cast("float32", sin_table[row0 + row, pair])
-                        x_even = T.Cast("float32", xs[row, col])
-                        x_odd = T.Cast("float32", xs[row, col + 1])
-                        ys[row, col] = T.Cast(dtype, x_even * c - x_odd * s)
-                        ys[row, col + 1] = T.Cast(dtype, x_odd * c + x_even * s)
-                    T.copy(ys, y[row0 : row0 + rows_per_block, :])
+            if vectorized:
+                with T.Kernel(seq_len * head_dim // block, threads=threads_arg) as bx:
+                    tx = T.get_thread_binding()
+                    run = T.alloc_local([npt_arg], dtype)
+                    turned = T.alloc_local([npt_arg], dtype)
+                    cs = T.alloc_local([npt_arg // 2], dtype)
+                    sn = T.alloc_local([npt_arg // 2], dtype)
+                    at = (bx * threads_arg + tx) * npt_arg
+                    row = at // head_dim
+                    col = at % head_dim
+                    for i in T.vectorized(npt_arg):
+                        run[i] = x[row, col + i]
+                    for i in T.vectorized(npt_arg // 2):
+                        cs[i] = cos_table[row, col // 2 + i]
+                    for i in T.vectorized(npt_arg // 2):
+                        sn[i] = sin_table[row, col // 2 + i]
+                    for i in T.serial(npt_arg // 2):
+                        x_even = T.Cast("float32", run[i * 2])
+                        x_odd = T.Cast("float32", run[i * 2 + 1])
+                        c = T.Cast("float32", cs[i])
+                        s = T.Cast("float32", sn[i])
+                        turned[i * 2] = T.Cast(dtype, x_even * c - x_odd * s)
+                        turned[i * 2 + 1] = T.Cast(dtype, x_odd * c + x_even * s)
+                    for i in T.vectorized(npt_arg):
+                        y[row, col + i] = turned[i]
             else:
-                with T.Kernel(T.ceildiv(n_pairs, block_size), threads=threads_arg) as bx:
+                with T.Kernel(T.ceildiv(n_pairs, block), threads=threads_arg) as bx:
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         pair_idx = (bx * threads_arg + i) * npt_arg + j
                         if pair_idx < n_pairs:
@@ -230,7 +265,6 @@ def _make_rope_neox_position_ids_thd(
     n_total = num_tokens * token_stride
     n_pairs = num_tokens * num_heads * half
     n_tail = num_tokens * num_heads * (head_dim - rotary_dim)
-    block_size = threads * num_per_thread
     # One grid covers both walks, so the copied columns get blocks of their own
     # where there are more of them than there are rotated pairs.
     n_walked = max(n_pairs, n_tail)
@@ -246,7 +280,7 @@ def _make_rope_neox_position_ids_thd(
             status: T.Tensor((1,), "int32"),
             y: T.Tensor((n_total,), dtype),
         ):
-            with T.Kernel(T.ceildiv(n_walked, block_size), threads=threads_arg) as bx:
+            with T.Kernel(T.ceildiv(n_walked, threads_arg * npt_arg), threads=threads_arg) as bx:
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     token = (bx * threads_arg + i) * npt_arg + j
                     if token < num_tokens:
@@ -297,12 +331,12 @@ def _make_rope_non_neox_2d(
     half = head_dim // 2
     n_total = batch * seq_len * num_heads * head_dim
     n_pairs = n_total // 2
-    block_size = threads * num_per_thread
-
-    staged = num_per_thread % 2 == 0 and n_total % block_size == 0 and block_size % head_dim == 0
 
     @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
+        block = threads_arg * npt_arg
+        staged = npt_arg % 2 == 0 and n_total % block == 0 and block % head_dim == 0
+
         @T.prim_func
         def main(
             x: T.Tensor((n_total,), dtype),
@@ -311,13 +345,13 @@ def _make_rope_non_neox_2d(
             y: T.Tensor((n_total,), dtype),
         ):
             if staged:
-                with T.Kernel(T.ceildiv(n_total, block_size), threads=threads_arg) as bx:
-                    xs = T.alloc_shared((block_size,), dtype)
-                    ys = T.alloc_shared((block_size,), dtype)
-                    T.copy(x[bx * block_size : (bx + 1) * block_size], xs)
+                with T.Kernel(n_total // block, threads=threads_arg) as bx:
+                    xs = T.alloc_shared((block,), dtype)
+                    ys = T.alloc_shared((block,), dtype)
+                    T.copy(x[bx * block : (bx + 1) * block], xs)
                     for i, j in T.Parallel(threads_arg, npt_arg // 2):
                         slot = i * npt_arg + j * 2
-                        idx = bx * block_size + slot
+                        idx = bx * block + slot
                         head = idx // head_dim
                         pair = (idx % head_dim) // 2
                         s_idx = (head // num_heads) % seq_len
@@ -327,9 +361,9 @@ def _make_rope_non_neox_2d(
                         x_odd = T.Cast("float32", xs[slot + 1])
                         ys[slot] = T.Cast(dtype, x_even * c - x_odd * s)
                         ys[slot + 1] = T.Cast(dtype, x_odd * c + x_even * s)
-                    T.copy(ys, y[bx * block_size : (bx + 1) * block_size])
+                    T.copy(ys, y[bx * block : (bx + 1) * block])
             else:
-                with T.Kernel(T.ceildiv(n_pairs, block_size), threads=threads_arg) as bx:
+                with T.Kernel(T.ceildiv(n_pairs, block), threads=threads_arg) as bx:
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         pair_idx = (bx * threads_arg + i) * npt_arg + j
                         if pair_idx < n_pairs:
@@ -450,11 +484,21 @@ class _RopeKernelBase(Kernel):
 
     @property
     def default_config(self) -> dict:
+        """Threads and per-thread work, measured on this family's widest workloads.
+
+        ``num_per_thread`` counts columns for the non-neox rotation and pairs for the
+        neox one.
+        """
+        if self.layout == "1d":
+            if self.ROTATION_STYLE == "non_neox":
+                return {"threads": 256, "num_per_thread": 16 // self.dtype.itemsize}
+            npt = 2 if self.dtype == torch.float32 else 4
+            return {"threads": 256, "num_per_thread": npt}
         if self.ROTATION_STYLE == "non_neox":
             npt = 8 if self.dtype == torch.float32 else 16
             return {"threads": 128, "num_per_thread": npt}
-        npt = 2 if self.dtype == torch.float32 else 4
-        return {"threads": 256, "num_per_thread": npt}
+        npt = 4 if self.dtype == torch.float32 else 8
+        return {"threads": 128, "num_per_thread": npt}
 
     def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         """Apply RoPE rotation.
