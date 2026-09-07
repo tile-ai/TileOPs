@@ -295,45 +295,36 @@ def _max_pool1d_with_indices_kernel(
             max_idx = T.alloc_var(T.int32)
             # -1 until a NaN is seen, so it is also the flag saying one was.
             nan_idx = T.alloc_var(T.int32)
-            first_valid = T.alloc_var(T.bool)
             max_val = T.cast(float("-inf"), accum_dtype)
             nan_idx = -1
-            first_valid = True
             if always_in_bounds:
                 # An expression, because a mutable variable is opaque to the
                 # range analysis: every tap would then load under a bounds check
                 # this window's own extent rules out, addressed in 64 bits.
                 iw0 = ow * stride_w - pad_w
+                max_idx = iw0
             else:
                 # Each tap carries a bounds test anyway, so nothing is left to
                 # prove and a variable keeps the position arithmetic out of all
                 # of them.
                 iw0 = T.alloc_var(T.int32)
                 iw0 = ow * stride_w - pad_w
-            # With the window inside the row its first element is in bounds, so its
-            # position is the right seed and `first_valid` is unneeded: an all--inf
-            # window then reports that position, which is what PyTorch does.
-            max_idx = iw0 if always_in_bounds else 0
+                # The window's first tap the row holds, on the dilation grid.
+                # Only padding starts a window before position 0, and an
+                # all--inf window reports that tap, which is what PyTorch does.
+                max_idx = iw0 + dilation_w * T.ceildiv(T.max(-iw0, 0), dilation_w)
             for kw in T.serial(kernel_w):
                 iw = iw0 + kw * dilation_w
-                if always_in_bounds:
+                if always_in_bounds or (iw >= 0 and iw < l_in):
                     val = T.cast(src[src_c, src_row, iw], accum_dtype)
                     # `max_val` is never NaN and NaN fails `>`, so the compare
-                    # rejects NaN without a separate test.
+                    # rejects NaN without a separate test, and a tap equal to the
+                    # seed is rejected too -- which is why the seed is the
+                    # position that tap would have reported.
                     take = val > max_val
                     max_val = T.if_then_else(take, val, max_val)
                     max_idx = T.if_then_else(take, iw, max_idx)
                     nan_idx = T.if_then_else(T.isnan(val), iw, nan_idx)
-                elif iw >= 0 and iw < l_in:
-                    val = T.cast(src[src_c, src_row, iw], accum_dtype)
-                    is_nan = T.isnan(val)
-                    # `first_valid` admits the first element whatever it is, so the
-                    # NaN test cannot come out of the compare here.
-                    take = (not is_nan) and (first_valid or (val > max_val))
-                    max_val = T.if_then_else(take, val, max_val)
-                    max_idx = T.if_then_else(take, iw, max_idx)
-                    first_valid = first_valid and is_nan
-                    nan_idx = T.if_then_else(is_nan, iw, nan_idx)
 
             # PyTorch reports the last NaN a window visited.
             out[out_c, out_row, ow] = T.cast(
