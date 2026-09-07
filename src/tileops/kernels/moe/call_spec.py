@@ -32,18 +32,74 @@ class PrePermuteCall(CallSpec):
 
 @dataclasses.dataclass(frozen=True)
 class MGroupedGemmCall(CallSpec):
-    """Complete selection facts for one typed M-grouped GEMM invocation."""
+    """Complete selection facts for one M-grouped GEMM invocation.
 
-    layout_key: str = ""
-    max_m: int | None = None
-    device_type: str = ""
-    input_dtype: torch.dtype | None = None
-    weight_dtype: torch.dtype | None = None
-    output_dtype: torch.dtype | None = None
-    materialized_rows: int = 0
-    num_experts: int = 0
+    The layout arrives structured — ``kind`` first, then the contiguous
+    sub-axes — so a candidate can claim a region such as "every contiguous
+    layout with psum metadata" without enumerating keys. ``m`` is the
+    materialized row count (``num_groups * max_m`` for masked layouts); it is a
+    fact of the call, not of the specialization, and ``specialization_key``
+    leaves it out.
+    """
+
+    kind: str = ""  # "contiguous" | "masked"
+    packing: str | None = None  # "tight" | "aligned"; None for masked
+    metadata_kind: str | None = None  # "physical_psum" | "per_row"; None for masked
+    alignment: int = 1  # 1 unless packing == "aligned"
+    max_m: int | None = None  # masked only
+    ab_dtype: torch.dtype | None = None
+    cd_dtype: torch.dtype | None = None
+    num_groups: int = 0
+    m: int = 0
     n: int = 0
     k: int = 0
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        # The layout fields are one layout spec flattened; hold them to the
+        # combinations a spec can express so a candidate never has to. The
+        # all-defaults record (``CallSpec.__str__`` builds one to diff against)
+        # names no layout and is left alone.
+        if self.kind == "":
+            return
+        if self.kind == "contiguous":
+            if self.packing not in ("tight", "aligned"):
+                raise ValueError(
+                    f"contiguous layouts pack 'tight' or 'aligned', got {self.packing!r}"
+                )
+            if self.metadata_kind not in ("physical_psum", "per_row"):
+                raise ValueError(
+                    f"contiguous metadata is 'physical_psum' or 'per_row', got {self.metadata_kind!r}"
+                )
+            if self.max_m is not None:
+                raise ValueError("contiguous layouts have no max_m")
+            if self.packing == "tight" and self.alignment != 1:
+                raise ValueError("tight packing has alignment 1")
+            if self.packing == "aligned" and self.alignment < 2:
+                raise ValueError("aligned packing has alignment > 1")
+        elif self.kind == "masked":
+            if self.packing is not None or self.metadata_kind is not None or self.alignment != 1:
+                raise ValueError("masked layouts carry no packing, metadata_kind or alignment")
+            if self.max_m is None or self.max_m < 0:
+                raise ValueError("masked layouts need a non-negative max_m")
+        else:
+            raise ValueError(f"kind is 'contiguous' or 'masked', got {self.kind!r}")
+
+    @property
+    def specialization_key(self) -> tuple:
+        """What a built kernel is specialized on: everything but the row count."""
+        return (
+            self.kind,
+            self.packing,
+            self.metadata_kind,
+            self.alignment,
+            self.max_m,
+            self.ab_dtype,
+            self.cd_dtype,
+            self.num_groups,
+            self.n,
+            self.k,
+        )
 
 
 @dataclasses.dataclass(frozen=True)
