@@ -580,22 +580,23 @@ def test_avg_pool3d(
 def test_avg_pool1d_staged_span_stays_aligned(
     l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype: str
 ) -> None:
-    """Every span start a launch can take sits on a multiple of the access width.
+    """Every group of the staged span lies wholly inside the row or wholly outside it.
 
-    The staging load is vectorized and unguarded, so a start off that multiple reads the
-    wrong elements. A start moves by ``block_ol * stride_l`` per block and lands on
-    ``l_in - span`` where the span slides back inside the row, so the width has to divide
-    both. Only a window too wide to stage at 128 outputs selects a width that can break
-    it, which is why no benchmarked shape reaches this.
+    The staging load is vectorized, and it is the group boundaries that decide whether a
+    group is loaded or zeroed, so a boundary landing mid-row would read the wrong
+    elements for the whole group. Three things move a boundary: the block step
+    ``block_ol * stride_l``, the head in front of the leftmost window, and the row end.
+    Only a window too wide to stage at 128 outputs selects a width that can break this,
+    which is why no benchmarked shape reaches it.
     """
     for block_ol in _block_ol_choices(l_in, kernel_l, stride_l, pad_l, dtype):
         staged = _staging(block_ol, l_in, kernel_l, stride_l, pad_l, dtype)
         assert (block_ol * stride_l) % staged.vector_elems == 0
-        assert (l_in - staged.span) % staged.vector_elems == 0
-        assert staged.span % staged.vector_elems == 0
+        assert l_in % staged.vector_elems == 0
         assert staged.head % staged.vector_elems == 0
+        assert staged.span % staged.vector_elems == 0
         assert staged.head >= pad_l
-        assert staged.span >= min(staged.head + (block_ol - 1) * stride_l + kernel_l, l_in)
+        assert staged.span >= staged.head + (block_ol - 1) * stride_l + kernel_l
 
 
 @pytest.mark.smoke

@@ -14,9 +14,11 @@ __all__ = ["AvgPool1dKernel", "AvgPool1dSpatialKernel"]
 # Tile widths a launch may take, widest first. The tail below 128 is what keeps a window
 # too wide to stage at 128 outputs from having no width at all.
 _BLOCK_OL_CHOICES = (2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1)
-# Two warps per block measured fastest only on the widest workload, and is what
-# the autotuner mispicks on a launch too short for it to tell candidates apart.
-_THREAD_CHOICES = (128, 256)
+# The best block size is not a function of the shape any rule here fits, so it is tuned.
+_THREAD_CHOICES = (64, 128, 256)
+# Threads a launch needs before a narrow block is worth offering: below this the blocks
+# do not fill the device, and giving each thread more outputs only lengthens the tail.
+_MIN_LAUNCH_THREADS = 1 << 16
 # Measured best, or within one timer quantum of best, at all three manifest workloads.
 _DEFAULT_BLOCK_OL = 512
 _DEFAULT_THREADS = 128
@@ -51,18 +53,19 @@ def _staging(
 ) -> _Staging:
     """The staged span covering ``block_ol`` consecutive outputs.
 
-    The staging load is vectorized and unguarded, so every span start has to sit on a
-    multiple of the access width. Two things move a start: the block index, in steps of
-    ``block_ol * stride_l``, and the slide back inside the row at the end of a row, which
-    lands it on ``l_in - span``. The width is narrowed until it divides both. The head
-    then absorbs the left padding, and a span wider than the row is the whole row.
+    The tile is a window on the row's own coordinates, starting `head` elements before
+    the block's leftmost window and holding zeros wherever it reaches outside the row.
+    Every staging load is a whole group of `vector_elems`, so each group is either
+    entirely inside the row or entirely outside it, and the width is narrowed until the
+    three things that move a group boundary all divide it: the block step
+    ``block_ol * stride_l``, the head, and the row end ``l_in``.
     """
     vector_elems = VECTOR_ACCESS_BYTES // _itemsize(dtype)
     while vector_elems > 1 and (l_in % vector_elems or (block_ol * stride_l) % vector_elems):
         vector_elems //= 2
     head = _round_up(pad_l, vector_elems)
     reach = head + (block_ol - 1) * stride_l + kernel_l
-    return _Staging(vector_elems, head, min(_round_up(reach, vector_elems), l_in))
+    return _Staging(vector_elems, head, _round_up(reach, vector_elems))
 
 
 def _block_ol_choices(l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype: str) -> list[int]:
@@ -89,21 +92,30 @@ def _block_ol_choices(l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype
 
 
 def _thread_configs(
-    block_ol: int, l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype: str
+    block_ol: int,
+    rows: int,
+    l_in: int,
+    out_l: int,
+    kernel_l: int,
+    stride_l: int,
+    pad_l: int,
+    dtype: str,
 ) -> list[dict]:
     """Candidate configs at a fixed tile width: the block sizes worth timing on it.
 
     The width is not a candidate. Two widths a factor of two apart differ by a few
     percent here, which is under what the autotuner can resolve on a launch this short,
-    so it is settled by :func:`_default_block_ol` instead. A block with more threads than
-    the staging pass has full-width loads idles threads on the read this kernel is bound
-    by, which leaves at most one candidate on a narrow tile.
+    so it is settled by :func:`_default_block_ol` instead. Two block sizes are dropped:
+    one with more threads than the staging pass has full-width loads idles threads on the
+    read this kernel is bound by, and one whose launch falls short of
+    ``_MIN_LAUNCH_THREADS`` leaves the device unfilled.
     """
     staged = _staging(block_ol, l_in, kernel_l, stride_l, pad_l, dtype)
+    blocks = rows * ((out_l + block_ol - 1) // block_ol)
     return [
         {"block_ol": block_ol, "threads": threads}
         for threads in _THREAD_CHOICES
-        if staged.vectors >= threads
+        if staged.vectors >= threads and blocks * threads >= _MIN_LAUNCH_THREADS
     ] or [{"block_ol": block_ol, "threads": _DEFAULT_THREADS}]
 
 
@@ -138,6 +150,9 @@ def _avg_pool1d_kernel(
     window_inside = pad_l == 0 and (out_l - 1) * stride_l + kernel_l <= l_in
     # Otherwise a window can overhang, and the divisor comes from its own extent.
     whole_window_divides = window_inside or (count_include_pad and not ceil_mode)
+    # The outputs whose window lies inside the row, and so divides by the kernel width.
+    clean_lo = -(-pad_l // stride_l)
+    clean_hi = min((l_in + pad_l - kernel_l) // stride_l, out_l - 1)
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _avg_pool1d_func(block_ol: int, threads: int):
@@ -146,86 +161,76 @@ def _avg_pool1d_kernel(
         # block stages that stretch with full-width loads and takes every tap from it.
         staged = _staging(block_ol, l_in, kernel_l, stride_l, pad_l, dtype)
         vector_elems, head, span = staged
+        # The tile holds zeros where it reaches outside the row, so a tap needs no test
+        # of its own and its index into the tile is the same in every block.
+        base = head - pad_l
         blocks_per_row = (out_l + block_ol - 1) // block_ol
         tail_free = out_l % block_ol == 0
-        # Only the first and the last block of a row hold an overhanging window, so the
-        # blocks between them need neither the tap select nor a per-output divisor.
-        interior_split = (
-            not window_inside
-            and blocks_per_row >= 3
-            and block_ol * stride_l - pad_l >= 0
-            and ((blocks_per_row - 1) * block_ol - 1) * stride_l - pad_l + kernel_l <= l_in
-        )
-        # Inside those two blocks the overhang is a handful of outputs at the row ends.
-        clean_lo = -(-pad_l // stride_l)
-        clean_hi = min((l_in + pad_l - kernel_l) // stride_l, out_l - 1)
+        # Only the first and the last block of a row reach outside it.
+        edge_free = pad_l == 0 and (blocks_per_row - 1) * block_ol * stride_l + span <= l_in
 
-        def _window_store(inside: bool):
-            """A macro storing one output's mean, reading the taps from the tile.
+        @T.macro
+        def _stage_inside(tile, x, origin, row):
+            """Every group is in the row: one unguarded full-width load each."""
+            for i in T.Parallel(staged.vectors):
+                for v in T.vectorized(vector_elems):
+                    tile[i * vector_elems + v] = x[row, origin + i * vector_elems + v]
 
-            Args:
-                inside: Whether every tap of this output is known to be in the row.
-                    When it is not, the tap is read anyway and a select discards it,
-                    so an overhanging window costs no branch.
+        @T.macro
+        def _stage_edge(tile, x, origin, row):
+            """Zero the tile, then load the groups the row covers.
+
+            The row covers whole groups only, so the second pass tests one per group and
+            its load stays unguarded. Predicating the load itself instead, in one pass,
+            measured slower than doing two.
             """
-
-            @T.macro
-            def _store(tile, offset, j, ol, out, out_row):
-                total = T.alloc_var(T.float32)
-                total = T.cast(0.0, accum_dtype)
-                if inside:
-                    # Written out rather than held in a var: bound analysis cannot
-                    # place a var inside the tile, and guards the tap load in 64-bit
-                    # addressing when it cannot.
-                    for k in T.serial(kernel_l):
-                        total += T.cast(tile[offset + j * stride_l + k], accum_dtype)
-                else:
-                    # A guard is emitted here whatever the index looks like, so the var
-                    # keeps the address arithmetic from repeating per tap. The clamp
-                    # keeps the discarded read inside the tile.
-                    at = T.alloc_var(T.int32)
-                    at = offset + j * stride_l
-                    for k in T.serial(kernel_l):
-                        tap = T.cast(tile[T.max(0, T.min(at + k, span - 1))], accum_dtype)
-                        src = ol * stride_l - pad_l + k
-                        total += T.if_then_else(
-                            (src >= 0) and (src < l_in), tap, T.cast(0.0, accum_dtype)
-                        )
-                if inside or whole_window_divides:
-                    out[out_row, ol] = T.cast(total * T.cast(1.0 / kernel_l, accum_dtype), dtype)
-                else:
-                    start = ol * stride_l - pad_l
-                    if count_include_pad:
-                        divisor = T.max(
-                            T.min(start + kernel_l, l_in + pad_l) - T.max(start, -pad_l), 1
-                        )
-                    else:
-                        divisor = T.max(T.min(start + kernel_l, l_in) - T.max(start, 0), 1)
-                    out[out_row, ol] = T.cast(total / T.cast(divisor, accum_dtype), dtype)
-
-            return _store
-
-        _interior = _window_store(True)
-        _boundary = _window_store(window_inside)
+            for i in T.Parallel(staged.vectors):
+                for v in T.vectorized(vector_elems):
+                    tile[i * vector_elems + v] = T.cast(0.0, dtype)
+            for i in T.Parallel(staged.vectors):
+                if (origin + i * vector_elems >= 0) and (origin + (i + 1) * vector_elems <= l_in):
+                    for v in T.vectorized(vector_elems):
+                        tile[i * vector_elems + v] = x[row, origin + i * vector_elems + v]
 
         @T.macro
-        def _edge_split(tile, offset, j, ol, out, out_row):
-            """One edge block, testing each output for the clean path."""
-            if (ol >= clean_lo) and (ol <= clean_hi):
-                _interior(tile, offset, j, ol, out, out_row)
+        def _store(tile, j, ol, out, out_row, whole: bool):
+            """Store the mean of the window `tile` holds for output ``ol``."""
+            total = T.alloc_var(T.float32)
+            total = T.cast(0.0, accum_dtype)
+            for k in T.serial(kernel_l):
+                total += T.cast(tile[base + j * stride_l + k], accum_dtype)
+            if whole:
+                out[out_row, ol] = T.cast(total * T.cast(1.0 / kernel_l, accum_dtype), dtype)
             else:
-                if ol < out_l:
-                    _boundary(tile, offset, j, ol, out, out_row)
+                start = ol * stride_l - pad_l
+                if count_include_pad:
+                    divisor = T.max(T.min(start + kernel_l, l_in + pad_l) - T.max(start, -pad_l), 1)
+                else:
+                    divisor = T.max(T.min(start + kernel_l, l_in) - T.max(start, 0), 1)
+                out[out_row, ol] = T.cast(total / T.cast(divisor, accum_dtype), dtype)
 
         @T.macro
-        def _edge_plain(tile, offset, j, ol, out, out_row):
-            """One edge block, on the overhang path throughout."""
-            if ol < out_l:
-                _boundary(tile, offset, j, ol, out, out_row)
+        def _store_output(tile, j, ol, out, out_row):
+            """Store output ``ol``, taking its divisor from the window where it needs to."""
+            if whole_window_divides:
+                _store(tile, j, ol, out, out_row, True)
+            else:
+                # A window's divisor is its own extent only where it overhangs the row.
+                if (ol >= clean_lo) and (ol <= clean_hi):
+                    _store(tile, j, ol, out, out_row, True)
+                else:
+                    _store(tile, j, ol, out, out_row, False)
 
-        # Testing each output costs two comparisons and buys the constant divisor, which
-        # pays only where a window's divisor is its own extent.
-        _edge = _edge_plain if whole_window_divides else _edge_split
+        @T.macro
+        def _reduce(tile, bx, out, out_row):
+            """One output per lane, over the outputs this block owns."""
+            for j in T.Parallel(block_ol):
+                ol = bx * block_ol + j
+                if tail_free:
+                    _store_output(tile, j, ol, out, out_row)
+                else:
+                    if ol < out_l:
+                        _store_output(tile, j, ol, out, out_row)
 
         @T.prim_func
         def _avg_pool1d_main(
@@ -234,29 +239,15 @@ def _avg_pool1d_kernel(
         ):
             with T.Kernel(blocks_per_row, rows, threads=threads) as (bx, by):
                 tile = T.alloc_shared((span,), dtype)
-                # Sliding the span back inside the row costs a few already-staged
-                # elements at the two ends and keeps every staging load unguarded.
-                start = T.max(0, T.min(bx * (block_ol * stride_l) - head, l_in - span))
-                for i in T.Parallel(staged.vectors):
-                    for v in T.vectorized(vector_elems):
-                        tile[i * vector_elems + v] = x[by, start + i * vector_elems + v]
-                offset = bx * (block_ol * stride_l) - pad_l - start
-                for j in T.Parallel(block_ol):
-                    ol = bx * block_ol + j
-                    if window_inside:
-                        if tail_free:
-                            _interior(tile, offset, j, ol, out, by)
-                        else:
-                            if ol < out_l:
-                                _interior(tile, offset, j, ol, out, by)
+                origin = bx * (block_ol * stride_l) - head
+                if edge_free:
+                    _stage_inside(tile, x, origin, by)
+                else:
+                    if (bx > 0) and (bx < blocks_per_row - 1):
+                        _stage_inside(tile, x, origin, by)
                     else:
-                        if interior_split:
-                            if (bx > 0) and (bx < blocks_per_row - 1):
-                                _interior(tile, offset, j, ol, out, by)
-                            else:
-                                _edge(tile, offset, j, ol, out, by)
-                        else:
-                            _edge(tile, offset, j, ol, out, by)
+                        _stage_edge(tile, x, origin, by)
+                _reduce(tile, bx, out, by)
 
         return _avg_pool1d_main
 
@@ -388,7 +379,9 @@ class AvgPool1dSpatialKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return _thread_configs(
             self.default_config["block_ol"],
+            self.n * self.c_in,
             self.l_in,
+            self.out_l,
             self.kernel_l,
             self.stride_l,
             self.pad_l,
@@ -478,7 +471,9 @@ class AvgPool1dKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return _thread_configs(
             self.default_config["block_ol"],
+            self.n * self.c_in,
             self.l_in,
+            self.out_l,
             self.kernel_l,
             self.stride_l,
             self.pad_l,
