@@ -53,7 +53,8 @@ def _max_pool1d_kernel(
     accum_dtype = "float"
     out_l = pool_output_dim(l_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
     total_output = n * c_in * out_l
-    always_in_bounds = pad_w == 0 and (out_l - 1) * stride_w + (kernel_w - 1) * dilation_w < l_in
+    eff_w = dilation_w * (kernel_w - 1) + 1
+    always_in_bounds = pad_w == 0 and (out_l - 1) * stride_w + eff_w - 1 < l_in
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _max_pool1d_func(block_m: int, threads: int):
@@ -276,7 +277,8 @@ def _max_pool1d_with_indices_kernel(
     total_output = n * c_in * out_l
     # Static specialization: with zero padding and no ceil overshoot every window
     # lies fully inside the input, so the per-element bounds check can be dropped.
-    always_in_bounds = pad_w == 0 and (out_l - 1) * stride_w + (kernel_w - 1) * dilation_w < l_in
+    eff_w = dilation_w * (kernel_w - 1) + 1
+    always_in_bounds = pad_w == 0 and (out_l - 1) * stride_w + eff_w - 1 < l_in
 
     @tilelang.jit(out_idx=[1, 2], compile_flags=["-O3", "-DENABLE_BF16"])
     def _max_pool1d_with_indices_func(block_m: int, threads: int):
@@ -286,56 +288,48 @@ def _max_pool1d_with_indices_kernel(
         def _reduce_window(src, src_c, src_row, ow, out, indices, out_c, out_row):
             """Store the max and its index over one window of ``src[src_c, src_row]``."""
             max_val = T.alloc_var(T.float32)
-            has_nan = T.alloc_var(T.bool)
             max_idx = T.alloc_var(T.int32)
+            # -1 until a NaN is seen, so it is also the flag saying one was.
             nan_idx = T.alloc_var(T.int32)
             first_valid = T.alloc_var(T.bool)
-            # Loop-invariant window corner, materialized so it is not
-            # re-inlined into every window element.
             iw0 = T.alloc_var(T.int32)
             max_val = T.cast(float("-inf"), accum_dtype)
-            has_nan = False
+            nan_idx = -1
             first_valid = True
             iw0 = ow * stride_w - pad_w
-            if always_in_bounds:
-                # Window element 0 is in bounds here, so its flat index is
-                # the correct seed: an all--inf window reports the first
-                # position, matching PyTorch, and first_valid is unneeded.
-                max_idx = iw0
-                nan_idx = iw0
-            else:
-                max_idx = 0
-                nan_idx = 0
+            # With the window inside the row its first element is in bounds, so its
+            # position is the right seed and `first_valid` is unneeded: an all--inf
+            # window then reports that position, which is what PyTorch does.
+            max_idx = iw0 if always_in_bounds else 0
             for kw in T.serial(kernel_w):
                 iw = iw0 + kw * dilation_w
                 if always_in_bounds:
                     val = T.cast(src[src_c, src_row, iw], accum_dtype)
-                    is_nan = T.isnan(val)
-                    # Branch-free update. Strict > keeps the first
-                    # maximum; NaN never touches max_val/max_idx and
-                    # records the last NaN visited, matching PyTorch.
-                    take = (not is_nan) and (val > max_val)
+                    # `max_val` starts at -inf and only a passing compare replaces
+                    # it, so it is never NaN; NaN fails `>`. The compare alone
+                    # therefore rejects NaN and no separate test is needed.
+                    take = val > max_val
                     max_val = T.if_then_else(take, val, max_val)
                     max_idx = T.if_then_else(take, iw, max_idx)
-                    nan_idx = T.if_then_else(is_nan, iw, nan_idx)
-                    has_nan = has_nan or is_nan
+                    nan_idx = T.if_then_else(T.isnan(val), iw, nan_idx)
                 elif iw >= 0 and iw < l_in:
                     val = T.cast(src[src_c, src_row, iw], accum_dtype)
                     is_nan = T.isnan(val)
+                    # `first_valid` admits the first element whatever it is, so the
+                    # NaN test cannot come out of the compare here.
                     take = (not is_nan) and (first_valid or (val > max_val))
                     max_val = T.if_then_else(take, val, max_val)
                     max_idx = T.if_then_else(take, iw, max_idx)
                     first_valid = first_valid and is_nan
                     nan_idx = T.if_then_else(is_nan, iw, nan_idx)
-                    has_nan = has_nan or is_nan
 
-            result = T.if_then_else(
-                has_nan,
-                T.cast(float("nan"), accum_dtype),
-                max_val,
+            # PyTorch reports the last NaN a window visited.
+            out[out_c, out_row, ow] = T.cast(
+                T.if_then_else(nan_idx >= 0, T.cast(float("nan"), accum_dtype), max_val), dtype
             )
-            out[out_c, out_row, ow] = T.cast(result, dtype)
-            indices[out_c, out_row, ow] = T.cast(T.if_then_else(has_nan, nan_idx, max_idx), "int64")
+            indices[out_c, out_row, ow] = T.cast(
+                T.if_then_else(nan_idx >= 0, nan_idx, max_idx), "int64"
+            )
 
         @T.prim_func
         def _max_pool1d_with_indices_main(
