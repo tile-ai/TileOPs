@@ -1,3 +1,4 @@
+import weakref
 from collections.abc import Sequence
 from typing import Any, ClassVar, Dict, Optional, Tuple
 
@@ -144,6 +145,9 @@ class MeanPoolingFwdOp(Op):
         ```
     """
 
+    # How many distinct chunk maps stay remembered at once. See `_validate_ragged`.
+    _CHECKED_MAP_ENTRIES: ClassVar[int] = 8
+
     def __init__(
         self,
         chunk_size: int,
@@ -172,6 +176,8 @@ class MeanPoolingFwdOp(Op):
         # Keyed by (device, shape): the uniform path hands the kernel tensors it never
         # reads, and a placeholder on the wrong device would route the launch there.
         self._placeholders: Dict[tuple, torch.Tensor] = {}
+        # One entry per chunk map this op has already checked. See `_validate_ragged`.
+        self._checked_maps: Dict[tuple, tuple] = {}
         self.dispatch_kernel(kernel_map)
 
     @property
@@ -240,9 +246,9 @@ class MeanPoolingFwdOp(Op):
 
         Args:
             x: Input tensor, ``[batch, seq, heads, dim]``, dtype ``float16``, ``bfloat16``
-                or ``float32``. ``dim`` is at most 128 or a multiple of it: the kernel
-                tiles it by a width of at most 128, and a tile that is neither the whole
-                ``dim`` nor an exact divisor of it has no valid layout.
+                or ``float32``, contiguous — ``heads`` and ``dim`` are read as one width.
+                ``dim`` is at most 128 or a multiple of it, which is what the manifest
+                declares rather than what the kernel needs.
             offsets: Sequence boundaries, ``[seq_num + 1]``, dtype ``int32``. Passing it
                 selects the ragged split, and it comes with ``indices``.
             indices: One ``(sequence, chunk-within-sequence)`` pair per output chunk,
@@ -254,13 +260,15 @@ class MeanPoolingFwdOp(Op):
             ragged one.
 
         Raises:
-            ValueError: ``x`` is not 4D; exactly one of ``offsets`` and ``indices`` was
-                passed; ``chunk_size`` does not divide into whole warps; ``indices`` does
-                not hold one row per chunk ``offsets`` implies; or an input's dtype is
-                outside what the manifest declares.
+            ValueError: ``x`` is not 4D or not contiguous; exactly one of ``offsets`` and
+                ``indices`` was passed; ``chunk_size`` does not divide into whole warps;
+                ``indices`` does not hold one row per chunk ``offsets`` implies; or an
+                input's dtype is outside what the manifest declares.
         """
         if x.ndim != 4:
             raise ValueError(f"x must be [batch, seq, heads, dim]; got {tuple(x.shape)}")
+        if not x.is_contiguous():
+            raise ValueError("x must be contiguous; heads and dim are read as one width")
         if (offsets is None) != (indices is None):
             raise ValueError(
                 "offsets and indices describe one ragged split, so either both are passed "
@@ -271,8 +279,9 @@ class MeanPoolingFwdOp(Op):
             raise ValueError(f"chunk_size must be a positive multiple of 32; got {self.chunk_size}")
 
         batch_size, seq_len, heads, dim = x.shape
-        # The kernel tiles `dim` by a width of at most 128; a width that is neither the
-        # whole `dim` nor an exact divisor of it has no valid layout.
+        # The manifest's declared trailing width. A block takes a power-of-two share of
+        # `heads * dim` and bounds-tests its last block, so this is the contract's bound
+        # rather than the kernel's.
         if dim > 128 and dim % 128:
             raise ValueError(f"dim must be at most 128 or a multiple of 128; got {dim}")
         ragged = offsets is not None
@@ -306,6 +315,43 @@ class MeanPoolingFwdOp(Op):
         return out
 
     def _validate_ragged(
+        self, offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int
+    ) -> None:
+        """Check a chunk map once, then skip it while the same tensors come back unchanged.
+
+        `_check_ragged` reads `offsets` and `indices` element by element, costing a dozen
+        device launches and as many syncs, which a ragged call would otherwise pay before
+        every pooling. A chunk map is built once and passed to many calls, so its result is
+        remembered against the two tensors it was read from.
+
+        An entry applies only while both weak references still resolve to the objects that
+        were checked and neither `_version` has moved, so a tensor written in place, freed,
+        or replaced is checked again.
+        """
+        key = (id(offsets), id(indices), seq_len, chunks)
+        remembered = self._checked_maps.get(key)
+        if remembered is not None:
+            offsets_ref, indices_ref, versions = remembered
+            if (
+                offsets_ref() is offsets
+                and indices_ref() is indices
+                and versions == (offsets._version, indices._version)
+            ):
+                return
+
+        self._check_ragged(offsets, indices, seq_len, chunks)
+
+        # A dead tensor leaves its key behind, so the table is dropped rather than grown
+        # once a caller has cycled through this many maps.
+        if len(self._checked_maps) >= self._CHECKED_MAP_ENTRIES:
+            self._checked_maps.clear()
+        self._checked_maps[key] = (
+            weakref.ref(offsets),
+            weakref.ref(indices),
+            (offsets._version, indices._version),
+        )
+
+    def _check_ragged(
         self, offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int
     ) -> None:
         """Check `indices` against `offsets` rather than believing its row count.

@@ -6,8 +6,53 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import WARP_LANES, get_sm_count
 
 __all__ = ["MeanPoolingFwdKernel"]
+
+# The block widths a `heads * dim` may be cut into.
+_BLOCK_WIDTHS = (8192, 4096, 2048, 1024, 512, 256, 128, 64, 32)
+
+# Elements one lane accumulates; eight fp16 of them is a 16-byte load.
+_LANE_ELEMS = 8
+# The shares a lane is tried at when tuning, either side of `_LANE_ELEMS`.
+_TUNED_LANE_ELEMS = (4, 8, 16)
+
+
+def _block_widths(width: int) -> list[int]:
+    """The block widths to try for a `heads * dim` of ``width``, widest first.
+
+    A width the block divides is covered exactly, so those widths come first; a width none
+    of them divides — one that is not a multiple of the warp size — is covered with a
+    bounds test on the last block instead.
+    """
+    listed = [w for w in _BLOCK_WIDTHS if w <= width] or [_BLOCK_WIDTHS[-1]]
+    return [w for w in listed if width % w == 0] or listed
+
+
+def _threads_for(bwidth: int, lane_elems: int) -> int:
+    """The largest whole-warp thread count dividing ``bwidth`` into ``lane_elems`` or more."""
+    threads = min(1024, max(WARP_LANES, bwidth // lane_elems // WARP_LANES * WARP_LANES))
+    while threads > WARP_LANES and bwidth % threads:
+        threads -= WARP_LANES
+    return threads
+
+
+def _launch(width: int, blocks: int, sm_count: int) -> tuple[int, int]:
+    """The widest block whose grid still covers the SMs, and the threads to run it with.
+
+    A block reads one chunk's share of the width, so a narrower block buys more blocks at
+    the cost of a shorter contiguous run in each. The width is cut only until the grid
+    reaches one block per SM: below that the machine sits idle, above it the reads shorten
+    for nothing.
+    """
+    widths = _block_widths(width)
+    bwidth = widths[-1]
+    for candidate in widths:
+        if blocks * -(-width // candidate) >= sm_count:
+            bwidth = candidate
+            break
+    return bwidth, _threads_for(bwidth, _LANE_ELEMS)
 
 
 @functools.lru_cache(maxsize=32)
@@ -23,64 +68,76 @@ def _mean_pooling_kernel(
     dtype: str,
     accum_dtype: str,
 ) -> Callable:
+    # Neither `heads` nor `dim` is reduced and they are the two innermost axes of a
+    # contiguous tensor, so a block reads them as one contiguous width.
+    width = heads * dim
+    # Every chunk is then `chunk_size` tokens at `i_t * chunk_size`, an index that bound
+    # analysis places inside the sequence axis without a per-row guard.
+    full_chunks = use_offsets == 0 and seq_len % chunk_size == 0
+
     @tilelang.jit(out_idx=[1])
-    def _mean_pooling_func(bdim: int, threads: int) -> None:
+    def _mean_pooling_func(bwidth: int, threads: int) -> None:
+        # Only a width no block width divides leaves a last block reaching past the axis.
+        whole_blocks = width % bwidth == 0
+
+        def in_width(col):
+            """The lane's bound, or `True` where no block reaches past the axis.
+
+            A value rather than `whole_blocks or col < width`, whose `or` would drop the
+            comparison in Python before TileLang traced it.
+            """
+            return True if whole_blocks else col < width
+
         @T.prim_func
         def _mean_pooling_main(
-            x: T.Tensor((batch_size, seq_len, heads, dim), dtype),
-            o: T.Tensor((batch_size, chunks_per_batch, heads, dim), dtype),
+            x: T.Tensor((batch_size, seq_len, width), dtype),
+            o: T.Tensor((batch_size, chunks_per_batch, width), dtype),
             offsets: T.Tensor((seq_num + 1,), T.int32),
             indices: T.Tensor(
                 (chunks_per_batch, 2), T.int32
             ),  # columns are (seq_id, chunk_id within that sequence)
         ) -> None:
             with T.Kernel(
-                T.ceildiv(dim, bdim), chunks_per_batch, batch_size * heads, threads=threads
-            ) as (i_d, i_t, i_bh):
-                i_b = i_bh // heads
-                i_h = i_bh % heads
-                x_shared = T.alloc_shared((chunk_size, bdim), dtype)
-                x_local = T.alloc_fragment((chunk_size, bdim), dtype)
-                output_local = T.alloc_fragment((bdim,), accum_dtype)
+                T.ceildiv(width, bwidth), chunks_per_batch, batch_size, threads=threads
+            ) as (i_w, i_t, i_b):
+                total = T.alloc_fragment((bwidth,), accum_dtype)
+                start_col = i_w * bwidth
+                T.clear(total)
 
-                start_token = T.alloc_var(T.int32)
-                end_token = T.alloc_var(T.int32)
-
-                if use_offsets == 0:
-                    start_token = i_t * chunk_size
-                    end_token = T.min(start_token + chunk_size, seq_len)
+                if full_chunks:
+                    for s in T.serial(chunk_size):
+                        for j in T.Parallel(bwidth):
+                            if in_width(start_col + j):
+                                total[j] += T.cast(
+                                    x[i_b, i_t * chunk_size + s, start_col + j], accum_dtype
+                                )
+                    scale = T.cast(1.0 / chunk_size, accum_dtype)
                 else:
-                    seq_id = indices[i_t, 0]
-                    local_chunk_id = indices[i_t, 1]
-                    start_token = offsets[seq_id] + local_chunk_id * chunk_size
-                    end_token = T.min(start_token + chunk_size, offsets[seq_id + 1])
+                    start_token = T.alloc_var(T.int32)
+                    end_token = T.alloc_var(T.int32)
+                    if use_offsets == 0:
+                        start_token = i_t * chunk_size
+                        end_token = T.min(start_token + chunk_size, seq_len)
+                    else:
+                        seq_id = indices[i_t, 0]
+                        local_chunk_id = indices[i_t, 1]
+                        start_token = offsets[seq_id] + local_chunk_id * chunk_size
+                        end_token = T.min(start_token + chunk_size, offsets[seq_id + 1])
 
-                start_dim = i_d * bdim
-                end_dim = T.min(start_dim + bdim, dim)
+                    # The chunk's own token count bounds the loop. Walking `chunk_size`
+                    # rows and dropping the ones past the end instead predicates the load,
+                    # which is slower on every ragged workload.
+                    for s in T.serial(end_token - start_token):
+                        for j in T.Parallel(bwidth):
+                            if in_width(start_col + j):
+                                total[j] += T.cast(
+                                    x[i_b, start_token + s, start_col + j], accum_dtype
+                                )
+                    scale = T.cast(1.0, accum_dtype) / T.cast(end_token - start_token, accum_dtype)
 
-                # Every extent is a compile-time constant here, so the copy
-                # lowers to vectorized TMA loads and the full tile it writes
-                # needs no T.clear.
-                if use_offsets == 0 and seq_len % chunk_size == 0 and dim % bdim == 0:
-                    T.copy(
-                        x[i_b, start_token : start_token + chunk_size, i_h, start_dim:end_dim],
-                        x_shared,
-                    )
-                else:
-                    T.clear(x_shared)
-                    # disable_tma=True: the copy extent is a runtime value
-                    # (ragged chunks), which the TMA lowering cannot express.
-                    T.copy(
-                        x[i_b, start_token:end_token, i_h, start_dim:end_dim],
-                        x_shared[0 : end_token - start_token, : end_dim - start_dim],
-                        disable_tma=True,
-                    )
-                T.copy(x_shared, x_local)
-                T.reduce_sum(x_local, output_local, dim=0)
-                for d_idx in T.Parallel(bdim):
-                    o[i_b, i_t, i_h, start_dim + d_idx] = T.cast(
-                        output_local[d_idx] / T.cast(end_token - start_token, accum_dtype), dtype
-                    )
+                for j in T.Parallel(bwidth):
+                    if in_width(start_col + j):
+                        o[i_b, i_t, start_col + j] = T.cast(total[j] * scale, dtype)
 
         return _mean_pooling_main
 
@@ -99,13 +156,14 @@ def _mean_pooling_wrapped_kernel(
     use_offsets: int,
     dtype: str,
     accum_dtype: str,
-    bdim: int,
+    bwidth: int,
     threads: int,
     x: torch.Tensor,
     offsets: torch.Tensor,
     indices: torch.Tensor,
 ) -> torch.Tensor:
-    return _mean_pooling_kernel(
+    width = heads * dim
+    pooled = _mean_pooling_kernel(
         batch_size=batch_size,
         seq_len=seq_len,
         heads=heads,
@@ -116,7 +174,8 @@ def _mean_pooling_wrapped_kernel(
         use_offsets=use_offsets,
         dtype=dtype,
         accum_dtype=accum_dtype,
-    )(bdim, threads)(x, offsets, indices)
+    )(bwidth, threads)(x.view(batch_size, seq_len, width), offsets, indices)
+    return pooled.view(batch_size, chunks_per_batch, heads, dim)
 
 
 @_mean_pooling_wrapped_kernel.register_fake
@@ -131,11 +190,11 @@ def _(
     use_offsets: int,
     dtype: str,
     accum_dtype: str,
-    bdim: int,
+    bwidth: int,
     threads: int,
     *inputs: tuple[Any],
 ) -> torch.Tensor:
-    _ = (seq_len, chunk_size, seq_num, bdim, use_offsets, dtype, accum_dtype, threads)
+    _ = (seq_len, chunk_size, seq_num, bwidth, use_offsets, dtype, accum_dtype, threads)
     x = inputs[0]
     return torch.empty(
         (batch_size, chunks_per_batch, heads, dim),
@@ -174,6 +233,9 @@ class MeanPoolingFwdKernel(Kernel):
         self.dtype = dtype
         self.accum_dtype = accum_dtype
         self.accum_dtype_str = self.dtype_to_str(self.accum_dtype)
+        self.width = heads * dim
+        # One block per chunk before the width is cut; what the launch rule divides.
+        self.blocks = batch_size * chunks_per_batch
 
         self.kernel = _mean_pooling_kernel(
             self.batch_size,
@@ -194,9 +256,9 @@ class MeanPoolingFwdKernel(Kernel):
     def autotune_supply_prog(self):
         """Supply autotuning the chunk map a real call carries.
 
-        The kernel takes each chunk's token range from ``offsets[seq_id]`` and
-        ``offsets[seq_id + 1]`` and divides by that range's length, so random
-        values leave it empty or inverted.
+        The kernel takes a ragged chunk's token range from ``offsets[seq_id]`` and
+        ``offsets[seq_id + 1]`` and divides by that range's length, so random values leave
+        it empty or inverted.
         """
         from tilelang.utils.device import get_current_device
         from tilelang.utils.tensor import get_tensor_supply
@@ -243,16 +305,23 @@ class MeanPoolingFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {
-            "bdim": 128,
-            "threads": 128,
-        }
+        bwidth, threads = _launch(self.width, self.blocks, get_sm_count())
+        return {"bwidth": bwidth, "threads": threads}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        threads = [32, 64, 128, 256]
-        bdim = [16, 32, 64, 128]
-        return [{"bdim": b, "threads": t} for b in bdim for t in threads]
+        """The launch rule's width and its neighbours, at 8, 16 and 32 bytes per lane.
+
+        A band narrow enough that every member is close to the best, with the untuned
+        default a member of it.
+        """
+        widths = _block_widths(self.width)
+        chosen = widths.index(self.default_config["bwidth"])
+        return [
+            {"bwidth": w, "threads": t}
+            for w in widths[max(0, chosen - 1) : chosen + 3]
+            for t in sorted({_threads_for(w, e) for e in _TUNED_LANE_ELEMS})
+        ]
 
     def forward(
         self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor
@@ -269,7 +338,7 @@ class MeanPoolingFwdKernel(Kernel):
             self.use_offsets,
             self.dtype_str,
             self.accum_dtype_str,
-            self.config["bdim"],
+            self.config["bwidth"],
             self.config["threads"],
             x,
             offsets,

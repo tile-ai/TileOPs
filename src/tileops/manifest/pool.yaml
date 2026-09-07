@@ -811,10 +811,10 @@ MeanPoolingFwdOp:
     - "indices is None or (indices.ndim == 2 and indices.shape[1] == 2)"
     - "indices is None or output.shape == (batch, indices.shape[0], heads, dim)"
     - "indices is not None or output.shape == (batch, -(-seq_len // chunk_size), heads, dim)"
-    # A warp reduction spans the chunk, so the chunk must fill whole warps.
+    # Declared limits, not kernel limits. A block reduces a chunk without a warp
+    # reduction, so it reads any `chunk_size`; it takes a power-of-two share of
+    # `heads * dim` and bounds-tests a share that does not divide it, so it reads any `dim`.
     - "chunk_size > 0 and chunk_size % 32 == 0"
-    # The kernel tiles `dim` by a width of at most 128, and a tile that is neither the whole
-    # `dim` nor an exact divisor of it has no valid layout.
     - "dim <= 128 or dim % 128 == 0"
 
   workloads:

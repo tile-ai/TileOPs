@@ -95,9 +95,10 @@ def test_mean_pooling_op(
 def test_mean_pooling_dim_not_one_full_tile(dim: int) -> None:
     """`dim` values the manifest allows but no workload row carries.
 
-    The kernel tiles `dim` by a width of at most 128: 100 is one tile with a short tail, 256
-    is two whole tiles. Between them TileLang finds no layout, which is why the manifest
-    rules out that range rather than the op checking for it.
+    A block takes a power-of-two share of `heads * dim`: `dim` 100 gives a width of 200
+    that no share divides, so the last block is bounds-tested; 256 gives 512 that they
+    divide. The range the manifest rules out between them is a contract bound, not a shape
+    the kernel cannot read.
     """
     test = MeanPoolingTest(
         batch=1,
