@@ -230,9 +230,13 @@ class _MaxPool1dKernelBase(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        # `block_m` counts outputs, so 1024 of them is four per thread at 256
+        # threads, and the 512 this space stopped at is two. A row of a real
+        # workload runs into the thousands of outputs, and four per thread
+        # measured faster than two on an H200; re-measure on other hardware.
         return [
             {"block_m": block_m, "threads": threads}
-            for block_m, threads in itertools.product([128, 256, 512], [128, 256, 512])
+            for block_m, threads in itertools.product([128, 256, 512, 1024], [128, 256, 512])
         ]
 
     def forward(self, x: torch.Tensor) -> Any:
@@ -292,11 +296,20 @@ def _max_pool1d_with_indices_kernel(
             # -1 until a NaN is seen, so it is also the flag saying one was.
             nan_idx = T.alloc_var(T.int32)
             first_valid = T.alloc_var(T.bool)
-            iw0 = T.alloc_var(T.int32)
             max_val = T.cast(float("-inf"), accum_dtype)
             nan_idx = -1
             first_valid = True
-            iw0 = ow * stride_w - pad_w
+            if always_in_bounds:
+                # An expression, because a mutable variable is opaque to the
+                # range analysis: every tap would then load under a bounds check
+                # this window's own extent rules out, addressed in 64 bits.
+                iw0 = ow * stride_w - pad_w
+            else:
+                # Each tap carries a bounds test anyway, so nothing is left to
+                # prove and a variable keeps the position arithmetic out of all
+                # of them.
+                iw0 = T.alloc_var(T.int32)
+                iw0 = ow * stride_w - pad_w
             # With the window inside the row its first element is in bounds, so its
             # position is the right seed and `first_valid` is unneeded: an all--inf
             # window then reports that position, which is what PyTorch does.
