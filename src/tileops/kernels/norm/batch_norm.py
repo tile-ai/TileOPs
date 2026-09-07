@@ -108,12 +108,26 @@ class _WholePath:
     MAX_L = 32
     BLOCK_THREADS = 256
 
+    # Channel counts and channel lengths from which the narrow block wins. The
+    # two bounds hold for different reasons. A narrow block wastes half of every
+    # transaction -- a warp covers 32 channels, 64 bytes of a 128-byte line --
+    # and that costs the same at every channel count while what it buys grows:
+    # 768 channels fill three blocks of the default width against twelve narrow
+    # ones. The length bound is the register footprint, threads * L elements per
+    # block: only from eight elements per channel does it cap how many blocks of
+    # the default width an SM hosts.
+    SPREAD_MIN_C = 768
+    SPREAD_MIN_L = 8
+    SPREAD_BLOCK_THREADS = 64
+
     @classmethod
-    def launch(cls, L: int, S: int) -> Optional[int]:
+    def launch(cls, L: int, S: int, C: int) -> Optional[int]:
         """The block width this path needs, or None where it does not serve."""
-        if S <= cls.MAX_S and L <= cls.MAX_L:
-            return cls.BLOCK_THREADS
-        return None
+        if S > cls.MAX_S or L > cls.MAX_L:
+            return None
+        if C >= cls.SPREAD_MIN_C and L >= cls.SPREAD_MIN_L:
+            return cls.SPREAD_BLOCK_THREADS
+        return cls.BLOCK_THREADS
 
 
 class _WidePath:
@@ -790,7 +804,7 @@ class BatchNormFwdTrainKernel(Kernel):
 
         Each path class states what owns a channel there and when it is chosen.
         """
-        whole = _WholePath.launch(L, S)
+        whole = _WholePath.launch(L, S, C)
         if whole is not None:
             return "whole", whole
         wide = _WidePath.launch(C, L, S, dtype)
