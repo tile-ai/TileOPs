@@ -14,20 +14,6 @@ from .common import (
 
 __all__ = ["AdaptiveMaxPool2dKernel", "AdaptiveMaxPool2dWithIndicesKernel"]
 
-# Staged bytes a block aims for. Small keeps the grid longer than the device has
-# multiprocessors, which is what these shapes are short of: the whole input is a
-# megabyte or two, so a block that takes more planes only empties the grid.
-_TILE_BYTES = 4096
-
-# Elements one thread carries in the staging copy. The copy is the kernel's whole
-# memory cost, so the block width follows from it rather than from the output count.
-_COPY_RUN = 8
-
-# Widest staged tile the tuned space offers. Past this a block holds more shared memory
-# and the grid holds fewer blocks, which is the wrong direction for a shape whose whole
-# input is a megabyte or two, so those plane counts are not worth a tuning run.
-_TUNE_TILE_BYTES = 4 * _TILE_BYTES
-
 
 def _divisors(value: int) -> Tuple[int, ...]:
     return tuple(d for d in range(1, value + 1) if value % d == 0)
@@ -41,55 +27,86 @@ def _spread(values: Tuple[int, ...], limit: int) -> Tuple[int, ...]:
     return tuple(sorted({values[round(i * step)] for i in range(limit)}))
 
 
-def _plane_counts(rows: int, plane: int, dtype: str) -> Tuple[int, ...]:
-    """Planes a block may take at once: divisors of ``rows`` whose tile fits shared.
+class _PlaneStaging:
+    """How many planes a block of these kernels stages, and how wide that block is.
 
-    A run of planes is contiguous in the flat ``(rows, h_in, w_in)`` view whatever the
-    batch and channel extents are, so the only constraints are the shared budget and an
-    even split of the grid. Every divisor is offered when one plane alone will not fit,
-    where the reduction reads global memory instead.
+    These figures describe this kernel's access pattern, not the device, and are held
+    here so that a later kernel does not read them as general truths.
     """
-    if not fits_static_shared(plane, dtype):
-        return _divisors(rows)
-    return tuple(d for d in _divisors(rows) if fits_static_shared(d * plane, dtype))
 
+    # A block staging more than this leaves the grid shorter than the device has
+    # multiprocessors, and these shapes hold a megabyte or two in total.
+    _TILE_BYTES = 4096
+    # The tuned space reaches four times the default and no further, the trade above
+    # only continuing in the wrong direction.
+    _TUNE_TILE_BYTES = 4 * _TILE_BYTES
+    # Elements one thread carries in the staging copy. That copy is the kernel's whole
+    # memory cost, so the block width follows from it and not from the output count.
+    _COPY_RUN = 8
+    # Block widths offered, narrowest and widest also clamping the derived width.
+    _THREAD_CHOICES = (128, 256, 512)
+    # Plane counts a tuning run tries. With the widths above that is at most twelve
+    # builds, and the ceiling above has already dropped the counts that cannot win.
+    _TUNED_PLANE_COUNTS = 4
 
-def _check_planes(planes: int, rows: int) -> None:
-    """Refuse a plane count the grid cannot cover.
+    def __init__(self, rows: int, h_in: int, w_in: int, dtype: str) -> None:
+        self._rows = rows
+        self._plane = h_in * w_in
+        self._dtype = dtype
 
-    The grid is ``rows // planes`` blocks of ``planes`` planes each, so a count that does
-    not divide ``rows`` would leave the last planes unwritten. Both config sources draw
-    from :func:`_plane_counts`, which offers divisors only; this catches a hand-written
-    config before it returns uninitialized output.
-    """
-    if rows % planes:
-        raise ValueError(f"planes={planes} must divide rows={rows}")
+    def _tile_bytes(self, planes: int) -> int:
+        itemsize = 4 if self._dtype in ("float", "float32") else 2
+        return planes * self._plane * itemsize
 
+    def counts(self) -> Tuple[int, ...]:
+        """Plane counts a block may take: divisors of ``rows`` whose tile fits shared.
 
-def _block_threads(planes: int, plane: int) -> int:
-    width = 1 << max(0, (planes * plane // _COPY_RUN - 1).bit_length())
-    return min(512, max(128, width))
+        A run of planes is contiguous in the flat ``(rows, h_in, w_in)`` view for every
+        batch and channel extent, so the shared budget and an even split of the grid are
+        the only constraints. One plane that will not fit leaves every divisor on offer,
+        the reduction reading global memory instead.
+        """
+        if not fits_static_shared(self._plane, self._dtype):
+            return _divisors(self._rows)
+        return tuple(
+            d for d in _divisors(self._rows) if fits_static_shared(d * self._plane, self._dtype)
+        )
 
+    def stages(self, planes: int) -> bool:
+        """Whether a block of ``planes`` planes reads them from shared memory.
 
-def _default_config(rows: int, h_in: int, w_in: int, dtype: str) -> dict:
-    plane = h_in * w_in
-    itemsize = 4 if dtype in ("float", "float32") else 2
-    counts = _plane_counts(rows, plane, dtype)
-    fitting = [p for p in counts if p * plane * itemsize <= _TILE_BYTES]
-    planes = max(fitting) if fitting else min(counts)
-    return {"planes": planes, "threads": _block_threads(planes, plane)}
+        A tile that will not fit leaves the reduction reading global memory, where a
+        thread walks its own bin and the reads no longer coalesce.
+        """
+        return fits_static_shared(planes * self._plane, self._dtype)
 
+    def check(self, planes: int) -> None:
+        """Refuse a plane count the grid cannot cover.
 
-def _autotune_configs(rows: int, h_in: int, w_in: int, dtype: str) -> list[dict]:
-    plane = h_in * w_in
-    itemsize = 4 if dtype in ("float", "float32") else 2
-    counts = _plane_counts(rows, plane, dtype)
-    worth = tuple(p for p in counts if p * plane * itemsize <= _TUNE_TILE_BYTES)
-    return [
-        {"planes": planes, "threads": threads}
-        for planes in _spread(worth or counts[:1], 4)
-        for threads in (128, 256, 512)
-    ]
+        The grid is ``rows // planes`` blocks, so a count that does not divide ``rows``
+        leaves the last planes unwritten instead of failing.
+        """
+        if self._rows % planes:
+            raise ValueError(f"planes={planes} must divide rows={self._rows}")
+
+    def threads(self, planes: int) -> int:
+        width = 1 << max(0, (planes * self._plane // self._COPY_RUN - 1).bit_length())
+        return min(max(width, self._THREAD_CHOICES[0]), self._THREAD_CHOICES[-1])
+
+    def default(self) -> dict:
+        counts = self.counts()
+        fitting = [p for p in counts if self._tile_bytes(p) <= self._TILE_BYTES]
+        planes = max(fitting) if fitting else min(counts)
+        return {"planes": planes, "threads": self.threads(planes)}
+
+    def tuned(self) -> list[dict]:
+        counts = self.counts()
+        worth = tuple(p for p in counts if self._tile_bytes(p) <= self._TUNE_TILE_BYTES)
+        return [
+            {"planes": planes, "threads": threads}
+            for planes in _spread(worth or counts[:1], self._TUNED_PLANE_COUNTS)
+            for threads in self._THREAD_CHOICES
+        ]
 
 
 def _bin_extent(size_in: int, size_out: int) -> Tuple[int, bool]:
@@ -112,15 +129,15 @@ def _adaptive_max_pool2d_kernel(
 ):
     accum_dtype = "float"
     rows = n * c_in
-    plane = h_in * w_in
     out_plane = out_h * out_w
     max_kh, uniform_h = _bin_extent(h_in, out_h)
     max_kw, uniform_w = _bin_extent(w_in, out_w)
+    staging = _PlaneStaging(rows, h_in, w_in, dtype)
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _adaptive_max_pool2d_func(planes: int, threads: int):
-        _check_planes(planes, rows)
-        staged = fits_static_shared(planes * plane, dtype)
+        staging.check(planes)
+        staged = staging.stages(planes)
 
         @T.macro
         def _max_bin(src, src_plane, dst, dst_plane, oh, ow):
@@ -199,15 +216,15 @@ def _adaptive_max_pool2d_with_indices_kernel(
     out_plane = out_h * out_w
     max_kh, uniform_h = _bin_extent(h_in, out_h)
     max_kw, uniform_w = _bin_extent(w_in, out_w)
-    # The flat index spans one h_in * w_in plane. Carrying it as int32 keeps the
-    # arithmetic on the update path off the 64-bit path; the stored index is int64 to
-    # match PyTorch.
+    staging = _PlaneStaging(rows, h_in, w_in, dtype)
+    # The flat index spans one h_in * w_in plane, so carrying it as int32 keeps the
+    # update path off 64-bit arithmetic; the stored index is int64 to match PyTorch.
     idx_dtype = "int32" if plane < 2**31 else "int64"
 
     @tilelang.jit(out_idx=[1, 2], compile_flags=["-O3", "-DENABLE_BF16"])
     def _adaptive_max_pool2d_with_indices_func(planes: int, threads: int):
-        _check_planes(planes, rows)
-        staged = fits_static_shared(planes * plane, dtype)
+        staging.check(planes)
+        staged = staging.stages(planes)
 
         @T.macro
         def _argmax_bin(src, src_plane, dst, indices, dst_plane, oh, ow):
@@ -280,15 +297,18 @@ def _launch_adaptive_max_pool2d_with_indices(
 
 
 class _AdaptiveMaxPool2dKernelBase(AdaptivePool2dKernelBase):
-    """Plane-staged config policy shared by the two adaptive max-pool kernels."""
+    """Binds both adaptive max-pool kernels to the plane-staging config policy."""
+
+    def _staging(self) -> _PlaneStaging:
+        return _PlaneStaging(self.n * self.c_in, self.h_in, self.w_in, self.dtype_str)
 
     @property
     def default_config(self) -> dict:
-        return _default_config(self.n * self.c_in, self.h_in, self.w_in, self.dtype_str)
+        return self._staging().default()
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return _autotune_configs(self.n * self.c_in, self.h_in, self.w_in, self.dtype_str)
+        return self._staging().tuned()
 
 
 class AdaptiveMaxPool2dKernel(_AdaptiveMaxPool2dKernelBase):
