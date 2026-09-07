@@ -234,25 +234,46 @@ class FusedAddLayerNormKernel(Kernel):
 # Elements one thread moves per access: 16 bytes is the widest access these dtypes have.
 _VEC = VECTOR_ACCESS_BYTES // 2
 
-# Accesses a CTA makes over the row it reduces; the block width follows from it.
+# Accesses a CTA makes over the row it reduces, where the block width follows from
+# the row rather than the other way round.
 _ROW_ACCESSES = 4
 
 # CTAs put on one row when the call has too few rows to fill the device.
 _ROW_SPLITS = 4
 
+# Columns at or below which a narrow block serves a many-row call better. Under it the
+# shared park is small enough that 16 CTAs stay resident on an SM, which measured 3.9%
+# faster than the widest block; over it the park caps residency whatever the width is,
+# and the widest block wins -- 1.7% at 8192 in fp16, a wash in bf16.
+_NARROW_ROW_COLUMNS = 4096
+_NARROW_THREADS = 128
+_WIDE_THREADS = 512
 
-def _row_threads(n_padded: int) -> int:
-    """Block width for a row of *n_padded* columns.
 
-    The widest power of two that cuts the row into 16-byte accesses and leaves each CTA
-    :data:`_ROW_ACCESSES` of them. Capped at the 1024 CUDA allows a block, and floored at
-    one warp, which a row padded to :data:`ALIGNMENT` always admits.
+def _widest_dividing(target: int, n_padded: int) -> int:
+    """The widest block at or below *target* that cuts the row into whole accesses.
+
+    Floored at one warp, which a row padded to :data:`ALIGNMENT` always admits.
     """
-    target = min(max(n_padded // (_VEC * _ROW_ACCESSES), WARP_LANES), 1024)
     for threads in (1024, 512, 256, 128, 64, WARP_LANES):
         if threads <= target and (n_padded // _VEC) % threads == 0:
             return threads
     return WARP_LANES
+
+
+def _row_threads(n_padded: int) -> int:
+    """Block width for a call with a row per CTA, sized by :data:`_NARROW_ROW_COLUMNS`."""
+    target = _NARROW_THREADS if n_padded <= _NARROW_ROW_COLUMNS else _WIDE_THREADS
+    return _widest_dividing(target, n_padded)
+
+
+def _split_row_threads(n_padded: int) -> int:
+    """Block width for the single-row call, where the CTAs share one row.
+
+    Sized to leave each CTA :data:`_ROW_ACCESSES` accesses over the row it reduces. The
+    many-row width is the wrong answer here: at 8192 it runs 2.43us against 2.08.
+    """
+    return _widest_dividing(min(n_padded // (_VEC * _ROW_ACCESSES), 1024), n_padded)
 
 
 def _row_splits(n_padded: int, threads: int, rows: int) -> int:
@@ -426,7 +447,7 @@ class FusedAddRMSNormKernel(Kernel):
             N: Hidden size the rows are normalized over.
             eps: Epsilon for numerical stability.
             dtype: Element type the rows are stored in.
-            config: Optional ``{"threads": ...}`` override.
+            config: Optional ``{"threads": ...}`` override, for the row-per-CTA case.
             tune: Ignored -- the block width follows from the row width, and
                 ``autotune_configs`` says why a search cannot improve on it.
 
@@ -496,21 +517,20 @@ class FusedAddRMSNormKernel(Kernel):
         weight = weight.reshape(self.N)
         m = rows.shape[0]
 
+        # A single row puts several CTAs on it, which wants a different width from the
+        # row-per-CTA case and so does not read the configured one.
+        threads = _split_row_threads(self.N_padded) if m == 1 else self.config["threads"]
+        splits = _row_splits(self.N_padded, threads, m)
+
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _fused_add_rms_norm_kernel(
-            m,
-            self.N,
-            self.eps,
-            self.dtype_str,
-            _row_splits(self.N_padded, self.config["threads"], m),
-        )
+        self.kernel = _fused_add_rms_norm_kernel(m, self.N, self.eps, self.dtype_str, splits)
 
         pad = self.N_padded - self.N
         if pad:
             rows = F.pad(rows, (0, pad))
             residual = F.pad(residual, (0, pad))
             weight = F.pad(weight, (0, pad))
-        outputs = self.kernel(self.config["threads"])(rows, residual, weight)
+        outputs = self.kernel(threads)(rows, residual, weight)
         if pad:
             outputs = [out[:, : self.N] for out in outputs]
         return [out.reshape(original_shape) for out in outputs]
