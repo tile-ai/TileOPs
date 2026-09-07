@@ -120,15 +120,19 @@ def mha_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
 
 
 def gqa_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for grouped-query attention forward (prefill)."""
+    """Roofline for dense grouped-query attention forward."""
     data = _shape_or_attrs(op, kwargs)
     if "q_shape" in data:
-        batch, seq_len, heads, dim = data["q_shape"]
-        _, _, heads_kv, _ = data["kv_shape"]
+        batch, seq_len_q, heads, dim = data["q_shape"]
+        kv_shape = data.get("k_shape", data.get("kv_shape"))
+        if kv_shape is None:
+            raise KeyError("dense GQA roofline requires k_shape or kv_shape")
+        _, seq_len_kv, heads_kv, _ = kv_shape
     else:
-        batch, seq_len, heads, heads_kv, dim = (
+        batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = (
             data["batch"],
-            data["seq_len"],
+            data.get("seq_len_q", data.get("seq_len")),
+            data.get("seq_len_kv", data.get("seq_len")),
             data["heads"],
             data["heads_kv"],
             data["dim"],
@@ -136,11 +140,12 @@ def gqa_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     is_causal = bool(data.get("is_causal", True))
     elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
-    flops = 4 * batch * heads * seq_len * seq_len * dim
+    visible_scores = seq_len_q * seq_len_kv
     if is_causal:
-        flops //= 2
-    q_elems = batch * seq_len * heads * dim
-    kv_elems = batch * seq_len * heads_kv * dim
+        visible_scores = seq_len_q * (seq_len_kv - seq_len_q) + seq_len_q * (seq_len_q + 1) // 2
+    flops = 4 * batch * heads * visible_scores * dim
+    q_elems = batch * seq_len_q * heads * dim
+    kv_elems = batch * seq_len_kv * heads_kv * dim
     return int(flops), int(2 * (q_elems + kv_elems) * elem_bytes)
 
 

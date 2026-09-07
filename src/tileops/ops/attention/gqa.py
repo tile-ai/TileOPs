@@ -289,6 +289,8 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         self.rope_layout = rope_layout
         self.dtype = dtype
         self.target = target
+        self._roofline_kwargs: Optional[dict] = None
+        self._last_input_dtype: Optional[torch.dtype] = None
         self.dispatch_kernel()
 
     @property
@@ -347,8 +349,17 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                 raise ValueError(f"{name} must have dtype {output_dtype}")
 
     def eval_roofline(self) -> tuple[int, int]:
-        """Keep this spec-only Op concrete until its roofline is implemented."""
-        raise NotImplementedError("Dense GQA has no in-tree implementation yet")
+        if self._roofline_kwargs is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.eval_roofline() requires a prior forward() call"
+            )
+        from tileops.perf.formulas import gqa_fwd_roofline
+
+        return gqa_fwd_roofline(**self._roofline_kwargs)
+
+    def compute_roof(self) -> str:
+        """Dense attention's contractions are priced on tensor cores."""
+        return tensor_core_roof(self._last_input_dtype)
 
     def _validate_forward_inputs(
         self,
@@ -602,7 +613,15 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         self._validate_forward_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
         inputs = self._canonicalize_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
         kernel = self._get_kernel(inputs)
-        return kernel(*inputs)
+        output = kernel(*inputs)
+        self._last_input_dtype = q.dtype
+        self._roofline_kwargs = {
+            "q_shape": tuple(q.shape),
+            "k_shape": tuple(k.shape),
+            "is_causal": self.is_causal,
+            "dtype": q.dtype,
+        }
+        return output
 
 
 class GroupedQueryAttentionVarlenFwdOp(Op):

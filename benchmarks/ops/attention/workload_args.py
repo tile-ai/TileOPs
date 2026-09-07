@@ -16,6 +16,26 @@ def gqa_qkv_args(workload: dict[str, Any]) -> tuple[int, int, int, int, int, boo
     return batch, seq_len, heads, heads_kv, dim, workload.get("is_causal", True)
 
 
+def gqa_dense_decode_args(
+    workload: dict[str, Any],
+) -> tuple[int, int, int, int, int, float | None, float | None]:
+    batch, seq_len_q, heads, dim = workload["q_shape"]
+    batch_kv, seq_len_kv, heads_kv, dim_kv = workload["kv_shape"]
+    if seq_len_q != 1:
+        raise ValueError("a Dense decode workload requires q_shape sequence length 1")
+    if batch_kv != batch or dim_kv != dim:
+        raise ValueError("q_shape and kv_shape must share batch and head dimension")
+    return (
+        batch,
+        heads,
+        heads_kv,
+        seq_len_kv,
+        dim,
+        workload.get("sm_scale"),
+        workload.get("softcap"),
+    )
+
+
 def gqa_prefill_paged_args(
     workload: dict[str, Any],
 ) -> tuple[

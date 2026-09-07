@@ -164,6 +164,54 @@ class GroupedQueryAttentionBwdWorkload(WorkloadBase):
         return q, k, v, o, grad_output, lse
 
 
+class GroupedQueryAttentionDenseDecodeWorkload(WorkloadBase):
+    """Single-token decode over a contiguous BSHD KV cache."""
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        seq_len_kv: int,
+        dim: int,
+        dtype: torch.dtype,
+        sm_scale: float | None = None,
+        softcap: float | None = None,
+    ) -> None:
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len_kv = seq_len_kv
+        self.dim = dim
+        self.dtype = dtype
+        self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
+        self.softcap = 0.0 if softcap is None else softcap
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        q = torch.randn(self.batch, 1, self.heads, self.dim, device="cuda", dtype=self.dtype)
+        k = torch.randn(
+            self.batch,
+            self.seq_len_kv,
+            self.heads_kv,
+            self.dim,
+            device="cuda",
+            dtype=self.dtype,
+        )
+        v = torch.randn_like(k)
+        return q, k, v
+
+    def ref_program(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        groups = self.heads // self.heads_kv
+        q_bhsd = q.transpose(1, 2).float()
+        k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
+        v_bhsd = v.repeat_interleave(groups, dim=2).transpose(1, 2).float()
+        scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * self.sm_scale
+        if self.softcap > 0:
+            scores = self.softcap * torch.tanh(scores / self.softcap)
+        probs = torch.softmax(scores, dim=-1)
+        return torch.matmul(probs, v_bhsd).transpose(1, 2).to(q.dtype).contiguous()
+
+
 class GroupedQueryAttentionDecodePagedWorkload(WorkloadBase):
     def __init__(
         self,
