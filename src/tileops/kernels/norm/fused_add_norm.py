@@ -371,7 +371,10 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits):
                     for i in T.vectorized(_VEC):
                         b[i] = residual[row, mine + base + i]
                     for i in T.serial(_VEC):
-                        b[i] = T.cast(T.cast(a[i], "float32") + T.cast(b[i], "float32"), dtype)
+                        # A native add, not an f32 round trip: f32 holds the exact sum of
+                        # two 16-bit floats, so rounding that sum back is bit-identical to
+                        # adding in the storage dtype, and overflows to inf either way.
+                        b[i] = a[i] + b[i]
                         v = T.cast(b[i], "float32")
                         acc[0] += v * v
                     for i in T.vectorized(_VEC):
@@ -386,10 +389,7 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits):
                     for i in T.vectorized(_VEC):
                         b[i] = residual[row, base + i]
                     for i in T.serial(_VEC):
-                        v = T.cast(
-                            T.cast(T.cast(a[i], "float32") + T.cast(b[i], "float32"), dtype),
-                            "float32",
-                        )
+                        v = T.cast(a[i] + b[i], "float32")
                         acc[0] += v * v
 
                 block_rsqrt(tx, acc, warp_sums, rrms)
