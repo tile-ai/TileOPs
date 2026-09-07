@@ -1,6 +1,6 @@
 """Warp-specialized batch=1 GQA decode kernel (Hopper), context-split.
 
-``GQADecodeBs1Kernel`` dispatches on the runtime ``real_seqlen_kv``: lengths >= 1024
+``GQADecodeBs1Kernel`` dispatches on the runtime K/V sequence extent: lengths >= 1024
 run a context-only warp-specialized split (one TMA producer warp feeding a four-warp
 wgmma consumer warpgroup, exp2-domain online softmax, fp32 partial reduce via a combine
 kernel); shorter lengths fall back to the generic non-split decode kernel. Hopper-only,
@@ -31,7 +31,7 @@ __all__ = ["GQADecodeBs1Kernel"]
 
 
 @functools.lru_cache(maxsize=32)
-def _gqa_decode_bs1_ctx_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, softcap, dtype):
+def _gqa_decode_bs1_ctx_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype):
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     scale = score_scale * LOG2E
     accum_dtype = "float"
@@ -45,6 +45,7 @@ def _gqa_decode_bs1_ctx_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, s
         compile_flags=COMPILE_FLAGS,
     )
     def _func(block_M, block_N, ctx_splits, threads):
+        seqlen_kv = T.dynamic("seqlen_kv")
         shape_q = [batch, heads, dim]
         shape_k = [batch, seqlen_kv, groups, dim]
         shape_o = [batch, heads, dim]
@@ -93,12 +94,11 @@ def _gqa_decode_bs1_ctx_kernel(batch, heads, groups, seqlen_kv, dim, sm_scale, s
             Q: T.Tensor(shape_q, dtype),
             K: T.Tensor(shape_k, dtype),
             V: T.Tensor(shape_k, dtype),
-            real_seqlen_kv: T.int32,
             glse: T.Tensor(lse_shape, accum_dtype),
             Output_partial: T.Tensor(part_shape, accum_dtype),
             Output: T.Tensor(shape_o, dtype),
         ):
-            split(Q, K, V, K, real_seqlen_kv, glse, Output_partial)
+            split(Q, K, V, K, seqlen_kv, glse, Output_partial)
             combine(glse, Output_partial, Output)
 
         return gqa_decode_bs1_ctx
@@ -111,8 +111,6 @@ def _gqa_decode_bs1_ctx_op(
     batch: int,
     heads: int,
     groups: int,
-    seqlen_kv: int,
-    real_seqlen_kv: int,
     dim: int,
     sm_scale: float,
     softcap: float,
@@ -127,9 +125,9 @@ def _gqa_decode_bs1_ctx_op(
     glse: torch.Tensor,
     Output_partial: torch.Tensor,
 ) -> torch.Tensor:
-    return _gqa_decode_bs1_ctx_kernel(
-        batch, heads, groups, seqlen_kv, dim, sm_scale, softcap, dtype
-    )(block_M, block_N, ctx_splits, threads)(Q, K, V, real_seqlen_kv, glse, Output_partial)
+    return _gqa_decode_bs1_ctx_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype)(
+        block_M, block_N, ctx_splits, threads
+    )(Q, K, V, glse, Output_partial)
 
 
 @_gqa_decode_bs1_ctx_op.register_fake
@@ -137,8 +135,6 @@ def _(
     batch: int,
     heads: int,
     groups: int,
-    seqlen_kv: int,
-    real_seqlen_kv: int,
     dim: int,
     sm_scale: float,
     softcap: float,
@@ -159,7 +155,7 @@ def _(
 class GQADecodeBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
     """Hopper warp-specialized batch=1 GQA decode kernel with a context-length switch.
 
-    ``forward`` dispatches on the runtime ``real_seqlen_kv``: >= 1024 runs the context-only
+    ``forward`` dispatches on the runtime K/V sequence extent: >= 1024 runs the context-only
     split, shorter lengths run the generic non-split GQA decode kernel.
     """
 
@@ -173,45 +169,60 @@ class GQADecodeBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
         self,
         batch,
         heads,
-        groups,
-        seqlen_kv,
+        heads_kv,
+        seq_len_kv,
         dim,
         dtype="float16",
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         config: Optional[dict] = None,
         tune=False,
+        device_index: Optional[int] = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.heads = heads
-        self.groups = groups
-        self.seqlen_kv = seqlen_kv
+        self.groups = heads_kv
+        self.seqlen_kv = seq_len_kv
         self.dim = dim
         self.dtype = dtype
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
         if self.groups <= 0:
-            raise ValueError("groups must be positive")
+            raise ValueError("heads_kv must be positive")
         if self.heads % self.groups != 0:
-            raise ValueError("heads must be divisible by groups")
+            raise ValueError("heads must be divisible by heads_kv")
         if self.seqlen_kv <= 0:
-            raise ValueError("seqlen_kv must be positive")
+            raise ValueError("seq_len_kv must be positive")
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
         return {"block_M": 64, "block_N": 128, "threads": 160}
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, real_seqlen_kv: int):
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        self._require_cuda(q=q, k=k, v=v)
+        del q_scale, k_scale, v_scale, rope_cos, rope_sin
+        Q = q.squeeze(1)
+        K = k
+        V = v
+        real_seqlen_kv = k.shape[1]
         c = self.config
         if real_seqlen_kv < self._MIN_CTX:
-            return _gqa_decode_no_split_op(
+            output = _gqa_decode_no_split_op(
                 self.batch,
                 self.heads,
                 self.groups,
-                self.seqlen_kv,
-                real_seqlen_kv,
                 self.dim,
                 self.sm_scale,
                 self.softcap,
@@ -224,15 +235,14 @@ class GQADecodeBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
                 K,
                 V,
             )
+            return output.unsqueeze(1)
 
         ctx_splits = self._ctx_splits_for(real_seqlen_kv)
         glse, Output_partial = self._allocate_partials(Q, ctx_splits)
-        return _gqa_decode_bs1_ctx_op(
+        output = _gqa_decode_bs1_ctx_op(
             self.batch,
             self.heads,
             self.groups,
-            self.seqlen_kv,
-            real_seqlen_kv,
             self.dim,
             self.sm_scale,
             self.softcap,
@@ -247,3 +257,4 @@ class GQADecodeBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
             glse,
             Output_partial,
         )
+        return output.unsqueeze(1)

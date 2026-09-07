@@ -113,7 +113,21 @@ GroupedQueryAttentionDenseFwdOp:
       - "o.shape == (B, S_q, H, D)"
       - "H % H_kv == 0"
 
-  workloads: []
+  workloads:
+    # Dense decode: one query token over a contiguous KV cache.
+    - {q_shape: [32, 1, 32, 128], kv_shape: [32, 4096, 8, 128], dtypes: [float16, bfloat16], label: "decode-llama-8b-4k"}
+    - {q_shape: [8, 1, 32, 128], kv_shape: [8, 32768, 8, 128], dtypes: [float16, bfloat16], label: "decode-llama-8b-32k"}
+    - {q_shape: [16, 1, 64, 128], kv_shape: [16, 4096, 8, 128], dtypes: [float16, bfloat16], label: "decode-llama-70b-4k"}
+    - {q_shape: [4, 1, 64, 128], kv_shape: [4, 32768, 8, 128], dtypes: [float16, bfloat16], label: "decode-llama-70b-32k"}
+    - {q_shape: [32, 1, 32, 128], kv_shape: [32, 4096, 8, 128], softcap: 50.0, dtypes: [float16], label: "decode-llama-8b-4k-softcap50"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 1024, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-1k"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 4096, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-4k"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 8192, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-8k"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 16384, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-16k"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 32768, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-32k"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 65536, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-64k"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 131072, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-128k"}
+    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 262144, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-256k"}
 
   roofline:
     func: "tileops.perf.formulas.gqa_fwd_roofline"
@@ -122,10 +136,13 @@ GroupedQueryAttentionDenseFwdOp:
     kernel: tileops/kernels/attention/gqa_dense.py
     kernel_map:
       gqa_dense: GQADenseCausalWsKernel
+      gqa_dense_decode: GQADecodeKernel
+      gqa_dense_decode_bs1: GQADecodeBs1Kernel
       gqa_dense_sliding_window: GQADenseSlidingWindowKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
     bench: benchmarks/ops/attention/bench_gqa.py
+    bench_manifest_driven: true
 
 GroupedQueryAttentionVarlenFwdOp:
   ref_api: "none"

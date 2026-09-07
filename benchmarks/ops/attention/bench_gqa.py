@@ -13,6 +13,7 @@ from benchmarks.benchmark_base import (
     workload_params,
 )
 from benchmarks.ops.attention.workload_args import (
+    gqa_dense_decode_args,
     gqa_prefill_paged_args,
     gqa_prefill_varlen_args,
     gqa_qkv_args,
@@ -20,6 +21,7 @@ from benchmarks.ops.attention.workload_args import (
 from tileops.manifest import load_workloads
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
+    GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
 )
@@ -27,6 +29,7 @@ from workloads.attention.gqa import (
     GQAPrefillPagedWithKVCacheFwdWorkload,
     GQAPrefillVarlenFwdWorkload,
     GroupedQueryAttentionBwdWorkload,
+    GroupedQueryAttentionDenseDecodeWorkload,
 )
 
 
@@ -137,6 +140,143 @@ def test_gqa_bwd_bench(
 
     bm.compare(functors, *inputs)
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)
+
+
+def _fa3_gqa_dense_decode(test: GroupedQueryAttentionDenseDecodeWorkload):
+    """Return the contiguous FA3 decode baseline where its defaults match."""
+    if test.sm_scale != test.dim**-0.5 or test.softcap != 0.0:
+        return None
+    try:
+        from flash_attn_interface import flash_attn_with_kvcache
+    except ImportError:
+        return None
+
+    cache_seqlens = torch.full((test.batch,), test.seq_len_kv, dtype=torch.int32, device="cuda")
+
+    def baseline_fn(q, k, v):
+        out = flash_attn_with_kvcache(q, k, v, cache_seqlens=cache_seqlens)
+        return out[0] if isinstance(out, tuple) else out
+
+    return baseline_fn
+
+
+def _flashinfer_gqa_dense_decode(
+    test: GroupedQueryAttentionDenseDecodeWorkload,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+):
+    """Set up FlashInfer's contiguous or synthetic-paged decode baseline."""
+    if test.sm_scale != test.dim**-0.5 or test.softcap != 0.0:
+        return None
+    if test.heads // test.heads_kv > 8:
+        return None
+
+    batch, _, heads, dim = q.shape
+    heads_kv = k.shape[2]
+    if batch == 1:
+        try:
+            from flashinfer.decode import single_decode_with_kv_cache
+        except ImportError:
+            return None
+
+        def run_fn(q, k, v):
+            out = single_decode_with_kv_cache(
+                q[0, 0],
+                k[0],
+                v[0],
+                kv_layout="NHD",
+                use_tensor_cores=True,
+            )
+            return out.view(1, 1, heads, dim)
+
+        return run_fn
+
+    try:
+        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper
+    except ImportError:
+        return None
+
+    seq_len_kv = k.shape[1]
+    page_size = 256
+    if seq_len_kv % page_size != 0:
+        return None
+    pages_per_seq = seq_len_kv // page_size
+    total_pages = batch * pages_per_seq
+    indptr = torch.arange(0, batch + 1, dtype=torch.int32, device=q.device) * pages_per_seq
+    indices = torch.arange(total_pages, dtype=torch.int32, device=q.device)
+    last_page_len = torch.full((batch,), page_size, dtype=torch.int32, device=q.device)
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
+    wrapper = BatchDecodeWithPagedKVCacheWrapper(workspace, kv_layout="NHD")
+    wrapper.plan(
+        indptr=indptr,
+        indices=indices,
+        last_page_len=last_page_len,
+        num_qo_heads=heads,
+        num_kv_heads=heads_kv,
+        head_dim=dim,
+        page_size=page_size,
+        q_data_type=q.dtype,
+    )
+
+    def run_fn(q, k, v):
+        k_pages = k.view(total_pages, page_size, heads_kv, dim)
+        v_pages = v.view(total_pages, page_size, heads_kv, dim)
+        return wrapper.run(q.squeeze(1), (k_pages, v_pages)).unsqueeze(1)
+
+    return run_fn
+
+
+_GQA_DENSE_DECODE_BENCH_PARAMS = workload_params(
+    load_workloads(GroupedQueryAttentionDenseFwdOp),
+    then_dtype(gqa_dense_decode_args),
+)
+
+
+@pytest.mark.parametrize(
+    "batch, heads, heads_kv, seq_len_kv, dim, sm_scale, softcap, dtype",
+    _GQA_DENSE_DECODE_BENCH_PARAMS,
+)
+def test_gqa_dense_decode_bench(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len_kv: int,
+    dim: int,
+    sm_scale: float | None,
+    softcap: float | None,
+    dtype: torch.dtype,
+) -> None:
+    test = GroupedQueryAttentionDenseDecodeWorkload(
+        batch,
+        heads,
+        heads_kv,
+        seq_len_kv,
+        dim,
+        dtype,
+        sm_scale=sm_scale,
+        softcap=softcap,
+    )
+    inputs = test.gen_inputs()
+    op = GroupedQueryAttentionDenseFwdOp(sm_scale=sm_scale, softcap=softcap)
+    bm = ManifestBenchmark(op, test)
+    functors = {"tileops": op}
+
+    fa3_fn = _fa3_gqa_dense_decode(test)
+    if fa3_fn is not None:
+        assert_matches_reference(fa3_fn, op, *inputs, **reference_tolerance(dtype))
+        functors["fa3"] = fa3_fn
+
+    flashinfer_fn = _flashinfer_gqa_dense_decode(test, *inputs)
+    if flashinfer_fn is not None:
+        assert_matches_reference(flashinfer_fn, op, *inputs, **reference_tolerance(dtype))
+        functors["flashinfer"] = flashinfer_fn
+
+    if fa3_fn is None and flashinfer_fn is None:
+        assert_matches_reference(op, test.ref_program, *inputs, **reference_tolerance(dtype))
+        functors["torch-ref"] = test.ref_program
+
+    bm.compare(functors, *inputs)
 
 
 def _fa3_gqa_prefill_varlen(test: GQAPrefillVarlenFwdWorkload):

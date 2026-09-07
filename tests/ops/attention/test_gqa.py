@@ -7,9 +7,12 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import (
+    GQADecodeBs1Kernel,
+    GQADecodeKernel,
     GQADenseCausalWsKernel,
     GQADenseSlidingWindowKernel,
 )
+from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
@@ -178,11 +181,11 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
     op = GroupedQueryAttentionDenseFwdOp()
 
     for seq_len_q, seq_len_kv in (
-        (1, 270),
-        (1, 271),
+        (2, 270),
+        (2, 271),
         (160, 270),
         (896, 896),
-        (1, 270),
+        (2, 270),
     ):
         q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16)
         k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
@@ -196,6 +199,54 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
         )
 
     assert len(list(op.iter_kernels())) == 1
+
+
+@pytest.mark.parametrize(
+    "batch, dtype, seq_lens_kv, kernel_type",
+    [
+        pytest.param(
+            1,
+            torch.float16,
+            (257, 1057),
+            GQADecodeBs1Kernel,
+            id="bs1-fp16",
+        ),
+        pytest.param(
+            2,
+            torch.bfloat16,
+            (257, 2051),
+            GQADecodeKernel,
+            id="batched-bf16",
+        ),
+    ],
+)
+@pytest.mark.smoke
+def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
+    batch: int,
+    dtype: torch.dtype,
+    seq_lens_kv: tuple[int, ...],
+    kernel_type: type[Kernel],
+) -> None:
+    if not torch.cuda.is_available() or get_sm_version() != 90:
+        pytest.skip("Dense decode requires SM90")
+    heads, heads_kv, dim = 8, 2, 128
+    op = GroupedQueryAttentionDenseFwdOp()
+
+    for seq_len_kv in seq_lens_kv:
+        q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=dtype)
+        k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
+        v = torch.randn_like(k)
+        output = op(q, k, v)
+        torch.testing.assert_close(
+            output,
+            _gqa_prefill_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
+            atol=1.6e-2 if dtype == torch.bfloat16 else 5e-3,
+            rtol=1.6e-2 if dtype == torch.bfloat16 else 1e-5,
+        )
+
+    kernels = list(op.iter_kernels())
+    assert len(kernels) == 1
+    assert isinstance(kernels[0], kernel_type)
 
 
 @pytest.mark.parametrize("use_rope", [False, True])

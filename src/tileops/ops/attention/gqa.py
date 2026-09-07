@@ -7,6 +7,8 @@ from tileops.backend import Target
 from tileops.kernels.attention import (
     FlashAttnBwdPreprocessKernel,
     GQABwdWgmmaPipelinedKernel,
+    GQADecodeBs1Kernel,
+    GQADecodeKernel,
     GQADecodePagedBs1Kernel,
     GQADecodePagedKernel,
     GQADenseCausalWsKernel,
@@ -287,12 +289,16 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         self.rope_layout = rope_layout
         self.dtype = dtype
         self.target = target
+        self._roofline_kwargs: Optional[dict] = None
+        self._last_input_dtype: Optional[torch.dtype] = None
         self.dispatch_kernel()
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "gqa_dense": GQADenseCausalWsKernel,
+            "gqa_dense_decode": GQADecodeKernel,
+            "gqa_dense_decode_bs1": GQADecodeBs1Kernel,
             "gqa_dense_sliding_window": GQADenseSlidingWindowKernel,
         }
 
@@ -343,8 +349,17 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                 raise ValueError(f"{name} must have dtype {output_dtype}")
 
     def eval_roofline(self) -> tuple[int, int]:
-        """Keep this spec-only Op concrete until its roofline is implemented."""
-        raise NotImplementedError("Dense GQA has no in-tree implementation yet")
+        if self._roofline_kwargs is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.eval_roofline() requires a prior forward() call"
+            )
+        from tileops.perf.formulas import gqa_fwd_roofline
+
+        return gqa_fwd_roofline(**self._roofline_kwargs)
+
+    def compute_roof(self) -> str:
+        """Dense attention's contractions are priced on tensor cores."""
+        return tensor_core_roof(self._last_input_dtype)
 
     def _validate_forward_inputs(
         self,
@@ -458,8 +473,24 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         batch, seq_len_q, heads, dim = q.shape
         _, seq_len_kv, heads_kv, _ = k.shape
         uses_window = self.window_size_left != -1 or self.window_size_right != -1
-        role = "gqa_dense_sliding_window" if uses_window else "gqa_dense"
         rope_on = self.pos_encoding_mode == "rope"
+        uses_decode = seq_len_q == 1 and not uses_window and not rope_on
+        uses_bs1_decode = (
+            uses_decode
+            and batch == 1
+            and q.dtype == torch.float16
+            and dim == 128
+            and self.softcap == 0.0
+            and 1 <= heads // heads_kv <= 64
+        )
+        if uses_bs1_decode:
+            role = "gqa_dense_decode_bs1"
+        elif uses_decode:
+            role = "gqa_dense_decode"
+        elif uses_window:
+            role = "gqa_dense_sliding_window"
+        else:
+            role = "gqa_dense"
         rope_kwargs = {
             "fuse_rope": rope_on,
             "max_position": rope_cos.shape[0] if rope_cos is not None else 1,
@@ -469,6 +500,18 @@ class GroupedQueryAttentionDenseFwdOp(Op):
 
         def build() -> Kernel:
             self._validate_builtin_call(q, k)
+            if uses_decode:
+                return self.kernel_map[role](
+                    batch=batch,
+                    heads=heads,
+                    heads_kv=heads_kv,
+                    seq_len_kv=seq_len_kv,
+                    dim=dim,
+                    dtype=q.dtype,
+                    sm_scale=self.sm_scale,
+                    softcap=self.softcap,
+                    device_index=q.device.index,
+                )
             if uses_window:
                 return self.kernel_map[role](
                     batch=batch,
@@ -570,7 +613,15 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         self._validate_forward_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
         inputs = self._canonicalize_inputs(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
         kernel = self._get_kernel(inputs)
-        return kernel(*inputs)
+        output = kernel(*inputs)
+        self._last_input_dtype = q.dtype
+        self._roofline_kwargs = {
+            "q_shape": tuple(q.shape),
+            "k_shape": tuple(k.shape),
+            "is_causal": self.is_causal,
+            "dtype": q.dtype,
+        }
+        return output
 
 
 class GroupedQueryAttentionVarlenFwdOp(Op):
