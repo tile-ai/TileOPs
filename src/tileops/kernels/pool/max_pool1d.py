@@ -305,9 +305,8 @@ def _max_pool1d_with_indices_kernel(
                 iw = iw0 + kw * dilation_w
                 if always_in_bounds:
                     val = T.cast(src[src_c, src_row, iw], accum_dtype)
-                    # `max_val` starts at -inf and only a passing compare replaces
-                    # it, so it is never NaN; NaN fails `>`. The compare alone
-                    # therefore rejects NaN and no separate test is needed.
+                    # `max_val` is never NaN and NaN fails `>`, so the compare
+                    # rejects NaN without a separate test.
                     take = val > max_val
                     max_val = T.if_then_else(take, val, max_val)
                     max_idx = T.if_then_else(take, iw, max_idx)
