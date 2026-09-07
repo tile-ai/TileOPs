@@ -9,8 +9,8 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import (
     GQADecodeBs1Kernel,
     GQADecodeKernel,
-    GQADenseCausalWsKernel,
     GQADenseSlidingWindowKernel,
+    GQADenseWsKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
@@ -113,17 +113,22 @@ def _apply_dense_rope(
 
 
 @pytest.mark.parametrize(
-    "rope_layout, rotary_dim, dtype",
+    "is_causal, rope_layout, rotary_dim, dtype",
     [
-        (None, None, torch.float16),
-        ("neox", 64, torch.float16),
-        ("interleaved", 64, torch.float16),
-        ("neox", None, torch.bfloat16),
+        (True, None, None, torch.float16),
+        (True, "neox", 64, torch.float16),
+        (True, "interleaved", 64, torch.float16),
+        (True, "neox", None, torch.bfloat16),
+        (False, None, None, torch.float16),
+        (False, "neox", 64, torch.float16),
     ],
 )
 @pytest.mark.smoke
 def test_gqa_dense_sm90_main_kernel_matches_reference(
-    rope_layout: Optional[str], rotary_dim: Optional[int], dtype: torch.dtype
+    is_causal: bool,
+    rope_layout: Optional[str],
+    rotary_dim: Optional[int],
+    dtype: torch.dtype,
 ) -> None:
     if not torch.cuda.is_available() or get_sm_version() != 90:
         pytest.skip("Dense warp-specialized prefill requires SM90")
@@ -133,7 +138,7 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
     v = torch.randn_like(k)
 
     if rope_layout is None:
-        op = GroupedQueryAttentionDenseFwdOp()
+        op = GroupedQueryAttentionDenseFwdOp(is_causal=is_causal)
         output = op(q, k, v)
         q_ref, k_ref = q, k
     else:
@@ -141,7 +146,10 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
         angles = torch.randn(seq_len_kv, resolved_rotary_dim // 2, device="cuda") * 0.1
         rope_cos, rope_sin = angles.cos().to(dtype), angles.sin().to(dtype)
         op = GroupedQueryAttentionDenseFwdOp(
-            pos_encoding_mode="rope", rotary_dim=rotary_dim, rope_layout=rope_layout
+            is_causal=is_causal,
+            pos_encoding_mode="rope",
+            rotary_dim=rotary_dim,
+            rope_layout=rope_layout,
         )
         output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
         q_positions = torch.arange(seq_len_kv - seq_len_q, seq_len_kv, device="cuda")
@@ -165,11 +173,18 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
 
     torch.testing.assert_close(
         output,
-        _gqa_prefill_ref(q_ref, k_ref, v, heads=heads, heads_kv=heads_kv, is_causal=True),
+        _gqa_prefill_ref(
+            q_ref,
+            k_ref,
+            v,
+            heads=heads,
+            heads_kv=heads_kv,
+            is_causal=is_causal,
+        ),
         atol=2e-2 if dtype == torch.bfloat16 else 5e-3,
         rtol=1e-5,
     )
-    assert isinstance(next(iter(op.iter_kernels())), GQADenseCausalWsKernel)
+    assert isinstance(next(iter(op.iter_kernels())), GQADenseWsKernel)
 
 
 @pytest.mark.smoke
@@ -249,13 +264,24 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
     assert isinstance(kernels[0], kernel_type)
 
 
-@pytest.mark.parametrize("use_rope", [False, True])
+@pytest.mark.parametrize(
+    "is_causal,use_rope",
+    [
+        pytest.param(True, False, id="causal"),
+        pytest.param(True, True, id="causal-rope"),
+        pytest.param(False, False, id="noncausal"),
+        pytest.param(False, True, id="noncausal-rope"),
+    ],
+)
 @pytest.mark.smoke
-def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(use_rope: bool) -> None:
+def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(
+    is_causal: bool, use_rope: bool
+) -> None:
     if not torch.cuda.is_available() or get_sm_version() != 90:
         pytest.skip("Dense sliding-window prefill requires SM90")
-    batch, seq_len, heads, heads_kv, dim = 1, 256, 8, 2, 128
+    batch, seq_len, heads, heads_kv, dim = 1, 270, 8, 2, 128
     window_size_left = 64
+    window_size_right = 0 if is_causal else 32
     sm_scale = 0.125
     softcap = 2.0
     q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
@@ -269,8 +295,9 @@ def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(use_rope: bool) 
     else:
         rope_cos = rope_sin = None
     op = GroupedQueryAttentionDenseFwdOp(
+        is_causal=is_causal,
         window_size_left=window_size_left,
-        window_size_right=0,
+        window_size_right=window_size_right,
         sm_scale=sm_scale,
         softcap=softcap,
         pos_encoding_mode="rope" if use_rope else "none",
@@ -301,11 +328,11 @@ def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(use_rope: bool) 
             v,
             heads=heads,
             heads_kv=heads_kv,
-            is_causal=True,
+            is_causal=is_causal,
             sm_scale=sm_scale,
             softcap=softcap,
             window_size_left=window_size_left,
-            window_size_right=0,
+            window_size_right=window_size_right,
         ),
         atol=5e-3,
         rtol=1e-5,
