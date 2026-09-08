@@ -37,10 +37,9 @@ def _span(
 ) -> _Span:
     """The stretch of a row a block stages to cover ``tile_outputs`` outputs.
 
-    Every staging load is a whole group of ``vector_elems``, and a group is loaded or
-    zeroed as one, so each has to sit either wholly inside the row or wholly outside it.
-    The width is narrowed until the three things that move a group boundary all divide
-    it: the block step, the head, and the row end.
+    A group of ``vector_elems`` is loaded or zeroed as one, so it has to sit wholly
+    inside the row or wholly outside it. The width is narrowed until the block step, the
+    head and the row end all divide it.
     """
     vector_elems = VECTOR_ACCESS_BYTES // dtype_itemsize(dtype)
     step = tile_outputs * stride_l
@@ -58,16 +57,16 @@ class _WindowStaging:
     here so that a later kernel does not read them as general truths.
     """
 
-    # Tile widths a launch may take, widest first. The tail below 128 is what keeps a
-    # window too wide to stage at 128 outputs from having no width at all.
+    # Tile widths a launch may take, widest first. The tail below 128 is for a window
+    # too wide to stage at 128 outputs.
     _TILE_CHOICES: ClassVar[Tuple[int, ...]] = (2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1)
     # Outputs a block covers before the shared budget or the output row narrows it.
     _TILE_OUTPUTS: ClassVar[int] = 512
     _THREAD_CHOICES: ClassVar[Tuple[int, ...]] = (64, 128, 256)
-    # Taken when every block size is ruled out, which needs a tile of a few outputs.
+    # Taken when every block size is ruled out.
     _FALLBACK_THREADS: ClassVar[int] = 128
-    # Threads a launch needs before a narrow block is worth offering: under this the
-    # blocks do not fill the device, and widening each thread's run only lengthens it.
+    # Threads a launch needs before a narrow block is offered; under this the blocks
+    # do not fill the device.
     _MIN_LAUNCH_THREADS: ClassVar[int] = 1 << 16
 
     def __init__(
@@ -94,12 +93,7 @@ class _WindowStaging:
         )
 
     def widths(self) -> list[int]:
-        """The tile widths whose span fits the static shared budget, widest first.
-
-        Raises:
-            ValueError: When not even one output's window fits, which takes a kernel
-                size in the tens of thousands.
-        """
+        """The tile widths whose span fits the static shared budget, widest first."""
         budget = STATIC_SHARED_BYTES // dtype_itemsize(self._dtype)
         fitting = [width for width in self._TILE_CHOICES if self._span(width).span <= budget]
         if not fitting:
@@ -112,10 +106,7 @@ class _WindowStaging:
         return fitting
 
     def width(self) -> int:
-        """``_TILE_OUTPUTS``, narrowed to the shared budget and to the output row.
-
-        A tile wider than the row only idles threads.
-        """
+        """``_TILE_OUTPUTS``, narrowed to the shared budget and to the output row."""
         fitting = self.widths()
         wanted = min(self._TILE_OUTPUTS, max(self._out_l, fitting[-1]))
         return next(width for width in fitting if width <= wanted)
@@ -126,11 +117,8 @@ class _WindowStaging:
     def tuned(self) -> list[dict]:
         """Block sizes worth timing at the chosen width, which is not itself a candidate.
 
-        Two widths a factor of two apart differ by less than the autotuner resolves on a
-        launch this short. Two block sizes are dropped: one holding more threads than the
-        staging pass has full-width loads idles them on the read this kernel is bound by,
-        and one whose launch falls short of ``_MIN_LAUNCH_THREADS`` leaves the device
-        unfilled.
+        A block with more threads than the staging pass has loads idles them on the read
+        this kernel is bound by.
         """
         width = self.width()
         vectors = self._span(width).vectors
@@ -166,13 +154,11 @@ def _avg_pool1d_kernel(
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _avg_pool1d_func(block_ol: int, threads: int):
-        # Outputs `stride_l` apart share taps, so a warp taking one output each reads one
-        # short stretch of the row `kernel_l` times over, a narrow load each time. A block
-        # stages that stretch with full-width loads and takes every tap from it.
+        # A warp taking one output each reads one short stretch of the row `kernel_l`
+        # times over. A block stages that stretch with full-width loads instead.
         vector_elems, head, span = _span(block_ol, l_in, kernel_l, stride_l, pad_l, dtype)
         vectors = span // vector_elems
-        # The tile holds zeros where it reaches outside the row, so no tap carries a test
-        # and its index into the tile is this same constant in every block.
+        # The tile holds zeros outside the row, so a tap needs no test and this offset.
         base = head - pad_l
         blocks_per_row = (out_l + block_ol - 1) // block_ol
         tail_free = out_l % block_ol == 0
@@ -190,8 +176,7 @@ def _avg_pool1d_kernel(
         def _stage_edge(tile, x, origin, row):
             """Zero the tile, then load the groups the row covers.
 
-            The row covers whole groups, so the second pass tests one per group and its
-            load stays unguarded.
+            The row covers whole groups, so the test is per group and the load unguarded.
             """
             for i in T.Parallel(vectors):
                 for v in T.vectorized(vector_elems):
@@ -264,9 +249,6 @@ def _avg_pool1d_kernel(
 
 class _AvgPool1dKernelBase(Kernel):
     """Shape, launch planning and dispatch shared by the two avg_pool1d kernels.
-
-    The two differ only in which PyTorch flags a caller may set; the staged span and the
-    configs worth offering follow from the shape alone.
 
     Raises:
         ValueError: When one pooling window does not fit the shared memory a block
@@ -341,11 +323,7 @@ class _AvgPool1dKernelBase(Kernel):
 
 
 class AvgPool1dSpatialKernel(_AvgPool1dKernelBase):
-    """Fast path for common NCL avg_pool1d workloads.
-
-    Zero-padded and floor-mode, so every window spans the full kernel once the padding
-    is counted.
-    """
+    """Fast path for common NCL avg_pool1d workloads: zero-padded, floor-mode."""
 
     def __init__(
         self,
