@@ -14,6 +14,10 @@ Each rule below is a form the compiler accepts, so nothing downstream reports it
   loses its low bits. Reference ``x.dtype``, or compute wider and cast at the
   boundary. A narrow *integer* cast is not this: a uint8 mask compared against 0
   or 1 loses nothing.
+- A ``@tilelang.jit`` builder closing over a value that is not a scalar. The
+  autotuner folds a jit function's free variables into its cache key and accepts
+  only ``int``, ``float``, ``str``, ``bool`` and ``None``; anything else raises
+  only once that kernel is autotuned, which no correctness test does.
 - A file-level lint suppression (``# ruff: noqa``, ``# flake8: noqa``). It hides
   every future finding in the file, not the one being waived.
 
@@ -26,8 +30,10 @@ import argparse
 import ast
 import io
 import re
+import symtable
 import sys
 import tokenize
+from collections.abc import Iterator
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -144,6 +150,155 @@ def _arg(call: ast.Call, pos: int, name: str) -> ast.AST | None:
     return next((k.value for k in call.keywords if k.arg == name), None)
 
 
+_NONSCALAR_KINDS = {
+    ast.List: "list",
+    ast.ListComp: "list",
+    ast.Dict: "dict",
+    ast.DictComp: "dict",
+    ast.Set: "set",
+    ast.SetComp: "set",
+    ast.Tuple: "tuple",
+    ast.GeneratorExp: "generator",
+    ast.Lambda: "function",
+}
+
+_SCOPE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+_Func = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+def _jit_names(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """What this file binds to ``tilelang.jit``: module aliases, then bare names.
+
+    The package re-exports ``jit`` over its own submodule, so ``import tilelang.jit as
+    tj`` binds the decorator and the same import unaliased binds the package.
+    """
+    aliases, bare = set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "tilelang":
+                    aliases.add(a.asname or a.name)
+                elif a.name == "tilelang.jit":
+                    bare.add(a.asname) if a.asname else aliases.add("tilelang")
+        elif isinstance(node, ast.ImportFrom) and node.module == "tilelang":
+            bare |= {a.asname or a.name for a in node.names if a.name == "jit"}
+    return aliases, bare
+
+
+def _is_jit_builder(func: _Func, aliases: set[str], bare: set[str]) -> bool:
+    """Whether ``tilelang.jit`` decorates this function, called or bare."""
+    for dec in func.decorator_list:
+        node = dec.func if isinstance(dec, ast.Call) else dec
+        if isinstance(node, ast.Name) and node.id in bare:
+            return True
+        path = _attr_path(node)
+        if path:
+            base, _, attr = path.rpartition(".")
+            if attr == "jit" and base in aliases:
+                return True
+    return False
+
+
+def _nested_functions(tree: ast.Module) -> list[tuple[_Func, tuple[_Func, ...]]]:
+    """Each function defined inside another, with every function enclosing it.
+
+    A cell comes from any enclosing scope, so the chain is ordered innermost first — the
+    order in which a name resolves.
+    """
+    pairs, stack = [], [(tree, ())]
+    while stack:
+        node, outer = stack.pop()
+        for child in ast.iter_child_nodes(node):
+            nested = isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            if nested and outer:
+                pairs.append((child, outer))
+            stack.append((child, (child, *outer) if nested else outer))
+    return pairs
+
+
+def _own_scope(func: _Func) -> Iterator[ast.AST]:
+    """Nodes belonging to this function's own scope, not to one nested inside it."""
+    stack: list[ast.AST] = list(func.body)
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, _SCOPE):
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _function_tables(top: symtable.SymbolTable) -> dict[tuple[str, int], symtable.SymbolTable]:
+    """Every function scope in the file, keyed by its name and ``def`` line."""
+    tables: dict[tuple[str, int], symtable.SymbolTable] = {}
+    stack = [top]
+    while stack:
+        table = stack.pop()
+        if table.get_type() == "function":
+            tables.setdefault((table.get_name(), table.get_lineno()), table)
+        stack.extend(table.get_children())
+    return tables
+
+
+def _nonscalar_kind(value: ast.AST, classes: set[str]) -> str | None:
+    """What kind of non-scalar this expression provably builds, or None.
+
+    One-sided on purpose: an expression this cannot classify is left alone, so a
+    factory call returning an object passes.
+    """
+    for node_type, kind in _NONSCALAR_KINDS.items():
+        if isinstance(value, node_type):
+            return kind
+    if isinstance(value, ast.Call):
+        func = value.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+        if name in classes:
+            return f"{name} instance"
+    return None
+
+
+def _nonscalar_closures(path: Path, text: str, tree: ast.Module) -> list[str]:
+    """Free variables of a jit builder that provably hold something other than a scalar."""
+    try:
+        tables = _function_tables(symtable.symtable(text, str(path), "exec"))
+    except (SyntaxError, ValueError):
+        return []
+
+    aliases, bare = _jit_names(tree)
+    classes = {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
+    out = []
+
+    for func, outers in _nested_functions(tree):
+        table = tables.get((func.name, func.lineno))
+        if table is None or not _is_jit_builder(func, aliases, bare):
+            continue
+        free = {sym.get_name() for sym in table.get_symbols() if sym.is_free()}
+        # The innermost scope binding a name holds the cell the builder closes over. An
+        # outer scope binding the same name is shadowed and says nothing about that cell,
+        # so every name this scope binds leaves the search whether or not it is reported.
+        for outer in outers:
+            # The cell holds what the last assignment left, so a name bound more than
+            # once in a scope is classified by its final binding, not its first.
+            last: dict[str, tuple[int, str | None]] = {}
+            for node in _own_scope(outer):
+                if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+                    continue
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if not isinstance(target, ast.Name) or target.id not in free:
+                        continue
+                    if node.lineno >= last.get(target.id, (-1, None))[0]:
+                        last[target.id] = (node.lineno, _nonscalar_kind(node.value, classes))
+            out += [
+                f"{path}:{lineno}: {func.name} closes over `{name}` ({kind}) — a jit "
+                "builder's free variables enter the autotune cache key, which takes "
+                "only int, float, str, bool and None"
+                for name, (lineno, kind) in last.items()
+                if kind
+            ]
+            free -= set(last)
+    return sorted(out)
+
+
 def check(path: Path) -> list[str]:
     """Violations in one file, each rendered as ``path:line: message``."""
     raw = path.read_bytes()
@@ -163,6 +318,8 @@ def check(path: Path) -> list[str]:
         tree = ast.parse(text)
     except SyntaxError:
         return out  # check-ast reports it; nothing here to add
+
+    out += _nonscalar_closures(path, text, tree)
 
     aliases, bare = _tilelang_names(tree)
 

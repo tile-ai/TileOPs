@@ -31,14 +31,6 @@ def _nsa_topk_varlen_kernel(
     # would silently truncate the QK contraction.
     bk = dim
 
-    q_shape = [c_seq_len, heads, dim]
-    k_cmp_shape = [chunk_num, head_kv, dim]
-    lse_shape = [c_seq_len, heads]
-    offsets_shape = [seq_num + 1]
-    token_indices_shape = [c_seq_len, 2]
-    chunk_offsets_shape = [seq_num + 1]
-    block_indices_shape = [c_seq_len, head_kv, selected_block_num]
-
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={
@@ -77,13 +69,13 @@ def _nsa_topk_varlen_kernel(
 
         @T.prim_func
         def _parallel_nsa_topk_varlen_main(
-            q: T.Tensor(q_shape, dtype),
-            k_cmp: T.Tensor(k_cmp_shape, dtype),
-            lse_in: T.Tensor(lse_shape, dtype),  # todo: lse_in is none.
-            offsets: T.Tensor(offsets_shape, T.int32),
-            chunk_offsets: T.Tensor(chunk_offsets_shape, T.int32),
-            token_indices: T.Tensor(token_indices_shape, T.int32),
-            block_indices: T.Tensor(block_indices_shape, T.int32),
+            q: T.Tensor((c_seq_len, heads, dim), dtype),
+            k_cmp: T.Tensor((chunk_num, head_kv, dim), dtype),
+            lse_in: T.Tensor((c_seq_len, heads), dtype),  # todo: lse_in is none.
+            offsets: T.Tensor((seq_num + 1,), T.int32),
+            chunk_offsets: T.Tensor((seq_num + 1,), T.int32),
+            token_indices: T.Tensor((c_seq_len, 2), T.int32),
+            block_indices: T.Tensor((c_seq_len, head_kv, selected_block_num), T.int32),
         ):
             _ = lse_in
             with T.Kernel(c_seq_len, head_kv, threads=threads) as (bx, by):

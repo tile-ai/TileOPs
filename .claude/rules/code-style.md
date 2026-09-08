@@ -1,6 +1,7 @@
 Rules a reader has to apply by hand. The deprecated `T.Buffer` annotation, a dtype-first
-`T.reinterpret`, a literal cast to a narrow float, and a file-level `noqa` are checked by
-`scripts/lint/tilelang_idioms_lint.py`; that file states why each one is wrong.
+`T.reinterpret`, a literal cast to a narrow float, a `@tilelang.jit` builder closing over a
+non-scalar, and a file-level `noqa` are checked by `scripts/lint/tilelang_idioms_lint.py`;
+that file states why each one is wrong.
 
 - Every `src/tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from .module import Symbol` re-exports.
 

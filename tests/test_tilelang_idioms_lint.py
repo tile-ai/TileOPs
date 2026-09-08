@@ -91,6 +91,229 @@ def test_accepted(tmp_path, source):
     assert result.returncode == 0, result.stdout
 
 
+# One builder per fixture; the rule reads scopes, so the nesting is the fixture.
+CLOSES_OVER_A_LIST = """
+import tilelang
+
+
+def build(n):
+    shape = [n, 4]
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+ANNOTATED_LIST = """
+import tilelang
+
+
+def build(n):
+    shape: list[int] = [n, 4]
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+CLOSES_OVER_AN_INSTANCE = """
+from tilelang import jit as tjit
+
+
+class Policy:
+    pass
+
+
+def build(n):
+    policy = Policy()
+
+    @tjit
+    def _func(threads: int):
+        return policy.pick(n)
+"""
+
+FROM_A_GRANDPARENT_SCOPE = """
+import tilelang
+
+
+def outer(n):
+    shape = [n, 4]
+
+    def build():
+        @tilelang.jit(out_idx=[1])
+        def _func(threads: int):
+            return shape
+"""
+
+SUBMODULE_IMPORT = """
+import tilelang.jit
+
+
+def build(n):
+    shape = [n, 4]
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+SHADOWED_BY_THE_PARENT = """
+import tilelang
+
+
+def outer(n):
+    shape = [n, 4]
+    record(shape)
+
+    def build():
+        shape = n * 2
+
+        @tilelang.jit(out_idx=[1])
+        def _func(threads: int):
+            return shape
+"""
+
+SUBMODULE_IMPORT_ALIASED = """
+import tilelang.jit as tj
+
+
+def build(n):
+    shape = [n, 4]
+
+    @tj(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+REBOUND_SCALAR_LAST = """
+import tilelang
+
+
+def build(n):
+    shape = [n, 4]
+    shape = n * 2
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+CLOSES_OVER_A_SCALAR = """
+import tilelang
+
+
+def build(n):
+    rows = n * 2
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return rows
+"""
+
+PLAIN_NESTED_FUNCTION = """
+def build(n):
+    shape = [n, 4]
+
+    def _helper():
+        return shape
+"""
+
+ANOTHER_LIBRARYS_JIT = """
+import numba
+
+
+def build(n):
+    shape = [n, 4]
+
+    @numba.jit
+    def _func(threads):
+        return shape
+"""
+
+REBOUND_INSIDE_THE_BUILDER = """
+import tilelang
+
+
+def build(n):
+    tile = [n, 4]
+    record(tile)
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        tile = [threads, 4]
+        return tile
+"""
+
+SAME_NAME_IN_A_SIBLING_HELPER = """
+import tilelang
+
+
+def build(n):
+    rows = n * 2
+
+    def _describe():
+        rows = [n, 4]
+        return rows
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return rows, _describe
+"""
+
+CALLS_A_FACTORY = """
+import tilelang
+
+
+def build(n):
+    policy = make_policy(n)
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return policy.pick(n)
+"""
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        (CLOSES_OVER_A_LIST, "closes over `shape` (list)"),
+        (ANNOTATED_LIST, "closes over `shape` (list)"),
+        # An aliased bare import names the same decorator.
+        (CLOSES_OVER_AN_INSTANCE, "closes over `policy` (Policy instance)"),
+        (FROM_A_GRANDPARENT_SCOPE, "closes over `shape` (list)"),
+        (SUBMODULE_IMPORT, "closes over `shape` (list)"),
+        # Aliased, the same import binds the decorator rather than the package.
+        (SUBMODULE_IMPORT_ALIASED, "closes over `shape` (list)"),
+    ],
+)
+def test_nonscalar_closure_rejected(tmp_path, source, expected):
+    result = run_lint(tmp_path, source)
+    assert result.returncode == 1
+    assert expected in result.stdout
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        CLOSES_OVER_A_SCALAR,
+        # The nearest binding holds the cell; an outer one of the same name is shadowed.
+        SHADOWED_BY_THE_PARENT,
+        # The cell holds what the last assignment left.
+        REBOUND_SCALAR_LAST,
+        PLAIN_NESTED_FUNCTION,
+        ANOTHER_LIBRARYS_JIT,
+        # Assigned inside the builder, the name is local there and never a cell.
+        REBOUND_INSIDE_THE_BUILDER,
+        SAME_NAME_IN_A_SIBLING_HELPER,
+        # The blind spot, held deliberately: an unclassifiable call is left alone.
+        CALLS_A_FACTORY,
+    ],
+)
+def test_nonscalar_closure_accepted(tmp_path, source):
+    result = run_lint(tmp_path, source)
+    assert result.returncode == 0, result.stdout
+
+
 def test_bom_does_not_hide_the_rules(tmp_path):
     """A byte-order mark is valid Python; decoding past it must not skip the parse."""
     target = tmp_path / "fixture.py"
