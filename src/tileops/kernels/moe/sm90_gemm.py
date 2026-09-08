@@ -342,7 +342,7 @@ def _make_prim_func(
                 T.sync_threads(barrier_id=_EPILOGUE_BARRIER_BASE + wg, arrive_count=128)
                 if rows > 0:
                     for i, j in T.Parallel(wg_rows, block_n):
-                        if i < rows:
+                        if i < rows and col0 + j < n:
                             C[row0 + i, col0 + j] = C_s[i, j]
             else:
                 T.fence_proxy_async()
@@ -561,7 +561,12 @@ def _make_prim_func(
                         if num_multicast > 1:
                             if contiguous and not multicast_on_a:
                                 # The peer's tile must read the same B.
-                                peer_row = (t_row0[0] // T.int32(block_m) ^ 1) * T.int32(block_m)
+                                # The lone last tile's peer row is past M; its use_mc is
+                                # 0 either way, so clamp the read rather than the branch.
+                                peer_row = T.min(
+                                    (t_row0[0] // T.int32(block_m) ^ 1) * T.int32(block_m),
+                                    m - T.int32(1),
+                                )
                                 use_mc = T.if_then_else(
                                     (t_in_group[0] != 1)
                                     & (grouped_layout[t_row0[0]] == grouped_layout[peer_row]),
@@ -716,9 +721,10 @@ class SM90GemmFwdKernel(Kernel):
     """DeepGEMM-style 16-bit GEMM on Hopper: dense, batched, or m-grouped.
 
     ``C = A @ B^T`` on bf16 or fp16 operands with fp32 accumulation and a ``C``
-    in the operand dtype or fp32. Any of the four layouts is accepted and read off the operands'
-    strides. Operand shapes per ``gemm_type`` (logical; an MN-major operand is
-    a transposed view):
+    in the operand dtype or fp32. Majorness is read off the operands' strides;
+    ``NORMAL`` and ``BATCHED`` take either for both operands, the grouped types
+    need a K-major ``A``. Operand shapes per ``gemm_type`` (logical; an MN-major
+    operand is a transposed view):
 
     | ``gemm_type``               | ``a``            | ``b``          | ``c``            | ``grouped_layout``           |
     | --------------------------- | ---------------- | -------------- | ---------------- | ---------------------------- |
@@ -778,6 +784,10 @@ class SM90GemmFwdKernel(Kernel):
             device_index: Device the kernel is built for; the current one when ``None``.
         """
         super().__init__(device_index=device_index)
+        if num_groups < 1:
+            raise ValueError(f"num_groups must be positive, got {num_groups}")
+        if m_alignment < 1:
+            raise ValueError(f"m_alignment must be positive, got {m_alignment}")
         self.gemm_type = GemmType(gemm_type)
         self.num_groups = num_groups
         self.cd_dtype = cd_dtype
@@ -844,13 +854,23 @@ class SM90GemmFwdKernel(Kernel):
 
     @staticmethod
     def refusal_for(a: torch.Tensor, b: torch.Tensor) -> Optional[str]:
-        """Why TMA cannot address these operands, or ``None`` when it can."""
+        """Why TMA cannot address these operands or the output, or ``None`` when it can.
+
+        Every TMA-addressed row pitch must be a multiple of 16 bytes: the contiguous
+        extent of each operand, and ``N`` for the output row. ``K`` must be positive.
+        """
         if a.dtype not in (torch.bfloat16, torch.float16) or b.dtype != a.dtype:
             return f"bf16 or fp16 operands of one dtype only, got {a.dtype} and {b.dtype}"
+        if a.ndim < 2 or b.ndim < 2:
+            return f"operands need at least two dims, got {a.ndim}-D and {b.ndim}-D"
+        if a.shape[-1] == 0:
+            return "K must be positive"
         for name, t in (("a", a), ("b", b)):
             inner = t.shape[-1] if t.stride(-1) == 1 else t.shape[-2]
             if inner % 8:
                 return f"{name}'s contiguous extent {inner} is not a multiple of 8 elements"
+        if b.shape[-2] % 8:
+            return f"N={b.shape[-2]} is not a multiple of 8 elements (the output row pitch)"
         return None
 
     def _check_layout(self, desc: GemmDesc, grouped_layout: Optional[torch.Tensor]) -> None:
@@ -864,6 +884,8 @@ class SM90GemmFwdKernel(Kernel):
         length = desc.m if gtype is GemmType.M_GROUPED_ALIGNED_PER_ROW else self.num_groups
         if grouped_layout.dtype != torch.int32 or grouped_layout.shape != (length,):
             raise ValueError(f"grouped_layout must be [{length}] int32")
+        if not grouped_layout.is_contiguous():
+            raise ValueError("grouped_layout must be contiguous")
         if gtype is GemmType.M_GROUPED_ALIGNED_PER_ROW and desc.m % self.m_alignment:
             raise ValueError(
                 f"aligned_per_row rows ({desc.m}) must be a multiple of m_alignment "
@@ -889,11 +911,21 @@ class SM90GemmFwdKernel(Kernel):
             out: Optional preallocated output in ``cd_dtype``.
         """
         self._require_cuda(a=a, b=b, grouped_layout=grouped_layout, out=out)
+        for name, t in (("b", b), ("grouped_layout", grouped_layout), ("out", out)):
+            if t is not None and t.device != a.device:
+                raise ValueError(f"{name} must be on {a.device}, got {t.device}")
         why = self.refusal_for(a, b)
         if why is not None:
             raise ValueError(f"{type(self).__name__}: {why}")
         desc = self.describe(a, b)
         self._check_layout(desc, grouped_layout)
+        # The kernel takes the physical storage: an MN-major operand's contiguous
+        # tensor is the transpose of its logical view. A dynamic dim hides a stride
+        # from TileLang's ABI check, so require contiguity here.
+        a_phys = a if desc.major_a is Major.K else a.transpose(-2, -1)
+        b_phys = b if desc.major_b is Major.K else b.transpose(-2, -1)
+        if not a_phys.is_contiguous() or not b_phys.is_contiguous():
+            raise ValueError("a and b must be contiguous in their physical (K- or MN-major) layout")
         if grouped_layout is None:
             grouped_layout = torch.zeros(1, dtype=torch.int32, device=a.device)
         c_shape = (self.num_groups, desc.m, desc.n) if self._a_has_group else (desc.m, desc.n)
@@ -902,11 +934,14 @@ class SM90GemmFwdKernel(Kernel):
             out = torch.empty(c_shape, dtype=cd_dtype, device=a.device)
         elif tuple(out.shape) != c_shape or out.dtype != cd_dtype or not out.is_contiguous():
             raise ValueError(f"out must be a contiguous {list(c_shape)} {cd_dtype}")
+        if out.numel() == 0:  # no rows or no columns: nothing to launch
+            return out
+        if out.data_ptr() in (
+            a.data_ptr(),
+            b.data_ptr(),
+        ):  # same start; offset overlap is not caught
+            raise ValueError("out must not alias an operand: tiles store while others still load")
         spec = self._spec_of(desc)
-        # The kernel takes the physical storage: an MN-major operand's
-        # contiguous tensor is the transpose of its logical view.
-        a_phys = a if desc.major_a is Major.K else a.transpose(-2, -1)
-        b_phys = b if desc.major_b is Major.K else b.transpose(-2, -1)
         fn = _sm90_gemm_kernel(spec)()
         fn(a_phys, b_phys, out, grouped_layout)
         return out

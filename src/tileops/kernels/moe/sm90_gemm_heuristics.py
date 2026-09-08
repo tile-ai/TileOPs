@@ -98,7 +98,11 @@ PER_GROUP_TYPES = (
     GemmType.M_GROUPED_TIGHT_PSUM,
 )
 _FLAT_LIKE_TYPES = (GemmType.NORMAL, GemmType.BATCHED)
-# Only a dense GEMM may take a 2-CTA cluster; see _MIN_WAVES_FOR_CLUSTER. Offering
+# The schedulers a 2-CTA cluster is legal on: the flat ones pair consecutive tile
+# ids inside one swizzle group, and the per-row kernel checks the pair shares a
+# group. A per-group range can start at an odd tile, so pairs would straddle groups.
+_MULTICAST_TYPES = (GemmType.NORMAL, GemmType.M_GROUPED_ALIGNED_PER_ROW)
+# Only a dense GEMM is *offered* one by the selector; see _MIN_WAVES_FOR_CLUSTER. Offering
 # one to a per-group type would also need the CTA pair kept inside one group,
 # i.e. an even ceil(N / block_n), the prune DeepGEMM applies there.
 _CLUSTER_TYPES = (GemmType.NORMAL,)
@@ -160,14 +164,24 @@ class SM90GemmSpec:
             )
         if self.num_tma_multicast not in (1, 2):
             raise ValueError("num_tma_multicast must be 1 or 2")
+        if self.is_tma_multicast_on_a and self.num_tma_multicast == 1:
+            raise ValueError("is_tma_multicast_on_a needs a 2-CTA cluster")
+        if self.num_stages < 1:
+            raise ValueError("num_stages must be positive")
+        if self.num_sms < 1 or min(self.shape_m, self.shape_n, self.shape_k) < 0:
+            raise ValueError("num_sms must be positive and static dims non-negative")
         if self.num_tma_multicast > 1 and self.num_sms % 2:
             raise ValueError("TMA multicast needs an even persistent grid")
         if self.gemm_type not in _FLAT_LIKE_TYPES and self.major_a is not Major.K:
             raise ValueError("m-grouped GEMM requires a K-major A")
         if self.gemm_type is GemmType.NORMAL and self.num_groups != 1:
             raise ValueError("a normal GEMM has exactly one group")
-        if self.gemm_type is GemmType.BATCHED and self.num_tma_multicast > 1:
-            raise ValueError("the batched scheduler does not multicast")
+        if self.num_tma_multicast > 1 and self.gemm_type not in _MULTICAST_TYPES:
+            raise ValueError(
+                "TMA multicast is offered to the flat schedulers only (NORMAL, aligned per-row): "
+                "a per-group tile range can start at an odd tile, so a hardware CTA pair may "
+                "straddle two groups; the batched scheduler does not multicast"
+            )
         if self.block_m > 128 and self.block_n > 128:
             raise ValueError("block_m and block_n cannot both exceed 128 (register budget)")
         if self.block_m > 128 and self.cd_dtype == "float32":
@@ -319,6 +333,8 @@ def _num_cycles(desc: GemmDesc, layout: _Layout) -> tuple[int, int]:
         * (desc.num_groups if desc.gemm_type is GemmType.BATCHED else 1)
     )
     num_waves = math.ceil(num_blocks / desc.num_sms)
+    if num_blocks == 0:  # a call with no rows or no columns runs nothing
+        return 0, 0
 
     l2_bandwidth_per_cycle = int(min(64.0 * desc.num_sms, 8e6 / 1.3e3))
     l1_bandwidth_per_cycle = 128 * desc.num_sms
@@ -435,6 +451,12 @@ def spec_from_config(desc: GemmDesc, config: dict) -> SM90GemmSpec:
         config.get("cluster_m", 1),
         config.get("cluster_n", 1),
     )
+    if desc.gemm_type in _ALIGNED_TYPES and layout.block_m != desc.m_alignment:
+        raise ValueError(
+            f"an aligned layout's block_m is its segment alignment: the kernel rounds group "
+            f"starts up to block_m and reads a tile's group off its first row, so a block_m of "
+            f"{layout.block_m} does not fit m_alignment={desc.m_alignment}"
+        )
     stages = config.get("num_stages")
     if stages is None:
         stages = _num_stages(desc, dataclasses.replace(layout, block_k=_BLOCK_K))

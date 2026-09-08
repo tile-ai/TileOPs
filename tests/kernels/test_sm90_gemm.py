@@ -1,4 +1,4 @@
-"""Correctness tests for SM90GemmFwdKernel, the DeepGEMM sm90 bf16 template port."""
+"""Correctness tests for SM90GemmFwdKernel, the DeepGEMM ``sm90_bf16_gemm_impl`` port."""
 
 import math
 
@@ -54,7 +54,7 @@ def test_dense_tile_shapes(m, n, k, config):
         pytest.param(4096, 4096, dict(cluster_m=2), id="multicast-b"),
         pytest.param(4096, 4096, dict(cluster_n=2), id="multicast-a"),
         pytest.param(4096 + 3 * 128, 4096 + 5 * 128, dict(cluster_m=2), id="odd-groups-split"),
-        pytest.param(1000, 1000, dict(cluster_n=2), id="ragged-with-dead-peer"),
+        pytest.param(1000, 1000, dict(cluster_n=2), id="ragged-tma-clip"),
     ],
 )
 @pytest.mark.full
