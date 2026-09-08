@@ -32,18 +32,57 @@ class PrePermuteCall(CallSpec):
 
 @dataclasses.dataclass(frozen=True)
 class MGroupedGemmCall(CallSpec):
-    """Complete selection facts for one typed M-grouped GEMM invocation."""
+    """Complete selection facts for one M-grouped GEMM invocation.
 
-    layout_key: str = ""
-    max_m: int | None = None
-    device_type: str = ""
-    input_dtype: torch.dtype | None = None
-    weight_dtype: torch.dtype | None = None
-    output_dtype: torch.dtype | None = None
-    materialized_rows: int = 0
-    num_experts: int = 0
+    The layout arrives structured — ``kind`` first, then the contiguous
+    sub-axes — so a candidate can claim a region such as "every contiguous
+    layout with psum metadata" without enumerating keys. ``m`` is the
+    materialized row count (``num_groups * max_m`` for masked layouts); it is a
+    fact of the call and not of the built kernel, so the op keys its kernel
+    cache on this record with ``m`` reset.
+    """
+
+    kind: str = ""  # "contiguous" | "masked"
+    packing: str | None = None  # "tight" | "aligned"; None for masked
+    metadata_kind: str | None = None  # "physical_psum" | "per_row"; None for masked
+    alignment: int = 1  # 1 unless packing == "aligned"
+    max_m: int | None = None  # masked only
+    ab_dtype: torch.dtype | None = None
+    cd_dtype: torch.dtype | None = None
+    num_groups: int = 0
+    m: int = 0
     n: int = 0
     k: int = 0
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        # A record naming no layout is the all-defaults one ``CallSpec.__str__``
+        # diffs against; every other one is held to what a layout spec can express.
+        layout_fields = (self.kind, self.packing, self.metadata_kind, self.alignment, self.max_m)
+        if layout_fields == ("", None, None, 1, None):
+            return
+        if self.kind == "contiguous":
+            if self.packing not in ("tight", "aligned"):
+                raise ValueError(
+                    f"contiguous layouts pack 'tight' or 'aligned', got {self.packing!r}"
+                )
+            if self.metadata_kind not in ("physical_psum", "per_row"):
+                raise ValueError(
+                    f"contiguous metadata is 'physical_psum' or 'per_row', got {self.metadata_kind!r}"
+                )
+            if self.max_m is not None:
+                raise ValueError("contiguous layouts have no max_m")
+            if self.packing == "tight" and self.alignment != 1:
+                raise ValueError("tight packing has alignment 1")
+            if self.packing == "aligned" and self.alignment < 2:
+                raise ValueError("aligned packing has alignment > 1")
+        elif self.kind == "masked":
+            if self.packing is not None or self.metadata_kind is not None or self.alignment != 1:
+                raise ValueError("masked layouts carry no packing, metadata_kind or alignment")
+            if self.max_m is None or self.max_m < 0:
+                raise ValueError("masked layouts need a non-negative max_m")
+        else:
+            raise ValueError(f"kind is 'contiguous' or 'masked', got {self.kind!r}")
 
 
 @dataclasses.dataclass(frozen=True)

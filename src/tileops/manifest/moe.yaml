@@ -371,22 +371,25 @@ MoeGroupedGemmFwdOp:
   status: spec-only
   signature:
     inputs:
-      a: {dtype: "bfloat16"}
+      a: {dtype: "float16 | bfloat16"}
       b: {dtype: "same_as(a)"}
+      layout_metadata: {dtype: "int32"}
     outputs:
-      output: {dtype: "bfloat16"}
+      output: {dtype: "same_as(a) | float32"}
     params:
-      compute: {type: "NoScaleComputeSpec | None", default: null}
-      expert_layout: {type: MaterializedExpertLayout}
-      scales: {type: "object | None", default: null}
+      layout: {type: MGroupedLayoutSpec}
+      out_dtype: {type: "torch.float32 | None", default: null, kw_only: true}
       out: {type: "tensor | None", default: null}
     shape_rules:
     - "a.ndim == 2 or a.ndim == 3"
     - "b.ndim == 3"
     - "a.shape[-1] == b.shape[-1]"
+    - "layout_metadata.ndim == 1"
     - "output.shape == (*a.shape[:-1], b.shape[1])"
   workloads: []
-  roofline: {flops: "2 * a.numel() * b.shape[1]", bytes: "(a.numel() + b.numel() + output.numel()) * elem_bytes"}
+  # bytes depend on out_dtype as well as the operand dtype: not expressible inline.
+  roofline:
+    func: "tileops.perf.formulas.moe_grouped_gemm_roofline"
   source:
     kernel: tileops/ops/moe/staged.py
     op: tileops/ops/moe/staged.py
@@ -399,27 +402,28 @@ MoeExpertMLPFwdOp:
   status: spec-only
   signature:
     inputs:
-      expert_input: {dtype: "bfloat16"}
+      expert_input: {dtype: "float16 | bfloat16"}
       w_gate_up: {dtype: "same_as(expert_input)"}
       w_down: {dtype: "same_as(expert_input)"}
+      layout_metadata: {dtype: "int32"}
     outputs:
       output: {dtype: "same_as(expert_input)"}
     params:
+      layout: {type: MGroupedLayoutSpec}
       activation: {type: str, default: silu_and_mul}
-      compute: {type: "NoScaleComputeSpec | None", default: null}
-      expert_layout: {type: MaterializedExpertLayout}
       out: {type: "tensor | None", default: null}
     shape_rules:
     - "expert_input.ndim == 2 or expert_input.ndim == 3"
     - "w_gate_up.ndim == 3"
     - "w_down.ndim == 3"
+    - "w_gate_up.shape[0] == w_down.shape[0]"
     - "w_gate_up.shape[1] == 2 * w_down.shape[2]"
     - "expert_input.shape[-1] == w_gate_up.shape[-1]"
+    - "layout_metadata.ndim == 1"
     - "output.shape == (*expert_input.shape[:-1], w_down.shape[1])"
   workloads: []
   roofline:
-    flops: "(expert_input.numel() // expert_input.shape[-1]) * (2 * w_gate_up.shape[1] * w_gate_up.shape[2] + 6 * w_down.shape[2] + 2 * w_down.shape[1] * w_down.shape[2])"
-    bytes: "(expert_input.numel() + w_gate_up.numel() + w_down.numel() + output.numel()) * elem_bytes"
+    func: "tileops.perf.formulas.moe_expert_mlp_roofline"
   source:
     kernel: tileops/ops/moe/staged.py
     op: tileops/ops/moe/staged.py
