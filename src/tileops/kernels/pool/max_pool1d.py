@@ -12,19 +12,37 @@ from tileops.kernels.pool.common import fits_static_shared, pool_output_dim
 __all__ = ["MaxPool1dKernel", "MaxPool1dWithIndicesKernel"]
 
 
+def _window_geometry(
+    l_in: int,
+    kernel_w: int,
+    stride_w: int,
+    pad_w: int,
+    dilation_w: int,
+    ceil_mode: bool,
+) -> Tuple[int, bool]:
+    """Outputs along the pooled axis, and whether every window stays in its row.
+
+    The second decides whether a tap carries a bounds test, and both 1d max-pool
+    kernels read it, so the test for it has one home.
+    """
+    out_l = pool_output_dim(l_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
+    last_tap = (out_l - 1) * stride_w + dilation_w * (kernel_w - 1)
+    return out_l, pad_w == 0 and last_tap < l_in
+
+
 def _stage_rows(
     block_m: int, out_l: int, c_in: int, l_in: int, dtype: str
 ) -> Optional[Tuple[int, int]]:
-    """Rows of one image a block stages, and the pad between them, or None.
+    """Rows of one image a block stages, and the width of one staged row, or None.
 
     None means the block reads global instead, which every shape does unless its
-    outputs form whole rows of one image and those rows fit in shared memory.
+    outputs form whole rows of one image and those rows fit in shared memory. The
+    width exceeds `l_in` by the pad that keeps two staged rows off one bank.
     """
     # A warp's width. At or below it a warp spans more than one (batch, channel)
     # row, so neighbouring threads read global memory `l_in` elements apart.
     max_out_l = 32
-    # Pad the shared row off a whole number of banks, or the staged rows collide.
-    # The width is measured, on an H200; re-measure it on other hardware.
+    # Off a whole number of banks. Measured on an H200; re-measure elsewhere.
     row_pad = 8
 
     if out_l > max_out_l or block_m % out_l:
@@ -33,9 +51,10 @@ def _stage_rows(
     # Dividing c_in leaves no ragged last block, so the staged body needs no test.
     if rows > c_in or c_in % rows:
         return None
-    if not fits_static_shared(rows * (l_in + row_pad), dtype):
+    row_width = l_in + row_pad
+    if not fits_static_shared(rows * row_width, dtype):
         return None
-    return rows, row_pad
+    return rows, row_width
 
 
 @functools.lru_cache(maxsize=32)
@@ -51,10 +70,10 @@ def _max_pool1d_kernel(
     dtype: str = "float16",
 ):
     accum_dtype = "float"
-    out_l = pool_output_dim(l_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
+    out_l, always_in_bounds = _window_geometry(
+        l_in, kernel_w, stride_w, pad_w, dilation_w, ceil_mode
+    )
     total_output = n * c_in * out_l
-    eff_w = dilation_w * (kernel_w - 1) + 1
-    always_in_bounds = pad_w == 0 and (out_l - 1) * stride_w + eff_w - 1 < l_in
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _max_pool1d_func(block_m: int, threads: int):
@@ -124,8 +143,8 @@ def _max_pool1d_kernel(
                             batch = channel_batch_idx // c_in
                             _reduce_window_global(x, batch, c_idx, ow, out, batch, c_idx)
                 else:
-                    stage_rows, row_pad = staged
-                    tile = T.alloc_shared((1, stage_rows, l_in + row_pad), dtype)
+                    stage_rows, row_width = staged
+                    tile = T.alloc_shared((1, stage_rows, row_width), dtype)
                     batch = bx * stage_rows // c_in
                     c_base = bx * stage_rows % c_in
                     T.copy(x[batch, c_base : c_base + stage_rows, 0:l_in], tile[0, :, 0:l_in])
@@ -230,9 +249,11 @@ class _MaxPool1dKernelBase(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        # `block_m` counts outputs, and a row of a real workload runs into the
+        # thousands of them, so the widest block here is four per thread at 256.
         return [
             {"block_m": block_m, "threads": threads}
-            for block_m, threads in itertools.product([128, 256, 512], [128, 256, 512])
+            for block_m, threads in itertools.product([128, 256, 512, 1024], [128, 256, 512])
         ]
 
     def forward(self, x: torch.Tensor) -> Any:
@@ -273,12 +294,10 @@ def _max_pool1d_with_indices_kernel(
     dtype: str = "float16",
 ):
     accum_dtype = "float"
-    out_l = pool_output_dim(l_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
+    out_l, always_in_bounds = _window_geometry(
+        l_in, kernel_w, stride_w, pad_w, dilation_w, ceil_mode
+    )
     total_output = n * c_in * out_l
-    # Static specialization: with zero padding and no ceil overshoot every window
-    # lies fully inside the input, so the per-element bounds check can be dropped.
-    eff_w = dilation_w * (kernel_w - 1) + 1
-    always_in_bounds = pad_w == 0 and (out_l - 1) * stride_w + eff_w - 1 < l_in
 
     @tilelang.jit(out_idx=[1, 2], compile_flags=["-O3", "-DENABLE_BF16"])
     def _max_pool1d_with_indices_func(block_m: int, threads: int):
@@ -291,36 +310,35 @@ def _max_pool1d_with_indices_kernel(
             max_idx = T.alloc_var(T.int32)
             # -1 until a NaN is seen, so it is also the flag saying one was.
             nan_idx = T.alloc_var(T.int32)
-            first_valid = T.alloc_var(T.bool)
-            iw0 = T.alloc_var(T.int32)
             max_val = T.cast(float("-inf"), accum_dtype)
             nan_idx = -1
-            first_valid = True
-            iw0 = ow * stride_w - pad_w
-            # With the window inside the row its first element is in bounds, so its
-            # position is the right seed and `first_valid` is unneeded: an all--inf
-            # window then reports that position, which is what PyTorch does.
-            max_idx = iw0 if always_in_bounds else 0
+            if always_in_bounds:
+                # An expression, not a variable: a variable is opaque to the range
+                # analysis, and each tap would load under a bounds check this
+                # window's extent rules out.
+                iw0 = ow * stride_w - pad_w
+                max_idx = iw0
+            else:
+                # A variable, because each tap is bounds-tested anyway and this
+                # then stays out of all of them.
+                iw0 = T.alloc_var(T.int32)
+                iw0 = ow * stride_w - pad_w
+                # The first tap the row holds, on the dilation grid. Only padding
+                # starts a window before position 0, and that tap is the position
+                # PyTorch reports when every tap the row holds is -inf.
+                max_idx = iw0 + dilation_w * T.ceildiv(T.max(-iw0, 0), dilation_w)
             for kw in T.serial(kernel_w):
                 iw = iw0 + kw * dilation_w
-                if always_in_bounds:
+                if always_in_bounds or (iw >= 0 and iw < l_in):
                     val = T.cast(src[src_c, src_row, iw], accum_dtype)
                     # `max_val` is never NaN and NaN fails `>`, so the compare
-                    # rejects NaN without a separate test.
+                    # rejects NaN without a separate test. Strict `>` also keeps
+                    # the seed against a tap equal to it, and the first maximum
+                    # against a later equal one, which is what PyTorch reports.
                     take = val > max_val
                     max_val = T.if_then_else(take, val, max_val)
                     max_idx = T.if_then_else(take, iw, max_idx)
                     nan_idx = T.if_then_else(T.isnan(val), iw, nan_idx)
-                elif iw >= 0 and iw < l_in:
-                    val = T.cast(src[src_c, src_row, iw], accum_dtype)
-                    is_nan = T.isnan(val)
-                    # `first_valid` admits the first element whatever it is, so the
-                    # NaN test cannot come out of the compare here.
-                    take = (not is_nan) and (first_valid or (val > max_val))
-                    max_val = T.if_then_else(take, val, max_val)
-                    max_idx = T.if_then_else(take, iw, max_idx)
-                    first_valid = first_valid and is_nan
-                    nan_idx = T.if_then_else(is_nan, iw, nan_idx)
 
             # PyTorch reports the last NaN a window visited.
             out[out_c, out_row, ow] = T.cast(
@@ -347,8 +365,8 @@ def _max_pool1d_with_indices_kernel(
                             batch = channel_batch_idx // c_in
                             _reduce_window(x, batch, c_idx, ow, out, indices, batch, c_idx)
                 else:
-                    stage_rows, row_pad = staged
-                    tile = T.alloc_shared((1, stage_rows, l_in + row_pad), dtype)
+                    stage_rows, row_width = staged
+                    tile = T.alloc_shared((1, stage_rows, row_width), dtype)
                     batch = bx * stage_rows // c_in
                     c_base = bx * stage_rows % c_in
                     T.copy(x[batch, c_base : c_base + stage_rows, 0:l_in], tile[0, :, 0:l_in])
