@@ -28,6 +28,29 @@ class _Span(NamedTuple):
         return self.span // self.vector_elems
 
 
+def _round_up(value: int, step: int) -> int:
+    return ((value + step - 1) // step) * step
+
+
+def _span(
+    tile_outputs: int, l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype: str
+) -> _Span:
+    """The stretch of a row a block stages to cover ``tile_outputs`` outputs.
+
+    Every staging load is a whole group of ``vector_elems``, and a group is loaded or
+    zeroed as one, so each has to sit either wholly inside the row or wholly outside it.
+    The width is narrowed until the three things that move a group boundary all divide
+    it: the block step, the head, and the row end.
+    """
+    vector_elems = VECTOR_ACCESS_BYTES // dtype_itemsize(dtype)
+    step = tile_outputs * stride_l
+    while vector_elems > 1 and (l_in % vector_elems or step % vector_elems):
+        vector_elems //= 2
+    head = _round_up(pad_l, vector_elems)
+    reach = head + (tile_outputs - 1) * stride_l + kernel_l
+    return _Span(vector_elems, head, _round_up(reach, vector_elems))
+
+
 class _WindowStaging:
     """What one block stages, and the launch shapes worth offering for it.
 
@@ -65,25 +88,10 @@ class _WindowStaging:
         self._pad_l = pad_l
         self._dtype = dtype
 
-    @staticmethod
-    def _round_up(value: int, step: int) -> int:
-        return ((value + step - 1) // step) * step
-
-    def span(self, tile_outputs: int) -> _Span:
-        """The stretch covering ``tile_outputs`` consecutive outputs.
-
-        Every staging load is a whole group of ``vector_elems``, and a group is loaded or
-        zeroed as one, so each has to sit either wholly inside the row or wholly outside
-        it. The width is narrowed until the three things that move a group boundary all
-        divide it: the block step, the head, and the row end.
-        """
-        vector_elems = VECTOR_ACCESS_BYTES // dtype_itemsize(self._dtype)
-        step = tile_outputs * self._stride_l
-        while vector_elems > 1 and (self._l_in % vector_elems or step % vector_elems):
-            vector_elems //= 2
-        head = self._round_up(self._pad_l, vector_elems)
-        reach = head + (tile_outputs - 1) * self._stride_l + self._kernel_l
-        return _Span(vector_elems, head, self._round_up(reach, vector_elems))
+    def _span(self, tile_outputs: int) -> _Span:
+        return _span(
+            tile_outputs, self._l_in, self._kernel_l, self._stride_l, self._pad_l, self._dtype
+        )
 
     def widths(self) -> list[int]:
         """The tile widths whose span fits the static shared budget, widest first.
@@ -93,9 +101,9 @@ class _WindowStaging:
                 size in the tens of thousands.
         """
         budget = STATIC_SHARED_BYTES // dtype_itemsize(self._dtype)
-        fitting = [width for width in self._TILE_CHOICES if self.span(width).span <= budget]
+        fitting = [width for width in self._TILE_CHOICES if self._span(width).span <= budget]
         if not fitting:
-            need = self.span(1).span * dtype_itemsize(self._dtype)
+            need = self._span(1).span * dtype_itemsize(self._dtype)
             raise ValueError(
                 f"avg_pool1d stages the pooling window in shared memory: kernel_size="
                 f"{self._kernel_l} needs {need} B for a single output, over the "
@@ -125,7 +133,7 @@ class _WindowStaging:
         unfilled.
         """
         width = self.width()
-        vectors = self.span(width).vectors
+        vectors = self._span(width).vectors
         blocks = self._rows * ((self._out_l + width - 1) // width)
         return [
             {"block_ol": width, "threads": threads}
@@ -161,11 +169,7 @@ def _avg_pool1d_kernel(
         # Outputs `stride_l` apart share taps, so a warp taking one output each reads one
         # short stretch of the row `kernel_l` times over, a narrow load each time. A block
         # stages that stretch with full-width loads and takes every tap from it.
-        #
-        # Built here rather than closed over: TileLang reads every free variable of a jit
-        # builder into the autotune cache key and asserts on anything but a scalar.
-        staging = _WindowStaging(rows, l_in, out_l, kernel_l, stride_l, pad_l, dtype)
-        vector_elems, head, span = staging.span(block_ol)
+        vector_elems, head, span = _span(block_ol, l_in, kernel_l, stride_l, pad_l, dtype)
         vectors = span // vector_elems
         # The tile holds zeros where it reaches outside the row, so no tap carries a test
         # and its index into the tile is this same constant in every block.
