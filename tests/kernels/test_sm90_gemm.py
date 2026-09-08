@@ -392,3 +392,58 @@ def test_fused_gated_activation_refusals():
     a, b = _batched_operands(2, 64, 1024, 512, major_b="mn")
     with pytest.raises(ValueError, match="K-major B"):
         SM90GemmFwdKernel(GemmType.BATCHED, num_groups=2, activation="silu_and_mul")(a, b)
+
+
+def _k_grouped_operands(sizes, m, n, major_a="mn", major_b="mn", dtype=torch.bfloat16):
+    """Groups packed along K: logical ``a[M, sum_k]``, ``b[N, sum_k]``, fp32 ``ref[G, M, N]``.
+
+    The MN-major storage is ``[sum_k, M]`` / ``[sum_k, N]`` (``GroupedGemmFwdOp``'s
+    TN); a K-major ``b`` is ``[N, sum_k]`` (its TT).
+    """
+    torch.manual_seed(0)
+    sum_k = sum(sizes)
+    a = torch.randn(m, sum_k, device="cuda", dtype=dtype)
+    if major_a == "mn":
+        a = a.T.contiguous().T
+    b = torch.randn(n, sum_k, device="cuda", dtype=dtype)
+    if major_b == "mn":
+        b = b.T.contiguous().T
+    ref = torch.zeros(len(sizes), m, n, device="cuda")
+    start = 0
+    for g, size in enumerate(sizes):
+        ref[g] = a[:, start : start + size].float() @ b[:, start : start + size].float().T
+        start += size
+    return a, b, torch.tensor(sizes, dtype=torch.int32, device="cuda"), ref
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "major_a,major_b,config",
+    [
+        pytest.param("mn", "mn", dict(block_m=64, block_n=128), id="tn-one-wg"),
+        pytest.param("mn", "mn", dict(block_m=128, block_n=128), id="tn-two-wgs"),
+        pytest.param("mn", "k", None, id="tt-k-major-b"),
+        pytest.param("k", "mn", None, id="k-major-a"),
+    ],
+)
+def test_k_grouped_contiguous(major_a, major_b, config):
+    """Groups along K: each group's K tail is masked in shared memory, a K-major
+    operand's group start is rounded down to 8 and its head masked, a group with
+    no tokens stores zeros, and ragged M / N edges are clipped by the TMA store.
+    """
+    sizes = [100, 0, 300, 64, 7, 1]
+    a, b, ks, ref = _k_grouped_operands(sizes, 200, 136, major_a, major_b)
+    kernel = SM90GemmFwdKernel(GemmType.K_GROUPED_CONTIGUOUS, num_groups=len(sizes), config=config)
+    out = torch.full_like(ref, 1e4, dtype=torch.bfloat16)  # poison: every tile must be written
+    kernel(a, b, grouped_layout=ks, out=out)
+    _assert_gemm(out, ref)
+
+
+@pytest.mark.full
+def test_k_grouped_contiguous_without_tokens_and_refusals():
+    """Every group empty gives zeros without a launch; the fused epilogue is not offered."""
+    a, b, ks, ref = _k_grouped_operands([0, 0, 0], 64, 64)
+    out = SM90GemmFwdKernel(GemmType.K_GROUPED_CONTIGUOUS, num_groups=3)(a, b, grouped_layout=ks)
+    assert out.shape == (3, 64, 64) and not out.any()
+    with pytest.raises(ValueError, match="per-group B"):
+        SM90GemmFwdKernel(GemmType.K_GROUPED_CONTIGUOUS, num_groups=3, activation="silu_and_mul")

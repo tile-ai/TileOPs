@@ -32,7 +32,10 @@ The GEMM types fall into three scheduler families:
 
 * ``flat``: ``M_GROUPED_ALIGNED_PER_ROW`` enumerates the ``M x N`` tile grid
   once and reads a tile's group off its first row.
-* ``batched``: ``BATCHED`` repeats the tile grid per batch.
+* ``batched``: ``BATCHED`` repeats the tile grid per batch, and so does
+  ``K_GROUPED_CONTIGUOUS``, whose groups differ only in the K range they
+  contract over (a prefix sum of the per-group K, masked in shared memory at
+  the ends of a group).
 * ``per_group``: ``M_GROUPED_MASKED``, ``M_GROUPED_ALIGNED_PSUM``,
   ``M_GROUPED_TIGHT_PSUM`` and ``M_GROUPED_TIGHT_PER_ROW`` enumerate tiles
   group by group from a per-group row count, through a tile-count prefix sum
@@ -130,8 +133,15 @@ def _make_prim_func(
     tight_per_row = gtype is GemmType.M_GROUPED_TIGHT_PER_ROW
     tight = gtype in (GemmType.M_GROUPED_TIGHT_PSUM, GemmType.M_GROUPED_TIGHT_PER_ROW)
     batched = gtype is GemmType.BATCHED
+    k_grouped = gtype is GemmType.K_GROUPED_CONTIGUOUS
     per_group = gtype in PER_GROUP_TYPES
-    a_has_group = masked or batched  # A and C carry a leading group dim
+    a_has_group = masked or batched  # A carries a leading group dim
+    b_has_group = not k_grouped  # K-grouped shares one B across the groups
+    c_has_group = a_has_group or k_grouped
+    # A K-major operand's TMA box must start 16 bytes aligned along K, so a
+    # K-grouped GEMM with one rounds each group's start down to 8 elements and
+    # masks the head in shared memory like the tail.
+    k_head_align = 8 if k_grouped and (a_k_major or b_k_major) else 0
     search_steps = max(1, (num_groups - 1).bit_length())
 
     m = T.dynamic("m") if shape_m == 0 else shape_m
@@ -140,12 +150,13 @@ def _make_prim_func(
 
     a_2d = (m, k) if a_k_major else (k, m)
     a_shape = (num_groups,) + a_2d if a_has_group else a_2d
-    b_shape = (num_groups,) + ((n, k) if b_k_major else (k, n))
+    b_2d = (n, k) if b_k_major else (k, n)
+    b_shape = (num_groups,) + b_2d if b_has_group else b_2d
     c_cols = n // 2 if fused else n  # act(gate) * up halves the width
-    c_shape = (num_groups, m, c_cols) if a_has_group else (m, c_cols)
+    c_shape = (num_groups, m, c_cols) if c_has_group else (m, c_cols)
     if gtype in PER_ROW_TYPES:
         layout_shape = (m,)
-    elif per_group:
+    elif per_group or k_grouped:
         layout_shape = (num_groups,)
     else:
         layout_shape = (1,)
@@ -163,9 +174,13 @@ def _make_prim_func(
         return A[k0 : k0 + block_k, row0 : row0 + wg_rows]
 
     def b_region(B, group, n0, k0):
+        if b_has_group:
+            if b_k_major:
+                return B[group, n0 : n0 + block_n, k0 : k0 + block_k]
+            return B[group, k0 : k0 + block_k, n0 : n0 + block_n]
         if b_k_major:
-            return B[group, n0 : n0 + block_n, k0 : k0 + block_k]
-        return B[group, k0 : k0 + block_k, n0 : n0 + block_n]
+            return B[n0 : n0 + block_n, k0 : k0 + block_k]
+        return B[k0 : k0 + block_k, n0 : n0 + block_n]
 
     def b_half_region(B, group, n0, k0):
         """``block_n / 2`` columns of a K-major B (the fused path takes no other)."""
@@ -233,6 +248,13 @@ def _make_prim_func(
         s_total[0] = s_cum[num_groups] * num_n_blocks
 
     @T.macro
+    def k_cumsum(sizes, s_cum):
+        """K-grouped: the K prefix sum, group ``g`` contracting ``[s_cum[g], s_cum[g + 1])``."""
+        s_cum[0] = T.int32(0)
+        for g in T.serial(num_groups):
+            s_cum[g + 1] = s_cum[g] + T.max(sizes[g], T.int32(0))
+
+    @T.macro
     def resolve_tile(
         block_idx,
         grouped_layout,
@@ -244,23 +266,41 @@ def _make_prim_func(
         t_row0,
         t_col0,
         t_rows,
+        t_k0,
+        t_klen,
+        t_khead,
     ):
-        """Tile id -> group, first row, first column, valid rows.
+        """Tile id -> group, first row, first column, valid rows, K range.
 
         ``t_row0`` indexes the A/C slab the tile belongs to: the whole tensor
         for the flat and psum families, the group's slab for masked and
         batched. ``t_rows`` is ``block_m`` except on a tight group's last tile.
         ``ends`` is the per-group metadata (``grouped_layout`` itself for the
-        psum and masked types, the recovered ends for tight per-row).
+        psum and masked types, the recovered ends for tight per-row). The K
+        range ``[t_k0, t_k0 + t_klen)`` is the whole ``K`` except for the
+        K-grouped type, where it is the group's slice of the prefix sum; its
+        first ``t_khead`` columns are alignment padding to mask.
         """
         m_blk = T.alloc_local((1,), "int32")
         n_blk = T.alloc_local((1,), "int32")
-        if batched:
+        t_k0[0] = T.int32(0)
+        t_klen[0] = k
+        t_khead[0] = T.int32(0)
+        if batched or k_grouped:
             per_batch = num_m_blocks * num_n_blocks
             rem = block_idx % per_batch
             t_group[0] = block_idx // per_batch
-            m_blk[0] = rem % num_m_blocks
-            n_blk[0] = rem // num_m_blocks
+            if k_grouped:
+                swizzle_block(rem, num_m_blocks, num_n_blocks, m_blk, n_blk)
+                k_start = s_cum[t_group[0]]
+                k_len = s_cum[t_group[0] + 1] - k_start
+                if k_head_align:
+                    t_khead[0] = k_start % T.int32(k_head_align)
+                t_k0[0] = k_start - t_khead[0]
+                t_klen[0] = k_len + t_khead[0]
+            else:
+                m_blk[0] = rem % num_m_blocks
+                n_blk[0] = rem // num_m_blocks
             t_row0[0] = m_blk[0] * T.int32(block_m)
             t_rows[0] = T.int32(block_m)
         elif per_group:
@@ -296,6 +336,42 @@ def _make_prim_func(
                 T.max(grouped_layout[t_row0[0]], T.int32(0)), T.int32(num_groups - 1)
             )
         t_col0[0] = n_blk[0] * T.int32(c_tile_n)
+
+    def tile_k_iters(t_klen):
+        """K blocks of a tile. A K-grouped group with no K still runs one, fully
+        masked, block: the accumulator is then only ever written by WGMMA, which
+        keeps ptxas from serialising the WGMMA pipeline (C7514) as a separate
+        zero-fill path did."""
+        iters = T.ceildiv(t_klen[0], T.int32(block_k))
+        return T.max(iters, T.int32(1)) if k_grouped else iters
+
+    @T.macro
+    def mask_k(A_s, B_s, slot, lo, hi):
+        """K-grouped: zero a stage's columns outside ``[lo, hi)`` along K.
+
+        TMA clips against the tensor, not the group, so a group's last K block
+        holds the next group's first rows past ``hi``, and its first block holds
+        the previous group's last rows below ``lo`` when the start was rounded
+        down for a K-major operand. Both operands are zeroed so a stray
+        non-finite value cannot survive as ``0 * inf``; the caller fences the
+        generic-proxy writes before the WGMMA reads them.
+        """
+        if a_k_major:
+            for i, kk in T.Parallel(wg_rows, block_k):
+                if kk < lo or kk >= hi:
+                    A_s[slot, i, kk] = T.cast(0, A_s.dtype)
+        else:
+            for kk, i in T.Parallel(block_k, wg_rows):
+                if kk < lo or kk >= hi:
+                    A_s[slot, kk, i] = T.cast(0, A_s.dtype)
+        if b_k_major:
+            for i, kk in T.Parallel(block_n, block_k):
+                if kk < lo or kk >= hi:
+                    B_s[slot, i, kk] = T.cast(0, B_s.dtype)
+        else:
+            for kk, i in T.Parallel(block_k, block_n):
+                if kk < lo or kk >= hi:
+                    B_s[slot, kk, i] = T.cast(0, B_s.dtype)
 
     @T.macro
     def load_a(A, dst, full, slot, group, row0, k0):
@@ -367,7 +443,7 @@ def _make_prim_func(
         else:
             T.fence_proxy_async()
             T.sync_threads(barrier_id=_EPILOGUE_BARRIER_BASE + wg, arrive_count=128)
-            if a_has_group:
+            if c_has_group:
                 T.copy(C_s, C[group, row0, col0])
             else:
                 T.copy(C_s, C[row0, col0])
@@ -398,7 +474,6 @@ def _make_prim_func(
         num_n_blocks,
         num_blocks,
         num_waves,
-        k_iters,
     ):
         """One math warp-group: drain the ring over K for each tile, then store."""
         T.inc_max_nreg(math_regs)
@@ -410,6 +485,9 @@ def _make_prim_func(
         t_row0 = T.alloc_local((1,), "int32")
         t_col0 = T.alloc_local((1,), "int32")
         t_rows = T.alloc_local((1,), "int32")
+        t_k0 = T.alloc_local((1,), "int32")
+        t_klen = T.alloc_local((1,), "int32")
+        t_khead = T.alloc_local((1,), "int32")
 
         for w in T.serial(num_waves):
             block_idx = w * T.int32(num_sms) + pid
@@ -425,11 +503,22 @@ def _make_prim_func(
                     t_row0,
                     t_col0,
                     t_rows,
+                    t_k0,
+                    t_klen,
+                    t_khead,
                 )
+                k_iters = tile_k_iters(t_klen)
                 for ki in T.serial(k_iters):
                     slot = gi % num_stages
                     phase = (gi // num_stages) & 1
                     T.barrier_wait(full[slot], phase)
+                    if k_grouped:
+                        lo = T.if_then_else(ki == 0, t_khead[0], T.int32(0))
+                        hi = t_klen[0] - ki * T.int32(block_k)
+                        if lo > 0 or hi < T.int32(block_k):
+                            mask_k(A_s, B_s, slot, lo, hi)
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=_EPILOGUE_BARRIER_BASE + wg, arrive_count=128)
                     T.wgmma_gemm(
                         A_s[slot, :, :],
                         B_s[slot, :, :],
@@ -517,7 +606,6 @@ def _make_prim_func(
 
             num_m_blocks = T.ceildiv(m, block_m)
             num_n_blocks = T.ceildiv(c_cols, c_tile_n)
-            k_iters = T.ceildiv(k, block_k)
 
             tx = T.get_thread_binding()
 
@@ -529,12 +617,15 @@ def _make_prim_func(
             elif per_group:
                 if tx == 0:
                     tile_cumsum(grouped_layout, s_cum, s_total, num_n_blocks)
+            elif k_grouped:
+                if tx == 0:
+                    k_cumsum(grouped_layout, s_cum)
 
             T.sync_threads()
 
             if per_group:
                 num_blocks = s_total[0]
-            elif batched:
+            elif batched or k_grouped:
                 num_blocks = num_m_blocks * num_n_blocks * T.int32(num_groups)
             else:
                 num_blocks = num_m_blocks * num_n_blocks
@@ -548,6 +639,9 @@ def _make_prim_func(
                 t_row0 = T.alloc_local((1,), "int32")
                 t_col0 = T.alloc_local((1,), "int32")
                 t_rows = T.alloc_local((1,), "int32")
+                t_k0 = T.alloc_local((1,), "int32")
+                t_klen = T.alloc_local((1,), "int32")
+                t_khead = T.alloc_local((1,), "int32")
 
                 for w in T.serial(num_waves):
                     block_idx = w * T.int32(num_sms) + pid
@@ -563,11 +657,15 @@ def _make_prim_func(
                             t_row0,
                             t_col0,
                             t_rows,
+                            t_k0,
+                            t_klen,
+                            t_khead,
                         )
+                        k_iters = tile_k_iters(t_klen)
                         for ki in T.serial(k_iters):
                             slot = gi % num_stages
                             phase = (gi // num_stages) & 1
-                            k0 = ki * T.int32(block_k)
+                            k0 = t_k0[0] + ki * T.int32(block_k)
                             T.barrier_wait(empty[slot], phase ^ 1)
                             load_a(A, A_s0, full, slot, t_group[0], t_row0[0], k0)
                             if num_math_wgs > 1:
@@ -603,7 +701,6 @@ def _make_prim_func(
                     num_n_blocks,
                     num_blocks,
                     num_waves,
-                    k_iters,
                 )
             else:
                 if num_math_wgs > 1:
@@ -626,7 +723,6 @@ def _make_prim_func(
                         num_n_blocks,
                         num_blocks,
                         num_waves,
-                        k_iters,
                     )
 
     return sm90_gemm
@@ -718,6 +814,7 @@ class SM90GemmFwdKernel(Kernel):
     | ``M_GROUPED_TIGHT_PER_ROW`` | ``[M, K]``       | ``[G, N, K]``  | ``[M, N]``       | ``[M]`` group of each row    |
     | ``M_GROUPED_MASKED``        | ``[G, max_m, K]``| ``[G, N, K]``  | ``[G, max_m, N]``| ``[G]`` valid rows per group |
     | ``BATCHED``                 | ``[G, M, K]``    | ``[G, N, K]``  | ``[G, M, N]``    | none                         |
+    | ``K_GROUPED_CONTIGUOUS``    | ``[M, sum_k]``   | ``[N, sum_k]`` | ``[G, M, N]``    | ``[G]`` K per group          |
 
     With ``activation`` set, ``b`` stacks the gate and up projections along ``N``
     (``[G, 2 * ffn, K]``) and ``c`` is ``act(gate) * up`` with ``ffn`` columns; the
@@ -769,8 +866,8 @@ class SM90GemmFwdKernel(Kernel):
                 psum layouts; the slab height, or the mean over groups, when 0. A caller
                 whose routing is skewed passes the large experts' row count here.
             sm_count: Persistent grid size; the device's SM count when ``None``.
-            config: Pins ``block_m``, ``block_n`` and optionally ``block_k`` and ``num_stages``
-                instead of running the selector.
+            config: Pins ``block_m``, ``block_n`` and optionally ``num_stages`` instead of
+                running the selector.
             tune: Kernel-protocol flag; this kernel has no autotune space, the selector
                 stands in for it, so ``True`` only warns.
             device_index: Device the kernel is built for; the current one when ``None``.
@@ -782,6 +879,8 @@ class SM90GemmFwdKernel(Kernel):
             raise ValueError(f"m_alignment must be positive, got {m_alignment}")
         if activation not in ACTIVATIONS:
             raise ValueError(f"activation must be one of {ACTIVATIONS}, got {activation!r}")
+        if activation != "none" and GemmType(gemm_type) is GemmType.K_GROUPED_CONTIGUOUS:
+            raise ValueError("a fused gated activation needs a per-group B; K-grouped has one B")
         self.gemm_type = GemmType(gemm_type)
         self.activation = activation
         self.num_groups = num_groups
@@ -802,15 +901,23 @@ class SM90GemmFwdKernel(Kernel):
     def _a_has_group(self) -> bool:
         return self.gemm_type in (GemmType.M_GROUPED_MASKED, GemmType.BATCHED)
 
+    @property
+    def _c_has_group(self) -> bool:
+        return self._a_has_group or self.gemm_type is GemmType.K_GROUPED_CONTIGUOUS
+
     def describe(self, a: torch.Tensor, b: torch.Tensor) -> GemmDesc:
         """The selector's view of a call; see the class docstring for the shapes."""
-        a_ndim = 3 if self._a_has_group else 2
-        if a.ndim != a_ndim:
-            raise ValueError(f"{self.gemm_type.value} takes a {a_ndim}-D A, got {a.ndim}-D")
-        if b.ndim != 3 or b.shape[0] != self.num_groups:
-            raise ValueError(f"{self.gemm_type.value} takes B as [{self.num_groups}, N, K]")
-        if self._a_has_group and a.shape[0] != self.num_groups:
-            raise ValueError(f"{self.gemm_type.value} takes A as [{self.num_groups}, M, K]")
+        if self.gemm_type is GemmType.K_GROUPED_CONTIGUOUS:
+            if a.ndim != 2 or b.ndim != 2:
+                raise ValueError("k_grouped_contiguous takes A as [M, sum_k] and B as [N, sum_k]")
+        else:
+            a_ndim = 3 if self._a_has_group else 2
+            if a.ndim != a_ndim:
+                raise ValueError(f"{self.gemm_type.value} takes a {a_ndim}-D A, got {a.ndim}-D")
+            if b.ndim != 3 or b.shape[0] != self.num_groups:
+                raise ValueError(f"{self.gemm_type.value} takes B as [{self.num_groups}, N, K]")
+            if self._a_has_group and a.shape[0] != self.num_groups:
+                raise ValueError(f"{self.gemm_type.value} takes A as [{self.num_groups}, M, K]")
         m, k = a.shape[-2], a.shape[-1]
         n, k_b = b.shape[-2], b.shape[-1]
         if k != k_b:
@@ -861,7 +968,7 @@ class SM90GemmFwdKernel(Kernel):
             return f"bf16 or fp16 operands of one dtype only, got {a.dtype} and {b.dtype}"
         if a.ndim < 2 or b.ndim < 2:
             return f"operands need at least two dims, got {a.ndim}-D and {b.ndim}-D"
-        if a.shape[-1] == 0:
+        if a.shape[-1] == 0 and b.ndim != 2:  # a 2-D B is K-grouped, whose sum_k may be 0
             return "K must be positive"
         for name, t in (("a", a), ("b", b)):
             inner = t.shape[-1] if t.stride(-1) == 1 else t.shape[-2]
@@ -900,10 +1007,11 @@ class SM90GemmFwdKernel(Kernel):
         """Run ``C = A @ B^T`` (per group or batch when grouped) and return ``C``.
 
         Args:
-            a: Logical ``[M, K]`` bf16 or fp16, ``[G, M, K]`` for masked and batched; a
-                transposed view of contiguous storage is MN-major.
-            b: Logical ``[G, N, K]`` in ``a``'s dtype; a transposed view of ``[G, K, N]``
-                storage is MN-major.
+            a: Logical ``[M, K]`` bf16 or fp16, ``[G, M, K]`` for masked and batched,
+                ``[M, sum_k]`` for K-grouped; a transposed view of contiguous storage is
+                MN-major.
+            b: Logical ``[G, N, K]`` in ``a``'s dtype, ``[N, sum_k]`` for K-grouped; a
+                transposed view of ``[G, K, N]`` storage is MN-major.
             grouped_layout: int32 layout metadata per the class table; ``None`` for
                 ``BATCHED``.
             out: Optional preallocated output in ``cd_dtype``.
@@ -927,7 +1035,7 @@ class SM90GemmFwdKernel(Kernel):
         if grouped_layout is None:
             grouped_layout = torch.zeros(1, dtype=torch.int32, device=a.device)
         c_cols = desc.c_cols
-        c_shape = (self.num_groups, desc.m, c_cols) if self._a_has_group else (desc.m, c_cols)
+        c_shape = (self.num_groups, desc.m, c_cols) if self._c_has_group else (desc.m, c_cols)
         cd_dtype = self.output_dtype(a)
         if out is None:
             out = torch.empty(c_shape, dtype=cd_dtype, device=a.device)
@@ -935,6 +1043,8 @@ class SM90GemmFwdKernel(Kernel):
             raise ValueError(f"out must be a contiguous {list(c_shape)} {cd_dtype}")
         if out.numel() == 0:  # no rows or no columns: nothing to launch
             return out
+        if desc.k == 0:  # K-grouped with no tokens in any group: every product is zero
+            return out.zero_()
         if out.data_ptr() in (
             a.data_ptr(),
             b.data_ptr(),

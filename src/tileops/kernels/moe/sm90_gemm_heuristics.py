@@ -80,6 +80,12 @@ class GemmType(str, enum.Enum):
       leading group dim of ``max_m`` rows each and ``grouped_layout[g]`` is the
       valid row count.
     * ``BATCHED``: independent GEMMs on a leading batch dim of ``A``, ``B``, ``C``.
+    * ``K_GROUPED_CONTIGUOUS``: DeepGEMM's ``KGroupedContiguous``. The groups are
+      packed along ``K``: ``A`` is ``[M, sum_k]``, ``B`` is ``[N, sum_k]``,
+      ``grouped_layout[g]`` is group ``g``'s ``K`` and ``C`` is ``[G, M, N]``. The
+      weight-gradient GEMM of an expert MLP: each group contracts over its own
+      tokens, its last K block is masked in shared memory where it runs into the
+      next group, and a group with no tokens stores zeros.
     """
 
     M_GROUPED_ALIGNED_PER_ROW = "m_grouped_aligned_per_row"
@@ -88,6 +94,7 @@ class GemmType(str, enum.Enum):
     M_GROUPED_TIGHT_PER_ROW = "m_grouped_tight_per_row"
     M_GROUPED_MASKED = "m_grouped_masked"
     BATCHED = "batched"
+    K_GROUPED_CONTIGUOUS = "k_grouped_contiguous"
 
 
 _ALIGNED_TYPES = (GemmType.M_GROUPED_ALIGNED_PER_ROW, GemmType.M_GROUPED_ALIGNED_PSUM)
@@ -101,7 +108,8 @@ PER_GROUP_TYPES = (
 PER_ROW_TYPES = (GemmType.M_GROUPED_ALIGNED_PER_ROW, GemmType.M_GROUPED_TIGHT_PER_ROW)
 # The one type whose A carries no grouping in its rows: it may be MN-major and
 # takes the widest tiles.
-_FLAT_LIKE_TYPES = (GemmType.BATCHED,)
+# One full tile grid per group, and no M-grouping to constrain the tile.
+_FLAT_LIKE_TYPES = (GemmType.BATCHED, GemmType.K_GROUPED_CONTIGUOUS)
 
 
 # Gated activations the epilogue can fuse: B stacks gate and up along N; a tile's B
@@ -152,6 +160,8 @@ class SM90GemmSpec:
                 "a fused gated activation half-loads the B tile; an MN-major B would split "
                 "the 128-byte swizzle atom, so it takes a K-major B"
             )
+        if self.activation != "none" and self.gemm_type is GemmType.K_GROUPED_CONTIGUOUS:
+            raise ValueError("a fused gated activation needs a per-group B; K-grouped has one B")
         if self.ab_dtype not in ("bfloat16", "float16"):
             raise ValueError(f"ab_dtype must be bfloat16 or float16, got {self.ab_dtype!r}")
         if self.cd_dtype not in (self.ab_dtype, "float32"):
@@ -335,7 +345,7 @@ def _num_cycles(desc: GemmDesc, layout: _Layout) -> tuple[int, int]:
     num_blocks = (
         _num_m_blocks(desc, layout.block_m)
         * math.ceil(desc.n / layout.block_n)
-        * (desc.num_groups if desc.gemm_type is GemmType.BATCHED else 1)
+        * (desc.num_groups if desc.gemm_type in _FLAT_LIKE_TYPES else 1)
     )
     num_waves = math.ceil(num_blocks / desc.num_sms)
     if num_blocks == 0:  # a call with no rows or no columns runs nothing
@@ -347,6 +357,9 @@ def _num_cycles(desc: GemmDesc, layout: _Layout) -> tuple[int, int]:
     elem_cd = 4 if desc.cd_dtype == "float32" else 2
 
     k = desc.k
+    if desc.gemm_type is GemmType.K_GROUPED_CONTIGUOUS:
+        # The groups split K between them; a tile runs the mean group's contraction.
+        k = math.ceil(desc.k / desc.num_groups)
     c_width = layout.block_n // 2 if desc.fused else layout.block_n
     bytes_l2_ab = k * (layout.block_m + layout.block_n) * elem_ab
     bytes_l1_ab = k * (layout.block_m + layout.block_n) * elem_ab
