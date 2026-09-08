@@ -8,10 +8,12 @@ from .moe_grouped_gemm_separate_act import MoeGroupedGemmSeparateActKernel
 from .permute_align import MoePermuteAlignKernel
 from .permute_contiguous import MoePrePermuteContiguousKernel
 from .shared_expert_mlp import SharedExpertMLPKernel
+from .sm90_gemm import GemmType, SM90GemmFwdKernel
 from .unpermute import MoeUnpermuteKernel
 
 __all__ = [
     "FusedTopKKernel",
+    "GemmType",
     "MGroupedGemmCall",
     "MoeGroupedGemmNopadKernel",
     "MoeGroupedGemmPersistent3WGFusedActKernel",
@@ -21,5 +23,6 @@ __all__ = [
     "MoeUnpermuteKernel",
     "PostPermuteCall",
     "PrePermuteCall",
+    "SM90GemmFwdKernel",
     "SharedExpertMLPKernel",
 ]
