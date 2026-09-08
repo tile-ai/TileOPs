@@ -7,6 +7,11 @@ from tileops.kernels.constants import STATIC_SHARED_BYTES
 from tileops.kernels.kernel_base import Kernel
 
 
+def dtype_itemsize(dtype: str) -> int:
+    """Bytes one element of *dtype* takes, over the dtypes these kernels accept."""
+    return 4 if dtype in ("float", "float32") else 2
+
+
 def fits_static_shared(elements: int, dtype: str) -> bool:
     """Whether a tile of *elements* fits the shared memory a block gets by default.
 
@@ -17,8 +22,7 @@ def fits_static_shared(elements: int, dtype: str) -> bool:
     Returns:
         True when the tile fits :data:`STATIC_SHARED_BYTES`.
     """
-    itemsize = 4 if dtype in ("float", "float32") else 2
-    return elements * itemsize <= STATIC_SHARED_BYTES
+    return elements * dtype_itemsize(dtype) <= STATIC_SHARED_BYTES
 
 
 def pool_output_dim(

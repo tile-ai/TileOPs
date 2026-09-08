@@ -1,5 +1,5 @@
 import functools
-from typing import NamedTuple, Optional
+from typing import ClassVar, NamedTuple, Optional, Tuple
 
 import tilelang
 import tilelang.language as T
@@ -7,33 +7,13 @@ import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.pool.common import pool_output_dim
+from tileops.kernels.pool.common import dtype_itemsize, pool_output_dim
 
 __all__ = ["AvgPool1dKernel", "AvgPool1dSpatialKernel"]
 
-# Tile widths a launch may take, widest first. The tail below 128 is what keeps a window
-# too wide to stage at 128 outputs from having no width at all.
-_BLOCK_OL_CHOICES = (2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1)
-# The best block size is not a function of the shape any rule here fits, so it is tuned.
-_THREAD_CHOICES = (64, 128, 256)
-# Threads a launch needs before a narrow block is worth offering: below this the blocks
-# do not fill the device, and giving each thread more outputs only lengthens the tail.
-_MIN_LAUNCH_THREADS = 1 << 16
-# Measured best, or within one timer quantum of best, at all three manifest workloads.
-_DEFAULT_BLOCK_OL = 512
-_DEFAULT_THREADS = 128
 
-
-def _itemsize(dtype: str) -> int:
-    return 4 if dtype in ("float", "float32") else 2
-
-
-def _round_up(value: int, step: int) -> int:
-    return ((value + step - 1) // step) * step
-
-
-class _Staging(NamedTuple):
-    """Where one block's staged span sits in the row, and how wide its loads are."""
+class _Span(NamedTuple):
+    """The stretch of a row one block stages, in the row's own coordinates."""
 
     # Elements one full-width access covers.
     vector_elems: int
@@ -48,88 +28,110 @@ class _Staging(NamedTuple):
         return self.span // self.vector_elems
 
 
-def _staging(
-    block_ol: int, l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype: str
-) -> _Staging:
-    """The staged span covering ``block_ol`` consecutive outputs.
+class _WindowStaging:
+    """What one block stages, and the launch shapes worth offering for it.
 
-    The tile is a window on the row's own coordinates, starting `head` elements before
-    the block's leftmost window and holding zeros wherever it reaches outside the row.
-    Every staging load is a whole group of `vector_elems`, so each group is either
-    entirely inside the row or entirely outside it, and the width is narrowed until the
-    three things that move a group boundary all divide it: the block step
-    ``block_ol * stride_l``, the head, and the row end ``l_in``.
+    These figures describe this kernel's access pattern, not the device, and are held
+    here so that a later kernel does not read them as general truths.
     """
-    vector_elems = VECTOR_ACCESS_BYTES // _itemsize(dtype)
-    while vector_elems > 1 and (l_in % vector_elems or (block_ol * stride_l) % vector_elems):
-        vector_elems //= 2
-    head = _round_up(pad_l, vector_elems)
-    reach = head + (block_ol - 1) * stride_l + kernel_l
-    return _Staging(vector_elems, head, _round_up(reach, vector_elems))
 
+    # Tile widths a launch may take, widest first. The tail below 128 is what keeps a
+    # window too wide to stage at 128 outputs from having no width at all.
+    _TILE_CHOICES: ClassVar[Tuple[int, ...]] = (2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1)
+    # Outputs a block covers before the shared budget or the output row narrows it.
+    _TILE_OUTPUTS: ClassVar[int] = 512
+    _THREAD_CHOICES: ClassVar[Tuple[int, ...]] = (64, 128, 256)
+    # Taken when every block size is ruled out, which needs a tile of a few outputs.
+    _FALLBACK_THREADS: ClassVar[int] = 128
+    # Threads a launch needs before a narrow block is worth offering: under this the
+    # blocks do not fill the device, and widening each thread's run only lengthens it.
+    _MIN_LAUNCH_THREADS: ClassVar[int] = 1 << 16
 
-def _block_ol_choices(l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype: str) -> list[int]:
-    """The tile widths whose staged span fits the static shared budget, widest first.
+    def __init__(
+        self,
+        rows: int,
+        l_in: int,
+        out_l: int,
+        kernel_l: int,
+        stride_l: int,
+        pad_l: int,
+        dtype: str,
+    ) -> None:
+        self._rows = rows
+        self._l_in = l_in
+        self._out_l = out_l
+        self._kernel_l = kernel_l
+        self._stride_l = stride_l
+        self._pad_l = pad_l
+        self._dtype = dtype
 
-    Raises:
-        ValueError: When not even one output's window fits, which takes a kernel size
-            in the tens of thousands.
-    """
-    budget = STATIC_SHARED_BYTES // _itemsize(dtype)
-    fitting = [
-        block_ol
-        for block_ol in _BLOCK_OL_CHOICES
-        if _staging(block_ol, l_in, kernel_l, stride_l, pad_l, dtype).span <= budget
-    ]
-    if not fitting:
-        span = _staging(1, l_in, kernel_l, stride_l, pad_l, dtype).span
-        raise ValueError(
-            f"avg_pool1d stages the pooling window in shared memory: kernel_size="
-            f"{kernel_l} needs {span * _itemsize(dtype)} B for a single output, over "
-            f"the {STATIC_SHARED_BYTES} B a block gets"
-        )
-    return fitting
+    @staticmethod
+    def _round_up(value: int, step: int) -> int:
+        return ((value + step - 1) // step) * step
 
+    def span(self, tile_outputs: int) -> _Span:
+        """The stretch covering ``tile_outputs`` consecutive outputs.
 
-def _thread_configs(
-    block_ol: int,
-    rows: int,
-    l_in: int,
-    out_l: int,
-    kernel_l: int,
-    stride_l: int,
-    pad_l: int,
-    dtype: str,
-) -> list[dict]:
-    """Candidate configs at a fixed tile width: the block sizes worth timing on it.
+        Every staging load is a whole group of ``vector_elems``, and a group is loaded or
+        zeroed as one, so each has to sit either wholly inside the row or wholly outside
+        it. The width is narrowed until the three things that move a group boundary all
+        divide it: the block step, the head, and the row end.
+        """
+        vector_elems = VECTOR_ACCESS_BYTES // dtype_itemsize(self._dtype)
+        step = tile_outputs * self._stride_l
+        while vector_elems > 1 and (self._l_in % vector_elems or step % vector_elems):
+            vector_elems //= 2
+        head = self._round_up(self._pad_l, vector_elems)
+        reach = head + (tile_outputs - 1) * self._stride_l + self._kernel_l
+        return _Span(vector_elems, head, self._round_up(reach, vector_elems))
 
-    The width is not a candidate. Two widths a factor of two apart differ by a few
-    percent here, which is under what the autotuner can resolve on a launch this short,
-    so it is settled by :func:`_default_block_ol` instead. Two block sizes are dropped:
-    one with more threads than the staging pass has full-width loads idles threads on the
-    read this kernel is bound by, and one whose launch falls short of
-    ``_MIN_LAUNCH_THREADS`` leaves the device unfilled.
-    """
-    staged = _staging(block_ol, l_in, kernel_l, stride_l, pad_l, dtype)
-    blocks = rows * ((out_l + block_ol - 1) // block_ol)
-    return [
-        {"block_ol": block_ol, "threads": threads}
-        for threads in _THREAD_CHOICES
-        if staged.vectors >= threads and blocks * threads >= _MIN_LAUNCH_THREADS
-    ] or [{"block_ol": block_ol, "threads": _DEFAULT_THREADS}]
+    def widths(self) -> list[int]:
+        """The tile widths whose span fits the static shared budget, widest first.
 
+        Raises:
+            ValueError: When not even one output's window fits, which takes a kernel
+                size in the tens of thousands.
+        """
+        budget = STATIC_SHARED_BYTES // dtype_itemsize(self._dtype)
+        fitting = [width for width in self._TILE_CHOICES if self.span(width).span <= budget]
+        if not fitting:
+            need = self.span(1).span * dtype_itemsize(self._dtype)
+            raise ValueError(
+                f"avg_pool1d stages the pooling window in shared memory: kernel_size="
+                f"{self._kernel_l} needs {need} B for a single output, over the "
+                f"{STATIC_SHARED_BYTES} B a block gets"
+            )
+        return fitting
 
-def _default_block_ol(
-    l_in: int, out_l: int, kernel_l: int, stride_l: int, pad_l: int, dtype: str
-) -> int:
-    """``_DEFAULT_BLOCK_OL``, narrowed twice.
+    def width(self) -> int:
+        """``_TILE_OUTPUTS``, narrowed to the shared budget and to the output row.
 
-    Narrowed to what the static shared budget holds, and to what the output row is
-    wide enough to fill: a tile wider than the row only idles threads.
-    """
-    choices = _block_ol_choices(l_in, kernel_l, stride_l, pad_l, dtype)
-    wanted = min(_DEFAULT_BLOCK_OL, max(out_l, choices[-1]))
-    return next(block_ol for block_ol in choices if block_ol <= wanted)
+        A tile wider than the row only idles threads.
+        """
+        fitting = self.widths()
+        wanted = min(self._TILE_OUTPUTS, max(self._out_l, fitting[-1]))
+        return next(width for width in fitting if width <= wanted)
+
+    def default(self) -> dict:
+        return {"block_ol": self.width(), "threads": self._FALLBACK_THREADS}
+
+    def tuned(self) -> list[dict]:
+        """Block sizes worth timing at the chosen width, which is not itself a candidate.
+
+        Two widths a factor of two apart differ by less than the autotuner resolves on a
+        launch this short. Two block sizes are dropped: one holding more threads than the
+        staging pass has full-width loads idles them on the read this kernel is bound by,
+        and one whose launch falls short of ``_MIN_LAUNCH_THREADS`` leaves the device
+        unfilled.
+        """
+        width = self.width()
+        vectors = self.span(width).vectors
+        blocks = self._rows * ((self._out_l + width - 1) // width)
+        return [
+            {"block_ol": width, "threads": threads}
+            for threads in self._THREAD_CHOICES
+            if vectors >= threads and blocks * threads >= self._MIN_LAUNCH_THREADS
+        ] or [{"block_ol": width, "threads": self._FALLBACK_THREADS}]
 
 
 @functools.lru_cache(maxsize=64)
@@ -156,13 +158,17 @@ def _avg_pool1d_kernel(
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _avg_pool1d_func(block_ol: int, threads: int):
-        # Outputs `stride_l` apart share taps, so a warp taking one output each reads
-        # one short stretch of the row `kernel_l` times over, a narrow load each time. A
-        # block stages that stretch with full-width loads and takes every tap from it.
-        staged = _staging(block_ol, l_in, kernel_l, stride_l, pad_l, dtype)
-        vector_elems, head, span = staged
-        # The tile holds zeros where it reaches outside the row, so a tap needs no test
-        # of its own and its index into the tile is the same in every block.
+        # Outputs `stride_l` apart share taps, so a warp taking one output each reads one
+        # short stretch of the row `kernel_l` times over, a narrow load each time. A block
+        # stages that stretch with full-width loads and takes every tap from it.
+        #
+        # Built here rather than closed over: TileLang reads every free variable of a jit
+        # builder into the autotune cache key and asserts on anything but a scalar.
+        staging = _WindowStaging(rows, l_in, out_l, kernel_l, stride_l, pad_l, dtype)
+        vector_elems, head, span = staging.span(block_ol)
+        vectors = span // vector_elems
+        # The tile holds zeros where it reaches outside the row, so no tap carries a test
+        # and its index into the tile is this same constant in every block.
         base = head - pad_l
         blocks_per_row = (out_l + block_ol - 1) // block_ol
         tail_free = out_l % block_ol == 0
@@ -172,7 +178,7 @@ def _avg_pool1d_kernel(
         @T.macro
         def _stage_inside(tile, x, origin, row):
             """Every group is in the row: one unguarded full-width load each."""
-            for i in T.Parallel(staged.vectors):
+            for i in T.Parallel(vectors):
                 for v in T.vectorized(vector_elems):
                     tile[i * vector_elems + v] = x[row, origin + i * vector_elems + v]
 
@@ -180,14 +186,13 @@ def _avg_pool1d_kernel(
         def _stage_edge(tile, x, origin, row):
             """Zero the tile, then load the groups the row covers.
 
-            The row covers whole groups only, so the second pass tests one per group and
-            its load stays unguarded. Predicating the load itself instead, in one pass,
-            measured slower than doing two.
+            The row covers whole groups, so the second pass tests one per group and its
+            load stays unguarded.
             """
-            for i in T.Parallel(staged.vectors):
+            for i in T.Parallel(vectors):
                 for v in T.vectorized(vector_elems):
                     tile[i * vector_elems + v] = T.cast(0.0, dtype)
-            for i in T.Parallel(staged.vectors):
+            for i in T.Parallel(vectors):
                 if (origin + i * vector_elems >= 0) and (origin + (i + 1) * vector_elems <= l_in):
                     for v in T.vectorized(vector_elems):
                         tile[i * vector_elems + v] = x[row, origin + i * vector_elems + v]
@@ -215,7 +220,6 @@ def _avg_pool1d_kernel(
             if whole_window_divides:
                 _store(tile, j, ol, out, out_row, True)
             else:
-                # A window's divisor is its own extent only where it overhangs the row.
                 if (ol >= clean_lo) and (ol <= clean_hi):
                     _store(tile, j, ol, out, out_row, True)
                 else:
@@ -254,165 +258,18 @@ def _avg_pool1d_kernel(
     return _avg_pool1d_func
 
 
-def _avg_pool1d_spatial_kernel(
-    n: int,
-    c_in: int,
-    l_in: int,
-    kernel_l: int,
-    stride_l: int,
-    pad_l: int,
-    dtype: str = "float16",
-):
-    """Zero-padded, floor-mode 1d average pooling.
+class _AvgPool1dKernelBase(Kernel):
+    """Shape, launch planning and dispatch shared by the two avg_pool1d kernels.
 
-    Every window then spans the full kernel once the padding is counted, which is
-    what ``_avg_pool1d_kernel`` emits for these two flags.
-    """
-    return _avg_pool1d_kernel(n, c_in, l_in, kernel_l, stride_l, pad_l, False, True, dtype)
-
-
-def _launch_avg_pool1d(
-    n: int,
-    c_in: int,
-    l_in: int,
-    kernel_l: int,
-    stride_l: int,
-    pad_l: int,
-    ceil_mode: bool,
-    count_include_pad: bool,
-    dtype: str,
-    block_ol: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    out_l = pool_output_dim(l_in, kernel_l, stride_l, pad_l, ceil_mode)
-    kernel = _avg_pool1d_kernel(
-        n,
-        c_in,
-        l_in,
-        kernel_l,
-        stride_l,
-        pad_l,
-        ceil_mode,
-        count_include_pad,
-        dtype,
-    )(block_ol, threads)
-
-    return kernel(x.contiguous().view(n * c_in, l_in)).view(n, c_in, out_l)
-
-
-def _launch_avg_pool1d_spatial(
-    n: int,
-    c_in: int,
-    l_in: int,
-    kernel_l: int,
-    stride_l: int,
-    pad_l: int,
-    dtype: str,
-    block_ol: int,
-    threads: int,
-    x: torch.Tensor,
-) -> torch.Tensor:
-    return _launch_avg_pool1d(
-        n, c_in, l_in, kernel_l, stride_l, pad_l, False, True, dtype, block_ol, threads, x
-    )
-
-
-class AvgPool1dSpatialKernel(Kernel):
-    """Fast path for common NCL avg_pool1d workloads.
+    The two differ only in which PyTorch flags a caller may set; the staged span and the
+    configs worth offering follow from the shape alone.
 
     Raises:
         ValueError: When one pooling window does not fit the shared memory a block
             stages it in, which takes a ``kernel_size`` in the tens of thousands.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        l_in: int,
-        kernel_l: int,
-        stride_l: int,
-        pad_l: int,
-        dtype: torch.dtype,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ) -> None:
-        super().__init__()
-        self.n = n
-        self.c_in = c_in
-        self.l_in = l_in
-        self.kernel_l = kernel_l
-        self.stride_l = stride_l
-        self.pad_l = pad_l
-        self.dtype = dtype
-        self.out_l = pool_output_dim(l_in, kernel_l, stride_l, pad_l, False)
-
-        self.kernel = _avg_pool1d_spatial_kernel(
-            n,
-            c_in,
-            l_in,
-            kernel_l,
-            stride_l,
-            pad_l,
-            self.dtype_str,
-        )
-        self.init_config(config, tune)
-
-    @property
-    def default_config(self) -> dict:
-        return {
-            "block_ol": _default_block_ol(
-                self.l_in,
-                self.out_l,
-                self.kernel_l,
-                self.stride_l,
-                self.pad_l,
-                self.dtype_str,
-            ),
-            "threads": _DEFAULT_THREADS,
-        }
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return _thread_configs(
-            self.default_config["block_ol"],
-            self.n * self.c_in,
-            self.l_in,
-            self.out_l,
-            self.kernel_l,
-            self.stride_l,
-            self.pad_l,
-            self.dtype_str,
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self._require_cuda(x=x)
-        return _launch_avg_pool1d_spatial(
-            self.n,
-            self.c_in,
-            self.l_in,
-            self.kernel_l,
-            self.stride_l,
-            self.pad_l,
-            self.dtype_str,
-            self.config["block_ol"],
-            self.config["threads"],
-            x,
-        )
-
-
-class AvgPool1dKernel(Kernel):
-    """Average pooling over an NCL row, with every PyTorch flag combination.
-
-    Raises:
-        ValueError: When one pooling window does not fit the shared memory a block
-            stages it in, which takes a ``kernel_size`` in the tens of thousands.
-    """
-
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
 
     def __init__(
         self,
@@ -453,24 +310,8 @@ class AvgPool1dKernel(Kernel):
         )
         self.init_config(config, tune)
 
-    @property
-    def default_config(self) -> dict:
-        return {
-            "block_ol": _default_block_ol(
-                self.l_in,
-                self.out_l,
-                self.kernel_l,
-                self.stride_l,
-                self.pad_l,
-                self.dtype_str,
-            ),
-            "threads": _DEFAULT_THREADS,
-        }
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return _thread_configs(
-            self.default_config["block_ol"],
+    def _staging(self) -> _WindowStaging:
+        return _WindowStaging(
             self.n * self.c_in,
             self.l_in,
             self.out_l,
@@ -480,19 +321,42 @@ class AvgPool1dKernel(Kernel):
             self.dtype_str,
         )
 
+    @property
+    def default_config(self) -> dict:
+        return self._staging().default()
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return self._staging().tuned()
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_cuda(x=x)
-        return _launch_avg_pool1d(
-            self.n,
-            self.c_in,
-            self.l_in,
-            self.kernel_l,
-            self.stride_l,
-            self.pad_l,
-            self.ceil_mode,
-            self.count_include_pad,
-            self.dtype_str,
-            self.config["block_ol"],
-            self.config["threads"],
-            x,
-        )
+        kernel = self.kernel(self.config["block_ol"], self.config["threads"])
+        rows = kernel(x.contiguous().view(self.n * self.c_in, self.l_in))
+        return rows.view(self.n, self.c_in, self.out_l)
+
+
+class AvgPool1dSpatialKernel(_AvgPool1dKernelBase):
+    """Fast path for common NCL avg_pool1d workloads.
+
+    Zero-padded and floor-mode, so every window spans the full kernel once the padding
+    is counted.
+    """
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        l_in: int,
+        kernel_l: int,
+        stride_l: int,
+        pad_l: int,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        super().__init__(n, c_in, l_in, kernel_l, stride_l, pad_l, False, True, dtype, config, tune)
+
+
+class AvgPool1dKernel(_AvgPool1dKernelBase):
+    """Average pooling over an NCL row, with every PyTorch flag combination."""

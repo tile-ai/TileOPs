@@ -24,7 +24,8 @@ from tileops.kernels.pool import (
     MaxPool3dKernel,
     MaxPool3dWithIndicesKernel,
 )
-from tileops.kernels.pool.avg_pool1d import _block_ol_choices, _staging
+from tileops.kernels.pool.avg_pool1d import _WindowStaging
+from tileops.kernels.pool.common import pool_output_dim
 from tileops.ops import (
     AdaptiveAvgPool2dFwdOp,
     AdaptiveMaxPool2dFwdOp,
@@ -589,8 +590,10 @@ def test_avg_pool1d_staged_span_stays_aligned(
     Only a window too wide to stage at 128 outputs selects a width that can break this,
     which is why no benchmarked shape reaches it.
     """
-    for block_ol in _block_ol_choices(l_in, kernel_l, stride_l, pad_l, dtype):
-        staged = _staging(block_ol, l_in, kernel_l, stride_l, pad_l, dtype)
+    out_l = pool_output_dim(l_in, kernel_l, stride_l, pad_l, False)
+    staging = _WindowStaging(1, l_in, out_l, kernel_l, stride_l, pad_l, dtype)
+    for block_ol in staging.widths():
+        staged = staging.span(block_ol)
         assert (block_ol * stride_l) % staged.vector_elems == 0
         assert l_in % staged.vector_elems == 0
         assert staged.head % staged.vector_elems == 0
