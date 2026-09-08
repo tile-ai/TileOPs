@@ -16,11 +16,6 @@ Two rotation styles exist at the kernel level:
 Layouts:
 - 1D: (seq_len, head_dim) — single-head or pre-reshaped
 - 2D: (batch, seq_len, num_heads, head_dim) — multi-head batched
-
-Schedules:
-- Walked: operands are read from global memory into registers and stored straight back.
-- Staged: a block moves a contiguous span through shared memory, so its global read and
-  its write are one run apiece. A block that cannot cover a whole span walks instead.
 """
 
 import functools
@@ -53,7 +48,7 @@ def _make_rope_neox_1d(
     """1D neox RoPE kernel: (seq_len, head_dim) x cos(seq_len, half) x sin(seq_len, half).
 
     cos/sin are of shape (seq_len, head_dim // 2), one entry per rotated pair.
-    One thread per pair ``(c, c + half)``; the arithmetic is f32 and rounds once.
+    The arithmetic is f32 and rounds once, at the store into ``y``.
     """
     half = head_dim // 2
     n_pairs = seq_len * half
@@ -98,10 +93,8 @@ def _make_rope_neox_2d(
     """2D neox RoPE kernel: (batch, seq_len, num_heads, head_dim).
 
     cos/sin are of shape (seq_len, head_dim // 2), broadcast over batch and heads.
-    One thread per pair ``(c, c + half)``; the arithmetic is f32 and rounds once.
-
-    A pair spans ``half`` columns, so a span of whole head rows holds both members of
-    every pair in it and the block can stage it. A partial span walks instead.
+    ``x`` and ``y`` are flat: the caller reshapes. The arithmetic is f32 and rounds
+    once, at the store into ``y``.
     """
     half = head_dim // 2
     n_total = batch * seq_len * num_heads * head_dim
@@ -166,12 +159,9 @@ def _make_rope_non_neox_1d(
 ) -> object:
     """1D non-neox (RoFormer) RoPE kernel: adjacent-pair rotation.
 
-    cos/sin shape: (seq_len, head_dim // 2), one entry per pair.
-    The arithmetic is f32 and rounds once.
-
-    A thread owns ``num_per_thread`` consecutive columns, so both members of every pair
-    it rotates arrive in one access and the rotation runs in registers. The run has to
-    stay inside one row; a width that leaves it straddling two walks the pairs instead.
+    cos/sin shape: (seq_len, head_dim // 2), one entry per pair; entry ``p`` serves
+    columns ``2p`` and ``2p + 1``. The arithmetic is f32 and rounds once, at the store
+    into ``y``.
     """
     half = head_dim // 2
     n_pairs = seq_len * half
@@ -247,26 +237,21 @@ def _make_rope_neox_position_ids_thd(
 ) -> object:
     """THD neox RoPE kernel with explicit absolute position ids.
 
-    A thread owns the pair ``(c, c + half)`` a neox rotation couples, so ``x`` is
-    read once and both of its outputs leave in the same step: the walked space is
-    the rotated half, not the head. Where ``rotary_dim < head_dim`` a second walk
-    copies the columns past it. The rotation runs in f32 and rounds once, at the
-    store into ``y``.
+    ``x`` and ``y`` are flat over ``(num_tokens, num_heads, head_dim)``. Columns past
+    ``rotary_dim`` are copied through unrotated. The arithmetic is f32 and rounds once,
+    at the store into ``y``.
 
-    ``status`` counts the positions seen outside ``[0, max_position)``. It is
-    reported from a walk over the token axis, which is ``num_heads * half`` times
-    shorter than the rotation's, so the rotation stays branch-free; the rotation
-    clamps its own table index so an out-of-range position cannot fault before the
-    caller reads the count back. The count only grows, which is what lets one
-    buffer serve every call without a reset: a caller raises when it moves.
+    A position outside ``[0, max_position)`` is clamped to the table rather than
+    faulting, and ``status`` counts how many were seen. The count only grows and is
+    never reset, so one buffer serves every call and a caller learns of an out-of-range
+    position by the count moving.
     """
     half = rotary_dim // 2
     token_stride = num_heads * head_dim
     n_total = num_tokens * token_stride
     n_pairs = num_tokens * num_heads * half
     n_tail = num_tokens * num_heads * (head_dim - rotary_dim)
-    # One grid covers both walks, so the copied columns get blocks of their own
-    # where there are more of them than there are rotated pairs.
+    # One grid covers both walks, so the longer of the two sizes it.
     n_walked = max(n_pairs, n_tail)
 
     @tilelang.jit(out_idx=[5])
@@ -484,10 +469,10 @@ class _RopeKernelBase(Kernel):
 
     @property
     def default_config(self) -> dict:
-        """Threads and per-thread work, measured on this family's widest workloads.
+        """Default threads and per-thread work.
 
         ``num_per_thread`` counts columns for the non-neox rotation and pairs for the
-        neox one.
+        neox one, so a caller overriding it states its own units.
         """
         if self.layout == "1d":
             if self.ROTATION_STYLE == "non_neox":
@@ -572,9 +557,8 @@ class RopeNeoxPositionIdsKernel(Kernel):
         self.rotary_dim = rotary_dim
         self.max_position = max_position
         self.dtype = dtype
-        #: Grows by one per position seen outside ``[0, max_position)``. One buffer
-        #: serves every call because the count is never reset; ``out_of_range_since``
-        #: answers whether it moved.
+        #: Grows by one per position seen outside ``[0, max_position)``, and is never
+        #: reset; ``take_out_of_range`` answers whether it moved.
         self._status: torch.Tensor | None = None
         self._seen_out_of_range = 0
         self.kernel = self._build_kernel()
@@ -601,8 +585,7 @@ class RopeNeoxPositionIdsKernel(Kernel):
     def take_out_of_range(self) -> bool:
         """Whether a call since the previous ask saw a position outside the table.
 
-        One device read per ask, and the count it compares against is held here, so
-        a caller pays one synchronisation rather than one before and one after.
+        Costs one device synchronisation per ask.
         """
         if self._status is None:
             return False
