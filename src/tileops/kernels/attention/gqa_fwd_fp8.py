@@ -10,6 +10,7 @@ from ..kernel_base import Kernel
 from .call_spec import ATTENTION_DTYPES, uses_sliding_window
 from .fp8_prefill_core import make_native_fp8_prefill_tile_update
 from .online_softmax import (
+    LOG2E,
     make_log2e_scale,
     make_online_softmax_with_score_scale,
 )
@@ -333,6 +334,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     dim: int,
     out_dtype: str,
     is_causal: bool,
+    softcap: float,
     write_lse: bool,
     num_sms: int,
 ) -> Callable:
@@ -364,8 +366,12 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     groups = heads // heads_kv
     accum_dtype = "float"
     fp8_dtype = "float8_e4m3fn"
+    attention_scale = dim**-0.5
     scale = make_log2e_scale(dim)
-    defer_row_sum = is_causal or (seq_len_kv + 223) // 224 < 32
+    use_softcap = softcap > 0.0
+    capped_softmax_scale = softcap * LOG2E
+    lse_scale = capped_softmax_scale if use_softcap else scale
+    defer_row_sum = use_softcap or is_causal or (seq_len_kv + 223) // 224 < 32
     causal_offset = seq_len_kv - seq_len_q
 
     @T.macro
@@ -429,6 +435,41 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
         for i in T.Parallel(half_m):
             logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
 
+    @T.macro
+    def online_softmax_with_softcap_partial_sum(
+        acc_s,
+        scores_max,
+        scores_max_prev,
+        scores_scale,
+        scores_sum,
+        logsum,
+        score_scale,
+    ):
+        # The raw accumulator was capped before masking.  Keeping the tanh
+        # transform in the raw PTX layout avoids a generic fragment loop.
+        T.copy(scores_max, scores_max_prev)
+        T.fill(scores_max, -T.infinity(accum_dtype))
+        T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+        for i in T.Parallel(half_m):
+            scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
+            scores_scale[i] = T.exp2(
+                (scores_max_prev[i] - scores_max[i])
+                * T.cast(capped_softmax_scale, accum_dtype)
+            )
+        for i, j in T.Parallel(half_m, 224):
+            acc_s[i, j] = T.exp2(
+                (acc_s[i, j] - scores_max[i])
+                * T.cast(capped_softmax_scale, accum_dtype)
+            )
+        T.call_extern(
+            "handle",
+            "tl::fp8_partial_row_sum_raw_acc_64x224",
+            acc_s.data,
+            scores_sum.data,
+        )
+        for i in T.Parallel(half_m):
+            logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+
     @tilelang.jit(
         out_idx=[6, 7],
         pass_configs={
@@ -456,7 +497,12 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
         online_softmax_fast_2 = make_online_softmax_with_score_scale(
             scale, accum_dtype, half_m, 224
         )
-        if is_causal:
+        if use_softcap:
+            online_softmax_fast_1 = online_softmax_with_softcap_partial_sum
+            online_softmax_fast_2 = online_softmax_with_softcap_partial_sum
+            online_softmax_1 = online_softmax_with_softcap_partial_sum
+            online_softmax_2 = online_softmax_with_softcap_partial_sum
+        elif is_causal:
             online_softmax_1 = online_softmax_with_causal_partial_sum
             online_softmax_2 = online_softmax_with_causal_partial_sum
         elif not defer_row_sum:
@@ -762,6 +808,13 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             T.warpgroup_fence_operand(acc_s_1, num_regs=112)
                             T.barrier_arrive(k_empty)
                             gi_kc1 = gi_kc1 + 1
+                            if use_softcap:
+                                T.call_extern(
+                                    "handle",
+                                    "tl::fp8_apply_softcap_raw_acc_64x224",
+                                    acc_s_1.data,
+                                    qk_descale * attention_scale / softcap,
+                                )
                             if (
                                 is_causal
                                 and (n_idx + 1) * 224
@@ -873,7 +926,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         )
                         if write_lse:
                             for i in T.Parallel(half_m):
-                                ls_1[i] = T.log2(ls_1[i]) + sm_1[i] * scale
+                                ls_1[i] = T.log2(ls_1[i]) + sm_1[i] * lse_scale
                             T.copy(ls_1, lse[tile_b, tile_h, row_base : row_base + half_m])
                         if groups == 8 and defer_row_sum:
                             T.sync_threads(barrier_id=5, arrive_count=384)
@@ -942,6 +995,13 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             T.warpgroup_fence_operand(acc_s_2, num_regs=112)
                             T.barrier_arrive(k_empty)
                             gi_kc2 = gi_kc2 + 1
+                            if use_softcap:
+                                T.call_extern(
+                                    "handle",
+                                    "tl::fp8_apply_softcap_raw_acc_64x224",
+                                    acc_s_2.data,
+                                    qk_descale * attention_scale / softcap,
+                                )
                             if (
                                 is_causal
                                 and (n_idx + 1) * 224
@@ -1051,7 +1111,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         )
                         if write_lse:
                             for i in T.Parallel(half_m):
-                                ls_2[i] = T.log2(ls_2[i]) + sm_2[i] * scale
+                                ls_2[i] = T.log2(ls_2[i]) + sm_2[i] * lse_scale
                             T.copy(
                                 ls_2,
                                 lse[tile_b, tile_h, row_base + half_m : row_base + block_m],
@@ -1088,6 +1148,7 @@ def _gqa_fwd_fp8_bn224_tma_v_wrapped_kernel(
         dim,
         out_dtype,
         False,
+        0.0,
         True,
         NUM_SMS,
     )()(q, k, v, q_descale, k_descale, v_descale)
@@ -1103,6 +1164,7 @@ def _gqa_dense_fwd_fp8_bn224_wrapped_kernel(
     dim: int,
     out_dtype: str,
     is_causal: bool,
+    softcap: float,
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -1122,6 +1184,7 @@ def _gqa_dense_fwd_fp8_bn224_wrapped_kernel(
         dim,
         out_dtype,
         is_causal,
+        softcap,
         False,
         grid_size,
     )()(q, k, v, q_descale, k_descale, v_descale)[0]
@@ -1137,9 +1200,10 @@ def _(
     dim: int,
     out_dtype: str,
     is_causal: bool,
+    softcap: float,
     *inputs: Tuple[torch.Tensor, ...],
 ) -> torch.Tensor:
-    del heads_kv, seq_len_kv, is_causal
+    del heads_kv, seq_len_kv, is_causal, softcap
     torch_dtype = torch.float16 if out_dtype == "float16" else torch.bfloat16
     return torch.empty(
         (batch, seq_len_q, heads, dim), dtype=torch_dtype, device=inputs[0].device
@@ -1367,7 +1431,7 @@ class GQADenseFP8Kernel(Kernel):
             not self.fuse_rope
             and self.window_size_left == -1
             and self.window_size_right == -1
-            and self.softcap == 0.0
+            and (self.softcap == 0.0 or self.is_causal)
             and self.seq_len_q % 128 == 0
             and self.seq_len_kv % 896 == 0
             and self.sm_scale == self.dim**-0.5
@@ -1419,6 +1483,7 @@ class GQADenseFP8Kernel(Kernel):
                 self.dim,
                 self.dtype_str,
                 self.is_causal,
+                self.softcap,
                 q,
                 k,
                 v,

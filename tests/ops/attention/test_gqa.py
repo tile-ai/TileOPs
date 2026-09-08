@@ -241,7 +241,8 @@ def test_gqa_dense_fp8_fused_rope_matches_reference() -> None:
 
 
 @pytest.mark.smoke
-def test_gqa_dense_fp8_causal_rectangular_matches_reference() -> None:
+@pytest.mark.parametrize("softcap", [0.0, 50.0])
+def test_gqa_dense_fp8_causal_rectangular_matches_reference(softcap: float) -> None:
     fp8 = getattr(torch, "float8_e4m3fn", None)
     if fp8 is None or not torch.cuda.is_available() or get_sm_version() != 90:
         pytest.skip("native FP8 Dense GQA requires SM90 and float8_e4m3fn")
@@ -252,7 +253,9 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference() -> None:
     v = (torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda") * 0.2).to(fp8)
     scale = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
 
-    output = GroupedQueryAttentionDenseFwdOp(is_causal=True, dtype=torch.float16)(
+    output = GroupedQueryAttentionDenseFwdOp(
+        is_causal=True, dtype=torch.float16, softcap=softcap
+    )(
         q, k, v, scale, scale, scale
     )
     reference = _gqa_prefill_ref(
@@ -262,6 +265,7 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference() -> None:
         heads=heads,
         heads_kv=heads_kv,
         is_causal=True,
+        softcap=softcap,
     )
     torch.testing.assert_close(output, reference, atol=8e-2, rtol=2e-2)
 

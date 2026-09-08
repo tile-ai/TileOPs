@@ -246,6 +246,18 @@ __device__ __forceinline__ void fp8_partial_row_sum_raw_acc_64x224(
     row_sum[i] = sum;
   }
 }
+__device__ __forceinline__ float fp8_tanh_approx(float value) {
+  float result;
+  asm("tanh.approx.f32 %0, %1;" : "=f"(result) : "f"(value));
+  return result;
+}
+__device__ __forceinline__ void fp8_apply_softcap_raw_acc_64x224(
+    float* acc_s, float score_to_cap) {
+#pragma unroll
+  for (int i = 0; i < 112; ++i) {
+    acc_s[i] = fp8_tanh_approx(acc_s[i] * score_to_cap);
+  }
+}
 __device__ __forceinline__ void fp8_producer_barrier_128() {
   asm volatile("bar.sync 15, 128;\n" ::: "memory");
 }
