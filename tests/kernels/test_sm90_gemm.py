@@ -199,6 +199,11 @@ def test_selector_prunes_like_deepgemm():
         assert layout.block_n % 64 == 0
     fp32 = layout_candidates(_desc(4096, 4096, 4096, cd_dtype="float32"))
     assert all(layout.block_m <= 128 for layout in fp32)
+    # Every candidate takes the 64-wide K block; 128 is pinned-config only (see
+    # layout_candidates for the power-cap measurement behind that).
+    grouped = dict(gemm_type=GemmType.M_GROUPED_TIGHT_PSUM, num_groups=128)
+    decode = layout_candidates(_desc(4096, 4096, 7168, **grouped))
+    assert {layout.block_k for layout in decode} == {64}
 
 
 @pytest.mark.full
@@ -225,11 +230,14 @@ def test_spec_rejects_inconsistent_template_parameters():
         SM90GemmSpec(**{**fields, "block_m": 64})
     with pytest.raises(ValueError, match="both exceed 128"):
         SM90GemmSpec(**{**fields, "block_m": 256, "block_n": 256})
-    with pytest.raises(ValueError, match="block_k is 64"):
-        SM90GemmSpec(**{**fields, "block_k": 128})
-    # A pinned pipeline past the shared-memory budget is refused, not launched.
+    with pytest.raises(ValueError, match="block_k must be 64 or 128"):
+        SM90GemmSpec(**{**fields, "block_k": 96})
+    # A pinned pipeline past the shared-memory budget, or the single stage the
+    # 128x256x128 tile has room for, is refused, not launched (it deadlocked).
     with pytest.raises(ValueError, match="at most"):
         spec_from_config(_desc(4096, 4096, 4096), dict(block_m=128, block_n=256, num_stages=8))
+    with pytest.raises(ValueError, match="at least 2"):
+        spec_from_config(_desc(4096, 4096, 4096), dict(block_m=128, block_n=256, block_k=128))
     with pytest.raises(ValueError, match="K-major A"):
         SM90GemmSpec(
             **{

@@ -81,6 +81,7 @@ _TMA_REGS = 48
 _MATH_REGS_ONE_WG = 248
 _MATH_REGS_TWO_WG = 224
 # Named barriers private to each math warp-group's epilogue.
+_SWIZZLE_ATOM = 64  # 128 bytes of bf16 / fp16 along K
 _EPILOGUE_BARRIER_BASE = 8
 
 
@@ -182,9 +183,12 @@ def _make_prim_func(
             return B[n0 : n0 + block_n, k0 : k0 + block_k]
         return B[k0 : k0 + block_k, n0 : n0 + block_n]
 
-    def b_half_region(B, group, n0, k0):
-        """``block_n / 2`` columns of a K-major B (the fused path takes no other)."""
-        return B[group, n0 : n0 + half_n, k0 : k0 + block_k]
+    k_atoms = block_k // _SWIZZLE_ATOM  # 128-byte swizzle atoms along K
+
+    def b_half_region(B, group, n0, k0, atom):
+        """``block_n / 2`` columns and one K atom of a K-major B (the fused path takes no other)."""
+        kk = k0 + atom * _SWIZZLE_ATOM
+        return B[group, n0 : n0 + half_n, kk : kk + _SWIZZLE_ATOM]
 
     def align_up(x):
         return ((x + T.int32(block_m - 1)) // T.int32(block_m)) * T.int32(block_m)
@@ -380,13 +384,20 @@ def _make_prim_func(
     @T.macro
     def load_b(B, dst, full, slot, group, n0, k0):
         if fused:
-            # Gate columns fill the tile's first half, the matching up columns its second.
-            T.tma_copy(b_half_region(B, group, n0, k0), dst[slot, 0:half_n, :], barrier=full[slot])
-            T.tma_copy(
-                b_half_region(B, group, c_cols + n0, k0),
-                dst[slot, half_n:block_n, :],
-                barrier=full[slot],
-            )
+            # Gate columns fill the tile's first half, the matching up columns its
+            # second, one box per 128-byte K atom so each lands in one swizzle span.
+            for atom in range(k_atoms):
+                lo, hi = atom * _SWIZZLE_ATOM, (atom + 1) * _SWIZZLE_ATOM
+                T.tma_copy(
+                    b_half_region(B, group, n0, k0, atom),
+                    dst[slot, 0:half_n, lo:hi],
+                    barrier=full[slot],
+                )
+                T.tma_copy(
+                    b_half_region(B, group, c_cols + n0, k0, atom),
+                    dst[slot, half_n:block_n, lo:hi],
+                    barrier=full[slot],
+                )
         else:
             T.tma_copy(b_region(B, group, n0, k0), dst[slot, :, :], barrier=full[slot])
 

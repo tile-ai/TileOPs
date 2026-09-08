@@ -173,18 +173,19 @@ class SM90GemmSpec:
             raise ValueError(f"block_m must be 64, 128 or 256, got {self.block_m}")
         if self.block_n % 8 or not 8 <= self.block_n <= 256:
             raise ValueError(f"block_n must be a multiple of 8 in [8, 256], got {self.block_n}")
-        if self.block_k != _BLOCK_K:
-            # One 128-byte swizzle atom per operand row; the fused half-load of B
-            # and the stage budget assume it (a 128-wide K was 3% faster at one
-            # decode shape and 40% slower at prefill on H200, and is not offered).
-            raise ValueError(f"block_k is {_BLOCK_K} for 2-byte operands, got {self.block_k}")
+        if self.block_k not in (_BLOCK_K, 2 * _BLOCK_K):
+            # One or two 128-byte swizzle atoms per operand row.
+            raise ValueError(f"block_k must be {_BLOCK_K} or {2 * _BLOCK_K}, got {self.block_k}")
         if self.num_math_threads != (128 if self.block_m <= 64 else 256):
             raise ValueError(
                 "num_math_threads is 128 for block_m <= 64 and 256 otherwise, "
                 f"got {self.num_math_threads} for block_m={self.block_m}"
             )
-        if self.num_stages < 1:
-            raise ValueError("num_stages must be positive")
+        if self.num_stages < 2:
+            # The mainloop keeps one WGMMA group in flight and releases a stage
+            # one k-step late, so with a single stage producer and consumer wait
+            # on each other for ever.
+            raise ValueError("num_stages must be at least 2")
         if self.num_sms < 1 or min(self.shape_m, self.shape_n, self.shape_k) < 0:
             raise ValueError("num_sms must be positive and static dims non-negative")
         if self.gemm_type not in _FLAT_LIKE_TYPES and self.major_a is not Major.K:
@@ -305,6 +306,11 @@ def layout_candidates(desc: GemmDesc) -> list[_Layout]:
     # this TileLang epilogue, so those widths are not offered.
     block_n_candidates = list(range(_BLOCK_N_STEP, 256 + 1, _BLOCK_N_STEP))
 
+    # The selector enumerates the 64-wide K block only. A 128-wide block (still
+    # accepted from a pinned config) halves the barrier round trips and, cold,
+    # was 2-3% faster on MoE decode shapes; under the sustained 700 W power cap
+    # an H200 sits at within a second it lost 5-7%, because the tile it fits in
+    # shared memory is half as wide and doubles the L2 re-reads of A.
     candidates = []
     for block_m in block_m_candidates:
         for block_n in block_n_candidates:
@@ -413,15 +419,16 @@ def get_best_config(desc: GemmDesc) -> SM90GemmSpec:
 def spec_from_config(desc: GemmDesc, config: dict) -> SM90GemmSpec:
     """A spec from an explicit ``config`` instead of the selector.
 
-    ``config`` names ``block_m``, ``block_n`` and optionally ``num_stages``. A
-    missing ``num_stages`` takes the shared-memory budget's maximum for that
-    tile, so a tuning sweep can pin the tile and leave the pipeline depth alone;
-    a pinned one past the budget is refused rather than launched.
+    ``config`` names ``block_m``, ``block_n`` and optionally ``block_k`` and
+    ``num_stages``. A missing ``num_stages`` takes the shared-memory budget's
+    maximum for that tile, so a tuning sweep can pin the tile and leave the
+    pipeline depth alone; a pinned one past the budget is refused rather than
+    launched.
     """
-    unknown = set(config) - {"block_m", "block_n", "num_stages"}
+    unknown = set(config) - {"block_m", "block_n", "block_k", "num_stages"}
     if unknown:
         raise ValueError(f"config names no such template parameter: {sorted(unknown)}")
-    layout = _Layout(config["block_m"], config["block_n"], _BLOCK_K)
+    layout = _Layout(config["block_m"], config["block_n"], config.get("block_k", _BLOCK_K))
     if desc.gemm_type in _ALIGNED_TYPES and layout.block_m != desc.m_alignment:
         raise ValueError(
             f"an aligned layout's block_m is its segment alignment: the kernel rounds group "
@@ -430,9 +437,10 @@ def spec_from_config(desc: GemmDesc, config: dict) -> SM90GemmSpec:
         )
     max_stages = _num_stages(desc, layout)
     stages = config.get("num_stages", max_stages)
-    if not 1 <= stages <= max_stages:
+    if not 2 <= stages <= max_stages:
         raise ValueError(
-            f"a {layout.block_m}x{layout.block_n} tile fits at most {max_stages} stages in "
-            f"shared memory, got num_stages={stages}"
+            f"a {layout.block_m}x{layout.block_n}x{layout.block_k} tile fits at most "
+            f"{max_stages} stages in shared memory, got num_stages={stages}; the pipeline "
+            "needs at least 2"
         )
     return _spec(desc, layout, stages)
