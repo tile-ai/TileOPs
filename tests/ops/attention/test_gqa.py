@@ -241,6 +241,32 @@ def test_gqa_dense_fp8_fused_rope_matches_reference() -> None:
 
 
 @pytest.mark.smoke
+def test_gqa_dense_fp8_causal_rectangular_matches_reference() -> None:
+    fp8 = getattr(torch, "float8_e4m3fn", None)
+    if fp8 is None or not torch.cuda.is_available() or get_sm_version() != 90:
+        pytest.skip("native FP8 Dense GQA requires SM90 and float8_e4m3fn")
+    batch, seq_len_q, seq_len_kv = 1, 256, 1792
+    heads, heads_kv, dim = 8, 2, 128
+    q = (torch.randn(batch, seq_len_q, heads, dim, device="cuda") * 0.2).to(fp8)
+    k = (torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda") * 0.2).to(fp8)
+    v = (torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda") * 0.2).to(fp8)
+    scale = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
+
+    output = GroupedQueryAttentionDenseFwdOp(is_causal=True, dtype=torch.float16)(
+        q, k, v, scale, scale, scale
+    )
+    reference = _gqa_prefill_ref(
+        q.to(torch.float16),
+        k.to(torch.float16),
+        v.to(torch.float16),
+        heads=heads,
+        heads_kv=heads_kv,
+        is_causal=True,
+    )
+    torch.testing.assert_close(output, reference, atol=8e-2, rtol=2e-2)
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("batch", [1, 2])
 def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None:
     if not torch.cuda.is_available() or get_sm_version() != 90:

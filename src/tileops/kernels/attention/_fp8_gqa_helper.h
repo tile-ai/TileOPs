@@ -249,8 +249,8 @@ __device__ __forceinline__ void fp8_partial_row_sum_raw_acc_64x224(
 __device__ __forceinline__ void fp8_producer_barrier_128() {
   asm volatile("bar.sync 15, 128;\n" ::: "memory");
 }
-template <typename FP8T>
-__device__ __forceinline__ void fp8_transpose_v_128x224_fa3_src_ldsm_stsm_barrier_each_iter(
+template <bool InPlace, typename FP8T>
+__device__ __forceinline__ void fp8_transpose_v_128x224_fa3_src_ldsm_stsm_impl(
     FP8T* v_vt_smem, FP8T* v_tc_smem) {
   using namespace cute;
   using Config = fp8_gqa_detail::VTranspose128x224Fa3Src<FP8T>;
@@ -285,7 +285,9 @@ __device__ __forceinline__ void fp8_transpose_v_128x224_fa3_src_ldsm_stsm_barrie
     Tensor tTransrV = make_fragment_like(tTranssV(_, make_coord(_, _0{}), _0{}));
     Tensor tTransrV64 = recast<uint2>(tTransrV);
     cute::copy(s2r_tiled_copy_vt, tTranssVt(_, make_coord(_, i), _0{}), tTransrV);
-    fp8_producer_barrier_128();
+    if constexpr (InPlace) {
+      fp8_producer_barrier_128();
+    }
 #pragma unroll
     for (int j = 0; j < size(tTransrV64); ++j) {
       uint32_t upper = tTransrV64[j].x;
@@ -294,8 +296,20 @@ __device__ __forceinline__ void fp8_transpose_v_128x224_fa3_src_ldsm_stsm_barrie
       tTransrV64[j].y = __byte_perm(upper, lower, 0x7531);
     }
     cute::copy(r2s_tiled_copy_v, tTransrV, tTranssV(_, make_coord(_, i), _0{}));
-    fp8_producer_barrier_128();
+    if constexpr (InPlace) {
+      fp8_producer_barrier_128();
+    }
   }
+}
+template <typename FP8T>
+__device__ __forceinline__ void fp8_transpose_v_128x224_fa3_src_ldsm_stsm_barrier_each_iter(
+    FP8T* v_vt_smem, FP8T* v_tc_smem) {
+  fp8_transpose_v_128x224_fa3_src_ldsm_stsm_impl<true>(v_vt_smem, v_tc_smem);
+}
+template <typename FP8T>
+__device__ __forceinline__ void fp8_transpose_v_128x224_fa3_src_ldsm_stsm_out_of_place(
+    FP8T* v_vt_smem, FP8T* v_tc_smem) {
+  fp8_transpose_v_128x224_fa3_src_ldsm_stsm_impl<false>(v_vt_smem, v_tc_smem);
 }
 template <typename FP8T>
 __device__ __forceinline__ void fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224(
