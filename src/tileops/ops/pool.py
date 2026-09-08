@@ -120,6 +120,53 @@ def validate_pool_params(
         raise ValueError("divisor_override must not be zero")
 
 
+class _CheckedChunkMaps:
+    """The chunk maps whose values have already been through `MeanPoolingFwdOp`'s checks.
+
+    An entry stands only while both weak references still resolve to the tensors that were
+    checked and neither `_version` has moved, so a map written in place, freed, or replaced
+    is checked again.
+    """
+
+    # Distinct maps remembered at once. A dead tensor leaves its key behind, so the table is
+    # dropped rather than grown once a caller has cycled through this many.
+    _ENTRIES = 8
+
+    def __init__(self) -> None:
+        """Start empty. An entry maps a key to (weak offsets, weak indices, both versions)."""
+        self._seen: Dict[tuple, tuple] = {}
+
+    @staticmethod
+    def _key(offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int) -> tuple:
+        return (id(offsets), id(indices), seq_len, chunks)
+
+    def checked(
+        self, offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int
+    ) -> bool:
+        """Whether this map, unchanged since it was checked, may skip the checks."""
+        entry = self._seen.get(self._key(offsets, indices, seq_len, chunks))
+        if entry is None:
+            return False
+        offsets_ref, indices_ref, versions = entry
+        return (
+            offsets_ref() is offsets
+            and indices_ref() is indices
+            and versions == (offsets._version, indices._version)
+        )
+
+    def remember(
+        self, offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int
+    ) -> None:
+        """Record that this map passed the checks."""
+        if len(self._seen) >= self._ENTRIES:
+            self._seen.clear()
+        self._seen[self._key(offsets, indices, seq_len, chunks)] = (
+            weakref.ref(offsets),
+            weakref.ref(indices),
+            (offsets._version, indices._version),
+        )
+
+
 class MeanPoolingFwdOp(Op):
     """Chunked mean over the sequence axis of a ``[batch, seq, heads, dim]`` tensor.
 
@@ -144,9 +191,6 @@ class MeanPoolingFwdOp(Op):
         chunk_means = op(x, offsets, indices)      # ragged, one row of indices per chunk
         ```
     """
-
-    # How many distinct chunk maps stay remembered at once. See `_validate_ragged`.
-    _CHECKED_MAP_ENTRIES: ClassVar[int] = 8
 
     def __init__(
         self,
@@ -176,8 +220,7 @@ class MeanPoolingFwdOp(Op):
         # Keyed by (device, shape): the uniform path hands the kernel tensors it never
         # reads, and a placeholder on the wrong device would route the launch there.
         self._placeholders: Dict[tuple, torch.Tensor] = {}
-        # One entry per chunk map this op has already checked. See `_validate_ragged`.
-        self._checked_maps: Dict[tuple, tuple] = {}
+        self._checked_maps = _CheckedChunkMaps()
         self.dispatch_kernel(kernel_map)
 
     @property
@@ -320,36 +363,13 @@ class MeanPoolingFwdOp(Op):
         """Check a chunk map once, then skip it while the same tensors come back unchanged.
 
         `_check_ragged` reads `offsets` and `indices` element by element, costing a dozen
-        device launches and as many syncs, which a ragged call would otherwise pay before
-        every pooling. A chunk map is built once and passed to many calls, so its result is
-        remembered against the two tensors it was read from.
-
-        An entry applies only while both weak references still resolve to the objects that
-        were checked and neither `_version` has moved, so a tensor written in place, freed,
-        or replaced is checked again.
+        device launches and as many syncs that a ragged call would otherwise pay before
+        every pooling. A chunk map is built once and passed to many calls.
         """
-        key = (id(offsets), id(indices), seq_len, chunks)
-        remembered = self._checked_maps.get(key)
-        if remembered is not None:
-            offsets_ref, indices_ref, versions = remembered
-            if (
-                offsets_ref() is offsets
-                and indices_ref() is indices
-                and versions == (offsets._version, indices._version)
-            ):
-                return
-
+        if self._checked_maps.checked(offsets, indices, seq_len, chunks):
+            return
         self._check_ragged(offsets, indices, seq_len, chunks)
-
-        # A dead tensor leaves its key behind, so the table is dropped rather than grown
-        # once a caller has cycled through this many maps.
-        if len(self._checked_maps) >= self._CHECKED_MAP_ENTRIES:
-            self._checked_maps.clear()
-        self._checked_maps[key] = (
-            weakref.ref(offsets),
-            weakref.ref(indices),
-            (offsets._version, indices._version),
-        )
+        self._checked_maps.remember(offsets, indices, seq_len, chunks)
 
     def _check_ragged(
         self, offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int

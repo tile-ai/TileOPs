@@ -158,6 +158,18 @@ def test_mean_pooling_rejects_indices_that_disagree_with_offsets() -> None:
 
 
 @pytest.mark.smoke
+def test_mean_pooling_rechecks_a_chunk_map_written_in_place() -> None:
+    """A map's checks are skipped while the same tensors come back unchanged, so one edited
+    in place has to be checked again instead of riding the earlier call's result."""
+    op = _op()
+    offsets, indices = mean_pooling_chunk_index([32, 32], 32)
+    op(_x(), offsets, indices)
+    indices[1, 1] = 5  # a chunk its sequence does not have
+    with pytest.raises(ValueError, match="does not have"):
+        op(_x(), offsets, indices)
+
+
+@pytest.mark.smoke
 def test_mean_pooling_rejects_offsets_that_leave_tokens_out() -> None:
     """`offsets` partitions the sequence axis. Bounds that stop short would drop rows from
     the mean without saying so."""
