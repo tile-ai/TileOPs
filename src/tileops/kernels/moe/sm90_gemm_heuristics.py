@@ -31,6 +31,7 @@ import math
 
 __all__ = [
     "PER_GROUP_TYPES",
+    "PER_ROW_TYPES",
     "GemmDesc",
     "GemmType",
     "Major",
@@ -70,6 +71,10 @@ class GemmType(str, enum.Enum):
     * ``M_GROUPED_TIGHT_PSUM``: TileOPs' ``tight_physical_psum``. As the aligned
       psum layout but each group starts exactly at the previous end, so a
       group's last tile is stored with a row mask.
+    * ``M_GROUPED_TIGHT_PER_ROW``: TileOPs' ``tight_per_row``. The tight layout
+      described by a non-decreasing group id per row instead of the ends; the
+      kernel recovers the ends with one binary search per group at start and
+      then runs the tight-psum schedule.
     * ``M_GROUPED_MASKED``: DeepGEMM's ``MGroupedMasked``. ``A`` and ``C`` carry a
       leading group dim of ``max_m`` rows each and ``grouped_layout[g]`` is the
       valid row count.
@@ -79,6 +84,7 @@ class GemmType(str, enum.Enum):
     M_GROUPED_ALIGNED_PER_ROW = "m_grouped_aligned_per_row"
     M_GROUPED_ALIGNED_PSUM = "m_grouped_aligned_psum"
     M_GROUPED_TIGHT_PSUM = "m_grouped_tight_psum"
+    M_GROUPED_TIGHT_PER_ROW = "m_grouped_tight_per_row"
     M_GROUPED_MASKED = "m_grouped_masked"
     BATCHED = "batched"
 
@@ -88,7 +94,10 @@ PER_GROUP_TYPES = (
     GemmType.M_GROUPED_MASKED,
     GemmType.M_GROUPED_ALIGNED_PSUM,
     GemmType.M_GROUPED_TIGHT_PSUM,
+    GemmType.M_GROUPED_TIGHT_PER_ROW,
 )
+# The types whose grouped_layout is one entry per row rather than per group.
+PER_ROW_TYPES = (GemmType.M_GROUPED_ALIGNED_PER_ROW, GemmType.M_GROUPED_TIGHT_PER_ROW)
 # The one type whose A carries no grouping in its rows: it may be MN-major and
 # takes the widest tiles.
 _FLAT_LIKE_TYPES = (GemmType.BATCHED,)
@@ -215,7 +224,11 @@ def _align(x: int, a: int) -> int:
 def _num_stages(desc: GemmDesc, layout: _Layout) -> int:
     cd_bytes = 4 if desc.cd_dtype == "float32" else 2
     smem_cd = _align(layout.block_m * layout.block_n * cd_bytes, 1024)
-    smem_prefix = _align((desc.num_groups + 2) * 4, 128)
+    # s_cum + s_total, plus the recovered ends for the tight per-row layout.
+    prefix_ints = desc.num_groups + 2
+    if desc.gemm_type is GemmType.M_GROUPED_TIGHT_PER_ROW:
+        prefix_ints += desc.num_groups
+    smem_prefix = _align(prefix_ints * 4, 128)
     per_stage = (layout.block_m + layout.block_n) * layout.block_k * _ELEM_BYTES
     budget = _SMEM_CAPACITY - smem_cd - _BARRIER_BYTES - _SMEM_ALIGN_SLACK - smem_prefix
     return min(budget // per_stage, _MAX_STAGES)

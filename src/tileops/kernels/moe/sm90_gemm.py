@@ -27,11 +27,13 @@ The GEMM types fall into three scheduler families:
 * ``flat``: ``M_GROUPED_ALIGNED_PER_ROW`` enumerates the ``M x N`` tile grid
   once and reads a tile's group off its first row.
 * ``batched``: ``BATCHED`` repeats the tile grid per batch.
-* ``per_group``: ``M_GROUPED_MASKED``, ``M_GROUPED_ALIGNED_PSUM`` and
-  ``M_GROUPED_TIGHT_PSUM`` enumerate tiles group by group from a per-group
-  row count, through a tile-count prefix sum built in shared memory at
-  kernel start. Only the tight variant can end a group mid-tile, so only it
-  masks the store of a group's last tile.
+* ``per_group``: ``M_GROUPED_MASKED``, ``M_GROUPED_ALIGNED_PSUM``,
+  ``M_GROUPED_TIGHT_PSUM`` and ``M_GROUPED_TIGHT_PER_ROW`` enumerate tiles
+  group by group from a per-group row count, through a tile-count prefix sum
+  built in shared memory at kernel start. The tight per-row layout first
+  recovers each group's end row from the per-row ids with one binary search
+  per group, then runs as tight psum. Only the tight variants can end a group
+  mid-tile, so only they mask the store of a group's last tile.
 """
 
 import functools
@@ -46,6 +48,7 @@ from tileops.utils import get_sm_count
 
 from .sm90_gemm_heuristics import (
     PER_GROUP_TYPES,
+    PER_ROW_TYPES,
     GemmDesc,
     GemmType,
     Major,
@@ -111,10 +114,10 @@ def _make_prim_func(
     cast_output = cd_dtype != "float32"
 
     # Scheduler family and what each operand looks like.
-    contiguous = gtype is GemmType.M_GROUPED_ALIGNED_PER_ROW
     masked = gtype is GemmType.M_GROUPED_MASKED
     aligned_psum = gtype is GemmType.M_GROUPED_ALIGNED_PSUM
-    tight_psum = gtype is GemmType.M_GROUPED_TIGHT_PSUM
+    tight_per_row = gtype is GemmType.M_GROUPED_TIGHT_PER_ROW
+    tight = gtype in (GemmType.M_GROUPED_TIGHT_PSUM, GemmType.M_GROUPED_TIGHT_PER_ROW)
     batched = gtype is GemmType.BATCHED
     per_group = gtype in PER_GROUP_TYPES
     a_has_group = masked or batched  # A and C carry a leading group dim
@@ -128,7 +131,7 @@ def _make_prim_func(
     a_shape = (num_groups,) + a_2d if a_has_group else a_2d
     b_shape = (num_groups,) + ((n, k) if b_k_major else (k, n))
     c_shape = (num_groups, m, n) if a_has_group else (m, n)
-    if contiguous:
+    if gtype in PER_ROW_TYPES:
         layout_shape = (m,)
     elif per_group:
         layout_shape = (num_groups,)
@@ -170,30 +173,53 @@ def _make_prim_func(
         out_n[0] = in_group // in_group_blocks
 
     @T.macro
-    def tile_cumsum(grouped_layout, s_cum, s_total, num_n_blocks):
+    def recover_ends(grouped_layout, s_ends, tx):
+        """Tight per-row: the end row of every group, from its non-decreasing ids.
+
+        Each thread takes groups ``tx, tx + threads, ...`` and binary-searches
+        the first row whose id exceeds the group; ids past the last group are
+        never reached by a tile. 32 steps bound any int32 ``m``.
+        """
+        for g in T.serial(T.ceildiv(num_groups, threads)):
+            group = g * T.int32(threads) + tx
+            if group < num_groups:
+                lo = T.alloc_var("int32", init=0)
+                hi = T.alloc_var("int32", init=m)
+                for _ in T.serial(32):
+                    if lo < hi:
+                        mid = (lo + hi) >> T.int32(1)
+                        if grouped_layout[mid] <= group:
+                            lo = mid + T.int32(1)
+                        else:
+                            hi = mid
+                s_ends[group] = lo
+
+    @T.macro
+    def tile_cumsum(ends, s_cum, s_total, num_n_blocks):
         """Per-group tile-count prefix sum; ``s_total`` is the tile count of the call.
 
         Masked groups are ``masked_m[g]`` rows from row 0 of their slab; psum
         groups run from the previous end (aligned up for the aligned variant)
-        to ``psum[g]``.
+        to ``ends[g]``.
         """
         s_cum[0] = T.int32(0)
         prev_end = T.alloc_var("int32", init=0)
         for g in T.serial(num_groups):
             if masked:
-                rows = T.max(T.min(grouped_layout[g], m), T.int32(0))
+                rows = T.max(T.min(ends[g], m), T.int32(0))
             elif aligned_psum:
-                rows = T.max(grouped_layout[g] - align_up(prev_end), T.int32(0))
+                rows = T.max(ends[g] - align_up(prev_end), T.int32(0))
             else:
-                rows = T.max(grouped_layout[g] - prev_end, T.int32(0))
+                rows = T.max(ends[g] - prev_end, T.int32(0))
             s_cum[g + 1] = s_cum[g] + (rows + T.int32(block_m - 1)) // T.int32(block_m)
-            prev_end = grouped_layout[g]
+            prev_end = ends[g]
         s_total[0] = s_cum[num_groups] * num_n_blocks
 
     @T.macro
     def resolve_tile(
         block_idx,
         grouped_layout,
+        ends,
         s_cum,
         num_m_blocks,
         num_n_blocks,
@@ -207,6 +233,8 @@ def _make_prim_func(
         ``t_row0`` indexes the A/C slab the tile belongs to: the whole tensor
         for the flat and psum families, the group's slab for masked and
         batched. ``t_rows`` is ``block_m`` except on a tight group's last tile.
+        ``ends`` is the per-group metadata (``grouped_layout`` itself for the
+        psum and masked types, the recovered ends for tight per-row).
         """
         m_blk = T.alloc_local((1,), "int32")
         n_blk = T.alloc_local((1,), "int32")
@@ -234,13 +262,13 @@ def _make_prim_func(
                 t_row0[0] = m_blk[0] * T.int32(block_m)
                 t_rows[0] = T.int32(block_m)
             else:
-                prev_end = T.if_then_else(lo > 0, grouped_layout[T.max(lo - 1, 0)], T.int32(0))
+                prev_end = T.if_then_else(lo > 0, ends[T.max(lo - 1, 0)], T.int32(0))
                 if aligned_psum:
                     t_row0[0] = align_up(prev_end) + m_blk[0] * T.int32(block_m)
                     t_rows[0] = T.int32(block_m)
                 else:
                     t_row0[0] = prev_end + m_blk[0] * T.int32(block_m)
-                    t_rows[0] = T.min(T.int32(block_m), grouped_layout[lo] - t_row0[0])
+                    t_rows[0] = T.min(T.int32(block_m), ends[lo] - t_row0[0])
         else:  # aligned per-row: the flat grid, a tile's group read off its first row
             swizzle_block(block_idx, num_m_blocks, num_n_blocks, m_blk, n_blk)
             t_row0[0] = m_blk[0] * T.int32(block_m)
@@ -274,7 +302,7 @@ def _make_prim_func(
         """
         T.sync_threads(barrier_id=_EPILOGUE_BARRIER_BASE + wg, arrive_count=128)
         T.copy(C_src, C_s)
-        if tight_psum:
+        if tight:
             if rows < T.int32(wg_rows):
                 T.sync_threads(barrier_id=_EPILOGUE_BARRIER_BASE + wg, arrive_count=128)
                 if rows > 0:
@@ -307,6 +335,7 @@ def _make_prim_func(
         full,
         empty,
         grouped_layout,
+        ends,
         s_cum,
         C_l,
         C_cast,
@@ -336,6 +365,7 @@ def _make_prim_func(
                 resolve_tile(
                     block_idx,
                     grouped_layout,
+                    ends,
                     s_cum,
                     num_m_blocks,
                     num_n_blocks,
@@ -402,6 +432,8 @@ def _make_prim_func(
             # Per-group tile prefix sum and the call's tile count (per_group family).
             s_cum = T.alloc_shared((num_groups + 1,), "int32")
             s_total = T.alloc_shared((1,), "int32")
+            if tight_per_row:
+                s_ends = T.alloc_shared((num_groups,), "int32")
 
             if num_math_wgs > 1:
                 T.annotate_layout(
@@ -433,7 +465,12 @@ def _make_prim_func(
 
             tx = T.get_thread_binding()
 
-            if per_group:  # noqa: SIM102 -- compile-time guard around a runtime test
+            if tight_per_row:
+                recover_ends(grouped_layout, s_ends, tx)
+                T.sync_threads()
+                if tx == 0:
+                    tile_cumsum(s_ends, s_cum, s_total, num_n_blocks)
+            elif per_group:
                 if tx == 0:
                     tile_cumsum(grouped_layout, s_cum, s_total, num_n_blocks)
 
@@ -462,6 +499,7 @@ def _make_prim_func(
                         resolve_tile(
                             block_idx,
                             grouped_layout,
+                            s_ends if tight_per_row else grouped_layout,
                             s_cum,
                             num_m_blocks,
                             num_n_blocks,
@@ -497,6 +535,7 @@ def _make_prim_func(
                     full,
                     empty,
                     grouped_layout,
+                    s_ends if tight_per_row else grouped_layout,
                     s_cum,
                     C_l0,
                     C_cast0,
@@ -518,6 +557,7 @@ def _make_prim_func(
                         full,
                         empty,
                         grouped_layout,
+                        s_ends if tight_per_row else grouped_layout,
                         s_cum,
                         C_l1,
                         C_cast1,
@@ -615,6 +655,7 @@ class SM90GemmFwdKernel(Kernel):
     | ``M_GROUPED_ALIGNED_PER_ROW`` | ``[M, K]``     | ``[G, N, K]``  | ``[M, N]``       | ``[M]`` group of each row    |
     | ``M_GROUPED_ALIGNED_PSUM``  | ``[M, K]``       | ``[G, N, K]``  | ``[M, N]``       | ``[G]`` psum row ends        |
     | ``M_GROUPED_TIGHT_PSUM``    | ``[M, K]``       | ``[G, N, K]``  | ``[M, N]``       | ``[G]`` psum row ends        |
+    | ``M_GROUPED_TIGHT_PER_ROW`` | ``[M, K]``       | ``[G, N, K]``  | ``[M, N]``       | ``[M]`` group of each row    |
     | ``M_GROUPED_MASKED``        | ``[G, max_m, K]``| ``[G, N, K]``  | ``[G, max_m, N]``| ``[G]`` valid rows per group |
     | ``BATCHED``                 | ``[G, M, K]``    | ``[G, N, K]``  | ``[G, M, N]``    | none                         |
 
@@ -761,7 +802,7 @@ class SM90GemmFwdKernel(Kernel):
             return
         if grouped_layout is None:
             raise ValueError(f"{gtype.value} needs grouped_layout")
-        length = desc.m if gtype is GemmType.M_GROUPED_ALIGNED_PER_ROW else self.num_groups
+        length = desc.m if gtype in PER_ROW_TYPES else self.num_groups
         if grouped_layout.dtype != torch.int32 or grouped_layout.shape != (length,):
             raise ValueError(f"grouped_layout must be [{length}] int32")
         if not grouped_layout.is_contiguous():

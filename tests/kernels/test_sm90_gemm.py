@@ -252,6 +252,22 @@ def test_m_grouped_tight_psum_masks_each_groups_last_tile(sizes, config):
     _assert_gemm(out, ref)
 
 
+@pytest.mark.smoke
+def test_m_grouped_tight_per_row_recovers_the_psum_schedule():
+    """Per-row ids on tight rows: the recovered ends give the psum type's exact output."""
+    sizes = [100, 0, 300, 128, 7, 64]
+    a, b, ends, ref, _ = _grouped_operands(sizes, 2048, 1024, "tight")
+    ids = torch.repeat_interleave(
+        torch.arange(len(sizes), dtype=torch.int32, device="cuda"),
+        torch.tensor(sizes, device="cuda"),
+    )
+    per_row = SM90GemmFwdKernel(GemmType.M_GROUPED_TIGHT_PER_ROW, num_groups=len(sizes))
+    out = per_row(a, b, grouped_layout=ids)
+    _assert_gemm(out, ref)
+    psum = SM90GemmFwdKernel(GemmType.M_GROUPED_TIGHT_PSUM, num_groups=len(sizes))
+    assert torch.equal(out, psum(a, b, grouped_layout=ends))
+
+
 @pytest.mark.full
 @pytest.mark.parametrize(
     "sizes,config",
