@@ -11,8 +11,8 @@ from tileops.kernels.attention import (
     GQADecodeKernel,
     GQADecodePagedBs1Kernel,
     GQADecodePagedKernel,
-    GQADenseCausalWsKernel,
     GQADenseSlidingWindowKernel,
+    GQADenseWsKernel,
     GQAPrefillPagedWithFP8KVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
@@ -296,7 +296,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "gqa_dense": GQADenseCausalWsKernel,
+            "gqa_dense": GQADenseWsKernel,
             "gqa_dense_decode": GQADecodeKernel,
             "gqa_dense_decode_bs1": GQADecodeBs1Kernel,
             "gqa_dense_sliding_window": GQADenseSlidingWindowKernel,
@@ -437,8 +437,6 @@ class GroupedQueryAttentionDenseFwdOp(Op):
 
     def _validate_builtin_call(self, q: torch.Tensor, k: torch.Tensor) -> None:
         """Reject features not implemented by the in-tree Dense kernels."""
-        if not self.is_causal:
-            raise ValueError("Dense GQA currently supports causal attention only")
         if q.shape[-1] != 128:
             raise ValueError("Dense GQA currently requires head dimension 128")
         if q.dtype not in (torch.float16, torch.bfloat16):
@@ -536,6 +534,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                 seq_len_q=seq_len_q,
                 seq_len_kv=seq_len_kv,
                 dim=dim,
+                is_causal=self.is_causal,
                 dtype=q.dtype,
                 sm_scale=self.sm_scale,
                 softcap=self.softcap,

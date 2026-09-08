@@ -135,7 +135,7 @@ GroupedQueryAttentionDenseFwdOp:
   source:
     kernel: tileops/kernels/attention/gqa_dense.py
     kernel_map:
-      gqa_dense: GQADenseCausalWsKernel
+      gqa_dense: GQADenseWsKernel
       gqa_dense_decode: GQADecodeKernel
       gqa_dense_decode_bs1: GQADecodeBs1Kernel
       gqa_dense_sliding_window: GQADenseSlidingWindowKernel
