@@ -11,6 +11,7 @@ from tileops.kernels.attention import (
     GQADecodeKernel,
     GQADecodePagedBs1Kernel,
     GQADecodePagedKernel,
+    GQADenseFP8Kernel,
     GQADenseSlidingWindowKernel,
     GQADenseWsKernel,
     GQAPrefillPagedWithFP8KVCacheFwdKernel,
@@ -299,6 +300,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
             "gqa_dense": GQADenseWsKernel,
             "gqa_dense_decode": GQADecodeKernel,
             "gqa_dense_decode_bs1": GQADecodeBs1Kernel,
+            "gqa_dense_fp8": GQADenseFP8Kernel,
             "gqa_dense_sliding_window": GQADenseSlidingWindowKernel,
         }
 
@@ -439,10 +441,10 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         """Reject features not implemented by the in-tree Dense kernels."""
         if q.shape[-1] != 128:
             raise ValueError("Dense GQA currently requires head dimension 128")
-        if q.dtype not in (torch.float16, torch.bfloat16):
-            raise ValueError("Dense GQA currently supports float16 and bfloat16 inputs only")
+        if q.dtype not in (torch.float16, torch.bfloat16, fp8_dtype()):
+            raise ValueError("Dense GQA requires float16, bfloat16, or float8_e4m3fn inputs")
         uses_window = self.window_size_left != -1 or self.window_size_right != -1
-        if uses_window and q.shape[1] != k.shape[1]:
+        if uses_window and q.dtype != fp8_dtype() and q.shape[1] != k.shape[1]:
             raise ValueError("Dense sliding-window GQA currently requires equal Q and KV lengths")
 
     @staticmethod
@@ -470,9 +472,10 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         assert q is not None and k is not None
         batch, seq_len_q, heads, dim = q.shape
         _, seq_len_kv, heads_kv, _ = k.shape
+        is_fp8 = q.dtype == fp8_dtype()
         uses_window = self.window_size_left != -1 or self.window_size_right != -1
         rope_on = self.pos_encoding_mode == "rope"
-        uses_decode = seq_len_q == 1 and not uses_window and not rope_on
+        uses_decode = not is_fp8 and seq_len_q == 1 and not uses_window and not rope_on
         uses_bs1_decode = (
             uses_decode
             and batch == 1
@@ -481,7 +484,9 @@ class GroupedQueryAttentionDenseFwdOp(Op):
             and self.softcap == 0.0
             and 1 <= heads // heads_kv <= 64
         )
-        if uses_bs1_decode:
+        if is_fp8:
+            role = "gqa_dense_fp8"
+        elif uses_bs1_decode:
             role = "gqa_dense_decode_bs1"
         elif uses_decode:
             role = "gqa_dense_decode"
@@ -498,6 +503,24 @@ class GroupedQueryAttentionDenseFwdOp(Op):
 
         def build() -> Kernel:
             self._validate_builtin_call(q, k)
+            if is_fp8:
+                assert self.dtype is not None
+                return self.kernel_map[role](
+                    batch=batch,
+                    heads=heads,
+                    heads_kv=heads_kv,
+                    seq_len_q=seq_len_q,
+                    seq_len_kv=seq_len_kv,
+                    dim=dim,
+                    is_causal=self.is_causal,
+                    window_size_left=self.window_size_left,
+                    window_size_right=self.window_size_right,
+                    dtype=self.dtype,
+                    sm_scale=self.sm_scale,
+                    softcap=self.softcap,
+                    **rope_kwargs,
+                    device_index=q.device.index,
+                )
             if uses_decode:
                 return self.kernel_map[role](
                     batch=batch,
@@ -541,7 +564,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                 device_index=q.device.index,
             )
 
-        if uses_window or rope_on:
+        if is_fp8 or uses_window or rope_on:
             # Sliding and RoPE still compile exact sequence lengths. The plain
             # causal WS kernel accepts its sequence extents at runtime.
             key = (

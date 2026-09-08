@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tileops.kernels.attention import GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel
+from tileops.ops import GroupedQueryAttentionDenseFwdOp
 from workloads.gqa_fp8_utils import (
     quantize_kv_fa3_descale,
     quantize_q_fa3_gqa_descale,
@@ -27,16 +28,14 @@ def _run_fp8_prefill_kernel(
     k_scale: torch.Tensor,
     v_scale: torch.Tensor,
 ) -> torch.Tensor:
-    cu = torch.tensor([0, seq_len], device=q_fp8.device, dtype=torch.int32)
-    kernel = GQAFwdFP8Fa3ContractPtxAccBN224WsTmaVKernel(
-        batch, heads, heads_kv, seq_len, seq_len, dim, False, out_dtype
+    op = GroupedQueryAttentionDenseFwdOp(
+        dtype=out_dtype,
+        is_causal=False,
     )
-    return kernel(
-        q_fp8.reshape(batch * seq_len, heads, dim).contiguous(),
-        k_fp8.reshape(batch * seq_len, heads_kv, dim).contiguous(),
-        v_fp8.reshape(batch * seq_len, heads_kv, dim).contiguous(),
-        cu,
-        cu,
+    return op(
+        q_fp8.contiguous(),
+        k_fp8.contiguous(),
+        v_fp8.contiguous(),
         q_scale,
         k_scale,
         v_scale,
@@ -120,9 +119,109 @@ def test_gqa_prefill_fp8_kernel_accepts_fa3_descale_contract(
         v_scale=v_descale,
     )
 
-    assert out.shape == (batch * seq_len, heads, dim)
+    assert out.shape == (batch, seq_len, heads, dim)
     assert out.dtype == out_dtype
     assert torch.isfinite(out.float()).all()
+
+
+@pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
+@pytest.mark.skipif(not _has_sm90(), reason="requires Hopper FP8 WGMMA")
+@pytest.mark.parametrize(
+    (
+        "seq_len_q",
+        "seq_len_kv",
+        "is_causal",
+        "window_size_left",
+        "window_size_right",
+        "softcap",
+        "sm_scale",
+        "out_dtype",
+    ),
+    [
+        pytest.param(
+            193,
+            193,
+            True,
+            -1,
+            -1,
+            0.0,
+            None,
+            torch.float16,
+            id="causal-tail",
+        ),
+        pytest.param(
+            129,
+            257,
+            False,
+            96,
+            32,
+            2.0,
+            0.11,
+            torch.bfloat16,
+            id="rectangular-window-softcap-tail",
+        ),
+    ],
+)
+@pytest.mark.smoke
+def test_gqa_dense_fp8_general_semantics(
+    seq_len_q: int,
+    seq_len_kv: int,
+    is_causal: bool,
+    window_size_left: int,
+    window_size_right: int,
+    softcap: float,
+    sm_scale: float | None,
+    out_dtype: torch.dtype,
+) -> None:
+    batch, heads, heads_kv, dim = 1, 8, 2, 128
+    group_size = heads // heads_kv
+    torch.manual_seed(321)
+    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16) * 0.2
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16) * 0.2
+    v = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16) * 0.2
+    q_fp8, q_scale = quantize_q_fa3_gqa_descale(q, heads_kv)
+    k_fp8, k_scale = quantize_kv_fa3_descale(k)
+    v_fp8, v_scale = quantize_kv_fa3_descale(v)
+    op = GroupedQueryAttentionDenseFwdOp(
+        dtype=out_dtype,
+        is_causal=is_causal,
+        window_size_left=window_size_left,
+        window_size_right=window_size_right,
+        softcap=softcap,
+        sm_scale=sm_scale,
+    )
+
+    out = op(q_fp8, k_fp8, v_fp8, q_scale, k_scale, v_scale)
+
+    q_deq = q_fp8.float().reshape(batch, seq_len_q, heads_kv, group_size, dim)
+    q_deq = (q_deq * q_scale[:, None, :, None, None]).reshape(batch, seq_len_q, heads, dim)
+    k_deq = k_fp8.float() * k_scale[:, None, :, None]
+    v_deq = v_fp8.float() * v_scale[:, None, :, None]
+    offset = seq_len_kv - seq_len_q
+    q_pos = torch.arange(seq_len_q, device="cuda")[:, None]
+    k_pos = torch.arange(seq_len_kv, device="cuda")[None, :]
+    center = q_pos + offset
+    visible = torch.ones((seq_len_q, seq_len_kv), dtype=torch.bool, device="cuda")
+    if is_causal:
+        visible &= k_pos <= center
+    if window_size_left >= 0:
+        visible &= k_pos >= center - window_size_left
+    if window_size_right >= 0:
+        visible &= k_pos <= center + window_size_right
+
+    ref_heads = []
+    for head in range(heads):
+        kv_head = head // group_size
+        scores = torch.matmul(q_deq[0, :, head], k_deq[0, :, kv_head].T)
+        scores *= dim**-0.5 if sm_scale is None else sm_scale
+        if softcap > 0:
+            scores = softcap * torch.tanh(scores / softcap)
+        scores = scores.masked_fill(~visible, float("-inf"))
+        ref_heads.append(torch.matmul(torch.softmax(scores, dim=-1), v_deq[0, :, kv_head]))
+    ref = torch.stack(ref_heads, dim=1).unsqueeze(0)
+
+    assert out.dtype == out_dtype
+    torch.testing.assert_close(out.float(), ref, atol=8e-2, rtol=8e-2)
 
 
 @pytest.mark.parametrize("seq_len", [224, 672])
@@ -184,6 +283,4 @@ def test_gqa_prefill_fp8_tensor_core_matches_dequantized_reference() -> None:
         ref_heads.append(torch.matmul(probs, v_deq[0, :, head_kv, :]))
     ref = torch.stack(ref_heads, dim=1).unsqueeze(0)
 
-    torch.testing.assert_close(
-        out.reshape(batch, seq_len, heads, dim).float(), ref, atol=5e-2, rtol=5e-2
-    )
+    torch.testing.assert_close(out.float(), ref, atol=5e-2, rtol=5e-2)

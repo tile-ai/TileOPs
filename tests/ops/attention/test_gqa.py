@@ -188,6 +188,59 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
 
 
 @pytest.mark.smoke
+def test_gqa_dense_fp8_fused_rope_matches_reference() -> None:
+    fp8 = getattr(torch, "float8_e4m3fn", None)
+    if fp8 is None or not torch.cuda.is_available() or get_sm_version() != 90:
+        pytest.skip("native FP8 Dense GQA requires SM90 and float8_e4m3fn")
+    batch, seq_len_q, seq_len_kv = 1, 65, 97
+    heads, heads_kv, dim, rotary_dim = 8, 2, 128, 64
+    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda").clamp(-2, 2).to(fp8)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda").clamp(-2, 2).to(fp8)
+    v = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda").clamp(-2, 2).to(fp8)
+    angles = torch.randn(seq_len_kv, rotary_dim // 2, device="cuda") * 0.1
+    rope_cos = angles.cos().to(torch.float16)
+    rope_sin = angles.sin().to(torch.float16)
+    scale = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
+    op = GroupedQueryAttentionDenseFwdOp(
+        is_causal=True,
+        dtype=torch.float16,
+        pos_encoding_mode="rope",
+        rotary_dim=rotary_dim,
+        rope_layout="interleaved",
+    )
+
+    output = op(q, k, v, scale, scale, scale, rope_cos, rope_sin)
+
+    q_positions = torch.arange(seq_len_kv - seq_len_q, seq_len_kv, device="cuda")
+    k_positions = torch.arange(seq_len_kv, device="cuda")
+    q_ref = _apply_dense_rope(
+        q,
+        q_positions,
+        rope_cos,
+        rope_sin,
+        rotary_dim=rotary_dim,
+        layout="interleaved",
+    ).to(torch.float16)
+    k_ref = _apply_dense_rope(
+        k,
+        k_positions,
+        rope_cos,
+        rope_sin,
+        rotary_dim=rotary_dim,
+        layout="interleaved",
+    ).to(torch.float16)
+    ref = _gqa_prefill_ref(
+        q_ref,
+        k_ref,
+        v.to(torch.float16),
+        heads=heads,
+        heads_kv=heads_kv,
+        is_causal=True,
+    )
+    torch.testing.assert_close(output, ref, atol=8e-2, rtol=2e-2)
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("batch", [1, 2])
 def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None:
     if not torch.cuda.is_available() or get_sm_version() != 90:
