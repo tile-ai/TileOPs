@@ -69,23 +69,6 @@ class _PlaneStaging:
             d for d in _divisors(self._rows) if fits_static_shared(d * self._plane, self._dtype)
         )
 
-    def stages(self, planes: int) -> bool:
-        """Whether a block of ``planes`` planes reads them from shared memory.
-
-        A tile that will not fit leaves the reduction reading global memory, where a
-        thread walks its own bin and the reads no longer coalesce.
-        """
-        return fits_static_shared(planes * self._plane, self._dtype)
-
-    def check(self, planes: int) -> None:
-        """Refuse a plane count the grid cannot cover.
-
-        The grid is ``rows // planes`` blocks, so a count that does not divide ``rows``
-        leaves the last planes unwritten instead of failing.
-        """
-        if self._rows % planes:
-            raise ValueError(f"planes={planes} must divide rows={self._rows}")
-
     def threads(self, planes: int) -> int:
         width = 1 << max(0, (planes * self._plane // self._COPY_RUN - 1).bit_length())
         return min(max(width, self._THREAD_CHOICES[0]), self._THREAD_CHOICES[-1])
@@ -104,6 +87,25 @@ class _PlaneStaging:
             for planes in _spread(worth or counts[:1], self._TUNED_PLANE_COUNTS)
             for threads in self._THREAD_CHOICES
         ]
+
+
+def _stages_in_shared(planes: int, plane: int, dtype: str) -> bool:
+    """Whether a block of ``planes`` planes reads them from shared memory.
+
+    A tile that will not fit leaves the reduction reading global memory, where a thread
+    walks its own bin and the reads no longer coalesce.
+    """
+    return fits_static_shared(planes * plane, dtype)
+
+
+def _check_planes(rows: int, planes: int) -> None:
+    """Refuse a plane count the grid cannot cover.
+
+    The grid is ``rows // planes`` blocks, so a count that does not divide ``rows``
+    leaves the last planes unwritten instead of failing.
+    """
+    if rows % planes:
+        raise ValueError(f"planes={planes} must divide rows={rows}")
 
 
 def _bin_extent(size_in: int, size_out: int) -> Tuple[int, bool]:
@@ -129,12 +131,14 @@ def _adaptive_max_pool2d_kernel(
     out_plane = out_h * out_w
     max_kh, uniform_h = _bin_extent(h_in, out_h)
     max_kw, uniform_w = _bin_extent(w_in, out_w)
-    staging = _PlaneStaging(rows, h_in, w_in, dtype)
+    plane = h_in * w_in
 
+    # The autotuner reads this builder's free variables and accepts only int, float,
+    # str, bool and None, so every value the jit function closes over is a scalar.
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _adaptive_max_pool2d_func(planes: int, threads: int):
-        staging.check(planes)
-        staged = staging.stages(planes)
+        _check_planes(rows, planes)
+        staged = _stages_in_shared(planes, plane, dtype)
 
         @T.macro
         def _max_bin(src, src_plane, dst, dst_plane, oh, ow):
@@ -213,15 +217,15 @@ def _adaptive_max_pool2d_with_indices_kernel(
     out_plane = out_h * out_w
     max_kh, uniform_h = _bin_extent(h_in, out_h)
     max_kw, uniform_w = _bin_extent(w_in, out_w)
-    staging = _PlaneStaging(rows, h_in, w_in, dtype)
     # The flat index spans one h_in * w_in plane, so carrying it as int32 keeps the
     # update path off 64-bit arithmetic; the stored index is int64 to match PyTorch.
     idx_dtype = "int32" if plane < 2**31 else "int64"
 
+    # Scalar free variables only, as the autotuner requires.
     @tilelang.jit(out_idx=[1, 2], compile_flags=["-O3", "-DENABLE_BF16"])
     def _adaptive_max_pool2d_with_indices_func(planes: int, threads: int):
-        staging.check(planes)
-        staged = staging.stages(planes)
+        _check_planes(rows, planes)
+        staged = _stages_in_shared(planes, plane, dtype)
 
         @T.macro
         def _argmax_bin(src, src_plane, dst, indices, dst_plane, oh, ow):
