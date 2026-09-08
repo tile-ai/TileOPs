@@ -1,3 +1,4 @@
+import weakref
 from collections.abc import Sequence
 from typing import Any, ClassVar, Dict, Optional, Tuple
 
@@ -119,6 +120,53 @@ def validate_pool_params(
         raise ValueError("divisor_override must not be zero")
 
 
+class _CheckedChunkMaps:
+    """The chunk maps whose values have already been through `MeanPoolingFwdOp`'s checks.
+
+    An entry stands only while both weak references still resolve to the tensors that were
+    checked and neither `_version` has moved, so a map written in place, freed, or replaced
+    is checked again.
+    """
+
+    # Distinct maps remembered at once. A dead tensor leaves its key behind, so the table is
+    # dropped rather than grown once a caller has cycled through this many.
+    _ENTRIES = 8
+
+    def __init__(self) -> None:
+        """Start empty. An entry maps a key to (weak offsets, weak indices, both versions)."""
+        self._seen: Dict[tuple, tuple] = {}
+
+    @staticmethod
+    def _key(offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int) -> tuple:
+        return (id(offsets), id(indices), seq_len, chunks)
+
+    def checked(
+        self, offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int
+    ) -> bool:
+        """Whether this map, unchanged since it was checked, may skip the checks."""
+        entry = self._seen.get(self._key(offsets, indices, seq_len, chunks))
+        if entry is None:
+            return False
+        offsets_ref, indices_ref, versions = entry
+        return (
+            offsets_ref() is offsets
+            and indices_ref() is indices
+            and versions == (offsets._version, indices._version)
+        )
+
+    def remember(
+        self, offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int
+    ) -> None:
+        """Record that this map passed the checks."""
+        if len(self._seen) >= self._ENTRIES:
+            self._seen.clear()
+        self._seen[self._key(offsets, indices, seq_len, chunks)] = (
+            weakref.ref(offsets),
+            weakref.ref(indices),
+            (offsets._version, indices._version),
+        )
+
+
 class MeanPoolingFwdOp(Op):
     """Chunked mean over the sequence axis of a ``[batch, seq, heads, dim]`` tensor.
 
@@ -172,6 +220,7 @@ class MeanPoolingFwdOp(Op):
         # Keyed by (device, shape): the uniform path hands the kernel tensors it never
         # reads, and a placeholder on the wrong device would route the launch there.
         self._placeholders: Dict[tuple, torch.Tensor] = {}
+        self._checked_maps = _CheckedChunkMaps()
         self.dispatch_kernel(kernel_map)
 
     @property
@@ -240,9 +289,9 @@ class MeanPoolingFwdOp(Op):
 
         Args:
             x: Input tensor, ``[batch, seq, heads, dim]``, dtype ``float16``, ``bfloat16``
-                or ``float32``. ``dim`` is at most 128 or a multiple of it: the kernel
-                tiles it by a width of at most 128, and a tile that is neither the whole
-                ``dim`` nor an exact divisor of it has no valid layout.
+                or ``float32``, contiguous — ``heads`` and ``dim`` are read as one width.
+                ``dim`` is at most 128 or a multiple of it, which is what the manifest
+                declares rather than what the kernel needs.
             offsets: Sequence boundaries, ``[seq_num + 1]``, dtype ``int32``. Passing it
                 selects the ragged split, and it comes with ``indices``.
             indices: One ``(sequence, chunk-within-sequence)`` pair per output chunk,
@@ -254,13 +303,15 @@ class MeanPoolingFwdOp(Op):
             ragged one.
 
         Raises:
-            ValueError: ``x`` is not 4D; exactly one of ``offsets`` and ``indices`` was
-                passed; ``chunk_size`` does not divide into whole warps; ``indices`` does
-                not hold one row per chunk ``offsets`` implies; or an input's dtype is
-                outside what the manifest declares.
+            ValueError: ``x`` is not 4D or not contiguous; exactly one of ``offsets`` and
+                ``indices`` was passed; ``chunk_size`` does not divide into whole warps;
+                ``indices`` does not hold one row per chunk ``offsets`` implies; or an
+                input's dtype is outside what the manifest declares.
         """
         if x.ndim != 4:
             raise ValueError(f"x must be [batch, seq, heads, dim]; got {tuple(x.shape)}")
+        if not x.is_contiguous():
+            raise ValueError("x must be contiguous; heads and dim are read as one width")
         if (offsets is None) != (indices is None):
             raise ValueError(
                 "offsets and indices describe one ragged split, so either both are passed "
@@ -271,8 +322,9 @@ class MeanPoolingFwdOp(Op):
             raise ValueError(f"chunk_size must be a positive multiple of 32; got {self.chunk_size}")
 
         batch_size, seq_len, heads, dim = x.shape
-        # The kernel tiles `dim` by a width of at most 128; a width that is neither the
-        # whole `dim` nor an exact divisor of it has no valid layout.
+        # The manifest's declared trailing width. A block takes a power-of-two share of
+        # `heads * dim` and bounds-tests its last block, so this is the contract's bound
+        # rather than the kernel's.
         if dim > 128 and dim % 128:
             raise ValueError(f"dim must be at most 128 or a multiple of 128; got {dim}")
         ragged = offsets is not None
@@ -306,6 +358,20 @@ class MeanPoolingFwdOp(Op):
         return out
 
     def _validate_ragged(
+        self, offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int
+    ) -> None:
+        """Check a chunk map once, then skip it while the same tensors come back unchanged.
+
+        `_check_ragged` reads `offsets` and `indices` element by element, costing a dozen
+        device launches and as many syncs that a ragged call would otherwise pay before
+        every pooling. A chunk map is built once and passed to many calls.
+        """
+        if self._checked_maps.checked(offsets, indices, seq_len, chunks):
+            return
+        self._check_ragged(offsets, indices, seq_len, chunks)
+        self._checked_maps.remember(offsets, indices, seq_len, chunks)
+
+    def _check_ragged(
         self, offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int
     ) -> None:
         """Check `indices` against `offsets` rather than believing its row count.

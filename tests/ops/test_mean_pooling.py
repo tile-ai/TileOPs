@@ -95,9 +95,10 @@ def test_mean_pooling_op(
 def test_mean_pooling_dim_not_one_full_tile(dim: int) -> None:
     """`dim` values the manifest allows but no workload row carries.
 
-    The kernel tiles `dim` by a width of at most 128: 100 is one tile with a short tail, 256
-    is two whole tiles. Between them TileLang finds no layout, which is why the manifest
-    rules out that range rather than the op checking for it.
+    A block takes a power-of-two share of `heads * dim`: `dim` 100 gives a width of 200
+    that no share divides, so the last block is bounds-tested; 256 gives 512 that they
+    divide. The range the manifest rules out between them is a contract bound, not a shape
+    the kernel cannot read.
     """
     test = MeanPoolingTest(
         batch=1,
@@ -154,6 +155,18 @@ def test_mean_pooling_rejects_indices_that_disagree_with_offsets() -> None:
     indices[1, 0], indices[1, 1] = 0, 0
     with pytest.raises(ValueError, match="exactly once"):
         _op()(_x(), offsets, indices)
+
+
+@pytest.mark.smoke
+def test_mean_pooling_rechecks_a_chunk_map_written_in_place() -> None:
+    """A map's checks are skipped while the same tensors come back unchanged, so one edited
+    in place has to be checked again instead of riding the earlier call's result."""
+    op = _op()
+    offsets, indices = mean_pooling_chunk_index([32, 32], 32)
+    op(_x(), offsets, indices)
+    indices[1, 1] = 5  # a chunk its sequence does not have
+    with pytest.raises(ValueError, match="does not have"):
+        op(_x(), offsets, indices)
 
 
 @pytest.mark.smoke
