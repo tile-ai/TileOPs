@@ -24,6 +24,8 @@ from tileops.kernels.pool import (
     MaxPool3dKernel,
     MaxPool3dWithIndicesKernel,
 )
+from tileops.kernels.pool.avg_pool1d import _span, _WindowStaging
+from tileops.kernels.pool.common import pool_output_dim
 from tileops.ops import (
     AdaptiveAvgPool2dFwdOp,
     AdaptiveMaxPool2dFwdOp,
@@ -560,6 +562,44 @@ def test_avg_pool3d(
         dtype,
         tune,
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "l_in, kernel_l, stride_l, pad_l, dtype",
+    [
+        (4096, 3, 2, 1, "float16"),
+        (32000, 5, 4, 2, "float16"),
+        (2048, 4, 2, 1, "bfloat16"),
+        (28000, 12000, 4001, 0, "float16"),
+        (127, 7, 3, 3, "bfloat16"),
+        (30, 4, 4, 2, "bfloat16"),
+        (33, 3, 2, 1, "float16"),
+        (64, 1, 1, 0, "float16"),
+    ],
+)
+def test_avg_pool1d_staged_span_stays_aligned(
+    l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype: str
+) -> None:
+    """Every group of the staged span lies wholly inside the row or wholly outside it.
+
+    The staging load is vectorized, and it is the group boundaries that decide whether a
+    group is loaded or zeroed, so a boundary landing mid-row would read the wrong
+    elements for the whole group. Three things move a boundary: the block step
+    ``block_ol * stride_l``, the head in front of the leftmost window, and the row end.
+    Only a window too wide to stage at 128 outputs selects a width that can break this,
+    which is why no benchmarked shape reaches it.
+    """
+    out_l = pool_output_dim(l_in, kernel_l, stride_l, pad_l, False)
+    staging = _WindowStaging(1, l_in, out_l, kernel_l, stride_l, pad_l, dtype)
+    for block_ol in staging.widths():
+        staged = _span(block_ol, l_in, kernel_l, stride_l, pad_l, dtype)
+        assert (block_ol * stride_l) % staged.vector_elems == 0
+        assert l_in % staged.vector_elems == 0
+        assert staged.head % staged.vector_elems == 0
+        assert staged.span % staged.vector_elems == 0
+        assert staged.head >= pad_l
+        assert staged.span >= staged.head + (block_ol - 1) * stride_l + kernel_l
 
 
 @pytest.mark.smoke
