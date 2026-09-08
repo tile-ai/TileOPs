@@ -9,13 +9,11 @@ outputs ``(y, x + residual)`` so downstream residual connections can reuse the
 pre-norm sum without recomputation.
 
 FusedAddLayerNorm holds the row in a register fragment from the load through the store.
+FusedAddRMSNorm reads it through 16-byte accesses and writes nothing until the reduction
+has settled, so the two reads and the two writes reach memory as two runs rather than
+interleaved; the chunk a CTA writes waits in shared memory in between.
 
-FusedAddRMSNorm reads the row through 16-byte accesses and writes nothing until the
-reduction has settled, so the two reads and the two writes reach memory as two runs
-rather than interleaved. The chunk a CTA writes waits in shared memory in between.
-
-Rows are padded to 256 elements (512 bytes for fp16/bf16), so a 16-byte access always
-divides the row evenly across one warp.
+Rows are padded to 256 elements, so a 16-byte access always divides the row across a warp.
 """
 
 import functools
@@ -231,94 +229,8 @@ class FusedAddLayerNormKernel(Kernel):
 
 # Fused Add + RMSNorm kernel
 
-# Elements one thread moves per access: 16 bytes is the widest access these dtypes have.
+# This kernel serves 16-bit dtypes only, so one 16-byte access moves eight elements.
 _VEC = VECTOR_ACCESS_BYTES // 2
-
-# Accesses a CTA makes over the row it reduces, where the block width follows from
-# the row rather than the other way round.
-_ROW_ACCESSES = 4
-
-# CTAs put on one row when the call has too few rows to fill the device.
-_ROW_SPLITS = 4
-
-# Columns at or below which a narrow block serves a many-row call better. Under it the
-# shared park is small enough that 16 CTAs stay resident on an SM, which measured 3.9%
-# faster than the widest block; over it the park caps residency whatever the width is,
-# and the widest block wins -- 1.7% at 8192 in fp16, a wash in bf16.
-_NARROW_ROW_COLUMNS = 4096
-_NARROW_THREADS = 128
-_WIDE_THREADS = 512
-
-
-def _widest_dividing(target: int, n_padded: int) -> int:
-    """The widest block at or below *target* that cuts the row into whole accesses.
-
-    Floored at one warp, which a row padded to :data:`ALIGNMENT` always admits.
-    """
-    for threads in (1024, 512, 256, 128, 64, WARP_LANES):
-        if threads <= target and (n_padded // _VEC) % threads == 0:
-            return threads
-    return WARP_LANES
-
-
-def _row_threads(n_padded: int) -> int:
-    """Block width for a call with a row per CTA, sized by :data:`_NARROW_ROW_COLUMNS`."""
-    target = _NARROW_THREADS if n_padded <= _NARROW_ROW_COLUMNS else _WIDE_THREADS
-    return _widest_dividing(target, n_padded)
-
-
-def _split_row_threads(n_padded: int) -> int:
-    """Block width for the single-row call, where the CTAs share one row.
-
-    Sized to leave each CTA :data:`_ROW_ACCESSES` accesses over the row it reduces. The
-    many-row width is the wrong answer here: at 8192 it runs 2.43us against 2.08.
-    """
-    return _widest_dividing(min(n_padded // (_VEC * _ROW_ACCESSES), 1024), n_padded)
-
-
-def _row_splits(n_padded: int, threads: int, rows: int) -> int:
-    """CTAs to put on one row -- more than one only when the call is a single row.
-
-    A call with rows to spare fills the grid with them. A single row instead leaves one
-    CTA holding it and the rest of the device idle, so the row is cut into as many pieces
-    as divide it evenly at *threads*, up to :data:`_ROW_SPLITS`.
-    """
-    if rows != 1:
-        return 1
-    accesses = n_padded // (_VEC * threads)
-    return max(s for s in (_ROW_SPLITS, 2, 1) if accesses % s == 0)
-
-
-def _make_block_rsqrt(warps, inv_n, eps):
-    """Create the macro folding one fp32 partial per thread into ``rrms[0]``.
-
-    Thread 0 adds the per-warp totals rather than a second butterfly folding them: at
-    these widths there are at most 32 of them.
-
-    Args:
-        warps: Warps in the block.
-        inv_n: Reciprocal of the unpadded row length.
-        eps: Epsilon for numerical stability.
-
-    Returns:
-        A ``@T.macro`` taking ``(tx, acc, warp_sums, rrms)``.
-    """
-
-    @T.macro
-    def block_rsqrt(tx, acc, warp_sums, rrms):
-        for step in T.serial(WARP_LANES.bit_length() - 1):
-            acc[0] += T.shfl_xor(acc[0], T.shift_left(1, step))
-        if tx % WARP_LANES == 0:
-            warp_sums[tx // WARP_LANES] = acc[0]
-        T.sync_threads()
-        if tx == 0:
-            acc[0] = T.cast(0, "float32")
-            for w in T.serial(warps):
-                acc[0] += warp_sums[w]
-            rrms[0] = T.rsqrt(acc[0] * inv_n + eps)
-        T.sync_threads()
-
-    return block_rsqrt
 
 
 @functools.lru_cache(maxsize=32)
@@ -327,12 +239,10 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits):
 
     A CTA reduces a whole row and writes one chunk of it. Nothing is written until the
     reduction has settled, so the two reads and the two writes reach memory as two runs
-    rather than interleaved -- worth 3% over writing the sum in the first pass.
+    rather than interleaved.
 
-    With ``splits > 1`` the CTAs sharing a row each reduce the whole row, which costs
-    them reads that L2 serves and buys a single row more than one SM without a second
-    launch. A grid barrier is the other way to spend one launch on it, and measured
-    slower than the redundant reads at every width here.
+    With ``splits > 1`` the CTAs sharing a row each reduce the whole row, paying reads
+    that L2 serves to put a single row on more than one SM in one launch.
     """
     N_padded = align_up(N, ALIGNMENT)
     chunk = N_padded // splits
@@ -341,8 +251,24 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits):
     def _func(threads):
         own = chunk // (threads * _VEC)  # accesses this CTA reduces and writes
         rest = (N_padded - chunk) // (threads * _VEC)  # accesses it only reduces
-        # N, not N_padded: a padded column holds zero and contributes nothing.
-        block_rsqrt = _make_block_rsqrt(threads // WARP_LANES, 1.0 / N, eps)
+        warps = threads // WARP_LANES
+        inv_n = 1.0 / N  # N, not N_padded: a padded column holds zero
+
+        @T.macro
+        def block_rsqrt(tx, acc, warp_sums, rrms):
+            """Fold one fp32 partial per thread into ``rrms[0]``."""
+            for step in T.serial(WARP_LANES.bit_length() - 1):
+                acc[0] += T.shfl_xor(acc[0], T.shift_left(1, step))
+            if tx % WARP_LANES == 0:
+                warp_sums[tx // WARP_LANES] = acc[0]
+            T.sync_threads()
+            # One thread adds the per-warp totals: a block holds at most 32 warps.
+            if tx == 0:
+                acc[0] = T.cast(0, "float32")
+                for w in T.serial(warps):
+                    acc[0] += warp_sums[w]
+                rrms[0] = T.rsqrt(acc[0] * inv_n + eps)
+            T.sync_threads()
 
         @T.prim_func
         def main(
@@ -360,7 +286,7 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits):
                 b = T.alloc_local([_VEC], dtype)
                 summed = T.alloc_shared([chunk], dtype)
                 acc = T.alloc_local([1], "float32")
-                warp_sums = T.alloc_shared([threads // WARP_LANES], "float32")
+                warp_sums = T.alloc_shared([warps], "float32")
                 rrms = T.alloc_shared([1], "float32")
 
                 acc[0] = T.cast(0, "float32")
@@ -371,9 +297,8 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits):
                     for i in T.vectorized(_VEC):
                         b[i] = residual[row, mine + base + i]
                     for i in T.serial(_VEC):
-                        # A native add, not an f32 round trip: f32 holds the exact sum of
-                        # two 16-bit floats, so rounding that sum back is bit-identical to
-                        # adding in the storage dtype, and overflows to inf either way.
+                        # Adding in the storage dtype is bit-identical to rounding the
+                        # f32 sum: f32 holds the exact sum of two 16-bit floats.
                         b[i] = a[i] + b[i]
                         v = T.cast(b[i], "float32")
                         acc[0] += v * v
@@ -418,17 +343,69 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits):
 class FusedAddRMSNormKernel(Kernel):
     """Fused Add + RMSNorm forward kernel.
 
-    Computes ``y = RMSNorm(x + residual)`` and returns both ``y`` and ``x + residual``.
-    The residual add is fused into the first load pass to save one global memory round
-    trip, which leaves the four passes over the row that the two inputs and two outputs
-    require and no more.
+    Computes ``y = RMSNorm(x + residual)`` and returns both ``y`` and ``x + residual``,
+    in the four passes over the row that two inputs and two outputs require.
 
     Supports SM80+ architectures. One CTA reduces a row and writes one chunk of it,
-    through 16-byte accesses; the chunk it writes waits in shared memory while the
-    reduction settles.
+    through 16-byte accesses, parking that chunk in shared memory while the reduction
+    settles.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    # Rows at or below which a row-per-CTA call takes the narrow block: while the shared
+    # park is small a narrow block keeps more CTAs resident on an SM, and past this width
+    # the park caps residency whatever the block is.
+    _NARROW_ROW_COLUMNS = 4096
+    _NARROW_THREADS = 128
+    _WIDE_THREADS = 512
+
+    # Accesses each CTA makes over the row it reduces, when several CTAs share one row.
+    _ROW_ACCESSES = 4
+
+    # Most CTAs a single row is cut across. A power of two, so halving reaches every
+    # candidate the row may admit.
+    _ROW_SPLITS = 4
+
+    # Threads CUDA allows in one block.
+    _MAX_THREADS = 1024
+
+    def _widest_dividing(self, target: int) -> int:
+        """The widest block at or below *target* cutting the row into whole accesses.
+
+        Floored at one warp, which a row padded to :data:`ALIGNMENT` always admits.
+        """
+        threads = self._MAX_THREADS
+        while threads > WARP_LANES and (threads > target or (self.N_padded // _VEC) % threads):
+            threads //= 2
+        return threads
+
+    def _row_threads(self) -> int:
+        """Block width for a call holding one row per CTA."""
+        narrow = self.N_padded <= self._NARROW_ROW_COLUMNS
+        return self._widest_dividing(self._NARROW_THREADS if narrow else self._WIDE_THREADS)
+
+    def _split_row_threads(self) -> int:
+        """Block width for a single-row call, where the CTAs share one row.
+
+        Sized by the whole row every CTA reduces rather than the chunk it writes,
+        which is why it differs from :meth:`_row_threads`.
+        """
+        return self._widest_dividing(self.N_padded // (_VEC * self._ROW_ACCESSES))
+
+    def _row_splits(self, threads: int, rows: int) -> int:
+        """CTAs to put on one row -- more than one only when the call is a single row.
+
+        A call with rows to spare fills the grid with them. A single row instead leaves
+        one CTA holding it and the rest of the device idle.
+        """
+        if rows != 1:
+            return 1
+        accesses = self.N_padded // (_VEC * threads)
+        splits = self._ROW_SPLITS
+        while splits > 1 and accesses % splits:
+            splits //= 2
+        return splits
 
     def __init__(
         self,
@@ -440,16 +417,15 @@ class FusedAddRMSNormKernel(Kernel):
     ):
         """Build for a hidden size and dtype.
 
-        The program for a given row count is resolved in ``forward``, memoized by
-        ``_fused_add_rms_norm_kernel``.
+        The program for a given row count is resolved in ``forward``.
 
         Args:
             N: Hidden size the rows are normalized over.
             eps: Epsilon for numerical stability.
             dtype: Element type the rows are stored in.
             config: Optional ``{"threads": ...}`` override, for the row-per-CTA case.
-            tune: Ignored -- the block width follows from the row width, and
-                ``autotune_configs`` says why a search cannot improve on it.
+            tune: Ignored -- the block width follows from the row width; see
+                ``autotune_configs``.
 
         Raises:
             ValueError: *config* names a width that does not cut the row into whole
@@ -462,28 +438,26 @@ class FusedAddRMSNormKernel(Kernel):
         self.N_padded = align_up(N, ALIGNMENT)
         self.init_config(config, tune=False)
         threads = self.config["threads"]
-        # A width that leaves a partial access truncates the per-CTA loop bounds to
-        # zero, which writes no row at all rather than failing.
+        # A partial access truncates the per-CTA loop bounds to zero, which returns an
+        # untouched row rather than failing.
         if (self.N_padded // _VEC) % threads:
             raise ValueError(
                 f"{type(self).__name__} needs a block width that cuts a row of "
                 f"{self.N_padded} columns into whole {VECTOR_ACCESS_BYTES}-byte "
                 f"accesses; {threads} leaves a partial one. "
-                f"{_row_threads(self.N_padded)} is the width this row takes."
+                f"{self._row_threads()} is the width this row takes."
             )
 
     @property
     def default_config(self) -> dict:
-        return {"threads": _row_threads(self.N_padded)}
+        return {"threads": self._row_threads()}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        """The one width :func:`_row_threads` gives, so a tuned build equals an untuned one.
+        """The one width :meth:`_row_threads` gives, so a tuned build equals an untuned one.
 
-        There is nothing here a search can rank. This kernel is a pure DRAM stream, and
-        the autotuner times repeats of one candidate back to back, which reads the row
-        out of L2 -- it would be ranking a kernel this one never runs as. Offered widths
-        measured up to 0.8us apart under a cleared cache and inseparable to that timer.
+        The autotuner times repeats of one candidate back to back, which reads the row
+        out of L2 and so ranks a kernel this one never runs as.
         """
         return [self.default_config]
 
@@ -519,8 +493,8 @@ class FusedAddRMSNormKernel(Kernel):
 
         # A single row puts several CTAs on it, which wants a different width from the
         # row-per-CTA case and so does not read the configured one.
-        threads = _split_row_threads(self.N_padded) if m == 1 else self.config["threads"]
-        splits = _row_splits(self.N_padded, threads, m)
+        threads = self._split_row_threads() if m == 1 else self.config["threads"]
+        splits = self._row_splits(threads, m)
 
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = _fused_add_rms_norm_kernel(m, self.N, self.eps, self.dtype_str, splits)
