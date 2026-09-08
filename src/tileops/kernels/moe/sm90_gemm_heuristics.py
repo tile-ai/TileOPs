@@ -30,6 +30,7 @@ import functools
 import math
 
 __all__ = [
+    "ACTIVATIONS",
     "PER_GROUP_TYPES",
     "PER_ROW_TYPES",
     "GemmDesc",
@@ -103,6 +104,12 @@ PER_ROW_TYPES = (GemmType.M_GROUPED_ALIGNED_PER_ROW, GemmType.M_GROUPED_TIGHT_PE
 _FLAT_LIKE_TYPES = (GemmType.BATCHED,)
 
 
+# Gated activations the epilogue can fuse: B stacks gate and up along N; a tile's B
+# half-loads block_n / 2 gate columns and the matching up columns, one accumulator
+# holds both, and the epilogue stores act(gate) * up, so C has N / 2 columns.
+ACTIVATIONS = ("none", "silu_and_mul", "gelu_and_mul")
+
+
 class Major(str, enum.Enum):
     """Which logical dim is contiguous in memory for an operand."""
 
@@ -135,8 +142,16 @@ class SM90GemmSpec:
     num_stages: int
     num_math_threads: int
     num_sms: int
+    activation: str = "none"
 
     def __post_init__(self) -> None:
+        if self.activation not in ACTIVATIONS:
+            raise ValueError(f"activation must be one of {ACTIVATIONS}, got {self.activation!r}")
+        if self.activation != "none" and self.major_b is not Major.K:
+            raise ValueError(
+                "a fused gated activation half-loads the B tile; an MN-major B would split "
+                "the 128-byte swizzle atom, so it takes a K-major B"
+            )
         if self.ab_dtype not in ("bfloat16", "float16"):
             raise ValueError(f"ab_dtype must be bfloat16 or float16, got {self.ab_dtype!r}")
         if self.cd_dtype not in (self.ab_dtype, "float32"):
@@ -148,8 +163,11 @@ class SM90GemmSpec:
             raise ValueError(f"block_m must be 64, 128 or 256, got {self.block_m}")
         if self.block_n % 8 or not 8 <= self.block_n <= 256:
             raise ValueError(f"block_n must be a multiple of 8 in [8, 256], got {self.block_n}")
-        if self.block_k % 64:
-            raise ValueError(f"block_k must be a multiple of 64, got {self.block_k}")
+        if self.block_k != _BLOCK_K:
+            # One 128-byte swizzle atom per operand row; the fused half-load of B
+            # and the stage budget assume it (a 128-wide K was 3% faster at one
+            # decode shape and 40% slower at prefill on H200, and is not offered).
+            raise ValueError(f"block_k is {_BLOCK_K} for 2-byte operands, got {self.block_k}")
         if self.num_math_threads != (128 if self.block_m <= 64 else 256):
             raise ValueError(
                 "num_math_threads is 128 for block_m <= 64 and 256 otherwise, "
@@ -199,8 +217,20 @@ class GemmDesc:
     ab_dtype: str = "bfloat16"
     m_alignment: int = 128
     expected_m: int = 0
+    activation: str = "none"
+
+    @property
+    def fused(self) -> bool:
+        return self.activation != "none"
+
+    @property
+    def c_cols(self) -> int:
+        """Columns of C: half of N when the gated activation is fused."""
+        return self.n // 2 if self.fused else self.n
 
     def __post_init__(self) -> None:
+        if self.activation not in ACTIVATIONS:
+            raise ValueError(f"activation must be one of {ACTIVATIONS}, got {self.activation!r}")
         if any(c not in "mnk" for c in self.static_dims):
             raise ValueError(f"static_dims may only name m, n, k; got {self.static_dims!r}")
         if self.num_sms < 1:
@@ -223,7 +253,8 @@ def _align(x: int, a: int) -> int:
 
 def _num_stages(desc: GemmDesc, layout: _Layout) -> int:
     cd_bytes = 4 if desc.cd_dtype == "float32" else 2
-    smem_cd = _align(layout.block_m * layout.block_n * cd_bytes, 1024)
+    c_width = layout.block_n // 2 if desc.fused else layout.block_n
+    smem_cd = _align(layout.block_m * c_width * cd_bytes, 1024)
     # s_cum + s_total, plus the recovered ends for the tight per-row layout.
     prefix_ints = desc.num_groups + 2
     if desc.gemm_type is GemmType.M_GROUPED_TIGHT_PER_ROW:
@@ -300,6 +331,7 @@ def _num_cycles(desc: GemmDesc, layout: _Layout) -> tuple[int, int]:
     """DeepGEMM's L1/L2 cycle model; returns ``(num_waves, cycles)``."""
     # Only a batched GEMM runs one full tile grid per group; the grouped
     # layouts are counted per group by _num_m_blocks instead.
+    # A fused tile covers block_n / 2 output columns, i.e. block_n columns of B.
     num_blocks = (
         _num_m_blocks(desc, layout.block_m)
         * math.ceil(desc.n / layout.block_n)
@@ -315,11 +347,12 @@ def _num_cycles(desc: GemmDesc, layout: _Layout) -> tuple[int, int]:
     elem_cd = 4 if desc.cd_dtype == "float32" else 2
 
     k = desc.k
+    c_width = layout.block_n // 2 if desc.fused else layout.block_n
     bytes_l2_ab = k * (layout.block_m + layout.block_n) * elem_ab
     bytes_l1_ab = k * (layout.block_m + layout.block_n) * elem_ab
     bytes_l1_tc = k * (max(_WGMMA_M, layout.block_m) + layout.block_n) * elem_ab
-    bytes_l1_tc += layout.block_m * layout.block_n * elem_cd
-    bytes_cd = layout.block_m * layout.block_n * elem_cd
+    bytes_l1_tc += layout.block_m * c_width * elem_cd
+    bytes_cd = layout.block_m * c_width * elem_cd
 
     l2_cycles = (bytes_l2_ab + bytes_cd) * num_blocks // l2_bandwidth_per_cycle
     l1_cycles = (bytes_l1_ab + bytes_l1_tc + bytes_cd) * num_blocks // l1_bandwidth_per_cycle
@@ -349,6 +382,7 @@ def _spec(desc: GemmDesc, layout: _Layout, num_stages: int) -> SM90GemmSpec:
         num_stages=num_stages,
         num_math_threads=_num_math_threads(layout.block_m),
         num_sms=desc.num_sms,
+        activation=desc.activation,
     )
 
 
@@ -366,23 +400,26 @@ def get_best_config(desc: GemmDesc) -> SM90GemmSpec:
 def spec_from_config(desc: GemmDesc, config: dict) -> SM90GemmSpec:
     """A spec from an explicit ``config`` instead of the selector.
 
-    ``config`` names ``block_m``, ``block_n`` and optionally ``block_k`` and
-    ``num_stages``. Missing fields take the selector's derivation for that
-    layout, so a tuning sweep can pin the tile and leave the pipeline depth to
-    the shared-memory budget.
+    ``config`` names ``block_m``, ``block_n`` and optionally ``num_stages``. A
+    missing ``num_stages`` takes the shared-memory budget's maximum for that
+    tile, so a tuning sweep can pin the tile and leave the pipeline depth alone;
+    a pinned one past the budget is refused rather than launched.
     """
-    unknown = set(config) - {"block_m", "block_n", "block_k", "num_stages"}
+    unknown = set(config) - {"block_m", "block_n", "num_stages"}
     if unknown:
         raise ValueError(f"config names no such template parameter: {sorted(unknown)}")
-    layout = _Layout(config["block_m"], config["block_n"], config.get("block_k", _BLOCK_K))
+    layout = _Layout(config["block_m"], config["block_n"], _BLOCK_K)
     if desc.gemm_type in _ALIGNED_TYPES and layout.block_m != desc.m_alignment:
         raise ValueError(
             f"an aligned layout's block_m is its segment alignment: the kernel rounds group "
             f"starts up to block_m and reads a tile's group off its first row, so a block_m of "
             f"{layout.block_m} does not fit m_alignment={desc.m_alignment}"
         )
-    stages = config.get("num_stages")
-    if stages is None:
-        stages = _num_stages(desc, dataclasses.replace(layout, block_k=_BLOCK_K))
-        stages = max(1, stages * _BLOCK_K // layout.block_k)
+    max_stages = _num_stages(desc, layout)
+    stages = config.get("num_stages", max_stages)
+    if not 1 <= stages <= max_stages:
+        raise ValueError(
+            f"a {layout.block_m}x{layout.block_n} tile fits at most {max_stages} stages in "
+            f"shared memory, got num_stages={stages}"
+        )
     return _spec(desc, layout, stages)

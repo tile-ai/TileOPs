@@ -20,7 +20,13 @@ Structure, as in DeepGEMM:
 * one WGMMA group stays in flight: a k-step drains the previous one with
   ``wgmma.wait_group 1`` and releases that stage;
 * the epilogue casts to the output dtype, stages through shared memory and
-  TMA-stores the tile, so ragged edges are clipped by the descriptor.
+  TMA-stores the tile, so ragged edges are clipped by the descriptor;
+* optionally a gated activation is fused: ``B`` stacks gate and up along ``N``;
+  a tile's ``B`` stage is half-loaded with ``block_n / 2`` gate columns and the
+  matching up columns, so one accumulator holds both and the epilogue stores
+  ``act(gate) * up`` into a ``C`` of ``N / 2`` columns. Column ``j`` and
+  ``j + block_n / 2`` of a WGMMA accumulator sit in the same thread, so the
+  pairing is register-local.
 
 The GEMM types fall into three scheduler families:
 
@@ -43,10 +49,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.elementwise._erf import erf
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_count
 
 from .sm90_gemm_heuristics import (
+    ACTIVATIONS,
     PER_GROUP_TYPES,
     PER_ROW_TYPES,
     GemmDesc,
@@ -99,6 +107,7 @@ def _make_prim_func(
     num_stages: int,
     num_math_wgs: int,
     num_sms: int,
+    activation: str,
 ):
     """Build the ``@T.prim_func`` for one spec; parameters are the spec's scalars."""
     dtype = ab_dtype
@@ -112,6 +121,8 @@ def _make_prim_func(
     blocks_per_group = _num_1d_blocks_per_group(block_m, block_n, num_sms)
     math_regs = _MATH_REGS_ONE_WG if num_math_wgs == 1 else _MATH_REGS_TWO_WG
     cast_output = cd_dtype != "float32"
+    fused = activation != "none"
+    c_tile_n = block_n // 2 if fused else block_n  # output columns per tile
 
     # Scheduler family and what each operand looks like.
     masked = gtype is GemmType.M_GROUPED_MASKED
@@ -130,7 +141,8 @@ def _make_prim_func(
     a_2d = (m, k) if a_k_major else (k, m)
     a_shape = (num_groups,) + a_2d if a_has_group else a_2d
     b_shape = (num_groups,) + ((n, k) if b_k_major else (k, n))
-    c_shape = (num_groups, m, n) if a_has_group else (m, n)
+    c_cols = n // 2 if fused else n  # act(gate) * up halves the width
+    c_shape = (num_groups, m, c_cols) if a_has_group else (m, c_cols)
     if gtype in PER_ROW_TYPES:
         layout_shape = (m,)
     elif per_group:
@@ -139,6 +151,7 @@ def _make_prim_func(
         layout_shape = (1,)
     a_tile = (wg_rows, block_k) if a_k_major else (block_k, wg_rows)
     b_tile = (block_n, block_k) if b_k_major else (block_k, block_n)
+    half_n = block_n // 2
 
     def a_region(A, group, row0, k0):
         if a_has_group:
@@ -153,6 +166,10 @@ def _make_prim_func(
         if b_k_major:
             return B[group, n0 : n0 + block_n, k0 : k0 + block_k]
         return B[group, k0 : k0 + block_k, n0 : n0 + block_n]
+
+    def b_half_region(B, group, n0, k0):
+        """``block_n / 2`` columns of a K-major B (the fused path takes no other)."""
+        return B[group, n0 : n0 + half_n, k0 : k0 + block_k]
 
     def align_up(x):
         return ((x + T.int32(block_m - 1)) // T.int32(block_m)) * T.int32(block_m)
@@ -278,7 +295,7 @@ def _make_prim_func(
             t_group[0] = T.min(
                 T.max(grouped_layout[t_row0[0]], T.int32(0)), T.int32(num_groups - 1)
             )
-        t_col0[0] = n_blk[0] * T.int32(block_n)
+        t_col0[0] = n_blk[0] * T.int32(c_tile_n)
 
     @T.macro
     def load_a(A, dst, full, slot, group, row0, k0):
@@ -286,28 +303,62 @@ def _make_prim_func(
 
     @T.macro
     def load_b(B, dst, full, slot, group, n0, k0):
-        T.tma_copy(b_region(B, group, n0, k0), dst[slot, :, :], barrier=full[slot])
+        if fused:
+            # Gate columns fill the tile's first half, the matching up columns its second.
+            T.tma_copy(b_half_region(B, group, n0, k0), dst[slot, 0:half_n, :], barrier=full[slot])
+            T.tma_copy(
+                b_half_region(B, group, c_cols + n0, k0),
+                dst[slot, half_n:block_n, :],
+                barrier=full[slot],
+            )
+        else:
+            T.tma_copy(b_region(B, group, n0, k0), dst[slot, :, :], barrier=full[slot])
 
     @T.macro
-    def store_tile(C, C_src, C_s, group, row0, col0, rows, wg):
+    def gate_multiply(C_l, C_up, C_s):
+        """The fused epilogue: ``C_s[i, j] = act(C_l[i, j]) * C_l[i, j + block_n / 2]``.
+
+        Both accumulator columns of a pair live in the calling thread, so this is
+        register arithmetic followed by the same shared staging a plain tile does.
+        The up half goes through ``C_up`` because one parallel loop may read a
+        fragment under a single index pattern.
+        """
+        T.copy(C_l[:, half_n:block_n], C_up)
+        for i, j in T.Parallel(wg_rows, half_n):
+            g = C_l[i, j]
+            u = C_up[i, j]
+            if activation == "silu_and_mul":
+                C_s[i, j] = T.cast(g * T.sigmoid(g) * u, cd_dtype)
+            else:  # gelu_and_mul, exact erf form
+                half = T.cast(0.5, accum_dtype)
+                one = T.cast(1.0, accum_dtype)
+                inv_sqrt2 = T.cast(0.7071067811865476, accum_dtype)
+                C_s[i, j] = T.cast(half * g * (one + erf(g * inv_sqrt2, cd_dtype)) * u, cd_dtype)
+
+    @T.macro
+    def store_tile(C, C_src, C_up, C_s, group, row0, col0, rows, wg):
         """Store one warp-group's rows of a tile from its shared staging buffer.
 
-        Every tile is staged fragment -> shared first; the previous tile's TMA store
-        may still be reading ``C_s``, hence the barrier before. A full tile then
-        goes out through TMA. A tight group's ragged last tile cannot: TMA clips
-        against the tensor, not the group, and would overwrite the next group's
-        rows, so its valid rows are written back with row-predicated vector stores.
-        (Writing the accumulator fragment straight from registers scattered 4-byte
-        stores across the tile and cost 12% to 24% on short-K grouped GEMMs.)
+        Every tile is staged fragment -> shared first (the fused epilogue does its
+        arithmetic on the way); the previous tile's TMA store may still be reading
+        ``C_s``, hence the barrier before. A full tile then goes out through TMA. A
+        tight group's ragged last tile cannot: TMA clips against the tensor, not the
+        group, and would overwrite the next group's rows, so its valid rows are
+        written back with row-predicated vector stores. (Writing the accumulator
+        fragment straight from registers scattered 4-byte stores across the tile
+        and cost 12% to 24% on short-K grouped GEMMs.)
         """
         T.sync_threads(barrier_id=_EPILOGUE_BARRIER_BASE + wg, arrive_count=128)
-        T.copy(C_src, C_s)
+        if fused:
+            gate_multiply(C_src, C_up, C_s)
+        else:
+            T.copy(C_src, C_s)
         if tight:
             if rows < T.int32(wg_rows):
                 T.sync_threads(barrier_id=_EPILOGUE_BARRIER_BASE + wg, arrive_count=128)
                 if rows > 0:
-                    for i, j in T.Parallel(wg_rows, block_n):
-                        if i < rows and col0 + j < n:
+                    for i, j in T.Parallel(wg_rows, c_tile_n):
+                        if i < rows and col0 + j < c_cols:
                             C[row0 + i, col0 + j] = C_s[i, j]
             else:
                 T.fence_proxy_async()
@@ -339,6 +390,7 @@ def _make_prim_func(
         s_cum,
         C_l,
         C_cast,
+        C_up,
         C_s,
         wg,
         pid,
@@ -404,11 +456,12 @@ def _make_prim_func(
 
                 row0 = t_row0[0] + T.int32(wg * wg_rows)
                 rows = t_rows[0] - T.int32(wg * wg_rows)
-                if cast_output:
-                    T.copy(C_l, C_cast)
-                    store_tile(C, C_cast, C_s, t_group[0], row0, t_col0[0], rows, wg)
+                if fused or not cast_output:
+                    # The fused epilogue casts as it multiplies; fp32 out needs no cast.
+                    store_tile(C, C_l, C_up, C_s, t_group[0], row0, t_col0[0], rows, wg)
                 else:
-                    store_tile(C, C_l, C_s, t_group[0], row0, t_col0[0], rows, wg)
+                    T.copy(C_l, C_cast)
+                    store_tile(C, C_cast, C_up, C_s, t_group[0], row0, t_col0[0], rows, wg)
 
     @T.prim_func
     def sm90_gemm(
@@ -422,37 +475,40 @@ def _make_prim_func(
             if num_math_wgs > 1:
                 A_s1 = T.alloc_shared((num_stages,) + a_tile, dtype)
             B_s = T.alloc_shared((num_stages,) + b_tile, dtype)
+            # The cast fragment serves a plain 16-bit output; the fused epilogue casts
+            # as it multiplies and takes the up half through its own fragment.
             C_l0 = T.alloc_fragment((wg_rows, block_n), accum_dtype)
-            C_cast0 = T.alloc_fragment((wg_rows, block_n), cd_dtype)
-            C_s0 = T.alloc_shared((wg_rows, block_n), cd_dtype)
+            C_cast0 = (
+                T.alloc_fragment((wg_rows, block_n), cd_dtype)
+                if cast_output and not fused
+                else C_l0
+            )
+            C_up0 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l0
+            C_s0 = T.alloc_shared((wg_rows, c_tile_n), cd_dtype)
             if num_math_wgs > 1:
                 C_l1 = T.alloc_fragment((wg_rows, block_n), accum_dtype)
-                C_cast1 = T.alloc_fragment((wg_rows, block_n), cd_dtype)
-                C_s1 = T.alloc_shared((wg_rows, block_n), cd_dtype)
+                C_cast1 = (
+                    T.alloc_fragment((wg_rows, block_n), cd_dtype)
+                    if cast_output and not fused
+                    else C_l1
+                )
+                C_up1 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l1
+                C_s1 = T.alloc_shared((wg_rows, c_tile_n), cd_dtype)
             # Per-group tile prefix sum and the call's tile count (per_group family).
             s_cum = T.alloc_shared((num_groups + 1,), "int32")
             s_total = T.alloc_shared((1,), "int32")
             if tight_per_row:
                 s_ends = T.alloc_shared((num_groups,), "int32")
 
+            swizzled = {
+                A_s0: tilelang.layout.make_swizzled_layout(A_s0),
+                B_s: tilelang.layout.make_swizzled_layout(B_s),
+                C_s0: tilelang.layout.make_swizzled_layout(C_s0),
+            }
             if num_math_wgs > 1:
-                T.annotate_layout(
-                    {
-                        A_s0: tilelang.layout.make_swizzled_layout(A_s0),
-                        A_s1: tilelang.layout.make_swizzled_layout(A_s1),
-                        B_s: tilelang.layout.make_swizzled_layout(B_s),
-                        C_s0: tilelang.layout.make_swizzled_layout(C_s0),
-                        C_s1: tilelang.layout.make_swizzled_layout(C_s1),
-                    }
-                )
-            else:
-                T.annotate_layout(
-                    {
-                        A_s0: tilelang.layout.make_swizzled_layout(A_s0),
-                        B_s: tilelang.layout.make_swizzled_layout(B_s),
-                        C_s0: tilelang.layout.make_swizzled_layout(C_s0),
-                    }
-                )
+                swizzled[A_s1] = tilelang.layout.make_swizzled_layout(A_s1)
+                swizzled[C_s1] = tilelang.layout.make_swizzled_layout(C_s1)
+            T.annotate_layout(swizzled)
 
             # full: the TMA warp-group arrives once per thread after issuing a
             # stage. empty: lane 0 of every math warp arrives (DeepGEMM's counts).
@@ -460,7 +516,7 @@ def _make_prim_func(
             empty = T.alloc_barrier([math_warps] * num_stages)
 
             num_m_blocks = T.ceildiv(m, block_m)
-            num_n_blocks = T.ceildiv(n, block_n)
+            num_n_blocks = T.ceildiv(c_cols, c_tile_n)
             k_iters = T.ceildiv(k, block_k)
 
             tx = T.get_thread_binding()
@@ -539,6 +595,7 @@ def _make_prim_func(
                     s_cum,
                     C_l0,
                     C_cast0,
+                    C_up0,
                     C_s0,
                     0,
                     pid,
@@ -561,6 +618,7 @@ def _make_prim_func(
                         s_cum,
                         C_l1,
                         C_cast1,
+                        C_up1,
                         C_s1,
                         1,
                         pid,
@@ -596,6 +654,7 @@ def _sm90_gemm_kernel(spec: SM90GemmSpec):
     num_stages = spec.num_stages
     num_math_wgs = spec.num_math_warpgroups
     num_sms = spec.num_sms
+    activation = spec.activation
 
     @tilelang.jit(
         out_idx=[],
@@ -622,6 +681,7 @@ def _sm90_gemm_kernel(spec: SM90GemmSpec):
             num_stages,
             num_math_wgs,
             num_sms,
+            activation,
         )
 
     return _func
@@ -659,6 +719,11 @@ class SM90GemmFwdKernel(Kernel):
     | ``M_GROUPED_MASKED``        | ``[G, max_m, K]``| ``[G, N, K]``  | ``[G, max_m, N]``| ``[G]`` valid rows per group |
     | ``BATCHED``                 | ``[G, M, K]``    | ``[G, N, K]``  | ``[G, M, N]``    | none                         |
 
+    With ``activation`` set, ``b`` stacks the gate and up projections along ``N``
+    (``[G, 2 * ffn, K]``) and ``c`` is ``act(gate) * up`` with ``ffn`` columns; the
+    activation is fused into the epilogue, so the ``[M, 2 * ffn]`` intermediate is
+    never written.
+
     The kernel is selected per call by DeepGEMM's cost model over the legal
     tile layouts, so a config never has to be authored; ``config`` pins one for
     tuning. Dims not named in ``static_dims`` stay dynamic, and a call with a
@@ -681,6 +746,7 @@ class SM90GemmFwdKernel(Kernel):
         *,
         num_groups: int = 1,
         cd_dtype: Optional[torch.dtype] = None,
+        activation: str = "none",
         static_dims: str = "nk",
         m_alignment: int = 128,
         expected_m: int = 0,
@@ -695,6 +761,8 @@ class SM90GemmFwdKernel(Kernel):
             gemm_type: Which rows of ``a`` and which ``b`` a tile reads.
             num_groups: Groups, experts or batches.
             cd_dtype: Output dtype: the operand dtype (default) or ``torch.float32``.
+            activation: ``"none"``, or a gated activation (``"silu_and_mul"``,
+                ``"gelu_and_mul"``) fused into the epilogue over a gate||up ``b``.
             static_dims: Dims compiled into the kernel, a subset of ``"mnk"``.
             m_alignment: Segment alignment of the aligned grouped layouts; it fixes ``block_m``.
             expected_m: Rows per group the cost model should plan for in the masked and
@@ -712,7 +780,10 @@ class SM90GemmFwdKernel(Kernel):
             raise ValueError(f"num_groups must be positive, got {num_groups}")
         if m_alignment < 1:
             raise ValueError(f"m_alignment must be positive, got {m_alignment}")
+        if activation not in ACTIVATIONS:
+            raise ValueError(f"activation must be one of {ACTIVATIONS}, got {activation!r}")
         self.gemm_type = GemmType(gemm_type)
+        self.activation = activation
         self.num_groups = num_groups
         self.cd_dtype = cd_dtype
         self.static_dims = static_dims
@@ -744,6 +815,11 @@ class SM90GemmFwdKernel(Kernel):
         n, k_b = b.shape[-2], b.shape[-1]
         if k != k_b:
             raise ValueError(f"A and B disagree on K: {k} vs {k_b}")
+        if self.activation != "none" and n % 16:
+            raise ValueError(
+                f"a fused gated activation splits N={n} into gate and up halves whose width "
+                "must be a multiple of 8 (the output row pitch): N must be a multiple of 16"
+            )
         return GemmDesc(
             gemm_type=self.gemm_type,
             m=m,
@@ -758,6 +834,7 @@ class SM90GemmFwdKernel(Kernel):
             static_dims=self.static_dims,
             m_alignment=self.m_alignment,
             expected_m=self.expected_m,
+            activation=self.activation,
         )
 
     def spec_for(self, a: torch.Tensor, b: torch.Tensor) -> SM90GemmSpec:
@@ -849,7 +926,8 @@ class SM90GemmFwdKernel(Kernel):
             raise ValueError("a and b must be contiguous in their physical (K- or MN-major) layout")
         if grouped_layout is None:
             grouped_layout = torch.zeros(1, dtype=torch.int32, device=a.device)
-        c_shape = (self.num_groups, desc.m, desc.n) if self._a_has_group else (desc.m, desc.n)
+        c_cols = desc.c_cols
+        c_shape = (self.num_groups, desc.m, c_cols) if self._a_has_group else (desc.m, c_cols)
         cd_dtype = self.output_dtype(a)
         if out is None:
             out = torch.empty(c_shape, dtype=cd_dtype, device=a.device)

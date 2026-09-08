@@ -10,6 +10,7 @@ from tileops.kernels.moe.sm90_gemm_heuristics import (
     GemmDesc,
     SM90GemmSpec,
     layout_candidates,
+    spec_from_config,
 )
 
 pytestmark = pytest.mark.hopper
@@ -224,6 +225,11 @@ def test_spec_rejects_inconsistent_template_parameters():
         SM90GemmSpec(**{**fields, "block_m": 64})
     with pytest.raises(ValueError, match="both exceed 128"):
         SM90GemmSpec(**{**fields, "block_m": 256, "block_n": 256})
+    with pytest.raises(ValueError, match="block_k is 64"):
+        SM90GemmSpec(**{**fields, "block_k": 128})
+    # A pinned pipeline past the shared-memory budget is refused, not launched.
+    with pytest.raises(ValueError, match="at most"):
+        spec_from_config(_desc(4096, 4096, 4096), dict(block_m=128, block_n=256, num_stages=8))
     with pytest.raises(ValueError, match="K-major A"):
         SM90GemmSpec(
             **{
@@ -322,3 +328,67 @@ def test_fp16_operands_batched_and_tight():
     _assert_gemm(kernel(ta, tb, grouped_layout=ends), ref)
     with pytest.raises(ValueError, match="one dtype"):
         SM90GemmFwdKernel(GemmType.BATCHED, num_groups=2)(a, b.bfloat16())
+
+
+def _gated_ref(ref, activation):
+    """``act(gate) * up`` over a GEMM reference whose columns stack gate then up."""
+    gate, up = ref.chunk(2, dim=-1)
+    act = torch.nn.functional.silu if activation == "silu_and_mul" else torch.nn.functional.gelu
+    return act(gate) * up
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
+@pytest.mark.parametrize(
+    "config",
+    [
+        pytest.param(dict(block_m=128, block_n=128), id="two-wgs"),
+        pytest.param(dict(block_m=64, block_n=256), id="one-wg"),
+    ],
+)
+def test_fused_gated_activation_tight(activation, config):
+    """The fused epilogue half-loads gate and up into one B tile and stores N / 2 columns.
+
+    Tight ragged groups take the row-masked store path with the halved tile width.
+    """
+    sizes = [100, 0, 300, 128, 7, 64]
+    a, b, ends, ref, _ = _grouped_operands(sizes, 1024, 512, "tight")
+    kernel = SM90GemmFwdKernel(
+        GemmType.M_GROUPED_TIGHT_PSUM, num_groups=len(sizes), activation=activation, config=config
+    )
+    out = kernel(a, b, grouped_layout=ends)
+    assert out.shape == (a.shape[0], 512)
+    _assert_gemm(out, _gated_ref(ref, activation))
+
+
+@pytest.mark.full
+def test_fused_gated_activation_masked_and_fp32_output():
+    """Masked groups and an fp32 ``out`` take the fused epilogue without a cast."""
+    masked = [64, 0, 17, 33]
+    a, b = _batched_operands(len(masked), 64, 1024, 512)
+    counts = torch.tensor(masked, dtype=torch.int32, device="cuda")
+    kernel = SM90GemmFwdKernel(
+        GemmType.M_GROUPED_MASKED, num_groups=len(masked), activation="silu_and_mul"
+    )
+    out = kernel(a, b, grouped_layout=counts)
+    ref = _gated_ref(_bmm_ref(a, b), "silu_and_mul")
+    for g, rows in enumerate(masked):
+        _assert_gemm(out[g, :rows], ref[g, :rows])
+    fp32 = SM90GemmFwdKernel(
+        GemmType.BATCHED, num_groups=len(masked), activation="silu_and_mul", cd_dtype=torch.float32
+    )(a, b)
+    assert fp32.dtype is torch.float32
+    _assert_gemm(fp32, ref)
+
+
+@pytest.mark.full
+def test_fused_gated_activation_refusals():
+    """A fused call needs an even split of N into gate and up, a K-major B, a known name."""
+    with pytest.raises(ValueError, match="activation"):
+        SM90GemmFwdKernel(GemmType.BATCHED, num_groups=2, activation="relu")
+    a, b = _batched_operands(2, 64, 1032, 512)
+    with pytest.raises(ValueError, match="multiple of 16"):
+        SM90GemmFwdKernel(GemmType.BATCHED, num_groups=2, activation="silu_and_mul")(a, b)
+    a, b = _batched_operands(2, 64, 1024, 512, major_b="mn")
+    with pytest.raises(ValueError, match="K-major B"):
+        SM90GemmFwdKernel(GemmType.BATCHED, num_groups=2, activation="silu_and_mul")(a, b)
