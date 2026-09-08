@@ -48,7 +48,7 @@ def _make_rope_neox_1d(
     """1D neox RoPE kernel: (seq_len, head_dim) x cos(seq_len, half) x sin(seq_len, half).
 
     cos/sin are of shape (seq_len, head_dim // 2), one entry per rotated pair.
-    The arithmetic is f32 and rounds once, at the store into ``y``.
+    The arithmetic is f32 and rounds once.
     """
     half = head_dim // 2
     n_pairs = seq_len * half
@@ -94,7 +94,7 @@ def _make_rope_neox_2d(
 
     cos/sin are of shape (seq_len, head_dim // 2), broadcast over batch and heads.
     ``x`` and ``y`` are flat: the caller reshapes. The arithmetic is f32 and rounds
-    once, at the store into ``y``.
+    once.
     """
     half = head_dim // 2
     n_total = batch * seq_len * num_heads * head_dim
@@ -160,8 +160,7 @@ def _make_rope_non_neox_1d(
     """1D non-neox (RoFormer) RoPE kernel: adjacent-pair rotation.
 
     cos/sin shape: (seq_len, head_dim // 2), one entry per pair; entry ``p`` serves
-    columns ``2p`` and ``2p + 1``. The arithmetic is f32 and rounds once, at the store
-    into ``y``.
+    columns ``2p`` and ``2p + 1``. The arithmetic is f32 and rounds once.
     """
     half = head_dim // 2
     n_pairs = seq_len * half
@@ -238,8 +237,8 @@ def _make_rope_neox_position_ids_thd(
     """THD neox RoPE kernel with explicit absolute position ids.
 
     ``x`` and ``y`` are flat over ``(num_tokens, num_heads, head_dim)``. Columns past
-    ``rotary_dim`` are copied through unrotated. The arithmetic is f32 and rounds once,
-    at the store into ``y``.
+    ``rotary_dim`` are copied through unrotated. The arithmetic is f32 and rounds
+    once.
 
     A position outside ``[0, max_position)`` is clamped to the table rather than
     faulting, and ``status`` counts how many were seen. The count only grows and is
@@ -251,7 +250,6 @@ def _make_rope_neox_position_ids_thd(
     n_total = num_tokens * token_stride
     n_pairs = num_tokens * num_heads * half
     n_tail = num_tokens * num_heads * (head_dim - rotary_dim)
-    # One grid covers both walks, so the longer of the two sizes it.
     n_walked = max(n_pairs, n_tail)
 
     @tilelang.jit(out_idx=[5])
@@ -557,8 +555,8 @@ class RopeNeoxPositionIdsKernel(Kernel):
         self.rotary_dim = rotary_dim
         self.max_position = max_position
         self.dtype = dtype
-        #: Grows by one per position seen outside ``[0, max_position)``, and is never
-        #: reset; ``take_out_of_range`` answers whether it moved.
+        # Grows by one per position seen outside [0, max_position), and is never
+        # reset; take_out_of_range answers whether it moved.
         self._status: torch.Tensor | None = None
         self._seen_out_of_range = 0
         self.kernel = self._build_kernel()
