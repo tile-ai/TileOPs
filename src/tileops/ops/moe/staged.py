@@ -15,7 +15,6 @@ from tileops.ops.op_base import Op
 from tileops.perf.formulas import moe_expert_mlp_roofline, moe_grouped_gemm_roofline
 from tileops.utils import get_sm_version, is_h200
 
-from ..elementwise import SiluAndMulFwdOp
 from .contracts import (
     ContiguousLayoutSpec,
     ContiguousMetadata,
@@ -32,6 +31,10 @@ __all__ = [
     "MoePostPermuteFwdOp",
     "MoePrePermuteFwdOp",
 ]
+
+
+# Gated activations a grouped GEMM may fuse into its epilogue.
+GATED_ACTIVATIONS = ("silu_and_mul", "gelu_and_mul")
 
 
 def _same_device(named_tensors: Mapping[str, torch.Tensor]) -> torch.device:
@@ -242,6 +245,11 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
     the operands. Accumulation is fp32; the output is written in the operand dtype
     unless ``out_dtype`` asks for fp32.
 
+    With ``activation`` set, ``b`` stacks the gate and up projections along ``N``
+    (``[E, 2 * ffn, K]``) and ``out`` is ``act(gate) * up`` with ``ffn`` columns: the
+    gated activation is fused into the GEMM's epilogue and the ``[.., 2 * ffn]``
+    intermediate is never written.
+
     Per layout the operands are (``trans``-free, ``b`` is ``[E, N, K]``):
 
     | layout                      | ``a``             | ``layout_metadata``          | ``out``           |
@@ -266,14 +274,18 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
         self,
         layout: MGroupedLayoutSpec,
         *,
+        activation: str | None = None,
         out_dtype: torch.dtype | None = None,
         kernel_map: dict[str, Kernel] | None = None,
         target: object = None,
     ) -> None:
-        """Fix the expert layout and the output dtype policy.
+        """Fix the expert layout, the fused activation and the output dtype policy.
 
         Args:
             layout: Manifest ``params.layout``; how ``a``'s rows are grouped by expert.
+            activation: Manifest ``params.activation``; ``None`` for a plain GEMM, or a
+                gated activation (``"silu_and_mul"``, ``"gelu_and_mul"``) fused into the
+                epilogue over a gate||up ``b``, which halves the output width.
             out_dtype: Manifest ``params.out_dtype``; ``None`` writes the operand dtype,
                 ``torch.float32`` keeps the fp32 accumulator.
             kernel_map: Optional kernel override dict.
@@ -281,6 +293,9 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
                 ``None``.
         """
         self.layout = _check_layout(layout)
+        if activation is not None and activation not in GATED_ACTIVATIONS:
+            raise ValueError(f"activation must be None or one of {GATED_ACTIVATIONS}")
+        self.activation = activation
         if out_dtype is not None and out_dtype is not torch.float32:
             raise ValueError("out_dtype must be None (operand dtype) or torch.float32")
         self.out_dtype = out_dtype
@@ -297,7 +312,12 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
         b_shape: tuple[int, ...],
         layout_metadata_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        return {"output": (*tuple(a_shape)[:-1], b_shape[1])}
+        # The manifest validator's parity probe builds the op without __init__ and
+        # binds a placeholder for ``activation``; anything but None means fused.
+        n = b_shape[1]
+        if getattr(self, "activation", None) is not None:
+            n //= 2
+        return {"output": (*tuple(a_shape)[:-1], n)}
 
     def eval_roofline(self) -> tuple[int, int]:
         # What codegen emits for ``roofline.func``; a spec-only entry gets no codegen.
@@ -346,6 +366,10 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
                 )
         if a.shape[-1] != k:
             raise ValueError("a and b must have the same reduction dimension")
+        if self.activation is not None and n % 2:
+            raise ValueError(
+                f"a fused gated activation splits b's N={n} into gate and up halves: N must be even"
+            )
         rows = _rows_of(layout, tuple(a.shape))
         expected_meta = layout.metadata_length(rows=rows, num_experts=num_experts)
         if layout_metadata.ndim != 1 or layout_metadata.shape[0] != expected_meta:
@@ -372,6 +396,7 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
             metadata_kind=metadata_kind,
             alignment=getattr(layout, "alignment", 1),
             max_m=layout.max_m,
+            activation=self.activation,
             ab_dtype=a.dtype,
             cd_dtype=cd_dtype,
             num_groups=num_experts,
@@ -456,12 +481,13 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
 
 
 class MoeExpertMLPFwdOp(_StagedOpBase):
-    """Two grouped GEMMs around a gated activation on one expert layout.
+    """Two grouped GEMMs on one expert layout, the gated activation fused into the first.
 
     ``out = (act(expert_input @ w_gate_up[g]^T)) @ w_down[g]^T`` per expert ``g``, where
     ``act`` is the gated activation: ``w_gate_up`` stacks the gate and up projections
-    along ``N`` and the activation halves it. A composite: it registers no operator
-    of its own, its graph is its three leaves'.
+    along ``N`` and the gate_up GEMM's epilogue applies the activation and halves it,
+    so the ``[.., 2 * ffn]`` intermediate is never written. A composite: it registers
+    no operator of its own, its graph is its two leaves'.
     """
 
     def __init__(
@@ -472,33 +498,29 @@ class MoeExpertMLPFwdOp(_StagedOpBase):
         kernel_map: dict[str, Kernel] | None = None,
         target: object = None,
     ) -> None:
-        """Configure two grouped GEMMs on ``layout`` around the selected gated activation.
+        """Configure two grouped GEMMs on ``layout``, the first fusing the gated activation.
 
         Args:
             layout: Manifest ``params.layout``; shared by both GEMMs and the metadata.
-            activation: Manifest ``params.activation``; ``"silu_and_mul"`` only for now.
-            kernel_map: Optional overrides, forwarded to the delegate whose key they name.
+            activation: Manifest ``params.activation``; ``"silu_and_mul"`` or
+                ``"gelu_and_mul"``, fused into the gate_up GEMM's epilogue.
+            kernel_map: Optional overrides, forwarded to both GEMMs.
             target: Which backend serves the delegates.
         """
-        if activation != "silu_and_mul":
-            raise ValueError("the staged Expert MLP currently supports only silu_and_mul")
+        if activation not in GATED_ACTIVATIONS:
+            raise ValueError(f"activation must be one of {GATED_ACTIVATIONS}, got {activation!r}")
         self.layout = _check_layout(layout)
         self.activation = activation
         self.target = target
         self.dispatch_kernel(kernel_map)
-        overrides = self.forwarded_overrides()
-        grouped_overrides = (
-            {key: value for key, value in overrides.items() if key != "silu_and_mul"}
-            if overrides
-            else None
+        overrides = self.forwarded_overrides() or None
+        self.gate_up = MoeGroupedGemmFwdOp(
+            layout, activation=activation, kernel_map=overrides, target=target
         )
-        self.gate_up = MoeGroupedGemmFwdOp(layout, kernel_map=grouped_overrides, target=target)
-        self.activation_op = SiluAndMulFwdOp(kernel_map=overrides)
-        self.activation_op.target = target
-        self.down = MoeGroupedGemmFwdOp(layout, kernel_map=grouped_overrides, target=target)
+        self.down = MoeGroupedGemmFwdOp(layout, kernel_map=overrides, target=target)
 
-    def kernel_delegates(self) -> tuple[Op, Op, Op]:
-        return self.gate_up, self.activation_op, self.down
+    def kernel_delegates(self) -> tuple[Op, Op]:
+        return self.gate_up, self.down
 
     def _infer_output_shapes(
         self,
@@ -532,7 +554,7 @@ class MoeExpertMLPFwdOp(_StagedOpBase):
         layout_metadata: torch.Tensor,
         out: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Run gate/up GEMM, gated activation, and down GEMM on one layout.
+        """Run the gate/up GEMM with its fused activation, then the down GEMM.
 
         Args:
             expert_input: ``[M, hidden]`` or ``[E, max_m, hidden]`` per the layout.
@@ -552,10 +574,7 @@ class MoeExpertMLPFwdOp(_StagedOpBase):
             tuple(w_down.shape),
             tuple(layout_metadata.shape),
         ]
-        gate_up = self.gate_up(expert_input, w_gate_up, layout_metadata)
-        flat_gate_up = gate_up.reshape(-1, gate_up.shape[-1])
-        activated = self.activation_op(flat_gate_up)
-        activated = activated.reshape(*gate_up.shape[:-1], gate_up.shape[-1] // 2)
+        activated = self.gate_up(expert_input, w_gate_up, layout_metadata)
         return self.down(activated, w_down, layout_metadata, out=out)
 
 

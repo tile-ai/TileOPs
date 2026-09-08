@@ -378,6 +378,9 @@ MoeGroupedGemmFwdOp:
       output: {dtype: "same_as(a) | float32"}
     params:
       layout: {type: MGroupedLayoutSpec}
+      # A gated activation fused into the epilogue: b stacks gate and up along N
+      # and the output keeps act(gate) * up, half of N.
+      activation: {type: "str | None", default: null, kw_only: true}
       out_dtype: {type: "torch.float32 | None", default: null, kw_only: true}
       out: {type: "tensor | None", default: null}
     shape_rules:
@@ -385,9 +388,10 @@ MoeGroupedGemmFwdOp:
     - "b.ndim == 3"
     - "a.shape[-1] == b.shape[-1]"
     - "layout_metadata.ndim == 1"
-    - "output.shape == (*a.shape[:-1], b.shape[1])"
+    - "activation is None or b.shape[1] % 2 == 0"
+    - "output.shape == (*a.shape[:-1], b.shape[1] if activation is None else b.shape[1] // 2)"
   workloads: []
-  # bytes depend on out_dtype as well as the operand dtype: not expressible inline.
+  # bytes depend on out_dtype and activation as well as the operand dtype: not expressible inline.
   roofline:
     func: "tileops.perf.formulas.moe_grouped_gemm_roofline"
   source:
