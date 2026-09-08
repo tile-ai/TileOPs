@@ -30,6 +30,8 @@ from tests.compile_contract import (
 )
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
+    MaskedLayoutSpec,
+    MoeGroupedGemmFwdOp,
     MoePermuteAlignFwdOp,
     MoePostPermuteFwdOp,
     MoePrePermuteFwdOp,
@@ -125,7 +127,37 @@ def _grouped_gemm_nopad_case():
     return make, _grouped_gemm_inputs(numel, _NUM_EXPERTS, n, k), "all"
 
 
+def _staged_grouped_gemm_case(dtype: torch.dtype = torch.bfloat16, activation: str | None = None):
+    numel, n, k = 64, 128, 128
+
+    def make():
+        return MoeGroupedGemmFwdOp(
+            ContiguousLayoutSpec.tight_physical_psum(), activation=activation
+        )
+
+    a, b, sizes, _ = _grouped_gemm_inputs(numel, _NUM_EXPERTS, n, k)
+    ends = torch.cumsum(sizes, dim=0).to(torch.int32)
+    return make, (a.to(dtype), b.to(dtype), ends), "all"
+
+
+def _staged_grouped_gemm_masked_case():
+    max_m, n, k = 32, 128, 128
+
+    def make():
+        return MoeGroupedGemmFwdOp(MaskedLayoutSpec(max_m=max_m))
+
+    a = torch.randn(_NUM_EXPERTS, max_m, k, dtype=torch.bfloat16, device="cuda")
+    b = torch.randn(_NUM_EXPERTS, n, k, dtype=torch.bfloat16, device="cuda")
+    masked_m = torch.tensor([32, 0, 17, 32], dtype=torch.int32, device="cuda")
+    # Rows past an expert's valid count hold unspecified values.
+    return make, (a, b, masked_m), ()
+
+
 _LEAF_CASES = {
+    "staged_grouped_gemm": _staged_grouped_gemm_case,
+    "staged_grouped_gemm_fp16": lambda: _staged_grouped_gemm_case(torch.float16),
+    "staged_grouped_gemm_fused": lambda: _staged_grouped_gemm_case(activation="silu_and_mul"),
+    "staged_grouped_gemm_masked": _staged_grouped_gemm_masked_case,
     "permute_align": _permute_align_case,
     "pre_permute": _pre_permute_case,
     "pre_permute_fp16": lambda: _pre_permute_case(torch.float16),
@@ -235,6 +267,7 @@ for _op_cls in (
     MoePermuteAlignFwdOp,
     MoePrePermuteFwdOp,
     MoePostPermuteFwdOp,
+    MoeGroupedGemmFwdOp,
     MoeGateUpFwdOp,
     MoeGroupedGemmNopadFwdOp,
 ):

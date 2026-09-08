@@ -8,11 +8,16 @@ from typing import ClassVar, Mapping
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.moe import MoePrePermuteContiguousKernel, MoeUnpermuteKernel
+from tileops.kernels.moe import (
+    MoePrePermuteContiguousKernel,
+    MoeUnpermuteKernel,
+    SM90MGroupedGemmFwdKernel,
+)
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
 from tileops.ops.compile_boundary import get_instance
 from tileops.ops.op_base import Op
 from tileops.perf.formulas import moe_expert_mlp_roofline, moe_grouped_gemm_roofline
+from tileops.perf.profile import tensor_core_roof
 from tileops.utils import get_sm_version, is_h200
 
 from .contracts import (
@@ -270,6 +275,10 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
         "tileops::moe_grouped_gemm_fwd_inplace",
     )
 
+    @property
+    def default_kernel_map(self) -> dict[str, Kernel]:
+        return {"sm90_gemm": SM90MGroupedGemmFwdKernel}
+
     def __init__(
         self,
         layout: MGroupedLayoutSpec,
@@ -320,8 +329,11 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
         return {"output": (*tuple(a_shape)[:-1], n)}
 
     def eval_roofline(self) -> tuple[int, int]:
-        # What codegen emits for ``roofline.func``; a spec-only entry gets no codegen.
         return moe_grouped_gemm_roofline(self)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
     def make_call(
         self,
@@ -532,8 +544,11 @@ class MoeExpertMLPFwdOp(_StagedOpBase):
         return {"output": (*tuple(expert_input_shape)[:-1], w_down_shape[1])}
 
     def eval_roofline(self) -> tuple[int, int]:
-        # What codegen emits for ``roofline.func``; a spec-only entry gets no codegen.
         return moe_expert_mlp_roofline(self)
+
+    def compute_roof(self) -> str:
+        """The two GEMMs dominate the FLOPs; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
     @staticmethod
     def _check_widths(w_gate_up: torch.Tensor, w_down: torch.Tensor) -> None:

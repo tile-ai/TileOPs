@@ -74,6 +74,7 @@ __all__ = [
     "Major",
     "SM90GemmFwdKernel",
     "SM90GemmSpec",
+    "SM90MGroupedGemmFwdKernel",
 ]
 
 # Register budgets after `setmaxnreg`, DeepGEMM's numbers.
@@ -1065,3 +1066,70 @@ class SM90GemmFwdKernel(Kernel):
         fn = _sm90_gemm_kernel(spec)()
         fn(a_phys, b_phys, out, grouped_layout)
         return out
+
+
+class SM90MGroupedGemmFwdKernel(Kernel):
+    """The template's expert-grouped instantiations behind the staged MoE grouped-GEMM op.
+
+    An adapter: ``MoeGroupedGemmFwdOp`` selects candidates by ``MGroupedGemmCall``
+    and constructs the one that applied as ``cls(call)``, while the template's
+    constructor speaks GEMM (a ``GemmType``, a tile alignment, an activation).
+    This class takes the call, looks its flattened layout up into a ``GemmType``,
+    passes the alignment as the tile height, the fused activation as it is, and
+    the output dtype only when it differs from the operands', and forwards to the
+    template it built.
+
+    Claims contiguous tight-psum, contiguous aligned-psum, contiguous aligned
+    per-row and masked layouts on bf16 or fp16 operands with the output in the
+    operand dtype or fp32; an aligned layout only when its alignment is a tile
+    height; ``K`` and ``N`` that TMA can address (multiples of 8), ``N`` a multiple
+    of 16 when a gated activation splits it. Tight per-row rows have an
+    instantiation but are not claimed yet. Refusing here rather than at launch
+    lets selection say why.
+    """
+
+    supported_archs: list[int] = [90]
+
+    _TYPES: dict[tuple[str, Optional[str], Optional[str]], GemmType] = {
+        ("contiguous", "tight", "physical_psum"): GemmType.M_GROUPED_TIGHT_PSUM,
+        ("contiguous", "aligned", "physical_psum"): GemmType.M_GROUPED_ALIGNED_PSUM,
+        ("contiguous", "aligned", "per_row"): GemmType.M_GROUPED_ALIGNED_PER_ROW,
+        ("masked", None, None): GemmType.M_GROUPED_MASKED,
+    }
+    # An aligned layout's segment alignment is the tile height, so it must be one.
+    _ALIGNED_TILE_HEIGHTS = (64, 128, 256)
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        n_step = 8 if call.activation is None else 16
+        return (
+            (call.kind, call.packing, call.metadata_kind) in cls._TYPES
+            and call.ab_dtype in (torch.bfloat16, torch.float16)
+            and call.cd_dtype in (call.ab_dtype, torch.float32)
+            and (call.packing != "aligned" or call.alignment in cls._ALIGNED_TILE_HEIGHTS)
+            and (call.activation is None or call.activation in ACTIVATIONS)
+            and call.k % 8 == 0
+            and call.n % n_step == 0
+        )
+
+    def __init__(self, call) -> None:
+        super().__init__()
+        self.call = call
+        self.inner = SM90GemmFwdKernel(
+            self._TYPES[(call.kind, call.packing, call.metadata_kind)],
+            num_groups=call.num_groups,
+            m_alignment=call.alignment if call.packing == "aligned" else 128,
+            cd_dtype=None if call.cd_dtype is call.ab_dtype else call.cd_dtype,
+            activation="none" if call.activation is None else call.activation,
+        )
+
+    def forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        layout_metadata: torch.Tensor,
+        *,
+        out: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """``out[rows of g] = a[rows of g] @ b[g]^T`` for every expert ``g``, activated if fused."""
+        return self.inner(a, b, grouped_layout=layout_metadata, out=out)

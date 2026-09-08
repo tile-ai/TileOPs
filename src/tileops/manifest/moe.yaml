@@ -368,7 +368,8 @@ MoePrePermuteFwdOp:
 MoeGroupedGemmFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
+  torch_compile_fullgraph: true
   signature:
     inputs:
       a: {dtype: "float16 | bfloat16"}
@@ -390,20 +391,35 @@ MoeGroupedGemmFwdOp:
     - "layout_metadata.ndim == 1"
     - "activation is None or b.shape[1] % 2 == 0"
     - "output.shape == (*a.shape[:-1], b.shape[1] if activation is None else b.shape[1] // 2)"
-  workloads: []
+  workloads:
+  # DeepSeek-V3 local experts on tight PrePermute rows: gate_up has N = 2 * ffn, down N = hidden.
+  - {a_shape: [4096, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-decode-gate-up"}
+  - {a_shape: [32768, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-prefill-gate-up"}
+  - {a_shape: [4096, 2048], b_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-decode-down"}
+  - {a_shape: [32768, 2048], b_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-prefill-down"}
+  # The same gate_up with the gated activation fused: the GEMM writes ffn columns.
+  - {a_shape: [4096, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, activation: silu_and_mul, dtypes: [bfloat16], label: "deepseek-v3-decode-gate-up-fused"}
+  - {a_shape: [32768, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, activation: silu_and_mul, dtypes: [bfloat16], label: "deepseek-v3-prefill-gate-up-fused"}
+  # Mixtral-8x7B gate_up on rows an aligned PrePermute padded into 128-row segments.
+  - {a_shape: [32768, 4096], b_shape: [8, 28672, 4096], layout: aligned_per_row, alignment: 128, dtypes: [bfloat16], label: "mixtral-8x7b-prefill-gate-up-aligned"}
+  # DeepSeek-V3 under EP8: 32 local experts, each a 128-row slab with its valid count.
+  - {a_shape: [32, 128, 7168], b_shape: [32, 4096, 7168], layout: masked, max_m: 128, dtypes: [bfloat16], label: "deepseek-v3-ep8-decode-gate-up-masked"}
   # bytes depend on out_dtype and activation as well as the operand dtype: not expressible inline.
   roofline:
     func: "tileops.perf.formulas.moe_grouped_gemm_roofline"
   source:
-    kernel: tileops/ops/moe/staged.py
+    kernel: tileops/kernels/moe/sm90_gemm.py
     op: tileops/ops/moe/staged.py
-    test: tests/ops/test_moe_staged_contracts.py
+    test: tests/ops/test_moe_grouped_gemm.py
     bench: benchmarks/ops/bench_moe_staged.py
+    bench_manifest_driven: true
+    kernel_map:
+      sm90_gemm: SM90MGroupedGemmFwdKernel
 
 MoeExpertMLPFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
   signature:
     inputs:
       expert_input: {dtype: "float16 | bfloat16"}
@@ -425,14 +441,22 @@ MoeExpertMLPFwdOp:
     - "expert_input.shape[-1] == w_gate_up.shape[-1]"
     - "layout_metadata.ndim == 1"
     - "output.shape == (*expert_input.shape[:-1], w_down.shape[1])"
-  workloads: []
+  workloads:
+  # The shapes FusedMoEExpertsNopadPersistent3WGFwdOp declares, on the same tight rows.
+  - {expert_input_shape: [4096, 7168], w_gate_up_shape: [128, 4096, 7168], w_down_shape: [128, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "qwen3-235b-decode"}
+  - {expert_input_shape: [32768, 7168], w_gate_up_shape: [128, 4096, 7168], w_down_shape: [128, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "qwen3-235b-prefill"}
+  - {expert_input_shape: [4096, 7168], w_gate_up_shape: [256, 4096, 7168], w_down_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-decode"}
+  - {expert_input_shape: [32768, 7168], w_gate_up_shape: [256, 4096, 7168], w_down_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-prefill"}
   roofline:
     func: "tileops.perf.formulas.moe_expert_mlp_roofline"
   source:
-    kernel: tileops/ops/moe/staged.py
+    kernel: tileops/kernels/moe/sm90_gemm.py
     op: tileops/ops/moe/staged.py
-    test: tests/ops/test_moe_staged_contracts.py
+    test: tests/ops/test_moe_grouped_gemm.py
     bench: benchmarks/ops/bench_moe_staged.py
+    bench_manifest_driven: true
+    kernel_map:
+      sm90_gemm: SM90MGroupedGemmFwdKernel
 
 MoePostPermuteFwdOp:
   ref_api: "none"
