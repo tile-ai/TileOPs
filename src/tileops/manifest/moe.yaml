@@ -378,7 +378,7 @@ MoeGroupedGemmFwdOp:
       output: {dtype: "same_as(a) | float32"}
     params:
       layout: {type: MGroupedLayoutSpec}
-      out_dtype: {type: "torch.dtype | None", default: null, kw_only: true}
+      out_dtype: {type: "torch.float32 | None", default: null, kw_only: true}
       out: {type: "tensor | None", default: null}
     shape_rules:
     - "a.ndim == 2 or a.ndim == 3"
@@ -387,11 +387,9 @@ MoeGroupedGemmFwdOp:
     - "layout_metadata.ndim == 1"
     - "output.shape == (*a.shape[:-1], b.shape[1])"
   workloads: []
-  # Bytes count the output at the operand width; an fp32 ``out_dtype`` writes twice
-  # that, and the op's eval_roofline reports the exact figure.
+  # bytes depend on out_dtype as well as the operand dtype: not expressible inline.
   roofline:
-    flops: "2 * a.numel() * b.shape[1]"
-    bytes: "(a.numel() + b.numel() + output.numel()) * elem_bytes + layout_metadata.numel() * 4"
+    func: "tileops.perf.formulas.moe_grouped_gemm_roofline"
   source:
     kernel: tileops/ops/moe/staged.py
     op: tileops/ops/moe/staged.py
@@ -425,8 +423,7 @@ MoeExpertMLPFwdOp:
     - "output.shape == (*expert_input.shape[:-1], w_down.shape[1])"
   workloads: []
   roofline:
-    flops: "(expert_input.numel() // expert_input.shape[-1]) * (2 * w_gate_up.shape[1] * w_gate_up.shape[2] + 6 * w_down.shape[2] + 2 * w_down.shape[1] * w_down.shape[2])"
-    bytes: "(expert_input.numel() + w_gate_up.numel() + w_down.numel() + output.numel()) * elem_bytes + layout_metadata.numel() * 4"
+    func: "tileops.perf.formulas.moe_expert_mlp_roofline"
   source:
     kernel: tileops/ops/moe/staged.py
     op: tileops/ops/moe/staged.py

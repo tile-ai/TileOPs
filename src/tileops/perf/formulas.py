@@ -67,6 +67,8 @@ __all__ = [
     "mhc_post_roofline",
     "mhc_pre_roofline",
     "minimum_fwd_roofline",
+    "moe_expert_mlp_roofline",
+    "moe_grouped_gemm_roofline",
     "mul_fwd_roofline",
     "ne_fwd_roofline",
     "pow_fwd_roofline",
@@ -1047,6 +1049,45 @@ def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
         memory_c = batch_count * n * k
         memory_b = k * batch_sum if bool(op.transpose_b) else batch_sum * k
     return int(flops), int((memory_a + memory_b + memory_c) * elem)
+
+
+def _staged_moe_input_shapes(op: "Op") -> tuple:
+    if getattr(op, "input_shapes", None) is None or getattr(op, "dtype", None) is None:
+        raise RuntimeError(f"{type(op).__name__}.eval_roofline requires a prior forward call")
+    return tuple(op.input_shapes)
+
+
+def _staged_moe_rows(a_shape: tuple) -> int:
+    # Contiguous layouts hand over [M, K], masked ones [E, max_m, K].
+    rows = 1
+    for dim in a_shape[:-1]:
+        rows *= int(dim)
+    return rows
+
+
+def moe_grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
+    a_shape, b_shape, meta_shape = _staged_moe_input_shapes(op)
+    rows = _staged_moe_rows(a_shape)
+    num_experts, n, k = (int(dim) for dim in b_shape)
+    elem = op.dtype.itemsize
+    # The output width is the op's, not the operands': out_dtype may keep fp32.
+    out_elem = op.resolve_output_dtype(op.dtype).itemsize
+    flops = 2 * rows * n * k
+    nbytes = (rows * k + num_experts * n * k) * elem + rows * n * out_elem
+    nbytes += int(meta_shape[0]) * 4
+    return int(flops), int(nbytes)
+
+
+def moe_expert_mlp_roofline(op: "Op") -> tuple[int, int]:
+    x_shape, gate_shape, down_shape, meta_shape = _staged_moe_input_shapes(op)
+    rows = _staged_moe_rows(x_shape)
+    num_experts, two_ffn, hidden = (int(dim) for dim in gate_shape)
+    ffn = int(down_shape[2])
+    elem = op.dtype.itemsize
+    flops = rows * (2 * two_ffn * hidden + 6 * ffn + 2 * hidden * ffn)
+    weights = num_experts * two_ffn * hidden + num_experts * hidden * ffn
+    nbytes = (2 * rows * hidden + weights) * elem + int(meta_shape[0]) * 4
+    return int(flops), int(nbytes)
 
 
 def rope_roofline(op: "Op") -> tuple[int, int]:

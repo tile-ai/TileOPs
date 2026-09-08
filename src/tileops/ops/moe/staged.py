@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import ClassVar, Mapping
 
 import torch
@@ -11,6 +12,7 @@ from tileops.kernels.moe import MoePrePermuteContiguousKernel, MoeUnpermuteKerne
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
 from tileops.ops.compile_boundary import get_instance
 from tileops.ops.op_base import Op
+from tileops.perf.formulas import moe_expert_mlp_roofline, moe_grouped_gemm_roofline
 from tileops.utils import get_sm_version, is_h200
 
 from ..elementwise import SiluAndMulFwdOp
@@ -123,9 +125,8 @@ class MoePrePermuteFwdOp(_StagedOpBase):
         local_expert_ids_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
         rows = hidden_states_shape[0] * local_expert_ids_shape[1]
-        # The manifest validator's parity check builds the op without __init__ and
-        # hands a placeholder for ``layout``; read its axes with getattr so that
-        # placeholder resolves to the tight shapes instead of raising.
+        # The manifest validator's parity probe builds the op without __init__ and
+        # binds a placeholder for ``layout``; getattr resolves it to the tight shapes.
         layout = self.layout
         if isinstance(layout, MaskedLayoutSpec):
             expert_input = (self.num_local_experts, layout.max_m, hidden_states_shape[1])
@@ -299,16 +300,8 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
         return {"output": (*tuple(a_shape)[:-1], b_shape[1])}
 
     def eval_roofline(self) -> tuple[int, int]:
-        if self.input_shapes is None or self.dtype is None:
-            raise RuntimeError("eval_roofline requires a prior forward call")
-        a_shape, b_shape, meta_shape = self.input_shapes
-        rows = _rows_of(self.layout, a_shape)
-        num_experts, n, k = b_shape
-        flops = 2 * rows * n * k
-        out_dtype = self.resolve_output_dtype(self.dtype)
-        nbytes = (rows * k + num_experts * n * k) * self.dtype.itemsize
-        nbytes += rows * n * out_dtype.itemsize + meta_shape[0] * 4
-        return int(flops), int(nbytes)
+        # What codegen emits for ``roofline.func``; a spec-only entry gets no codegen.
+        return moe_grouped_gemm_roofline(self)
 
     def make_call(
         self,
@@ -450,11 +443,14 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
         self.dtype = a.dtype
         self.input_shapes = [tuple(a.shape), tuple(b.shape), tuple(layout_metadata.shape)]
         name = self.select_kernel_key(tuple((self.kernel_map or {}).keys()), call)
+        # ``m`` is a fact of the call, not of the built kernel. The builder is handed
+        # the record the cache is keyed on, so it cannot specialize on a row count.
+        build_call = dataclasses.replace(call, m=0)
         kernel = self.get_or_build_kernel(
             name,
             inputs=(a, b, layout_metadata),
-            key=call.specialization_key,
-            build=lambda: self.kernel_map[name](call),
+            key=build_call,
+            build=lambda: self.kernel_map[name](build_call),
         )
         return kernel(a, b, layout_metadata, out=out)
 
@@ -514,17 +510,8 @@ class MoeExpertMLPFwdOp(_StagedOpBase):
         return {"output": (*tuple(expert_input_shape)[:-1], w_down_shape[1])}
 
     def eval_roofline(self) -> tuple[int, int]:
-        if self.input_shapes is None or self.dtype is None:
-            raise RuntimeError("eval_roofline requires a prior forward call")
-        x_shape, gate_shape, down_shape, meta_shape = self.input_shapes
-        rows = _rows_of(self.layout, x_shape)
-        num_experts, two_ffn, hidden = gate_shape
-        ffn = down_shape[2]
-        flops = rows * (2 * two_ffn * hidden + 6 * ffn + 2 * hidden * ffn)
-        elem = self.dtype.itemsize
-        nbytes = (rows * hidden + num_experts * two_ffn * hidden) * elem
-        nbytes += (num_experts * hidden * ffn + rows * hidden) * elem + meta_shape[0] * 4
-        return int(flops), int(nbytes)
+        # What codegen emits for ``roofline.func``; a spec-only entry gets no codegen.
+        return moe_expert_mlp_roofline(self)
 
     @staticmethod
     def _check_widths(w_gate_up: torch.Tensor, w_down: torch.Tensor) -> None:

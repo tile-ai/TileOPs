@@ -181,11 +181,12 @@ def test_family_call_specs_are_frozen_and_keep_selection_axes_separate() -> None
     assert aligned_pre != pre
     assert len({pre, aligned_pre}) == 2
     assert post.layout_key == "tight_physical_psum"
-    # The row count is a fact of the call, not of the built kernel.
+    # The op keys its cache on this record with ``m`` reset; every other field survives.
     taller = dataclasses.replace(gemm, m=4096)
     assert taller != gemm
-    assert taller.specialization_key == gemm.specialization_key
-    assert dataclasses.replace(gemm, n=8).specialization_key != gemm.specialization_key
+    assert dataclasses.replace(taller, m=0) == dataclasses.replace(gemm, m=0)
+    assert dataclasses.replace(gemm, n=8, m=0) != dataclasses.replace(gemm, m=0)
+    assert dataclasses.replace(gemm, arch=100, m=0) != dataclasses.replace(gemm, m=0)
     # The flattened layout fields admit only what a layout spec can express.
     with pytest.raises(ValueError, match="no max_m"):
         dataclasses.replace(gemm, max_m=4)
@@ -195,6 +196,10 @@ def test_family_call_specs_are_frozen_and_keep_selection_axes_separate() -> None
         MGroupedGemmCall(arch=90, sm_count=1, kind="masked", packing="tight", max_m=4)
     with pytest.raises(ValueError, match="kind is"):
         MGroupedGemmCall(arch=90, sm_count=1, kind="padded")
+    # Only the record that names no layout skips the checks.
+    assert MGroupedGemmCall(arch=90, sm_count=1).kind == ""
+    with pytest.raises(ValueError, match="kind is"):
+        MGroupedGemmCall(arch=90, sm_count=1, max_m=4)
 
 
 def _layout_key_of(call: MGroupedGemmCall) -> str | None:

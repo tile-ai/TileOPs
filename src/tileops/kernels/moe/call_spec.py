@@ -38,8 +38,8 @@ class MGroupedGemmCall(CallSpec):
     sub-axes — so a candidate can claim a region such as "every contiguous
     layout with psum metadata" without enumerating keys. ``m`` is the
     materialized row count (``num_groups * max_m`` for masked layouts); it is a
-    fact of the call, not of the specialization, and ``specialization_key``
-    leaves it out.
+    fact of the call and not of the built kernel, so the op keys its kernel
+    cache on this record with ``m`` reset.
     """
 
     kind: str = ""  # "contiguous" | "masked"
@@ -56,11 +56,10 @@ class MGroupedGemmCall(CallSpec):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        # The layout fields are one layout spec flattened; hold them to the
-        # combinations a spec can express so a candidate never has to. The
-        # all-defaults record (``CallSpec.__str__`` builds one to diff against)
-        # names no layout and is left alone.
-        if self.kind == "":
+        # A record naming no layout is the all-defaults one ``CallSpec.__str__``
+        # diffs against; every other one is held to what a layout spec can express.
+        layout_fields = (self.kind, self.packing, self.metadata_kind, self.alignment, self.max_m)
+        if layout_fields == ("", None, None, 1, None):
             return
         if self.kind == "contiguous":
             if self.packing not in ("tight", "aligned"):
@@ -84,22 +83,6 @@ class MGroupedGemmCall(CallSpec):
                 raise ValueError("masked layouts need a non-negative max_m")
         else:
             raise ValueError(f"kind is 'contiguous' or 'masked', got {self.kind!r}")
-
-    @property
-    def specialization_key(self) -> tuple:
-        """What a built kernel is specialized on: everything but the row count."""
-        return (
-            self.kind,
-            self.packing,
-            self.metadata_kind,
-            self.alignment,
-            self.max_m,
-            self.ab_dtype,
-            self.cd_dtype,
-            self.num_groups,
-            self.n,
-            self.k,
-        )
 
 
 @dataclasses.dataclass(frozen=True)
