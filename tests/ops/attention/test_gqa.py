@@ -13,7 +13,7 @@ from tileops.kernels.attention import (
     GQADenseWsKernel,
 )
 from tileops.kernels.attention.gqa_decode import (
-    _effective_num_split,
+    _effective_dense_num_split,
     _gqa_decode_no_split_op,
     _gqa_decode_split_op,
 )
@@ -222,21 +222,33 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
 
 
 @pytest.mark.parametrize(
-    "batch, dtype, seq_lens_kv, rope_layout, rotary_dim, kernel_type",
+    "batch, head_shape, dtype, seq_lens_kv, rope_layout, rotary_dim, kernel_type",
     [
         pytest.param(
             1,
+            (8, 2),
             torch.float16,
             (257, 1057),
             None,
             None,
             GQADecodeBs1Kernel,
-            id="bs1-fp16",
+            id="bs1-fp16-other-head-ratio",
+        ),
+        pytest.param(
+            1,
+            (32, 4),
+            torch.float16,
+            (1024, 1057),
+            None,
+            None,
+            GQADecodeKernel,
+            id="measured-bs1-long-generic",
         ),
         pytest.param(
             2,
+            (8, 2),
             torch.bfloat16,
-            (257, 2051),
+            (257, 511),
             None,
             None,
             GQADecodeKernel,
@@ -244,6 +256,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
         ),
         pytest.param(
             1,
+            (8, 2),
             torch.float16,
             (271,),
             "neox",
@@ -253,6 +266,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
         ),
         pytest.param(
             1,
+            (8, 2),
             torch.float16,
             (1057,),
             "neox",
@@ -262,6 +276,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
         ),
         pytest.param(
             2,
+            (8, 2),
             torch.bfloat16,
             (257,),
             "interleaved",
@@ -274,6 +289,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
 @pytest.mark.smoke
 def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
     batch: int,
+    head_shape: tuple[int, int],
     dtype: torch.dtype,
     seq_lens_kv: tuple[int, ...],
     rope_layout: Optional[str],
@@ -282,7 +298,8 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
 ) -> None:
     if not torch.cuda.is_available() or get_sm_version() != 90:
         pytest.skip("Dense decode requires SM90")
-    heads, heads_kv, dim = 8, 2, 128
+    heads, heads_kv = head_shape
+    dim = 128
     op = GroupedQueryAttentionDenseFwdOp(
         pos_encoding_mode="rope" if rope_layout is not None else "none",
         rotary_dim=rotary_dim,
@@ -334,20 +351,18 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
     "num_split, block_N, real_seqlen_kv, expected",
     [
         pytest.param(32, 64, 1024, 16, id="issue-shape-clamps-to-tiles"),
-        pytest.param(32, 64, 2048, 32, id="feasible-tuned-value-kept"),
+        pytest.param(32, 64, 1000, 8, id="non-candidate-count-rounded-down"),
+        pytest.param(7, 64, 100000, 4, id="non-candidate-ceiling-rounded-down"),
         pytest.param(16, 128, 1024, 8, id="block-128-clamps"),
         pytest.param(32, 64, 100, 1, id="short-sequence-no-split"),
-        pytest.param(8, 64, 63, 1, id="sub-tile-no-split"),
-        pytest.param(4, 64, 64, 1, id="single-tile-no-split"),
-        pytest.param(4, 64, 128, 2, id="two-tiles-split-two"),
         pytest.param(1, 64, 100000, 1, id="tuned-no-split-stays-no-split"),
     ],
 )
-def test_gqa_decode_effective_num_split(
+def test_gqa_dense_decode_effective_num_split(
     num_split: int, block_N: int, real_seqlen_kv: int, expected: int
 ) -> None:
     """The tuned num_split is a ceiling shrunk to the runtime KV extent."""
-    assert _effective_num_split(num_split, block_N, real_seqlen_kv) == expected
+    assert _effective_dense_num_split(num_split, block_N, real_seqlen_kv) == expected
 
 
 @pytest.mark.smoke

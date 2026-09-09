@@ -18,6 +18,9 @@ from .online_softmax import (
 __all__ = ["GQADecodeKernel"]
 
 
+_SPLIT_CANDIDATES = (1, 2, 4, 8, 16, 32)
+
+
 def _effective_num_split(num_split: int, block_N: int, real_seqlen_kv: int) -> int:
     """Split count the runtime can use for a KV extent of *real_seqlen_kv*.
 
@@ -29,6 +32,12 @@ def _effective_num_split(num_split: int, block_N: int, real_seqlen_kv: int) -> i
     no-split kernel.
     """
     return max(1, min(num_split, real_seqlen_kv // block_N))
+
+
+def _effective_dense_num_split(num_split: int, block_N: int, real_seqlen_kv: int) -> int:
+    """Map Dense decode to one of its finite autotune split candidates."""
+    limit = _effective_num_split(num_split, block_N, real_seqlen_kv)
+    return max(candidate for candidate in _SPLIT_CANDIDATES if candidate <= limit)
 
 
 # JIT kernel: no-split variant
@@ -684,29 +693,50 @@ class GQADecodeKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        high_parallelism = self._uses_high_parallelism_default()
         return {
             "block_H": 64,
-            "block_N": 128,
-            "num_split": self._default_num_split(),
+            "block_N": 64 if high_parallelism else 128,
+            "num_split": 32 if high_parallelism else 16,
             "num_stages": 2,
             "threads": 128,
         }
 
-    def _default_num_split(self) -> int:
-        """Choose a conservative default split-count ceiling for GQA decode.
+    def _uses_high_parallelism_default(self) -> bool:
+        """Whether this call belongs to the measured BN64/split32 region."""
+        return self.high_parallelism_region(
+            batch=self.batch,
+            heads=self.heads,
+            heads_kv=self.groups,
+            dim=self.dim,
+            dtype=self.dtype,
+            softcap=self.softcap,
+        )
 
-        ``forward`` shrinks this to the runtime KV extent, so it only bounds how
-        far the split kernel may parallelise. Single-request, high-ratio GQA
-        decode with very few KV heads benefits from more split parallelism.
-        Keep the existing split=16 default for other shapes to avoid changing
-        batched Llama-like workloads.
-        """
-        kv_group_num = self.heads // self.groups
-        if self.batch == 1 and self.dim == 128 and self.groups <= 2 and kv_group_num >= 8:
-            candidate = 32
-        else:
-            candidate = 16
-        return candidate
+    @staticmethod
+    def high_parallelism_region(
+        *,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        dim: int,
+        dtype: torch.dtype | str,
+        softcap: float,
+    ) -> bool:
+        """Whether the call matches the H200 region measured for BN64/split32."""
+        return (
+            batch == 1
+            and heads == 32
+            and heads_kv == 4
+            and dim == 128
+            and Kernel.dtype_to_str(dtype) == "float16"
+            and softcap == 0.0
+        )
+
+    @staticmethod
+    def split_capacity(seq_len_kv: int) -> int:
+        """Return the finite autotune-capacity bucket for an input KV extent."""
+        return _effective_dense_num_split(max(_SPLIT_CANDIDATES), 64, seq_len_kv)
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -758,7 +788,7 @@ class GQADecodeKernel(Kernel):
         threads = self.config["threads"]
         # The tuned num_split is a ceiling: shrink it until every split keeps
         # one full KV tile. 1 means the sequence is too short to split.
-        num_split = _effective_num_split(self.config["num_split"], block_N, real_seqlen_kv)
+        num_split = _effective_dense_num_split(self.config["num_split"], block_N, real_seqlen_kv)
 
         # Dispatch: no-split for sequences too short to give each split a tile
         if num_split == 1:
