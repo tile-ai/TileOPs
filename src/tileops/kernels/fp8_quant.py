@@ -19,13 +19,13 @@ _THREADS = 128
 def _block_rows(seq_len_kv: int, row_bytes: int) -> int:
     """Rows per block: the most whose bytes fit one vector access per thread.
 
-    The result is a power of two that divides ``seq_len_kv``, which is what makes every
-    block the launch covers a full one. A row width that leaves the tile indivisible by
-    ``_THREADS`` still gets a valid block; it gets one whose threads read unequal shares.
+    A power of two, so a thread's share of the tile is a whole number of elements wherever
+    the row width allows one, and never more rows than the axis holds. Every width serves
+    every ``seq_len_kv``: the body clamps the rows it reads and tests the rows it writes.
     """
-    widest = _THREADS * VECTOR_ACCESS_BYTES // row_bytes
+    widest = min(_THREADS * VECTOR_ACCESS_BYTES // row_bytes, seq_len_kv)
     block_m = 1
-    while block_m * 2 <= widest and seq_len_kv % (block_m * 2) == 0:
+    while block_m * 2 <= widest:
         block_m *= 2
     return block_m
 
@@ -34,12 +34,8 @@ def _block_rows(seq_len_kv: int, row_bytes: int) -> int:
 def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str):
     @tilelang.jit(out_idx=[1, 2])
     def _fp8_quant_fwd_func(block_m):
-        if block_m < 1 or seq_len_kv % block_m:
-            raise ValueError(
-                f"block_m={block_m} must be a positive divisor of seq_len_kv={seq_len_kv}: "
-                "the body reads and writes whole blocks, so any other width would run past "
-                "the tensor"
-            )
+        if block_m < 1:
+            raise ValueError(f"block_m={block_m} must be positive")
         out_dtype = T.float8_e4m3fn
         scale_dtype = T.float32
         fp8_min = -FP8_E4M3_MAX
@@ -64,8 +60,13 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str):
 
                 # Every read the block makes happens before any of its writes: the row is
                 # read once here, and no output is stored until the scale has settled.
+                #
+                # A block past the end of the axis re-reads its last row rather than
+                # testing the index, which keeps the access provably in range and so
+                # vectorized. The rows it must not produce are dropped at the stores.
                 for i, j in T.Parallel(block_m, index_dim):
-                    input_local[i, j] = input_tensor[bx, pid_m * block_m + i, g, j]
+                    row = T.min(pid_m * block_m + i, seq_len_kv - 1)
+                    input_local[i, j] = input_tensor[bx, row, g, j]
 
                 T.reduce_absmax(input_local, amax_local, dim=1)
                 for i in T.Parallel(block_m):
@@ -82,9 +83,11 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str):
                     )
 
                 for i in T.Parallel(block_m):
-                    scale_tensor[bx, pid_m * block_m + i, g] = scale_local[i]
+                    if pid_m * block_m + i < seq_len_kv:
+                        scale_tensor[bx, pid_m * block_m + i, g] = scale_local[i]
                 for i, j in T.Parallel(block_m, index_dim):
-                    output_tensor[bx, pid_m * block_m + i, g, j] = output_local[i, j]
+                    if pid_m * block_m + i < seq_len_kv:
+                        output_tensor[bx, pid_m * block_m + i, g, j] = output_local[i, j]
 
         return _fp8_quant_fwd_main
 
@@ -120,8 +123,8 @@ class FP8QuantKernel(Kernel):
 
     A block owns whole rows and reduces each of them across the threads holding it. The
     default ``block_m`` follows from the row width: it is the number of rows whose bytes fit
-    one vector access per thread. A caller may override it with any positive divisor of
-    ``seq_len_kv``.
+    one vector access per thread. Any positive width serves any ``seq_len_kv``, the block
+    that overruns the axis re-reading its last row and writing none of it.
 
     Args:
         batch: Batch size.
@@ -135,9 +138,7 @@ class FP8QuantKernel(Kernel):
         tune: Whether to autotune.
 
     Raises:
-        ValueError: ``block_m`` is not a positive divisor of ``seq_len_kv``, raised where
-            the kernel is built. The body reads and writes whole blocks, so any other width
-            would run past the tensor.
+        ValueError: ``block_m`` is not positive, raised where the kernel is built.
     """
 
     supported_archs: list[int] = [90]
