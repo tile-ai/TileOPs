@@ -9,6 +9,7 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import (
     GQADecodeBs1Kernel,
     GQADecodeKernel,
+    GQADenseFP8Kernel,
     GQADenseSlidingWindowKernel,
     GQADenseWsKernel,
 )
@@ -190,6 +191,45 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
         rtol=1e-5,
     )
     assert isinstance(next(iter(op.iter_kernels())), GQADenseWsKernel)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("seq_len_q", "seq_len_kv", "sm_scale", "softcap"),
+    [(256, 1792, 0.125, 0.0), (255, 1793, 0.0625, 50.0)],
+)
+def test_gqa_dense_fp8_causal_rectangular_matches_reference(
+    seq_len_q: int, seq_len_kv: int, sm_scale: float, softcap: float
+) -> None:
+    fp8 = getattr(torch, "float8_e4m3fn", None)
+    if fp8 is None or not torch.cuda.is_available() or get_sm_version() != 90:
+        pytest.skip("native FP8 Dense GQA requires SM90 and float8_e4m3fn")
+    batch = 1
+    heads, heads_kv, dim = 8, 2, 128
+    q = (torch.randn(batch, seq_len_q, heads, dim, device="cuda") * 0.2).to(fp8)
+    k = (torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda") * 0.2).to(fp8)
+    v = (torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda") * 0.2).to(fp8)
+    scale = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
+
+    op = GroupedQueryAttentionDenseFwdOp(
+        is_causal=True,
+        dtype=torch.float16,
+        sm_scale=sm_scale,
+        softcap=softcap,
+    )
+    output = op(q, k, v, scale, scale, scale)
+    reference = _gqa_prefill_ref(
+        q.to(torch.float16),
+        k.to(torch.float16),
+        v.to(torch.float16),
+        heads=heads,
+        heads_kv=heads_kv,
+        is_causal=True,
+        sm_scale=sm_scale,
+        softcap=softcap,
+    )
+    torch.testing.assert_close(output, reference, atol=8e-2, rtol=2e-2)
+    assert isinstance(next(iter(op.iter_kernels())), GQADenseFP8Kernel)
 
 
 @pytest.mark.smoke
