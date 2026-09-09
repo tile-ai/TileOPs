@@ -57,7 +57,7 @@ TINY_M_BLOCK_N = 128
 _SWAP_AB_BLOCK_NN = 64
 SWAP_AB_MPAD = 8
 
-_NS_CAP = {"basic": 4, "splitk": 4, "coop2": 6, "coop2_splitk": 4}
+_NS_CAP = {"basic": 4, "splitk": 4, "coop2": 4, "coop2_splitk": 4}
 
 
 @dataclass(frozen=True)
@@ -161,8 +161,8 @@ def _ns_basic(bm: int, bn: int, bk: int) -> int:
 
 
 def _coop2_ns_sn(bn: int, bk: int):
-    """Deepest ring the SMEM budget allows; shrink the epilogue staging
-    chunk (stage_n) when that buys another pipeline stage."""
+    """Deepest ring under ``_NS_CAP`` the SMEM budget allows; shrink the epilogue
+    staging chunk (stage_n) when that buys another pipeline stage."""
     ring = (128 + bn) * bk * 2
     best = None
     for sn in (bn, bn // 2, bn // 4):
