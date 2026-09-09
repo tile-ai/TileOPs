@@ -429,15 +429,16 @@ def small_batch_config(n: int, k: int, sm_count: int) -> dict:
     return cfg
 
 
-def _fp8_ws_stages(block_n: int, block_scaled: bool) -> int:
+def _fp8_ws_stages(m: int, block_n: int, block_scaled: bool) -> int:
     """Deepest ring the SMEM budget allows for one warp-specialized FP8 tile.
 
-    Per stage the ring holds two 64-row ``A`` halves and one ``block_n`` ``B``
-    tile of FP8, plus the block128 scale vectors when they are staged. The
-    epilogue's two ``out_dtype`` staging tiles are live at the same time.
+    A stage holds two 64-row ``A`` halves, one ``block_n`` ``B`` tile, and the
+    block128 scale vectors when they are staged. The epilogue's two staging
+    tiles are live alongside the ring, except at an ``m`` inside one consumer's
+    half, where no row tile can be full and the kernel does not allocate them.
     """
     per_stage = (2 * 64 + block_n) * 128 + (block_scaled * (128 + block_n) * 4)
-    epilogue = 2 * 64 * block_n * 2
+    epilogue = 2 * 64 * block_n * 2 if m > 64 else 0
     return (_SMEM_BUDGET - epilogue) // per_stage
 
 
@@ -454,26 +455,23 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
     - otherwise, a ``block_n = 128`` grid that does not fill one wave leaves
       SMs idle for the whole launch; the narrow tile doubles the grid and the
       re-read of ``A`` it costs stays in L2.
-    - per-tensor ring depth: the deepest the budget allows. WGMMA accumulates
-      across the whole K axis with nothing between two K-steps, so the mainloop
-      only ever waits on the ring.
+    - per-tensor ring depth: the deepest the budget allows, because nothing sits
+      between two K-steps and the mainloop only ever waits on the ring.
     - block128 ring depth: a K-step ends in a promotion the next WGMMA cannot
-      start under, so the mainloop is not load-bound and a deeper ring only
-      spends SMEM. The exceptions are a K axis short enough that the fill is a
-      visible fraction of it, and one long enough that a shallower ring frees
-      the L2 sooner.
-    - split-K: a grid that leaves three quarters of the device idle runs each
-      resident CTA at its own SM's read bandwidth, so slicing K multiplies the
-      grid without changing the bytes any CTA reads. It is taken only where the
-      sliced grid still fits one wave and every slice stays long enough to
-      amortize the pipeline fill and the fp32 workspace round trip.
+      start under, so a deeper ring only spends SMEM. Three exceptions: an ``m``
+      inside one consumer's half, where the shape is a weight stream and the
+      ring is all that covers the read latency; a K axis short enough that the
+      fill is a visible fraction of it; and one long enough that a shallower
+      ring frees the L2 sooner.
+    - split-K: only where the sliced grid still fits one wave and every slice
+      keeps enough K-tiles to amortize the fill and the fp32 workspace.
     """
     block_n = 128 if m <= 8 or -(-m // 128) * -(-n // 128) >= sm_count else 64
     k_iters = -(-k // 128)
-    deepest = _fp8_ws_stages(block_n, block_scaled)
-    if not block_scaled:
+    deepest = _fp8_ws_stages(m, block_n, block_scaled)
+    if not block_scaled or m <= 8:
         num_stages = deepest
-    elif block_n == 64 or m <= 8 or k_iters <= 12:
+    elif block_n == 64 or k_iters <= 12:
         num_stages = min(5, deepest)
     elif k_iters >= 128:
         num_stages = 3

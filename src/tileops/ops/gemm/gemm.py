@@ -348,13 +348,14 @@ class GemmFp8FwdOp(Op):
         dtype: torch.dtype,
         scale_a_shape: Tuple[int, ...],
         scale_b_shape: Tuple[int, ...],
+        device_index: Optional[int],
     ) -> Kernel:
         return self.get_or_build_kernel(
             kernel_name,
             inputs,
-            key=(m, n, k, dtype, scale_a_shape, scale_b_shape, self.out_dtype),
+            key=(m, n, k, dtype, scale_a_shape, scale_b_shape, self.out_dtype, device_index),
             build=lambda: self.kernel_map[kernel_name](
-                m, n, k, dtype, self.out_dtype, tune=self.tune
+                m, n, k, dtype, self.out_dtype, tune=self.tune, device_index=device_index
             ),
         )
 
@@ -393,6 +394,7 @@ class GemmFp8FwdOp(Op):
             ```
         """
         sig = (
+            a.device,
             a.shape,
             b.shape,
             scale_a.shape,
@@ -422,6 +424,7 @@ class GemmFp8FwdOp(Op):
                 a.dtype,
                 tuple(scale_a.shape),
                 tuple(scale_b.shape),
+                a.device.index,
             )
             self.kernel = kernel
             self._active = kernel

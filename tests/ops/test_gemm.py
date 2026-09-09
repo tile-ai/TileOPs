@@ -552,7 +552,7 @@ def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
         ),
         pytest.param(
             (8, 7168, 2048),
-            (128, 5),
+            (128, 6),
             marks=pytest.mark.full,
             id="tiny-m-widens-the-tile",
         ),

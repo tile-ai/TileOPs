@@ -1,4 +1,5 @@
 import contextlib
+import functools
 from typing import Any, Callable, Optional
 
 import pytest
@@ -507,13 +508,25 @@ def test_gemm_fp8_bench(
     else:
         try:
             import flashinfer  # noqa: F401
-        except ImportError as exc:
-            print(f"  [skip] flashinfer-fp8-blockscale-sm90: {exc}")
-        else:
-            functors["flashinfer-fp8-blockscale-sm90"] = (
-                lambda *args: _flashinfer_fp8_blockscale_ref(workload, *args),
-                inputs,
+
+            blockscale_fn = functools.partial(_flashinfer_fp8_blockscale_ref, workload)
+            assert_matches_reference(
+                blockscale_fn,
+                workload.torch_scaled_matmul,
+                *inputs,
+                **reference_tolerance(out_dtype),
             )
+        except (ImportError, ValueError) as exc:
+            print(f"  [skip] flashinfer-fp8-blockscale-sm90: {str(exc).splitlines()[0]}")
+        except AssertionError as exc:
+            # Preferred, not selected: a tag whose kernel disagrees with the reference
+            # is dropped rather than taking the op's own numbers down with it.
+            print(
+                "  [skip] flashinfer-fp8-blockscale-sm90: disagrees with the reference "
+                f"({str(exc).splitlines()[0]})"
+            )
+        else:
+            functors["flashinfer-fp8-blockscale-sm90"] = (blockscale_fn, inputs)
 
     bm.compare(functors, *inputs)
 
