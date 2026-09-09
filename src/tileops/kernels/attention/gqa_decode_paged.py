@@ -8,7 +8,6 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 
-from .gqa_decode import _effective_num_split
 from .online_softmax import (
     LOG2E,
     make_apply_softcap,
@@ -568,8 +567,7 @@ class GQADecodePagedKernel(Kernel):
             self.dtype_str,
         )
 
-        # autotune targets the split kernel; forward shrinks the tuned
-        # num_split to the runtime KV extent instead of gating dispatch on it
+        # autotune targets the split kernel
         self.kernel = self.split_jit
         self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
@@ -632,14 +630,11 @@ class GQADecodePagedKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         block_N = self._supported_block_ns
         block_H = [64]
-        num_split = [1, 2, 4, 8]
+        num_split = [2, 4, 8]
         num_stages = [1, 2, 3]
         threads = [128]
         _configs = list(itertools.product(block_N, block_H, num_split, num_stages, threads))
 
-        # Every split keeps at least one full KV tile, so the autotuner never
-        # times a distribution the runtime cannot run; num_split=1 lets it
-        # compare the unsplit strategy, which degenerates to no-split.
         configs = [
             {
                 "block_N": c[0],
@@ -649,7 +644,6 @@ class GQADecodePagedKernel(Kernel):
                 "threads": c[4],
             }
             for c in _configs
-            if c[2] <= max(1, self.seqlen_kv // c[0])
         ]
         return configs
 
@@ -663,18 +657,16 @@ class GQADecodePagedKernel(Kernel):
     ):
         block_H = self.config["block_H"]
         block_N = self.config["block_N"]
+        num_split = self.config["num_split"]
         num_stages = self.config["num_stages"]
         threads = self.config["threads"]
 
+        # Dispatch: use no-split for short sequences where splitting is not beneficial
         real_max = (
             real_seqlen_kv.max().item() if real_seqlen_kv.dim() > 0 else real_seqlen_kv.item()
         )
-        # The tuned num_split is a ceiling: shrink it until every split keeps
-        # one full KV tile of the longest sequence. 1 means no-split.
-        num_split = _effective_num_split(self.config["num_split"], block_N, real_max)
-
-        # Dispatch: no-split for sequences too short to give each split a tile
-        if num_split == 1:
+        threshold = num_split * block_N
+        if real_max < threshold:
             return _gqa_decode_paged_no_split_op(
                 self.batch,
                 self.heads,
