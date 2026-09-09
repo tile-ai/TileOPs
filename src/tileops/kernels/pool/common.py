@@ -37,7 +37,6 @@ class WindowSpan(NamedTuple):
 
     @property
     def vectors(self) -> int:
-        """Full-width loads the staging pass issues over one row."""
         return self.span // self.vector_elems
 
 
@@ -57,9 +56,8 @@ def window_span(
 ) -> WindowSpan:
     """The stretch of a row a block stages to cover ``tile_outputs`` outputs.
 
-    A group of ``vector_elems`` is loaded as one, so it has to sit wholly inside the row
-    or wholly outside it. The width is narrowed until the head, the row end and *step*
-    all divide it.
+    A group of ``vector_elems`` is loaded as one, so the width is narrowed until the
+    head, the row end and *step* all divide it and no group straddles the row's edge.
 
     Args:
         tile_outputs: Outputs one block covers.

@@ -27,6 +27,7 @@ from tileops.kernels.pool import (
 from tileops.kernels.pool.avg_pool1d import _WindowStaging
 from tileops.kernels.pool.common import pool_output_dim, window_span
 from tileops.kernels.pool.max_pool1d import _plan as _max_pool1d_plan
+from tileops.kernels.pool.max_pool1d import _Shape as _MaxPool1dShape
 from tileops.ops import (
     AdaptiveAvgPool2dFwdOp,
     AdaptiveMaxPool2dFwdOp,
@@ -615,7 +616,8 @@ def test_max_pool1d_row_reduce_takes_no_tap_past_the_row(l_in: int, kernel_l: in
     PyTorch pads the missing taps with ``-inf`` and still emits one output -- and the
     taps past the row's end would then read the row after it.
     """
-    plan = _max_pool1d_plan(l_in, kernel_l, kernel_l, 0, 1, True, "float16", False)
+    shape = _MaxPool1dShape(8, l_in, kernel_l, kernel_l, 0, 1, "float16")
+    plan = _max_pool1d_plan(shape, True, False)
     assert plan.out_l == 1
     assert not plan.always_in_bounds
     assert plan.body != "rowreduce"
