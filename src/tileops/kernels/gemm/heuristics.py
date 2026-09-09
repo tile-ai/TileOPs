@@ -44,6 +44,7 @@ from typing import Optional
 __all__ = [
     "SWAP_AB_MPAD",
     "best_config",
+    "fp8_ws_config",
     "gemv_config",
     "small_batch_config",
     "swap_ab_grid_underfills",
@@ -53,6 +54,9 @@ _SMEM_BUDGET = 227 * 1024
 _MAX_ACCUM_REGS = 200
 
 TINY_M_BLOCK_N = 128
+
+# Shortest K slice the FP8 split-K path pays for.
+_FP8_MIN_SLICE_K_TILES = 12
 
 _SWAP_AB_BLOCK_NN = 64
 SWAP_AB_MPAD = 8
@@ -423,3 +427,63 @@ def small_batch_config(n: int, k: int, sm_count: int) -> dict:
     if n >= 28 * sm_count and k_iters >= 12:
         cfg["num_stages"] = 2
     return cfg
+
+
+def _fp8_ws_stages(m: int, block_n: int, block_scaled: bool) -> int:
+    """Deepest ring the SMEM budget allows for one warp-specialized FP8 tile.
+
+    A stage holds two 64-row ``A`` halves, one ``block_n`` ``B`` tile, and the
+    block128 scale vectors when staged. The epilogue's two staging tiles are
+    live alongside the ring, and exist only for ``m`` over one consumer's half.
+    """
+    per_stage = (2 * 64 + block_n) * 128 + (block_scaled * (128 + block_n) * 4)
+    epilogue = 2 * 64 * block_n * 2 if m > 64 else 0
+    return (_SMEM_BUDGET - epilogue) // per_stage
+
+
+def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> dict:
+    """Tile, ring depth and K split for the warp-specialized FP8 GEMM.
+
+    ``block_m`` is fixed at 128 by the two-consumer split, so the tile freedom
+    is ``block_n``, over ``{64, 128}``. 256 spills: its accumulator and scaled
+    partial together want 256 registers per thread.
+
+    - ``block_n``: 128, except where that grid does not fill one wave, which
+      leaves SMs idle for the whole launch. The narrow tile doubles the grid,
+      and the re-read of ``A`` it costs stays in L2. At ``m <= 8`` the ``A``
+      tile is mostly padding and the ``B`` re-read decides instead, so the wide
+      tile wins even under a short grid.
+    - ring depth: the deepest the budget allows, except in block128, where a
+      K-step ends in a promotion the next WGMMA cannot start under. There the
+      ring covers nothing beyond the fill, and 4 stages is enough — 3 over a
+      long K axis, 5 over a short one or a weight stream.
+    - split-K: only where the sliced grid still fits one wave and every slice
+      keeps enough K-tiles to amortize the fill and the fp32 workspace.
+    """
+    block_n = 128 if m <= 8 or -(-m // 128) * -(-n // 128) >= sm_count else 64
+    k_iters = -(-k // 128)
+    deepest = _fp8_ws_stages(m, block_n, block_scaled)
+    if not block_scaled or m <= 8:
+        num_stages = deepest
+    elif block_n == 64 or k_iters <= 12:
+        num_stages = min(5, deepest)
+    elif k_iters >= 128:
+        num_stages = 3
+    else:
+        num_stages = 4
+    tiles = -(-m // 128) * -(-n // block_n)
+    split_k = 1
+    for candidate in (4, 2):
+        if (
+            tiles * candidate <= sm_count
+            and k_iters % candidate == 0
+            and k_iters // candidate >= _FP8_MIN_SLICE_K_TILES
+        ):
+            split_k = candidate
+            break
+    return {
+        "block_n": block_n,
+        "num_stages": num_stages,
+        "group_size_m": 8,
+        "split_k": split_k,
+    }

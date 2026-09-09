@@ -396,6 +396,28 @@ class GemmFp8Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-fp8-e4m3-per-tensor-gemv",
                 ),
+                pytest.param(
+                    128,
+                    256,
+                    6144,
+                    torch.float8_e4m3fn,
+                    "block128",
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp8-e4m3-block128-split-k",
+                ),
+                pytest.param(
+                    128,
+                    256,
+                    6144,
+                    torch.float8_e4m3fn,
+                    "per_tensor",
+                    torch.bfloat16,
+                    True,
+                    marks=pytest.mark.full,
+                    id="full-fp8-e4m3-per-tensor-split-k-bias",
+                ),
             ],
         ),
     ]
@@ -514,30 +536,36 @@ def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
 
 
 @pytest.mark.parametrize(
-    ("shape", "expected_tile"),
+    ("shape", "expected"),
     [
         pytest.param(
             (4096, 2112, 7168),
-            (128, 64),
+            (128, 4),
             marks=pytest.mark.smoke,
             id="prefill-gate-up",
         ),
         pytest.param(
-            (4096, 4096, 7168),
-            (64, 128),
+            (128, 7168, 2048),
+            (64, 5),
             marks=pytest.mark.full,
-            id="prefill-attn-proj",
+            id="decode-grid-underfills",
         ),
         pytest.param(
-            (4096, 7168, 2048),
-            (128, 128),
+            (8, 7168, 2048),
+            (128, 6),
             marks=pytest.mark.full,
-            id="prefill-down-default",
+            id="tiny-m-widens-the-tile",
+        ),
+        pytest.param(
+            (4096, 7168, 16384),
+            (128, 3),
+            marks=pytest.mark.full,
+            id="long-k-shallow-ring",
         ),
     ],
 )
 def test_gemm_fp8_block128_default_config(
-    shape: tuple[int, int, int], expected_tile: tuple[int, int]
+    shape: tuple[int, int, int], expected: tuple[int, int]
 ) -> None:
     kernel = GemmFp8BlockScaledKernel(
         *shape,
@@ -545,7 +573,7 @@ def test_gemm_fp8_block128_default_config(
         out_dtype=torch.bfloat16,
     )
 
-    assert (kernel.config["block_m"], kernel.config["block_n"]) == expected_tile
+    assert (kernel.config["block_n"], kernel.config["num_stages"]) == expected
 
 
 @pytest.mark.smoke

@@ -12,6 +12,7 @@ from tileops.utils import get_sm_count, str2dtype
 from .heuristics import (
     SWAP_AB_MPAD,
     best_config,
+    fp8_ws_config,
     gemv_config,
     small_batch_config,
     swap_ab_grid_underfills,
@@ -19,6 +20,11 @@ from .heuristics import (
 
 _CONSUMER_BAR_WG0 = 8
 _CONSUMER_BAR_WG1 = 9
+
+# Fixed by the two-consumer split and by the block128 scale grid; not tunable.
+_FP8_WS_BLOCK_M = 128
+_FP8_WS_HALF_M = _FP8_WS_BLOCK_M // 2
+_FP8_WS_BLOCK_K = 128
 
 
 def _tma_misalignment(
@@ -72,8 +78,28 @@ __all__ = [
 ]
 
 
-class GemmFp8EpilogueKernel(Kernel):
-    """Simple TileLang FP8 GEMM for per-tensor scales."""
+def _fp8_ws_refusal(m: int, n: int, k: int, dtype: torch.dtype) -> Optional[str]:
+    """Why the warp-specialized FP8 kernel cannot serve this call, or ``None``.
+
+    It loads through TMA, and its epilogue releases a ring slot the mainloop
+    named, so it needs at least one K-tile. The fallback carries neither.
+    """
+    if dtype != torch.float8_e4m3fn:
+        return f"the warp-specialized FP8 kernel is e4m3-only, got {dtype}"
+    if k == 0:
+        return "the warp-specialized mainloop has no K-tile to run at k=0"
+    return _tma_misalignment(m, n, k, dtype, trans_a=False, trans_b=True)
+
+
+class _GemmFp8Kernel(Kernel):
+    """Shared body of the two FP8 GEMM kernels; ``BLOCK_SCALED`` picks the scale grid.
+
+    Takes :func:`_gemm_fp8_ws_kernel`, or :func:`_gemm_fp8_kernel` on a call
+    :func:`_fp8_ws_refusal` rejects.
+    """
+
+    # Whether this kernel reads block128 scale grids rather than per-tensor scalars.
+    BLOCK_SCALED = False
 
     def __init__(
         self,
@@ -84,17 +110,65 @@ class GemmFp8EpilogueKernel(Kernel):
         out_dtype: torch.dtype,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.m = m
         self.n = n
         self.k = k
         self.dtype = dtype
         self.out_dtype = out_dtype
-        self.kernel = _gemm_fp8_kernel(
-            m, n, k, self.dtype_str, self.out_dtype_str, block_scaled=False
-        )
+        self.sm_count = get_sm_count(self.device_index)
+        self.ws_refusal = _fp8_ws_refusal(m, n, k, dtype)
+        self.kernel = self._builder()
         self.init_config(config, tune)
+        self._unused_bias: Optional[torch.Tensor] = None
+
+    def _builder(self) -> Callable:
+        if self.ws_refusal is None:
+            return _gemm_fp8_ws_kernel(
+                self.m,
+                self.n,
+                self.k,
+                self.dtype_str,
+                self.out_dtype_str,
+                self.BLOCK_SCALED,
+                has_bias=False,
+                sm_count=self.sm_count,
+            )
+        return _gemm_fp8_kernel(
+            self.m, self.n, self.k, self.dtype_str, self.out_dtype_str, self.BLOCK_SCALED
+        )
+
+    def _run_split_k(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        scale_a: torch.Tensor,
+        scale_b: torch.Tensor,
+        bias: Optional[torch.Tensor],
+        split_k: int,
+        tile_config: dict,
+    ) -> torch.Tensor:
+        """Run the sliced mainloop and reduce its fp32 workspace into the output."""
+        mainloop, reduce = _fp8_ws_splitk_pair(
+            self.m,
+            self.n,
+            self.k,
+            self.dtype_str,
+            self.out_dtype_str,
+            self.BLOCK_SCALED,
+            bias is not None,
+            split_k,
+            tile_config["block_n"],
+            tile_config["num_stages"],
+            tile_config["group_size_m"],
+        )
+        slices = torch.empty((split_k, self.m, self.n), dtype=torch.float32, device=a.device)
+        c = torch.empty((self.m, self.n), dtype=self.out_dtype, device=a.device)
+        mainloop(a, b, scale_a, scale_b, self._bias_operand(bias, a), slices)
+        reduce(slices, c)
+        return c
 
     @property
     def out_dtype_str(self) -> str:
@@ -102,6 +176,8 @@ class GemmFp8EpilogueKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        if self.ws_refusal is None:
+            return fp8_ws_config(self.m, self.n, self.k, self.sm_count, self.BLOCK_SCALED)
         return {
             "block_m": 128,
             "block_n": 128,
@@ -110,78 +186,13 @@ class GemmFp8EpilogueKernel(Kernel):
             "threads": 256,
         }
 
-    def forward(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if self.dtype != torch.float8_e4m3fn:
-            raise NotImplementedError(
-                f"GemmFp8EpilogueKernel only supports torch.float8_e4m3fn, got {self.dtype}"
-            )
-        compiled = _gemm_fp8_kernel(
-            self.m,
-            self.n,
-            self.k,
-            self.dtype_str,
-            self.out_dtype_str,
-            block_scaled=False,
-            has_bias=bias is not None,
-        )(**self.config)
+    def _bias_operand(self, bias: Optional[torch.Tensor], like: torch.Tensor) -> torch.Tensor:
+        """The bias operand, or a one-element stand-in the no-bias build never reads."""
         if bias is not None:
-            return compiled(a, b, scale_a, scale_b, bias)
-        return compiled(a, b, scale_a, scale_b)
-
-
-class GemmFp8BlockScaledKernel(Kernel):
-    """Simple TileLang FP8 GEMM for K-block scales."""
-
-    def __init__(
-        self,
-        m: int,
-        n: int,
-        k: int,
-        dtype: torch.dtype,
-        out_dtype: torch.dtype,
-        config: Optional[dict] = None,
-        tune: bool = False,
-    ) -> None:
-        super().__init__()
-        self.m = m
-        self.n = n
-        self.k = k
-        self.dtype = dtype
-        self.out_dtype = out_dtype
-        self.kernel = _gemm_fp8_kernel(
-            m, n, k, self.dtype_str, self.out_dtype_str, block_scaled=True
-        )
-        self.init_config(config, tune)
-
-    @property
-    def out_dtype_str(self) -> str:
-        return self.dtype_to_str(self.out_dtype)
-
-    @property
-    def default_config(self) -> dict:
-        # Block scaling keeps both the unscaled WGMMA fragment and the scaled
-        # accumulator live. Narrow one output axis on the register-bound prefill
-        # shapes where the additional CTAs recover occupancy.
-        if (self.m, self.n, self.k) == (4096, 2112, 7168):
-            block_m, block_n = 128, 64
-        elif (self.m, self.n, self.k) == (4096, 4096, 7168):
-            block_m, block_n = 64, 128
-        else:
-            block_m, block_n = 128, 128
-        return {
-            "block_m": block_m,
-            "block_n": block_n,
-            "block_k": 128,
-            "num_stages": 3,
-            "threads": 256,
-        }
+            return bias
+        if self._unused_bias is None or self._unused_bias.device != like.device:
+            self._unused_bias = torch.zeros(1, dtype=self.out_dtype, device=like.device)
+        return self._unused_bias
 
     def forward(
         self,
@@ -193,20 +204,75 @@ class GemmFp8BlockScaledKernel(Kernel):
     ) -> torch.Tensor:
         if self.dtype != torch.float8_e4m3fn:
             raise NotImplementedError(
-                f"GemmFp8BlockScaledKernel only supports torch.float8_e4m3fn, got {self.dtype}"
+                f"{type(self).__name__} only supports torch.float8_e4m3fn, got {self.dtype}"
             )
+        if self.ws_refusal is None:
+            tile_config = {key: value for key, value in self.config.items() if key != "split_k"}
+            split_k = self.config.get("split_k", 1)
+            if split_k > 1:
+                return self._run_split_k(a, b, scale_a, scale_b, bias, split_k, tile_config)
+            builder = self.kernel
+            if bias is not None:
+                builder = _gemm_fp8_ws_kernel(
+                    self.m,
+                    self.n,
+                    self.k,
+                    self.dtype_str,
+                    self.out_dtype_str,
+                    self.BLOCK_SCALED,
+                    has_bias=True,
+                    sm_count=self.sm_count,
+                )
+            return builder(**tile_config)(a, b, scale_a, scale_b, self._bias_operand(bias, a))
         compiled = _gemm_fp8_kernel(
             self.m,
             self.n,
             self.k,
             self.dtype_str,
             self.out_dtype_str,
-            block_scaled=True,
+            self.BLOCK_SCALED,
             has_bias=bias is not None,
         )(**self.config)
         if bias is not None:
             return compiled(a, b, scale_a, scale_b, bias)
         return compiled(a, b, scale_a, scale_b)
+
+
+class GemmFp8EpilogueKernel(_GemmFp8Kernel):
+    """FP8 NT GEMM for per-tensor scales; the two scalars land in the epilogue."""
+
+    BLOCK_SCALED = False
+
+
+class GemmFp8BlockScaledKernel(_GemmFp8Kernel):
+    """FP8 NT GEMM for block128 scale grids; each K-step's partial is scaled and folded in."""
+
+    BLOCK_SCALED = True
+
+
+@functools.lru_cache(maxsize=32)
+def _fp8_ws_splitk_pair(
+    m: int,
+    n: int,
+    k: int,
+    dtype: str,
+    out_dtype: str,
+    block_scaled: bool,
+    has_bias: bool,
+    split_k: int,
+    block_n: int,
+    num_stages: int,
+    group_size_m: int,
+) -> tuple[Callable, Callable]:
+    """The compiled (mainloop, reduce) pair for one split-K configuration.
+
+    Resolved together so the host is not building the second launch while the
+    first is already draining.
+    """
+    mainloop = _gemm_fp8_ws_splitk_kernel(
+        m, n, k, dtype, out_dtype, block_scaled, has_bias, split_k=split_k
+    )(block_n, num_stages, group_size_m)
+    return mainloop, _splitk_reduce_kernel(split_k, m, n, out_dtype)()
 
 
 @functools.lru_cache(maxsize=32)
@@ -428,6 +494,780 @@ def _gemm_fp8_kernel(
         return _gemm_fp8_bias_main if has_bias else _gemm_fp8_main
 
     return _gemm_fp8_func
+
+
+@T.macro
+def _fp8_ws_tile_id(flat_id, mt, nt, *, group_size_m: int, num_pid_m: int, num_pid_n: int):
+    """Write the grouped-rasterization (m, n) tile coordinates of a flat tile id."""
+    gin = T.int32(group_size_m * num_pid_n)
+    gid = flat_id // gin
+    first_m = gid * T.int32(group_size_m)
+    gsize = T.min(T.int32(group_size_m), T.int32(num_pid_m) - first_m)
+    mt[0] = first_m + (flat_id % gin) % gsize
+    nt[0] = (flat_id % gin) // gsize
+
+
+@T.macro
+def _fp8_ws_stage(
+    a,
+    b,
+    scale_a,
+    scale_b,
+    a_top,
+    a_bot,
+    b_smem,
+    sa_stage,
+    sb_stage,
+    ab_full,
+    slot,
+    kb,
+    m_start,
+    n_start,
+    *,
+    m: int,
+    n: int,
+    block_n: int,
+    block_scaled: bool,
+):
+    """One K-step of the producer: the step's three TMA boxes and its two scale vectors."""
+    half_m = _FP8_WS_HALF_M
+    block_m = _FP8_WS_BLOCK_M
+    ks = kb * _FP8_WS_BLOCK_K
+    T.tma_copy(
+        a[m_start : m_start + half_m, ks : ks + _FP8_WS_BLOCK_K],
+        a_top[slot, :, :],
+        barrier=ab_full[slot],
+    )
+    T.tma_copy(
+        a[m_start + half_m : m_start + block_m, ks : ks + _FP8_WS_BLOCK_K],
+        a_bot[slot, :, :],
+        barrier=ab_full[slot],
+    )
+    T.tma_copy(
+        b[n_start : n_start + block_n, ks : ks + _FP8_WS_BLOCK_K],
+        b_smem[slot, :, :],
+        barrier=ab_full[slot],
+    )
+    if block_scaled:
+        for i in T.Parallel(block_m):
+            sa_stage[slot, i] = scale_a[T.min(m_start + i, m - 1), kb]
+        for j in T.Parallel(block_n):
+            sb_stage[slot, j] = scale_b[T.min(n_start + j, n - 1), kb]
+        T.fence_proxy_async()
+    T.barrier_arrive(ab_full[slot])
+
+
+@T.macro
+def _fp8_ws_scaled_step(
+    a_smem,
+    b_smem,
+    sa_stage,
+    sb_stage,
+    ab_full,
+    ab_empty,
+    acc,
+    part,
+    sa_f,
+    sb_f,
+    slot,
+    phase,
+    *,
+    row_base: int,
+    block_n: int,
+):
+    """One K-step of a block128 consumer: WGMMA into a fresh accumulator, then promote it.
+
+    Both scale vectors are copied out of the step's ring slot into fragments,
+    which keeps the promotion register-local. ``row_base`` is this consumer's
+    offset into the staged ``A`` row scales.
+    """
+    T.barrier_wait(ab_full[slot], phase)
+    T.wgmma_gemm(
+        a_smem[slot, :, :],
+        b_smem[slot, :, :],
+        part,
+        transpose_B=True,
+        policy=T.GemmWarpPolicy.FullRow,
+        clear_accum=True,
+    )
+    T.copy(sa_stage[slot, row_base : row_base + _FP8_WS_HALF_M], sa_f)
+    T.copy(sb_stage[slot, :], sb_f)
+    T.wait_wgmma(0)
+    for i, j in T.Parallel(_FP8_WS_HALF_M, block_n):
+        acc[i, j] += part[i, j] * sa_f[i] * sb_f[j]
+    T.barrier_arrive(ab_empty[slot])
+
+
+@T.macro
+def _fp8_ws_plain_step(a_smem, b_smem, ab_full, ab_empty, acc, prev, slot, phase, ki):
+    """One K-step of a per-tensor consumer: WGMMA accumulates, the previous slot is released.
+
+    The release trails by one step because step ``ki``'s WGMMA still reads slot
+    ``ki``; ``prev`` carries the slot the next release belongs to.
+    """
+    T.barrier_wait(ab_full[slot], phase)
+    T.wgmma_gemm(
+        a_smem[slot, :, :],
+        b_smem[slot, :, :],
+        acc,
+        transpose_B=True,
+        policy=T.GemmWarpPolicy.FullRow,
+        clear_accum=(ki == 0),
+    )
+    if ki > 0:
+        T.wait_wgmma(1)
+        T.barrier_arrive(ab_empty[prev[0]])
+    prev[0] = slot
+
+
+@T.macro
+def _fp8_ws_plain_drain(ab_empty, acc, prev, scale_a, scale_b, *, num_regs: int, block_n: int):
+    """Close a per-tensor consumer's mainloop and apply the two scalars."""
+    T.wait_wgmma(0)
+    T.barrier_arrive(ab_empty[prev[0]])
+    T.warpgroup_fence_operand(acc, num_regs=num_regs)
+    for i, j in T.Parallel(_FP8_WS_HALF_M, block_n):
+        acc[i, j] *= scale_a[0, 0] * scale_b[0, 0]
+
+
+@T.macro
+def _fp8_ws_epilogue(
+    c,
+    bias,
+    acc,
+    out,
+    c_smem,
+    m_start,
+    n_start,
+    rows,
+    cols,
+    *,
+    bar: int,
+    block_n: int,
+    n: int,
+    out_dtype: str,
+    has_bias: bool,
+    stage_store: bool,
+):
+    """Cast one consumer's tile and store it: one TMA box when full, elements otherwise.
+
+    ``stage_store`` is False where no row tile can be full — every ``m`` inside
+    one consumer's half — and the staging tile is then not allocated.
+    """
+    half_m = _FP8_WS_HALF_M
+    if has_bias:
+        for i, j in T.Parallel(half_m, block_n):
+            out[i, j] = T.cast(acc[i, j], out_dtype) + bias[T.min(n_start + j, n - 1)]
+    else:
+        T.copy(acc, out)
+    if not stage_store:
+        if rows > T.int32(0):
+            for i, j in T.Parallel(half_m, block_n):
+                if i < rows and j < cols:
+                    c[m_start + i, n_start + j] = out[i, j]
+    elif rows == T.int32(half_m) and cols == T.int32(block_n):
+        T.sync_threads(barrier_id=bar, arrive_count=128)
+        T.copy(out, c_smem)
+        T.fence_proxy_async()
+        T.sync_threads(barrier_id=bar, arrive_count=128)
+        T.copy(c_smem, c[m_start, n_start])
+    elif rows > T.int32(0):
+        for i, j in T.Parallel(half_m, block_n):
+            if i < rows and j < cols:
+                c[m_start + i, n_start + j] = out[i, j]
+
+
+@functools.lru_cache(maxsize=32)
+def _gemm_fp8_ws_kernel(
+    m: int,
+    n: int,
+    k: int,
+    dtype: str,
+    out_dtype: str,
+    block_scaled: bool,
+    has_bias: bool,
+    *,
+    sm_count: int,
+) -> Callable:
+    """Warp-specialized FP8 NT GEMM for Hopper: 1 producer + 2 consumer warpgroups.
+
+    Same split-A / shared-B layout as :func:`_gemm_coop2_kernel`: a producer
+    warpgroup issues the TMA loads, two consumer warpgroups each own 64 of the
+    tile's 128 rows and run their own WGMMA over a shared ``B`` ring, and the
+    persistent grid sweeps a grouped tile order for L2 reuse.
+
+    Under block128 scaling the producer also stages the K-step's ``A`` row
+    scales and ``B`` column scales into that step's ring slot, and the consumer
+    folds a fresh WGMMA accumulator in as
+    ``acc += partial * scale_a[row] * scale_b[col]``. The staging is what makes
+    that affordable: a thread holds ``block_n / 4`` distinct output columns, and
+    reading their scales from global inside the mainloop is that many
+    uncoalesced sectors per K-step.
+
+    Per-tensor scaling has no such step: WGMMA accumulates across the whole K
+    axis and the two scalars land in the epilogue.
+
+    ``M``, ``N`` and ``K`` tails need no predicate on the load side: a TMA box
+    past the end of the tensor is zero-filled, so a K tail contributes a zero
+    term under any scale, and the epilogue predicates the store.
+
+    Args:
+        m: Rows of ``A`` / ``C``.
+        n: Columns of ``op(B)`` / ``C``.
+        k: Contraction dim.
+        dtype: FP8 operand dtype string.
+        out_dtype: Output dtype string.
+        block_scaled: True for block128 scale grids, False for per-tensor scalars.
+        has_bias: Whether the compiled function takes a ``[n]`` bias operand.
+        sm_count: Persistent grid width — the device SM count. Part of the cache
+            key so a kernel built for one GPU is never reused on another.
+
+    Returns:
+        A ``@tilelang.jit`` factory; calling it with ``(block_n, num_stages,
+        group_size_m)`` returns the compiled ``prim_func``.
+    """
+    accum_dtype = "float"
+    block_m = _FP8_WS_BLOCK_M
+    block_k = _FP8_WS_BLOCK_K
+    scale_k = (k + 127) // 128
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={"tl.disable_warp_specialized": True},
+        compile_flags=["-O3", "-DENABLE_BF16", "-DENABLE_FP8"],
+    )
+    def _gemm_fp8_ws_func(
+        block_n: int = 128,
+        num_stages: int = 4,
+        group_size_m: int = 8,
+    ) -> Callable:
+        half_m = block_m // 2
+        nr = (half_m * block_n) // 128
+        num_pid_m = -(-m // block_m)
+        num_pid_n = -(-n // block_n)
+        total_tiles = num_pid_m * num_pid_n
+        grid = min(sm_count, total_tiles)
+        max_waves = -(-total_tiles // grid) + 1
+        k_iters = -(-k // block_k)
+        scale_a_shape = (m, scale_k) if block_scaled else (1, 1)
+        scale_b_shape = (n, scale_k) if block_scaled else (1, 1)
+        bias_shape = (n,) if has_bias else (1,)
+        stage_rows = num_stages if block_scaled else 1
+        stage_store = m > half_m
+        store_rows = half_m if stage_store else 1
+
+        @T.prim_func
+        def _gemm_fp8_ws_main(
+            a: T.Tensor((m, k), dtype),  # type: ignore
+            b: T.Tensor((n, k), dtype),  # type: ignore
+            scale_a: T.Tensor(scale_a_shape, "float32"),  # type: ignore
+            scale_b: T.Tensor(scale_b_shape, "float32"),  # type: ignore
+            bias: T.Tensor(bias_shape, out_dtype),  # type: ignore
+            c: T.Tensor((m, n), out_dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(grid, threads=384) as (pid,):
+                a_top = T.alloc_shared((num_stages, half_m, block_k), dtype)
+                a_bot = T.alloc_shared((num_stages, half_m, block_k), dtype)
+                b_smem = T.alloc_shared((num_stages, block_n, block_k), dtype)
+                c_smem_0 = T.alloc_shared((store_rows, block_n), out_dtype)
+                c_smem_1 = T.alloc_shared((store_rows, block_n), out_dtype)
+                sa_stage = T.alloc_shared((stage_rows, block_m), accum_dtype)
+                sb_stage = T.alloc_shared((stage_rows, block_n), accum_dtype)
+                acc_0 = T.alloc_fragment((half_m, block_n), accum_dtype)
+                acc_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
+                part_0 = T.alloc_fragment((half_m, block_n), accum_dtype)
+                part_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
+                out_0 = T.alloc_fragment((half_m, block_n), out_dtype)
+                out_1 = T.alloc_fragment((half_m, block_n), out_dtype)
+                sa_0 = T.alloc_fragment((half_m,), accum_dtype)
+                sa_1 = T.alloc_fragment((half_m,), accum_dtype)
+                sb_0 = T.alloc_fragment((block_n,), accum_dtype)
+                sb_1 = T.alloc_fragment((block_n,), accum_dtype)
+
+                layouts = {
+                    a_top: tilelang.layout.make_swizzled_layout(a_top),
+                    a_bot: tilelang.layout.make_swizzled_layout(a_bot),
+                    b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                }
+                if stage_store:
+                    layouts[c_smem_0] = tilelang.layout.make_swizzled_layout(c_smem_0)
+                    layouts[c_smem_1] = tilelang.layout.make_swizzled_layout(c_smem_1)
+                T.annotate_layout(layouts)
+
+                ab_full = T.alloc_barrier([128] * num_stages)
+                ab_empty = T.alloc_barrier([256] * num_stages)
+
+                gi_prod = T.alloc_var("int32", init=0)
+                gi_cons_0 = T.alloc_var("int32", init=0)
+                gi_cons_1 = T.alloc_var("int32", init=0)
+                ps0 = T.alloc_local((1,), "int32")
+                ps1 = T.alloc_local((1,), "int32")
+                mt = T.alloc_local((1,), "int32")
+                nt = T.alloc_local((1,), "int32")
+
+                tx = T.get_thread_binding()
+
+                if tx < 128:
+                    T.dec_max_nreg(24)
+                    for w in T.serial(max_waves):
+                        flat_id = T.int32(grid) * w + pid
+                        if flat_id < total_tiles:
+                            _fp8_ws_tile_id(
+                                flat_id,
+                                mt,
+                                nt,
+                                group_size_m=group_size_m,
+                                num_pid_m=num_pid_m,
+                                num_pid_n=num_pid_n,
+                            )
+                            m_start = mt[0] * block_m
+                            n_start = nt[0] * block_n
+                            for ki in T.Pipelined(k_iters, num_stages=0):
+                                slot = gi_prod % num_stages
+                                T.barrier_wait(ab_empty[slot], ((gi_prod // num_stages) & 1) ^ 1)
+                                _fp8_ws_stage(
+                                    a,
+                                    b,
+                                    scale_a,
+                                    scale_b,
+                                    a_top,
+                                    a_bot,
+                                    b_smem,
+                                    sa_stage,
+                                    sb_stage,
+                                    ab_full,
+                                    slot,
+                                    ki,
+                                    m_start,
+                                    n_start,
+                                    m=m,
+                                    n=n,
+                                    block_n=block_n,
+                                    block_scaled=block_scaled,
+                                )
+                                gi_prod = gi_prod + 1
+
+                elif tx < 256:
+                    T.inc_max_nreg(232)
+                    for w in T.serial(max_waves):
+                        flat_id = T.int32(grid) * w + pid
+                        if flat_id < total_tiles:
+                            _fp8_ws_tile_id(
+                                flat_id,
+                                mt,
+                                nt,
+                                group_size_m=group_size_m,
+                                num_pid_m=num_pid_m,
+                                num_pid_n=num_pid_n,
+                            )
+                            m_start = mt[0] * block_m
+                            n_start = nt[0] * block_n
+                            arows = T.min(T.int32(half_m), T.int32(m) - m_start)
+                            acols = T.min(T.int32(block_n), T.int32(n) - n_start)
+                            if block_scaled:
+                                T.clear(acc_0)
+                                for _ki in T.Pipelined(k_iters, num_stages=0):
+                                    slot = gi_cons_0 % num_stages
+                                    _fp8_ws_scaled_step(
+                                        a_top,
+                                        b_smem,
+                                        sa_stage,
+                                        sb_stage,
+                                        ab_full,
+                                        ab_empty,
+                                        acc_0,
+                                        part_0,
+                                        sa_0,
+                                        sb_0,
+                                        slot,
+                                        (gi_cons_0 // num_stages) & 1,
+                                        row_base=0,
+                                        block_n=block_n,
+                                    )
+                                    gi_cons_0 = gi_cons_0 + 1
+                            else:
+                                for ki in T.Pipelined(k_iters, num_stages=0):
+                                    slot = gi_cons_0 % num_stages
+                                    _fp8_ws_plain_step(
+                                        a_top,
+                                        b_smem,
+                                        ab_full,
+                                        ab_empty,
+                                        acc_0,
+                                        ps0,
+                                        slot,
+                                        (gi_cons_0 // num_stages) & 1,
+                                        ki,
+                                    )
+                                    gi_cons_0 = gi_cons_0 + 1
+                                _fp8_ws_plain_drain(
+                                    ab_empty,
+                                    acc_0,
+                                    ps0,
+                                    scale_a,
+                                    scale_b,
+                                    num_regs=nr,
+                                    block_n=block_n,
+                                )
+                            _fp8_ws_epilogue(
+                                c,
+                                bias,
+                                acc_0,
+                                out_0,
+                                c_smem_0,
+                                m_start,
+                                n_start,
+                                arows,
+                                acols,
+                                bar=_CONSUMER_BAR_WG0,
+                                block_n=block_n,
+                                n=n,
+                                out_dtype=out_dtype,
+                                has_bias=has_bias,
+                                stage_store=stage_store,
+                            )
+
+                else:
+                    T.inc_max_nreg(232)
+                    for w in T.serial(max_waves):
+                        flat_id = T.int32(grid) * w + pid
+                        if flat_id < total_tiles:
+                            _fp8_ws_tile_id(
+                                flat_id,
+                                mt,
+                                nt,
+                                group_size_m=group_size_m,
+                                num_pid_m=num_pid_m,
+                                num_pid_n=num_pid_n,
+                            )
+                            m_start = mt[0] * block_m + half_m
+                            n_start = nt[0] * block_n
+                            brows = T.max(T.int32(0), T.min(T.int32(half_m), T.int32(m) - m_start))
+                            bcols = T.min(T.int32(block_n), T.int32(n) - n_start)
+                            if block_scaled:
+                                T.clear(acc_1)
+                                for _ki in T.Pipelined(k_iters, num_stages=0):
+                                    slot = gi_cons_1 % num_stages
+                                    _fp8_ws_scaled_step(
+                                        a_bot,
+                                        b_smem,
+                                        sa_stage,
+                                        sb_stage,
+                                        ab_full,
+                                        ab_empty,
+                                        acc_1,
+                                        part_1,
+                                        sa_1,
+                                        sb_1,
+                                        slot,
+                                        (gi_cons_1 // num_stages) & 1,
+                                        row_base=half_m,
+                                        block_n=block_n,
+                                    )
+                                    gi_cons_1 = gi_cons_1 + 1
+                            else:
+                                for ki in T.Pipelined(k_iters, num_stages=0):
+                                    slot = gi_cons_1 % num_stages
+                                    _fp8_ws_plain_step(
+                                        a_bot,
+                                        b_smem,
+                                        ab_full,
+                                        ab_empty,
+                                        acc_1,
+                                        ps1,
+                                        slot,
+                                        (gi_cons_1 // num_stages) & 1,
+                                        ki,
+                                    )
+                                    gi_cons_1 = gi_cons_1 + 1
+                                _fp8_ws_plain_drain(
+                                    ab_empty,
+                                    acc_1,
+                                    ps1,
+                                    scale_a,
+                                    scale_b,
+                                    num_regs=nr,
+                                    block_n=block_n,
+                                )
+                            _fp8_ws_epilogue(
+                                c,
+                                bias,
+                                acc_1,
+                                out_1,
+                                c_smem_1,
+                                m_start,
+                                n_start,
+                                brows,
+                                bcols,
+                                bar=_CONSUMER_BAR_WG1,
+                                block_n=block_n,
+                                n=n,
+                                out_dtype=out_dtype,
+                                has_bias=has_bias,
+                                stage_store=stage_store,
+                            )
+
+        return _gemm_fp8_ws_main
+
+    return _gemm_fp8_ws_func
+
+
+@functools.lru_cache(maxsize=32)
+def _gemm_fp8_ws_splitk_kernel(
+    m: int,
+    n: int,
+    k: int,
+    dtype: str,
+    out_dtype: str,
+    block_scaled: bool,
+    has_bias: bool,
+    *,
+    split_k: int,
+) -> Callable:
+    """Split-K variant of the warp-specialized FP8 mainloop (NT).
+
+    Slicing K across ``grid.y`` multiplies the grid by ``split_k`` without
+    changing the bytes any CTA reads, which is what a decode shape needs: one
+    ``block_m`` row tile and few column tiles leave most of the device idle and
+    each resident CTA at its own SM's read bandwidth. Each slice writes an fp32
+    partial tile into ``slices[split_k, m, n]``; :func:`_splitk_reduce_kernel`
+    sums them and casts. Slice 0 carries the bias, so the sum adds it once.
+
+    The mainloop bodies are the macros :func:`_gemm_fp8_ws_kernel` uses; the
+    shell differs — a two-dimensional grid instead of a persistent sweep, and
+    an fp32 workspace instead of the cast-and-store epilogue.
+
+    Args:
+        m: Rows of ``A`` / ``C``.
+        n: Columns of ``op(B)`` / ``C``.
+        k: Contraction dim.
+        dtype: FP8 operand dtype string.
+        out_dtype: Output dtype string, which the bias operand also carries.
+        block_scaled: True for block128 scale grids, False for per-tensor scalars.
+        has_bias: Whether the compiled function takes a ``[n]`` bias operand.
+        split_k: Number of K slices; must divide the block128 K-tile count evenly.
+
+    Returns:
+        A ``@tilelang.jit`` factory; calling it with ``(block_n, num_stages,
+        group_size_m)`` returns the compiled ``prim_func`` producing the fp32
+        workspace.
+    """
+    accum_dtype = "float"
+    block_m = _FP8_WS_BLOCK_M
+    block_k = _FP8_WS_BLOCK_K
+    scale_k = (k + 127) // 128
+    k_iters_total = -(-k // block_k)
+    if k_iters_total % split_k:
+        raise ValueError(
+            f"split_k={split_k} must divide the K-tile count evenly "
+            f"(k={k}, block_k={block_k} -> {k_iters_total} tiles)"
+        )
+
+    @tilelang.jit(
+        pass_configs={"tl.disable_warp_specialized": True},
+        compile_flags=["-O3", "-DENABLE_BF16", "-DENABLE_FP8"],
+    )
+    def _gemm_fp8_ws_splitk_func(
+        block_n: int = 64,
+        num_stages: int = 5,
+        group_size_m: int = 8,
+    ) -> Callable:
+        half_m = block_m // 2
+        nr = (half_m * block_n) // 128
+        num_pid_m = -(-m // block_m)
+        num_pid_n = -(-n // block_n)
+        total_tiles = num_pid_m * num_pid_n
+        k_iters = k_iters_total // split_k
+        scale_a_shape = (m, scale_k) if block_scaled else (1, 1)
+        scale_b_shape = (n, scale_k) if block_scaled else (1, 1)
+        stage_rows = num_stages if block_scaled else 1
+        bias_shape = (n,) if has_bias else (1,)
+
+        @T.prim_func
+        def _gemm_fp8_ws_splitk_main(
+            a: T.Tensor((m, k), dtype),  # type: ignore
+            b: T.Tensor((n, k), dtype),  # type: ignore
+            scale_a: T.Tensor(scale_a_shape, "float32"),  # type: ignore
+            scale_b: T.Tensor(scale_b_shape, "float32"),  # type: ignore
+            bias: T.Tensor(bias_shape, out_dtype),  # type: ignore
+            slices: T.Tensor((split_k, m, n), accum_dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(total_tiles, split_k, threads=384) as (pid, bz):
+                a_top = T.alloc_shared((num_stages, half_m, block_k), dtype)
+                a_bot = T.alloc_shared((num_stages, half_m, block_k), dtype)
+                b_smem = T.alloc_shared((num_stages, block_n, block_k), dtype)
+                sa_stage = T.alloc_shared((stage_rows, block_m), accum_dtype)
+                sb_stage = T.alloc_shared((stage_rows, block_n), accum_dtype)
+                acc_0 = T.alloc_fragment((half_m, block_n), accum_dtype)
+                acc_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
+                part_0 = T.alloc_fragment((half_m, block_n), accum_dtype)
+                part_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
+                sa_0 = T.alloc_fragment((half_m,), accum_dtype)
+                sa_1 = T.alloc_fragment((half_m,), accum_dtype)
+                sb_0 = T.alloc_fragment((block_n,), accum_dtype)
+                sb_1 = T.alloc_fragment((block_n,), accum_dtype)
+
+                T.annotate_layout(
+                    {
+                        a_top: tilelang.layout.make_swizzled_layout(a_top),
+                        a_bot: tilelang.layout.make_swizzled_layout(a_bot),
+                        b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                    }
+                )
+
+                ab_full = T.alloc_barrier([128] * num_stages)
+                ab_empty = T.alloc_barrier([256] * num_stages)
+
+                ps0 = T.alloc_local((1,), "int32")
+                ps1 = T.alloc_local((1,), "int32")
+                mt = T.alloc_local((1,), "int32")
+                nt = T.alloc_local((1,), "int32")
+
+                _fp8_ws_tile_id(
+                    pid,
+                    mt,
+                    nt,
+                    group_size_m=group_size_m,
+                    num_pid_m=num_pid_m,
+                    num_pid_n=num_pid_n,
+                )
+                m_start = mt[0] * block_m
+                n_start = nt[0] * block_n
+                tx = T.get_thread_binding()
+
+                if tx < 128:
+                    T.dec_max_nreg(24)
+                    for ki in T.Pipelined(k_iters, num_stages=0):
+                        slot = ki % num_stages
+                        T.barrier_wait(ab_empty[slot], ((ki // num_stages) & 1) ^ 1)
+                        _fp8_ws_stage(
+                            a,
+                            b,
+                            scale_a,
+                            scale_b,
+                            a_top,
+                            a_bot,
+                            b_smem,
+                            sa_stage,
+                            sb_stage,
+                            ab_full,
+                            slot,
+                            bz * k_iters + ki,
+                            m_start,
+                            n_start,
+                            m=m,
+                            n=n,
+                            block_n=block_n,
+                            block_scaled=block_scaled,
+                        )
+
+                elif tx < 256:
+                    T.inc_max_nreg(232)
+                    arows = T.min(T.int32(half_m), T.int32(m) - m_start)
+                    acols = T.min(T.int32(block_n), T.int32(n) - n_start)
+                    if block_scaled:
+                        T.clear(acc_0)
+                        for ki in T.Pipelined(k_iters, num_stages=0):
+                            _fp8_ws_scaled_step(
+                                a_top,
+                                b_smem,
+                                sa_stage,
+                                sb_stage,
+                                ab_full,
+                                ab_empty,
+                                acc_0,
+                                part_0,
+                                sa_0,
+                                sb_0,
+                                ki % num_stages,
+                                (ki // num_stages) & 1,
+                                row_base=0,
+                                block_n=block_n,
+                            )
+                    else:
+                        for ki in T.Pipelined(k_iters, num_stages=0):
+                            _fp8_ws_plain_step(
+                                a_top,
+                                b_smem,
+                                ab_full,
+                                ab_empty,
+                                acc_0,
+                                ps0,
+                                ki % num_stages,
+                                (ki // num_stages) & 1,
+                                ki,
+                            )
+                        _fp8_ws_plain_drain(
+                            ab_empty,
+                            acc_0,
+                            ps0,
+                            scale_a,
+                            scale_b,
+                            num_regs=nr,
+                            block_n=block_n,
+                        )
+                    if has_bias and bz == 0:
+                        for i, j in T.Parallel(half_m, block_n):
+                            acc_0[i, j] += T.cast(bias[T.min(n_start + j, n - 1)], accum_dtype)
+                    for i, j in T.Parallel(half_m, block_n):
+                        if i < arows and j < acols:
+                            slices[bz, m_start + i, n_start + j] = acc_0[i, j]
+
+                else:
+                    T.inc_max_nreg(232)
+                    brows = T.max(T.int32(0), T.min(T.int32(half_m), T.int32(m) - m_start - half_m))
+                    bcols = T.min(T.int32(block_n), T.int32(n) - n_start)
+                    if block_scaled:
+                        T.clear(acc_1)
+                        for ki in T.Pipelined(k_iters, num_stages=0):
+                            _fp8_ws_scaled_step(
+                                a_bot,
+                                b_smem,
+                                sa_stage,
+                                sb_stage,
+                                ab_full,
+                                ab_empty,
+                                acc_1,
+                                part_1,
+                                sa_1,
+                                sb_1,
+                                ki % num_stages,
+                                (ki // num_stages) & 1,
+                                row_base=half_m,
+                                block_n=block_n,
+                            )
+                    else:
+                        for ki in T.Pipelined(k_iters, num_stages=0):
+                            _fp8_ws_plain_step(
+                                a_bot,
+                                b_smem,
+                                ab_full,
+                                ab_empty,
+                                acc_1,
+                                ps1,
+                                ki % num_stages,
+                                (ki // num_stages) & 1,
+                                ki,
+                            )
+                        _fp8_ws_plain_drain(
+                            ab_empty,
+                            acc_1,
+                            ps1,
+                            scale_a,
+                            scale_b,
+                            num_regs=nr,
+                            block_n=block_n,
+                        )
+                    if has_bias and bz == 0:
+                        for i, j in T.Parallel(half_m, block_n):
+                            acc_1[i, j] += T.cast(bias[T.min(n_start + j, n - 1)], accum_dtype)
+                    for i, j in T.Parallel(half_m, block_n):
+                        if i < brows and j < bcols:
+                            slices[bz, m_start + half_m + i, n_start + j] = acc_1[i, j]
+
+        return _gemm_fp8_ws_splitk_main
+
+    return _gemm_fp8_ws_splitk_func
 
 
 @functools.lru_cache(maxsize=32)
