@@ -473,6 +473,19 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         uses_window = self.window_size_left != -1 or self.window_size_right != -1
         rope_on = self.pos_encoding_mode == "rope"
         uses_decode = seq_len_q == 1 and not uses_window
+        uses_long_generic_decode = (
+            uses_decode
+            and not rope_on
+            and seq_len_kv >= 1024
+            and GQADecodeKernel.high_parallelism_region(
+                batch=batch,
+                heads=heads,
+                heads_kv=heads_kv,
+                dim=dim,
+                dtype=q.dtype,
+                softcap=self.softcap,
+            )
+        )
         uses_bs1_decode = (
             uses_decode
             and batch == 1
@@ -480,6 +493,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
             and dim == 128
             and self.softcap == 0.0
             and 1 <= heads // heads_kv <= 64
+            and not uses_long_generic_decode
         )
         if uses_bs1_decode:
             role = "gqa_dense_decode_bs1"
@@ -559,6 +573,10 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                 heads_kv,
                 dim,
             )
+            if role == "gqa_dense_decode":
+                # Decode may compile one of a finite set of split programs.
+                # Key the capacity tier, not the exact runtime KV length.
+                key += (GQADecodeKernel.split_capacity(seq_len_kv),)
         return self.get_or_build_kernel(role, inputs, key=key, build=build)
 
     def forward(

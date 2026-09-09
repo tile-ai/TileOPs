@@ -12,6 +12,11 @@ from tileops.kernels.attention import (
     GQADenseSlidingWindowKernel,
     GQADenseWsKernel,
 )
+from tileops.kernels.attention.gqa_decode import (
+    _effective_dense_num_split,
+    _gqa_decode_no_split_op,
+    _gqa_decode_split_op,
+)
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
@@ -217,21 +222,33 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
 
 
 @pytest.mark.parametrize(
-    "batch, dtype, seq_lens_kv, rope_layout, rotary_dim, kernel_type",
+    "batch, head_shape, dtype, seq_lens_kv, rope_layout, rotary_dim, kernel_type",
     [
         pytest.param(
             1,
+            (8, 2),
             torch.float16,
             (257, 1057),
             None,
             None,
             GQADecodeBs1Kernel,
-            id="bs1-fp16",
+            id="bs1-fp16-other-head-ratio",
+        ),
+        pytest.param(
+            1,
+            (32, 4),
+            torch.float16,
+            (1024, 1057),
+            None,
+            None,
+            GQADecodeKernel,
+            id="measured-bs1-long-generic",
         ),
         pytest.param(
             2,
+            (8, 2),
             torch.bfloat16,
-            (257, 2051),
+            (257, 511),
             None,
             None,
             GQADecodeKernel,
@@ -239,6 +256,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
         ),
         pytest.param(
             1,
+            (8, 2),
             torch.float16,
             (271,),
             "neox",
@@ -248,6 +266,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
         ),
         pytest.param(
             1,
+            (8, 2),
             torch.float16,
             (1057,),
             "neox",
@@ -257,6 +276,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
         ),
         pytest.param(
             2,
+            (8, 2),
             torch.bfloat16,
             (257,),
             "interleaved",
@@ -269,6 +289,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
 @pytest.mark.smoke
 def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
     batch: int,
+    head_shape: tuple[int, int],
     dtype: torch.dtype,
     seq_lens_kv: tuple[int, ...],
     rope_layout: Optional[str],
@@ -277,7 +298,8 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
 ) -> None:
     if not torch.cuda.is_available() or get_sm_version() != 90:
         pytest.skip("Dense decode requires SM90")
-    heads, heads_kv, dim = 8, 2, 128
+    heads, heads_kv = head_shape
+    dim = 128
     op = GroupedQueryAttentionDenseFwdOp(
         pos_encoding_mode="rope" if rope_layout is not None else "none",
         rotary_dim=rotary_dim,
@@ -322,6 +344,87 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
     kernels = list(op.iter_kernels())
     assert len(kernels) == 1
     assert isinstance(kernels[0], kernel_type)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "num_split, block_N, real_seqlen_kv, expected",
+    [
+        pytest.param(32, 64, 1024, 16, id="issue-shape-clamps-to-tiles"),
+        pytest.param(32, 64, 1000, 8, id="non-candidate-count-rounded-down"),
+        pytest.param(7, 64, 100000, 4, id="non-candidate-ceiling-rounded-down"),
+        pytest.param(16, 128, 1024, 8, id="block-128-clamps"),
+        pytest.param(32, 64, 100, 1, id="short-sequence-no-split"),
+        pytest.param(1, 64, 100000, 1, id="tuned-no-split-stays-no-split"),
+    ],
+)
+def test_gqa_dense_decode_effective_num_split(
+    num_split: int, block_N: int, real_seqlen_kv: int, expected: int
+) -> None:
+    """The tuned num_split is a ceiling shrunk to the runtime KV extent."""
+    assert _effective_dense_num_split(num_split, block_N, real_seqlen_kv) == expected
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("seqlen_kv", [1, 63, 128, 1024])
+def test_gqa_decode_autotune_configs_keep_full_tiles_per_split(seqlen_kv: int) -> None:
+    """Every swept config leaves each split one full KV tile; num_split=1 stays comparable."""
+    if not torch.cuda.is_available() or get_sm_version() not in (80, 89, 90):
+        pytest.skip("GQA decode requires SM80/89/90")
+    kernel = GQADecodeKernel(2, 8, 2, seqlen_kv, 128, dtype=torch.float16)
+    configs = kernel.autotune_configs
+    assert configs, "the sweep must stay non-empty for any positive sequence length"
+    for config in configs:
+        assert config["num_split"] <= max(1, seqlen_kv // config["block_N"])
+    assert any(config["num_split"] == 1 for config in configs)
+
+
+@pytest.mark.smoke
+def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> None:
+    """A tuned num_split the sequence cannot fill shrinks instead of pushing
+    dispatch into the never-tuned no-split kernel (the reported issue)."""
+    if not torch.cuda.is_available() or get_sm_version() not in (80, 89, 90):
+        pytest.skip("GQA decode requires SM80/89/90")
+    batch, heads, heads_kv, dim = 2, 32, 4, 128
+    kernel = GQADecodeKernel(
+        batch,
+        heads,
+        heads_kv,
+        1024,
+        dim,
+        dtype=torch.float16,
+        config={"block_H": 64, "block_N": 64, "num_split": 32, "num_stages": 2, "threads": 128},
+    )
+
+    calls: list[tuple[str, int]] = []
+
+    def split_spy(*args, **kwargs):
+        # num_split is the 12th positional argument of _gqa_decode_split_op
+        calls.append(("split", args[11]))
+        return _gqa_decode_split_op(*args, **kwargs)
+
+    def no_split_spy(*args, **kwargs):
+        calls.append(("no_split", 0))
+        return _gqa_decode_no_split_op(*args, **kwargs)
+
+    monkeypatch.setattr("tileops.kernels.attention.gqa_decode._gqa_decode_split_op", split_spy)
+    monkeypatch.setattr(
+        "tileops.kernels.attention.gqa_decode._gqa_decode_no_split_op", no_split_spy
+    )
+
+    # 1024 tokens fill 16 of the tuned 32 splits; 100 cannot fill two
+    for seq_len_kv, expected in ((1024, ("split", 16)), (100, ("no_split", 0))):
+        q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=torch.float16)
+        k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
+        v = torch.randn_like(k)
+        output = kernel(q, k, v)
+        torch.testing.assert_close(
+            output,
+            _gqa_prefill_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
+            atol=5e-3,
+            rtol=1e-5,
+        )
+        assert calls[-1] == expected
 
 
 @pytest.mark.parametrize(
