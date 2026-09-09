@@ -519,8 +519,7 @@ def test_gemm_fp8_bench(
         except (ImportError, ValueError) as exc:
             print(f"  [skip] flashinfer-fp8-blockscale-sm90: {str(exc).splitlines()[0]}")
         except AssertionError as exc:
-            # Preferred, not selected: a tag whose kernel disagrees with the reference
-            # is dropped rather than taking the op's own numbers down with it.
+            # Preferred, not selected: drop the tag rather than fail the row.
             print(
                 "  [skip] flashinfer-fp8-blockscale-sm90: disagrees with the reference "
                 f"({str(exc).splitlines()[0]})"

@@ -21,8 +21,7 @@ from .heuristics import (
 _CONSUMER_BAR_WG0 = 8
 _CONSUMER_BAR_WG1 = 9
 
-# The warp-specialized FP8 tile: two 64-row consumers, and one 128-element scale block per
-# K-step. Neither is a tunable — the consumer split fixes the first, the scale grid the second.
+# Fixed by the two-consumer split and by the block128 scale grid; not tunable.
 _FP8_WS_BLOCK_M = 128
 _FP8_WS_HALF_M = _FP8_WS_BLOCK_M // 2
 _FP8_WS_BLOCK_K = 128
@@ -82,8 +81,8 @@ __all__ = [
 def _fp8_ws_refusal(m: int, n: int, k: int, dtype: torch.dtype) -> Optional[str]:
     """Why the warp-specialized FP8 kernel cannot serve this call, or ``None``.
 
-    It loads through TMA and its epilogue releases a ring slot the mainloop
-    named. The pipelined fallback carries neither requirement.
+    It loads through TMA, and its epilogue releases a ring slot the mainloop
+    named, so it needs at least one K-tile. The fallback carries neither.
     """
     if dtype != torch.float8_e4m3fn:
         return f"the warp-specialized FP8 kernel is e4m3-only, got {dtype}"
@@ -188,11 +187,7 @@ class _GemmFp8Kernel(Kernel):
         }
 
     def _bias_operand(self, bias: Optional[torch.Tensor], like: torch.Tensor) -> torch.Tensor:
-        """The bias operand, a one-element stand-in when the call has none.
-
-        The no-bias build declares the parameter as one element and compiles
-        every read of it away, but the call still needs a tensor to bind.
-        """
+        """The bias operand, or a one-element stand-in the no-bias build never reads."""
         if bias is not None:
             return bias
         if self._unused_bias is None or self._unused_bias.device != like.device:
@@ -271,8 +266,8 @@ def _fp8_ws_splitk_pair(
 ) -> tuple[Callable, Callable]:
     """The compiled (mainloop, reduce) pair for one split-K configuration.
 
-    Why one call: the two launches sit back to back, so the host must not be
-    resolving the second one in the window between them.
+    Resolved together so the host is not building the second launch while the
+    first is already draining.
     """
     mainloop = _gemm_fp8_ws_splitk_kernel(
         m, n, k, dtype, out_dtype, block_scaled, has_bias, split_k=split_k
@@ -582,9 +577,9 @@ def _fp8_ws_scaled_step(
 ):
     """One K-step of a block128 consumer: WGMMA into a fresh accumulator, then promote it.
 
-    The scale vectors come from the step's ring slot, and both are copied into
-    fragments so the promotion is register-local. ``row_base`` is this
-    consumer's offset into the staged ``A`` row scales.
+    Both scale vectors are copied out of the step's ring slot into fragments,
+    which keeps the promotion register-local. ``row_base`` is this consumer's
+    offset into the staged ``A`` row scales.
     """
     T.barrier_wait(ab_full[slot], phase)
     T.wgmma_gemm(
@@ -607,8 +602,8 @@ def _fp8_ws_scaled_step(
 def _fp8_ws_plain_step(a_smem, b_smem, ab_full, ab_empty, acc, prev, slot, phase, ki):
     """One K-step of a per-tensor consumer: WGMMA accumulates, the previous slot is released.
 
-    The release trails by one step because the WGMMA of step ``ki`` still reads
-    slot ``ki``; ``prev`` carries the slot the next release belongs to.
+    The release trails by one step because step ``ki``'s WGMMA still reads slot
+    ``ki``; ``prev`` carries the slot the next release belongs to.
     """
     T.barrier_wait(ab_full[slot], phase)
     T.wgmma_gemm(
@@ -656,8 +651,8 @@ def _fp8_ws_epilogue(
 ):
     """Cast one consumer's tile and store it: one TMA box when full, elements otherwise.
 
-    ``stage_store`` is False where no row tile can be full, which is every ``m``
-    inside one consumer's half; the staging tile is then dead and not allocated.
+    ``stage_store`` is False where no row tile can be full — every ``m`` inside
+    one consumer's half — and the staging tile is then not allocated.
     """
     half_m = _FP8_WS_HALF_M
     if has_bias:
@@ -704,18 +699,17 @@ def _gemm_fp8_ws_kernel(
     Under block128 scaling the producer also stages the K-step's ``A`` row
     scales and ``B`` column scales into that step's ring slot, and the consumer
     folds a fresh WGMMA accumulator in as
-    ``acc += partial * scale_a[row] * scale_b[col]``. Why the staging: a thread
-    holds ``block_n / 4`` distinct output columns, so reading their scales from
-    global inside the mainloop is that many uncoalesced sectors per K-step, and
-    measured 2.4x the whole kernel on ``4096x7168x2048``.
+    ``acc += partial * scale_a[row] * scale_b[col]``. The staging is what makes
+    that affordable: a thread holds ``block_n / 4`` distinct output columns, and
+    reading their scales from global inside the mainloop is that many
+    uncoalesced sectors per K-step.
 
     Per-tensor scaling has no such step: WGMMA accumulates across the whole K
     axis and the two scalars land in the epilogue.
 
     ``M``, ``N`` and ``K`` tails need no predicate on the load side: a TMA box
-    that runs past the tensor is zero-filled, so a K tail contributes a zero
-    term under any scale, and the epilogue predicates the store. Measured on
-    ``65x129x144`` in both scale modes.
+    past the end of the tensor is zero-filled, so a K tail contributes a zero
+    term under any scale, and the epilogue predicates the store.
 
     Args:
         m: Rows of ``A`` / ``C``.
@@ -1039,9 +1033,9 @@ def _gemm_fp8_ws_splitk_kernel(
     partial tile into ``slices[split_k, m, n]``; :func:`_splitk_reduce_kernel`
     sums them and casts. Slice 0 carries the bias, so the sum adds it once.
 
-    The mainloop bodies are the same macros :func:`_gemm_fp8_ws_kernel` uses;
-    what differs is the shell — a two-dimensional grid instead of a persistent
-    sweep, and an fp32 workspace instead of the cast-and-store epilogue.
+    The mainloop bodies are the macros :func:`_gemm_fp8_ws_kernel` uses; the
+    shell differs — a two-dimensional grid instead of a persistent sweep, and
+    an fp32 workspace instead of the cast-and-store epilogue.
 
     Args:
         m: Rows of ``A`` / ``C``.

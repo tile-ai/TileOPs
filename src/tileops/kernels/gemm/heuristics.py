@@ -55,7 +55,7 @@ _MAX_ACCUM_REGS = 200
 
 TINY_M_BLOCK_N = 128
 
-# Shortest K slice the FP8 split-K path pays for; below it the reduce pass wins back nothing.
+# Shortest K slice the FP8 split-K path pays for.
 _FP8_MIN_SLICE_K_TILES = 12
 
 _SWAP_AB_BLOCK_NN = 64
@@ -433,9 +433,8 @@ def _fp8_ws_stages(m: int, block_n: int, block_scaled: bool) -> int:
     """Deepest ring the SMEM budget allows for one warp-specialized FP8 tile.
 
     A stage holds two 64-row ``A`` halves, one ``block_n`` ``B`` tile, and the
-    block128 scale vectors when they are staged. The epilogue's two staging
-    tiles are live alongside the ring, except at an ``m`` inside one consumer's
-    half, where no row tile can be full and the kernel does not allocate them.
+    block128 scale vectors when staged. The epilogue's two staging tiles are
+    live alongside the ring, and exist only for ``m`` over one consumer's half.
     """
     per_stage = (2 * 64 + block_n) * 128 + (block_scaled * (128 + block_n) * 4)
     epilogue = 2 * 64 * block_n * 2 if m > 64 else 0
@@ -445,24 +444,19 @@ def _fp8_ws_stages(m: int, block_n: int, block_scaled: bool) -> int:
 def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> dict:
     """Tile, ring depth and K split for the warp-specialized FP8 GEMM.
 
-    ``block_m`` is fixed at 128 by the two-consumer split, so the only tile
-    freedom is ``block_n``. 256 is not a candidate: its accumulator and scaled
-    partial together need 256 registers per thread, which spills.
+    ``block_m`` is fixed at 128 by the two-consumer split, so the tile freedom
+    is ``block_n``, over ``{64, 128}``. 256 spills: its accumulator and scaled
+    partial together want 256 registers per thread.
 
-    - ``m <= 8``: a 128-row ``A`` tile is almost entirely padding, so the cost
-      that matters is the number of times the ``B`` panel is re-read. Take the
-      wider tile even though it halves the CTA count.
-    - otherwise, a ``block_n = 128`` grid that does not fill one wave leaves
-      SMs idle for the whole launch; the narrow tile doubles the grid and the
-      re-read of ``A`` it costs stays in L2.
-    - per-tensor ring depth: the deepest the budget allows, because nothing sits
-      between two K-steps and the mainloop only ever waits on the ring.
-    - block128 ring depth: a K-step ends in a promotion the next WGMMA cannot
-      start under, so a deeper ring only spends SMEM. Three exceptions: an ``m``
-      inside one consumer's half, where the shape is a weight stream and the
-      ring is all that covers the read latency; a K axis short enough that the
-      fill is a visible fraction of it; and one long enough that a shallower
-      ring frees the L2 sooner.
+    - ``block_n``: 128, except where that grid does not fill one wave, which
+      leaves SMs idle for the whole launch. The narrow tile doubles the grid,
+      and the re-read of ``A`` it costs stays in L2. At ``m <= 8`` the ``A``
+      tile is mostly padding and the ``B`` re-read decides instead, so the wide
+      tile wins even under a short grid.
+    - ring depth: the deepest the budget allows, except in block128, where a
+      K-step ends in a promotion the next WGMMA cannot start under. There the
+      ring covers nothing beyond the fill, and 4 stages is enough — 3 over a
+      long K axis, 5 over a short one or a weight stream.
     - split-K: only where the sliced grid still fits one wave and every slice
       keeps enough K-tiles to amortize the fill and the fp32 workspace.
     """
