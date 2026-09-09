@@ -204,10 +204,12 @@ GroupedGemmFwdOp:
     func: "tileops.perf.formulas.grouped_gemm_roofline"
 
   source:
-    kernel: tileops/kernels/grouped_gemm/grouped_gemm.py
+    kernel:
+    - tileops/kernels/grouped_gemm/sm90_grouped_gemm.py
+    - tileops/kernels/grouped_gemm/grouped_gemm.py
     kernel_map:
+      sm90_gemm: SM90GroupedGemmKernel
       grouped_gemm_kernel: GroupedGemmKernel
-      grouped_gemm_persistent_3wg_kernel: GroupedGemmPersistent3WGKernel
     op: tileops/ops/gemm/grouped_gemm.py
     test: tests/ops/test_grouped_gemm.py
     bench: benchmarks/ops/bench_grouped_gemm.py

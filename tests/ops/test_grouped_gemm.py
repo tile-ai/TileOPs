@@ -159,23 +159,25 @@ def test_supply_prog_keeps_every_row_in_the_k_loop():
 
 
 @pytest.mark.parametrize(
-    "n, k, transpose_a, transpose_b, expected",
+    "numel, n, k, transpose_a, transpose_b, expected",
     [
-        (4096, 4096, False, True, "grouped_gemm_persistent_3wg_kernel"),
-        (4000, 4096, False, True, "grouped_gemm_kernel"),  # N the tiling misses
-        (4096, 4096, False, False, "grouped_gemm_kernel"),  # NN
-        (4096, 4096, True, False, "grouped_gemm_kernel"),  # TN
+        (4096, 4096, 4096, False, True, "sm90_gemm"),
+        (4096, 4000, 4096, False, True, "sm90_gemm"),  # N off the tile grid still runs
+        (4096, 4096, 4096, False, False, "sm90_gemm"),  # NN
+        (4096, 4096, 4096, True, False, "sm90_gemm"),  # TN
+        (4099, 4096, 4096, True, True, "grouped_gemm_kernel"),  # TT: b's row pitch is the K sum
+        (4096, 4096, 4100, False, True, "grouped_gemm_kernel"),  # K TMA cannot address
     ],
 )
 @pytest.mark.smoke
-def test_selection_prefers_the_persistent_kernel_where_it_applies(
-    n: int, k: int, transpose_a: bool, transpose_b: bool, expected: str
+def test_selection_prefers_the_template_where_tma_can_address_the_operands(
+    numel: int, n: int, k: int, transpose_a: bool, transpose_b: bool, expected: str
 ):
-    """The persistent kernel serves aligned NT; the general one serves the rest."""
+    """The SM90 template serves every layout with 8-aligned extents; the general kernel the rest."""
     op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b)
     call = GroupedGemmCall(
         arch=get_sm_version(),
-        numel=4096,
+        numel=numel,
         num_experts=16,
         n=n,
         k=k,
