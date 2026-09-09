@@ -13,6 +13,7 @@ from .dense import (
     GemvKernel,
     SmallBatchGemmKernel,
 )
+from .fp8_1d2d import GemmFp81D2DKernel
 from .w4a16 import GemmW4A16Kernel
 from .w4a16_decode import GemmW4A16DecodeKernel
 
@@ -20,6 +21,7 @@ __all__ = [
     "BmmFp8Kernel",
     "BmmKernel",
     "GemmCall",
+    "GemmFp81D2DKernel",
     "GemmFp8BlockScaledKernel",
     "GemmFp8EpilogueKernel",
     "GemmKernel",
