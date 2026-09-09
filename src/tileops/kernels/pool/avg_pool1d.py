@@ -1,53 +1,20 @@
 import functools
-from typing import ClassVar, NamedTuple, Optional, Tuple
+from typing import ClassVar, Optional, Tuple
 
 import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
+from tileops.kernels.constants import STATIC_SHARED_BYTES
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.pool.common import dtype_itemsize, pool_output_dim
+from tileops.kernels.pool.common import (
+    WindowSpan,
+    dtype_itemsize,
+    pool_output_dim,
+    window_span,
+)
 
 __all__ = ["AvgPool1dKernel", "AvgPool1dSpatialKernel"]
-
-
-class _Span(NamedTuple):
-    """The stretch of a row one block stages, in the row's own coordinates."""
-
-    # Elements one full-width access covers.
-    vector_elems: int
-    # Elements staged in front of the block's leftmost window.
-    head: int
-    # Elements the block stages.
-    span: int
-
-    @property
-    def vectors(self) -> int:
-        """Full-width loads the staging pass issues."""
-        return self.span // self.vector_elems
-
-
-def _round_up(value: int, step: int) -> int:
-    return ((value + step - 1) // step) * step
-
-
-def _span(
-    tile_outputs: int, l_in: int, kernel_l: int, stride_l: int, pad_l: int, dtype: str
-) -> _Span:
-    """The stretch of a row a block stages to cover ``tile_outputs`` outputs.
-
-    A group of ``vector_elems`` is loaded or zeroed as one, so it has to sit wholly
-    inside the row or wholly outside it. The width is narrowed until the block step, the
-    head and the row end all divide it.
-    """
-    vector_elems = VECTOR_ACCESS_BYTES // dtype_itemsize(dtype)
-    step = tile_outputs * stride_l
-    while vector_elems > 1 and (l_in % vector_elems or step % vector_elems):
-        vector_elems //= 2
-    head = _round_up(pad_l, vector_elems)
-    reach = head + (tile_outputs - 1) * stride_l + kernel_l
-    return _Span(vector_elems, head, _round_up(reach, vector_elems))
 
 
 class _WindowStaging:
@@ -87,9 +54,16 @@ class _WindowStaging:
         self._pad_l = pad_l
         self._dtype = dtype
 
-    def _span(self, tile_outputs: int) -> _Span:
-        return _span(
-            tile_outputs, self._l_in, self._kernel_l, self._stride_l, self._pad_l, self._dtype
+    def _span(self, tile_outputs: int) -> WindowSpan:
+        return window_span(
+            tile_outputs,
+            tile_outputs * self._stride_l,
+            self._l_in,
+            self._kernel_l,
+            self._stride_l,
+            self._pad_l,
+            1,
+            self._dtype,
         )
 
     def widths(self) -> list[int]:
@@ -156,7 +130,9 @@ def _avg_pool1d_kernel(
     def _avg_pool1d_func(block_ol: int, threads: int):
         # A warp taking one output each reads one short stretch of the row `kernel_l`
         # times over. A block stages that stretch with full-width loads instead.
-        vector_elems, head, span = _span(block_ol, l_in, kernel_l, stride_l, pad_l, dtype)
+        vector_elems, head, span = window_span(
+            block_ol, block_ol * stride_l, l_in, kernel_l, stride_l, pad_l, 1, dtype
+        )
         vectors = span // vector_elems
         # The tile holds zeros outside the row, so a tap needs no test and this offset.
         base = head - pad_l
