@@ -123,6 +123,17 @@ def test_grouped_gemm_fuses_the_gated_activation(activation):
 
 
 @pytest.mark.smoke
+def test_grouped_gemm_dims_off_the_tile_grid():
+    """K and N that divide no tile: the rows the retired general kernel's predicated path served."""
+    workload = MoeGroupedGemmStagedWorkload(
+        (200, 96), (_E, 192, 96), "tight_physical_psum", torch.bfloat16
+    )
+    a, b, metadata = workload.gen_inputs()
+    out = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())(a, b, metadata)
+    _assert_valid_rows(out, workload.ref_program(a, b, metadata), workload.valid_rows)
+
+
+@pytest.mark.smoke
 def test_grouped_gemm_fp32_output_and_preallocated_out():
     workload = MoeGroupedGemmStagedWorkload(
         (600, 512), (_E, 256, 512), "tight_physical_psum", torch.bfloat16

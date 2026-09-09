@@ -287,8 +287,7 @@ class GroupedGemmPersistent3WGKernel(Kernel):
 
         # TMA OOB zero-fill (descriptor globalDim = numel) makes the last expert's
         # partial-tile A over-read hardware-zero-filled; the partial-tile epilogue
-        # masks the store. No F.pad / guard rows / alignment detection needed —
-        # mirrors moe_grouped_gemm_persistent_3wg_fused_act.py.
+        # masks the store. No F.pad / guard rows / alignment detection needed.
         gemm_fn = _persistent_grouped_gemm_v2_kernel(
             self.numel,
             self.num_experts,

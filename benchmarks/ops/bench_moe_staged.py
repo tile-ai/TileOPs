@@ -13,9 +13,7 @@ from tileops.manifest import load_workloads
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
     MoeExpertMLPFwdOp,
-    MoeGateUpFwdOp,
     MoeGroupedGemmFwdOp,
-    MoeGroupedGemmNopadFwdOp,
     MoePostPermuteFwdOp,
     MoePrePermuteFwdOp,
 )
@@ -132,12 +130,6 @@ def _layout_spec(layout_args: dict):
     return layout_from_preset(layout_args["layout"], **extra)
 
 
-def _sizes_offsets(ends: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """The 3WG kernels' sizes/offsets ABI from staged psum ends."""
-    offsets = torch.cat((ends.new_zeros(1), ends[:-1]))
-    return ends - offsets, offsets
-
-
 def _flashinfer_segment_gemm(ends: torch.Tensor):
     """flashinfer's CUTLASS segment GEMM on the same tight rows.
 
@@ -188,41 +180,22 @@ def test_moe_grouped_gemm_bench(a_shape, b_shape, layout_args, activation, dtype
     _assert_valid_rows_match(op(a, b, metadata), ref, workload.valid_rows)
 
     functors = {"tileops": op, "torch-ref": workload.ref_program}
-    num_experts, n, k = b_shape
-    if layout_args["layout"] == "tight_physical_psum":
-        sizes, offsets = _sizes_offsets(metadata)
-        if activation is None:
-            # torch's grouped GEMM takes the same tight rows and psum ends, with B as [E, K, N].
-            b_kn = b.transpose(1, 2).contiguous()
+    if layout_args["layout"] == "tight_physical_psum" and activation is None:
+        # torch's grouped GEMM takes the same tight rows and psum ends, with B as [E, K, N].
+        b_kn = b.transpose(1, 2).contiguous()
 
-            def _torch_grouped_mm(a_: torch.Tensor, _b: torch.Tensor, ends: torch.Tensor):
-                return torch._grouped_mm(a_, b_kn, offs=ends)
+        def _torch_grouped_mm(a_: torch.Tensor, _b: torch.Tensor, ends: torch.Tensor):
+            return torch._grouped_mm(a_, b_kn, offs=ends)
 
-            _assert_valid_rows_match(_torch_grouped_mm(a, b, metadata), ref, workload.valid_rows)
-            functors["torch-grouped-mm"] = _torch_grouped_mm
-            # The kernel the composite runs today on the same rows, its sizes/offsets
-            # prepared outside the timed call: kernel against kernel, no ABI bridge.
-            legacy_op = MoeGroupedGemmNopadFwdOp(
-                numel=a_shape[0], num_experts=num_experts, n=n, k=k
-            )
-            segment_gemm = _flashinfer_segment_gemm(metadata)
+        _assert_valid_rows_match(_torch_grouped_mm(a, b, metadata), ref, workload.valid_rows)
+        functors["torch-grouped-mm"] = _torch_grouped_mm
+        segment_gemm = _flashinfer_segment_gemm(metadata)
 
-            def _flashinfer(a_: torch.Tensor, b_: torch.Tensor, _ends: torch.Tensor):
-                return segment_gemm(a_, b_)
+        def _flashinfer(a_: torch.Tensor, b_: torch.Tensor, _ends: torch.Tensor):
+            return segment_gemm(a_, b_)
 
-            _assert_valid_rows_match(_flashinfer(a, b, metadata), ref, workload.valid_rows)
-            functors["flashinfer-segment-gemm"] = _flashinfer
-        else:
-            # The composite's fused gate_up kernel: GEMM and gated activation in one launch.
-            legacy_op = MoeGateUpFwdOp(
-                numel=a_shape[0], num_experts=num_experts, ffn=n // 2, k=k, activation=activation
-            )
-
-        def _legacy_3wg(a_: torch.Tensor, b_: torch.Tensor, _ends: torch.Tensor):
-            return legacy_op(a_, b_, sizes, offsets)
-
-        _assert_valid_rows_match(_legacy_3wg(a, b, metadata), ref, workload.valid_rows)
-        functors["legacy-3wg"] = _legacy_3wg
+        _assert_valid_rows_match(_flashinfer(a, b, metadata), ref, workload.valid_rows)
+        functors["flashinfer-segment-gemm"] = _flashinfer
     benchmark.compare(functors, a, b, metadata)
 
 
@@ -234,29 +207,6 @@ def _mlp_args(workload: dict, dtype: torch.dtype) -> tuple:
         _layout_args(workload),
         dtype,
     )
-
-
-def _legacy_3wg_slice(numel: int, num_experts: int, hidden: int, ffn: int, ends: torch.Tensor):
-    """The experts composite's middle on the 3WG sizes/offsets ABI, twice.
-
-    ``with_bridge`` converts the staged ``physical_ends`` inside the timed call the way
-    the composite does today, so the bridge's two kernels are counted against it;
-    ``kernels_only`` takes the conversion as given and times the GEMM path alone.
-    """
-    gate_up = MoeGateUpFwdOp(numel=numel, num_experts=num_experts, ffn=ffn, k=hidden)
-    down = MoeGroupedGemmNopadFwdOp(numel=numel, num_experts=num_experts, n=hidden, k=ffn)
-    fixed_sizes, fixed_offsets = _sizes_offsets(ends)
-
-    def with_bridge(x, w_gate_up, w_down, ends_):
-        sizes, offsets = _sizes_offsets(ends_)
-        return down(gate_up(x, w_gate_up, sizes, offsets), w_down, sizes, offsets)
-
-    def kernels_only(x, w_gate_up, w_down, _ends):
-        return down(
-            gate_up(x, w_gate_up, fixed_sizes, fixed_offsets), w_down, fixed_sizes, fixed_offsets
-        )
-
-    return with_bridge, kernels_only
 
 
 @pytest.mark.parametrize(
@@ -275,15 +225,6 @@ def test_moe_expert_mlp_bench(x_shape, w_gate_up_shape, w_down_shape, layout_arg
 
     functors = {"tileops": op, "torch-ref": workload.ref_program}
     if layout_args["layout"] == "tight_physical_psum":
-        num_experts, two_ffn, hidden = w_gate_up_shape
-        with_bridge, kernels_only = _legacy_3wg_slice(
-            x_shape[0], num_experts, hidden, two_ffn // 2, metadata
-        )
-        for tag, legacy in (("legacy-3wg", with_bridge), ("legacy-3wg-kernels", kernels_only)):
-            _assert_valid_rows_match(
-                legacy(x, w_gate_up, w_down, metadata), ref, workload.valid_rows
-            )
-            functors[tag] = legacy
         segment_gemm = _flashinfer_segment_gemm(metadata)
         silu_and_mul = flashinfer_op("activation.silu_and_mul")
 

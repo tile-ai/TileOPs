@@ -93,7 +93,8 @@ def test_moe_experts_nopad_bench(
     ws1 = torch.empty(0, dtype=dtype, device="cuda")
     ws2 = torch.empty(0, dtype=dtype, device="cuda")
 
-    # -- TileOPs nopad (3WG persistent) --------------------------------------
+    # -- TileOPs: staged permute + expert MLP on the SM90 template. The tag keeps
+    # the name the 3WG pipeline reported under so the series stays comparable.
     nopad = FusedMoEExpertsNopadPersistent3WGFwdOp(
         num_tokens=num_tokens,
         num_experts=num_experts,
