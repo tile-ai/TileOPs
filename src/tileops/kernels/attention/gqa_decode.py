@@ -17,6 +17,20 @@ from .online_softmax import (
 
 __all__ = ["GQADecodeKernel"]
 
+
+def _effective_num_split(num_split: int, block_N: int, real_seqlen_kv: int) -> int:
+    """Split count the runtime can use for a KV extent of *real_seqlen_kv*.
+
+    The tuned or default ``num_split`` is only a ceiling: shrink it until every
+    split keeps at least one full KV tile. ``1`` means the sequence is too
+    short to split and the no-split kernel should run. Gating dispatch on the
+    tuned value itself (the old ``real_seqlen_kv < num_split * block_N`` test)
+    let a large tuned ``num_split`` push execution into the never-tuned
+    no-split kernel.
+    """
+    return max(1, min(num_split, real_seqlen_kv // block_N))
+
+
 # JIT kernel: no-split variant
 
 
@@ -262,7 +276,6 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
             V: T.Tensor(shape_v, dtype),
             glse: T.Tensor([batch, heads, num_split], dtype),
             Output_partial: T.Tensor(part_shape, dtype),
-            split_length: T.Tensor(num_split, "int32"),
         ):
             with T.Kernel(batch, heads // valid_block_H, num_split, threads=threads) as (
                 bx,
@@ -282,29 +295,35 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
                 scores_sum = T.alloc_fragment([block_H], accum_dtype)
                 logsum = T.alloc_fragment([block_H], accum_dtype)
 
-                split_length_shared = T.alloc_shared([num_split], "int32")
-                T.copy(split_length, split_length_shared, disable_tma=True)
-
                 bid = bx
                 hid = by
                 sid = bz
                 cur_kv_head = hid // (kv_group_num // valid_block_H)
+
+                # Partition whole KV tiles as evenly as possible (recipe from
+                # gqa_decode_bs1): every CTA derives its own tile range from
+                # the runtime sequence extent, so the autotuner times the same
+                # distribution forward runs and no split is left empty.
+                num_tiles = T.ceildiv(seqlen_kv, block_N)
+                base_tiles = num_tiles // num_split
+                extra_tiles = num_tiles % num_split
+                tiles_this_split = base_tiles + T.if_then_else(sid < extra_tiles, 1, 0)
+                tile_begin = sid * base_tiles + T.min(sid, extra_tiles)
+                base = tile_begin * block_N
+                this_len = T.max(T.min(seqlen_kv - base, tiles_this_split * block_N), 0)
 
                 T.copy(Q[bid, hid * valid_block_H : hid * valid_block_H + block_H, :], Q_shared)
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
-                loop_range = T.ceildiv(split_length_shared[sid], block_N)
+                loop_range = T.ceildiv(this_len, block_N)
 
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
                     T.copy(
                         K[
                             bid,
-                            (seqlen_kv // (num_split * block_N) * block_N) * sid
-                            + k * valid_block_N : (seqlen_kv // (num_split * block_N) * block_N)
-                            * sid
-                            + (k + 1) * valid_block_N,
+                            base + k * valid_block_N : base + (k + 1) * valid_block_N,
                             cur_kv_head,
                             :,
                         ],
@@ -316,7 +335,7 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
                     )
                     for i, j in T.Parallel(block_H, valid_block_N):
                         acc_s[i, j] = T.if_then_else(
-                            (k * block_N + j < split_length[sid]),
+                            (base + k * block_N + j < seqlen_kv),
                             acc_s[i, j],
                             -T.infinity(accum_dtype),
                         )
@@ -330,10 +349,7 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
                     T.copy(
                         V[
                             bid,
-                            (seqlen_kv // (num_split * block_N) * block_N) * sid
-                            + k * valid_block_N : (seqlen_kv // (num_split * block_N) * block_N)
-                            * sid
-                            + (k + 1) * valid_block_N,
+                            base + k * valid_block_N : base + (k + 1) * valid_block_N,
                             cur_kv_head,
                             :,
                         ],
@@ -341,9 +357,15 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
                     )
                     T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_H, dim):
-                    acc_o[i, j] /= logsum[i]
+                    # An empty split (this_len == 0) must not poison the combine
+                    # with 0/0; its glse is -inf so it weighs nothing there.
+                    acc_o[i, j] /= T.if_then_else(this_len > 0, logsum[i], 1.0)
                 for i in T.Parallel(block_H):
-                    logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
+                    logsum[i] = T.if_then_else(
+                        this_len > 0,
+                        T.log2(logsum[i]) + scores_max[i] * scale,
+                        -T.infinity(accum_dtype),
+                    )
 
                 for i in T.Parallel(block_H):
                     if i < valid_block_H:
@@ -393,10 +415,9 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
             V: T.Tensor(shape_v, dtype),
             glse: T.Tensor([batch, heads, num_split], dtype),
             Output_partial: T.Tensor(part_shape, dtype),
-            split_length: T.Tensor(num_split, "int32"),
             Output: T.Tensor(shape_o, dtype),
         ):
-            _gqa_decode_split(Q, K, V, glse, Output_partial, split_length)
+            _gqa_decode_split(Q, K, V, glse, Output_partial)
             combine(glse, Output_partial, Output)
 
         return gqa_decode_split
@@ -530,11 +551,10 @@ def _gqa_decode_split_op(
     V: torch.Tensor,
     glse: torch.Tensor,
     Output_partial: torch.Tensor,
-    split_length: torch.Tensor,
 ) -> torch.Tensor:
     return _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype)(
         block_H, block_N, num_split, num_stages, threads
-    )(Q, K, V, glse, Output_partial, split_length)
+    )(Q, K, V, glse, Output_partial)
 
 
 @_gqa_decode_split_op.register_fake
@@ -556,7 +576,6 @@ def _(
     V: torch.Tensor,
     glse: torch.Tensor,
     Output_partial: torch.Tensor,
-    split_length: torch.Tensor,
 ) -> torch.Tensor:
     return torch.empty_like(Q)
 
@@ -635,7 +654,8 @@ class GQADecodeKernel(Kernel):
             self.softcap,
             self.dtype_str,
         )
-        # autotune targets the split kernel
+        # autotune targets the split kernel; forward shrinks the tuned
+        # num_split to the runtime KV extent instead of gating dispatch on it
         self.kernel = self.split_jit
         self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
@@ -652,13 +672,6 @@ class GQADecodeKernel(Kernel):
             for param in params:
                 if param.is_scalar():
                     inputs.append(seqlen_kv)
-                elif str(param.dtype) == "int32":
-                    # split_length: fill with evenly divided lengths
-                    num_split = param.shape[0]
-                    base = seqlen_kv // num_split
-                    t = torch.full((num_split,), base, dtype=torch.int32, device="cuda")
-                    t[-1] += seqlen_kv % num_split
-                    inputs.append(t)
                 else:
                     inputs.append(default_supply(param))
             return inputs
@@ -680,11 +693,13 @@ class GQADecodeKernel(Kernel):
         }
 
     def _default_num_split(self) -> int:
-        """Choose a conservative default split policy for GQA decode.
+        """Choose a conservative default split-count ceiling for GQA decode.
 
-        Single-request, high-ratio GQA decode with very few KV heads benefits
-        from more split parallelism. Keep the existing split=16 default for
-        other shapes to avoid changing batched Llama-like workloads.
+        ``forward`` shrinks this to the runtime KV extent, so it only bounds how
+        far the split kernel may parallelise. Single-request, high-ratio GQA
+        decode with very few KV heads benefits from more split parallelism.
+        Keep the existing split=16 default for other shapes to avoid changing
+        batched Llama-like workloads.
         """
         kv_group_num = self.heads // self.groups
         if self.batch == 1 and self.dim == 128 and self.groups <= 2 and kv_group_num >= 8:
@@ -697,11 +712,14 @@ class GQADecodeKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         block_N = [64, 128]
         block_H = [64]
-        num_split = [ns for ns in [2, 4, 8, 16, 32] if ns <= self.seqlen_kv] or [1]
+        num_split = [1, 2, 4, 8, 16, 32]
         num_stages = [1, 2, 3]
         threads = [128]
         _configs = list(itertools.product(block_N, block_H, num_split, num_stages, threads))
 
+        # Every split keeps at least one full KV tile, so the autotuner never
+        # times a distribution the runtime cannot run; num_split=1 lets it
+        # compare the unsplit strategy, which degenerates to no-split.
         configs = [
             {
                 "block_N": c[0],
@@ -711,6 +729,7 @@ class GQADecodeKernel(Kernel):
                 "threads": c[4],
             }
             for c in _configs
+            if c[2] <= max(1, self.seqlen_kv // c[0])
         ]
         return configs
 
@@ -735,13 +754,14 @@ class GQADecodeKernel(Kernel):
         real_seqlen_kv = k.shape[1]
         block_H = self.config["block_H"]
         block_N = self.config["block_N"]
-        num_split = self.config["num_split"]
         num_stages = self.config["num_stages"]
         threads = self.config["threads"]
+        # The tuned num_split is a ceiling: shrink it until every split keeps
+        # one full KV tile. 1 means the sequence is too short to split.
+        num_split = _effective_num_split(self.config["num_split"], block_N, real_seqlen_kv)
 
-        # Dispatch: use no-split for short sequences where splitting is not beneficial
-        threshold = num_split * block_N
-        if real_seqlen_kv < threshold:
+        # Dispatch: no-split for sequences too short to give each split a tile
+        if num_split == 1:
             if self.fuse_rope:
                 output = _gqa_decode_no_split_rope_op(
                     self.batch,
@@ -823,11 +843,7 @@ class GQADecodeKernel(Kernel):
             )
             return output.unsqueeze(1)
 
-        # Split path: compute per-split lengths
-        base_len = real_seqlen_kv // (num_split * block_N) * block_N
-        split_length = torch.full((num_split,), base_len, dtype=torch.int32, device=Q.device)
-        split_length[-1] = real_seqlen_kv - (num_split - 1) * base_len
-
+        # Split path: the kernel partitions KV tiles from the runtime extent
         glse = torch.empty((self.batch, self.heads, num_split), dtype=self.dtype, device=Q.device)
         Output_partial = torch.empty(
             (self.batch, self.heads, num_split, self.dim), dtype=self.dtype, device=Q.device
@@ -851,6 +867,5 @@ class GQADecodeKernel(Kernel):
             V,
             glse,
             Output_partial,
-            split_length,
         )
         return output.unsqueeze(1)
