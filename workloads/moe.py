@@ -1,5 +1,4 @@
 import math
-from typing import Any
 
 import torch
 
@@ -137,37 +136,6 @@ def make_expert_sizes_offsets(
     offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
     assert int(sizes.sum().item()) == numel
     return sizes, offsets
-
-
-class MoeGroupedGemmNopadWorkload(WorkloadBase):
-    """Tight A, per-expert weights B, and the expert size/offset tables."""
-
-    def __init__(
-        self,
-        numel: int,
-        num_experts: int,
-        n: int,
-        k: int,
-        dtype: torch.dtype,
-        distribution: str = "uniform",
-    ):
-        self.numel = numel
-        self.num_experts = num_experts
-        self.n = n
-        self.k = k
-        self.dtype = dtype
-        self.distribution = distribution
-
-    def gen_inputs(self):
-        torch.manual_seed(42)
-        dev = "cuda"
-        true_sizes, true_offsets = make_expert_sizes_offsets(
-            self.numel, self.num_experts, self.distribution, dev
-        )
-        # Small scale keeps fp16 accumulation well within the parity tolerance.
-        a = torch.randn(self.numel, self.k, dtype=self.dtype, device=dev) * 0.02
-        b = torch.randn(self.num_experts, self.n, self.k, dtype=self.dtype, device=dev) * 0.02
-        return a, b, true_sizes, true_offsets
 
 
 def make_expert_layout_metadata(
@@ -565,70 +533,6 @@ class MoeExpertsWorkload(WorkloadBase):
             0, self.num_experts, (self.num_tokens, self.top_k), dtype=torch.int32, device=dev
         )
         return hidden, w1, w2, topk_weights, topk_ids
-
-
-class MoeFusedActivationWorkload(WorkloadBase):
-    """Workload descriptor for fused vs unfused activation benchmark."""
-
-    def __init__(
-        self,
-        num_tokens: int,
-        hidden_size: int,
-        ffn_size: int,
-        num_experts: int,
-        top_k: int,
-        dtype: torch.dtype,
-    ):
-        self.num_tokens = num_tokens
-        self.hidden_size = hidden_size
-        self.ffn_size = ffn_size
-        self.num_experts = num_experts
-        self.top_k = top_k
-        self.dtype = dtype
-        # Primary shape: (num_tokens, hidden_size) — the token tensor footprint.
-        self.shape: tuple[int, int] = (num_tokens, hidden_size)
-
-    def gen_inputs(self) -> tuple[Any, ...]:
-        torch.manual_seed(42)
-        dev = "cuda"
-        hidden = torch.randn(
-            self.num_tokens,
-            self.hidden_size,
-            dtype=self.dtype,
-            device=dev,
-        )
-        w_gate_up = (
-            torch.randn(
-                self.num_experts,
-                self.ffn_size * 2,
-                self.hidden_size,
-                dtype=self.dtype,
-                device=dev,
-            )
-            * 0.02
-        )
-        w_down = (
-            torch.randn(
-                self.num_experts,
-                self.hidden_size,
-                self.ffn_size,
-                dtype=self.dtype,
-                device=dev,
-            )
-            * 0.02
-        )
-        topk_weights = torch.softmax(
-            torch.randn(self.num_tokens, self.top_k, dtype=torch.float32, device=dev),
-            dim=-1,
-        )
-        topk_ids = torch.randint(
-            0,
-            self.num_experts,
-            (self.num_tokens, self.top_k),
-            dtype=torch.int32,
-            device=dev,
-        )
-        return hidden, w_gate_up, w_down, topk_weights, topk_ids
 
 
 def ref_permute_align(

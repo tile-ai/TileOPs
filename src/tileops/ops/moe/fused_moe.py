@@ -21,7 +21,7 @@ from tileops.ops.moe.abc import (
 )
 from tileops.ops.moe.fused_topk import FusedTopKOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
-from tileops.ops.moe.routed_expert import FusedMoEExpertsNopadPersistent3WGFwdOp
+from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -126,7 +126,7 @@ class FusedMoe(Op):
             self._experts: FusedMoEExpertsModular = experts
         else:
             self.activation = activation
-            self._experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+            self._experts = FusedMoEExpertsFwdOp(
                 num_tokens=num_tokens,
                 num_experts=num_experts,
                 top_k=top_k,

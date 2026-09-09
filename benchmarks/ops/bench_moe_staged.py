@@ -7,6 +7,7 @@ from vllm.model_executor.layers.fused_moe.moe_permute_unpermute import (
     moe_unpermute,
 )
 
+from benchmarks.baselines import flashinfer_op
 from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.moe import (
@@ -22,6 +23,7 @@ from workloads.moe import (
     MoeGroupedGemmStagedWorkload,
     MoePermuteWorkload,
     MoeUnpermuteWorkload,
+    gated_activation,
 )
 
 
@@ -133,6 +135,24 @@ def _assert_valid_rows_match(out: torch.Tensor, ref: torch.Tensor, valid: torch.
     torch.testing.assert_close(flat_out, flat_ref, rtol=2e-2, atol=1e-1)
 
 
+def _flashinfer_segment_gemm(ends: torch.Tensor):
+    wrapper = flashinfer_op("gemm.SegmentGEMMWrapper")(
+        torch.empty(32 * 1024 * 1024, dtype=torch.uint8, device=ends.device)
+    )
+    indptr = torch.cat((ends.new_zeros(1), ends)).to(torch.int64)
+
+    def run(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        return wrapper.run(
+            x,
+            weight,
+            batch_size=weight.shape[0],
+            weight_column_major=True,
+            seg_indptr=indptr,
+        )
+
+    return run
+
+
 def _gemm_args(workload: dict, dtype: torch.dtype) -> tuple:
     return (
         tuple(workload["a_shape"]),
@@ -158,8 +178,14 @@ def test_moe_grouped_gemm_bench(a_shape, b_shape, layout_args, activation, dtype
     ref = workload.ref_program(a, b, metadata)
     _assert_valid_rows_match(op(a, b, metadata), ref, workload.valid_rows)
 
-    # FIXME(staged-rollout): compare through the replaced op's benchmark after migration.
-    benchmark.compare({"tileops": op}, a, b, metadata)
+    b_kn = b.transpose(1, 2).contiguous()
+
+    def _torch_grouped_mm(a_, _b, ends):
+        output = torch._grouped_mm(a_, b_kn, offs=ends)
+        return output if activation is None else gated_activation(output, activation)
+
+    _assert_valid_rows_match(_torch_grouped_mm(a, b, metadata), ref, workload.valid_rows)
+    benchmark.compare({"tileops": op, "torch-grouped-mm": _torch_grouped_mm}, a, b, metadata)
 
 
 def _mlp_args(workload: dict, dtype: torch.dtype) -> tuple:
@@ -186,5 +212,34 @@ def test_moe_expert_mlp_bench(x_shape, w_gate_up_shape, w_down_shape, layout_arg
     ref = workload.ref_program(x, w_gate_up, w_down, metadata)
     _assert_valid_rows_match(op(x, w_gate_up, w_down, metadata), ref, workload.valid_rows)
 
-    # FIXME(staged-rollout): compare through the replaced op's benchmark after migration.
-    benchmark.compare({"tileops": op}, x, w_gate_up, w_down, metadata)
+    gate_up_kn = w_gate_up.transpose(1, 2).contiguous()
+    down_kn = w_down.transpose(1, 2).contiguous()
+
+    def _torch_grouped_mlp(x_, _w_gate_up, _w_down, ends):
+        gate_up = torch._grouped_mm(x_, gate_up_kn, offs=ends)
+        activated = gated_activation(gate_up, op.activation)
+        return torch._grouped_mm(activated, down_kn, offs=ends)
+
+    _assert_valid_rows_match(
+        _torch_grouped_mlp(x, w_gate_up, w_down, metadata), ref, workload.valid_rows
+    )
+    segment_gemm = _flashinfer_segment_gemm(metadata)
+    silu_and_mul = flashinfer_op("activation.silu_and_mul")
+
+    def _flashinfer_mlp(x_, w_gate_up_, w_down_, _ends):
+        return segment_gemm(silu_and_mul(segment_gemm(x_, w_gate_up_)), w_down_)
+
+    _assert_valid_rows_match(
+        _flashinfer_mlp(x, w_gate_up, w_down, metadata), ref, workload.valid_rows
+    )
+    benchmark.compare(
+        {
+            "tileops": op,
+            "torch-grouped-mm": _torch_grouped_mlp,
+            "flashinfer-segment-mlp": _flashinfer_mlp,
+        },
+        x,
+        w_gate_up,
+        w_down,
+        metadata,
+    )

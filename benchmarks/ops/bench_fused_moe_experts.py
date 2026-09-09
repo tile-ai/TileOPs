@@ -1,7 +1,6 @@
-"""Benchmark for FusedMoEExpertsNopadPersistent3WGFwdOp.
+"""Benchmark for FusedMoEExpertsFwdOp.
 
-Measures the permute + grouped-GEMM + unpermute pipeline without routing.
-The nopad (3WG persistent kernel) layout is benchmarked
+Measures the permute + grouped-GEMM + unpermute pipeline without routing and compares it
 against vLLM Triton fused_experts and vLLM CUTLASS fused_experts (when available).
 
 Workloads match the manifest entries (shared workload set):
@@ -13,7 +12,7 @@ Workloads match the manifest entries (shared workload set):
   DeepSeek-V3      4096  7168  2048  256   8   (prefill)
 
 Baselines:
-  - tileops-nopad-3wg: FusedMoEExpertsNopadPersistent3WGFwdOp (default 3WG kernel)
+  - tileops:            FusedMoEExpertsFwdOp
   - vllm-triton:       vLLM Triton fused_experts (default backend)
   - vllm-cutlass:      vLLM CUTLASS fused_experts (when importable)
   - torch-ref:         per-expert GEMM loop with index_add_ (fallback)
@@ -58,7 +57,7 @@ except ImportError:
 
 from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
 from tileops.manifest import load_workloads
-from tileops.ops.moe import FusedMoEExpertsNopadPersistent3WGFwdOp
+from tileops.ops.moe import FusedMoEExpertsFwdOp
 from workloads.moe import MoeExpertsWorkload
 
 # Workload
@@ -67,7 +66,7 @@ from workloads.moe import MoeExpertsWorkload
 @pytest.mark.parametrize(
     "num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype",
     workload_params(
-        load_workloads(FusedMoEExpertsNopadPersistent3WGFwdOp),
+        load_workloads(FusedMoEExpertsFwdOp),
         fields(
             "num_tokens",
             "num_experts",
@@ -78,7 +77,7 @@ from workloads.moe import MoeExpertsWorkload
         ),
     ),
 )
-def test_moe_experts_nopad_bench(
+def test_moe_experts_bench(
     num_tokens: int,
     num_experts: int,
     top_k: int,
@@ -93,18 +92,17 @@ def test_moe_experts_nopad_bench(
     ws1 = torch.empty(0, dtype=dtype, device="cuda")
     ws2 = torch.empty(0, dtype=dtype, device="cuda")
 
-    # -- TileOPs nopad (3WG persistent) --------------------------------------
-    nopad = FusedMoEExpertsNopadPersistent3WGFwdOp(
+    experts = FusedMoEExpertsFwdOp(
         num_tokens=num_tokens,
         num_experts=num_experts,
         top_k=top_k,
         hidden_size=hidden_size,
         ffn_size=ffn_size,
     )
-    bm = ManifestBenchmark(nopad, test)
+    bm = ManifestBenchmark(experts, test)
 
-    def _nopad_fn(hidden, w1, w2, topk_weights, topk_ids):
-        nopad.forward(
+    def _experts_fn(hidden, w1, w2, topk_weights, topk_ids):
+        experts.forward(
             output,
             hidden,
             w1,
@@ -116,10 +114,10 @@ def test_moe_experts_nopad_bench(
         )
         return output
 
-    _nopad_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup / JIT compile
+    _experts_fn(hidden, w1, w2, topk_weights, topk_ids)
     torch.cuda.synchronize()
 
-    functors = {"tileops-nopad-3wg": _nopad_fn}
+    functors = {"tileops": _experts_fn}
 
     # -- vLLM Triton baseline -------------------------------------------------
     if _VLLM_TRITON_AVAILABLE:

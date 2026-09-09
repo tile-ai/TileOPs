@@ -1,4 +1,4 @@
-"""Tests for FusedMoEExpertsNopadPersistent3WGFwdOp and supporting ABCs."""
+"""Tests for FusedMoEExpertsFwdOp and supporting ABCs."""
 
 import pytest
 import torch
@@ -11,10 +11,7 @@ from tileops.ops.moe.abc import (
 from tileops.ops.moe.fused_moe import FusedMoeFwdOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert.fused_routed_expert import (
-    FusedMoEExpertsNopadPersistent3WGFwdOp,
-)
-from tileops.ops.moe.routed_expert.gate_up import (
-    MoeGateUpFwdOp,
+    FusedMoEExpertsFwdOp,
 )
 
 
@@ -140,7 +137,7 @@ class TestMoEPrepareAndFinalizeNoDPEP:
         assert torch.allclose(output, expert_out)
 
 
-# FusedMoEExpertsNopadPersistent3WGFwdOp
+# FusedMoEExpertsFwdOp
 
 
 @pytest.fixture
@@ -173,17 +170,12 @@ def moe_tensors(request):
     )
 
 
-class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
+class TestFusedMoEExpertsFwdOp:
     @pytest.mark.smoke
-    @pytest.mark.smoke
-    def test_the_automatically_fused_pipeline_matches_the_reference(self):
-        """The fused branch is what production decode runs, so it needs its own check.
-
-        Kernel-level tests cover the fused GEMM against a reference expression; this
-        covers the op around it — permute, weights, the down GEMM and unpermute.
-        """
+    def test_the_decode_shaped_pipeline_matches_the_reference(self):
+        """Cover the complete decode-shaped expert pipeline."""
         T_count, E, top_k, H, F_dim = 1024, 128, 2, 256, 1152
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=T_count,
             num_experts=E,
             top_k=top_k,
@@ -212,7 +204,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
     @pytest.mark.smoke
     def test_workspace_shapes(self, moe_meta):
         d = moe_meta
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=d["T"],
             num_experts=d["E"],
             top_k=d["K"],
@@ -225,7 +217,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
     @pytest.mark.smoke
     def test_output_shape(self, moe_meta):
         d = moe_meta
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=d["T"],
             num_experts=d["E"],
             top_k=d["K"],
@@ -237,7 +229,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
     @pytest.mark.smoke
     def test_make_weighted_reduce_is_noop(self, moe_meta):
         d = moe_meta
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=d["T"],
             num_experts=d["E"],
             top_k=d["K"],
@@ -250,7 +242,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
     def test_forward_matches_torch_ref(self, moe_tensors):
         """forward() output must match a per-expert PyTorch reference."""
         d = moe_tensors
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=d["T"],
             num_experts=d["E"],
             top_k=d["K"],
@@ -277,13 +269,8 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         assert torch.allclose(output.float(), ref_out.float(), atol=1e-2, rtol=1e-2)
 
     @pytest.mark.smoke
-    def test_forward_fallback_path_unaligned_dims(self):
-        """Unaligned dims must trigger the MoeGroupedGemmNopadKernel fallback
-        and still produce correct output.
-
-        H=128, F=96: gate_up_n=192 is not divisible by 3WG block_n=256, so the
-        persistent kernel does not apply and the general one serves the call.
-        """
+    def test_forward_dims_off_the_tile_grid(self):
+        """Cover non-tile-aligned gate-up and down dimensions."""
         T, H, F_dim, E, K = 64, 128, 96, 4, 2
         dtype = torch.bfloat16
         hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
@@ -292,7 +279,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), dim=-1)
         ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
 
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=T,
             num_experts=E,
             top_k=K,
@@ -321,7 +308,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
     def test_forward_matches_torch_ref_activation(self, moe_tensors, activation):
         """forward() output matches PyTorch reference for each activation."""
         d = moe_tensors
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=d["T"],
             num_experts=d["E"],
             top_k=d["K"],
@@ -356,7 +343,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
 
 class TestFusedMoeActivationInjection:
     def _make_experts(self, activation="silu_and_mul"):
-        return FusedMoEExpertsNopadPersistent3WGFwdOp(
+        return FusedMoEExpertsFwdOp(
             num_tokens=128,
             num_experts=4,
             top_k=2,
@@ -543,26 +530,3 @@ class TestSharedFusedMoeActivation:
             shared_ffn_size=128,
         )
         assert moe.activation == "silu_and_mul"
-
-
-@pytest.mark.smoke
-def test_fused_act_fwd_op_shape_and_values():
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
-        pytest.skip("Requires SM90")
-    T_count, E, top_k, ffn, K = 256, 8, 2, 768, 128
-    numel = T_count * top_k
-    sizes = torch.full((E,), numel // E, dtype=torch.int32, device="cuda")
-    sizes[: numel % E] += 1  # spread remainder; safe when numel < E
-    offsets = torch.zeros(E, dtype=torch.int32, device="cuda")
-    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
-    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
-    B = torch.randn(E, 2 * ffn, K, dtype=torch.bfloat16, device="cuda") * 0.02
-    op = MoeGateUpFwdOp(numel=numel, num_experts=E, ffn=ffn, k=K, activation="silu_and_mul")
-    out = op(A, B, sizes, offsets)
-    assert out.shape == (numel, ffn)
-    exp = torch.zeros(numel, ffn, dtype=torch.bfloat16, device="cuda")
-    for e in range(E):
-        n, o = int(sizes[e]), int(offsets[e])
-        gu = A[o : o + n].float() @ B[e].float().t()
-        exp[o : o + n] = (F.silu(gu[:, :ffn]) * gu[:, ffn:]).to(torch.bfloat16)
-    torch.testing.assert_close(out, exp, rtol=2e-2, atol=2e-2)
