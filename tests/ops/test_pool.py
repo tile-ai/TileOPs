@@ -24,8 +24,9 @@ from tileops.kernels.pool import (
     MaxPool3dKernel,
     MaxPool3dWithIndicesKernel,
 )
-from tileops.kernels.pool.avg_pool1d import _span, _WindowStaging
-from tileops.kernels.pool.common import pool_output_dim
+from tileops.kernels.pool.avg_pool1d import _WindowStaging
+from tileops.kernels.pool.common import pool_output_dim, window_span
+from tileops.kernels.pool.max_pool1d import _plan as _max_pool1d_plan
 from tileops.ops import (
     AdaptiveAvgPool2dFwdOp,
     AdaptiveMaxPool2dFwdOp,
@@ -593,13 +594,31 @@ def test_avg_pool1d_staged_span_stays_aligned(
     out_l = pool_output_dim(l_in, kernel_l, stride_l, pad_l, False)
     staging = _WindowStaging(1, l_in, out_l, kernel_l, stride_l, pad_l, dtype)
     for block_ol in staging.widths():
-        staged = _span(block_ol, l_in, kernel_l, stride_l, pad_l, dtype)
+        staged = window_span(
+            block_ol, block_ol * stride_l, l_in, kernel_l, stride_l, pad_l, 1, dtype
+        )
         assert (block_ol * stride_l) % staged.vector_elems == 0
         assert l_in % staged.vector_elems == 0
         assert staged.head % staged.vector_elems == 0
         assert staged.span % staged.vector_elems == 0
         assert staged.head >= pad_l
         assert staged.span >= staged.head + (block_ol - 1) * stride_l + kernel_l
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("l_in, kernel_l", [(15, 16), (31, 32), (100, 128), (1000, 1024)])
+def test_max_pool1d_row_reduce_takes_no_tap_past_the_row(l_in: int, kernel_l: int) -> None:
+    """A window wider than the row does not reach the row-reduce body.
+
+    That body reads taps 0 to ``kernel_size - 1`` of the row with no bounds test, which
+    only holds where the window fits. Ceil mode admits a window wider than the row --
+    PyTorch pads the missing taps with ``-inf`` and still emits one output -- and the
+    taps past the row's end would then read the row after it.
+    """
+    plan = _max_pool1d_plan(l_in, kernel_l, kernel_l, 0, 1, True, "float16", False)
+    assert plan.out_l == 1
+    assert not plan.always_in_bounds
+    assert plan.body != "rowreduce"
 
 
 @pytest.mark.smoke
@@ -1052,7 +1071,7 @@ _MAX_POOL1D_PARAMS = [
         marks=pytest.mark.full,
         id="full-ceil-k5-s3-p2-bf16",
     ),
-    # Short output: sends max_pool1d down the shared-memory staged read.
+    # Non-overlapping windows over a short output row: the windowed read.
     pytest.param(
         2,
         32,
@@ -1066,7 +1085,23 @@ _MAX_POOL1D_PARAMS = [
         False,
         True,
         marks=pytest.mark.full,
-        id="full-staged-short-output-fp16",
+        id="full-windowed-short-output-fp16",
+    ),
+    # One output a row, at a window width the row-reduce fragment takes.
+    pytest.param(
+        2,
+        8,
+        32,
+        (32,),
+        (32,),
+        (0,),
+        (1,),
+        False,
+        torch.float16,
+        False,
+        True,
+        marks=pytest.mark.full,
+        id="full-rowreduce-one-output-fp16",
     ),
 ]
 

@@ -1,9 +1,9 @@
 import itertools
-from typing import Any, Callable, ClassVar, Optional
+from typing import Any, Callable, ClassVar, NamedTuple, Optional
 
 import torch
 
-from tileops.kernels.constants import STATIC_SHARED_BYTES
+from tileops.kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
 
 
@@ -23,6 +23,65 @@ def fits_static_shared(elements: int, dtype: str) -> bool:
         True when the tile fits :data:`STATIC_SHARED_BYTES`.
     """
     return elements * dtype_itemsize(dtype) <= STATIC_SHARED_BYTES
+
+
+class WindowSpan(NamedTuple):
+    """The stretch of a row one block stages, in the row's own coordinates."""
+
+    # Elements one full-width access covers.
+    vector_elems: int
+    # Elements staged in front of the block's leftmost window.
+    head: int
+    # Elements the block stages.
+    span: int
+
+    @property
+    def vectors(self) -> int:
+        """Full-width loads the staging pass issues over one row."""
+        return self.span // self.vector_elems
+
+
+def round_up(value: int, step: int) -> int:
+    return ((value + step - 1) // step) * step
+
+
+def window_span(
+    tile_outputs: int,
+    step: int,
+    l_in: int,
+    kernel_l: int,
+    stride_l: int,
+    pad_l: int,
+    dilation_l: int,
+    dtype: str,
+) -> WindowSpan:
+    """The stretch of a row a block stages to cover ``tile_outputs`` outputs.
+
+    A group of ``vector_elems`` is loaded as one, so it has to sit wholly inside the row
+    or wholly outside it. The width is narrowed until the head, the row end and *step*
+    all divide it.
+
+    Args:
+        tile_outputs: Outputs one block covers.
+        step: Elements between the origins of two consecutive blocks of one row, or 0
+            when one block covers the whole row and every origin is the same.
+        l_in: Elements one row holds.
+        kernel_l: Elements one window reaches over, before dilation.
+        stride_l: Elements between two consecutive windows.
+        pad_l: Elements the leftmost window reaches in front of the row.
+        dilation_l: Elements between two taps of one window.
+        dtype: TileLang name of the element type.
+
+    Returns:
+        The access width, the elements staged in front of the first window, and the
+        elements staged in all.
+    """
+    vector_elems = VECTOR_ACCESS_BYTES // dtype_itemsize(dtype)
+    while vector_elems > 1 and (l_in % vector_elems or step % vector_elems):
+        vector_elems //= 2
+    head = round_up(pad_l, vector_elems)
+    reach = head + (tile_outputs - 1) * stride_l + dilation_l * (kernel_l - 1) + 1
+    return WindowSpan(vector_elems, head, round_up(reach, vector_elems))
 
 
 def pool_output_dim(
