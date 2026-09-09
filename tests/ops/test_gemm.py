@@ -3,7 +3,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.gemm import GemmKernel, SmallBatchGemmKernel
-from tileops.kernels.gemm.dense import GemmFp8BlockScaledKernel
+from tileops.kernels.gemm.dense import GemmFp8BlockScaledKernel, _b_eviction
 from tileops.kernels.gemm.heuristics import best_config
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload, quantize_weight_int4
@@ -793,6 +793,44 @@ def test_gemm_refuses_non_matrix_operands_before_building_anything() -> None:
         op(a, a)
     assert (op.m, op.n, op.k) == (None, None, None)
     assert not op.built_kernels("gemm_kernel")
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("num_stages, stage_n", [(3, 0), (4, 128)])
+def test_coop2_epilogue_chunking_matches_reference(num_stages: int, stage_n: int) -> None:
+    """Shape coverage: the coop2 epilogue staged in one SMEM chunk and in two.
+
+    ``stage_n`` cuts a ``block_n``-wide output tile into ``block_n / stage_n`` chunks.
+    """
+    m, n, k = 1536, 3072, 256
+    test = GemmTest(m, n, k, torch.bfloat16, False, True)
+    a, b = test.gen_inputs()
+    kernel = GemmKernel(
+        m,
+        n,
+        k,
+        torch.bfloat16,
+        trans_a=False,
+        trans_b=True,
+        config={
+            "coop2": True,
+            "block_n": 256,
+            "block_k": 64,
+            "num_stages": num_stages,
+            "group_size_m": 16,
+            "stage_n": stage_n,
+        },
+    )
+    torch.testing.assert_close(kernel.forward(a, b), torch.matmul(a, b.T), atol=1.6e-2, rtol=1.6e-2)
+
+
+@pytest.mark.smoke
+def test_b_tile_eviction_hint_follows_the_m_tile_count() -> None:
+    """Dispatch branch: the streaming-B hint is on at one or two M-tiles, off above."""
+    assert _b_eviction(64, 64) == "evict_first"
+    assert _b_eviction(128, 64) == "evict_first"
+    assert _b_eviction(129, 64) is None
+    assert _b_eviction(4096, 128) is None
 
 
 @pytest.mark.smoke

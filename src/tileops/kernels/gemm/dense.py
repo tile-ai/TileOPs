@@ -53,6 +53,16 @@ def _tma_misalignment(
     )
 
 
+def _b_eviction(m: int, block_m: int) -> Optional[str]:
+    """``"evict_first"`` for a ``B`` tile the grid reads at most twice, else ``None``.
+
+    Each of the ``ceil(m / block_m)`` M-tiles reads the whole of ``B``. At one or two of
+    them ``B`` is streamed and the L2 it would hold belongs to ``A``, which every N-tile
+    re-reads; above two ``B`` is itself the reused operand.
+    """
+    return "evict_first" if -(-m // block_m) <= 2 else None
+
+
 __all__ = [
     "GemmFp8BlockScaledKernel",
     "GemmFp8EpilogueKernel",
@@ -492,6 +502,7 @@ def _gemm_kernel(
         # reconcile them with the logical (M,K) x (K,N) contraction.
         a_tile = (block_k, block_m) if trans_a else (block_m, block_k)
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
+        b_evict = _b_eviction(m, block_m)
         grid_size = -(-n // block_n) * -(-m // block_m)
         tma_epilogue = (n * 2) % 16 == 0 and grid_size > sm_count
 
@@ -574,12 +585,14 @@ def _gemm_kernel(
                                         b[n_start : n_start + block_n, k_start : k_start + block_k],
                                         b_smem[slot, :, :],
                                         barrier=ab_full[slot],
+                                        eviction_policy=b_evict,
                                     )
                                 else:
                                     T.tma_copy(
                                         b[k_start : k_start + block_k, n_start : n_start + block_n],
                                         b_smem[slot, :, :],
                                         barrier=ab_full[slot],
+                                        eviction_policy=b_evict,
                                     )
                             with trace.range("arrive", lane="barrier"):
                                 T.barrier_arrive(ab_full[slot])
@@ -687,6 +700,7 @@ def _gemm_splitk_kernel(
         k_slice = k_iters // split_k
         a_tile = (block_k, block_m) if trans_a else (block_m, block_k)
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
+        b_evict = _b_eviction(m, block_m)
 
         @T.prim_func
         def _gemm_splitk_main(
@@ -743,12 +757,14 @@ def _gemm_splitk_kernel(
                                 b[n_start : n_start + block_n, k_start : k_start + block_k],
                                 b_smem[slot, :, :],
                                 barrier=ab_full[slot],
+                                eviction_policy=b_evict,
                             )
                         else:
                             T.tma_copy(
                                 b[k_start : k_start + block_k, n_start : n_start + block_n],
                                 b_smem[slot, :, :],
                                 barrier=ab_full[slot],
+                                eviction_policy=b_evict,
                             )
                         T.barrier_arrive(ab_full[slot])
                 else:
@@ -894,6 +910,7 @@ def _gemm_coop2_kernel(
         stage_n: int = 0,
     ) -> Callable:
         half_m = block_m // 2
+        b_evict = _b_eviction(m, block_m)
         nr = (half_m * block_n) // 128
         sn = block_n if stage_n <= 0 else stage_n
         n_chunks = block_n // sn
@@ -978,6 +995,7 @@ def _gemm_coop2_kernel(
                                     b[n_start : n_start + block_n, ks : ks + block_k],
                                     b_smem[slot, :, :],
                                     barrier=ab_full[slot],
+                                    eviction_policy=b_evict,
                                 )
                                 T.barrier_arrive(ab_full[slot])
                                 gi_prod = gi_prod + 1
@@ -1122,6 +1140,7 @@ def _gemm_coop2_splitk_kernel(
         block_n: int = 64, block_k: int = 128, num_stages: int = 4, split_k: int = 4
     ) -> Callable:
         half_m = block_m // 2
+        b_evict = _b_eviction(m, block_m)
         nr = (half_m * block_n) // 128
         k_iters_total = T.ceildiv(k, block_k)
         if k_iters_total % split_k != 0:
@@ -1185,6 +1204,7 @@ def _gemm_coop2_splitk_kernel(
                             b[n_start : n_start + block_n, ks : ks + block_k],
                             b_smem[slot, :, :],
                             barrier=ab_full[slot],
+                            eviction_policy=b_evict,
                         )
                         T.barrier_arrive(ab_full[slot])
                 elif tx < 256:
@@ -1325,6 +1345,8 @@ def _gemm_simple_kernel(
             if panel_size > 0:
                 raise ValueError("cluster_m > 1 requires panel_size == 0")
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
+        # A cluster multicasts one B tile to all cluster_m of its M-tiles.
+        b_evict = _b_eviction(m, block_m * cluster_m)
 
         def _launch():
             if cluster_m > 1:
@@ -1348,9 +1370,9 @@ def _gemm_simple_kernel(
                 for ki in T.Pipelined(k // block_k, num_stages=num_stages):
                     T.copy(a[by * block_m, ki * block_k], a_smem)
                     if trans_b:
-                        T.copy(b[bx * block_n, ki * block_k], b_smem)
+                        T.copy(b[bx * block_n, ki * block_k], b_smem, eviction_policy=b_evict)
                     else:
-                        T.copy(b[ki * block_k, bx * block_n], b_smem)
+                        T.copy(b[ki * block_k, bx * block_n], b_smem, eviction_policy=b_evict)
                     T.gemm(a_smem, b_smem, c_local, transpose_B=trans_b)
                 T.copy(c_local, c[by * block_m, bx * block_n])
 
@@ -1400,6 +1422,7 @@ def _gemm_swap_ab_kernel(
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _gemm_swap_ab_func(block_nn: int = 64, block_k: int = 128, num_stages: int = 4) -> Callable:
         mpad = SWAP_AB_MPAD
+        b_evict = "evict_first"  # one N range per CTA, so B is read once
 
         @T.prim_func
         def _gemm_swap_ab_main(
@@ -1415,7 +1438,7 @@ def _gemm_swap_ab_kernel(
                 ct_smem = T.alloc_shared((block_nn, mpad), dtype)
                 T.clear(ct_local)
                 for ki in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
-                    T.copy(b[bx * block_nn, ki * block_k], b_smem)
+                    T.copy(b[bx * block_nn, ki * block_k], b_smem, eviction_policy=b_evict)
                     T.copy(a[0, ki * block_k], a_smem)
                     T.gemm(b_smem, a_smem, ct_local, transpose_B=True)
                 T.copy(ct_local, ct_cast)
@@ -1478,6 +1501,7 @@ def _gemm_coop2s_kernel(
                 f"m={m} % {block_m}, n={n} % {block_n}, k={k} % {block_k}"
             )
         half_m = block_m // 2
+        b_evict = _b_eviction(m, block_m)
         nr = (half_m * block_n) // 128
         k_iters = k // block_k
 
@@ -1538,6 +1562,7 @@ def _gemm_coop2s_kernel(
                             b[ks : ks + block_k, n_start : n_start + block_n],
                             b_smem[slot, :, :],
                             barrier=ab_full[slot],
+                            eviction_policy=b_evict,
                         )
                         T.barrier_arrive(ab_full[slot])
                 elif tx < 256:
@@ -1760,14 +1785,14 @@ class GemmKernel(Kernel):
         (1024, 1024, 1024, False, False, "float16"): {
             "coop2s": True,
             "block_n": 64,
-            "block_k": 128,
-            "num_stages": 4,
+            "block_k": 64,
+            "num_stages": 6,
         },
         (1024, 1024, 1024, False, False, "bfloat16"): {
             "coop2s": True,
             "block_n": 64,
-            "block_k": 128,
-            "num_stages": 4,
+            "block_k": 64,
+            "num_stages": 6,
         },
         (128, 7168, 2048, False, True, "bfloat16"): {
             "simple": True,
@@ -1787,54 +1812,6 @@ class GemmKernel(Kernel):
             "num_stages": 4,
             "threads": 128,
             "panel_size": 8,
-        },
-        (4096, 2112, 7168, False, True, "bfloat16"): {
-            "coop2": True,
-            "block_n": 192,
-            "block_k": 64,
-            "num_stages": 5,
-            "group_size_m": 16,
-            "stage_n": 96,
-        },
-        (4096, 4096, 7168, False, True, "float16"): {
-            "coop2": True,
-            "block_n": 256,
-            "block_k": 64,
-            "num_stages": 3,
-            "group_size_m": 16,
-            "stage_n": 0,
-        },
-        (4096, 4096, 7168, False, True, "bfloat16"): {
-            "coop2": True,
-            "block_n": 256,
-            "block_k": 64,
-            "num_stages": 3,
-            "group_size_m": 16,
-            "stage_n": 0,
-        },
-        (4096, 7168, 2048, False, True, "bfloat16"): {
-            "coop2": True,
-            "block_n": 256,
-            "block_k": 64,
-            "num_stages": 4,
-            "group_size_m": 16,
-            "stage_n": 128,
-        },
-        (4096, 7168, 16384, False, True, "bfloat16"): {
-            "coop2": True,
-            "block_n": 256,
-            "block_k": 64,
-            "num_stages": 3,
-            "group_size_m": 16,
-            "stage_n": 0,
-        },
-        (4096, 24576, 1536, False, True, "bfloat16"): {
-            "coop2": True,
-            "block_n": 256,
-            "block_k": 64,
-            "num_stages": 3,
-            "group_size_m": 16,
-            "stage_n": 0,
         },
     }
 
@@ -2009,6 +1986,7 @@ def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> 
     ) -> Callable:
         tile_k = 128 // (str2dtype[dtype].itemsize * 8)
         block_k = reduce_threads * tile_k
+        b_evict = "evict_first"  # one N range per CTA, so B is read once
 
         @T.prim_func
         def _gemm_small_batch_main(
@@ -2025,7 +2003,12 @@ def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> 
                 a_local = T.alloc_local((m, tile_k), dtype)
 
                 for bk in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
-                    T.copy(b[bn * block_n, bk * block_k], b_shared, disable_tma=True)
+                    T.copy(
+                        b[bn * block_n, bk * block_k],
+                        b_shared,
+                        disable_tma=True,
+                        eviction_policy=b_evict,
+                    )
                     for mi in T.serial(m):
                         for _k in T.vectorized(tile_k):
                             a_local[mi, _k] = a[mi, bk * block_k + tk * tile_k + _k]
