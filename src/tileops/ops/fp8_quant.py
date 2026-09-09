@@ -11,6 +11,19 @@ __all__ = ["FP8QuantFwdOp"]
 
 
 class FP8QuantFwdOp(Op):
+    """Quantize each row of an index tensor to ``float8_e4m3fn`` against its own maximum.
+
+    A row's scale is its absolute maximum, floored at ``1e-4``, over 448. For a row of
+    finite values the returned scale is exact, and the quantized tensor is within one
+    ``float8_e4m3fn`` code of ``clamp(input / scale, -448, 448)`` element by element: the
+    row is scaled by the reciprocal of its scale rather than divided by it, so an element
+    on a boundary between two codes can be assigned either one.
+
+    A row holding an infinity or a NaN is not quantized against a propagated scale. The
+    reduction ignores NaN, so such a row takes the maximum of its finite values, and every
+    element that would be NaN saturates to -448 instead.
+    """
+
     def __init__(self, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False):
         """Build the op. Shapes and dtype are taken from the first call.
 
