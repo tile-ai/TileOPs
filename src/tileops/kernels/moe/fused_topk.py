@@ -46,6 +46,7 @@ def _fused_topk_kernel(
     num_experts,
     top_k,
     scoring_func,
+    input_dtype,
     with_correction_bias=False,
     renormalize=False,
 ):
@@ -79,7 +80,7 @@ def _fused_topk_kernel(
 
             @T.prim_func
             def main(
-                gating_output: T.Tensor([num_tokens, num_experts], "float32"),
+                gating_output: T.Tensor([num_tokens, num_experts], input_dtype),
                 correction_bias: T.Tensor([num_experts], "float32"),
                 topk_weights: T.Tensor([num_tokens, top_k], "float32"),
                 topk_ids: T.Tensor([num_tokens, top_k], "int32"),
@@ -188,7 +189,7 @@ def _fused_topk_kernel(
 
             @T.prim_func
             def main(
-                gating_output: T.Tensor([num_tokens, num_experts], "float32"),
+                gating_output: T.Tensor([num_tokens, num_experts], input_dtype),
                 topk_weights: T.Tensor([num_tokens, top_k], "float32"),
                 topk_ids: T.Tensor([num_tokens, top_k], "int32"),
             ):
@@ -322,17 +323,13 @@ class FusedTopKKernel(Kernel):
         with_correction_bias: If True, accept a per-expert correction_bias tensor in
             forward(). Adds bias to sigmoid scores for expert selection while writing
             unbiased sigmoid scores to topk_weights. Requires scoring_func="sigmoid".
+        dtype: Input logits dtype; routing arithmetic remains float32.
         config: Optional kernel config dict (key: "TOKENS_PER_BLOCK").
         tune: Whether to autotune. ``TOKENS_PER_BLOCK`` is pinned to the
             one-warp-per-token mapping the algorithm relies on, so
             ``autotune_configs`` is undefined and ``tune=True`` degrades to the
             default config with a warning from ``Kernel.init_config``.
 
-    Note:
-        ``dtype`` does not apply. Routing arithmetic is fixed at float32 and
-        the outputs are float32 weights plus int32 expert ids; ``forward()``
-        up-casts ``gating_output`` of any float dtype before the launch, so no
-        element type is selected at construction.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -345,10 +342,12 @@ class FusedTopKKernel(Kernel):
         scoring_func: str = "softmax",
         renormalize: bool = False,
         with_correction_bias: bool = False,
+        dtype: torch.dtype = torch.float32,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: Optional[int] = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         if scoring_func not in _SCORING_FUNCS:
             raise ValueError(
                 f"Unsupported scoring_func '{scoring_func}'. Expected one of {_SCORING_FUNCS}."
@@ -367,9 +366,16 @@ class FusedTopKKernel(Kernel):
         self.scoring_func = scoring_func
         self.renormalize = renormalize
         self.with_correction_bias = with_correction_bias
+        self.dtype = dtype
 
         self._kernel_fn = _fused_topk_kernel(
-            num_tokens, num_experts, top_k, scoring_func, with_correction_bias, renormalize
+            num_tokens,
+            num_experts,
+            top_k,
+            scoring_func,
+            self.dtype_str,
+            with_correction_bias,
+            renormalize,
         )
         self.init_config(config, tune)
 
@@ -412,17 +418,14 @@ class FusedTopKKernel(Kernel):
                 "correction_bias must be None when with_correction_bias=False"
             )
 
-        logits_f32 = gating_output.to(torch.float32)
-
-        dev = logits_f32.device
+        dev = gating_output.device
         topk_weights = torch.empty(self.num_tokens, self.top_k, dtype=torch.float32, device=dev)
         topk_ids = torch.empty(self.num_tokens, self.top_k, dtype=torch.int32, device=dev)
 
         fn = self._kernel_fn(self.config["TOKENS_PER_BLOCK"])
         if self.with_correction_bias:
-            bias_f32 = correction_bias.to(torch.float32)
-            fn(logits_f32, bias_f32, topk_weights, topk_ids)
+            fn(gating_output, correction_bias, topk_weights, topk_ids)
         else:
-            fn(logits_f32, topk_weights, topk_ids)
+            fn(gating_output, topk_weights, topk_ids)
 
         return topk_weights, topk_ids

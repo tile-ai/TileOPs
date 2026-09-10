@@ -86,6 +86,7 @@ class FusedTopKOp(Op):
             self.renormalize,
             device_index,
             with_correction_bias,
+            inputs[0].dtype,
         )
         return self.get_or_build_kernel(
             "fused_topk_kernel",
@@ -98,7 +99,9 @@ class FusedTopKOp(Op):
                 scoring_func=self.scoring_func,
                 renormalize=self.renormalize,
                 with_correction_bias=with_correction_bias,
+                dtype=inputs[0].dtype,
                 config=self.config,
+                device_index=device_index,
             ),
         )
 
