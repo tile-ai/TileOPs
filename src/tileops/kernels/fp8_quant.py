@@ -1,5 +1,5 @@
 import functools
-from typing import Optional, Tuple
+from typing import ClassVar, Optional, Tuple
 
 import tilelang
 import tilelang.language as T
@@ -10,28 +10,14 @@ from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["FP8QuantKernel"]
 
-# Lower bound on a row's absolute maximum, so an all-zero row still has a finite scale.
+# This operator's floor on a row's absolute maximum, which leaves an all-zero row a finite
+# scale. It belongs to the quantization rule ``workloads/fp8_quant.py`` states, not to the
+# fp8 format, so no other kernel should read it. Module scope because the body reads it.
 _AMAX_FLOOR = 1e-4
-# Threads a block runs. ``_block_rows`` reads it, so the two are one launch rule.
-_THREADS = 128
-
-
-def _block_rows(seq_len_kv: int, row_bytes: int) -> int:
-    """Rows per block: the most whose bytes fit one vector access per thread.
-
-    A power of two, so a thread's share of the tile is a whole number of elements wherever
-    the row width allows one, and never more rows than the axis holds. Every width serves
-    every ``seq_len_kv``: the body clamps the rows it reads and tests the rows it writes.
-    """
-    widest = min(_THREADS * VECTOR_ACCESS_BYTES // row_bytes, seq_len_kv)
-    block_m = 1
-    while block_m * 2 <= widest:
-        block_m *= 2
-    return block_m
 
 
 @functools.lru_cache(maxsize=32)
-def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str):
+def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str, threads: int):
     @tilelang.jit(out_idx=[1, 2])
     def _fp8_quant_fwd_func(block_m):
         if block_m < 1:
@@ -47,7 +33,7 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str):
             scale_tensor: T.Tensor[(batch, seq_len_kv, kv_group), scale_dtype],
             output_tensor: T.Tensor[(batch, seq_len_kv, kv_group, index_dim), out_dtype],
         ):
-            with T.Kernel(batch, T.ceildiv(seq_len_kv, block_m), kv_group, threads=_THREADS) as (
+            with T.Kernel(batch, T.ceildiv(seq_len_kv, block_m), kv_group, threads=threads) as (
                 bx,
                 pid_m,
                 g,
@@ -58,15 +44,13 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str):
                 scale_local = T.alloc_fragment((block_m,), scale_dtype)
                 recip_local = T.alloc_fragment((block_m,), scale_dtype)
 
-                # Every read the block makes happens before any of its writes: the row is
-                # read once here, and no output is stored until the scale has settled.
-                #
-                # A block past the end of the axis re-reads its last row rather than
-                # testing the index, which keeps the access provably in range and so
-                # vectorized. The rows it must not produce are dropped at the stores.
+                # Every read the block makes precedes every write it makes. A block reaching
+                # past the axis re-reads its last row, so the load needs no test of the
+                # index; the rows it must not produce are dropped at the stores instead.
                 for i, j in T.Parallel(block_m, index_dim):
-                    row = T.min(pid_m * block_m + i, seq_len_kv - 1)
-                    input_local[i, j] = input_tensor[bx, row, g, j]
+                    input_local[i, j] = input_tensor[
+                        bx, T.min(pid_m * block_m + i, seq_len_kv - 1), g, j
+                    ]
 
                 T.reduce_absmax(input_local, amax_local, dim=1)
                 for i in T.Parallel(block_m):
@@ -74,9 +58,9 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str):
                     scale_local[i] = amax_local[i] / fp8_max
                     recip_local[i] = 1.0 / scale_local[i]
 
-                # Multiplying by the row's reciprocal is not bitwise the reference's divide
-                # by the scale: an element on an fp8 rounding boundary can land one code
-                # away. ``FP8QuantFwdOp`` states the bound this holds to.
+                # This multiply is not the reference's divide by the scale. The two differ
+                # by at most a few float32 ulp, which moves an element at most to the next
+                # fp8 code; ``FP8QuantFwdOp`` publishes that bound.
                 for i, j in T.Parallel(block_m, index_dim):
                     output_local[i, j] = T.clamp(
                         input_local[i, j] * recip_local[i], fp8_min, fp8_max
@@ -101,16 +85,17 @@ def _fp8_quant_wrapped_kernel(
     kv_group: int,
     index_dim: int,
     in_dtype: str,
+    threads: int,
     block_m: int,
     input_tensor: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    return _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype)(block_m)(
+    return _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype, threads)(block_m)(
         input_tensor
     )
 
 
 @_fp8_quant_wrapped_kernel.register_fake
-def _(batch, seq_len_kv, kv_group, index_dim, in_dtype, block_m, *inputs):
+def _(batch, seq_len_kv, kv_group, index_dim, in_dtype, threads, block_m, *inputs):
     return torch.empty(
         (batch, seq_len_kv, kv_group), dtype=torch.float32, device=inputs[0].device
     ), torch.empty(
@@ -121,10 +106,9 @@ def _(batch, seq_len_kv, kv_group, index_dim, in_dtype, block_m, *inputs):
 class FP8QuantKernel(Kernel):
     """Per-group fp8 quantization of a $[B \\times S\\_kv \\times G \\times D]$ index tensor.
 
-    A block owns whole rows and reduces each of them across the threads holding it. The
-    default ``block_m`` follows from the row width: it is the number of rows whose bytes fit
-    one vector access per thread. Any positive width serves any ``seq_len_kv``, the block
-    that overruns the axis re-reading its last row and writing none of it.
+    A block owns whole rows and reduces each of them across the threads holding it. Any
+    positive ``block_m`` serves any ``seq_len_kv``, the block that reaches past the axis
+    re-reading its last row and writing none of it.
 
     Args:
         batch: Batch size.
@@ -143,6 +127,11 @@ class FP8QuantKernel(Kernel):
 
     supported_archs: list[int] = [90]
 
+    # This kernel's launch, not a property of the device: four warps is the block a row
+    # reduction fills, and ``_block_rows`` sizes the tile against it. Held here so that a
+    # later kernel does not read either as a general truth.
+    _THREADS: ClassVar[int] = 128
+
     def __init__(
         self,
         batch: int,
@@ -160,13 +149,31 @@ class FP8QuantKernel(Kernel):
         self.index_dim = index_dim
         self.dtype = dtype
         self.kernel = _fp8_quant_kernel(
-            self.batch, self.seq_len_kv, self.kv_group, self.index_dim, self.dtype_str
+            self.batch,
+            self.seq_len_kv,
+            self.kv_group,
+            self.index_dim,
+            self.dtype_str,
+            self._THREADS,
         )
         self.init_config(config, tune)
 
+    def _block_rows(self) -> int:
+        """Rows a block owns: the largest power of two the access budget and the axis allow.
+
+        The budget is one ``VECTOR_ACCESS_BYTES`` access per thread. A row wider than the
+        whole block's budget, or an axis shorter than two rows, yields the floor of one.
+        """
+        row_bytes = self.index_dim * self.dtype.itemsize
+        widest = min(self._THREADS * VECTOR_ACCESS_BYTES // row_bytes, self.seq_len_kv)
+        block_m = 1
+        while block_m * 2 <= widest:
+            block_m *= 2
+        return block_m
+
     @property
     def default_config(self) -> dict:
-        return {"block_m": _block_rows(self.seq_len_kv, self.index_dim * self.dtype.itemsize)}
+        return {"block_m": self._block_rows()}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -179,6 +186,7 @@ class FP8QuantKernel(Kernel):
             self.kv_group,
             self.index_dim,
             self.dtype_str,
+            self._THREADS,
             self.config["block_m"],
             input_tensor,
         )
