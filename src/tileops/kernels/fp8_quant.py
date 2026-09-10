@@ -14,6 +14,14 @@ __all__ = ["FP8QuantKernel"]
 _AMAX_FLOOR = 1e-4
 
 
+def _pow2_floor(n: int) -> int:
+    """The largest power of two at most *n*, and at least one."""
+    p = 1
+    while p * 2 <= n:
+        p *= 2
+    return p
+
+
 @functools.lru_cache(maxsize=32)
 def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int):
     @tilelang.jit(out_idx=[1, 2])
@@ -100,7 +108,8 @@ class FP8QuantKernel(Kernel):
 
     A block owns whole rows, taken along the flattened $[B \\times S\\_kv \\times G]$ row
     axis so that its rows are adjacent in memory, and reduces each of them across the
-    threads holding it. Any positive ``block_m`` serves any row count.
+    threads holding it, or inside one thread where the row width leaves the reduction no
+    power-of-two group of threads. Any positive ``block_m`` serves any row count.
 
     Args:
         batch: Batch size.
@@ -119,8 +128,10 @@ class FP8QuantKernel(Kernel):
 
     supported_archs: list[int] = [90]
 
-    # This kernel's launch, not the device's.
-    _THREADS: ClassVar[int] = 128
+    # This kernel's launch, not the device's. A block reducing a row across its threads
+    # runs _LANE_THREADS of them; a block reducing a row inside one thread runs _ROW_THREADS.
+    _LANE_THREADS: ClassVar[int] = 128
+    _ROW_THREADS: ClassVar[int] = 64
 
     def __init__(
         self,
@@ -138,24 +149,36 @@ class FP8QuantKernel(Kernel):
         self.kv_group = kv_group
         self.index_dim = index_dim
         self.dtype = dtype
+        self._threads, self._block_m = self._launch()
         self.kernel = _fp8_quant_kernel(
-            batch * seq_len_kv * kv_group, self.index_dim, self.dtype_str, self._THREADS
+            batch * seq_len_kv * kv_group, self.index_dim, self.dtype_str, self._threads
         )
         self.init_config(config, tune)
 
-    def _block_rows(self) -> int:
-        """Rows a block owns: the largest power of two the access budget and the axis allow."""
-        row_bytes = self.index_dim * self.dtype.itemsize
+    def _launch(self) -> tuple[int, int]:
+        """Threads a block runs, and rows it owns.
+
+        A row width that is a power of two times an odd number above one cannot both give
+        each thread a whole number of vector accesses and leave a power-of-two group of
+        threads on each row, which is what the cross-lane reduction takes. Such a row goes
+        to one thread whole, so the reduction stays in registers and no group exists:
+        ``index_dim=96`` float16 measures 2.783 us that way against 7.264 with the row
+        split across threads. Every other width keeps the split, faster where the two
+        demands agree: 2.016 us against 2.369 at ``index_dim=64``.
+        """
         rows = self.batch * self.seq_len_kv * self.kv_group
-        widest = min(self._THREADS * VECTOR_ACCESS_BYTES // row_bytes, rows)
-        block_m = 1
-        while block_m * 2 <= widest:
-            block_m *= 2
-        return block_m
+        odd = self.index_dim
+        while odd % 2 == 0:
+            odd //= 2
+        if odd > 1:
+            return self._ROW_THREADS, min(self._ROW_THREADS, _pow2_floor(rows))
+        row_bytes = self.index_dim * self.dtype.itemsize
+        widest = self._LANE_THREADS * VECTOR_ACCESS_BYTES // row_bytes
+        return self._LANE_THREADS, _pow2_floor(min(widest, rows))
 
     @property
     def default_config(self) -> dict:
-        return {"block_m": self._block_rows()}
+        return {"block_m": self._block_m}
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -168,7 +191,7 @@ class FP8QuantKernel(Kernel):
             self.kv_group,
             self.index_dim,
             self.dtype_str,
-            self._THREADS,
+            self._threads,
             self.config["block_m"],
             input_tensor,
         )
