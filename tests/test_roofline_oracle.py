@@ -278,7 +278,7 @@ PENDING = frozenset(
         "FloorFwdOp",
         "FusedAddLayerNormFwdOp",
         "FusedAddRMSNormFwdOp",
-        "FusedMoEExpertsNopadPersistent3WGFwdOp",
+        "FusedMoEExpertsFwdOp",
         "FusedTopKOp",
         "GLABwdOp",
         "GLADecodeFwdOp",

@@ -1,9 +1,9 @@
 """Routed expert implementations and supporting operations."""
 
 from .fused_routed_expert import (
-    FusedMoEExpertsNopadPersistent3WGFwdOp,
+    FusedMoEExpertsFwdOp,
 )
 
 __all__ = [
-    "FusedMoEExpertsNopadPersistent3WGFwdOp",
+    "FusedMoEExpertsFwdOp",
 ]

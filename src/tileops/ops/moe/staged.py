@@ -9,9 +9,9 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import (
+    MoeGroupedGemmKernel,
     MoePrePermuteContiguousKernel,
     MoeUnpermuteKernel,
-    SM90MGroupedGemmFwdKernel,
 )
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
 from tileops.ops.compile_boundary import get_instance
@@ -277,7 +277,7 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
 
     @property
     def default_kernel_map(self) -> dict[str, Kernel]:
-        return {"sm90_gemm": SM90MGroupedGemmFwdKernel}
+        return {"grouped_gemm": MoeGroupedGemmKernel}
 
     def __init__(
         self,

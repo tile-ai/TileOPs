@@ -104,7 +104,7 @@ def _run_bench(
 
     forward_args_tileops = (hidden, gating, w_gate_up, w_down, correction_bias)
 
-    # -- TileOPs nopad -----------------------------------------------------
+    # -- TileOPs -----------------------------------------------------------
     op = FusedMoeFwdOp(**common_kwargs)
     bm = ManifestBenchmark(op, test)
     op(*forward_args_tileops)  # warmup / JIT compile

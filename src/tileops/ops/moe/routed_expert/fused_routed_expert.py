@@ -23,14 +23,14 @@ from ..abc import (
 from ..contracts import ContiguousLayoutSpec, RoutingEpilogueSpec
 from ..staged import MoeExpertMLPFwdOp, MoePostPermuteFwdOp, MoePrePermuteFwdOp
 
-__all__ = ["FusedMoEExpertsNopadPersistent3WGFwdOp"]
+__all__ = ["FusedMoEExpertsFwdOp"]
 
 
-class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
+class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
     """Expert MLP on the tight (T*K rows, no-pad) layout.
 
     The local pipeline is the staged PrePermute, the staged Expert MLP (two grouped
-    GEMMs on the SM90 template around the gated activation) and the staged
+    GEMMs around the gated activation) and the staged
     PostPermute, all on one ``physical_ends`` metadata tensor.
 
     forward() output shape is (T, H): reduction is done internally by the
@@ -39,7 +39,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
 
     Example:
         ```python linenums="1"
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=512, num_experts=128, top_k=8,
             hidden_size=7168, ffn_size=2048,
         )

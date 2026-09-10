@@ -1,4 +1,4 @@
-"""Template parameters and config selection for the SM90 grouped GEMM template.
+"""Template parameters and config selection for the persistent grouped GEMM template.
 
 Ported from DeepGEMM: the kernel template ``sm90_bf16_gemm_impl`` takes every
 structural choice as a template parameter, and the host side (``SM90ArchSpec``

@@ -1,6 +1,6 @@
 """Op-level tests for the staged grouped GEMM and expert MLP on the SM90 template.
 
-``MoeGroupedGemmFwdOp`` selects ``SM90MGroupedGemmFwdKernel``, the adapter over the
+``MoeGroupedGemmFwdOp`` selects ``MoeGroupedGemmKernel``, the adapter over the
 SM90 template, through the staged candidate protocol; these tests route every layout
 it claims through the op and check the rows the layout defines against the
 workload's per-expert reference.
@@ -9,7 +9,8 @@ workload's per-expert reference.
 import pytest
 import torch
 
-from tileops.kernels.moe import SM90GemmFwdKernel, SM90MGroupedGemmFwdKernel
+from tileops.kernels.grouped_gemm import GroupedGemmTemplate
+from tileops.kernels.moe import MoeGroupedGemmKernel
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
     MaskedLayoutSpec,
@@ -84,9 +85,9 @@ def test_grouped_gemm_runs_each_layout_through_the_op(layout_name, layout_args, 
     out = op(a, b, metadata)
     assert out.dtype is dtype and out.shape == (*a_shape[:-1], 256)
     _assert_valid_rows(out, workload.ref_program(a, b, metadata), workload.valid_rows)
-    (kernel,) = op.built_kernels("sm90_gemm").values()
-    assert isinstance(kernel, SM90MGroupedGemmFwdKernel)
-    assert isinstance(kernel.inner, SM90GemmFwdKernel)
+    (kernel,) = op.built_kernels("grouped_gemm").values()
+    assert isinstance(kernel, MoeGroupedGemmKernel)
+    assert isinstance(kernel.inner, GroupedGemmTemplate)
     # A second call with a new row count reuses the instance: M is not in the key.
     if layout_name == "masked":
         a2_shape = a_shape
@@ -103,7 +104,7 @@ def test_grouped_gemm_runs_each_layout_through_the_op(layout_name, layout_args, 
         **layout_args,
     ).gen_inputs()
     op(a2, b2, metadata2)
-    assert len(op.built_kernels("sm90_gemm")) == 1
+    assert len(op.built_kernels("grouped_gemm")) == 1
 
 
 @pytest.mark.smoke
@@ -118,7 +119,7 @@ def test_grouped_gemm_fuses_the_gated_activation(activation):
     out = op(a, b, metadata)
     assert out.shape == (600, 192)
     _assert_valid_rows(out, workload.ref_program(a, b, metadata), workload.valid_rows)
-    (kernel,) = op.built_kernels("sm90_gemm").values()
+    (kernel,) = op.built_kernels("grouped_gemm").values()
     assert kernel.inner.activation == activation
 
 
@@ -196,6 +197,6 @@ def test_expert_mlp_composes_two_template_gemms(dtype, activation):
     _assert_valid_rows(
         out, workload.ref_program(x, w_gate_up, w_down, metadata), workload.valid_rows
     )
-    (gate_up,) = op.gate_up.built_kernels("sm90_gemm").values()
-    (down,) = op.down.built_kernels("sm90_gemm").values()
+    (gate_up,) = op.gate_up.built_kernels("grouped_gemm").values()
+    (down,) = op.down.built_kernels("grouped_gemm").values()
     assert (gate_up.inner.activation, down.inner.activation) == (activation, "none")

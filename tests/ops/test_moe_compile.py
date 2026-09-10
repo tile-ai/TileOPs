@@ -12,7 +12,7 @@ Two assertions per op, both from a cold instance:
    ``torch_compile_fullgraph``.
 
 A composite registers no operator of its own, so the last test asserts the other
-half: the graph of ``FusedMoEExpertsNopadPersistent3WGFwdOp`` holds its leaves'
+half: the graph of ``FusedMoEExpertsFwdOp`` holds its leaves'
 operators and nothing else. ``FusedMoeFwdOp`` is absent because the routing op it
 builds has no boundary yet.
 """
@@ -34,7 +34,7 @@ from tileops.ops.moe import (
     MoePostPermuteFwdOp,
     MoePrePermuteFwdOp,
 )
-from tileops.ops.moe.routed_expert import FusedMoEExpertsNopadPersistent3WGFwdOp
+from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp
 
 _NUM_EXPERTS = 4
 _TOP_K = 2
@@ -193,7 +193,7 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
     target replaces.
     """
     num_experts, top_k, tokens, hidden, ffn = 4, 2, 4, 128, 128
-    experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+    experts = FusedMoEExpertsFwdOp(
         num_tokens=tokens,
         num_experts=num_experts,
         top_k=top_k,

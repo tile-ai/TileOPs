@@ -5,7 +5,7 @@ import torch
 from tileops.kernels.grouped_gemm import (
     GroupedGemmCall,
     GroupedGemmKernel,
-    SM90GroupedGemmKernel,
+    GroupedGemmPersistentKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
@@ -55,15 +55,15 @@ class GroupedGemmFwdOp(Op):
         self.dispatch_kernel(kernel_map)
         self.kernel = None
 
-    # The SM90 template serves every layout whose extents TMA can address; the
-    # general kernel takes what it refuses.
-    _KERNEL_KEYS = ("sm90_gemm", "grouped_gemm_kernel")
+    # The persistent kernel serves every layout whose extents TMA can address;
+    # the general kernel remains the fallback for every other call.
+    _KERNEL_KEYS = ("grouped_gemm_persistent", "grouped_gemm_kernel")
 
     @property
     def default_kernel_map(self) -> Dict:
         return {
             "grouped_gemm_kernel": GroupedGemmKernel,
-            "sm90_gemm": SM90GroupedGemmKernel,
+            "grouped_gemm_persistent": GroupedGemmPersistentKernel,
         }
 
     def _resolve_spec(

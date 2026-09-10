@@ -51,7 +51,7 @@ MoePermuteAlignFwdOp:
     kernel_map:
       permute_align_kernel: MoePermuteAlignKernel
 
-FusedMoEExpertsNopadPersistent3WGFwdOp:
+FusedMoEExpertsFwdOp:
   ref_api: "none"
   family: moe
   status: implemented
@@ -109,14 +109,14 @@ FusedMoEExpertsNopadPersistent3WGFwdOp:
     bytes: "(num_experts * 3 * ffn_size * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/moe/sm90_gemm.py
+    kernel: tileops/kernels/moe/grouped_gemm.py
     op: tileops/ops/moe/routed_expert/fused_routed_expert.py
     test: tests/ops/test_fused_moe_experts.py
     bench: benchmarks/ops/bench_fused_moe_experts.py
     bench_manifest_driven: true
     kernel_map:
       contiguous: MoePrePermuteContiguousKernel
-      sm90_gemm: SM90MGroupedGemmFwdKernel
+      grouped_gemm: MoeGroupedGemmKernel
       unpermute_kernel: MoeUnpermuteKernel
 
 FusedTopKOp:
@@ -225,7 +225,7 @@ FusedMoeFwdOp:
     kernel_map:
       fused_topk_kernel: FusedTopKKernel
       contiguous: MoePrePermuteContiguousKernel
-      sm90_gemm: SM90MGroupedGemmFwdKernel
+      grouped_gemm: MoeGroupedGemmKernel
       unpermute_kernel: MoeUnpermuteKernel
 
 MoePrePermuteFwdOp:
@@ -307,13 +307,13 @@ MoeGroupedGemmFwdOp:
   roofline:
     func: "tileops.perf.formulas.moe_grouped_gemm_roofline"
   source:
-    kernel: tileops/kernels/moe/sm90_gemm.py
+    kernel: tileops/kernels/moe/grouped_gemm.py
     op: tileops/ops/moe/staged.py
     test: tests/ops/test_moe_grouped_gemm.py
     bench: benchmarks/ops/bench_moe_staged.py
     bench_manifest_driven: true
     kernel_map:
-      sm90_gemm: SM90MGroupedGemmFwdKernel
+      grouped_gemm: MoeGroupedGemmKernel
 
 MoeExpertMLPFwdOp:
   ref_api: "none"
@@ -341,7 +341,7 @@ MoeExpertMLPFwdOp:
     - "layout_metadata.ndim == 1"
     - "output.shape == (*expert_input.shape[:-1], w_down.shape[1])"
   workloads:
-  # The shapes FusedMoEExpertsNopadPersistent3WGFwdOp declares, on the same tight rows.
+  # The shapes FusedMoEExpertsFwdOp declares, on the same tight rows.
   - {expert_input_shape: [4096, 7168], w_gate_up_shape: [128, 4096, 7168], w_down_shape: [128, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "qwen3-235b-decode"}
   - {expert_input_shape: [32768, 7168], w_gate_up_shape: [128, 4096, 7168], w_down_shape: [128, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "qwen3-235b-prefill"}
   - {expert_input_shape: [4096, 7168], w_gate_up_shape: [256, 4096, 7168], w_down_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-decode"}
@@ -349,13 +349,13 @@ MoeExpertMLPFwdOp:
   roofline:
     func: "tileops.perf.formulas.moe_expert_mlp_roofline"
   source:
-    kernel: tileops/kernels/moe/sm90_gemm.py
+    kernel: tileops/kernels/moe/grouped_gemm.py
     op: tileops/ops/moe/staged.py
     test: tests/ops/test_moe_grouped_gemm.py
     bench: benchmarks/ops/bench_moe_staged.py
     bench_manifest_driven: true
     kernel_map:
-      sm90_gemm: SM90MGroupedGemmFwdKernel
+      grouped_gemm: MoeGroupedGemmKernel
 
 MoePostPermuteFwdOp:
   ref_api: "none"

@@ -186,7 +186,7 @@ class FusedMoEExperts(Op, ABC):
         """Return the shape of the tensor written by forward().
 
         Implementations that perform internal unpermute + weighted reduction
-        (Nopad, Padded) return (T_prime, H).  No-EP: T_prime == T.
+        return (T_prime, H). No-EP implementations use T_prime == T.
         Implementations that do not reduce return (T_prime * topk, H).
         """
 

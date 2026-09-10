@@ -1,16 +1,17 @@
-"""The SM90 GEMM template behind ``GroupedGemmFwdOp``'s four layouts."""
+"""The persistent kernel behind ``GroupedGemmFwdOp``'s four layouts."""
 
 from typing import Optional
 
 import torch
 
+from tileops.kernels.grouped_gemm.heuristics import GemmType
+from tileops.kernels.grouped_gemm.template import GroupedGemmTemplate
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.moe.sm90_gemm import GemmType, SM90GemmFwdKernel
 
-__all__ = ["SM90GroupedGemmKernel"]
+__all__ = ["GroupedGemmPersistentKernel"]
 
 
-class SM90GroupedGemmKernel(Kernel):
+class GroupedGemmPersistentKernel(Kernel):
     """``GroupedGemmFwdOp``'s NT / NN / TN / TT on the SM90 GEMM template.
 
     An adapter: the op builds a kernel as ``cls(batch_sum, batch_count, n, k, ...)``
@@ -60,7 +61,7 @@ class SM90GroupedGemmKernel(Kernel):
         self.transpose_a = transpose_a
         self.transpose_b = transpose_b
         gemm_type = GemmType.K_GROUPED_CONTIGUOUS if transpose_a else GemmType.M_GROUPED_TIGHT_PSUM
-        self.inner = SM90GemmFwdKernel(gemm_type, num_groups=batch_count, tune=tune)
+        self.inner = GroupedGemmTemplate(gemm_type, num_groups=batch_count, tune=tune)
 
     def forward(
         self,

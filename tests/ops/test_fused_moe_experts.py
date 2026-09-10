@@ -1,4 +1,4 @@
-"""Tests for FusedMoEExpertsNopadPersistent3WGFwdOp and supporting ABCs."""
+"""Tests for FusedMoEExpertsFwdOp and supporting ABCs."""
 
 import pytest
 import torch
@@ -11,7 +11,7 @@ from tileops.ops.moe.abc import (
 from tileops.ops.moe.fused_moe import FusedMoeFwdOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert.fused_routed_expert import (
-    FusedMoEExpertsNopadPersistent3WGFwdOp,
+    FusedMoEExpertsFwdOp,
 )
 
 
@@ -137,7 +137,7 @@ class TestMoEPrepareAndFinalizeNoDPEP:
         assert torch.allclose(output, expert_out)
 
 
-# FusedMoEExpertsNopadPersistent3WGFwdOp
+# FusedMoEExpertsFwdOp
 
 
 @pytest.fixture
@@ -170,7 +170,7 @@ def moe_tensors(request):
     )
 
 
-class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
+class TestFusedMoEExpertsFwdOp:
     @pytest.mark.smoke
     @pytest.mark.smoke
     def test_the_decode_shaped_pipeline_matches_the_reference(self):
@@ -180,7 +180,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         the op around it — permute, weights, the two GEMMs and unpermute.
         """
         T_count, E, top_k, H, F_dim = 1024, 128, 2, 256, 1152
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=T_count,
             num_experts=E,
             top_k=top_k,
@@ -209,7 +209,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
     @pytest.mark.smoke
     def test_workspace_shapes(self, moe_meta):
         d = moe_meta
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=d["T"],
             num_experts=d["E"],
             top_k=d["K"],
@@ -222,7 +222,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
     @pytest.mark.smoke
     def test_output_shape(self, moe_meta):
         d = moe_meta
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=d["T"],
             num_experts=d["E"],
             top_k=d["K"],
@@ -234,7 +234,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
     @pytest.mark.smoke
     def test_make_weighted_reduce_is_noop(self, moe_meta):
         d = moe_meta
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=d["T"],
             num_experts=d["E"],
             top_k=d["K"],
@@ -247,7 +247,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
     def test_forward_matches_torch_ref(self, moe_tensors):
         """forward() output must match a per-expert PyTorch reference."""
         d = moe_tensors
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=d["T"],
             num_experts=d["E"],
             top_k=d["K"],
@@ -288,7 +288,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
         weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), dim=-1)
         ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
 
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=T,
             num_experts=E,
             top_k=K,
@@ -317,7 +317,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
     def test_forward_matches_torch_ref_activation(self, moe_tensors, activation):
         """forward() output matches PyTorch reference for each activation."""
         d = moe_tensors
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=d["T"],
             num_experts=d["E"],
             top_k=d["K"],
@@ -352,7 +352,7 @@ class TestFusedMoEExpertsNopadPersistent3WGFwdOp:
 
 class TestFusedMoeActivationInjection:
     def _make_experts(self, activation="silu_and_mul"):
-        return FusedMoEExpertsNopadPersistent3WGFwdOp(
+        return FusedMoEExpertsFwdOp(
             num_tokens=128,
             num_experts=4,
             top_k=2,

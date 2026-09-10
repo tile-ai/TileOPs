@@ -161,10 +161,11 @@ def test_supply_prog_keeps_every_row_in_the_k_loop():
 @pytest.mark.parametrize(
     "numel, n, k, transpose_a, transpose_b, expected",
     [
-        (4096, 4096, 4096, False, True, "sm90_gemm"),
-        (4096, 4000, 4096, False, True, "sm90_gemm"),  # N off the tile grid still runs
-        (4096, 4096, 4096, False, False, "sm90_gemm"),  # NN
-        (4096, 4096, 4096, True, False, "sm90_gemm"),  # TN
+        (4096, 4096, 4096, False, True, "grouped_gemm_persistent"),
+        (4096, 4000, 4096, False, True, "grouped_gemm_persistent"),  # N off-grid
+        (4096, 4096, 4096, False, False, "grouped_gemm_persistent"),  # NN
+        (4096, 4096, 4096, True, False, "grouped_gemm_persistent"),  # TN
+        (4096, 4096, 4096, True, True, "grouped_gemm_persistent"),  # TT
         (4099, 4096, 4096, True, True, "grouped_gemm_kernel"),  # TT: b's row pitch is the K sum
         (4096, 4096, 4100, False, True, "grouped_gemm_kernel"),  # K TMA cannot address
     ],

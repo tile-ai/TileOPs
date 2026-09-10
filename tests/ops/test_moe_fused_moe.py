@@ -189,7 +189,7 @@ def test_fused_moe_qwen3(
     w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
 
-    op_nopad = FusedMoeFwdOp(
+    op = FusedMoeFwdOp(
         num_tokens=num_tokens,
         num_experts=num_experts,
         top_k=top_k,
@@ -199,17 +199,17 @@ def test_fused_moe_qwen3(
         renormalize=renormalize,
     )
 
-    out_nopad = op_nopad(hidden, gating, w_gate_up, w_down)
+    out = op(hidden, gating, w_gate_up, w_down)
 
-    assert out_nopad.shape == (num_tokens, hidden_size)
-    assert out_nopad.dtype == dtype
+    assert out.shape == (num_tokens, hidden_size)
+    assert out.dtype == dtype
 
     # Reference using the same FusedTopKOp routing
     fk = FusedTopKOp(top_k, scoring_func, renormalize)
     topk_weights, topk_ids = fk(gating)
     ref = _ref_moe_ffn(hidden, w_gate_up, w_down, topk_weights, topk_ids.long())
 
-    torch.testing.assert_close(out_nopad.float(), ref.float(), rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(out.float(), ref.float(), rtol=1e-2, atol=1e-2)
 
     if _VLLM_AVAILABLE and scoring_func == "softmax":
         out_vllm = _vllm_fused_experts(
@@ -219,7 +219,7 @@ def test_fused_moe_qwen3(
             topk_weights,
             topk_ids,
         ).to(dtype)
-        torch.testing.assert_close(out_nopad.float(), out_vllm.float(), rtol=1e-2, atol=1e-2)
+        torch.testing.assert_close(out.float(), out_vllm.float(), rtol=1e-2, atol=1e-2)
 
 
 # Cases for the FusedMoe non-determinism regression. The cooperative 3WG
@@ -411,7 +411,7 @@ def test_fused_moe_kimi(
     w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
 
-    op_nopad = FusedMoeFwdOp(
+    op = FusedMoeFwdOp(
         num_tokens=num_tokens,
         num_experts=num_experts,
         top_k=top_k,
@@ -422,10 +422,10 @@ def test_fused_moe_kimi(
         routed_scaling_factor=routed_scaling_factor,
     )
 
-    out_nopad = op_nopad(hidden, gating, w_gate_up, w_down, correction_bias)
+    out = op(hidden, gating, w_gate_up, w_down, correction_bias)
 
-    assert out_nopad.shape == (num_tokens, hidden_size)
-    assert out_nopad.dtype == dtype
+    assert out.shape == (num_tokens, hidden_size)
+    assert out.dtype == dtype
 
     # Reference using FusedTopKOp for consistent routing
     fk = FusedTopKOp(top_k, "sigmoid", True)
@@ -434,7 +434,7 @@ def test_fused_moe_kimi(
     if routed_scaling_factor != 1.0:
         ref = ref * routed_scaling_factor
 
-    torch.testing.assert_close(out_nopad.float(), ref.float(), rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(out.float(), ref.float(), rtol=1e-2, atol=1e-2)
 
 
 # correction_bias routing precision
