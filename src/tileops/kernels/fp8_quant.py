@@ -15,7 +15,7 @@ _AMAX_FLOOR = 1e-4
 
 
 @functools.lru_cache(maxsize=32)
-def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str, threads: int):
+def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int):
     @tilelang.jit(out_idx=[1, 2])
     def _fp8_quant_fwd_func(block_m):
         if block_m < 1:
@@ -27,15 +27,11 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str, thr
 
         @T.prim_func
         def _fp8_quant_fwd_main(
-            input_tensor: T.Tensor[(batch, seq_len_kv, kv_group, index_dim), in_dtype],
-            scale_tensor: T.Tensor[(batch, seq_len_kv, kv_group), scale_dtype],
-            output_tensor: T.Tensor[(batch, seq_len_kv, kv_group, index_dim), out_dtype],
+            input_tensor: T.Tensor[(rows, index_dim), in_dtype],
+            scale_tensor: T.Tensor[(rows,), scale_dtype],
+            output_tensor: T.Tensor[(rows, index_dim), out_dtype],
         ):
-            with T.Kernel(batch, T.ceildiv(seq_len_kv, block_m), kv_group, threads=threads) as (
-                bx,
-                pid_m,
-                g,
-            ):
+            with T.Kernel(T.ceildiv(rows, block_m), threads=threads) as pid_m:
                 input_local = T.alloc_fragment((block_m, index_dim), in_dtype)
                 output_local = T.alloc_fragment((block_m, index_dim), out_dtype)
                 amax_local = T.alloc_fragment((block_m,), scale_dtype)
@@ -44,9 +40,7 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str, thr
 
                 # A block past the axis re-reads its last row; the stores drop those rows.
                 for i, j in T.Parallel(block_m, index_dim):
-                    input_local[i, j] = input_tensor[
-                        bx, T.min(pid_m * block_m + i, seq_len_kv - 1), g, j
-                    ]
+                    input_local[i, j] = input_tensor[T.min(pid_m * block_m + i, rows - 1), j]
 
                 T.reduce_absmax(input_local, amax_local, dim=1)
                 for i in T.Parallel(block_m):
@@ -61,11 +55,11 @@ def _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype: str, thr
                     )
 
                 for i in T.Parallel(block_m):
-                    if pid_m * block_m + i < seq_len_kv:
-                        scale_tensor[bx, pid_m * block_m + i, g] = scale_local[i]
+                    if pid_m * block_m + i < rows:
+                        scale_tensor[pid_m * block_m + i] = scale_local[i]
                 for i, j in T.Parallel(block_m, index_dim):
-                    if pid_m * block_m + i < seq_len_kv:
-                        output_tensor[bx, pid_m * block_m + i, g, j] = output_local[i, j]
+                    if pid_m * block_m + i < rows:
+                        output_tensor[pid_m * block_m + i, j] = output_local[i, j]
 
         return _fp8_quant_fwd_main
 
@@ -83,8 +77,12 @@ def _fp8_quant_wrapped_kernel(
     block_m: int,
     input_tensor: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    return _fp8_quant_kernel(batch, seq_len_kv, kv_group, index_dim, in_dtype, threads)(block_m)(
-        input_tensor
+    rows = batch * seq_len_kv * kv_group
+    scale, quant = _fp8_quant_kernel(rows, index_dim, in_dtype, threads)(block_m)(
+        input_tensor.view(rows, index_dim)
+    )
+    return scale.view(batch, seq_len_kv, kv_group), quant.view(
+        batch, seq_len_kv, kv_group, index_dim
     )
 
 
@@ -100,8 +98,9 @@ def _(batch, seq_len_kv, kv_group, index_dim, in_dtype, threads, block_m, *input
 class FP8QuantKernel(Kernel):
     """Per-group fp8 quantization of a $[B \\times S\\_kv \\times G \\times D]$ index tensor.
 
-    A block owns whole rows and reduces each of them across the threads holding it. Any
-    positive ``block_m`` serves any ``seq_len_kv``.
+    A block owns whole rows, taken along the flattened $[B \\times S\\_kv \\times G]$ row
+    axis so that its rows are adjacent in memory, and reduces each of them across the
+    threads holding it. Any positive ``block_m`` serves any row count.
 
     Args:
         batch: Batch size.
@@ -140,19 +139,15 @@ class FP8QuantKernel(Kernel):
         self.index_dim = index_dim
         self.dtype = dtype
         self.kernel = _fp8_quant_kernel(
-            self.batch,
-            self.seq_len_kv,
-            self.kv_group,
-            self.index_dim,
-            self.dtype_str,
-            self._THREADS,
+            batch * seq_len_kv * kv_group, self.index_dim, self.dtype_str, self._THREADS
         )
         self.init_config(config, tune)
 
     def _block_rows(self) -> int:
         """Rows a block owns: the largest power of two the access budget and the axis allow."""
         row_bytes = self.index_dim * self.dtype.itemsize
-        widest = min(self._THREADS * VECTOR_ACCESS_BYTES // row_bytes, self.seq_len_kv)
+        rows = self.batch * self.seq_len_kv * self.kv_group
+        widest = min(self._THREADS * VECTOR_ACCESS_BYTES // row_bytes, rows)
         block_m = 1
         while block_m * 2 <= widest:
             block_m *= 2
