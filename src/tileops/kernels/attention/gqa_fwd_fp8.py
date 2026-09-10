@@ -8,6 +8,7 @@ import torch
 
 from ..kernel_base import Kernel
 from .call_spec import ATTENTION_DTYPES
+from .gqa_dense import make_dense_qk_rope_preprocessor
 from .online_softmax import (
     LOG2E,
     make_online_softmax_with_score_scale,
@@ -987,8 +988,21 @@ class GQADenseFP8Kernel(Kernel):
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
         self.fuse_rope = fuse_rope
-        del max_position, rotary_dim, rope_layout
         self._validate_spec()
+        self.rope = make_dense_qk_rope_preprocessor(
+            fuse_rope=fuse_rope,
+            batch=batch,
+            heads=heads,
+            heads_kv=heads_kv,
+            seq_len_q=seq_len_q,
+            seq_len_kv=seq_len_kv,
+            dim=dim,
+            max_position=max_position,
+            rotary_dim=rotary_dim,
+            rope_layout=rope_layout,
+            dtype="float8_e4m3fn",
+            rope_dtype=self.dtype_str,
+        )
         self.init_config(config, tune)
 
     def _validate_spec(self) -> None:
@@ -1000,8 +1014,8 @@ class GQADenseFP8Kernel(Kernel):
             raise ValueError("native-FP8 Dense GQA outputs float16 or bfloat16")
         if self.is_causal and self.seq_len_q > self.seq_len_kv:
             raise ValueError("causal FP8 Dense GQA requires seq_len_q <= seq_len_kv")
-        if self.fuse_rope:
-            raise ValueError("native-FP8 Dense GQA does not support fused RoPE")
+        if self.fuse_rope and self.seq_len_q == 1:
+            raise ValueError("FP8 Dense decode requires an in-kernel RoPE implementation")
         if self.window_size_left != -1 or self.window_size_right != -1:
             raise ValueError("native-FP8 Dense GQA does not support sliding windows")
         if not self.is_causal and self.seq_len_q != self.seq_len_kv:
@@ -1044,7 +1058,9 @@ class GQADenseFP8Kernel(Kernel):
             q.device,
         )
 
-        if rope_cos is not None or rope_sin is not None:
+        if self.rope is not None:
+            q, k = self.rope(q, k, rope_cos, rope_sin)
+        elif rope_cos is not None or rope_sin is not None:
             raise ValueError("native-FP8 Dense GQA does not accept RoPE tables")
         return _gqa_dense_fwd_fp8_wrapped_kernel(
             self.batch,

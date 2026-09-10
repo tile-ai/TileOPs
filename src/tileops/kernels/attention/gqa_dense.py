@@ -53,9 +53,11 @@ def _gqa_dense_rope_qk_kernel(
     rotary_dim,
     rope_layout,
     dtype,
+    rope_dtype=None,
     threads=256,
     num_per_thread=4,
 ):
+    rope_dtype = dtype if rope_dtype is None else rope_dtype
     half = rotary_dim // 2
     q_rows = B * Sq * H
     k_rows = B * Skv * Hkv
@@ -72,8 +74,8 @@ def _gqa_dense_rope_qk_kernel(
     def main(
         Q: T.Tensor([q_rows * D], dtype),
         K: T.Tensor([k_rows * D], dtype),
-        RopeCos: T.Tensor([max_position, half], dtype),
-        RopeSin: T.Tensor([max_position, half], dtype),
+        RopeCos: T.Tensor([max_position, half], rope_dtype),
+        RopeSin: T.Tensor([max_position, half], rope_dtype),
         QRot: T.Tensor([q_rows * D], dtype),
         KRot: T.Tensor([k_rows * D], dtype),
     ):
@@ -136,6 +138,7 @@ class DenseQKRoPEPreprocessor:
         rotary_dim: int,
         rope_layout: str,
         dtype: str,
+        rope_dtype: Optional[str] = None,
     ) -> None:
         self.kernel = _gqa_dense_rope_qk_kernel(
             batch,
@@ -148,6 +151,7 @@ class DenseQKRoPEPreprocessor:
             rotary_dim,
             rope_layout,
             dtype,
+            rope_dtype,
         )
 
     def __call__(
@@ -176,6 +180,7 @@ def make_dense_qk_rope_preprocessor(
     rotary_dim: int,
     rope_layout: str,
     dtype: str,
+    rope_dtype: Optional[str] = None,
 ) -> Optional[DenseQKRoPEPreprocessor]:
     """Build the shared Dense Q/K RoPE stage when requested."""
     if not fuse_rope:
@@ -191,6 +196,7 @@ def make_dense_qk_rope_preprocessor(
         rotary_dim,
         rope_layout,
         dtype,
+        rope_dtype,
     )
 
 
