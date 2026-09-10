@@ -8,9 +8,10 @@ import torch
 from tileops.kernels.constants import STATIC_SHARED_BYTES
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool.common import (
+    ACCUM_DTYPE,
+    AvgPoolWindow,
     WindowSpan,
     dtype_itemsize,
-    pool_output_dim,
     window_span,
 )
 
@@ -36,32 +37,27 @@ class _WindowStaging:
     # do not fill the device.
     _MIN_LAUNCH_THREADS: ClassVar[int] = 1 << 16
 
-    def __init__(
-        self,
-        rows: int,
-        l_in: int,
-        out_l: int,
-        kernel_l: int,
-        stride_l: int,
-        pad_l: int,
-        dtype: str,
-    ) -> None:
-        self._rows = rows
-        self._l_in = l_in
-        self._out_l = out_l
-        self._kernel_l = kernel_l
-        self._stride_l = stride_l
-        self._pad_l = pad_l
+    def __init__(self, window: AvgPoolWindow, dtype: str) -> None:
+        self._window = window
         self._dtype = dtype
+        self._out_l = window.out[0]
+        self._kernel_l = window.kernel[0]
 
     def _span(self, tile_outputs: int) -> WindowSpan:
+        window = self._window
+        (l_in,), (kernel_l,), (stride_l,), (pad_l,) = (
+            window.size,
+            window.kernel,
+            window.stride,
+            window.pad,
+        )
         return window_span(
             tile_outputs,
-            tile_outputs * self._stride_l,
-            self._l_in,
-            self._kernel_l,
-            self._stride_l,
-            self._pad_l,
+            tile_outputs * stride_l,
+            l_in,
+            kernel_l,
+            stride_l,
+            pad_l,
             1,
             self._dtype,
         )
@@ -96,7 +92,7 @@ class _WindowStaging:
         """
         width = self.width()
         vectors = self._span(width).vectors
-        blocks = self._rows * ((self._out_l + width - 1) // width)
+        blocks = self._window.rows * ((self._out_l + width - 1) // width)
         return [
             {"block_ol": width, "threads": threads}
             for threads in self._THREAD_CHOICES
@@ -104,24 +100,19 @@ class _WindowStaging:
         ] or [{"block_ol": width, "threads": self._FALLBACK_THREADS}]
 
 
-@functools.lru_cache(maxsize=64)
-def _avg_pool1d_kernel(
-    n: int,
-    c_in: int,
-    l_in: int,
-    kernel_l: int,
-    stride_l: int,
-    pad_l: int,
-    ceil_mode: bool,
-    count_include_pad: bool,
-    dtype: str = "float16",
-):
-    accum_dtype = "float"
-    out_l = pool_output_dim(l_in, kernel_l, stride_l, pad_l, ceil_mode)
-    rows = n * c_in
-    window_inside = pad_l == 0 and (out_l - 1) * stride_l + kernel_l <= l_in
-    # Otherwise a window can overhang, and the divisor comes from its own extent.
-    whole_window_divides = window_inside or (count_include_pad and not ceil_mode)
+@functools.lru_cache(maxsize=32)
+def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
+    """One block per row tile, the stretch it pools staged in shared memory."""
+    (l_in,), (kernel_l,), (stride_l,), (pad_l,) = (
+        window.size,
+        window.kernel,
+        window.stride,
+        window.pad,
+    )
+    (out_l,) = window.out
+    rows = window.rows
+    count_include_pad = window.count_include_pad
+    whole_window_divides = window.whole_window_divides
     # The outputs whose window lies inside the row, and so divides by the kernel width.
     clean_lo = -(-pad_l // stride_l)
     clean_hi = min((l_in + pad_l - kernel_l) // stride_l, out_l - 1)
@@ -166,18 +157,18 @@ def _avg_pool1d_kernel(
         def _store(tile, j, ol, out, out_row, whole: bool):
             """Store the mean of the window `tile` holds for output ``ol``."""
             total = T.alloc_var(T.float32)
-            total = T.cast(0.0, accum_dtype)
+            total = T.cast(0.0, ACCUM_DTYPE)
             for k in T.serial(kernel_l):
-                total += T.cast(tile[base + j * stride_l + k], accum_dtype)
+                total += T.cast(tile[base + j * stride_l + k], ACCUM_DTYPE)
             if whole:
-                out[out_row, ol] = T.cast(total * T.cast(1.0 / kernel_l, accum_dtype), dtype)
+                out[out_row, ol] = T.cast(total / T.cast(kernel_l, ACCUM_DTYPE), dtype)
             else:
                 start = ol * stride_l - pad_l
                 if count_include_pad:
                     divisor = T.max(T.min(start + kernel_l, l_in + pad_l) - T.max(start, -pad_l), 1)
                 else:
                     divisor = T.max(T.min(start + kernel_l, l_in) - T.max(start, 0), 1)
-                out[out_row, ol] = T.cast(total / T.cast(divisor, accum_dtype), dtype)
+                out[out_row, ol] = T.cast(total / T.cast(divisor, ACCUM_DTYPE), dtype)
 
         @T.macro
         def _store_output(tile, j, ol, out, out_row):
@@ -250,38 +241,22 @@ class _AvgPool1dKernelBase(Kernel):
         super().__init__()
         self.n = n
         self.c_in = c_in
-        self.l_in = l_in
-        self.kernel_l = kernel_l
-        self.stride_l = stride_l
-        self.pad_l = pad_l
-        self.ceil_mode = ceil_mode
-        self.count_include_pad = count_include_pad
         self.dtype = dtype
-        self.out_l = pool_output_dim(l_in, kernel_l, stride_l, pad_l, ceil_mode)
-
-        self.kernel = _avg_pool1d_kernel(
-            n,
-            c_in,
-            l_in,
-            kernel_l,
-            stride_l,
-            pad_l,
-            ceil_mode,
-            count_include_pad,
-            self.dtype_str,
+        self.window = AvgPoolWindow(
+            rows=n * c_in,
+            size=(l_in,),
+            kernel=(kernel_l,),
+            stride=(stride_l,),
+            pad=(pad_l,),
+            ceil_mode=ceil_mode,
+            count_include_pad=count_include_pad,
+            divisor_override=None,
         )
+        self.kernel = _avg_pool1d_kernel(self.window, self.dtype_str)
         self.init_config(config, tune)
 
     def _staging(self) -> _WindowStaging:
-        return _WindowStaging(
-            self.n * self.c_in,
-            self.l_in,
-            self.out_l,
-            self.kernel_l,
-            self.stride_l,
-            self.pad_l,
-            self.dtype_str,
-        )
+        return _WindowStaging(self.window, self.dtype_str)
 
     @property
     def default_config(self) -> dict:
@@ -294,8 +269,8 @@ class _AvgPool1dKernelBase(Kernel):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_cuda(x=x)
         kernel = self.kernel(self.config["block_ol"], self.config["threads"])
-        rows = kernel(x.contiguous().view(self.n * self.c_in, self.l_in))
-        return rows.view(self.n, self.c_in, self.out_l)
+        rows = kernel(x.contiguous().view(self.window.rows, *self.window.size))
+        return rows.view(self.n, self.c_in, *self.window.out)
 
 
 class AvgPool1dSpatialKernel(_AvgPool1dKernelBase):

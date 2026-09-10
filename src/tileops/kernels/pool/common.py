@@ -1,5 +1,6 @@
 import itertools
-from typing import Any, Callable, ClassVar, NamedTuple, Optional
+import math
+from typing import Any, Callable, ClassVar, NamedTuple, Optional, Tuple
 
 import torch
 
@@ -100,6 +101,87 @@ def pool_output_dim(
         out -= 1
 
     return max(out, 0)
+
+
+# Window sums promote to fp32 and cast back at the store: a narrow accumulator loses the
+# low bits of a window this wide.
+ACCUM_DTYPE = "float"
+
+
+class AvgPoolWindow(NamedTuple):
+    """One average-pooling problem, and the extents and facts that follow from it.
+
+    The per-axis fields carry one entry per spatial axis, so the same type serves 1d, 2d
+    and 3d. A kernel builder is cached on this, so everything it derives is derived here
+    once and cannot differ between the builders of one family.
+    """
+
+    rows: int
+    size: Tuple[int, ...]
+    kernel: Tuple[int, ...]
+    stride: Tuple[int, ...]
+    pad: Tuple[int, ...]
+    ceil_mode: bool
+    count_include_pad: bool
+    divisor_override: Optional[int]
+
+    @property
+    def out(self) -> Tuple[int, ...]:
+        return tuple(
+            pool_output_dim(size, k, s, p, self.ceil_mode)
+            for size, k, s, p in zip(self.size, self.kernel, self.stride, self.pad, strict=True)
+        )
+
+    @property
+    def outputs(self) -> int:
+        return self.rows * math.prod(self.out)
+
+    @property
+    def window_inside(self) -> bool:
+        """Whether every window lies inside the input, so no tap carries a test.
+
+        True also settles the output extent: a window that fits is one the ceil-mode and
+        the floor-mode formula both count.
+        """
+        return all(
+            p == 0 and (o - 1) * s + k <= size
+            for size, o, k, s, p in zip(
+                self.size, self.out, self.kernel, self.stride, self.pad, strict=True
+            )
+        )
+
+    @property
+    def whole_window_divides(self) -> bool:
+        """Whether one divisor covers every output.
+
+        Without ceil mode a window reaches ``size + pad`` at the furthest, so counting
+        the padding gives every output the whole kernel. Ceil mode can overhang that, and
+        uncounted padding shortens the windows that do.
+        """
+        return self.window_inside or (self.count_include_pad and not self.ceil_mode)
+
+    @property
+    def divisor(self) -> int:
+        """The divisor every window takes where one covers them all.
+
+        An explicit divisor is used as given, negative included.
+        """
+        if self.divisor_override is not None:
+            return self.divisor_override
+        return math.prod(self.kernel)
+
+    @property
+    def overlap(self) -> Tuple[Tuple[int, ...], Tuple[int, ...]]:
+        """Per axis, the half-open range a window's own divisor counts.
+
+        Uncounted padding cuts the range back to the input itself.
+        """
+        if self.count_include_pad:
+            return (
+                tuple(-p for p in self.pad),
+                tuple(size + p for size, p in zip(self.size, self.pad, strict=True)),
+            )
+        return ((0,) * len(self.pad), self.size)
 
 
 def adaptive_bin(o, size_in: int, size_out: int):
