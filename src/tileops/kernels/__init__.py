@@ -46,7 +46,7 @@ from .gemm import (
     GemvKernel,
     SmallBatchGemmKernel,
 )
-from .grouped_gemm import GroupedGemmKernel
+from .grouped_gemm import GroupedGemmKernel, GroupedGemmPersistentKernel
 from .kernel_base import Kernel
 from .linear_attention import (
     DeltaNetBwdKernel,
@@ -172,6 +172,7 @@ __all__ = [
     "GroupConv3dKernel",
     "GroupNormKernel",
     "GroupedGemmKernel",
+    "GroupedGemmPersistentKernel",
     "Kernel",
     "LayerNormKernel",
     "MHADecodeKernel",

@@ -91,7 +91,7 @@ MoeGroupedGemmNopadFwdOp:
     bench_manifest_driven: true
     kernel_map:
       moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
-      moe_grouped_gemm_persistent_kernel: GroupedGemmPersistent3WGKernel
+      moe_grouped_gemm_persistent_kernel: GroupedGemmPersistentKernel
 
 MoeGateUpFwdOp:
   ref_api: "none"
@@ -142,7 +142,7 @@ MoeGateUpFwdOp:
       moe_grouped_gemm_fused_act_kernel: MoeGroupedGemmPersistent3WGFusedActKernel
       moe_grouped_gemm_act_kernel: MoeGroupedGemmSeparateActKernel
       moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
-      moe_grouped_gemm_persistent_kernel: GroupedGemmPersistent3WGKernel
+      moe_grouped_gemm_persistent_kernel: GroupedGemmPersistentKernel
 
 FusedMoEExpertsNopadPersistent3WGFwdOp:
   ref_api: "none"
@@ -210,7 +210,7 @@ FusedMoEExpertsNopadPersistent3WGFwdOp:
     kernel_map:
       contiguous: MoePrePermuteContiguousKernel
       moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
-      moe_grouped_gemm_persistent_kernel: GroupedGemmPersistent3WGKernel
+      moe_grouped_gemm_persistent_kernel: GroupedGemmPersistentKernel
       moe_grouped_gemm_fused_act_kernel: MoeGroupedGemmPersistent3WGFusedActKernel
       silu_and_mul: SiluAndMulFwdKernel
       gelu_and_mul: GeluAndMulFwdKernel
@@ -323,7 +323,7 @@ FusedMoeFwdOp:
       fused_topk_kernel: FusedTopKKernel
       contiguous: MoePrePermuteContiguousKernel
       moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
-      moe_grouped_gemm_persistent_kernel: GroupedGemmPersistent3WGKernel
+      moe_grouped_gemm_persistent_kernel: GroupedGemmPersistentKernel
       moe_grouped_gemm_fused_act_kernel: MoeGroupedGemmPersistent3WGFusedActKernel
       silu_and_mul: SiluAndMulFwdKernel
       gelu_and_mul: GeluAndMulFwdKernel
@@ -368,7 +368,8 @@ MoePrePermuteFwdOp:
 MoeGroupedGemmFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
+  torch_compile_fullgraph: true
   signature:
     inputs:
       a: {dtype: "float16 | bfloat16"}
@@ -378,6 +379,9 @@ MoeGroupedGemmFwdOp:
       output: {dtype: "same_as(a) | float32"}
     params:
       layout: {type: MGroupedLayoutSpec}
+      # A gated activation fused into the epilogue: b stacks gate and up along N
+      # and the output keeps act(gate) * up, half of N.
+      activation: {type: "str | None", default: null, kw_only: true}
       out_dtype: {type: "torch.float32 | None", default: null, kw_only: true}
       out: {type: "tensor | None", default: null}
     shape_rules:
@@ -385,21 +389,26 @@ MoeGroupedGemmFwdOp:
     - "b.ndim == 3"
     - "a.shape[-1] == b.shape[-1]"
     - "layout_metadata.ndim == 1"
-    - "output.shape == (*a.shape[:-1], b.shape[1])"
-  workloads: []
-  # bytes depend on out_dtype as well as the operand dtype: not expressible inline.
+    - "activation is None or b.shape[1] % 2 == 0"
+    - "output.shape == (*a.shape[:-1], b.shape[1] if activation is None else b.shape[1] // 2)"
+  workloads:
+  - {a_shape: [4096, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-gate-up"}
+  - {a_shape: [4096, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, activation: silu_and_mul, dtypes: [bfloat16], label: "deepseek-v3-gate-up-fused"}
   roofline:
     func: "tileops.perf.formulas.moe_grouped_gemm_roofline"
   source:
-    kernel: tileops/ops/moe/staged.py
+    kernel: tileops/kernels/moe/moe_grouped_gemm.py
     op: tileops/ops/moe/staged.py
-    test: tests/ops/test_moe_staged_contracts.py
+    test: tests/ops/test_moe_grouped_gemm.py
     bench: benchmarks/ops/bench_moe_staged.py
+    bench_manifest_driven: true
+    kernel_map:
+      grouped_gemm: MoeGroupedGemmKernel
 
 MoeExpertMLPFwdOp:
   ref_api: "none"
   family: moe
-  status: spec-only
+  status: implemented
   signature:
     inputs:
       expert_input: {dtype: "float16 | bfloat16"}
@@ -421,14 +430,19 @@ MoeExpertMLPFwdOp:
     - "expert_input.shape[-1] == w_gate_up.shape[-1]"
     - "layout_metadata.ndim == 1"
     - "output.shape == (*expert_input.shape[:-1], w_down.shape[1])"
-  workloads: []
+  workloads:
+  - {expert_input_shape: [4096, 7168], w_gate_up_shape: [128, 4096, 7168], w_down_shape: [128, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "qwen3-235b-decode"}
+  - {expert_input_shape: [4096, 7168], w_gate_up_shape: [256, 4096, 7168], w_down_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-decode"}
   roofline:
     func: "tileops.perf.formulas.moe_expert_mlp_roofline"
   source:
-    kernel: tileops/ops/moe/staged.py
+    kernel: tileops/kernels/moe/moe_grouped_gemm.py
     op: tileops/ops/moe/staged.py
-    test: tests/ops/test_moe_staged_contracts.py
+    test: tests/ops/test_moe_grouped_gemm.py
     bench: benchmarks/ops/bench_moe_staged.py
+    bench_manifest_driven: true
+    kernel_map:
+      grouped_gemm: MoeGroupedGemmKernel
 
 MoePostPermuteFwdOp:
   ref_api: "none"

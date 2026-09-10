@@ -1,5 +1,6 @@
 from .call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
 from .fused_topk import FusedTopKKernel
+from .moe_grouped_gemm import MoeGroupedGemmKernel
 from .moe_grouped_gemm_nopad import MoeGroupedGemmNopadKernel
 from .moe_grouped_gemm_persistent_3wg_fused_act import (
     MoeGroupedGemmPersistent3WGFusedActKernel,
@@ -21,5 +22,6 @@ __all__ = [
     "MoeUnpermuteKernel",
     "PostPermuteCall",
     "PrePermuteCall",
+    "MoeGroupedGemmKernel",
     "SharedExpertMLPKernel",
 ]
