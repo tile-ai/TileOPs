@@ -9,6 +9,7 @@ from tileops.kernels.attention import (
     GQABwdWgmmaPipelinedKernel,
     GQADecodeBs1Kernel,
     GQADecodeKernel,
+    GQADecodeLongContextKernel,
     GQADecodePagedBs1Kernel,
     GQADecodePagedKernel,
     GQADenseFP8Kernel,
@@ -42,6 +43,12 @@ __all__ = [
 def _validate_attention_dtype(dtype: torch.dtype) -> None:
     if dtype not in (torch.float16, torch.bfloat16):
         raise ValueError(f"Expected dtype torch.float16 or torch.bfloat16, got {dtype}")
+
+
+def _dense_decode_split_capacity(seq_len_kv: int) -> int:
+    """Bucket a runtime KV extent by the largest feasible split tier."""
+    full_tiles = max(1, seq_len_kv // 64)
+    return min(32, 1 << (full_tiles.bit_length() - 1))
 
 
 def _paged_cache_dtype(cache_dtype: Optional[torch.dtype]) -> Optional[torch.dtype]:
@@ -301,6 +308,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
             "gqa_dense_decode": GQADecodeKernel,
             "gqa_dense_decode_bs1": GQADecodeBs1Kernel,
             "gqa_dense_fp8": GQADenseFP8Kernel,
+            "gqa_dense_decode_long_context": GQADecodeLongContextKernel,
             "gqa_dense_sliding_window": GQADenseSlidingWindowKernel,
         }
 
@@ -476,18 +484,16 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         uses_window = self.window_size_left != -1 or self.window_size_right != -1
         rope_on = self.pos_encoding_mode == "rope"
         uses_decode = not is_fp8 and seq_len_q == 1 and not uses_window
-        uses_long_generic_decode = (
+        uses_long_context_decode = (
             uses_decode
             and not rope_on
             and seq_len_kv >= 1024
-            and GQADecodeKernel.high_parallelism_region(
-                batch=batch,
-                heads=heads,
-                heads_kv=heads_kv,
-                dim=dim,
-                dtype=q.dtype,
-                softcap=self.softcap,
-            )
+            and batch == 1
+            and heads == 32
+            and heads_kv == 4
+            and dim == 128
+            and q.dtype == torch.float16
+            and self.softcap == 0.0
         )
         uses_bs1_decode = (
             uses_decode
@@ -496,10 +502,12 @@ class GroupedQueryAttentionDenseFwdOp(Op):
             and dim == 128
             and self.softcap == 0.0
             and 1 <= heads // heads_kv <= 64
-            and not uses_long_generic_decode
+            and not uses_long_context_decode
         )
         if is_fp8:
             role = "gqa_dense_fp8"
+        elif uses_long_context_decode:
+            role = "gqa_dense_decode_long_context"
         elif uses_bs1_decode:
             role = "gqa_dense_decode_bs1"
         elif uses_decode:
@@ -596,10 +604,10 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                 heads_kv,
                 dim,
             )
-            if role == "gqa_dense_decode":
+            if role in ("gqa_dense_decode", "gqa_dense_decode_long_context"):
                 # Decode may compile one of a finite set of split programs.
                 # Key the capacity tier, not the exact runtime KV length.
-                key += (GQADecodeKernel.split_capacity(seq_len_kv),)
+                key += (_dense_decode_split_capacity(seq_len_kv),)
         return self.get_or_build_kernel(role, inputs, key=key, build=build)
 
     def forward(

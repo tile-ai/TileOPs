@@ -693,50 +693,13 @@ class GQADecodeKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        high_parallelism = self._uses_high_parallelism_default()
         return {
             "block_H": 64,
-            "block_N": 64 if high_parallelism else 128,
-            "num_split": 32 if high_parallelism else 16,
+            "block_N": 128,
+            "num_split": 16,
             "num_stages": 2,
             "threads": 128,
         }
-
-    def _uses_high_parallelism_default(self) -> bool:
-        """Whether this call belongs to the measured BN64/split32 region."""
-        return self.high_parallelism_region(
-            batch=self.batch,
-            heads=self.heads,
-            heads_kv=self.groups,
-            dim=self.dim,
-            dtype=self.dtype,
-            softcap=self.softcap,
-        )
-
-    @staticmethod
-    def high_parallelism_region(
-        *,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        dim: int,
-        dtype: torch.dtype | str,
-        softcap: float,
-    ) -> bool:
-        """Whether the call matches the H200 region measured for BN64/split32."""
-        return (
-            batch == 1
-            and heads == 32
-            and heads_kv == 4
-            and dim == 128
-            and Kernel.dtype_to_str(dtype) == "float16"
-            and softcap == 0.0
-        )
-
-    @staticmethod
-    def split_capacity(seq_len_kv: int) -> int:
-        """Return the finite autotune-capacity bucket for an input KV extent."""
-        return _effective_dense_num_split(max(_SPLIT_CANDIDATES), 64, seq_len_kv)
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -899,3 +862,17 @@ class GQADecodeKernel(Kernel):
             Output_partial,
         )
         return output.unsqueeze(1)
+
+
+class GQADecodeLongContextKernel(GQADecodeKernel):
+    """Dense decode specialization with the measured long-context defaults."""
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_H": 64,
+            "block_N": 64,
+            "num_split": 32,
+            "num_stages": 2,
+            "threads": 128,
+        }

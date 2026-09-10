@@ -9,6 +9,7 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.attention import (
     GQADecodeBs1Kernel,
     GQADecodeKernel,
+    GQADecodeLongContextKernel,
     GQADenseFP8Kernel,
     GQADenseSlidingWindowKernel,
     GQADenseWsKernel,
@@ -281,7 +282,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             (1024, 1057),
             None,
             None,
-            GQADecodeKernel,
+            GQADecodeLongContextKernel,
             id="measured-bs1-long-generic",
         ),
         pytest.param(

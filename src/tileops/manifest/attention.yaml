@@ -139,6 +139,7 @@ GroupedQueryAttentionDenseFwdOp:
       gqa_dense_decode: GQADecodeKernel
       gqa_dense_decode_bs1: GQADecodeBs1Kernel
       gqa_dense_fp8: GQADenseFP8Kernel
+      gqa_dense_decode_long_context: GQADecodeLongContextKernel
       gqa_dense_sliding_window: GQADenseSlidingWindowKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa.py
