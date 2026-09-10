@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.gemm import GemmKernel, SmallBatchGemmKernel
+from tileops.kernels.gemm import GemmBasicKernel, GemmKernel, SmallBatchGemmKernel
 from tileops.kernels.gemm.dense import GemmFp8BlockScaledKernel, _b_eviction
 from tileops.kernels.gemm.heuristics import best_config
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
@@ -934,3 +934,27 @@ def test_config_selector_declines_a_board_it_was_not_measured_on() -> None:
     assert best_config(1024, 1024, 1024, False, False, 132, "NVIDIA H200") is not None
     assert best_config(1024, 1024, 1024, False, False, 132, "NVIDIA H20-3e") is None
     assert best_config(1024, 1024, 1024, False, False, 132, "no such board") is None
+
+
+@pytest.mark.smoke
+def test_gemm_basic_kernel_k_tail_padding() -> None:
+    """Non-16-aligned k rides on the backend zero-padding the K tail.
+
+    Verified on real sm80 and sm89 hardware: any k with
+    k * itemsize >= 4 compiles and matches the reference with
+    block_k = 16 (the mma.sync floor); the K tail is zero-padded.
+    """
+    for k in (2, 8, 24):
+        kern = GemmBasicKernel(m=32, n=64, k=k, dtype=torch.bfloat16, trans_b=True)
+        a = torch.randn(32, k, dtype=torch.bfloat16, device="cuda") * 0.05
+        b = torch.randn(64, k, dtype=torch.bfloat16, device="cuda") * 0.05
+        out = kern(a, b)
+        ref = a.float() @ b.float().t()
+        torch.testing.assert_close(out.float(), ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+def test_gemm_basic_kernel_rejects_narrow_k() -> None:
+    """k narrower than one vectorized load (k=1 fp16/bf16 = 2 bytes) is rejected."""
+    with pytest.raises(ValueError, match="itemsize"):
+        GemmBasicKernel(m=32, n=64, k=1, dtype=torch.bfloat16, trans_b=True)

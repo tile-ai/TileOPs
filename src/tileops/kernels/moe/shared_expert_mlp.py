@@ -7,11 +7,20 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.gemm.dense import GemmKernel
+from tileops.kernels.gemm.dense import GemmBasicKernel, GemmKernel
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_sm_version
 
 __all__ = ["SharedExpertMLPKernel"]
 
+# Hopper default. NOTE: its 3-stage pipelined SMEM footprint is
+# (128+256)*64*2B*3 = 144KB for the loads plus a 64KB C tile (208KB total),
+# which exceeds the per-block dynamic shared-memory limit of every pre-Hopper
+# CUDA card (163KB on sm80 — launch fails, verified on real sm80 hardware —
+# and 99KB on sm86/sm89): pass an explicit ``config=`` with a smaller tile
+# there.
+# The rasterization switch is inert for GemmBasicKernel (init_config keeps
+# only its own config keys).
 _DEFAULT_CONFIG = {
     "block_m": 128,
     "block_n": 256,
@@ -98,7 +107,13 @@ class SharedExpertMLPKernel(Kernel):
         self.dtype = dtype
         self.init_config(config, tune)
 
-        self._gemm_gate_up = GemmKernel(
+        # GemmKernel is the WGMMA + TMA sm90 build (_gemm_kernel factory).
+        # Mirror GemmFwdOp's dispatch: route to the pipelined GemmBasicKernel
+        # (plain T.gemm) on pre-Hopper targets so the shared expert stays
+        # arch-valid — this ctor builds the GEMM kernels directly, bypassing
+        # the op-level arch check that normally guards GemmKernel.
+        gemm_cls = GemmKernel if get_sm_version() == 90 else GemmBasicKernel
+        self._gemm_gate_up = gemm_cls(
             m=num_tokens,
             n=ffn_size * 2,
             k=hidden_size,
@@ -106,7 +121,7 @@ class SharedExpertMLPKernel(Kernel):
             trans_b=True,
             config=self.config,
         )
-        self._gemm_down = GemmKernel(
+        self._gemm_down = gemm_cls(
             m=num_tokens,
             n=hidden_size,
             k=ffn_size,

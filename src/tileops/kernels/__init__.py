@@ -19,6 +19,7 @@ from .attention import (
     NSACmpFwdVarlenKernel,
     NSAFwdVarlenKernel,
     NSATopkVarlenKernel,
+    SparseMlaBasicKernel,
     SparseMlaKernel,
 )
 from .convolution import (
@@ -40,6 +41,7 @@ from .fp8_quant import FP8QuantKernel
 from .gemm import (
     BmmFp8Kernel,
     BmmKernel,
+    GemmBasicKernel,
     GemmFp8BlockScaledKernel,
     GemmFp8EpilogueKernel,
     GemmKernel,
@@ -163,6 +165,7 @@ __all__ = [
     "GatedDeltaNetFwdKernel",
     "GatedDeltaNetFwdProductionKernel",
     "GatedDeltaNetPrefillFwdKernel",
+    "GemmBasicKernel",
     "GemmFp8BlockScaledKernel",
     "GemmFp8EpilogueKernel",
     "GemmKernel",
@@ -199,6 +202,7 @@ __all__ = [
     "RopeNonNeoxKernel",
     "RopeYarnKernel",
     "SmallBatchGemmKernel",
+    "SparseMlaBasicKernel",
     "SparseMlaKernel",
     "TopkSelectorKernel",
     "UnaryKernel",

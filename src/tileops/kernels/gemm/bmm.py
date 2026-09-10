@@ -684,7 +684,7 @@ class BmmKernel(Kernel):
 
 
 class BmmFp8Kernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [89, 90]
 
     def __init__(
         self,
@@ -699,15 +699,15 @@ class BmmFp8Kernel(Kernel):
         tune: bool = False,
     ) -> None:
         super().__init__()
-        # Every dispatched variant emits WGMMA + TMA (SM90+ only); fail fast
-        # with a clear message on pre-Hopper GPUs instead of a downstream
-        # nvcc / PTX error at JIT time.
         if device is None:
             device = torch.device(torch.cuda.current_device())
         cc = torch.cuda.get_device_capability(device)
-        if cc[0] != 9:
+        if cc[0] < 9 and cc != (8, 9):
+            # Fail fast with a clear message instead of a downstream
+            # nvcc / PTX error at JIT time.
             raise NotImplementedError(
-                f"BmmFp8Kernel requires SM90 (Hopper); got sm{cc[0]}{cc[1]} on the current device"
+                f"BmmFp8Kernel requires FP8 tensor cores (sm89+); "
+                f"got sm{cc[0]}{cc[1]} on the current device"
             )
         if k % 32 != 0:
             raise ValueError(
@@ -721,12 +721,19 @@ class BmmFp8Kernel(Kernel):
         self.dtype = dtype
         self.out_dtype = out_dtype
         # Dispatch policy (in order of preference):
-        #   1) 3-WG WS persistent (best throughput on aligned shapes);
-        #   2) plain persistent (removes wave quantisation);
-        #   3) classic 3D grid (handles arbitrary M/N tails).
+        #   1) 3-WG WS persistent (best throughput on aligned shapes;
+        #      Hopper only — TMA + WGMMA);
+        #   2) plain persistent (removes wave quantisation; Hopper only —
+        #      the plain T.gemm body could run on pre-Hopper archs but is
+        #      unvalidated there);
+        #   3) classic 3D grid (handles arbitrary M/N tails; plain T.gemm,
+        #      runs on any FP8 tensor-core target, sm89+).
         self._sm_count = torch.cuda.get_device_properties(device).multi_processor_count
-        self._use_ws = self._ws_eligible(batch, m, n, k, self._sm_count)
-        self._use_persistent = self._use_ws or self._persistent_eligible(m, n, k, self._use_ws)
+        self._is_hopper = cc[0] == 9
+        self._use_ws = self._is_hopper and self._ws_eligible(batch, m, n, k, self._sm_count)
+        self._use_persistent = self._is_hopper and (
+            self._use_ws or self._persistent_eligible(m, n, k, self._use_ws)
+        )
         if self._use_ws:
             self.kernel = _bmm_fp8_persistent_ws_kernel(
                 batch, m, n, k, self.dtype_str, self.out_dtype_str, self._sm_count
@@ -785,6 +792,16 @@ class BmmFp8Kernel(Kernel):
                 "threads": 384,
                 "group_size_m": 8,
             }
+        if not self._is_hopper:
+            # Sized for the sm89 100KB per-block SMEM cap; K tails are
+            # zero-padded by the classic copy path.
+            return {
+                "block_m": 128,
+                "block_n": 128,
+                "block_k": 64 if self.k % 64 == 0 else 128,
+                "num_stages": 2,
+                "threads": 128,
+            }
         return {
             "block_m": 128,
             "block_n": 128,
@@ -825,6 +842,28 @@ class BmmFp8Kernel(Kernel):
                                         "group_size_m": gsm,
                                     }
                                 )
+            return configs
+
+        if not self._is_hopper:
+            # Classic 3D-grid sweep for the sm89 100KB cap.
+            SMEM_BUDGET_BYTES = 100 * 1024
+            configs = []
+            for bm in (64, 128):
+                for bn in (64, 128):
+                    for bk in (64, 128):
+                        for ns in (2, 3):
+                            smem = (bm * bk + bk * bn) * ns + bm * bn * 2
+                            if smem > SMEM_BUDGET_BYTES:
+                                continue
+                            configs.append(
+                                {
+                                    "block_m": bm,
+                                    "block_n": bn,
+                                    "block_k": bk,
+                                    "num_stages": ns,
+                                    "threads": 128,
+                                }
+                            )
             return configs
 
         SMEM_BUDGET_BYTES = 200 * 1024
