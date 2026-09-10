@@ -14,15 +14,12 @@ class FP8QuantFwdOp(Op):
     """Quantize each row of an index tensor to ``float8_e4m3fn`` against its own maximum.
 
     ``scale_tensor`` is the row's absolute maximum, floored at ``1e-4``, over 448, to
-    within one float32 ulp. ``output_tensor`` is the row multiplied by the reciprocal of
-    that scale rather than divided by it, which for finite rows puts every element within
-    one ``float8_e4m3fn`` code of ``clamp(input / scale, -448, 448)``: the two products
-    differ by a few float32 ulp, too little to cross more than one rounding boundary of a
-    format whose codes are an eighth apart.
+    within one float32 ulp. ``output_tensor`` is the row scaled by the reciprocal of that
+    scale, so for a finite row every element is within one ``float8_e4m3fn`` code of
+    ``clamp(input / scale, -448, 448)`` rather than equal to it.
 
-    Neither output propagates a non-finite input. A row holding an infinity or a NaN is
-    quantized against the maximum of its finite values, and an element that division would
-    make NaN saturates instead. Callers needing NaN to survive must check for it.
+    Neither output propagates a non-finite input: a row holding an infinity or a NaN is
+    quantized against the maximum of its finite values.
     """
 
     def __init__(self, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False):
