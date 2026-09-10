@@ -155,6 +155,8 @@ def test_epilogue_spec_is_minimal_and_frozen_and_ops_type_check_their_layout() -
         MoeExpertMLPFwdOp("tight_physical_psum")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="out_dtype must be None"):
         MoeGroupedGemmFwdOp(_TIGHT, out_dtype=torch.float16)
+    with pytest.raises(ValueError, match="activation must be None or one of"):
+        MoeGroupedGemmFwdOp(_TIGHT, activation="relu")
     assert MoeGroupedGemmFwdOp(_TIGHT).resolve_output_dtype(torch.float16) is torch.float16
     assert (
         MoeGroupedGemmFwdOp(_TIGHT, out_dtype=torch.float32).resolve_output_dtype(torch.bfloat16)
@@ -385,7 +387,10 @@ def test_staged_wiring_builds_all_family_calls_without_an_executable_candidate()
     assert gate_call.kind == down_call.kind == "contiguous"
     assert gate_call.packing == down_call.packing == "tight"
     assert (gate_call.k, gate_call.n, down_call.k, down_call.n) == (8, 12, 6, 8)
-    assert tuple(mlp.kernel_delegates()) == (mlp.gate_up, mlp.activation_op, mlp.down)
+    # The gate_up GEMM carries the fused activation and hands the down GEMM ffn columns.
+    assert (gate_call.activation, down_call.activation) == ("silu_and_mul", None)
+    assert mlp.gate_up._infer_output_shapes((2, 8), (2, 12, 8), (2,)) == {"output": (2, 6)}
+    assert tuple(mlp.kernel_delegates()) == (mlp.gate_up, mlp.down)
     with pytest.raises(ValueError, match="gated width"):
         mlp(
             expert_input, w_gate_up, torch.empty(2, 8, 5, dtype=torch.bfloat16, device=device), ends
@@ -424,7 +429,7 @@ def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
     a = torch.ones(1, 4, dtype=torch.bfloat16, device=device)
     b = torch.ones(1, 2, 4, dtype=torch.bfloat16, device=device)
     _ExecutableGroupedCandidate.builds = 0
-    op = MoeGroupedGemmFwdOp(_TIGHT, kernel_map={"grouped": _ExecutableGroupedCandidate})
+    op = MoeGroupedGemmFwdOp(_TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate})
 
     first = op(a, b, ends)
     second = op(a, b, ends)
@@ -434,7 +439,7 @@ def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
     assert first.shape == second.shape == (1, 2)
     assert taller.shape == (3, 2)
     assert _ExecutableGroupedCandidate.builds == 1
-    assert len(op.built_kernels("grouped")) == 1
+    assert len(op.built_kernels("grouped_gemm")) == 1
     assert op.eval_roofline() == (2 * 3 * 2 * 4, (3 * 4 + 1 * 2 * 4 + 3 * 2) * 2 + 4)
 
     out = torch.empty(1, 2, dtype=torch.bfloat16, device=device)
@@ -443,17 +448,13 @@ def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
         op(a, b, ends, out=torch.empty(1, 2, dtype=torch.float32, device=device))
 
 
-def test_expert_mlp_forwards_only_caller_replacements_to_matching_delegates() -> None:
-    mlp = MoeExpertMLPFwdOp(
-        _TIGHT,
-        kernel_map={
-            "grouped": _ExecutableGroupedCandidate,
-            "silu_and_mul": _NeverCandidate,
-        },
-    )
-    assert mlp.gate_up.forwarded_overrides() == {"grouped": _ExecutableGroupedCandidate}
-    assert mlp.down.forwarded_overrides() == {"grouped": _ExecutableGroupedCandidate}
-    assert mlp.activation_op.forwarded_overrides() == {"silu_and_mul": _NeverCandidate}
+def test_expert_mlp_forwards_caller_replacements_to_both_gemms() -> None:
+    mlp = MoeExpertMLPFwdOp(_TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate})
+    assert mlp.gate_up.forwarded_overrides() == {"grouped_gemm": _ExecutableGroupedCandidate}
+    assert mlp.down.forwarded_overrides() == {"grouped_gemm": _ExecutableGroupedCandidate}
+    assert MoeExpertMLPFwdOp(_TIGHT, "gelu_and_mul").gate_up.activation == "gelu_and_mul"
+    with pytest.raises(ValueError, match="activation must be one of"):
+        MoeExpertMLPFwdOp(_TIGHT, "relu")
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="candidate test uses CUDA calls")
@@ -576,18 +577,28 @@ def test_grouped_gemm_make_call_checks_geometry_against_the_layout() -> None:
     )
     assert (aligned.packing, aligned.metadata_kind, aligned.alignment) == ("aligned", "per_row", 2)
 
+    # A fused activation keeps b's stacked width in the call and halves the output.
+    fused_op = MoeGroupedGemmFwdOp(_TIGHT, activation="silu_and_mul")
+    fused = fused_op.make_call(a, b, ends)
+    assert (fused.activation, fused.n) == ("silu_and_mul", 4)
+    assert fused_op._infer_output_shapes((6, 8), (2, 4, 8), (2,)) == {"output": (6, 2)}
+    with pytest.raises(ValueError, match="N must be even"):
+        fused_op.make_call(a, torch.empty(2, 5, 8, dtype=torch.bfloat16, device=device), ends)
+    with pytest.raises(ValueError, match=r"out must be a \[6, 2\] tensor"):
+        fused_op.make_call(a, b, ends, out=torch.empty(6, 4, dtype=torch.bfloat16, device=device))
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="selection records CUDA architecture")
-def test_grouped_gemm_without_a_shipped_candidate_reports_no_implementation() -> None:
-    """The boundary is public before any kernel serves it; a call says so, not a crash."""
+def test_grouped_gemm_call_no_candidate_serves_reports_no_implementation() -> None:
+    """A call outside every shipped candidate's region says so, rather than crashing."""
     device = torch.device("cuda")
-    op = MoeGroupedGemmFwdOp(_TIGHT)
-    assert op.kernel_map == {}
+    op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_per_row())  # not claimed yet
+    assert set(op.kernel_map) == {"grouped_gemm"}
     with pytest.raises(ValueError, match="no implementation serves this call"):
         op(
             torch.empty(2, 8, dtype=torch.bfloat16, device=device),
             torch.empty(2, 4, 8, dtype=torch.bfloat16, device=device),
-            torch.tensor([1, 2], dtype=torch.int32, device=device),
+            torch.tensor([0, 1], dtype=torch.int32, device=device),
         )
 
 

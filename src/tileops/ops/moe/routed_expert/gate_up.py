@@ -4,7 +4,7 @@ from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.grouped_gemm import GroupedGemmCall, GroupedGemmPersistent3WGKernel
+from tileops.kernels.grouped_gemm import GroupedGemmCall, GroupedGemmPersistentKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe import (
     MoeGroupedGemmNopadKernel,
@@ -122,7 +122,7 @@ class MoeGateUpFwdOp(GroupedOperandEagerForward, Op):
             "moe_grouped_gemm_fused_act_kernel": MoeGroupedGemmPersistent3WGFusedActKernel,
             "moe_grouped_gemm_act_kernel": MoeGroupedGemmSeparateActKernel,
             "moe_grouped_gemm_kernel": MoeGroupedGemmNopadKernel,
-            "moe_grouped_gemm_persistent_kernel": GroupedGemmPersistent3WGKernel,
+            "moe_grouped_gemm_persistent_kernel": GroupedGemmPersistentKernel,
         }
 
     def forward(

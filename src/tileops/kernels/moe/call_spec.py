@@ -47,6 +47,9 @@ class MGroupedGemmCall(CallSpec):
     metadata_kind: str | None = None  # "physical_psum" | "per_row"; None for masked
     alignment: int = 1  # 1 unless packing == "aligned"
     max_m: int | None = None  # masked only
+    # Gated activation fused into the epilogue ("silu_and_mul", ...); None for a
+    # plain GEMM. With one, ``n`` is B's stacked gate||up width and C has n / 2.
+    activation: str | None = None
     ab_dtype: torch.dtype | None = None
     cd_dtype: torch.dtype | None = None
     num_groups: int = 0

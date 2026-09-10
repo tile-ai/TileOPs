@@ -5,7 +5,7 @@ import torch
 from tileops.kernels.grouped_gemm import (
     GroupedGemmCall,
     GroupedGemmKernel,
-    GroupedGemmPersistent3WGKernel,
+    GroupedGemmPersistentKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
@@ -55,13 +55,15 @@ class GroupedGemmFwdOp(Op):
         self.dispatch_kernel(kernel_map)
         self.kernel = None
 
-    _KERNEL_KEYS = ("grouped_gemm_persistent_3wg_kernel", "grouped_gemm_kernel")
+    # The SM90 template serves every layout whose extents TMA can address; the
+    # general kernel takes what it refuses.
+    _KERNEL_KEYS = ("grouped_gemm_persistent", "grouped_gemm_kernel")
 
     @property
     def default_kernel_map(self) -> Dict:
         return {
             "grouped_gemm_kernel": GroupedGemmKernel,
-            "grouped_gemm_persistent_3wg_kernel": GroupedGemmPersistent3WGKernel,
+            "grouped_gemm_persistent": GroupedGemmPersistentKernel,
         }
 
     def _resolve_spec(
@@ -140,10 +142,12 @@ class GroupedGemmFwdOp(Op):
         )
         key_name = self.select_kernel_key(self._KERNEL_KEYS, call)
         kernel_cls = self.kernel_map[key_name]
-        kwargs: Dict[str, object] = {"dtype": dtype, "tune": self.tune}
-        if key_name == "grouped_gemm_kernel":
-            kwargs["transpose_a"] = self.transpose_a
-            kwargs["transpose_b"] = self.transpose_b
+        kwargs: Dict[str, object] = {
+            "dtype": dtype,
+            "tune": self.tune,
+            "transpose_a": self.transpose_a,
+            "transpose_b": self.transpose_b,
+        }
         key = (
             batch_sum,
             batch_count,
@@ -236,10 +240,6 @@ class GroupedGemmFwdOp(Op):
             dtype,
             device_index,
         )
-        if key_name == "grouped_gemm_persistent_3wg_kernel":
-            # It reads the tight layout straight off batch_sizes / batch_offsets
-            # and has no use for the padded ones.
-            return self.kernel(a, b, batch_sizes, batch_offsets)
         return self.kernel(a, b, batch_sizes, batch_offsets, batch_padded_offsets)
 
     def compute_roof(self) -> str:
