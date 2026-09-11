@@ -51,100 +51,7 @@ MoePermuteAlignFwdOp:
     kernel_map:
       permute_align_kernel: MoePermuteAlignKernel
 
-MoeGroupedGemmNopadFwdOp:
-  ref_api: "none"
-  family: moe
-  status: implemented
-  torch_compile_fullgraph: true
-
-  signature:
-    inputs:
-      a: {dtype: "float16 | bfloat16", shape: [numel, k]}
-      b: {dtype: "same_as(a)", shape: [num_experts, n, k]}
-      true_sizes: {dtype: "int32", shape: [num_experts]}
-      true_offsets: {dtype: "int32", shape: [num_experts]}
-    outputs:
-      c: {dtype: "same_as(a)", shape: [numel, n]}
-    params:
-      numel: {type: int}
-      num_experts: {type: int}
-      n: {type: int}
-      k: {type: int}
-
-  workloads:
-    # Tight grouped-GEMM shapes representative of DeepSeek-V3 MoE
-    # (E=256, K=8, H=7168, F=2048; numel = num_tokens * top_k).
-  - {numel: 4096, num_experts: 256, n: 4096, k: 7168, dtypes: [bfloat16], label: "deepseek-v3-decode-gate-up"}
-  - {numel: 32768, num_experts: 256, n: 4096, k: 7168, dtypes: [bfloat16], label: "deepseek-v3-prefill-gate-up"}
-  - {numel: 4096, num_experts: 256, n: 7168, k: 2048, dtypes: [bfloat16], label: "deepseek-v3-decode-down"}
-  - {numel: 32768, num_experts: 256, n: 7168, k: 2048, dtypes: [bfloat16], label: "deepseek-v3-prefill-down"}
-
-  roofline:
-    flops: "2 * numel * n * k"
-    bytes: "(numel * k + num_experts * n * k + numel * n) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/moe/moe_grouped_gemm_nopad.py
-    op: tileops/ops/moe/routed_expert/moe_grouped_gemm_nopad.py
-    test: tests/ops/test_moe_grouped_gemm_nopad.py
-    bench: benchmarks/ops/bench_moe_grouped_gemm_nopad.py
-    bench_manifest_driven: true
-    kernel_map:
-      moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
-      moe_grouped_gemm_persistent_kernel: GroupedGemmPersistentKernel
-
-MoeGateUpFwdOp:
-  ref_api: "none"
-  family: moe
-  status: implemented
-  torch_compile_fullgraph: true
-
-  signature:
-    inputs:
-      a: {dtype: "float16 | bfloat16", shape: [numel, k]}
-      # gate and up stacked, so the GEMM is 2 * ffn wide and the gated
-      # activation in the epilogue halves it.
-      b: {dtype: "same_as(a)", shape: [num_experts, two_ffn, k]}
-      true_sizes: {dtype: "int32", shape: [num_experts]}
-      true_offsets: {dtype: "int32", shape: [num_experts]}
-    outputs:
-      c: {dtype: "same_as(a)", shape: [numel, ffn]}
-    params:
-      numel: {type: int}
-      num_experts: {type: int}
-      ffn: {type: int}
-      k: {type: int}
-      activation: {type: str, default: silu_and_mul}
-    shape_rules:
-    - "b.shape[1] == 2 * c.shape[1]"
-    - "a.shape[0] == c.shape[0]"
-
-  workloads:
-    # gate/up shapes of the DeepSeek-V3 MoE expert pipeline
-    # (E=256, K=8, H=7168, F=2048; numel = num_tokens * top_k).
-  - {numel: 4096, num_experts: 256, ffn: 2048, k: 7168, dtypes: [bfloat16], label: "deepseek-v3-decode-gate-up"}
-  - {numel: 32768, num_experts: 256, ffn: 2048, k: 7168, dtypes: [bfloat16], label: "deepseek-v3-prefill-gate-up"}
-
-  roofline:
-    # The GEMM is 2 * ffn wide; the activation epilogue is not counted.
-    flops: "4 * numel * ffn * k"
-    bytes: "(numel * k + num_experts * 2 * ffn * k + numel * ffn) * elem_bytes"
-
-  source:
-    kernel:
-    - tileops/kernels/moe/moe_grouped_gemm_persistent_3wg_fused_act.py
-    - tileops/kernels/moe/moe_grouped_gemm_separate_act.py
-    op: tileops/ops/moe/routed_expert/gate_up.py
-    test: tests/ops/test_moe_gate_up.py
-    bench: benchmarks/ops/bench_moe_gate_up.py
-    bench_manifest_driven: true
-    kernel_map:
-      moe_grouped_gemm_fused_act_kernel: MoeGroupedGemmPersistent3WGFusedActKernel
-      moe_grouped_gemm_act_kernel: MoeGroupedGemmSeparateActKernel
-      moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
-      moe_grouped_gemm_persistent_kernel: GroupedGemmPersistentKernel
-
-FusedMoEExpertsNopadPersistent3WGFwdOp:
+FusedMoEExpertsFwdOp:
   ref_api: "none"
   family: moe
   status: implemented
@@ -202,18 +109,14 @@ FusedMoEExpertsNopadPersistent3WGFwdOp:
     bytes: "(num_experts * 3 * ffn_size * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes"
 
   source:
-    kernel: tileops/kernels/moe/moe_grouped_gemm_nopad.py
+    kernel: tileops/kernels/moe/moe_grouped_gemm.py
     op: tileops/ops/moe/routed_expert/fused_routed_expert.py
     test: tests/ops/test_fused_moe_experts.py
     bench: benchmarks/ops/bench_fused_moe_experts.py
     bench_manifest_driven: true
     kernel_map:
       contiguous: MoePrePermuteContiguousKernel
-      moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
-      moe_grouped_gemm_persistent_kernel: GroupedGemmPersistentKernel
-      moe_grouped_gemm_fused_act_kernel: MoeGroupedGemmPersistent3WGFusedActKernel
-      silu_and_mul: SiluAndMulFwdKernel
-      gelu_and_mul: GeluAndMulFwdKernel
+      grouped_gemm: MoeGroupedGemmKernel
       unpermute_kernel: MoeUnpermuteKernel
 
 FusedTopKOp:
@@ -322,11 +225,7 @@ FusedMoeFwdOp:
     kernel_map:
       fused_topk_kernel: FusedTopKKernel
       contiguous: MoePrePermuteContiguousKernel
-      moe_grouped_gemm_kernel: MoeGroupedGemmNopadKernel
-      moe_grouped_gemm_persistent_kernel: GroupedGemmPersistentKernel
-      moe_grouped_gemm_fused_act_kernel: MoeGroupedGemmPersistent3WGFusedActKernel
-      silu_and_mul: SiluAndMulFwdKernel
-      gelu_and_mul: GeluAndMulFwdKernel
+      grouped_gemm: MoeGroupedGemmKernel
       unpermute_kernel: MoeUnpermuteKernel
 
 MoePrePermuteFwdOp:
@@ -392,8 +291,12 @@ MoeGroupedGemmFwdOp:
     - "activation is None or b.shape[1] % 2 == 0"
     - "output.shape == (*a.shape[:-1], b.shape[1] if activation is None else b.shape[1] // 2)"
   workloads:
-  - {a_shape: [4096, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-gate-up"}
-  - {a_shape: [4096, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, activation: silu_and_mul, dtypes: [bfloat16], label: "deepseek-v3-gate-up-fused"}
+  - {a_shape: [4096, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, dtypes: [bfloat16], label: "deepseek-v3-decode-gate-up"}
+  - {a_shape: [32768, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, dtypes: [bfloat16], label: "deepseek-v3-prefill-gate-up"}
+  - {a_shape: [4096, 2048], b_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [bfloat16], label: "deepseek-v3-decode-down"}
+  - {a_shape: [32768, 2048], b_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [bfloat16], label: "deepseek-v3-prefill-down"}
+  - {a_shape: [4096, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, activation: silu_and_mul, dtypes: [bfloat16], label: "deepseek-v3-decode-gate-up-fused"}
+  - {a_shape: [32768, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, activation: silu_and_mul, dtypes: [bfloat16], label: "deepseek-v3-prefill-gate-up-fused"}
   roofline:
     func: "tileops.perf.formulas.moe_grouped_gemm_roofline"
   source:
@@ -432,7 +335,9 @@ MoeExpertMLPFwdOp:
     - "output.shape == (*expert_input.shape[:-1], w_down.shape[1])"
   workloads:
   - {expert_input_shape: [4096, 7168], w_gate_up_shape: [128, 4096, 7168], w_down_shape: [128, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "qwen3-235b-decode"}
+  - {expert_input_shape: [32768, 7168], w_gate_up_shape: [128, 4096, 7168], w_down_shape: [128, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "qwen3-235b-prefill"}
   - {expert_input_shape: [4096, 7168], w_gate_up_shape: [256, 4096, 7168], w_down_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-decode"}
+  - {expert_input_shape: [32768, 7168], w_gate_up_shape: [256, 4096, 7168], w_down_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-prefill"}
   roofline:
     func: "tileops.perf.formulas.moe_expert_mlp_roofline"
   source:

@@ -12,12 +12,10 @@ Two assertions per op, both from a cold instance:
    ``torch_compile_fullgraph``.
 
 A composite registers no operator of its own, so the last test asserts the other
-half: the graph of ``FusedMoEExpertsNopadPersistent3WGFwdOp`` holds its leaves'
+half: the graph of ``FusedMoEExpertsFwdOp`` holds its leaves'
 operators and nothing else. ``FusedMoeFwdOp`` is absent because the routing op it
 builds has no boundary yet.
 """
-
-import operator
 
 import pytest
 import torch
@@ -36,9 +34,7 @@ from tileops.ops.moe import (
     MoePostPermuteFwdOp,
     MoePrePermuteFwdOp,
 )
-from tileops.ops.moe.routed_expert import FusedMoEExpertsNopadPersistent3WGFwdOp
-from tileops.ops.moe.routed_expert.gate_up import MoeGateUpFwdOp
-from tileops.ops.moe.routed_expert.moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
+from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp
 
 _NUM_EXPERTS = 4
 _TOP_K = 2
@@ -60,13 +56,12 @@ def _assert_same_layout(compiled: tuple, eager: tuple) -> None:
 
 
 def _grouped_gemm_inputs(numel: int, num_experts: int, n: int, k: int):
-    """Tight rows split evenly across experts, plus the two index arrays."""
+    """Tight rows split evenly across experts, plus the psum ends."""
     a = torch.randn(numel, k, dtype=torch.bfloat16, device="cuda")
     b = torch.randn(num_experts, n, k, dtype=torch.bfloat16, device="cuda")
     per_expert = numel // num_experts
-    sizes = torch.full((num_experts,), per_expert, dtype=torch.int32, device="cuda")
-    offsets = torch.arange(num_experts, dtype=torch.int32, device="cuda") * per_expert
-    return a, b, sizes, offsets
+    ends = torch.arange(1, num_experts + 1, dtype=torch.int32, device="cuda") * per_expert
+    return a, b, ends
 
 
 def _permute_align_case():
@@ -109,24 +104,6 @@ def _aligned_pre_permute_case():
     return make, (hidden_states, local_expert_ids), (1,)
 
 
-def _gate_up_case():
-    numel, ffn, k = 64, 128, 128
-
-    def make():
-        return MoeGateUpFwdOp(numel, _NUM_EXPERTS, ffn, k)
-
-    return make, _grouped_gemm_inputs(numel, _NUM_EXPERTS, 2 * ffn, k), "all"
-
-
-def _grouped_gemm_nopad_case():
-    numel, n, k = 64, 128, 128
-
-    def make():
-        return MoeGroupedGemmNopadFwdOp(numel, _NUM_EXPERTS, n, k)
-
-    return make, _grouped_gemm_inputs(numel, _NUM_EXPERTS, n, k), "all"
-
-
 def _staged_grouped_gemm_case(dtype: torch.dtype = torch.bfloat16, activation: str | None = None):
     numel, n, k = 64, 128, 128
 
@@ -135,8 +112,7 @@ def _staged_grouped_gemm_case(dtype: torch.dtype = torch.bfloat16, activation: s
             ContiguousLayoutSpec.tight_physical_psum(), activation=activation
         )
 
-    a, b, sizes, _ = _grouped_gemm_inputs(numel, _NUM_EXPERTS, n, k)
-    ends = torch.cumsum(sizes, dim=0).to(torch.int32)
+    a, b, ends = _grouped_gemm_inputs(numel, _NUM_EXPERTS, n, k)
     return make, (a.to(dtype), b.to(dtype), ends), "all"
 
 
@@ -162,8 +138,6 @@ _LEAF_CASES = {
     "pre_permute": _pre_permute_case,
     "pre_permute_fp16": lambda: _pre_permute_case(torch.float16),
     "pre_permute_aligned": _aligned_pre_permute_case,
-    "gate_up": _gate_up_case,
-    "grouped_gemm_nopad": _grouped_gemm_nopad_case,
 }
 
 
@@ -219,7 +193,7 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
     target replaces.
     """
     num_experts, top_k, tokens, hidden, ffn = 4, 2, 4, 128, 128
-    experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+    experts = FusedMoEExpertsFwdOp(
         num_tokens=tokens,
         num_experts=num_experts,
         top_k=top_k,
@@ -241,8 +215,7 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
     )
     local_pipeline_leaves = (
         experts._pre_permute,
-        experts._gate_up,
-        experts._gemm_down,
+        *experts._expert_mlp.kernel_delegates(),
         experts._post_permute,
     )
     owned_by_leaves = {
@@ -254,12 +227,8 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
     calls = traced_call_targets(experts, *args)
 
     assert calls, "the traced graph called nothing"
-    # Temporary bridge from staged physical ends to the existing grouped-GEMM
-    # sizes/offsets ABI. These are the only tensor operations allowed outside a leaf.
-    layout_bridge = {torch.cat, operator.sub}
-    assert calls <= owned_by_leaves | layout_bridge, (
-        "graph holds unexpected nodes: "
-        f"{sorted(str(c) for c in calls - owned_by_leaves - layout_bridge)}"
+    assert calls <= owned_by_leaves, (
+        f"graph holds unexpected nodes: {sorted(str(c) for c in calls - owned_by_leaves)}"
     )
 
 
@@ -268,7 +237,5 @@ for _op_cls in (
     MoePrePermuteFwdOp,
     MoePostPermuteFwdOp,
     MoeGroupedGemmFwdOp,
-    MoeGateUpFwdOp,
-    MoeGroupedGemmNopadFwdOp,
 ):
     register_compile_contract(_op_cls)

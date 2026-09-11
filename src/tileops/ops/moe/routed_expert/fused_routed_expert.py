@@ -1,4 +1,4 @@
-"""FusedMoEExperts implementation: nopad + 3WG persistent variant.
+"""FusedMoEExperts implementation on tight (no-pad) rows.
 
 Registers no operator of its own: a composite is not the unit of replacement,
 so its graph is its leaves' operators.
@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-import torch
 from torch import Tensor
 
 from tileops.kernels.kernel_base import Kernel
@@ -22,18 +21,17 @@ from ..abc import (
     _validate_fused_moe_experts_dtypes,
 )
 from ..contracts import ContiguousLayoutSpec, RoutingEpilogueSpec
-from ..staged import MoePostPermuteFwdOp, MoePrePermuteFwdOp
-from .gate_up import MoeGateUpFwdOp
-from .moe_grouped_gemm_nopad import MoeGroupedGemmNopadFwdOp
+from ..staged import MoeExpertMLPFwdOp, MoePostPermuteFwdOp, MoePrePermuteFwdOp
 
-__all__ = ["FusedMoEExpertsNopadPersistent3WGFwdOp"]
+__all__ = ["FusedMoEExpertsFwdOp"]
 
 
-class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
-    """Expert GEMM using tight (T*K rows, no-pad) layout with 3WG persistent kernel.
+class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
+    """Expert MLP on the tight (T*K rows, no-pad) layout.
 
-    The local pipeline uses staged PrePermute/PostPermute boundaries around the
-    existing GateUp and down-GEMM stages.
+    The local pipeline is the staged PrePermute, the staged Expert MLP (two grouped
+    GEMMs on the SM90 template around the gated activation) and the staged
+    PostPermute, all on one ``physical_ends`` metadata tensor.
 
     forward() output shape is (T, H): reduction is done internally by the
     PostPermute/Unpermute stage, so make_weighted_reduce() returns
@@ -41,7 +39,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
 
     Example:
         ```python linenums="1"
-        experts = FusedMoEExpertsNopadPersistent3WGFwdOp(
+        experts = FusedMoEExpertsFwdOp(
             num_tokens=512, num_experts=128, top_k=8,
             hidden_size=7168, ffn_size=2048,
         )
@@ -83,24 +81,8 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         self.ffn_size = ffn_size
         self.activation = activation
         self._routed_scaling_factor = routed_scaling_factor
-        numel = num_tokens * top_k
-
-        self._gate_up = MoeGateUpFwdOp(
-            numel=numel,
-            num_experts=num_experts,
-            ffn=ffn_size,
-            k=hidden_size,
-            activation=activation,
-            kernel_map=kernel_map,
-        )
-        self._gemm_down = MoeGroupedGemmNopadFwdOp(
-            numel=numel,
-            num_experts=num_experts,
-            n=hidden_size,
-            k=ffn_size,
-            kernel_map=kernel_map,
-        )
         layout = ContiguousLayoutSpec.tight_physical_psum()
+        self._expert_mlp = MoeExpertMLPFwdOp(layout, activation, kernel_map=kernel_map)
         self._pre_permute = MoePrePermuteFwdOp(
             layout=layout,
             num_local_experts=num_experts,
@@ -115,12 +97,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
         )
 
     def kernel_delegates(self) -> tuple[Op, ...]:
-        return (
-            self._pre_permute,
-            self._gate_up,
-            self._gemm_down,
-            self._post_permute,
-        )
+        return (self._pre_permute, self._expert_mlp, self._post_permute)
 
     def eval_roofline(self) -> tuple[int, int]:
         """Manifest ``roofline``: three F x H weight planes per local expert."""
@@ -234,11 +211,7 @@ class FusedMoEExpertsNopadPersistent3WGFwdOp(FusedMoEExpertsModular):
             workspace2,
         )
         expert_input, physical_ends, inverse_indices = self._pre_permute(hidden_states, topk_ids)
-        # Temporary bridge until GroupedGemm consumes staged layout metadata.
-        true_offsets = torch.cat((physical_ends.new_zeros(1), physical_ends[:-1]))
-        true_sizes = physical_ends - true_offsets
-        act = self._gate_up(expert_input, w_gate_up, true_sizes, true_offsets)
-        expert_output = self._gemm_down(act, w_down, true_sizes, true_offsets)
+        expert_output = self._expert_mlp(expert_input, w_gate_up, w_down, physical_ends)
         self._post_permute(expert_output, topk_weights, inverse_indices, out=output)
 
     def compute_roof(self) -> str:

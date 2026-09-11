@@ -17,11 +17,7 @@ from .fused_moe import FusedMoe, FusedMoeFwdOp
 from .fused_topk import FusedTopKOp
 from .permute_align import MoePermuteAlignFwdOp
 from .prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
-from .routed_expert import (
-    FusedMoEExpertsNopadPersistent3WGFwdOp,
-    MoeGateUpFwdOp,
-    MoeGroupedGemmNopadFwdOp,
-)
+from .routed_expert import FusedMoEExpertsFwdOp
 from .shared_fused_moe import SharedFusedMoE
 from .staged import (
     MoeExpertMLPFwdOp,
@@ -34,7 +30,7 @@ __all__ = [
     "ContiguousLayoutSpec",
     "FusedMoEExperts",
     "FusedMoEExpertsModular",
-    "FusedMoEExpertsNopadPersistent3WGFwdOp",
+    "FusedMoEExpertsFwdOp",
     "FusedMoEPrepareAndFinalize",
     "FusedMoe",
     "FusedMoeFwdOp",
@@ -42,9 +38,7 @@ __all__ = [
     "MaskedLayoutSpec",
     "MoEPrepareAndFinalizeNoDPEP",
     "MoeExpertMLPFwdOp",
-    "MoeGateUpFwdOp",
     "MoeGroupedGemmFwdOp",
-    "MoeGroupedGemmNopadFwdOp",
     "MoePermuteAlignFwdOp",
     "MoePostPermuteFwdOp",
     "MoePrePermuteFwdOp",
