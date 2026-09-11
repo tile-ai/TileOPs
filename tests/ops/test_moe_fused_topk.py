@@ -275,10 +275,11 @@ def test_fused_topk_correction_bias_device_check() -> None:
 
 
 @pytest.mark.smoke
-def test_fused_topk_dynamic_shape_kernel_cache() -> None:
+def test_fused_topk_kernel_cache_specializations() -> None:
     op = FusedTopKOp(top_k=2)
     gating1 = torch.randn(4, 8, dtype=torch.float16, device="cuda")
     gating2 = torch.randn(5, 8, dtype=torch.float16, device="cuda")
+    gating3 = gating1.to(torch.bfloat16)
 
     op(gating1)
     assert op.dtype == torch.float16
@@ -287,3 +288,5 @@ def test_fused_topk_dynamic_shape_kernel_cache() -> None:
     assert len(list(op.iter_kernels())) == 1
     op(gating2)
     assert len(list(op.iter_kernels())) == 2
+    op(gating3)
+    assert len(list(op.iter_kernels())) == 3
