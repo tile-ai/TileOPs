@@ -315,6 +315,27 @@ def build(rows: int, name: str, eps: float, flag: bool, cap: Optional[int], tail
         return rows, name, eps, flag, cap, tail
 """
 
+CLOSES_OVER_QUOTED_SCALAR_PARAMETERS = """
+import tilelang
+from typing import Literal, Optional
+
+
+def build(rows: "int | None", cap: "Optional[int]", mode: "Literal['softmax', 'sigmoid']"):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return rows, cap, mode
+"""
+
+CLOSES_OVER_A_QUOTED_SUBSCRIPTED_PARAMETER = """
+import tilelang
+
+
+def build(shape: "tuple[int, int]"):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
 UNANNOTATED_PARAMETER = """
 import tilelang
 
@@ -368,6 +389,7 @@ def build(n):
         (CLOSES_OVER_A_TYPED_PARAMETER, "closes over `window` (Window)"),
         (CLOSES_OVER_A_DOTTED_PARAMETER, "closes over `dtype` (torch.dtype)"),
         (CLOSES_OVER_A_SUBSCRIPTED_PARAMETER, "closes over `shape` (Tuple[int, int])"),
+        (CLOSES_OVER_A_QUOTED_SUBSCRIPTED_PARAMETER, "closes over `shape` (tuple[int, int])"),
         # The cell holds the assignment, not the parameter it overwrote.
         (PARAMETER_REBOUND_TO_A_LIST, "closes over `shape` (list)"),
     ],
@@ -395,6 +417,7 @@ def test_nonscalar_closure_rejected(tmp_path, source, expected):
         CALLS_A_FACTORY,
         # Every annotation the autotune cache key accepts, unions included.
         CLOSES_OVER_SCALAR_PARAMETERS,
+        CLOSES_OVER_QUOTED_SCALAR_PARAMETERS,
         # The same blind spot on a parameter: nothing to classify it by.
         UNANNOTATED_PARAMETER,
         # The parameter binds the name the builder reads; the outer list is shadowed.

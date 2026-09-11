@@ -245,6 +245,14 @@ def _function_tables(top: symtable.SymbolTable) -> dict[tuple[str, int], symtabl
 _SCALAR_ANNOTATIONS = frozenset({"int", "float", "str", "bool", "None", "NoneType"})
 
 
+def _string_annotation_kind(annotation: str) -> str | None:
+    """Classify a quoted annotation by reading the expression it contains."""
+    try:
+        return _annotation_kind(ast.parse(annotation, mode="eval").body)
+    except SyntaxError:
+        return None if annotation in _SCALAR_ANNOTATIONS else annotation
+
+
 def _annotation_kind(annotation: ast.AST | None) -> str | None:
     """What non-scalar this annotation provably names, or None.
 
@@ -257,7 +265,7 @@ def _annotation_kind(annotation: ast.AST | None) -> str | None:
         # A forward reference: `"int"` annotates the same type `int` does.
         if not isinstance(annotation.value, str):
             return None
-        return None if annotation.value in _SCALAR_ANNOTATIONS else annotation.value
+        return _string_annotation_kind(annotation.value)
     if isinstance(annotation, ast.Name):
         return None if annotation.id in _SCALAR_ANNOTATIONS else annotation.id
     if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
@@ -274,6 +282,15 @@ def _annotation_kind(annotation: ast.AST | None) -> str | None:
                 kind = _annotation_kind(arm)
                 if kind:
                     return kind
+            return None
+        if name == "Literal":
+            values = annotation.slice
+            elts = values.elts if isinstance(values, ast.Tuple) else [values]
+            for elt in elts:
+                if not isinstance(elt, ast.Constant) or not isinstance(
+                    elt.value, (int, float, str, bool, type(None))
+                ):
+                    return ast.unparse(annotation)
             return None
         return ast.unparse(annotation)
     if isinstance(annotation, ast.Attribute):
