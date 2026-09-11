@@ -5,7 +5,7 @@ from typing import Optional
 import torch
 
 from tileops.kernels.grouped_gemm.heuristics import ACTIVATIONS, GemmType
-from tileops.kernels.grouped_gemm.template import GroupedGemmTemplate
+from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["MoeGroupedGemmKernel"]
@@ -40,7 +40,7 @@ class MoeGroupedGemmKernel(Kernel):
     def __init__(self, call) -> None:
         super().__init__()
         self.call = call
-        self.inner = GroupedGemmTemplate(
+        self.inner = GemmTemplate(
             self._TYPES[(call.kind, call.packing, call.metadata_kind)],
             num_groups=call.num_groups,
             m_alignment=call.alignment if call.packing == "aligned" else 128,

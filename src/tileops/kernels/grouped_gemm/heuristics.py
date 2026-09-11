@@ -1,4 +1,4 @@
-"""Configuration and selection policy for ``GroupedGemmTemplate``.
+"""Configuration and selection policy for ``GemmTemplate``.
 
 ``GroupedGemmSpec`` contains compile-time kernel parameters; ``GemmDesc``
 describes one call and drives tile selection.
@@ -41,6 +41,7 @@ class _HeuristicPolicy:
 class GemmType(str, enum.Enum):
     """Which rows of ``A`` and which ``B`` a tile reads.
 
+    * ``DENSE``: one ordinary 2-D GEMM, with no group metadata.
     * ``M_GROUPED_ALIGNED_PER_ROW``: rows are
       packed per group into segments whose length is a multiple of ``block_m``,
       ``grouped_layout[row]`` names the group of each row, and rows past the
@@ -65,6 +66,7 @@ class GemmType(str, enum.Enum):
       next group, and a group with no tokens stores zeros.
     """
 
+    DENSE = "dense"
     M_GROUPED_ALIGNED_PER_ROW = "m_grouped_aligned_per_row"
     M_GROUPED_ALIGNED_PSUM = "m_grouped_aligned_psum"
     M_GROUPED_TIGHT_PSUM = "m_grouped_tight_psum"
@@ -86,7 +88,7 @@ PER_ROW_TYPES = (GemmType.M_GROUPED_ALIGNED_PER_ROW, GemmType.M_GROUPED_TIGHT_PE
 # The one type whose A carries no grouping in its rows: it may be MN-major and
 # takes the widest tiles.
 # One full tile grid per group, and no M-grouping to constrain the tile.
-_FLAT_LIKE_TYPES = (GemmType.BATCHED, GemmType.K_GROUPED_CONTIGUOUS)
+_FLAT_LIKE_TYPES = (GemmType.DENSE, GemmType.BATCHED, GemmType.K_GROUPED_CONTIGUOUS)
 
 
 # Gated activations the epilogue can fuse: B stacks gate and up along N; a tile's B
@@ -127,10 +129,24 @@ class GroupedGemmSpec:
     num_math_threads: int
     num_sms: int
     activation: str = "none"
+    epilogue_stage_n: int = 0
+    swizzle_group_m: int = 0
 
     def __post_init__(self) -> None:
         if self.activation not in ACTIVATIONS:
             raise ValueError(f"activation must be one of {ACTIVATIONS}, got {self.activation!r}")
+        c_tile_n = self.block_n // 2 if self.activation != "none" else self.block_n
+        if self.epilogue_stage_n < 0:
+            raise ValueError("epilogue_stage_n must be non-negative")
+        if self.epilogue_stage_n:
+            if self.gemm_type is not GemmType.DENSE or self.activation != "none":
+                raise ValueError("epilogue_stage_n only supports an unfused dense GEMM")
+            if c_tile_n % self.epilogue_stage_n:
+                raise ValueError("epilogue_stage_n must divide the output tile width")
+        if self.swizzle_group_m and self.gemm_type is not GemmType.DENSE:
+            raise ValueError("swizzle_group_m only supports dense GEMM")
+        if self.swizzle_group_m < 0:
+            raise ValueError("swizzle_group_m must be non-negative")
         if self.activation != "none" and self.major_b is not Major.K:
             raise ValueError(
                 "a fused gated activation half-loads the B tile; an MN-major B would split "
@@ -151,10 +167,12 @@ class GroupedGemmSpec:
             raise ValueError(f"block_n must be a multiple of 8 in [8, 256], got {self.block_n}")
         if self.block_k not in (64, 128):
             raise ValueError(f"block_k must be 64 or 128, got {self.block_k}")
-        if self.num_math_threads != (128 if self.block_m <= 64 else 256):
+        if self.num_math_threads not in (128, 256):
+            raise ValueError("num_math_threads must be 128 or 256")
+        if self.block_m // self.num_math_warpgroups not in (64, 128):
             raise ValueError(
-                "num_math_threads is 128 for block_m <= 64 and 256 otherwise, "
-                f"got {self.num_math_threads} for block_m={self.block_m}"
+                f"num_math_threads={self.num_math_threads} makes each math warpgroup own "
+                f"{self.block_m // self.num_math_warpgroups} rows; expected 64 or 128"
             )
         if self.num_stages < 2:
             # The mainloop keeps one WGMMA group in flight and releases a stage
@@ -240,9 +258,9 @@ def _align(x: int, a: int) -> int:
     return (x + a - 1) // a * a
 
 
-def _num_stages(desc: GemmDesc, layout: _Layout) -> int:
+def _num_stages(desc: GemmDesc, layout: _Layout, epilogue_stage_n: int = 0) -> int:
     cd_bytes = 4 if desc.cd_dtype == "float32" else 2
-    c_width = layout.block_n // 2 if desc.fused else layout.block_n
+    c_width = epilogue_stage_n or (layout.block_n // 2 if desc.fused else layout.block_n)
     smem_cd = _align(layout.block_m * c_width * cd_bytes, 1024)
     prefix_ints = desc.num_groups + 2
     if desc.gemm_type is GemmType.M_GROUPED_TIGHT_PER_ROW:
@@ -254,7 +272,11 @@ def _num_stages(desc: GemmDesc, layout: _Layout) -> int:
         policy.smem_capacity
         - smem_cd
         - policy.barrier_bytes
-        - policy.smem_alignment_slack
+        - (
+            0
+            if epilogue_stage_n and desc.gemm_type is GemmType.DENSE
+            else policy.smem_alignment_slack
+        )
         - smem_prefix
     )
     return min(budget // per_stage, policy.max_stages)
@@ -355,7 +377,15 @@ def _best_layout(desc: GemmDesc, candidates: list[_Layout]) -> _Layout:
     return min(candidates, key=lambda lay: _num_cycles(desc, lay)[1])
 
 
-def _spec(desc: GemmDesc, layout: _Layout, num_stages: int) -> GroupedGemmSpec:
+def _spec(
+    desc: GemmDesc,
+    layout: _Layout,
+    num_stages: int,
+    *,
+    epilogue_stage_n: int = 0,
+    swizzle_group_m: int = 0,
+    num_math_wgs: int = 0,
+) -> GroupedGemmSpec:
     return GroupedGemmSpec(
         gemm_type=desc.gemm_type,
         major_a=desc.major_a,
@@ -370,9 +400,13 @@ def _spec(desc: GemmDesc, layout: _Layout, num_stages: int) -> GroupedGemmSpec:
         block_n=layout.block_n,
         block_k=layout.block_k,
         num_stages=num_stages,
-        num_math_threads=_num_math_threads(layout.block_m),
+        num_math_threads=(
+            128 * num_math_wgs if num_math_wgs else _num_math_threads(layout.block_m)
+        ),
         num_sms=desc.num_sms,
         activation=desc.activation,
+        epilogue_stage_n=epilogue_stage_n,
+        swizzle_group_m=swizzle_group_m,
     )
 
 
@@ -392,7 +426,15 @@ def spec_from_config(desc: GemmDesc, config: dict) -> GroupedGemmSpec:
     pipeline depth alone; a pinned one past the budget is refused rather than
     launched.
     """
-    unknown = set(config) - {"block_m", "block_n", "block_k", "num_stages"}
+    unknown = set(config) - {
+        "block_m",
+        "block_n",
+        "block_k",
+        "num_stages",
+        "epilogue_stage_n",
+        "swizzle_group_m",
+        "num_math_wgs",
+    }
     if unknown:
         raise ValueError(f"config names no such template parameter: {sorted(unknown)}")
     layout = _Layout(
@@ -404,7 +446,8 @@ def spec_from_config(desc: GemmDesc, config: dict) -> GroupedGemmSpec:
             f"starts up to block_m and reads a tile's group off its first row, so a block_m of "
             f"{layout.block_m} does not fit m_alignment={desc.m_alignment}"
         )
-    max_stages = _num_stages(desc, layout)
+    epilogue_stage_n = config.get("epilogue_stage_n", 0)
+    max_stages = _num_stages(desc, layout, epilogue_stage_n)
     stages = config.get("num_stages", max_stages)
     if not 2 <= stages <= max_stages:
         raise ValueError(
@@ -412,4 +455,13 @@ def spec_from_config(desc: GemmDesc, config: dict) -> GroupedGemmSpec:
             f"{max_stages} stages in shared memory, got num_stages={stages}; the pipeline "
             "needs at least 2"
         )
-    return _spec(desc, layout, stages)
+    return _spec(
+        desc,
+        layout,
+        stages,
+        epilogue_stage_n=epilogue_stage_n,
+        swizzle_group_m=config.get(
+            "swizzle_group_m", 16 if desc.gemm_type is GemmType.DENSE else 0
+        ),
+        num_math_wgs=config.get("num_math_wgs", 0),
+    )

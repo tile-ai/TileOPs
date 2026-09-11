@@ -11,15 +11,20 @@ Verifies:
 import pytest
 import torch
 
+from tileops.kernels.gemm.dense import GemmKernel
+from tileops.kernels.grouped_gemm.template import GemmTemplate
+from tileops.kernels.moe import SharedExpertMLPKernel
 from tileops.ops.moe import SharedFusedMoE
 from tileops.ops.moe.fused_moe import FusedMoeFwdOp
+from tileops.utils import get_sm_version
 
 
 @pytest.mark.smoke
-def test_shared_fused_moe_basic():
+@pytest.mark.parametrize("num_tokens", [32, 512])
+def test_shared_fused_moe_basic(num_tokens):
     """SharedFusedMoE with shared expert kernel."""
     torch.manual_seed(42)
-    T, E, K, H, F, F_s = 32, 8, 2, 64, 32, 16
+    T, E, K, H, F, F_s = num_tokens, 8, 2, 64, 32, 16
     dtype = torch.bfloat16
     dev = "cuda"
 
@@ -61,6 +66,15 @@ def test_shared_fused_moe_basic():
     gate_up_act = torch.nn.functional.silu(gate_ref) * up_ref
     shared_ref = (gate_up_act @ shared_w_down.float().T).to(dtype)
     torch.testing.assert_close(shared_out, shared_ref, rtol=1e-2, atol=1e-2)
+
+    if get_sm_version() == 90:
+        shared_kernel = next(iter(op.built_kernels("shared_expert_mlp").values()))
+        assert isinstance(shared_kernel._gemm_gate_up, GemmKernel)
+        assert isinstance(shared_kernel._gemm_down, GemmKernel)
+        if T == 512:
+            wide = SharedExpertMLPKernel(512, 7168, 18432, dtype)
+            assert isinstance(wide._gemm_gate_up, GemmTemplate)
+            assert isinstance(wide._gemm_down, GemmTemplate)
 
     # routed_out matches FusedMoe
     op_routed = FusedMoeFwdOp(
@@ -252,8 +266,6 @@ def test_shared_fused_moe_tp_rejects_local_shards():
 @pytest.mark.smoke
 def test_a_replaced_shared_expert_kernel_is_the_one_built():
     """The shared half is reachable through kernel_map, like the routed half."""
-    from tileops.kernels.moe import SharedExpertMLPKernel
-
     built = []
 
     class Replacement(SharedExpertMLPKernel):

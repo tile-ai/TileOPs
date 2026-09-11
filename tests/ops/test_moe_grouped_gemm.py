@@ -9,7 +9,7 @@ workload's per-expert reference.
 import pytest
 import torch
 
-from tileops.kernels.grouped_gemm import GroupedGemmTemplate
+from tileops.kernels.grouped_gemm import GemmTemplate
 from tileops.kernels.moe import MoeGroupedGemmKernel
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
@@ -87,7 +87,7 @@ def test_grouped_gemm_runs_each_layout_through_the_op(layout_name, layout_args, 
     _assert_valid_rows(out, workload.ref_program(a, b, metadata), workload.valid_rows)
     (kernel,) = op.built_kernels("grouped_gemm").values()
     assert isinstance(kernel, MoeGroupedGemmKernel)
-    assert isinstance(kernel.inner, GroupedGemmTemplate)
+    assert isinstance(kernel.inner, GemmTemplate)
     # A second call with a new row count reuses the instance: M is not in the key.
     if layout_name == "masked":
         a2_shape = a_shape
