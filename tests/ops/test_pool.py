@@ -25,7 +25,7 @@ from tileops.kernels.pool import (
     MaxPool3dWithIndicesKernel,
 )
 from tileops.kernels.pool.avg_pool1d import _WindowStaging
-from tileops.kernels.pool.common import pool_output_dim, window_span
+from tileops.kernels.pool.common import AvgPoolWindow, pool_output_dim, window_span
 from tileops.kernels.pool.max_pool1d import _plan as _max_pool1d_plan
 from tileops.kernels.pool.max_pool1d import _Shape as _MaxPool1dShape
 from tileops.ops import (
@@ -408,6 +408,40 @@ class AvgPool3dFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-divisor-override-bf16",
                 ),
+                pytest.param(
+                    1,
+                    16,
+                    8,
+                    12,
+                    12,
+                    (2, 2, 1),
+                    (2, 2, 2),
+                    (0, 0, 0),
+                    False,
+                    True,
+                    None,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-window-narrower-than-stride-fp16",
+                ),
+                pytest.param(
+                    1,
+                    16,
+                    8,
+                    12,
+                    12,
+                    (2, 2, 2),
+                    (2, 2, 2),
+                    (0, 0, 0),
+                    False,
+                    True,
+                    -3,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-negative-divisor-tiled-w-fp16",
+                ),
             ],
         ),
     ]
@@ -592,8 +626,17 @@ def test_avg_pool1d_staged_span_stays_aligned(
     Only a window too wide to stage at 128 outputs selects a width that can break this,
     which is why no benchmarked shape reaches it.
     """
-    out_l = pool_output_dim(l_in, kernel_l, stride_l, pad_l, False)
-    staging = _WindowStaging(1, l_in, out_l, kernel_l, stride_l, pad_l, dtype)
+    window = AvgPoolWindow(
+        rows=1,
+        size=(l_in,),
+        kernel=(kernel_l,),
+        stride=(stride_l,),
+        pad=(pad_l,),
+        ceil_mode=False,
+        count_include_pad=True,
+        divisor_override=None,
+    )
+    staging = _WindowStaging(window, dtype)
     for block_ol in staging.widths():
         staged = window_span(
             block_ol, block_ol * stride_l, l_in, kernel_l, stride_l, pad_l, 1, dtype
@@ -2140,8 +2183,6 @@ def test_pool_output_dim_with_dilation(
     ceil_mode: bool,
     expected: int | str,
 ) -> None:
-    from tileops.kernels.pool.common import pool_output_dim
-
     if expected == "default_matches_explicit":
         default = pool_output_dim(input_size, kernel_size, stride, padding, ceil_mode)
         explicit = pool_output_dim(

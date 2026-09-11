@@ -4,6 +4,7 @@ import torch
 
 from tileops.kernels.gemm.call_spec import GemmCall
 from tileops.kernels.gemm.dense import (
+    GemmBasicKernel,
     GemmFp8BlockScaledKernel,
     GemmFp8EpilogueKernel,
     GemmKernel,
@@ -14,6 +15,7 @@ from tileops.kernels.gemm.w4a16 import GROUP_SIZE, GemmW4A16Kernel
 from tileops.kernels.gemm.w4a16_decode import GemmW4A16DecodeKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
+from tileops.utils import get_sm_version
 
 from ..op_base import Op
 
@@ -71,8 +73,10 @@ class GemmFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
+        # GemmKernel is the WGMMA + TMA SM90 build; pre-Hopper targets take
+        # the pipelined GemmBasicKernel (plain T.gemm).
         return {
-            "gemm_kernel": GemmKernel,
+            "gemm_kernel": GemmKernel if get_sm_version() == 90 else GemmBasicKernel,
             "gemv_kernel": GemvKernel,
             "small_batch_kernel": SmallBatchGemmKernel,
         }
@@ -107,8 +111,10 @@ class GemmFwdOp(Op):
 
         ``mode`` is ``GemmCall.gemv_mode`` for the GEMV fast path (which operand
         is the vector decides how ``forward`` reshapes it), ``"small_batch"`` for
-        the low-``m`` NT bandwidth kernel, else ``"gemm"`` — ``GemmKernel``
-        (SM90), covering all four ``(trans_a, trans_b)`` layouts.
+        the low-``m`` NT bandwidth kernel, else ``"gemm"`` — the hand-written
+        warp-specialized ``GemmKernel`` on Hopper or the pipelined
+        ``GemmBasicKernel`` elsewhere, both covering all four
+        ``(trans_a, trans_b)`` layouts.
 
         Which one serves the call is stated by the candidates themselves
         (each kernel's ``applies``, read through

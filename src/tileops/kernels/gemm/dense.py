@@ -70,6 +70,7 @@ def _b_eviction(m: int, block_m: int) -> Optional[str]:
 
 
 __all__ = [
+    "GemmBasicKernel",
     "GemmFp8BlockScaledKernel",
     "GemmFp8EpilogueKernel",
     "GemmKernel",
@@ -3033,3 +3034,261 @@ class SmallBatchGemmKernel(Kernel):
             self.config["reduce_threads"],
             self.config["num_stages"],
         )(a, b)
+
+
+@functools.lru_cache(maxsize=32)
+def _gemm_basic_kernel(
+    m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
+) -> Callable:
+    """Pipelined dense GEMM ``C = op(A) @ op(B)`` for any tensor-core target.
+
+    The non-warp-specialized counterpart of ``_gemm_kernel``: the same four
+    ``(trans_a, trans_b)`` layouts, but with ``T.Pipelined`` software
+    pipelining and plain ``T.gemm`` so it compiles on pre-SM90 targets
+    (sm80 / sm86 / sm89). SMEM tile shapes follow the storage layout and the
+    ``T.gemm`` transpose flags reconcile them with the logical (M, K) x
+    (K, N) contraction (cf. the WGMMA version, which forwards them to WGMMA).
+    """
+    accum_dtype = "float"
+    a_shape = (k, m) if trans_a else (m, k)
+    b_shape = (n, k) if trans_b else (k, n)
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={"tl.disable_warp_specialized": True},
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _gemm_basic_func(
+        block_m: int = 64,
+        block_n: int = 64,
+        block_k: int = 64,
+        num_stages: int = 2,
+        threads: int = 128,
+    ) -> Callable:
+        # SMEM tile shapes follow the storage layout; the T.gemm transpose
+        # flags reconcile them with the logical (M,K) x (K,N) contraction.
+        a_tile = (block_k, block_m) if trans_a else (block_m, block_k)
+        b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
+        n_exact = n % block_n == 0
+
+        @T.prim_func
+        def _gemm_basic_main(
+            a: T.Tensor(a_shape, dtype),  # type: ignore
+            b: T.Tensor(b_shape, dtype),  # type: ignore
+            c: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (
+                bx,
+                by,
+            ):
+                a_smem = T.alloc_shared(a_tile, dtype)
+                b_smem = T.alloc_shared(b_tile, dtype)
+                c_smem = T.alloc_shared((block_m, block_n), dtype)
+                c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+
+                T.annotate_layout(
+                    {
+                        a_smem: tilelang.layout.make_swizzled_layout(a_smem),
+                        b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                        c_smem: tilelang.layout.make_swizzled_layout(c_smem),
+                    }
+                )
+
+                # L2 rasterization: same panel traversal as the BMM kernel.
+                T.use_swizzle(10, enable=True)
+
+                T.clear(c_local)
+                m_start = by * block_m
+                n_start = bx * block_n
+
+                for ki in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
+                    k_start = ki * block_k
+                    # M/N tail reads land in c_local rows/cols that the
+                    # epilogue guard skips; a K tail would corrupt live
+                    # outputs, so block_k must divide k (enforced by the
+                    # config chain / autotune filter).
+                    if trans_a:
+                        T.copy(
+                            a[k_start : k_start + block_k, m_start : m_start + block_m],
+                            a_smem,
+                        )
+                    else:
+                        T.copy(
+                            a[m_start : m_start + block_m, k_start : k_start + block_k],
+                            a_smem,
+                        )
+                    if trans_b:
+                        T.copy(
+                            b[n_start : n_start + block_n, k_start : k_start + block_k],
+                            b_smem,
+                        )
+                    elif n_exact:
+                        T.copy(
+                            b[k_start : k_start + block_k, n_start : n_start + block_n],
+                            b_smem,
+                        )
+                    else:
+                        # NN with an N tail: the b tile's innermost (N) dim can
+                        # be narrower than one vectorised cp_async transfer
+                        # (cp_async only accepts 4/8/16-byte accesses — e.g.
+                        # an n=1 fp16 GEMV-replacement shape has 2-byte rows),
+                        # so mask the copy instead
+                        # (cf. _bmm_fp8_kernel's tail path).
+                        for i, j in T.Parallel(block_k, block_n):
+                            b_smem[i, j] = T.if_then_else(
+                                n_start + j < n,
+                                b[k_start + i, n_start + j],
+                                T.cast(0, dtype),
+                            )
+                    T.gemm(
+                        a_smem,
+                        b_smem,
+                        c_local,
+                        transpose_A=trans_a,
+                        transpose_B=trans_b,
+                        policy=T.GemmWarpPolicy.FullRow,
+                    )
+
+                # Epilogue: stage fp32 accum through SMEM before the GMEM
+                # store and guard the M/N tails (cf. BmmKernel).
+                T.copy(c_local, c_smem)
+                for i, j in T.Parallel(block_m, block_n):
+                    if m_start + i < m and n_start + j < n:
+                        c[m_start + i, n_start + j] = c_smem[i, j]
+
+        return _gemm_basic_main
+
+    return _gemm_basic_func
+
+
+@torch.library.custom_op("tileops::gemm_basic_wrapped_kernel", mutates_args=())
+def _gemm_basic_wrapped_kernel(
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    a: torch.Tensor,
+    b: torch.Tensor,
+) -> torch.Tensor:
+    """Run the pipelined GEMM ``C = op(A) @ op(B)`` (torch custom op).
+
+    Kept for ``torch.compile`` compatibility (registered op +
+    ``register_fake``); ``GemmBasicKernel.forward`` calls the compiled JIT
+    directly, cf. ``GemmKernel``.
+    """
+    return _gemm_basic_kernel(m, n, k, trans_a, trans_b, dtype)(
+        block_m, block_n, block_k, num_stages, threads
+    )(a, b)
+
+
+@_gemm_basic_wrapped_kernel.register_fake
+def _(
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype: str,
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    a: torch.Tensor,
+    b: torch.Tensor,
+) -> torch.Tensor:
+    return torch.empty((m, n), dtype=a.dtype, device=a.device)
+
+
+class GemmBasicKernel(Kernel):
+    """Dense GEMM kernel: pipelined, architecture-agnostic (sm80+).
+
+    Computes ``C = op(A) @ op(B)`` for any ``(trans_a, trans_b)`` layout —
+    the same contract as ``GemmKernel`` — via ``T.Pipelined`` + plain
+    ``T.gemm`` so it runs on pre-SM90 tensor-core targets (sm80 / sm86 /
+    sm89). fp16 / bf16 inputs, fp32 accumulation. ``block_k`` must divide
+    ``k`` (the smallest fallback is 16); M / N need not be multiples of the
+    block sizes (epilogue guard).
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+    general = True
+
+    def __init__(
+        self,
+        m: int,
+        n: int,
+        k: int,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+        trans_a: bool = False,
+        trans_b: bool = False,
+    ) -> None:
+        super().__init__()
+        # k only has to span one vectorized load along the innermost (k)
+        # dim: k * itemsize >= 4 bytes (a k=1 fp16/bf16 row is 2 bytes and is
+        # rejected by the backend). k need NOT be 16-aligned — the backend
+        # zero-pads K tails (verified on real sm80 and sm89 hardware).
+        itemsize = torch.empty((), dtype=dtype).element_size()
+        if k * itemsize < 4:
+            raise ValueError(
+                f"GemmBasicKernel requires k * itemsize >= 4 bytes for the "
+                f"vectorized loads, got k={k} of a {itemsize}-byte dtype"
+            )
+        self.m = m
+        self.n = n
+        self.k = k
+        self.dtype = dtype
+        self.trans_a = trans_a
+        self.trans_b = trans_b
+
+        self.kernel = _gemm_basic_kernel(m, n, k, trans_a, trans_b, self.dtype_str)
+
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        # Modal winner shape of the pipelined BMM kernel (H20-3e manifest).
+        # Prefer block_k dividing k; k with no 32/64 factor (or not
+        # 16-aligned at all) falls back to 16 — the mma.sync floor — and
+        # the backend zero-pads the K tail.
+        block_k = 64 if self.k % 64 == 0 else (32 if self.k % 32 == 0 else 16)
+        return {
+            "block_m": 64,
+            "block_n": 64,
+            "block_k": block_k,
+            "num_stages": 2,
+            "threads": 128,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        # Prefer block_k that divides k; when k has no 32/64 factor (or is
+        # not 16-aligned at all), fall back to 16 — the mma.sync floor — and
+        # let the backend zero-pad the K tail (any k with k * itemsize >= 4).
+        block_k_options = [bk for bk in (64, 32) if self.k % bk == 0]
+        if not block_k_options:
+            block_k_options = [16]
+        return [
+            {"block_m": bm, "block_n": bn, "block_k": bk, "num_stages": ns, "threads": 128}
+            for bm in [64, 128]
+            for bn in [64, 128]
+            for bk in block_k_options
+            for ns in [2, 3, 4]
+        ]
+
+    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        # Call the compiled JIT directly (cf. BmmKernel); the torch custom-op
+        # is retained only for torch.compile compatibility.
+        if not hasattr(self, "_compiled_kernel"):
+            jit_config = {k: v for k, v in self.config.items() if k != "pass_configs"}
+            self._compiled_kernel = self.kernel(**jit_config)
+        return self._compiled_kernel(a, b)

@@ -7,10 +7,24 @@ from vllm.model_executor.layers.fused_moe.moe_permute_unpermute import (
     moe_unpermute,
 )
 
+from benchmarks.baselines import flashinfer_op
 from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
-from tileops.ops.moe import ContiguousLayoutSpec, MoePostPermuteFwdOp, MoePrePermuteFwdOp
-from workloads.moe import MoePermuteWorkload, MoeUnpermuteWorkload
+from tileops.ops.moe import (
+    ContiguousLayoutSpec,
+    MoeExpertMLPFwdOp,
+    MoeGroupedGemmFwdOp,
+    MoePostPermuteFwdOp,
+    MoePrePermuteFwdOp,
+)
+from tileops.ops.moe.contracts import layout_from_preset
+from workloads.moe import (
+    MoeExpertMLPStagedWorkload,
+    MoeGroupedGemmStagedWorkload,
+    MoePermuteWorkload,
+    MoeUnpermuteWorkload,
+    gated_activation,
+)
 
 
 def _pre_args(workload: dict, dtype: torch.dtype) -> tuple[int, int, int, int, torch.dtype]:
@@ -102,4 +116,130 @@ def test_moe_post_permute_bench(tokens: int, top_k: int, hidden: int, dtype: tor
         expert_output,
         weights,
         inverse,
+    )
+
+
+def _layout_args(workload: dict) -> dict:
+    extra = {k: workload[k] for k in ("alignment", "max_m") if k in workload}
+    return {"layout": workload["layout"], **extra}
+
+
+def _layout_spec(layout_args: dict):
+    extra = {k: v for k, v in layout_args.items() if k != "layout"}
+    return layout_from_preset(layout_args["layout"], **extra)
+
+
+def _assert_valid_rows_match(out: torch.Tensor, ref: torch.Tensor, valid: torch.Tensor) -> None:
+    flat_out = out.reshape(-1, out.shape[-1])[valid].float()
+    flat_ref = ref.reshape(-1, ref.shape[-1])[valid].float()
+    torch.testing.assert_close(flat_out, flat_ref, rtol=2e-2, atol=1e-1)
+
+
+def _flashinfer_segment_gemm(ends: torch.Tensor):
+    wrapper = flashinfer_op("gemm.SegmentGEMMWrapper")(
+        torch.empty(32 * 1024 * 1024, dtype=torch.uint8, device=ends.device)
+    )
+    indptr = torch.cat((ends.new_zeros(1), ends)).to(torch.int64)
+
+    def run(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        return wrapper.run(
+            x,
+            weight,
+            batch_size=weight.shape[0],
+            weight_column_major=True,
+            seg_indptr=indptr,
+        )
+
+    return run
+
+
+def _gemm_args(workload: dict, dtype: torch.dtype) -> tuple:
+    return (
+        tuple(workload["a_shape"]),
+        tuple(workload["b_shape"]),
+        _layout_args(workload),
+        workload.get("activation"),
+        dtype,
+    )
+
+
+@pytest.mark.parametrize(
+    "a_shape,b_shape,layout_args,activation,dtype",
+    workload_params(load_workloads(MoeGroupedGemmFwdOp), _gemm_args),
+)
+def test_moe_grouped_gemm_bench(a_shape, b_shape, layout_args, activation, dtype) -> None:
+    op = MoeGroupedGemmFwdOp(_layout_spec(layout_args), activation=activation)
+    workload = MoeGroupedGemmStagedWorkload(
+        a_shape, b_shape, dtype=dtype, activation=activation, **layout_args
+    )
+    a, b, metadata = workload.gen_inputs()
+    benchmark = ManifestBenchmark(op, workload)
+    torch._assert_async(op.layout_guard(a, b, metadata))
+    ref = workload.ref_program(a, b, metadata)
+    _assert_valid_rows_match(op(a, b, metadata), ref, workload.valid_rows)
+
+    b_kn = b.transpose(1, 2).contiguous()
+
+    def _torch_grouped_mm(a_, _b, ends):
+        output = torch._grouped_mm(a_, b_kn, offs=ends)
+        return output if activation is None else gated_activation(output, activation)
+
+    _assert_valid_rows_match(_torch_grouped_mm(a, b, metadata), ref, workload.valid_rows)
+    benchmark.compare({"tileops": op, "torch-grouped-mm": _torch_grouped_mm}, a, b, metadata)
+
+
+def _mlp_args(workload: dict, dtype: torch.dtype) -> tuple:
+    return (
+        tuple(workload["expert_input_shape"]),
+        tuple(workload["w_gate_up_shape"]),
+        tuple(workload["w_down_shape"]),
+        _layout_args(workload),
+        dtype,
+    )
+
+
+@pytest.mark.parametrize(
+    "x_shape,w_gate_up_shape,w_down_shape,layout_args,dtype",
+    workload_params(load_workloads(MoeExpertMLPFwdOp), _mlp_args),
+)
+def test_moe_expert_mlp_bench(x_shape, w_gate_up_shape, w_down_shape, layout_args, dtype) -> None:
+    op = MoeExpertMLPFwdOp(_layout_spec(layout_args))
+    workload = MoeExpertMLPStagedWorkload(
+        x_shape, w_gate_up_shape, w_down_shape, dtype=dtype, **layout_args
+    )
+    x, w_gate_up, w_down, metadata = workload.gen_inputs()
+    benchmark = ManifestBenchmark(op, workload)
+    ref = workload.ref_program(x, w_gate_up, w_down, metadata)
+    _assert_valid_rows_match(op(x, w_gate_up, w_down, metadata), ref, workload.valid_rows)
+
+    gate_up_kn = w_gate_up.transpose(1, 2).contiguous()
+    down_kn = w_down.transpose(1, 2).contiguous()
+
+    def _torch_grouped_mlp(x_, _w_gate_up, _w_down, ends):
+        gate_up = torch._grouped_mm(x_, gate_up_kn, offs=ends)
+        activated = gated_activation(gate_up, op.activation)
+        return torch._grouped_mm(activated, down_kn, offs=ends)
+
+    _assert_valid_rows_match(
+        _torch_grouped_mlp(x, w_gate_up, w_down, metadata), ref, workload.valid_rows
+    )
+    segment_gemm = _flashinfer_segment_gemm(metadata)
+    silu_and_mul = flashinfer_op("activation.silu_and_mul")
+
+    def _flashinfer_mlp(x_, w_gate_up_, w_down_, _ends):
+        return segment_gemm(silu_and_mul(segment_gemm(x_, w_gate_up_)), w_down_)
+
+    _assert_valid_rows_match(
+        _flashinfer_mlp(x, w_gate_up, w_down, metadata), ref, workload.valid_rows
+    )
+    benchmark.compare(
+        {
+            "tileops": op,
+            "torch-grouped-mm": _torch_grouped_mlp,
+            "flashinfer-segment-mlp": _flashinfer_mlp,
+        },
+        x,
+        w_gate_up,
+        w_down,
+        metadata,
     )
