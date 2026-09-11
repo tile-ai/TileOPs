@@ -15,11 +15,9 @@ Each rule below is a form the compiler accepts, so nothing downstream reports it
   boundary. A narrow *integer* cast is not this: a uint8 mask compared against 0
   or 1 loses nothing.
 - A ``@tilelang.jit`` builder closing over a value that is not a scalar. The
-  autotuner folds a jit function's free variables into its cache key and accepts
-  only ``int``, ``float``, ``str``, ``bool`` and ``None``; anything else raises
-  only once that kernel is autotuned, which no correctness test does. An
-  enclosing scope binds the name by assigning it, and the assigned expression
-  classifies it; or by taking it as a parameter, and the annotation does.
+  autotuner folds free variables into its cache key and accepts only ``int``,
+  ``float``, ``str``, ``bool`` and ``None``. Assignments and parameter
+  annotations classify enclosing bindings.
 - A file-level lint suppression (``# ruff: noqa``, ``# flake8: noqa``). It hides
   every future finding in the file, not the one being waived.
 
@@ -241,12 +239,11 @@ def _function_tables(top: symtable.SymbolTable) -> dict[tuple[str, int], symtabl
     return tables
 
 
-# What the autotuner accepts in a cache key, spelled as an annotation.
 _SCALAR_ANNOTATIONS = frozenset({"int", "float", "str", "bool", "None", "NoneType"})
 
 
 def _string_annotation_kind(annotation: str) -> str | None:
-    """Classify a quoted annotation by reading the expression it contains."""
+    """Classify a quoted annotation."""
     try:
         return _annotation_kind(ast.parse(annotation, mode="eval").body)
     except SyntaxError:
@@ -254,15 +251,10 @@ def _string_annotation_kind(annotation: str) -> str | None:
 
 
 def _annotation_kind(annotation: ast.AST | None) -> str | None:
-    """What non-scalar this annotation provably names, or None.
-
-    One-sided, like :func:`_nonscalar_kind`: an unannotated parameter, or one whose
-    annotation this cannot read, is left alone. A union is scalar when every arm is.
-    """
+    """What non-scalar this annotation provably names, or None."""
     if annotation is None:
         return None
     if isinstance(annotation, ast.Constant):
-        # A forward reference: `"int"` annotates the same type `int` does.
         if not isinstance(annotation.value, str):
             return None
         return _string_annotation_kind(annotation.value)
@@ -331,12 +323,8 @@ def _nonscalar_closures(path: Path, text: str, tree: ast.Module) -> list[str]:
         if table is None or not _is_jit_builder(func, aliases, bare):
             continue
         free = {sym.get_name() for sym in table.get_symbols() if sym.is_free()}
-        # The innermost scope binding a name holds the cell the builder closes over. An
-        # outer scope binding the same name is shadowed and says nothing about that cell,
-        # so every name this scope binds leaves the search whether or not it is reported.
+        # Search enclosing scopes from nearest to farthest; shadowed names stop there.
         for outer in outers:
-            # A parameter binds a name the same way an assignment does, and the
-            # annotation is all there is to classify it by.
             args = outer.args
             params = [*args.posonlyargs, *args.args, *args.kwonlyargs]
             params += [arg for arg in (args.vararg, args.kwarg) if arg is not None]
@@ -346,8 +334,7 @@ def _nonscalar_closures(path: Path, text: str, tree: ast.Module) -> list[str]:
                 if arg.arg in free
             }
             bound = set(last)
-            # The cell holds what the last assignment left, so a name bound more than
-            # once in a scope is classified by its final binding, not its first.
+            # The final assignment in a scope determines the captured cell value.
             for node in _own_scope(outer):
                 if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
                     continue
