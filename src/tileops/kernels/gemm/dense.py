@@ -1,5 +1,5 @@
 import functools
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -3220,6 +3220,10 @@ class GemmBasicKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
     general = True
+
+    @classmethod
+    def applies(cls, call: Any) -> bool:
+        return call.arch != 90
 
     def __init__(
         self,

@@ -30,7 +30,7 @@ def _sparse_mla_kernel(
     sm_scale: float = None,
     is_causal: bool = True,
     cp0: bool = True,
-    dtype: torch.dtype = "float16",
+    dtype: str = "float16",
 ) -> None:
     """
     This code implements sparse MLA attention.
@@ -492,7 +492,7 @@ def _sparse_mla_basic_kernel(
     sm_scale: float = None,
     is_causal: bool = True,
     cp0: bool = True,
-    dtype: torch.dtype = "float16",
+    dtype: str = "float16",
 ) -> None:
     """
     Architecture-agnostic sparse MLA forward (plain T.gemm + T.Pipelined).

@@ -260,6 +260,107 @@ def build(n):
         return rows, _describe
 """
 
+CLOSES_OVER_A_TYPED_PARAMETER = """
+import tilelang
+
+
+def build(window: Window, dtype: str):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return window.rows, dtype
+"""
+
+CLOSES_OVER_A_DOTTED_PARAMETER = """
+import tilelang
+import torch
+
+
+def build(dtype: torch.dtype):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return dtype
+"""
+
+CLOSES_OVER_A_SUBSCRIPTED_PARAMETER = """
+import tilelang
+from typing import Tuple
+
+
+def build(shape: Tuple[int, int]):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+PARAMETER_REBOUND_TO_A_LIST = """
+import tilelang
+
+
+def build(shape: int):
+    shape = [shape, 4]
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+CLOSES_OVER_SCALAR_PARAMETERS = """
+import tilelang
+from typing import Optional
+
+
+def build(rows: int, name: str, eps: float, flag: bool, cap: Optional[int], tail: int | None):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return rows, name, eps, flag, cap, tail
+"""
+
+CLOSES_OVER_QUOTED_SCALAR_PARAMETERS = """
+import tilelang
+from typing import Literal, Optional
+
+
+def build(rows: "int | None", cap: "Optional[int]", mode: "Literal['softmax', 'sigmoid']"):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return rows, cap, mode
+"""
+
+CLOSES_OVER_A_QUOTED_SUBSCRIPTED_PARAMETER = """
+import tilelang
+
+
+def build(shape: "tuple[int, int]"):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+UNANNOTATED_PARAMETER = """
+import tilelang
+
+
+def build(window):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return window
+"""
+
+PARAMETER_SHADOWS_AN_OUTER_LIST = """
+import tilelang
+
+
+def outer():
+    shape = [1, 2]
+
+    def build(shape: int):
+        @tilelang.jit(out_idx=[1])
+        def _func(threads: int):
+            return shape
+
+    return build, shape
+"""
+
 CALLS_A_FACTORY = """
 import tilelang
 
@@ -284,6 +385,11 @@ def build(n):
         (SUBMODULE_IMPORT, "closes over `shape` (list)"),
         # Aliased, the same import binds the decorator rather than the package.
         (SUBMODULE_IMPORT_ALIASED, "closes over `shape` (list)"),
+        (CLOSES_OVER_A_TYPED_PARAMETER, "closes over `window` (Window)"),
+        (CLOSES_OVER_A_DOTTED_PARAMETER, "closes over `dtype` (torch.dtype)"),
+        (CLOSES_OVER_A_SUBSCRIPTED_PARAMETER, "closes over `shape` (Tuple[int, int])"),
+        (CLOSES_OVER_A_QUOTED_SUBSCRIPTED_PARAMETER, "closes over `shape` (tuple[int, int])"),
+        (PARAMETER_REBOUND_TO_A_LIST, "closes over `shape` (list)"),
     ],
 )
 def test_nonscalar_closure_rejected(tmp_path, source, expected):
@@ -307,6 +413,10 @@ def test_nonscalar_closure_rejected(tmp_path, source, expected):
         SAME_NAME_IN_A_SIBLING_HELPER,
         # The blind spot, held deliberately: an unclassifiable call is left alone.
         CALLS_A_FACTORY,
+        CLOSES_OVER_SCALAR_PARAMETERS,
+        CLOSES_OVER_QUOTED_SCALAR_PARAMETERS,
+        UNANNOTATED_PARAMETER,
+        PARAMETER_SHADOWS_AN_OUTER_LIST,
     ],
 )
 def test_nonscalar_closure_accepted(tmp_path, source):

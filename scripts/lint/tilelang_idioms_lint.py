@@ -15,9 +15,9 @@ Each rule below is a form the compiler accepts, so nothing downstream reports it
   boundary. A narrow *integer* cast is not this: a uint8 mask compared against 0
   or 1 loses nothing.
 - A ``@tilelang.jit`` builder closing over a value that is not a scalar. The
-  autotuner folds a jit function's free variables into its cache key and accepts
-  only ``int``, ``float``, ``str``, ``bool`` and ``None``; anything else raises
-  only once that kernel is autotuned, which no correctness test does.
+  autotuner folds free variables into its cache key and accepts only ``int``,
+  ``float``, ``str``, ``bool`` and ``None``. Assignments and parameter
+  annotations classify enclosing bindings.
 - A file-level lint suppression (``# ruff: noqa``, ``# flake8: noqa``). It hides
   every future finding in the file, not the one being waived.
 
@@ -239,6 +239,57 @@ def _function_tables(top: symtable.SymbolTable) -> dict[tuple[str, int], symtabl
     return tables
 
 
+_SCALAR_ANNOTATIONS = frozenset({"int", "float", "str", "bool", "None", "NoneType"})
+
+
+def _string_annotation_kind(annotation: str) -> str | None:
+    """Classify a quoted annotation."""
+    try:
+        return _annotation_kind(ast.parse(annotation, mode="eval").body)
+    except SyntaxError:
+        return None if annotation in _SCALAR_ANNOTATIONS else annotation
+
+
+def _annotation_kind(annotation: ast.AST | None) -> str | None:
+    """What non-scalar this annotation provably names, or None."""
+    if annotation is None:
+        return None
+    if isinstance(annotation, ast.Constant):
+        if not isinstance(annotation.value, str):
+            return None
+        return _string_annotation_kind(annotation.value)
+    if isinstance(annotation, ast.Name):
+        return None if annotation.id in _SCALAR_ANNOTATIONS else annotation.id
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        left = _annotation_kind(annotation.left)
+        right = _annotation_kind(annotation.right)
+        return left or right
+    if isinstance(annotation, ast.Subscript):
+        head = annotation.value
+        name = head.id if isinstance(head, ast.Name) else getattr(head, "attr", "")
+        if name in ("Optional", "Union"):
+            arms = annotation.slice
+            elts = arms.elts if isinstance(arms, ast.Tuple) else [arms]
+            for arm in elts:
+                kind = _annotation_kind(arm)
+                if kind:
+                    return kind
+            return None
+        if name == "Literal":
+            values = annotation.slice
+            elts = values.elts if isinstance(values, ast.Tuple) else [values]
+            for elt in elts:
+                if not isinstance(elt, ast.Constant) or not isinstance(
+                    elt.value, (int, float, str, bool, type(None))
+                ):
+                    return ast.unparse(annotation)
+            return None
+        return ast.unparse(annotation)
+    if isinstance(annotation, ast.Attribute):
+        return _attr_path(annotation)
+    return None
+
+
 def _nonscalar_kind(value: ast.AST, classes: set[str]) -> str | None:
     """What kind of non-scalar this expression provably builds, or None.
 
@@ -272,13 +323,18 @@ def _nonscalar_closures(path: Path, text: str, tree: ast.Module) -> list[str]:
         if table is None or not _is_jit_builder(func, aliases, bare):
             continue
         free = {sym.get_name() for sym in table.get_symbols() if sym.is_free()}
-        # The innermost scope binding a name holds the cell the builder closes over. An
-        # outer scope binding the same name is shadowed and says nothing about that cell,
-        # so every name this scope binds leaves the search whether or not it is reported.
+        # Search enclosing scopes from nearest to farthest; shadowed names stop there.
         for outer in outers:
-            # The cell holds what the last assignment left, so a name bound more than
-            # once in a scope is classified by its final binding, not its first.
-            last: dict[str, tuple[int, str | None]] = {}
+            args = outer.args
+            params = [*args.posonlyargs, *args.args, *args.kwonlyargs]
+            params += [arg for arg in (args.vararg, args.kwarg) if arg is not None]
+            last: dict[str, tuple[int, str | None]] = {
+                arg.arg: (outer.lineno, _annotation_kind(arg.annotation))
+                for arg in params
+                if arg.arg in free
+            }
+            bound = set(last)
+            # The final assignment in a scope determines the captured cell value.
             for node in _own_scope(outer):
                 if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
                     continue
@@ -286,6 +342,7 @@ def _nonscalar_closures(path: Path, text: str, tree: ast.Module) -> list[str]:
                 for target in targets:
                     if not isinstance(target, ast.Name) or target.id not in free:
                         continue
+                    bound.add(target.id)
                     if node.lineno >= last.get(target.id, (-1, None))[0]:
                         last[target.id] = (node.lineno, _nonscalar_kind(node.value, classes))
             out += [
@@ -295,7 +352,7 @@ def _nonscalar_closures(path: Path, text: str, tree: ast.Module) -> list[str]:
                 for name, (lineno, kind) in last.items()
                 if kind
             ]
-            free -= set(last)
+            free -= bound
     return sorted(out)
 
 
