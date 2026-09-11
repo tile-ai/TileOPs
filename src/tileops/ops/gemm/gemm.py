@@ -15,13 +15,12 @@ from tileops.kernels.gemm.w4a16 import GROUP_SIZE, GemmW4A16Kernel
 from tileops.kernels.gemm.w4a16_decode import GemmW4A16DecodeKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
-from tileops.utils import get_sm_version
 
 from ..op_base import Op
 
 __all__ = ["GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
 
-_GEMM_KEYS = ("gemv_kernel", "small_batch_kernel", "gemm_kernel")
+_GEMM_KEYS = ("gemv_kernel", "small_batch_kernel", "gemm_kernel", "gemm_basic_kernel")
 
 
 class GemmFwdOp(Op):
@@ -73,10 +72,9 @@ class GemmFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        # GemmKernel is the WGMMA + TMA SM90 build; pre-Hopper targets take
-        # the pipelined GemmBasicKernel (plain T.gemm).
         return {
-            "gemm_kernel": GemmKernel if get_sm_version() == 90 else GemmBasicKernel,
+            "gemm_kernel": GemmKernel,
+            "gemm_basic_kernel": GemmBasicKernel,
             "gemv_kernel": GemvKernel,
             "small_batch_kernel": SmallBatchGemmKernel,
         }
@@ -143,11 +141,12 @@ class GemmFwdOp(Op):
             )
             return "small_batch", kernel
 
+        main_cls = self.kernel_map[key]
         kernel = self.get_or_build_kernel(
-            "gemm_kernel",
+            key,
             inputs,
             key=(m, n, k, dtype),
-            build=lambda: self.kernel_map["gemm_kernel"](
+            build=lambda: main_cls(
                 m, n, k, dtype, tune=self.tune, trans_a=self.trans_a, trans_b=self.trans_b
             ),
         )

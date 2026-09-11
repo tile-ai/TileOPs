@@ -32,7 +32,7 @@ _SM80 = 80
 
 
 # --- GEMM: a vector operand picks the GEMV kernel, but only in the two layouts
-# it is written for. Off SM90 neither implementation can run.
+# it is written for. Non-SM90 falls back to the pipelined mainloop.
 
 
 @pytest.mark.smoke
@@ -83,13 +83,11 @@ def test_gemm_vector_on_a_transposed_operand_is_refused(
 
 
 @pytest.mark.smoke
-def test_gemm_is_refused_where_neither_implementation_runs() -> None:
-    """Both are SM90-only, so an older architecture has nothing to fall back to."""
+def test_gemm_uses_basic_mainloop_off_sm90() -> None:
     op = GemmFwdOp()
     call = GemmCall(arch=_SM80, m=1, n=8, k=64, dtype=torch.float16, trans_b=True)
 
-    with pytest.raises(ValueError, match="no implementation serves this call"):
-        op.select_kernel_key(("gemv_kernel", "gemm_kernel"), call)
+    assert op.select_kernel_key(_GEMM_KEYS, call) == "gemm_basic_kernel"
 
 
 # --- DeltaNet decode: fp32 has its own kernel; the raw-CUDA one serves 16-bit
