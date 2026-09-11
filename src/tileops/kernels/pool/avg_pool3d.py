@@ -1,5 +1,5 @@
 import functools
-from typing import ClassVar, NamedTuple, Optional, Tuple
+from typing import ClassVar, NamedTuple, Optional
 
 import tilelang
 import tilelang.language as T
@@ -7,90 +7,9 @@ import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.pool.common import dtype_itemsize, pool_output_dim
+from tileops.kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow, dtype_itemsize
 
 __all__ = ["AvgPool3dKernel", "AvgPool3dSpatialKernel"]
-
-# Window sums promote to fp32 and cast back at the store: a fp16 accumulator loses the
-# low bits of a window this wide.
-_ACCUM_DTYPE = "float"
-
-
-class _Window(NamedTuple):
-    """One avg_pool3d problem, and the extents and facts that follow from it.
-
-    The builders below are cached on this, so everything they derive is derived here
-    once and cannot differ between them.
-    """
-
-    rows: int
-    size: Tuple[int, int, int]
-    kernel: Tuple[int, int, int]
-    stride: Tuple[int, int, int]
-    pad: Tuple[int, int, int]
-    ceil_mode: bool
-    count_include_pad: bool
-    divisor_override: Optional[int]
-
-    @property
-    def out(self) -> Tuple[int, int, int]:
-        return tuple(
-            pool_output_dim(size, k, s, p, self.ceil_mode)
-            for size, k, s, p in zip(self.size, self.kernel, self.stride, self.pad, strict=True)
-        )
-
-    @property
-    def outputs(self) -> int:
-        out_d, out_h, out_w = self.out
-        return self.rows * out_d * out_h * out_w
-
-    @property
-    def window_inside(self) -> bool:
-        """Whether every window lies inside the volume, so no tap carries a test.
-
-        True also settles the output extent: a window that fits is one the ceil-mode and
-        the floor-mode formula both count.
-        """
-        return all(
-            p == 0 and (o - 1) * s + k <= size
-            for size, o, k, s, p in zip(
-                self.size, self.out, self.kernel, self.stride, self.pad, strict=True
-            )
-        )
-
-    @property
-    def whole_window_divides(self) -> bool:
-        """Whether one divisor covers every output.
-
-        Without ceil mode a window reaches ``size + pad`` at the furthest, so counting
-        the padding gives every output the whole kernel. Ceil mode can overhang that, and
-        uncounted padding shortens the windows that do.
-        """
-        return self.window_inside or (self.count_include_pad and not self.ceil_mode)
-
-    @property
-    def divisor(self) -> int:
-        """The divisor every window takes where one covers them all.
-
-        An explicit divisor is used as given, negative included.
-        """
-        if self.divisor_override is not None:
-            return self.divisor_override
-        kernel_d, kernel_h, kernel_w = self.kernel
-        return kernel_d * kernel_h * kernel_w
-
-    @property
-    def overlap(self) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
-        """Per axis, the half-open range a window's own divisor counts.
-
-        Uncounted padding cuts the range back to the volume itself.
-        """
-        if self.count_include_pad:
-            return (
-                tuple(-p for p in self.pad),
-                tuple(size + p for size, p in zip(self.size, self.pad, strict=True)),
-            )
-        return ((0, 0, 0), self.size)
 
 
 class _WideRun(NamedTuple):
@@ -100,7 +19,7 @@ class _WideRun(NamedTuple):
     vector_elems: int
 
 
-def _wide_run(window: _Window, dtype: str) -> Optional[_WideRun]:
+def _wide_run(window: AvgPoolWindow, dtype: str) -> Optional[_WideRun]:
     """The narrowest run of outputs whose taps reach the widest access the w axis admits.
 
     ``run`` consecutive outputs cover ``run * stride_w`` consecutive inputs, and the
@@ -133,7 +52,7 @@ def _wide_run(window: _Window, dtype: str) -> Optional[_WideRun]:
 
 
 @functools.lru_cache(maxsize=32)
-def _avg_pool3d_kernel(window: _Window, dtype: str):
+def _avg_pool3d_kernel(window: AvgPoolWindow, dtype: str):
     """One output per thread, every tap read where it lies."""
     d_in, h_in, w_in = window.size
     kernel_d, kernel_h, kernel_w = window.kernel
@@ -155,7 +74,7 @@ def _avg_pool3d_kernel(window: _Window, dtype: str):
         def _store(total_val, od, oh, ow, out, row):
             """Store one output, taking its divisor from wherever this shape has it."""
             if one_divisor:
-                out[row, od, oh, ow] = T.cast(total_val / T.cast(divisor, _ACCUM_DTYPE), dtype)
+                out[row, od, oh, ow] = T.cast(total_val / T.cast(divisor, ACCUM_DTYPE), dtype)
             else:
                 front = od * stride_d - pad_d
                 top = oh * stride_h - pad_h
@@ -167,7 +86,7 @@ def _avg_pool3d_kernel(window: _Window, dtype: str):
                     * T.max(T.min(left + kernel_w, limit_w) - T.max(left, low_w), 0),
                     1,
                 )
-                out[row, od, oh, ow] = T.cast(total_val / T.cast(extent, _ACCUM_DTYPE), dtype)
+                out[row, od, oh, ow] = T.cast(total_val / T.cast(extent, ACCUM_DTYPE), dtype)
 
         @T.prim_func
         def _avg_pool3d_main(
@@ -188,7 +107,7 @@ def _avg_pool3d_kernel(window: _Window, dtype: str):
                         top = oh * stride_h - pad_h
                         left = ow * stride_w - pad_w
                         total_val = T.alloc_var(T.float32)
-                        total_val = T.cast(0.0, _ACCUM_DTYPE)
+                        total_val = T.cast(0.0, ACCUM_DTYPE)
                         for kd in T.serial(kernel_d):
                             for kh in T.serial(kernel_h):
                                 for kw in T.serial(kernel_w):
@@ -205,7 +124,7 @@ def _avg_pool3d_kernel(window: _Window, dtype: str):
                                         and (iw >= 0)
                                         and (iw < w_in)
                                     ):
-                                        total_val += T.cast(x[row, id_, ih, iw], _ACCUM_DTYPE)
+                                        total_val += T.cast(x[row, id_, ih, iw], ACCUM_DTYPE)
                         _store(total_val, od, oh, ow, out, row)
 
         return _avg_pool3d_main
@@ -214,7 +133,7 @@ def _avg_pool3d_kernel(window: _Window, dtype: str):
 
 
 @functools.lru_cache(maxsize=32)
-def _avg_pool3d_wide_kernel(window: _Window, dtype: str):
+def _avg_pool3d_wide_kernel(window: AvgPoolWindow, dtype: str):
     """A run of outputs per thread, their shared input stretch read as whole groups.
 
     Reached only where :func:`_wide_run` returns a plan, so every window lies inside the
@@ -245,7 +164,7 @@ def _avg_pool3d_wide_kernel(window: _Window, dtype: str):
         ):
             with T.Kernel(T.ceildiv(items, threads), threads=threads) as tile:
                 held = T.alloc_local((span,), dtype)
-                sums = T.alloc_local((run,), _ACCUM_DTYPE)
+                sums = T.alloc_local((run,), ACCUM_DTYPE)
                 for i in T.Parallel(threads):
                     idx = tile * threads + i
                     if block_full or idx < items:
@@ -259,7 +178,7 @@ def _avg_pool3d_wide_kernel(window: _Window, dtype: str):
                         top = oh * stride_h
                         left = jr * span
                         for j in T.serial(run):
-                            sums[j] = T.cast(0.0, _ACCUM_DTYPE)
+                            sums[j] = T.cast(0.0, ACCUM_DTYPE)
                         for kd in T.serial(kernel_d):
                             for kh in T.serial(kernel_h):
                                 # The run covers one contiguous stretch of the row, so
@@ -274,10 +193,10 @@ def _avg_pool3d_wide_kernel(window: _Window, dtype: str):
                                         ]
                                 for j in T.serial(run):
                                     for kw in T.serial(kernel_w):
-                                        sums[j] += T.cast(held[j * stride_w + kw], _ACCUM_DTYPE)
+                                        sums[j] += T.cast(held[j * stride_w + kw], ACCUM_DTYPE)
                         for j in T.serial(run):
                             out[row, od, oh, jr * run + j] = T.cast(
-                                sums[j] / T.cast(divisor, _ACCUM_DTYPE), dtype
+                                sums[j] / T.cast(divisor, ACCUM_DTYPE), dtype
                             )
 
         return _avg_pool3d_main
@@ -323,7 +242,7 @@ class _AvgPool3dKernelBase(Kernel):
         self.n = n
         self.c_in = c_in
         self.dtype = dtype
-        self.window = _Window(
+        self.window = AvgPoolWindow(
             rows=n * c_in,
             size=(d_in, h_in, w_in),
             kernel=(kernel_d, kernel_h, kernel_w),
