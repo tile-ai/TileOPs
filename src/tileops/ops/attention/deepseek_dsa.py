@@ -2,9 +2,10 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.attention import SparseMlaKernel
+from tileops.kernels.attention import SparseMlaBasicKernel, SparseMlaKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
+from tileops.utils import get_sm_version
 
 from ..op_base import Op
 
@@ -118,9 +119,13 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
 
         Returns:
             Dict[str, Kernel]: A dictionary mapping kernel names to kernel functions.
-            The default map includes the "sparse_mla_kernel".
+            The default map includes the "sparse_mla_kernel": the WGMMA
+            warp-specialized SparseMlaKernel on Hopper, and the
+            architecture-agnostic SparseMlaBasicKernel (plain T.gemm) elsewhere.
         """
-        return {"sparse_mla_kernel": SparseMlaKernel}
+        return {
+            "sparse_mla_kernel": SparseMlaKernel if get_sm_version() == 90 else SparseMlaBasicKernel
+        }
 
     def _infer_output_shapes(
         self,
