@@ -1,6 +1,5 @@
 """Layout-specialized contiguous materialization for staged MoE PrePermute."""
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -13,97 +12,178 @@ from tileops.kernels.moe.call_spec import PrePermuteCall
 __all__ = ["MoePrePermuteContiguousKernel"]
 
 
-# Past this many routed rows the fused launch loses: merged, the gather loop
-# compiles at 32 registers against the standalone 46, so it holds far fewer loads
-# in flight -- 73 us against 28 us at T=512, H=7168, and 779 against 253 at T=4096.
-_FUSED_TIGHT_MAX_NUMEL = 64
-
-
-def _make_tight_scan_body(numel: int, num_experts: int, top_k: int, threads: int):
-    """Shared tight count/prefix/scatter body for split and fused launches."""
-
-    @T.macro
-    def scan(
-        flat_ids,
-        physical_ends,
-        permuted_idx,
-        inverse_indices,
-        write_offsets,
-        counts,
-        offsets,
-        slot_buf,
-    ):
-        tx = T.get_thread_binding()
-        for i in T.serial(T.ceildiv(num_experts, threads)):
-            idx = i * threads + tx
-            if idx < num_experts:
-                counts[idx] = T.int32(0)
-        T.sync_threads()
-
-        for i in T.serial(T.ceildiv(numel, threads)):
-            idx = i * threads + tx
-            if idx < numel:
-                T.atomic_add(counts[flat_ids[idx]], 1)
-        T.sync_threads()
-
-        if tx == 0:
-            offsets[0] = T.int64(0)
-            for expert in T.serial(num_experts):
-                offsets[expert + 1] = offsets[expert] + T.Cast(T.int64, counts[expert])
-        T.sync_threads()
-
-        for i in T.serial(T.ceildiv(num_experts, threads)):
-            idx = i * threads + tx
-            if idx < num_experts:
-                physical_ends[idx] = T.Cast(T.int32, offsets[idx + 1])
-                write_offsets[idx] = T.Cast(T.int32, offsets[idx])
-        T.sync_threads()
-
-        for i in T.serial(T.ceildiv(numel, threads)):
-            idx = i * threads + tx
-            if idx < numel:
-                expert = flat_ids[idx]
-                slot_buf[0] = T.atomic_add(write_offsets[expert], T.int32(1), return_prev=True)
-                slot = slot_buf[0]
-                permuted_idx[slot] = idx // T.int32(top_k)
-                inverse_indices[idx] = slot
-
-    return scan
-
-
 def _make_tight_scan(numel: int, num_experts: int, top_k: int):
     """Count assignments and produce tight physical-PSUM metadata."""
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3"])
     def _scan(threads: int):
-        scan = _make_tight_scan_body(numel, num_experts, top_k, threads)
-
         @T.prim_func
         def _scan_main(
             flat_ids: T.Tensor([numel], "int32"),
             physical_ends: T.Tensor([num_experts], "int32"),
             permuted_idx: T.Tensor([numel], "int32"),
             inverse_indices: T.Tensor([numel], "int32"),
-            write_offsets: T.Tensor([num_experts], "int32"),
         ):
             with T.Kernel(1, threads=threads) as (_,):
                 counts = T.alloc_shared([num_experts], "int32")
-                offsets = T.alloc_shared([num_experts + 1], "int64")
+                offsets = T.alloc_shared([num_experts + 1], "int32")
                 slot_buf = T.alloc_local([1], "int32")
-                scan(
-                    flat_ids,
-                    physical_ends,
-                    permuted_idx,
-                    inverse_indices,
-                    write_offsets,
-                    counts,
-                    offsets,
-                    slot_buf,
-                )
+                tx = T.get_thread_binding()
+
+                for i in T.serial(T.ceildiv(num_experts, threads)):
+                    expert = i * threads + tx
+                    if expert < num_experts:
+                        counts[expert] = T.int32(0)
+                T.sync_threads()
+
+                for i in T.serial(T.ceildiv(numel, threads)):
+                    idx = i * threads + tx
+                    if idx < numel:
+                        T.atomic_add(counts[flat_ids[idx]], 1)
+                T.sync_threads()
+
+                if tx == 0:
+                    offsets[0] = T.int32(0)
+                    for expert in T.serial(num_experts):
+                        offsets[expert + 1] = offsets[expert] + counts[expert]
+                T.sync_threads()
+
+                for i in T.serial(T.ceildiv(num_experts, threads)):
+                    expert = i * threads + tx
+                    if expert < num_experts:
+                        physical_ends[expert] = offsets[expert + 1]
+                        counts[expert] = offsets[expert]
+                T.sync_threads()
+
+                for i in T.serial(T.ceildiv(numel, threads)):
+                    idx = i * threads + tx
+                    if idx < numel:
+                        expert = flat_ids[idx]
+                        slot_buf[0] = T.atomic_add(counts[expert], T.int32(1), return_prev=True)
+                        slot = slot_buf[0]
+                        permuted_idx[slot] = idx // T.int32(top_k)
+                        inverse_indices[idx] = slot
 
         return _scan_main
 
     return _scan
+
+
+def _make_parallel_tight_scan(
+    numel: int,
+    num_experts: int,
+    top_k: int,
+    routes_per_block: int,
+    threads: int,
+):
+    """Count and scatter large route tables across independent CTAs."""
+    blocks = (numel + routes_per_block - 1) // routes_per_block
+    prefix_threads = min(1024, 1 << max(0, (num_experts - 1).bit_length()))
+
+    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
+    def _count():
+        @T.prim_func
+        def _count_main(
+            flat_ids: T.Tensor([numel], "int32"),
+            block_counts: T.Tensor([blocks, num_experts], "int32"),
+        ):
+            with T.Kernel(blocks, threads=threads) as (bid,):
+                tx = T.get_thread_binding()
+                counts = T.alloc_shared([num_experts], "int32")
+
+                for i in T.serial(T.ceildiv(num_experts, threads)):
+                    expert = i * threads + tx
+                    if expert < num_experts:
+                        counts[expert] = T.int32(0)
+                T.sync_threads()
+
+                for i in T.serial(T.ceildiv(routes_per_block, threads)):
+                    idx = bid * routes_per_block + i * threads + tx
+                    if idx < numel:
+                        T.atomic_add(counts[flat_ids[idx]], 1)
+                T.sync_threads()
+
+                for i in T.serial(T.ceildiv(num_experts, threads)):
+                    expert = i * threads + tx
+                    if expert < num_experts:
+                        block_counts[bid, expert] = counts[expert]
+
+        return _count_main
+
+    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
+    def _prefix():
+        @T.prim_func
+        def _prefix_main(
+            block_offsets: T.Tensor([blocks, num_experts], "int32"),
+            physical_ends: T.Tensor([num_experts], "int32"),
+        ):
+            with T.Kernel(1, threads=prefix_threads) as (_,):
+                tx = T.get_thread_binding()
+                totals = T.alloc_shared([num_experts], "int32")
+                offsets = T.alloc_shared([num_experts + 1], "int32")
+                total = T.alloc_local([1], "int32")
+                running = T.alloc_local([1], "int32")
+                count = T.alloc_local([1], "int32")
+
+                for i in T.serial(T.ceildiv(num_experts, prefix_threads)):
+                    expert = i * prefix_threads + tx
+                    if expert < num_experts:
+                        total[0] = T.int32(0)
+                        for block in T.serial(blocks):
+                            total[0] = total[0] + block_offsets[block, expert]
+                        totals[expert] = total[0]
+                T.sync_threads()
+
+                if tx == 0:
+                    offsets[0] = T.int32(0)
+                    for expert in T.serial(num_experts):
+                        offsets[expert + 1] = offsets[expert] + totals[expert]
+                T.sync_threads()
+
+                for i in T.serial(T.ceildiv(num_experts, prefix_threads)):
+                    expert = i * prefix_threads + tx
+                    if expert < num_experts:
+                        physical_ends[expert] = offsets[expert + 1]
+                        running[0] = offsets[expert]
+                        for block in T.serial(blocks):
+                            count[0] = block_offsets[block, expert]
+                            block_offsets[block, expert] = running[0]
+                            running[0] = running[0] + count[0]
+
+        return _prefix_main
+
+    @tilelang.jit(out_idx=[], compile_flags=["-O3"])
+    def _scatter():
+        @T.prim_func
+        def _scatter_main(
+            flat_ids: T.Tensor([numel], "int32"),
+            block_offsets: T.Tensor([blocks, num_experts], "int32"),
+            permuted_idx: T.Tensor([numel], "int32"),
+            inverse_indices: T.Tensor([numel], "int32"),
+        ):
+            with T.Kernel(blocks, threads=threads) as (bid,):
+                tx = T.get_thread_binding()
+                cursors = T.alloc_shared([num_experts], "int32")
+                slot_buf = T.alloc_local([1], "int32")
+
+                for i in T.serial(T.ceildiv(num_experts, threads)):
+                    expert = i * threads + tx
+                    if expert < num_experts:
+                        cursors[expert] = block_offsets[bid, expert]
+                T.sync_threads()
+
+                for i in T.serial(T.ceildiv(routes_per_block, threads)):
+                    idx = bid * routes_per_block + i * threads + tx
+                    if idx < numel:
+                        expert = flat_ids[idx]
+                        slot_buf[0] = T.atomic_add(cursors[expert], T.int32(1), return_prev=True)
+                        slot = slot_buf[0]
+                        permuted_idx[slot] = idx // T.int32(top_k)
+                        inverse_indices[idx] = slot
+
+        return _scatter_main
+
+    return (_count, _prefix, _scatter), blocks
 
 
 def _make_aligned_per_row_scan(
@@ -125,7 +205,6 @@ def _make_aligned_per_row_scan(
             row_expert_ids: T.Tensor([capacity], "int32"),
             permuted_idx: T.Tensor([capacity], "int32"),
             inverse_indices: T.Tensor([numel], "int32"),
-            write_offsets: T.Tensor([num_experts], "int32"),
         ):
             with T.Kernel(1, threads=threads) as (_,):
                 tx = T.get_thread_binding()
@@ -166,7 +245,7 @@ def _make_aligned_per_row_scan(
                 for i in T.serial(T.ceildiv(num_experts, threads)):
                     expert = i * threads + tx
                     if expert < num_experts:
-                        write_offsets[expert] = offsets[expert]
+                        counts[expert] = offsets[expert]
                 for i in T.serial(T.ceildiv(capacity, threads)):
                     row = i * threads + tx
                     if row < capacity:
@@ -188,9 +267,7 @@ def _make_aligned_per_row_scan(
                     idx = i * threads + tx
                     if idx < numel:
                         expert = flat_ids[idx]
-                        slot_buf[0] = T.atomic_add(
-                            write_offsets[expert], T.int32(1), return_prev=True
-                        )
+                        slot_buf[0] = T.atomic_add(counts[expert], T.int32(1), return_prev=True)
                         slot = slot_buf[0]
                         permuted_idx[slot] = idx // T.int32(top_k)
                         inverse_indices[idx] = slot
@@ -207,6 +284,7 @@ def _make_gather(
     dtype: str,
     *,
     zero_fill: bool,
+    rows_per_block: int,
 ):
     """Gather real rows and optionally zero-fill padding and capacity rows."""
     vector = 8
@@ -214,7 +292,6 @@ def _make_gather(
     while threads > 0 and hidden_size % threads != 0:
         threads -= 1
     threads = max(threads, 1)
-    rows_per_block = 8
     grid = (physical_rows + rows_per_block - 1) // rows_per_block
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -253,70 +330,6 @@ def _make_gather(
     return _gather
 
 
-@functools.lru_cache(maxsize=64)
-def _make_fused_tight(
-    num_tokens: int,
-    numel: int,
-    num_experts: int,
-    top_k: int,
-    hidden_size: int,
-    dtype: str,
-    grid: int,
-    rows_per_block: int,
-):
-    """Build tight metadata and gather rows in one cooperative launch."""
-    vector = 8
-    gather_threads = min(1024, hidden_size // vector)
-    while gather_threads > 0 and hidden_size % gather_threads != 0:
-        gather_threads -= 1
-    scan_threads = 1 << min(10, max(0, numel - 1).bit_length())
-    threads = max(gather_threads, scan_threads, 1)
-    scan = _make_tight_scan_body(numel, num_experts, top_k, threads)
-
-    @tilelang.jit(out_idx=[], compile_flags=["-O3", "-DENABLE_BF16"])
-    def _fused():
-        @T.prim_func
-        def _fused_main(
-            hidden_states: T.Tensor([num_tokens, hidden_size], dtype),
-            flat_ids: T.Tensor([numel], "int32"),
-            physical_ends: T.Tensor([num_experts], "int32"),
-            permuted_idx: T.Tensor([numel], "int32"),
-            inverse_indices: T.Tensor([numel], "int32"),
-            write_offsets: T.Tensor([num_experts], "int32"),
-            expert_input: T.Tensor([numel, hidden_size], dtype),
-        ):
-            with T.Kernel(grid, threads=threads) as (bid,):
-                counts = T.alloc_shared([num_experts], "int32")
-                offsets = T.alloc_shared([num_experts + 1], "int64")
-                slot_buf = T.alloc_local([1], "int32")
-
-                if bid == 0:
-                    scan(
-                        flat_ids,
-                        physical_ends,
-                        permuted_idx,
-                        inverse_indices,
-                        write_offsets,
-                        counts,
-                        offsets,
-                        slot_buf,
-                    )
-
-                T.sync_grid()
-
-                for local_row in T.serial(rows_per_block):
-                    row = bid * rows_per_block + local_row
-                    if row < numel:
-                        T.copy(
-                            hidden_states[permuted_idx[row], 0:hidden_size],
-                            expert_input[row, 0:hidden_size],
-                        )
-
-        return _fused_main
-
-    return _fused
-
-
 class MoePrePermuteContiguousKernel(Kernel):
     """Build one contiguous PrePermute specialization from ``call.layout``."""
 
@@ -346,8 +359,6 @@ class MoePrePermuteContiguousKernel(Kernel):
         self.num_experts = call.num_experts
         self.hidden_size = call.hidden_size
         self.dtype = call.input_dtype
-        self.h200 = call.h200
-        self.sm_count = call.sm_count
         self.numel = call.num_tokens * call.top_k
         self.alignment = getattr(layout, "alignment", 1)
         self.capacity = (
@@ -355,10 +366,24 @@ class MoePrePermuteContiguousKernel(Kernel):
             if self.layout_key == "tight_physical_psum"
             else self.numel + self.num_experts * (self.alignment - 1)
         )
+        self.init_config(config, tune)
 
         if self.layout_key == "tight_physical_psum":
-            self._scan_fn = _make_tight_scan(self.numel, self.num_experts, self.top_k)
+            self._parallel_scan_fns = None
+            routes_per_block = self.config["scan_routes_per_block"]
+            if self.numel >= 8 * routes_per_block:
+                self._parallel_scan_fns, self._scan_blocks = _make_parallel_tight_scan(
+                    self.numel,
+                    self.num_experts,
+                    self.top_k,
+                    routes_per_block,
+                    self.config["parallel_scan_threads"],
+                )
+                self._scan_fn = None
+            else:
+                self._scan_fn = _make_tight_scan(self.numel, self.num_experts, self.top_k)
         else:
+            self._parallel_scan_fns = None
             self._scan_fn = _make_aligned_per_row_scan(
                 self.num_tokens,
                 self.numel,
@@ -373,12 +398,23 @@ class MoePrePermuteContiguousKernel(Kernel):
             self.hidden_size,
             self.dtype_str,
             zero_fill=self.layout_key == "aligned_per_row",
+            rows_per_block=self.config["gather_rows_per_block"],
         )
-        self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
-        return {"threads": 1024}
+        work = max(self.numel, self.num_experts)
+        threads = min(512, 1 << max(0, (work - 1).bit_length()))
+        if self.capacity <= 512:
+            rows_per_block = 2
+        elif self.capacity <= 4096:
+            rows_per_block = 4
+        else:
+            rows_per_block = 8
+        config = {"threads": threads, "gather_rows_per_block": rows_per_block}
+        if self.layout_key == "tight_physical_psum":
+            config.update(parallel_scan_threads=256, scan_routes_per_block=512)
+        return config
 
     def forward(
         self,
@@ -398,44 +434,25 @@ class MoePrePermuteContiguousKernel(Kernel):
         layout_metadata = torch.empty(metadata_rows, dtype=torch.int32, device=device)
         permuted_idx = torch.empty(self.capacity, dtype=torch.int32, device=device)
         inverse_indices = torch.empty(self.numel, dtype=torch.int32, device=device)
-        write_offsets = torch.empty(self.num_experts, dtype=torch.int32, device=device)
 
         expert_input = torch.empty(
             (self.capacity, self.hidden_size), dtype=self.dtype, device=device
         )
-        use_fused_tight = (
-            self.layout_key == "tight_physical_psum"
-            and self.h200
-            and self.numel <= _FUSED_TIGHT_MAX_NUMEL
-        )
-        if use_fused_tight:
-            rows_per_block = max(1, (self.numel + self.sm_count - 1) // self.sm_count)
-            grid = (self.numel + rows_per_block - 1) // rows_per_block
-            _make_fused_tight(
-                self.num_tokens,
-                self.numel,
-                self.num_experts,
-                self.top_k,
-                self.hidden_size,
-                self.dtype_str,
-                grid,
-                rows_per_block,
-            )()(
-                hidden_states,
-                flat_ids,
-                layout_metadata,
-                permuted_idx,
-                inverse_indices,
-                write_offsets,
-                expert_input,
+        if self._parallel_scan_fns is not None:
+            block_offsets = torch.empty(
+                (self._scan_blocks, self.num_experts), dtype=torch.int32, device=device
             )
+            count, prefix, scatter = (make() for make in self._parallel_scan_fns)
+            count(flat_ids, block_offsets)
+            prefix(block_offsets, layout_metadata)
+            scatter(flat_ids, block_offsets, permuted_idx, inverse_indices)
         else:
+            assert self._scan_fn is not None
             self._scan_fn(self.config["threads"])(
                 flat_ids,
                 layout_metadata,
                 permuted_idx,
                 inverse_indices,
-                write_offsets,
             )
-            self._gather_fn()(hidden_states, permuted_idx, expert_input)
+        self._gather_fn()(hidden_states, permuted_idx, expert_input)
         return expert_input, layout_metadata, inverse_indices

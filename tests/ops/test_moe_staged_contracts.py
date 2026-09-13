@@ -504,6 +504,35 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="staged kernels require CUDA")
+@pytest.mark.parametrize(
+    "tokens,top_k,experts,hidden",
+    [(512, 8, 128, 128), (32, 8, 128, 7168)],
+)
+def test_staged_tight_optimized_shapes_round_trip(
+    tokens: int, top_k: int, experts: int, hidden: int
+) -> None:
+    x = torch.randn(tokens, hidden, dtype=torch.bfloat16, device="cuda")
+    local_ids = (
+        torch.arange(tokens * top_k, dtype=torch.int32, device="cuda")
+        .remainder(experts)
+        .reshape(tokens, top_k)
+    )
+    weights = torch.rand(tokens, top_k, dtype=torch.float32, device="cuda")
+    layout = ContiguousLayoutSpec.tight_physical_psum()
+    pre = MoePrePermuteFwdOp(layout, num_local_experts=experts)
+
+    expert_input, physical_ends, inverse = pre(x, local_ids)
+
+    token_rows = torch.arange(tokens * top_k, device="cuda") // top_k
+    torch.testing.assert_close(expert_input[inverse.long()], x[token_rows], rtol=0, atol=0)
+    counts = torch.bincount(local_ids.flatten().long(), minlength=experts)
+    torch.testing.assert_close(physical_ends, counts.cumsum(0).int(), rtol=0, atol=0)
+    output = MoePostPermuteFwdOp(layout)(expert_input, weights, inverse)
+    expected = x.float() * weights.sum(dim=1, keepdim=True)
+    torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="staged kernels require CUDA")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     tokens, top_k, experts, hidden, alignment = 4, 2, 4, 64, 4

@@ -73,6 +73,7 @@ class _ContiguousPostPermuteKernel(Kernel):
             call.materialized_rows,
             scaling=call.epilogue.routed_scaling_factor,
             dtype=call.input_dtype,
+            sm_count=call.sm_count,
         )
 
     def forward(
