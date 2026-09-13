@@ -196,11 +196,30 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("seq_len_q", "seq_len_kv", "sm_scale", "softcap"),
-    [(256, 1792, 0.125, 0.0), (255, 1793, 0.0625, 50.0)],
+    (
+        "seq_len_q",
+        "seq_len_kv",
+        "sm_scale",
+        "softcap",
+        "rope_layout",
+        "rotary_dim",
+        "out_dtype",
+    ),
+    [
+        (256, 1792, 0.125, 0.0, None, None, torch.float16),
+        (255, 1793, 0.0625, 50.0, None, None, torch.float16),
+        (256, 1792, 0.125, 0.0, "neox", 64, torch.float16),
+        (255, 1793, 0.0625, 50.0, "interleaved", 128, torch.bfloat16),
+    ],
 )
 def test_gqa_dense_fp8_causal_rectangular_matches_reference(
-    seq_len_q: int, seq_len_kv: int, sm_scale: float, softcap: float
+    seq_len_q: int,
+    seq_len_kv: int,
+    sm_scale: float,
+    softcap: float,
+    rope_layout: Optional[str],
+    rotary_dim: Optional[int],
+    out_dtype: torch.dtype,
 ) -> None:
     fp8 = getattr(torch, "float8_e4m3fn", None)
     if fp8 is None or not torch.cuda.is_available() or get_sm_version() != 90:
@@ -211,18 +230,57 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
     k = (torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda") * 0.2).to(fp8)
     v = (torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda") * 0.2).to(fp8)
     scale = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
+    rope_cos = rope_sin = None
+    if rope_layout is not None:
+        assert rotary_dim is not None
+        angles = torch.randn(seq_len_kv, rotary_dim // 2, device="cuda") * 0.1
+        rope_cos, rope_sin = angles.cos().to(out_dtype), angles.sin().to(out_dtype)
 
     op = GroupedQueryAttentionDenseFwdOp(
         is_causal=True,
-        dtype=torch.float16,
+        dtype=out_dtype,
         sm_scale=sm_scale,
         softcap=softcap,
+        pos_encoding_mode="rope" if rope_layout is not None else "none",
+        rotary_dim=rotary_dim,
+        rope_layout="neox" if rope_layout is None else rope_layout,
     )
-    output = op(q, k, v, scale, scale, scale)
+    output = op(
+        q,
+        k,
+        v,
+        scale,
+        scale,
+        scale,
+        rope_cos=rope_cos,
+        rope_sin=rope_sin,
+    )
+    q_ref = q.to(out_dtype)
+    k_ref = k.to(out_dtype)
+    if rope_layout is not None:
+        assert rope_cos is not None and rope_sin is not None and rotary_dim is not None
+        q_positions = torch.arange(seq_len_kv - seq_len_q, seq_len_kv, device="cuda")
+        k_positions = torch.arange(seq_len_kv, device="cuda")
+        q_ref = _apply_dense_rope(
+            q_ref,
+            q_positions,
+            rope_cos,
+            rope_sin,
+            rotary_dim=rotary_dim,
+            layout=rope_layout,
+        )
+        k_ref = _apply_dense_rope(
+            k_ref,
+            k_positions,
+            rope_cos,
+            rope_sin,
+            rotary_dim=rotary_dim,
+            layout=rope_layout,
+        )
     reference = _gqa_prefill_ref(
-        q.to(torch.float16),
-        k.to(torch.float16),
-        v.to(torch.float16),
+        q_ref,
+        k_ref,
+        v.to(out_dtype),
         heads=heads,
         heads_kv=heads_kv,
         is_causal=True,
