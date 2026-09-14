@@ -81,9 +81,34 @@ def _bmm_case(op_name: str, entry: dict, row: dict, dtype):
     return op, (a, b)
 
 
+def _fused_moe_case(op_name: str, entry: dict, row: dict, dtype):
+    """Build the manifest's routed-MoE workload."""
+    from workloads.moe import FusedMoeWorkload
+
+    params = {
+        name: row[name] for name in (entry.get("signature") or {}).get("params", {}) if name in row
+    }
+    op = _op_class(op_name, entry)(**params)
+    workload = FusedMoeWorkload(
+        op.num_tokens,
+        op.num_experts,
+        op.top_k,
+        op.hidden_size,
+        op.ffn_size,
+        op.scoring_func,
+        op.renormalize,
+        "correction_bias_shape" in row,
+        op.routed_scaling_factor,
+        dtype,
+    )
+    hidden, gating, correction_bias, w_gate_up, w_down = workload.gen_inputs()
+    return op, (hidden, gating, w_gate_up, w_down, correction_bias)
+
+
 # Multi-input ops the audit can build. Extend per family; an op absent here
 # and outside the single-input contract is SKIPPED, visibly.
 INPUT_BUILDERS = {
+    "FusedMoeFwdOp": _fused_moe_case,
     "GemmFwdOp": _gemm_case,
     "BmmFwdOp": _bmm_case,
 }
@@ -102,7 +127,8 @@ def _branch_signature(row: dict) -> tuple:
         tuple(sorted(row.get("dtypes", []))),
         row.get("backend"),
         tuple(sorted(k for k, v in row.items() if v is None)),
-        tuple(sorted(k for k in row if isinstance(row[k], bool))),
+        tuple(sorted((k, v) for k, v in row.items() if isinstance(v, bool))),
+        tuple(sorted(k for k in row if k.endswith("_shape"))),
     )
 
 

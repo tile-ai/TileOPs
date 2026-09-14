@@ -949,21 +949,27 @@ def fused_topk_roofline(op: "Op") -> tuple[int, int]:
 
 
 def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
-    """Roofline for FusedMoeFwdOp.
+    """Roofline for FusedMoeFwdOp using the last call's active experts.
 
-    Func-mode: byte traffic mixes float32 gating (and the float32 correction
-    bias, when the call passes one) with hidden-states / weights at
-    ``op.dtype``, so a single ``elem_bytes`` cannot express the total.
+    Gating and correction bias are float32; hidden states and weights use
+    ``op.dtype``. Experts with no routed rows contribute no weight traffic.
     """
     num_tokens = int(op.num_tokens)
     num_experts = int(op.num_experts)
     top_k = int(op.top_k)
     hidden_size = int(op.hidden_size)
     ffn_size = int(op.ffn_size)
+    topk_ids = getattr(op, "_roofline_topk_ids", None)
+    if topk_ids is None:
+        raise RuntimeError(
+            "FusedMoeFwdOp.eval_roofline() requires a prior forward() "
+            "to determine the active experts"
+        )
     elem_bytes = _dtype_itemsize(op.dtype)
+    active_experts = int(topk_ids.unique().numel())
 
     flops = num_tokens * top_k * 6 * ffn_size * hidden_size
-    weight_bytes = num_experts * 3 * ffn_size * hidden_size * elem_bytes
+    weight_bytes = active_experts * 3 * ffn_size * hidden_size * elem_bytes
     token_bytes = 2 * num_tokens * hidden_size * elem_bytes
     gating_bytes = num_tokens * num_experts * 4  # float32 logits
     bias_bytes = num_experts * 4 if _supplied(op, "correction_bias") else 0
