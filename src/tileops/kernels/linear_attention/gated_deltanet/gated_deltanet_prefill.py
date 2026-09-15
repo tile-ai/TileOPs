@@ -6,6 +6,12 @@ forward, but uses an inference-only prepare kernel that produces only ``w`` and
 not written to global memory.
 """
 
+# FIXME(staged-rollout): prefill kernels are retained without a public Op path.
+#
+# Broken invariant: exported kernels have no in-tree Op, test, or benchmark owner.
+# Why: the legacy Ops were removed before migration into GatedDeltaNetFwdOp.
+# Cleanup: remove this marker when prefill dispatch and coverage migrate to that Op.
+
 import functools
 import math
 import os

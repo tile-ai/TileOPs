@@ -38,9 +38,7 @@ __all__ = [
     "fp8_lightning_indexer_roofline",
     "fp8_quant_roofline",
     "fused_moe_fwd_bytes",
-    "gated_deltanet_decode_roofline",
     "gated_deltanet_fwd_roofline",
-    "gated_deltanet_prefill_fwd_roofline",
     "ge_fwd_roofline",
     "gemm_fwd_roofline",
     "gemm_w4a16_fwd_roofline",
@@ -196,96 +194,6 @@ def _causal_prefill_visible_scores(seq_len_q: int, seq_len_kv: int) -> int:
     return rows * seq_len_kv - rows * (rows - 1) // 2
 
 
-def gated_deltanet_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for the Gated DeltaNet training forward.
-
-    Same chunkwise matmul work as the prefill helper, over the same conservative
-    model. The byte count differs: this forward also materializes the per-chunk
-    state ``S`` and the ``Aw`` / ``Au`` training artifacts that backward reads.
-    """
-    prefill_flops, prefill_bytes = gated_deltanet_prefill_fwd_roofline(op, **kwargs)
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        q_shape, v_shape = data["q_shape"], data["v_shape"]
-        layout = str(data.get("layout", "bthd")).lower()
-        if layout == "bthd":
-            batch, seq_len, heads, dim_k = q_shape
-            dim_v = v_shape[3]
-        else:
-            batch, heads, seq_len, dim_k = q_shape
-            dim_v = v_shape[3]
-        chunk_size = data.get("chunk_size", 64) or 64
-    else:
-        batch, heads, seq_len = data["batch"], data["heads"], data["seq_len"]
-        dim_k, dim_v = data["dim_k"], data["dim_v"]
-        chunk_size = data["chunk_size"] or 64
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    num_chunks = seq_len // chunk_size
-    # S [B, H, NC + 1, DK, DV] plus Aw and Au, each [B, H, S, chunk_size].
-    state_elems = batch * heads * (num_chunks + 1) * dim_k * dim_v
-    wy_elems = 2 * batch * heads * seq_len * chunk_size
-    # The prefill model already counts one [B, H, DK, DV] final state.
-    prefill_state_elems = batch * heads * dim_k * dim_v
-    extra = (state_elems + wy_elems - prefill_state_elems) * elem_bytes
-
-    # Aw comes from a chunk-local block solve the prefill path does not run:
-    # one triangular inverse per chunk, then applying it across DK.
-    blocksolve_flops = (
-        2 * batch * heads * num_chunks * chunk_size * chunk_size * (chunk_size + dim_k)
-    )
-    return int(prefill_flops + blocksolve_flops), int(prefill_bytes + extra)
-
-
-def gated_deltanet_prefill_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Approximate roofline for Gated DeltaNet zero-state prefill.
-
-    This models the dominant chunkwise matmul work in the current
-    implementation. It is intentionally conservative; the helper exists so the
-    manifest and benchmark share one explicit cost-model hook.
-    """
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        layout = str(data.get("layout", "bthd")).lower()
-        q_shape = data["q_shape"]
-        v_shape = data["v_shape"]
-        if layout == "bthd":
-            batch, seq_len, heads, dim_k = q_shape
-            _, v_seq_len, v_heads, dim_v = v_shape
-        elif layout == "bhtd":
-            batch, heads, seq_len, dim_k = q_shape
-            _, v_heads, v_seq_len, dim_v = v_shape
-        else:
-            raise ValueError(f"Unsupported GDN prefill layout: {layout}")
-        if v_seq_len != seq_len or v_heads != heads:
-            raise ValueError("GDN prefill q_shape and v_shape must share seq_len and heads")
-        chunk_size = data.get("chunk_size", 64) or 64
-    else:
-        batch, heads, seq_len, dim_k, dim_v, chunk_size = (
-            data["batch"],
-            data["heads"],
-            data["seq_len"],
-            data["dim_k"],
-            data["dim_v"],
-            data["chunk_size"] or 64,
-        )
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    num_chunks = seq_len // chunk_size
-    state_flops = 4 * batch * heads * num_chunks * chunk_size * dim_k * dim_v
-    intra_flops = 4 * batch * heads * num_chunks * chunk_size * chunk_size * (dim_k + dim_v)
-    flops = state_flops + intra_flops
-
-    input_elems = (
-        3 * batch * heads * seq_len * dim_k
-        + batch * heads * seq_len * dim_v
-        + 2 * batch * heads * seq_len
-    )
-    output_elems = batch * heads * seq_len * dim_v + batch * heads * dim_k * dim_v
-    nbytes = (input_elems + output_elems) * elem_bytes
-    return int(flops), int(nbytes)
-
-
 def _linear_attention_decode_dims(data: dict[str, Any]) -> tuple[int, int, int, int]:
     if "q_shape" in data:
         batch, heads, dim_k = data["q_shape"]
@@ -308,15 +216,28 @@ def deltanet_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int,
     return int(flops), int(nbytes * elem_bytes)
 
 
-def gated_deltanet_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for single-step Gated DeltaNet recurrence decode."""
+def gated_deltanet_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Algorithmic lower bound for dense Gated DeltaNet inference."""
     data = _shape_or_attrs(op, kwargs)
-    batch, heads, dim_k, dim_v = _linear_attention_decode_dims(data)
+    batch, seq_len, heads, dim_k = data["q_shape"]
+    _batch, _seq_len, value_heads, dim_v = data["v_shape"]
     elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
-    flops = 2 * batch * heads * (3 * dim_k * dim_v + dim_k)
-    nbytes = batch * heads * (2 * dim_k + 2 * dim_v + 2 + 2 * dim_k * dim_v)
-    return int(flops), int(nbytes * elem_bytes)
+    # Per recurrent head and token: two state matvecs and one state
+    # outer-product update (six FLOPs per state element), plus the elementwise
+    # state decay (one multiply per state element).
+    flops = batch * seq_len * value_heads * (7 * dim_k * dim_v)
+
+    qk = 2 * batch * seq_len * heads * dim_k
+    token_values = 2 * batch * seq_len * value_heads * dim_v  # v input and o output
+    gates = 2 * batch * seq_len * value_heads
+    cu_shape = data.get("cu_seqlens_shape")
+    state_batch = cu_shape[0] - 1 if cu_shape is not None else batch
+    state = state_batch * value_heads * dim_v * dim_k
+    seeded = data.get("initial_state") is not None or data.get("initial_state_shape") is not None
+    nbytes = (qk + token_values + gates) * elem_bytes
+    nbytes += state * 4 * (2 if seeded else 1)
+    return int(flops), int(nbytes)
 
 
 def gla_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -391,24 +312,6 @@ def deltanet_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, in
     per_token = (3 * dim_k + 3 * dim_v + 1 + 2 * chunk) + (2 * dim_k + dim_v + 1)
     state = batch * heads * (seq_len // chunk + 1) * dim_k * dim_v
     nbytes = batch * heads * seq_len * per_token * elem_bytes + state * 4
-    return int(flops), int(nbytes)
-
-
-def gated_deltanet_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for the Gated DeltaNet backward, head-major.
-
-    The gate adds one tensor in and one gradient out over the ungated backward. The
-    per-chunk state the forward saved is read in the input dtype.
-    """
-    data = _shape_or_attrs(op, kwargs)
-    batch, heads, seq_len, dim_k, dim_v = _chunkwise_dims_bhsd(data)
-    chunk = int(data.get("chunk_size", 64))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    flops = 4 * batch * heads * seq_len * dim_k * dim_v
-    tokens = batch * heads * seq_len
-    state = batch * heads * (seq_len // chunk + 1) * dim_k * dim_v
-    nbytes = (tokens * (4 * dim_k + 3 * dim_v + 4) + state) * elem_bytes
     return int(flops), int(nbytes)
 
 

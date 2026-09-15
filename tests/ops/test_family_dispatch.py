@@ -18,10 +18,6 @@ from tileops.ops.linear_attention.deltanet_recurrence import (
     DELTANET_DECODE_KEYS,
     DeltaNetDecodeFwdOp,
 )
-from tileops.ops.linear_attention.gated_deltanet import (
-    GATED_DELTANET_DECODE_KEYS,
-    GatedDeltaNetDecodeFwdOp,
-)
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="selection reads the device architecture"
@@ -116,47 +112,6 @@ def test_deltanet_decode_dispatch(
     call = DeltaNetDecodeCall(arch=arch, batch=1, heads=4, dim_k=dim_k, dim_v=dim_v, dtype=dtype)
 
     assert op.select_kernel_key(DELTANET_DECODE_KEYS, call) == expected
-
-
-# --- Gated DeltaNet decode: the same shape, and the raw-CUDA kernel additionally
-# declines when the caller asked to autotune, having no knobs to tune.
-
-_GATED_ROWS = [
-    (torch.float32, 128, 128, _SM90, "GatedDeltaNetDecodeFP32Kernel", "fp32"),
-    (torch.bfloat16, 128, 128, _SM90, "GatedDeltaNetDecodeRawCudaFlaStyleKernel", "bf16-raw"),
-    (torch.float16, 128, 128, _SM90, "GatedDeltaNetDecodeKernel", "fp16-not-raw"),
-    (torch.bfloat16, 64, 128, _SM90, "GatedDeltaNetDecodeKernel", "dim-k-off"),
-    (torch.bfloat16, 128, 64, _SM90, "GatedDeltaNetDecodeKernel", "dim-v-off"),
-    (torch.bfloat16, 128, 128, _SM80, "GatedDeltaNetDecodeKernel", "arch-off"),
-]
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("dtype", "dim_k", "dim_v", "arch", "expected"),
-    [pytest.param(*row[:5], id=row[5]) for row in _GATED_ROWS],
-)
-def test_gated_deltanet_decode_dispatch(
-    dtype: torch.dtype, dim_k: int, dim_v: int, arch: int, expected: str
-) -> None:
-    op = GatedDeltaNetDecodeFwdOp()
-    call = DeltaNetDecodeCall(arch=arch, batch=1, heads=4, dim_k=dim_k, dim_v=dim_v, dtype=dtype)
-
-    assert op.select_kernel_key(GATED_DELTANET_DECODE_KEYS, call) == expected
-
-
-@pytest.mark.smoke
-def test_gated_deltanet_raw_cuda_declines_when_asked_to_autotune() -> None:
-    """It has no tunable knobs, so a caller asking to tune wants the other one.
-
-    Nothing is autotuned here: only the key is resolved.
-    """
-    op = GatedDeltaNetDecodeFwdOp(tune=True)
-    call = DeltaNetDecodeCall(
-        arch=_SM90, batch=1, heads=4, dim_k=128, dim_v=128, dtype=torch.bfloat16, tune=True
-    )
-
-    assert op.select_kernel_key(GATED_DELTANET_DECODE_KEYS, call) == ("GatedDeltaNetDecodeKernel")
 
 
 @pytest.mark.smoke
