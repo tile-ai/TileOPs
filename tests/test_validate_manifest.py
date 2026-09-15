@@ -2053,6 +2053,58 @@ class TestValidateDtypesParity:
         )
         assert any("rejects dtype_combos" in e for e in errors), errors
 
+    def test_dtype_combos_converting_op_reads_the_output_dtype(self, validator):
+        """FP8 in, 16-bit out: the instance can only hold the 16-bit dtype."""
+        import torch
+
+        def validate(self, x):
+            if x.dtype == torch.float8_e4m3fn:
+                if self.dtype not in (torch.float16, torch.bfloat16):
+                    raise ValueError("FP8 input requires a 16-bit output dtype")
+                return
+            if x.dtype != self.dtype:
+                raise ValueError("16-bit output dtype must match the input")
+
+        errors, _ = _dtype_parity(
+            validator,
+            validate,
+            _sig(
+                {"x": "float16 | float8_e4m3fn"},
+                {"y": "float16"},
+                params={"dtype": {"type": "torch.dtype | None", "default": None}},
+                dtype_combos=[
+                    {"x": "float16", "y": "float16"},
+                    {"x": "float8_e4m3fn", "y": "float16"},
+                ],
+            ),
+        )
+        assert errors == [], errors
+
+    def test_optional_bound_by_same_as_is_probed_at_the_bound_dtype(self, validator):
+        """A ``same_as(ref)`` optional is probed at ref's dtype, not the union."""
+
+        def validate(self, x, table=None):
+            import torch
+
+            if x.dtype not in (torch.float16, torch.bfloat16):
+                raise ValueError(f"bad dtype {x.dtype}")
+            if table is not None and table.dtype != x.dtype:
+                raise ValueError("table must have the output dtype")
+
+        errors, _ = _dtype_parity(
+            validator,
+            validate,
+            _sig(
+                {"x": "float16 | bfloat16", "table": {"dtype": "same_as(y)", "optional": True}},
+                {"y": "same_as(x)"},
+                dtype_combos=[
+                    {"x": "float16", "y": "float16"},
+                    {"x": "bfloat16", "y": "bfloat16"},
+                ],
+            ),
+        )
+        assert errors == [], errors
+
     def test_dtype_combos_accepts_unlisted_fails(self, validator):
         """Accepts a non-listed combo -> parity error."""
 

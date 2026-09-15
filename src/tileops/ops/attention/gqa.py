@@ -233,6 +233,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         rotary_dim: Optional[int] = None,
         rope_layout: str = "neox",
         dtype: Optional[torch.dtype] = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         target: Target = None,
     ) -> None:
@@ -259,6 +260,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                 16-bit types are equally valid, so ``float16`` or
                 ``bfloat16`` must be named here; a 16-bit call has nothing to
                 choose and accepts only ``None`` or its own input dtype.
+            kernel_map: Optional in-tree kernel overrides.
             target: Backend target to serve this op, or ``None`` to decide
                 from the input device.
 
@@ -299,7 +301,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         self.target = target
         self._roofline_kwargs: Optional[dict] = None
         self._last_input_dtype: Optional[torch.dtype] = None
-        self.dispatch_kernel()
+        self.dispatch_kernel(kernel_map)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -669,6 +671,14 @@ class GroupedQueryAttentionDenseFwdOp(Op):
             "k_shape": tuple(k.shape),
             "is_causal": self.is_causal,
             "dtype": q.dtype,
+            "out_dtype": output.dtype,
+            # The optional tensors this call passed: the roofline prices the
+            # traffic the call made.
+            "optional_shapes": tuple(
+                (tuple(t.shape), t.dtype)
+                for t in (q_scale, k_scale, v_scale, rope_cos, rope_sin)
+                if t is not None
+            ),
         }
         return output
 

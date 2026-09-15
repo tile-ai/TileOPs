@@ -196,6 +196,39 @@ class TestBytesOracle:
         with pytest.raises(RuntimeError, match="requires a prior forward"):
             op.eval_roofline()
 
+    def test_gqa_dense_counts_qkv_output_and_the_optional_inputs(self):
+        from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
+
+        batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 256, 1792, 8, 2, 128
+        q_shape = (batch, seq_len_q, heads, dim)
+        kv_shape = (batch, seq_len_kv, heads_kv, dim)
+        scales = (((batch, heads_kv), torch.float32),) * 3
+        tables = (((seq_len_kv, dim // 4), torch.float16),) * 2
+        # (q/k/v dtype, output dtype, the optional tensors the call passed)
+        calls = {
+            "16-bit": (torch.float16, torch.float16, ()),
+            "fused RoPE": (torch.float16, torch.float16, tables),
+            "FP8": (torch.float8_e4m3fn, torch.float16, scales),
+        }
+        for label, (dtype, out_dtype, optional) in calls.items():
+            op = GroupedQueryAttentionDenseFwdOp.__new__(GroupedQueryAttentionDenseFwdOp)
+            op._roofline_kwargs = {
+                "q_shape": q_shape,
+                "k_shape": kv_shape,
+                "is_causal": True,
+                "dtype": dtype,
+                "out_dtype": out_dtype,
+                "optional_shapes": optional,
+            }
+            oracle = _nbytes(
+                (q_shape, dtype),
+                (kv_shape, dtype),
+                (kv_shape, dtype),
+                (q_shape, out_dtype),
+                *optional,
+            )
+            assert op.eval_roofline()[1] == oracle, label
+
 
 # Classification registry: every implemented op appears in exactly one of
 # AUDITED (has a bytes-oracle case above), EXEMPT (traffic depends on tensor
@@ -208,6 +241,7 @@ AUDITED = frozenset(
         "Conv2dFwdOp",
         "GemmFp8FwdOp",
         "GemmW4A16FwdOp",
+        "GroupedQueryAttentionDenseFwdOp",
         "MoePostPermuteFwdOp",
         "MoePrePermuteFwdOp",
         "RMSNormFwdOp",
