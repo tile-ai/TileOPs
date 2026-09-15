@@ -177,6 +177,8 @@ class FusedMoe(Op):
             topk_ids,
             self.num_experts,
         )
+        # Post-prepare ids name the local experts whose weights are read.
+        self._roofline_topk_ids = r.topk_ids
 
         T_prime = r.hidden_q.shape[0]
         ws1_shape, ws2_shape = self._experts.workspace_shapes(

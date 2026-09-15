@@ -170,25 +170,31 @@ class TestBytesOracle:
         )
         assert op.eval_roofline()[1] == oracle
 
-    def test_fused_moe_counts_the_bias_the_call_passed(self):
+    def test_fused_moe_counts_active_experts_and_bias(self):
         from tileops.ops.moe.fused_moe import FusedMoeFwdOp
 
-        tokens, experts, top_k, hidden, ffn = 4096, 64, 8, 4096, 1408
+        tokens, experts, top_k, hidden, ffn = 2, 8, 2, 64, 32
         for has_bias in (True, False):
             op = FusedMoeFwdOp.__new__(FusedMoeFwdOp)
             op.num_tokens, op.num_experts, op.top_k = tokens, experts, top_k
             op.hidden_size, op.ffn_size = hidden, ffn
             op.dtype = torch.bfloat16
             op.correction_bias_shape = (experts,) if has_bias else None
+            # Only experts 0, 3 and 7 receive rows.
+            op._roofline_topk_ids = torch.tensor([[0, 3], [3, 7]], dtype=torch.int32)
             oracle = _nbytes(
                 ((tokens, hidden), torch.bfloat16),  # hidden states in
-                ((experts, 2 * ffn, hidden), torch.bfloat16),  # w_gate_up
-                ((experts, hidden, ffn), torch.bfloat16),  # w_down
+                ((3, 2 * ffn, hidden), torch.bfloat16),  # active w_gate_up
+                ((3, hidden, ffn), torch.bfloat16),  # active w_down
                 ((tokens, experts), torch.float32),  # gating logits
                 ((tokens, hidden), torch.bfloat16),  # output
                 *((((experts,), torch.float32),) if has_bias else ()),
             )
             assert op.eval_roofline()[1] == oracle, f"has_bias={has_bias}"
+
+        del op._roofline_topk_ids
+        with pytest.raises(RuntimeError, match="requires a prior forward"):
+            op.eval_roofline()
 
 
 # Classification registry: every implemented op appears in exactly one of
@@ -200,7 +206,6 @@ AUDITED = frozenset(
         "AddFwdOp",
         "ArgmaxFwdOp",
         "Conv2dFwdOp",
-        "FusedMoeFwdOp",
         "GemmFp8FwdOp",
         "GemmW4A16FwdOp",
         "MoePostPermuteFwdOp",
@@ -211,7 +216,9 @@ AUDITED = frozenset(
 )
 
 # op name -> why the shape-level oracle cannot count its traffic
-EXEMPT: dict[str, str] = {}
+EXEMPT: dict[str, str] = {
+    "FusedMoeFwdOp": "expert weight traffic depends on the experts selected by topk_ids",
+}
 
 # FIXME(staged-rollout): most implemented ops lack a bytes-oracle case.
 #
