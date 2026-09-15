@@ -18,7 +18,7 @@ def cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
     return (torch.dot(a_flat, b_flat) / (a_flat.norm() * b_flat.norm() + 1e-12)).item()
 
 
-def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None):
+def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None, *, return_final_state=False):
     """Fully differentiable chunked GLA forward in float32."""
     B, T, H, K = q.shape
     V = v.shape[-1]
@@ -61,4 +61,5 @@ def gla_fwd_chunked_torch(q, k, v, g, chunk_size, scale=None):
         h = h * torch.exp(g_last).permute(0, 2, 3, 1).squeeze(-1).unsqueeze(-1)
         h = h + torch.einsum("bthk,bthv->bhkv", k_adj, vc)
 
-    return torch.cat(o_chunks, dim=1)
+    o = torch.cat(o_chunks, dim=1)
+    return (o, h) if return_final_state else o

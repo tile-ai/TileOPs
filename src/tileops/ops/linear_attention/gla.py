@@ -2,17 +2,26 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.linear_attention.gla import GLABwdKernel, GLAFwdKernel
+from tileops.kernels.linear_attention.gla import (
+    GLABwdKernel,
+    GLAFwdKernel,
+    GLAPartitionedFwdKernel,
+)
+from tileops.kernels.linear_attention.gla.call_spec import GLAFwdCall
 from tileops.perf.profile import tensor_core_roof
+from tileops.utils import get_sm_count, get_sm_version, is_h200
 
 from .._validation import check_tensor_shape
 from ..op_base import Op
 
 __all__ = ["GLABwdOp", "GLAFwdOp"]
 
+_GLA_FWD_KEYS = ("gla_fwd_partitioned", "gla_fwd_general")
 
-def _resolve_gla_bthd(
+
+def _resolve_gla_bthd_shapes(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -20,10 +29,11 @@ def _resolve_gla_bthd(
     chunk_size: int,
     do: Optional[torch.Tensor] = None,
 ) -> tuple[int, int, int, int, int, torch.dtype]:
-    if not all(tensor.is_cuda for tensor in (q, k, v, g)):
-        raise ValueError("q, k, v, and g must be CUDA tensors")
     if q.ndim != 4:
         raise ValueError("q must have shape [batch, seq_len, heads, dim_k]")
+    for name, tensor in (("k", k), ("v", v), ("g", g)):
+        if tensor.device != q.device:
+            raise ValueError(f"{name} must be on the same device as q")
     batch, seq_len, heads, dim_k = q.shape
     if k.shape != (batch, seq_len, heads, dim_k):
         raise ValueError("k must match q shape")
@@ -40,6 +50,19 @@ def _resolve_gla_bthd(
     return batch, seq_len, heads, dim_k, dim_v, dtype
 
 
+def _resolve_gla_bthd(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    chunk_size: int,
+    do: Optional[torch.Tensor] = None,
+) -> tuple[int, int, int, int, int, torch.dtype]:
+    if not all(tensor.is_cuda for tensor in (q, k, v, g)):
+        raise ValueError("q, k, v, and g must be CUDA tensors")
+    return _resolve_gla_bthd_shapes(q, k, v, g, chunk_size, do)
+
+
 class GLAFwdOp(Op):
     """GLA (Gated Linear Attention) forward operator.
 
@@ -53,6 +76,8 @@ class GLAFwdOp(Op):
         self,
         chunk_size: int = 64,
         scale: float = -1.0,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -61,6 +86,7 @@ class GLAFwdOp(Op):
         Args:
             chunk_size: Chunk size for chunked linear attention.
             scale: Query scale factor (default: dim_k**-0.5).
+            target: Backend target, or ``None`` to decide from the input device.
             kernel_map: Optional kernel overrides.
             tune: Whether to autotune kernels.
         """
@@ -72,6 +98,7 @@ class GLAFwdOp(Op):
         self.chunk_size = chunk_size
         self.scale = scale
         self.dtype = None
+        self.target = target
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
@@ -80,7 +107,8 @@ class GLAFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "GLAFwdKernel": GLAFwdKernel,
+            "gla_fwd_partitioned": GLAPartitionedFwdKernel,
+            "gla_fwd_general": GLAFwdKernel,
         }
 
     def _get_kernel(
@@ -93,7 +121,30 @@ class GLAFwdOp(Op):
         dim_v: int,
         dtype: torch.dtype,
         device_index: int | None,
+        has_initial_state: bool,
     ) -> Kernel:
+        q = inputs[0]
+        assert q is not None
+        if q.is_cuda:
+            call = GLAFwdCall(
+                arch=get_sm_version(device_index),
+                h200=is_h200(device_index),
+                sm_count=get_sm_count(device_index),
+                batch=batch,
+                seq_len=seq_len,
+                heads=heads,
+                dim_k=dim_k,
+                dim_v=dim_v,
+                chunk_size=self.chunk_size,
+                dtype=dtype,
+                tune=self.tune,
+                has_initial_state=has_initial_state,
+            )
+            role = self.select_kernel_key(_GLA_FWD_KEYS, call)
+        else:
+            # External targets own their shape-specific selection. This name is
+            # only the Op-local cache role on that path.
+            role = "gla_fwd_general"
         key = (
             batch,
             seq_len,
@@ -107,10 +158,10 @@ class GLAFwdOp(Op):
             self.tune,
         )
         return self.get_or_build_kernel(
-            "GLAFwdKernel",
+            role,
             inputs,
             key=key,
-            build=lambda: self.kernel_map["GLAFwdKernel"](
+            build=lambda: self.kernel_map[role](
                 batch,
                 seq_len,
                 heads,
@@ -121,6 +172,7 @@ class GLAFwdOp(Op):
                 output_final_state=True,
                 dtype=dtype,
                 tune=self.tune,
+                device_index=device_index,
             ),
         )
 
@@ -158,9 +210,19 @@ class GLAFwdOp(Op):
         Returns:
             Tuple of (o, final_state).
         """
-        batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd(q, k, v, g, self.chunk_size)
+        q = q.contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
+        g = g.contiguous()
+        if initial_state is not None:
+            initial_state = initial_state.contiguous()
+        batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd_shapes(
+            q, k, v, g, self.chunk_size
+        )
         self._validate_dtypes(q, k, v, g, initial_state=initial_state)
         if initial_state is not None:
+            if initial_state.device != q.device:
+                raise ValueError("initial_state must be on the same device as q")
             check_tensor_shape("initial_state", initial_state, (batch, heads, dim_k, dim_v))
         self.batch = batch
         self.seq_len = seq_len
@@ -169,7 +231,15 @@ class GLAFwdOp(Op):
         self.dim_v = dim_v
         self.dtype = dtype
         self.kernel = self._get_kernel(
-            (q, k, v, g, initial_state), batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index
+            (q, k, v, g, initial_state),
+            batch,
+            seq_len,
+            heads,
+            dim_k,
+            dim_v,
+            dtype,
+            q.device.index,
+            initial_state is not None,
         )
         return self.kernel(q, k, v, g, initial_state)
 

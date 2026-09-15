@@ -79,7 +79,15 @@ def test_gla_fwd_bench(
     q, k, v, g, initial_state = inputs
 
     def fla_fwd():
-        return chunk_gla(q, k, v, g, scale=scale, initial_state=initial_state)
+        return chunk_gla(
+            q,
+            k,
+            v,
+            g,
+            scale=scale,
+            initial_state=initial_state,
+            output_final_state=True,
+        )
 
     functors["fla"] = (fla_fwd, ())
 

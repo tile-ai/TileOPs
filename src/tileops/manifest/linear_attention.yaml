@@ -562,11 +562,17 @@ GLAFwdOp:
   - {q_shape: [2, 4096, 4, 64], k_shape: [2, 4096, 4, 64], v_shape: [2, 4096, 4, 64], g_shape: [2, 4096, 4, 64], initial_state_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-init-b2-s4k-h4-d64"}
   - {q_shape: [2, 8192, 4, 64], k_shape: [2, 8192, 4, 64], v_shape: [2, 8192, 4, 64], g_shape: [2, 8192, 4, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-noinit-b2-s8k-h4-d64"}
   - {q_shape: [2, 16384, 4, 64], k_shape: [2, 16384, 4, 64], v_shape: [2, 16384, 4, 64], g_shape: [2, 16384, 4, 64], initial_state_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-init-b2-s16k-h4-d64"}
+  - {q_shape: [1, 32768, 16, 128], k_shape: [1, 32768, 16, 128], v_shape: [1, 32768, 16, 128], g_shape: [1, 32768, 16, 128], chunk_size: 64, scale: 0.08838834764831845, dtypes: [float16, bfloat16], label: "gla-prefill-b1-s32k-h16-d128"}
+  - {q_shape: [1, 65536, 16, 128], k_shape: [1, 65536, 16, 128], v_shape: [1, 65536, 16, 128], g_shape: [1, 65536, 16, 128], chunk_size: 64, scale: 0.08838834764831845, dtypes: [float16, bfloat16], label: "gla-prefill-b1-s64k-h16-d128"}
+  - {q_shape: [1, 131072, 16, 128], k_shape: [1, 131072, 16, 128], v_shape: [1, 131072, 16, 128], g_shape: [1, 131072, 16, 128], chunk_size: 64, scale: 0.08838834764831845, dtypes: [float16, bfloat16], label: "gla-prefill-b1-s128k-h16-d128"}
+  - {q_shape: [1, 32768, 32, 128], k_shape: [1, 32768, 32, 128], v_shape: [1, 32768, 32, 128], g_shape: [1, 32768, 32, 128], chunk_size: 64, scale: 0.08838834764831845, dtypes: [float16, bfloat16], label: "gla-prefill-b1-s32k-h32-d128"}
+  - {q_shape: [1, 32768, 64, 128], k_shape: [1, 32768, 64, 128], v_shape: [1, 32768, 64, 128], g_shape: [1, 32768, 64, 128], chunk_size: 64, scale: 0.08838834764831845, dtypes: [float16, bfloat16], label: "gla-prefill-b1-s32k-h64-d128"}
   roofline: {func: tileops.perf.formulas.gla_fwd_roofline}
   source:
     kernel: tileops/kernels/linear_attention/gla/gla_fwd.py
     kernel_map:
-      GLAFwdKernel: GLAFwdKernel
+      gla_fwd_partitioned: GLAPartitionedFwdKernel
+      gla_fwd_general: GLAFwdKernel
     op: tileops/ops/linear_attention/gla.py
     test: tests/ops/test_gla_chunkwise_fwd.py
     bench: benchmarks/ops/bench_gla_chunkwise.py
