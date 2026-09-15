@@ -58,7 +58,7 @@ MultiHeadAttentionBwdOp:
 GroupedQueryAttentionDenseFwdOp:
   ref_api: "torch.nn.functional.scaled_dot_product_attention"
   family: attention
-  status: spec-only
+  status: implemented
 
   signature:
     inputs:
@@ -128,6 +128,9 @@ GroupedQueryAttentionDenseFwdOp:
     - {q_shape: [1, 1, 32, 128], kv_shape: [1, 65536, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-64k"}
     - {q_shape: [1, 1, 32, 128], kv_shape: [1, 131072, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-128k"}
     - {q_shape: [1, 1, 32, 128], kv_shape: [1, 262144, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-256k"}
+    # Chunked prefill; the rows that pass the optional inputs.
+    - {q_shape: [1, 256, 8, 128], kv_shape: [1, 1792, 2, 128], rope_cos_shape: [1792, 32], rope_sin_shape: [1792, 32], pos_encoding_mode: rope, rotary_dim: 64, dtypes: [float16, bfloat16], label: "prefill-rope-neox-q256-kv1792"}
+    - {q_shape: [1, 256, 8, 128], kv_shape: [1, 1792, 2, 128], q_scale_shape: [1, 2], k_scale_shape: [1, 2], v_scale_shape: [1, 2], dtype: float16, dtypes: [float8_e4m3fn], label: "prefill-scaled-q256-kv1792"}
 
   roofline:
     func: "tileops.perf.formulas.gqa_fwd_roofline"

@@ -13,7 +13,6 @@ dependencies = [
     # Downstream `pip install tileops` resolves a compatible tilelang release; apache-tvm-ffi
     # comes in transitively via tilelang's own metadata — no manual cap here.
     "tilelang>=0.1.9,<0.2.0",
-    "einops",
     "pyyaml>=6.0",
 ]
 requires-python = ">=3.10"
@@ -40,6 +39,9 @@ Issues = "https://github.com/tile-ai/TileOPs/issues"
 dev = [
     "ruff==0.14.13",
     "codespell==2.4.1",
+    # workloads/attention/deepseek.py, which tests and benchmarks import;
+    # nothing under src/ does.
+    "einops",
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "pytest-xdist>=3.0",

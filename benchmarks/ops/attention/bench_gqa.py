@@ -4,7 +4,12 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.baselines import assert_matches_reference, reference_tolerance
+from benchmarks.baselines import (
+    TORCH_COMPILE_TAG,
+    assert_matches_reference,
+    compiled_reference,
+    reference_tolerance,
+)
 from benchmarks.benchmark_base import (
     BenchmarkReport,
     ManifestBenchmark,
@@ -13,7 +18,9 @@ from benchmarks.benchmark_base import (
     workload_params,
 )
 from benchmarks.ops.attention.workload_args import (
+    GQADensePrefillCase,
     gqa_dense_decode_args,
+    gqa_dense_prefill_args,
     gqa_prefill_paged_args,
     gqa_prefill_varlen_args,
     gqa_qkv_args,
@@ -25,11 +32,13 @@ from tileops.ops import (
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
 )
+from tileops.utils import get_sm_version
 from workloads.attention.gqa import (
     GQAPrefillPagedWithKVCacheFwdWorkload,
     GQAPrefillVarlenFwdWorkload,
     GroupedQueryAttentionBwdWorkload,
     GroupedQueryAttentionDenseDecodeWorkload,
+    GroupedQueryAttentionDensePrefillWorkload,
 )
 
 
@@ -227,9 +236,33 @@ def _flashinfer_gqa_dense_decode(
     return run_fn
 
 
+# A Dense row carrying any of these is a prefill case with FP8 dequantization
+# or fused RoPE; a row carrying none is a plain decode.
+_DENSE_OPTIONAL_SHAPE_KEYS = (
+    "q_scale_shape",
+    "k_scale_shape",
+    "v_scale_shape",
+    "rope_cos_shape",
+    "rope_sin_shape",
+)
+
+
+def _dense_rows(*, optional_inputs: bool) -> list[dict]:
+    return [
+        w
+        for w in load_workloads(GroupedQueryAttentionDenseFwdOp)
+        if any(key in w for key in _DENSE_OPTIONAL_SHAPE_KEYS) is optional_inputs
+    ]
+
+
 _GQA_DENSE_DECODE_BENCH_PARAMS = workload_params(
-    load_workloads(GroupedQueryAttentionDenseFwdOp),
+    _dense_rows(optional_inputs=False),
     then_dtype(gqa_dense_decode_args),
+)
+
+_GQA_DENSE_PREFILL_BENCH_PARAMS = workload_params(
+    _dense_rows(optional_inputs=True),
+    gqa_dense_prefill_args,
 )
 
 
@@ -277,6 +310,64 @@ def test_gqa_dense_decode_bench(
         functors["torch-ref"] = test.ref_program
 
     bm.compare(functors, *inputs)
+
+
+@pytest.mark.parametrize("case", _GQA_DENSE_PREFILL_BENCH_PARAMS)
+def test_gqa_dense_prefill_bench(case: GQADensePrefillCase) -> None:
+    """Dense prefill through the op's optional inputs: FP8 scales, fused RoPE.
+
+    Read against the reference and its compiled form: FA3 and FlashInfer fuse
+    neither the per-KV-head dequantization nor a caller-supplied cos/sin table.
+    """
+    if case.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
+        pytest.skip("native FP8 Dense GQA requires SM90")
+    test = GroupedQueryAttentionDensePrefillWorkload(
+        case.batch,
+        case.seq_len_q,
+        case.seq_len_kv,
+        case.heads,
+        case.heads_kv,
+        case.dim,
+        case.dtype,
+        out_dtype=case.out_dtype,
+        is_causal=case.is_causal,
+        sm_scale=case.sm_scale,
+        softcap=case.softcap,
+        rotary_dim=case.rotary_dim,
+        rope_layout=case.rope_layout,
+    )
+    inputs = test.gen_inputs()
+    op = GroupedQueryAttentionDenseFwdOp(
+        is_causal=case.is_causal,
+        sm_scale=case.sm_scale,
+        softcap=case.softcap,
+        dtype=case.out_dtype,
+        pos_encoding_mode="rope" if case.rotary_dim is not None else "none",
+        rotary_dim=case.rotary_dim,
+        rope_layout=case.rope_layout,
+    )
+    bm = ManifestBenchmark(op, test)
+    # FP8 is held to the tolerance tests/ops/attention/test_gqa.py uses: no
+    # per-dtype one covers dequantization against a 16-bit reference.
+    assert_matches_reference(
+        op,
+        test.ref_program,
+        *inputs,
+        **(
+            {"atol": 8e-2, "rtol": 2e-2}
+            if case.dtype == torch.float8_e4m3fn
+            else reference_tolerance(case.dtype)
+        ),
+    )
+
+    bm.compare(
+        {
+            "tileops": op,
+            "torch-ref": test.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        },
+        *inputs,
+    )
 
 
 def _fa3_gqa_prefill_varlen(test: GQAPrefillVarlenFwdWorkload):

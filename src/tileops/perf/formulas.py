@@ -10,6 +10,7 @@ field.
 
 from __future__ import annotations
 
+from math import prod
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -141,6 +142,8 @@ def gqa_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
         )
     is_causal = bool(data.get("is_causal", True))
     elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+    # FP8 input has no FP8 output, so the write is priced on its own dtype.
+    out_bytes = _dtype_itemsize(data.get("out_dtype", data.get("dtype", "float16")))
 
     visible_scores = seq_len_q * seq_len_kv
     if is_causal:
@@ -148,7 +151,12 @@ def gqa_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     flops = 4 * batch * heads * visible_scores * dim
     q_elems = batch * seq_len_q * heads * dim
     kv_elems = batch * seq_len_kv * heads_kv * dim
-    return int(flops), int(2 * (q_elems + kv_elems) * elem_bytes)
+    # Per-KV-head scales and RoPE tables the call passed, each read once.
+    optional_bytes = sum(
+        prod(shape) * _dtype_itemsize(dtype) for shape, dtype in data.get("optional_shapes", ())
+    )
+    read_bytes = (q_elems + 2 * kv_elems) * elem_bytes + optional_bytes
+    return int(flops), int(read_bytes + q_elems * out_bytes)
 
 
 def _dtype_itemsize(dtype: Any) -> int:

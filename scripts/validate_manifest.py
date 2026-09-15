@@ -2901,6 +2901,28 @@ def _make_mock_tensor(dtype_name: str):
         return None
 
 
+def _configured_dtype_name(
+    sig: dict,
+    combo: dict[str, str],
+    forward_inputs: list[str],
+) -> str | None:
+    """The dtype ``self.dtype`` holds while *combo* is probed.
+
+    An op declaring a ``dtype`` param holds the combo's output dtype — FP8 in
+    and 16-bit out is a dtype its ``__init__`` accepts, the input's is not.
+    Every other op holds the first input dtype nothing binds, which for a
+    combo that does not convert is the same dtype.
+    """
+    params = sig.get("params")
+    outputs = sig.get("outputs")
+    if isinstance(params, dict) and "dtype" in params and isinstance(outputs, dict):
+        named = [combo[name] for name in outputs if isinstance(combo.get(name), str)]
+        if len(named) == 1:
+            return named[0]
+    primary = _primary_dtype_input(sig, forward_inputs)
+    return combo.get(primary) if primary is not None else None
+
+
 def _combo_accepted(
     cls: type,
     forward_inputs: list[str],
@@ -2958,9 +2980,10 @@ def _combo_accepted(
             if override_t is not None:
                 extra_attrs["dtype"] = override_t.dtype
         else:
-            primary = _primary_dtype_input(sig, forward_inputs)
-            if primary is not None and primary in tensors:
-                extra_attrs["dtype"] = tensors[primary].dtype
+            configured = _configured_dtype_name(sig, combo, forward_inputs)
+            configured_t = _make_mock_tensor(configured) if configured else None
+            if configured_t is not None:
+                extra_attrs["dtype"] = configured_t.dtype
     mock_self = _build_mock_self(cls, param_env, extra_attrs)
     # Pre-bind the callable signature so only genuine signature mismatches
     # surface as ``TypeError: ...``. TypeError raised from inside the body
@@ -3231,11 +3254,20 @@ def check_l3_validate_dtypes_parity(
         # The optional inputs have no combo column, so the loop above never
         # passes one. Probe the other side too: each listed combo, augmented
         # with every optional at a declared dtype, must still be accepted.
+        # R4 gives a ``same_as(ref)`` optional one legal dtype per combo: ref's.
+        # The union holds pairings the manifest never declared.
+        bound_refs = _same_as_refs(sig)
         for name in sorted(optional_inputs):
-            for dtype_name in dtype_options.get(name) or []:
-                for i, combo in enumerate(dtype_combos):
-                    if not isinstance(combo, dict):
-                        continue
+            bound_ref = bound_refs.get(name)
+            for i, combo in enumerate(dtype_combos):
+                if not isinstance(combo, dict):
+                    continue
+                if bound_ref is not None:
+                    bound_dtype = combo.get(bound_ref)
+                    options = [bound_dtype] if isinstance(bound_dtype, str) else []
+                else:
+                    options = list(dtype_options.get(name) or [])
+                for dtype_name in options:
                     accepted, reason = _combo_accepted(
                         cls,
                         forward_inputs + [name],
