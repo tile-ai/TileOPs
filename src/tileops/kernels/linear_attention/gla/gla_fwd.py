@@ -330,7 +330,7 @@ def _gla_fwd_h_summary_kernel(
                         )
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
                         h_f[i_k, i_v] = h_f[i_k, i_v] * T.exp2(
-                            T.cast(g_s[chunk_size - 1, i_k], accum_dtype) * LOG2_E
+                            T.cast(g_s[chunk_size - 1, i_k], accum_dtype) * LOG2E
                         )
                     for i_t, i_k in T.Parallel(chunk_size, dim_k_part):
                         k_adj[i_t, i_k] = T.cast(
@@ -340,7 +340,7 @@ def _gla_fwd_h_summary_kernel(
                                     T.cast(g_s[chunk_size - 1, i_k], accum_dtype)
                                     - T.cast(g_s[i_t, i_k], accum_dtype)
                                 )
-                                * LOG2_E
+                                * LOG2E
                             ),
                             dtype,
                         )
@@ -406,7 +406,7 @@ def _gla_fwd_h0_scan_kernel(
                     )
                     for i_k, i_v in T.Parallel(dim_k, block_v):
                         h_s[i_k, i_v] = (
-                            h_s[i_k, i_v] * T.exp2(log_decays[i_b, i_p, i_h, i_k] * LOG2_E)
+                            h_s[i_k, i_v] * T.exp2(log_decays[i_b, i_p, i_h, i_k] * LOG2E)
                             + summary_s[i_k, i_v]
                         )
 
@@ -523,7 +523,7 @@ def _gla_prefill_fused_replay_kernel(
                         T.copy(h_f, h_s)
                         for i_k, i_v in T.Parallel(dim_k, dim_v):
                             h_f[i_k, i_v] *= T.exp2(
-                                T.cast(g_s[chunk_size - 1, i_k], accum_dtype) * LOG2_E
+                                T.cast(g_s[chunk_size - 1, i_k], accum_dtype) * LOG2E
                             )
                     elif tx < 256:
                         for i_t, i_k in T.Parallel(chunk_size, dim_k):
@@ -532,12 +532,12 @@ def _gla_prefill_fused_replay_kernel(
                             q_value = T.cast(q_s[i_t, i_k], accum_dtype)
                             k_value = T.cast(k_s[i_t, i_k], accum_dtype)
                             q_intra_s[i_t, i_k] = T.cast(
-                                q_value * T.exp2((g_value - g_last) * LOG2_E), dtype
+                                q_value * T.exp2((g_value - g_last) * LOG2E), dtype
                             )
                             k_s[i_t, i_k] = T.cast(
-                                k_value * T.exp2((g_last - g_value) * LOG2_E), dtype
+                                k_value * T.exp2((g_last - g_value) * LOG2E), dtype
                             )
-                            q_s[i_t, i_k] = T.cast(q_value * T.exp2(g_value * LOG2_E), dtype)
+                            q_s[i_t, i_k] = T.cast(q_value * T.exp2(g_value * LOG2E), dtype)
                     T.sync_threads()
 
                     if tx < 128:
@@ -646,12 +646,12 @@ def _gla_fwd_a_inter_kernel(
                     anchor = gq_s[0, i_k]
                     q_adj_s[i_t, i_k] = T.cast(
                         T.cast(q_s[i_t, i_k], accum_dtype)
-                        * T.exp2((gq_s[i_t, i_k] - anchor) * LOG2_E),
+                        * T.exp2((gq_s[i_t, i_k] - anchor) * LOG2E),
                         dtype,
                     )
                     k_adj_s[i_t, i_k] = T.cast(
                         T.cast(k_s[i_t, i_k], accum_dtype)
-                        * T.exp2((anchor - gk_s[i_t, i_k]) * LOG2_E),
+                        * T.exp2((anchor - gk_s[i_t, i_k]) * LOG2E),
                         dtype,
                     )
                 T.clear(a_frag)
@@ -729,10 +729,10 @@ def _gla_fwd_a_intra_gemm_kernel(
                 for i_t, i_k in T.Parallel(block_t, dim_k):
                     anchor = g_s[block_t - 1, i_k]
                     q_adj[i_t, i_k] = T.cast(q_s[i_t, i_k], accum_dtype) * T.exp2(
-                        (g_s[i_t, i_k] - anchor) * LOG2_E
+                        (g_s[i_t, i_k] - anchor) * LOG2E
                     )
                     k_adj[i_t, i_k] = T.cast(k_s[i_t, i_k], accum_dtype) * T.exp2(
-                        (anchor - g_s[i_t, i_k]) * LOG2_E
+                        (anchor - g_s[i_t, i_k]) * LOG2E
                     )
                 T.clear(a_frag)
                 T.gemm(q_adj, k_adj, a_frag, transpose_B=True)
@@ -891,8 +891,9 @@ class GLAFwdKernel(Kernel):
         config: Optional[dict] = None,
         tune: bool = False,
         state_dtype: str = "float32",
+        device_index: int | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.seq_len = seq_len
         self.heads = heads
@@ -1110,16 +1111,82 @@ class GLAFwdKernel(Kernel):
         return o, final_state
 
 
-class GLAPrefillFwdKernel(GLAFwdKernel):
+class GLAPrefillGeneralFwdKernel(GLAFwdKernel):
+    """General zero-state GLA prefill implementation."""
+
+    general = True
+
+    def __init__(
+        self,
+        batch: int,
+        seq_len: int,
+        heads: int,
+        dim_k: int,
+        dim_v: int,
+        chunk_size: int = 64,
+        scale: float = -1.0,
+        dtype: torch.dtype = torch.float16,
+        config: Optional[dict] = None,
+        tune: bool = False,
+        device_index: int | None = None,
+    ) -> None:
+        super().__init__(
+            batch=batch,
+            seq_len=seq_len,
+            heads=heads,
+            dim_k=dim_k,
+            dim_v=dim_v,
+            chunk_size=chunk_size,
+            scale=scale,
+            output_final_state=True,
+            dtype=dtype,
+            config=config,
+            tune=tune,
+            state_dtype=str(dtype).split(".")[-1],
+            device_index=device_index,
+        )
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self._require_cuda(q=q, k=k, v=v, g=g)
+        o, final_state = super().forward(q, k, v, g, initial_state=None)
+        assert final_state is not None
+        return o, final_state
+
+
+class GLAPrefillPartitionedFwdKernel(GLAFwdKernel):
     """Inference-only GLA prefill with a partitioned long-context scan."""
+
+    supported_archs = [90]
+    partition_chunks = 32
+    partition_min_chunks = 512
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        num_chunks = call.seq_len // call.chunk_size
+        return (
+            call.dtype in (torch.float16, torch.bfloat16)
+            and call.batch == 1
+            and call.heads <= 64
+            and call.chunk_size == 64
+            and call.dim_k == 128
+            and call.dim_v == 128
+            and num_chunks >= cls.partition_min_chunks
+            and num_chunks % cls.partition_chunks == 0
+        )
 
     @property
     def default_config(self) -> dict:
         config = super().default_config
         config["num_v_partitions"] = 1
         config["num_k_partitions"] = 2
-        config["partition_chunks"] = 32
-        config["partition_min_chunks"] = 512
+        config["partition_chunks"] = self.partition_chunks
+        config["partition_min_chunks"] = self.partition_min_chunks
         config["scan_threads"] = 128
         return config
 
@@ -1145,8 +1212,9 @@ class GLAPrefillFwdKernel(GLAFwdKernel):
             and num_chunks % requested_partition_chunks == 0
         )
         if not use_partition:
-            super()._build_kernels(config)
-            return
+            raise ValueError(
+                "GLAPrefillPartitionedFwdKernel requires its partitioned long-context region"
+            )
 
         self._partition_chunks = requested_partition_chunks
         ns = config.get("num_stages", 2)
@@ -1218,6 +1286,7 @@ class GLAPrefillFwdKernel(GLAFwdKernel):
         dtype: torch.dtype = torch.float16,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(
             batch=batch,
@@ -1232,6 +1301,7 @@ class GLAPrefillFwdKernel(GLAFwdKernel):
             config=config,
             tune=tune,
             state_dtype=str(dtype).split(".")[-1],
+            device_index=device_index,
         )
 
     def forward(
@@ -1241,11 +1311,7 @@ class GLAPrefillFwdKernel(GLAFwdKernel):
         v: torch.Tensor,
         g: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if not self._partition_chunks:
-            o, final_state = super().forward(q, k, v, g, initial_state=None)
-            assert final_state is not None
-            return o, final_state
-
+        self._require_cuda(q=q, k=k, v=v, g=g)
         dtype_torch = getattr(torch, self.dtype_name)
         q = q.to(dtype_torch)
         k = k.to(dtype_torch)

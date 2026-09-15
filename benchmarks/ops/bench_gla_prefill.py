@@ -6,13 +6,10 @@ import pytest
 import torch
 from fla.ops.gla import chunk_gla
 
-from benchmarks.benchmark_base import BenchmarkReport, ManifestBenchmark
-from benchmarks.ops.attention.manifest_params import manifest_params
+from benchmarks.benchmark_base import ManifestBenchmark, then_dtype, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops import GLAPrefillFwdOp
 from workloads.linear_attention import GLAPrefillFwdWorkload
-
-_OP_NAME = "GLAPrefillFwdOp"
 
 
 def _gla_prefill_args(
@@ -33,7 +30,9 @@ def _gla_prefill_args(
     )
 
 
-_BENCH_PARAMS = manifest_params(load_workloads(_OP_NAME), _gla_prefill_args, tune=False)
+_BENCH_PARAMS = workload_params(
+    load_workloads(GLAPrefillFwdOp), then_dtype(_gla_prefill_args, tune=False)
+)
 
 
 @pytest.mark.parametrize(
@@ -54,7 +53,7 @@ def test_gla_prefill_fwd_bench(
     test = GLAPrefillFwdWorkload(batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype)
     inputs = test.gen_inputs()
     op = GLAPrefillFwdOp(chunk_size=chunk_size, scale=scale, tune=tune)
-    bm = ManifestBenchmark(_OP_NAME, op, test)
+    bm = ManifestBenchmark(op, test)
 
     def fla_prefill(q, k, v, g):
         return chunk_gla(
@@ -66,9 +65,4 @@ def test_gla_prefill_fwd_bench(
             output_final_state=True,
         )
 
-    results = bm.compare({"tileops": op, "fla": fla_prefill}, *inputs)
-    results["tileops"]["speedup_vs_fla"] = (
-        results["fla"]["latency_ms"] / results["tileops"]["latency_ms"]
-    )
-    BenchmarkReport.record(op, locals(), results["tileops"], tag="tileops")
-    BenchmarkReport.record(op, locals(), results["fla"], tag="fla")
+    bm.compare({"tileops": op, "fla": fla_prefill}, *inputs)

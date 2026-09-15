@@ -312,6 +312,10 @@ class GLAChunkwiseWorkload(WorkloadBase):
 class GLAPrefillFwdWorkload(GLAChunkwiseWorkload):
     """Zero-state BTHD GLA prefill workload."""
 
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        q, k, v, g, _initial_state = super().gen_inputs()
+        return q, k, v, g
+
     def ref_program(
         self,
         q: torch.Tensor,

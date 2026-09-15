@@ -2,17 +2,27 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.linear_attention.gla import GLABwdKernel, GLAFwdKernel, GLAPrefillFwdKernel
+from tileops.kernels.linear_attention.gla import (
+    GLABwdKernel,
+    GLAFwdKernel,
+    GLAPrefillGeneralFwdKernel,
+    GLAPrefillPartitionedFwdKernel,
+)
+from tileops.kernels.linear_attention.gla.call_spec import GLAPrefillCall
 from tileops.perf.profile import tensor_core_roof
+from tileops.utils import get_sm_count, get_sm_version, is_h200
 
 from .._validation import check_tensor_shape
 from ..op_base import Op
 
 __all__ = ["GLABwdOp", "GLAFwdOp", "GLAPrefillFwdOp"]
 
+_GLA_PREFILL_KEYS = ("gla_prefill_partitioned", "gla_prefill_general")
 
-def _resolve_gla_bthd(
+
+def _resolve_gla_bthd_shapes(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -20,10 +30,11 @@ def _resolve_gla_bthd(
     chunk_size: int,
     do: Optional[torch.Tensor] = None,
 ) -> tuple[int, int, int, int, int, torch.dtype]:
-    if not all(tensor.is_cuda for tensor in (q, k, v, g)):
-        raise ValueError("q, k, v, and g must be CUDA tensors")
     if q.ndim != 4:
         raise ValueError("q must have shape [batch, seq_len, heads, dim_k]")
+    for name, tensor in (("k", k), ("v", v), ("g", g)):
+        if tensor.device != q.device:
+            raise ValueError(f"{name} must be on the same device as q")
     batch, seq_len, heads, dim_k = q.shape
     if k.shape != (batch, seq_len, heads, dim_k):
         raise ValueError("k must match q shape")
@@ -38,6 +49,19 @@ def _resolve_gla_bthd(
     if seq_len % chunk_size != 0:
         raise ValueError(f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})")
     return batch, seq_len, heads, dim_k, dim_v, dtype
+
+
+def _resolve_gla_bthd(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    chunk_size: int,
+    do: Optional[torch.Tensor] = None,
+) -> tuple[int, int, int, int, int, torch.dtype]:
+    if not all(tensor.is_cuda for tensor in (q, k, v, g)):
+        raise ValueError("q, k, v, and g must be CUDA tensors")
+    return _resolve_gla_bthd_shapes(q, k, v, g, chunk_size, do)
 
 
 class GLAFwdOp(Op):
@@ -192,9 +216,20 @@ class GLAPrefillFwdOp(Op):
         self,
         chunk_size: int = 64,
         scale: float = -1.0,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
+        """Build the inference prefill op; shapes and dtype come from each call.
+
+        Args:
+            chunk_size: Chunk size for the recurrent scan.
+            scale: Query scale factor; a non-positive value selects ``dim_k**-0.5``.
+            target: Backend target, or ``None`` to decide from the input device.
+            kernel_map: Optional replacements for the built-in kernel roles.
+            tune: Whether kernels should autotune when first built.
+        """
         self.batch = None
         self.seq_len = None
         self.heads = None
@@ -203,14 +238,17 @@ class GLAPrefillFwdOp(Op):
         self.chunk_size = chunk_size
         self.scale = scale
         self.dtype = None
+        self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._active_sig: Optional[tuple] = None
         self.kernel = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"GLAPrefillFwdKernel": GLAPrefillFwdKernel}
+        return {
+            "gla_prefill_partitioned": GLAPrefillPartitionedFwdKernel,
+            "gla_prefill_general": GLAPrefillGeneralFwdKernel,
+        }
 
     def _infer_output_shapes(
         self,
@@ -225,22 +263,9 @@ class GLAPrefillFwdOp(Op):
             "final_state": (q_shape[0], q_shape[2], q_shape[-1], v_shape[-1]),
         }
 
-    def _validate_dtypes(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-    ) -> None:
-        dtype = q.dtype
-        if dtype not in (torch.float32, torch.float16, torch.bfloat16):
-            raise ValueError(f"Unsupported dtype: {dtype}")
-        for name, tensor in (("k", k), ("v", v), ("g", g)):
-            if tensor.dtype != dtype:
-                raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
-
     def _get_kernel(
         self,
+        inputs: tuple[torch.Tensor | None, ...],
         batch: int,
         seq_len: int,
         heads: int,
@@ -249,6 +274,27 @@ class GLAPrefillFwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
+        q = inputs[0]
+        assert q is not None
+        if q.is_cuda:
+            call = GLAPrefillCall(
+                arch=get_sm_version(device_index),
+                h200=is_h200(device_index),
+                sm_count=get_sm_count(device_index),
+                batch=batch,
+                seq_len=seq_len,
+                heads=heads,
+                dim_k=dim_k,
+                dim_v=dim_v,
+                chunk_size=self.chunk_size,
+                dtype=dtype,
+                tune=self.tune,
+            )
+            role = self.select_kernel_key(_GLA_PREFILL_KEYS, call)
+        else:
+            # External targets may use non-CUDA tensors. The role only names
+            # this Op's cache slot there; the target's builder owns selection.
+            role = "gla_prefill_general"
         key = (
             batch,
             seq_len,
@@ -262,9 +308,10 @@ class GLAPrefillFwdOp(Op):
             self.tune,
         )
         return self.get_or_build_kernel(
-            "GLAPrefillFwdKernel",
+            role,
+            inputs,
             key=key,
-            build=lambda: self.kernel_map["GLAPrefillFwdKernel"](
+            build=lambda: self.kernel_map[role](
                 batch,
                 seq_len,
                 heads,
@@ -274,13 +321,9 @@ class GLAPrefillFwdOp(Op):
                 scale=self.scale,
                 dtype=dtype,
                 tune=self.tune,
+                device_index=device_index,
             ),
         )
-
-    def eval_roofline(self) -> tuple[int, int]:
-        from tileops.perf.formulas import gla_prefill_fwd_roofline
-
-        return gla_prefill_fwd_roofline(self)
 
     def forward(
         self,
@@ -289,43 +332,40 @@ class GLAPrefillFwdOp(Op):
         v: torch.Tensor,
         g: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Run zero-state GLA prefill and return output plus decode state.
+
+        Args:
+            q: Query tensor in BTHD layout, ``[B, S, H, DK]``.
+            k: Key tensor in BTHD layout, ``[B, S, H, DK]``.
+            v: Value tensor in BTHD layout, ``[B, S, H, DV]``.
+            g: Log-space forget gates, ``[B, S, H, DK]``.
+
+        Returns:
+            ``(o, final_state)`` with shapes ``[B, S, H, DV]`` and
+            ``[B, H, DK, DV]``. Both use the input dtype.
+        """
         q = q.contiguous()
         k = k.contiguous()
         v = v.contiguous()
         g = g.contiguous()
-        sig = (
-            q.shape,
-            k.shape,
-            v.shape,
-            g.shape,
-            q.dtype,
-            k.dtype,
-            v.dtype,
-            g.dtype,
-            q.device,
-            k.device,
-            v.device,
-            g.device,
-            self.chunk_size,
-            self.scale,
-            self.tune,
+        self._validate_dtypes(q, k, v, g)
+        batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd_shapes(
+            q, k, v, g, self.chunk_size
         )
-        if sig != self._active_sig:
-            self._validate_dtypes(q, k, v, g)
-            batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd(
-                q, k, v, g, self.chunk_size
-            )
-            self.batch = batch
-            self.seq_len = seq_len
-            self.heads = heads
-            self.dim_k = dim_k
-            self.dim_v = dim_v
-            self.dtype = dtype
-            self.kernel = self._get_kernel(
-                batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index
-            )
-            self._active_sig = sig
+        self.batch = batch
+        self.seq_len = seq_len
+        self.heads = heads
+        self.dim_k = dim_k
+        self.dim_v = dim_v
+        self.dtype = dtype
+        self.kernel = self._get_kernel(
+            (q, k, v, g), batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index
+        )
         return self.kernel(q, k, v, g)
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.dtype)
 
 
 class GLABwdOp(Op):

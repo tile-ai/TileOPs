@@ -9,7 +9,7 @@ from .gated_deltanet import (
     GatedDeltaNetPrefillBHTDFwdOp,
     GatedDeltaNetPrefillBTHDFwdOp,
 )
-from .gla import GLABwdOp, GLAFwdOp
+from .gla import GLABwdOp, GLAFwdOp, GLAPrefillFwdOp
 from .gla_recurrence import GLADecodeFwdOp
 
 __all__: list[str] = [
@@ -20,6 +20,7 @@ __all__: list[str] = [
     "GLABwdOp",
     "GLADecodeFwdOp",
     "GLAFwdOp",
+    "GLAPrefillFwdOp",
     "GatedDeltaNetBHTDFwdOp",
     "GatedDeltaNetBTHDFwdOp",
     "GatedDeltaNetBwdOp",

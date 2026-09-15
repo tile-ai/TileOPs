@@ -67,7 +67,8 @@ from .linear_attention import (
     GLADecodeFP32Kernel,
     GLADecodeKernel,
     GLAFwdKernel,
-    GLAPrefillFwdKernel,
+    GLAPrefillGeneralFwdKernel,
+    GLAPrefillPartitionedFwdKernel,
 )
 from .mhc import MHCPostKernel, MHCPreKernel
 from .moe import MoePermuteAlignKernel
@@ -146,7 +147,8 @@ __all__ = [
     "GLADecodeFP32Kernel",
     "GLADecodeKernel",
     "GLAFwdKernel",
-    "GLAPrefillFwdKernel",
+    "GLAPrefillGeneralFwdKernel",
+    "GLAPrefillPartitionedFwdKernel",
     "GQABwdWgmmaPipelinedKernel",
     "GQADecodeKernel",
     "GQADecodePagedKernel",

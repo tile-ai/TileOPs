@@ -16,11 +16,8 @@ from .attention import (
     NSATopkVarlenOp,
 )
 from .convolution import (
-    Conv1dBiasFwdOp,
     Conv1dFwdOp,
-    Conv2dBiasFwdOp,
     Conv2dFwdOp,
-    Conv3dBiasFwdOp,
     Conv3dFwdOp,
 )
 from .dropout import DropoutFwdOp
@@ -44,6 +41,7 @@ from .linear_attention import (
     DeltaNetFwdOp,
     GatedDeltaNetAutogradOp,
     GatedDeltaNetBHTDFwdOp,
+    GatedDeltaNetBTHDFwdOp,
     GatedDeltaNetBwdOp,
     GatedDeltaNetDecodeFwdOp,
     GatedDeltaNetPrefillBHTDFwdOp,

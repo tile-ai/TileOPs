@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tileops.kernels.gla import GLAPrefillFwdKernel
+from tileops.kernels.linear_attention.gla import GLAPrefillPartitionedFwdKernel
 from tileops.ops import GLAPrefillFwdOp
 from workloads.linear_attention import GLAPrefillFwdWorkload
 
@@ -29,13 +29,17 @@ def test_gla_prefill_fwd(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
+    reason="partitioned GLA prefill uses Hopper instructions",
+)
 def test_gla_prefill_partitioned_recurrence() -> None:
     torch.manual_seed(42)
     dtype = torch.bfloat16
     test = GLAPrefillFwdWorkload(1, 2048, 2, 128, 128, 64, dtype)
     inputs = test.gen_inputs()
     ref_o, ref_state = test.ref_program(*inputs)
-    kernel = GLAPrefillFwdKernel(
+    kernel = GLAPrefillPartitionedFwdKernel(
         1,
         2048,
         2,
@@ -49,9 +53,10 @@ def test_gla_prefill_partitioned_recurrence() -> None:
             "h_num_stages": 2,
             "h_threads": 128,
             "a_inter_threads": 64,
+            "a_intra_threads": 128,
             "o_num_stages": 2,
             "o_threads": 256,
-            "num_v_partitions": 1,
+            "num_v_partitions": 2,
             "num_k_partitions": 2,
             "partition_chunks": 32,
             "partition_min_chunks": 0,
@@ -63,18 +68,3 @@ def test_gla_prefill_partitioned_recurrence() -> None:
 
     torch.testing.assert_close(o, ref_o, **_tolerances(dtype))
     torch.testing.assert_close(state, ref_state, **_tolerances(dtype))
-
-
-@pytest.mark.smoke
-def test_gla_prefill_partitioned_recurrence_falls_back_for_float32() -> None:
-    kernel = GLAPrefillFwdKernel(
-        1,
-        2048,
-        2,
-        128,
-        128,
-        chunk_size=64,
-        dtype=torch.float32,
-        config={"partition_chunks": 32, "partition_min_chunks": 0},
-    )
-    assert kernel._partition_chunks == 0

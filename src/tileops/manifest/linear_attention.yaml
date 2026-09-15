@@ -570,10 +570,11 @@ GLAPrefillFwdOp:
   roofline:
     func: "tileops.perf.formulas.gla_prefill_fwd_roofline"
   source:
-    kernel: tileops/kernels/gla/gla_fwd.py
+    kernel: tileops/kernels/linear_attention/gla/gla_fwd.py
     kernel_map:
-      GLAPrefillFwdKernel: GLAPrefillFwdKernel
-    op: tileops/ops/gla.py
+      gla_prefill_partitioned: GLAPrefillPartitionedFwdKernel
+      gla_prefill_general: GLAPrefillGeneralFwdKernel
+    op: tileops/ops/linear_attention/gla.py
     test: tests/ops/test_gla_prefill.py
     bench: benchmarks/ops/bench_gla_prefill.py
     bench_manifest_driven: true
