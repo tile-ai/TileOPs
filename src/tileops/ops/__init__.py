@@ -49,7 +49,6 @@ from .linear_attention import (
     GLABwdOp,
     GLADecodeFwdOp,
     GLAFwdOp,
-    GLAPrefillFwdOp,
 )
 from .mamba import (
     DaCumsumFwdOp,
@@ -246,7 +245,6 @@ __all__ = [
     "GatedDeltaNetDecodeFwdOp",
     "GatedDeltaNetBwdOp",
     "GLAFwdOp",
-    "GLAPrefillFwdOp",
     "GLABwdOp",
     "GLADecodeFwdOp",
     # Mamba

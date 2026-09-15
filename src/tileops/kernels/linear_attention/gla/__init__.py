@@ -1,9 +1,8 @@
 from .gla_bwd import GLABwdKernel
-from .gla_fwd import GLAFwdKernel, GLAPrefillGeneralFwdKernel, GLAPrefillPartitionedFwdKernel
+from .gla_fwd import GLAFwdKernel, GLAPartitionedFwdKernel
 
 __all__ = [
     "GLABwdKernel",
     "GLAFwdKernel",
-    "GLAPrefillGeneralFwdKernel",
-    "GLAPrefillPartitionedFwdKernel",
+    "GLAPartitionedFwdKernel",
 ]

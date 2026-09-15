@@ -416,7 +416,7 @@ def _gla_fwd_h0_scan_kernel(
 
 
 @functools.lru_cache(maxsize=32)
-def _gla_prefill_fused_replay_kernel(
+def _gla_fwd_partitioned_replay_kernel(
     batch: int,
     seq_len: int,
     heads: int,
@@ -465,7 +465,7 @@ def _gla_prefill_fused_replay_kernel(
             g_cumsum: T.Tensor(g_shape, gate_dtype),
             initial_states: T.Tensor(initial_shape, accum_dtype),
             o: T.Tensor(o_shape, dtype),
-            final_state: T.Tensor(final_shape, dtype),
+            final_state: T.Tensor(final_shape, accum_dtype),
         ):
             with T.Kernel(num_partitions, batch, heads, threads=threads) as (i_p, i_b, i_h):
                 q_s = T.alloc_shared([chunk_size, dim_k], dtype)
@@ -561,7 +561,7 @@ def _gla_prefill_fused_replay_kernel(
 
                 if tx < 128 and i_p == num_partitions - 1:
                     for i_k, i_v in T.Parallel(dim_k, dim_v):
-                        final_state[i_b, i_h, i_k, i_v] = T.cast(h_f[i_k, i_v], dtype)
+                        final_state[i_b, i_h, i_k, i_v] = h_f[i_k, i_v]
 
         return _main
 
@@ -876,6 +876,7 @@ class GLAFwdKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    general = True
 
     def __init__(
         self,
@@ -1111,57 +1112,10 @@ class GLAFwdKernel(Kernel):
         return o, final_state
 
 
-class GLAPrefillGeneralFwdKernel(GLAFwdKernel):
-    """General zero-state GLA prefill implementation."""
-
-    general = True
-
-    def __init__(
-        self,
-        batch: int,
-        seq_len: int,
-        heads: int,
-        dim_k: int,
-        dim_v: int,
-        chunk_size: int = 64,
-        scale: float = -1.0,
-        dtype: torch.dtype = torch.float16,
-        config: Optional[dict] = None,
-        tune: bool = False,
-        device_index: int | None = None,
-    ) -> None:
-        super().__init__(
-            batch=batch,
-            seq_len=seq_len,
-            heads=heads,
-            dim_k=dim_k,
-            dim_v=dim_v,
-            chunk_size=chunk_size,
-            scale=scale,
-            output_final_state=True,
-            dtype=dtype,
-            config=config,
-            tune=tune,
-            state_dtype=str(dtype).split(".")[-1],
-            device_index=device_index,
-        )
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        self._require_cuda(q=q, k=k, v=v, g=g)
-        o, final_state = super().forward(q, k, v, g, initial_state=None)
-        assert final_state is not None
-        return o, final_state
-
-
-class GLAPrefillPartitionedFwdKernel(GLAFwdKernel):
+class GLAPartitionedFwdKernel(GLAFwdKernel):
     """Inference-only GLA prefill with a partitioned long-context scan."""
 
+    general = False
     supported_archs = [90]
     partition_chunks = 32
     partition_min_chunks = 512
@@ -1170,7 +1124,8 @@ class GLAPrefillPartitionedFwdKernel(GLAFwdKernel):
     def applies(cls, call) -> bool:
         num_chunks = call.seq_len // call.chunk_size
         return (
-            call.dtype in (torch.float16, torch.bfloat16)
+            not call.has_initial_state
+            and call.dtype in (torch.float16, torch.bfloat16)
             and call.batch == 1
             and call.heads <= 64
             and call.chunk_size == 64
@@ -1212,9 +1167,7 @@ class GLAPrefillPartitionedFwdKernel(GLAFwdKernel):
             and num_chunks % requested_partition_chunks == 0
         )
         if not use_partition:
-            raise ValueError(
-                "GLAPrefillPartitionedFwdKernel requires its partitioned long-context region"
-            )
+            raise ValueError("GLAPartitionedFwdKernel requires its partitioned long-context region")
 
         self._partition_chunks = requested_partition_chunks
         ns = config.get("num_stages", 2)
@@ -1261,7 +1214,7 @@ class GLAPrefillPartitionedFwdKernel(GLAFwdKernel):
             self.dim_k,
             self.dim_v,
         )(scan_threads)
-        self._fused_replay_fn = _gla_prefill_fused_replay_kernel(
+        self._fused_replay_fn = _gla_fwd_partitioned_replay_kernel(
             self.batch,
             self.seq_len,
             self.heads,
@@ -1283,6 +1236,7 @@ class GLAPrefillPartitionedFwdKernel(GLAFwdKernel):
         dim_v: int,
         chunk_size: int = 64,
         scale: float = -1.0,
+        output_final_state: bool = True,
         dtype: torch.dtype = torch.float16,
         config: Optional[dict] = None,
         tune: bool = False,
@@ -1296,11 +1250,11 @@ class GLAPrefillPartitionedFwdKernel(GLAFwdKernel):
             dim_v=dim_v,
             chunk_size=chunk_size,
             scale=scale,
-            output_final_state=True,
+            output_final_state=output_final_state,
             dtype=dtype,
             config=config,
             tune=tune,
-            state_dtype=str(dtype).split(".")[-1],
+            state_dtype="float32",
             device_index=device_index,
         )
 
@@ -1310,7 +1264,10 @@ class GLAPrefillPartitionedFwdKernel(GLAFwdKernel):
         k: torch.Tensor,
         v: torch.Tensor,
         g: torch.Tensor,
+        initial_state: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        if initial_state is not None:
+            raise ValueError("partitioned GLA forward requires a zero initial state")
         self._require_cuda(q=q, k=k, v=v, g=g)
         dtype_torch = getattr(torch, self.dtype_name)
         q = q.to(dtype_torch)
@@ -1323,4 +1280,6 @@ class GLAPrefillPartitionedFwdKernel(GLAFwdKernel):
         assert self._fused_replay_fn is not None
         summaries, log_decays = self._summary_fn(k, v, g_cumsum)
         partition_initial_states = self._scan_fn(summaries, log_decays)
-        return self._fused_replay_fn(q, k, v, g_cumsum, partition_initial_states)
+        o, final_state = self._fused_replay_fn(q, k, v, g_cumsum, partition_initial_states)
+        self._h_out = None
+        return o, final_state

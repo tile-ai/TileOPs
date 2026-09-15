@@ -7,6 +7,7 @@ from tests.ops.gla_test_utils import (
     gla_fwd_chunked_torch,
 )
 from tests.test_base import FixtureBase
+from tileops.kernels.linear_attention.gla import GLAPartitionedFwdKernel
 from tileops.ops import GLAFwdOp
 
 try:
@@ -84,3 +85,52 @@ def test_gla_fwd(
         cos = cosine_sim(fla_o, op_o)
         print(f"  TileOPs vs FLA o: cosine={cos:.6f}")
         assert cos > 0.99, f"TileOPs vs FLA o cosine too low: {cos:.6f}"
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
+    reason="partitioned GLA forward uses Hopper instructions",
+)
+def test_gla_partitioned_fwd() -> None:
+    """The long-context specialization preserves GLAFwdOp's FP32 state ABI."""
+    torch.manual_seed(42)
+    batch, seq_len, heads, dim_k, dim_v, chunk_size = 1, 2048, 2, 128, 128, 64
+    dtype = torch.bfloat16
+    q = torch.randn(batch, seq_len, heads, dim_k, device="cuda", dtype=dtype) * 0.1
+    k = torch.randn(batch, seq_len, heads, dim_k, device="cuda", dtype=dtype) * 0.1
+    v = torch.randn(batch, seq_len, heads, dim_v, device="cuda", dtype=dtype) * 0.1
+    g = -torch.rand(batch, seq_len, heads, dim_k, device="cuda", dtype=dtype)
+    ref_o, ref_state = gla_fwd_chunked_torch(
+        q,
+        k,
+        v,
+        g,
+        chunk_size,
+        return_final_state=True,
+    )
+    kernel = GLAPartitionedFwdKernel(
+        batch,
+        seq_len,
+        heads,
+        dim_k,
+        dim_v,
+        chunk_size=chunk_size,
+        dtype=dtype,
+        config={
+            "g_num_stages": 2,
+            "g_threads": 128,
+            "h_num_stages": 2,
+            "h_threads": 128,
+            "num_v_partitions": 2,
+            "num_k_partitions": 2,
+            "partition_chunks": 32,
+            "partition_min_chunks": 0,
+            "scan_threads": 128,
+        },
+    )
+    o, final_state = kernel(q, k, v, g)
+
+    assert final_state.dtype == torch.float32
+    torch.testing.assert_close(o.float(), ref_o, **get_tolerances(dtype))
+    torch.testing.assert_close(final_state, ref_state, **get_tolerances(dtype))

@@ -7,19 +7,18 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.linear_attention.gla import (
     GLABwdKernel,
     GLAFwdKernel,
-    GLAPrefillGeneralFwdKernel,
-    GLAPrefillPartitionedFwdKernel,
+    GLAPartitionedFwdKernel,
 )
-from tileops.kernels.linear_attention.gla.call_spec import GLAPrefillCall
+from tileops.kernels.linear_attention.gla.call_spec import GLAFwdCall
 from tileops.perf.profile import tensor_core_roof
 from tileops.utils import get_sm_count, get_sm_version, is_h200
 
 from .._validation import check_tensor_shape
 from ..op_base import Op
 
-__all__ = ["GLABwdOp", "GLAFwdOp", "GLAPrefillFwdOp"]
+__all__ = ["GLABwdOp", "GLAFwdOp"]
 
-_GLA_PREFILL_KEYS = ("gla_prefill_partitioned", "gla_prefill_general")
+_GLA_FWD_KEYS = ("gla_fwd_partitioned", "gla_fwd_general")
 
 
 def _resolve_gla_bthd_shapes(
@@ -77,6 +76,8 @@ class GLAFwdOp(Op):
         self,
         chunk_size: int = 64,
         scale: float = -1.0,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -85,6 +86,7 @@ class GLAFwdOp(Op):
         Args:
             chunk_size: Chunk size for chunked linear attention.
             scale: Query scale factor (default: dim_k**-0.5).
+            target: Backend target, or ``None`` to decide from the input device.
             kernel_map: Optional kernel overrides.
             tune: Whether to autotune kernels.
         """
@@ -96,6 +98,7 @@ class GLAFwdOp(Op):
         self.chunk_size = chunk_size
         self.scale = scale
         self.dtype = None
+        self.target = target
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
@@ -104,7 +107,8 @@ class GLAFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "GLAFwdKernel": GLAFwdKernel,
+            "gla_fwd_partitioned": GLAPartitionedFwdKernel,
+            "gla_fwd_general": GLAFwdKernel,
         }
 
     def _get_kernel(
@@ -117,7 +121,30 @@ class GLAFwdOp(Op):
         dim_v: int,
         dtype: torch.dtype,
         device_index: int | None,
+        has_initial_state: bool,
     ) -> Kernel:
+        q = inputs[0]
+        assert q is not None
+        if q.is_cuda:
+            call = GLAFwdCall(
+                arch=get_sm_version(device_index),
+                h200=is_h200(device_index),
+                sm_count=get_sm_count(device_index),
+                batch=batch,
+                seq_len=seq_len,
+                heads=heads,
+                dim_k=dim_k,
+                dim_v=dim_v,
+                chunk_size=self.chunk_size,
+                dtype=dtype,
+                tune=self.tune,
+                has_initial_state=has_initial_state,
+            )
+            role = self.select_kernel_key(_GLA_FWD_KEYS, call)
+        else:
+            # External targets own their shape-specific selection. This name is
+            # only the Op-local cache role on that path.
+            role = "gla_fwd_general"
         key = (
             batch,
             seq_len,
@@ -131,10 +158,10 @@ class GLAFwdOp(Op):
             self.tune,
         )
         return self.get_or_build_kernel(
-            "GLAFwdKernel",
+            role,
             inputs,
             key=key,
-            build=lambda: self.kernel_map["GLAFwdKernel"](
+            build=lambda: self.kernel_map[role](
                 batch,
                 seq_len,
                 heads,
@@ -145,6 +172,7 @@ class GLAFwdOp(Op):
                 output_final_state=True,
                 dtype=dtype,
                 tune=self.tune,
+                device_index=device_index,
             ),
         )
 
@@ -182,9 +210,19 @@ class GLAFwdOp(Op):
         Returns:
             Tuple of (o, final_state).
         """
-        batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd(q, k, v, g, self.chunk_size)
+        q = q.contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
+        g = g.contiguous()
+        if initial_state is not None:
+            initial_state = initial_state.contiguous()
+        batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd_shapes(
+            q, k, v, g, self.chunk_size
+        )
         self._validate_dtypes(q, k, v, g, initial_state=initial_state)
         if initial_state is not None:
+            if initial_state.device != q.device:
+                raise ValueError("initial_state must be on the same device as q")
             check_tensor_shape("initial_state", initial_state, (batch, heads, dim_k, dim_v))
         self.batch = batch
         self.seq_len = seq_len
@@ -193,175 +231,17 @@ class GLAFwdOp(Op):
         self.dim_v = dim_v
         self.dtype = dtype
         self.kernel = self._get_kernel(
-            (q, k, v, g, initial_state), batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index
-        )
-        return self.kernel(q, k, v, g, initial_state)
-
-    def compute_roof(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
-
-
-class GLAPrefillFwdOp(Op):
-    """Serving-oriented zero-state GLA prefill.
-
-    Unlike :class:`GLAFwdOp`, this interface does not accept an initial state
-    or retain training-forward artifacts for backward. It always returns the
-    prompt output and the recurrent state consumed by decode.
-
-    Layout: BTHD (batch, sequence, heads, dimension).
-    """
-
-    def __init__(
-        self,
-        chunk_size: int = 64,
-        scale: float = -1.0,
-        *,
-        target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Build the inference prefill op; shapes and dtype come from each call.
-
-        Args:
-            chunk_size: Chunk size for the recurrent scan.
-            scale: Query scale factor; a non-positive value selects ``dim_k**-0.5``.
-            target: Backend target, or ``None`` to decide from the input device.
-            kernel_map: Optional replacements for the built-in kernel roles.
-            tune: Whether kernels should autotune when first built.
-        """
-        self.batch = None
-        self.seq_len = None
-        self.heads = None
-        self.dim_k = None
-        self.dim_v = None
-        self.chunk_size = chunk_size
-        self.scale = scale
-        self.dtype = None
-        self.target = target
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "gla_prefill_partitioned": GLAPrefillPartitionedFwdKernel,
-            "gla_prefill_general": GLAPrefillGeneralFwdKernel,
-        }
-
-    def _infer_output_shapes(
-        self,
-        q_shape: tuple[int, ...],
-        k_shape: tuple[int, ...],
-        v_shape: tuple[int, ...],
-        g_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        del k_shape, g_shape
-        return {
-            "o": tuple(q_shape[:-1]) + (v_shape[-1],),
-            "final_state": (q_shape[0], q_shape[2], q_shape[-1], v_shape[-1]),
-        }
-
-    def _get_kernel(
-        self,
-        inputs: tuple[torch.Tensor | None, ...],
-        batch: int,
-        seq_len: int,
-        heads: int,
-        dim_k: int,
-        dim_v: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        q = inputs[0]
-        assert q is not None
-        if q.is_cuda:
-            call = GLAPrefillCall(
-                arch=get_sm_version(device_index),
-                h200=is_h200(device_index),
-                sm_count=get_sm_count(device_index),
-                batch=batch,
-                seq_len=seq_len,
-                heads=heads,
-                dim_k=dim_k,
-                dim_v=dim_v,
-                chunk_size=self.chunk_size,
-                dtype=dtype,
-                tune=self.tune,
-            )
-            role = self.select_kernel_key(_GLA_PREFILL_KEYS, call)
-        else:
-            # External targets may use non-CUDA tensors. The role only names
-            # this Op's cache slot there; the target's builder owns selection.
-            role = "gla_prefill_general"
-        key = (
+            (q, k, v, g, initial_state),
             batch,
             seq_len,
             heads,
             dim_k,
             dim_v,
-            self.chunk_size,
-            self.scale,
             dtype,
-            device_index,
-            self.tune,
+            q.device.index,
+            initial_state is not None,
         )
-        return self.get_or_build_kernel(
-            role,
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map[role](
-                batch,
-                seq_len,
-                heads,
-                dim_k,
-                dim_v,
-                self.chunk_size,
-                scale=self.scale,
-                dtype=dtype,
-                tune=self.tune,
-                device_index=device_index,
-            ),
-        )
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Run zero-state GLA prefill and return output plus decode state.
-
-        Args:
-            q: Query tensor in BTHD layout, ``[B, S, H, DK]``.
-            k: Key tensor in BTHD layout, ``[B, S, H, DK]``.
-            v: Value tensor in BTHD layout, ``[B, S, H, DV]``.
-            g: Log-space forget gates, ``[B, S, H, DK]``.
-
-        Returns:
-            ``(o, final_state)`` with shapes ``[B, S, H, DV]`` and
-            ``[B, H, DK, DV]``. Both use the input dtype.
-        """
-        q = q.contiguous()
-        k = k.contiguous()
-        v = v.contiguous()
-        g = g.contiguous()
-        self._validate_dtypes(q, k, v, g)
-        batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd_shapes(
-            q, k, v, g, self.chunk_size
-        )
-        self.batch = batch
-        self.seq_len = seq_len
-        self.heads = heads
-        self.dim_k = dim_k
-        self.dim_v = dim_v
-        self.dtype = dtype
-        self.kernel = self._get_kernel(
-            (q, k, v, g), batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index
-        )
-        return self.kernel(q, k, v, g)
+        return self.kernel(q, k, v, g, initial_state)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
