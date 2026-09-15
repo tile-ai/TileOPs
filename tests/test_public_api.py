@@ -26,11 +26,24 @@ def _family_module(family: str):
 
 
 def _imported_names(path: Path) -> set[str]:
-    """Every name a module binds through an import."""
+    """Every name a module binds from its own package.
+
+    A lazy package root binds its names through ``__getattr__`` and lists them under
+    ``if TYPE_CHECKING:`` for type checkers, so that block counts as an import.
+    """
+    body = ast.parse(path.read_text()).body
+    guarded = [
+        inner
+        for node in body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "TYPE_CHECKING"
+        for inner in node.body
+    ]
     return {
         alias.asname or alias.name
-        for node in ast.parse(path.read_text()).body
-        if isinstance(node, ast.ImportFrom)
+        for node in body + guarded
+        if isinstance(node, ast.ImportFrom) and node.level > 0
         for alias in node.names
     }
 
@@ -136,11 +149,31 @@ def test_importing_tileops_does_not_import_torch():
 
 
 @pytest.mark.smoke
+def test_a_package_root_lists_every_name_it_resolves():
+    """A lazy root states each name twice: in `_LAZY`, which resolves it, and under
+    `if TYPE_CHECKING:`, which is all a type checker sees. One without the other is a
+    name that resolves but cannot be checked, or the reverse."""
+    for root in ("tileops.kernels", "tileops.ops"):
+        mod = importlib.import_module(root)
+        listed = _imported_names(Path(mod.__file__))
+        assert listed == set(mod._LAZY) == set(mod.__all__), root
+
+
+@pytest.mark.smoke
+def test_the_op_base_class_does_not_import_the_compiler():
+    """`Op` and `Kernel` describe ops; only a concrete kernel compiles one. Reaching the
+    base classes must not import TileLang, which it does the moment either package root
+    re-exports its subtree eagerly."""
+    code = "import sys, tileops.ops.op_base; print('tilelang' in sys.modules)"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "False"
+
+
+@pytest.mark.smoke
 def test_ops_aggregate_is_internally_consistent():
     """`tileops.ops` is the implementation path, not the public one. Its list is not
     required to cover the manifest; every name in it must resolve."""
     import tileops.ops as ops
 
-    assert _imported_names(Path(ops.__file__)) == set(ops.__all__)
     assert len(ops.__all__) == len(set(ops.__all__))
     assert [name for name in ops.__all__ if not hasattr(ops, name)] == []
