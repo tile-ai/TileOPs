@@ -5,7 +5,7 @@ from typing import Optional
 import torch
 
 from tileops.kernels.grouped_gemm.heuristics import GemmType
-from tileops.kernels.grouped_gemm.template import GroupedGemmTemplate
+from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["GroupedGemmPersistentKernel"]
@@ -61,7 +61,7 @@ class GroupedGemmPersistentKernel(Kernel):
         self.transpose_a = transpose_a
         self.transpose_b = transpose_b
         gemm_type = GemmType.K_GROUPED_CONTIGUOUS if transpose_a else GemmType.M_GROUPED_TIGHT_PSUM
-        self.inner = GroupedGemmTemplate(gemm_type, num_groups=batch_count, tune=tune)
+        self.inner = GemmTemplate(gemm_type, num_groups=batch_count, tune=tune)
 
     def forward(
         self,

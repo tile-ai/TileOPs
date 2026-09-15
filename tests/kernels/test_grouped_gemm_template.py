@@ -11,7 +11,7 @@ from tileops.kernels.grouped_gemm.heuristics import (
     layout_candidates,
     spec_from_config,
 )
-from tileops.kernels.grouped_gemm.template import GemmType, GroupedGemmTemplate, Major
+from tileops.kernels.grouped_gemm.template import GemmTemplate, GemmType, Major
 
 pytestmark = pytest.mark.hopper
 
@@ -38,6 +38,61 @@ def _assert_gemm(out, ref):
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
+    "activation,cd_dtype",
+    [
+        pytest.param("none", None, id="plain"),
+        pytest.param("silu_and_mul", None, id="gated"),
+        pytest.param("none", torch.float32, id="fp32-output"),
+    ],
+)
+def test_dense(activation, cd_dtype):
+    """Dense inputs are ``A[M,K]`` and ``B[N,K]``; gated output has ``N/2`` columns."""
+    torch.manual_seed(0)
+    m, n, k = 256, 512, 512
+    b_rows = 2 * n if activation != "none" else n
+    a = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
+    b = torch.randn(b_rows, k, device="cuda", dtype=torch.bfloat16)
+    config = dict(block_m=128, block_n=128)
+    if activation == "none" and cd_dtype is None:
+        config.update(
+            block_k=64,
+            num_stages=4,
+            epilogue_stage_n=64,
+            swizzle_group_m=16,
+        )
+    kernel = GemmTemplate(
+        GemmType.DENSE,
+        activation=activation,
+        cd_dtype=cd_dtype,
+        config=config,
+    )
+    ref = a.float() @ b.float().T
+    if activation != "none":
+        gate, up = ref.chunk(2, dim=-1)
+        ref = torch.nn.functional.silu(gate) * up
+    out = kernel(a, b)
+    assert out.shape == (m, n)
+    _assert_gemm(out, ref)
+
+    if activation == "none" and cd_dtype is None:
+        assert kernel.spec_for(a, b).num_math_warpgroups == 2
+        _assert_gemm(kernel(a.T.contiguous().T, b), ref)
+        coop1 = GemmTemplate(
+            GemmType.DENSE,
+            config=dict(
+                block_m=128,
+                block_n=128,
+                block_k=64,
+                num_stages=4,
+                num_math_wgs=1,
+            ),
+        )
+        assert coop1.spec_for(a, b).num_math_warpgroups == 1
+        _assert_gemm(coop1(a, b), ref)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
     "m,n,k,config",
     [
         pytest.param(512, 512, 512, dict(block_m=64, block_n=128), id="one-math-warpgroup"),
@@ -48,7 +103,7 @@ def _assert_gemm(out, ref):
 def test_batched_tile_shapes(m, n, k, config):
     """Each math warp-group arrangement the template offers, on the batched scheduler."""
     a, b = _batched_operands(2, m, n, k)
-    kernel = GroupedGemmTemplate(GemmType.BATCHED, num_groups=2, config=config)
+    kernel = GemmTemplate(GemmType.BATCHED, num_groups=2, config=config)
     _assert_gemm(kernel(a, b), _bmm_ref(a, b))
 
 
@@ -64,7 +119,7 @@ def test_batched_tile_shapes(m, n, k, config):
 def test_batched_layouts_from_strides(major_a, major_b):
     """Majorness is read off the operands and picks the transposed TMA/WGMMA path."""
     a, b = _batched_operands(3, 1000, 1000, 1024, major_a, major_b)
-    kernel = GroupedGemmTemplate(GemmType.BATCHED, num_groups=3)
+    kernel = GemmTemplate(GemmType.BATCHED, num_groups=3)
     spec = kernel.spec_for(a, b)
     assert spec.major_a is Major(major_a) and spec.major_b is Major(major_b)
     _assert_gemm(kernel(a, b), _bmm_ref(a, b))
@@ -73,7 +128,7 @@ def test_batched_layouts_from_strides(major_a, major_b):
 @pytest.mark.full
 def test_fp32_output():
     a, b = _batched_operands(2, 1000, 1000, 1024)
-    kernel = GroupedGemmTemplate(GemmType.BATCHED, num_groups=2, cd_dtype=torch.float32)
+    kernel = GemmTemplate(GemmType.BATCHED, num_groups=2, cd_dtype=torch.float32)
     out = kernel(a, b)
     assert out.dtype == torch.float32
     torch.testing.assert_close(out, _bmm_ref(a, b), rtol=1e-3, atol=1e-2)
@@ -82,9 +137,7 @@ def test_fp32_output():
 @pytest.mark.full
 def test_dynamic_m_shares_one_spec():
     """M is dynamic by default: two row counts resolve to one spec, hence one compiled kernel."""
-    kernel = GroupedGemmTemplate(
-        GemmType.BATCHED, num_groups=2, config=dict(block_m=128, block_n=128)
-    )
+    kernel = GemmTemplate(GemmType.BATCHED, num_groups=2, config=dict(block_m=128, block_n=128))
     a1, b = _batched_operands(2, 1024, 1024, 1024)
     a2 = torch.randn(2, 1000, 1024, device="cuda", dtype=torch.bfloat16)
     spec1, spec2 = kernel.spec_for(a1, b), kernel.spec_for(a2, b)
@@ -149,7 +202,7 @@ def _grouped_operands(sizes, n, k, layout, *, alignment=128, major_b="k", dtype=
 def test_m_grouped_aligned_per_row(sizes, n, k, major_b, config):
     """Rows follow their group's B; padding rows and the sentinel tail are never read back."""
     a, b, ids, ref, valid = _grouped_operands(sizes, n, k, "per_row", major_b=major_b)
-    kernel = GroupedGemmTemplate(
+    kernel = GemmTemplate(
         GemmType.M_GROUPED_ALIGNED_PER_ROW, num_groups=len(sizes), m_alignment=128, config=config
     )
     out = kernel(a, b, grouped_layout=ids)
@@ -159,7 +212,7 @@ def test_m_grouped_aligned_per_row(sizes, n, k, major_b, config):
 @pytest.mark.full
 def test_grouped_requires_layout_and_alignment():
     a, b, ids, _, _ = _grouped_operands([64, 64], 256, 256, "per_row")
-    kernel = GroupedGemmTemplate(GemmType.M_GROUPED_ALIGNED_PER_ROW, num_groups=2)
+    kernel = GemmTemplate(GemmType.M_GROUPED_ALIGNED_PER_ROW, num_groups=2)
     with pytest.raises(ValueError, match="grouped_layout"):
         kernel(a, b)
     with pytest.raises(ValueError, match="m_alignment"):
@@ -170,9 +223,14 @@ def test_grouped_requires_layout_and_alignment():
 def test_refuses_operands_tma_cannot_address():
     a = torch.randn(2, 64, 60, device="cuda", dtype=torch.bfloat16)
     b = torch.randn(2, 64, 60, device="cuda", dtype=torch.bfloat16)
-    assert "multiple of 8" in GroupedGemmTemplate.refusal_for(a, b)
+    assert "multiple of 8" in GemmTemplate.refusal_for(a, b)
     with pytest.raises(ValueError, match="multiple of 8"):
-        GroupedGemmTemplate(GemmType.BATCHED, num_groups=2)(a, b)
+        GemmTemplate(GemmType.BATCHED, num_groups=2)(a, b)
+    with pytest.raises(ValueError, match="multiple of 8"):
+        GemmTemplate(
+            GemmType.DENSE,
+            config=dict(block_m=128, block_n=64),
+        )(a[0], b[0])
 
 
 def _desc(m, n, k, **kw):
@@ -258,9 +316,7 @@ def test_spec_rejects_inconsistent_template_parameters():
 def test_m_grouped_tight_psum_masks_each_groups_last_tile(sizes, config):
     """Tight rows: a group's ragged last tile is stored under a row mask, not over its neighbour."""
     a, b, ends, ref, _ = _grouped_operands(sizes, 2048, 1024, "tight")
-    kernel = GroupedGemmTemplate(
-        GemmType.M_GROUPED_TIGHT_PSUM, num_groups=len(sizes), config=config
-    )
+    kernel = GemmTemplate(GemmType.M_GROUPED_TIGHT_PSUM, num_groups=len(sizes), config=config)
     out = torch.full_like(ref, 1e4, dtype=torch.bfloat16)  # poison: every row must be written
     kernel(a, b, grouped_layout=ends, out=out)
     _assert_gemm(out, ref)
@@ -275,10 +331,10 @@ def test_m_grouped_tight_per_row_recovers_the_psum_schedule():
         torch.arange(len(sizes), dtype=torch.int32, device="cuda"),
         torch.tensor(sizes, device="cuda"),
     )
-    per_row = GroupedGemmTemplate(GemmType.M_GROUPED_TIGHT_PER_ROW, num_groups=len(sizes))
+    per_row = GemmTemplate(GemmType.M_GROUPED_TIGHT_PER_ROW, num_groups=len(sizes))
     out = per_row(a, b, grouped_layout=ids)
     _assert_gemm(out, ref)
-    psum = GroupedGemmTemplate(GemmType.M_GROUPED_TIGHT_PSUM, num_groups=len(sizes))
+    psum = GemmTemplate(GemmType.M_GROUPED_TIGHT_PSUM, num_groups=len(sizes))
     assert torch.equal(out, psum(a, b, grouped_layout=ends))
 
 
@@ -293,7 +349,7 @@ def test_m_grouped_tight_per_row_recovers_the_psum_schedule():
 def test_m_grouped_aligned_psum(sizes, config):
     """Aligned psum rows: each group starts at the previous end rounded up to block_m."""
     a, b, ends, ref, valid = _grouped_operands(sizes, 2048, 1024, "aligned")
-    kernel = GroupedGemmTemplate(
+    kernel = GemmTemplate(
         GemmType.M_GROUPED_ALIGNED_PSUM, num_groups=len(sizes), m_alignment=128, config=config
     )
     out = kernel(a, b, grouped_layout=ends)
@@ -314,7 +370,7 @@ def test_m_grouped_masked(masked, max_m, config):
     groups = len(masked)
     a = torch.randn(groups, max_m, 512, device="cuda", dtype=torch.bfloat16)
     b = torch.randn(groups, 1024, 512, device="cuda", dtype=torch.bfloat16)
-    kernel = GroupedGemmTemplate(GemmType.M_GROUPED_MASKED, num_groups=groups, config=config)
+    kernel = GemmTemplate(GemmType.M_GROUPED_MASKED, num_groups=groups, config=config)
     out = kernel(a, b, grouped_layout=torch.tensor(masked, dtype=torch.int32).cuda())
     assert out.shape == (groups, max_m, 1024)
     for g, mm in enumerate(masked):
@@ -326,16 +382,16 @@ def test_m_grouped_masked(masked, max_m, config):
 def test_fp16_operands_batched_and_tight():
     """fp16 operands take the same kernel; the output follows the operand dtype."""
     a, b = _batched_operands(2, 1024, 1024, 1024, dtype=torch.float16)
-    out = GroupedGemmTemplate(GemmType.BATCHED, num_groups=2)(a, b)
+    out = GemmTemplate(GemmType.BATCHED, num_groups=2)(a, b)
     assert out.dtype is torch.float16
     _assert_gemm(out, _bmm_ref(a, b))
     ta, tb, ends, ref, _ = _grouped_operands(
         [100, 0, 300, 128, 7, 64], 512, 512, "tight", dtype=torch.float16
     )
-    kernel = GroupedGemmTemplate(GemmType.M_GROUPED_TIGHT_PSUM, num_groups=6)
+    kernel = GemmTemplate(GemmType.M_GROUPED_TIGHT_PSUM, num_groups=6)
     _assert_gemm(kernel(ta, tb, grouped_layout=ends), ref)
     with pytest.raises(ValueError, match="one dtype"):
-        GroupedGemmTemplate(GemmType.BATCHED, num_groups=2)(a, b.bfloat16())
+        GemmTemplate(GemmType.BATCHED, num_groups=2)(a, b.bfloat16())
 
 
 def _gated_ref(ref, activation):
@@ -361,7 +417,7 @@ def test_fused_gated_activation_tight(activation, config):
     """
     sizes = [100, 0, 300, 128, 7, 64]
     a, b, ends, ref, _ = _grouped_operands(sizes, 1024, 512, "tight")
-    kernel = GroupedGemmTemplate(
+    kernel = GemmTemplate(
         GemmType.M_GROUPED_TIGHT_PSUM, num_groups=len(sizes), activation=activation, config=config
     )
     out = kernel(a, b, grouped_layout=ends)
@@ -375,14 +431,14 @@ def test_fused_gated_activation_masked_and_fp32_output():
     masked = [64, 0, 17, 33]
     a, b = _batched_operands(len(masked), 64, 1024, 512)
     counts = torch.tensor(masked, dtype=torch.int32, device="cuda")
-    kernel = GroupedGemmTemplate(
+    kernel = GemmTemplate(
         GemmType.M_GROUPED_MASKED, num_groups=len(masked), activation="silu_and_mul"
     )
     out = kernel(a, b, grouped_layout=counts)
     ref = _gated_ref(_bmm_ref(a, b), "silu_and_mul")
     for g, rows in enumerate(masked):
         _assert_gemm(out[g, :rows], ref[g, :rows])
-    fp32 = GroupedGemmTemplate(
+    fp32 = GemmTemplate(
         GemmType.BATCHED, num_groups=len(masked), activation="silu_and_mul", cd_dtype=torch.float32
     )(a, b)
     assert fp32.dtype is torch.float32
@@ -393,13 +449,13 @@ def test_fused_gated_activation_masked_and_fp32_output():
 def test_fused_gated_activation_refusals():
     """A fused call needs an even split of N into gate and up, a K-major B, a known name."""
     with pytest.raises(ValueError, match="activation"):
-        GroupedGemmTemplate(GemmType.BATCHED, num_groups=2, activation="relu")
+        GemmTemplate(GemmType.BATCHED, num_groups=2, activation="relu")
     a, b = _batched_operands(2, 64, 1032, 512)
     with pytest.raises(ValueError, match="multiple of 16"):
-        GroupedGemmTemplate(GemmType.BATCHED, num_groups=2, activation="silu_and_mul")(a, b)
+        GemmTemplate(GemmType.BATCHED, num_groups=2, activation="silu_and_mul")(a, b)
     a, b = _batched_operands(2, 64, 1024, 512, major_b="mn")
     with pytest.raises(ValueError, match="K-major B"):
-        GroupedGemmTemplate(GemmType.BATCHED, num_groups=2, activation="silu_and_mul")(a, b)
+        GemmTemplate(GemmType.BATCHED, num_groups=2, activation="silu_and_mul")(a, b)
 
 
 def _k_grouped_operands(sizes, m, n, major_a="mn", major_b="mn", dtype=torch.bfloat16):
@@ -441,9 +497,7 @@ def test_k_grouped_contiguous(major_a, major_b, config):
     """
     sizes = [100, 0, 300, 64, 7, 1]
     a, b, ks, ref = _k_grouped_operands(sizes, 200, 136, major_a, major_b)
-    kernel = GroupedGemmTemplate(
-        GemmType.K_GROUPED_CONTIGUOUS, num_groups=len(sizes), config=config
-    )
+    kernel = GemmTemplate(GemmType.K_GROUPED_CONTIGUOUS, num_groups=len(sizes), config=config)
     out = torch.full_like(ref, 1e4, dtype=torch.bfloat16)  # poison: every tile must be written
     kernel(a, b, grouped_layout=ks, out=out)
     _assert_gemm(out, ref)
@@ -453,7 +507,7 @@ def test_k_grouped_contiguous(major_a, major_b, config):
 def test_k_grouped_contiguous_without_tokens_and_refusals():
     """Every group empty gives zeros without a launch; the fused epilogue is not offered."""
     a, b, ks, ref = _k_grouped_operands([0, 0, 0], 64, 64)
-    out = GroupedGemmTemplate(GemmType.K_GROUPED_CONTIGUOUS, num_groups=3)(a, b, grouped_layout=ks)
+    out = GemmTemplate(GemmType.K_GROUPED_CONTIGUOUS, num_groups=3)(a, b, grouped_layout=ks)
     assert out.shape == (3, 64, 64) and not out.any()
     with pytest.raises(ValueError, match="per-group B"):
-        GroupedGemmTemplate(GemmType.K_GROUPED_CONTIGUOUS, num_groups=3, activation="silu_and_mul")
+        GemmTemplate(GemmType.K_GROUPED_CONTIGUOUS, num_groups=3, activation="silu_and_mul")

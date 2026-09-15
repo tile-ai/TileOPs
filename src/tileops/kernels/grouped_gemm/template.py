@@ -1,6 +1,6 @@
 """Persistent grouped GEMM template for grouped, batched, and MoE layouts.
 
-Inputs and output shapes are documented by ``GroupedGemmTemplate``.
+Inputs and output shapes are documented by ``GemmTemplate``.
 """
 
 import functools
@@ -30,6 +30,7 @@ __all__ = [
     "GemmDesc",
     "GemmType",
     "Major",
+    "GemmTemplate",
     "GroupedGemmTemplate",
     "GroupedGemmSpec",
 ]
@@ -62,6 +63,8 @@ def _make_prim_func(
     num_math_wgs: int,
     num_sms: int,
     activation: str,
+    epilogue_stage_n: int,
+    swizzle_group_m: int,
 ):
     """Build the ``@T.prim_func`` for one spec; parameters are the spec's scalars."""
     dtype = ab_dtype
@@ -72,25 +75,33 @@ def _make_prim_func(
     threads = tma_threads + math_threads
     wg_rows = block_m // num_math_wgs
     math_warps = math_threads // 32
-    blocks_per_group = _num_1d_blocks_per_group(block_m, block_n, num_sms)
-    tma_regs = 48
-    math_regs = 248 if num_math_wgs == 1 else 224
+    blocks_per_group = (
+        swizzle_group_m
+        if gtype is GemmType.DENSE and swizzle_group_m
+        else _num_1d_blocks_per_group(block_m, block_n, num_sms)
+    )
+    dense_coop2 = gtype is GemmType.DENSE and num_math_wgs == 2
+    tma_regs = 24 if dense_coop2 else 48
+    math_regs = 240 if dense_coop2 else (248 if num_math_wgs == 1 else 224)
     swizzle_atom = 64
     epilogue_barrier_base = 8
     cast_output = cd_dtype != "float32"
     fused = activation != "none"
     c_tile_n = block_n // 2 if fused else block_n  # output columns per tile
+    staged_n = epilogue_stage_n or c_tile_n
+    epilogue_chunks = c_tile_n // staged_n
 
     # Scheduler family and what each operand looks like.
     masked = gtype is GemmType.M_GROUPED_MASKED
     aligned_psum = gtype is GemmType.M_GROUPED_ALIGNED_PSUM
     tight_per_row = gtype is GemmType.M_GROUPED_TIGHT_PER_ROW
     tight = gtype in (GemmType.M_GROUPED_TIGHT_PSUM, GemmType.M_GROUPED_TIGHT_PER_ROW)
+    dense = gtype is GemmType.DENSE
     batched = gtype is GemmType.BATCHED
     k_grouped = gtype is GemmType.K_GROUPED_CONTIGUOUS
     per_group = gtype in PER_GROUP_TYPES
     a_has_group = masked or batched
-    b_has_group = not k_grouped  # K-grouped shares one B across the groups
+    b_has_group = not (dense or k_grouped)
     c_has_group = a_has_group or k_grouped
     # A K-major operand's TMA box must start 16 bytes aligned along K, so a
     # K-grouped GEMM with one rounds each group's start down to 8 elements and
@@ -141,6 +152,8 @@ def _make_prim_func(
     def b_half_region(B, group, n0, k0, atom):
         """``block_n / 2`` columns and one K atom of a K-major B (the fused path takes no other)."""
         kk = k0 + atom * swizzle_atom
+        if dense:
+            return B[n0 : n0 + half_n, kk : kk + swizzle_atom]
         return B[group, n0 : n0 + half_n, kk : kk + swizzle_atom]
 
     def align_up(x):
@@ -236,7 +249,12 @@ def _make_prim_func(
         t_k0[0] = T.int32(0)
         t_klen[0] = k
         t_khead[0] = T.int32(0)
-        if batched or k_grouped:
+        if dense:
+            swizzle_block(block_idx, num_m_blocks, num_n_blocks, m_blk, n_blk)
+            t_group[0] = T.int32(0)
+            t_row0[0] = m_blk[0] * T.int32(block_m)
+            t_rows[0] = T.int32(block_m)
+        elif batched or k_grouped:
             per_batch = num_m_blocks * num_n_blocks
             rem = block_idx % per_batch
             t_group[0] = block_idx // per_batch
@@ -368,40 +386,27 @@ def _make_prim_func(
 
     @T.macro
     def store_tile(C, C_src, C_up, C_s, group, row0, col0, rows, wg):
-        """Store one warp-group's rows of a tile from its shared staging buffer.
-
-        Every tile is staged fragment -> shared first (the fused epilogue does its
-        arithmetic on the way); the previous tile's TMA store may still be reading
-        ``C_s``, hence the barrier before. A full tile then goes out through TMA. A
-        tight group's ragged last tile cannot: TMA clips against the tensor, not the
-        group, and would overwrite the next group's rows, so its valid rows are
-        written back with row-predicated vector stores. (Writing the accumulator
-        fragment straight from registers scattered 4-byte stores across the tile
-        and produces scattered stores.)
-        """
-        T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
-        if fused:
-            gate_multiply(C_src, C_up, C_s)
-        else:
-            T.copy(C_src, C_s)
-        if tight:
-            if rows < T.int32(wg_rows):
+        """Stage and store one warp-group's rows of a tile."""
+        for chunk in range(epilogue_chunks):
+            chunk_col = chunk * staged_n
+            T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+            if fused:
+                gate_multiply(C_src, C_up, C_s)
+            else:
+                T.copy(C_src[:, chunk_col : chunk_col + staged_n], C_s)
+            if tight and rows < T.int32(wg_rows):
                 T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
                 if rows > 0:
-                    for i, j in T.Parallel(wg_rows, c_tile_n):
-                        if i < rows and col0 + j < c_cols:
-                            C[row0 + i, col0 + j] = C_s[i, j]
+                    for i, j in T.Parallel(wg_rows, staged_n):
+                        if i < rows and col0 + chunk_col + j < c_cols:
+                            C[row0 + i, col0 + chunk_col + j] = C_s[i, j]
             else:
                 T.fence_proxy_async()
                 T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
-                T.copy(C_s, C[row0, col0])
-        else:
-            T.fence_proxy_async()
-            T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
-            if c_has_group:
-                T.copy(C_s, C[group, row0, col0])
-            else:
-                T.copy(C_s, C[row0, col0])
+                if c_has_group:
+                    T.copy(C_s, C[group, row0, col0 + chunk_col])
+                else:
+                    T.copy(C_s, C[row0, col0 + chunk_col])
 
     @T.macro
     def release_stage(empty, slot, lane):
@@ -523,7 +528,7 @@ def _make_prim_func(
                 else C_l0
             )
             C_up0 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l0
-            C_s0 = T.alloc_shared((wg_rows, c_tile_n), cd_dtype)
+            C_s0 = T.alloc_shared((wg_rows, staged_n), cd_dtype)
             if num_math_wgs > 1:
                 C_l1 = T.alloc_fragment((wg_rows, block_n), accum_dtype)
                 C_cast1 = (
@@ -532,10 +537,13 @@ def _make_prim_func(
                     else C_l1
                 )
                 C_up1 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l1
-                C_s1 = T.alloc_shared((wg_rows, c_tile_n), cd_dtype)
-            # Per-group tile prefix sum and the call's tile count (per_group family).
-            s_cum = T.alloc_shared((num_groups + 1,), "int32")
-            s_total = T.alloc_shared((1,), "int32")
+                C_s1 = T.alloc_shared((wg_rows, staged_n), cd_dtype)
+            if dense:
+                s_cum = T.alloc_local((1,), "int32")
+                s_total = T.alloc_local((1,), "int32")
+            else:
+                s_cum = T.alloc_shared((num_groups + 1,), "int32")
+                s_total = T.alloc_shared((1,), "int32")
             if tight_per_row:
                 s_ends = T.alloc_shared((num_groups,), "int32")
 
@@ -570,7 +578,8 @@ def _make_prim_func(
                 if tx == 0:
                     k_cumsum(grouped_layout, s_cum)
 
-            T.sync_threads()
+            if not dense:
+                T.sync_threads()
 
             if per_group:
                 num_blocks = s_total[0]
@@ -700,6 +709,8 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
     num_math_wgs = spec.num_math_warpgroups
     num_sms = spec.num_sms
     activation = spec.activation
+    epilogue_stage_n = spec.epilogue_stage_n
+    swizzle_group_m = spec.swizzle_group_m
 
     @tilelang.jit(
         out_idx=[],
@@ -727,6 +738,8 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
             num_math_wgs,
             num_sms,
             activation,
+            epilogue_stage_n,
+            swizzle_group_m,
         )
 
     return _func
@@ -746,7 +759,7 @@ def _torch_dtype_str(dtype: torch.dtype) -> str:
     return str(dtype).split(".")[-1]
 
 
-class GroupedGemmTemplate(Kernel):
+class GemmTemplate(Kernel):
     """16-bit grouped GEMM template for Hopper.
 
     ``C = A @ B^T`` per group on bf16 or fp16 operands with fp32 accumulation and
@@ -757,6 +770,7 @@ class GroupedGemmTemplate(Kernel):
 
     | ``gemm_type``               | ``a``            | ``b``          | ``c``            | ``grouped_layout``           |
     | --------------------------- | ---------------- | -------------- | ---------------- | ---------------------------- |
+    | ``DENSE``                   | ``[M, K]``       | ``[N, K]``     | ``[M, N]``       | none                         |
     | ``M_GROUPED_ALIGNED_PER_ROW`` | ``[M, K]``     | ``[G, N, K]``  | ``[M, N]``       | ``[M]`` group of each row    |
     | ``M_GROUPED_ALIGNED_PSUM``  | ``[M, K]``       | ``[G, N, K]``  | ``[M, N]``       | ``[G]`` psum row ends        |
     | ``M_GROUPED_TIGHT_PSUM``    | ``[M, K]``       | ``[G, N, K]``  | ``[M, N]``       | ``[G]`` psum row ends        |
@@ -765,19 +779,17 @@ class GroupedGemmTemplate(Kernel):
     | ``BATCHED``                 | ``[G, M, K]``    | ``[G, N, K]``  | ``[G, M, N]``    | none                         |
     | ``K_GROUPED_CONTIGUOUS``    | ``[M, sum_k]``   | ``[N, sum_k]`` | ``[G, M, N]``    | ``[G]`` K per group          |
 
-    With ``activation`` set, ``b`` stacks the gate and up projections along ``N``
-    (``[G, 2 * ffn, K]``) and ``c`` is ``act(gate) * up`` with ``ffn`` columns; the
-    activation is fused into the epilogue, so the ``[M, 2 * ffn]`` intermediate is
-    never written.
+    With ``activation`` set, ``b`` stacks gate and up along ``N`` and ``c`` has
+    half as many columns.
 
     A selector chooses a legal tile layout per call; ``config`` may pin one.
     Dimensions absent from ``static_dims`` remain dynamic.
 
     Example:
         ```python linenums="1"
-        kernel = GroupedGemmTemplate(GemmType.M_GROUPED_TIGHT_PSUM, num_groups=E)
+        kernel = GemmTemplate(GemmType.M_GROUPED_TIGHT_PSUM, num_groups=E)
         c = kernel(a, b, grouped_layout=ends)  # a: [M, K], b: [E, N, K], ends: [E] int32
-        kernel = GroupedGemmTemplate(GemmType.BATCHED, num_groups=G)
+        kernel = GemmTemplate(GemmType.BATCHED, num_groups=G)
         c = kernel(a, b)  # a: [G, M, K], b: [G, N, K]
         ```
     """
@@ -822,6 +834,8 @@ class GroupedGemmTemplate(Kernel):
         super().__init__(device_index=device_index)
         if num_groups < 1:
             raise ValueError(f"num_groups must be positive, got {num_groups}")
+        if GemmType(gemm_type) is GemmType.DENSE and num_groups != 1:
+            raise ValueError(f"dense requires num_groups=1, got {num_groups}")
         if m_alignment < 1:
             raise ValueError(f"m_alignment must be positive, got {m_alignment}")
         if activation not in ACTIVATIONS:
@@ -837,6 +851,8 @@ class GroupedGemmTemplate(Kernel):
         self.expected_m = expected_m
         self.sm_count = get_sm_count(device_index) if sm_count is None else sm_count
         self.explicit_config = config
+        self._spec_cache: dict[GemmDesc, GroupedGemmSpec] = {}
+        self._empty_layout = None
         self.init_config(config, tune)
 
     @property
@@ -857,6 +873,9 @@ class GroupedGemmTemplate(Kernel):
         if self.gemm_type is GemmType.K_GROUPED_CONTIGUOUS:
             if a.ndim != 2 or b.ndim != 2:
                 raise ValueError("k_grouped_contiguous takes A as [M, sum_k] and B as [N, sum_k]")
+        elif self.gemm_type is GemmType.DENSE:
+            if a.ndim != 2 or b.ndim != 2:
+                raise ValueError("dense takes A as [M, K] and B as [N, K]")
         else:
             a_ndim = 3 if self._a_has_group else 2
             if a.ndim != a_ndim:
@@ -896,9 +915,15 @@ class GroupedGemmTemplate(Kernel):
         return self._spec_of(self.describe(a, b))
 
     def _spec_of(self, desc: GemmDesc) -> GroupedGemmSpec:
-        if self.explicit_config:
-            return spec_from_config(desc, self.explicit_config)
-        return get_best_config(desc)
+        spec = self._spec_cache.get(desc)
+        if spec is None:
+            spec = (
+                spec_from_config(desc, self.explicit_config)
+                if self.explicit_config
+                else get_best_config(desc)
+            )
+            self._spec_cache[desc] = spec
+        return spec
 
     def output_dtype(self, a: torch.Tensor) -> torch.dtype:
         """The dtype ``C`` is written in: ``cd_dtype`` when set, else the operand dtype."""
@@ -927,9 +952,9 @@ class GroupedGemmTemplate(Kernel):
 
     def _check_layout(self, desc: GemmDesc, grouped_layout: Optional[torch.Tensor]) -> None:
         gtype = self.gemm_type
-        if gtype is GemmType.BATCHED:
+        if gtype in (GemmType.DENSE, GemmType.BATCHED):
             if grouped_layout is not None:
-                raise ValueError("batched takes no grouped_layout")
+                raise ValueError(f"{gtype.value} takes no grouped_layout")
             return
         if grouped_layout is None:
             raise ValueError(f"{gtype.value} needs grouped_layout")
@@ -951,15 +976,14 @@ class GroupedGemmTemplate(Kernel):
         grouped_layout: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Run ``C = A @ B^T`` per group or batch and return ``C``.
+        """Run dense ``C = A @ B^T`` or its grouped/batched forms.
 
         Args:
-            a: Logical ``[M, K]`` bf16 or fp16, ``[G, M, K]`` for masked and batched,
-                ``[M, sum_k]`` for K-grouped; a transposed view of contiguous storage is
-                MN-major.
-            b: Logical ``[G, N, K]`` in ``a``'s dtype, ``[N, sum_k]`` for K-grouped; a
-                transposed view of ``[G, K, N]`` storage is MN-major.
-            grouped_layout: int32 layout metadata per the class table; none for batched.
+            a: ``[M, K]``, ``[G, M, K]`` for masked/batched, or ``[M, sum_k]``
+                for K-grouped.
+            b: ``[N, K]`` for dense, ``[G, N, K]`` for grouped/batched, or
+                ``[N, sum_k]`` for K-grouped.
+            grouped_layout: int32 metadata per the class table; none for dense/batched.
             out: Optional preallocated output in ``cd_dtype``.
         """
         self._require_cuda(a=a, b=b, grouped_layout=grouped_layout, out=out)
@@ -979,7 +1003,9 @@ class GroupedGemmTemplate(Kernel):
         if not a_phys.is_contiguous() or not b_phys.is_contiguous():
             raise ValueError("a and b must be contiguous in their physical (K- or MN-major) layout")
         if grouped_layout is None:
-            grouped_layout = torch.zeros(1, dtype=torch.int32, device=a.device)
+            if self._empty_layout is None or self._empty_layout.device != a.device:
+                self._empty_layout = torch.zeros(1, dtype=torch.int32, device=a.device)
+            grouped_layout = self._empty_layout
         c_cols = desc.c_cols
         c_shape = (self.num_groups, desc.m, c_cols) if self._c_has_group else (desc.m, c_cols)
         cd_dtype = self.output_dtype(a)
@@ -1000,3 +1026,6 @@ class GroupedGemmTemplate(Kernel):
         fn = _grouped_gemm_kernel(spec)()
         fn(a_phys, b_phys, out, grouped_layout)
         return out
+
+
+GroupedGemmTemplate = GemmTemplate
