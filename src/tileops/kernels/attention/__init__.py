@@ -10,6 +10,7 @@ from .gqa_bwd import (
 from .gqa_decode import GQADecodeKernel, GQADecodeLongContextKernel
 from .gqa_decode_bs1 import GQADecodeBs1Kernel
 from .gqa_decode_bs1_paged import GQADecodePagedBs1Kernel
+from .gqa_decode_fp8 import GQADenseFP8DecodeKernel
 from .gqa_decode_paged import GQADecodePagedKernel
 from .gqa_dense import (
     GQADenseSlidingWindowKernel,
@@ -41,6 +42,7 @@ __all__ = [
     "GQADecodeLongContextKernel",
     "GQADecodePagedBs1Kernel",
     "GQADecodePagedKernel",
+    "GQADenseFP8DecodeKernel",
     "GQADenseWsKernel",
     "GQADenseSlidingWindowKernel",
     "GQADenseFP8Kernel",

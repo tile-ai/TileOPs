@@ -10,6 +10,7 @@ from tileops.kernels.attention import (
     GQADecodeBs1Kernel,
     GQADecodeKernel,
     GQADecodeLongContextKernel,
+    GQADenseFP8DecodeKernel,
     GQADenseFP8Kernel,
     GQADenseSlidingWindowKernel,
     GQADenseWsKernel,
@@ -206,6 +207,7 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
         "out_dtype",
     ),
     [
+        (1, 2049, 0.125, 50.0, None, None, torch.bfloat16),
         (256, 1792, 0.125, 0.0, None, None, torch.float16),
         (255, 1793, 0.0625, 50.0, None, None, torch.float16),
         (256, 1792, 0.125, 0.0, "neox", 64, torch.float16),
@@ -288,7 +290,8 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
         softcap=softcap,
     )
     torch.testing.assert_close(output, reference, atol=8e-2, rtol=2e-2)
-    assert isinstance(next(iter(op.iter_kernels())), GQADenseFP8Kernel)
+    expected_kernel = GQADenseFP8DecodeKernel if seq_len_q == 1 else GQADenseFP8Kernel
+    assert isinstance(next(iter(op.iter_kernels())), expected_kernel)
 
 
 @pytest.mark.smoke
