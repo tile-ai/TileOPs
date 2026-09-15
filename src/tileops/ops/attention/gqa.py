@@ -12,6 +12,7 @@ from tileops.kernels.attention import (
     GQADecodeLongContextKernel,
     GQADecodePagedBs1Kernel,
     GQADecodePagedKernel,
+    GQADenseFP8DecodeKernel,
     GQADenseFP8Kernel,
     GQADenseSlidingWindowKernel,
     GQADenseWsKernel,
@@ -310,6 +311,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
             "gqa_dense_decode": GQADecodeKernel,
             "gqa_dense_decode_bs1": GQADecodeBs1Kernel,
             "gqa_dense_fp8": GQADenseFP8Kernel,
+            "gqa_dense_fp8_decode": GQADenseFP8DecodeKernel,
             "gqa_dense_decode_long_context": GQADecodeLongContextKernel,
             "gqa_dense_sliding_window": GQADenseSlidingWindowKernel,
         }
@@ -506,7 +508,18 @@ class GroupedQueryAttentionDenseFwdOp(Op):
             and 1 <= heads // heads_kv <= 64
             and not uses_long_context_decode
         )
-        if is_fp8:
+        uses_fp8_decode = (
+            is_fp8
+            and batch == 1
+            and seq_len_q == 1
+            and seq_len_kv >= 2048
+            and heads // heads_kv <= 16
+            and not uses_window
+            and not rope_on
+        )
+        if uses_fp8_decode:
+            role = "gqa_dense_fp8_decode"
+        elif is_fp8:
             role = "gqa_dense_fp8"
         elif uses_long_context_decode:
             role = "gqa_dense_decode_long_context"
@@ -527,6 +540,18 @@ class GroupedQueryAttentionDenseFwdOp(Op):
 
         def build() -> Kernel:
             self._validate_builtin_call(q, k)
+            if uses_fp8_decode:
+                assert self.dtype is not None
+                return self.kernel_map[role](
+                    batch=batch,
+                    heads=heads,
+                    heads_kv=heads_kv,
+                    dim=dim,
+                    dtype=self.dtype,
+                    sm_scale=self.sm_scale,
+                    softcap=self.softcap,
+                    device_index=q.device.index,
+                )
             if is_fp8:
                 assert self.dtype is not None
                 return self.kernel_map[role](
@@ -589,7 +614,11 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                 device_index=q.device.index,
             )
 
-        if is_fp8 or uses_window or rope_on:
+        if uses_fp8_decode:
+            # Skv is dynamic in the decode program. One Kernel object serves
+            # every length and TileLang caches only the finite split tiers.
+            key = (q.dtype, batch, heads, heads_kv, dim)
+        elif is_fp8 or uses_window or rope_on:
             # Sliding and RoPE still compile exact sequence lengths. The plain
             # causal WS kernel accepts its sequence extents at runtime.
             key = (
