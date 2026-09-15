@@ -215,6 +215,81 @@ class TestFusedMoEExpertsFwdOp:
         assert ws1 == (0,) and ws2 == (0,)
 
     @pytest.mark.smoke
+    def test_small_route_workspace_shapes(self):
+        experts = FusedMoEExpertsFwdOp(4, 8, 2, 128, 256)
+        ws1, ws2 = experts.workspace_shapes(4, 256, 128, 2, 8)
+        assert ws1 == (2340,)
+        assert ws2 == (1024,)
+
+    @pytest.mark.smoke
+    @pytest.mark.parametrize(
+        "ids",
+        [
+            [[0, 1], [2, 3], [4, 5], [6, 7]],
+            [[0, 1], [0, 1], [0, 2], [0, 2]],
+        ],
+        ids=["dispersed", "reused"],
+    )
+    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+    def test_small_route_branch_matches_reference(self, ids, dtype):
+        T, E, K, H, F_dim = 4, 8, 2, 128, 256
+        hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
+        w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
+        w2 = torch.randn(E, H, F_dim, dtype=dtype, device="cuda") * 0.02
+        weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), -1)
+        topk_ids = torch.tensor(ids, dtype=torch.int32, device="cuda")
+        experts = FusedMoEExpertsFwdOp(T, E, K, H, F_dim)
+        ws1_shape, ws2_shape = experts.workspace_shapes(T, F_dim, H, K, E)
+        workspace1 = torch.empty(ws1_shape, dtype=dtype, device="cuda")
+        workspace2 = torch.empty(ws2_shape, dtype=dtype, device="cuda")
+        output = torch.empty(T, H, dtype=dtype, device="cuda")
+
+        experts.forward(
+            output,
+            hidden,
+            w1,
+            w2,
+            weights,
+            topk_ids,
+            workspace1,
+            workspace2,
+        )
+
+        expected = _torch_ref_moe(hidden, w1, w2, weights, topk_ids)
+        torch.testing.assert_close(output.float(), expected.float(), rtol=2e-2, atol=1e-1)
+
+    @pytest.mark.smoke
+    def test_small_route_dispatch_replays_in_cuda_graph(self):
+        T, E, K, H, F_dim = 4, 8, 2, 128, 256
+        dtype = torch.bfloat16
+        hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
+        w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
+        w2 = torch.randn(E, H, F_dim, dtype=dtype, device="cuda") * 0.02
+        weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), -1)
+        topk_ids = torch.tensor([[0, 1], [2, 3], [4, 5], [6, 7]], dtype=torch.int32, device="cuda")
+        experts = FusedMoEExpertsFwdOp(T, E, K, H, F_dim)
+        ws1_shape, ws2_shape = experts.workspace_shapes(T, F_dim, H, K, E)
+        workspace1 = torch.empty(ws1_shape, dtype=dtype, device="cuda")
+        workspace2 = torch.empty(ws2_shape, dtype=dtype, device="cuda")
+        output = torch.empty(T, H, dtype=dtype, device="cuda")
+        args = (output, hidden, w1, w2, weights, topk_ids, workspace1, workspace2)
+        experts.forward(*args)
+        torch.cuda.synchronize()
+
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            experts.forward(*args)
+
+        topk_ids.copy_(
+            torch.tensor([[0, 1], [0, 1], [0, 2], [0, 2]], dtype=torch.int32, device="cuda")
+        )
+        graph.replay()
+        torch.cuda.synchronize()
+
+        expected = _torch_ref_moe(hidden, w1, w2, weights, topk_ids)
+        torch.testing.assert_close(output.float(), expected.float(), rtol=2e-2, atol=1e-1)
+
+    @pytest.mark.smoke
     def test_output_shape(self, moe_meta):
         d = moe_meta
         experts = FusedMoEExpertsFwdOp(

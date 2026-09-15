@@ -1,8 +1,4 @@
-"""FusedMoEExperts implementation on tight (no-pad) rows.
-
-Registers no operator of its own: a composite is not the unit of replacement,
-so its graph is its leaves' operators.
-"""
+"""FusedMoEExperts implementation with indexed and tight backends."""
 
 from __future__ import annotations
 
@@ -22,16 +18,17 @@ from ..abc import (
 )
 from ..contracts import ContiguousLayoutSpec, RoutingEpilogueSpec
 from ..staged import MoeExpertMLPFwdOp, MoePostPermuteFwdOp, MoePrePermuteFwdOp
+from .indexed_routed_expert import _IndexedExpertMLPFwdOp
 
 __all__ = ["FusedMoEExpertsFwdOp"]
 
 
 class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
-    """Expert MLP on the tight (T*K rows, no-pad) layout.
+    """Expert MLP with an indexed small-route path and a tight grouped fallback.
 
-    The local pipeline is the staged PrePermute, the staged Expert MLP (two grouped
-    GEMMs on the SM90 template around the gated activation) and the staged
-    PostPermute, all on one ``physical_ends`` metadata tensor.
+    SM90 calls with at most eight tokens use route-major Tensor Core GEMMs. A
+    device-side reuse ratio selects direct rows or same-expert M16 batches. Other
+    shapes use PrePermute, two tight grouped GEMMs and PostPermute.
 
     forward() output shape is (T, H): reduction is done internally by the
     PostPermute/Unpermute stage, so make_weighted_reduce() returns
@@ -95,9 +92,30 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
             ),
             kernel_map=kernel_map,
         )
+        self._indexed_mlp = (
+            _IndexedExpertMLPFwdOp(
+                num_tokens,
+                num_experts,
+                top_k,
+                hidden_size,
+                ffn_size,
+                routed_scaling_factor,
+                self._pre_permute,
+                self._expert_mlp,
+                self._post_permute,
+            )
+            if (
+                num_tokens <= 8
+                and activation == "silu_and_mul"
+                and hidden_size % 128 == 0
+                and ffn_size % 256 == 0
+            )
+            else None
+        )
 
     def kernel_delegates(self) -> tuple[Op, ...]:
-        return (self._pre_permute, self._expert_mlp, self._post_permute)
+        tight = (self._pre_permute, self._expert_mlp, self._post_permute)
+        return tight if self._indexed_mlp is None else (*tight, self._indexed_mlp)
 
     def eval_roofline(self) -> tuple[int, int]:
         """Manifest ``roofline``: three F x H weight planes per local expert."""
@@ -137,20 +155,17 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
             workspace1,
             workspace2,
         )
-        self._reject_non_empty_workspaces(workspace1, workspace2)
-
-    def _reject_non_empty_workspaces(
-        self,
-        workspace1: Tensor,
-        workspace2: Tensor,
-    ) -> None:
-        """workspace_shapes() returns ((0,), (0,)); anything else is a mismatch."""
-        if workspace1.numel() != 0 or workspace2.numel() != 0:
+        expected1, expected2 = self.workspace_shapes(
+            self.num_tokens,
+            self.ffn_size,
+            self.hidden_size,
+            self.top_k,
+            self.num_experts,
+        )
+        if tuple(workspace1.shape) != expected1 or tuple(workspace2.shape) != expected2:
             raise ValueError(
-                "workspace1 and workspace2 must be empty (numel == 0) for "
-                f"{type(self).__name__}; got "
-                f"workspace1.numel()={workspace1.numel()}, "
-                f"workspace2.numel()={workspace2.numel()}."
+                f"workspace1 and workspace2 must have shapes {expected1} and {expected2}; "
+                f"got {tuple(workspace1.shape)} and {tuple(workspace2.shape)}"
             )
 
     def workspace_shapes(
@@ -161,6 +176,8 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         topk: int,
         num_experts: int,
     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        if self._indexed_mlp is not None:
+            return self._indexed_mlp.workspace_shapes()
         return ((0,), (0,))
 
     def output_shape(self, T_prime: int, H: int) -> tuple[int, int]:
@@ -210,6 +227,18 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
             workspace1,
             workspace2,
         )
+        if self._indexed_mlp is not None:
+            self._indexed_mlp(
+                output,
+                hidden_states,
+                w_gate_up,
+                w_down,
+                topk_weights,
+                topk_ids,
+                workspace1,
+                workspace2,
+            )
+            return
         expert_input, physical_ends, inverse_indices = self._pre_permute(hidden_states, topk_ids)
         expert_output = self._expert_mlp(expert_input, w_gate_up, w_down, physical_ends)
         self._post_permute(expert_output, topk_weights, inverse_indices, out=output)
