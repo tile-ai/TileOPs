@@ -193,6 +193,16 @@ class GemmW4A16Kernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        if self.m <= 128 and self.n <= 256 and self.k <= 256:
+            # Short reductions cannot amortize pipeline setup. Smaller output
+            # tiles also provide more CTAs for these small matrices.
+            return {
+                "block_m": 16,
+                "block_n": 32,
+                "block_k": 128,
+                "num_stages": 0,
+                "threads": 128,
+            }
         return {
             "block_m": 64,
             "block_n": 64,

@@ -460,6 +460,38 @@ class GemmW4A16Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-w4a16-m16",
                 ),
+                pytest.param(
+                    1,
+                    35,
+                    384,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-w4a16-decode-short-k-n-tail",
+                ),
+                pytest.param(
+                    1,
+                    65,
+                    1024,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-w4a16-decode-n-tail",
+                ),
+                pytest.param(
+                    1,
+                    96,
+                    8192,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-w4a16-decode-staged-k",
+                ),
+                pytest.param(
+                    17,
+                    65,
+                    256,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-w4a16-small-mn-tail",
+                ),
             ],
         ),
     ]
@@ -507,6 +539,27 @@ def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
     test = GemmW4A16Test(m, n, k, dtype)
     op = GemmW4A16FwdOp()
     test.check(op, *test.gen_inputs(), atol=7e-2, rtol=5e-2)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("k_index", [0, 127, 128, 383])
+def test_gemm_w4a16_decode_preserves_fp32_scale(k_index: int) -> None:
+    """A basis vector exposes exact nibble, group, and weight-rounding errors."""
+    n, k = 35, 384
+    rows = torch.arange(n)[:, None]
+    quantized = (rows + torch.arange(k)[None, :]) % 16
+    zero = ((3 * rows + torch.arange(k // 128)[None, :]) % 16).to(torch.uint8)
+    scale = 0.03137 + torch.arange(n * (k // 128), dtype=torch.float32).reshape(n, -1) * 0.001147
+    packed = (quantized[:, 0::2] | (quantized[:, 1::2] << 4)).to(torch.uint8)
+    group = k_index // 128
+    centered = quantized[:, k_index].float() - zero[:, group].float()
+    expected = (centered * scale[:, group]).half()[None, :]
+    # These scales distinguish the contract from rounding scales to A16 first.
+    assert not torch.equal(expected[0], (centered * scale[:, group].half().float()).half())
+    activation = torch.zeros((1, k), device="cuda", dtype=torch.float16)
+    activation[0, k_index] = 1
+    actual = GemmW4A16FwdOp()(activation, packed.cuda(), scale.cuda(), zero.cuda())
+    torch.testing.assert_close(actual.cpu(), expected, atol=0, rtol=0)
 
 
 @pytest.mark.smoke
