@@ -639,6 +639,8 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                 # Decode may compile one of a finite set of split programs.
                 # Key the capacity tier, not the exact runtime KV length.
                 key += (_dense_decode_split_capacity(seq_len_kv),)
+                if role == "gqa_dense_decode_long_context":
+                    key += (GQADecodeLongContextKernel.sequence_bucket(seq_len_kv),)
         return self.get_or_build_kernel(role, inputs, key=key, build=build)
 
     def forward(
