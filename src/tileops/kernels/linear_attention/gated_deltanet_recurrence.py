@@ -20,7 +20,6 @@ Optimization:
 # FIXME(staged-rollout): decode kernels are retained without a public Op path.
 #
 # Broken invariant: exported kernels have no in-tree Op, test, or benchmark owner.
-# Why: the legacy Ops were removed before migration into GatedDeltaNetFwdOp.
 # Cleanup: remove this marker when decode dispatch and coverage migrate to that Op.
 
 import functools
