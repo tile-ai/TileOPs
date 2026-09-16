@@ -13,9 +13,8 @@ from .call_spec import GemmCall
 
 GROUP_SIZE = 128
 
-# Packed bytes each carried partial sum covers. Four keeps the accumulator
-# fragment small enough to stay in registers at the tile sizes that saturate
-# the weight stream.
+# Four packed bytes encode eight weights. Sixteen adjacent lanes therefore
+# cover one group128 and can share its sixteen possible dequantized values.
 BYTES_PER_SLOT = 4
 
 __all__ = ["GemmW4A16DecodeKernel"]
@@ -27,17 +26,22 @@ def _gemm_w4a16_decode_kernel(n: int, k: int, dtype: str) -> Callable:
         out_idx=[-1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            # Keep lookup entries and carried sums in the same threads;
+            # automatic warp specialization separates this thread-local state.
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def build(
         block_n: int = 32,
-        block_k: int = 512,
+        block_k: int = 1024,
         threads: int = 128,
-        num_stages: int = 4,
+        num_stages: int = 2,
     ) -> Callable:
         if block_k % GROUP_SIZE != 0:
             raise ValueError(f"block_k={block_k} must be a multiple of {GROUP_SIZE}")
+        if threads % 32 != 0 or (block_n * block_k // 8) % threads != 0:
+            raise ValueError("decode tiles must divide into whole warps of eight-weight slots")
         packed_k = block_k // 2
         tile_groups = block_k // GROUP_SIZE
 
@@ -54,13 +58,28 @@ def _gemm_w4a16_decode_kernel(n: int, k: int, dtype: str) -> Callable:
                 packed_shared = T.alloc_shared((block_n, packed_k), "uint8")
                 scale_shared = T.alloc_shared((block_n, tile_groups), "float32")
                 zero_shared = T.alloc_shared((block_n, tile_groups), "uint8")
-                # Partial sums carried across the whole K loop, so the
-                # cross-thread reduction runs once instead of once per tile.
                 products = T.alloc_fragment((block_n, packed_k // BYTES_PER_SLOT), "float")
                 partial = T.alloc_fragment((block_n,), "float")
 
+                lookup_local = T.alloc_local((1,), "float32")
+                activation_local = T.alloc_local((8,), dtype)
+                packed_local = T.alloc_local((4,), "uint8")
+                scale_local = T.alloc_local((1,), "float32")
+                zero_local = T.alloc_local((1,), "int32")
+                # Carry sums across K and reduce across threads only once.
+                products_local = T.alloc_local((block_n * block_k // (8 * threads),), "float32")
+                tx = T.get_thread_binding(0)
+                T.annotate_layout(
+                    {
+                        products: T.Fragment(
+                            (block_n, block_k // 8),
+                            forward_thread_fn=lambda i, j: (i * (block_k // 8) + j) % threads,
+                            forward_index_fn=lambda i, j: (i * (block_k // 8) + j) // threads,
+                        )
+                    }
+                )
+                T.clear(products_local)
                 n_start = bx * block_n
-                T.clear(products)
 
                 for kk in T.Pipelined(k // block_k, num_stages=num_stages):
                     for j in T.Parallel(block_k):
@@ -106,21 +125,38 @@ def _gemm_w4a16_decode_kernel(n: int, k: int, dtype: str) -> Callable:
                                 T.cast(0, "uint8"),
                             )
 
-                    for i, j in T.Parallel(block_n, packed_k // BYTES_PER_SLOT):
-                        for v in T.serial(BYTES_PER_SLOT):
-                            byte_k = j * BYTES_PER_SLOT + v
-                            byte = T.cast(packed_shared[i, byte_k], "int32")
-                            scale = scale_shared[i, byte_k // (GROUP_SIZE // 2)]
-                            zero = T.cast(zero_shared[i, byte_k // (GROUP_SIZE // 2)], "float")
-                            # Round to the storage dtype before the product: the
-                            # contract dequantizes to A16 and only then multiplies.
-                            low = T.cast((T.cast(byte % 16, "float") - zero) * scale, dtype)
-                            high = T.cast((T.cast(byte // 16, "float") - zero) * scale, dtype)
-                            products[i, j] += T.cast(
-                                activation_shared[0, byte_k * 2], "float"
-                            ) * T.cast(low, "float") + T.cast(
-                                activation_shared[0, byte_k * 2 + 1], "float"
-                            ) * T.cast(high, "float")
+                    for chunk in T.serial(block_n * block_k // (8 * threads)):
+                        index = chunk * threads + tx
+                        row = index // (block_k // 8)
+                        col = index % (block_k // 8)
+                        for v in T.vectorized(8):
+                            activation_local[v] = activation_shared[0, col * 8 + v]
+                        for v in T.vectorized(4):
+                            packed_local[v] = packed_shared[row, col * 4 + v]
+                        scale_local[0] = scale_shared[row, col // 16]
+                        zero_local[0] = T.cast(zero_shared[row, col // 16], "int32")
+                        # Each half-warp holds the complete lookup for its
+                        # group. Preserve FP32 affine math and A16 rounding,
+                        # but evaluate it sixteen times per group, not 128.
+                        lookup_local[0] = T.cast(
+                            T.cast(
+                                T.cast(tx % 16 - zero_local[0], "float32") * scale_local[0], dtype
+                            ),
+                            "float32",
+                        )
+                        for v in T.unroll(8):
+                            quantized = (
+                                T.cast(packed_local[v // 2], "int32") >> (4 * (v % 2))
+                            ) & 15
+                            dequantized = T.shfl_sync(lookup_local[0], quantized, width=16)
+                            products_local[chunk] += (
+                                T.cast(activation_local[v], "float32") * dequantized
+                            )
+                for chunk in T.serial(block_n * block_k // (8 * threads)):
+                    index = chunk * threads + tx
+                    products[index // (block_k // 8), index % (block_k // 8)] = products_local[
+                        chunk
+                    ]
 
                 T.reduce_sum(products, partial, dim=1)
                 for i in T.Parallel(block_n):
@@ -175,15 +211,15 @@ class GemmW4A16DecodeKernel(Kernel):
     @property
     def default_config(self) -> dict:
         # 32 rows of N per CTA still leaves 224 CTAs at the manifest's smallest
-        # N, and 128 threads keeps the carried accumulator in registers.
-        return {"block_n": 32, "block_k": 512, "threads": 128, "num_stages": 4}
+        # N. A wider K tile amortizes staging the lookup metadata.
+        return {"block_n": 32, "block_k": 1024, "threads": 128, "num_stages": 2}
 
     @property
     def autotune_configs(self) -> list[dict]:
         return [
             {"block_n": block_n, "block_k": block_k, "threads": threads, "num_stages": num_stages}
             for block_n in (8, 16, 32)
-            for block_k in (256, 512)
+            for block_k in (256, 512, 1024)
             for threads in (128, 256)
             for num_stages in (2, 4)
             # Tile K exactly, and keep the carried accumulator off the stack.
