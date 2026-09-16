@@ -194,11 +194,40 @@ jobs:
           cat env.json
         shell: bash
 
+      # Two attempts, neither fatal: this job's conclusion states whether the
+      # benchmark passed. A snapshot that never reaches the artifact API fails
+      # `publish-bench-data`, where the missing data is what the failure names.
       - name: Upload benchmark artifacts
+        id: upload_bench
         uses: actions/upload-artifact@v4
         if: ${{ always() }}
+        continue-on-error: true
         with:
-          name: tileops_benchmark_${{ github.run_id }}
+          name: tileops_benchmark_${{ github.run_id }}_${{ github.run_attempt }}
+          path: |
+            tileops_benchmarks.log
+            bench_results.xml
+            bench_coverage.md
+            env.json
+            bench_stack_dumps/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Wait out the reset before retrying the upload
+        if: ${{ always() && steps.upload_bench.outcome == 'failure' }}
+        run: sleep 30
+        shell: bash
+
+      - name: Upload benchmark artifacts (retry)
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.upload_bench.outcome == 'failure' }}
+        continue-on-error: true
+        with:
+          name: tileops_benchmark_${{ github.run_id }}_${{ github.run_attempt }}
+          # A create request whose response was lost may still have created the
+          # artifact, and v4 names are immutable: without this the retry is
+          # rejected for the name the failed attempt left behind.
+          overwrite: true
           path: |
             tileops_benchmarks.log
             bench_results.xml
@@ -266,7 +295,7 @@ jobs:
         uses: actions/download-artifact@v4
         if: ${{ always() }}
         with:
-          name: tileops_benchmark_${{ github.run_id }}
+          name: tileops_benchmark_${{ github.run_id }}_${{ github.run_attempt }}
         continue-on-error: true
 
       - name: Resolve previous perf history artifact
@@ -363,7 +392,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
-          name: tileops_op_test_${{ github.run_id }}
+          name: tileops_op_test_${{ github.run_id }}_${{ github.run_attempt }}
           path: |
             test_results.xml
             tileops_op_test.log
@@ -408,14 +437,14 @@ jobs:
       - name: Download benchmark artifact
         uses: actions/download-artifact@v4
         with:
-          name: tileops_benchmark_${{ github.run_id }}
+          name: tileops_benchmark_${{ github.run_id }}_${{ github.run_attempt }}
           path: _bench
         continue-on-error: true
 
       - name: Download op test artifact
         uses: actions/download-artifact@v4
         with:
-          name: tileops_op_test_${{ github.run_id }}
+          name: tileops_op_test_${{ github.run_id }}_${{ github.run_attempt }}
           path: _optest
         continue-on-error: true
 
@@ -428,7 +457,7 @@ jobs:
           if [ -f _bench/bench_results.xml ]; then
             cp _bench/bench_results.xml _publish/bench_results.xml
           else
-            echo "::warning::bench_results.xml missing; skipping nightly-bench publish"
+            echo "bench_results.xml missing; skipping nightly-bench publish"
             ok=0
           fi
           if [ -f _optest/test_results.xml ]; then
@@ -469,6 +498,13 @@ jobs:
           full_commit_message: "bench: ${{ github.sha }} (run ${{ github.run_id }})"
           user_name: "github-actions[bot]"
           user_email: "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fail when tonight's benchmark data was not published
+        if: ${{ steps.assemble.outputs.ok != '1' }}
+        run: |
+          echo "::error::bench_results.xml is missing, so the snapshot still shows the previous run. Check whether the benchmark job produced it and whether its artifact upload reached GitHub."
+          exit 1
+        shell: bash
 
   # =========================================================================
   # Phase 3 — Packaging and smoke test
@@ -529,7 +565,7 @@ jobs:
         if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
-          name: tileops-wheel-${{ github.sha }}
+          name: tileops-wheel-${{ github.sha }}_${{ github.run_attempt }}
           path: dist/*.whl
           if-no-files-found: error
           retention-days: 14
@@ -538,7 +574,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: packaging-logs-${{ github.sha }}
+          name: packaging-logs-${{ github.sha }}_${{ github.run_attempt }}
           path: |
             packaging.log
             packaging_smoke.xml
