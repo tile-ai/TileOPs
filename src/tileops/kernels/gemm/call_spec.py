@@ -12,7 +12,11 @@ __all__ = ["GemmCall"]
 
 @dataclasses.dataclass(frozen=True)
 class GemmCall(CallSpec):
-    """One matmul, as the op knows it after inferring ``(m, n, k)``."""
+    """One matmul, as the op knows it after inferring ``(m, n, k)``.
+
+    Carries what this family's kernels read to decide whether they serve the call
+    and what they are constructed from, so a candidate needs nothing else.
+    """
 
     m: int = 0
     n: int = 0
@@ -20,6 +24,12 @@ class GemmCall(CallSpec):
     dtype: Optional[torch.dtype] = None
     trans_a: bool = False
     trans_b: bool = False
+    # FP8 only: the scale grids separate the two kernels, out_dtype builds both.
+    scale_a_shape: Optional[tuple] = None
+    scale_b_shape: Optional[tuple] = None
+    out_dtype: Optional[torch.dtype] = None
+    # W4A16 only: the dequantization group its kernels are compiled for.
+    group_size: Optional[int] = None
 
     @property
     def gemv_mode(self) -> Optional[Literal["lhs_row", "rhs_col"]]:

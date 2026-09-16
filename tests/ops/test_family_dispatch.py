@@ -2,8 +2,8 @@
 
 One row per region the family's own predicates used to draw, including the
 boundaries they turned on: element type, dimensions, layout, and architecture.
-Selection is asserted through ``select_kernel_key``, which resolves the key
-without compiling anything.
+Selection is asserted through ``select_kernel`` / ``select_kernel_key``, which
+resolve the implementation without compiling anything.
 """
 
 import itertools
@@ -11,9 +11,10 @@ import itertools
 import pytest
 import torch
 
+from tileops.kernels.gemm import GemmBasicKernel
 from tileops.kernels.gemm.call_spec import GemmCall
 from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
-from tileops.ops.gemm.gemm import _GEMM_KEYS, GemmFwdOp
+from tileops.ops.gemm.gemm import GemmFwdOp
 from tileops.ops.linear_attention.deltanet_recurrence import (
     DELTANET_DECODE_KEYS,
     DeltaNetDecodeFwdOp,
@@ -39,12 +40,12 @@ _SM80 = 80
 @pytest.mark.parametrize(
     ("m", "n", "trans_a", "trans_b", "expected"),
     [
-        pytest.param(1, 8, False, True, "gemv_kernel", id="lhs-row"),
-        pytest.param(8, 1, False, False, "gemv_kernel", id="rhs-col"),
-        pytest.param(1, 8, False, False, "gemm_kernel", id="lhs-row-wrong-layout"),
-        pytest.param(8, 1, False, True, "gemm_kernel", id="rhs-col-wrong-layout"),
-        pytest.param(8, 8, False, False, "gemm_kernel", id="neither-is-a-vector"),
-        pytest.param(1, 1, False, False, "gemv_kernel", id="both-are-vectors"),
+        pytest.param(1, 8, False, True, "GemvKernel", id="lhs-row"),
+        pytest.param(8, 1, False, False, "GemvKernel", id="rhs-col"),
+        pytest.param(1, 8, False, False, "GemmKernel", id="lhs-row-wrong-layout"),
+        pytest.param(8, 1, False, True, "GemmKernel", id="rhs-col-wrong-layout"),
+        pytest.param(8, 8, False, False, "GemmKernel", id="neither-is-a-vector"),
+        pytest.param(1, 1, False, False, "GemvKernel", id="both-are-vectors"),
     ],
 )
 def test_gemm_dispatch(m: int, n: int, trans_a: bool, trans_b: bool, expected: str) -> None:
@@ -53,7 +54,7 @@ def test_gemm_dispatch(m: int, n: int, trans_a: bool, trans_b: bool, expected: s
         arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
     )
 
-    assert op.select_kernel_key(_GEMM_KEYS, call) == expected
+    assert op.select_kernel(call).__name__ == expected
 
 
 @pytest.mark.smoke
@@ -79,7 +80,7 @@ def test_gemm_vector_on_a_transposed_operand_is_refused(
     )
 
     with pytest.raises(ValueError, match=f"multiple of 8 .*and {dim}"):
-        op.select_kernel_key(_GEMM_KEYS, call)
+        op.select_kernel(call)
 
 
 @pytest.mark.smoke
@@ -87,7 +88,7 @@ def test_gemm_uses_basic_mainloop_off_sm90() -> None:
     op = GemmFwdOp()
     call = GemmCall(arch=_SM80, m=1, n=8, k=64, dtype=torch.float16, trans_b=True)
 
-    assert op.select_kernel_key(_GEMM_KEYS, call) == "gemm_basic_kernel"
+    assert op.select_kernel(call) is GemmBasicKernel
 
 
 # --- DeltaNet decode: fp32 has its own kernel; the raw-CUDA one serves 16-bit

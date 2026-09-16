@@ -1,9 +1,13 @@
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Hashable, Optional, Union
 
 import torch
 
-__all__ = ["Kernel"]
+__all__ = ["Entry", "Kernel"]
+
+# What ``Op.get_or_build_kernel`` stores for one specialization: the identity two
+# builds share to be the same entry, and the thunk that produces it.
+Entry = tuple[Hashable, Callable[[], object]]
 
 # Sentinel for ``tune_jit_kernel(supply_prog=...)``: inherit the whole-kernel
 # supplier. Distinct from ``None``, which means "no supplier".
@@ -79,9 +83,12 @@ class Kernel(ABC):
         """Whether this implementation serves the call *call* describes.
 
         States a region positively — what this class serves, never what a
-        sibling serves. Architecture is not part of it: ``supported_archs``
-        already answers that, and a specialised implementation the device
-        cannot run simply does not apply, leaving the call to the general one.
+        sibling serves.
+
+        ``supported_archs`` says where this class can run, and one the device
+        cannot run does not apply. A class that runs where a sibling supersedes it
+        states that exclusion here instead, since ``supported_archs`` also gates
+        direct construction.
 
         Answered by the class that would run, so a ``kernel_map`` override is
         asked about its own region rather than the region of the class it
@@ -109,6 +116,30 @@ class Kernel(ABC):
         if not cls.applies(call):
             return "does not serve this call"
         return None
+
+    # FIXME(staged-rollout): entry_for is declared here but not abstract.
+    #
+    # Broken invariant: a class ``Op.kernel_for`` selects must state how it is built.
+    # Why: only GEMM dispatches through it; every kernel of the other families would
+    #   fail to instantiate the moment this became abstract.
+    # Cleanup: no op passes ``key=`` / ``build=`` to ``get_or_build_kernel``.
+    @classmethod
+    def entry_for(cls, call: Any, *, tune: bool) -> Entry:
+        """How to build this class for *call*, and what makes two builds one entry.
+
+        The identity is the construction arguments, so two calls that would compile
+        the same kernel share an entry and none reuses one compiled for different
+        arguments. The thunk runs only on a cache miss.
+
+        Raises:
+            NotImplementedError: This class is selected by an op that builds through
+                ``entry_for`` and does not define it.
+        """
+        raise NotImplementedError(
+            f"{cls.__name__} is dispatched through entry_for(call, *, tune) but does not "
+            f"define it; it must return (identity, thunk) — the construction arguments "
+            f"this class takes from the call, and a callable that builds it from them"
+        )
 
     def _check_arch(self) -> None:
         """Reject construction on a device this kernel is not built for.

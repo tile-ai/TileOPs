@@ -33,8 +33,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
     from .fp8_lightning_indexer import FP8LightningIndexerFwdOp
     from .fp8_quant import FP8QuantFwdOp
     from .gemm import (
-        BmmFp8KNFwdOp,
-        BmmFp8NKFwdOp,
+        BmmFp8FwdOp,
         BmmFwdOp,
         GemmFp8FwdOp,
         GemmFwdOp,
@@ -187,8 +186,7 @@ _LAZY = {
     "GemmFp8FwdOp": ".gemm",
     "GemmW4A16FwdOp": ".gemm",
     "BmmFwdOp": ".gemm",
-    "BmmFp8KNFwdOp": ".gemm",
-    "BmmFp8NKFwdOp": ".gemm",
+    "BmmFp8FwdOp": ".gemm",
     "GroupedGemmFwdOp": ".gemm",
     # Pooling
     "AvgPool1dFwdOp": ".pool",

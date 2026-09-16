@@ -63,6 +63,7 @@ GemmFwdOp:
     bench_manifest_driven: true
     kernel_map:
       gemm_kernel: GemmKernel
+      gemm_basic_kernel: GemmBasicKernel
       gemv_kernel: GemvKernel
       small_batch_kernel: SmallBatchGemmKernel
 

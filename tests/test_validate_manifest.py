@@ -455,6 +455,44 @@ class TestSchema:
         errors = validator.check_l0("test_op", entry)
         assert any("kernel_map" in e for e in errors)
 
+    def test_kernel_map_parity_with_default_kernel_map(self, validator):
+        """A declared slot the op does not install, or vice versa, is an error."""
+
+        class _K:
+            pass
+
+        class _Op:
+            default_kernel_map = {"fwd": _K}
+
+        entry = _make_entry(status="implemented", kernel_map={"fwd": "_K"})
+        assert validator.check_kernel_map_parity("test_op", entry, _Op) == []
+
+        entry = _make_entry(status="implemented", kernel_map={"fwd": "_K", "extra": "_K"})
+        errors = validator.check_kernel_map_parity("test_op", entry, _Op)
+        assert any("does not match default_kernel_map" in e for e in errors), errors
+
+        entry = _make_entry(status="implemented", kernel_map={"other": "_K"})
+        errors = validator.check_kernel_map_parity("test_op", entry, _Op)
+        assert any("does not match default_kernel_map" in e for e in errors), errors
+
+    def test_kernel_map_parity_skips_composites_and_unreadable_maps(self, validator):
+        """A composite installs no map of its own, and an unreadable one warns."""
+
+        class _Composite:
+            default_kernel_map: dict = {}
+
+        entry = _make_entry(status="implemented", kernel_map={"grouped_gemm": "SomeKernel"})
+        assert validator.check_kernel_map_parity("test_op", entry, _Composite) == []
+
+        class _NeedsInit:
+            @property
+            def default_kernel_map(self):
+                return {"fwd": self.missing}
+
+        warnings: list[str] = []
+        assert validator.check_kernel_map_parity("test_op", entry, _NeedsInit, warnings) == []
+        assert any("could not be read without __init__" in w for w in warnings), warnings
+
     def test_shape_rule_expressions_pass_l0(self, validator):
         """Registered builtins and attribute calls pass the L0 callable gate."""
         entry = _make_entry(

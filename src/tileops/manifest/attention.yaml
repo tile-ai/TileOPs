@@ -367,7 +367,6 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
     kernel: tileops/kernels/attention/gqa_fwd.py
     kernel_map:
       gqa_prefill_paged_with_kv_cache_fwd_kernel: GQAPrefillPagedWithKVCacheFwdKernel
-      gqa_prefill_paged_with_kv_cache_rope_append_kernel: GQAPrefillPagedWithKVCacheRopeAppendKernel
       gqa_prefill_paged_with_kv_cache_rope_fwd_kernel: GQAPrefillPagedWithKVCacheRopeFwdKernel
       gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel: GQAPrefillPagedWithFP8KVCacheFwdKernel
     op: tileops/ops/attention/gqa.py
@@ -469,6 +468,7 @@ MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
     kernel: tileops/kernels/attention/mha_decode_paged.py
     kernel_map:
       mha_decode_paged_kernel: MHADecodePagedKernel
+      mha_decode_paged_ws_kernel: MHADecodePagedWsKernel
     op: tileops/ops/attention/mha.py
     test: tests/ops/attention/test_mha_decode_paged.py
     bench: benchmarks/ops/attention/bench_mha_decode_paged.py

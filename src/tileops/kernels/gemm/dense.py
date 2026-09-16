@@ -5,10 +5,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.trace import trace
 from tileops.utils import get_sm_count, str2dtype
 
+from .call_spec import GemmCall
 from .heuristics import (
     SWAP_AB_MPAD,
     best_config,
@@ -79,28 +80,71 @@ __all__ = [
 ]
 
 
-def _fp8_ws_refusal(m: int, n: int, k: int, dtype: torch.dtype) -> Optional[str]:
-    """Why the warp-specialized FP8 kernel cannot serve this call, or ``None``.
+def _dense_entry(cls: type, call: GemmCall, *, tune: bool) -> Entry:
+    """The entry for a kernel taking ``(m, n, k, dtype)`` and both flags.
 
-    It loads through TMA, and its epilogue releases a ring slot the mainloop
-    named, so it needs at least one K-tile. The fallback carries neither.
+    The device is in the identity: its SM count and name pick the config.
     """
-    if dtype != torch.float8_e4m3fn:
-        return f"the warp-specialized FP8 kernel is e4m3-only, got {dtype}"
-    if k == 0:
-        return "the warp-specialized mainloop has no K-tile to run at k=0"
-    return _tma_misalignment(m, n, k, dtype, trans_a=False, trans_b=True)
+    index = call.device.index if call.device is not None else None
+    identity = (call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b, index)
+    return identity, lambda: cls(
+        call.m,
+        call.n,
+        call.k,
+        call.dtype,
+        tune=tune,
+        trans_a=call.trans_a,
+        trans_b=call.trans_b,
+        device_index=index,
+    )
 
 
 class _GemmFp8Kernel(Kernel):
     """Shared body of the two FP8 GEMM kernels; ``BLOCK_SCALED`` picks the scale grid.
 
     Takes :func:`_gemm_fp8_ws_kernel`, or :func:`_gemm_fp8_kernel` on a call
-    :func:`_fp8_ws_refusal` rejects.
+    :meth:`_ws_refusal` rejects.
     """
 
     # Whether this kernel reads block128 scale grids rather than per-tensor scalars.
     BLOCK_SCALED = False
+
+    @staticmethod
+    def _ws_refusal(m: int, n: int, k: int, dtype: torch.dtype) -> Optional[str]:
+        """Why the warp-specialized variant cannot serve this call, or ``None``.
+
+        It loads through TMA, and its epilogue releases a ring slot the mainloop
+        named, so it needs at least one K-tile. The fallback carries neither.
+        """
+        if dtype != torch.float8_e4m3fn:
+            return f"the warp-specialized FP8 kernel is e4m3-only, got {dtype}"
+        if k == 0:
+            return "the warp-specialized mainloop has no K-tile to run at k=0"
+        return _tma_misalignment(m, n, k, dtype, trans_a=False, trans_b=True)
+
+    @classmethod
+    def entry_for(cls, call: GemmCall, *, tune: bool) -> Entry:
+        """The cache identity and the thunk that builds this class for *call*."""
+        index = call.device.index if call.device is not None else None
+        identity = (
+            call.m,
+            call.n,
+            call.k,
+            call.dtype,
+            call.scale_a_shape,
+            call.scale_b_shape,
+            call.out_dtype,
+            index,
+        )
+        return identity, lambda: cls(
+            call.m,
+            call.n,
+            call.k,
+            call.dtype,
+            call.out_dtype,
+            tune=tune,
+            device_index=index,
+        )
 
     def __init__(
         self,
@@ -120,7 +164,7 @@ class _GemmFp8Kernel(Kernel):
         self.dtype = dtype
         self.out_dtype = out_dtype
         self.sm_count = get_sm_count(self.device_index)
-        self.ws_refusal = _fp8_ws_refusal(m, n, k, dtype)
+        self.ws_refusal = self._ws_refusal(m, n, k, dtype)
         self.kernel = self._builder()
         self.init_config(config, tune)
         self._unused_bias: Optional[torch.Tensor] = None
@@ -244,11 +288,20 @@ class GemmFp8EpilogueKernel(_GemmFp8Kernel):
 
     BLOCK_SCALED = False
 
+    @classmethod
+    def applies(cls, call: GemmCall) -> bool:
+        return call.scale_a_shape == (1, 1) and call.scale_b_shape == (1, 1)
+
 
 class GemmFp8BlockScaledKernel(_GemmFp8Kernel):
     """FP8 NT GEMM for block128 scale grids; each K-step's partial is scaled and folded in."""
 
     BLOCK_SCALED = True
+
+    @classmethod
+    def applies(cls, call: GemmCall) -> bool:
+        scale_k = (call.k + 127) // 128
+        return call.scale_a_shape == (call.m, scale_k) and call.scale_b_shape == (call.n, scale_k)
 
 
 @functools.lru_cache(maxsize=32)
@@ -2585,6 +2638,11 @@ class GemmKernel(Kernel):
             return super().refusal(call)
         return _tma_misalignment(call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b)
 
+    @classmethod
+    def entry_for(cls, call: GemmCall, *, tune: bool) -> Entry:
+        """The cache identity and the thunk that builds this class for *call*."""
+        return _dense_entry(cls, call, tune=tune)
+
     def __init__(
         self,
         m: int,
@@ -2595,8 +2653,9 @@ class GemmKernel(Kernel):
         tune: bool = False,
         trans_a: bool = False,
         trans_b: bool = False,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         misaligned = _tma_misalignment(m, n, k, dtype, trans_a, trans_b)
         if misaligned is not None:
             raise ValueError(f"{type(self).__name__} cannot serve {m}x{n}x{k}: {misaligned}")
@@ -2606,8 +2665,8 @@ class GemmKernel(Kernel):
         self.dtype = dtype
         self.trans_a = trans_a
         self.trans_b = trans_b
-        self.sm_count = get_sm_count()
-        self.device_name = torch.cuda.get_device_name()
+        self.sm_count = get_sm_count(self.device_index)
+        self.device_name = torch.cuda.get_device_name(self.device_index)
 
         self.kernel = _gemm_kernel(
             m, n, k, trans_a, trans_b, self.dtype_str, sm_count=self.sm_count
@@ -2931,7 +2990,12 @@ def _bandwidth_autotune_grid(rts: tuple, bns: tuple, nss: tuple) -> list[dict]:
 
 
 class GemvKernel(Kernel):
-    """Matrix-vector product; serves the layouts a vector operand can take."""
+    """Matrix-vector product; serves the layouts a vector operand can take.
+
+    ``mode`` names the vector operand, so ``forward`` takes the two matrices the op
+    was handed and flattens the right one: the contracted body is always
+    ``[1, k] @ ... -> [1, out]``.
+    """
 
     supported_archs: list[int] = [90]
 
@@ -2939,15 +3003,42 @@ class GemvKernel(Kernel):
     def applies(cls, call) -> bool:
         return call.gemv_mode is not None
 
+    @classmethod
+    def entry_for(cls, call: GemmCall, *, tune: bool) -> Entry:
+        """The cache identity and the thunk that builds this class for *call*."""
+        index = call.device.index if call.device is not None else None
+        identity = (call.gemv_mode, call.m, call.n, call.k, call.dtype, index)
+        return identity, lambda: cls(
+            call.gemv_mode,
+            call.m,
+            call.n,
+            call.k,
+            call.dtype,
+            tune=tune,
+            device_index=index,
+        )
+
     def __init__(
-        self, n: int, k: int, dtype: torch.dtype, config: Optional[dict] = None, tune: bool = False
+        self,
+        mode: str,
+        m: int,
+        n: int,
+        k: int,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
+        self.mode = mode
+        self.m = m
         self.n = n
         self.k = k
         self.dtype = dtype
+        # The other operand's free dim, which is what the body produces.
+        self.out_len = n if mode == "lhs_row" else m
 
-        self.kernel = _gemm_small_batch_kernel(1, n, k, self.dtype_str)
+        self.kernel = _gemm_small_batch_kernel(1, self.out_len, k, self.dtype_str)
 
         self.init_config(config, tune)
 
@@ -2960,12 +3051,13 @@ class GemvKernel(Kernel):
         return _bandwidth_autotune_grid((32, 64, 128, 256), (1, 2, 4, 8, 16), (1, 2, 3, 4, 5, 6))
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        a = a.reshape(1, -1).contiguous()
-        return self.kernel(
+        vector, matrix = (a, b) if self.mode == "lhs_row" else (b, a)
+        out = self.kernel(
             self.config["block_n"],
             self.config["reduce_threads"],
             self.config["num_stages"],
-        )(a, b)
+        )(vector.reshape(1, -1).contiguous(), matrix)
+        return out.reshape(1, self.n) if self.mode == "lhs_row" else out.reshape(self.m, 1)
 
 
 class SmallBatchGemmKernel(Kernel):
@@ -3003,6 +3095,17 @@ class SmallBatchGemmKernel(Kernel):
             return False
         return swap_ab_grid_underfills(call.n, call.sm_count)
 
+    @classmethod
+    def entry_for(cls, call: GemmCall, *, tune: bool) -> Entry:
+        """The cache identity and the thunk that builds this class for *call*.
+
+        The device is in the identity: its SM count picks the config band.
+        """
+        index = call.device.index if call.device is not None else None
+        return (call.m, call.n, call.k, call.dtype, index), lambda: cls(
+            call.m, call.n, call.k, call.dtype, tune=tune, device_index=index
+        )
+
     def __init__(
         self,
         m: int,
@@ -3011,8 +3114,9 @@ class SmallBatchGemmKernel(Kernel):
         dtype: torch.dtype,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.m = m
         self.n = n
         self.k = k
@@ -3022,7 +3126,7 @@ class SmallBatchGemmKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return small_batch_config(self.n, self.k, get_sm_count())
+        return small_batch_config(self.n, self.k, get_sm_count(self.device_index))
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -3223,7 +3327,16 @@ class GemmBasicKernel(Kernel):
 
     @classmethod
     def applies(cls, call: Any) -> bool:
+        """Every architecture but SM90, where :class:`GemmKernel` supersedes it.
+
+        Why: it runs on SM90, so SM90 cannot come out of ``supported_archs``.
+        """
         return call.arch != 90
+
+    @classmethod
+    def entry_for(cls, call: GemmCall, *, tune: bool) -> Entry:
+        """The cache identity and the thunk that builds this class for *call*."""
+        return _dense_entry(cls, call, tune=tune)
 
     def __init__(
         self,
@@ -3235,8 +3348,9 @@ class GemmBasicKernel(Kernel):
         tune: bool = False,
         trans_a: bool = False,
         trans_b: bool = False,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         # k only has to span one vectorized load along the innermost (k)
         # dim: k * itemsize >= 4 bytes (a k=1 fp16/bf16 row is 2 bytes and is
         # rejected by the backend). k need NOT be 16-aligned — the backend

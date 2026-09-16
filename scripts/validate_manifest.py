@@ -1158,6 +1158,47 @@ def check_l0(
     return errors
 
 
+def check_kernel_map_parity(
+    op_name: str,
+    entry: dict,
+    op_cls: type | None,
+    warnings: list[str] | None = None,
+) -> list[str]:
+    """Check ``source.kernel_map`` against the op's ``default_kernel_map``.
+
+    A name only the manifest knows is a slot nobody can replace through
+    ``kernel_map=``; one only the code knows is a slot nobody can find.
+
+    A composite op installs no map of its own and declares its sub-ops' kernels,
+    which this cannot check. A map that needs ``__init__`` warns instead.
+    """
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+    if op_cls is None or _is_spec_only(entry):
+        return errors
+    declared = (entry.get("source") or {}).get("kernel_map")
+    if not isinstance(declared, dict):
+        return errors
+    try:
+        installed = op_cls.__new__(op_cls).default_kernel_map or {}
+    except Exception as exc:  # noqa: BLE001 - any ctor-free read failure is unproven
+        if warnings is not None:
+            warnings.append(
+                f"[schema] {op_name}: default_kernel_map could not be read without "
+                f"__init__ ({type(exc).__name__}); kernel_map parity not checked"
+            )
+        return errors
+    actual = {key: getattr(cls, "__name__", str(cls)) for key, cls in installed.items()}
+    if not actual:
+        return errors
+    if dict(declared) != actual:
+        err(
+            f"source.kernel_map does not match default_kernel_map: manifest has "
+            f"{dict(sorted(declared.items()))}, code has {dict(sorted(actual.items()))}"
+        )
+    return errors
+
+
 def check_source_paths(op_name: str, entry: dict, repo_root: Path) -> list[str]:
     """Check that string ``source`` values of non-spec-only ops are real files.
 
@@ -4172,6 +4213,8 @@ def validate_manifest(
         op_file = source.get("op", "")
         resolve_result = _resolve_op_class(op_file, op_name) if op_file else None
         op_cls = resolve_result.cls if resolve_result is not None else None
+
+        all_errors.extend(check_kernel_map_parity(op_name, entry, op_cls, warnings=all_warnings))
 
         # signature: Op.forward() consistency
         if "signature" in levels:

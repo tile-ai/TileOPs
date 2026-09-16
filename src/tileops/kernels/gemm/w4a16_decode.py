@@ -10,8 +10,7 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 
 from .call_spec import GemmCall
-
-GROUP_SIZE = 128
+from .w4a16 import GROUP_SIZE
 
 # Packed bytes each carried partial sum covers. Four keeps the accumulator
 # fragment small enough to stay in registers at the tile sizes that saturate
@@ -145,6 +144,21 @@ class GemmW4A16DecodeKernel(Kernel):
     def applies(cls, call: GemmCall) -> bool:
         return call.m == 1
 
+    @classmethod
+    def entry_for(cls, call: GemmCall, *, tune: bool) -> tuple:
+        """The cache identity and the thunk that builds this class for *call*."""
+        index = call.device.index if call.device is not None else None
+        identity = (call.m, call.n, call.k, call.dtype, call.group_size, index)
+        return identity, lambda: cls(
+            call.m,
+            call.n,
+            call.k,
+            call.dtype,
+            tune=tune,
+            group_size=call.group_size,
+            device_index=index,
+        )
+
     def __init__(
         self,
         m: int,
@@ -154,8 +168,9 @@ class GemmW4A16DecodeKernel(Kernel):
         config: Optional[dict] = None,
         tune: bool = False,
         group_size: int = GROUP_SIZE,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         if m != 1:
             raise ValueError(f"GemmW4A16DecodeKernel requires M=1, got {m}")
         if group_size != GROUP_SIZE:
