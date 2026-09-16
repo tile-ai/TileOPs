@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Optional, Union
 
 import torch
-from tilelang.autotuner import autotune
 
 __all__ = ["Kernel"]
 
@@ -362,6 +361,8 @@ class Kernel(ABC):
             autotune_kwargs["supply_prog"] = supply_prog
         else:
             self._refuse_random_int_inputs(jit_kernel, seeds)
+        from tilelang.autotuner import autotune
+
         autotuned_kernel_fn = autotune(**autotune_kwargs)(jit_kernel)
 
         return self._call_autotuned_kernel(autotuned_kernel_fn, jit_kernel, seed_config)
