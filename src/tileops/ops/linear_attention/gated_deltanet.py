@@ -1,230 +1,93 @@
-import functools
-from typing import ClassVar, Dict, Optional, Tuple
+import math
+from typing import Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
-from tileops.kernels.linear_attention.gated_deltanet import (
-    GatedDeltaNetBwdKernel,
-    GatedDeltaNetFwdKernel,
-    GatedDeltaNetFwdProductionKernel,
-    GatedDeltaNetPrefillFwdKernel,
-)
-from tileops.kernels.linear_attention.gated_deltanet_recurrence import (
-    GatedDeltaNetDecodeFP32Kernel,
-    GatedDeltaNetDecodeKernel,
-    GatedDeltaNetDecodeRawCudaFlaStyleKernel,
-)
-from tileops.perf.profile import tensor_core_roof
 
-from .._validation import check_tensor_shape
 from ..op_base import Op
 
-__all__ = [
-    "GatedDeltaNetBHTDFwdOp",
-    "GatedDeltaNetBTHDFwdOp",
-    "GatedDeltaNetBwdOp",
-    "GatedDeltaNetDecodeFwdOp",
-    "GatedDeltaNetAutogradOp",
-    "GatedDeltaNetPrefillBHTDFwdOp",
-    "GatedDeltaNetPrefillBTHDFwdOp",
-]
-
-# Implementations of the gated DeltaNet decode slot.
-GATED_DELTANET_DECODE_KEYS = (
-    "GatedDeltaNetDecodeFP32Kernel",
-    "GatedDeltaNetDecodeRawCudaFlaStyleKernel",
-    "GatedDeltaNetDecodeKernel",
-)
+__all__ = ["GatedDeltaNetFwdOp"]
 
 
-def _resolve_gated_bhsd(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    beta: torch.Tensor,
-    chunk_size: int,
-    do: Optional[torch.Tensor] = None,
-) -> tuple[int, int, int, int, int, torch.dtype]:
-    if not all(tensor.is_cuda for tensor in (q, k, v, g, beta)):
-        raise ValueError("q, k, v, g, and beta must be CUDA tensors")
-    if q.ndim != 4:
-        raise ValueError("q must have shape [batch, heads, seq_len, dim_k]")
-    batch, heads, seq_len, dim_k = q.shape
-    if k.shape != (batch, heads, seq_len, dim_k):
-        raise ValueError("k must match q shape")
-    if v.ndim != 4 or v.shape[:3] != (batch, heads, seq_len):
-        raise ValueError("v must have shape [batch, heads, seq_len, dim_v]")
-    dim_v = v.shape[-1]
-    if g.shape != (batch, heads, seq_len):
-        raise ValueError("g must have shape [batch, heads, seq_len]")
-    if beta.shape != (batch, heads, seq_len):
-        raise ValueError("beta must have shape [batch, heads, seq_len]")
-    if do is not None and do.shape != (batch, heads, seq_len, dim_v):
-        raise ValueError("do must have shape [batch, heads, seq_len, dim_v]")
-    dtype = q.dtype
-    for name, tensor in (("k", k), ("v", v), ("g", g), ("beta", beta)):
-        if tensor.dtype != dtype:
-            raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
-    if do is not None and do.dtype != dtype:
-        raise ValueError(f"do.dtype must be {dtype}, got {do.dtype}")
-    if seq_len % chunk_size != 0:
-        raise ValueError(f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})")
-    return batch, heads, seq_len, dim_k, dim_v, dtype
+class GatedDeltaNetFwdOp(Op):
+    """Inference forward for the gated delta rule.
 
+    ``q`` and ``k`` use ``[B, T, H, K]``. ``v``, ``g``, ``beta`` and the
+    output use ``HV`` recurrent heads, where ``HV`` is a multiple of ``H``.
+    The recurrent state is always FP32. It is key-major ``[N, HV, K, V]`` by
+    default and value-major ``[N, HV, V, K]`` when ``state_v_first=True``.
+    For equal-length inputs, ``N == B``. Passing ``cu_seqlens`` selects packed
+    varlen mode: the token tensors have ``B == 1`` and ``N`` is the number of
+    packed sequences.
 
-def _resolve_gated_bthd(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    beta: torch.Tensor,
-    chunk_size: int,
-) -> tuple[int, int, int, int, int, torch.dtype]:
-    if not all(tensor.is_cuda for tensor in (q, k, v, g, beta)):
-        raise ValueError("q, k, v, g, and beta must be CUDA tensors")
-    if q.ndim != 4:
-        raise ValueError("q must have shape [batch, seq_len, heads, dim_k]")
-    batch, seq_len, heads, dim_k = q.shape
-    if k.shape != (batch, seq_len, heads, dim_k):
-        raise ValueError("k must match q shape")
-    if v.ndim != 4 or v.shape[:3] != (batch, seq_len, heads):
-        raise ValueError("v must have shape [batch, seq_len, heads, dim_v]")
-    dim_v = v.shape[-1]
-    if g.shape != (batch, seq_len, heads):
-        raise ValueError("g must have shape [batch, seq_len, heads]")
-    if beta.shape != (batch, seq_len, heads):
-        raise ValueError("beta must have shape [batch, seq_len, heads]")
-    dtype = q.dtype
-    for name, tensor in (("k", k), ("v", v), ("g", g), ("beta", beta)):
-        if tensor.dtype != dtype:
-            raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
-    if seq_len % chunk_size != 0:
-        raise ValueError(f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})")
-    return batch, heads, seq_len, dim_k, dim_v, dtype
+    By default, ``g`` contains the precomputed log-space decay and ``beta``
+    contains the post-sigmoid update strength. ``use_gate_in_kernel=True``
+    instead treats ``g`` as the raw gate and requires ``A_log`` and
+    ``dt_bias``; ``use_beta_sigmoid_in_kernel=True`` treats ``beta`` as raw
+    logits. With ``allow_neg_eigval=True``, the beta transform is
+    ``2 * sigmoid(beta)`` rather than ``sigmoid(beta)``.
 
+    One interface covers prefill and decode, and always returns
+    ``(o, final_state)``. This intentionally pins FLA's
+    ``output_final_state=True`` because inference callers need the state to
+    continue recurrence. The target callable selects the execution path from
+    the current inputs; in particular, ``T == 1`` is decode rather than a
+    separate public Op.
 
-@functools.lru_cache(maxsize=8)
-def _device_capability(device_index: "int | None") -> tuple[int, int]:
-    """Compute capability of *device_index*. A device property, so read it once."""
-    return torch.cuda.get_device_capability(device_index)
-
-
-def _bthd_production_gaps(
-    chunk_size: int,
-    dim_k: int,
-    dim_v: int,
-    dtype: torch.dtype,
-    device_index: "int | None",
-) -> list[str]:
-    """Requirements of the BTHD production pipeline this call does not meet.
-
-    Each entry names one requirement and the value that failed it, so a refusal
-    says which one to change.
-    """
-    gaps = []
-    if chunk_size != 64:
-        gaps.append(f"chunk_size must be 64, got {chunk_size}")
-    if dim_k != dim_v:
-        gaps.append(f"dim_k and dim_v must be equal, got {dim_k} and {dim_v}")
-    if dim_k not in (64, 128):
-        gaps.append(f"dim_k must be 64 or 128, got {dim_k}")
-    if dtype not in (torch.float16, torch.bfloat16):
-        gaps.append(f"dtype must be float16 or bfloat16, got {dtype}")
-    major, minor = _device_capability(device_index)
-    if major != 9:
-        gaps.append(
-            f"the warp-specialized kernel needs Hopper (compute capability 9.x), "
-            f"got {major}.{minor}"
-        )
-    return gaps
-
-
-class GatedDeltaNetBHTDFwdOp(Op):
-    """Gated DeltaNet forward operator.
-
-    Pipeline: prepare_wy_repr(k, g, beta) -> (Aw, Au) -> gated_deltanet_fwd(q, k, v, g, beta, Aw, Au) -> o.
-
-    Head-major (BHTD) inputs: ``q/k [B, H, S, DK]``, ``v [B, H, S, DV]``,
-    ``g/beta [B, H, S]``. ``GatedDeltaNetBwdOp`` consumes the ``S`` this returns,
-    in the same layout. Token-major callers want ``GatedDeltaNetBTHDFwdOp``.
-
+    No in-tree implementation is available yet. Until the retained kernels
+    are migrated, calls require an external target implementation.
     """
 
     def __init__(
         self,
-        chunk_size: int = 64,
+        scale: Optional[float] = None,
+        use_qk_l2norm_in_kernel: bool = False,
+        use_beta_sigmoid_in_kernel: bool = False,
+        allow_neg_eigval: bool = False,
+        state_v_first: bool = False,
+        use_gate_in_kernel: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Fix recurrence semantics; tensor metadata comes from each call.
 
         Args:
-            chunk_size: Chunk size for chunked linear attention.
-            kernel_map: Optional kernel overrides.
-            tune: Whether to autotune kernels.
+            scale: Query scale, or ``None`` for ``K**-0.5``.
+            use_qk_l2norm_in_kernel: Normalize Q and K internally.
+            use_beta_sigmoid_in_kernel: Treat ``beta`` as raw logits and apply
+                sigmoid internally.
+            allow_neg_eigval: Compute ``2 * sigmoid(beta)`` instead of
+                ``sigmoid(beta)``. Valid only with
+                ``use_beta_sigmoid_in_kernel=True``.
+            state_v_first: Use value-major recurrent state layout
+                ``[N, HV, V, K]`` instead of key-major ``[N, HV, K, V]``.
+            use_gate_in_kernel: Treat ``g`` as a raw gate and internally
+                compute ``-exp(A_log) * softplus(g + dt_bias)``. Otherwise,
+                ``g`` must already contain the log-space decay.
+            kernel_map: Optional in-tree kernel overrides.
+            target: Backend target, or ``None`` to resolve from the input
+                device.
         """
-        self.batch = None
-        self.heads = None
-        self.seq_len = None
-        self.dim_k = None
-        self.dim_v = None
-        self.chunk_size = chunk_size
-        self.dtype = None
-        self.tune = tune
+        if scale is not None and not math.isfinite(scale):
+            raise ValueError(f"scale must be finite, got {scale}")
+        if allow_neg_eigval and not use_beta_sigmoid_in_kernel:
+            raise ValueError("allow_neg_eigval requires use_beta_sigmoid_in_kernel=True")
 
+        self.scale = scale
+        self.use_qk_l2norm_in_kernel = use_qk_l2norm_in_kernel
+        self.use_beta_sigmoid_in_kernel = use_beta_sigmoid_in_kernel
+        self.allow_neg_eigval = allow_neg_eigval
+        self.state_v_first = state_v_first
+        self.use_gate_in_kernel = use_gate_in_kernel
+        self.target = target
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"GatedDeltaNetFwdKernel": GatedDeltaNetFwdKernel}
-
-    def eval_roofline(self) -> tuple[int, int]:
-        from tileops.perf.formulas import gated_deltanet_fwd_roofline
-
-        return gated_deltanet_fwd_roofline(self)
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        heads: int,
-        seq_len: int,
-        dim_k: int,
-        dim_v: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        kernel_name = "GatedDeltaNetFwdKernel"
-        key = (
-            batch,
-            heads,
-            seq_len,
-            self.chunk_size,
-            dim_k,
-            dim_v,
-            dtype,
-            device_index,
-            self.tune,
-        )
-        return self.get_or_build_kernel(
-            kernel_name,
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map[kernel_name](
-                batch,
-                heads,
-                seq_len,
-                self.chunk_size,
-                dim_k,
-                dim_v,
-                dtype=Kernel.dtype_to_str(dtype),
-                tune=self.tune,
-            ),
-        )
+        return {}
 
     def _infer_output_shapes(
         self,
@@ -233,104 +96,29 @@ class GatedDeltaNetBHTDFwdOp(Op):
         v_shape: tuple[int, ...],
         g_shape: tuple[int, ...],
         beta_shape: tuple[int, ...],
+        initial_state_shape: Optional[tuple[int, ...]] = None,
+        cu_seqlens_shape: Optional[tuple[int, ...]] = None,
+        cu_seqlens_cpu_shape: Optional[tuple[int, ...]] = None,
+        A_log_shape: Optional[tuple[int, ...]] = None,
+        dt_bias_shape: Optional[tuple[int, ...]] = None,
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: the output, the per-chunk state, and the two chunk buffers."""
-        b, h, s, dk = q_shape
-        dv = v_shape[3]
+        del (
+            k_shape,
+            g_shape,
+            beta_shape,
+            initial_state_shape,
+            cu_seqlens_cpu_shape,
+            A_log_shape,
+            dt_bias_shape,
+        )
+        batch, seq_len, _heads, dim_k = q_shape
+        _batch, _seq_len, value_heads, dim_v = v_shape
+        state_batch = cu_seqlens_shape[0] - 1 if cu_seqlens_shape is not None else batch
+        state_tail = (dim_v, dim_k) if self.state_v_first else (dim_k, dim_v)
         return {
-            "o": (b, h, s, dv),
-            "S": (b, h, s // self.chunk_size + 1, dk, dv),
-            "Aw": (b, h, s, self.chunk_size),
-            "Au": (b, h, s, self.chunk_size),
+            "o": (batch, seq_len, value_heads, dim_v),
+            "final_state": (state_batch, value_heads, *state_tail),
         }
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> torch.Tensor:
-        """Run gated deltanet forward.
-
-        Args:
-            q: Query tensor [B, H, S, DK].
-            k: Key tensor [B, H, S, DK].
-            v: Value tensor [B, H, S, DV].
-            g: Gate tensor [B, H, S].
-            beta: Beta tensor [B, H, S].
-
-        Returns:
-            Tuple of (o, S, Aw, Au).
-        """
-        q = q.contiguous()
-        k = k.contiguous()
-        v = v.contiguous()
-        g = g.contiguous()
-        beta = beta.contiguous()
-        batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bhsd(
-            q, k, v, g, beta, self.chunk_size
-        )
-        self.batch = batch
-        self.heads = heads
-        self.seq_len = seq_len
-        self.dim_k = dim_k
-        self.dim_v = dim_v
-        self.dtype = dtype
-        self.kernel = self._get_kernel(
-            (q, k, v, g, beta), batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index
-        )
-        o, S, Aw, Au = self.kernel(q, k, v, g, beta)
-        return o, S, Aw, Au
-
-    def compute_roof(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
-
-
-class GatedDeltaNetBTHDFwdOp(Op):
-    """Gated DeltaNet forward over token-major (BTHD) inputs.
-
-    Same operator as ``GatedDeltaNetBHTDFwdOp`` and the same four outputs, over the
-    token-major memory order the FLA reference uses: ``q/k [B, S, H, DK]``,
-    ``v [B, S, H, DV]``, ``g/beta [B, S, H]``. A separate entry because the
-    memory order is part of the signature, not a mode of one signature.
-
-    It runs the warp-specialized production pipeline, so it serves Hopper with
-    ``chunk_size=64``, equal K/V dimensions in {64, 128}, and float16 or
-    bfloat16. Any other call is refused, naming what it failed.
-
-    """
-
-    def __init__(
-        self,
-        chunk_size: int = 64,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            chunk_size: Chunk size for chunked linear attention.
-            kernel_map: Optional kernel overrides.
-            tune: Whether to autotune kernels.
-        """
-        self.batch = None
-        self.heads = None
-        self.seq_len = None
-        self.dim_k = None
-        self.dim_v = None
-        self.chunk_size = chunk_size
-        self.dtype = None
-        self.tune = tune
-
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"GatedDeltaNetFwdProductionKernel": GatedDeltaNetFwdProductionKernel}
 
     def _validate_dtypes(
         self,
@@ -339,847 +127,119 @@ class GatedDeltaNetBTHDFwdOp(Op):
         v: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
+        initial_state: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        cu_seqlens_cpu: Optional[torch.Tensor] = None,
+        A_log: Optional[torch.Tensor] = None,
+        dt_bias: Optional[torch.Tensor] = None,
     ) -> None:
-        """Manifest ``dtype``: every input carries q's dtype, which must be half."""
         if q.dtype not in (torch.float16, torch.bfloat16):
-            raise ValueError(f"Expected q.dtype float16 or bfloat16, got {q.dtype}")
+            raise ValueError("q must have float16 or bfloat16 dtype")
         for name, tensor in (("k", k), ("v", v), ("g", g), ("beta", beta)):
             if tensor.dtype != q.dtype:
-                raise ValueError(f"Expected {name}.dtype {q.dtype}, got {tensor.dtype}")
-        self.dtype = q.dtype
-
-    def _infer_output_shapes(
-        self,
-        q_shape: Tuple[int, ...],
-        k_shape: Tuple[int, ...],
-        v_shape: Tuple[int, ...],
-        g_shape: Tuple[int, ...],
-        beta_shape: Tuple[int, ...],
-    ) -> Dict[str, Tuple[int, ...]]:
-        """Manifest ``shape_rules`` for the four outputs, in token-major order."""
-        batch, seq_len, heads, _ = q_shape
-        dim_k, dim_v = q_shape[3], v_shape[3]
-        num_chunks = seq_len // self.chunk_size
-        return {
-            "o": (batch, seq_len, heads, dim_v),
-            "S": (batch, heads, num_chunks + 1, dim_k, dim_v),
-            "Aw": (batch, seq_len, heads, self.chunk_size),
-            "Au": (batch, seq_len, heads, self.chunk_size),
-        }
-
-    def eval_roofline(self) -> tuple[int, int]:
-        from tileops.perf.formulas import gated_deltanet_fwd_roofline
-
-        return gated_deltanet_fwd_roofline(self)
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        heads: int,
-        seq_len: int,
-        dim_k: int,
-        dim_v: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        gaps = _bthd_production_gaps(self.chunk_size, dim_k, dim_v, dtype, device_index)
-        if gaps:
-            raise ValueError(
-                "BTHD GatedDeltaNet forward has no kernel for this call: " + "; ".join(gaps)
-            )
-        key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
-        return self.get_or_build_kernel(
-            "GatedDeltaNetFwdProductionKernel",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["GatedDeltaNetFwdProductionKernel"](
-                batch,
-                heads,
-                seq_len,
-                self.chunk_size,
-                dim_k,
-                dim_v,
-                dtype=Kernel.dtype_to_str(dtype),
-                tune=self.tune,
-            ),
-        )
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> torch.Tensor:
-        """Run the token-major forward.
-
-        Args:
-            q: Query tensor [B, S, H, DK].
-            k: Key tensor [B, S, H, DK].
-            v: Value tensor [B, S, H, DV].
-            g: Gate tensor [B, S, H].
-            beta: Beta tensor [B, S, H].
-
-        Returns:
-            Tuple of (o, S, Aw, Au).
-        """
-        q = q.contiguous()
-        k = k.contiguous()
-        v = v.contiguous()
-        g = g.contiguous()
-        beta = beta.contiguous()
-        batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bthd(
-            q, k, v, g, beta, self.chunk_size
-        )
-        self._validate_dtypes(q, k, v, g, beta)
-        self.batch = batch
-        self.heads = heads
-        self.seq_len = seq_len
-        self.dim_k = dim_k
-        self.dim_v = dim_v
-        self.kernel = self._get_kernel(
-            (q, k, v, g, beta), batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index
-        )
-        o, S, Aw, Au = self.kernel(q, k, v, g, beta)
-        return o, S, Aw, Au
-
-    def compute_roof(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
-
-
-class GatedDeltaNetPrefillBTHDFwdOp(Op):
-    """Gated DeltaNet inference prefill operator.
-
-    This is the serving-oriented zero-state prefill interface:
-    ``(q, k, v, g, beta) -> (o, final_state)``. It intentionally does not
-    expose backward-only training artifacts such as ``Aw`` and ``Au``.
-    Token-major (BTHD) inputs, the FLA/Qwen convention: ``q/k/v/o [B, T, H, D]``,
-    ``g/beta [B, T, H]``. Head-major callers want ``GatedDeltaNetPrefillBHTDFwdOp``.
-    When ``chunk_size`` is not specified, the op uses a small-stream serving
-    default: 128 for ``batch * heads <= 8`` when the sequence length allows it,
-    otherwise 64.
-    """
-
-    # The memory order this op takes. One entry declares one order: the order changes
-    # what an axis means, so an op serving two layouts is two entries.
-    LAYOUT: ClassVar[str] = "bthd"
-
-    def __init__(
-        self,
-        chunk_size: Optional[int] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            chunk_size: Manifest ``params.chunk_size``, ``int | None``, default ``None``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
-        self.batch = None
-        self.heads = None
-        self.seq_len = None
-        self.dim_k = None
-        self.dim_v = None
-        self._requested_chunk_size = chunk_size
-        self.chunk_size = chunk_size
-        self.dtype = None
-        self.tune = tune
-
-        self.dispatch_kernel(kernel_map)
-        self._active_sig: Optional[tuple] = None
-        self.kernel = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "GatedDeltaNetPrefillFwdKernel": GatedDeltaNetPrefillFwdKernel,
-        }
-
-    def _infer_output_shapes(
-        self,
-        q_shape: tuple[int, ...],
-        k_shape: tuple[int, ...],
-        v_shape: tuple[int, ...],
-        g_shape: tuple[int, ...],
-        beta_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        del k_shape, g_shape, beta_shape
-        layout = self.LAYOUT
-        if layout == "bthd":
-            return {
-                "o": (q_shape[0], q_shape[1], q_shape[2], v_shape[-1]),
-                "final_state": (
-                    q_shape[0],
-                    q_shape[2],
-                    q_shape[-1],
-                    v_shape[-1],
-                ),
-            }
-        return {
-            "o": tuple(q_shape[:-1]) + (v_shape[-1],),
-            "final_state": (
-                q_shape[0],
-                q_shape[1],
-                q_shape[-1],
-                v_shape[-1],
-            ),
-        }
-
-    def _validate_dtypes(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> None:
-        dtype = q.dtype
-        if dtype not in (torch.float32, torch.float16, torch.bfloat16):
-            raise ValueError(f"Unsupported dtype: {dtype}")
-        for name, tensor in (("q", q), ("k", k), ("v", v), ("g", g), ("beta", beta)):
-            if tensor.dtype != dtype:
-                raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        heads: int,
-        seq_len: int,
-        chunk_size: int,
-        dim_k: int,
-        dim_v: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        key = (
-            batch,
-            heads,
-            seq_len,
-            chunk_size,
-            dim_k,
-            dim_v,
-            dtype,
-            self.LAYOUT,
-            device_index,
-            self.tune,
-        )
-        return self.get_or_build_kernel(
-            "GatedDeltaNetPrefillFwdKernel",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["GatedDeltaNetPrefillFwdKernel"](
-                batch,
-                heads,
-                seq_len,
-                chunk_size,
-                dim_k,
-                dim_v,
-                dtype=Kernel.dtype_to_str(dtype),
-                layout=self.LAYOUT,
-                tune=self.tune,
-            ),
-        )
-
-    def _validate_shapes(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> None:
-        if self.LAYOUT == "bthd":
-            if q.ndim != 4:
-                raise ValueError("q must have shape [batch, seq_len, heads, dim_k]")
-            batch, seq_len, heads, dim_k = q.shape
-            q_shape = (batch, seq_len, heads, dim_k)
-            v_shape = (batch, seq_len, heads, v.shape[-1])
-            gate_shape = (batch, seq_len, heads)
-        else:
-            if q.ndim != 4:
-                raise ValueError("q must have shape [batch, heads, seq_len, dim_k]")
-            batch, heads, seq_len, dim_k = q.shape
-            q_shape = (batch, heads, seq_len, dim_k)
-            v_shape = (batch, heads, seq_len, v.shape[-1])
-            gate_shape = (batch, heads, seq_len)
-        if tuple(q.shape) != q_shape:
-            raise ValueError(f"q must have shape {q_shape}, got {tuple(q.shape)}")
-        if tuple(k.shape) != q_shape:
-            raise ValueError(f"k must have shape {q_shape}, got {tuple(k.shape)}")
-        if tuple(v.shape) != v_shape:
-            raise ValueError(f"v must have shape {v_shape}, got {tuple(v.shape)}")
-        if tuple(g.shape) != gate_shape:
-            raise ValueError(f"g must have shape {gate_shape}, got {tuple(g.shape)}")
-        if tuple(beta.shape) != gate_shape:
-            raise ValueError(f"beta must have shape {gate_shape}, got {tuple(beta.shape)}")
-        if not all(tensor.is_cuda for tensor in (q, k, v, g, beta)):
-            raise ValueError("q, k, v, g, and beta must be CUDA tensors")
-        chunk_size = self._requested_chunk_size
-        if chunk_size is None:
-            streams = batch * heads
-            chunk_size = 128 if streams <= 8 and seq_len % 128 == 0 else 64
-        if seq_len % chunk_size != 0:
-            raise ValueError(f"seq_len ({seq_len}) must be divisible by chunk_size ({chunk_size})")
-        self.batch = batch
-        self.heads = heads
-        self.seq_len = seq_len
-        self.dim_k = dim_k
-        self.dim_v = v.shape[-1]
-        self.chunk_size = chunk_size
-        self.dtype = q.dtype
-        self.kernel = self._get_kernel(
-            (q, k, v, g, beta),
-            batch,
-            heads,
-            seq_len,
-            chunk_size,
-            dim_k,
-            self.dim_v,
-            q.dtype,
-            q.device.index,
-        )
-
-    def eval_roofline(self) -> tuple[int, int]:
-        from tileops.perf.formulas import gated_deltanet_prefill_fwd_roofline
-
-        return gated_deltanet_prefill_fwd_roofline(self)
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            q: Input tensor, dtype ``float16 | bfloat16 | float32``.
-            k: Input tensor, dtype ``same_as(q)``.
-            v: Input tensor, dtype ``same_as(q)``.
-            g: Input tensor, dtype ``same_as(q)``.
-            beta: Input tensor, dtype ``same_as(q)``.
-
-        Returns:
-            ``o``, ``final_state``, as the manifest declares. Shape rules: ``final_state.shape == (B, H, DK, DV)``.
-        """
-        q = q.contiguous()
-        k = k.contiguous()
-        v = v.contiguous()
-        g = g.contiguous()
-        beta = beta.contiguous()
-        sig = (
-            q.shape,
-            k.shape,
-            v.shape,
-            g.shape,
-            beta.shape,
-            q.dtype,
-            k.dtype,
-            v.dtype,
-            g.dtype,
-            beta.dtype,
-            q.device,
-            k.device,
-            v.device,
-            g.device,
-            beta.device,
-            self.LAYOUT,
-            self._requested_chunk_size,
-            getattr(self, "tune", None),
-        )
-        if sig != getattr(self, "_active_sig", None):
-            self._validate_dtypes(q, k, v, g, beta)
-            self._validate_shapes(q, k, v, g, beta)
-            self._active_sig = sig
-        return self.kernel(q, k, v, g, beta)
-
-    def compute_roof(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
-
-
-class GatedDeltaNetPrefillBHTDFwdOp(GatedDeltaNetPrefillBTHDFwdOp):
-    """Gated DeltaNet inference prefill over head-major (BHTD) inputs.
-
-    ``q/k/v/o [B, H, T, D]``, ``g/beta [B, H, T]`` — the TileOps convention.
-    Same kernel and same arithmetic as ``GatedDeltaNetPrefillBTHDFwdOp``; only the
-    memory order the tensors arrive in differs, and memory order is part of the
-    signature, so it is its own entry.
-    """
-
-    LAYOUT: ClassVar[str] = "bhtd"
-
-
-class GatedDeltaNetBwdOp(Op):
-    """Gated DeltaNet backward operator.
-
-    Pipeline: prepare_wy_repr -> fwd (to get Aw, Au) -> bwd kernel -> (dq, dk, dv, dg, dbeta).
-
-    """
-
-    def __init__(
-        self,
-        chunk_size: int = 64,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            chunk_size: Chunk size for chunked linear attention.
-            kernel_map: Optional kernel overrides.
-            tune: Whether to autotune kernels.
-        """
-        self.batch = None
-        self.heads = None
-        self.seq_len = None
-        self.dim_k = None
-        self.dim_v = None
-        self.chunk_size = chunk_size
-        self.dtype = None
-        self.tune = tune
-
-        self.dispatch_kernel(kernel_map)
-        self.kernel = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "GatedDeltaNetBwdKernel": GatedDeltaNetBwdKernel,
-        }
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        heads: int,
-        seq_len: int,
-        dim_k: int,
-        dim_v: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
-        return self.get_or_build_kernel(
-            "GatedDeltaNetBwdKernel",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["GatedDeltaNetBwdKernel"](
-                batch,
-                heads,
-                seq_len,
-                self.chunk_size,
-                dim_k,
-                dim_v,
-                dtype=Kernel.dtype_to_str(dtype),
-                tune=self.tune,
-            ),
-        )
-
-    def _infer_output_shapes(
-        self,
-        do_shape: tuple[int, ...],
-        q_shape: tuple[int, ...],
-        k_shape: tuple[int, ...],
-        v_shape: tuple[int, ...],
-        g_shape: tuple[int, ...],
-        beta_shape: tuple[int, ...],
-        S_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: each gradient has the shape of what it is for."""
-        return {
-            "dq": tuple(q_shape),
-            "dk": tuple(k_shape),
-            "dv": tuple(v_shape),
-            "dg": tuple(g_shape),
-            "dbeta": tuple(beta_shape),
-        }
-
-    def forward(
-        self,
-        do: torch.Tensor,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-        S: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Run gated deltanet backward.
-
-        Args:
-            do: Gradient of output [B, H, S, DV].
-            q: Query tensor [B, H, S, DK].
-            k: Key tensor [B, H, S, DK].
-            v: Value tensor [B, H, S, DV].
-            g: Gate tensor [B, H, S].
-            beta: Beta tensor [B, H, S].
-            S: Per-chunk boundary states from forward [B, H, NC+1, DK, DV].
-
-        Returns:
-            Tuple of (dq, dk, dv, dg, dbeta).
-        """
-        batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bhsd(
-            q, k, v, g, beta, self.chunk_size, do=do
-        )
-        self._validate_dtypes(do, q, k, v, g, beta, S)
-        check_tensor_shape("S", S, (batch, heads, seq_len // self.chunk_size + 1, dim_k, dim_v))
-        self.batch = batch
-        self.heads = heads
-        self.seq_len = seq_len
-        self.dim_k = dim_k
-        self.dim_v = dim_v
-        self.dtype = dtype
-        self.kernel = self._get_kernel(
-            (do, q, k, v, g, beta, S), batch, heads, seq_len, dim_k, dim_v, dtype, q.device.index
-        )
-        dq, dk, dv, dg, dbeta = self.kernel(do, q, k, v, g, beta, S)
-        return dq, dk, dv, dg, dbeta
-
-    def compute_roof(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
-
-
-class _GatedDeltaNetFunction(torch.autograd.Function):
-    """Autograd function wrapping TileOPs fwd + bwd kernels."""
-
-    @staticmethod
-    def forward(ctx, q, k, v, g, beta, fwd_kernel, bwd_kernel):
-        """Run the op on ``q``, ``k``, ``v``, ``g``, ``beta``, ``fwd_kernel`` and ``bwd_kernel``."""
-        o, S, Aw, Au = fwd_kernel(q, k, v, g, beta)
-        ctx.save_for_backward(q, k, v, g, beta, S)
-        ctx.bwd_kernel = bwd_kernel
-        return o
-
-    @staticmethod
-    def backward(ctx, do):
-        q, k, v, g, beta, S = ctx.saved_tensors
-        dq, dk, dv, dg, dbeta = ctx.bwd_kernel(do, q, k, v, g, beta, S)
-        return dq, dk, dv, dg, dbeta, None, None
-
-
-class GatedDeltaNetAutogradOp(Op):
-    """Combined Gated DeltaNet fwd+bwd operator with autograd support.
-
-    Wraps ``GatedDeltaNetFwdKernel`` and ``GatedDeltaNetBwdKernel`` in a
-    ``torch.autograd.Function`` so that ``output.backward(do)`` automatically
-    invokes the TileOPs backward kernels.
-
-    This makes end-to-end benchmarking against FLA straightforward::
-
-        op = GatedDeltaNetAutogradOp(chunk_size=chunk_size)
-        o = op(q, k, v, g, beta)   # forward
-        o.backward(do)              # backward via TileOPs kernels
-
-    Layout: BHSD (batch, head, seq_len, dim).
-
-    """
-
-    def __init__(
-        self,
-        chunk_size: int = 64,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            chunk_size: Chunk size for chunked linear attention.
-            kernel_map: Optional kernel overrides.
-            tune: Whether to autotune kernels.
-        """
-        self.batch = None
-        self.heads = None
-        self.seq_len = None
-        self.dim_k = None
-        self.dim_v = None
-        self.chunk_size = chunk_size
-        self.dtype = None
-        self.tune = tune
-
-        self.dispatch_kernel(kernel_map)
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "GatedDeltaNetFwdKernel": GatedDeltaNetFwdKernel,
-            "GatedDeltaNetBwdKernel": GatedDeltaNetBwdKernel,
-        }
-
-    def _infer_output_shapes(
-        self,
-        q_shape: tuple[int, ...],
-        k_shape: tuple[int, ...],
-        v_shape: tuple[int, ...],
-        g_shape: tuple[int, ...],
-        beta_shape: tuple[int, ...],
-    ) -> Dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: only ``o``; the chunk buffers stay in the autograd context."""
-        return {"o": tuple(v_shape)}
-
-    def _bind_from_inputs(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> Tuple[Kernel, Kernel]:
-        batch, heads, seq_len, dim_k, dim_v, dtype = _resolve_gated_bhsd(
-            q, k, v, g, beta, self.chunk_size
-        )
-        self.batch = batch
-        self.heads = heads
-        self.seq_len = seq_len
-        self.dim_k = dim_k
-        self.dim_v = dim_v
-        self.dtype = dtype
-        key = (
-            batch,
-            heads,
-            seq_len,
-            self.chunk_size,
-            dim_k,
-            dim_v,
-            dtype,
-            q.device.index,
-            self.tune,
-        )
-        return self.get_or_build_kernel(
-            "GatedDeltaNetFwdKernel",
-            (q, k, v, g, beta),
-            key=key,
-            build=lambda: (
-                self.kernel_map["GatedDeltaNetFwdKernel"](
-                    batch,
-                    heads,
-                    seq_len,
-                    self.chunk_size,
-                    dim_k,
-                    dim_v,
-                    dtype=Kernel.dtype_to_str(dtype),
-                    tune=self.tune,
-                ),
-                self.kernel_map["GatedDeltaNetBwdKernel"](
-                    batch,
-                    heads,
-                    seq_len,
-                    self.chunk_size,
-                    dim_k,
-                    dim_v,
-                    dtype=Kernel.dtype_to_str(dtype),
-                    tune=self.tune,
-                ),
-            ),
-        )
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> torch.Tensor:
-        """Run gated deltanet forward with autograd backward support.
-
-        Args:
-            q: Query tensor [B, H, S, DK].
-            k: Key tensor [B, H, S, DK].
-            v: Value tensor [B, H, S, DV].
-            g: Gate tensor [B, H, S].
-            beta: Beta tensor [B, H, S].
-
-        Returns:
-            Output tensor o [B, H, S, DV] (supports .backward()).
-        """
-        self._validate_dtypes(q, k, v, g, beta)
-        fwd_kernel, bwd_kernel = self._bind_from_inputs(q, k, v, g, beta)
-        return _GatedDeltaNetFunction.apply(q, k, v, g, beta, fwd_kernel, bwd_kernel)
-
-    def compute_roof(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
-
-
-class GatedDeltaNetDecodeFwdOp(Op):
-    """Gated DeltaNet decode (single-step recurrence).
-
-    Computes one step of the gated delta rule:
-        S_t = S_{t-1} (alpha_t (I - beta_t k_t k_t^T)) + beta_t v_t k_t^T
-        o_t = S_t q_t
-
-    Layout: BHD (batch, head, dim).
-    Supports float32, float16, and bfloat16 with fp32 accumulation.
-
-    For fp32 dtype, dispatches to a dedicated FP32 kernel that uses
-    element-wise matvec instead of T.gemm to avoid TF32 mantissa truncation.
-    """
-
-    def __init__(
-        self,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
-        self.batch = None
-        self.heads = None
-        self.dim_k = None
-        self.dim_v = None
-        self.dtype = None
-        self.tune = tune
-
-        self.dispatch_kernel(kernel_map)
-        self._active_sig: Optional[tuple] = None
-        self.kernel = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "GatedDeltaNetDecodeKernel": GatedDeltaNetDecodeKernel,
-            "GatedDeltaNetDecodeFP32Kernel": GatedDeltaNetDecodeFP32Kernel,
-            "GatedDeltaNetDecodeRawCudaFlaStyleKernel": GatedDeltaNetDecodeRawCudaFlaStyleKernel,
-        }
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        heads: int,
-        dim_k: int,
-        dim_v: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        key = (batch, heads, dim_k, dim_v, dtype, device_index, self.tune)
-        call = DeltaNetDecodeCall(
-            batch=batch, heads=heads, dim_k=dim_k, dim_v=dim_v, dtype=dtype, tune=self.tune
-        )
-        chosen = self.select_kernel_key(GATED_DELTANET_DECODE_KEYS, call)
-
-        def build() -> Kernel:
-            return self.kernel_map[chosen](
-                batch,
-                heads,
-                dim_k,
-                dim_v,
-                dtype=Kernel.dtype_to_str(dtype),
-                tune=self.tune,
-            )
-
-        return self.get_or_build_kernel(chosen, inputs, key=key, build=build)
-
-    def _infer_output_shapes(
-        self,
-        q_shape: tuple[int, ...],
-        k_shape: tuple[int, ...],
-        v_shape: tuple[int, ...],
-        g_shape: tuple[int, ...],
-        beta_shape: tuple[int, ...],
-        state_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        del k_shape, g_shape, beta_shape
-        return {
-            "o": (q_shape[0], q_shape[1], v_shape[-1]),
-            "new_state": state_shape,
-        }
-
-    def _validate_dtypes(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-        state: torch.Tensor,
-    ) -> None:
-        dtype = q.dtype
-        if dtype not in (torch.float32, torch.float16, torch.bfloat16):
-            raise ValueError(f"Unsupported dtype: {dtype}")
+                raise ValueError(f"{name} must have the same dtype as q")
         for name, tensor in (
-            ("q", q),
+            ("initial_state", initial_state),
+            ("A_log", A_log),
+            ("dt_bias", dt_bias),
+        ):
+            if tensor is not None and tensor.dtype != torch.float32:
+                raise ValueError(f"{name} must have float32 dtype")
+        for name, tensor in (("cu_seqlens", cu_seqlens), ("cu_seqlens_cpu", cu_seqlens_cpu)):
+            if tensor is not None and tensor.dtype != torch.int64:
+                raise ValueError(f"{name} must have int64 dtype")
+
+    def eval_roofline(self) -> tuple[int, int]:
+        raise NotImplementedError("GatedDeltaNetFwdOp has no in-tree implementation yet")
+
+    def _validate_forward_inputs(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+        initial_state: Optional[torch.Tensor],
+        cu_seqlens: Optional[torch.Tensor],
+        cu_seqlens_cpu: Optional[torch.Tensor],
+        A_log: Optional[torch.Tensor],
+        dt_bias: Optional[torch.Tensor],
+    ) -> None:
+        if q.ndim != 4 or k.shape != q.shape:
+            raise ValueError("q and k must have the same [B, T, H, K] shape")
+        if v.ndim != 4 or v.shape[:2] != q.shape[:2]:
+            raise ValueError("v must have shape [B, T, HV, V]")
+
+        batch, seq_len, heads, dim_k = q.shape
+        value_heads, dim_v = v.shape[2:]
+        if heads <= 0:
+            raise ValueError("H must be positive")
+        if value_heads % heads != 0:
+            raise ValueError("HV must be divisible by H")
+        if g.shape != (batch, seq_len, value_heads):
+            raise ValueError("g must have shape [B, T, HV]")
+        if beta.shape != g.shape:
+            raise ValueError("beta must have the same shape as g")
+
+        state_batch = batch
+        if cu_seqlens is not None:
+            if batch != 1:
+                raise ValueError("packed varlen inputs require B == 1")
+            if cu_seqlens.ndim != 1 or cu_seqlens.shape[0] < 2:
+                raise ValueError("cu_seqlens must have shape [N + 1]")
+            state_batch = cu_seqlens.shape[0] - 1
+        if cu_seqlens_cpu is not None:
+            if cu_seqlens is None:
+                raise ValueError("cu_seqlens_cpu requires cu_seqlens")
+            if cu_seqlens_cpu.shape != cu_seqlens.shape:
+                raise ValueError("cu_seqlens_cpu must have the same shape as cu_seqlens")
+            if cu_seqlens_cpu.device.type != "cpu":
+                raise ValueError("cu_seqlens_cpu must be on CPU")
+
+        state_tail = (dim_v, dim_k) if self.state_v_first else (dim_k, dim_v)
+        expected_state_shape = (state_batch, value_heads, *state_tail)
+        if initial_state is not None and initial_state.shape != expected_state_shape:
+            layout = "[N, HV, V, K]" if self.state_v_first else "[N, HV, K, V]"
+            raise ValueError(f"initial_state must have shape {layout}")
+
+        if self.use_gate_in_kernel:
+            if A_log is None or dt_bias is None:
+                raise ValueError("use_gate_in_kernel=True requires A_log and dt_bias")
+            if A_log.shape != (value_heads,) or dt_bias.shape != (value_heads,):
+                raise ValueError("A_log and dt_bias must have shape [HV]")
+        elif A_log is not None or dt_bias is not None:
+            raise ValueError("A_log and dt_bias require use_gate_in_kernel=True")
+
+        self._validate_dtypes(
+            q,
+            k,
+            v,
+            g,
+            beta,
+            initial_state,
+            cu_seqlens,
+            cu_seqlens_cpu,
+            A_log,
+            dt_bias,
+        )
+        for name, tensor in (
             ("k", k),
             ("v", v),
             ("g", g),
             ("beta", beta),
-            ("state", state),
+            ("initial_state", initial_state),
+            ("cu_seqlens", cu_seqlens),
+            ("A_log", A_log),
+            ("dt_bias", dt_bias),
         ):
-            if tensor.dtype != dtype:
-                raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
+            if tensor is not None and tensor.device != q.device:
+                raise ValueError(f"{name} must be on the same device as q")
 
-    def _validate_shapes(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-        state: torch.Tensor,
-    ) -> None:
-        if q.ndim != 3:
-            raise ValueError("q must have shape [batch, heads, dim_k]")
-        batch, heads, dim_k = q.shape
-        if v.ndim != 3 or v.shape[:2] != (batch, heads):
-            raise ValueError("v must have shape [batch, heads, dim_v]")
-        dim_v = v.shape[2]
-        q_shape = (batch, heads, dim_k)
-        v_shape = (batch, heads, dim_v)
-        gate_shape = (batch, heads)
-        state_shape = (batch, heads, dim_k, dim_v)
-        expected_shapes = (
-            ("q", q, q_shape),
-            ("k", k, q_shape),
-            ("v", v, v_shape),
-            ("g", g, gate_shape),
-            ("beta", beta, gate_shape),
-            ("state", state, state_shape),
-        )
-        for name, tensor, expected in expected_shapes:
-            if tuple(tensor.shape) != expected:
-                raise ValueError(f"{name} must have shape {expected}, got {tuple(tensor.shape)}")
-        if not all(tensor.is_cuda for tensor in (q, k, v, g, beta, state)):
-            raise ValueError("q, k, v, g, beta, and state must be CUDA tensors")
-        self.batch = batch
-        self.heads = heads
-        self.dim_k = dim_k
-        self.dim_v = dim_v
-        self.dtype = q.dtype
-        self.kernel = self._get_kernel(
-            (q, k, v, g, beta, state), batch, heads, dim_k, dim_v, q.dtype, q.device.index
-        )
-
-    def _validate_output_shapes(
-        self,
-        o: torch.Tensor,
-        new_state: torch.Tensor,
-    ) -> None:
-        o_shape = (self.batch, self.heads, self.dim_v)
-        state_shape = (self.batch, self.heads, self.dim_k, self.dim_v)
-        if tuple(o.shape) != o_shape:
-            raise ValueError(f"o must have shape {o_shape}, got {tuple(o.shape)}")
-        if tuple(new_state.shape) != state_shape:
-            raise ValueError(
-                f"new_state must have shape {state_shape}, got {tuple(new_state.shape)}"
-            )
-
-    def eval_roofline(self) -> tuple[int, int]:
-        from tileops.perf.formulas import gated_deltanet_decode_roofline
-
-        return gated_deltanet_decode_roofline(self)
+    @staticmethod
+    def _canonicalize_inputs(
+        *inputs: Optional[torch.Tensor],
+    ) -> tuple[Optional[torch.Tensor], ...]:
+        return tuple(tensor.contiguous() if tensor is not None else None for tensor in inputs)
 
     def forward(
         self,
@@ -1188,46 +248,36 @@ class GatedDeltaNetDecodeFwdOp(Op):
         v: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
-        state: torch.Tensor,
+        initial_state: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        cu_seqlens_cpu: Optional[torch.Tensor] = None,
+        A_log: Optional[torch.Tensor] = None,
+        dt_bias: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            q: Input tensor, dtype ``float16 | bfloat16 | float32``.
-            k: Input tensor, dtype ``same_as(q)``.
-            v: Input tensor, dtype ``same_as(q)``.
-            g: Input tensor, dtype ``same_as(q)``.
-            beta: Input tensor, dtype ``same_as(q)``.
-            state: Input tensor, dtype ``same_as(q)``.
-
-        Returns:
-            ``o``, ``new_state``, as the manifest declares. Shape rules: ``o.shape == (B, H, DV)``; ``new_state.shape == (B, H, DK, DV)``.
-        """
-        sig = (
-            q.shape,
-            k.shape,
-            v.shape,
-            g.shape,
-            beta.shape,
-            state.shape,
-            q.dtype,
-            k.dtype,
-            v.dtype,
-            g.dtype,
-            beta.dtype,
-            state.dtype,
-            q.device,
-            k.device,
-            v.device,
-            g.device,
-            beta.device,
-            state.device,
-            getattr(self, "tune", None),
+        """Run prefill or decode and return ``(o, final_state)``."""
+        self._validate_forward_inputs(
+            q,
+            k,
+            v,
+            g,
+            beta,
+            initial_state,
+            cu_seqlens,
+            cu_seqlens_cpu,
+            A_log,
+            dt_bias,
         )
-        if sig != getattr(self, "_active_sig", None):
-            self._validate_dtypes(q, k, v, g, beta, state)
-            self._validate_shapes(q, k, v, g, beta, state)
-            self._active_sig = sig
-        o, new_state = self.kernel(q, k, v, g, beta, state)
-        self._validate_output_shapes(o, new_state)
-        return o, new_state
+        inputs = self._canonicalize_inputs(
+            q,
+            k,
+            v,
+            g,
+            beta,
+            initial_state,
+            cu_seqlens,
+            cu_seqlens_cpu,
+            A_log,
+            dt_bias,
+        )
+        kernel = self.get_or_build_kernel("gated_deltanet", inputs)
+        return kernel(*inputs)

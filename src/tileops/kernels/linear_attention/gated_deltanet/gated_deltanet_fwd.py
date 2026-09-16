@@ -11,6 +11,11 @@ Splitting kernel2 into h_recurrence + output_o increases SM utilisation:
   - output_o grid:     (num_chunks, batch, head) — fully parallel
 """
 
+# FIXME(staged-rollout): training-forward kernels have no public Op path.
+#
+# Broken invariant: exported kernels have no in-tree Op, test, or benchmark owner.
+# Cleanup: remove this marker when retained pieces migrate or this file is deleted.
+
 import functools
 from typing import Optional, Tuple
 

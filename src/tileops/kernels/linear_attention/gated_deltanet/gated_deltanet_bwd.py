@@ -10,6 +10,11 @@ Backward (split for SM utilisation):
   5. merge: combine dk paths and apply the chunk-local reverse cumsum to dg
 """
 
+# FIXME(staged-rollout): backward kernels are retained without a public Op path.
+#
+# Broken invariant: exported kernels have no in-tree Op, test, or benchmark owner.
+# Cleanup: remove this marker when a new training Op owns them or the kernels are deleted.
+
 import functools
 from typing import Optional, Tuple
 
