@@ -8,10 +8,11 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.gemm.dense import GemmBasicKernel, GemmKernel
+from tileops.kernels.gemm.heuristics import small_m_splitk_config
 from tileops.kernels.grouped_gemm.heuristics import GemmType
 from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_version
+from tileops.utils import get_sm_count, get_sm_version
 
 __all__ = ["SharedExpertMLPKernel"]
 
@@ -85,20 +86,25 @@ class SharedExpertMLPKernel(Kernel):
         self.init_config(config, tune)
 
         sm_version = get_sm_version()
+        self._fused_gate_up = None
+        self._gate_up_is_activated = False
         if (
             sm_version == 90
             and num_tokens >= self.config["template_min_m"]
             and ffn_size >= hidden_size
         ):
+            fuse_gate_up = 512 <= num_tokens <= 2048
             template_config = {
                 key: self.config[key] for key in ("block_m", "block_n", "block_k", "num_stages")
             }
             template_config.update(num_math_wgs=2, swizzle_group_m=16)
             self._gemm_gate_up = GemmTemplate(
                 GemmType.DENSE,
+                activation="silu_and_mul" if fuse_gate_up else "none",
                 static_dims="mnk",
-                config=template_config,
+                config=template_config if config is not None or not fuse_gate_up else None,
             )
+            self._gate_up_is_activated = fuse_gate_up
             self._gemm_down = GemmTemplate(
                 GemmType.DENSE,
                 static_dims="mnk",
@@ -114,14 +120,46 @@ class SharedExpertMLPKernel(Kernel):
                 trans_b=True,
                 config=gemm_config,
             )
-            self._gemm_down = GemmKernel(
-                m=num_tokens,
-                n=hidden_size,
-                k=ffn_size,
-                dtype=dtype,
-                trans_b=True,
-                config=gemm_config,
+            small_m_config = (
+                small_m_splitk_config(
+                    num_tokens,
+                    hidden_size,
+                    ffn_size,
+                    get_sm_count(),
+                    torch.cuda.get_device_name(),
+                )
+                if dtype is torch.bfloat16 and config is None
+                else None
             )
+            if small_m_config is not None:
+                self._gemm_down = GemmBasicKernel(
+                    m=num_tokens,
+                    n=hidden_size,
+                    k=ffn_size,
+                    dtype=dtype,
+                    trans_b=True,
+                    config=small_m_config,
+                )
+            else:
+                self._gemm_down = GemmKernel(
+                    m=num_tokens,
+                    n=hidden_size,
+                    k=ffn_size,
+                    dtype=dtype,
+                    trans_b=True,
+                    config=gemm_config,
+                )
+            gate_config = self._gemm_gate_up.config
+            if num_tokens == 32 and gate_config.get("split_k", 1) > 1:
+                self._fused_gate_up = GemmKernel(
+                    m=num_tokens,
+                    n=ffn_size * 2,
+                    k=hidden_size,
+                    dtype=dtype,
+                    trans_b=True,
+                    activation="silu_and_mul",
+                    config=gate_config,
+                )
         else:
             self._gemm_gate_up = GemmBasicKernel(
                 m=num_tokens,
@@ -161,11 +199,16 @@ class SharedExpertMLPKernel(Kernel):
         T_dim = self.num_tokens
         F = self.ffn_size
 
-        gate_up_out = self._gemm_gate_up(hidden, w_gate_up)
-
-        silu_mul_fn = _silu_mul_fused_kernel(T_dim, F, self.dtype_str)(
-            self.config["block_m"], self.config["block_n"], self.config["threads"]
-        )
-        gate_up = silu_mul_fn(gate_up_out)
+        if self._fused_gate_up is None:
+            gate_up_out = self._gemm_gate_up(hidden, w_gate_up)
+            if self._gate_up_is_activated:
+                gate_up = gate_up_out
+            else:
+                silu_mul_fn = _silu_mul_fused_kernel(T_dim, F, self.dtype_str)(
+                    self.config["block_m"], self.config["block_n"], self.config["threads"]
+                )
+                gate_up = silu_mul_fn(gate_up_out)
+        else:
+            gate_up = self._fused_gate_up(hidden, w_gate_up)
 
         return self._gemm_down(gate_up, w_down)

@@ -222,6 +222,7 @@ class GemmDesc:
     m_alignment: int = 128
     expected_m: int = 0
     activation: str = "none"
+    device_name: str = ""
     policy: _HeuristicPolicy = dataclasses.field(
         default_factory=_HeuristicPolicy, init=False, repr=False
     )
@@ -377,6 +378,21 @@ def _best_layout(desc: GemmDesc, candidates: list[_Layout]) -> _Layout:
     return min(candidates, key=lambda lay: _num_cycles(desc, lay)[1])
 
 
+def _short_group_layout(desc: GemmDesc) -> _Layout | None:
+    rows_per_group = math.ceil(desc.m / desc.num_groups)
+    if (
+        desc.device_name == "NVIDIA H200"
+        and desc.gemm_type is GemmType.M_GROUPED_TIGHT_PSUM
+        and desc.ab_dtype == desc.cd_dtype
+        and desc.activation in ("none", "silu_and_mul")
+        and rows_per_group <= 32
+        and desc.k >= 1024
+        and (desc.activation != "none" or desc.n <= 5120)
+    ):
+        return _Layout(64, 128, 128)
+    return None
+
+
 def _spec(
     desc: GemmDesc,
     layout: _Layout,
@@ -413,7 +429,7 @@ def _spec(
 @functools.lru_cache(maxsize=1024)
 def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
     """Return the selected kernel spec for ``desc``."""
-    best = _best_layout(desc, layout_candidates(desc))
+    best = _short_group_layout(desc) or _best_layout(desc, layout_candidates(desc))
     return _spec(desc, best, _num_stages(desc, best))
 
 

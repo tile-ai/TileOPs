@@ -850,6 +850,9 @@ class GemmTemplate(Kernel):
         self.m_alignment = m_alignment
         self.expected_m = expected_m
         self.sm_count = get_sm_count(device_index) if sm_count is None else sm_count
+        self.device_name = (
+            torch.cuda.get_device_name(device_index) if torch.cuda.is_available() else ""
+        )
         self.explicit_config = config
         self._spec_cache: dict[GemmDesc, GroupedGemmSpec] = {}
         self._empty_layout = None
@@ -908,6 +911,7 @@ class GemmTemplate(Kernel):
             m_alignment=self.m_alignment,
             expected_m=self.expected_m,
             activation=self.activation,
+            device_name=self.device_name,
         )
 
     def spec_for(self, a: torch.Tensor, b: torch.Tensor) -> GroupedGemmSpec:

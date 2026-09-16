@@ -68,7 +68,10 @@ def _fused_topk_kernel(
         JIT factory _func(TOKENS_PER_BLOCK) → callable.
     """
 
-    @tilelang.jit(out_idx=[])
+    @tilelang.jit(
+        out_idx=[],
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+    )
     def _func(TOKENS_PER_BLOCK):
         WARP_SIZE = WARP_LANES
         ELEMS_PER_THREAD = -(-num_experts // WARP_SIZE)  # ceildiv(E, 32)
@@ -381,7 +384,7 @@ class FusedTopKKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {"TOKENS_PER_BLOCK": 16}
+        return {"TOKENS_PER_BLOCK": min(16, max(1, math.ceil(self.num_tokens / 16)))}
 
     def forward(
         self,
