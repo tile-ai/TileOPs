@@ -74,6 +74,28 @@ def _torch_ref_moe_activation(hidden, w1, w2, topk_weights, topk_ids, activation
     return output.to(hidden.dtype)
 
 
+def _small_route_case(ids, dtype=torch.bfloat16):
+    T, E, K, H, F_dim = 4, 8, 2, 128, 256
+    hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
+    w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
+    w2 = torch.randn(E, H, F_dim, dtype=dtype, device="cuda") * 0.02
+    weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), -1)
+    topk_ids = torch.tensor(ids, dtype=torch.int32, device="cuda")
+    experts = FusedMoEExpertsFwdOp(T, E, K, H, F_dim)
+    ws1, ws2 = experts.workspace_shapes(T, F_dim, H, K, E)
+    args = (
+        torch.empty(T, H, dtype=dtype, device="cuda"),
+        hidden,
+        w1,
+        w2,
+        weights,
+        topk_ids,
+        torch.empty(ws1, dtype=dtype, device="cuda"),
+        torch.empty(ws2, dtype=dtype, device="cuda"),
+    )
+    return experts, args
+
+
 @pytest.mark.smoke
 def test_abc_imports():
     """ABCs and data structures can be imported."""
@@ -201,7 +223,6 @@ class TestFusedMoEExpertsFwdOp:
         torch.testing.assert_close(out.float(), expected.float(), rtol=3e-2, atol=3e-2)
 
     @pytest.mark.smoke
-    @pytest.mark.smoke
     def test_workspace_shapes(self, moe_meta):
         d = moe_meta
         experts = FusedMoEExpertsFwdOp(
@@ -213,6 +234,42 @@ class TestFusedMoEExpertsFwdOp:
         )
         ws1, ws2 = experts.workspace_shapes(d["T"], d["F"], d["H"], d["K"], d["E"])
         assert ws1 == (0,) and ws2 == (0,)
+
+    @pytest.mark.smoke
+    @pytest.mark.parametrize(
+        "ids",
+        [
+            [[0, 1], [2, 3], [4, 5], [6, 7]],
+            [[0, 1], [0, 1], [0, 2], [0, 2]],
+            [[0, 0], [0, 0], [0, 0], [0, 0]],
+        ],
+        ids=["dispersed", "reused", "group-capacity-fallback"],
+    )
+    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+    def test_small_route_branch_matches_reference(self, ids, dtype):
+        experts, args = _small_route_case(ids, dtype)
+        experts.forward(*args)
+        expected = _torch_ref_moe(args[1], args[2], args[3], args[4], args[5])
+        torch.testing.assert_close(args[0].float(), expected.float(), rtol=2e-2, atol=1e-1)
+
+    @pytest.mark.smoke
+    def test_small_route_dispatch_replays_in_cuda_graph(self):
+        experts, args = _small_route_case([[0, 1], [2, 3], [4, 5], [6, 7]])
+        experts.forward(*args)
+        torch.cuda.synchronize()
+
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            experts.forward(*args)
+
+        args[5].copy_(
+            torch.tensor([[0, 1], [0, 1], [0, 2], [0, 2]], dtype=torch.int32, device="cuda")
+        )
+        graph.replay()
+        torch.cuda.synchronize()
+
+        expected = _torch_ref_moe(args[1], args[2], args[3], args[4], args[5])
+        torch.testing.assert_close(args[0].float(), expected.float(), rtol=2e-2, atol=1e-1)
 
     @pytest.mark.smoke
     def test_output_shape(self, moe_meta):
