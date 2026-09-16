@@ -24,6 +24,7 @@ from tileops.kernels.attention import (
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
+from tileops.utils import get_sm_version
 
 from ..op_base import Op
 from ..rope import base_freqs
@@ -636,9 +637,10 @@ class GroupedQueryAttentionDenseFwdOp(Op):
                 dim,
             )
             if role in ("gqa_dense_decode", "gqa_dense_decode_long_context"):
-                # Decode may compile one of a finite set of split programs.
-                # Key the capacity tier, not the exact runtime KV length.
+                # Dense decode cache tiers follow split capacity.
                 key += (_dense_decode_split_capacity(seq_len_kv),)
+                if role == "gqa_dense_decode_long_context" and get_sm_version(q.device.index) == 90:
+                    key += (GQADecodeLongContextKernel.sequence_bucket(seq_len_kv),)
         return self.get_or_build_kernel(role, inputs, key=key, build=build)
 
     def forward(

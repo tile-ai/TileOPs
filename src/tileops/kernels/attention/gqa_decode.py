@@ -635,6 +635,7 @@ class GQADecodeKernel(Kernel):
         from tileops.utils import get_sm_version
 
         arch = get_sm_version(device_index)
+        self._is_hopper = arch == 90
         if fuse_rope and arch != 90:
             raise ValueError("fused RoPE decode currently requires SM90")
         self.use_ws_rope = fuse_rope
@@ -644,6 +645,13 @@ class GQADecodeKernel(Kernel):
             raise ValueError("heads must be divisible by heads_kv")
         if self.seqlen_kv <= 0:
             raise ValueError("seq_len_kv must be positive")
+        self._use_batched_config = (
+            self._is_hopper
+            and self.batch > 1
+            and self.dim == 128
+            and self.heads // self.groups <= 8
+            and not self.fuse_rope
+        )
 
         self.no_split_jit = _gqa_decode_no_split_kernel(
             self.batch,
@@ -693,6 +701,16 @@ class GQADecodeKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        if self._use_batched_config:
+            head_ctas = self.batch * self.groups
+            splits = max(1, (256 + head_ctas - 1) // head_ctas)
+            return {
+                "block_H": 64,
+                "block_N": 64,
+                "num_split": min(16, 1 << (splits - 1).bit_length()),
+                "num_stages": 2,
+                "threads": 128,
+            }
         return {
             "block_H": 64,
             "block_N": 128,
@@ -867,11 +885,16 @@ class GQADecodeKernel(Kernel):
 class GQADecodeLongContextKernel(GQADecodeKernel):
     """Dense decode specialization with the measured long-context defaults."""
 
+    @staticmethod
+    def sequence_bucket(seq_len_kv: int) -> int:
+        """Tile-size tier for long-context decode."""
+        return int(seq_len_kv > 131072)
+
     @property
     def default_config(self) -> dict:
         return {
             "block_H": 64,
-            "block_N": 64,
+            "block_N": 128 if self._is_hopper and self.sequence_bucket(self.seqlen_kv) else 64,
             "num_split": 32,
             "num_stages": 2,
             "threads": 128,

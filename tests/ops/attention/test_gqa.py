@@ -294,6 +294,26 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             id="batched-bf16",
         ),
         pytest.param(
+            32,
+            (32, 8),
+            torch.float16,
+            (4096, 4097),
+            None,
+            None,
+            GQADecodeKernel,
+            id="batched-fp16-unsplit-tail",
+        ),
+        pytest.param(
+            16,
+            (64, 8),
+            torch.bfloat16,
+            (4096, 4161),
+            None,
+            None,
+            GQADecodeKernel,
+            id="batched-bf16-split-tail",
+        ),
+        pytest.param(
             1,
             (8, 2),
             torch.float16,
@@ -402,6 +422,27 @@ def test_gqa_dense_decode_effective_num_split(
 ) -> None:
     """The tuned num_split is a ceiling shrunk to the runtime KV extent."""
     assert _effective_dense_num_split(num_split, block_N, real_seqlen_kv) == expected
+
+
+@pytest.mark.smoke
+def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
+    """A reused op crosses the tile-size boundary in both directions, including KV tails."""
+    if not torch.cuda.is_available() or get_sm_version() != 90:
+        pytest.skip("Long-context decode defaults are measured on SM90")
+    op = GroupedQueryAttentionDenseFwdOp()
+    q = torch.randn(1, 1, 32, 128, device="cuda", dtype=torch.float16)
+    for seq_len in (131072, 131073, 262145, 131071):
+        k = torch.randn(1, seq_len, 4, 128, device="cuda", dtype=q.dtype)
+        v = torch.randn_like(k)
+        out = op(q, k, v)
+        # Grouped FP32 matmuls avoid materializing eight copies of the long KV.
+        q_grouped = q[0, 0].reshape(4, 8, 128).float()
+        scores = q_grouped @ k[0].permute(1, 2, 0).float() * (128**-0.5)
+        ref = (scores.softmax(-1) @ v[0].transpose(0, 1).float()).reshape_as(out)
+        torch.testing.assert_close(out, ref.to(out.dtype), atol=1e-3, rtol=1e-3)
+    kernels = list(op.iter_kernels())
+    assert len(kernels) == 2
+    assert {kernel.config["block_N"] for kernel in kernels} == {64, 128}
 
 
 @pytest.mark.smoke
