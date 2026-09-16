@@ -4,7 +4,10 @@ from typing import Dict, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.linear_attention import GatedDeltaNetDensePrefillFwdKernel
+from tileops.perf.formulas import gated_deltanet_fwd_roofline
+from tileops.perf.profile import tensor_core_roof
 
 from ..op_base import Op
 
@@ -36,8 +39,10 @@ class GatedDeltaNetFwdOp(Op):
     the current inputs; in particular, ``T == 1`` is decode rather than a
     separate public Op.
 
-    No in-tree implementation is available yet. Until the retained kernels
-    are migrated, calls require an external target implementation.
+    The in-tree implementation currently covers equal-length Hopper prefill
+    with zero initial state, matching recurrent head counts, 128-wide state,
+    and precomputed gate and beta values. Other regions still require an
+    external target implementation while their retained kernels are migrated.
     """
 
     def __init__(
@@ -87,7 +92,57 @@ class GatedDeltaNetFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {}
+        return {"gated_deltanet_dense_prefill": GatedDeltaNetDensePrefillFwdKernel}
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """Build the one migrated in-tree specialization for this call."""
+        del role
+        (
+            batch,
+            seq_len,
+            heads,
+            value_heads,
+            dim_k,
+            dim_v,
+            dtype,
+            device_index,
+            scale,
+            has_initial_state,
+            has_cu_seqlens,
+        ) = call
+        unsupported = []
+        if has_initial_state:
+            unsupported.append("initial_state")
+        if has_cu_seqlens:
+            unsupported.append("packed varlen")
+        if self.state_v_first:
+            unsupported.append("state_v_first=True")
+        if self.use_qk_l2norm_in_kernel:
+            unsupported.append("use_qk_l2norm_in_kernel=True")
+        if self.use_gate_in_kernel:
+            unsupported.append("use_gate_in_kernel=True")
+        if self.use_beta_sigmoid_in_kernel:
+            unsupported.append("use_beta_sigmoid_in_kernel=True")
+        if value_heads != heads:
+            unsupported.append("HV != H")
+        if dim_k != 128 or dim_v != 128:
+            unsupported.append("K or V != 128")
+        if seq_len < 64 or seq_len % 64 != 0:
+            unsupported.append("T is not a positive multiple of 64")
+        if unsupported:
+            raise ValueError(
+                "the in-tree GatedDeltaNet dense-prefill kernel does not yet support "
+                + ", ".join(unsupported)
+            )
+        return call, lambda: self.kernel_map["gated_deltanet_dense_prefill"](
+            batch=batch,
+            heads=heads,
+            seq_len=seq_len,
+            dim=dim_k,
+            scale=scale,
+            dtype=dtype,
+            device_index=device_index,
+        )
 
     def _infer_output_shapes(
         self,
@@ -150,7 +205,20 @@ class GatedDeltaNetFwdOp(Op):
                 raise ValueError(f"{name} must have int64 dtype")
 
     def eval_roofline(self) -> tuple[int, int]:
-        raise NotImplementedError("GatedDeltaNetFwdOp has no in-tree implementation yet")
+        if not hasattr(self, "q_shape"):
+            raise RuntimeError("eval_roofline() requires one completed forward call")
+        return gated_deltanet_fwd_roofline(
+            q_shape=self.q_shape,
+            v_shape=self.v_shape,
+            dtype=self.dtype,
+            initial_state=self.initial_state,
+            cu_seqlens_shape=self.cu_seqlens_shape,
+        )
+
+    def compute_roof(self) -> str:
+        if not hasattr(self, "dtype"):
+            raise RuntimeError("compute_roof() requires one completed forward call")
+        return tensor_core_roof(self.dtype)
 
     def _validate_forward_inputs(
         self,
@@ -279,5 +347,26 @@ class GatedDeltaNetFwdOp(Op):
             A_log,
             dt_bias,
         )
-        kernel = self.kernel_for("gated_deltanet", inputs)
+        self.q_shape = tuple(q.shape)
+        self.v_shape = tuple(v.shape)
+        self.dtype = q.dtype
+        self.initial_state = True if initial_state is not None else None
+        self.cu_seqlens_shape = None if cu_seqlens is None else tuple(cu_seqlens.shape)
+        batch, seq_len, heads, dim_k = q.shape
+        value_heads, dim_v = v.shape[2:]
+        scale = self.scale if self.scale is not None else dim_k**-0.5
+        call = (
+            batch,
+            seq_len,
+            heads,
+            value_heads,
+            dim_k,
+            dim_v,
+            q.dtype,
+            q.device.index,
+            scale,
+            initial_state is not None,
+            cu_seqlens is not None,
+        )
+        kernel = self.kernel_for("gated_deltanet", inputs, call)
         return kernel(*inputs)

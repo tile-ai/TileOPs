@@ -388,7 +388,8 @@ def _gated_deltanet_fwd_production_kernel_call(
     g: torch.Tensor,
     beta: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    from .gated_deltanet_prefill import _gated_deltanet_production_bthd, _prefill_blocksolve_A_bthd
+    from . import _dense_prefill_kernels as dense_prefill_impl
+    from .dense_prefill import _gated_deltanet_production_bthd
 
     o, states, _final_state, g_cum = _gated_deltanet_production_bthd(
         q,
@@ -403,7 +404,7 @@ def _gated_deltanet_fwd_production_kernel_call(
     assert states is not None
 
     # The legacy forward ABI also needs the gated Aw/Au training artifacts.
-    Aw = _prefill_blocksolve_A_bthd(k, g_cum, beta, chunk_size)
+    Aw = dense_prefill_impl._prefill_blocksolve_A_bthd(k, g_cum, beta, chunk_size)
     Au = Aw.clone()
     return o, states, Aw, Au
 
