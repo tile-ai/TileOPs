@@ -388,7 +388,8 @@ def _gated_deltanet_fwd_production_kernel_call(
     g: torch.Tensor,
     beta: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    from .gated_deltanet_prefill import _gated_deltanet_production_bthd, _prefill_blocksolve_A_bthd
+    from .prefill.dense import _gated_deltanet_production_bthd
+    from .prefill.prepare import _prefill_blocksolve_A_bthd
 
     o, states, _final_state, g_cum = _gated_deltanet_production_bthd(
         q,

@@ -1,6 +1,7 @@
 # Copyright (c) 2026 The Qwen team, Alibaba Group.
 # Licensed under the MIT License.
 # Adapted and modified for TileOps GatedDeltaNet prefill integration.
+"""Gated DeltaNet private fused forward stage."""
 
 import functools
 import os
@@ -11,10 +12,7 @@ import torch
 
 from tileops.kernels.constants import LOG2E
 
-from .utils import prepare_chunk_offsets
-
-MULTI_PROCESSOR_COUNT = torch.cuda.get_device_properties().multi_processor_count
-TARGET_NUM_CTAS = int(MULTI_PROCESSOR_COUNT * 0.7)
+from .common import _gemm_v1, prepare_chunk_offsets
 
 
 @functools.lru_cache(maxsize=32)
@@ -203,7 +201,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_wait(bar_5, i_s % 2)
                     # S += K^T @ V'
-                    T.gemm_v1(
+                    _gemm_v1(
                         k_shared[i_s % 2, :, :],
                         vn_shared,
                         h_fragment,
@@ -253,7 +251,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_wait(bar_1, i_s % 2)
                     # U = K @ S
-                    T.gemm_v1(k_shared[i_s % 2, :, :], h_shared, u_fragment, clear_accum=True)
+                    _gemm_v1(k_shared[i_s % 2, :, :], h_shared, u_fragment, clear_accum=True)
 
                     # [STAGE 0] 2
                     # W = V - g * U
@@ -266,7 +264,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_wait(bar_3, i_s % 2)
                     # Vd = Ag @ W
-                    T.gemm_v1(
+                    _gemm_v1(
                         a_shared[i_s % 2, :, :],
                         v_shared[i_s % 2, :, :],
                         v_fragment,
@@ -295,7 +293,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_wait(bar_0, i_s % 2)
                     # P = Q K^T
-                    T.gemm_v1(
+                    _gemm_v1(
                         q_shared[i_s % 2, :, :],
                         k_shared[i_s % 2, :, :],
                         p_fragment,
@@ -324,7 +322,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_wait(bar_1, i_s % 2)
                     # O = Q @ S
-                    T.gemm_v1(q_shared[i_s % 2, :, :], h_shared, o_fragment, clear_accum=True)
+                    _gemm_v1(q_shared[i_s % 2, :, :], h_shared, o_fragment, clear_accum=True)
 
                     # [STAGE 0] 3
                     # Pg = s * G * P
@@ -338,7 +336,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_wait(bar_4, i_s % 2)
                     # O += Pg @ Vd
-                    T.gemm_v1(p_shared, vd_shared, o_fragment, clear_accum=False)
+                    _gemm_v1(p_shared, vd_shared, o_fragment, clear_accum=False)
                     T.barrier_arrive(bar_5)
 
                     T.barrier_wait(bar_5, i_s % 2)
@@ -548,7 +546,7 @@ def fused_gdr_fwd(
 ):
     batch_size, num_tokens, Hg, K = k.shape
     _, _, H, V = v.shape
-    scale = scale or K ** (-0.5)
+    scale = K ** (-0.5) if scale is None else scale
     assert K == V and K in (64, 128)
     assert chunk_size == 64
 
@@ -603,6 +601,9 @@ def fused_gdr_fwd(
     o = torch.empty_like(v)
 
     grid_size = real_batch_size * H
+    target_num_ctas = int(
+        torch.cuda.get_device_properties(k.device.index).multi_processor_count * 0.7
+    )
     block_dv_override = os.environ.get(
         "TILEOPS_GDN_PREFILL_BLOCK_DV",
         os.environ.get("TILEOPS_GDN_PREFILL_CP_BLOCK_DV"),
@@ -615,9 +616,9 @@ def fused_gdr_fwd(
             )
     elif V == 64 and not is_cp and chunks_per_sequence > 0:
         block_DV = 8 if chunks_per_sequence <= 64 else 16
-    elif grid_size >= TARGET_NUM_CTAS:
+    elif grid_size >= target_num_ctas:
         block_DV = min(128, V)
-    elif grid_size * 2 >= TARGET_NUM_CTAS:
+    elif grid_size * 2 >= target_num_ctas:
         block_DV = min(64, V)
     else:
         block_DV = min(32, V)
