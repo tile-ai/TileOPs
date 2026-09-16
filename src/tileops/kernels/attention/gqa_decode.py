@@ -646,7 +646,11 @@ class GQADecodeKernel(Kernel):
         if self.seqlen_kv <= 0:
             raise ValueError("seq_len_kv must be positive")
         self._use_batched_config = (
-            arch == 90 and batch > 1 and dim == 128 and heads // heads_kv <= 8 and not fuse_rope
+            self._is_hopper
+            and self.batch > 1
+            and self.dim == 128
+            and self.heads // self.groups <= 8
+            and not self.fuse_rope
         )
 
         self.no_split_jit = _gqa_decode_no_split_kernel(
@@ -698,10 +702,6 @@ class GQADecodeKernel(Kernel):
     @property
     def default_config(self) -> dict:
         if self._use_batched_config:
-            # Batch and KV heads already provide independent CTAs. On Hopper,
-            # splitting each of them 16 ways makes short decode bandwidth worse
-            # and adds a large partial reduction. Keep roughly two CTA waves,
-            # with smaller KV tiles to limit the work done on padded Q heads.
             head_ctas = self.batch * self.groups
             splits = max(1, (256 + head_ctas - 1) // head_ctas)
             return {
@@ -887,7 +887,7 @@ class GQADecodeLongContextKernel(GQADecodeKernel):
 
     @staticmethod
     def sequence_bucket(seq_len_kv: int) -> int:
-        """Keep shorter contexts on 64-token tiles; amortize wider tiles above 128K."""
+        """Tile-size tier for long-context decode."""
         return int(seq_len_kv > 131072)
 
     @property
