@@ -2,7 +2,12 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.gemm import GemmBasicKernel, GemmKernel, SmallBatchGemmKernel
+from tileops.kernels.gemm import (
+    GemmBasicKernel,
+    GemmKernel,
+    GemvKernel,
+    SmallBatchGemmKernel,
+)
 from tileops.kernels.gemm.dense import GemmFp8BlockScaledKernel, _b_eviction
 from tileops.kernels.gemm.heuristics import best_config
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
@@ -717,22 +722,22 @@ def test_small_batch_dispatch() -> None:
     One case per clause of ``SmallBatchGemmKernel.applies``: m == 1 stays on
     gemv, m >= 3 and non-NT stay on the generic kernel (whose small-m band
     picks swap_ab / split-K / simple configs analytically), and so does any n
-    wide enough for the operand-swapped grid. Dispatch only — ``_get_kernel``
-    constructs kernel objects without triggering a JIT compile (that happens on
-    first forward), so this stays smoke-fast.
+    wide enough for the operand-swapped grid. Selection only — no kernel is
+    built, so this stays smoke-fast.
     """
     from tileops.utils import get_sm_version
 
     if get_sm_version() not in (SmallBatchGemmKernel.supported_archs or []):
         pytest.skip("small_batch kernel-mode is SM90-only")
 
-    op = GemmFwdOp(trans_a=False, trans_b=True)
-    assert op._get_kernel((), 2, 2112, 7168, torch.float16)[0] == "small_batch"
-    assert op._get_kernel((), 2, 7168, 2048, torch.float16)[0] == "gemm"
-    assert op._get_kernel((), 3, 2112, 7168, torch.float16)[0] == "gemm"
-    assert op._get_kernel((), 1, 2112, 7168, torch.float16)[0] == "lhs_row"
-    op_nn = GemmFwdOp(trans_a=False, trans_b=False)
-    assert op_nn._get_kernel((), 2, 2112, 7168, torch.float16)[0] == "gemm"
+    nt = GemmFwdOp(trans_a=False, trans_b=True)
+    fp = torch.float16
+    assert nt.select_kernel(nt._call_spec(2, 2112, 7168, fp)) is SmallBatchGemmKernel
+    assert nt.select_kernel(nt._call_spec(2, 7168, 2048, fp)) is GemmKernel
+    assert nt.select_kernel(nt._call_spec(3, 2112, 7168, fp)) is GemmKernel
+    assert nt.select_kernel(nt._call_spec(1, 2112, 7168, fp)) is GemvKernel
+    nn = GemmFwdOp(trans_a=False, trans_b=False)
+    assert nn.select_kernel(nn._call_spec(2, 2112, 7168, fp)) is GemmKernel
 
 
 @pytest.mark.smoke
@@ -827,12 +832,13 @@ def test_gemm_refuses_tma_misaligned_shapes_by_naming_the_dim() -> None:
     fp = torch.bfloat16
 
     with pytest.raises(ValueError, match=r"multiple of 8 elements.*k=1001"):
-        nt._get_kernel((), 256, 512, 1001, fp)
+        nt.select_kernel(nt._call_spec(256, 512, 1001, fp))
     with pytest.raises(ValueError, match=r"multiple of 8 elements.*n=511"):
-        nn._get_kernel((), 256, 511, 1024, fp)
-    assert nt._get_kernel((), 256, 511, 1024, fp)[0] == "gemm"
+        nn.select_kernel(nn._call_spec(256, 511, 1024, fp))
+    assert nt.select_kernel(nt._call_spec(256, 511, 1024, fp)) is GemmKernel
 
-    assert nt._get_kernel((), 1, 512, 1001, fp)[0] == "lhs_row"
+    assert nt.select_kernel(nt._call_spec(1, 512, 1001, fp)) is GemvKernel
+    assert nt._call_spec(1, 512, 1001, fp).gemv_mode == "lhs_row"
 
     with pytest.raises(ValueError, match=r"cannot serve 256x512x1001"):
         GemmKernel(256, 512, 1001, fp, trans_a=False, trans_b=True)
@@ -872,8 +878,8 @@ def test_gemm_refuses_non_matrix_operands_before_building_anything() -> None:
 
     with pytest.raises(ValueError, match=r"contracts two matrices.*a\.ndim=3"):
         op(a, a)
-    assert (op.m, op.n, op.k) == (None, None, None)
-    assert not op.built_kernels("gemm_kernel")
+    assert not any(hasattr(op, dim) for dim in ("m", "n", "k"))
+    assert not op.built_kernels("gemm")
 
 
 @pytest.mark.smoke
@@ -925,7 +931,7 @@ def test_structure_routing_matches_test_ids() -> None:
     passes. This pins the mapping: when it fails, the correctness case named in
     the assertion needs a new shape, not a new expectation.
 
-    Routing only — ``_get_kernel`` builds no JIT, so this stays smoke-fast.
+    Routing only — construction builds no JIT, so this stays smoke-fast.
     """
     from tileops.utils import get_sm_version
 
@@ -949,9 +955,11 @@ def test_structure_routing_matches_test_ids() -> None:
 
     for test_id, m, n, k, dtype, trans_b, want in expected:
         op = GemmFwdOp(trans_a=False, trans_b=trans_b)
-        mode, kernel = op._get_kernel((), m, n, k, dtype)
-        assert mode == "gemm", f"{test_id}: expected the generic kernel, got {mode}"
-        config = kernel.config
+        call = op._call_spec(m, n, k, dtype)
+        cls = op.select_kernel(call)
+        assert cls is GemmKernel, f"{test_id}: expected the generic kernel, got {cls.__name__}"
+        _identity, build = cls.entry_for(call, tune=False)
+        config = build().config
         got = next((f for f in flags if config.get(f)), None)
         if got is None:
             split_k = config.get("split_k", 1)

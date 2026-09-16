@@ -15,11 +15,11 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from benchmarks.timing import bench_kernel, median_busy_ms
+from tileops.kernels.gemm.w4a16 import GROUP_SIZE
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload
 
-_W4A16_GROUP_SIZE = 128
 _FP8_BLOCK = 128
 
 
@@ -312,7 +312,7 @@ def _prepare_marlin_w4a16_baseline(
     )
     from vllm.scalar_type import scalar_types
 
-    if k % 16 or k % _W4A16_GROUP_SIZE or n % 64:
+    if k % 16 or k % GROUP_SIZE or n % 64:
         raise ValueError("Marlin W4A16 benchmark requires K % 128 == 0 and N % 64 == 0")
 
     if tuple(activation.shape) != (m, k):
@@ -341,11 +341,11 @@ def _prepare_marlin_w4a16_baseline(
         weight_scale.T.to(torch.float16).contiguous(),
         k,
         n,
-        _W4A16_GROUP_SIZE,
+        GROUP_SIZE,
     )
     zeros = marlin_zero_points(
         weight_zero.T.to(torch.int32).contiguous(),
-        k // _W4A16_GROUP_SIZE,
+        k // GROUP_SIZE,
         n,
         4,
     )
@@ -401,7 +401,7 @@ def _gemm_fp8_args(w: dict, dtype: torch.dtype) -> tuple:
 
 
 def _gemm_w4a16_args(w: dict, dtype: torch.dtype) -> tuple:
-    return (w["m"], w["n"], w["k"], int(w.get("group_size", _W4A16_GROUP_SIZE)), dtype)
+    return (w["m"], w["n"], w["k"], int(w.get("group_size", GROUP_SIZE)), dtype)
 
 
 @pytest.mark.parametrize(

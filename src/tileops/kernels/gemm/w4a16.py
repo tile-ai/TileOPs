@@ -8,6 +8,10 @@ import torch
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.quantize_utils import _tir_packed_to_unsigned_convert
 
+from .call_spec import GemmCall
+
+# Weights are quantized per group of this many K elements, which fixes the
+# ``[N, K / GROUP_SIZE]`` shape of weight_scale and weight_zero.
 GROUP_SIZE = 128
 
 __all__ = ["GemmW4A16Kernel"]
@@ -172,6 +176,21 @@ class GemmW4A16Kernel(Kernel):
 
     general = True
 
+    @classmethod
+    def entry_for(cls, call: GemmCall, *, tune: bool) -> tuple:
+        """The cache identity and the thunk that builds this class for *call*."""
+        index = call.device.index if call.device is not None else None
+        identity = (call.m, call.n, call.k, call.dtype, call.group_size, index)
+        return identity, lambda: cls(
+            call.m,
+            call.n,
+            call.k,
+            call.dtype,
+            tune=tune,
+            group_size=call.group_size,
+            device_index=index,
+        )
+
     def __init__(
         self,
         m: int,
@@ -181,8 +200,9 @@ class GemmW4A16Kernel(Kernel):
         config: Optional[dict] = None,
         tune: bool = False,
         group_size: int = GROUP_SIZE,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.m = m
         self.n = n
         self.k = k

@@ -434,7 +434,7 @@ are defined in [roofline.md](roofline.md).
 
 #### kernel_map
 
-Op→Kernel dispatch registration table. Declares which Kernels an Op uses so agents know what to implement. Does not describe dispatch strategy (runtime concern). Format: `dispatch_key: KernelClassName`. See [op-slot-rules.md § Slot S14 `default_kernel_map`](op-slot-rules.md#slot-s14).
+Op→Kernel dispatch registration table. Declares which Kernels an Op uses so agents know what to implement, and which slots a caller's `kernel_map=` replaces. Does not describe dispatch strategy (runtime concern). Format: `dispatch_key: KernelClassName`. The validator holds it equal to the op's `default_kernel_map`; a composite op installs none of its own and declares its sub-ops' kernels, which is not checked. See [op-slot-rules.md § Slot S14 `default_kernel_map`](op-slot-rules.md#slot-s14).
 
 ```yaml
 # Single-kernel op
