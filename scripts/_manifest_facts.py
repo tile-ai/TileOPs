@@ -10,20 +10,17 @@ failed silently.
 Every such fact is computed here and nowhere else. A consumer asks for the
 fact; it does not decide what the fact is.
 
-Parsing accumulates rather than aborts: a field that cannot be read becomes
-:class:`Invalid` and the rest of the entry is still read, because the validator
-reports several schema problems per entry and must keep doing so. A consumer
-that needs an ``Invalid`` fact consults :func:`can_silence` rather than
-skipping outright, so a diagnostic the current ``--levels`` would not otherwise
-produce is still reported.
+Parsing accumulates rather than aborts: a field that cannot be read yields
+nothing for that fact while the rest of the entry is still read, because the
+validator reports several schema problems per entry and must keep doing so.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from enum import Enum, auto
+from enum import Enum
 from typing import Any
 
 SAME_AS_RE = re.compile(r"^\s*same_as\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*$")
@@ -77,36 +74,6 @@ class KeyTaker:
         if not isinstance(self.raw, dict):
             return ()
         return tuple(sorted((k for k in self.raw if k not in self.accepted), key=repr))
-
-
-class DiagnosticKind(Enum):
-    """What a diagnostic is about, independent of how it is worded.
-
-    Granularity is the smallest unit a consumer may fall silent for: two
-    diagnostics take separate kinds when the level, severity or routing that
-    produces them differs, when they block different consumers, or when one
-    appearing does not prove the other consumer can safely skip. Differing only
-    in field name, value or wording keeps them in one kind.
-    """
-
-    SIGNATURE_STRUCTURE = auto()
-    DTYPE_COMBO_DATA = auto()
-    SHAPE_RULE_SYNTAX = auto()
-    COMPOSITION_STRUCTURE = auto()
-    RESOURCE_STRUCTURE = auto()
-
-
-@dataclass(frozen=True)
-class Invalid:
-    """A field that could not be read into a fact.
-
-    ``covers`` names the diagnostics that report this same problem. A consumer
-    may only fall silent for kinds listed here that have actually been emitted
-    under the levels in force.
-    """
-
-    reason: str
-    covers: tuple[DiagnosticKind, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -173,7 +140,6 @@ class Facts:
     params: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     source: Mapping[str, Any] = field(default_factory=dict)
     roofline: Mapping[str, Any] = field(default_factory=dict)
-    invalid: Mapping[str, Invalid] = field(default_factory=dict)
 
     # -- status and severity ----------------------------------------------
 
@@ -338,29 +304,9 @@ class Facts:
         return None
 
 
-def can_silence(
-    invalid: Invalid | None,
-    blocked_by: Collection[DiagnosticKind],
-    emitted: Collection[DiagnosticKind],
-) -> bool:
-    """Whether a consumer may skip without reporting anything of its own.
-
-    Only when the problem it would report has already been reported: the kinds
-    the ``Invalid`` covers, the consumer declares itself blocked by, and that
-    were actually emitted under the levels in force. Otherwise the consumer
-    still reports, or the entry loses a diagnostic it produces today.
-    """
-    if invalid is None:
-        return False
-    covered = set(invalid.covers) & set(blocked_by)
-    return bool(covered) and covered <= set(emitted)
-
-
-def _tensor_args(
-    tensors: object, *, workspace: bool = False
-) -> tuple[tuple[TensorArg, ...], Invalid | None]:
+def _tensor_args(tensors: object, *, workspace: bool = False) -> tuple[TensorArg, ...]:
     if not isinstance(tensors, dict):
-        return (), Invalid("not a mapping", (DiagnosticKind.SIGNATURE_STRUCTURE,))
+        return ()
     args = []
     for name, attrs in tensors.items():
         if not isinstance(name, str) or not isinstance(attrs, dict):
@@ -376,7 +322,7 @@ def _tensor_args(
                 shape=attrs.get("shape") if isinstance(attrs.get("shape"), str) else None,
             )
         )
-    return tuple(args), None
+    return tuple(args)
 
 
 def _workspace_args(entry: Mapping[str, Any]) -> tuple[TensorArg, ...]:
@@ -446,7 +392,6 @@ def unknown_keys_of(section: Section, raw: object) -> tuple[Any, ...]:
 
 def build(name: str, entry: Mapping[str, Any]) -> Facts:
     """Read one entry into its facts, accumulating what cannot be read."""
-    invalid: dict[str, Invalid] = {}
     accepted: dict[Section, tuple[str, ...]] = {}
     unknown: dict[Section, tuple[str, ...]] = {}
 
@@ -462,16 +407,12 @@ def build(name: str, entry: Mapping[str, Any]) -> Facts:
     accepted[Section.SIGNATURE] = tuple(sorted(sig_taker.accepted))
     unknown[Section.SIGNATURE] = sig_taker.unknown
 
-    merged_inputs, bad = _tensor_args(sig.get("inputs"))
+    merged_inputs = _tensor_args(sig.get("inputs"))
     # A signature handed in already merged carries its workspaces inside
     # ``inputs``; the value contract is the rest.
     value_inputs = tuple(a for a in merged_inputs if not a.workspace)
     premerged = tuple(a for a in merged_inputs if a.workspace)
-    if bad is not None and "inputs" in sig:
-        invalid["signature.inputs"] = bad
-    outputs, bad = _tensor_args(sig.get("outputs"))
-    if bad is not None and "outputs" in sig:
-        invalid["signature.outputs"] = bad
+    outputs = _tensor_args(sig.get("outputs"))
 
     # A workspace is declared apart from the inputs but passed like one, so the
     # call carries both; only the inputs are the caller's value contract.
@@ -490,10 +431,6 @@ def build(name: str, entry: Mapping[str, Any]) -> Facts:
     combos: tuple[Mapping[str, str], ...] = ()
     if isinstance(raw_combos, list):
         combos = tuple(c for c in raw_combos if isinstance(c, dict))
-    elif raw_combos is not None:
-        invalid["signature.dtype_combos"] = Invalid(
-            "not a list", (DiagnosticKind.DTYPE_COMBO_DATA,)
-        )
 
     composition = entry.get("composition")
     stage_names: frozenset[str] = frozenset()
@@ -504,10 +441,6 @@ def build(name: str, entry: Mapping[str, Any]) -> Facts:
                 st["name"]
                 for st in stages
                 if isinstance(st, dict) and isinstance(st.get("name"), str)
-            )
-        else:
-            invalid["composition.stages"] = Invalid(
-                "not a list", (DiagnosticKind.COMPOSITION_STRUCTURE,)
             )
 
     raw_params = sig.get("params")
@@ -527,5 +460,4 @@ def build(name: str, entry: Mapping[str, Any]) -> Facts:
         params=raw_params if isinstance(raw_params, dict) else {},
         source=raw_source if isinstance(raw_source, dict) else {},
         roofline=raw_roofline if isinstance(raw_roofline, dict) else {},
-        invalid=invalid,
     )

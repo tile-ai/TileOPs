@@ -234,47 +234,6 @@ class TestMutationContract:
         assert f.mutated_input_names == frozenset()
 
 
-class TestParsingAccumulates:
-    """A field that cannot be read must not stop the rest from being read."""
-
-    def test_a_broken_field_leaves_the_others_intact(self):
-        f = F.build("Op", _entry(composition={"kind": "composite", "stages": "not a list"}))
-        assert "composition.stages" in f.invalid
-        assert f.call_names == ("x",)
-        assert f.outputs[0].name == "y"
-
-    def test_invalid_records_what_reports_it(self):
-        f = F.build(
-            "Op",
-            _entry(
-                signature={"inputs": {"x": {"dtype": "f16"}}, "outputs": {}, "dtype_combos": "nope"}
-            ),
-        )
-        invalid = f.invalid["signature.dtype_combos"]
-        assert F.DiagnosticKind.DTYPE_COMBO_DATA in invalid.covers
-
-
-class TestCanSilence:
-    """A consumer falls silent only for a problem already reported."""
-
-    KIND = F.DiagnosticKind.DTYPE_COMBO_DATA
-
-    def test_silent_when_the_covering_diagnostic_was_emitted(self):
-        invalid = F.Invalid("bad", (self.KIND,))
-        assert F.can_silence(invalid, [self.KIND], [self.KIND])
-
-    def test_reports_when_the_levels_in_force_produce_nothing(self):
-        invalid = F.Invalid("bad", (self.KIND,))
-        assert not F.can_silence(invalid, [self.KIND], [])
-
-    def test_reports_when_the_consumer_is_not_blocked_by_it(self):
-        invalid = F.Invalid("bad", (self.KIND,))
-        assert not F.can_silence(invalid, [F.DiagnosticKind.SHAPE_RULE_SYNTAX], [self.KIND])
-
-    def test_a_usable_fact_never_silences(self):
-        assert not F.can_silence(None, [self.KIND], [self.KIND])
-
-
 class TestKeyTaker:
     """The parser is the schema: whatever it does not read is an unknown key."""
 
