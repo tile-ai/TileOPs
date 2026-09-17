@@ -1,16 +1,16 @@
 """Cumulative scan operators (cumsum, cumprod)."""
 
 from math import prod
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.reduction.cumulative import CumulativeKernel
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
-from ._boundary import register_reduction_op
 
 __all__ = ["CumprodFwdOp", "CumsumFwdOp", "CumulativeOp"]
 
@@ -25,8 +25,10 @@ class CumulativeOp(Op):
 
     _op_kind: str
 
-    # Set by ``register_reduction_op`` on each concrete op; a base registers none.
-    _wrapped = None
+    # One operator, the op's declared inputs in, its declared outputs out. The
+    # registration is generated from the manifest entry by
+    # ``tileops.ops._compile_boundary_codegen``, which a base class with no entry skips.
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -113,22 +115,26 @@ class CumulativeOp(Op):
         # From the shape, not from ``numel``: an empty scanned axis makes ``n`` zero.
         m = prod(d for i, d in enumerate(x.shape) if i != axis)
         self._last_roofline_mn = (m, n)
-        kernel = self.get_or_build_kernel(
-            "cumulative_fwd",
-            (x,),
-            # The kernel owns the permute, so the whole shape decides which kernel it is.
-            key=(tuple(x.shape), axis, x.dtype, x.device.index),
-            build=lambda: self.kernel_map["cumulative_fwd"](
-                m,
-                n,
-                self._op_kind,
-                x.dtype,
-                scan_axis=axis,
-                tune=self.tune,
-                device_index=x.device.index,
-            ),
+        kernel = self.kernel_for(
+            "cumulative_fwd", (x,), (tuple(x.shape), axis, x.dtype, x.device.index, m, n)
         )
         return kernel(x)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built from the whole shape and the axis it scans.
+
+        The kernel owns the permute, so the whole shape decides which kernel it is.
+        """
+        _shape, axis, dtype, device_index, m, n = call
+        return call, lambda: self.kernel_map["cumulative_fwd"](
+            m,
+            n,
+            self._op_kind,
+            dtype,
+            scan_axis=axis,
+            tune=self.tune,
+            device_index=device_index,
+        )
 
 
 class CumsumFwdOp(CumulativeOp):
@@ -183,7 +189,3 @@ class CumprodFwdOp(CumulativeOp):
     """
 
     _op_kind = "prod"
-
-
-for _op_cls in (CumsumFwdOp, CumprodFwdOp):
-    register_reduction_op(_op_cls)

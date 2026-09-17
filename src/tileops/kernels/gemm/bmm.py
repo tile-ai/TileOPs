@@ -578,26 +578,6 @@ def _bmm_fp8_persistent_ws_kernel(
     return _bmm_fp8_persistent_ws_func
 
 
-@torch.library.custom_op("tileops::bmm_wrapped_kernel", mutates_args=())
-def _bmm_wrapped_kernel(
-    batch: int,
-    m: int,
-    n: int,
-    k: int,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    a: torch.Tensor,
-    b: torch.Tensor,
-) -> torch.Tensor:
-    """Torch custom-op wrapper for ``torch.compile`` compatibility."""
-    return _bmm_kernel(batch, m, n, k, dtype)(block_m, block_n, block_k, num_stages, threads)(a, b)
-
-
-@_bmm_wrapped_kernel.register_fake
 def _(
     batch: int,
     m: int,

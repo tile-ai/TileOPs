@@ -25,7 +25,6 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdTest(
         v: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_k: torch.Tensor,
-        max_seqlen_q: int,
     ) -> torch.Tensor:
         """Pure-PyTorch reference: per-sample masked softmax attention.
 
@@ -321,6 +320,7 @@ def test_gqa_sliding_window_varlen_fwd_op(
         heads=heads,
         heads_kv=heads_kv,
         dim=dim,
+        max_seqlen_q=test.max_seqlen_q,
         is_causal=is_causal,
         window_size_left=wl,
         window_size_right=wr,

@@ -72,7 +72,14 @@ def test_mhc_pre_bench(
     )
     inputs = test.gen_inputs()
 
-    op = MHCPreFwdOp(tune=_TUNE)
+    op = MHCPreFwdOp(
+        test.alpha_pre,
+        test.alpha_post,
+        test.alpha_res,
+        test.sinkhorn_repeat,
+        test.sinkhorn_eps,
+        tune=_TUNE,
+    )
     bm = ManifestBenchmark(op, test)
 
     bm.compare(

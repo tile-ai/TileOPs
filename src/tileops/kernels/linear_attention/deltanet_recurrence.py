@@ -22,7 +22,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
 
 __all__ = [
     "DeltaNetDecodeFP32Kernel",
@@ -233,8 +234,7 @@ def _deltanet_decode_tl(
     return _decode_func
 
 
-@torch.library.custom_op("tileops::deltanet_decode_kernel", mutates_args=())
-def _deltanet_decode_wrapped_kernel(
+def _deltanet_decode_run(
     batch: int,
     head: int,
     dim_k: int,
@@ -253,8 +253,7 @@ def _deltanet_decode_wrapped_kernel(
     return kernel_fn(q, k, v, beta, state)
 
 
-@_deltanet_decode_wrapped_kernel.register_fake
-def _deltanet_decode_wrapped_kernel_fake(
+def _deltanet_decode_run_fake(
     batch: int,
     head: int,
     dim_k: int,
@@ -274,6 +273,20 @@ def _deltanet_decode_wrapped_kernel_fake(
     return o, new_state
 
 
+def _decode_entry(cls: type, call: DeltaNetDecodeCall) -> Entry:
+    """The entry for a decode kernel: the three take the same construction arguments.
+
+    The device index is in the identity because the kernel is compiled for the
+    architecture it is built on.
+    """
+    index = call.device.index if call.device is not None else None
+    dtype = Kernel.dtype_to_str(call.dtype)
+    identity = (call.batch, call.heads, call.dim_k, call.dim_v, dtype, call.tune, index)
+    return identity, lambda: cls(
+        call.batch, call.heads, call.dim_k, call.dim_v, dtype=dtype, tune=call.tune
+    )
+
+
 class DeltaNetDecodeKernel(Kernel):
     """DeltaNet single-step decode kernel (ungated).
 
@@ -285,6 +298,10 @@ class DeltaNetDecodeKernel(Kernel):
 
     supported_archs: list[int] = [80, 89, 90]
     general = True
+
+    @classmethod
+    def entry_for(cls, call: DeltaNetDecodeCall) -> Entry:
+        return _decode_entry(cls, call)
 
     def __init__(
         self,
@@ -402,6 +419,10 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
             and call.dim_k == 128
             and call.dim_v == 128
         )
+
+    @classmethod
+    def entry_for(cls, call: DeltaNetDecodeCall) -> Entry:
+        return _decode_entry(cls, call)
 
     def __init__(
         self,
@@ -630,6 +651,10 @@ class DeltaNetDecodeFP32Kernel(Kernel):
     @classmethod
     def applies(cls, call) -> bool:
         return call.dtype == torch.float32
+
+    @classmethod
+    def entry_for(cls, call: DeltaNetDecodeCall) -> Entry:
+        return _decode_entry(cls, call)
 
     def __init__(
         self,

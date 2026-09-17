@@ -4,7 +4,7 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.fft import FFTC2CKernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
 from .op_base import Op
 
@@ -43,26 +43,10 @@ class FFTC2CFwdOp(Op):
         ] = {}
         self.kernel = None
 
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        n: int,
-        batch_size: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        key = (n, batch_size, dtype, device_index)
-        return self.get_or_build_kernel(
-            "fft_c2c_kernel",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["fft_c2c_kernel"](
-                n,
-                batch_size,
-                dtype,
-                tune=self.tune,
-            ),
-        )
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per transform length, batch, dtype and device."""
+        n, batch_size, dtype, _device_index = call
+        return call, lambda: self.kernel_map["fft_c2c_kernel"](n, batch_size, dtype, tune=self.tune)
 
     @staticmethod
     def _build_lut(
@@ -146,7 +130,9 @@ class FFTC2CFwdOp(Op):
         self.n = n
         self.dtype = x.dtype
         self.twiddle_real, self.twiddle_imag = self._get_lut(n, x.dtype, x.device)
-        kernel = self._get_kernel((input,), n, batch_size, x.dtype, x.device.index)
+        kernel = self.kernel_for(
+            "fft_c2c_kernel", (input,), (n, batch_size, x.dtype, x.device.index)
+        )
         self.kernel = kernel
         y_pair = kernel(x_real, x_imag, self.twiddle_real, self.twiddle_imag)
 

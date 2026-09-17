@@ -6,7 +6,6 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
-from tileops.ops.attention.selection import MHA_PAGED_DECODE_KEYS
 from workloads.attention.mha import (
     MhaDecodePagedWorkload,
 )
@@ -175,5 +174,5 @@ def test_mha_decode_paged_dispatch_declines_multi_token_query() -> None:
     op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
         batch=1, heads=8, seqlen_q=4, seqlen_kv=1024, dim=64, page_size=256, is_causal=False
     )
-    key = op.select_kernel_key(MHA_PAGED_DECODE_KEYS, op._attention_call(torch.float16))
-    assert key == "mha_decode_paged_kernel"
+    chosen = op.select_kernel(op._attention_call(torch.float16))
+    assert chosen.__name__ == "MHADecodePagedKernel"

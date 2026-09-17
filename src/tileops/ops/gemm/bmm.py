@@ -5,14 +5,15 @@ batch item is an independent GEMM, no broadcasting.
 """
 
 import warnings
-from typing import Dict, Hashable, Optional, Set, Tuple
+from typing import ClassVar, Dict, Hashable, Optional, Set, Tuple
 
 import torch
 
 from tileops.kernels.gemm.bmm import BmmFp8Kernel, BmmKernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.perf.profile import tensor_core_roof
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["BmmFp8FwdOp", "BmmFwdOp"]
@@ -27,6 +28,8 @@ class BmmFwdOp(Op):
     use for each ``(batch, m, n, k, dtype)`` combination and cached.
 
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -107,12 +110,12 @@ class BmmFwdOp(Op):
         dtype: torch.dtype,
     ) -> Kernel:
         """Return the cached BmmKernel for the given dims, building lazily."""
-        return self.get_or_build_kernel(
-            "bmm_kernel",
-            inputs,
-            key=(batch, m, n, k, dtype),
-            build=lambda: self.kernel_map["bmm_kernel"](batch, m, n, k, dtype, tune=self.tune),
-        )
+        return self.kernel_for("bmm_kernel", inputs, (batch, m, n, k, dtype))
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per batch, the three extents and the dtype."""
+        batch, m, n, k, dtype = call
+        return call, lambda: self.kernel_map["bmm_kernel"](batch, m, n, k, dtype, tune=self.tune)
 
     def _infer_output_shapes(
         self,
@@ -145,6 +148,13 @@ class BmmFwdOp(Op):
         """
         # Fast path: same input signature as the last call → reuse the already
         # built/JIT'd kernel directly.
+        return self._wrapped(a, b, self._instance_key)
+
+    def _eager_forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
+        """
         sig = (a.shape, b.shape, a.dtype, b.dtype)
         if sig != self._active_sig:
             self._validate_dtypes(a, b)
@@ -176,9 +186,11 @@ class BmmFp8FwdOp(Op):
     $[B \\times N \\times K]$, which reaches the kernel as it stands.
     """
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
     def __init__(
         self,
-        out_dtype: torch.dtype | str = "bfloat16",
+        out_dtype: torch.dtype = torch.bfloat16,
         trans_b: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -191,8 +203,6 @@ class BmmFp8FwdOp(Op):
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune (applied when a kernel is first built).
         """
-        if isinstance(out_dtype, str):
-            out_dtype = getattr(torch, out_dtype)
         if out_dtype not in (torch.float16, torch.bfloat16):
             raise ValueError(
                 f"BmmFp8FwdOp outputs torch.float16 or torch.bfloat16, got {out_dtype}"
@@ -302,13 +312,15 @@ class BmmFp8FwdOp(Op):
         dtype: torch.dtype,
         device: torch.device,
     ) -> Kernel:
-        return self.get_or_build_kernel(
-            "bmm_fp8_kernel",
-            inputs,
-            key=(batch, m, n, k, dtype, self.out_dtype, device),
-            build=lambda: self.kernel_map["bmm_fp8_kernel"](
-                batch, m, n, k, dtype, self.out_dtype, device=device, tune=self.tune
-            ),
+        return self.kernel_for(
+            "bmm_fp8_kernel", inputs, (batch, m, n, k, dtype, self.out_dtype, device)
+        )
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per batch, the three extents, both dtypes and device."""
+        batch, m, n, k, dtype, out_dtype, device = call
+        return call, lambda: self.kernel_map["bmm_fp8_kernel"](
+            batch, m, n, k, dtype, out_dtype, device=device, tune=self.tune
         )
 
     def _infer_output_shapes(
@@ -350,6 +362,19 @@ class BmmFp8FwdOp(Op):
             d = op(a, b_kn, scale_a, scale_b)
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
+        """
+        return self._wrapped(a, b, scale_a, scale_b, self._instance_key)
+
+    def _eager_forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        scale_a: torch.Tensor,
+        scale_b: torch.Tensor,
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         sig = (
             a.device,

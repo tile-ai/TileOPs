@@ -8,9 +8,8 @@ from workloads.workload_base import WorkloadBase
 class MHCPreWorkload(WorkloadBase):
     """One MHC pre case: its shape, its dtype, and the scalars it is run with.
 
-    The scaling and sinkhorn scalars are arguments of the call rather than of the
-    op, so the case is where they live; ``gen_inputs`` hands them back with the
-    tensors, and a caller that wants the manifest's values passes them here.
+    The scaling and sinkhorn scalars are manifest ``params``, so they are construction
+    arguments of the op; the case holds the values it builds that op with.
     """
 
     def __init__(
@@ -36,18 +35,7 @@ class MHCPreWorkload(WorkloadBase):
         self.sinkhorn_repeat = sinkhorn_repeat
         self.sinkhorn_eps = sinkhorn_eps
 
-    def gen_inputs(
-        self,
-    ) -> tuple[
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        int,
-        float,
-    ]:
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch = self.batch
         n_expand = self.n_expand
         c_x = self.c_x
@@ -57,27 +45,10 @@ class MHCPreWorkload(WorkloadBase):
         )
         x = torch.randn([batch, n_expand * c_x], device="cuda", dtype=torch.bfloat16)
         b = torch.randn([n_expand * n_expand + 2 * n_expand], device="cuda", dtype=torch.float32)
-        return (
-            phi,
-            x,
-            b,
-            self.alpha_pre,
-            self.alpha_post,
-            self.alpha_res,
-            self.sinkhorn_repeat,
-            self.sinkhorn_eps,
-        )
+        return phi, x, b
 
     def ref_program(
-        self,
-        phi: torch.Tensor,
-        x: torch.Tensor,
-        b: torch.Tensor,
-        alpha_pre,
-        alpha_post,
-        alpha_res,
-        sinkhorn_repeat: int,
-        eps: float,
+        self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         return mhc_pre_ref(
             self.batch,
@@ -86,11 +57,11 @@ class MHCPreWorkload(WorkloadBase):
             phi,
             x,
             b,
-            alpha_pre,
-            alpha_post,
-            alpha_res,
-            sinkhorn_repeat,
-            eps,
+            self.alpha_pre,
+            self.alpha_post,
+            self.alpha_res,
+            self.sinkhorn_repeat,
+            self.sinkhorn_eps,
         )
 
 

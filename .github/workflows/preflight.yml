@@ -100,8 +100,12 @@ jobs:
             # The Python helpers beside the YAML count too:
             # `scripts/validate_manifest.py` imports `shape_rules` and
             # `dtype_rules` at module scope, so either one decides what it accepts.
+            # The op classes count as well: the C3-C9 parity gates resolve each
+            # entry's class and compare its ctor, forward and `out_dtype` param
+            # against the entry, so an op-only change can break the manifest
+            # contract while leaving every YAML file untouched.
             case "$f" in
-              src/tileops/manifest/*|scripts/validate_manifest.py|tests/test_validate_manifest.py|"$WORKFLOW_PATH")
+              src/tileops/manifest/*|src/tileops/ops/*|scripts/validate_manifest.py|tests/test_validate_manifest.py|"$WORKFLOW_PATH")
                 manifest=true
                 ;;
             esac

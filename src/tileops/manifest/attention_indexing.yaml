@@ -4,6 +4,7 @@ FP8LightningIndexerFwdOp:
   ref_api: "none"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -53,6 +54,7 @@ TopkSelectorFwdOp:
   ref_api: "torch.topk"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -60,6 +62,10 @@ TopkSelectorFwdOp:
       starts: {dtype: "int32", shape: "[batch, seq_len]"}
       ends: {dtype: "int32", shape: "[batch, seq_len]"}
     outputs:
+      # Unordered along the topk axis, unlike ref_api's sorted indices: a row selects
+      # the same positions every call and may place them in different slots. A window
+      # holding fewer than topk positions fills the rest with seq_len_kv, which selects
+      # nothing.
       indexes: {dtype: "int32", shape: "[batch, seq_len, kv_group, topk]"}
     params:
       topk: {type: int}

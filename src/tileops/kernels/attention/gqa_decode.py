@@ -6,8 +6,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
+from .call_spec import dense_decode_region, dense_long_context_decode_region
+from .dense_entry import dense_decode_entry
 from .online_softmax import (
     LOG2E,
     make_apply_softcap,
@@ -437,8 +439,7 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
 # Custom ops (torch.compile compatible wrappers)
 
 
-@torch.library.custom_op("tileops::gqa_decode_no_split_op", mutates_args=())
-def _gqa_decode_no_split_op(
+def _gqa_decode_no_split_run(
     batch: int,
     heads: int,
     groups: int,
@@ -459,7 +460,6 @@ def _gqa_decode_no_split_op(
     )(Q, K, V)
 
 
-@_gqa_decode_no_split_op.register_fake
 def _(
     batch: int,
     heads: int,
@@ -479,8 +479,7 @@ def _(
     return torch.empty_like(Q)
 
 
-@torch.library.custom_op("tileops::gqa_decode_no_split_rope_op", mutates_args=())
-def _gqa_decode_no_split_rope_op(
+def _gqa_decode_no_split_rope_run(
     batch: int,
     heads: int,
     groups: int,
@@ -516,7 +515,6 @@ def _gqa_decode_no_split_rope_op(
     )(block_H, block_N, num_stages, threads)(Q, K, V, rope_cos, rope_sin)
 
 
-@_gqa_decode_no_split_rope_op.register_fake
 def _(
     batch: int,
     heads: int,
@@ -541,8 +539,7 @@ def _(
     return torch.empty_like(Q)
 
 
-@torch.library.custom_op("tileops::gqa_decode_split_op", mutates_args=())
-def _gqa_decode_split_op(
+def _gqa_decode_split_run(
     batch: int,
     heads: int,
     groups: int,
@@ -566,7 +563,6 @@ def _gqa_decode_split_op(
     )(Q, K, V, glse, Output_partial)
 
 
-@_gqa_decode_split_op.register_fake
 def _(
     batch: int,
     heads: int,
@@ -596,9 +592,17 @@ class GQADecodeKernel(Kernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        # The broad region: every contiguous decode call. The batch-1 kernel
-        # states the narrower one it serves and wins wherever it applies.
-        return True
+        return dense_decode_region(call)
+
+    @classmethod
+    def split_tier(cls, call) -> tuple:
+        """The cache-length tier this program compiles a split count for."""
+        full_tiles = max(1, call.seqlen_kv // 64)
+        return (min(32, 1 << (full_tiles.bit_length() - 1)),)
+
+    @classmethod
+    def entry_for(cls, call) -> Entry:
+        return dense_decode_entry(cls, call)
 
     def __init__(
         self,
@@ -774,7 +778,7 @@ class GQADecodeKernel(Kernel):
         # Dispatch: no-split for sequences too short to give each split a tile
         if num_split == 1:
             if self.fuse_rope:
-                output = _gqa_decode_no_split_rope_op(
+                output = _gqa_decode_no_split_rope_run(
                     self.batch,
                     self.heads,
                     self.groups,
@@ -796,7 +800,7 @@ class GQADecodeKernel(Kernel):
                     rope_sin,
                 )
                 return output.unsqueeze(1)
-            output = _gqa_decode_no_split_op(
+            output = _gqa_decode_no_split_run(
                 self.batch,
                 self.heads,
                 self.groups,
@@ -818,7 +822,7 @@ class GQADecodeKernel(Kernel):
             # The Hopper producer/consumer kernel supports arbitrary batch
             # sizes; use it here so RoPE stays fused without replacing TMA and
             # WGMMA with scalar global-memory loads.
-            from .gqa_decode_bs1 import _gqa_decode_bs1_ctx_op
+            from .gqa_decode_bs1 import _gqa_decode_bs1_ctx_run
 
             glse = torch.empty(
                 (self.batch, self.heads, num_split), dtype=torch.float32, device=Q.device
@@ -828,7 +832,7 @@ class GQADecodeKernel(Kernel):
                 dtype=torch.float32,
                 device=Q.device,
             )
-            output = _gqa_decode_bs1_ctx_op(
+            output = _gqa_decode_bs1_ctx_run(
                 self.batch,
                 self.heads,
                 self.groups,
@@ -860,7 +864,7 @@ class GQADecodeKernel(Kernel):
             (self.batch, self.heads, num_split, self.dim), dtype=self.dtype, device=Q.device
         )
 
-        output = _gqa_decode_split_op(
+        output = _gqa_decode_split_run(
             self.batch,
             self.heads,
             self.groups,
@@ -884,6 +888,20 @@ class GQADecodeKernel(Kernel):
 
 class GQADecodeLongContextKernel(GQADecodeKernel):
     """Dense decode specialization with the measured long-context defaults."""
+
+    general: bool = False
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        return dense_long_context_decode_region(call)
+
+    @classmethod
+    def split_tier(cls, call) -> tuple:
+        """As the general decode tier, plus the Hopper tile tier it also compiles."""
+        tier = super().split_tier(call)
+        if call.arch == 90:
+            return (*tier, cls.sequence_bucket(call.seqlen_kv))
+        return tier
 
     @staticmethod
     def sequence_bucket(seq_len_kv: int) -> int:

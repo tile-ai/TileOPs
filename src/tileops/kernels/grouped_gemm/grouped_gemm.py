@@ -7,8 +7,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.grouped_gemm.call import GroupedGemmCall
+from tileops.kernels.grouped_gemm.grouped_gemm_persistent import grouped_gemm_entry
 from tileops.kernels.grouped_tiling import GroupTiling
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = [
     "GroupedGemmKernel",
@@ -187,6 +189,10 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
 class GroupedGemmKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
     general: bool = True
+
+    @classmethod
+    def entry_for(cls, call: GroupedGemmCall) -> Entry:
+        return grouped_gemm_entry(cls, call)
 
     def __init__(
         self,

@@ -32,8 +32,10 @@ import tilelang.language as T
 import torch
 from tilelang.layout import make_swizzled_layout
 
+from tileops.kernels.attention.call_spec import AttentionCall
+from tileops.kernels.attention.mha_decode_paged import paged_decode_entry
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
 from .call_spec import paged_decode_ws_region
 
@@ -309,8 +311,7 @@ def _mha_decode_paged_ws_kernel(
 # Custom op (torch.compile compatible wrapper)
 
 
-@torch.library.custom_op("tileops::mha_decode_paged_ws_op", mutates_args=())
-def _mha_decode_paged_ws_op(
+def _mha_decode_paged_ws_run(
     batch: int,
     heads: int,
     seqlen_kv: int,
@@ -332,7 +333,6 @@ def _mha_decode_paged_ws_op(
     return kernel(block_N, num_split, stages)(Q, K, V, real_seqlen_kv, block_table, glse, O_partial)
 
 
-@_mha_decode_paged_ws_op.register_fake
 def _(
     batch: int,
     heads: int,
@@ -363,6 +363,10 @@ class MHADecodePagedWsKernel(Kernel):
     def applies(cls, call) -> bool:
         return paged_decode_ws_region(call)
 
+    @classmethod
+    def entry_for(cls, call: AttentionCall) -> Entry:
+        return paged_decode_entry(cls, call)
+
     def __init__(
         self,
         batch: int,
@@ -375,8 +379,9 @@ class MHADecodePagedWsKernel(Kernel):
         dtype: torch.dtype = torch.float16,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.heads = heads
         self.seqlen_q = seqlen_q
@@ -504,7 +509,7 @@ class MHADecodePagedWsKernel(Kernel):
         O_partial = torch.empty(
             (self.batch, self.heads, num_split, self.dim), dtype=torch.float32, device=Q.device
         )
-        return _mha_decode_paged_ws_op(
+        return _mha_decode_paged_ws_run(
             self.batch,
             self.heads,
             self.seqlen_kv,

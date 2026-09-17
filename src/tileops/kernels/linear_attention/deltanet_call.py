@@ -23,4 +23,3 @@ class DeltaNetDecodeCall(CallSpec):
     dim_k: int = 0
     dim_v: int = 0
     dtype: Optional[torch.dtype] = None
-    tune: bool = False

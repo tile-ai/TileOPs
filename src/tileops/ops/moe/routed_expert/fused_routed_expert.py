@@ -18,7 +18,7 @@ from ..abc import (
 )
 from ..contracts import ContiguousLayoutSpec, RoutingEpilogueSpec
 from ..staged import MoeExpertMLPFwdOp, MoePostPermuteFwdOp, MoePrePermuteFwdOp
-from .indexed_routed_expert import _IndexedExpertMLPFwdOp
+from .indexed_routed_expert import IndexedExpertMLPFwdOp
 
 __all__ = ["FusedMoEExpertsFwdOp"]
 
@@ -88,16 +88,14 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
             )
         )
         self._indexed_mlp = (
-            _IndexedExpertMLPFwdOp(
+            IndexedExpertMLPFwdOp(
                 num_tokens,
                 num_experts,
                 top_k,
                 hidden_size,
                 ffn_size,
                 routed_scaling_factor,
-                self._pre_permute,
-                self._expert_mlp,
-                self._post_permute,
+                kernel_map,
             )
             if indexed
             else None
@@ -145,6 +143,9 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
             workspace1,
             workspace2,
         )
+
+    def _validate_workspaces(self, workspace1: Tensor, workspace2: Tensor) -> None:
+        """Hold the two scratch buffers to the sizes the chosen backend implies."""
         expected1, expected2 = self.workspace_shapes(
             self.num_tokens,
             self.ffn_size,
@@ -216,6 +217,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
             workspace1,
             workspace2,
         )
+        self._validate_workspaces(workspace1, workspace2)
         if self._indexed_mlp is not None:
             self._indexed_mlp(
                 output,

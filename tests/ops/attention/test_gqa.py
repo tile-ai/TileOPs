@@ -17,8 +17,8 @@ from tileops.kernels.attention import (
 )
 from tileops.kernels.attention.gqa_decode import (
     _effective_dense_num_split,
-    _gqa_decode_no_split_op,
-    _gqa_decode_split_op,
+    _gqa_decode_no_split_run,
+    _gqa_decode_split_run,
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
@@ -177,7 +177,7 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
 
     op = GroupedQueryAttentionDenseFwdOp(
         is_causal=True,
-        dtype=out_dtype,
+        out_dtype=out_dtype,
         sm_scale=sm_scale,
         softcap=softcap,
         pos_encoding_mode="rope" if rope_layout is not None else "none",
@@ -479,17 +479,17 @@ def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> No
     calls: list[tuple[str, int]] = []
 
     def split_spy(*args, **kwargs):
-        # num_split is the 12th positional argument of _gqa_decode_split_op
+        # num_split is the 12th positional argument of _gqa_decode_split_run
         calls.append(("split", args[11]))
-        return _gqa_decode_split_op(*args, **kwargs)
+        return _gqa_decode_split_run(*args, **kwargs)
 
     def no_split_spy(*args, **kwargs):
         calls.append(("no_split", 0))
-        return _gqa_decode_no_split_op(*args, **kwargs)
+        return _gqa_decode_no_split_run(*args, **kwargs)
 
-    monkeypatch.setattr("tileops.kernels.attention.gqa_decode._gqa_decode_split_op", split_spy)
+    monkeypatch.setattr("tileops.kernels.attention.gqa_decode._gqa_decode_split_run", split_spy)
     monkeypatch.setattr(
-        "tileops.kernels.attention.gqa_decode._gqa_decode_no_split_op", no_split_spy
+        "tileops.kernels.attention.gqa_decode._gqa_decode_no_split_run", no_split_spy
     )
 
     # 1024 tokens fill 16 of the tuned 32 splits; 100 cannot fill two

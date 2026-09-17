@@ -161,5 +161,8 @@ def test_gla_decode_rejects_manifest_shape_mismatch() -> None:
     gk = torch.empty(2, 3, 5)
     state = torch.empty(2, 3, 4, 5)
 
+    # ``forward`` is one call to the registered operator, which resolves the instance by
+    # the key ``__init__`` stores; this op never ran one. The validation under test is in
+    # ``_eager_forward``, which is what the operator calls.
     with pytest.raises(ValueError, match="gk must have shape"):
-        op.forward(q, k, v, gk, state)
+        op._eager_forward(q, k, v, gk, state)

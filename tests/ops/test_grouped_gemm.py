@@ -161,19 +161,19 @@ def test_supply_prog_keeps_every_row_in_the_k_loop():
 @pytest.mark.parametrize(
     "numel, n, k, transpose_a, transpose_b, expected",
     [
-        (4096, 4096, 4096, False, True, "grouped_gemm_persistent"),
+        (4096, 4096, 4096, False, True, "GroupedGemmPersistentKernel"),
         (
             4096,
             4000,
             4096,
             False,
             True,
-            "grouped_gemm_persistent",
+            "GroupedGemmPersistentKernel",
         ),  # N off the tile grid still runs
-        (4096, 4096, 4096, False, False, "grouped_gemm_persistent"),  # NN
-        (4096, 4096, 4096, True, False, "grouped_gemm_persistent"),  # TN
-        (4099, 4096, 4096, True, True, "grouped_gemm_kernel"),  # TT: b's row pitch is the K sum
-        (4096, 4096, 4100, False, True, "grouped_gemm_kernel"),  # K TMA cannot address
+        (4096, 4096, 4096, False, False, "GroupedGemmPersistentKernel"),  # NN
+        (4096, 4096, 4096, True, False, "GroupedGemmPersistentKernel"),  # TN
+        (4099, 4096, 4096, True, True, "GroupedGemmKernel"),  # TT: b's row pitch is the K sum
+        (4096, 4096, 4100, False, True, "GroupedGemmKernel"),  # K TMA cannot address
     ],
 )
 @pytest.mark.smoke
@@ -192,4 +192,4 @@ def test_selection_prefers_the_template_where_tma_can_address_the_operands(
         transpose_a=transpose_a,
         transpose_b=transpose_b,
     )
-    assert op.select_kernel_key(op._KERNEL_KEYS, call) == expected
+    assert op.select_kernel(call).__name__ == expected

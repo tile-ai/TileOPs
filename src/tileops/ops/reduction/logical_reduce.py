@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.reduction._primitives import (
     device_smem_budget,
     edge_axis_plan,
@@ -18,16 +18,12 @@ from tileops.kernels.reduction.logical_reduce import (
     storage_dtype_for,
 )
 from tileops.manifest.shape_rules import reduced_shape
-from tileops.utils import get_sm_count, get_sm_version, is_h200
 
-from ._boundary import register_reduction_op
+from ..op_base import Op
 from ._multidim import EmptyDimPolicy
 from .reduce import _ReduceOpBase
 
 __all__ = ["AllFwdOp", "AnyFwdOp", "CountNonzeroFwdOp"]
-
-
-_LOGICAL_REDUCE_KEYS = ("logical_reduce_edge_fused", "logical_reduce")
 
 
 class _LogicalReduceOpBase(_ReduceOpBase):
@@ -43,13 +39,8 @@ class _LogicalReduceOpBase(_ReduceOpBase):
             "logical_reduce": LogicalReduceKernel,
         }
 
-    def _select_kernel_key(
-        self,
-        x: torch.Tensor,
-        axes: "tuple[int, ...]",
-        m: int,
-        n: int,
-    ) -> str:
+    def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int) -> LogicalReduceCall:
+        """The facts that pick a logical reduction implementation and build it."""
         device_index = x.device.index
         k, j = edge_axis_split(x.ndim, axes)
         kept = 0
@@ -60,10 +51,8 @@ class _LogicalReduceOpBase(_ReduceOpBase):
             smem_budget = device_smem_budget(device_index)
             _, kept, _, planner, _ = edge_axis_plan(tuple(x.shape), k, j, elem_bytes, smem_budget)
             trail_needs_tiling = planner.needs_tiling
-        call = LogicalReduceCall(
-            arch=get_sm_version(device_index),
-            h200=is_h200(device_index),
-            sm_count=get_sm_count(device_index),
+        return LogicalReduceCall(
+            device=x.device,
             shape=tuple(x.shape),
             axes=axes,
             op_kind=self._op_kind,
@@ -73,9 +62,13 @@ class _LogicalReduceOpBase(_ReduceOpBase):
             kept=kept,
             trail_needs_tiling=trail_needs_tiling,
             reduced_count=n,
+            m=m,
             tune=self.tune,
         )
-        return self.select_kernel_key(_LOGICAL_REDUCE_KEYS, call)
+
+    def entry_for(self, role: str, call: LogicalReduceCall) -> Entry:
+        """Two implementations, so the one that serves the call says how it is built."""
+        return Op.entry_for(self, role, call)
 
 
 class AllFwdOp(_LogicalReduceOpBase):
@@ -268,11 +261,3 @@ class CountNonzeroFwdOp(_LogicalReduceOpBase):
         ``x != 0`` predicate to the declared output dtype.
         """
         return torch.int64
-
-
-for _op_cls in (
-    AllFwdOp,
-    AnyFwdOp,
-    CountNonzeroFwdOp,
-):
-    register_reduction_op(_op_cls)

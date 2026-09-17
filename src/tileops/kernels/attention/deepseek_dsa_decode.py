@@ -431,8 +431,7 @@ def _sparse_mla_kernel(
     return _sparse_mla_fwd_func
 
 
-@torch.library.custom_op("tileops::sparse_mla_fwd_wrapped_kernel", mutates_args=())
-def _sparse_mla_wrapped_kernel(
+def _sparse_mla_run(
     batch: int,
     seq_len: int,
     seq_len_kv: int,
@@ -472,7 +471,6 @@ def _sparse_mla_wrapped_kernel(
     )(block_i, threads)(q, kv, indices)
 
 
-@_sparse_mla_wrapped_kernel.register_fake
 def _(batch: int, seq_len: int, heads: int, dim: int, *inputs) -> None:
     return torch.empty([batch, seq_len, heads, dim], device=inputs[0].device, dtype=inputs[0].dtype)
 
@@ -683,8 +681,7 @@ def _sparse_mla_basic_kernel(
     return _sparse_mla_basic_fwd_func
 
 
-@torch.library.custom_op("tileops::sparse_mla_basic_fwd_wrapped_kernel", mutates_args=())
-def _sparse_mla_basic_wrapped_kernel(
+def _sparse_mla_basic_run(
     batch: int,
     seq_len: int,
     seq_len_kv: int,
@@ -725,7 +722,6 @@ def _sparse_mla_basic_wrapped_kernel(
     )(block_i, threads, num_stages)(q, kv, indices)
 
 
-@_sparse_mla_basic_wrapped_kernel.register_fake
 def _(batch: int, seq_len: int, heads: int, dim: int, *inputs) -> None:
     return torch.empty([batch, seq_len, heads, dim], device=inputs[0].device, dtype=inputs[0].dtype)
 
@@ -870,7 +866,7 @@ class SparseMlaBasicKernel(Kernel):
         Returns:
            torch.Tensor: Result of the sparse multi-head attention.
         """
-        return _sparse_mla_basic_wrapped_kernel(
+        return _sparse_mla_basic_run(
             self.batch,
             self.seq_len,
             self.seq_len_kv,
@@ -1068,7 +1064,7 @@ class SparseMlaKernel(Kernel):
         Returns:
            torch.Tensor: Result of the sparse multi-head attention.
         """
-        return _sparse_mla_wrapped_kernel(
+        return _sparse_mla_run(
             self.batch,
             self.seq_len,
             self.seq_len_kv,

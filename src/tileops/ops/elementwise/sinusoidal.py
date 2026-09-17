@@ -6,7 +6,7 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.elementwise import SinusoidalFwdKernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
 from ..op_base import Op
 
@@ -32,7 +32,7 @@ class SinusoidalFwdOp(Op):
         *,
         seq_len: int,
         d_model: int,
-        dtype: torch.dtype,
+        out_dtype: torch.dtype = torch.float32,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
@@ -41,7 +41,7 @@ class SinusoidalFwdOp(Op):
         Args:
             seq_len: Sequence length.
             d_model: Model dimension.
-            dtype: Torch dtype.
+            out_dtype: Dtype of the generated tensor.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
                 the in-tree kernels, or ``None``. Nothing is probed: with no tensor input
                 there is no device to detect, so the in-tree kernels serve unless a target
@@ -51,7 +51,7 @@ class SinusoidalFwdOp(Op):
         """
         self.seq_len = seq_len
         self.d_model = d_model
-        self.dtype = dtype
+        self.out_dtype = out_dtype
         self.target = target
         self.dispatch_kernel(kernel_map)
 
@@ -67,29 +67,29 @@ class SinusoidalFwdOp(Op):
 
     @property
     def total_memory(self) -> int:
-        return self.seq_len * self.d_model * self.dtype.itemsize
+        return self.seq_len * self.d_model * self.out_dtype.itemsize
 
     def eval_roofline(self) -> tuple[int, int]:
         n_elem = self.seq_len * self.d_model
         return 6 * n_elem, self.total_memory
+
+    def entry_for(self, role: str, call: torch.dtype) -> Entry:
+        """One implementation, built per dtype; the extents are the op's."""
+        return call, lambda: self._build(call)
 
     def _build(self, dtype: torch.dtype):
         impl, ctor_dtype = self.kernel_map[self._op_name].specialize(dtype)
         return impl(self.seq_len, self.d_model, ctor_dtype)
 
     def forward(self) -> torch.Tensor:
-        # The op promised ``self.dtype``; whichever storage the backend chose to
+        # The op promised ``self.out_dtype``; whichever storage the backend chose to
         # compute in is its own business and does not reach the caller.
         """Run the op on the inputs the manifest declares.
 
         Returns:
             ``output``, as the manifest declares.
         """
-        kernel = self.get_or_build_kernel(
-            self._op_name,
-            (),  # no tensor input, so no device to detect: in-tree only
-            key=self.dtype,
-            build=lambda: self._build(self.dtype),
-        )
+        # No tensor input, so no device to detect: in-tree only.
+        kernel = self.kernel_for(self._op_name, (), self.out_dtype)
         out = kernel().reshape(self.seq_len, self.d_model)
-        return out if out.dtype == self.dtype else out.to(self.dtype)
+        return out if out.dtype == self.out_dtype else out.to(self.out_dtype)

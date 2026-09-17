@@ -4,10 +4,10 @@ from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe import MoePermuteAlignKernel
 
-from ..compile_boundary import get_instance
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["MoePermuteAlignFwdOp"]
@@ -27,7 +27,7 @@ class MoePermuteAlignFwdOp(Op):
         ```
     """
 
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::moe_permute_align_fwd",)
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -54,14 +54,18 @@ class MoePermuteAlignFwdOp(Op):
         self.block_size = block_size
         self.numel = total_tokens * top_k
 
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = self.kernel_map["permute_align_kernel"](
-            self.numel, num_experts, block_size, tune=tune
-        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"permute_align_kernel": MoePermuteAlignKernel}
+
+    def entry_for(self, role: str, call: object) -> Entry:
+        """One implementation, built from the extents the caller committed to."""
+        return call, lambda: self.kernel_map[role](
+            self.numel, self.num_experts, self.block_size, tune=self.tune
+        )
 
     def _padded_extents(self, numel: int) -> Tuple[int, int]:
         """``(max_padded, num_blocks)`` — the two padded extents the manifest states.
@@ -106,32 +110,11 @@ class MoePermuteAlignFwdOp(Op):
             expert_ids:       [num_blocks] int32
             num_tokens_post_pad: [1] int32
         """
-        return _moe_permute_align_fwd(topk_ids, self._instance_key)
+        return self._wrapped(topk_ids, self._instance_key)
 
     def _eager_forward(
         self, topk_ids: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Launch inside the operator, where dynamo does not follow the kernel call."""
-        return self.kernel(topk_ids)
-
-
-@torch.library.custom_op("tileops::moe_permute_align_fwd", mutates_args=())
-def _moe_permute_align_fwd(
-    topk_ids: torch.Tensor,
-    instance_key: str,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    return get_instance(instance_key)._eager_forward(topk_ids)
-
-
-@_moe_permute_align_fwd.register_fake
-def _moe_permute_align_fwd_fake(
-    topk_ids: torch.Tensor,
-    instance_key: str,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(tuple(topk_ids.shape))
-    # All three outputs are ``int32`` by the manifest, independent of the input dtype.
-    return tuple(
-        torch.empty(shapes[name], dtype=torch.int32, device=topk_ids.device)
-        for name in ("sorted_token_ids", "expert_ids", "num_tokens_post_pad")
-    )
+        kernel = self.kernel_for("permute_align_kernel", (topk_ids,), topk_ids.device)
+        return kernel(topk_ids)

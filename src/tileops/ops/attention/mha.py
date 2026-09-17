@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
@@ -11,9 +11,10 @@ from tileops.kernels.attention import (
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 from .gqa import GroupedQueryAttentionBwdOp
-from .selection import MHA_PAGED_DECODE_KEYS, AttentionCall
+from .selection import AttentionCall, device_of
 
 __all__ = [
     "MultiHeadAttentionBwdOp",
@@ -27,6 +28,8 @@ class MultiHeadAttentionBwdOp(Op):
     MHA backward is the ``heads_kv == heads`` specialization of GQA backward,
     matching the forward path's dispatch through GQA.
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     _LEGACY_KERNEL_MAP_KEYS = frozenset(
         {
@@ -131,6 +134,21 @@ class MultiHeadAttentionBwdOp(Op):
         Returns:
             ``dq``, ``dk``, ``dv``, as the manifest declares. Shape rules: ``dq.shape == (B, S, H, D)``; ``dk.shape == (B, S, H, D)``; ``dv.shape == (B, S, H, D)``.
         """
+        return self._wrapped(q, k, v, o, do, lse, self._instance_key)
+
+    def _eager_forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        o: torch.Tensor,
+        do: torch.Tensor,
+        lse: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
+        """
         self.dtype = q.dtype
         return self._gqa_op(q, k, v, o, do, lse)
 
@@ -143,6 +161,8 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
     """Paged MHA decode with dynamic KV cache. Layout: ``Q`` $[batch \\times seqlen\\_q \\times heads \\times dim]$ (BSHD);
     K, V physical cache [seqlen_kv, heads, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -175,23 +195,8 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.dispatch_kernel(kernel_map)
 
     def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        call = self._attention_call(dtype)
-        key = self.select_kernel_key(MHA_PAGED_DECODE_KEYS, call)
-
-        def build() -> Kernel:
-            return self.kernel_map[key](
-                call.batch,
-                call.heads,
-                call.max_seqlen_q,
-                call.seqlen_kv,
-                call.dim,
-                call.page_size,
-                call.is_causal,
-                dtype,
-                tune=call.tune,
-            )
-
-        return self.get_or_build_kernel(key, inputs, key=dtype, build=build)
+        call = self._attention_call(dtype, device_of(inputs))
+        return self.kernel_for("mha_decode_paged", inputs, call)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -200,13 +205,13 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
             "mha_decode_paged_ws_kernel": MHADecodePagedWsKernel,
         }
 
-    def _attention_call(self, dtype: torch.dtype) -> AttentionCall:
+    def _attention_call(
+        self, dtype: torch.dtype, device: Optional[torch.device] = None
+    ) -> AttentionCall:
         """State what one paged decode call is, for selection to filter against.
 
         The element type arrives with the inputs rather than with the op, so one
-        instance serves every dtype it is handed. Named with a leading underscore
-        where the GQA siblings' equivalent is public: this round's provenance gate
-        rejects any addition to a public Op surface under ``src/tileops/ops/``.
+        instance serves every dtype it is handed.
         """
         return AttentionCall(
             dtype=dtype,
@@ -219,6 +224,7 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
             page_size=self.page_size,
             is_causal=self.is_causal,
             tune=self.tune,
+            device=device,
         )
 
     def _infer_output_shapes(
@@ -251,6 +257,20 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
 
         Returns:
             ``o``, as the manifest declares. Shape rules: ``o.shape == (B, S_q, H, D)``.
+        """
+        return self._wrapped(q, k, v, real_seqlen_kv, block_table, self._instance_key)
+
+    def _eager_forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        real_seqlen_kv: torch.Tensor,
+        block_table: torch.Tensor,
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         self.dtype = q.dtype
         return self._get_kernel((q, k, v, real_seqlen_kv, block_table), q.dtype)(

@@ -3,13 +3,10 @@
 from math import prod
 from typing import Dict, Optional
 
-import torch
-
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.argreduce import ArgreduceKernel
 
-from ._boundary import register_reduction_op
 from .reduce import _ReduceOpBase
 
 __all__ = ["ArgmaxFwdOp", "ArgminFwdOp"]
@@ -26,14 +23,14 @@ class _ArgreduceOpBase(_ReduceOpBase):
     This op's part is the stride, which the shape and the reduced axis decide.
     """
 
-    def _build_kernel_kwargs(self, x: torch.Tensor, axes: "tuple[int, ...]") -> dict:
+    def _build_kernel_kwargs(self, shape, axes, device_index) -> dict:
         """Elements between two neighbours along the reduced axis, on top of the shared set.
 
         One for the last axis and for a full reduction, which is the flattened buffer.
         """
         return {
-            **super()._build_kernel_kwargs(x, axes),
-            "inner_stride": prod(x.shape[axes[-1] + 1 :]) if len(axes) == 1 else 1,
+            **super()._build_kernel_kwargs(shape, axes, device_index),
+            "inner_stride": prod(shape[axes[-1] + 1 :]) if len(axes) == 1 else 1,
         }
 
 
@@ -147,10 +144,3 @@ class ArgminFwdOp(_ArgreduceOpBase):
             f"ArgminFwdOp only supports scalar dim (int) or None, "
             f"got {type(self.dim).__name__}: {self.dim!r}"
         )
-
-
-for _op_cls in (
-    ArgmaxFwdOp,
-    ArgminFwdOp,
-):
-    register_reduction_op(_op_cls)

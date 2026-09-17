@@ -65,40 +65,6 @@ def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat
     return _mhc_func
 
 
-@torch.library.custom_op("tileops::mhc_post_wrapped_kernel", mutates_args=())
-def _mhc_post_wrapped_kernel(
-    batch: int,
-    n_expand: int,
-    c_x: int,
-    dtype: str,
-    block_x_b: int,
-    block_C: int,
-    num_stages: int,
-    threads: int,
-    x_layer_out: torch.Tensor,
-    h_post: torch.Tensor,
-    x_res: torch.Tensor,
-) -> torch.Tensor:
-    return _mhc_post_kernel(batch, n_expand, c_x, dtype)(block_x_b, block_C, num_stages, threads)(
-        x_layer_out, h_post, x_res
-    )
-
-
-@_mhc_post_wrapped_kernel.register_fake
-def _(
-    batch: int,
-    n_expand: int,
-    c_x: int,
-    dtype: str,
-    block_x_b: int,
-    block_C: int,
-    num_stages: int,
-    threads: int,
-    *input,
-) -> torch.Tensor:
-    return torch.empty_like(input[0], dtype=input[0].dtype, device=input[0].device)
-
-
 class MHCPostKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
@@ -140,17 +106,9 @@ class MHCPostKernel(Kernel):
         return configs
 
     def forward(self, x_layer_out, h_post, x_res):
-        result = _mhc_post_wrapped_kernel(
-            self.batch,
-            self.n_expand,
-            self.c_x,
-            self.dtype_str,
+        return self.kernel(
             self.config["block_x_b"],
             self.config["block_C"],
             self.config["num_stages"],
             self.config["threads"],
-            x_layer_out,
-            h_post,
-            x_res,
-        )
-        return result
+        )(x_layer_out, h_post, x_res)

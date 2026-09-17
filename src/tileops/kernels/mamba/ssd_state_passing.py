@@ -228,32 +228,6 @@ def _ssd_state_passing_fwd_kernel(
     return kernel_func
 
 
-@torch.library.custom_op("tileops::ssd_state_passing_fwd", mutates_args=())
-def _ssd_state_passing_fwd_wrapped(
-    batch: int,
-    num_chunks: int,
-    n_heads: int,
-    d_state: int,
-    has_initial_states: bool,
-    dtype: str,
-    block_d: int,
-    threads: int,
-    vectorize: bool,
-    states: torch.Tensor,
-    dA_chunk_cumsum: torch.Tensor,
-    initial_states: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    return _ssd_state_passing_fwd_kernel(
-        batch,
-        num_chunks,
-        n_heads,
-        d_state,
-        has_initial_states,
-        dtype,
-    )(block_d, threads, vectorize)(states, dA_chunk_cumsum, initial_states)
-
-
-@_ssd_state_passing_fwd_wrapped.register_fake
 def _(
     batch: int,
     num_chunks: int,
@@ -373,16 +347,11 @@ class SSDStatePassingFwdKernel(Kernel):
         dA_chunk_cumsum: torch.Tensor,
         initial_states: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return _ssd_state_passing_fwd_wrapped(
-            self.batch,
-            self.num_chunks,
-            self.n_heads,
-            self.d_state,
-            self.has_initial_states,
-            self.dtype_str,
+        return self.kernel(
             self.config["block_d"],
             self.config["threads"],
             self.config["vectorize"],
+        )(
             states,
             dA_chunk_cumsum,
             initial_states,

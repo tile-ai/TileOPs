@@ -1,10 +1,11 @@
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba import SSDDecodeKernel
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["SSDDecodeFwdOp"]
@@ -26,6 +27,8 @@ class SSDDecodeFwdOp(Op):
     here and must be applied by the caller if needed.
 
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -63,13 +66,13 @@ class SSDDecodeFwdOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, n_heads, d_head, d_state, n_groups, dtype, device_index, self.tune)
-        return self.get_or_build_kernel(
-            "ssd_decode",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["ssd_decode"](
-                batch, n_heads, d_head, d_state, n_groups, dtype, tune=self.tune
-            ),
+        return self.kernel_for("ssd_decode", inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, dtype and device."""
+        batch, n_heads, d_head, d_state, n_groups, dtype, _device, tune = call
+        return call, lambda: self.kernel_map["ssd_decode"](
+            batch, n_heads, d_head, d_state, n_groups, dtype, tune=tune
         )
 
     def _infer_output_shapes(
@@ -105,6 +108,21 @@ class SSDDecodeFwdOp(Op):
 
         Returns:
             y_out: (batch, n_heads, d_head) float32
+        """
+        return self._wrapped(A, dt, x, B_in, C_in, state, self._instance_key)
+
+    def _eager_forward(
+        self,
+        A: torch.Tensor,
+        dt: torch.Tensor,
+        x: torch.Tensor,
+        B_in: torch.Tensor,
+        C_in: torch.Tensor,
+        state: torch.Tensor,
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")

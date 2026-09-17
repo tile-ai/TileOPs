@@ -12,6 +12,8 @@
 
 - `dtype` syntax: `|` for alternatives. `same_as(ref)` is dtype-only identity (matches `ref` at runtime, no extra axis in `dtype_combos`, never used for shape).
 
+- An output's `dtype` names one dtype, never a set (R23). An output the caller may restate declares `caller_stated: true` and takes its value from a `signature.params` entry named `out_dtype`, whose `type` is the set the caller may ask for; the output's own declaration is the fallback. Marked output and param imply each other, and the op's `__init__` takes a parameter of that name.
+
 - `dtype_combos` only when the supported set is a strict subset of the Cartesian product. Omit when all combinations are valid.
 
 - Output shapes are fully specified by `shape` and/or `shape_rules`. `shape` present → fixed rank, names become roofline variables; `shape` absent on inputs → arbitrary rank, use `params` + `shape_rules`. Shared dim names across tensors → sizes must match.
@@ -32,7 +34,7 @@
 
 - Roofline `vars` maps variable names to Python expressions over tensor shapes and params. Required for arbitrary-rank ops.
 
-- `status` is required: `implemented` or `spec-only`. A new entry lands as `spec-only` whatever existing code claims, and the PR that flips it to `implemented` changes `status` and the `source.*` pointers only — an entry needing spec edits to match the implementation is reverse-engineering from code, and those fields are re-derived from `ref_api` in their own PR.
+- `status` is required: `implemented` or `spec-only`. `spec-only` is for an entry with no implementation behind it; an entry whose op exists and passes the parity gates is `implemented`.
 
 - `torch_compile_fullgraph`: literal `true` only; omit for no promise; invalid on `spec-only`. Declare only ops with a registered cold `fullgraph=True` compile test. Semantics: [manifest.md](../../docs/design/manifest.md#torch_compile_fullgraph).
 
@@ -41,6 +43,8 @@
 - An optional input's name may appear only in its own `dtype` / `shape` declaration, in a bare `X is None` / `X is not None` test, or in a use guarded by `X is None` earlier in the same expression. `shape_rules` take `X is None or <condition>`; a roofline presence test goes in a `vars` entry, which `flops` / `bytes` then read, and a formula needing the tensor's own shape uses `roofline: {func: ...}`. Symbols first bound in `X`'s `shape` may not appear in a required input's or output's `shape`. Per-position table: [manifest.md](../../docs/design/manifest.md#optional-inputs).
 
 - Every optional input needs a workload row that passes it and one that omits it, counted per input rather than per combination. Param values and kernel shape ranges are out of scope.
+
+- Reserved workload keys are `dtype` (the row's element type, read by a `roofline.func` formula), `dtypes` (the dtype axis the row expands over) and `label`. Every other key names a `signature.params` entry.
 
 - Merging a signature does not merge the performance account: workload rows stay split by presence, and roofline counts the optional inputs the call actually passed rather than assuming all of them.
 

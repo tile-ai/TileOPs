@@ -10,14 +10,14 @@ Edge cases:
 - training=False: identity pass-through
 """
 
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
 from tileops.kernels.dropout import DropoutKernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
-from .compile_boundary import get_instance
+from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
 
 __all__ = ["DropoutFwdOp"]
@@ -93,17 +93,13 @@ class DropoutFwdOp(Op):
 
         *rows* is the flat view the kernel wants; *x* is what the signature declares.
         """
-        return self.get_or_build_kernel(
-            self._op_name,
-            (x,),
-            key=(rows.numel(), rows.dtype, rows.device.index),
-            build=lambda: self.kernel_map[self._op_name](
-                rows.numel(),
-                rows.dtype,
-                p=self.p,
-                seed=self.seed,
-                tune=self.tune,
-            ),
+        return self.kernel_for(self._op_name, (x,), (rows.numel(), rows.dtype, rows.device.index))
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per element count, dtype and device."""
+        count, dtype, _device_index = call
+        return call, lambda: self.kernel_map[self._op_name](
+            count, dtype, p=self.p, seed=self.seed, tune=self.tune
         )
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -146,21 +142,4 @@ class DropoutFwdOp(Op):
             return wrapped(input, self._instance_key)
         return self._eager_forward(input)
 
-    _wrapped = None
-
-
-# torch.compile registration
-
-
-@torch.library.custom_op("tileops::dropout", mutates_args=())
-def _wrapped_dropout(x: torch.Tensor, instance_key: str) -> torch.Tensor:
-    instance = get_instance(instance_key)
-    return instance._eager_forward(x)
-
-
-@_wrapped_dropout.register_fake
-def _(x: torch.Tensor, instance_key: str) -> torch.Tensor:
-    return torch.empty_like(x)
-
-
-DropoutFwdOp._wrapped = _wrapped_dropout
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)

@@ -339,6 +339,7 @@ PENDING = frozenset(
         "HardsigmoidFwdOp",
         "HardswishFwdOp",
         "HardtanhFwdOp",
+        "IndexedExpertMLPFwdOp",
         "InfNormFwdOp",
         "InstanceNormFwdOp",
         "IsfiniteFwdOp",

@@ -233,6 +233,7 @@ def test_gqa_prefill_paged_with_kv_cache_fwd(
         max_pages_per_req=max_pages_per_req,
         page_size=page_size,
         dim=dim,
+        max_seqlen_q=max(q_lens),
         is_causal=is_causal,
     )
     k_scale, v_scale = make_unit_cache_scales()
@@ -248,7 +249,6 @@ def test_gqa_prefill_paged_with_kv_cache_fwd(
         cu_seqlens_q,
         cache_seqlens,
         block_table,
-        max(q_lens),
     )
     assert isinstance(output, torch.Tensor)
     atol, rtol = _PREFILL_PAGED_TOLERANCE[dtype]
@@ -343,6 +343,7 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_fwd(
         max_pages_per_req=max_pages_per_req,
         page_size=page_size,
         dim=dim,
+        max_seqlen_q=max(q_lens),
         is_causal=is_causal,
         cache_dtype=cache_dtype,
         softcap=softcap,
@@ -359,7 +360,6 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_fwd(
         cu_seqlens_q,
         cache_seqlens,
         block_table,
-        max(q_lens),
     )
     assert isinstance(output, torch.Tensor)
     torch.testing.assert_close(output, ref, atol=8e-2, rtol=2e-2)
@@ -418,6 +418,7 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_rejects_invalid_scales(
         max_pages_per_req=max_pages_per_req,
         page_size=page_size,
         dim=dim,
+        max_seqlen_q=max(q_lens),
         cache_dtype=torch.float8_e4m3fn,
     )
 
@@ -433,7 +434,6 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_rejects_invalid_scales(
             make_cu_seqlens(q_lens),
             torch.tensor([0], device="cuda", dtype=torch.int32),
             block_table,
-            max(q_lens),
         )
 
 
@@ -527,6 +527,7 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
         max_pages_per_req=max_pages_per_req,
         page_size=page_size,
         dim=dim,
+        max_seqlen_q=max(q_lens),
         is_causal=is_causal,
         softcap=softcap,
         fuse_rope=True,
@@ -546,7 +547,6 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
         cu_seqlens_q,
         cache_seqlens,
         block_table,
-        max(q_lens),
     )
     atol, rtol = _PREFILL_PAGED_TOLERANCE[dtype]
     torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
@@ -585,6 +585,7 @@ def test_gqa_prefill_paged_with_kv_cache_validates_capacity() -> None:
         max_pages_per_req=max_pages_per_req,
         page_size=page_size,
         dim=dim,
+        max_seqlen_q=max(q_lens),
     )
     k_scale, v_scale = make_unit_cache_scales()
 
@@ -600,7 +601,6 @@ def test_gqa_prefill_paged_with_kv_cache_validates_capacity() -> None:
             make_cu_seqlens(q_lens),
             torch.tensor(old_lens, device="cuda", dtype=torch.int32),
             block_table,
-            max(q_lens),
         )
 
 
@@ -614,6 +614,7 @@ def test_gqa_prefill_paged_with_kv_cache_requires_power_of_two_page_size() -> No
             max_pages_per_req=8,
             page_size=24,
             dim=64,
+            max_seqlen_q=16,
         )
 
 
@@ -671,6 +672,7 @@ def test_gqa_prefill_paged_with_kv_cache_page_sizes(page_size: int) -> None:
         max_pages_per_req=max_pages_per_req,
         page_size=page_size,
         dim=dim,
+        max_seqlen_q=max(q_lens),
     )
     k_scale, v_scale = make_unit_cache_scales()
 
@@ -685,7 +687,6 @@ def test_gqa_prefill_paged_with_kv_cache_page_sizes(page_size: int) -> None:
         cu_seqlens_q,
         cache_seqlens,
         block_table,
-        max(q_lens),
     )
     torch.testing.assert_close(output, ref, atol=5e-3, rtol=1e-5)
 
@@ -710,6 +711,7 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
         max_pages_per_req=max_pages_per_req,
         page_size=page_size,
         dim=dim,
+        max_seqlen_q=max(q_lens),
     )
 
     for dtype in (torch.float16, torch.bfloat16):
@@ -752,16 +754,13 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
             cu_seqlens_q,
             cache_seqlens,
             block_table,
-            max(q_lens),
         )
         assert output.dtype == dtype
         atol, rtol = _PREFILL_PAGED_TOLERANCE[dtype]
         torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
 
-    assert set(op.built_kernels("gqa_prefill_paged_with_kv_cache_fwd_kernel")) == {
-        torch.float16,
-        torch.bfloat16,
-    }
+    built = op.built_kernels("gqa_prefill_paged")
+    assert {kernel.dtype for kernel in built.values()} == {torch.float16, torch.bfloat16}
 
 
 # ----------------------------------------------------------------------

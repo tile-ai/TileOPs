@@ -232,68 +232,6 @@ def _engram_decode_kernel(batch, d_mem, d, max_conv_len, conv_kernel_size, dilat
     return _func
 
 
-@torch.library.custom_op("tileops::engram_decode", mutates_args=())
-def _engram_decode_wrapped(
-    batch: int,
-    d_mem: int,
-    d: int,
-    max_conv_len: int,
-    conv_kernel_size: int,
-    dilation: int,
-    eps: float,
-    dtype_str: str,
-    threads: int,
-    e_t: torch.Tensor,
-    h_t: torch.Tensor,
-    conv_state: torch.Tensor,
-    W_K: torch.Tensor,
-    W_V: torch.Tensor,
-    rms_w_h: torch.Tensor,
-    rms_w_v: torch.Tensor,
-    conv_w: torch.Tensor,
-) -> list[torch.Tensor]:
-    results = _engram_decode_kernel(
-        batch,
-        d_mem,
-        d,
-        max_conv_len,
-        conv_kernel_size,
-        dilation,
-        eps,
-        dtype_str,
-    )(threads)(e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
-    return list(results)
-
-
-@_engram_decode_wrapped.register_fake
-def _(
-    batch,
-    d_mem,
-    d,
-    max_conv_len,
-    conv_kernel_size,
-    dilation,
-    eps,
-    dtype_str,
-    threads,
-    e_t,
-    h_t,
-    conv_state,
-    W_K,
-    W_V,
-    rms_w_h,
-    rms_w_v,
-    conv_w,
-):
-    d_padded = align_up(d, ALIGNMENT)
-    device = e_t.device
-    dt = e_t.dtype
-    return [
-        torch.empty((batch, d_padded), dtype=dt, device=device),
-        torch.empty((batch, max_conv_len, d_padded), dtype=dt, device=device),
-    ]
-
-
 class EngramDecodeKernel(Kernel):
     """Engram fused decode kernel — full single-token pipeline.
 
@@ -406,24 +344,10 @@ class EngramDecodeKernel(Kernel):
             rms_w_h = F.pad(rms_w_h, (0, pad))
             rms_w_v = F.pad(rms_w_v, (0, pad))
             conv_w = F.pad(conv_w, (0, pad))
-        results = _engram_decode_wrapped(
-            self.batch,
-            self.d_mem,
-            self.d,
-            self.max_conv_len,
-            self.conv_kernel_size,
-            self.dilation,
-            self.eps,
-            self.dtype_str,
-            self.config["threads"],
-            e_t,
-            h_t,
-            conv_state,
-            W_K,
-            W_V,
-            rms_w_h,
-            rms_w_v,
-            conv_w,
+        results = list(
+            self.kernel(self.config["threads"])(
+                e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w
+            )
         )
         if pad:
             results[0] = results[0][:, : self.d]

@@ -1,7 +1,7 @@
 """PReLU op: y = x if x > 0 else weight[channel] * x."""
 
 from math import prod
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
@@ -9,13 +9,11 @@ from tileops.backend import Target
 from tileops.kernels.elementwise import PreluFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
-from ..compile_boundary import get_instance
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 from ._base import (
     _PerDtypeKernels,
     _require_one_device,
-    _require_shape_inference,
-    resolve_output_dtype,
 )
 
 
@@ -28,8 +26,9 @@ class PreluFwdOp(_PerDtypeKernels, Op):
 
     """
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
     _op_name = "prelu"
-    _wrapped = None
 
     def __init__(
         self,
@@ -145,21 +144,3 @@ class PreluFwdOp(_PerDtypeKernels, Op):
 # The compile boundary: one operator for this op, registered at import time. The op's
 # key crosses it, and the body trades the key back for the instance — see
 # src/tileops/ops/compile_boundary.py.
-
-_require_shape_inference(PreluFwdOp)
-
-
-@torch.library.custom_op("tileops::elementwise_prelu", mutates_args=())
-def _prelu_fwd(x: torch.Tensor, weight: torch.Tensor, instance_key: str) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(x, weight)
-
-
-@_prelu_fwd.register_fake
-def _prelu_fwd_fake(x: torch.Tensor, weight: torch.Tensor, instance_key: str) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(tuple(x.shape), tuple(weight.shape))
-    return x.new_empty(shapes["output"], dtype=resolve_output_dtype(PreluFwdOp.__name__, x.dtype))
-
-
-PreluFwdOp._wrapped = _prelu_fwd
-PreluFwdOp.compile_op_names = ("tileops::elementwise_prelu",)

@@ -1,16 +1,31 @@
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.topk_selector import TopkSelectorKernel
 
+from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
 
 __all__ = ["TopkSelectorFwdOp"]
 
 
 class TopkSelectorFwdOp(Op):
+    """The ``topk`` highest-scoring key positions of each query row's own window.
+
+    Row ``(b, s, g)`` selects from ``index_score[b, s, starts[b, s]:ends[b, s], g]``.
+
+    Two deviations from ``torch.topk``, which returns its indices sorted:
+
+    - The indices come back in no particular order along the ``topk`` axis. Two calls on
+      one input select the same positions and may place them in different slots.
+    - A window holding fewer than ``topk`` positions fills the rest with ``seq_len_kv``,
+      one past the last key, which selects nothing.
+    """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
     def __init__(
         self, topk: int, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False
     ) -> None:
@@ -47,21 +62,17 @@ class TopkSelectorFwdOp(Op):
         in_dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
-        key = (batch, seq_len, seq_len_kv, kv_group, self.topk, in_dtype, device_index, self.tune)
-        return self.get_or_build_kernel(
+        return self.kernel_for(
             "topk_selector_kernel",
             inputs,
-            key=key,
-            build=lambda: self.kernel_map["topk_selector_kernel"](
-                batch,
-                seq_len,
-                seq_len_kv,
-                kv_group,
-                self.topk,
-                in_dtype,
-                self.out_dtype,
-                tune=self.tune,
-            ),
+            (batch, seq_len, seq_len_kv, kv_group, self.topk, in_dtype, device_index, self.tune),
+        )
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, dtype and device; ``out_dtype`` is the op's."""
+        batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, _device_index, tune = call
+        return call, lambda: self.kernel_map["topk_selector_kernel"](
+            batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, self.out_dtype, tune=tune
         )
 
     def _infer_output_shapes(
@@ -84,6 +95,13 @@ class TopkSelectorFwdOp(Op):
 
         Returns:
             ``indexes``, as the manifest declares.
+        """
+        return self._wrapped(index_score, starts, ends, self._instance_key)
+
+    def _eager_forward(self, index_score, starts, ends) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         if not index_score.is_cuda:
             raise ValueError("TopkSelectorFwdOp expects CUDA inputs")

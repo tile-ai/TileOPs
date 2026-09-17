@@ -17,6 +17,11 @@ __all__ = [
     "ATTENTION_DTYPES",
     "WS_ARCH",
     "AttentionCall",
+    "dense_decode_region",
+    "dense_long_context_decode_region",
+    "dense_fp8_decode_region",
+    "dense_sliding_window_region",
+    "dense_ws_region",
     "decode_bs1_region",
     "dense_prefill_region",
     "fp8_dtype",
@@ -71,8 +76,8 @@ class AttentionCall(CallSpec):
     fuse_rope: bool = False
     max_position: Optional[int] = None
     rotary_dim: Optional[int] = None
+    rope_layout: str = "neox"
     accum_dtype: torch.dtype = torch.float32
-    tune: bool = False
 
 
 def uses_sliding_window(call: AttentionCall) -> bool:
@@ -155,6 +160,50 @@ def paged_decode_ws_region(call: AttentionCall) -> bool:
         tile <= call.page_size and call.page_size % tile == 0 and tile <= call.seqlen_kv
         for tile in _WS_DECODE_TILES
     )
+
+
+def dense_decode_region(call: AttentionCall) -> bool:
+    """The contiguous decode region: one query position, no window, not FP8."""
+    return not call.is_fp8 and call.max_seqlen_q == 1 and not uses_sliding_window(call)
+
+
+def dense_long_context_decode_region(call: AttentionCall) -> bool:
+    """The one decode shape the long-context split serves."""
+    return (
+        dense_decode_region(call)
+        and not call.fuse_rope
+        and call.seqlen_kv >= 1024
+        and call.batch == 1
+        and call.heads == 32
+        and call.heads_kv == 4
+        and call.dim == 128
+        and call.dtype == torch.float16
+        and call.softcap == 0.0
+    )
+
+
+def dense_fp8_decode_region(call: AttentionCall) -> bool:
+    """The FP8 decode region: batch 1, one query position, a long cache."""
+    return (
+        call.is_fp8
+        and call.batch == 1
+        and call.max_seqlen_q == 1
+        and call.seqlen_kv >= 2048
+        and call.heads_kv > 0
+        and call.heads // call.heads_kv <= 16
+        and not uses_sliding_window(call)
+        and not call.fuse_rope
+    )
+
+
+def dense_sliding_window_region(call: AttentionCall) -> bool:
+    """The contiguous windowed region, which FP8 has its own implementation for."""
+    return not call.is_fp8 and uses_sliding_window(call)
+
+
+def dense_ws_region(call: AttentionCall) -> bool:
+    """The contiguous prefill region: more than one query position, no window."""
+    return not call.is_fp8 and call.max_seqlen_q != 1 and not uses_sliding_window(call)
 
 
 def decode_bs1_region(call: AttentionCall) -> bool:

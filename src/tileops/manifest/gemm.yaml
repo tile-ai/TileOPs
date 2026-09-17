@@ -9,6 +9,7 @@ GemmFwdOp:
   ref_api: "torch.matmul"
   family: gemm
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -71,6 +72,7 @@ GemmFp8FwdOp:
   ref_api: "torch._scaled_mm"
   family: gemm
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -78,11 +80,11 @@ GemmFp8FwdOp:
       b: {dtype: "same_as(a)", shape: "[N, K]"}
       scale_a: {dtype: "float32"}
       scale_b: {dtype: "float32"}
-      bias: {dtype: "bfloat16", shape: "[N]", optional: true}
+      bias: {dtype: "same_as(d)", shape: "[N]", optional: true}
     outputs:
-      d: {dtype: "bfloat16 | float16", shape: "[M, N]"}
+      d: {dtype: "bfloat16", caller_stated: true, shape: "[M, N]"}
     params:
-      out_dtype: {type: dtype, default: bfloat16}
+      out_dtype: {type: "bfloat16 | float16", default: bfloat16}
     shape_rules:
     - "a.shape[1] == b.shape[1]"
     - "d.shape == (a.shape[0], b.shape[0])"
@@ -122,6 +124,7 @@ GemmW4A16FwdOp:
   ref_api: "none"
   family: gemm
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -167,6 +170,7 @@ GroupedGemmFwdOp:
   ref_api: "none"
   family: gemm
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:

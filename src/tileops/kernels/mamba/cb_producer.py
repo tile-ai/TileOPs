@@ -166,29 +166,6 @@ def _cb_producer_kernel(
     return kernel_func
 
 
-@torch.library.custom_op("tileops::cb_producer", mutates_args=())
-def _cb_producer_wrapped(
-    batch: int,
-    num_chunks: int,
-    n_groups: int,
-    chunk_len: int,
-    d_state: int,
-    dtype: str,
-    block_l: int,
-    block_s: int,
-    block_n: int,
-    threads: int,
-    C_mat: torch.Tensor,
-    B_mat: torch.Tensor,
-) -> torch.Tensor:
-    kernel_func = _cb_producer_kernel(batch, num_chunks, n_groups, chunk_len, d_state, dtype)
-    kernel = kernel_func(block_l, block_s, block_n, threads)
-
-    # TileLang with out_idx=[-1] returns the output directly
-    return kernel(C_mat, B_mat)
-
-
-@_cb_producer_wrapped.register_fake
 def _(
     batch: int,
     num_chunks: int,
@@ -298,17 +275,12 @@ class CBProducerKernel(Kernel):
         """
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
-        return _cb_producer_wrapped(
-            self.batch,
-            self.num_chunks,
-            self.n_groups,
-            self.chunk_len,
-            self.d_state,
-            self.dtype_str,
+        return self.kernel(
             self.config["block_l"],
             self.config["block_s"],
             self.config["block_n"],
             self.config["threads"],
+        )(
             C_mat,
             B_mat,
         )

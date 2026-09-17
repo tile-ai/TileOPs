@@ -15,17 +15,17 @@ dtype and device, so one op instance handles varying shapes.
 
 import warnings
 from math import prod
-from typing import Dict, List, Optional, Tuple, Union
+from typing import ClassVar, Dict, List, Optional, Tuple, Union
 
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.reduction.reduce import ReduceKernel
 from tileops.manifest.shape_rules import reduced_shape
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
-from ._boundary import register_reduction_op
 from ._multidim import EmptyDimPolicy, normalize_dim
 
 # Op kinds that accept 0-D (scalar) input. The kernel path assumes
@@ -76,11 +76,13 @@ class _ReduceOpBase(Op):
     - ``_kernel_key``: kernel map key (default ``"reduce"``).
     - ``_kernel_cls``: kernel class (default ``ReduceKernel``).
     - ``_validate_dim()``: validate ``dim`` at init (default: accept int/list/None).
-    - ``_build_kernel_kwargs(x, axes)``: extra kwargs for the kernel constructor.
+    - ``_build_kernel_kwargs(shape, axes, device_index)``: extra kernel constructor kwargs.
     """
 
-    # Set by ``register_reduction_op`` on each concrete op; a base registers none.
-    _wrapped = None
+    # One operator, the op's declared inputs in, its declared outputs out. The
+    # registration is generated from the manifest entry by
+    # ``tileops.ops._compile_boundary_codegen``, which a base class with no entry skips.
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     _op_kind: str = ""  # overridden by subclasses
     _kernel_key: str = "reduce"  # overridden by subclasses for different kernel families
@@ -378,24 +380,43 @@ class _ReduceOpBase(Op):
 
     # Kernel cache
 
-    def _build_kernel_kwargs(self, x: torch.Tensor, axes: "tuple[int, ...]") -> dict:
+    def _build_kernel_kwargs(
+        self, shape: "tuple[int, ...]", axes: "tuple[int, ...]", device_index: "int | None"
+    ) -> dict:
         """What this op's kernel takes beyond the shared arguments.
 
         The device is one of them: a kernel that plans against shared memory has to plan
         against the device the input lives on, not whichever one is current.
         """
-        return {"device_index": x.device.index}
+        return {"device_index": device_index}
 
-    def _select_kernel_key(
-        self,
-        x: torch.Tensor,
-        axes: "tuple[int, ...]",
-        m: int,
-        n: int,
-    ) -> str:
-        """Choose the implementation key for this reduce call."""
+    def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int) -> object:
+        """What this call is, for :meth:`entry_for`.
 
-        return self._kernel_key
+        The default is the facts the kernel is built from. A family that chooses between
+        implementations returns a call record instead, and selection reads it.
+        """
+        return (tuple(x.shape), axes, self.keepdim, x.dtype, x.device.index, m, n)
+
+    def entry_for(self, role: str, call: object) -> Entry:
+        """One implementation, built from the whole shape and the axes it reduces.
+
+        The kernel owns the permute, so the whole shape decides what it is, not just the
+        row count and width. The device is in the identity because the kernel plans
+        against that device's shared memory.
+        """
+        shape, axes, keepdim, dtype, device_index, m, n = call
+        cls = self.kernel_map[self._kernel_key]
+        return call, lambda: cls(
+            m,
+            n,
+            self._op_kind,
+            dtype,
+            reduce_axes=axes,
+            keepdim=keepdim,
+            tune=self.tune,
+            **self._build_kernel_kwargs(shape, axes, device_index),
+        )
 
     def _reduce_axes(self, x: torch.Tensor) -> "tuple[int, ...]":
         """The axes this call reduces, ascending and non-negative.
@@ -426,27 +447,7 @@ class _ReduceOpBase(Op):
         n = prod(x.shape[a] for a in axes)
         m = prod(d for i, d in enumerate(x.shape) if i not in axes)
         self._last_roofline_mn = (m, n)
-        extra = self._build_kernel_kwargs(x, axes)
-        selected_key = self._select_kernel_key(x, axes, m, n)
-        kernel = self.get_or_build_kernel(
-            selected_key,
-            (x,),
-            # The kernel now owns the permute, so the whole shape decides what it is,
-            # not just the row count and width it reduces. The device is in the key
-            # because the kernel plans against that device's shared memory.
-            key=(selected_key, tuple(x.shape), axes, self.keepdim, x.dtype, x.device.index),
-            build=lambda: self.kernel_map[selected_key](
-                m,
-                n,
-                self._op_kind,
-                x.dtype,
-                reduce_axes=axes,
-                keepdim=self.keepdim,
-                tune=self.tune,
-                **extra,
-            ),
-        )
-        return x, kernel
+        return x, self.kernel_for("reduce", (x,), self._call(x, axes, m, n))
 
 
 # Simple reduce ops (sum, mean, amin, amax, prod)
@@ -597,9 +598,12 @@ class _WelfordReduceOp(_ReduceOpBase):
             tune=tune,
         )
 
-    def _build_kernel_kwargs(self, x: torch.Tensor, axes: "tuple[int, ...]") -> dict:
+    def _build_kernel_kwargs(self, shape, axes, device_index) -> dict:
         """Pass correction to the kernel constructor."""
-        return {**super()._build_kernel_kwargs(x, axes), "correction": self.correction}
+        return {
+            **super()._build_kernel_kwargs(shape, axes, device_index),
+            "correction": self.correction,
+        }
 
     def _scalar_forward(self, x: torch.Tensor):
         """Compute Welford ops on a 0-D input from closed-form.
@@ -704,16 +708,3 @@ class VarMeanFwdOp(_WelfordReduceOp):
             mean_out = x.float().mean(dim=axes, keepdim=self.keepdim).to(x.dtype)
             return invalid_dof, mean_out.reshape(invalid_dof.shape)
         return kernel(x)
-
-
-for _op_cls in (
-    SumFwdOp,
-    MeanFwdOp,
-    AminFwdOp,
-    AmaxFwdOp,
-    ProdFwdOp,
-    StdFwdOp,
-    VarFwdOp,
-    VarMeanFwdOp,
-):
-    register_reduction_op(_op_cls)

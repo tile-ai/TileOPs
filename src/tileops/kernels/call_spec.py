@@ -26,6 +26,9 @@ class CallSpec:
     sm_count: int = 0
     # The device whose facts decide selection. ``None`` reads the current device.
     device: "torch.device | None" = None
+    # Whether the kernel built for this call tunes itself. A construction argument
+    # wherever a kernel takes one, so it belongs to the call rather than beside it.
+    tune: bool = False
 
     def __post_init__(self) -> None:
         index = self.device.index if self.device is not None else None
@@ -51,7 +54,7 @@ class CallSpec:
         stated = [
             f"{f.name}={getattr(self, f.name)!r}"
             for f in dataclasses.fields(self)
-            if f.name not in ("arch", "h200", "sm_count", "device")
+            if f.name not in ("arch", "h200", "sm_count", "device", "tune")
             and getattr(self, f.name) != getattr(default, f.name)
         ]
         return ", ".join(

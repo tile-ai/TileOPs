@@ -83,9 +83,9 @@ design, calling conventions — live in
 
 - **Rule.** Block order: (1) `static_dims` entries in manifest key order, no defaults;
   (2) `signature.params` entries in manifest key order; then `*` and (3) any param declaring
-  `kw_only: true`, followed by `target`, `kernel_map`, `tune`. Give `dtype` a parameter only when
-  the inputs do not determine every output dtype — see
-  [Parameter design](./ops-design-reference.md#parameter-design).
+  `kw_only: true`, followed by `target`, `kernel_map`, `tune`. An output dtype the inputs do not determine
+  arrives as a parameter named `out_dtype`, and under no other name
+  ([manifest.md R23](./manifest.md)).
 - **Example.**
   ```python
   def __init__(
@@ -98,7 +98,8 @@ design, calling conventions — live in
       tune: bool = False,
   ):
   ```
-- **Common mistakes.** Parameters with no manifest source; accepting `dtype`, `in_dtype` or
+- **Common mistakes.** Parameters with no manifest source; taking an input dtype as `dtype` or
+  `in_dtype` when the tensors carry it; naming a caller-stated output dtype anything but
   `out_dtype`; making a param keyword-only that the manifest does not declare `kw_only`.
 
 ### Slot S13: <a id="slot-s13"></a> `__init__` body
@@ -121,7 +122,7 @@ design, calling conventions — live in
   ```
 - **Common mistakes.** `_infer_output_shapes` before `dispatch_kernel`; hard-coding the kernel class
   instead of routing through `self.kernel_map`; storing `self.dtype` at ctor time; a private cache
-  dict in place of `Op.get_or_build_kernel`.
+  dict in place of `Op.kernel_for`.
 
 ### Slot S14: <a id="slot-s14"></a> `default_kernel_map` property
 
@@ -151,7 +152,7 @@ design, calling conventions — live in
   axes via modulo (`dim = self.dim % x.ndim`); (c) validate each `static_dims` commitment
   (`x.shape[<resolved_axis>] == self.<kwarg>`); (d) bind `self._static_axes` for arbitrary-rank
   ops; (e) `.contiguous()` every input; (f)
-  `self.get_or_build_kernel(<name>, <inputs>, key=<key>, build=<factory>)`, handing over one slot
+  `self.kernel_for(<role>, <inputs>, <call>)`, handing over one slot
   per `signature.inputs` entry — `None` for an absent optional one; (g) call the kernel.
   An op that declares `torch_compile_fullgraph` keeps this body under the name `_eager_forward`,
   and its `forward` becomes one call to the operator it registers — that operator is outside the
@@ -178,20 +179,24 @@ design, calling conventions — live in
       self._static_axes = frozenset({(0, dim)})
       self.dtype = x.dtype
       x = x.contiguous()
-      kernel = self.get_or_build_kernel(
-          "example_cumsum_fwd",
-          (x,),
-          key=(self._cache_key(x.shape), x.dtype),
-          build=lambda: self.kernel_map["example_cumsum_fwd"](
-              self.N, "sum", x.dtype, tune=self.tune
-          ),
+      kernel = self.kernel_for(
+          "example_cumsum_fwd", (x,), (self._cache_key(x.shape), x.dtype)
       )
       return kernel(x)
+
+
+  def entry_for(self, role: str, call: tuple) -> Entry:
+      """One implementation, built per shape and dtype; the row width is the op's."""
+      _shape, dtype = call
+      return call, lambda: self.kernel_map["example_cumsum_fwd"](
+          self.N, "sum", dtype, tune=self.tune
+      )
   ```
 - **Common mistakes.** Building a kernel in a traced `forward`; keying on shape alone, so a second
   dtype reuses the first dtype's kernel; a `.is_cuda` check in the op; reshaping before the fetch;
   binding `self._static_axes` before the axis is non-negative; passing an already-built kernel where
-  a factory is expected, which rebuilds on every call; fetching a kernel at two sites in one op.
+  a factory is expected, which rebuilds on every call; fetching a kernel under two roles in one op
+  where one entry holding both would do.
 
 ### Slot S17: <a id="slot-s17"></a> `_infer_output_shapes` method body
 

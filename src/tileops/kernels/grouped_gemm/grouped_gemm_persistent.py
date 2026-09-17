@@ -4,11 +4,42 @@ from typing import Optional
 
 import torch
 
+from tileops.kernels.grouped_gemm.call import GroupedGemmCall
 from tileops.kernels.grouped_gemm.heuristics import GemmType
 from tileops.kernels.grouped_gemm.template import GemmTemplate
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = ["GroupedGemmPersistentKernel"]
+
+
+def grouped_gemm_entry(cls: type, call: GroupedGemmCall) -> Entry:
+    """The entry for a grouped-GEMM candidate: both take the same construction arguments.
+
+    The device index is in the identity because the kernel is compiled for the
+    architecture it is built on.
+    """
+    index = call.device.index if call.device is not None else None
+    identity = (
+        call.numel,
+        call.num_experts,
+        call.n,
+        call.k,
+        call.dtype,
+        call.transpose_a,
+        call.transpose_b,
+        call.tune,
+        index,
+    )
+    return identity, lambda: cls(
+        call.numel,
+        call.num_experts,
+        call.n,
+        call.k,
+        call.dtype,
+        transpose_a=call.transpose_a,
+        transpose_b=call.transpose_b,
+        tune=call.tune,
+    )
 
 
 class GroupedGemmPersistentKernel(Kernel):
@@ -39,6 +70,10 @@ class GroupedGemmPersistentKernel(Kernel):
         if call.transpose_a and call.transpose_b:
             extents.append(call.numel)
         return all(extent % 8 == 0 for extent in extents)
+
+    @classmethod
+    def entry_for(cls, call: GroupedGemmCall) -> Entry:
+        return grouped_gemm_entry(cls, call)
 
     def __init__(
         self,

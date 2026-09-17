@@ -569,7 +569,7 @@ def test_vector_norm_long_sequence_tiled(op_kind: str) -> None:
     )
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-    (kernel,) = op.built_kernels(op._kernel_key).values()
+    (kernel,) = op.built_kernels("reduce").values()
     assert kernel.config["block_m"] > test.shape[0]
     assert kernel.config["tile_n"] > 0
 
@@ -587,7 +587,7 @@ def test_vector_norm_tiled_autotune() -> None:
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
-    (kernel,) = op.built_kernels(op._kernel_key).values()
+    (kernel,) = op.built_kernels("reduce").values()
     assert kernel._needs_tiling
     assert kernel.config in kernel.autotune_configs
 

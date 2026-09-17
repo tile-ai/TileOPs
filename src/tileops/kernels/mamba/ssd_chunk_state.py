@@ -254,50 +254,6 @@ def _ssd_chunk_state_fwd_kernel(
     return kernel_func
 
 
-@torch.library.custom_op("tileops::ssd_chunk_state_fwd", mutates_args=())
-def _ssd_chunk_state_fwd_wrapped(
-    batch: int,
-    num_chunks: int,
-    chunk_len: int,
-    n_heads: int,
-    d_head: int,
-    d_state: int,
-    n_groups: int,
-    has_seq_idx: bool,
-    dtype: str,
-    dt_dtype: str,
-    block_n: int,
-    block_p: int,
-    block_l: int,
-    threads: int,
-    num_stages: int,
-    x: torch.Tensor,
-    Bmat: torch.Tensor,
-    dt: torch.Tensor,
-    dA_cumsum: torch.Tensor,
-    seq_idx: torch.Tensor,
-) -> torch.Tensor:
-    return _ssd_chunk_state_fwd_kernel(
-        batch,
-        num_chunks,
-        chunk_len,
-        n_heads,
-        d_head,
-        d_state,
-        n_groups,
-        has_seq_idx,
-        dtype,
-        dt_dtype,
-    )(
-        block_n,
-        block_p,
-        block_l,
-        threads,
-        num_stages,
-    )(x, Bmat, dt, dA_cumsum, seq_idx)
-
-
-@_ssd_chunk_state_fwd_wrapped.register_fake
 def _(
     batch: int,
     num_chunks: int,
@@ -487,25 +443,10 @@ class SSDChunkStateFwdKernel(Kernel):
         The compiled kernel reads dt in its input dtype and converts values to
         float32 during accumulation.
         """
-        return _ssd_chunk_state_fwd_wrapped(
-            self.batch,
-            self.num_chunks,
-            self.chunk_len,
-            self.n_heads,
-            self.d_head,
-            self.d_state,
-            self.n_groups,
-            self.has_seq_idx,
-            self.dtype_str,
-            self.dtype_to_str(self.dt_dtype),
+        return self.kernel(
             self.config["block_n"],
             self.config["block_p"],
             self.config["block_l"],
             self.config["threads"],
             self.config.get("num_stages", 2),
-            x,
-            Bmat,
-            dt,
-            dA_cumsum,
-            seq_idx,
-        )
+        )(x, Bmat, dt, dA_cumsum, seq_idx)

@@ -348,8 +348,7 @@ def _gla_fwd_o_kernel(
 # Custom op wrappers (kept for torch.compile compatibility)
 
 
-@torch.library.custom_op("tileops::gla_fwd_wrapped_kernel", mutates_args=("h_out",))
-def _gla_fwd_wrapped_kernel(
+def _gla_fwd_run(
     batch: int,
     seq_len: int,
     heads: int,
@@ -382,7 +381,6 @@ def _gla_fwd_wrapped_kernel(
     return o_fn(q, k, v, g_cumsum, h_out)
 
 
-@_gla_fwd_wrapped_kernel.register_fake
 def _(
     batch: int,
     seq_len: int,

@@ -1,7 +1,7 @@
 """NanToNum op: replace NaN, +Inf, -Inf with specified values."""
 
 from math import prod
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
@@ -9,6 +9,7 @@ from tileops.backend import Target
 from tileops.kernels.elementwise import NanToNumFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 from ._base import _PerDtypeKernels, _validate_scalar_param_repr
 
@@ -17,7 +18,8 @@ class NanToNumFwdOp(_PerDtypeKernels, Op):
     """NanToNum: replace NaN, +Inf, -Inf with specified values."""
 
     _op_name = "nan_to_num"
-    _wrapped = None
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,

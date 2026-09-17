@@ -40,13 +40,14 @@ Abstract interface: `default_kernel_map` (property), `forward()`. Manifest-drive
 
 Rationale and the role / entry vocabulary: [ops-design.md § Kernel caching and enumeration](ops-design.md#kernel-caching-and-enumeration).
 
-| Method                                             | Purpose                                                                                                                                                                                                                                                                    |
-| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `get_or_build_kernel(name, inputs, *, key, build)` | Return the kernel for this call, building it once on a miss. The only get-or-build in L1-L3. `key` and `build` are the in-tree recipe; `inputs` is what an external target's builder is described with, and an op that has not been wired to external targets yet omits it |
-| `built_kernels(name)`                              | Read-only view of a name's entries; empty before its first build. Introspection only, never dispatch                                                                                                                                                                       |
-| `kernel_delegates()`                               | The ops whose kernels this op runs. Default `()`; a composite op overrides it                                                                                                                                                                                              |
-| `iter_kernels()`                                   | Every `Kernel` the op holds, deduplicated: entries and delegates                                                                                                                                                                                                           |
-| `autotune()`                                       | Puts the op in tuned mode: tunes built kernels, and sets `tune` so later builds tune too                                                                                                                                                                                   |
+| Method                           | Purpose                                                                                                                                                        |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kernel_for(role, inputs, call)` | Return what serves this call, building it once on a miss. The only way an op reaches a kernel. `inputs` is what an external target's builder is described with |
+| `entry_for(role, call)`          | The in-tree identity and builder. The default selects among the op's candidates and asks the chosen class; an op with one implementation overrides it          |
+| `built_kernels(name)`            | Read-only view of a name's entries; empty before its first build. Introspection only, never dispatch                                                           |
+| `kernel_delegates()`             | The ops whose kernels this op runs. Default `()`; a composite op overrides it                                                                                  |
+| `iter_kernels()`                 | Every `Kernel` the op holds, deduplicated: entries and delegates                                                                                               |
+| `autotune()`                     | Puts the op in tuned mode: tunes built kernels, and sets `tune` so later builds tune too                                                                       |
 
 ### `Kernel` base class attributes ([`src/tileops/kernels/kernel_base.py`](../../src/tileops/kernels/kernel_base.py))
 
@@ -102,7 +103,7 @@ The manifest ([`src/tileops/manifest/`](../../src/tileops/manifest/)) is the sol
 
 Three time points: (1) manifest — constraint structure; (2) `__init__` — user commits `static_dims` values; (3) `forward` — shapes concrete, commitments validated, dtype read from the tensors. See [manifest.md § `static_dims`](manifest.md#static_dims).
 
-**Dtype belongs to time point 3, never to 2.** The tensors carry it, so requiring the caller to restate it at construction only creates a second source that can disagree with the first. Constructing an op therefore commits to shape structure and nothing about element type.
+**An input dtype belongs to time point 3, never to 2.** The tensors carry it, so requiring the caller to restate it at construction only creates a second source that can disagree with the first. Constructing an op commits to shape structure, and to element type only where the inputs settle none: an output dtype they do not determine is the caller's to state, at time point 2, under the name `out_dtype` ([manifest.md R23](manifest.md)).
 
 |                          | Fixed-rank op           | Arbitrary-rank op                                            |
 | ------------------------ | ----------------------- | ------------------------------------------------------------ |
@@ -116,9 +117,9 @@ Three time points: (1) manifest — constraint structure; (2) `__init__` — use
 
 - **Fully static op:** `_infer_output_shapes` called once in `__init__`, result stored as an instance attribute.
 - **Op with dynamic dims:** `_infer_output_shapes` called once dynamic dims resolve, and by the fake while tracing.
-- **Kernel construction:** in `_eager_forward`, through `get_or_build_kernel` — never in the traced `forward`, which is one call to the op's operator ([Compile Dispatch Boundary](ops-design.md#compile-dispatch-boundary)). See [Slot S16](op-slot-rules.md#slot-s16).
+- **Kernel construction:** in `_eager_forward`, through `kernel_for` — never in the traced `forward`, which is one call to the op's operator ([Compile Dispatch Boundary](ops-design.md#compile-dispatch-boundary)). See [Slot S16](op-slot-rules.md#slot-s16).
 - **`_validate_dtypes`:** runs on every call, and is the only place an op rejects a dtype.
-- **Empty outputs:** a call whose every declared output would hold no elements raises `ValueError` from `get_or_build_kernel` — after `_eager_forward`'s own validation, before the kernel build. The output decides, not the input.
+- **Empty outputs:** a call whose every declared output would hold no elements raises `ValueError` from `kernel_for` — after `_eager_forward`'s own validation, before the kernel build. The output decides, not the input.
 - **Non-runtime consumers** (validator, graph compiler): call `_infer_output_shapes` with concrete shape tuples without constructing tensors. Roofline consumers use interfaces in [`roofline.md`](roofline.md).
 
 ### Inheritance in family-base hierarchies

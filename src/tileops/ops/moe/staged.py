@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from typing import ClassVar, Mapping
 
 import torch
@@ -14,7 +13,8 @@ from tileops.kernels.moe import (
     MoeUnpermuteKernel,
 )
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
-from tileops.ops.compile_boundary import get_instance
+from tileops.ops._compile_boundary_codegen import OperatorSpec
+from tileops.ops._output_dtype import output_dtype
 from tileops.ops.op_base import Op
 from tileops.perf.formulas import moe_expert_mlp_roofline, moe_grouped_gemm_roofline
 from tileops.perf.profile import tensor_core_roof
@@ -106,7 +106,7 @@ class MoePrePermuteFwdOp(_StagedOpBase):
     Global placement and communication belong to EPDispatch.
     """
 
-    compile_op_names: ClassVar[tuple[str, ...]] = ("tileops::moe_pre_permute_fwd",)
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -210,7 +210,7 @@ class MoePrePermuteFwdOp(_StagedOpBase):
         local_expert_ids: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return ``(expert_input, layout_metadata, inverse_indices)``."""
-        return _moe_pre_permute_fwd(hidden_states, local_expert_ids, self._instance_key)
+        return self._wrapped(hidden_states, local_expert_ids, self._instance_key)
 
     def _eager_forward(
         self,
@@ -220,13 +220,7 @@ class MoePrePermuteFwdOp(_StagedOpBase):
         call = self.make_call(hidden_states, local_expert_ids)
         self.dtype = hidden_states.dtype
         self.input_shapes = [tuple(hidden_states.shape), tuple(local_expert_ids.shape)]
-        name = self.select_kernel_key(tuple((self.kernel_map or {}).keys()), call)
-        kernel = self.get_or_build_kernel(
-            name,
-            inputs=(hidden_states, local_expert_ids),
-            key=call,
-            build=lambda: self.kernel_map[name](call),
-        )
+        kernel = self.kernel_for("pre_permute", (hidden_states, local_expert_ids), call)
         return kernel(hidden_states, local_expert_ids)
 
 
@@ -271,9 +265,11 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
     tensor for tests and benchmarks.
     """
 
-    compile_op_names: ClassVar[tuple[str, ...]] = (
-        "tileops::moe_grouped_gemm_fwd",
-        "tileops::moe_grouped_gemm_fwd_inplace",
+    # A caller-supplied ``out`` makes the operator write rather than return, so the two
+    # forms are two operators and ``forward`` picks per call.
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (
+        OperatorSpec(),
+        OperatorSpec.writes_out("out"),
     )
 
     @property
@@ -311,10 +307,6 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
         self.out_dtype = out_dtype
         self.target = target
         self.dispatch_kernel(kernel_map)
-
-    def resolve_output_dtype(self, input_dtype: torch.dtype) -> torch.dtype:
-        """The dtype ``out`` is written in for operands of ``input_dtype``."""
-        return input_dtype if self.out_dtype is None else self.out_dtype
 
     def _infer_output_shapes(
         self,
@@ -390,7 +382,7 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
                 f"layout_metadata must have shape ({expected_meta},) for this layout, "
                 f"got {tuple(layout_metadata.shape)}"
             )
-        cd_dtype = self.resolve_output_dtype(a.dtype)
+        cd_dtype = output_dtype(self, "output", a.dtype)
         output_shape = self._infer_output_shapes(
             tuple(a.shape), tuple(b.shape), tuple(layout_metadata.shape)
         )["output"]
@@ -466,8 +458,8 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
             ``[M, N]`` or ``[E, max_m, N]`` in the operand dtype, or fp32 when asked for.
         """
         if out is None:
-            return _moe_grouped_gemm_fwd(a, b, layout_metadata, self._instance_key)
-        _moe_grouped_gemm_fwd_inplace(a, b, layout_metadata, out, self._instance_key)
+            return self._wrapped(a, b, layout_metadata, self._instance_key)
+        self._wrapped_inplace(a, b, layout_metadata, out, self._instance_key)
         return out
 
     def _eager_forward(
@@ -480,16 +472,7 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
         call = self.make_call(a, b, layout_metadata, out)
         self.dtype = a.dtype
         self.input_shapes = [tuple(a.shape), tuple(b.shape), tuple(layout_metadata.shape)]
-        name = self.select_kernel_key(tuple((self.kernel_map or {}).keys()), call)
-        # ``m`` is a fact of the call, not of the built kernel. The builder is handed
-        # the record the cache is keyed on, so it cannot specialize on a row count.
-        build_call = dataclasses.replace(call, m=0)
-        kernel = self.get_or_build_kernel(
-            name,
-            inputs=(a, b, layout_metadata),
-            key=build_call,
-            build=lambda: self.kernel_map[name](build_call),
-        )
+        kernel = self.kernel_for("grouped_gemm", (a, b, layout_metadata), call)
         return kernel(a, b, layout_metadata, out=out)
 
 
@@ -597,25 +580,36 @@ class MoeExpertMLPFwdOp(_StagedOpBase):
 class MoePostPermuteFwdOp(_StagedOpBase):
     """Restore token order and apply the declared local routing epilogue."""
 
-    compile_op_names: ClassVar[tuple[str, ...]] = (
-        "tileops::moe_post_permute_fwd",
-        "tileops::moe_post_permute_fwd_inplace",
+    # A caller-supplied ``out`` makes the operator write rather than return, so the two
+    # forms are two operators and ``forward`` picks per call.
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (
+        OperatorSpec(),
+        OperatorSpec.writes_out("out"),
     )
 
     def __init__(
         self,
         layout: MGroupedLayoutSpec,
         epilogue: RoutingEpilogueSpec | None = None,
+        out_dtype: torch.dtype | None = None,
         *,
         kernel_map: dict[str, Kernel] | None = None,
         target: object = None,
     ) -> None:
-        """Configure inverse permutation and the exactly-once routing epilogue."""
+        """Configure inverse permutation and the exactly-once routing epilogue.
+
+        Args:
+            out_dtype: Manifest ``params.out_dtype``. The dtype the reduced result is
+                written in; ``None`` keeps the expert output's own.
+        """
         epilogue = RoutingEpilogueSpec() if epilogue is None else epilogue
         if not isinstance(epilogue, RoutingEpilogueSpec):
             raise TypeError("epilogue must be RoutingEpilogueSpec")
+        if out_dtype is not None and out_dtype not in (torch.bfloat16, torch.float16):
+            raise ValueError("out_dtype must be None, torch.bfloat16, or torch.float16")
         self.layout = _check_layout(layout)
         self.epilogue = epilogue
+        self.out_dtype = out_dtype
         self.target = target
         self.dispatch_kernel(kernel_map)
 
@@ -683,11 +677,11 @@ class MoePostPermuteFwdOp(_StagedOpBase):
             raise TypeError("inverse_indices must have dtype torch.int32")
         if expert_output.dtype not in (torch.bfloat16, torch.float16):
             raise TypeError("the current staged post-permute contract accepts BF16 or FP16 only")
-        output_dtype = self.epilogue.resolve_output_dtype(expert_output.dtype)
+        declared = output_dtype(self, "output", expert_output.dtype)
         output_shape = (topk_weights.shape[0], expert_output.shape[-1])
         if out is not None and not out.is_contiguous():
             raise ValueError("out must be contiguous")
-        if out is not None and (tuple(out.shape) != output_shape or out.dtype != output_dtype):
+        if out is not None and (tuple(out.shape) != output_shape or out.dtype != declared):
             raise ValueError("out shape and dtype must match the routing epilogue output")
         return PostPermuteCall(
             arch=get_sm_version(device.index),
@@ -697,7 +691,7 @@ class MoePostPermuteFwdOp(_StagedOpBase):
             device_type=expert_output.device.type,
             input_dtype=expert_output.dtype,
             routing_weight_dtype=topk_weights.dtype,
-            output_dtype=output_dtype,
+            output_dtype=declared,
             num_experts=expert_output.shape[0] if isinstance(self.layout, MaskedLayoutSpec) else 0,
             materialized_rows=physical_rows,
             num_tokens=topk_weights.shape[0],
@@ -714,19 +708,15 @@ class MoePostPermuteFwdOp(_StagedOpBase):
     ) -> torch.Tensor:
         """Restore token order, apply routing weights, reduce top-k, and cast."""
         if out is None:
-            return _moe_post_permute_fwd(
-                expert_output, inverse_indices, topk_weights, self._instance_key
-            )
-        _moe_post_permute_fwd_inplace(
-            expert_output, inverse_indices, topk_weights, out, self._instance_key
-        )
+            return self._wrapped(expert_output, topk_weights, inverse_indices, self._instance_key)
+        self._wrapped_inplace(expert_output, topk_weights, inverse_indices, out, self._instance_key)
         return out
 
     def _eager_forward(
         self,
         expert_output: torch.Tensor,
-        inverse_indices: torch.Tensor,
         topk_weights: torch.Tensor,
+        inverse_indices: torch.Tensor,
         out: torch.Tensor | None = None,
     ) -> torch.Tensor:
         call = self.make_call(expert_output, topk_weights, inverse_indices, out)
@@ -736,12 +726,8 @@ class MoePostPermuteFwdOp(_StagedOpBase):
             tuple(topk_weights.shape),
             tuple(inverse_indices.shape),
         ]
-        name = self.select_kernel_key(tuple((self.kernel_map or {}).keys()), call)
-        kernel = self.get_or_build_kernel(
-            name,
-            inputs=(expert_output, topk_weights, inverse_indices),
-            key=call,
-            build=lambda: self.kernel_map[name](call),
+        kernel = self.kernel_for(
+            "post_permute", (expert_output, topk_weights, inverse_indices), call
         )
         return kernel(
             expert_output,
@@ -749,97 +735,3 @@ class MoePostPermuteFwdOp(_StagedOpBase):
             topk_weights,
             out=out,
         )
-
-
-@torch.library.custom_op("tileops::moe_pre_permute_fwd", mutates_args=())
-def _moe_pre_permute_fwd(
-    hidden_states: torch.Tensor,
-    local_expert_ids: torch.Tensor,
-    instance_key: str,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    return get_instance(instance_key)._eager_forward(hidden_states, local_expert_ids)
-
-
-@_moe_pre_permute_fwd.register_fake
-def _moe_pre_permute_fwd_fake(
-    hidden_states: torch.Tensor,
-    local_expert_ids: torch.Tensor,
-    instance_key: str,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(tuple(hidden_states.shape), tuple(local_expert_ids.shape))
-    return (
-        hidden_states.new_empty(shapes["expert_input"]),
-        torch.empty(shapes["layout_metadata"], dtype=torch.int32, device=hidden_states.device),
-        torch.empty(shapes["inverse_indices"], dtype=torch.int32, device=hidden_states.device),
-    )
-
-
-@torch.library.custom_op("tileops::moe_post_permute_fwd", mutates_args=())
-def _moe_post_permute_fwd(
-    expert_output: torch.Tensor,
-    inverse_indices: torch.Tensor,
-    topk_weights: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(expert_output, inverse_indices, topk_weights)
-
-
-@_moe_post_permute_fwd.register_fake
-def _moe_post_permute_fwd_fake(
-    expert_output: torch.Tensor,
-    inverse_indices: torch.Tensor,
-    topk_weights: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    dtype = op.epilogue.resolve_output_dtype(expert_output.dtype)
-    return torch.empty(
-        (topk_weights.shape[0], expert_output.shape[-1]),
-        dtype=dtype,
-        device=expert_output.device,
-    )
-
-
-@torch.library.custom_op("tileops::moe_post_permute_fwd_inplace", mutates_args=("out",))
-def _moe_post_permute_fwd_inplace(
-    expert_output: torch.Tensor,
-    inverse_indices: torch.Tensor,
-    topk_weights: torch.Tensor,
-    out: torch.Tensor,
-    instance_key: str,
-) -> None:
-    get_instance(instance_key)._eager_forward(expert_output, inverse_indices, topk_weights, out=out)
-
-
-@torch.library.custom_op("tileops::moe_grouped_gemm_fwd", mutates_args=())
-def _moe_grouped_gemm_fwd(
-    a: torch.Tensor,
-    b: torch.Tensor,
-    layout_metadata: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(a, b, layout_metadata)
-
-
-@_moe_grouped_gemm_fwd.register_fake
-def _moe_grouped_gemm_fwd_fake(
-    a: torch.Tensor,
-    b: torch.Tensor,
-    layout_metadata: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shape = op._infer_output_shapes(tuple(a.shape), tuple(b.shape), tuple(layout_metadata.shape))
-    return torch.empty(shape["output"], dtype=op.resolve_output_dtype(a.dtype), device=a.device)
-
-
-@torch.library.custom_op("tileops::moe_grouped_gemm_fwd_inplace", mutates_args=("out",))
-def _moe_grouped_gemm_fwd_inplace(
-    a: torch.Tensor,
-    b: torch.Tensor,
-    layout_metadata: torch.Tensor,
-    out: torch.Tensor,
-    instance_key: str,
-) -> None:
-    get_instance(instance_key)._eager_forward(a, b, layout_metadata, out=out)

@@ -1,11 +1,12 @@
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba import SSDChunkScanFwdKernel
 from tileops.perf.profile import tensor_core_roof
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["SSDChunkScanFwdOp"]
@@ -21,6 +22,8 @@ class SSDChunkScanFwdOp(Op):
                 + sum_{s <= l} cb[l, s] * exp(dA_cumsum[l] - dA_cumsum[s]) * dt[s] * x[s, p]
 
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -73,21 +76,24 @@ class SSDChunkScanFwdOp(Op):
             device_index,
             self.tune,
         )
-        return self.get_or_build_kernel(
-            "ssd_chunk_scan_fwd",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["ssd_chunk_scan_fwd"](
-                batch,
-                num_chunks,
-                chunk_len,
-                n_heads,
-                d_head,
-                d_state,
-                n_groups,
-                dtype,
-                tune=self.tune,
-            ),
+        return self.kernel_for("ssd_chunk_scan_fwd", inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, dtype and device."""
+        (
+            batch,
+            num_chunks,
+            chunk_len,
+            n_heads,
+            d_head,
+            d_state,
+            n_groups,
+            dtype,
+            _device,
+            tune,
+        ) = call
+        return call, lambda: self.kernel_map["ssd_chunk_scan_fwd"](
+            batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune=tune
         )
 
     def _infer_output_shapes(
@@ -123,6 +129,21 @@ class SSDChunkScanFwdOp(Op):
 
         Returns:
             out: (batch, seqlen, n_heads, d_head)  float32
+        """
+        return self._wrapped(x, cb, dA_cumsum, C, prev_states, dt, self._instance_key)
+
+    def _eager_forward(
+        self,
+        x: torch.Tensor,
+        cb: torch.Tensor,
+        dA_cumsum: torch.Tensor,
+        C: torch.Tensor,
+        prev_states: torch.Tensor,
+        dt: torch.Tensor,
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")

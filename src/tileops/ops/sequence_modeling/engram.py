@@ -1,10 +1,11 @@
-from typing import Dict, List, Optional
+from typing import ClassVar, Dict, List, Optional
 
 import torch
 
 from tileops.kernels.engram import EngramGateConvBwdKernel, EngramGateConvFwdKernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["EngramGateConvBwdOp", "EngramGateConvFwdOp"]
@@ -24,6 +25,8 @@ class EngramGateConvFwdOp(Op):
         vhat, alpha, rrms_h, rrms_k, rrms_v
 
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -50,18 +53,12 @@ class EngramGateConvFwdOp(Op):
         self.dispatch_kernel(kernel_map)
 
     def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        return self.get_or_build_kernel(
-            "engram_gate_conv_fwd",
-            inputs,
-            key=dtype,
-            build=lambda: self.kernel_map["engram_gate_conv_fwd"](
-                self.M,
-                self.seq_len,
-                self.d,
-                self.eps,
-                dtype,
-                tune=self.tune,
-            ),
+        return self.kernel_for("engram_gate_conv_fwd", inputs, dtype)
+
+    def entry_for(self, role: str, call: torch.dtype) -> Entry:
+        """One implementation, built per dtype; every extent is the op's."""
+        return call, lambda: self.kernel_map["engram_gate_conv_fwd"](
+            self.M, self.seq_len, self.d, self.eps, call, tune=self.tune
         )
 
     @property
@@ -115,6 +112,21 @@ class EngramGateConvFwdOp(Op):
                 rrms_k: (M, seq_len) — RMSNorm reciprocal rms of k.
                 rrms_v: (M, seq_len) — RMSNorm reciprocal rms of v_hat.
         """
+        return self._wrapped(H, k, v, rms_w_h, rms_w_v, conv_w, self._instance_key)
+
+    def _eager_forward(
+        self,
+        H: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        rms_w_h: torch.Tensor,
+        rms_w_v: torch.Tensor,
+        conv_w: torch.Tensor,
+    ) -> List[torch.Tensor]:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
+        """
         if not H.is_cuda:
             raise ValueError("H must be a CUDA tensor")
         self._validate_dtypes(H, k, v, rms_w_h, rms_w_v, conv_w)
@@ -146,6 +158,8 @@ class EngramGateConvBwdOp(Op):
 
     """
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
     def __init__(
         self,
         M: int,
@@ -171,18 +185,12 @@ class EngramGateConvBwdOp(Op):
         self.dispatch_kernel(kernel_map)
 
     def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        return self.get_or_build_kernel(
-            "engram_gate_conv_bwd",
-            inputs,
-            key=dtype,
-            build=lambda: self.kernel_map["engram_gate_conv_bwd"](
-                self.M,
-                self.seq_len,
-                self.d,
-                self.eps,
-                dtype,
-                tune=self.tune,
-            ),
+        return self.kernel_for("engram_gate_conv_bwd", inputs, dtype)
+
+    def entry_for(self, role: str, call: torch.dtype) -> Entry:
+        """One implementation, built per dtype; every extent is the op's."""
+        return call, lambda: self.kernel_map["engram_gate_conv_bwd"](
+            self.M, self.seq_len, self.d, self.eps, call, tune=self.tune
         )
 
     @property
@@ -252,6 +260,41 @@ class EngramGateConvBwdOp(Op):
                 drms_w_h: (d,) — fp32
                 drms_w_v: (d,) — fp32
                 dconv_w:  (4, d) — fp32
+        """
+        return self._wrapped(
+            dY,
+            H,
+            k,
+            v,
+            rms_w_h,
+            rms_w_v,
+            conv_w,
+            vhat,
+            alpha,
+            rrms_h,
+            rrms_k,
+            rrms_v,
+            self._instance_key,
+        )
+
+    def _eager_forward(
+        self,
+        dY: torch.Tensor,
+        H: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        rms_w_h: torch.Tensor,
+        rms_w_v: torch.Tensor,
+        conv_w: torch.Tensor,
+        vhat: torch.Tensor,
+        alpha: torch.Tensor,
+        rrms_h: torch.Tensor,
+        rrms_k: torch.Tensor,
+        rrms_v: torch.Tensor,
+    ) -> List[torch.Tensor]:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         if not dY.is_cuda:
             raise ValueError("dY must be a CUDA tensor")

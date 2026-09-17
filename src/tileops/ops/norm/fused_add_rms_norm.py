@@ -3,10 +3,10 @@ from typing import ClassVar, Dict, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm import FusedAddRMSNormKernel
 
-from ..compile_boundary import get_instance
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["FusedAddRMSNormFwdOp"]
@@ -38,7 +38,7 @@ class FusedAddRMSNormFwdOp(Op):
 
     """
 
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_fused_add_rms_norm_fwd",)
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -107,7 +107,7 @@ class FusedAddRMSNormFwdOp(Op):
             ValueError: Dtypes or shapes disagree. Raised from inside the operator, by
                 `_eager_forward`.
         """
-        return _norm_fused_add_rms_norm_fwd(x, residual, weight, self._instance_key)
+        return self._wrapped(x, residual, weight, self._instance_key)
 
     def _eager_forward(
         self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor
@@ -136,41 +136,18 @@ class FusedAddRMSNormFwdOp(Op):
         x = x.contiguous()
         residual = residual.contiguous()
         weight = weight.contiguous()
-        kernel = self.get_or_build_kernel(
+        kernel = self.kernel_for(
             "fused_add_rms_norm",
             (x, residual, weight),
-            key=(n, x.dtype),  # this instance's in-tree cache key
-            build=lambda: self.kernel_map["fused_add_rms_norm"](
-                n,
-                self.eps,
-                x.dtype,
-                tune=self.tune,
-            ),
+            (n, x.dtype),
         )
         self._last_roofline_mn = (x.numel() // n, n)
         y, residual_out = kernel(x, residual, weight)
         return y, residual_out
 
-
-@torch.library.custom_op("tileops::norm_fused_add_rms_norm_fwd", mutates_args=())
-def _norm_fused_add_rms_norm_fwd(
-    x: torch.Tensor,
-    residual: torch.Tensor,
-    weight: torch.Tensor,
-    instance_key: str,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    return get_instance(instance_key)._eager_forward(x, residual, weight)
-
-
-@_norm_fused_add_rms_norm_fwd.register_fake
-def _norm_fused_add_rms_norm_fwd_fake(
-    x: torch.Tensor,
-    residual: torch.Tensor,
-    weight: torch.Tensor,
-    instance_key: str,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(tuple(x.shape), tuple(residual.shape), tuple(weight.shape))
-    # The manifest's shapes, not the kernel's: alignment padding is the kernel's business
-    # and never reaches the op's return.
-    return x.new_empty(shapes["output"]), x.new_empty(shapes["residual_out"])
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per row width and dtype; epsilon is the op's."""
+        n, dtype = call
+        return call, lambda: self.kernel_map["fused_add_rms_norm"](
+            n, self.eps, dtype, tune=self.tune
+        )

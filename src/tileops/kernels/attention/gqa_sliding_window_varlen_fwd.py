@@ -317,10 +317,7 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
     return _gqa_sw_fwd_varlen_wgmma_pipelined_func
 
 
-@torch.library.custom_op(
-    "tileops::gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel", mutates_args=()
-)
-def _gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel(
+def _gqa_sw_fwd_varlen_wgmma_pipelined_run(
     batch: int,
     heads: int,
     heads_kv: int,
@@ -358,7 +355,6 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel(
     )(block_m, block_n, num_stages, threads)(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q)
 
 
-@_gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel.register_fake
 def _(
     batch,
     heads,
@@ -420,6 +416,6 @@ class GQASlidingWindowVarlenFwdWgmmaPipelinedKernel(_GQASlidingWindowVarlenFwdKe
         v_scale: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         output, _ = self._call_wrapped(
-            _gqa_sw_fwd_varlen_wgmma_pipelined_wrapped_kernel, q, k, v, cu_seqlens_q, cu_seqlens_kv
+            _gqa_sw_fwd_varlen_wgmma_pipelined_run, q, k, v, cu_seqlens_q, cu_seqlens_kv
         )
         return output

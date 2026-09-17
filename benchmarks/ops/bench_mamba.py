@@ -176,7 +176,7 @@ def test_da_cumsum_fwd_bench(
     op = DaCumsumFwdOp(
         chunk_len=chunk_len,
         dt_softplus=dt_softplus,
-        dtype=dtype,
+        out_dtype=dtype,
         tune=tune,
     )
     bm = ManifestBenchmark(op, test)

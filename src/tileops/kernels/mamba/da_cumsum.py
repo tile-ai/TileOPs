@@ -246,39 +246,6 @@ def _da_cumsum_fwd_kernel(
     return kernel_func
 
 
-@torch.library.custom_op("tileops::da_cumsum_fwd", mutates_args=())
-def _da_cumsum_fwd_wrapped(
-    batch: int,
-    num_chunks: int,
-    chunk_len: int,
-    n_heads: int,
-    seq_len: int,
-    dtype: str,
-    threads: int,
-    dt_softplus: bool,
-    has_dt_bias: bool,
-    dt_min: float,
-    dt_max: float,
-    block_h: int,
-    dt: torch.Tensor,
-    A: torch.Tensor,
-    dt_bias: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    return _da_cumsum_fwd_placed_kernel(
-        batch,
-        num_chunks,
-        chunk_len,
-        n_heads,
-        seq_len,
-        dtype,
-        dt_softplus,
-        has_dt_bias,
-        dt_min,
-        dt_max,
-    )(block_h, threads)(dt, A, dt_bias)
-
-
-@_da_cumsum_fwd_wrapped.register_fake
 def _(
     batch: int,
     num_chunks: int,
@@ -422,20 +389,4 @@ class DaCumsumFwdKernel(Kernel):
         # ABI placeholder instead of allocating/filling a dummy CUDA tensor.
         dt_bias = A if dt_bias is None else dt_bias.contiguous()
 
-        return _da_cumsum_fwd_wrapped(
-            self.batch,
-            self.num_chunks,
-            self.chunk_len,
-            self.n_heads,
-            self.seq_len,
-            self.dtype_str,
-            self.config["threads"],
-            self.dt_softplus,
-            self.has_dt_bias,
-            self.dt_min,
-            self.dt_max,
-            self.config["block_h"],
-            dt,
-            A,
-            dt_bias,
-        )
+        return self.kernel(self.config["block_h"], self.config["threads"])(dt, A, dt_bias)

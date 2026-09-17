@@ -1,10 +1,11 @@
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba import SSDStatePassingFwdKernel
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["SSDStatePassingFwdOp"]
@@ -20,6 +21,8 @@ class SSDStatePassingFwdOp(Op):
     with s_{-1} = initial_states, or 0 when it is not passed.
 
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -65,19 +68,19 @@ class SSDStatePassingFwdOp(Op):
             device_index,
             self.tune,
         )
-        return self.get_or_build_kernel(
-            "ssd_state_passing_fwd",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["ssd_state_passing_fwd"](
-                batch,
-                num_chunks,
-                n_heads,
-                d_state,
-                has_initial_states=has_initial_states,
-                dtype=dtype,
-                tune=self.tune,
-            ),
+        return self.kernel_for("ssd_state_passing_fwd", inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, initial-state presence, dtype and device."""
+        batch, num_chunks, n_heads, d_state, has_initial_states, dtype, _device, tune = call
+        return call, lambda: self.kernel_map["ssd_state_passing_fwd"](
+            batch,
+            num_chunks,
+            n_heads,
+            d_state,
+            has_initial_states=has_initial_states,
+            dtype=dtype,
+            tune=tune,
         )
 
     def _infer_output_shapes(
@@ -106,6 +109,18 @@ class SSDStatePassingFwdOp(Op):
         Returns:
             out:          (batch, num_chunks, n_heads, d_state) float32
             final_states: (batch, n_heads, d_state) float32
+        """
+        return self._wrapped(states, dA_chunk_cumsum, initial_states, self._instance_key)
+
+    def _eager_forward(
+        self,
+        states: torch.Tensor,
+        dA_chunk_cumsum: torch.Tensor,
+        initial_states: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         if not states.is_cuda:
             raise ValueError("states must be a CUDA tensor")

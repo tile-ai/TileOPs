@@ -173,8 +173,7 @@ def _mean_pooling_kernel(
     return _mean_pooling_func
 
 
-@torch.library.custom_op("tileops::mean_pooling_fwd_wrapped_kernel", mutates_args=())
-def _mean_pooling_wrapped_kernel(
+def _mean_pooling_run(
     batch_size: int,
     seq_len: int,
     heads: int,
@@ -207,7 +206,6 @@ def _mean_pooling_wrapped_kernel(
     return pooled.view(batch_size, chunks_per_batch, heads, dim)
 
 
-@_mean_pooling_wrapped_kernel.register_fake
 def _(
     batch_size: int,
     seq_len: int,
@@ -346,7 +344,7 @@ class MeanPoolingFwdKernel(Kernel):
         self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor
     ) -> torch.Tensor:
         self._require_cuda(x=x, offsets=offsets, indices=indices)
-        return _mean_pooling_wrapped_kernel(
+        return _mean_pooling_run(
             self.batch_size,
             self.seq_len,
             self.heads,

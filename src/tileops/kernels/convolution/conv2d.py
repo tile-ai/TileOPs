@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_version
 
 from ._common import CONV_SWIZZLE_PANEL, _launch, conv_autotune_configs
@@ -709,6 +709,29 @@ class Conv2dSymmetricKernel(Kernel):
             call.n, call.out_h * call.out_w, min(cls.block_m_candidates)
         )
 
+    @classmethod
+    def entry_for(cls, call: Conv2dCall) -> Entry:
+        """The cache identity and the thunk that builds this class for *call*.
+
+        Its region is the symmetric one, so one extent of each pair speaks for both.
+        """
+        index = call.device.index if call.device is not None else None
+        args = (
+            call.n,
+            call.c_in,
+            call.h,
+            call.w,
+            call.c_out,
+            call.kernel_h,
+            call.stride[0],
+            call.padding[0],
+            call.dilation[0],
+            call.dtype,
+        )
+        return (*args, call.has_bias, call.tune, index), lambda: cls(
+            *args, has_bias=call.has_bias, tune=call.tune
+        )
+
     def __init__(
         self,
         n: int,
@@ -829,6 +852,29 @@ class Conv2dKernel(Kernel):
     def applies(cls, call: Conv2dCall) -> bool:
         return conv2d_dense_region(call)
 
+    @classmethod
+    def entry_for(cls, call: Conv2dCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        args = (
+            call.n,
+            call.c_in,
+            call.h,
+            call.w,
+            call.c_out,
+            call.kernel_h,
+            call.kernel_w,
+            call.stride[0],
+            call.stride[1],
+            call.padding[0],
+            call.padding[1],
+            call.dilation[0],
+            call.dilation[1],
+            call.dtype,
+        )
+        return (*args, call.has_bias, call.tune, index), lambda: cls(
+            *args, has_bias=call.has_bias, tune=call.tune
+        )
+
     def __init__(
         self,
         n: int,
@@ -942,6 +988,35 @@ class GroupConv2dKernel(Kernel):
     @classmethod
     def applies(cls, call: Conv2dCall) -> bool:
         return conv2d_group_region(call)
+
+    @classmethod
+    def entry_for(cls, call: Conv2dCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        args = (
+            call.n,
+            call.c_in,
+            call.h,
+            call.w,
+            call.c_out,
+            call.kernel_h,
+            call.kernel_w,
+            call.stride[0],
+            call.stride[1],
+            call.padding[0],
+            call.padding[1],
+            call.dilation[0],
+            call.dilation[1],
+            call.dtype,
+        )
+        group = (call.groups, call.c_in_g, call.c_out // call.groups)
+        return (*args, call.has_bias, *group, call.tune, index), lambda: cls(
+            *args,
+            has_bias=call.has_bias,
+            groups=group[0],
+            c_in_g=group[1],
+            c_out_g=group[2],
+            tune=call.tune,
+        )
 
     def __init__(
         self,
@@ -1099,6 +1174,25 @@ class Conv2d1x1Kernel(Kernel):
     @classmethod
     def applies(cls, call: Conv2dCall) -> bool:
         return conv2d_pointwise_region(call)
+
+    @classmethod
+    def entry_for(cls, call: Conv2dCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        args = (
+            call.n,
+            call.c_in,
+            call.h,
+            call.w,
+            call.c_out,
+            call.stride[0],
+            call.stride[1],
+            call.padding[0],
+            call.padding[1],
+            call.dtype,
+        )
+        return (*args, call.has_bias, call.tune, index), lambda: cls(
+            *args, has_bias=call.has_bias, tune=call.tune
+        )
 
     def __init__(
         self,

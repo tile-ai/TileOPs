@@ -135,8 +135,7 @@ def _gla_decode_tl(
     return _decode_func
 
 
-@torch.library.custom_op("tileops::gla_decode_kernel", mutates_args=())
-def _gla_decode_wrapped_kernel(
+def _gla_decode_run(
     batch: int,
     head: int,
     dim_k: int,
@@ -164,8 +163,7 @@ def _gla_decode_wrapped_kernel(
     return kernel_fn(q, k, v, gk, state)
 
 
-@_gla_decode_wrapped_kernel.register_fake
-def _gla_decode_wrapped_kernel_fake(
+def _gla_decode_run_fake(
     batch: int,
     head: int,
     dim_k: int,
@@ -222,7 +220,7 @@ class GLADecodeKernel(Kernel):
             self.init_config(config, tune=False)
 
         # Cache the JIT-compiled kernel to avoid re-creation overhead
-        # on every forward call (_gla_decode_wrapped_kernel is kept
+        # on every forward call (_gla_decode_run is kept
         # for torch.compile compatibility).
         self._kernel_fn = _gla_decode_tl(
             batch,
@@ -402,8 +400,7 @@ def _gla_decode_fp32_tl(
     return _decode_func
 
 
-@torch.library.custom_op("tileops::gla_decode_fp32_kernel", mutates_args=())
-def _gla_decode_fp32_wrapped_kernel(
+def _gla_decode_fp32_run(
     batch: int,
     head: int,
     dim_k: int,
@@ -429,8 +426,7 @@ def _gla_decode_fp32_wrapped_kernel(
     return kernel_fn(q, k, v, gk, state)
 
 
-@_gla_decode_fp32_wrapped_kernel.register_fake
-def _gla_decode_fp32_wrapped_kernel_fake(
+def _gla_decode_fp32_run_fake(
     batch: int,
     head: int,
     dim_k: int,

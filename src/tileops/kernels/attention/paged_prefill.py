@@ -13,13 +13,40 @@ from typing import Optional
 
 import torch
 
-from ..kernel_base import Kernel
+from ..kernel_base import Entry, Kernel
+from .call_spec import AttentionCall
 
 __all__ = ["PagedPrefillKernel"]
 
 
 class PagedPrefillKernel(Kernel):
     """Base for every implementation of the paged GQA prefill slot."""
+
+    @classmethod
+    def entry_for(cls, call: AttentionCall) -> Entry:
+        """The cache identity and the thunk that builds this class for *call*.
+
+        Every implementation of the slot takes this constructor, so the base states
+        it once. The device index is in the identity because the kernel is compiled
+        for the architecture it is built on.
+        """
+        index = call.device.index if call.device is not None else None
+        args = dict(
+            batch=call.batch,
+            heads=call.heads,
+            heads_kv=call.heads_kv,
+            max_pages_per_req=call.max_pages_per_req,
+            page_size=call.page_size,
+            dim=call.dim,
+            is_causal=call.is_causal,
+            dtype=call.dtype,
+            sm_scale=call.sm_scale,
+            softcap=call.softcap,
+            max_position=call.max_position,
+            rotary_dim=call.rotary_dim,
+            tune=call.tune,
+        )
+        return (*args.values(), index), lambda: cls(**args, device_index=index)
 
     def __init__(
         self,
@@ -37,8 +64,9 @@ class PagedPrefillKernel(Kernel):
         rotary_dim: Optional[int] = None,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         if heads_kv <= 0 or heads % heads_kv != 0:
             raise ValueError("heads must be divisible by heads_kv")
         self.batch = batch

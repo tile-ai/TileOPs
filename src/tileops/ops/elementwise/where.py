@@ -1,7 +1,7 @@
 """Where op: out = condition ? input : other (with broadcasting)."""
 
 from math import prod
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
@@ -9,14 +9,12 @@ from tileops.backend import Target
 from tileops.kernels.elementwise import WhereFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
-from ..compile_boundary import get_instance
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 from ._base import (
     _PerDtypeKernels,
     _require_one_device,
-    _require_shape_inference,
     broadcast_or_raise,
-    resolve_output_dtype,
 )
 
 
@@ -30,8 +28,9 @@ class WhereFwdOp(_PerDtypeKernels, Op):
 
     """
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
     _op_name = "where"
-    _wrapped = None
 
     # Manifest declares ``input`` / ``other`` dtype as
     # ``float16 | bfloat16 | float32``. fp8 dtypes are not in the contract;
@@ -166,33 +165,3 @@ class WhereFwdOp(_PerDtypeKernels, Op):
 # The compile boundary: one operator for this op, registered at import time. The op's
 # key crosses it, and the body trades the key back for the instance — see
 # src/tileops/ops/compile_boundary.py.
-
-_require_shape_inference(WhereFwdOp)
-
-
-@torch.library.custom_op("tileops::elementwise_where", mutates_args=())
-def _where_fwd(
-    condition: torch.Tensor,
-    input: torch.Tensor,
-    other: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(condition, input, other)
-
-
-@_where_fwd.register_fake
-def _where_fwd_fake(
-    condition: torch.Tensor,
-    input: torch.Tensor,
-    other: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(tuple(condition.shape), tuple(input.shape), tuple(other.shape))
-    return input.new_empty(
-        shapes["output"], dtype=resolve_output_dtype(WhereFwdOp.__name__, input.dtype)
-    )
-
-
-WhereFwdOp._wrapped = _where_fwd
-WhereFwdOp.compile_op_names = ("tileops::elementwise_where",)

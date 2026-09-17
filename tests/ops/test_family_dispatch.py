@@ -15,10 +15,7 @@ from tileops.kernels.gemm import GemmBasicKernel
 from tileops.kernels.gemm.call_spec import GemmCall
 from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
 from tileops.ops.gemm.gemm import GemmFwdOp
-from tileops.ops.linear_attention.deltanet_recurrence import (
-    DELTANET_DECODE_KEYS,
-    DeltaNetDecodeFwdOp,
-)
+from tileops.ops.linear_attention.deltanet_recurrence import DeltaNetDecodeFwdOp
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="selection reads the device architecture"
@@ -112,7 +109,7 @@ def test_deltanet_decode_dispatch(
     op = DeltaNetDecodeFwdOp()
     call = DeltaNetDecodeCall(arch=arch, batch=1, heads=4, dim_k=dim_k, dim_v=dim_v, dtype=dtype)
 
-    assert op.select_kernel_key(DELTANET_DECODE_KEYS, call) == expected
+    assert op.select_kernel(call).__name__ == expected
 
 
 @pytest.mark.smoke
@@ -135,3 +132,91 @@ def test_gemv_kernel_claims_the_layouts_it_was_written_for() -> None:
             arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
         )
         assert GemvKernel.applies(call) is expected, (m, n, trans_a, trans_b)
+
+
+# --- Dense GQA: one row per region, plus each boundary between two of them.
+
+_GQA_DENSE_ROWS = [
+    # (dtype, batch, seq_len_q, heads, heads_kv, dim, seq_len_kv, window, rope, softcap)
+    (
+        ("fp8", 1, 1, 32, 4, 128, 2048, (-1, -1), False, 0.0),
+        "GQADenseFP8DecodeKernel",
+        "fp8-decode",
+    ),
+    (("fp8", 2, 1, 32, 4, 128, 2048, (-1, -1), False, 0.0), "GQADenseFP8Kernel", "fp8-batch-2"),
+    (("fp8", 1, 1, 32, 4, 128, 512, (-1, -1), False, 0.0), "GQADenseFP8Kernel", "fp8-short-cache"),
+    (("fp8", 1, 1, 32, 1, 128, 2048, (-1, -1), False, 0.0), "GQADenseFP8Kernel", "fp8-wide-group"),
+    (("fp8", 1, 1, 32, 4, 128, 2048, (64, 0), False, 0.0), "GQADenseFP8Kernel", "fp8-window"),
+    (("fp8", 1, 1, 32, 4, 128, 2048, (-1, -1), True, 0.0), "GQADenseFP8Kernel", "fp8-rope"),
+    (
+        ("fp16", 1, 1, 32, 4, 128, 2048, (-1, -1), False, 0.0),
+        "GQADecodeLongContextKernel",
+        "long-context",
+    ),
+    (("fp16", 1, 1, 32, 4, 128, 512, (-1, -1), False, 0.0), "GQADecodeBs1Kernel", "bs1-short"),
+    (("fp16", 1, 1, 8, 4, 128, 2048, (-1, -1), False, 0.0), "GQADecodeBs1Kernel", "bs1-heads"),
+    (("fp16", 1, 1, 32, 4, 128, 2048, (-1, -1), True, 0.0), "GQADecodeBs1Kernel", "bs1-rope"),
+    (("bf16", 1, 1, 32, 4, 128, 2048, (-1, -1), False, 0.0), "GQADecodeKernel", "decode-bf16"),
+    (
+        ("fp16", 1, 1, 32, 4, 128, 2048, (-1, -1), False, 30.0),
+        "GQADecodeKernel",
+        "decode-softcap",
+    ),
+    (("fp16", 2, 1, 32, 4, 128, 2048, (-1, -1), False, 0.0), "GQADecodeKernel", "decode-batch-2"),
+    (("fp16", 1, 1, 32, 4, 64, 2048, (-1, -1), False, 0.0), "GQADecodeKernel", "decode-dim-64"),
+    (
+        ("fp16", 1, 4, 32, 4, 128, 2048, (64, 0), False, 0.0),
+        "GQADenseSlidingWindowKernel",
+        "window",
+    ),
+    (
+        ("fp16", 1, 1, 32, 4, 128, 2048, (64, 0), False, 0.0),
+        "GQADenseSlidingWindowKernel",
+        "window-beats-decode",
+    ),
+    (("fp16", 1, 4, 32, 4, 128, 2048, (-1, -1), False, 0.0), "GQADenseWsKernel", "prefill"),
+    (
+        ("bf16", 2, 8, 8, 8, 64, 512, (-1, -1), True, 30.0),
+        "GQADenseWsKernel",
+        "prefill-rope-softcap",
+    ),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [pytest.param(row, expected, id=name) for row, expected, name in _GQA_DENSE_ROWS],
+)
+def test_gqa_dense_dispatch(row: tuple, expected: str) -> None:
+    """Each region, and the boundary that separates it from the next."""
+    from tileops.kernels.attention.call_spec import AttentionCall, fp8_dtype
+    from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
+
+    dtype_name, batch, seq_q, heads, heads_kv, dim, seq_kv, window, rope, softcap = row
+    dtypes = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp8": fp8_dtype()}
+    is_fp8 = dtype_name == "fp8"
+    op = GroupedQueryAttentionDenseFwdOp(
+        window_size_left=window[0],
+        window_size_right=window[1],
+        softcap=softcap,
+        pos_encoding_mode="rope" if rope else "none",
+        out_dtype=torch.float16 if is_fp8 else None,
+    )
+    call = AttentionCall(
+        arch=_SM90,
+        dtype=torch.float16 if is_fp8 else dtypes[dtype_name],
+        batch=batch,
+        heads=heads,
+        heads_kv=heads_kv,
+        dim=dim,
+        max_seqlen_q=seq_q,
+        seqlen_kv=seq_kv,
+        softcap=softcap,
+        window_size_left=window[0],
+        window_size_right=window[1],
+        is_fp8=is_fp8,
+        fuse_rope=rope,
+    )
+
+    assert op.select_kernel(call).__name__ == expected

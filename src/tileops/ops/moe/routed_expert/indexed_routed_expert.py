@@ -7,26 +7,36 @@ from typing import ClassVar
 import torch
 from torch import Tensor
 
+from tileops.kernels.kernel_base import Entry
 from tileops.kernels.moe.indexed_expert_gemm import (
     IndexedExpertGemmTemplate,
     IndexedRouteStatsKernel,
     IndexedWeightedReduceKernel,
 )
-from tileops.ops.compile_boundary import get_instance
 from tileops.perf.profile import tensor_core_roof
 from tileops.utils import get_sm_version
 
+from ..._compile_boundary_codegen import OperatorSpec
 from ...op_base import Op
 from ..abc import _validate_fused_moe_experts_dtypes
+from ..contracts import ContiguousLayoutSpec, RoutingEpilogueSpec
 from ..staged import MoeExpertMLPFwdOp, MoePostPermuteFwdOp, MoePrePermuteFwdOp
 
-__all__: list[str] = []
+__all__ = ["IndexedExpertMLPFwdOp"]
 
 
-class _IndexedExpertMLPFwdOp(Op):
-    """Route-major expert MLP with device-side reuse dispatch."""
+class IndexedExpertMLPFwdOp(Op):
+    """Route-major expert MLP with device-side reuse dispatch.
 
-    compile_op_names: ClassVar[tuple[str, ...]] = ("tileops::moe_indexed_expert_mlp_fwd",)
+    Each of the ``T * K`` routes is a row of its expert's GEMM, so the weights are read
+    once per route rather than once per expert segment. That pays off while the routes
+    are few; :class:`FusedMoEExpertsFwdOp` picks this op over the staged pipeline on the
+    shapes where it does, and requires SM90.
+    """
+
+    # The op writes the caller's ``output`` buffer and returns nothing, so its single
+    # operator is the writing one.
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec.writes_out("output"),)
 
     def __init__(
         self,
@@ -35,31 +45,67 @@ class _IndexedExpertMLPFwdOp(Op):
         top_k: int,
         hidden_size: int,
         ffn_size: int,
-        routed_scaling_factor: float,
-        fallback_pre_permute: MoePrePermuteFwdOp,
-        fallback_expert_mlp: MoeExpertMLPFwdOp,
-        fallback_post_permute: MoePostPermuteFwdOp,
+        routed_scaling_factor: float = 1.0,
+        kernel_map: dict | None = None,
     ) -> None:
-        """Configure route shapes, output scaling, and the non-SM90 fallback."""
+        """Fix the route extents and the scalar applied to the reduced output.
+
+        Args:
+            num_tokens: Number of input tokens T (rows of ``hidden_states``).
+            num_experts: Number of local compute experts E.
+            top_k: Number of experts each token is routed to (K).
+            hidden_size: Model hidden dimension H.
+            ffn_size: Per-expert FFN intermediate dimension F.
+            routed_scaling_factor: Scalar applied to the final reduced output.
+            kernel_map: Optional dispatch override mapping kernel keys to ``Kernel``
+                subclasses, forwarded to the staged ops this one falls back to.
+        """
         self.num_tokens = num_tokens
         self.num_experts = num_experts
         self.top_k = top_k
         self.hidden_size = hidden_size
         self.ffn_size = ffn_size
         self.routed_scaling_factor = routed_scaling_factor
-        self._fallback_pre_permute = fallback_pre_permute
-        self._fallback_expert_mlp = fallback_expert_mlp
-        self._fallback_post_permute = fallback_post_permute
-        self.dispatch_kernel()
+        # The indexed kernels are SM90-only, and the card is a fact of the call. Choosing
+        # inside the operator keeps the traced graph one node on any card, so the staged
+        # pipeline it falls back to is built here.
+        layout = ContiguousLayoutSpec.tight_physical_psum()
+        self._pre_permute = MoePrePermuteFwdOp(
+            layout=layout, num_local_experts=num_experts, kernel_map=kernel_map
+        )
+        self._expert_mlp = MoeExpertMLPFwdOp(layout, "silu_and_mul", kernel_map=kernel_map)
+        self._post_permute = MoePostPermuteFwdOp(
+            layout=layout,
+            epilogue=RoutingEpilogueSpec(routed_scaling_factor=routed_scaling_factor),
+            kernel_map=kernel_map,
+        )
+        self.dispatch_kernel(kernel_map)
+
+    def kernel_delegates(self) -> tuple[Op, ...]:
+        """The staged ops this one falls back to off SM90."""
+        return (self._pre_permute, self._expert_mlp, self._post_permute)
 
     @property
     def default_kernel_map(self) -> dict:
-        return {}
+        return {
+            "route_stats": IndexedRouteStatsKernel,
+            "expert_gemm": IndexedExpertGemmTemplate,
+            "weighted_reduce": IndexedWeightedReduceKernel,
+        }
 
     def _infer_output_shapes(
-        self, hidden_states_shape: tuple[int, ...]
+        self,
+        output_shape: tuple[int, ...],
+        hidden_states_shape: tuple[int, ...],
+        w_gate_up_shape: tuple[int, ...],
+        w_down_shape: tuple[int, ...],
+        topk_weights_shape: tuple[int, ...],
+        topk_ids_shape: tuple[int, ...],
+        workspace1_shape: tuple[int, ...],
+        workspace2_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        return {"output": hidden_states_shape}
+        """Manifest ``shape_rules``: the caller's buffer holds one row per token."""
+        return {"output": tuple(hidden_states_shape)}
 
     def eval_roofline(self) -> tuple[int, int]:
         if self.dtype is None:
@@ -72,6 +118,7 @@ class _IndexedExpertMLPFwdOp(Op):
         return int(flops), int(nbytes)
 
     def workspace_shapes(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        """The two scratch buffers the caller allocates, in elements."""
         routes = self.num_tokens * self.top_k
         metadata_elements = 0
         if self.num_tokens > 1:
@@ -107,12 +154,55 @@ class _IndexedExpertMLPFwdOp(Op):
             workspace1,
             workspace2,
         )
+
+    def _validate_workspaces(self, workspace1: Tensor, workspace2: Tensor) -> None:
+        """Hold the two scratch buffers to the sizes the route extents imply."""
         expected1, expected2 = self.workspace_shapes()
         if tuple(workspace1.shape) != expected1 or tuple(workspace2.shape) != expected2:
             raise ValueError(
                 f"indexed workspaces must have shapes {expected1} and {expected2}, got "
                 f"{tuple(workspace1.shape)} and {tuple(workspace2.shape)}"
             )
+
+    def entry_for(self, role: str, call: torch.dtype) -> Entry:
+        """One implementation, built per operand dtype; the route extents are the op's."""
+        return call, lambda: self._build(call)
+
+    def _build(self, dtype: torch.dtype) -> tuple:
+        """The route statistics pass, the two GEMMs and the weighted reduction."""
+        grouped = self.num_tokens > 1
+        dispatch_mode = "grouped" if grouped else "direct"
+        route_stats = self.kernel_map["route_stats"]
+        expert_gemm = self.kernel_map["expert_gemm"]
+        stats = route_stats(self.num_tokens, self.top_k, self.num_experts) if grouped else None
+        gate = expert_gemm(
+            self.num_tokens,
+            self.num_experts,
+            self.top_k,
+            self.ffn_size,
+            self.hidden_size,
+            dtype,
+            activation="silu_and_mul",
+            dispatch_mode=dispatch_mode,
+        )
+        down = expert_gemm(
+            self.num_tokens,
+            self.num_experts,
+            self.top_k,
+            self.hidden_size,
+            self.ffn_size,
+            dtype,
+            route_input=True,
+            dispatch_mode=dispatch_mode,
+        )
+        reduce = self.kernel_map["weighted_reduce"](
+            self.num_tokens,
+            self.top_k,
+            self.hidden_size,
+            dtype,
+            self.routed_scaling_factor,
+        )
+        return stats, gate, down, reduce
 
     def forward(
         self,
@@ -126,7 +216,7 @@ class _IndexedExpertMLPFwdOp(Op):
         workspace2: Tensor,
     ) -> None:
         """Write the weighted and reduced expert result into ``output``."""
-        _moe_indexed_expert_mlp_fwd(
+        self._wrapped(
             output,
             hidden_states,
             w_gate_up,
@@ -159,62 +249,27 @@ class _IndexedExpertMLPFwdOp(Op):
             workspace1,
             workspace2,
         )
+        self._validate_workspaces(workspace1, workspace2)
         if get_sm_version(hidden_states.device.index) != 90:
-            expert_input, physical_ends, inverse_indices = self._fallback_pre_permute(
+            expert_input, physical_ends, inverse_indices = self._pre_permute(
                 hidden_states, topk_ids
             )
-            expert_output = self._fallback_expert_mlp(
-                expert_input, w_gate_up, w_down, physical_ends
-            )
-            self._fallback_post_permute(expert_output, topk_weights, inverse_indices, out=output)
+            expert_output = self._expert_mlp(expert_input, w_gate_up, w_down, physical_ends)
+            self._post_permute(expert_output, topk_weights, inverse_indices, out=output)
             return
-        grouped = self.num_tokens > 1
-
-        def build():
-            stats = (
-                IndexedRouteStatsKernel(self.num_tokens, self.top_k, self.num_experts)
-                if grouped
-                else None
-            )
-            dispatch_mode = "grouped" if grouped else "direct"
-            gate = IndexedExpertGemmTemplate(
-                self.num_tokens,
-                self.num_experts,
-                self.top_k,
-                self.ffn_size,
-                self.hidden_size,
-                hidden_states.dtype,
-                activation="silu_and_mul",
-                dispatch_mode=dispatch_mode,
-            )
-            down = IndexedExpertGemmTemplate(
-                self.num_tokens,
-                self.num_experts,
-                self.top_k,
-                self.hidden_size,
-                self.ffn_size,
-                hidden_states.dtype,
-                route_input=True,
-                dispatch_mode=dispatch_mode,
-            )
-            return (
-                stats,
-                gate,
-                down,
-                IndexedWeightedReduceKernel(
-                    self.num_tokens,
-                    self.top_k,
-                    self.hidden_size,
-                    hidden_states.dtype,
-                    self.routed_scaling_factor,
-                ),
-            )
-
-        stats, gate, down, reduce = self.get_or_build_kernel(
+        stats, gate, down, reduce = self.kernel_for(
             "indexed_mlp",
-            inputs=(hidden_states, w_gate_up, w_down, topk_weights, topk_ids),
-            key=hidden_states.dtype,
-            build=build,
+            (
+                output,
+                hidden_states,
+                w_gate_up,
+                w_down,
+                topk_weights,
+                topk_ids,
+                workspace1,
+                workspace2,
+            ),
+            hidden_states.dtype,
         )
         routes = self.num_tokens * self.top_k
         hidden_elements = routes * self.ffn_size
@@ -231,30 +286,3 @@ class _IndexedExpertMLPFwdOp(Op):
 
     def compute_roof(self) -> str:
         return tensor_core_roof(self.dtype)
-
-
-@torch.library.custom_op(
-    "tileops::moe_indexed_expert_mlp_fwd",
-    mutates_args=("output", "workspace1", "workspace2"),
-)
-def _moe_indexed_expert_mlp_fwd(
-    output: Tensor,
-    hidden_states: Tensor,
-    w_gate_up: Tensor,
-    w_down: Tensor,
-    topk_weights: Tensor,
-    topk_ids: Tensor,
-    workspace1: Tensor,
-    workspace2: Tensor,
-    instance_key: str,
-) -> None:
-    get_instance(instance_key)._eager_forward(
-        output,
-        hidden_states,
-        w_gate_up,
-        w_down,
-        topk_weights,
-        topk_ids,
-        workspace1,
-        workspace2,
-    )

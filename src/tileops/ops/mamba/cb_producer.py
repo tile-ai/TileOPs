@@ -2,14 +2,15 @@
 CB Producer Op - High-level interface for CB matrix computation.
 """
 
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba.cb_producer import CBProducerKernel
 from tileops.perf.profile import tensor_core_roof
 
+from .._compile_boundary_codegen import OperatorSpec
 from .._validation import check_tensor_shape
 from ..op_base import Op
 
@@ -23,6 +24,8 @@ class CBProducerFwdOp(Op):
     with causal masking (cb[l,s] = 0 if s > l).
 
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -55,19 +58,18 @@ class CBProducerFwdOp(Op):
         self.dispatch_kernel(kernel_map)
 
     def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        return self.get_or_build_kernel(
-            "cb_producer",
-            inputs,
-            key=dtype,
-            build=lambda: self.kernel_map["cb_producer"](
-                self.batch,
-                self.num_chunks,
-                self.n_groups,
-                self.chunk_len,
-                self.d_state,
-                dtype,
-                tune=self.tune,
-            ),
+        return self.kernel_for("cb_producer", inputs, dtype)
+
+    def entry_for(self, role: str, call: torch.dtype) -> Entry:
+        """One implementation, built per dtype; every extent is the op's."""
+        return call, lambda: self.kernel_map["cb_producer"](
+            self.batch,
+            self.num_chunks,
+            self.n_groups,
+            self.chunk_len,
+            self.d_state,
+            call,
+            tune=self.tune,
         )
 
     @property
@@ -96,6 +98,17 @@ class CBProducerFwdOp(Op):
 
         Returns:
             cb: [B, C, G, Q, Q]  dtype
+        """
+        return self._wrapped(C_mat, B_mat, self._instance_key)
+
+    def _eager_forward(
+        self,
+        C_mat: torch.Tensor,
+        B_mat: torch.Tensor,
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         self._validate_dtypes(C_mat, B_mat)
         S = self.num_chunks * self.chunk_len

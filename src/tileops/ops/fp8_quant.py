@@ -3,7 +3,7 @@ from typing import Dict, Optional, Tuple
 import torch
 
 from tileops.kernels.fp8_quant import FP8QuantKernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
 from .op_base import Op
 
@@ -52,14 +52,17 @@ class FP8QuantFwdOp(Op):
         in_dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
-        key = (batch, seq_len_kv, kv_group, index_dim, in_dtype, device_index, self.tune)
-        return self.get_or_build_kernel(
+        return self.kernel_for(
             "fp8_quant_kernel",
             inputs,
-            key=key,
-            build=lambda: self.kernel_map["fp8_quant_kernel"](
-                batch, seq_len_kv, kv_group, index_dim, in_dtype, tune=self.tune
-            ),
+            (batch, seq_len_kv, kv_group, index_dim, in_dtype, device_index, self.tune),
+        )
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, dtype and device."""
+        batch, seq_len_kv, kv_group, index_dim, in_dtype, _device_index, tune = call
+        return call, lambda: self.kernel_map["fp8_quant_kernel"](
+            batch, seq_len_kv, kv_group, index_dim, in_dtype, tune=tune
         )
 
     def _infer_output_shapes(

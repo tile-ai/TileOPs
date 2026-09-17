@@ -9,6 +9,7 @@ import tileops.ops.moe.staged as staged_module
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
 from tileops.ops import moe as public_moe
+from tileops.ops._output_dtype import output_dtype
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
     MaskedLayoutSpec,
@@ -141,10 +142,13 @@ def test_device_value_validation_returns_a_device_guard_without_host_readback() 
 def test_epilogue_spec_is_minimal_and_frozen_and_ops_type_check_their_layout() -> None:
     epilogue = RoutingEpilogueSpec()
     assert epilogue.accumulation_dtype is torch.float32
-    assert epilogue.output_dtype is None
-    assert epilogue.resolve_output_dtype(torch.bfloat16) is torch.bfloat16
-    assert epilogue.resolve_output_dtype(torch.float16) is torch.float16
-    assert RoutingEpilogueSpec(output_dtype=torch.float16).output_dtype is torch.float16
+    # The output dtype is the op's ``out_dtype``, not the epilogue's: one name carries a
+    # caller-stated output dtype, and the generated fake reads it from there.
+    assert not hasattr(epilogue, "output_dtype")
+    assert MoePostPermuteFwdOp(_TIGHT).out_dtype is None
+    assert MoePostPermuteFwdOp(_TIGHT, out_dtype=torch.float16).out_dtype is torch.float16
+    with pytest.raises(ValueError, match="out_dtype must be"):
+        MoePostPermuteFwdOp(_TIGHT, out_dtype=torch.float32)
     with pytest.raises(ValueError, match="finite and positive"):
         RoutingEpilogueSpec(routed_scaling_factor=0.0)
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -157,9 +161,9 @@ def test_epilogue_spec_is_minimal_and_frozen_and_ops_type_check_their_layout() -
         MoeGroupedGemmFwdOp(_TIGHT, out_dtype=torch.float16)
     with pytest.raises(ValueError, match="activation must be None or one of"):
         MoeGroupedGemmFwdOp(_TIGHT, activation="relu")
-    assert MoeGroupedGemmFwdOp(_TIGHT).resolve_output_dtype(torch.float16) is torch.float16
+    assert output_dtype(MoeGroupedGemmFwdOp(_TIGHT), "output", torch.float16) is torch.float16
     assert (
-        MoeGroupedGemmFwdOp(_TIGHT, out_dtype=torch.float32).resolve_output_dtype(torch.bfloat16)
+        output_dtype(MoeGroupedGemmFwdOp(_TIGHT, out_dtype=torch.float32), "output", torch.bfloat16)
         is torch.float32
     )
     with pytest.raises(TypeError, match="RoutingEpilogueSpec"):
@@ -183,12 +187,13 @@ def test_family_call_specs_are_frozen_and_keep_selection_axes_separate() -> None
     assert aligned_pre != pre
     assert len({pre, aligned_pre}) == 2
     assert post.layout_key == "tight_physical_psum"
-    # The op keys its cache on this record with ``m`` reset; every other field survives.
+    # ``m`` selects but does not build, so it is outside this record's identity;
+    # every other field is inside it.
     taller = dataclasses.replace(gemm, m=4096)
-    assert taller != gemm
-    assert dataclasses.replace(taller, m=0) == dataclasses.replace(gemm, m=0)
-    assert dataclasses.replace(gemm, n=8, m=0) != dataclasses.replace(gemm, m=0)
-    assert dataclasses.replace(gemm, arch=100, m=0) != dataclasses.replace(gemm, m=0)
+    assert taller == gemm
+    assert len({gemm, taller}) == 1
+    assert dataclasses.replace(gemm, n=8) != gemm
+    assert dataclasses.replace(gemm, arch=100) != gemm
     # The flattened layout fields admit only what a layout spec can express.
     with pytest.raises(ValueError, match="no max_m"):
         dataclasses.replace(gemm, max_m=4)

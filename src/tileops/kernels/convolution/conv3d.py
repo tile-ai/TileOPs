@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
 from ._common import CONV_SWIZZLE_PANEL, _launch, conv_autotune_configs, conv_num_stages
 from .call_spec import Conv3dCall, conv3d_dense_region, conv3d_group_region, conv3d_ndhwc_region
@@ -621,6 +621,33 @@ class Conv3dKernel(Kernel):
     def applies(cls, call: Conv3dCall) -> bool:
         return conv3d_dense_region(call)
 
+    @classmethod
+    def entry_for(cls, call: Conv3dCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        args = dict(
+            n=call.n,
+            c_in=call.c_in,
+            d_in=call.d,
+            h_in=call.h,
+            w_in=call.w,
+            c_out=call.c_out,
+            kernel_d=call.kernel_d,
+            kernel_h=call.kernel_h,
+            kernel_w=call.kernel_w,
+            stride_d=call.stride[0],
+            stride_h=call.stride[1],
+            stride_w=call.stride[2],
+            pad_d=call.padding[0],
+            pad_h=call.padding[1],
+            pad_w=call.padding[2],
+            dilation_d=call.dilation[0],
+            dilation_h=call.dilation[1],
+            dilation_w=call.dilation[2],
+            dtype=call.dtype,
+        )
+        identity = (*args.values(), call.has_bias, call.tune, index)
+        return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
+
     def __init__(
         self,
         n: int,
@@ -731,6 +758,36 @@ class GroupConv3dKernel(Kernel):
     @classmethod
     def applies(cls, call: Conv3dCall) -> bool:
         return conv3d_group_region(call)
+
+    @classmethod
+    def entry_for(cls, call: Conv3dCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        args = dict(
+            n=call.n,
+            c_in=call.c_in,
+            d_in=call.d,
+            h_in=call.h,
+            w_in=call.w,
+            c_out=call.c_out,
+            kernel_d=call.kernel_d,
+            kernel_h=call.kernel_h,
+            kernel_w=call.kernel_w,
+            stride_d=call.stride[0],
+            stride_h=call.stride[1],
+            stride_w=call.stride[2],
+            pad_d=call.padding[0],
+            pad_h=call.padding[1],
+            pad_w=call.padding[2],
+            dilation_d=call.dilation[0],
+            dilation_h=call.dilation[1],
+            dilation_w=call.dilation[2],
+            dtype=call.dtype,
+            groups=call.groups,
+            c_in_g=call.c_in_g,
+            c_out_g=call.c_out // call.groups,
+        )
+        identity = (*args.values(), call.has_bias, call.tune, index)
+        return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
 
     def __init__(
         self,
@@ -885,6 +942,33 @@ class Conv3dNdhwcKernel(Kernel):
     @classmethod
     def applies(cls, call: Conv3dCall) -> bool:
         return conv3d_ndhwc_region(call)
+
+    @classmethod
+    def entry_for(cls, call: Conv3dCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        args = dict(
+            n=call.n,
+            c_in=call.c_in,
+            d=call.d,
+            h=call.h,
+            w=call.w,
+            c_out=call.c_out,
+            kernel_d=call.kernel_d,
+            kernel_h=call.kernel_h,
+            kernel_w=call.kernel_w,
+            stride_d=call.stride[0],
+            stride_h=call.stride[1],
+            stride_w=call.stride[2],
+            pad_d=call.padding[0],
+            pad_h=call.padding[1],
+            pad_w=call.padding[2],
+            dilation_d=call.dilation[0],
+            dilation_h=call.dilation[1],
+            dilation_w=call.dilation[2],
+            dtype=call.dtype,
+        )
+        identity = (*args.values(), call.has_bias, call.tune, index)
+        return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
 
     def __init__(
         self,

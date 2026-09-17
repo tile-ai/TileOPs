@@ -28,7 +28,7 @@ def _run_fp8_prefill_kernel(
     v_scale: torch.Tensor,
 ) -> torch.Tensor:
     op = GroupedQueryAttentionDenseFwdOp(
-        dtype=out_dtype,
+        out_dtype=out_dtype,
         is_causal=False,
     )
     return op(

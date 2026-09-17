@@ -217,8 +217,7 @@ def _nsa_topk_varlen_kernel(
     return _nsa_topk_varlen_func
 
 
-@torch.library.custom_op("tileops::nsa_topk_varlen_wrapped_kernel", mutates_args=())
-def _nsa_topk_varlen_wrapped_kernel(
+def _nsa_topk_varlen_run(
     seq_num: int,
     c_seq_len: int,
     heads: int,
@@ -255,7 +254,6 @@ def _nsa_topk_varlen_wrapped_kernel(
     )(threads)(q, k_cmp, lse_in, offsets, chunk_offsets, token_indices)
 
 
-@_nsa_topk_varlen_wrapped_kernel.register_fake
 def _(
     seq_num: int,
     c_seq_len: int,
@@ -337,7 +335,7 @@ class NSATopkVarlenKernel(Kernel):
         chunk_offsets: torch.Tensor,
         token_indices: torch.Tensor,
     ) -> torch.Tensor:
-        return _nsa_topk_varlen_wrapped_kernel(
+        return _nsa_topk_varlen_run(
             self.seq_num,
             self.c_seq_len,
             self.heads,

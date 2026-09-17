@@ -983,13 +983,16 @@ def _staged_moe_rows(a_shape: tuple) -> int:
 
 
 def moe_grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
+    # Imported here: this module is a leaf the op layer imports, not the other way round.
+    from tileops.ops._output_dtype import output_dtype
+
     a_shape, b_shape, meta_shape = _staged_moe_input_shapes(op)
     rows = _staged_moe_rows(a_shape)
     num_experts, n, k = (int(dim) for dim in b_shape)
     elem = op.dtype.itemsize
     # The output width is the op's, not the operands': out_dtype may keep fp32,
     # and a fused gated activation writes act(gate) * up, half of N.
-    out_elem = op.resolve_output_dtype(op.dtype).itemsize
+    out_elem = output_dtype(op, "output", op.dtype).itemsize
     n_out = n // 2 if op.activation is not None else n
     flops = 2 * rows * n * k
     nbytes = (rows * k + num_experts * n * k) * elem + rows * n_out * out_elem

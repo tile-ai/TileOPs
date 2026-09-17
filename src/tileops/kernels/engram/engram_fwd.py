@@ -191,42 +191,6 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
     return _func
 
 
-@torch.library.custom_op("tileops::engram_gate_conv_fwd", mutates_args=())
-def _engram_gate_conv_fwd_wrapped(
-    M: int,
-    seq_len: int,
-    d: int,
-    eps: float,
-    dtype_str: str,
-    threads: int,
-    H: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    rms_w_h: torch.Tensor,
-    rms_w_v: torch.Tensor,
-    conv_w: torch.Tensor,
-) -> list[torch.Tensor]:
-    results = _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype_str)(
-        threads,
-    )(H, k, v, rms_w_h, rms_w_v, conv_w)
-    return list(results)
-
-
-@_engram_gate_conv_fwd_wrapped.register_fake
-def _(M, seq_len, d, eps, dtype_str, threads, H, k, v, rms_w_h, rms_w_v, conv_w):
-    d_padded = align_up(d, ALIGNMENT)
-    device = H.device
-    dt = H.dtype
-    return [
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # Y
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # vhat_buf
-        torch.empty((M, seq_len), dtype=torch.float32, device=device),  # alpha
-        torch.empty((M, seq_len), dtype=torch.float32, device=device),  # rrms_h
-        torch.empty((M, seq_len), dtype=torch.float32, device=device),  # rrms_k
-        torch.empty((M, seq_len), dtype=torch.float32, device=device),  # rrms_v
-    ]
-
-
 class EngramGateConvFwdKernel(Kernel):
     """Engram GateConv forward kernel.
 
@@ -305,20 +269,7 @@ class EngramGateConvFwdKernel(Kernel):
             rms_w_h = F.pad(rms_w_h, (0, pad))
             rms_w_v = F.pad(rms_w_v, (0, pad))
             conv_w = F.pad(conv_w, (0, pad))
-        results = _engram_gate_conv_fwd_wrapped(
-            self.M,
-            self.seq_len,
-            self.d,
-            self.eps,
-            self.dtype_str,
-            self.config["threads"],
-            H,
-            k,
-            v,
-            rms_w_h,
-            rms_w_v,
-            conv_w,
-        )
+        results = list(self.kernel(self.config["threads"])(H, k, v, rms_w_h, rms_w_v, conv_w))
         if pad:
             results[0] = results[0][:, :, : self.d]
             results[1] = results[1][:, :, : self.d]

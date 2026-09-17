@@ -238,8 +238,7 @@ def _chunk_local_cumsum(g: torch.Tensor, chunk_size: int) -> torch.Tensor:
     return g.reshape(B, H, S // chunk_size, chunk_size).cumsum(-1).reshape(B, H, S)
 
 
-@torch.library.custom_op("tileops::gated_deltanet_fwd_kernel", mutates_args=())
-def _gated_deltanet_fwd_wrapped_kernel(
+def _gated_deltanet_fwd_kernel_call(
     batch: int,
     head: int,
     seq_len: int,
@@ -293,35 +292,6 @@ def _gated_deltanet_fwd_wrapped_kernel(
     S_buf, v_new = h_fn(k, g_cum, w, u, S_0)
     o = o_fn(q, k, g_cum, S_buf, v_new)
     return o, S_buf, Aw, Au
-
-
-@_gated_deltanet_fwd_wrapped_kernel.register_fake
-def _gated_deltanet_fwd_wrapped_kernel_fake(
-    batch: int,
-    head: int,
-    seq_len: int,
-    chunk_size: int,
-    dim_k: int,
-    dim_v: int,
-    dtype: str,
-    fused_num_stages: int,
-    fused_threads: int,
-    h_num_stages: int,
-    h_threads: int,
-    h_block_v: int,
-    o_threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    beta: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    num_chunks = seq_len // chunk_size
-    o = torch.empty(batch, head, seq_len, dim_v, dtype=q.dtype, device=q.device)
-    S = torch.empty(batch, head, num_chunks + 1, dim_k, dim_v, dtype=q.dtype, device=q.device)
-    Aw = torch.empty(batch, head, seq_len, chunk_size, dtype=q.dtype, device=q.device)
-    Au = torch.empty_like(Aw)
-    return o, S, Aw, Au
 
 
 class GatedDeltaNetFwdKernel(Kernel):
@@ -383,7 +353,7 @@ class GatedDeltaNetFwdKernel(Kernel):
         g: torch.Tensor,
         beta: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        return _gated_deltanet_fwd_wrapped_kernel(
+        return _gated_deltanet_fwd_kernel_call(
             self.batch,
             self.head,
             self.seq_len,
@@ -405,8 +375,7 @@ class GatedDeltaNetFwdKernel(Kernel):
         )
 
 
-@torch.library.custom_op("tileops::gated_deltanet_fwd_production_kernel", mutates_args=())
-def _gated_deltanet_fwd_production_wrapped_kernel(
+def _gated_deltanet_fwd_production_kernel_call(
     batch: int,
     head: int,
     seq_len: int,
@@ -436,37 +405,6 @@ def _gated_deltanet_fwd_production_wrapped_kernel(
     # The legacy forward ABI also needs the gated Aw/Au training artifacts.
     Aw = _prefill_blocksolve_A_bthd(k, g_cum, beta, chunk_size)
     Au = Aw.clone()
-    return o, states, Aw, Au
-
-
-@_gated_deltanet_fwd_production_wrapped_kernel.register_fake
-def _gated_deltanet_fwd_production_wrapped_kernel_fake(
-    batch: int,
-    head: int,
-    seq_len: int,
-    chunk_size: int,
-    dim_k: int,
-    dim_v: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    beta: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    del k, v, g, beta
-    num_chunks = seq_len // chunk_size
-    o = torch.empty(batch, seq_len, head, dim_v, dtype=q.dtype, device=q.device)
-    states = torch.empty(
-        batch,
-        head,
-        num_chunks + 1,
-        dim_k,
-        dim_v,
-        dtype=q.dtype,
-        device=q.device,
-    )
-    Aw = torch.empty(batch, seq_len, head, chunk_size, dtype=q.dtype, device=q.device)
-    Au = torch.empty_like(Aw)
     return o, states, Aw, Au
 
 
@@ -514,7 +452,7 @@ class GatedDeltaNetFwdProductionKernel(Kernel):
         g: torch.Tensor,
         beta: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        return _gated_deltanet_fwd_production_wrapped_kernel(
+        return _gated_deltanet_fwd_production_kernel_call(
             self.batch,
             self.head,
             self.seq_len,

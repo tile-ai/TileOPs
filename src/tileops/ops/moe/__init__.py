@@ -17,7 +17,7 @@ from .fused_moe import FusedMoe, FusedMoeFwdOp
 from .fused_topk import FusedTopKOp
 from .permute_align import MoePermuteAlignFwdOp
 from .prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
-from .routed_expert import FusedMoEExpertsFwdOp
+from .routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 from .shared_fused_moe import SharedFusedMoE
 from .staged import (
     MoeExpertMLPFwdOp,
@@ -31,6 +31,7 @@ __all__ = [
     "FusedMoEExperts",
     "FusedMoEExpertsModular",
     "FusedMoEExpertsFwdOp",
+    "IndexedExpertMLPFwdOp",
     "FusedMoEPrepareAndFinalize",
     "FusedMoe",
     "FusedMoeFwdOp",

@@ -212,8 +212,7 @@ def _output_o_tl(
     return _func
 
 
-@torch.library.custom_op("tileops::deltanet_fwd_kernel", mutates_args=())
-def _deltanet_fwd_wrapped_kernel(
+def _deltanet_fwd_run(
     batch: int,
     head: int,
     seq_len: int,
@@ -267,8 +266,7 @@ def _deltanet_fwd_wrapped_kernel(
     return o, S_buf, Aw, Au, w, u
 
 
-@_deltanet_fwd_wrapped_kernel.register_fake
-def _deltanet_fwd_wrapped_kernel_fake(
+def _deltanet_fwd_run_fake(
     batch: int,
     head: int,
     seq_len: int,
@@ -355,7 +353,7 @@ class DeltaNetFwdKernel(Kernel):
         v: torch.Tensor,
         beta: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        return _deltanet_fwd_wrapped_kernel(
+        return _deltanet_fwd_run(
             self.batch,
             self.head,
             self.seq_len,

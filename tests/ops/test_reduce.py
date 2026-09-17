@@ -276,7 +276,7 @@ def test_reduce_untiled_autotune_unaligned_n() -> None:
     op = SumFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
-    (kernel,) = op.built_kernels(op._kernel_key).values()
+    (kernel,) = op.built_kernels("reduce").values()
     assert not kernel._needs_tiling
     assert {c["block_m"] for c in kernel.autotune_configs} == {1}
 
@@ -306,7 +306,7 @@ def test_reduce_tiled_autotune(op_kind: str) -> None:
         op = VarFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
-    (kernel,) = op.built_kernels(op._kernel_key).values()
+    (kernel,) = op.built_kernels("reduce").values()
     assert kernel._needs_tiling
     assert kernel.config in kernel.autotune_configs
 

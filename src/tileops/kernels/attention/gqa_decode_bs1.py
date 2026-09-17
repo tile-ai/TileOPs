@@ -17,12 +17,13 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.attention.gqa_decode import (
-    _gqa_decode_no_split_op,
-    _gqa_decode_no_split_rope_op,
+    _gqa_decode_no_split_rope_run,
+    _gqa_decode_no_split_run,
 )
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
-from .call_spec import decode_bs1_region
+from .call_spec import decode_bs1_region, dense_decode_region, dense_long_context_decode_region
+from .dense_entry import dense_decode_entry
 from .gqa_decode_bs1_common import (
     COMPILE_FLAGS,
     RING_DEPTH,
@@ -462,8 +463,7 @@ def _gqa_decode_bs1_ctx_kernel(
     return _func
 
 
-@torch.library.custom_op("tileops::gqa_decode_bs1_ctx_op", mutates_args=())
-def _gqa_decode_bs1_ctx_op(
+def _gqa_decode_bs1_ctx_run(
     batch: int,
     heads: int,
     groups: int,
@@ -505,7 +505,6 @@ def _gqa_decode_bs1_ctx_op(
     return kernel(Q, K, V, glse, Output_partial)
 
 
-@_gqa_decode_bs1_ctx_op.register_fake
 def _(
     batch: int,
     heads: int,
@@ -588,7 +587,22 @@ class GQADecodeBs1Kernel(Kernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return decode_bs1_region(call)
+        # ``decode_bs1_region`` is the shape, shared with the paged sibling; this
+        # class serves it in the contiguous decode region only.
+        return (
+            dense_decode_region(call)
+            and decode_bs1_region(call)
+            and not dense_long_context_decode_region(call)
+        )
+
+    @classmethod
+    def split_tier(cls, call) -> tuple:
+        """This program takes the cache length at runtime and tiers on nothing."""
+        return ()
+
+    @classmethod
+    def entry_for(cls, call) -> Entry:
+        return dense_decode_entry(cls, call)
 
     def __init__(
         self,
@@ -660,7 +674,7 @@ class GQADecodeBs1Kernel(Kernel):
         )
         if not use_ctx_pipeline:
             if self.fuse_rope:
-                output = _gqa_decode_no_split_rope_op(
+                output = _gqa_decode_no_split_rope_run(
                     self.batch,
                     self.heads,
                     self.groups,
@@ -682,7 +696,7 @@ class GQADecodeBs1Kernel(Kernel):
                     rope_sin,
                 )
                 return output.unsqueeze(1)
-            output = _gqa_decode_no_split_op(
+            output = _gqa_decode_no_split_run(
                 self.batch,
                 self.heads,
                 self.groups,
@@ -706,7 +720,7 @@ class GQADecodeBs1Kernel(Kernel):
         )
         if self.fuse_rope:
             glse, Output_partial = self._allocate_partials(Q, ctx_splits)
-            output = _gqa_decode_bs1_ctx_op(
+            output = _gqa_decode_bs1_ctx_run(
                 self.batch,
                 self.heads,
                 self.groups,
@@ -733,7 +747,7 @@ class GQADecodeBs1Kernel(Kernel):
             return output.unsqueeze(1)
 
         glse, Output_partial = self._allocate_partials(Q, ctx_splits)
-        output = _gqa_decode_bs1_ctx_op(
+        output = _gqa_decode_bs1_ctx_run(
             self.batch,
             self.heads,
             self.groups,

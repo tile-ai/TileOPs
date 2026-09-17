@@ -6,8 +6,9 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from ..kernel_base import Kernel
-from .call_spec import ATTENTION_DTYPES
+from ..kernel_base import Entry, Kernel
+from .call_spec import ATTENTION_DTYPES, dense_fp8_decode_region
+from .dense_entry import dense_fp8_entry
 from .gqa_dense import make_dense_qk_rope_preprocessor
 from .online_softmax import (
     LOG2E,
@@ -862,8 +863,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     return func
 
 
-@torch.library.custom_op("tileops::gqa_dense_fwd_fp8_wrapped_kernel", mutates_args=())
-def _gqa_dense_fwd_fp8_wrapped_kernel(
+def _gqa_dense_fwd_fp8_run(
     batch: int,
     heads: int,
     heads_kv: int,
@@ -900,7 +900,6 @@ def _gqa_dense_fwd_fp8_wrapped_kernel(
     )()(q, k, v, q_descale, k_descale, v_descale)[0]
 
 
-@_gqa_dense_fwd_fp8_wrapped_kernel.register_fake
 def _(
     batch: int,
     heads: int,
@@ -950,6 +949,14 @@ class GQADenseFP8Kernel(Kernel):
     """Native-FP8 Dense GQA main kernel using the BN224 schedule."""
 
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        return call.is_fp8 and not dense_fp8_decode_region(call)
+
+    @classmethod
+    def entry_for(cls, call) -> Entry:
+        return dense_fp8_entry(cls, call)
 
     def __init__(
         self,
@@ -1062,7 +1069,7 @@ class GQADenseFP8Kernel(Kernel):
             q, k = self.rope(q, k, rope_cos, rope_sin)
         elif rope_cos is not None or rope_sin is not None:
             raise ValueError("native-FP8 Dense GQA does not accept RoPE tables")
-        return _gqa_dense_fwd_fp8_wrapped_kernel(
+        return _gqa_dense_fwd_fp8_run(
             self.batch,
             self.heads,
             self.heads_kv,

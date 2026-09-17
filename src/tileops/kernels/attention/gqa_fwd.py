@@ -192,8 +192,7 @@ def _gqa_fwd_wgmma_pipelined_kernel(
     return _gqa_fwd_wgmma_pipelined_func
 
 
-@torch.library.custom_op("tileops::gqa_fwd_wgmma_pipelined_wrapped_kernel", mutates_args=())
-def _gqa_fwd_wgmma_pipelined_wrapped_kernel(
+def _gqa_fwd_wgmma_pipelined_run(
     batch: int,
     heads: int,
     heads_kv: int,
@@ -214,7 +213,6 @@ def _gqa_fwd_wgmma_pipelined_wrapped_kernel(
     )(q, k, v)
 
 
-@_gqa_fwd_wgmma_pipelined_wrapped_kernel.register_fake
 def _(
     batch: int,
     heads: int,
@@ -283,7 +281,7 @@ class GQAFwdWgmmaPipelinedKernel(Kernel):
     def forward(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _gqa_fwd_wgmma_pipelined_wrapped_kernel(
+        return _gqa_fwd_wgmma_pipelined_run(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -466,8 +464,7 @@ def _gqa_prefill_fwd_kernel(
     return _gqa_prefill_fwd_func
 
 
-@torch.library.custom_op("tileops::gqa_prefill_fwd_wrapped_kernel", mutates_args=())
-def _gqa_prefill_fwd_wrapped_kernel(
+def _gqa_prefill_fwd_run(
     batch: int,
     heads: int,
     heads_kv: int,
@@ -491,7 +488,6 @@ def _gqa_prefill_fwd_wrapped_kernel(
     )(block_m, block_n, num_stages, threads)(q, k, v)
 
 
-@_gqa_prefill_fwd_wrapped_kernel.register_fake
 def _(
     batch: int,
     heads: int,
@@ -568,7 +564,7 @@ class GQAPrefillFwdKernel(PackedPrefillKernel):
         v_scale: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         q_bshd, k_bshd, v_bshd = self._bshd(q, k, v)
-        output, _ = _gqa_prefill_fwd_wrapped_kernel(
+        output, _ = _gqa_prefill_fwd_run(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -859,11 +855,7 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(
     return _gqa_prefill_paged_with_kv_cache_fwd_func
 
 
-@torch.library.custom_op(
-    "tileops::gqa_prefill_paged_with_kv_cache_fwd_wrapped_kernel",
-    mutates_args=("k_pages", "v_pages"),
-)
-def _gqa_prefill_paged_with_kv_cache_fwd_wrapped_kernel(
+def _gqa_prefill_paged_with_kv_cache_fwd_run(
     batch: int,
     heads: int,
     heads_kv: int,
@@ -908,7 +900,6 @@ def _gqa_prefill_paged_with_kv_cache_fwd_wrapped_kernel(
     )
 
 
-@_gqa_prefill_paged_with_kv_cache_fwd_wrapped_kernel.register_fake
 def _(
     batch: int,
     heads: int,
@@ -971,7 +962,7 @@ class GQAPrefillPagedWithKVCacheFwdKernel(PagedPrefillKernel):
         cos_table: Optional[torch.Tensor] = None,
         sin_table: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return _gqa_prefill_paged_with_kv_cache_fwd_wrapped_kernel(
+        return _gqa_prefill_paged_with_kv_cache_fwd_run(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -1303,11 +1294,7 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
     return _gqa_prefill_paged_with_fp8_kv_cache_fwd_func
 
 
-@torch.library.custom_op(
-    "tileops::gqa_prefill_paged_with_fp8_kv_cache_fwd_wrapped_kernel",
-    mutates_args=("k_pages", "v_pages"),
-)
-def _gqa_prefill_paged_with_fp8_kv_cache_fwd_wrapped_kernel(
+def _gqa_prefill_paged_with_fp8_kv_cache_fwd_run(
     batch: int,
     heads: int,
     heads_kv: int,
@@ -1364,7 +1351,6 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_wrapped_kernel(
     )
 
 
-@_gqa_prefill_paged_with_fp8_kv_cache_fwd_wrapped_kernel.register_fake
 def _(
     batch: int,
     heads: int,
@@ -1427,7 +1413,7 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
         cos_table: Optional[torch.Tensor] = None,
         sin_table: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return _gqa_prefill_paged_with_fp8_kv_cache_fwd_wrapped_kernel(
+        return _gqa_prefill_paged_with_fp8_kv_cache_fwd_run(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -1933,11 +1919,7 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
     return _gqa_prefill_paged_with_kv_cache_rope_fwd_func
 
 
-@torch.library.custom_op(
-    "tileops::gqa_prefill_paged_with_kv_cache_rope_fwd_wrapped_kernel",
-    mutates_args=(),
-)
-def _gqa_prefill_paged_with_kv_cache_rope_fwd_wrapped_kernel(
+def _gqa_prefill_paged_with_kv_cache_rope_fwd_run(
     batch: int,
     heads: int,
     heads_kv: int,
@@ -1998,7 +1980,6 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_wrapped_kernel(
     )
 
 
-@_gqa_prefill_paged_with_kv_cache_rope_fwd_wrapped_kernel.register_fake
 def _(
     batch: int,
     heads: int,
@@ -2105,7 +2086,7 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
             cos_table,
             sin_table,
         )
-        return _gqa_prefill_paged_with_kv_cache_rope_fwd_wrapped_kernel(
+        return _gqa_prefill_paged_with_kv_cache_rope_fwd_run(
             self.batch,
             self.heads,
             self.heads_kv,

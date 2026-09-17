@@ -155,8 +155,7 @@ def _nsa_fwd_varlen_kernel(
     return _nsa_fwd_varlen_func
 
 
-@torch.library.custom_op("tileops::nsa_fwd_varlen_wrapped_kernel", mutates_args=())
-def _nsa_fwd_varlen_wrapped_kernel(
+def _nsa_fwd_varlen_run(
     batch: int,
     heads: int,
     c_seq_len: int,
@@ -192,7 +191,6 @@ def _nsa_fwd_varlen_wrapped_kernel(
     )(threads)(q, k, v, block_indices, block_counts, offsets, token_indices)
 
 
-@_nsa_fwd_varlen_wrapped_kernel.register_fake
 def _(
     batch: int,
     heads: int,
@@ -271,7 +269,7 @@ class NSAFwdVarlenKernel(Kernel):
         offsets: torch.Tensor,
         token_indices: torch.Tensor,
     ) -> torch.Tensor:
-        return _nsa_fwd_varlen_wrapped_kernel(
+        return _nsa_fwd_varlen_run(
             self.batch,
             self.heads,
             self.c_seq_len,

@@ -24,7 +24,7 @@ from tileops.kernels.convolution.call_spec import (
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
-from .compile_boundary import get_instance
+from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
 
 __all__ = [
@@ -251,6 +251,8 @@ def _conv1d_call(
     out_l: int,
     dtype: torch.dtype,
     has_bias: bool,
+    tune: bool,
+    device: torch.device | None,
 ) -> Conv1dCall:
     """Build the Conv1d dispatch record after op-level validation."""
     return Conv1dCall(
@@ -268,11 +270,13 @@ def _conv1d_call(
         out_l=out_l,
         dtype=dtype,
         has_bias=has_bias,
+        tune=tune,
+        device=device,
     )
 
 
 class Conv1dFwdOp(Op):
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::conv_conv1d_fwd",)
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -386,63 +390,10 @@ class Conv1dFwdOp(Op):
             out_l=out_l,
             dtype=dtype,
             has_bias=has_bias,
+            tune=self.tune,
+            device=None if device_index is None else torch.device("cuda", device_index),
         )
-        selected_key = self.select_kernel_key(
-            ("conv1d_pointwise_kernel", "group_conv1d_kernel", "conv1d_kernel"),
-            call,
-        )
-        key = (
-            selected_key,
-            n,
-            c_in,
-            l_in,
-            c_out,
-            c_in_g,
-            kernel_l,
-            self.stride,
-            pad_left,
-            pad_right,
-            self.dilation,
-            self.groups,
-            dtype,
-            device_index,
-            has_bias,
-            self.tune,
-        )
-
-        def build() -> Kernel:
-            kernel_kwargs = dict(
-                n=n,
-                c_in=c_in,
-                l_in=l_in,
-                c_out=c_out,
-                dtype=dtype,
-                has_bias=has_bias,
-                tune=self.tune,
-            )
-            if selected_key == "conv1d_pointwise_kernel":
-                return self.kernel_map["conv1d_pointwise_kernel"](**kernel_kwargs)
-            elif selected_key == "group_conv1d_kernel":
-                return self.kernel_map["group_conv1d_kernel"](
-                    **kernel_kwargs,
-                    kernel_l=kernel_l,
-                    stride_l=self.stride,
-                    pad_l=(pad_left, pad_right),
-                    dilation_l=self.dilation,
-                    groups=self.groups,
-                    c_in_g=c_in_g,
-                    c_out_g=c_out // self.groups,
-                )
-            else:
-                return self.kernel_map["conv1d_kernel"](
-                    **kernel_kwargs,
-                    kernel_l=kernel_l,
-                    stride_l=self.stride,
-                    pad_l=(pad_left, pad_right),
-                    dilation_l=self.dilation,
-                )
-
-        return self.get_or_build_kernel("conv1d_kernel", inputs, key=key, build=build)
+        return self.kernel_for("conv1d", inputs, call)
 
     def forward(
         self,
@@ -464,7 +415,7 @@ class Conv1dFwdOp(Op):
             ValueError: Dtypes or shapes disagree with the manifest. Raised from inside the
                 operator, by `_eager_forward`.
         """
-        return _conv1d_fwd(input, weight, bias, self._instance_key)
+        return self._wrapped(input, weight, bias, self._instance_key)
 
     def _eager_forward(
         self,
@@ -639,6 +590,8 @@ def _conv2d_call(
     out_w: int,
     dtype: torch.dtype,
     has_bias: bool,
+    tune: bool,
+    device: torch.device | None,
 ) -> Conv2dCall:
     """Build the Conv2d dispatch record after op-level validation."""
     return Conv2dCall(
@@ -658,11 +611,13 @@ def _conv2d_call(
         out_w=out_w,
         dtype=dtype,
         has_bias=has_bias,
+        tune=tune,
+        device=device,
     )
 
 
 class Conv2dFwdOp(Op):
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::conv_conv2d_fwd",)
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -809,89 +764,10 @@ class Conv2dFwdOp(Op):
             out_w=out_w,
             dtype=dtype,
             has_bias=has_bias,
+            tune=self.tune,
+            device=None if device_index is None else torch.device("cuda", device_index),
         )
-        selected_key = self.select_kernel_key(
-            (
-                "conv2d_1x1_kernel",
-                "conv2d_symmetric_kernel",
-                "group_conv2d_kernel",
-                "conv2d_kernel",
-            ),
-            call,
-        )
-        key = (
-            selected_key,
-            n,
-            c_in,
-            h,
-            w,
-            c_out,
-            c_in_g,
-            kernel_h,
-            kernel_w,
-            self.stride,
-            (pad_h, pad_w),
-            self.dilation,
-            self.groups,
-            dtype,
-            device_index,
-            has_bias,
-            self.tune,
-        )
-
-        def build() -> Kernel:
-            kernel_kwargs = dict(
-                n=n,
-                c_in=c_in,
-                h=h,
-                w=w,
-                c_out=c_out,
-                stride_h=self.stride[0],
-                stride_w=self.stride[1],
-                pad_h=pad_h,
-                pad_w=pad_w,
-                dtype=dtype,
-                has_bias=has_bias,
-                tune=self.tune,
-            )
-            if selected_key == "conv2d_1x1_kernel":
-                return self.kernel_map["conv2d_1x1_kernel"](**kernel_kwargs)
-            elif selected_key == "conv2d_symmetric_kernel":
-                return self.kernel_map["conv2d_symmetric_kernel"](
-                    n=n,
-                    c_in=c_in,
-                    h=h,
-                    w=w,
-                    c_out=c_out,
-                    kernel_size=kernel_h,
-                    stride=self.stride[0],
-                    pad=pad_h,
-                    dilation=self.dilation[0],
-                    dtype=dtype,
-                    has_bias=has_bias,
-                    tune=self.tune,
-                )
-            elif selected_key == "group_conv2d_kernel":
-                return self.kernel_map["group_conv2d_kernel"](
-                    **kernel_kwargs,
-                    kernel_h=kernel_h,
-                    kernel_w=kernel_w,
-                    dilation_h=self.dilation[0],
-                    dilation_w=self.dilation[1],
-                    groups=self.groups,
-                    c_in_g=c_in_g,
-                    c_out_g=c_out // self.groups,
-                )
-            else:
-                return self.kernel_map["conv2d_kernel"](
-                    **kernel_kwargs,
-                    kernel_h=kernel_h,
-                    kernel_w=kernel_w,
-                    dilation_h=self.dilation[0],
-                    dilation_w=self.dilation[1],
-                )
-
-        return self.get_or_build_kernel("conv2d_kernel", inputs, key=key, build=build)
+        return self.kernel_for("conv2d", inputs, call)
 
     def forward(
         self,
@@ -913,7 +789,7 @@ class Conv2dFwdOp(Op):
             ValueError: Dtypes or shapes disagree with the manifest. Raised from inside the
                 operator, by `_eager_forward`.
         """
-        return _conv2d_fwd(input, weight, bias, self._instance_key)
+        return self._wrapped(input, weight, bias, self._instance_key)
 
     def _eager_forward(
         self,
@@ -1141,6 +1017,8 @@ def _conv3d_call(
     out_w: int,
     dtype: torch.dtype,
     has_bias: bool,
+    tune: bool,
+    device: torch.device | None,
 ) -> Conv3dCall:
     """Build the Conv3d dispatch record after op-level validation.
 
@@ -1169,11 +1047,13 @@ def _conv3d_call(
         out_w=out_w,
         dtype=dtype,
         has_bias=has_bias,
+        tune=tune,
+        device=device,
     )
 
 
 class Conv3dFwdOp(Op):
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::conv_conv3d_fwd",)
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -1338,92 +1218,10 @@ class Conv3dFwdOp(Op):
             out_w=out_w,
             dtype=dtype,
             has_bias=has_bias,
+            tune=self.tune,
+            device=None if device_index is None else torch.device("cuda", device_index),
         )
-        selected_key = self.select_kernel_key(
-            ("conv3d_ndhwc_kernel", "group_conv3d_kernel", "conv3d_kernel"),
-            call,
-        )
-        key = (
-            selected_key,
-            n,
-            c_in,
-            d,
-            h,
-            w,
-            c_out,
-            c_in_g,
-            kernel_d,
-            kernel_h,
-            kernel_w,
-            self.stride,
-            (pad_d, pad_h, pad_w),
-            self.dilation,
-            self.groups,
-            dtype,
-            device_index,
-            has_bias,
-            self.tune,
-        )
-
-        def build() -> Kernel:
-            kernel_kwargs = dict(
-                n=n,
-                c_in=c_in,
-                d_in=d,
-                h_in=h,
-                w_in=w,
-                c_out=c_out,
-                kernel_d=kernel_d,
-                kernel_h=kernel_h,
-                kernel_w=kernel_w,
-                stride_d=self.stride[0],
-                stride_h=self.stride[1],
-                stride_w=self.stride[2],
-                pad_d=pad_d,
-                pad_h=pad_h,
-                pad_w=pad_w,
-                dilation_d=self.dilation[0],
-                dilation_h=self.dilation[1],
-                dilation_w=self.dilation[2],
-                dtype=dtype,
-                has_bias=has_bias,
-                tune=self.tune,
-            )
-            if selected_key == "conv3d_ndhwc_kernel":
-                return self.kernel_map["conv3d_ndhwc_kernel"](
-                    n=n,
-                    c_in=c_in,
-                    d=d,
-                    h=h,
-                    w=w,
-                    c_out=c_out,
-                    kernel_d=kernel_d,
-                    kernel_h=kernel_h,
-                    kernel_w=kernel_w,
-                    stride_d=self.stride[0],
-                    stride_h=self.stride[1],
-                    stride_w=self.stride[2],
-                    pad_d=pad_d,
-                    pad_h=pad_h,
-                    pad_w=pad_w,
-                    dilation_d=self.dilation[0],
-                    dilation_h=self.dilation[1],
-                    dilation_w=self.dilation[2],
-                    dtype=dtype,
-                    has_bias=has_bias,
-                    tune=self.tune,
-                )
-            if selected_key == "group_conv3d_kernel":
-                return self.kernel_map["group_conv3d_kernel"](
-                    **kernel_kwargs,
-                    groups=self.groups,
-                    c_in_g=c_in_g,
-                    c_out_g=c_out // self.groups,
-                )
-            else:
-                return self.kernel_map["conv3d_kernel"](**kernel_kwargs)
-
-        return self.get_or_build_kernel("conv3d_kernel", inputs, key=key, build=build)
+        return self.kernel_for("conv3d", inputs, call)
 
     def forward(
         self,
@@ -1445,7 +1243,7 @@ class Conv3dFwdOp(Op):
             ValueError: Dtypes or shapes disagree with the manifest. Raised from inside the
                 operator, by `_eager_forward`.
         """
-        return _conv3d_fwd(input, weight, bias, self._instance_key)
+        return self._wrapped(input, weight, bias, self._instance_key)
 
     def _eager_forward(
         self,
@@ -1634,81 +1432,3 @@ class Conv3dFwdOp(Op):
 # src/tileops/ops/compile_boundary.py.
 #
 # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
-
-
-@torch.library.custom_op("tileops::conv_conv1d_fwd", mutates_args=())
-def _conv1d_fwd(
-    input: torch.Tensor,
-    weight: torch.Tensor,
-    bias: Optional[torch.Tensor],
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(input, weight, bias)
-
-
-@_conv1d_fwd.register_fake
-def _conv1d_fwd_fake(
-    input: torch.Tensor,
-    weight: torch.Tensor,
-    bias: Optional[torch.Tensor],
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(
-        tuple(input.shape),
-        tuple(weight.shape),
-        None if bias is None else tuple(bias.shape),
-    )
-    return input.new_empty(shapes["output"])
-
-
-@torch.library.custom_op("tileops::conv_conv2d_fwd", mutates_args=())
-def _conv2d_fwd(
-    input: torch.Tensor,
-    weight: torch.Tensor,
-    bias: Optional[torch.Tensor],
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(input, weight, bias)
-
-
-@_conv2d_fwd.register_fake
-def _conv2d_fwd_fake(
-    input: torch.Tensor,
-    weight: torch.Tensor,
-    bias: Optional[torch.Tensor],
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(
-        tuple(input.shape),
-        tuple(weight.shape),
-        None if bias is None else tuple(bias.shape),
-    )
-    return input.new_empty(shapes["output"])
-
-
-@torch.library.custom_op("tileops::conv_conv3d_fwd", mutates_args=())
-def _conv3d_fwd(
-    input: torch.Tensor,
-    weight: torch.Tensor,
-    bias: Optional[torch.Tensor],
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(input, weight, bias)
-
-
-@_conv3d_fwd.register_fake
-def _conv3d_fwd_fake(
-    input: torch.Tensor,
-    weight: torch.Tensor,
-    bias: Optional[torch.Tensor],
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(
-        tuple(input.shape),
-        tuple(weight.shape),
-        None if bias is None else tuple(bias.shape),
-    )
-    return input.new_empty(shapes["output"])
