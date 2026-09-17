@@ -41,6 +41,8 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
+from tileops.utils import is_h200_name
+
 __all__ = [
     "SWAP_AB_MPAD",
     "best_config",
@@ -487,7 +489,7 @@ def small_m_splitk_config(
     """Select the H200 split-K basic GEMM band for a 32-row NT call."""
     block_k = 128
     k_tiles = k // block_k
-    if device_name != "NVIDIA H200" or m != 32 or k % block_k or n % 8 or k_tiles < 48:
+    if not is_h200_name(device_name) or m != 32 or k % block_k or n % 8 or k_tiles < 48:
         return None
     block_ns = [block_n for block_n in range(8, 129, 8) if n % block_n == 0]
     target_n_tiles = max(1, sm_count // 2)

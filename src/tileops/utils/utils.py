@@ -23,7 +23,7 @@ str2dtype = {
 
 @functools.lru_cache(maxsize=16)
 def _device_name(index: int) -> str:
-    return torch.cuda.get_device_name(index).upper()
+    return torch.cuda.get_device_name(index)
 
 
 @functools.lru_cache(maxsize=16)
@@ -32,11 +32,31 @@ def _sm_version(index: int) -> int:
     return major * 10 + minor
 
 
+def is_h200_name(device_name: str) -> bool:
+    """Whether a CUDA device name is an H200 board.
+
+    The one H200 test. A band fitted on H200 and the selection that routes work
+    to it both read this, so they cannot disagree on an SKU whose reported name
+    carries a suffix.
+
+    Case is normalised here rather than by the caller: a name reaches this both
+    straight from ``torch.cuda.get_device_name`` and through a call record that
+    carried it, and a test that held for one spelling only would pass on the
+    board it was written on.
+
+    A profile matches the full name instead (:func:`tileops.perf.find_profile`).
+    A selection band is an approximation two SKUs of one board can share; a
+    speed-of-light reading is a measurement, and is left blank rather than
+    borrowed from a sibling SKU.
+    """
+    return "H200" in device_name.upper()
+
+
 def is_h200(index: "int | None" = None) -> bool:
     """Whether the device is an H200; defaults to the current device."""
     if not torch.cuda.is_available():
         return False
-    return "H200" in _device_name(torch.cuda.current_device() if index is None else index)
+    return is_h200_name(_device_name(torch.cuda.current_device() if index is None else index))
 
 
 def get_sm_version(index: "int | None" = None) -> int:

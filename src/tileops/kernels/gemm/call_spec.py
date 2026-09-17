@@ -1,4 +1,4 @@
-"""The facts of one GEMM call, as the op knows them after inferring ``(m, n, k)``."""
+"""The facts of one GEMM-family call after the op has inferred its dimensions."""
 
 import dataclasses
 from typing import Literal, Optional
@@ -7,7 +7,18 @@ import torch
 
 from ..call_spec import CallSpec
 
-__all__ = ["GemmCall"]
+__all__ = ["BmmCall", "GemmCall"]
+
+
+@dataclasses.dataclass(frozen=True)
+class BmmCall(CallSpec):
+    """One batched matmul after the op has inferred ``(batch, m, n, k)``."""
+
+    batch: int = 0
+    m: int = 0
+    n: int = 0
+    k: int = 0
+    dtype: Optional[torch.dtype] = None
 
 
 @dataclasses.dataclass(frozen=True)

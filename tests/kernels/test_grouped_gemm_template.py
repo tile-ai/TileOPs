@@ -99,12 +99,48 @@ def test_dense(activation, cd_dtype):
         pytest.param(512, 512, 512, dict(block_m=64, block_n=128), id="one-math-warpgroup"),
         pytest.param(1024, 1024, 1024, dict(block_m=128, block_n=128), id="two-math-warpgroups"),
         pytest.param(2048, 2048, 1024, dict(block_m=256, block_n=128), id="block-m-256"),
+        pytest.param(
+            1024,
+            1024,
+            1024,
+            dict(
+                block_m=128,
+                block_n=256,
+                block_k=64,
+                num_stages=4,
+                num_math_wgs=2,
+                epilogue_stage_n=128,
+            ),
+            id="staged-epilogue",
+        ),
     ],
 )
 def test_batched_tile_shapes(m, n, k, config):
     """Each math warp-group arrangement the template offers, on the batched scheduler."""
     a, b = _batched_operands(2, m, n, k)
     kernel = GemmTemplate(GemmType.BATCHED, num_groups=2, config=config)
+    _assert_gemm(kernel(a, b), _bmm_ref(a, b))
+
+
+@pytest.mark.smoke
+def test_batched_async_epilogue_store_across_persistent_waves():
+    """A staged output survives reuse after its prior tile's async TMA store."""
+    groups, m, n, k = 64, 128, 768, 128
+    a, b = _batched_operands(groups, m, n, k)
+    kernel = GemmTemplate(
+        GemmType.BATCHED,
+        num_groups=groups,
+        static_dims="mnk",
+        sm_count=128,
+        config=dict(
+            block_m=128,
+            block_n=256,
+            block_k=64,
+            num_stages=4,
+            num_math_wgs=2,
+            epilogue_stage_n=128,
+        ),
+    )
     _assert_gemm(kernel(a, b), _bmm_ref(a, b))
 
 
@@ -286,6 +322,23 @@ def test_selector_short_group_h200_band():
     assert (
         get_best_config(_desc(4096, 7168, 2048, device_name="NVIDIA H200", **plain)).block_k == 64
     )
+
+
+@pytest.mark.smoke
+def test_selector_stages_h200_batched_epilogue():
+    """H200 batched 128x256 tiles trade half-width stores for a fourth K stage."""
+    h200 = get_best_config(_desc(1024, 1024, 1024, num_groups=8, device_name="NVIDIA H200"))
+    assert (h200.block_m, h200.block_n, h200.num_stages, h200.epilogue_stage_n) == (
+        128,
+        256,
+        4,
+        128,
+    )
+    h100 = get_best_config(_desc(1024, 1024, 1024, num_groups=8, device_name="NVIDIA H100"))
+    assert h100.epilogue_stage_n == 0
+    # The band is fitted on the board, not on the exact name CUDA reports for it.
+    nvl = get_best_config(_desc(1024, 1024, 1024, num_groups=8, device_name="NVIDIA H200 NVL"))
+    assert nvl.epilogue_stage_n == 128
 
 
 @pytest.mark.full

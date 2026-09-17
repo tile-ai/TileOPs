@@ -4,8 +4,8 @@ The grouped forms are a separate family in ``kernels.grouped_gemm``: they schedu
 over a group offset table rather than a single ``(m, n, k)``.
 """
 
-from .bmm import BmmFp8Kernel, BmmKernel
-from .call_spec import GemmCall
+from .bmm import BmmFp8Kernel, BmmKernel, BmmTemplateKernel
+from .call_spec import BmmCall, GemmCall
 from .dense import (
     GemmBasicKernel,
     GemmFp8BlockScaledKernel,
@@ -18,8 +18,10 @@ from .w4a16 import GemmW4A16Kernel
 from .w4a16_decode import GemmW4A16DecodeKernel
 
 __all__ = [
+    "BmmCall",
     "BmmFp8Kernel",
     "BmmKernel",
+    "BmmTemplateKernel",
     "GemmBasicKernel",
     "GemmCall",
     "GemmFp8BlockScaledKernel",

@@ -2,6 +2,8 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.gemm.bmm import BmmTemplateKernel
+from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.ops import BmmFp8FwdOp, BmmFwdOp
 from workloads.bmm import BmmFp8Workload, BmmWorkload
 
@@ -204,6 +206,53 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
     b = torch.randn(4, 24, 16, device="cuda", dtype=torch.float16)
     with pytest.raises(ValueError, match="multiple of 16"):
         op(a, b)
+
+
+@pytest.mark.smoke
+def test_bmm_template_h200_dispatch_region() -> None:
+    """The template claims aligned, untuned H200 calls worth half a persistent wave."""
+
+    def call(batch=64, m=128, n=2048, *, h200=True, tune=False):
+        return BmmCall(
+            batch=batch,
+            m=m,
+            n=n,
+            k=2048,
+            dtype=torch.bfloat16,
+            arch=90,
+            h200=h200,
+            sm_count=132,
+            tune=tune,
+        )
+
+    assert BmmTemplateKernel.applies(call())
+    assert not BmmTemplateKernel.applies(call(batch=32, m=256, n=256))
+    assert not BmmTemplateKernel.applies(call(m=200, n=300))
+    assert not BmmTemplateKernel.applies(call(h200=False))
+    # n is TMA-aligned and the shape is large, so only the tile count rejects it.
+    assert not BmmTemplateKernel.applies(call(batch=1, m=2048, n=1024))
+    # BmmKernel is the implementation that takes a tune flag.
+    assert not BmmTemplateKernel.applies(call(tune=True))
+
+
+@pytest.mark.smoke
+def test_bmm_template_region_holds_manifest_workloads() -> None:
+    """The two manifest workloads nearest the wave threshold keep their routing."""
+    for batch, m, n, k, claimed in [
+        (16, 512, 512, 512, True),
+        (32, 256, 256, 256, False),
+    ]:
+        call = BmmCall(
+            batch=batch,
+            m=m,
+            n=n,
+            k=k,
+            dtype=torch.bfloat16,
+            arch=90,
+            h200=True,
+            sm_count=132,
+        )
+        assert BmmTemplateKernel.applies(call) is claimed, call
 
 
 class BmmFp8Fixture(FixtureBase):
