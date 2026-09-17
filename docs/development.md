@@ -60,7 +60,7 @@ Two suites do not need a GPU and are worth running before pushing:
 
 ```bash
 python -m pytest -q tests/test_validate_manifest.py   # manifest spec validator
-python -m pytest -q benchmarks/tests                  # benchmark harness contract
+python -m pytest -q benchmarks/tests                  # benchmark base-class contract
 ```
 
 The `packaging` marker is separate from the tiers: it is a minimal wheel-install sanity check, one case per op family, run against an installed wheel rather than a source checkout.

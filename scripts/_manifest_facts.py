@@ -59,7 +59,7 @@ class TensorArg:
     @property
     def same_as(self) -> str | None:
         """The tensor this one's dtype follows, if it is declared that way."""
-        match = SAME_AS_RE.match(self.dtype)
+        match = SAME_AS_RE.match(self.dtype.strip())
         return match.group(1) if match else None
 
 
@@ -100,7 +100,8 @@ class Facts:
     value_inputs: tuple[TensorArg, ...] = ()
     outputs: tuple[TensorArg, ...] = ()
     combos: tuple[Mapping[str, str], ...] = ()
-    stage_names: frozenset[str] = frozenset()
+    #: Declaration order — the diagnostics print them that way.
+    stage_names: tuple[str, ...] = ()
     #: Keys the entry carries that the parser does not read, per section.
     unknown_keys: Mapping[Section, tuple[Any, ...]] = field(default_factory=dict)
     params: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
@@ -180,10 +181,6 @@ class Facts:
         return frozenset(a.name for a in self.call_tensor_args if a.optional)
 
     @property
-    def workspace_names(self) -> tuple[str, ...]:
-        return tuple(a.name for a in self.call_tensor_args if a.workspace)
-
-    @property
     def combo_columns(self) -> tuple[str, ...]:
         """Columns a ``dtype_combos`` row spans: caller inputs, workspaces out.
 
@@ -199,6 +196,20 @@ class Facts:
         return tuple(a.name for a in self.value_inputs if not a.optional)
 
     # -- dtype -------------------------------------------------------------
+
+    @property
+    def same_as_map(self) -> Mapping[str, str]:
+        """Tensor -> the tensor its dtype follows, over the call and the outputs.
+
+        Only a bare ``same_as(ref)`` names one. A union that merely mentions it
+        states a choice the caller makes, and reading that as an edge would
+        demand a rejection the op never makes.
+        """
+        return {
+            a.name: a.same_as
+            for a in (*self.call_tensor_args, *self.outputs)
+            if a.same_as is not None
+        }
 
     @property
     def call_same_as_map(self) -> Mapping[str, str]:
@@ -353,11 +364,11 @@ def build(name: str, entry: Mapping[str, Any]) -> Facts:
         combos = tuple(c for c in raw_combos if isinstance(c, dict))
 
     composition = entry.get("composition")
-    stage_names: frozenset[str] = frozenset()
+    stage_names: tuple[str, ...] = ()
     if isinstance(composition, dict):
         stages = composition.get("stages")
         if isinstance(stages, list):
-            stage_names = frozenset(
+            stage_names = tuple(
                 st["name"]
                 for st in stages
                 if isinstance(st, dict) and isinstance(st.get("name"), str)

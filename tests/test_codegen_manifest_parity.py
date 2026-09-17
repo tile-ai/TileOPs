@@ -48,4 +48,4 @@ def test_a_combo_row_carries_no_workspace_column():
 def test_the_real_manifest_still_exercises_a_workspace():
     """Without one, the two assertions above prove nothing about this repo."""
     entries = {n: e for n, e in load_manifest().items() if e.get("status") == "implemented"}
-    assert any(F.build(n, e).workspace_names for n, e in entries.items())
+    assert any(any(a.workspace for a in F.build(n, e).call_tensor_args) for n, e in entries.items())

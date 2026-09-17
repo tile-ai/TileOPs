@@ -51,7 +51,6 @@ import _manifest_facts as facts_mod  # noqa: E402
 
 import tileops.manifest as manifest_pkg  # noqa: E402
 from tileops.manifest import (  # noqa: E402
-    WORKSPACE_ATTR,
     forward_signature,
 )
 from tileops.manifest.dtype_rules import PROMOTE_INT_TO_FLOAT_RE, SAME_AS_RE  # noqa: E402
@@ -1105,6 +1104,9 @@ def _check_optional_in_dtype_positions(
             dtype = attrs.get("dtype")
             if not isinstance(dtype, str):
                 continue
+            # Every mention of a tensor, including inside a union — wider
+            # than the ``same_as`` edge the facts carry, which is the bare
+            # form only.
             for ref in _SAME_AS_RE.findall(dtype):
                 if ref in optional:
                     err(
@@ -1248,18 +1250,8 @@ def _forward_signature(entry: dict) -> dict:
 
 
 def _stage_names(entry: dict) -> list[str]:
-    """Top-level ``composition.stages`` names, in declaration order.
-
-    Order matters to the callers that print them, so this keeps declaration
-    order while ``Facts.stage_names`` carries the membership test.
-    """
-    composition = entry.get("composition")
-    if not isinstance(composition, dict):
-        return []
-    stages = composition.get("stages")
-    if not isinstance(stages, list):
-        return []
-    return [st["name"] for st in stages if isinstance(st, dict) and isinstance(st.get("name"), str)]
+    """Top-level ``composition.stages`` names, in declaration order."""
+    return list(_facts(entry).stage_names)
 
 
 def _op_ref_resolves(ref: str, all_op_names: Collection[str]) -> bool:
@@ -2045,21 +2037,6 @@ def _validate_dtype_token(
     return None
 
 
-def _build_same_as_map(all_tensors: dict) -> dict[str, str]:
-    """Map tensor name → same_as reference target for pure same_as dtypes.
-
-    Mixed expressions (``float16 | same_as(x)``) are not tracked.
-    """
-    same_as_map: dict[str, str] = {}
-    for tname, attrs in all_tensors.items():
-        tokens = _parse_dtype_expr(attrs.get("dtype", ""))
-        if len(tokens) == 1:
-            m = _SAME_AS_RE.match(tokens[0])
-            if m:
-                same_as_map[tname] = m.group(1)
-    return same_as_map
-
-
 def _check_dtype_combos_same_as_identity(
     op_name: str,
     dtype_combos: list,
@@ -2141,7 +2118,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     # same_as identity constraint in dtype_combos
     dtype_combos = sig.get("dtype_combos", [])
     if isinstance(dtype_combos, list) and dtype_combos:
-        same_as_map = _build_same_as_map(all_tensors)
+        same_as_map = dict(_facts_from_sig(sig).same_as_map)
         # An output the caller states may depart from its declared fallback in a combo
         # row. An output the entry leaves unmarked may not: the op decides that one.
         caller_stated = frozenset(
@@ -2211,15 +2188,7 @@ def _diagnose_unresolvable_signature(op_name: str, sig: dict) -> list[str]:
     # Pure ``same_as(ref)`` edges only — mixed expressions are not part
     # of the cycle graph; a cycle in pure edges is what stalls fixpoint
     # resolution.
-    edges: dict[str, str] = {}
-    for tname, attrs in all_tensors.items():
-        if not isinstance(attrs, dict):
-            continue
-        tokens = _parse_dtype_expr(attrs.get("dtype", ""))
-        if len(tokens) == 1:
-            m = _SAME_AS_RE.match(tokens[0])
-            if m:
-                edges[tname] = m.group(1)
+    edges = dict(_facts_from_sig(sig).same_as_map)
 
     # Dangling references: ``same_as(ref)`` where ``ref`` is not declared.
     dangling: set[str] = set()
@@ -3283,6 +3252,8 @@ def _dtype_options_for_tensor(
     whether that is a temporary state inside the fixpoint loop or a
     permanent failure).
     """
+    # Token-level: a union expands term by term, so this walks the dtype
+    # grammar rather than reading the bare-form edge off the facts.
     out: list[str] = []
     for tok in _parse_dtype_expr(dtype_str):
         m = _SAME_AS_RE.match(tok)
@@ -3373,18 +3344,10 @@ def _primary_dtype_input(
     manifest-derived ``_validate_dtypes`` implementations typically
     compare the op's ``self.dtype`` against the unbound primary input.
     """
-    inputs = sig.get("inputs") or {}
-    if not isinstance(inputs, dict):
-        return None
+    bound = _facts_from_sig(sig).same_as_map
     for name in forward_inputs:
-        attrs = inputs.get(name)
-        if not isinstance(attrs, dict):
-            continue
-        dstr = attrs.get("dtype", "")
-        tokens = _parse_dtype_expr(dstr)
-        if len(tokens) == 1 and _SAME_AS_RE.match(tokens[0]):
-            continue
-        return name
+        if name not in bound:
+            return name
     # Fallback: no fully-free input; use the first declared input even
     # if it's same_as-bound, so ``self.dtype`` is at least non-None.
     return forward_inputs[0] if forward_inputs else None
@@ -3451,7 +3414,9 @@ def _caller_stated_out_dtype(sig: dict, combo: dict[str, str]) -> dict:
     return {}
 
 
-def _workspace_probe_dtype(attrs: object, combo: dict[str, str]) -> "str | None":
+def _workspace_probe_dtype(
+    arg: "facts_mod.TensorArg | None", combo: dict[str, str]
+) -> "str | None":
     """A concrete dtype for a workspace the probe must pass but no combo names.
 
     ``same_as(ref)`` follows the row's choice for *ref*. A union prefers a token
@@ -3459,15 +3424,11 @@ def _workspace_probe_dtype(attrs: object, combo: dict[str, str]) -> "str | None"
     activation dtype is probed with a combination it accepts; failing that it
     takes the first declared token, which the manifest says is legal.
     """
-    if not (isinstance(attrs, dict) and attrs.get(WORKSPACE_ATTR)):
+    if arg is None or not arg.workspace:
         return None
-    dtype_str = attrs.get("dtype")
-    if not isinstance(dtype_str, str):
-        return None
-    same_as = SAME_AS_RE.match(dtype_str.strip())
-    if same_as:
-        return combo.get(same_as.group(1))
-    tokens = _parse_dtype_expr(dtype_str)
+    if arg.same_as is not None:
+        return combo.get(arg.same_as)
+    tokens = _parse_dtype_expr(arg.dtype)
     if not tokens:
         return None
     in_row = [t for t in tokens if t in set(combo.values())]
@@ -3503,7 +3464,7 @@ def _combo_accepted(
     if validate_fn is None:
         return False, "no _validate_dtypes"
 
-    sig_inputs = (sig or {}).get("inputs") or {}
+    sig_facts = _facts_from_sig(sig or {})
     tensors: dict = {}
     for name in forward_inputs:
         dtype_name = combo.get(name)
@@ -3511,7 +3472,7 @@ def _combo_accepted(
             # A workspace is a forward argument the op validates, but never a
             # combo column. Its dtype comes from its own declaration so the
             # probe can make the call the combo row describes.
-            dtype_name = _workspace_probe_dtype(sig_inputs.get(name), combo)
+            dtype_name = _workspace_probe_dtype(sig_facts.arg(name), combo)
         if dtype_name is None:
             return False, f"combo missing input {name!r}"
         t = _make_mock_tensor(dtype_name)
@@ -3759,6 +3720,8 @@ def check_l3_validate_dtypes_parity(
                 expanded_combos.append({})
                 continue
             expanded: dict[str, str] = {}
+            # A combo cell, not a signature declaration: the row itself may
+            # write ``same_as(ref)`` in place of a dtype.
             for key, val in combo.items():
                 if isinstance(val, str):
                     m = _SAME_AS_RE.match(val.strip())
@@ -4070,21 +4033,14 @@ def _same_as_refs(sig: dict) -> dict[str, str]:
 
 
 def _honours_same_as(sig: dict, candidate: dict[str, str]) -> bool:
-    """Return True when *candidate* satisfies the same_as dtype identity."""
-    inputs = sig.get("inputs") or {}
-    if not isinstance(inputs, dict):
-        return True
-    for tname, attrs in inputs.items():
-        if not isinstance(attrs, dict):
-            continue
-        dstr = attrs.get("dtype", "")
-        tokens = _parse_dtype_expr(dstr)
-        if len(tokens) == 1:
-            m = _SAME_AS_RE.match(tokens[0])
-            if m:
-                ref = m.group(1)
-                if ref in candidate and candidate.get(tname) != candidate[ref]:
-                    return False
+    """Whether *candidate* satisfies the same_as dtype identity.
+
+    A tensor declared ``same_as(ref)`` must carry ref's dtype in the row. A row
+    that states ref but omits the bound tensor does not satisfy it either.
+    """
+    for tname, ref in _facts_from_sig(sig).call_same_as_map.items():
+        if ref in candidate and candidate.get(tname) != candidate[ref]:
+            return False
     return True
 
 

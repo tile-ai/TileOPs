@@ -448,7 +448,7 @@ class AvgPool3dFixture(FixtureBase):
 
 
 class AvgPoolTest(AvgPoolWorkload, TestBase):
-    """Dim-generic avg-pool reference harness (divisor_override is 2d/3d-only)."""
+    """Dim-generic avg-pool reference test (divisor_override is 2d/3d-only)."""
 
 
 def _avg_pool_expected_kernel(
@@ -1438,7 +1438,7 @@ class MaxPool3dFixture(FixtureBase):
 
 
 class MaxPoolTest(MaxPoolWorkload, TestBase):
-    """Dim-generic max-pool reference harness."""
+    """Dim-generic max-pool reference test."""
 
 
 def _run_max_pool_case(

@@ -73,7 +73,7 @@ _SHAPES = ((1024, 4096), (1024, 10240), (1024, 11008))
 
 
 class FusedGatedBenchmark(BenchmarkBase[FusedGatedBenchCase]):
-    """Timing harness for the fused-gated strategy decision.
+    """Times the fused-gated strategy decision.
 
     Its only caller compares two forced kernel strategies and reads
     ``device_busy_ms``. Nothing records a row, so there is no throughput to
