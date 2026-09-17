@@ -354,10 +354,6 @@ FusedMoeFwdOp:
     # entry declares it; repeating it here would be one fact in two places.
     - name: routed_experts
       op: FusedMoEExpertsFwdOp
-      delegates:
-      - MoePrePermuteFwdOp
-      - MoeExpertMLPFwdOp
-      - MoePostPermuteFwdOp
 
 MoePrePermuteFwdOp:
   ref_api: "none"

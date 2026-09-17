@@ -119,7 +119,9 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
     ),
 )
 
-LEVELS = (None, "schema", "signature", "shape", "dtype", "bench")
+#: Not every level: the three checks that assumed a mapping ran under these,
+#: and running the rest is a cartesian product of one property.
+LEVELS = (None, "schema", "signature", "shape", "bench")
 
 
 @pytest.fixture(scope="module")

@@ -3761,11 +3761,6 @@ class TestComposition:
         errors = validator.check_l0("op", entry, all_op_names=["op"])
         assert any("condition must be a non-empty string" in e for e in errors)
 
-    def test_delegates_must_resolve(self, validator):
-        entry = self._entry([{"name": "s", "kernel": "inner", "delegates": ["NoSuchOp"]}])
-        errors = validator.check_l0("op", entry, all_op_names=["op"])
-        assert any("delegates[0]" in e for e in errors)
-
 
 class TestResources:
     """resources.workspaces: scratch buffers declared apart from the inputs."""

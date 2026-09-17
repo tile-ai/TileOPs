@@ -44,38 +44,6 @@ class Section(Enum):
     ROOFLINE_COMPOSITION = "roofline.composition"
 
 
-@dataclass
-class KeyTaker:
-    """Reads a mapping key by key and remembers which ones were taken.
-
-    The schema is what the parser accepts, so there is no second list to keep
-    in step with it: whatever is left over at the end is an unknown key, and
-    the accepted set the diagnostic prints is the one the parser declared.
-    """
-
-    raw: Mapping[str, Any]
-    accepted: set[str] = field(default_factory=set)
-
-    def take(self, *names: str) -> None:
-        """Declare these keys read, whether or not the mapping carries them."""
-        self.accepted.update(names)
-
-    def get(self, name: str, default: Any = None) -> Any:
-        self.accepted.add(name)
-        return self.raw.get(name, default)
-
-    @property
-    def unknown(self) -> tuple[Any, ...]:
-        """Keys the parser did not read, ordered by their repr.
-
-        A malformed entry can carry a non-string key, so ordering by the key
-        itself would raise where the point is to report the problem.
-        """
-        if not isinstance(self.raw, dict):
-            return ()
-        return tuple(sorted((k for k in self.raw if k not in self.accepted), key=repr))
-
-
 @dataclass(frozen=True)
 class TensorArg:
     """One tensor of the call, with its dtype already parsed."""
@@ -133,10 +101,8 @@ class Facts:
     outputs: tuple[TensorArg, ...] = ()
     combos: tuple[Mapping[str, str], ...] = ()
     stage_names: frozenset[str] = frozenset()
-    #: Per section: the keys the parser accepts, and the ones the entry carried
-    #: that it does not. Both come from the same reading, so they cannot drift.
-    accepted_keys: Mapping[Section, tuple[str, ...]] = field(default_factory=dict)
-    unknown_keys: Mapping[Section, tuple[str, ...]] = field(default_factory=dict)
+    #: Keys the entry carries that the parser does not read, per section.
+    unknown_keys: Mapping[Section, tuple[Any, ...]] = field(default_factory=dict)
     params: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     source: Mapping[str, Any] = field(default_factory=dict)
     roofline: Mapping[str, Any] = field(default_factory=dict)
@@ -156,22 +122,9 @@ class Facts:
         return self.status is None or self.status == "spec-only"
 
     @property
-    def implemented(self) -> bool:
-        return self.status == "implemented"
-
-    @property
     def bench_manifest_driven(self) -> bool:
         """Whether the benchmark contract is a hard error rather than a warning."""
         return bool(self.source.get("bench_manifest_driven", False))
-
-    @property
-    def roofline_mode(self) -> str:
-        """``func``, ``inline`` or ``none`` — which form the cost takes."""
-        if isinstance(self.roofline.get("func"), str):
-            return "func"
-        if "flops" in self.roofline and "bytes" in self.roofline:
-            return "inline"
-        return "none"
 
     # -- params ------------------------------------------------------------
 
@@ -248,50 +201,25 @@ class Facts:
     # -- dtype -------------------------------------------------------------
 
     @property
-    def same_as_map(self) -> Mapping[str, str]:
-        """Tensor -> the tensor its dtype follows, over the call and the outputs."""
-        return self._same_as(self.call_tensor_args + self.outputs)
-
-    @property
     def call_same_as_map(self) -> Mapping[str, str]:
-        """The same, restricted to what the call passes.
+        """Call argument -> the tensor its dtype follows.
 
         The negative dtype probes substitute an out-of-union dtype on one
         tensor and expect the ops that follow it to be rejected, so they need
         the edges among call arguments and nothing else.
         """
-        return self._same_as(self.call_tensor_args)
-
-    @staticmethod
-    def _same_as(args: "tuple[TensorArg, ...]") -> Mapping[str, str]:
-        out: dict[str, str] = {}
-        for arg in args:
-            ref = arg.same_as
-            if ref is not None:
-                out[arg.name] = ref
-        return out
-
-    # -- shape -------------------------------------------------------------
+        return {a.name: a.same_as for a in self.call_tensor_args if a.same_as is not None}
 
     @property
     def declared_output_shapes(self) -> Mapping[str, tuple[str, ...]]:
         """Outputs whose shape the entry writes out, as dimension names.
 
-        An output without a ``shape`` declares none, which is different from
-        declaring an empty one, so it is absent rather than mapped to ``()``.
+        Absent rather than empty where the declaration cannot be bound as mock
+        dimension names, because a consumer runs its check when the shape is
+        stated and skips it when it is not.
         """
         out: dict[str, tuple[str, ...]] = {}
         for arg in self.outputs:
-            parts = _shape_parts(arg.shape)
-            if parts is not None:
-                out[arg.name] = parts
-        return out
-
-    @property
-    def declared_input_shapes(self) -> Mapping[str, tuple[str, ...]]:
-        """The same, for everything the call passes."""
-        out: dict[str, tuple[str, ...]] = {}
-        for arg in self.call_tensor_args:
             parts = _shape_parts(arg.shape)
             if parts is not None:
                 out[arg.name] = parts
@@ -362,7 +290,7 @@ _ENTRY_KEYS = (
 )
 _SIGNATURE_KEYS = ("inputs", "outputs", "params", "shape_rules", "dtype_combos", "static_dims")
 _COMPOSITION_KEYS = ("kind", "stages")
-_STAGE_KEYS = ("name", "op", "kernel", "delegates", "variants", "optional")
+_STAGE_KEYS = ("name", "op", "kernel", "variants", "optional")
 _VARIANT_KEYS = ("name", "condition", "stages")
 _RESOURCE_KEYS = ("workspaces",)
 _WORKSPACE_KEYS = ("name", "dtype", "owner", "kind", "optional", "note")
@@ -392,20 +320,12 @@ def unknown_keys_of(section: Section, raw: object) -> tuple[Any, ...]:
 
 def build(name: str, entry: Mapping[str, Any]) -> Facts:
     """Read one entry into its facts, accumulating what cannot be read."""
-    accepted: dict[Section, tuple[str, ...]] = {}
-    unknown: dict[Section, tuple[str, ...]] = {}
-
-    entry_taker = KeyTaker(entry if isinstance(entry, dict) else {})
-    entry_taker.take(*_ENTRY_KEYS)
-    accepted[Section.ENTRY] = tuple(sorted(entry_taker.accepted))
-    unknown[Section.ENTRY] = entry_taker.unknown
-
     sig = entry.get("signature")
     sig = sig if isinstance(sig, dict) else {}
-    sig_taker = KeyTaker(sig)
-    sig_taker.take(*_SIGNATURE_KEYS)
-    accepted[Section.SIGNATURE] = tuple(sorted(sig_taker.accepted))
-    unknown[Section.SIGNATURE] = sig_taker.unknown
+    unknown = {
+        Section.ENTRY: unknown_keys_of(Section.ENTRY, entry),
+        Section.SIGNATURE: unknown_keys_of(Section.SIGNATURE, sig),
+    }
 
     merged_inputs = _tensor_args(sig.get("inputs"))
     # A signature handed in already merged carries its workspaces inside
@@ -455,7 +375,6 @@ def build(name: str, entry: Mapping[str, Any]) -> Facts:
         outputs=outputs,
         combos=combos,
         stage_names=stage_names,
-        accepted_keys=accepted,
         unknown_keys=unknown,
         params=raw_params if isinstance(raw_params, dict) else {},
         source=raw_source if isinstance(raw_source, dict) else {},

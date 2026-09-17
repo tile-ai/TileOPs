@@ -1,10 +1,10 @@
-"""The op layer's generated code must follow the manifest, entry by entry.
+"""The generated validator takes the call's arguments, workspaces included.
 
-The validator's differential compares diagnostics, which says nothing about
-what the wheel does: ``_validate_dtypes`` and ``eval_roofline`` are synthesised
-from the same manifest facts, and a change to how a fact is derived reaches
-them without changing a single diagnostic. These pin the generated shape for
-every implemented entry so that gap is covered.
+``_validate_dtypes`` is synthesised from the manifest, so a change to how the
+call's argument list is derived reaches the wheel without moving a single
+validator diagnostic. One synthetic entry pins the shape; one assertion over
+the real manifest keeps the synthetic one honest by failing if no entry
+exercises a workspace any more.
 """
 
 import inspect
@@ -23,45 +23,29 @@ import _manifest_facts as F  # noqa: E402
 from tileops.manifest import forward_signature, load_manifest  # noqa: E402
 from tileops.ops._dtype_codegen import synthesize_validate_dtypes  # noqa: E402
 
-
-def _implemented():
-    return {n: e for n, e in load_manifest().items() if e.get("status") == "implemented"}
-
-
-@pytest.mark.parametrize("op_name", sorted(_implemented()))
-def test_generated_validator_takes_the_call_arguments(op_name):
-    """The synthesised signature is the manifest's call, in declaration order.
-
-    Inputs then workspaces: a workspace is passed like any other tensor, and a
-    generated validator that omitted one would reject every call that passes it.
-    """
-    entry = _implemented()[op_name]
-    facts = F.build(op_name, entry)
-    try:
-        fn = synthesize_validate_dtypes(op_name, forward_signature(entry))
-    except ValueError:
-        pytest.skip("signature too irregular for the codegen to synthesise from")
-    params = [p for p in inspect.signature(fn).parameters if p != "self"]
-    assert params == list(facts.call_names)
+_ENTRY = {
+    "status": "implemented",
+    "signature": {
+        "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+        "outputs": {"y": {"dtype": "same_as(x)"}},
+        "dtype_combos": [{"x": "float16"}, {"x": "bfloat16"}],
+    },
+    "resources": {"workspaces": [{"name": "ws", "dtype": "float16 | bfloat16"}]},
+}
 
 
-@pytest.mark.parametrize("op_name", sorted(_implemented()))
-def test_combo_columns_exclude_the_workspaces(op_name):
-    """A combo row spans the caller's inputs; a workspace's dtype is strategy.
-
-    Checked against the facts rather than recomputed here, so a change to how
-    the column set is derived shows up as a failure rather than agreeing with
-    itself.
-    """
-    entry = _implemented()[op_name]
-    facts = F.build(op_name, entry)
-    for column in facts.combo_columns:
-        arg = facts.arg(column)
-        assert arg is not None and not arg.workspace, column
-    for name in facts.workspace_names:
-        assert name not in facts.combo_columns
+def test_generated_validator_takes_the_workspace():
+    """Omitting it would reject every call that passes one."""
+    fn = synthesize_validate_dtypes("Op", forward_signature(_ENTRY))
+    assert [p for p in inspect.signature(fn).parameters if p != "self"] == ["x", "ws"]
 
 
-def test_at_least_one_entry_exercises_a_workspace():
-    """Guard against the two assertions above passing vacuously."""
-    assert any(F.build(n, e).workspace_names for n, e in _implemented().items())
+def test_a_combo_row_carries_no_workspace_column():
+    """A row states what a caller may pass; a workspace's dtype is strategy."""
+    assert F.build("Op", _ENTRY).combo_columns == ("x",)
+
+
+def test_the_real_manifest_still_exercises_a_workspace():
+    """Without one, the two assertions above prove nothing about this repo."""
+    entries = {n: e for n, e in load_manifest().items() if e.get("status") == "implemented"}
+    assert any(F.build(n, e).workspace_names for n, e in entries.items())

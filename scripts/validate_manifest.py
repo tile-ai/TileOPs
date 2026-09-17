@@ -470,7 +470,7 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
     if unknown_sig:
         err(
             f"unknown signature keys [{', '.join(unknown_sig)}]; valid "
-            f"keys are {list(ef.accepted_keys[facts_mod.Section.SIGNATURE])}"
+            f"keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.SIGNATURE])}"
         )
 
     # static_dims must be a mapping of str -> str expression.
@@ -1334,20 +1334,6 @@ def _l0_stage(
     if "optional" in stage and not isinstance(stage["optional"], bool):
         err(f"{where}.optional must be a bool")
 
-    delegates = stage.get("delegates")
-    if delegates is not None:
-        if not isinstance(delegates, list):
-            err(f"{where}.delegates must be a list")
-        else:
-            for i, dele in enumerate(delegates):
-                if not isinstance(dele, str) or not dele.strip():
-                    err(f"{where}.delegates[{i}] must be a non-empty string")
-                elif not _op_ref_resolves(dele, all_op_names):
-                    err(
-                        f"{where}.delegates[{i}] {dele!r} is neither a manifest "
-                        f"entry nor an importable dotted path"
-                    )
-
     variants = stage.get("variants")
     if variants is not None:
         if depth:
@@ -1572,7 +1558,7 @@ def check_l0(
     if unknown_top:
         err(
             f"unknown entry keys [{', '.join(unknown_top)}]; "
-            f"valid keys are {list(ef_top.accepted_keys[facts_mod.Section.ENTRY])}"
+            f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.ENTRY])}"
         )
 
     # ref_api: required string — fully qualified PyTorch API equivalent

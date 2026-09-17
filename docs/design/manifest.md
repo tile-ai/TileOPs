@@ -438,14 +438,13 @@ not a stage.
 
 Each stage:
 
-| Field       | Required | Description                                                                          |
-| ----------- | -------- | ------------------------------------------------------------------------------------ |
-| `name`      | yes      | Unique within the `composition`. Workspaces and `roofline.composition` cite it.      |
-| `op`        | \*       | Manifest entry name, or a dotted path importing to a class. Exclusive with `kernel`. |
-| `kernel`    | \*       | A key of this entry's `source.kernel_map`. Exclusive with `op`.                      |
-| `delegates` | no       | Ops the stage builds, mirroring the op's `kernel_delegates()`.                       |
-| `variants`  | no       | Mutually exclusive performance paths. Top-level stages only.                         |
-| `optional`  | no       | The stage runs only in some configurations.                                          |
+| Field      | Required | Description                                                                          |
+| ---------- | -------- | ------------------------------------------------------------------------------------ |
+| `name`     | yes      | Unique within the `composition`. Workspaces and `roofline.composition` cite it.      |
+| `op`       | \*       | Manifest entry name, or a dotted path importing to a class. Exclusive with `kernel`. |
+| `kernel`   | \*       | A key of this entry's `source.kernel_map`. Exclusive with `op`.                      |
+| `variants` | no       | Mutually exclusive performance paths. Top-level stages only.                         |
+| `optional` | no       | The stage runs only in some configurations.                                          |
 
 A stage names what runs only through `op` or `kernel`, so the name always resolves: an
 implementation worth naming as a stage is registered as a manifest op.
@@ -463,7 +462,6 @@ composition:
     op: PrepareFwdOp
   - name: compute
     op: ComputeFwdOp
-    delegates: [InnerFwdOp]
     variants:
     - name: tight
       stages: [{op: InnerFwdOp}]

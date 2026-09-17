@@ -118,10 +118,6 @@ class TestDeclaredShapes:
 
 
 class TestDtypeFacts:
-    def test_same_as_spans_inputs_and_outputs(self):
-        f = F.build("Op", _entry())
-        assert f.same_as_map == {"y": "x"}
-
     def test_a_plain_union_has_no_reference(self):
         assert F.build("Op", _entry()).arg("x").same_as is None
 
@@ -146,29 +142,24 @@ class TestDtypeFacts:
                 }
             ),
         )
-        assert "w" not in f.same_as_map
-
-    def test_call_scope_excludes_outputs(self):
-        f = F.build("Op", _entry(resources={"workspaces": [{"name": "ws", "dtype": "same_as(x)"}]}))
-        assert f.same_as_map == {"y": "x", "ws": "x"}
-        assert f.call_same_as_map == {"ws": "x"}
+        assert "w" not in f.call_same_as_map
 
 
 class TestStatusAndSeverity:
     """Status decides whether a check may probe code; severity decides how it reports."""
 
     @pytest.mark.parametrize(
-        "status, spec_only, implemented",
+        "status, spec_only",
         [
-            ("implemented", False, True),
-            ("spec-only", True, False),
-            (None, True, False),
-            (3, True, False),
-            ("garbage", False, False),
+            ("implemented", False),
+            ("spec-only", True),
+            (None, True),
+            (3, True),
+            ("garbage", False),
         ],
         ids=["implemented", "spec_only", "absent", "not_a_string", "unknown_string"],
     )
-    def test_status_branches(self, status, spec_only, implemented):
+    def test_status_branches(self, status, spec_only):
         """An unknown string is neither: schema reports it, facts do not guess.
 
         Treating it as spec-only would silently stand down every check that
@@ -177,26 +168,11 @@ class TestStatusAndSeverity:
         entry = {"signature": {"inputs": {}, "outputs": {}}}
         if status is not None:
             entry["status"] = status
-        f = F.build("Op", entry)
-        assert f.spec_only is spec_only
-        assert f.implemented is implemented
+        assert F.build("Op", entry).spec_only is spec_only
 
     def test_bench_severity_defaults_to_the_softer_one(self):
         assert not F.build("Op", _entry()).bench_manifest_driven
         assert F.build("Op", _entry(source={"bench_manifest_driven": True})).bench_manifest_driven
-
-    @pytest.mark.parametrize(
-        "roofline, mode",
-        [
-            ({"func": "pkg.f"}, "func"),
-            ({"flops": "1", "bytes": "2"}, "inline"),
-            ({"flops": "1"}, "none"),
-            ({}, "none"),
-        ],
-        ids=["func", "inline", "half_inline", "empty"],
-    )
-    def test_roofline_mode(self, roofline, mode):
-        assert F.build("Op", _entry(roofline=roofline)).roofline_mode == mode
 
 
 class TestMutationContract:
@@ -234,8 +210,8 @@ class TestMutationContract:
         assert f.mutated_input_names == frozenset()
 
 
-class TestKeyTaker:
-    """The parser is the schema: whatever it does not read is an unknown key."""
+class TestUnknownKeys:
+    """A key the parser does not read is an unknown key."""
 
     def test_a_key_nothing_reads_is_unknown(self):
         f = F.build("Op", _entry(made_up_field=1))
@@ -253,15 +229,6 @@ class TestKeyTaker:
             family="test",
         )
         assert F.build("Op", entry).unknown_keys[F.Section.ENTRY] == ()
-
-    def test_the_message_and_the_parser_read_one_declaration(self):
-        """The accepted set a diagnostic prints is the set the parser consumed.
-
-        Two lists would drift: a field added to one and not the other either
-        reads as unknown while the message calls it valid, or the reverse.
-        """
-        f = F.build("Op", _entry())
-        assert set(f.accepted_keys[F.Section.ENTRY]) == set(F.SECTION_KEYS[F.Section.ENTRY])
 
     @pytest.mark.parametrize("section", list(F.Section))
     def test_every_section_declares_its_keys(self, section):
