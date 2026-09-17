@@ -32,11 +32,21 @@ def _sm_version(index: int) -> int:
     return major * 10 + minor
 
 
+def is_h200_name(device_name: str) -> bool:
+    """Whether a CUDA device name is an H200 board.
+
+    The one H200 test. A band fitted on H200 and the selection that routes work
+    to it both read this, so they cannot disagree on an SKU whose reported name
+    carries a suffix.
+    """
+    return "H200" in device_name
+
+
 def is_h200(index: "int | None" = None) -> bool:
     """Whether the device is an H200; defaults to the current device."""
     if not torch.cuda.is_available():
         return False
-    return "H200" in _device_name(torch.cuda.current_device() if index is None else index)
+    return is_h200_name(_device_name(torch.cuda.current_device() if index is None else index))
 
 
 def get_sm_version(index: "int | None" = None) -> int:

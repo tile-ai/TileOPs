@@ -336,6 +336,9 @@ def test_selector_stages_h200_batched_epilogue():
     )
     h100 = get_best_config(_desc(1024, 1024, 1024, num_groups=8, device_name="NVIDIA H100"))
     assert h100.epilogue_stage_n == 0
+    # The band is fitted on the board, not on the exact name CUDA reports for it.
+    nvl = get_best_config(_desc(1024, 1024, 1024, num_groups=8, device_name="NVIDIA H200 NVL"))
+    assert nvl.epilogue_stage_n == 128
 
 
 @pytest.mark.full

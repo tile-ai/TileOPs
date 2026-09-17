@@ -9,6 +9,8 @@ import enum
 import functools
 import math
 
+from tileops.utils import is_h200_name
+
 __all__ = [
     "ACTIVATIONS",
     "PER_GROUP_TYPES",
@@ -235,6 +237,15 @@ class GemmDesc:
         return self.activation != "none"
 
     @property
+    def h200(self) -> bool:
+        """Whether the bands fitted on H200 apply to this device.
+
+        Read through :func:`tileops.utils.is_h200_name`, so a band and the
+        selection that routes work to it agree on every H200 SKU.
+        """
+        return is_h200_name(self.device_name)
+
+    @property
     def c_cols(self) -> int:
         """Columns of C: half of N when the gated activation is fused."""
         return self.n // 2 if self.fused else self.n
@@ -384,7 +395,7 @@ def _best_layout(desc: GemmDesc, candidates: list[_Layout]) -> _Layout:
 def _short_group_layout(desc: GemmDesc) -> _Layout | None:
     rows_per_group = math.ceil(desc.m / desc.num_groups)
     if (
-        desc.device_name == "NVIDIA H200"
+        desc.h200
         and desc.gemm_type is GemmType.M_GROUPED_TIGHT_PSUM
         and desc.ab_dtype == desc.cd_dtype
         and desc.activation in ("none", "silu_and_mul")
@@ -434,7 +445,7 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
     """Return the selected kernel spec for ``desc``."""
     best = _short_group_layout(desc) or _best_layout(desc, layout_candidates(desc))
     if (
-        desc.device_name == "NVIDIA H200"
+        desc.h200
         and desc.gemm_type is GemmType.BATCHED
         and desc.activation == "none"
         and (best.block_m, best.block_n, best.block_k) == (128, 256, 64)
