@@ -1923,8 +1923,9 @@ def check_l1(
     """
     errors: list[str] = []
     sig = entry.get("signature", {})
-    source = entry.get("source", {})
-    op_file = source.get("op", "")
+    # Via the facts so a source that is not a mapping reads as "no paths"
+    # rather than raising: reporting the malformed entry is the job here.
+    op_file = _facts(entry, op_name).source_paths.get("op", "")
     if not op_file:
         if entry.get("status") == "spec-only":
             if warnings is not None:
@@ -1980,7 +1981,10 @@ def check_l1(
 def check_l2(op_name: str, entry: dict) -> list[str]:
     """Validate shape_rules are parseable Python expressions."""
     errors: list[str] = []
-    sig = entry.get("signature", {})
+    # A signature that is not a mapping is a schema error, reported there; here
+    # it simply declares no rules rather than raising.
+    sig = entry.get("signature")
+    sig = sig if isinstance(sig, dict) else {}
     rules = sig.get("shape_rules", [])
 
     for i, rule in enumerate(rules):
@@ -4503,9 +4507,13 @@ def check_c9_output_dtype_convention(op_name: str, entry: dict, cls: type | None
     the fake to what the op returns.
     """
     errors: list[str] = []
-    signature = entry.get("signature") or {}
+    # Via the facts so a signature that is not a mapping reads as empty rather
+    # than raising: a malformed entry is reported, not crashed on.
+    signature = entry.get("signature")
+    signature = signature if isinstance(signature, dict) else {}
     outputs = signature.get("outputs") or {}
-    params = signature.get("params") or {}
+    outputs = outputs if isinstance(outputs, dict) else {}
+    params = _facts(entry, op_name).params
     has_param = OUT_DTYPE_PARAM in params
     stated = [
         name
@@ -4774,8 +4782,7 @@ def validate_manifest(
             continue
 
         # Resolve Op class once per entry so parity checks can reuse it.
-        source = entry.get("source", {})
-        op_file = source.get("op", "")
+        op_file = _facts(entry, op_name).source_paths.get("op", "")
         resolve_result = _resolve_op_class(op_file, op_name) if op_file else None
         op_cls = resolve_result.cls if resolve_result is not None else None
 
@@ -4852,7 +4859,7 @@ def validate_manifest(
         # bench: benchmark uses manifest workloads
         if "bench" in levels:
             all_errors.extend(check_bench_declaration(op_name, entry))
-            bench_path = entry.get("source", {}).get("bench", "")
+            bench_path = _facts(entry, op_name).source_paths.get("bench", "")
             if bench_path:
                 bench_errors = check_l4_benchmark(op_name, bench_path, repo_root)
                 if _is_bench_manifest_driven(entry):
