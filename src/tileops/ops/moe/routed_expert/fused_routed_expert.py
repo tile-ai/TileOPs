@@ -167,7 +167,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         topk: int,
         num_experts: int,
     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        if self._indexed_mlp is not None:
+        if getattr(self, "_indexed_mlp", None) is not None:
             return self._indexed_mlp.workspace_shapes()
         return ((0,), (0,))
 
