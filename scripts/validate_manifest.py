@@ -112,41 +112,21 @@ _PROMOTE_TARGET_DTYPE: str = "float32"
 
 # Required top-level fields per op entry
 _REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
-_VALID_TOP_KEYS = _REQUIRED_TOP | {
-    "ref_api",
-    "torch_compile_fullgraph",
-    "composition",
-    "resources",
-}
 _REQUIRED_SIGNATURE = {"inputs", "outputs"}
-_VALID_SIGNATURE_KEYS = {
-    "inputs",
-    "outputs",
-    "params",
-    "shape_rules",
-    "dtype_combos",
-    "static_dims",
-}
 _REQUIRED_SOURCE = {"kernel", "op", "test", "bench"}
 
 # Valid tensor layout values: what a non-default ``layout`` field may say
 _VALID_LAYOUTS = {"channels_last"}
 
 # composition: the internal structure contract of a composite public op.
-_VALID_COMPOSITION_KEYS = {"kind", "stages"}
 _VALID_COMPOSITION_KINDS = {"composite"}
-_VALID_STAGE_KEYS = {"name", "op", "kernel", "delegates", "variants", "optional"}
-_VALID_VARIANT_KEYS = {"name", "condition", "stages"}
 
 # resources: the execution resource contract. A workspace is scratch the op
 # needs to run, not a value the result depends on, so it is declared here
 # rather than among ``signature.inputs``.
-_VALID_RESOURCE_KEYS = {"workspaces"}
-_VALID_WORKSPACE_KEYS = {"name", "dtype", "owner", "kind", "optional", "note"}
 _VALID_WORKSPACE_KINDS = {"scratch"}
 
 # roofline.composition: which stages the parent's cost is made of.
-_VALID_ROOFLINE_COMPOSITION_KEYS = {"stage", "source", "formula", "optional"}
 
 # Single-axis reference a ``static_dims`` entry takes:
 # `<tensor>.shape[<int_literal_or_identifier>]`
@@ -482,12 +462,15 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
                     continue
                 errors.extend(_check_shape_rule_callables(op_name, i, rule))
 
-    # Unknown signature keys are silently ignored by L1+; reject here.
-    unknown_sig = sorted(repr(k) for k in set(sig) - _VALID_SIGNATURE_KEYS)
+    # Unknown signature keys are silently ignored by L1+; reject here. Both the
+    # leftovers and the accepted set come from the parser, so the message
+    # cannot claim a key is valid that nothing reads.
+    ef = _facts(entry, op_name)
+    unknown_sig = sorted(repr(k) for k in ef.unknown_keys.get(facts_mod.Section.SIGNATURE, ()))
     if unknown_sig:
         err(
             f"unknown signature keys [{', '.join(unknown_sig)}]; valid "
-            f"keys are {sorted(_VALID_SIGNATURE_KEYS)}"
+            f"keys are {list(ef.accepted_keys[facts_mod.Section.SIGNATURE])}"
         )
 
     # static_dims must be a mapping of str -> str expression.
@@ -621,11 +604,14 @@ def _l0_roofline(op_name: str, entry: dict, roofline: dict) -> list[str]:
                 if not isinstance(item, dict):
                     err(f"{where} must be a mapping, got {type(item).__name__}")
                     continue
-                unknown_c = sorted(repr(k) for k in set(item) - _VALID_ROOFLINE_COMPOSITION_KEYS)
+                unknown_c = sorted(
+                    repr(k)
+                    for k in facts_mod.unknown_keys_of(facts_mod.Section.ROOFLINE_COMPOSITION, item)
+                )
                 if unknown_c:
                     err(
                         f"{where} has unknown keys [{', '.join(unknown_c)}]; "
-                        f"valid keys are {sorted(_VALID_ROOFLINE_COMPOSITION_KEYS)}"
+                        f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.ROOFLINE_COMPOSITION])}"
                     )
                 stage = item.get("stage")
                 if not isinstance(stage, str) or not stage.strip():
@@ -1312,11 +1298,11 @@ def _l0_stage(
         err(f"{where} must be a mapping, got {type(stage).__name__}")
         return errors
 
-    unknown = sorted(repr(k) for k in set(stage) - _VALID_STAGE_KEYS)
+    unknown = sorted(repr(k) for k in facts_mod.unknown_keys_of(facts_mod.Section.STAGE, stage))
     if unknown:
         err(
             f"{where} has unknown keys [{', '.join(unknown)}]; "
-            f"valid keys are {sorted(_VALID_STAGE_KEYS)}"
+            f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.STAGE])}"
         )
 
     if named:
@@ -1375,11 +1361,13 @@ def _l0_stage(
                 if not isinstance(variant, dict):
                     err(f"{vwhere} must be a mapping")
                     continue
-                unknown_v = sorted(repr(k) for k in set(variant) - _VALID_VARIANT_KEYS)
+                unknown_v = sorted(
+                    repr(k) for k in facts_mod.unknown_keys_of(facts_mod.Section.VARIANT, variant)
+                )
                 if unknown_v:
                     err(
                         f"{vwhere} has unknown keys [{', '.join(unknown_v)}]; "
-                        f"valid keys are {sorted(_VALID_VARIANT_KEYS)}"
+                        f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.VARIANT])}"
                     )
                 vname = variant.get("name")
                 if not isinstance(vname, str) or not vname.strip():
@@ -1425,20 +1413,21 @@ def _l0_composition(
     errors: list[str] = []
     err = _emit_to(errors, "schema", op_name)
 
-    unknown = sorted(repr(k) for k in set(composition) - _VALID_COMPOSITION_KEYS)
+    unknown = sorted(
+        repr(k) for k in facts_mod.unknown_keys_of(facts_mod.Section.COMPOSITION, composition)
+    )
     if unknown:
         err(
             f"composition has unknown keys [{', '.join(unknown)}]; "
-            f"valid keys are {sorted(_VALID_COMPOSITION_KEYS)}"
+            f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.COMPOSITION])}"
         )
 
     kind = composition.get("kind")
     if kind not in _VALID_COMPOSITION_KINDS:
         err(f"composition.kind must be one of {sorted(_VALID_COMPOSITION_KINDS)}, got {kind!r}")
 
-    source = entry.get("source")
-    kernel_map = source.get("kernel_map") if isinstance(source, dict) else None
-    kernel_keys = set(kernel_map) if isinstance(kernel_map, dict) else set()
+    # The dispatch keys a stage may name, read off the facts.
+    kernel_keys = set(_facts(entry, op_name).kernel_map)
 
     stages = composition.get("stages")
     if not isinstance(stages, list) or not stages:
@@ -1471,11 +1460,13 @@ def _l0_resources(op_name: str, entry: dict, resources: dict) -> list[str]:
     errors: list[str] = []
     err = _emit_to(errors, "schema", op_name)
 
-    unknown = sorted(repr(k) for k in set(resources) - _VALID_RESOURCE_KEYS)
+    unknown = sorted(
+        repr(k) for k in facts_mod.unknown_keys_of(facts_mod.Section.RESOURCES, resources)
+    )
     if unknown:
         err(
             f"resources has unknown keys [{', '.join(unknown)}]; "
-            f"valid keys are {sorted(_VALID_RESOURCE_KEYS)}"
+            f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.RESOURCES])}"
         )
 
     workspaces = resources.get("workspaces")
@@ -1494,11 +1485,13 @@ def _l0_resources(op_name: str, entry: dict, resources: dict) -> list[str]:
         if not isinstance(ws, dict):
             err(f"{where} must be a mapping, got {type(ws).__name__}")
             continue
-        unknown_w = sorted(repr(k) for k in set(ws) - _VALID_WORKSPACE_KEYS)
+        unknown_w = sorted(
+            repr(k) for k in facts_mod.unknown_keys_of(facts_mod.Section.WORKSPACE, ws)
+        )
         if unknown_w:
             err(
                 f"{where} has unknown keys [{', '.join(unknown_w)}]; "
-                f"valid keys are {sorted(_VALID_WORKSPACE_KEYS)}"
+                f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.WORKSPACE])}"
             )
         name = ws.get("name")
         if not isinstance(name, str) or not name.strip():
@@ -1574,11 +1567,12 @@ def check_l0(
 
     # Unknown top-level keys are ignored by every later level, so reject
     # them here (covers removed fields like parity_opt_out).
-    unknown_top = sorted(repr(k) for k in set(entry) - _VALID_TOP_KEYS)
+    ef_top = _facts(entry, op_name)
+    unknown_top = sorted(repr(k) for k in ef_top.unknown_keys.get(facts_mod.Section.ENTRY, ()))
     if unknown_top:
         err(
             f"unknown entry keys [{', '.join(unknown_top)}]; "
-            f"valid keys are {sorted(_VALID_TOP_KEYS)}"
+            f"valid keys are {list(ef_top.accepted_keys[facts_mod.Section.ENTRY])}"
         )
 
     # ref_api: required string — fully qualified PyTorch API equivalent

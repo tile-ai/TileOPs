@@ -273,3 +273,40 @@ class TestCanSilence:
 
     def test_a_usable_fact_never_silences(self):
         assert not F.can_silence(None, [self.KIND], [self.KIND])
+
+
+class TestKeyTaker:
+    """The parser is the schema: whatever it does not read is an unknown key."""
+
+    def test_a_key_nothing_reads_is_unknown(self):
+        f = F.build("Op", _entry(made_up_field=1))
+        assert f.unknown_keys[F.Section.ENTRY] == ("made_up_field",)
+
+    def test_every_declared_key_is_accepted(self):
+        entry = _entry(
+            ref_api="none",
+            workloads=[],
+            roofline={"flops": "1", "bytes": "1"},
+            source={"kernel": "k.py", "op": "o.py", "test": "t.py", "bench": "b.py"},
+            composition={"kind": "composite", "stages": []},
+            resources={"workspaces": []},
+            torch_compile_fullgraph=True,
+            family="test",
+        )
+        assert F.build("Op", entry).unknown_keys[F.Section.ENTRY] == ()
+
+    def test_the_message_and_the_parser_read_one_declaration(self):
+        """The accepted set a diagnostic prints is the set the parser consumed.
+
+        Two lists would drift: a field added to one and not the other either
+        reads as unknown while the message calls it valid, or the reverse.
+        """
+        f = F.build("Op", _entry())
+        assert set(f.accepted_keys[F.Section.ENTRY]) == set(F.SECTION_KEYS[F.Section.ENTRY])
+
+    @pytest.mark.parametrize("section", list(F.Section))
+    def test_every_section_declares_its_keys(self, section):
+        assert F.SECTION_KEYS[section], section
+
+    def test_unknown_keys_of_ignores_a_non_mapping(self):
+        assert F.unknown_keys_of(F.Section.STAGE, "not a mapping") == ()

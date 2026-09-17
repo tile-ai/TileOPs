@@ -34,6 +34,51 @@ SAME_AS_RE = re.compile(r"^\s*same_as\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*$")
 WORKSPACE_ATTR = "__workspace__"
 
 
+class Section(Enum):
+    """A mapping in the manifest whose keys are a closed set."""
+
+    ENTRY = "entry"
+    SIGNATURE = "signature"
+    COMPOSITION = "composition"
+    STAGE = "stage"
+    VARIANT = "variant"
+    RESOURCES = "resources"
+    WORKSPACE = "workspace"
+    ROOFLINE_COMPOSITION = "roofline.composition"
+
+
+@dataclass
+class KeyTaker:
+    """Reads a mapping key by key and remembers which ones were taken.
+
+    The schema is what the parser accepts, so there is no second list to keep
+    in step with it: whatever is left over at the end is an unknown key, and
+    the accepted set the diagnostic prints is the one the parser declared.
+    """
+
+    raw: Mapping[str, Any]
+    accepted: set[str] = field(default_factory=set)
+
+    def take(self, *names: str) -> None:
+        """Declare these keys read, whether or not the mapping carries them."""
+        self.accepted.update(names)
+
+    def get(self, name: str, default: Any = None) -> Any:
+        self.accepted.add(name)
+        return self.raw.get(name, default)
+
+    @property
+    def unknown(self) -> tuple[Any, ...]:
+        """Keys the parser did not read, ordered by their repr.
+
+        A malformed entry can carry a non-string key, so ordering by the key
+        itself would raise where the point is to report the problem.
+        """
+        if not isinstance(self.raw, dict):
+            return ()
+        return tuple(sorted((k for k in self.raw if k not in self.accepted), key=repr))
+
+
 class DiagnosticKind(Enum):
     """What a diagnostic is about, independent of how it is worded.
 
@@ -121,6 +166,10 @@ class Facts:
     outputs: tuple[TensorArg, ...] = ()
     combos: tuple[Mapping[str, str], ...] = ()
     stage_names: frozenset[str] = frozenset()
+    #: Per section: the keys the parser accepts, and the ones the entry carried
+    #: that it does not. Both come from the same reading, so they cannot drift.
+    accepted_keys: Mapping[Section, tuple[str, ...]] = field(default_factory=dict)
+    unknown_keys: Mapping[Section, tuple[str, ...]] = field(default_factory=dict)
     params: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     source: Mapping[str, Any] = field(default_factory=dict)
     roofline: Mapping[str, Any] = field(default_factory=dict)
@@ -168,6 +217,25 @@ class Facts:
         it would state nothing the reader did not already know.
         """
         return frozenset(a.name for a in self.value_inputs if a.mutated)
+
+    # -- source -----------------------------------------------------------
+
+    @property
+    def source_paths(self) -> Mapping[str, str]:
+        """The four declared paths, each as written inside the distribution."""
+        return {
+            key: value
+            for key in ("kernel", "op", "test", "bench")
+            if isinstance(value := self.source.get(key), str)
+        }
+
+    @property
+    def kernel_map(self) -> Mapping[str, str]:
+        """The op's dispatch table as the entry declares it, ``key -> Kernel``."""
+        declared = self.source.get("kernel_map")
+        if not isinstance(declared, dict):
+            return {}
+        return {k: v for k, v in declared.items() if isinstance(k, str) and isinstance(v, str)}
 
     @property
     def tensor_param_names(self) -> frozenset[str]:
@@ -332,11 +400,67 @@ def _workspace_args(entry: Mapping[str, Any]) -> tuple[TensorArg, ...]:
     return tuple(args)
 
 
+#: Keys each closed section accepts. Declared where the parser reads them so
+#: the diagnostic and the parser cannot disagree about what is valid.
+_ENTRY_KEYS = (
+    "family",
+    "status",
+    "signature",
+    "workloads",
+    "roofline",
+    "source",
+    "ref_api",
+    "torch_compile_fullgraph",
+    "composition",
+    "resources",
+)
+_SIGNATURE_KEYS = ("inputs", "outputs", "params", "shape_rules", "dtype_combos", "static_dims")
+_COMPOSITION_KEYS = ("kind", "stages")
+_STAGE_KEYS = ("name", "op", "kernel", "delegates", "variants", "optional")
+_VARIANT_KEYS = ("name", "condition", "stages")
+_RESOURCE_KEYS = ("workspaces",)
+_WORKSPACE_KEYS = ("name", "dtype", "owner", "kind", "optional", "note")
+_ROOFLINE_COMPOSITION_KEYS = ("stage", "source", "formula", "optional")
+
+#: The accepted key set of each closed section, for the diagnostic that prints
+#: it. One declaration, read both by the parser and by the message.
+SECTION_KEYS: Mapping[Section, tuple[str, ...]] = {
+    Section.ENTRY: _ENTRY_KEYS,
+    Section.SIGNATURE: _SIGNATURE_KEYS,
+    Section.COMPOSITION: _COMPOSITION_KEYS,
+    Section.STAGE: _STAGE_KEYS,
+    Section.VARIANT: _VARIANT_KEYS,
+    Section.RESOURCES: _RESOURCE_KEYS,
+    Section.WORKSPACE: _WORKSPACE_KEYS,
+    Section.ROOFLINE_COMPOSITION: _ROOFLINE_COMPOSITION_KEYS,
+}
+
+
+def unknown_keys_of(section: Section, raw: object) -> tuple[Any, ...]:
+    """Keys *raw* carries that the parser does not read for this section."""
+    if not isinstance(raw, dict):
+        return ()
+    accepted = set(SECTION_KEYS[section])
+    return tuple(sorted((k for k in raw if k not in accepted), key=repr))
+
+
 def build(name: str, entry: Mapping[str, Any]) -> Facts:
     """Read one entry into its facts, accumulating what cannot be read."""
     invalid: dict[str, Invalid] = {}
+    accepted: dict[Section, tuple[str, ...]] = {}
+    unknown: dict[Section, tuple[str, ...]] = {}
+
+    entry_taker = KeyTaker(entry if isinstance(entry, dict) else {})
+    entry_taker.take(*_ENTRY_KEYS)
+    accepted[Section.ENTRY] = tuple(sorted(entry_taker.accepted))
+    unknown[Section.ENTRY] = entry_taker.unknown
+
     sig = entry.get("signature")
     sig = sig if isinstance(sig, dict) else {}
+    sig_taker = KeyTaker(sig)
+    sig_taker.take(*_SIGNATURE_KEYS)
+    accepted[Section.SIGNATURE] = tuple(sorted(sig_taker.accepted))
+    unknown[Section.SIGNATURE] = sig_taker.unknown
 
     merged_inputs, bad = _tensor_args(sig.get("inputs"))
     # A signature handed in already merged carries its workspaces inside
@@ -398,6 +522,8 @@ def build(name: str, entry: Mapping[str, Any]) -> Facts:
         outputs=outputs,
         combos=combos,
         stage_names=stage_names,
+        accepted_keys=accepted,
+        unknown_keys=unknown,
         params=raw_params if isinstance(raw_params, dict) else {},
         source=raw_source if isinstance(raw_source, dict) else {},
         roofline=raw_roofline if isinstance(raw_roofline, dict) else {},
