@@ -125,6 +125,34 @@ class TestDtypeFacts:
     def test_a_plain_union_has_no_reference(self):
         assert F.build("Op", _entry()).arg("x").same_as is None
 
+    @pytest.mark.parametrize(
+        "dtype",
+        ["float16 | same_as(x)", "same_as(x) | float16", "notsame_as(x)"],
+        ids=["union_trailing", "union_leading", "other_call"],
+    )
+    def test_only_a_bare_same_as_is_a_reference(self, dtype):
+        """A dtype that merely mentions same_as does not follow another tensor.
+
+        The negative probes substitute a dtype on one tensor and expect the ops
+        that follow it to reject; treating a union as a reference would make
+        them expect a rejection the op never makes.
+        """
+        f = F.build(
+            "Op",
+            _entry(
+                signature={
+                    "inputs": {"x": {"dtype": "float16"}, "w": {"dtype": dtype}},
+                    "outputs": {"y": {"dtype": "same_as(x)"}},
+                }
+            ),
+        )
+        assert "w" not in f.same_as_map
+
+    def test_call_scope_excludes_outputs(self):
+        f = F.build("Op", _entry(resources={"workspaces": [{"name": "ws", "dtype": "same_as(x)"}]}))
+        assert f.same_as_map == {"y": "x", "ws": "x"}
+        assert f.call_same_as_map == {"ws": "x"}
+
 
 class TestParsingAccumulates:
     """A field that cannot be read must not stop the rest from being read."""

@@ -4099,20 +4099,7 @@ def _same_as_refs(sig: dict) -> dict[str, str]:
     be exercised against a mismatched dtype and to propagate out-of-union
     substitutions to dependent tensors.
     """
-    refs: dict[str, str] = {}
-    inputs = sig.get("inputs") or {}
-    if not isinstance(inputs, dict):
-        return refs
-    for tname, attrs in inputs.items():
-        if not isinstance(attrs, dict):
-            continue
-        dstr = attrs.get("dtype", "")
-        tokens = _parse_dtype_expr(dstr)
-        if len(tokens) == 1:
-            m = _SAME_AS_RE.match(tokens[0])
-            if m:
-                refs[tname] = m.group(1)
-    return refs
+    return dict(_facts_from_sig(sig).call_same_as_map)
 
 
 def _honours_same_as(sig: dict, candidate: dict[str, str]) -> bool:

@@ -153,9 +153,23 @@ class Facts:
 
     @property
     def same_as_map(self) -> Mapping[str, str]:
-        """Tensor -> the tensor its dtype follows, over inputs and outputs."""
+        """Tensor -> the tensor its dtype follows, over the call and the outputs."""
+        return self._same_as(self.call_tensor_args + self.outputs)
+
+    @property
+    def call_same_as_map(self) -> Mapping[str, str]:
+        """The same, restricted to what the call passes.
+
+        The negative dtype probes substitute an out-of-union dtype on one
+        tensor and expect the ops that follow it to be rejected, so they need
+        the edges among call arguments and nothing else.
+        """
+        return self._same_as(self.call_tensor_args)
+
+    @staticmethod
+    def _same_as(args: "tuple[TensorArg, ...]") -> Mapping[str, str]:
         out: dict[str, str] = {}
-        for arg in (*self.call_tensor_args, *self.outputs):
+        for arg in args:
             ref = arg.same_as
             if ref is not None:
                 out[arg.name] = ref
