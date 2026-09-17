@@ -103,6 +103,14 @@ def _make_prim_func(
     a_has_group = masked or batched
     b_has_group = not (dense or k_grouped)
     c_has_group = a_has_group or k_grouped
+    batched_async_store = (
+        batched
+        and shape_m > 0
+        and shape_n > 0
+        and shape_m % block_m == 0
+        and shape_n % c_tile_n == 0
+        and num_groups * (shape_m // block_m) * (shape_n // c_tile_n) > num_sms
+    )
     # A K-major operand's TMA box must start 16 bytes aligned along K, so a
     # K-grouped GEMM with one rounds each group's start down to 8 elements and
     # masks the head in shared memory like the tail.
@@ -389,6 +397,8 @@ def _make_prim_func(
         """Stage and store one warp-group's rows of a tile."""
         for chunk in range(epilogue_chunks):
             chunk_col = chunk * staged_n
+            if batched_async_store and T.get_thread_binding() % 128 == 0:
+                T.tma_store_wait(0)
             T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
             if fused:
                 gate_multiply(C_src, C_up, C_s)
@@ -404,7 +414,14 @@ def _make_prim_func(
                 T.fence_proxy_async()
                 T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
                 if c_has_group:
-                    T.copy(C_s, C[group, row0, col0 + chunk_col])
+                    if batched_async_store:
+                        T.tma_copy(
+                            C_s,
+                            C[group, row0, col0 + chunk_col],
+                            leader_scope_threads=128,
+                        )
+                    else:
+                        T.copy(C_s, C[group, row0, col0 + chunk_col])
                 else:
                     T.copy(C_s, C[row0, col0 + chunk_col])
 
@@ -500,12 +517,15 @@ def _make_prim_func(
 
                 row0 = t_row0[0] + T.int32(wg * wg_rows)
                 rows = t_rows[0] - T.int32(wg * wg_rows)
-                if fused or not cast_output:
+                if fused or not cast_output or batched:
                     # The fused epilogue casts as it multiplies; fp32 out needs no cast.
+                    # Batched GEMM casts each staged chunk directly into shared memory.
                     store_tile(C, C_l, C_up, C_s, t_group[0], row0, t_col0[0], rows, wg)
                 else:
                     T.copy(C_l, C_cast)
                     store_tile(C, C_cast, C_up, C_s, t_group[0], row0, t_col0[0], rows, wg)
+        if batched_async_store and tx % 128 == 0:
+            T.tma_store_wait(0)
 
     @T.prim_func
     def grouped_gemm(
@@ -524,7 +544,7 @@ def _make_prim_func(
             C_l0 = T.alloc_fragment((wg_rows, block_n), accum_dtype)
             C_cast0 = (
                 T.alloc_fragment((wg_rows, block_n), cd_dtype)
-                if cast_output and not fused
+                if cast_output and not fused and not batched
                 else C_l0
             )
             C_up0 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l0
@@ -533,7 +553,7 @@ def _make_prim_func(
                 C_l1 = T.alloc_fragment((wg_rows, block_n), accum_dtype)
                 C_cast1 = (
                     T.alloc_fragment((wg_rows, block_n), cd_dtype)
-                    if cast_output and not fused
+                    if cast_output and not fused and not batched
                     else C_l1
                 )
                 C_up1 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l1

@@ -10,11 +10,17 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.grouped_gemm.heuristics import GemmType
+from tileops.kernels.grouped_gemm.template import GemmTemplate
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_sm_count, is_h200
+
+from .call_spec import BmmCall
 
 __all__ = [
     "BmmFp8Kernel",
     "BmmKernel",
+    "BmmTemplateKernel",
 ]
 
 
@@ -605,6 +611,22 @@ class BmmKernel(Kernel):
     """
 
     supported_archs: list[int] = [90]
+    general = True
+
+    @classmethod
+    def entry_for(cls, call: BmmCall) -> Entry:
+        """Build the shape-specialized classic BMM fallback."""
+        index = call.device.index if call.device is not None else None
+        identity = (call.batch, call.m, call.n, call.k, call.dtype, call.tune, index)
+        return identity, lambda: cls(
+            call.batch,
+            call.m,
+            call.n,
+            call.k,
+            call.dtype,
+            tune=call.tune,
+            device_index=index,
+        )
 
     def __init__(
         self,
@@ -615,8 +637,9 @@ class BmmKernel(Kernel):
         dtype: torch.dtype,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         if k % 16 != 0:
             raise ValueError(
                 f"BmmKernel requires contraction dim k to be a multiple of 16, got k={k}"
@@ -661,6 +684,82 @@ class BmmKernel(Kernel):
         if not hasattr(self, "_compiled_kernel"):
             self._compiled_kernel = self.kernel(**self.config)
         return self._compiled_kernel(a, b)
+
+
+class BmmTemplateKernel(Kernel):
+    """Persistent H200 BMM adapter over :class:`GemmTemplate`.
+
+    The template reads the zero-copy ``[batch, n, k]`` view of public
+    ``b[batch, k, n]`` storage. :class:`BmmKernel` serves grids that do not fill
+    the persistent template or whose contiguous extent is not TMA-aligned.
+    """
+
+    supported_archs: list[int] = [90]
+
+    @classmethod
+    def applies(cls, call: BmmCall) -> bool:
+        step = 16 // call.dtype.itemsize
+        tile = 128
+        tiles = call.batch * ((call.m + tile - 1) // tile) * ((call.n + tile - 1) // tile)
+        return call.h200 and call.n % step == 0 and tiles > call.sm_count
+
+    @staticmethod
+    def _persistent_grid(batch: int, m: int, n: int, physical_sms: int) -> int:
+        """Choose a full-wave H200 grid for the selector's 128x256 tile."""
+        tile_m, tile_n = 128, 256
+        tiles = batch * ((m + tile_m - 1) // tile_m) * ((n + tile_n - 1) // tile_n)
+        power_of_two_grid = 1 << (physical_sms.bit_length() - 1)
+        return power_of_two_grid if tiles % power_of_two_grid == 0 else physical_sms
+
+    @classmethod
+    def entry_for(cls, call: BmmCall) -> Entry:
+        """Build the persistent template specialization for this BMM call."""
+        index = call.device.index if call.device is not None else None
+        identity = (call.batch, call.m, call.n, call.k, call.dtype, index)
+        return identity, lambda: cls(
+            call.batch,
+            call.m,
+            call.n,
+            device_index=index,
+        )
+
+    def __init__(
+        self,
+        batch: int,
+        m: int,
+        n: int,
+        device_index: Optional[int] = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        physical_sms = get_sm_count(device_index)
+        persistent_sms = (
+            self._persistent_grid(batch, m, n, physical_sms)
+            if is_h200(device_index)
+            else physical_sms
+        )
+        self.template = GemmTemplate(
+            GemmType.BATCHED,
+            num_groups=batch,
+            static_dims="mnk",
+            sm_count=persistent_sms,
+            device_index=device_index,
+        )
+
+    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        b_nk = b.transpose(-2, -1)
+        out = self.template(a, b_nk)
+        if not self.config:
+            spec = self.template.spec_for(a, b_nk)
+            self.config = {
+                "block_m": spec.block_m,
+                "block_n": spec.block_n,
+                "block_k": spec.block_k,
+                "num_stages": spec.num_stages,
+                "num_math_wgs": spec.num_math_warpgroups,
+                "epilogue_stage_n": spec.epilogue_stage_n,
+                "persistent_sms": spec.num_sms,
+            }
+        return out
 
 
 class BmmFp8Kernel(Kernel):

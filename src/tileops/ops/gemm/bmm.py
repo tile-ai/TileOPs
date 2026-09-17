@@ -5,11 +5,12 @@ batch item is an independent GEMM, no broadcasting.
 """
 
 import warnings
-from typing import ClassVar, Dict, Hashable, Optional, Set, Tuple
+from typing import ClassVar, Dict, Optional, Set, Tuple
 
 import torch
 
-from tileops.kernels.gemm.bmm import BmmFp8Kernel, BmmKernel
+from tileops.kernels.gemm.bmm import BmmFp8Kernel, BmmKernel, BmmTemplateKernel
+from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.perf.profile import tensor_core_roof
 
@@ -52,7 +53,10 @@ class BmmFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"bmm_kernel": BmmKernel}
+        return {
+            "bmm_template_kernel": BmmTemplateKernel,
+            "bmm_kernel": BmmKernel,
+        }
 
     def _infer_bmnk(
         self,
@@ -89,33 +93,33 @@ class BmmFwdOp(Op):
             )
         return batch_a, m, n, k_a
 
-    def _cache_key(self, *input_shapes: Tuple[int, ...]) -> Hashable:
-        """Project onto the dims the kernel actually specializes on."""
-        if len(input_shapes) == 2:
-            a_shape, b_shape = input_shapes
-            if len(a_shape) == 3 and len(b_shape) == 3:
-                batch, m, k = a_shape
-                _, _, n = b_shape
-                return (batch, m, n, k, None if self.dtype is None else str(self.dtype))
-        bound = tuple(getattr(self, dim, None) for dim in ("batch", "m", "n", "k"))
-        return (*bound, None if self.dtype is None else str(self.dtype))
-
-    def _get_kernel(
+    def _call_spec(
         self,
-        inputs: "tuple[torch.Tensor | None, ...]",
         batch: int,
         m: int,
         n: int,
         k: int,
         dtype: torch.dtype,
-    ) -> Kernel:
-        """Return the cached BmmKernel for the given dims, building lazily."""
-        return self.kernel_for("bmm_kernel", inputs, (batch, m, n, k, dtype))
+        device: torch.device,
+    ) -> BmmCall:
+        """State the inferred BMM call for implementation selection."""
+        return BmmCall(
+            batch=batch,
+            m=m,
+            n=n,
+            k=k,
+            dtype=dtype,
+            device=device,
+            tune=self.tune,
+        )
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per batch, the three extents and the dtype."""
-        batch, m, n, k, dtype = call
-        return call, lambda: self.kernel_map["bmm_kernel"](batch, m, n, k, dtype, tune=self.tune)
+    def _get_kernel(
+        self,
+        inputs: "tuple[torch.Tensor | None, ...]",
+        call: BmmCall,
+    ) -> Kernel:
+        """Return what serves *call*, building and caching on a miss."""
+        return self.kernel_for("bmm", inputs, call)
 
     def _infer_output_shapes(
         self,
@@ -146,8 +150,6 @@ class BmmFwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        # Fast path: same input signature as the last call → reuse the already
-        # built/JIT'd kernel directly.
         return self._wrapped(a, b, self._instance_key)
 
     def _eager_forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -155,7 +157,7 @@ class BmmFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        sig = (a.shape, b.shape, a.dtype, b.dtype)
+        sig = (a.shape, b.shape, a.dtype, b.dtype, a.device)
         if sig != self._active_sig:
             self._validate_dtypes(a, b)
             batch, m, n, k = self._infer_bmnk(a, b)
@@ -164,7 +166,8 @@ class BmmFwdOp(Op):
             self.dtype = a.dtype
             self.a_shape = tuple(a.shape)
             self.b_shape = tuple(b.shape)
-            kernel = self._get_kernel((a, b), batch, m, n, k, a.dtype)
+            call = self._call_spec(batch, m, n, k, a.dtype, a.device)
+            kernel = self._get_kernel((a, b), call)
             # Expose the active kernel so autotune()/introspection can find it.
             self.kernel = kernel
             self._active_kernel = kernel

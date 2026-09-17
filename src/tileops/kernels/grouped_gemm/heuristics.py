@@ -139,8 +139,11 @@ class GroupedGemmSpec:
         if self.epilogue_stage_n < 0:
             raise ValueError("epilogue_stage_n must be non-negative")
         if self.epilogue_stage_n:
-            if self.gemm_type is not GemmType.DENSE or self.activation != "none":
-                raise ValueError("epilogue_stage_n only supports an unfused dense GEMM")
+            if (
+                self.gemm_type not in (GemmType.DENSE, GemmType.BATCHED)
+                or self.activation != "none"
+            ):
+                raise ValueError("epilogue_stage_n only supports an unfused dense or batched GEMM")
             if c_tile_n % self.epilogue_stage_n:
                 raise ValueError("epilogue_stage_n must divide the output tile width")
         if self.swizzle_group_m and self.gemm_type is not GemmType.DENSE:
@@ -275,7 +278,7 @@ def _num_stages(desc: GemmDesc, layout: _Layout, epilogue_stage_n: int = 0) -> i
         - policy.barrier_bytes
         - (
             0
-            if epilogue_stage_n and desc.gemm_type is GemmType.DENSE
+            if epilogue_stage_n and desc.gemm_type in (GemmType.DENSE, GemmType.BATCHED)
             else policy.smem_alignment_slack
         )
         - smem_prefix
@@ -430,6 +433,15 @@ def _spec(
 def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
     """Return the selected kernel spec for ``desc``."""
     best = _short_group_layout(desc) or _best_layout(desc, layout_candidates(desc))
+    if (
+        desc.device_name == "NVIDIA H200"
+        and desc.gemm_type is GemmType.BATCHED
+        and desc.activation == "none"
+        and (best.block_m, best.block_n, best.block_k) == (128, 256, 64)
+        and _num_stages(desc, best, epilogue_stage_n=128) >= 4
+    ):
+        # Half-width output staging makes a fourth mainloop stage fit on H200.
+        return _spec(desc, best, 4, epilogue_stage_n=128)
     return _spec(desc, best, _num_stages(desc, best))
 
 

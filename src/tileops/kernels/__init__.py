@@ -52,6 +52,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
     from .gemm import (
         BmmFp8Kernel,
         BmmKernel,
+        BmmTemplateKernel,
         GemmBasicKernel,
         GemmFp8BlockScaledKernel,
         GemmFp8EpilogueKernel,
@@ -140,6 +141,7 @@ _LAZY = {
     "BinaryKernel": ".elementwise",
     "BmmFp8Kernel": ".gemm",
     "BmmKernel": ".gemm",
+    "BmmTemplateKernel": ".gemm",
     "Conv1dKernel": ".convolution",
     "Conv1dPointwiseKernel": ".convolution",
     "Conv2d1x1Kernel": ".convolution",
