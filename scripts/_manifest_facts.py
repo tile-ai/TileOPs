@@ -109,7 +109,8 @@ class Facts:
     """Every derived fact of one entry. Consumers read; they do not re-derive."""
 
     name: str
-    status: str
+    #: The declared status, or None where the entry did not state one as a string.
+    status: str | None
     # inputs followed by workspaces, in declaration order: what forward() takes.
     call_tensor_args: tuple[TensorArg, ...] = ()
     # caller-visible inputs only: what a dtype_combos row and the reference
@@ -118,7 +119,57 @@ class Facts:
     outputs: tuple[TensorArg, ...] = ()
     combos: tuple[Mapping[str, str], ...] = ()
     stage_names: frozenset[str] = frozenset()
+    params: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    source: Mapping[str, Any] = field(default_factory=dict)
+    roofline: Mapping[str, Any] = field(default_factory=dict)
     invalid: Mapping[str, Invalid] = field(default_factory=dict)
+
+    # -- status and severity ----------------------------------------------
+
+    @property
+    def spec_only(self) -> bool:
+        """Whether checks that need an implementation should stand down.
+
+        ``status is None`` means the entry did not state one as a string.
+        That counts as spec-only: schema reports the missing status, and a
+        level run on its own must not go on to probe code that is not there.
+        A status that is a string but not a known one is left alone — schema
+        reports it, and nothing here second-guesses which branch it meant.
+        """
+        return self.status is None or self.status == "spec-only"
+
+    @property
+    def implemented(self) -> bool:
+        return self.status == "implemented"
+
+    @property
+    def bench_manifest_driven(self) -> bool:
+        """Whether the benchmark contract is a hard error rather than a warning."""
+        return bool(self.source.get("bench_manifest_driven", False))
+
+    @property
+    def roofline_mode(self) -> str:
+        """``func``, ``inline`` or ``none`` — which form the cost takes."""
+        if isinstance(self.roofline.get("func"), str):
+            return "func"
+        if "flops" in self.roofline and "bytes" in self.roofline:
+            return "inline"
+        return "none"
+
+    # -- params ------------------------------------------------------------
+
+    @property
+    def tensor_param_names(self) -> frozenset[str]:
+        """Params typed as a tensor: where a caller-supplied output buffer sits.
+
+        The op writes it and the return aliases it, so it is a param rather
+        than an input.
+        """
+        return frozenset(
+            name
+            for name, attrs in self.params.items()
+            if isinstance(attrs, dict) and "tensor" in str(attrs.get("type", "")).lower()
+        )
 
     # -- names -------------------------------------------------------------
 
@@ -323,14 +374,20 @@ def build(name: str, entry: Mapping[str, Any]) -> Facts:
                 "not a list", (DiagnosticKind.COMPOSITION_STRUCTURE,)
             )
 
+    raw_params = sig.get("params")
+    raw_source = entry.get("source")
+    raw_roofline = entry.get("roofline")
     status = entry.get("status")
     return Facts(
         name=name,
-        status=status if isinstance(status, str) else "",
+        status=status if isinstance(status, str) else None,
         call_tensor_args=call,
         value_inputs=value_inputs,
         outputs=outputs,
         combos=combos,
         stage_names=stage_names,
+        params=raw_params if isinstance(raw_params, dict) else {},
+        source=raw_source if isinstance(raw_source, dict) else {},
+        roofline=raw_roofline if isinstance(raw_roofline, dict) else {},
         invalid=invalid,
     )

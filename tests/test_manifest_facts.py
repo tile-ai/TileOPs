@@ -154,6 +154,51 @@ class TestDtypeFacts:
         assert f.call_same_as_map == {"ws": "x"}
 
 
+class TestStatusAndSeverity:
+    """Status decides whether a check may probe code; severity decides how it reports."""
+
+    @pytest.mark.parametrize(
+        "status, spec_only, implemented",
+        [
+            ("implemented", False, True),
+            ("spec-only", True, False),
+            (None, True, False),
+            (3, True, False),
+            ("garbage", False, False),
+        ],
+        ids=["implemented", "spec_only", "absent", "not_a_string", "unknown_string"],
+    )
+    def test_status_branches(self, status, spec_only, implemented):
+        """An unknown string is neither: schema reports it, facts do not guess.
+
+        Treating it as spec-only would silently stand down every check that
+        needs an implementation, on an entry whose status is simply a typo.
+        """
+        entry = {"signature": {"inputs": {}, "outputs": {}}}
+        if status is not None:
+            entry["status"] = status
+        f = F.build("Op", entry)
+        assert f.spec_only is spec_only
+        assert f.implemented is implemented
+
+    def test_bench_severity_defaults_to_the_softer_one(self):
+        assert not F.build("Op", _entry()).bench_manifest_driven
+        assert F.build("Op", _entry(source={"bench_manifest_driven": True})).bench_manifest_driven
+
+    @pytest.mark.parametrize(
+        "roofline, mode",
+        [
+            ({"func": "pkg.f"}, "func"),
+            ({"flops": "1", "bytes": "2"}, "inline"),
+            ({"flops": "1"}, "none"),
+            ({}, "none"),
+        ],
+        ids=["func", "inline", "half_inline", "empty"],
+    )
+    def test_roofline_mode(self, roofline, mode):
+        assert F.build("Op", _entry(roofline=roofline)).roofline_mode == mode
+
+
 class TestParsingAccumulates:
     """A field that cannot be read must not stop the rest from being read."""
 

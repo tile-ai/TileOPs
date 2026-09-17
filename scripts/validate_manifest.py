@@ -4508,12 +4508,7 @@ def _tensor_param_names(entry: dict) -> set[str]:
     """The entry's tensor-typed params, which is where a caller-supplied output buffer
     is declared: the op writes it and the return aliases it, so it is not an input.
     """
-    params = entry.get("signature", {}).get("params") or {}
-    return {
-        name
-        for name, attrs in params.items()
-        if isinstance(attrs, dict) and "tensor" in str(attrs.get("type", "")).lower()
-    }
+    return set(_facts(entry).tensor_param_names)
 
 
 OUT_DTYPE_PARAM = "out_dtype"
@@ -4696,21 +4691,13 @@ STRICT_ONLY_TAGS: tuple[str, ...] = (
 
 
 def _is_spec_only(entry: dict) -> bool:
-    """Check if the entry is spec-only.
-
-    Returns True for missing or non-string status (safe default).
-    """
-    status = entry.get("status")
-    if not isinstance(status, str):
-        # Missing or non-string status — treat as spec-only (safe default).
-        # Schema validation catches this; defensive here for --levels bypass.
-        return True
-    return status == "spec-only"
+    """Whether checks needing an implementation stand down — see the facts layer."""
+    return _facts(entry).spec_only
 
 
 def _is_bench_manifest_driven(entry: dict) -> bool:
     """Whether the entry claims its benchmark reads manifest workloads."""
-    return bool(entry.get("source", {}).get("bench_manifest_driven", False))
+    return _facts(entry).bench_manifest_driven
 
 
 def check_bench_declaration(op_name: str, entry: dict) -> list[str]:
