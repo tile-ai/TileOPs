@@ -72,6 +72,8 @@ class TensorArg:
     dtype: str
     optional: bool = False
     workspace: bool = False
+    #: The op writes this input in place and the manifest says so.
+    mutated: bool = False
     shape: str | None = None
 
     @property
@@ -157,6 +159,15 @@ class Facts:
         return "none"
 
     # -- params ------------------------------------------------------------
+
+    @property
+    def mutated_input_names(self) -> frozenset[str]:
+        """Caller inputs the manifest says the op writes in place.
+
+        Workspaces are out by construction: every call writes one, so marking
+        it would state nothing the reader did not already know.
+        """
+        return frozenset(a.name for a in self.value_inputs if a.mutated)
 
     @property
     def tensor_param_names(self) -> frozenset[str]:
@@ -293,6 +304,7 @@ def _tensor_args(
                 dtype=dtype if isinstance(dtype, str) else "",
                 optional=attrs.get("optional") is True,
                 workspace=workspace or attrs.get(WORKSPACE_ATTR) is True,
+                mutated=attrs.get("mutated") is True,
                 shape=attrs.get("shape") if isinstance(attrs.get("shape"), str) else None,
             )
         )

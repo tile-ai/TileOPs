@@ -52,7 +52,6 @@ import _manifest_facts as facts_mod  # noqa: E402
 import tileops.manifest as manifest_pkg  # noqa: E402
 from tileops.manifest import (  # noqa: E402
     WORKSPACE_ATTR,
-    combo_input_names,
     forward_signature,
 )
 from tileops.manifest.dtype_rules import PROMOTE_INT_TO_FLOAT_RE, SAME_AS_RE  # noqa: E402
@@ -746,18 +745,11 @@ def _l0_kernel_map(
 def _optional_input_names(sig: dict) -> list[str]:
     """Optional tensor names, in declaration order.
 
-    Reads the same signature shape ``Facts`` does; kept as a function because
-    several callers hold a ``sig`` rather than an entry.
+    One reading, shared with :func:`_optional_inputs`, which wants the same
+    answer as a set: two implementations of "which inputs are optional" can
+    disagree, and several checks pair the two.
     """
-    """Names under ``signature.inputs`` carrying ``optional: true``."""
-    inputs = sig.get("inputs")
-    if not isinstance(inputs, dict):
-        return []
-    return [
-        name
-        for name, attrs in inputs.items()
-        if isinstance(attrs, dict) and attrs.get("optional") is True
-    ]
+    return [a.name for a in _facts_from_sig(sig).call_tensor_args if a.optional]
 
 
 def _type_parts(text: object) -> "set[str] | None":
@@ -2539,15 +2531,8 @@ def _input_bound_symbols(sig: dict) -> set[str]:
 
 
 def _optional_inputs(sig: dict) -> set[str]:
-    """Input names declared ``optional: true``."""
-    inputs = sig.get("inputs")
-    if not isinstance(inputs, dict):
-        return set()
-    return {
-        name
-        for name, attrs in inputs.items()
-        if isinstance(name, str) and isinstance(attrs, dict) and attrs.get("optional") is True
-    }
+    """Input names declared ``optional: true``, as a set."""
+    return set(_optional_input_names(sig))
 
 
 # Witness values for a required param the workloads do not pin. Positive and
@@ -3752,20 +3737,18 @@ def check_l3_validate_dtypes_parity(
         return errors
 
     sig = _forward_signature(entry)
-    inputs = sig.get("inputs") or {}
-    if not isinstance(inputs, dict) or not inputs:
+    ef = _facts(entry, op_name)
+    if not ef.call_tensor_args:
         return errors
 
-    # Only pass tensors corresponding to manifest inputs (forward args).
-    # An optional input is never a dtype_combos column, so a probe that
-    # demanded one for it could never be satisfied.
-    optional_inputs = set(_optional_input_names(sig))
-    # Two different lists. ``forward_inputs`` is what the call passes, so it
-    # carries the workspaces. ``combo_dims`` is what a dtype_combos row spans,
-    # so it does not: a row states the caller's dtypes, and the probe supplies
-    # a workspace's own declared dtype when it builds the call.
-    forward_inputs = [n for n in inputs if n not in optional_inputs]
-    combo_dims = [n for n in combo_input_names(sig) if n not in optional_inputs]
+    # Two different lists, both read off the facts. ``forward_inputs`` is what
+    # the call passes, so it carries the workspaces; ``combo_dims`` is what a
+    # dtype_combos row spans, so it does not, and the probe supplies a
+    # workspace's own declared dtype when it builds the call. An optional input
+    # is never a column: a probe demanding one for it could not be satisfied.
+    optional_inputs = set(ef.optional_names)
+    forward_inputs = [n for n in ef.call_names if n not in optional_inputs]
+    combo_dims = list(ef.required_combo_columns)
     param_env = _param_env(sig, entry.get("workloads"))
 
     dtype_options = _resolve_tensor_dtype_options(sig)
@@ -4411,10 +4394,8 @@ def check_c4_forward_signature_parity(
     if cls is None:
         return errors
 
-    manifest_inputs = _forward_signature(entry).get("inputs") or {}
-    if not isinstance(manifest_inputs, dict):
-        return errors
-    expected = list(manifest_inputs.keys())
+    # What the call passes, in declaration order: inputs then workspaces.
+    expected = list(_facts(entry, op_name).call_names)
 
     positional = _forward_positional_params(cls)
     if positional is None:
@@ -4588,12 +4569,11 @@ def check_c8_mutated_inputs_parity(
     errors: list[str] = []
     if cls is None:
         return errors
-    inputs = entry.get("signature", {}).get("inputs")
-    declared = {
-        name
-        for name, attrs in (inputs or {}).items()
-        if isinstance(attrs, dict) and attrs.get("mutated") is True
-    }
+    ef = _facts(entry, op_name)
+    declared = set(ef.mutated_input_names)
+    # Positional names of the operator's arguments: the caller's inputs, since
+    # a workspace is not part of the mutation contract.
+    inputs = [a.name for a in ef.value_inputs]
     names = getattr(cls, "compile_op_names", ()) or ()
     if not names:
         if declared and warnings is not None:

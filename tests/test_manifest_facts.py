@@ -199,6 +199,41 @@ class TestStatusAndSeverity:
         assert F.build("Op", _entry(roofline=roofline)).roofline_mode == mode
 
 
+class TestMutationContract:
+    """Which inputs the op writes in place — the workspaces are never part of it."""
+
+    def test_only_a_marked_caller_input_counts(self):
+        f = F.build(
+            "Op",
+            {
+                "status": "implemented",
+                "signature": {
+                    "inputs": {
+                        "x": {"dtype": "float16"},
+                        "out": {"dtype": "float16", "mutated": True},
+                    },
+                    "outputs": {"y": {"dtype": "same_as(x)"}},
+                },
+            },
+        )
+        assert f.mutated_input_names == frozenset({"out"})
+
+    def test_a_workspace_is_never_a_mutated_input(self):
+        """Every call writes one, so marking it would state nothing."""
+        f = F.build(
+            "Op",
+            {
+                "status": "implemented",
+                "signature": {
+                    "inputs": {"x": {"dtype": "float16"}},
+                    "outputs": {"y": {"dtype": "same_as(x)"}},
+                },
+                "resources": {"workspaces": [{"name": "ws", "dtype": "float16", "mutated": True}]},
+            },
+        )
+        assert f.mutated_input_names == frozenset()
+
+
 class TestParsingAccumulates:
     """A field that cannot be read must not stop the rest from being read."""
 
