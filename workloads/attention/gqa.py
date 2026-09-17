@@ -614,7 +614,6 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
             cu_seqlens_q,
             cache_seqlens,
             block_table,
-            self.max_seqlen_q,
         )
 
 
@@ -643,9 +642,13 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(WorkloadBase):
         self.wr = wr
         self.dtype = dtype
 
+    @property
+    def max_seqlen_q(self) -> int:
+        return max(self.seqlens_q)
+
     def gen_inputs(
         self,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         total_q = sum(self.seqlens_q)
         total_k = sum(self.seqlens_k)
         q = torch.randn(total_q, self.heads, self.dim, dtype=self.dtype, device="cuda") * 0.1
@@ -662,6 +665,4 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(WorkloadBase):
             dtype=torch.int32,
             device="cuda",
         )
-        max_seqlen_q = max(self.seqlens_q)
-
-        return q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q
+        return q, k, v, cu_seqlens_q, cu_seqlens_k

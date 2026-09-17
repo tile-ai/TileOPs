@@ -3,10 +3,10 @@ from typing import ClassVar, Dict, Optional, Sequence, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm import LayerNormKernel
 
-from ..compile_boundary import get_instance
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 from .norm_base import normalized_shape_to_n
 
@@ -36,7 +36,7 @@ class LayerNormFwdOp(Op):
     # ``None`` normalization both read it, so the two cannot drift apart.
     DEFAULT_EPS = 1e-5
 
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_layer_norm_fwd",)
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -116,7 +116,7 @@ class LayerNormFwdOp(Op):
                 configured ``normalized_shape``. Raised from inside the operator, by
                 `_eager_forward`.
         """
-        return _layer_norm_fwd(x, weight, bias, self._instance_key)
+        return self._wrapped(x, weight, bias, self._instance_key)
 
     def _eager_forward(
         self,
@@ -153,39 +153,10 @@ class LayerNormFwdOp(Op):
         x = x.contiguous()
         weight = weight.contiguous()
         bias = bias.contiguous()
-        kernel = self.get_or_build_kernel(
-            "layer_norm",
-            (x, weight, bias),
-            key=x.dtype,  # this instance's in-tree cache key
-            build=lambda: self.kernel_map["layer_norm"](
-                self.N,
-                self.eps,
-                x.dtype,
-                tune=self.tune,
-            ),
-        )
+        kernel = self.kernel_for("layer_norm", (x, weight, bias), x.dtype)
         self._last_m = x.numel() // self.N
         return kernel(x, weight, bias)
 
-
-@torch.library.custom_op("tileops::norm_layer_norm_fwd", mutates_args=())
-def _layer_norm_fwd(
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(x, weight, bias)
-
-
-@_layer_norm_fwd.register_fake
-def _layer_norm_fwd_fake(
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(tuple(x.shape), tuple(weight.shape), tuple(bias.shape))
-    # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
-    return x.new_empty(shapes["output"])
+    def entry_for(self, role: str, call: torch.dtype) -> Entry:
+        """One implementation, built per dtype; the row width and epsilon are the op's."""
+        return call, lambda: self.kernel_map["layer_norm"](self.N, self.eps, call, tune=self.tune)

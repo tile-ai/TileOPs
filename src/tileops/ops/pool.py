@@ -5,7 +5,7 @@ from typing import Any, ClassVar, Dict, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.pool import (
     AdaptiveAvgPool2dKernel,
     AdaptiveMaxPool2dKernel,
@@ -26,7 +26,7 @@ from tileops.kernels.pool import (
 )
 from tileops.kernels.pool.common import pool_output_dim
 
-from .compile_boundary import get_instance
+from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
 
 __all__ = [
@@ -249,7 +249,8 @@ class MeanPoolingFwdOp(Op):
             self._placeholders[key] = torch.zeros(shape, dtype=torch.int32, device=device)
         return self._placeholders[key]
 
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", key: tuple) -> Kernel:
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, chunking and offsets presence."""
         (
             batch_size,
             seq_len,
@@ -259,24 +260,19 @@ class MeanPoolingFwdOp(Op):
             seq_num,
             use_offsets,
             dtype,
-        ) = key
-        return self.get_or_build_kernel(
-            "mean_pooling_fwd_kernel",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["mean_pooling_fwd_kernel"](
-                batch_size=batch_size,
-                seq_len=seq_len,
-                heads=heads,
-                dim=dim,
-                chunk_size=self.chunk_size,
-                chunks_per_batch=chunks_per_batch,
-                seq_num=seq_num,
-                use_offsets=use_offsets,
-                dtype=dtype,
-                accum_dtype=self.accum_dtype,
-                tune=self.tune,
-            ),
+        ) = call
+        return call, lambda: self.kernel_map["mean_pooling_fwd_kernel"](
+            batch_size=batch_size,
+            seq_len=seq_len,
+            heads=heads,
+            dim=dim,
+            chunk_size=self.chunk_size,
+            chunks_per_batch=chunks_per_batch,
+            seq_num=seq_num,
+            use_offsets=use_offsets,
+            dtype=dtype,
+            accum_dtype=self.accum_dtype,
+            tune=self.tune,
         )
 
     def forward(
@@ -343,7 +339,8 @@ class MeanPoolingFwdOp(Op):
             indices_arg = self._placeholder((chunks, 2), x.device)
 
         self._validate_dtypes(x, offsets=offsets, indices=indices)
-        kernel = self._get_kernel(
+        kernel = self.kernel_for(
+            "mean_pooling_fwd_kernel",
             (x, offsets, indices),
             (batch_size, seq_len, heads, dim, chunks, seq_num, int(ragged), x.dtype),
         )
@@ -457,7 +454,7 @@ class _AvgPoolFwdOpBase(Op):
     # This op's operator, and its name; both set by the registrations at the bottom of
     # this module, one per concrete op class.
     _wrapped: ClassVar[Any]
-    compile_op_names: ClassVar[Tuple[str, ...]] = ()
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -560,15 +557,9 @@ class _AvgPoolFwdOpBase(Op):
             )
         return (n, c_in, *in_dims, *out_dims, input.dtype)
 
-    def _get_kernel(
-        self,
-        input: torch.Tensor,
-        n: int,
-        c_in: int,
-        in_dims: Tuple[int, ...],
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """The spatial fast path picks the implementation, so its name is in the identity."""
+        n, c_in, in_dims, dtype, device_index = call
         use_spatial_fast_path = self._use_spatial_fast_path()
         kernel_name = self._spatial_slot if use_spatial_fast_path else self._generic_slot
         key = (
@@ -604,7 +595,7 @@ class _AvgPoolFwdOpBase(Op):
                     kernel_kwargs["divisor_override"] = self.divisor_override
             return self.kernel_map[kernel_name](**kernel_kwargs)
 
-        return self.get_or_build_kernel(kernel_name, (input,), key=key, build=build)
+        return key, build
 
     def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
         nd = self.ndim
@@ -637,7 +628,9 @@ class _AvgPoolFwdOpBase(Op):
         in_dims = resolved[2 : 2 + nd]
         out_dims = resolved[2 + nd : 2 + 2 * nd]
         dtype = resolved[-1]
-        kernel = self._get_kernel(input, n, c_in, in_dims, dtype, _device_index(input))
+        kernel = self.kernel_for(
+            "avg_pool", (input,), (n, c_in, in_dims, dtype, _device_index(input))
+        )
         out = kernel(input)
         # Recorded after the launch: eval_roofline and profiling read these, and a call that
         # raised described nothing.
@@ -838,7 +831,7 @@ class _MaxPoolFwdOpBase(Op):
     # This op's operator, and its name; both set by the registrations at the bottom of
     # this module, one per concrete op class.
     _wrapped: ClassVar[Any]
-    compile_op_names: ClassVar[Tuple[str, ...]] = ()
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -917,15 +910,9 @@ class _MaxPoolFwdOpBase(Op):
             )
         return (n, c_in, *in_dims, *out_dims, input.dtype)
 
-    def _get_kernel(
-        self,
-        input: torch.Tensor,
-        n: int,
-        c_in: int,
-        in_dims: Tuple[int, ...],
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, window, stride, padding and dilation."""
+        n, c_in, in_dims, dtype, device_index = call
         key = (
             n,
             c_in,
@@ -957,7 +944,7 @@ class _MaxPoolFwdOpBase(Op):
                 kernel_kwargs[f"dilation_{name}"] = self.dilation[k]
             return self.kernel_map[self._kernel_slot](**kernel_kwargs)
 
-        return self.get_or_build_kernel(self._kernel_slot, (input,), key=key, build=build)
+        return key, build
 
     def _infer_output_shapes(self, input_shape: tuple[int, ...]) -> Dict[str, tuple[int, ...]]:
         nd = self.ndim
@@ -997,7 +984,9 @@ class _MaxPoolFwdOpBase(Op):
         in_dims = resolved[2 : 2 + nd]
         out_dims = resolved[2 + nd : 2 + 2 * nd]
         dtype = resolved[-1]
-        kernel = self._get_kernel(input, n, c_in, in_dims, dtype, _device_index(input))
+        kernel = self.kernel_for(
+            "max_pool", (input,), (n, c_in, in_dims, dtype, _device_index(input))
+        )
         out = kernel(input)
         # Recorded after the launch: eval_roofline and profiling read these, and a call that
         # raised described nothing.
@@ -1503,7 +1492,7 @@ class _AdaptivePool2dFwdOpBase(Op):
     # This op's operator, and its name; both set by the registrations at the bottom of
     # this module, one per concrete op class.
     _wrapped: ClassVar[Any]
-    compile_op_names: ClassVar[Tuple[str, ...]] = ()
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -1584,21 +1573,7 @@ class _AdaptivePool2dFwdOpBase(Op):
         x = x.contiguous()
         dtype = x.dtype
         key = (n, c_in, h_in, w_in, out_h, out_w, dtype, _device_index(x), self.tune)
-        kernel = self.get_or_build_kernel(
-            self._kernel_slot,
-            (x,),
-            key=key,
-            build=lambda: self.kernel_map[self._kernel_slot](
-                n=n,
-                c_in=c_in,
-                h_in=h_in,
-                w_in=w_in,
-                out_h=out_h,
-                out_w=out_w,
-                dtype=dtype,
-                tune=self.tune,
-            ),
-        )
+        kernel = self.kernel_for("adaptive_pool", (x,), key)
         result = kernel(x)
         # Recorded after the launch: eval_roofline and profiling read these, and a call that
         # raised described nothing.
@@ -1619,6 +1594,20 @@ class _AdaptivePool2dFwdOpBase(Op):
         if squeezed:
             return result.squeeze(0)
         return result
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per input and output extents, dtype and device."""
+        n, c_in, h_in, w_in, out_h, out_w, dtype, _device, tune = call
+        return call, lambda: self.kernel_map[self._kernel_slot](
+            n=n,
+            c_in=c_in,
+            h_in=h_in,
+            w_in=w_in,
+            out_h=out_h,
+            out_w=out_w,
+            dtype=dtype,
+            tune=tune,
+        )
 
 
 class AdaptiveAvgPool2dFwdOp(_AdaptivePool2dFwdOpBase):
@@ -1748,62 +1737,3 @@ class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
 
     def eval_roofline(self) -> tuple[int, int]:
         return _adaptive_pool2d_roofline(self, indices=True)
-
-
-# The compile boundary: one operator per concrete op class, registered at import time.
-# The op's key crosses it, and the body trades the key back for the instance — see
-# src/tileops/ops/compile_boundary.py. Per class rather than per family, so the name a
-# traced graph carries identifies the op that produced it, and a target that replaces one
-# pool op leaves what the others' graphs hold alone.
-
-
-def _register_pool_operator(op_cls: type, name: str) -> None:
-    """Register *name* as *op_cls*'s operator and record it on the class."""
-    if op_cls._returns_indices:
-
-        @torch.library.custom_op(name, mutates_args=())
-        def _fwd(input: torch.Tensor, instance_key: str) -> Tuple[torch.Tensor, torch.Tensor]:
-            return get_instance(instance_key)._eager_forward(input)
-
-        @_fwd.register_fake
-        def _fwd_fake(
-            input: torch.Tensor,
-            instance_key: str,
-        ) -> Tuple[torch.Tensor, torch.Tensor]:
-            shapes = get_instance(instance_key)._infer_output_shapes(tuple(input.shape))
-            # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
-            return (
-                input.new_empty(shapes["output"]),
-                input.new_empty(shapes["indices"], dtype=torch.int64),
-            )
-
-    else:
-
-        @torch.library.custom_op(name, mutates_args=())
-        def _fwd(input: torch.Tensor, instance_key: str) -> torch.Tensor:  # noqa: F811
-            return get_instance(instance_key)._eager_forward(input)
-
-        @_fwd.register_fake
-        def _fwd_fake(input: torch.Tensor, instance_key: str) -> torch.Tensor:  # noqa: F811
-            shapes = get_instance(instance_key)._infer_output_shapes(tuple(input.shape))
-            return input.new_empty(shapes["output"])
-
-    op_cls._wrapped = _fwd
-    op_cls.compile_op_names = (name,)
-
-
-for _op_cls, _op_name in (
-    (AvgPool1dFwdOp, "tileops::pool_avg_pool1d_fwd"),
-    (AvgPool2dFwdOp, "tileops::pool_avg_pool2d_fwd"),
-    (AvgPool3dFwdOp, "tileops::pool_avg_pool3d_fwd"),
-    (MaxPool1dFwdOp, "tileops::pool_max_pool1d_fwd"),
-    (MaxPool2dFwdOp, "tileops::pool_max_pool2d_fwd"),
-    (MaxPool3dFwdOp, "tileops::pool_max_pool3d_fwd"),
-    (MaxPool1dIndicesFwdOp, "tileops::pool_max_pool1d_indices_fwd"),
-    (MaxPool2dIndicesFwdOp, "tileops::pool_max_pool2d_indices_fwd"),
-    (MaxPool3dIndicesFwdOp, "tileops::pool_max_pool3d_indices_fwd"),
-    (AdaptiveAvgPool2dFwdOp, "tileops::pool_adaptive_avg_pool2d_fwd"),
-    (AdaptiveMaxPool2dFwdOp, "tileops::pool_adaptive_max_pool2d_fwd"),
-    (AdaptiveMaxPool2dIndicesFwdOp, "tileops::pool_adaptive_max_pool2d_indices_fwd"),
-):
-    _register_pool_operator(_op_cls, _op_name)

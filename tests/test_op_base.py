@@ -2,7 +2,7 @@
 
 Covers ``Op._cache_key`` default behavior, the runtime warning fired when
 a subclass with empty ``_static_axes`` does not override ``_cache_key``,
-composite kernel-map overrides, the ``get_or_build_kernel`` primitive, and
+composite kernel-map overrides, the ``kernel_for`` path, and
 the explicit kernel enumeration ``Op.autotune`` runs over.
 """
 
@@ -174,7 +174,7 @@ class TestCompositeKernelMapOverride:
 
 
 class _SlottedOp(Op):
-    """Op whose forward-built kernels all go through ``get_or_build_kernel``."""
+    """Op whose forward-built kernels all go through ``kernel_for``."""
 
     def __init__(self, tuned: list):
         self._tuned = tuned
@@ -196,16 +196,21 @@ class _SlottedOp(Op):
     def forward(self, *a, **kw):
         return None
 
-    def build(self, role: str, key, name: str):
+    def entry_for(self, role: str, call):
+        key, name = call
+
         def factory():
             self.builds.append((role, key))
             return _RecordingKernel(name, self._tuned)
 
-        return self.get_or_build_kernel(role, (), key=key, build=factory)
+        return key, factory
+
+    def build(self, role: str, key, name: str):
+        return self.kernel_for(role, (), (key, name))
 
 
 class TestGetOrBuildKernel:
-    """``Op.get_or_build_kernel`` is the single get-or-build in the Op layer."""
+    """``Op.kernel_for`` is the single get-or-build in the Op layer."""
 
     def test_factory_runs_once_per_key(self):
         op = _SlottedOp([])
@@ -251,19 +256,17 @@ class TestIterKernels:
             compute_dtype: torch.dtype
 
         class BundleOp(_SlottedOp):
+            def entry_for(self, role, call):
+                if role == "pair":
+                    return call, lambda: (
+                        _RecordingKernel("pre", tuned),
+                        _RecordingKernel("bwd", tuned),
+                    )
+                return call, lambda: Entry(_RecordingKernel("record", tuned), torch.float32)
+
             def populate(self):
-                self.get_or_build_kernel(
-                    "pair",
-                    (),
-                    key=torch.float16,
-                    build=lambda: (_RecordingKernel("pre", tuned), _RecordingKernel("bwd", tuned)),
-                )
-                self.get_or_build_kernel(
-                    "entry",
-                    (),
-                    key=torch.bfloat16,
-                    build=lambda: Entry(_RecordingKernel("record", tuned), torch.float32),
-                )
+                self.kernel_for("pair", (), torch.float16)
+                self.kernel_for("entry", (), torch.bfloat16)
 
         op = BundleOp(tuned)
         op.populate()
@@ -325,8 +328,11 @@ class TestIterKernels:
             def kernel_delegates(self):
                 return (delegate,)
 
+            def entry_for(self, role, call):
+                return call, lambda: shared
+
         composite = CompositeOp(tuned)
-        composite.get_or_build_kernel("fwd", (), key=torch.float16, build=lambda: shared)
+        composite.kernel_for("fwd", (), torch.float16)
         assert [k.name for k in composite.iter_kernels()] == ["shared"]
 
 
@@ -385,14 +391,17 @@ class _TunableOp(Op):
     def eval_roofline(self):
         return (0, 0)
 
-    def build(self, dtype):
+    def entry_for(self, role, call):
         def factory():
-            kernel = _RecordingKernel(str(dtype), self._tuned)
+            kernel = _RecordingKernel(str(call), self._tuned)
             if self.tune:
                 kernel.autotune()
             return kernel
 
-        return self.get_or_build_kernel("fwd", (), key=dtype, build=factory)
+        return call, factory
+
+    def build(self, dtype):
+        return self.kernel_for("fwd", (), dtype)
 
 
 class TestTunedMode:

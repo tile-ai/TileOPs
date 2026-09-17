@@ -3,10 +3,10 @@ from typing import ClassVar, Dict, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm import AdaLayerNormKernel
 
-from ..compile_boundary import get_instance
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["AdaLayerNormZeroFwdOp"]
@@ -37,7 +37,7 @@ class AdaLayerNormZeroFwdOp(Op):
 
     """
 
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_ada_layer_norm_zero_fwd",)
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -104,7 +104,7 @@ class AdaLayerNormZeroFwdOp(Op):
             ValueError: Dtypes or shapes disagree. Raised from inside the operator, by
                 `_eager_forward`.
         """
-        return _norm_ada_layer_norm_zero_fwd(x, scale, shift, gate, self._instance_key)
+        return self._wrapped(x, scale, shift, gate, self._instance_key)
 
     def _eager_forward(
         self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor, gate: torch.Tensor
@@ -134,44 +134,13 @@ class AdaLayerNormZeroFwdOp(Op):
         shift = shift.contiguous()
         gate = gate.contiguous()
         n = x.shape[-1]
-        kernel = self.get_or_build_kernel(
-            "ada_layer_norm",
-            (x, scale, shift, gate),
-            key=(n, x.dtype),  # this instance's in-tree cache key
-            build=lambda: self.kernel_map["ada_layer_norm"](
-                n,
-                self.eps,
-                x.dtype,
-                has_gate=True,
-                tune=self.tune,
-            ),
-        )
+        kernel = self.kernel_for("ada_layer_norm", (x, scale, shift, gate), (n, x.dtype))
         self._last_roofline_mn = (x.numel() // n, n)
         return kernel(x, scale, shift, gate)
 
-
-@torch.library.custom_op("tileops::norm_ada_layer_norm_zero_fwd", mutates_args=())
-def _norm_ada_layer_norm_zero_fwd(
-    x: torch.Tensor,
-    scale: torch.Tensor,
-    shift: torch.Tensor,
-    gate: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(x, scale, shift, gate)
-
-
-@_norm_ada_layer_norm_zero_fwd.register_fake
-def _norm_ada_layer_norm_zero_fwd_fake(
-    x: torch.Tensor,
-    scale: torch.Tensor,
-    shift: torch.Tensor,
-    gate: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(
-        tuple(x.shape), tuple(scale.shape), tuple(shift.shape), tuple(gate.shape)
-    )
-    # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
-    return x.new_empty(shapes["output"])
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per row width and dtype; epsilon is the op's."""
+        n, dtype = call
+        return call, lambda: self.kernel_map["ada_layer_norm"](
+            n, self.eps, dtype, has_gate=True, tune=self.tune
+        )

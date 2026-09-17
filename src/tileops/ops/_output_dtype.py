@@ -1,9 +1,9 @@
-"""The dtype an op's fake reports, read off the manifest.
+"""The dtype an op writes an output in, from whichever of its two origins applies.
 
-A registered fake is all the compiler learns about an op's node, and the only statement
-about output dtype that holds for every target is the manifest's. So the fake reads it from
-here rather than from a kernel class, which would make the compiled graph depend on which
-target served the op.
+An output's dtype is the caller's where the entry marks the output ``caller_stated``, and
+the entry's own resolved declaration everywhere else. Both the fake and the eager path ask
+here, so the two cannot answer differently, and neither asks a kernel class — that would
+make the compiled graph depend on which target served the op.
 """
 
 import torch
@@ -11,7 +11,12 @@ import torch
 from tileops.manifest import load_manifest
 from tileops.manifest.dtype_rules import promote_int_to_float_ref, same_as_ref
 
-__all__ = ["resolve_output_dtype"]
+__all__ = ["output_dtype", "resolve_output_dtype"]
+
+# The one name a caller-stated output dtype travels under, and the flag on the outputs it
+# states (docs/design/manifest.md R23).
+OUT_DTYPE_PARAM = "out_dtype"
+CALLER_STATED_FLAG = "caller_stated"
 
 # What ``promote_int_to_float`` promotes an integral input to.
 _PROMOTED_FLOAT_DTYPE = torch.float32
@@ -63,15 +68,22 @@ def resolve_output_dtype(
         output: Which output to resolve. ``None`` for an op that declares one.
 
     Returns:
-        The output dtype. ``same_as(...)`` and dtype unions follow the input;
+        The output dtype. ``same_as(...)`` follows the input;
         ``promote_int_to_float(...)`` promotes integral inputs to float32; a
         bare dtype name resolves to that dtype.
 
     Raises:
-        ValueError: The declared expression names an unknown dtype.
+        ValueError: The declared expression names an unknown dtype, or names a set of
+            them — an output resolves to one dtype (manifest.md R23), so a union here
+            would be an answer this function invented.
     """
     expr = _declared_expr(op_class_name, output)
-    if same_as_ref(expr) is not None or "|" in expr:
+    if "|" in expr:
+        raise ValueError(
+            f"{op_class_name}: manifest output dtype {expr!r} names a set; an output "
+            "declares the one dtype it falls back to (R23)"
+        )
+    if same_as_ref(expr) is not None:
         return input_dtype
     if promote_int_to_float_ref(expr) is not None:
         if input_dtype.is_floating_point:
@@ -81,3 +93,25 @@ def resolve_output_dtype(
     if not isinstance(resolved, torch.dtype):
         raise ValueError(f"{op_class_name}: manifest output dtype {expr!r} is not a torch dtype")
     return resolved
+
+
+def output_dtype(op: object, output: str, input_dtype: torch.dtype) -> torch.dtype:
+    """The dtype *op* writes *output* in.
+
+    Args:
+        op: The op instance, read for its ``out_dtype`` where the entry marks the output.
+        output: Which output to answer for.
+        input_dtype: Dtype of the input the output's declaration refers to, used when the
+            caller states nothing.
+
+    Returns:
+        The caller's dtype where the entry marks *output* ``caller_stated: true`` and the
+        caller passed one, otherwise what the declaration resolves to.
+    """
+    op_class_name = type(op).__name__
+    outputs = load_manifest()[op_class_name]["signature"]["outputs"]
+    if outputs[output].get(CALLER_STATED_FLAG):
+        stated = getattr(op, OUT_DTYPE_PARAM, None)
+        if stated is not None:
+            return stated
+    return resolve_output_dtype(op_class_name, input_dtype, output)

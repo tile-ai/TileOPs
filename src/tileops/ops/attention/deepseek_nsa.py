@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
@@ -7,9 +7,10 @@ from tileops.kernels.attention import (
     NSAFwdVarlenKernel,
     NSATopkVarlenKernel,
 )
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.perf.profile import tensor_core_roof
 
+from .._compile_boundary_codegen import OperatorSpec
 from .._validation import check_tensor_shape
 from ..op_base import Op
 
@@ -73,6 +74,8 @@ class NSATopkVarlenOp(Op):
     ``offsets`` marks the boundaries, so the batch size and the chunk count come from
     the call rather than from construction.
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -149,25 +152,40 @@ class NSATopkVarlenOp(Op):
             device_index,
             self.tune,
         )
-        return self.get_or_build_kernel(
-            "nsa_topk_varlen_kernel",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["nsa_topk_varlen_kernel"](
-                seq_num=seq_num,
-                c_seq_len=c_seq_len,
-                heads=heads,
-                dim=dim,
-                chunk_num=chunk_num,
-                group=group,
-                scale=self.scale,
-                selected_block_num=self.selected_block_num,
-                bc=self.bc,
-                bs=self.bs,
-                dtype=dtype,
-                accum_dtype=self.accum_dtype,
-                tune=self.tune,
-            ),
+        return self.kernel_for("nsa_topk_varlen_kernel", inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, block geometry, dtypes and device."""
+        (
+            seq_num,
+            c_seq_len,
+            heads,
+            dim,
+            chunk_num,
+            group,
+            scale,
+            selected_block_num,
+            bc,
+            bs,
+            dtype,
+            accum_dtype,
+            _device,
+            tune,
+        ) = call
+        return call, lambda: self.kernel_map["nsa_topk_varlen_kernel"](
+            seq_num=seq_num,
+            c_seq_len=c_seq_len,
+            heads=heads,
+            dim=dim,
+            chunk_num=chunk_num,
+            group=group,
+            scale=scale,
+            selected_block_num=selected_block_num,
+            bc=bc,
+            bs=bs,
+            dtype=dtype,
+            accum_dtype=accum_dtype,
+            tune=tune,
         )
 
     def forward(
@@ -191,6 +209,23 @@ class NSATopkVarlenOp(Op):
 
         Returns:
             Selected block ids [c_seq_len, head_kv, selected_block_num].
+        """
+        return self._wrapped(
+            q, k_cmp, lse_in, offsets, chunk_offsets, token_indices, self._instance_key
+        )
+
+    def _eager_forward(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        lse_in: torch.Tensor,
+        offsets: torch.Tensor,
+        chunk_offsets: torch.Tensor,
+        token_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         self._validate_dtypes(q, k_cmp, lse_in, offsets, chunk_offsets, token_indices)
         c_seq_len, heads, dim = _packed_query_dims(q)
@@ -234,6 +269,8 @@ class NSAFwdVarlenOp(Op):
     layout is packed: ``offsets`` marks the request boundaries, so the batch size and
     the block count come from the call rather than from construction.
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -307,24 +344,38 @@ class NSAFwdVarlenOp(Op):
             device_index,
             self.tune,
         )
-        return self.get_or_build_kernel(
-            "nsa_fwd_varlen_kernel",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["nsa_fwd_varlen_kernel"](
-                batch=batch,
-                heads=heads,
-                c_seq_len=c_seq_len,
-                dim=dim,
-                is_causal=self.is_causal,
-                scale=self.scale,
-                block_size=self.block_size,
-                groups=groups,
-                selected_blocks=selected_blocks,
-                dtype=dtype,
-                accum_dtype=self.accum_dtype,
-                tune=self.tune,
-            ),
+        return self.kernel_for("nsa_fwd_varlen_kernel", inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, block geometry, dtypes and device."""
+        (
+            batch,
+            heads,
+            c_seq_len,
+            dim,
+            is_causal,
+            scale,
+            block_size,
+            groups,
+            selected_blocks,
+            dtype,
+            accum_dtype,
+            _device,
+            tune,
+        ) = call
+        return call, lambda: self.kernel_map["nsa_fwd_varlen_kernel"](
+            batch=batch,
+            heads=heads,
+            c_seq_len=c_seq_len,
+            dim=dim,
+            is_causal=is_causal,
+            scale=scale,
+            block_size=block_size,
+            groups=groups,
+            selected_blocks=selected_blocks,
+            dtype=dtype,
+            accum_dtype=accum_dtype,
+            tune=tune,
         )
 
     def forward(
@@ -350,6 +401,24 @@ class NSAFwdVarlenOp(Op):
 
         Returns:
             Attention output [c_seq_len, heads, dim].
+        """
+        return self._wrapped(
+            q, k, v, block_indices, block_counts, offsets, token_indices, self._instance_key
+        )
+
+    def _eager_forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        block_indices: torch.Tensor,
+        block_counts: torch.Tensor,
+        offsets: torch.Tensor,
+        token_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         self._validate_dtypes(q, k, v, block_indices, block_counts, offsets, token_indices)
         c_seq_len, heads, dim = _packed_query_dims(q)
@@ -404,6 +473,8 @@ class NSACmpFwdVarlenOp(Op):
     Sequence layout is packed: ``offsets`` marks the request boundaries, so the batch
     size and the chunk count come from the call rather than from construction.
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -479,25 +550,40 @@ class NSACmpFwdVarlenOp(Op):
             device_index,
             self.tune,
         )
-        return self.get_or_build_kernel(
-            "nsa_cmp_fwd_varlen_kernel",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["nsa_cmp_fwd_varlen_kernel"](
-                seq_num=seq_num,
-                c_seq_len=c_seq_len,
-                heads=heads,
-                dim_k=dim_k,
-                dim_v=dim_v,
-                chunk_num=chunk_num,
-                group=group,
-                scale=self.scale,
-                bc=self.bc,
-                bs=self.bs,
-                dtype=dtype,
-                accum_dtype=self.accum_dtype,
-                tune=self.tune,
-            ),
+        return self.kernel_for("nsa_cmp_fwd_varlen_kernel", inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, block geometry, dtypes and device."""
+        (
+            seq_num,
+            c_seq_len,
+            heads,
+            dim_k,
+            dim_v,
+            chunk_num,
+            group,
+            scale,
+            bc,
+            bs,
+            dtype,
+            accum_dtype,
+            _device,
+            tune,
+        ) = call
+        return call, lambda: self.kernel_map["nsa_cmp_fwd_varlen_kernel"](
+            seq_num=seq_num,
+            c_seq_len=c_seq_len,
+            heads=heads,
+            dim_k=dim_k,
+            dim_v=dim_v,
+            chunk_num=chunk_num,
+            group=group,
+            scale=scale,
+            bc=bc,
+            bs=bs,
+            dtype=dtype,
+            accum_dtype=accum_dtype,
+            tune=tune,
         )
 
     def forward(
@@ -521,6 +607,23 @@ class NSACmpFwdVarlenOp(Op):
 
         Returns:
             Tuple of (o, lse).
+        """
+        return self._wrapped(
+            q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices, self._instance_key
+        )
+
+    def _eager_forward(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        v_cmp: torch.Tensor,
+        offsets: torch.Tensor,
+        chunk_offsets: torch.Tensor,
+        token_indices: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         self._validate_dtypes(q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
         c_seq_len, heads, dim_k = _packed_query_dims(q)

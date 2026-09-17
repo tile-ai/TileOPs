@@ -225,8 +225,7 @@ def _gqa_prefill_varlen_fwd_kernel(
     return _gqa_prefill_varlen_fwd_func
 
 
-@torch.library.custom_op("tileops::gqa_prefill_varlen_fwd_wrapped_kernel", mutates_args=())
-def _gqa_prefill_varlen_fwd_wrapped_kernel(
+def _gqa_prefill_varlen_fwd_run(
     batch: int,
     heads: int,
     heads_kv: int,
@@ -256,7 +255,6 @@ def _gqa_prefill_varlen_fwd_wrapped_kernel(
     )
 
 
-@_gqa_prefill_varlen_fwd_wrapped_kernel.register_fake
 def _(
     batch: int,
     heads: int,
@@ -336,7 +334,7 @@ class GQAPrefillVarlenFwdKernel(PackedPrefillKernel):
         v_scale: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         total_q, total_kv = q.shape[0], k.shape[0]
-        output, _ = _gqa_prefill_varlen_fwd_wrapped_kernel(
+        output, _ = _gqa_prefill_varlen_fwd_run(
             self.batch,
             self.heads,
             self.heads_kv,

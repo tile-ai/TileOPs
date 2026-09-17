@@ -28,6 +28,7 @@ DaCumsumFwdOp:
   ref_api: "none"
   family: mamba
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -36,11 +37,11 @@ DaCumsumFwdOp:
       dt_bias: {dtype: "float32", shape: "[H]", optional: true}
     outputs:
       # dt_out is stored in the construction dtype; dA_cumsum stays float32.
-      dt_out: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, NC, chunk_len]"}
+      dt_out: {dtype: "same_as(dt)", caller_stated: true, shape: "[B, H, NC, chunk_len]"}
       dA_cumsum: {dtype: "float32", shape: "[B, H, NC, chunk_len]"}
     params:
       chunk_len: {type: int}
-      dtype: {type: torch.dtype, default: float32}
+      out_dtype: {type: "float16 | bfloat16 | float32", default: float32}
       dt_softplus: {type: bool, default: false}
       dt_min: {type: float, default: 0.0}
       dt_max: {type: float, default: .inf}
@@ -73,6 +74,7 @@ CBProducerFwdOp:
   ref_api: "none"
   family: mamba
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -116,6 +118,7 @@ SSDChunkStateFwdOp:
   ref_api: "none"
   family: mamba
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -158,6 +161,7 @@ SSDStatePassingFwdOp:
   ref_api: "none"
   family: mamba
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -194,6 +198,7 @@ SSDChunkScanFwdOp:
   ref_api: "none"
   family: mamba
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -234,6 +239,7 @@ SSDDecodeFwdOp:
   ref_api: "none"
   family: mamba
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:

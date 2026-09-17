@@ -151,7 +151,7 @@ def _sinusoidal_reference(seq_len: int, d_model: int, dtype: torch.dtype) -> tor
 
 @AlibiBenchFixture
 def test_alibi_bench(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
-    op = AlibiFwdOp(seq_len=seq_len, num_heads=num_heads, dtype=dtype)
+    op = AlibiFwdOp(seq_len=seq_len, num_heads=num_heads, out_dtype=dtype)
     workload = _GenerativeWorkload((num_heads, seq_len, seq_len), dtype)
     bm = ManifestBenchmark(op, workload)
 
@@ -169,7 +169,7 @@ def test_alibi_bench(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
 
 @SinusoidalBenchFixture
 def test_sinusoidal_bench(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
-    op = SinusoidalFwdOp(seq_len=seq_len, d_model=d_model, dtype=dtype)
+    op = SinusoidalFwdOp(seq_len=seq_len, d_model=d_model, out_dtype=dtype)
     workload = _GenerativeWorkload((seq_len, d_model), dtype)
     bm = ManifestBenchmark(op, workload)
 

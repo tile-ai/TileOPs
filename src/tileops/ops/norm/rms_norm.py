@@ -20,10 +20,10 @@ from typing import ClassVar, Dict, Optional, Sequence, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm import RMSNormKernel
 
-from ..compile_boundary import get_instance
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 from .norm_base import normalized_shape_to_n
 
@@ -53,7 +53,7 @@ class RMSNormFwdOp(Op):
     # normalization both read it, so the two cannot drift apart.
     DEFAULT_EPS = 1.0e-6
 
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_rms_norm_fwd",)
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -124,7 +124,7 @@ class RMSNormFwdOp(Op):
                 configured ``normalized_shape``. Raised from inside the operator, by
                 `_eager_forward`.
         """
-        return _rms_norm_fwd(x, weight, self._instance_key)
+        return self._wrapped(x, weight, self._instance_key)
 
     def _eager_forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         """Validate, normalize, resolve the kernel and launch, inside the operator.
@@ -151,44 +151,10 @@ class RMSNormFwdOp(Op):
         # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
         weight = weight.contiguous()
-        kernel = self.get_or_build_kernel(
-            "rms_norm",
-            (x, weight),
-            key=x.dtype,  # this instance's in-tree cache key
-            build=lambda: self.kernel_map["rms_norm"](
-                self.N,
-                self.eps,
-                x.dtype,
-                tune=self.tune,
-            ),
-        )
+        kernel = self.kernel_for("rms_norm", (x, weight), x.dtype)
         self._last_m = x.numel() // self.N
         return kernel(x, weight)
 
-
-# Both are module-level functions rather than methods, for three reasons: registration
-# happens at import time and once per qualified name; the schema is read off the
-# annotations, so ``self`` cannot appear in either signature; the instance is therefore
-# recovered from a string key. Why that key is a string and why it is never reused:
-# src/tileops/ops/compile_boundary.py.
-
-
-@torch.library.custom_op("tileops::norm_rms_norm_fwd", mutates_args=())
-def _rms_norm_fwd(
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(x, weight)
-
-
-@_rms_norm_fwd.register_fake
-def _rms_norm_fwd_fake(
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(tuple(x.shape), tuple(weight.shape))
-    # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
-    return x.new_empty(shapes["output"])
+    def entry_for(self, role: str, call: torch.dtype) -> Entry:
+        """One implementation, built per dtype; the row width and epsilon are the op's."""
+        return call, lambda: self.kernel_map["rms_norm"](self.N, self.eps, call, tune=self.tune)

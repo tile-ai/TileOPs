@@ -76,6 +76,7 @@ DeltaNetDecodeFwdOp:
   ref_api: "none"
   family: linear_attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -127,6 +128,7 @@ GLADecodeFwdOp:
   ref_api: "none"
   family: linear_attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -209,6 +211,7 @@ DeltaNetFwdOp:
   ref_api: "none"
   family: linear_attention
   status: implemented
+  torch_compile_fullgraph: true
   signature:
     inputs:
       q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DK]"}
@@ -248,6 +251,7 @@ DeltaNetBwdOp:
   ref_api: "none"
   family: linear_attention
   status: implemented
+  torch_compile_fullgraph: true
   signature:
     inputs:
       do: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DV]"}
@@ -290,6 +294,7 @@ GLAFwdOp:
   ref_api: "none"
   family: linear_attention
   status: implemented
+  torch_compile_fullgraph: true
   signature:
     inputs:
       q: {dtype: "float16 | bfloat16 | float32", shape: "[B, S, H, DK]"}
@@ -327,6 +332,7 @@ GLABwdOp:
   ref_api: "none"
   family: linear_attention
   status: implemented
+  torch_compile_fullgraph: true
   signature:
     inputs:
       q: {dtype: "float16 | bfloat16 | float32", shape: "[B, S, H, DK]"}

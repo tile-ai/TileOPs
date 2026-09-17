@@ -37,9 +37,9 @@ class MGroupedGemmCall(CallSpec):
     The layout arrives structured — ``kind`` first, then the contiguous
     sub-axes — so a candidate can claim a region such as "every contiguous
     layout with psum metadata" without enumerating keys. ``m`` is the
-    materialized row count (``num_groups * max_m`` for masked layouts); it is a
-    fact of the call and not of the built kernel, so the op keys its kernel
-    cache on this record with ``m`` reset.
+    materialized row count (``num_groups * max_m`` for masked layouts). It is a
+    fact of the call and not of the built kernel, so it is excluded from this
+    record's equality: a candidate selected on it is still cached without it.
     """
 
     kind: str = ""  # "contiguous" | "masked"
@@ -53,7 +53,7 @@ class MGroupedGemmCall(CallSpec):
     ab_dtype: torch.dtype | None = None
     cd_dtype: torch.dtype | None = None
     num_groups: int = 0
-    m: int = 0
+    m: int = dataclasses.field(default=0, compare=False)
     n: int = 0
     k: int = 0
 

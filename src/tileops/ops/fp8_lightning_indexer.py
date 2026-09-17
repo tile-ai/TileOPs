@@ -1,17 +1,20 @@
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
 from tileops.kernels.constants import FP8_E4M3_MAX
 from tileops.kernels.fp8_lightning_indexer import FP8LightningIndexerKernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
+from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
 
 __all__ = ["FP8LightningIndexerFwdOp"]
 
 
 class FP8LightningIndexerFwdOp(Op):
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
     def __init__(
         self,
         clean_logits=True,
@@ -61,23 +64,10 @@ class FP8LightningIndexerFwdOp(Op):
         kv_group: int,
         device_index: int | None,
     ) -> Kernel:
-        key = (
-            batch,
-            seq_len,
-            heads,
-            index_dim,
-            seq_len_kv,
-            kv_group,
-            self.clean_logits,
-            self._config_cache_key,
-            device_index,
-            self.tune,
-        )
-        return self.get_or_build_kernel(
+        return self.kernel_for(
             "fp8_lightning_indexer_kernel",
             inputs,
-            key=key,
-            build=lambda: self.kernel_map["fp8_lightning_indexer_kernel"](
+            (
                 batch,
                 seq_len,
                 heads,
@@ -85,9 +75,36 @@ class FP8LightningIndexerFwdOp(Op):
                 seq_len_kv,
                 kv_group,
                 self.clean_logits,
-                config=self.config,
-                tune=self.tune,
+                self._config_cache_key,
+                device_index,
+                self.tune,
             ),
+        )
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape and device; the config is the op's."""
+        (
+            batch,
+            seq_len,
+            heads,
+            index_dim,
+            seq_len_kv,
+            kv_group,
+            clean_logits,
+            _config,
+            _dev,
+            tune,
+        ) = call
+        return call, lambda: self.kernel_map["fp8_lightning_indexer_kernel"](
+            batch,
+            seq_len,
+            heads,
+            index_dim,
+            seq_len_kv,
+            kv_group,
+            clean_logits,
+            config=self.config,
+            tune=tune,
         )
 
     def _resolve_and_bind(
@@ -202,6 +219,23 @@ class FP8LightningIndexerFwdOp(Op):
 
         Returns:
             ``logits``, as the manifest declares.
+        """
+        return self._wrapped(
+            index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale, self._instance_key
+        )
+
+    def _eager_forward(
+        self,
+        index_q: torch.Tensor,
+        index_k: torch.Tensor,
+        weights: torch.Tensor,
+        cu_seqlen_ks: torch.Tensor,
+        cu_seqlen_ke: torch.Tensor,
+        index_k_scale: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         self._resolve_and_bind(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale)
         if index_k_scale is None:

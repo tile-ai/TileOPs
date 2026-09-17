@@ -5,7 +5,7 @@ import torch
 
 __all__ = ["Entry", "Kernel"]
 
-# What ``Op.get_or_build_kernel`` stores for one specialization: the identity two
+# What ``Op.kernel_for`` stores for one specialization: the identity two
 # builds share to be the same entry, and the thunk that produces it.
 Entry = tuple[Hashable, Callable[[], object]]
 
@@ -117,29 +117,24 @@ class Kernel(ABC):
             return "does not serve this call"
         return None
 
-    # FIXME(staged-rollout): entry_for is declared here but not abstract.
-    #
-    # Broken invariant: a class ``Op.kernel_for`` selects must state how it is built.
-    # Why: only GEMM dispatches through it; every kernel of the other families would
-    #   fail to instantiate the moment this became abstract.
-    # Cleanup: no op passes ``key=`` / ``build=`` to ``get_or_build_kernel``.
     @classmethod
-    def entry_for(cls, call: Any, *, tune: bool) -> Entry:
+    def entry_for(cls, call: Any) -> Entry:
         """How to build this class for *call*, and what makes two builds one entry.
 
         The identity is the construction arguments, so two calls that would compile
         the same kernel share an entry and none reuses one compiled for different
         arguments. The thunk runs only on a cache miss.
 
-        Raises:
-            NotImplementedError: This class is selected by an op that builds through
-                ``entry_for`` and does not define it.
+        The default is the identity mapping: this class is constructed from the call
+        record itself. A class with a narrower constructor overrides it and states
+        which of the call's facts it is built from.
+
+        The device index is in the identity wherever this class could build a
+        different object on another device, whether it takes one as an argument or
+        reads it while compiling. A class that only validates the architecture it
+        was handed does not put it there.
         """
-        raise NotImplementedError(
-            f"{cls.__name__} is dispatched through entry_for(call, *, tune) but does not "
-            f"define it; it must return (identity, thunk) — the construction arguments "
-            f"this class takes from the call, and a callable that builds it from them"
-        )
+        return call, lambda: cls(call)
 
     def _check_arch(self) -> None:
         """Reject construction on a device this kernel is not built for.

@@ -1,11 +1,12 @@
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba import SSDChunkStateFwdKernel
 from tileops.perf.profile import tensor_core_roof
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["SSDChunkStateFwdOp"]
@@ -25,6 +26,8 @@ class SSDChunkStateFwdOp(Op):
               * (1 if seq_idx is None else (seq_idx[b,c*Q+Q-1] >= 0 and seq_idx[b,c*Q+l] == seq_idx[b,c*Q+Q-1]))
 
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -83,23 +86,36 @@ class SSDChunkStateFwdOp(Op):
             device_index,
             self.tune,
         )
-        return self.get_or_build_kernel(
-            "ssd_chunk_state_fwd",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["ssd_chunk_state_fwd"](
-                batch,
-                num_chunks,
-                chunk_len,
-                n_heads,
-                d_head,
-                d_state,
-                n_groups,
-                dtype,
-                has_seq_idx=has_seq_idx,
-                dt_dtype=dt_dtype,
-                tune=self.tune,
-            ),
+        return self.kernel_for("ssd_chunk_state_fwd", inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, dtypes, seq-idx presence and device."""
+        (
+            batch,
+            num_chunks,
+            chunk_len,
+            n_heads,
+            d_head,
+            d_state,
+            n_groups,
+            dtype,
+            dt_dtype,
+            has_seq_idx,
+            _device,
+            tune,
+        ) = call
+        return call, lambda: self.kernel_map["ssd_chunk_state_fwd"](
+            batch,
+            num_chunks,
+            chunk_len,
+            n_heads,
+            d_head,
+            d_state,
+            n_groups,
+            dtype,
+            has_seq_idx=has_seq_idx,
+            dt_dtype=dt_dtype,
+            tune=tune,
         )
 
     def _infer_output_shapes(
@@ -133,6 +149,20 @@ class SSDChunkStateFwdOp(Op):
 
         Returns:
             out: (batch, num_chunks, n_heads, d_head, d_state) float32
+        """
+        return self._wrapped(x, Bmat, dt, dA_cumsum, seq_idx, self._instance_key)
+
+    def _eager_forward(
+        self,
+        x: torch.Tensor,
+        Bmat: torch.Tensor,
+        dt: torch.Tensor,
+        dA_cumsum: torch.Tensor,
+        seq_idx: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         if not x.is_cuda:
             raise ValueError("x must be a CUDA tensor")

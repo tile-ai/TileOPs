@@ -16,18 +16,18 @@ Layouts:
 - ``"2d"``: input shape $[batch \\times seq\\_len \\times num\\_heads \\times head\\_dim]$
 
 torch.compile support:
-- All 5 concrete ops are registered via @torch.library.custom_op at module
-  load time.  A factory function (_register_rope_custom_op) registers every
-  op; instances are looked up at runtime through the shared registry in
-  tileops.ops.compile_boundary, keyed by the instance's string key.
+- All 5 concrete ops declare ``compile_boundary``, from which
+  ``tileops.ops._compile_boundary_codegen`` generates one operator each; instances are
+  looked up at runtime through the shared registry in tileops.ops.compile_boundary,
+  keyed by the instance's string key.
 """
 
 import math
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.rope import (
     RopeLlama31Kernel,
     RopeLongRopeKernel,
@@ -37,48 +37,8 @@ from tileops.kernels.rope import (
     RopeYarnKernel,
 )
 
-from .compile_boundary import get_instance
+from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
-
-# torch.compile registration factory: a @torch.library.custom_op +
-# register_fake pair per RoPE op (see module docstring).
-
-
-def _register_rope_custom_op(op_cls):
-    """Register a RoPE op for torch.compile.
-
-    Args:
-        op_cls: The Op subclass to register (must have ``_op_name``).
-    """
-    op_name = op_cls._op_name
-
-    @torch.library.custom_op(f"tileops::rope_{op_name}", mutates_args=())
-    def _wrapped(x: torch.Tensor, instance_key: str) -> torch.Tensor:
-        instance = get_instance(instance_key)
-        return instance._eager_forward(x)
-
-    @_wrapped.register_fake
-    def _(x: torch.Tensor, instance_key: str) -> torch.Tensor:
-        return torch.empty_like(x)
-
-    op_cls._wrapped = _wrapped
-
-
-def _register_rope_position_ids_custom_op(op_cls):
-    """Register a RoPE op that consumes explicit packed position ids."""
-    op_name = op_cls._op_name
-
-    @torch.library.custom_op(f"tileops::rope_{op_name}", mutates_args=())
-    def _wrapped(x: torch.Tensor, position_ids: torch.Tensor, instance_key: str) -> torch.Tensor:
-        instance = get_instance(instance_key)
-        return instance._eager_forward(x, position_ids)
-
-    @_wrapped.register_fake
-    def _(x: torch.Tensor, position_ids: torch.Tensor, instance_key: str) -> torch.Tensor:
-        return torch.empty_like(x)
-
-    op_cls._wrapped = _wrapped
-
 
 __all__ = [
     "RopeLlama31FwdOp",
@@ -341,7 +301,7 @@ class _RopeOpBase(Op):
 
     Subclass must set ``kernel_cls``, ``_op_name``, and implement
     ``_compute_cos_sin(device)`` to generate variant-specific frequency tables.
-    Subclass should also set ``_wrapped`` via ``_register_rope_custom_op``
+    Subclass declares ``compile_boundary``, from which its operator is generated
     to enable torch.compile support.
 
     Cos/sin tables are computed lazily at forward time on the same device as
@@ -351,7 +311,7 @@ class _RopeOpBase(Op):
 
     kernel_cls: type
     _op_name: str
-    _wrapped = None  # Set by _register_rope_custom_op at class definition
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -431,19 +391,19 @@ class _RopeOpBase(Op):
             device_index,
             self.tune,
         )
-        return self.get_or_build_kernel(
-            self._op_name,
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map[self._op_name](
-                seq_len=self.seq_len,
-                head_dim=self.head_dim,
-                dtype=self.dtype,
-                layout=self.layout,
-                batch=self.batch,
-                num_heads=self.num_heads,
-                tune=self.tune,
-            ),
+        return self.kernel_for(self._op_name, inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, layout, dtype and device."""
+        seq_len, head_dim, dtype, layout, batch, num_heads, _device, tune = call
+        return call, lambda: self.kernel_map[self._op_name](
+            seq_len=seq_len,
+            head_dim=head_dim,
+            dtype=dtype,
+            layout=layout,
+            batch=batch,
+            num_heads=num_heads,
+            tune=tune,
         )
 
     def _validate_and_prepare(self, x: torch.Tensor) -> torch.Tensor:
@@ -548,7 +508,8 @@ class RopeNeoxPositionIdsFwdOp(Op):
     """GPT-NeoX style RoPE for packed THD tensors with explicit positions."""
 
     _op_name = "rope_neox_position_ids"
-    _wrapped = None
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -630,19 +591,19 @@ class RopeNeoxPositionIdsFwdOp(Op):
             device_index,
             self.tune,
         )
-        return self.get_or_build_kernel(
-            self._op_name,
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map[self._op_name](
-                num_tokens=self.num_tokens,
-                num_heads=self.num_heads,
-                head_dim=self.head_dim,
-                rotary_dim=self.rotary_dim,
-                max_position=self.max_position,
-                dtype=self.dtype,
-                tune=self.tune,
-            ),
+        return self.kernel_for(self._op_name, inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, rotary extent, dtype and device."""
+        num_tokens, num_heads, head_dim, rotary_dim, max_position, dtype, _device, tune = call
+        return call, lambda: self.kernel_map[self._op_name](
+            num_tokens=num_tokens,
+            num_heads=num_heads,
+            head_dim=head_dim,
+            rotary_dim=rotary_dim,
+            max_position=max_position,
+            dtype=dtype,
+            tune=tune,
         )
 
     def _validate_and_prepare(
@@ -928,10 +889,3 @@ class RopeLongRopeFwdOp(_RopeOpBase):
 
 
 # torch.compile registration for all 5 RoPE ops
-
-for _cls in [RopeNeoxFwdOp, RopeNonNeoxFwdOp, RopeLlama31FwdOp, RopeYarnFwdOp, RopeLongRopeFwdOp]:
-    _register_rope_custom_op(_cls)
-
-_register_rope_position_ids_custom_op(RopeNeoxPositionIdsFwdOp)
-
-del _cls

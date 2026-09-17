@@ -7,7 +7,9 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from ..kernel_base import Kernel
+from ..kernel_base import Entry, Kernel
+from .call_spec import dense_fp8_decode_region
+from .dense_entry import dense_fp8_decode_entry
 from .gqa_decode_bs1_common import COMPILE_FLAGS
 from .gqa_fwd_fp8 import _validate_fa3_gqa_descales
 from .online_softmax import LOG2E
@@ -234,8 +236,7 @@ def _gqa_dense_fp8_decode_ctx_kernel(
     return build
 
 
-@torch.library.custom_op("tileops::gqa_dense_fp8_decode_ctx", mutates_args=())
-def _gqa_dense_fp8_decode_ctx(
+def _gqa_dense_fp8_decode_ctx_run(
     batch: int,
     heads: int,
     heads_kv: int,
@@ -268,7 +269,6 @@ def _gqa_dense_fp8_decode_ctx(
     return kernel(q, k, v, q_descale, k_descale, v_descale, glse, output_partial)
 
 
-@_gqa_dense_fp8_decode_ctx.register_fake
 def _(
     batch: int,
     heads: int,
@@ -295,6 +295,14 @@ class GQADenseFP8DecodeKernel(Kernel):
     supported_archs: list[int] = [90]
     _TARGET_CTAS = 128
     _MAX_SPLITS = 32
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        return dense_fp8_decode_region(call)
+
+    @classmethod
+    def entry_for(cls, call) -> Entry:
+        return dense_fp8_decode_entry(cls, call)
 
     def __init__(
         self,
@@ -378,7 +386,7 @@ class GQADenseFP8DecodeKernel(Kernel):
             device=q.device,
         )
         c = self.config
-        return _gqa_dense_fp8_decode_ctx(
+        return _gqa_dense_fp8_decode_ctx_run(
             self.batch,
             self.heads,
             self.heads_kv,

@@ -74,8 +74,7 @@ def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int):
     return _fp8_quant_fwd_func
 
 
-@torch.library.custom_op("tileops::fp8_quant_wrapped_kernel", mutates_args=())
-def _fp8_quant_wrapped_kernel(
+def _fp8_quant_run(
     batch: int,
     seq_len_kv: int,
     kv_group: int,
@@ -94,7 +93,6 @@ def _fp8_quant_wrapped_kernel(
     )
 
 
-@_fp8_quant_wrapped_kernel.register_fake
 def _(batch, seq_len_kv, kv_group, index_dim, in_dtype, threads, block_m, *inputs):
     return torch.empty(
         (batch, seq_len_kv, kv_group), dtype=torch.float32, device=inputs[0].device
@@ -185,7 +183,7 @@ class FP8QuantKernel(Kernel):
         return [self.default_config]
 
     def forward(self, input_tensor: torch.Tensor):
-        return _fp8_quant_wrapped_kernel(
+        return _fp8_quant_run(
             self.batch,
             self.seq_len_kv,
             self.kv_group,

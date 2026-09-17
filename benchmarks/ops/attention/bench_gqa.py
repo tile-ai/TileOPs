@@ -341,7 +341,7 @@ def test_gqa_dense_prefill_bench(case: GQADensePrefillCase) -> None:
         is_causal=case.is_causal,
         sm_scale=case.sm_scale,
         softcap=case.softcap,
-        dtype=case.out_dtype,
+        out_dtype=case.out_dtype,
         pos_encoding_mode="rope" if case.rotary_dim is not None else "none",
         rotary_dim=case.rotary_dim,
         rope_layout=case.rope_layout,
@@ -471,9 +471,7 @@ def _fa3_gqa_prefill_paged(test, cache_dtype, fuse_rope, softcap):
 def _fp8_paged_cache_inputs(
     test: GQAPrefillPagedWithKVCacheFwdWorkload,
 ) -> tuple[torch.Tensor, ...]:
-    q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table, max_seqlen_q = (
-        test.gen_inputs()
-    )
+    q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table = test.gen_inputs()
     k_scale = torch.full((1,), 0.01, dtype=torch.float32, device=q.device)
     v_scale = torch.full((1,), 0.01, dtype=torch.float32, device=q.device)
     fp8_max = torch.finfo(torch.float8_e4m3fn).max
@@ -490,7 +488,6 @@ def _fp8_paged_cache_inputs(
         cu_seqlens_q,
         cache_seqlens,
         block_table,
-        max_seqlen_q,
     )
 
 
@@ -556,7 +553,6 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
             cu_seqlens_q,
             cache_seqlens,
             block_table,
-            max_seqlen_q,
         ) = test.gen_inputs()
         k_scale = torch.ones((1,), dtype=torch.float32, device=q.device)
         v_scale = torch.ones((1,), dtype=torch.float32, device=q.device)
@@ -571,7 +567,6 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
             cu_seqlens_q,
             cache_seqlens,
             block_table,
-            max_seqlen_q,
         )
 
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
@@ -581,6 +576,7 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
         max_pages_per_req=test.max_pages_per_req,
         page_size=page_size,
         dim=dim,
+        max_seqlen_q=test.max_seqlen_q,
         is_causal=causal,
         cache_dtype=cache_dtype,
         softcap=softcap,
@@ -592,7 +588,6 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
     op.total_q = test.total_q
     op.q_lens = q_lens
     op.cache_lens = cache_lens
-    op.max_seqlen_q = test.max_seqlen_q
     bm = ManifestBenchmark(op, test)
     fa3_fn = _fa3_gqa_prefill_paged(test, cache_dtype, fuse_rope, softcap)
     if fa3_fn is None:

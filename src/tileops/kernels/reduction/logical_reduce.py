@@ -21,7 +21,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
@@ -399,6 +399,34 @@ def _logical_reduce_kernel_tiled(
     return _func
 
 
+def _logical_entry(cls: type, call: LogicalReduceCall) -> Entry:
+    """The entry for a logical reduction kernel, which both implementations take.
+
+    The device is in the identity: its shared-memory budget decides the plan.
+    """
+    index = call.device.index if call.device is not None else None
+    identity = (
+        call.m,
+        call.shape,
+        call.axes,
+        call.op_kind,
+        call.dtype,
+        call.keepdim,
+        call.tune,
+        index,
+    )
+    return identity, lambda: cls(
+        call.m,
+        prod(call.shape[a] for a in call.axes),
+        call.op_kind,
+        call.dtype,
+        reduce_axes=call.axes,
+        keepdim=call.keepdim,
+        tune=call.tune,
+        device_index=index,
+    )
+
+
 class LogicalReduceKernel(Kernel):
     """Any / all / count_nonzero forward kernel.
 
@@ -536,6 +564,11 @@ class LogicalReduceKernel(Kernel):
     @classmethod
     def applies(cls, call: LogicalReduceCall) -> bool:
         return logical_reduce_region(call)
+
+    @classmethod
+    def entry_for(cls, call: LogicalReduceCall) -> Entry:
+        """Built from the kept rows, the reduced extent and the layout it permutes."""
+        return _logical_entry(cls, call)
 
     def __init__(
         self,
@@ -706,6 +739,11 @@ class LogicalReduceEdgeFusedKernel(Kernel):
     @classmethod
     def applies(cls, call: LogicalReduceCall) -> bool:
         return logical_edge_fused_region(call)
+
+    @classmethod
+    def entry_for(cls, call: LogicalReduceCall) -> Entry:
+        """Built from the kept rows, the reduced extent and the layout it permutes."""
+        return _logical_entry(cls, call)
 
     def __init__(
         self,

@@ -1,10 +1,11 @@
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["GLADecodeFwdOp"]
@@ -23,6 +24,8 @@ class GLADecodeFwdOp(Op):
     For fp32 dtype, dispatches to a dedicated FP32 kernel that uses
     element-wise matvec instead of T.gemm to avoid TF32 mantissa truncation.
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -66,23 +69,21 @@ class GLADecodeFwdOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, heads, dim_k, dim_v, self.scale, dtype, device_index, self.tune)
+        return self.kernel_for("gla_decode", inputs, key)
 
-        def build() -> Kernel:
-            if dtype == torch.float32:
-                kernel_cls = self.kernel_map["GLADecodeFP32Kernel"]
-            else:
-                kernel_cls = self.kernel_map["GLADecodeKernel"]
-            return kernel_cls(
-                batch,
-                heads,
-                dim_k,
-                dim_v,
-                scale=self.scale,
-                dtype=Kernel.dtype_to_str(dtype),
-                tune=self.tune,
-            )
-
-        return self.get_or_build_kernel("GLADecodeKernel", inputs, key=key, build=build)
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """The dtype picks the implementation, so it is in the identity."""
+        batch, heads, dim_k, dim_v, scale, dtype, _device, tune = call
+        name = "GLADecodeFP32Kernel" if dtype == torch.float32 else "GLADecodeKernel"
+        return call, lambda: self.kernel_map[name](
+            batch,
+            heads,
+            dim_k,
+            dim_v,
+            scale=scale,
+            dtype=Kernel.dtype_to_str(dtype),
+            tune=tune,
+        )
 
     def _infer_output_shapes(
         self,
@@ -189,6 +190,20 @@ class GLADecodeFwdOp(Op):
 
         Returns:
             ``o``, ``new_state``, as the manifest declares. Shape rules: ``o.shape == (B, H, DV)``; ``new_state.shape == (B, H, DK, DV)``.
+        """
+        return self._wrapped(q, k, v, gk, state, self._instance_key)
+
+    def _eager_forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        gk: torch.Tensor,
+        state: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         self._validate_dtypes(q, k, v, gk, state)
         self._validate_shapes(q, k, v, gk, state)

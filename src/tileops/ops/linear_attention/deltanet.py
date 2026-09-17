@@ -1,14 +1,15 @@
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.deltanet import (
     DeltaNetBwdKernel,
     DeltaNetFwdKernel,
 )
 from tileops.perf.profile import tensor_core_roof
 
+from .._compile_boundary_codegen import OperatorSpec
 from .._validation import check_tensor_shape
 from ..op_base import Op
 
@@ -31,6 +32,8 @@ class DeltaNetFwdOp(Op):
         layout: ``q/k [B, T, H, K]``, ``v [B, T, H, V]``, ``beta [B, T, H]``.
 
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -75,20 +78,20 @@ class DeltaNetFwdOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
-        return self.get_or_build_kernel(
-            "DeltaNetFwdKernel",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["DeltaNetFwdKernel"](
-                batch,
-                heads,
-                seq_len,
-                self.chunk_size,
-                dim_k,
-                dim_v,
-                dtype=Kernel.dtype_to_str(dtype),
-                tune=self.tune,
-            ),
+        return self.kernel_for("DeltaNetFwdKernel", inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, chunk length, dtype and device."""
+        batch, heads, seq_len, chunk_size, dim_k, dim_v, dtype, _device, tune = call
+        return call, lambda: self.kernel_map["DeltaNetFwdKernel"](
+            batch,
+            heads,
+            seq_len,
+            chunk_size,
+            dim_k,
+            dim_v,
+            dtype=Kernel.dtype_to_str(dtype),
+            tune=tune,
         )
 
     def _bind_from_inputs(
@@ -164,6 +167,19 @@ class DeltaNetFwdOp(Op):
         Returns:
             Tuple of (o, S, Aw, Au, w, u).
         """
+        return self._wrapped(q, k, v, beta, self._instance_key)
+
+    def _eager_forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
+        """
         self._bind_from_inputs(q, k, v, beta)
         o, S, Aw, Au, w, u = self.kernel(q, k, v, beta)
         return o, S, Aw, Au, w, u
@@ -179,6 +195,8 @@ class DeltaNetBwdOp(Op):
     Pipeline: prepare_wy_repr -> fwd (to get Aw, Au) -> bwd kernel -> (dq, dk, dv, dbeta).
 
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -223,20 +241,20 @@ class DeltaNetBwdOp(Op):
         device_index: int | None,
     ) -> Kernel:
         key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
-        return self.get_or_build_kernel(
-            "DeltaNetBwdKernel",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["DeltaNetBwdKernel"](
-                batch,
-                heads,
-                seq_len,
-                self.chunk_size,
-                dim_k,
-                dim_v,
-                dtype=Kernel.dtype_to_str(dtype),
-                tune=self.tune,
-            ),
+        return self.kernel_for("DeltaNetBwdKernel", inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, chunk length, dtype and device."""
+        batch, heads, seq_len, chunk_size, dim_k, dim_v, dtype, _device, tune = call
+        return call, lambda: self.kernel_map["DeltaNetBwdKernel"](
+            batch,
+            heads,
+            seq_len,
+            chunk_size,
+            dim_k,
+            dim_v,
+            dtype=Kernel.dtype_to_str(dtype),
+            tune=tune,
         )
 
     def _bind_from_inputs(self, inputs: "tuple[torch.Tensor, ...]") -> None:
@@ -329,6 +347,25 @@ class DeltaNetBwdOp(Op):
 
         Returns:
             Tuple of (dq, dk, dv, dbeta).
+        """
+        return self._wrapped(do, q, k, v, beta, S, Aw, Au, w, u, self._instance_key)
+
+    def _eager_forward(
+        self,
+        do: torch.Tensor,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+        S: torch.Tensor,
+        Aw: torch.Tensor,
+        Au: torch.Tensor,
+        w: torch.Tensor,
+        u: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         self._bind_from_inputs((do, q, k, v, beta, S, Aw, Au, w, u))
         dq, dk, dv, dbeta = self.kernel(do, q, k, v, beta, S, Aw, Au, w, u)
@@ -451,33 +488,21 @@ class DeltaNetAutogradOp(Op):
             q.device.index,
             self.tune,
         )
-        return self.get_or_build_kernel(
-            "DeltaNetFwdKernel",
-            (q, k, v, beta),
-            key=key,
-            build=lambda: (
-                self.kernel_map["DeltaNetFwdKernel"](
-                    batch,
-                    heads,
-                    seq_len,
-                    self.chunk_size,
-                    dim_k,
-                    self.dim_v,
-                    dtype=Kernel.dtype_to_str(dtype),
-                    tune=self.tune,
-                ),
-                self.kernel_map["DeltaNetBwdKernel"](
-                    batch,
-                    heads,
-                    seq_len,
-                    self.chunk_size,
-                    dim_k,
-                    self.dim_v,
-                    dtype=Kernel.dtype_to_str(dtype),
-                    tune=self.tune,
-                ),
-            ),
-        )
+        return self.kernel_for("deltanet", (q, k, v, beta), key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """Forward and backward are built together, so they are one entry."""
+        batch, heads, seq_len, chunk_size, dim_k, dim_v, dtype, _device, tune = call
+
+        def build() -> tuple:
+            args = (batch, heads, seq_len, chunk_size, dim_k, dim_v)
+            kwargs = {"dtype": Kernel.dtype_to_str(dtype), "tune": tune}
+            return (
+                self.kernel_map["DeltaNetFwdKernel"](*args, **kwargs),
+                self.kernel_map["DeltaNetBwdKernel"](*args, **kwargs),
+            )
+
+        return call, build
 
     def forward(
         self,

@@ -766,52 +766,6 @@ def test_explicit_structure_config_is_taken_verbatim() -> None:
 
 
 @pytest.mark.smoke
-def test_registered_wrapped_ops_keep_their_contracts() -> None:
-    """The two ``tileops::`` ops stay callable at the ranks they advertise.
-
-    Nothing in-tree calls either — ``forward`` builds the JIT directly and these
-    exist for ``torch.compile`` — so their bodies rot unwatched. Both were
-    changed here: the GEMM op gained ``panel_size`` / ``split_k`` and a split-K
-    branch, and the GEMV op now delegates to the shared ``[m, k] -> [m, n]``
-    small-batch body while still advertising ``a[k] -> c[n]``. That rank
-    adaptation was in fact missing and silent until this test existed.
-    """
-    from torch.library import opcheck
-
-    from tileops.kernels.gemm.dense import _gemm_wrapped_kernel, _gemv_wrapped_kernel
-    from tileops.utils import get_sm_version
-
-    if get_sm_version() != 90:
-        pytest.skip("both bodies are SM90-only")
-
-    m, n, k = 128, 512, 1024
-    a = torch.randn(m, k, dtype=torch.bfloat16, device="cuda")
-    b = torch.randn(n, k, dtype=torch.bfloat16, device="cuda")
-    ref = a.float() @ b.float().T
-
-    for split_k in (1, 4):
-        args = (m, n, k, False, True, "bfloat16", 64, 128, 128, 4, 16, split_k, a, b)
-        out = _gemm_wrapped_kernel(*args)
-        assert out.shape == (m, n)
-        torch.testing.assert_close(out.float(), ref, atol=2e-2, rtol=2e-2)
-        opcheck(
-            torch.ops.tileops.gemm_wrapped_kernel,
-            args,
-            test_utils=("test_schema", "test_faketensor"),
-        )
-
-    vec_args = (n, k, "bfloat16", 1, 128, 4, a[0].contiguous(), b)
-    out = _gemv_wrapped_kernel(*vec_args)
-    assert out.shape == (n,)
-    torch.testing.assert_close(out.float(), ref[0], atol=2e-2, rtol=2e-2)
-    opcheck(
-        torch.ops.tileops.gemv_wrapped_kernel,
-        vec_args,
-        test_utils=("test_schema", "test_faketensor"),
-    )
-
-
-@pytest.mark.smoke
 def test_gemm_refuses_tma_misaligned_shapes_by_naming_the_dim() -> None:
     """An unaligned innermost dimension is refused, with the dimension named.
 
@@ -958,7 +912,7 @@ def test_structure_routing_matches_test_ids() -> None:
         call = op._call_spec(m, n, k, dtype)
         cls = op.select_kernel(call)
         assert cls is GemmKernel, f"{test_id}: expected the generic kernel, got {cls.__name__}"
-        _identity, build = cls.entry_for(call, tune=False)
+        _identity, build = cls.entry_for(call)
         config = build().config
         got = next((f for f in flags if config.get(f)), None)
         if got is None:

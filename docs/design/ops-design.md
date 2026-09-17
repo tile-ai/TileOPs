@@ -33,7 +33,7 @@ Op                          ← L1: thin base, shared by all ops
 
 **Dtype is not a constructor parameter when the inputs determine it.** An op reads it from the input tensors in `forward()`: a caller who passes fp16 tensors gets the fp16 kernel without having said so twice, and an op can no longer be constructed in a state that disagrees with the tensors it is about to be handed.
 
-An output dtype is determined by the inputs when it is `same_as(...)`, `promote_int_to_float(...)`, one concrete dtype, or a union equal to some input's. When some output dtype is an independent choice — an op that generates a tensor from parameters alone, or an fp8 path whose output may be fp16 or bf16 — the tensors are not a second source and `dtype` stays a `signature.params` entry.
+**An output dtype has two possible origins and no third.** The manifest states it — a constant, `same_as(x)` or `promote_int_to_float(x)` — or the caller states it, through a parameter named `out_dtype`. Which of the two holds is per output, not per op: an output the caller may restate says so in its own declaration, and an op returning an auxiliary tensor beside its result keeps that one its own. The declaration is the fallback taken when the caller states none, so it resolves to one dtype and never names a set; the set a caller may ask for is the type of `out_dtype`. The name is the contract — the fake reads the output dtype off the attribute of that name — and [manifest.md R23](manifest.md) holds both directions.
 
 The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — keyed by every input that selects a specialization, dtype among them. `dispatch_kernel()` stays in `__init__`: resolving the kernel *class* needs no tensor. It also needs no device, and must not ask for one — see [Kernel selection](#kernel-selection).
 
@@ -49,13 +49,19 @@ The kernel is dtype-specialized, so this makes kernel construction uniformly def
 
 **Order decides nothing.** Selection takes the implementation that applies; the one declared general runs where no specialised one does. Nothing applicable is an error, and two specialised implementations claiming one call is an ambiguity error rather than a silent preference. A replacement the caller supplies answers the same question as the class it replaces.
 
+**An implementation states how it is built.** `entry_for(call)` returns the identity two builds must share to be one entry, and the thunk that produces it. The identity is the construction arguments, plus the device where the constructor could produce a different object on another one. An op names no candidate's constructor.
+
+Three records, each with one owner: the **call** (a `CallSpec` subclass) is what the caller asked for plus the device it runs on, and carries every fact the family's `applies` / `refusal` / `entry_for` read; the **build identity** is the selected class's projection of it; the **role** is the memoization bucket, one per op and never the dispatch key.
+
+`kernel_for` is the only way an op reaches a kernel. It asks `Op.entry_for(role, call)` for the identity and the builder, and supplies both to get-or-build as a thunk, so none of it runs when a target serves the op: which implementation and how to build it are that target's answers to give. The default `entry_for` selects among the op's candidates and asks the chosen class. An op with one implementation and no call record overrides `entry_for` and states its own identity and builder there, rather than opening a second path to the cache.
+
 The rule is implementation choice within one slot. Choosing the slot sits above it, dtype specialization beside it; neither goes through it. See [S13](op-slot-rules.md#slot-s13).
 
 ### Kernel caching and enumeration
 
-L1 owns get-or-build. An op names the **role** a kernel plays, the **key** identifying the specialization, and the factory that builds it. The factory runs on the first miss for that key and never again. An op MUST NOT carry a get-or-build of its own — no cache dict, no build guarded on a kernel attribute being unset. Holding what L1 returned in `self.kernel` is not one.
+L1 owns get-or-build. An op names the **role** a kernel plays, and `entry_for` names the **identity** of the specialization and the factory that builds it. The factory runs on the first miss for that identity and never again. An op MUST NOT carry a get-or-build of its own — no cache dict, no build guarded on a kernel attribute being unset. Holding what L1 returned in `self.kernel` is not one.
 
-The key is opaque to L1 and must carry every input that can change what gets built. Naming the axes is the op's job, because only the op knows what its factory closes over.
+The identity is opaque to L1 and must carry every input that can change what gets built. Where the op selects among candidates, the selected class names those axes in its own `entry_for`, because only it knows what its constructor reads; where the op has one kernel, the op's `entry_for` names them.
 
 The entry, not the kernel, is the unit built once. A specialization that must build several kernels together returns them as one immutable entry from one factory; kernels keyed independently of each other are separate roles.
 
@@ -188,14 +194,18 @@ class ExampleCumsumFwdOp(Op):
         self.M = M  # stored for eval_roofline
         self.dtype = x.dtype  # ditto; the op commits to no dtype before this
         x = x.contiguous()          # handed over as the manifest declares it
-        kernel = self.get_or_build_kernel(
-            "example_cumsum_fwd",
-            (x,),                        # the tensors the kernel will be handed
-            key=(tuple(x.shape), dim, x.dtype, x.device.index),
-            build=lambda: self.kernel_map["example_cumsum_fwd"](
-                M, self.N, "sum", x.dtype, scan_axis=dim, tune=self.tune),
+        # The tensors the kernel will be handed, then what this call is.
+        kernel = self.kernel_for(
+            "example_cumsum_fwd", (x,), (tuple(x.shape), dim, x.dtype, x.device.index, M)
         )
         return kernel(x)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built from the whole shape and the axis it scans."""
+        _shape, dim, dtype, device_index, m = call
+        return call, lambda: self.kernel_map["example_cumsum_fwd"](
+            m, self.N, "sum", dtype, scan_axis=dim, tune=self.tune, device_index=device_index
+        )
 ```
 
 **Validation.**
@@ -203,9 +213,9 @@ class ExampleCumsumFwdOp(Op):
 - `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim.
 - `forward` calls `self._validate_dtypes(...)` first — not inline dtype comparisons, which are Step 5's job. It checks no device kind: a kernel states which devices it runs on.
 - Every `static_dims` commitment is checked against the tensor shape at the normalized axis, and `_static_axes` is bound from that (non-negative) axis. Both before the get-or-build call.
-- The kernel comes from `self.get_or_build_kernel`, never a cache dict the op owns:
-  - `key=` and `build=` are the in-tree recipe. The kernel is built from `x.dtype` and the key carries it, so a call with another dtype builds a second kernel rather than reusing the first.
-  - `inputs=` is the tensors the kernel is handed, which is what an external target's builder is described with. A new op passes it; an op not yet migrated omits it and stays in-tree only.
+- The kernel comes from `self.kernel_for`, never a cache dict the op owns:
+  - `entry_for` is the in-tree recipe. The kernel is built from `x.dtype` and the identity carries it, so a call with another dtype builds a second kernel rather than reusing the first.
+  - `inputs` is the tensors the kernel is handed, which is what an external target's builder is described with.
 - The op never trims kernel output, and never reshapes its input for the kernel: a kernel that pads or permutes internally takes and returns the shapes the manifest declares.
 
 **Reference.** [Slot S14](op-slot-rules.md#slot-s14), [S15](op-slot-rules.md#slot-s15), [S16](op-slot-rules.md#slot-s16).
@@ -316,23 +326,30 @@ enter a TileLang builder. Kernel-cache misses run TileLang JIT machinery
 warm-up before `torch.compile` only hides the miss path and does not
 satisfy the cold-call contract.
 
-**Mechanism** (`src/tileops/ops/compile_boundary.py`; one op one operator:
-`norm/rms_norm.py`, `ops/elementwise/_base.py`):
+**Mechanism** (`src/tileops/ops/compile_boundary.py` and
+`src/tileops/ops/_compile_boundary_codegen.py`):
 
 1. `Op.dispatch_kernel` registers every op in a weak instance registry at
    `__init__` time and stores `self._instance_key`.
-1. One `torch.library.custom_op` per op — that is what makes the node in the
+1. The op declares `compile_boundary`, one `OperatorSpec` per operator it
+   registers. `Op.__init_subclass__` generates each registration from the
+   manifest entry and fills in `compile_op_names`, so no op writes registration
+   code and an operator's schema cannot drift from its entry.
+1. One `torch.library.custom_op` per spec — that is what makes the node in the
    graph this op's, and keeps it the same node when another target serves it.
-   Its eager body resolves the instance from the registry and calls
-   `self._eager_forward` — cache lookup, Kernel construction, and launch
-   all run untraced. Its fake derives output shapes from
-   `_infer_output_shapes` and dtypes from the manifest contract.
-1. `forward` becomes a single dispatch call:
-   `return _family_fwd(input, self._instance_key)`; the previous body is
-   renamed `_eager_forward` unchanged.
-1. The op publishes what it registered through `compile_op_names` — a tuple,
-   since a conditional in-place write registers two — so a test can assert the
-   traced graph holds nothing else.
+   Its arguments are `signature.inputs` in order plus the instance key, its
+   eager body resolves the instance and calls `self._eager_forward` — cache
+   lookup, Kernel construction, and launch all run untraced — and its fake
+   derives output shapes from `_infer_output_shapes` and each output's dtype
+   from `out_dtype` where the entry marks that output caller-stated, otherwise
+   from `signature.outputs`.
+1. `forward` becomes one call to the generated operator, passing the declared
+   inputs and the instance key; the previous body is renamed `_eager_forward`
+   unchanged.
+1. A spec states which of three kinds its operator is — returning the declared
+   outputs, writing its result into an argument, or writing a caller-supplied
+   buffer — and, for the two writing kinds, which argument it writes. The entry
+   says everything else.
 
 **Constraints.**
 
@@ -356,6 +373,12 @@ satisfy the cold-call contract.
   earlier call is a state write the fake reads before the write happens.
 - An op with no tensor input has no device to detect and no node to own, so it
   registers no boundary.
+- The operator's name is `tileops::<family>_<snake(class)>`, with the family
+  named once. An op does not choose it, so `compile_op_names` and the registered
+  name cannot disagree.
+- An operator writes the inputs the manifest marks `mutated: true`, plus the
+  argument a writing spec names. What an op's operators write, taken together, is
+  exactly the set the manifest marks — the validator holds them equal.
 
 ## Family-Base Refactoring
 

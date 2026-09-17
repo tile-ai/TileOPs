@@ -279,5 +279,5 @@ class GatedDeltaNetFwdOp(Op):
             A_log,
             dt_bias,
         )
-        kernel = self.get_or_build_kernel("gated_deltanet", inputs)
+        kernel = self.kernel_for("gated_deltanet", inputs)
         return kernel(*inputs)

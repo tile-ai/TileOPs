@@ -6,7 +6,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.attention.call_spec import AttentionCall
+from tileops.kernels.kernel_base import Entry, Kernel
 
 from .online_softmax import make_log2e_scale, make_online_softmax, make_rescale
 
@@ -439,8 +440,7 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
 # Use distinct op names so paged and non-paged (mha_decode.py) do not overwrite
 # each other in torch.library; otherwise the first-registered impl "changes" the
 # registry and later parametrized tests can hit the wrong implementation.
-@torch.library.custom_op("tileops::mha_decode_paged_no_split_op", mutates_args=())
-def _mha_decode_paged_no_split_op(
+def _mha_decode_paged_no_split_run(
     batch: int,
     heads: int,
     seqlen_q: int,
@@ -464,7 +464,6 @@ def _mha_decode_paged_no_split_op(
     )(block_M, block_N, num_stages, threads)(Q, K, V, real_seqlen_kv, block_table)
 
 
-@_mha_decode_paged_no_split_op.register_fake
 def _(
     batch: int,
     heads: int,
@@ -487,8 +486,7 @@ def _(
     return torch.empty_like(Q)
 
 
-@torch.library.custom_op("tileops::mha_decode_paged_split_op", mutates_args=())
-def _mha_decode_paged_split_op(
+def _mha_decode_paged_split_run(
     batch: int,
     heads: int,
     seqlen_q: int,
@@ -518,7 +516,6 @@ def _mha_decode_paged_split_op(
     )
 
 
-@_mha_decode_paged_split_op.register_fake
 def _(
     batch: int,
     heads: int,
@@ -545,12 +542,36 @@ def _(
     return torch.empty_like(Q)
 
 
+def paged_decode_entry(cls: type, call: AttentionCall) -> Entry:
+    """The entry for an MHA paged-decode candidate: both take the same arguments.
+
+    The device index is in the identity because the kernel is compiled for the
+    architecture it is built on.
+    """
+    index = call.device.index if call.device is not None else None
+    args = (
+        call.batch,
+        call.heads,
+        call.max_seqlen_q,
+        call.seqlen_kv,
+        call.dim,
+        call.page_size,
+        call.is_causal,
+        call.dtype,
+    )
+    return (*args, call.tune, index), lambda: cls(*args, tune=call.tune, device_index=index)
+
+
 class MHADecodePagedKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
     # The implementation behind the specialised one for this key: it serves any
     # paged decode call, including the query lengths, head dims and page sizes
     # the warp-specialized Hopper kernel does not claim.
     general: bool = True
+
+    @classmethod
+    def entry_for(cls, call: AttentionCall) -> Entry:
+        return paged_decode_entry(cls, call)
 
     def __init__(
         self,
@@ -564,8 +585,9 @@ class MHADecodePagedKernel(Kernel):
         dtype: str = "bfloat16",
         config: Optional[dict] = None,
         tune=False,
+        device_index: Optional[int] = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.heads = heads
         self.seqlen_q = seqlen_q
@@ -701,7 +723,7 @@ class MHADecodePagedKernel(Kernel):
         )
         threshold = num_split * block_N
         if real_max < threshold:
-            return _mha_decode_paged_no_split_op(
+            return _mha_decode_paged_no_split_run(
                 self.batch,
                 self.heads,
                 self.seqlen_q,
@@ -738,7 +760,7 @@ class MHADecodePagedKernel(Kernel):
             device=Q.device,
         ).contiguous()
 
-        return _mha_decode_paged_split_op(
+        return _mha_decode_paged_split_run(
             self.batch,
             self.heads,
             self.seqlen_q,

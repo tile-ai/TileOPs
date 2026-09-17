@@ -212,21 +212,14 @@ class RoutingEpilogueSpec:
     """Exactly-once local routing epilogue with fixed reduction/cast semantics."""
 
     routed_scaling_factor: float = 1.0
-    output_dtype: torch.dtype | None = None
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.routed_scaling_factor) or self.routed_scaling_factor <= 0:
             raise ValueError("routed_scaling_factor must be finite and positive")
-        if self.output_dtype not in (None, torch.bfloat16, torch.float16):
-            raise ValueError("output_dtype must be None, torch.bfloat16, or torch.float16")
 
     @property
     def accumulation_dtype(self) -> torch.dtype:
         return torch.float32
-
-    def resolve_output_dtype(self, input_dtype: torch.dtype) -> torch.dtype:
-        """Use an explicit final dtype, or preserve the expert-output dtype."""
-        return input_dtype if self.output_dtype is None else self.output_dtype
 
 
 def layout_value_guard(

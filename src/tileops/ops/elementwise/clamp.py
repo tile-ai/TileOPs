@@ -1,7 +1,7 @@
 """Clamp ops: Tensor-bound bounds, and the scalar-bound form."""
 
 from math import prod
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
@@ -9,15 +9,13 @@ from tileops.backend import Target
 from tileops.kernels.elementwise import ClampFwdKernel, ClampTensorFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
-from ..compile_boundary import get_instance
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 from ._base import (
     _PerDtypeKernels,
     _require_one_device,
-    _require_shape_inference,
     _validate_scalar_param_repr,
     broadcast_or_raise,
-    resolve_output_dtype,
 )
 
 
@@ -37,8 +35,9 @@ class ClampFwdOp(_PerDtypeKernels, Op):
 
     """
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
     _op_name = "clamp"
-    _wrapped = None
 
     def __init__(
         self,
@@ -168,7 +167,8 @@ class ClampScalarFwdOp(_PerDtypeKernels, Op):
     """Scalar-bound clamp (``torch.clamp(input, min: Number|None, max: Number|None)``)."""
 
     _op_name = "clamp"
-    _wrapped = None
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -259,36 +259,3 @@ class ClampScalarFwdOp(_PerDtypeKernels, Op):
 
 # The bounds are annotated ``Optional[torch.Tensor]``, so the schema reads
 # ``Tensor? min, Tensor? max`` and one registration serves clamp, clamp_min and clamp_max.
-_require_shape_inference(ClampFwdOp)
-
-
-@torch.library.custom_op("tileops::elementwise_clamp_tensor", mutates_args=())
-def _clamp_tensor_fwd(
-    input: torch.Tensor,
-    min: Optional[torch.Tensor],
-    max: Optional[torch.Tensor],
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(input, min, max)
-
-
-@_clamp_tensor_fwd.register_fake
-def _clamp_tensor_fwd_fake(
-    input: torch.Tensor,
-    min: Optional[torch.Tensor],
-    max: Optional[torch.Tensor],
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(
-        tuple(input.shape),
-        None if min is None else tuple(min.shape),
-        None if max is None else tuple(max.shape),
-    )
-    return input.new_empty(
-        shapes["output"], dtype=resolve_output_dtype(ClampFwdOp.__name__, input.dtype)
-    )
-
-
-ClampFwdOp._wrapped = _clamp_tensor_fwd
-ClampFwdOp.compile_op_names = ("tileops::elementwise_clamp_tensor",)

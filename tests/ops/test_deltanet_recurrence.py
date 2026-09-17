@@ -10,7 +10,6 @@ from tileops.kernels.linear_attention.deltanet_recurrence import (
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from tileops.ops import DeltaNetDecodeFwdOp
-from tileops.ops.linear_attention.deltanet_recurrence import DELTANET_DECODE_KEYS
 from workloads.linear_attention import DeltaNetDecodeWorkload, deltanet_decode_torch
 
 
@@ -114,8 +113,10 @@ def test_deltanet_decode_rejects_manifest_shape_mismatch() -> None:
     beta = torch.empty(2, 3)
     state = torch.empty(2, 3, 4, 5)
 
+    # The shape check lives in ``_eager_forward``: ``forward`` is one call to the op's
+    # operator, and this instance was built without one on purpose.
     with pytest.raises(ValueError, match="k must have shape"):
-        op.forward(q, k, v, beta, state)
+        op._eager_forward(q, k, v, beta, state)
 
 
 def _skip_unless_raw_cuda_decode_supported() -> None:
@@ -233,9 +234,7 @@ def test_deltanet_decode_raw_cuda_dispatch_selects_raw_on_supported_sm90(
 ) -> None:
     op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
 
-    key = op.select_kernel_key(DELTANET_DECODE_KEYS, _stated_call(90, dtype))
-
-    assert op.kernel_map[key] is _RawDispatchKernel
+    assert op.select_kernel(_stated_call(90, dtype)) is _RawDispatchKernel
 
 
 @pytest.mark.parametrize(
@@ -258,9 +257,7 @@ def test_deltanet_decode_build_carries_the_tune_flag(tune: bool) -> None:
 def test_deltanet_decode_raw_cuda_dispatch_falls_back_on_unsupported_sm() -> None:
     op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
 
-    key = op.select_kernel_key(DELTANET_DECODE_KEYS, _stated_call(80, torch.bfloat16))
-
-    assert op.kernel_map[key] is _DefaultDispatchKernel
+    assert op.select_kernel(_stated_call(80, torch.bfloat16)) is _DefaultDispatchKernel
 
 
 @pytest.mark.smoke
@@ -271,18 +268,16 @@ def test_deltanet_decode_raw_cuda_dispatch_falls_back_on_non_128_shapes(
 ) -> None:
     op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
 
-    key = op.select_kernel_key(DELTANET_DECODE_KEYS, _stated_call(90, torch.bfloat16, dim_k, dim_v))
-
-    assert op.kernel_map[key] is _DefaultDispatchKernel
+    assert (
+        op.select_kernel(_stated_call(90, torch.bfloat16, dim_k, dim_v)) is _DefaultDispatchKernel
+    )
 
 
 @pytest.mark.smoke
 def test_deltanet_decode_raw_cuda_dispatch_uses_fp32_kernel_for_fp32() -> None:
     op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
 
-    key = op.select_kernel_key(DELTANET_DECODE_KEYS, _stated_call(90, torch.float32))
-
-    assert op.kernel_map[key] is _FP32DispatchKernel
+    assert op.select_kernel(_stated_call(90, torch.float32)) is _FP32DispatchKernel
 
 
 @pytest.mark.smoke

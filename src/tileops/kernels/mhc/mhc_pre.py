@@ -255,66 +255,6 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
     return _mhc_func
 
 
-@torch.library.custom_op("tileops::mhc_pre_wrapped_kernel", mutates_args=())
-def _mhc_pre_wrapped_kernel(
-    batch: int,
-    n_expand: int,
-    c_x: int,
-    dtype: str,
-    block_x_b: int,
-    block_C: int,
-    num_stages: int,
-    threads: int,
-    phi: torch.Tensor,
-    x: torch.Tensor,
-    H: torch.Tensor,
-    r: torch.Tensor,
-    b: torch.Tensor,
-    alpha_pre: float,
-    alpha_post: float,
-    alpha_res: float,
-    H_pre: torch.Tensor,
-    H_post: torch.Tensor,
-    H_res_0: torch.Tensor,
-    sinkhorn_repeat: int,
-    sinkhorn_eps: float,
-    H_res: torch.Tensor,
-    x_res: torch.Tensor,
-) -> torch.Tensor:
-    return _mhc_pre_kernel(batch, n_expand, c_x, dtype)(block_x_b, block_C, num_stages, threads)(
-        phi,
-        x,
-        H,
-        r,
-        b,
-        alpha_pre,
-        alpha_post,
-        alpha_res,
-        H_pre,
-        H_post,
-        H_res_0,
-        sinkhorn_repeat,
-        sinkhorn_eps,
-        H_res,
-        x_res,
-    )
-
-
-@_mhc_pre_wrapped_kernel.register_fake
-def _(
-    batch: int,
-    n_expand: int,
-    c_x: int,
-    dtype: str,
-    block_x_b: int,
-    block_C: int,
-    num_stages: int,
-    threads: int,
-    *input,
-) -> torch.Tensor:
-    return torch.empty_like(input[0], dtype=input[0].dtype, device=input[0].device)
-
-
 class MHCPreKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 
@@ -404,15 +344,12 @@ class MHCPreKernel(Kernel):
         H_post = torch.empty((self.batch, self.n_expand), device=x.device, dtype=self.weights_dtype)
         x_res = torch.empty_like(x, device=x.device, dtype=x.dtype)
 
-        result = _mhc_pre_wrapped_kernel(
-            self.batch,
-            self.n_expand,
-            self.c_x,
-            self.dtype_str,
+        result = self.kernel(
             self.config["block_x_b"],
             self.config["block_C"],
             self.config["num_stages"],
             self.config["threads"],
+        )(
             phi,
             x,
             H,

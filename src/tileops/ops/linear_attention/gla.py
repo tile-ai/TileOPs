@@ -1,11 +1,12 @@
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.gla import GLABwdKernel, GLAFwdKernel
 from tileops.perf.profile import tensor_core_roof
 
+from .._compile_boundary_codegen import OperatorSpec
 from .._validation import check_tensor_shape
 from ..op_base import Op
 
@@ -48,6 +49,8 @@ class GLAFwdOp(Op):
     Layout: BTHD (batch, seq_len, heads, dim).
 
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -106,22 +109,22 @@ class GLAFwdOp(Op):
             device_index,
             self.tune,
         )
-        return self.get_or_build_kernel(
-            "GLAFwdKernel",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["GLAFwdKernel"](
-                batch,
-                seq_len,
-                heads,
-                dim_k,
-                dim_v,
-                self.chunk_size,
-                scale=self.scale,
-                output_final_state=True,
-                dtype=dtype,
-                tune=self.tune,
-            ),
+        return self.kernel_for("GLAFwdKernel", inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, chunk length, scale, dtype and device."""
+        batch, seq_len, heads, dim_k, dim_v, chunk_size, scale, dtype, _device, tune = call
+        return call, lambda: self.kernel_map["GLAFwdKernel"](
+            batch,
+            seq_len,
+            heads,
+            dim_k,
+            dim_v,
+            chunk_size,
+            scale=scale,
+            output_final_state=True,
+            dtype=dtype,
+            tune=tune,
         )
 
     def _infer_output_shapes(
@@ -158,6 +161,20 @@ class GLAFwdOp(Op):
         Returns:
             Tuple of (o, final_state).
         """
+        return self._wrapped(q, k, v, g, initial_state, self._instance_key)
+
+    def _eager_forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        initial_state: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
+        """
         batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd(q, k, v, g, self.chunk_size)
         self._validate_dtypes(q, k, v, g, initial_state=initial_state)
         if initial_state is not None:
@@ -189,10 +206,13 @@ class GLABwdOp(Op):
 
     """
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
     def __init__(
         self,
         chunk_size: int = 64,
         scale: float = -1.0,
+        has_initial_state: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -201,9 +221,12 @@ class GLABwdOp(Op):
         Args:
             chunk_size: Chunk size for chunked linear attention.
             scale: Query scale factor (default: dim_k**-0.5).
+            has_initial_state: Manifest ``params.has_initial_state``, whether the
+                forward this backward pairs with was given an initial state.
             kernel_map: Optional kernel overrides.
             tune: Whether to autotune kernels.
         """
+        self.has_initial_state = has_initial_state
         self.batch = None
         self.seq_len = None
         self.heads = None
@@ -246,21 +269,21 @@ class GLABwdOp(Op):
             device_index,
             self.tune,
         )
-        return self.get_or_build_kernel(
-            "GLABwdKernel",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["GLABwdKernel"](
-                batch,
-                seq_len,
-                heads,
-                dim_k,
-                dim_v,
-                self.chunk_size,
-                scale=self.scale,
-                dtype=dtype,
-                tune=self.tune,
-            ),
+        return self.kernel_for("GLABwdKernel", inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, chunk length, scale, dtype and device."""
+        batch, seq_len, heads, dim_k, dim_v, chunk_size, scale, dtype, _device, tune = call
+        return call, lambda: self.kernel_map["GLABwdKernel"](
+            batch,
+            seq_len,
+            heads,
+            dim_k,
+            dim_v,
+            chunk_size,
+            scale=scale,
+            dtype=dtype,
+            tune=tune,
         )
 
     def _infer_output_shapes(
@@ -290,7 +313,6 @@ class GLABwdOp(Op):
         h: torch.Tensor,
         do: torch.Tensor,
         dht: torch.Tensor,
-        has_initial_state: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run GLA backward.
 
@@ -302,10 +324,25 @@ class GLABwdOp(Op):
             h: Hidden states from forward [B, NT+1, H, K, V] (fp32).
             do: Output gradient [B, T, H, V].
             dht: Final-state gradient [B, H, K, V].
-            has_initial_state: Whether initial_state was provided by the user.
 
         Returns:
             Tuple of (dq, dk, dv, dg).
+        """
+        return self._wrapped(q, k, v, g, h, do, dht, self._instance_key)
+
+    def _eager_forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        h: torch.Tensor,
+        do: torch.Tensor,
+        dht: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         batch, seq_len, heads, dim_k, dim_v, dtype = _resolve_gla_bthd(
             q, k, v, g, self.chunk_size, do=do
@@ -323,7 +360,7 @@ class GLABwdOp(Op):
         self.kernel = self._get_kernel(
             (q, k, v, g, h, do, dht), batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index
         )
-        return self.kernel(q, k, v, g, h, do, dht, has_initial_state)
+        return self.kernel(q, k, v, g, h, do, dht, self.has_initial_state)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

@@ -7,7 +7,6 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
 
-from ._boundary import register_reduction_op
 from ._multidim import EmptyDimPolicy
 from .reduce import _ReduceOpBase
 
@@ -172,11 +171,3 @@ class InfNormFwdOp(_ReduceOpBase):
             kernel_map=kernel_map,
             tune=tune,
         )
-
-
-for _op_cls in (
-    L1NormFwdOp,
-    L2NormFwdOp,
-    InfNormFwdOp,
-):
-    register_reduction_op(_op_cls)

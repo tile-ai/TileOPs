@@ -115,7 +115,7 @@ def test_da_cumsum_fwd(
     op = DaCumsumFwdOp(
         chunk_len=chunk_len,
         dt_softplus=dt_softplus,
-        dtype=dtype,
+        out_dtype=dtype,
         tune=tune,
     )
     inputs = test.gen_inputs()
@@ -146,7 +146,7 @@ def test_da_cumsum_fwd_padded_head_tile():
     """Five heads against block_h=4 is the only shape reaching the masked tail."""
     batch, n_heads, chunk_len, num_chunks = 1, 5, 64, 2
     seq_len = chunk_len * num_chunks
-    op = DaCumsumFwdOp(chunk_len=chunk_len, dtype=torch.float32)
+    op = DaCumsumFwdOp(chunk_len=chunk_len, out_dtype=torch.float32)
     dt = torch.rand(batch, seq_len, n_heads, dtype=torch.float32, device="cuda")
     A = -torch.rand(n_heads, dtype=torch.float32, device="cuda")
 
@@ -172,7 +172,7 @@ def test_da_cumsum_fwd_rejects_undeclared_output_dtype(dtype):
     spec forbids.
     """
     with pytest.raises(ValueError, match="dt_out dtype must be one of"):
-        DaCumsumFwdOp(chunk_len=64, dtype=dtype)
+        DaCumsumFwdOp(chunk_len=64, out_dtype=dtype)
 
 
 class SSDChunkScanFwdTest(SSDChunkScanFwdWorkload, TestBase):

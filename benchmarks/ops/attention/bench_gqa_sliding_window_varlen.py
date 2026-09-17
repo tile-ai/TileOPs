@@ -30,7 +30,7 @@ _GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS = workload_params(
 def _torch_sliding_window_varlen_fwd(test):
     """Torch SDPA forward baseline: unpack varlen to padded batch, single SDPA call."""
 
-    def fn(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q):
+    def fn(q, k, v, cu_seqlens_q, cu_seqlens_k):
         B = test.batch
         seqlens_q = test.seqlens_q
         seqlens_k = test.seqlens_k
@@ -86,14 +86,14 @@ def _torch_sliding_window_varlen_fwd(test):
     return fn
 
 
-def _fa3_varlen_baseline(max_seqlen_k, is_causal, wl, wr):
+def _fa3_varlen_baseline(max_seqlen_q, max_seqlen_k, is_causal, wl, wr):
     """Return FA3 varlen baseline callable, or None if not installed."""
     try:
         from flash_attn_interface import flash_attn_varlen_func
     except ImportError:
         return None
 
-    def baseline_fn(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q):
+    def baseline_fn(q, k, v, cu_seqlens_q, cu_seqlens_k):
         out = flash_attn_varlen_func(
             q,
             k,
@@ -110,7 +110,7 @@ def _fa3_varlen_baseline(max_seqlen_k, is_causal, wl, wr):
     return baseline_fn
 
 
-def _flashinfer_varlen_sliding_window_fwd(test, q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q):
+def _flashinfer_varlen_sliding_window_fwd(test, q, k, v, cu_seqlens_q, cu_seqlens_k):
     """Set up FlashInfer ragged prefill wrapper. Returns callable or None.
 
     FlashInfer only supports window_left; skip when window_right >= 0.
@@ -135,7 +135,7 @@ def _flashinfer_varlen_sliding_window_fwd(test, q, k, v, cu_seqlens_q, cu_seqlen
         q_data_type=q.dtype,
     )
 
-    def run_fn(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q):
+    def run_fn(q, k, v, cu_seqlens_q, cu_seqlens_k):
         return wrapper.run(q, k, v)
 
     return run_fn
@@ -162,13 +162,14 @@ def test_gqa_sliding_window_varlen_fwd_bench(
         batch, seqlens_q, seqlens_k, heads, heads_kv, dim, is_causal, wl, wr, dtype
     )
     inputs = test.gen_inputs()
-    q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q = inputs
+    q, k, v, cu_seqlens_q, cu_seqlens_k = inputs
 
     op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(
         batch=batch,
         heads=heads,
         heads_kv=heads_kv,
         dim=dim,
+        max_seqlen_q=max(seqlens_q),
         is_causal=is_causal,
         window_size_left=wl,
         window_size_right=wr,
@@ -178,7 +179,6 @@ def test_gqa_sliding_window_varlen_fwd_bench(
     op.total_k = sum(seqlens_k)
     op.q_lens = seqlens_q
     op.k_lens = seqlens_k
-    op.max_seqlen_q = max(seqlens_q)
     op.max_seqlen_k = max(seqlens_k)
     bm = ManifestBenchmark(op, test)
 
@@ -189,7 +189,7 @@ def test_gqa_sliding_window_varlen_fwd_bench(
 
     # FA3 baseline
     max_seqlen_k = max(seqlens_k)
-    fa3_fn = _fa3_varlen_baseline(max_seqlen_k, is_causal, wl, wr)
+    fa3_fn = _fa3_varlen_baseline(max(seqlens_q), max_seqlen_k, is_causal, wl, wr)
     if fa3_fn is not None:
         functors["fa3"] = fa3_fn
 

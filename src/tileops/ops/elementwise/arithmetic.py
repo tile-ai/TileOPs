@@ -1,7 +1,7 @@
 """Binary arithmetic elementwise ops with broadcasting."""
 
 from math import prod
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
@@ -22,16 +22,14 @@ from tileops.kernels.elementwise import (
 )
 from tileops.kernels.kernel_base import Kernel
 
-from ..compile_boundary import get_instance
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 from ._base import (
     BinaryOp,
     _AlphaScaledBinaryOp,
     _PerDtypeKernels,
     _require_one_device,
-    _require_shape_inference,
     broadcast_or_raise,
-    resolve_output_dtype,
 )
 
 
@@ -240,8 +238,9 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
 
     """
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
     _op_name = "lerp_tensor"
-    _wrapped = None
 
     # Manifest declares all three operands as ``float16 | bfloat16 | float32``;
     # fp8 dtypes are rejected at the op-layer signature so the impl matches
@@ -360,32 +359,3 @@ class LerpTensorFwdOp(_PerDtypeKernels, Op):
 # src/tileops/ops/compile_boundary.py.
 
 # Its own name, not the scalar ``LerpFwdOp``'s: the weight is a third tensor here.
-_require_shape_inference(LerpTensorFwdOp)
-
-
-@torch.library.custom_op("tileops::elementwise_lerp_tensor", mutates_args=())
-def _lerp_tensor_fwd(
-    input: torch.Tensor,
-    end: torch.Tensor,
-    weight: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(input, end, weight)
-
-
-@_lerp_tensor_fwd.register_fake
-def _lerp_tensor_fwd_fake(
-    input: torch.Tensor,
-    end: torch.Tensor,
-    weight: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(tuple(input.shape), tuple(end.shape), tuple(weight.shape))
-    return input.new_empty(
-        shapes["output"], dtype=resolve_output_dtype(LerpTensorFwdOp.__name__, input.dtype)
-    )
-
-
-LerpTensorFwdOp._wrapped = _lerp_tensor_fwd
-LerpTensorFwdOp.compile_op_names = ("tileops::elementwise_lerp_tensor",)

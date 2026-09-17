@@ -75,6 +75,16 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                 l_start_idx = starts[bx, seq_row]
                 l_end_idx = ends[bx, seq_row]
 
+                # A row whose [start, end) window holds fewer than topk candidates leaves
+                # the remaining slots unselected. They are written here, with an index one
+                # past the last key: every consumer of this list treats an index beyond
+                # the key range as selecting nothing, and leaving the slot unwritten would
+                # return whatever the buffer held.
+                for j in T.serial(T.ceildiv(topk, BLOCK_SIZE)):
+                    slot = j * BLOCK_SIZE + tx
+                    if slot < topk:
+                        index[bx, seq_row, g, slot] = seq_len_kv
+
                 # stage 1: use 8bit to do quick topk
 
                 for j in T.serial(T.ceildiv(RADIX + 1, BLOCK_SIZE)):
@@ -240,8 +250,7 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
     return topk_selector_fwd_func
 
 
-@torch.library.custom_op("tileops::topk_selector_wrapped_kernel", mutates_args=())
-def _topk_selector_wrapped_kernel(
+def _topk_selector_run(
     batch: int,
     seq_len: int,
     seq_len_kv: int,
@@ -259,7 +268,6 @@ def _topk_selector_wrapped_kernel(
     )(index_score, starts, ends)
 
 
-@_topk_selector_wrapped_kernel.register_fake
 def _(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, *inputs) -> None:
     return torch.empty([batch, seq_len, kv_group, topk], device=inputs[0].device, dtype=torch.int32)
 
@@ -377,7 +385,7 @@ class TopkSelectorKernel(Kernel):
     def forward(
         self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
     ) -> torch.Tensor:
-        return _topk_selector_wrapped_kernel(
+        return _topk_selector_run(
             self.batch,
             self.seq_len,
             self.seq_len_kv,

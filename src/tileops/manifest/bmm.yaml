@@ -6,6 +6,7 @@ BmmFwdOp:
   ref_api: "torch.bmm"
   family: gemm
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -50,6 +51,7 @@ BmmFp8FwdOp:
   ref_api: "none"
   family: gemm
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -60,9 +62,9 @@ BmmFp8FwdOp:
       scale_a: {dtype: "float32"}
       scale_b: {dtype: "float32"}
     outputs:
-      d: {dtype: "bfloat16 | float16", shape: "[B, M, N]"}
+      d: {dtype: "bfloat16", caller_stated: true, shape: "[B, M, N]"}
     params:
-      out_dtype: {type: dtype, default: bfloat16}
+      out_dtype: {type: "bfloat16 | float16", default: bfloat16}
       trans_b: {type: bool, default: false}
     # Only fp8_e4m3fn inputs are supported; fp8_e5m2 is rejected at forward
     # time. dtype_combos pins the product so a validator does not read

@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
@@ -11,6 +11,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 from tileops.utils import get_sm_version
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["GroupedGemmFwdOp"]
@@ -28,6 +29,8 @@ class GroupedGemmFwdOp(Op):
     | ``(True, False)`` | TN | $C = A^{\\top} \\mathbin{@} B$ |
     | ``(True, True)`` | TT | $C = A^{\\top} \\mathbin{@} B^{\\top}$ |
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -57,7 +60,6 @@ class GroupedGemmFwdOp(Op):
 
     # The SM90 template serves every layout whose extents TMA can address; the
     # general kernel takes what it refuses.
-    _KERNEL_KEYS = ("grouped_gemm_persistent", "grouped_gemm_kernel")
 
     @property
     def default_kernel_map(self) -> Dict:
@@ -129,7 +131,7 @@ class GroupedGemmFwdOp(Op):
         k: int,
         dtype: torch.dtype,
         device_index: int | None,
-    ) -> tuple[str, Kernel]:
+    ) -> Kernel:
         call = GroupedGemmCall(
             arch=get_sm_version(device_index),
             numel=batch_sum,
@@ -139,34 +141,10 @@ class GroupedGemmFwdOp(Op):
             dtype=dtype,
             transpose_a=self.transpose_a,
             transpose_b=self.transpose_b,
+            tune=self.tune,
+            device=None if device_index is None else torch.device("cuda", device_index),
         )
-        key_name = self.select_kernel_key(self._KERNEL_KEYS, call)
-        kernel_cls = self.kernel_map[key_name]
-        kwargs: Dict[str, object] = {
-            "dtype": dtype,
-            "tune": self.tune,
-            "transpose_a": self.transpose_a,
-            "transpose_b": self.transpose_b,
-        }
-        key = (
-            batch_sum,
-            batch_count,
-            n,
-            k,
-            dtype,
-            device_index,
-            self.transpose_a,
-            self.transpose_b,
-            self.tune,
-            key_name,
-        )
-
-        return key_name, self.get_or_build_kernel(
-            key_name,
-            inputs,
-            key=key,
-            build=lambda: kernel_cls(batch_sum, batch_count, n, k, **kwargs),
-        )
+        return self.kernel_for("grouped_gemm", inputs, call)
 
     def _infer_output_shapes(
         self,
@@ -219,6 +197,22 @@ class GroupedGemmFwdOp(Op):
             d = op(a, b, batch_sizes, batch_offsets, batch_padded_offsets)
             ```
         """
+        return self._wrapped(
+            a, b, batch_sizes, batch_offsets, batch_padded_offsets, self._instance_key
+        )
+
+    def _eager_forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        batch_sizes: torch.Tensor,
+        batch_offsets: torch.Tensor,
+        batch_padded_offsets: torch.Tensor,
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
+        """
         batch_sum, batch_count, n, k, dtype, device_index = self._resolve_spec(
             a,
             b,
@@ -231,7 +225,7 @@ class GroupedGemmFwdOp(Op):
         self.N = n
         self.K = k
         self.dtype = dtype
-        key_name, self.kernel = self._get_kernel(
+        self.kernel = self._get_kernel(
             (a, b, batch_sizes, batch_offsets, batch_padded_offsets),
             batch_sum,
             batch_count,

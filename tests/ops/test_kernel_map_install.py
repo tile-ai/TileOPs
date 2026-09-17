@@ -378,7 +378,7 @@ def test_generative_op_also_defers_to_the_backend(op_name, kwargs):
     slot = {"AlibiFwdOp": "alibi", "SinusoidalFwdOp": "sinusoidal"}[op_name]
     _ProbeKernel.instances = []
     op = getattr(ew, op_name)(
-        dtype=torch.float16,
+        out_dtype=torch.float16,
         kernel_map={slot: _probe_backend(probe_dtype)},
         **kwargs,
     )
@@ -391,5 +391,5 @@ def test_generative_op_also_defers_to_the_backend(op_name, kwargs):
     assert built.ctor_dtype == probe_dtype
 
     # Whatever storage the backend computed in, the op delivers what it declared.
-    shipped = getattr(ew, op_name)(dtype=torch.float16, **kwargs)
+    shipped = getattr(ew, op_name)(out_dtype=torch.float16, **kwargs)
     assert shipped().dtype == torch.float16

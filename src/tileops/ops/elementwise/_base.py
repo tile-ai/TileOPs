@@ -28,15 +28,15 @@ import functools
 import inspect
 import math
 from math import prod
-from typing import Callable, Dict, Optional
+from typing import Callable, ClassVar, Dict, Optional
 
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
+from .._compile_boundary_codegen import OperatorSpec
 from .._output_dtype import resolve_output_dtype
-from ..compile_boundary import get_instance
 from ..op_base import Op
 
 _MANIFEST_INT_SCALAR_DTYPES = (
@@ -142,123 +142,6 @@ def _validate_scalar_param_repr(
         )
 
 
-def _require_shape_inference(op_cls) -> None:
-    """Refuse to register a boundary for a class with no ``_infer_output_shapes``.
-
-    The registered fake is all the compiler learns about the node, and it takes the
-    output shape from that method.
-    """
-    owner = next(b for b in op_cls.__mro__ if "_infer_output_shapes" in b.__dict__)
-    if owner is Op:
-        raise TypeError(
-            f"{op_cls.__name__} registers a compile boundary but implements no "
-            "_infer_output_shapes; its fake has no output shape to give"
-        )
-
-
-def _register_unary_custom_op(op_cls):
-    """Register a unary elementwise op for torch.compile.
-
-    Args:
-        op_cls: The Op subclass to register (must have ``_op_name``).
-    """
-    _require_shape_inference(op_cls)
-    op_name = f"tileops::elementwise_unary_{op_cls._op_name}"
-
-    @torch.library.custom_op(op_name, mutates_args=())
-    def _wrapped(x: torch.Tensor, instance_key: str) -> torch.Tensor:
-        instance = get_instance(instance_key)
-        return instance._eager_forward(x)
-
-    @_wrapped.register_fake
-    def _(x: torch.Tensor, instance_key: str) -> torch.Tensor:
-        # Shape from the op, dtype from the manifest: one rule covers a predicate's
-        # bool output and an integer input promoted to float32. ``new_empty``, not
-        # ``empty_like`` — the real path writes fresh contiguous storage, and a
-        # non-contiguous input's strides in the fake fail the graph's assertion.
-        op = get_instance(instance_key)
-        shapes = op._infer_output_shapes(tuple(x.shape))
-        return x.new_empty(
-            shapes["output"],
-            dtype=resolve_output_dtype(op_cls.__name__, x.dtype),
-        )
-
-    op_cls._wrapped = _wrapped
-    op_cls.compile_op_names = (op_name,)
-
-
-def _register_unary_inplace_custom_op(op_cls):
-    """Register the ``inplace=True`` companion for a unary activation op.
-
-    The kernel writes into a fresh buffer; this wrapper copies the result
-    back into ``x`` and returns ``x`` so the caller sees ``y is x`` and
-    ``x`` carries the activation output. The custom op is registered with
-    ``mutates_args=("x",)`` so ``torch.compile`` traces the mutation
-    correctly. Sets ``op_cls._wrapped_inplace`` for ``forward()`` to
-    dispatch through.
-    """
-    op_name = f"tileops::elementwise_unary_{op_cls._op_name}_inplace"
-
-    @torch.library.custom_op(op_name, mutates_args=("x",))
-    def _wrapped_inplace(x: torch.Tensor, instance_key: str) -> None:
-        instance = get_instance(instance_key)
-        result = instance._eager_forward(x)
-        x.copy_(result.reshape(x.shape))
-
-    op_cls._wrapped_inplace = _wrapped_inplace
-    # Two registrations, so two names: which one runs is decided per call by
-    # ``inplace``, while registration happens once per class.
-    op_cls.compile_op_names = tuple(op_cls.compile_op_names) + (op_name,)
-
-
-def _register_binary_custom_op(op_cls):
-    """Register a binary elementwise op for torch.compile.
-
-    Args:
-        op_cls: The Op subclass to register.
-    """
-    _require_shape_inference(op_cls)
-    op_name = f"tileops::elementwise_binary_{op_cls._op_name}"
-
-    @torch.library.custom_op(op_name, mutates_args=())
-    def _wrapped(a: torch.Tensor, b: torch.Tensor, instance_key: str) -> torch.Tensor:
-        instance = get_instance(instance_key)
-        return instance._eager_forward(a, b)
-
-    @_wrapped.register_fake
-    def _(a: torch.Tensor, b: torch.Tensor, instance_key: str) -> torch.Tensor:
-        op = get_instance(instance_key)
-        shapes = op._infer_output_shapes(tuple(a.shape), tuple(b.shape))
-        return a.new_empty(shapes["output"], dtype=resolve_output_dtype(op_cls.__name__, a.dtype))
-
-    op_cls._wrapped = _wrapped
-    op_cls.compile_op_names = (op_name,)
-
-
-def _register_fused_gated_custom_op(op_cls):
-    """Register a fused gated elementwise op for torch.compile.
-
-    Args:
-        op_cls: The Op subclass to register.
-    """
-    _require_shape_inference(op_cls)
-    op_name = f"tileops::elementwise_fused_gated_{op_cls._op_name}"
-
-    @torch.library.custom_op(op_name, mutates_args=())
-    def _wrapped(x: torch.Tensor, instance_key: str) -> torch.Tensor:
-        instance = get_instance(instance_key)
-        return instance._eager_forward(x)
-
-    @_wrapped.register_fake
-    def _(x: torch.Tensor, instance_key: str) -> torch.Tensor:
-        op = get_instance(instance_key)
-        shapes = op._infer_output_shapes(tuple(x.shape))
-        return x.new_empty(shapes["output"], dtype=resolve_output_dtype(op_cls.__name__, x.dtype))
-
-    op_cls._wrapped = _wrapped
-    op_cls.compile_op_names = (op_name,)
-
-
 def broadcast_or_raise(op_name: str, **shapes: Optional[tuple]) -> tuple:
     """The shape these operands broadcast to, or a ``ValueError`` naming the ones that
     do not fit.
@@ -358,12 +241,11 @@ class _PerDtypeKernels:
                 bakes in, plus any presence that changes what gets built. A target's
                 kernel is keyed on the input signature instead, by the base class.
         """
-        return self.get_or_build_kernel(
-            self._slot,
-            inputs,
-            key=(dtype, *dims),
-            build=lambda: self._build(dtype, *dims),
-        )
+        return self.kernel_for(self._slot, inputs, (dtype, *dims))
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built for the dtype and the extents it bakes in."""
+        return call, lambda: self._build(*call)
 
     def _build(self, dtype: torch.dtype, *dims):
         """Construct the in-tree kernel for one specialization."""
@@ -380,7 +262,7 @@ class UnaryOp(_PerDtypeKernels, Op):
 
     kernel_cls: type
     _op_name: str
-    _wrapped = None  # Set by _register_unary_custom_op at class definition
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
     # Per-element FLOP count, matching the manifest's ``roofline.flops``
     # coefficient on ``N``. Subclasses override when the op is more than one
     # arithmetic op per element (e.g. ``sigmoid`` ≈ 4, ``tanh`` ≈ 5). The
@@ -500,7 +382,7 @@ class BinaryOp(_PerDtypeKernels, Op):
 
     kernel_cls: type
     _op_name: str
-    _wrapped = None  # Set by _register_binary_custom_op at class definition
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
     # Subclasses may set ``_other_name`` to a manifest-aligned parameter
     # name (e.g. ``"exponent"`` for ``PowFwdOp``, ``"end"`` for
     # ``LerpFwdOp``); the L1 signature check sees the renamed parameter
@@ -661,7 +543,7 @@ class FusedGatedOp(_PerDtypeKernels, Op):
 
     kernel_cls: type
     _op_name: str
-    _wrapped = None  # Set by _register_fused_gated_custom_op at class definition
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
     FLOPS_PER_ELEM: int = 6
 
     def __init__(
@@ -760,21 +642,24 @@ class FusedGatedOp(_PerDtypeKernels, Op):
 # Intermediate (private) base classes shared by leaf op modules
 
 
+# The second operator an activation declaring ``inplace`` registers: the kernel writes a
+# fresh buffer, so this one copies the result back and the traced graph carries the write.
+# An activation adds it to its ``compile_boundary``; one whose manifest declares no
+# ``inplace`` does not.
+INPLACE_ACTIVATION = OperatorSpec.inplace("input")
+
+
 class _UnaryActivationMixin:
     """Shared ``forward`` / inplace dispatch for unary activation Ops.
 
-    The inplace path dispatches through ``_wrapped_inplace`` (registered
-    ``mutates_args=("x",)`` so ``torch.compile`` traces the mutation) and
-    returns the original ``input``, so callers see ``y is x``.
+    The inplace path dispatches through ``_wrapped_inplace``, whose written argument the
+    codegen names from the manifest so ``torch.compile`` traces the mutation, and returns
+    the original ``input``, so callers see ``y is x``.
 
     Which of the two operators runs is decided by ``self.inplace``, a construction
     parameter — read on the traced side, never written there. Leaves without
     ``inplace`` in their signature default it to ``False``.
     """
-
-    # Set by ``_register_unary_inplace_custom_op`` for leaves that
-    # declare ``inplace`` in their manifest signature.
-    _wrapped_inplace = None
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""

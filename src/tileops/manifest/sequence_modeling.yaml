@@ -5,6 +5,7 @@ EngramGateConvFwdOp:
   ref_api: "none"
   family: sequence_modeling
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -56,6 +57,7 @@ EngramGateConvBwdOp:
   ref_api: "none"
   family: sequence_modeling
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -116,6 +118,7 @@ EngramDecodeFwdOp:
   ref_api: "none"
   family: sequence_modeling
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -199,6 +202,7 @@ MHCPreFwdOp:
   ref_api: "none"
   family: sequence_modeling
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -242,6 +246,7 @@ MHCPostFwdOp:
   ref_api: "none"
   family: sequence_modeling
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:

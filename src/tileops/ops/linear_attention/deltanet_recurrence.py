@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
@@ -10,16 +10,10 @@ from tileops.kernels.linear_attention.deltanet_recurrence import (
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["DeltaNetDecodeFwdOp"]
-
-# Implementations of the DeltaNet decode slot.
-DELTANET_DECODE_KEYS = (
-    "DeltaNetDecodeFP32Kernel",
-    "DeltaNetDecodeRawCudaFlaStyleKernel",
-    "DeltaNetDecodeKernel",
-)
 
 
 class DeltaNetDecodeFwdOp(Op):
@@ -36,6 +30,8 @@ class DeltaNetDecodeFwdOp(Op):
     For fp32 dtype, dispatches to a dedicated FP32 kernel that uses
     element-wise matvec instead of T.gemm to avoid TF32 mantissa truncation.
     """
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -77,23 +73,16 @@ class DeltaNetDecodeFwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
-        key = (batch, heads, dim_k, dim_v, dtype, device_index, self.tune)
         call = DeltaNetDecodeCall(
-            batch=batch, heads=heads, dim_k=dim_k, dim_v=dim_v, dtype=dtype, tune=self.tune
+            batch=batch,
+            heads=heads,
+            dim_k=dim_k,
+            dim_v=dim_v,
+            dtype=dtype,
+            tune=self.tune,
+            device=None if device_index is None else torch.device("cuda", device_index),
         )
-        chosen = self.select_kernel_key(DELTANET_DECODE_KEYS, call)
-
-        def build() -> Kernel:
-            return self.kernel_map[chosen](
-                batch,
-                heads,
-                dim_k,
-                dim_v,
-                dtype=Kernel.dtype_to_str(dtype),
-                tune=self.tune,
-            )
-
-        return self.get_or_build_kernel(chosen, inputs, key=key, build=build)
+        return self.kernel_for("deltanet_decode", inputs, call)
 
     def _infer_output_shapes(
         self,
@@ -201,6 +190,20 @@ class DeltaNetDecodeFwdOp(Op):
 
         Returns:
             ``o``, ``new_state``, as the manifest declares. Shape rules: ``o.shape == (B, H, DV)``; ``new_state.shape == (B, H, DK, DV)``.
+        """
+        return self._wrapped(q, k, v, beta, state, self._instance_key)
+
+    def _eager_forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+        state: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         sig = (
             q.shape,

@@ -15,15 +15,7 @@ module.
 
 import torch as _torch
 
-from ._base import (
-    BinaryOp,
-    FusedGatedOp,
-    UnaryOp,
-    _register_binary_custom_op,
-    _register_fused_gated_custom_op,
-    _register_unary_custom_op,
-    _register_unary_inplace_custom_op,
-)
+from ._base import BinaryOp, FusedGatedOp, UnaryOp
 from .activations import (
     EluFwdOp,
     GeluAndMulFwdOp,
@@ -176,112 +168,5 @@ __all__ = [
 ]
 
 
-# torch.compile registration for the concrete elementwise ops.
-#
-# ``AlibiFwdOp`` and ``SinusoidalFwdOp`` are intentionally excluded: they
-# have zero tensor inputs (output is fully derived from ``__init__``
-# params), so they bypass the custom-op wrapper and run eager-only.
-
-# --- Unary ops whose output dtype follows the input ---
-for _cls in [
-    ReluFwdOp,
-    # math
-    ExpFwdOp,
-    LogFwdOp,
-    SqrtFwdOp,
-    RsqrtFwdOp,
-    AbsFwdOp,
-    NegFwdOp,
-    ReciprocalFwdOp,
-    SignFwdOp,
-    SinFwdOp,
-    CosFwdOp,
-    FloorFwdOp,
-    CeilFwdOp,
-    RoundFwdOp,
-    TruncFwdOp,
-    ErfFwdOp,
-    Log1pFwdOp,
-    Expm1FwdOp,
-    # activations
-    GeluFwdOp,
-    SiluFwdOp,
-    SigmoidFwdOp,
-    TanhFwdOp,
-    HardswishFwdOp,
-    HardsigmoidFwdOp,
-    MishFwdOp,
-    SeluFwdOp,
-    # bitwise — output dtype follows the input
-    BitwiseNotFwdOp,
-]:
-    _register_unary_custom_op(_cls)
-
-# --- Unary ops whose output is bool ---
-for _cls in [LogicalNotFwdOp, IsnanFwdOp, IsinfFwdOp, IsfiniteFwdOp]:
-    _register_unary_custom_op(_cls)
-
-# --- Binary ops: arithmetic, bitwise, comparison, logical ---
-# Output dtype comes from each op's manifest entry, so comparison and logical
-# ops need no separate registration group.
-for _cls in [
-    AddFwdOp,
-    SubFwdOp,
-    MulFwdOp,
-    DivFwdOp,
-    RemainderFwdOp,
-    PowFwdOp,
-    FloorDivideFwdOp,
-    LerpFwdOp,
-    MaximumFwdOp,
-    MinimumFwdOp,
-    BitwiseAndFwdOp,
-    BitwiseOrFwdOp,
-    BitwiseXorFwdOp,
-    EqFwdOp,
-    NeFwdOp,
-    GtFwdOp,
-    LtFwdOp,
-    GeFwdOp,
-    LeFwdOp,
-    LogicalAndFwdOp,
-    LogicalOrFwdOp,
-]:
-    _register_binary_custom_op(_cls)
-
-# --- Fused gated ops ---
-for _cls in [SiluAndMulFwdOp, GeluAndMulFwdOp, GeluTanhAndMulFwdOp]:
-    _register_fused_gated_custom_op(_cls)
-
-# --- Unary-like ops with values baked in at construction ---
-# ``ClampScalarFwdOp`` is the scalar-bound clamp; the Tensor-bound
-# ``ClampFwdOp`` registers its own operator in clamp.py.
-for _cls in [
-    LeakyReluFwdOp,
-    EluFwdOp,
-    HardtanhFwdOp,
-    SoftplusFwdOp,
-    ClampScalarFwdOp,
-    NanToNumFwdOp,
-]:
-    _register_unary_custom_op(_cls)
-
-# --- Inplace companions for activations declaring ``inplace`` ---
-# Each leaf below has ``inplace`` in its manifest signature. Register a
-# parallel ``_wrapped_inplace`` custom op with ``mutates_args=("x",)``
-# so ``forward(input)`` with ``self.inplace=True`` traces correctly
-# under ``torch.compile``.
-for _cls in [
-    ReluFwdOp,
-    SiluFwdOp,
-    HardswishFwdOp,
-    HardsigmoidFwdOp,
-    MishFwdOp,
-    SeluFwdOp,
-    LeakyReluFwdOp,
-    EluFwdOp,
-    HardtanhFwdOp,
-]:
-    _register_unary_inplace_custom_op(_cls)
-
-del _cls
+# ``AlibiFwdOp`` and ``SinusoidalFwdOp`` register no operator: they have zero tensor
+# inputs, so there is nothing for a traced graph to hand over, and they run eager-only.

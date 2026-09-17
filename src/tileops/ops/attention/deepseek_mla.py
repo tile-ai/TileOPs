@@ -1,11 +1,12 @@
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
 from tileops.kernels.attention import MLADecodeWsKernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.perf.profile import tensor_core_roof
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["MultiHeadLatentAttentionDecodeWithKVCacheFwdOp"]
@@ -13,6 +14,8 @@ __all__ = ["MultiHeadLatentAttentionDecodeWithKVCacheFwdOp"]
 
 class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
     """Layout: BSHD"""
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -43,20 +46,19 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
         self.dispatch_kernel(kernel_map)
 
     def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        return self.get_or_build_kernel(
-            "mla_decode_kernel",
-            inputs,
-            key=dtype,
-            build=lambda: self.kernel_map["mla_decode_kernel"](
-                self.batch,
-                self.heads,
-                self.heads_kv,
-                self.seqlen_kv,
-                self.dim,
-                self.pe_dim,
-                dtype,
-                tune=self.tune,
-            ),
+        return self.kernel_for("mla_decode_kernel", inputs, dtype)
+
+    def entry_for(self, role: str, call: torch.dtype) -> Entry:
+        """One implementation, built per dtype; every extent is the op's."""
+        return call, lambda: self.kernel_map["mla_decode_kernel"](
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.seqlen_kv,
+            self.dim,
+            self.pe_dim,
+            call,
+            tune=self.tune,
         )
 
     @property
@@ -86,6 +88,15 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
 
         Returns:
             ``o``, as the manifest declares. Shape rules: ``o.shape == (B, H, D)``.
+        """
+        return self._wrapped(q, q_pe, k, k_pe, self._instance_key)
+
+    def _eager_forward(
+        self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor, k_pe: torch.Tensor
+    ) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         self._validate_dtypes(q, q_pe, k, k_pe)
         self.dtype = q.dtype

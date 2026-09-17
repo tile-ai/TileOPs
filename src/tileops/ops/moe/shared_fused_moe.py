@@ -36,7 +36,7 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe import SharedExpertMLPKernel
 from tileops.ops.moe.abc import FusedMoEExpertsModular, FusedMoEPrepareAndFinalize
 from tileops.ops.moe.fused_moe import FusedMoe
@@ -199,16 +199,15 @@ class SharedFusedMoE(FusedMoe):
         self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype
     ) -> Kernel:
         """Return the shared-expert MLP kernel for *dtype*, building on first use."""
-        return self.get_or_build_kernel(
-            "shared_expert_mlp",
-            inputs,
-            key=dtype,
-            build=lambda: self.kernel_map["shared_expert_mlp"](
-                num_tokens=self.num_tokens,
-                hidden_size=self.hidden_size,
-                ffn_size=self._shared_mlp_shard_ffn,
-                dtype=dtype,
-            ),
+        return self.kernel_for("shared_expert_mlp", inputs, dtype)
+
+    def entry_for(self, role: str, call: torch.dtype) -> Entry:
+        """One implementation, built per dtype; every extent is the op's."""
+        return call, lambda: self.kernel_map["shared_expert_mlp"](
+            num_tokens=self.num_tokens,
+            hidden_size=self.hidden_size,
+            ffn_size=self._shared_mlp_shard_ffn,
+            dtype=call,
         )
 
     @property

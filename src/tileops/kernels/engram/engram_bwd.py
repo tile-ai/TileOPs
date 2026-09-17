@@ -345,69 +345,6 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
     return _func
 
 
-@torch.library.custom_op("tileops::engram_gate_conv_bwd", mutates_args=())
-def _engram_gate_conv_bwd_wrapped(
-    M: int,
-    seq_len: int,
-    d: int,
-    eps: float,
-    dtype_str: str,
-    threads: int,
-    dY: torch.Tensor,
-    H: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    rms_w_h: torch.Tensor,
-    rms_w_v: torch.Tensor,
-    conv_w: torch.Tensor,
-    vhat: torch.Tensor,
-    alpha: torch.Tensor,
-    rrms_h: torch.Tensor,
-    rrms_k: torch.Tensor,
-    rrms_v: torch.Tensor,
-) -> list[torch.Tensor]:
-    results = _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype_str)(
-        threads,
-    )(dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v)
-    return list(results)
-
-
-@_engram_gate_conv_bwd_wrapped.register_fake
-def _(
-    M,
-    seq_len,
-    d,
-    eps,
-    dtype_str,
-    threads,
-    dY,
-    H,
-    k,
-    v,
-    rms_w_h,
-    rms_w_v,
-    conv_w,
-    vhat,
-    alpha,
-    rrms_h,
-    rrms_k,
-    rrms_v,
-):
-    d_padded = align_up(d, ALIGNMENT)
-    device = dY.device
-    dt = dY.dtype
-    return [
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # dH
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # dk
-        torch.empty((M, seq_len, d_padded), dtype=dt, device=device),  # dv
-        torch.empty((d_padded,), dtype=torch.float32, device=device),  # drms_w_h
-        torch.empty((d_padded,), dtype=torch.float32, device=device),  # drms_w_v
-        torch.empty((CONV_KERNEL_SIZE, d_padded), dtype=torch.float32, device=device),  # dconv_w
-        torch.empty((M, seq_len, d_padded), dtype=torch.float32, device=device),  # dvhat_buf
-        torch.empty((M, seq_len, d_padded), dtype=torch.float32, device=device),  # dvhat_out
-    ]
-
-
 class EngramGateConvBwdKernel(Kernel):
     """Engram GateConv backward kernel.
 
@@ -500,25 +437,8 @@ class EngramGateConvBwdKernel(Kernel):
             rms_w_h = F.pad(rms_w_h, (0, pad))
             rms_w_v = F.pad(rms_w_v, (0, pad))
             conv_w = F.pad(conv_w, (0, pad))
-        results = _engram_gate_conv_bwd_wrapped(
-            self.M,
-            self.seq_len,
-            self.d,
-            self.eps,
-            self.dtype_str,
-            self.config["threads"],
-            dY,
-            H,
-            k,
-            v,
-            rms_w_h,
-            rms_w_v,
-            conv_w,
-            vhat,
-            alpha,
-            rrms_h,
-            rrms_k,
-            rrms_v,
+        results = self.kernel(self.config["threads"])(
+            dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v
         )
         dH, dk, dv, drms_w_h, drms_w_v, dconv_w = results[:6]
         if pad:

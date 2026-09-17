@@ -22,10 +22,10 @@ from typing import ClassVar, Dict, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm import InstanceNormKernel, InstanceNormNoAffineKernel
 
-from ..compile_boundary import get_instance
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["InstanceNormFwdOp"]
@@ -58,7 +58,7 @@ class InstanceNormFwdOp(Op):
 
     """
 
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_instance_norm_fwd",)
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -255,9 +255,7 @@ class InstanceNormFwdOp(Op):
             NotImplementedError: ``use_input_stats=False`` combined with the affine
                 tensors. Both raised from inside the operator, by `_eager_forward`.
         """
-        return _norm_instance_norm_fwd(
-            x, running_mean, running_var, weight, bias, self._instance_key
-        )
+        return self._wrapped(x, running_mean, running_var, weight, bias, self._instance_key)
 
     def _eager_forward(
         self,
@@ -327,19 +325,8 @@ class InstanceNormFwdOp(Op):
         if tracks_stats:
             running_mean = running_mean.contiguous()
             running_var = running_var.contiguous()
-        # The affine pair picks the implementation, so it belongs in the key; both are
-        # fetched under one name, which is what a target is asked to serve. One group per
-        # channel, so a row's every element belongs to the same channel.
-        slot = "instance_norm" if affine else "instance_norm_no_affine"
-        kernel = self.get_or_build_kernel(
-            "instance_norm",
-            (x, running_mean, running_var, weight, bias),
-            key=(D, dtype, affine),  # this instance's in-tree cache key
-            build=lambda: (
-                self.kernel_map[slot](D, self.eps, dtype, C, 1, tune=self.tune)
-                if affine
-                else self.kernel_map[slot](D, self.eps, dtype, tune=self.tune)
-            ),
+        kernel = self.kernel_for(
+            "instance_norm", (x, running_mean, running_var, weight, bias), (D, dtype, affine, C)
         )
         self.kernel = kernel
 
@@ -348,35 +335,14 @@ class InstanceNormFwdOp(Op):
         # this kernel reads no running statistics, and an absent optional input is ``None``.
         return kernel(x, running_mean, running_var, weight, bias)
 
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """The affine pair picks the implementation, so it is in the identity.
 
-@torch.library.custom_op("tileops::norm_instance_norm_fwd", mutates_args=())
-def _norm_instance_norm_fwd(
-    x: torch.Tensor,
-    running_mean: Optional[torch.Tensor],
-    running_var: Optional[torch.Tensor],
-    weight: Optional[torch.Tensor],
-    bias: Optional[torch.Tensor],
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(x, running_mean, running_var, weight, bias)
-
-
-@_norm_instance_norm_fwd.register_fake
-def _norm_instance_norm_fwd_fake(
-    x: torch.Tensor,
-    running_mean: Optional[torch.Tensor],
-    running_var: Optional[torch.Tensor],
-    weight: Optional[torch.Tensor],
-    bias: Optional[torch.Tensor],
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(
-        tuple(x.shape),
-        None if running_mean is None else tuple(running_mean.shape),
-        None if running_var is None else tuple(running_var.shape),
-        None if weight is None else tuple(weight.shape),
-        None if bias is None else tuple(bias.shape),
-    )
-    # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
-    return x.new_empty(shapes["output"])
+        One group per channel, so a row's every element belongs to the same channel.
+        """
+        d, dtype, affine, channels = call
+        if affine:
+            cls = self.kernel_map["instance_norm"]
+            return call, lambda: cls(d, self.eps, dtype, channels, 1, tune=self.tune)
+        cls = self.kernel_map["instance_norm_no_affine"]
+        return call, lambda: cls(d, self.eps, dtype, tune=self.tune)

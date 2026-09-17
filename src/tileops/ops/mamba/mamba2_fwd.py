@@ -132,7 +132,7 @@ class Mamba2FwdOp(Op):
         if dtype not in self._da_cumsum_ops:
             self._da_cumsum_ops[dtype] = DaCumsumFwdOp(
                 chunk_len=self.chunk_size,
-                dtype=dtype,
+                out_dtype=dtype,
                 dt_softplus=self.dt_softplus,
                 tune=self.tune,
                 kernel_map=self._kernel_map_override,

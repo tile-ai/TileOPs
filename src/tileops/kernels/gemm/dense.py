@@ -80,19 +80,19 @@ __all__ = [
 ]
 
 
-def _dense_entry(cls: type, call: GemmCall, *, tune: bool) -> Entry:
+def _dense_entry(cls: type, call: GemmCall) -> Entry:
     """The entry for a kernel taking ``(m, n, k, dtype)`` and both flags.
 
     The device is in the identity: its SM count and name pick the config.
     """
     index = call.device.index if call.device is not None else None
-    identity = (call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b, index)
+    identity = (call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b, call.tune, index)
     return identity, lambda: cls(
         call.m,
         call.n,
         call.k,
         call.dtype,
-        tune=tune,
+        tune=call.tune,
         trans_a=call.trans_a,
         trans_b=call.trans_b,
         device_index=index,
@@ -123,8 +123,7 @@ class _GemmFp8Kernel(Kernel):
         return _tma_misalignment(m, n, k, dtype, trans_a=False, trans_b=True)
 
     @classmethod
-    def entry_for(cls, call: GemmCall, *, tune: bool) -> Entry:
-        """The cache identity and the thunk that builds this class for *call*."""
+    def entry_for(cls, call: GemmCall) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (
             call.m,
@@ -142,7 +141,7 @@ class _GemmFp8Kernel(Kernel):
             call.k,
             call.dtype,
             call.out_dtype,
-            tune=tune,
+            tune=call.tune,
             device_index=index,
         )
 
@@ -2542,54 +2541,6 @@ def _gemm_coop2s_kernel(
     return _gemm_coop2s_func
 
 
-@torch.library.custom_op("tileops::gemm_wrapped_kernel", mutates_args=())
-def _gemm_wrapped_kernel(
-    m: int,
-    n: int,
-    k: int,
-    trans_a: bool,
-    trans_b: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    panel_size: int,
-    split_k: int,
-    a: torch.Tensor,
-    b: torch.Tensor,
-) -> torch.Tensor:
-    """Run the warp-specialized GEMM ``C = op(A) @ op(B)`` (torch custom op).
-
-    Kept for ``torch.compile`` compatibility (registered op + ``register_fake``).
-    ``GemmKernel.forward`` calls the compiled JIT directly (cf. ``GemvKernel``),
-    so this wrapper is not on the eager forward path.
-    """
-    if split_k > 1:
-        mainloop, reduce_ = _splitk_pair(
-            m,
-            n,
-            k,
-            trans_a,
-            trans_b,
-            dtype,
-            False,
-            block_m,
-            block_n,
-            block_k,
-            num_stages,
-            panel_size,
-            split_k,
-        )
-        c = torch.empty((m, n), dtype=a.dtype, device=a.device)
-        reduce_(mainloop(a, b), c)
-        return c
-    return _gemm_kernel(m, n, k, trans_a, trans_b, dtype, sm_count=get_sm_count())(
-        block_m, block_n, block_k, num_stages, panel_size
-    )(a, b)
-
-
-@_gemm_wrapped_kernel.register_fake
 def _(
     m: int,
     n: int,
@@ -2660,9 +2611,8 @@ class GemmKernel(Kernel):
         return _tma_misalignment(call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b)
 
     @classmethod
-    def entry_for(cls, call: GemmCall, *, tune: bool) -> Entry:
-        """The cache identity and the thunk that builds this class for *call*."""
-        return _dense_entry(cls, call, tune=tune)
+    def entry_for(cls, call: GemmCall) -> Entry:
+        return _dense_entry(cls, call)
 
     def __init__(
         self,
@@ -2929,29 +2879,6 @@ def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> 
     return _gemm_small_batch_func
 
 
-@torch.library.custom_op("tileops::gemv_wrapped_kernel", mutates_args=())
-def _gemv_wrapped_kernel(
-    n: int,
-    k: int,
-    dtype: str,
-    block_n: int,
-    reduce_threads: int,
-    num_stages: int,
-    a: torch.Tensor,
-    b: torch.Tensor,
-) -> torch.Tensor:
-    """The GEMV path as a registered op; off the eager path, as ``_gemm_wrapped_kernel``.
-
-    Adapts ranks around the shared ``[m, k] -> [m, n]`` body: this op's registered
-    ``a[k] -> c[n]`` contract predates that body and callers depend on it.
-    """
-    c = _gemm_small_batch_kernel(1, n, k, dtype)(block_n, reduce_threads, num_stages)(
-        a.reshape(1, -1), b
-    )
-    return c.reshape(n)
-
-
-@_gemv_wrapped_kernel.register_fake
 def _(
     n: int,
     k: int,
@@ -2995,17 +2922,16 @@ class GemvKernel(Kernel):
         return call.gemv_mode is not None
 
     @classmethod
-    def entry_for(cls, call: GemmCall, *, tune: bool) -> Entry:
-        """The cache identity and the thunk that builds this class for *call*."""
+    def entry_for(cls, call: GemmCall) -> Entry:
         index = call.device.index if call.device is not None else None
-        identity = (call.gemv_mode, call.m, call.n, call.k, call.dtype, index)
+        identity = (call.gemv_mode, call.m, call.n, call.k, call.dtype, call.tune, index)
         return identity, lambda: cls(
             call.gemv_mode,
             call.m,
             call.n,
             call.k,
             call.dtype,
-            tune=tune,
+            tune=call.tune,
             device_index=index,
         )
 
@@ -3087,14 +3013,14 @@ class SmallBatchGemmKernel(Kernel):
         return swap_ab_grid_underfills(call.n, call.sm_count)
 
     @classmethod
-    def entry_for(cls, call: GemmCall, *, tune: bool) -> Entry:
+    def entry_for(cls, call: GemmCall) -> Entry:
         """The cache identity and the thunk that builds this class for *call*.
 
         The device is in the identity: its SM count picks the config band.
         """
         index = call.device.index if call.device is not None else None
-        return (call.m, call.n, call.k, call.dtype, index), lambda: cls(
-            call.m, call.n, call.k, call.dtype, tune=tune, device_index=index
+        return (call.m, call.n, call.k, call.dtype, call.tune, index), lambda: cls(
+            call.m, call.n, call.k, call.dtype, tune=call.tune, device_index=index
         )
 
     def __init__(
@@ -3285,34 +3211,6 @@ def _gemm_basic_kernel(
     return _gemm_basic_func
 
 
-@torch.library.custom_op("tileops::gemm_basic_wrapped_kernel", mutates_args=())
-def _gemm_basic_wrapped_kernel(
-    m: int,
-    n: int,
-    k: int,
-    trans_a: bool,
-    trans_b: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    a: torch.Tensor,
-    b: torch.Tensor,
-) -> torch.Tensor:
-    """Run the pipelined GEMM ``C = op(A) @ op(B)`` (torch custom op).
-
-    Kept for ``torch.compile`` compatibility (registered op +
-    ``register_fake``); ``GemmBasicKernel.forward`` calls the compiled JIT
-    directly, cf. ``GemmKernel``.
-    """
-    return _gemm_basic_kernel(m, n, k, trans_a, trans_b, dtype)(
-        block_m, block_n, block_k, num_stages, threads
-    )(a, b)
-
-
-@_gemm_basic_wrapped_kernel.register_fake
 def _(
     m: int,
     n: int,
@@ -3355,9 +3253,8 @@ class GemmBasicKernel(Kernel):
         return call.arch != 90
 
     @classmethod
-    def entry_for(cls, call: GemmCall, *, tune: bool) -> Entry:
-        """The cache identity and the thunk that builds this class for *call*."""
-        return _dense_entry(cls, call, tune=tune)
+    def entry_for(cls, call: GemmCall) -> Entry:
+        return _dense_entry(cls, call)
 
     def __init__(
         self,

@@ -61,7 +61,10 @@ def _stub_op(**kwargs):
 
     class StubOp(RMSNormFwdOp):
         def forward(self, x, weight):
-            return self.get_or_build_kernel("stub", (), key=x.dtype, build=lambda: None)
+            return self.kernel_for("stub", (), x.dtype)
+
+        def entry_for(self, role, call):
+            return call, lambda: None
 
     StubOp.__name__ = "StubOp"
     return StubOp(normalized_shape=NORMALIZED_SHAPE, **kwargs)

@@ -6,7 +6,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.attention.call_spec import AttentionCall
+from tileops.kernels.kernel_base import Entry, Kernel
 
 from .online_softmax import (
     LOG2E,
@@ -382,8 +383,7 @@ def _gqa_decode_split_paged_kernel(
 # Custom ops (torch.compile compatible wrappers)
 
 
-@torch.library.custom_op("tileops::gqa_decode_paged_no_split_op", mutates_args=())
-def _gqa_decode_paged_no_split_op(
+def _gqa_decode_paged_no_split_run(
     batch: int,
     heads: int,
     groups: int,
@@ -408,7 +408,6 @@ def _gqa_decode_paged_no_split_op(
     )(block_H, block_N, num_stages, threads)(Q, K, V, real_seqlen_kv, block_table)
 
 
-@_gqa_decode_paged_no_split_op.register_fake
 def _(
     batch: int,
     heads: int,
@@ -432,8 +431,7 @@ def _(
     return torch.empty_like(Q)
 
 
-@torch.library.custom_op("tileops::gqa_decode_paged_split_op", mutates_args=())
-def _gqa_decode_paged_split_op(
+def _gqa_decode_paged_split_run(
     batch: int,
     heads: int,
     groups: int,
@@ -464,7 +462,6 @@ def _gqa_decode_paged_split_op(
     )
 
 
-@_gqa_decode_paged_split_op.register_fake
 def _(
     batch: int,
     heads: int,
@@ -492,6 +489,26 @@ def _(
     return torch.empty_like(Q)
 
 
+def paged_decode_entry(cls: type, call: AttentionCall) -> Entry:
+    """The entry for a GQA paged-decode candidate: both take the same arguments.
+
+    The device index is in the identity because the kernel is compiled for the
+    architecture it is built on.
+    """
+    index = call.device.index if call.device is not None else None
+    args = (
+        call.batch,
+        call.heads,
+        call.heads_kv,
+        call.seqlen_kv,
+        call.dim,
+        call.page_size,
+        call.dtype,
+    )
+    extra = dict(sm_scale=call.sm_scale, softcap=call.softcap, tune=call.tune)
+    return (*args, *extra.values(), index), lambda: cls(*args, **extra, device_index=index)
+
+
 class GQADecodePagedKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
     # The implementation behind the specialised ones for this key.
@@ -503,6 +520,10 @@ class GQADecodePagedKernel(Kernel):
         # states the narrower one it serves, page-tile condition included, and
         # wins wherever it applies.
         return True
+
+    @classmethod
+    def entry_for(cls, call: AttentionCall) -> Entry:
+        return paged_decode_entry(cls, call)
 
     def __init__(
         self,
@@ -517,8 +538,9 @@ class GQADecodePagedKernel(Kernel):
         softcap: float = 0.0,
         config: Optional[dict] = None,
         tune=False,
+        device_index: Optional[int] = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.heads = heads
         self.groups = groups
@@ -667,7 +689,7 @@ class GQADecodePagedKernel(Kernel):
         )
         threshold = num_split * block_N
         if real_max < threshold:
-            return _gqa_decode_paged_no_split_op(
+            return _gqa_decode_paged_no_split_run(
                 self.batch,
                 self.heads,
                 self.groups,
@@ -701,7 +723,7 @@ class GQADecodePagedKernel(Kernel):
             (self.batch, self.heads, num_split, self.dim), dtype=self.dtype, device=Q.device
         )
 
-        return _gqa_decode_paged_split_op(
+        return _gqa_decode_paged_split_run(
             self.batch,
             self.heads,
             self.groups,

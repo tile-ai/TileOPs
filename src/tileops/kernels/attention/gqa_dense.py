@@ -11,8 +11,9 @@ from tilelang.layout import make_swizzled_layout
 
 from tileops.kernels.constants import LOG2E
 
-from ..kernel_base import Kernel
-from .call_spec import WS_ARCH
+from ..kernel_base import Entry, Kernel
+from .call_spec import WS_ARCH, dense_sliding_window_region, dense_ws_region
+from .dense_entry import dense_sliding_window_entry, dense_ws_entry
 from .online_softmax import make_apply_softcap
 
 __all__ = [
@@ -655,6 +656,14 @@ class GQADenseWsKernel(Kernel):
 
     supported_archs: list[int] = [WS_ARCH]
 
+    @classmethod
+    def applies(cls, call) -> bool:
+        return dense_ws_region(call)
+
+    @classmethod
+    def entry_for(cls, call) -> Entry:
+        return dense_ws_entry(cls, call)
+
     def __init__(
         self,
         batch: int,
@@ -912,8 +921,7 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
     return _gqa_sw_fwd_wgmma_pipelined_func
 
 
-@torch.library.custom_op("tileops::gqa_sw_fwd_wgmma_pipelined_wrapped_kernel", mutates_args=())
-def _gqa_sw_fwd_wgmma_pipelined_wrapped_kernel(
+def _gqa_sw_fwd_wgmma_pipelined_run(
     batch: int,
     heads: int,
     heads_kv: int,
@@ -948,7 +956,6 @@ def _gqa_sw_fwd_wgmma_pipelined_wrapped_kernel(
     )(block_m, block_n, num_stages, threads)(q, k, v)
 
 
-@_gqa_sw_fwd_wgmma_pipelined_wrapped_kernel.register_fake
 def _(
     batch,
     heads,
@@ -976,6 +983,14 @@ class GQADenseSlidingWindowKernel(Kernel):
     """SM90 Dense sliding-window kernel with a native BSHD ABI."""
 
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def applies(cls, call) -> bool:
+        return dense_sliding_window_region(call)
+
+    @classmethod
+    def entry_for(cls, call) -> Entry:
+        return dense_sliding_window_entry(cls, call)
 
     def __init__(
         self,
@@ -1071,7 +1086,7 @@ class GQADenseSlidingWindowKernel(Kernel):
         self._require_cuda(q=q, k=k, v=v)
         if self.rope is not None:
             q, k = self.rope(q, k, rope_cos, rope_sin)
-        output, _ = _gqa_sw_fwd_wgmma_pipelined_wrapped_kernel(
+        output, _ = _gqa_sw_fwd_wgmma_pipelined_run(
             self.batch,
             self.heads,
             self.heads_kv,

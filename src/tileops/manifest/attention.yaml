@@ -8,6 +8,7 @@ MultiHeadAttentionBwdOp:
   ref_api: "torch.nn.functional.scaled_dot_product_attention"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -59,6 +60,7 @@ GroupedQueryAttentionDenseFwdOp:
   ref_api: "torch.nn.functional.scaled_dot_product_attention"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -71,14 +73,14 @@ GroupedQueryAttentionDenseFwdOp:
       rope_cos: {dtype: "same_as(o)", optional: true}
       rope_sin: {dtype: "same_as(o)", optional: true}
     outputs:
-      o: {dtype: "float16 | bfloat16"}
+      o: {dtype: "same_as(q)", caller_stated: true}
     params:
       is_causal: {type: bool, default: true}
       sm_scale: {type: "float | None", default: null}
       softcap: {type: "float | None", default: null}
       window_size_left: {type: int, default: -1}
       window_size_right: {type: int, default: -1}
-      dtype: {type: "torch.dtype | None", default: null}
+      out_dtype: {type: "float16 | bfloat16 | None", default: null}
       pos_encoding_mode: {type: str, default: none}
       rotary_dim: {type: "int | None", default: null}
       rope_layout: {type: str, default: neox}
@@ -168,17 +170,17 @@ GroupedQueryAttentionVarlenFwdOp:
       rope_cos: {dtype: "same_as(o)", optional: true}
       rope_sin: {dtype: "same_as(o)", optional: true}
     outputs:
-      o: {dtype: "float16 | bfloat16"}
+      o: {dtype: "same_as(q)", caller_stated: true}
     params:
       is_causal: {type: bool, default: true}
       window_size_left: {type: int, default: -1}
       window_size_right: {type: int, default: -1}
       sm_scale: {type: "float | None", default: null}
       softcap: {type: "float | None", default: null}
+      out_dtype: {type: "float16 | bfloat16 | None", default: null}
       pos_encoding_mode: {type: str, default: none}
       rotary_dim: {type: "int | None", default: null}
       rope_layout: {type: str, default: neox}
-      dtype: {type: "torch.dtype | None", default: null}
     dtype_combos:
       - {q: float16, k: float16, v: float16, cu_seqlens_q: int32, cu_seqlens_kv: int32, o: float16}
       - {q: bfloat16, k: bfloat16, v: bfloat16, cu_seqlens_q: int32, cu_seqlens_kv: int32, o: bfloat16}
@@ -238,17 +240,17 @@ GroupedQueryAttentionPagedFwdOp:
       rope_cos: {dtype: "same_as(o)", optional: true}
       rope_sin: {dtype: "same_as(o)", optional: true}
     outputs:
-      o: {dtype: "float16 | bfloat16"}
+      o: {dtype: "same_as(q)", caller_stated: true}
     params:
       is_causal: {type: bool, default: true}
       window_size_left: {type: int, default: -1}
       window_size_right: {type: int, default: -1}
       sm_scale: {type: "float | None", default: null}
       softcap: {type: "float | None", default: null}
+      out_dtype: {type: "float16 | bfloat16 | None", default: null}
       pos_encoding_mode: {type: str, default: none}
       rotary_dim: {type: "int | None", default: null}
       rope_layout: {type: str, default: neox}
-      dtype: {type: "torch.dtype | None", default: null}
     dtype_combos:
       - {q: float16, k_pages: float16, v_pages: float16, page_table: int32, cache_seqlens: int32, cu_seqlens_q: int32, o: float16}
       - {q: bfloat16, k_pages: bfloat16, v_pages: bfloat16, page_table: int32, cache_seqlens: int32, cu_seqlens_q: int32, o: bfloat16}
@@ -296,6 +298,7 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
   ref_api: "none"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -378,6 +381,7 @@ GroupedQueryAttentionBwdOp:
   ref_api: "torch.nn.functional.scaled_dot_product_attention"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -434,6 +438,7 @@ MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
   ref_api: "none"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -478,6 +483,7 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
   ref_api: "none"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -535,6 +541,7 @@ GroupedQueryAttentionPrefillVarlenFwdOp:
   ref_api: "none"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -584,6 +591,7 @@ GroupedQueryAttentionSlidingWindowVarlenFwdOp:
   ref_api: "none"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -636,6 +644,7 @@ MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
   ref_api: "none"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -680,6 +689,7 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
   ref_api: "none"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -724,6 +734,7 @@ NSACmpFwdVarlenOp:
   ref_api: "none"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -774,6 +785,7 @@ NSATopkVarlenOp:
   ref_api: "none"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:
@@ -828,6 +840,7 @@ NSAFwdVarlenOp:
   ref_api: "none"
   family: attention
   status: implemented
+  torch_compile_fullgraph: true
 
   signature:
     inputs:

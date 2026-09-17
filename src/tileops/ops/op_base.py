@@ -27,7 +27,7 @@ from tileops.backend import (
 )
 from tileops.backend.dispatch import registered_kernel_builder, select_target
 from tileops.backend.registry import ensure_loaded
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.manifest import load_manifest
 
 from .compile_boundary import register_instance
@@ -57,7 +57,7 @@ class Op(ABC):
 
     Attributes:
         kernel: single kernel, for ops that hold one; ops that build per
-            specialization use ``get_or_build_kernel`` instead
+            specialization use ``kernel_for`` instead
         dtype: Data type for computation (e.g., torch.float16)
         device: Device for computation (e.g., 'cuda')
         input_shapes: Expected input tensor shapes
@@ -81,7 +81,7 @@ class Op(ABC):
     kernel: Kernel
     kernel_map: Optional[dict[str, Kernel]] = None
     # Built entries, ``{role: {key: entry}}``. Annotation only: the instance
-    # attribute appears on the first ``get_or_build_kernel`` call, so an op that
+    # attribute appears on the first ``kernel_for`` call, so an op that
     # has built nothing carries no dict, and no constructor declares one.
     _kernel_roles: dict[str, dict[Hashable, object]]
     # Dispatch keys the caller replaced through ``kernel_map=``.
@@ -105,12 +105,14 @@ class Op(ABC):
 
         Synthesizes ``_validate_dtypes`` (per docs/design/ops-design.md
         §Step 5) and ``eval_roofline`` (per docs/design/roofline.md §4.4)
-        from the subclass's manifest entry, and attaches the manifest param
-        names a backend's ``build_kernel`` is called with. Each codegen pass is a no-op
+        from the subclass's manifest entry, attaches the manifest param names a
+        backend's ``build_kernel`` is called with, and registers the compile-boundary
+        operators the subclass declares. Each codegen pass is a no-op
         when the subclass does not advertise manifest metadata, supplies
         its own override, or is marked ``status: spec-only``.
         """
         super().__init_subclass__(**kwargs)
+        from tileops.ops._compile_boundary_codegen import maybe_install_compile_boundary
         from tileops.ops._dtype_codegen import maybe_install_validator
         from tileops.ops._params_codegen import maybe_install_param_names
         from tileops.ops._roofline_codegen import maybe_install_eval_roofline
@@ -118,6 +120,7 @@ class Op(ABC):
         maybe_install_validator(cls)
         maybe_install_eval_roofline(cls)
         maybe_install_param_names(cls)
+        maybe_install_compile_boundary(cls)
 
     @property
     @abstractmethod
@@ -131,6 +134,11 @@ class Op(ABC):
     # that declares ``torch_compile_fullgraph`` names its operators, which
     # ``register_compile_contract`` requires.
     compile_op_names: ClassVar[tuple[str, ...]] = ()
+
+    # One ``OperatorSpec`` per operator the op registers; ``_compile_boundary_codegen``
+    # turns them into the registrations and fills in ``compile_op_names``. Empty leaves
+    # the op off the boundary.
+    compile_boundary: ClassVar[tuple[object, ...]] = ()
 
     @abstractmethod
     def _infer_output_shapes(self, **shape_kwargs: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
@@ -310,16 +318,15 @@ class Op(ABC):
         self._install_kernel_map(kernel_map)
         self._instance_key = register_instance(self)
 
-    def get_or_build_kernel(
+    def _get_or_build_kernel(
         self,
         name: str,
         inputs: "Sequence[torch.Tensor | None]",
-        *,
-        key: Hashable = None,
-        build: Optional[Callable[[], _Entry]] = None,
-        plan: Optional[Callable[[], tuple[Hashable, Callable[[], _Entry]]]] = None,
+        plan: Callable[[], Entry],
     ) -> _Entry:
-        """Return the kernel for this call, building it once on a miss.
+        """Return the entry for this call, building it once on a miss.
+
+        The memoization primitive under :meth:`kernel_for`, which is what an op calls.
 
         Args:
             name: Which of this op's kernels is being asked for.
@@ -327,16 +334,10 @@ class Op(ABC):
                 ``signature.inputs`` entry, in that order. An ``optional: true`` input the
                 call did not pass occupies its slot as ``None`` — the same value ``forward``
                 was handed, so presence is a fact the builder reads off the slot rather than
-                off how many slots there are. An external target needs *inputs*; omitting
-                them leaves this op in-tree only.
-            key: What the *in-tree* kernel specializes on, typically
-                ``(self._cache_key(*input_shapes), dtype)`` or just the dtype. The external
-                path keys on the input signature instead.
-            build: How the *in-tree* kernel is constructed, called once per key. See
-                ``Op._entry_kernels`` for what it may return.
-            plan: Supplies *key* and *build*, called only where the in-tree path is
-                taken — selecting an in-tree implementation is work a target that serves
-                the op has already answered for itself.
+                off how many slots there are.
+            plan: The in-tree identity and builder, called only where the in-tree path is
+                taken — what serves the call is work a target that serves the op has
+                already answered for itself.
 
         Returns:
             The stored entry, identical across calls describing the same specialization.
@@ -371,8 +372,7 @@ class Op(ABC):
             builder = self._builder
             if builder is None or builder is _UNRESOLVED:
                 # In-tree: the op knows what its own kernel specializes on, so it says.
-                if plan is not None:
-                    key, build = plan()
+                key, build = plan()
                 if build is None:
                     raise OpNotAvailableError(
                         f"{type(self).__name__} has no in-tree implementation for {name!r}, "
@@ -409,31 +409,49 @@ class Op(ABC):
                 self._unsettle()
             raise
 
+    def entry_for(self, role: str, call: object) -> Entry:
+        """How to build what serves *call* for *role*, and what keys the result.
+
+        The default asks the implementation this op's candidates select for *call*,
+        which is where an op with more than one implementation stops. An op with one
+        implementation and no call record overrides this and states its own identity
+        and builder, so that every op reaches the cache through one path.
+
+        An op with nothing in tree has no builder, and the caller reports that.
+
+        Raises:
+            ValueError: What :meth:`select_kernel` raises.
+        """
+        if not self.kernel_map:
+            return None, None
+        cls = self.select_kernel(call)
+        identity, build = cls.entry_for(call)
+        return (cls, identity), build
+
     def kernel_for(
         self,
         role: str,
         inputs: "Sequence[torch.Tensor | None]",
-        call: object,
-        *,
-        candidates: "tuple[str, ...] | None" = None,
+        call: object = None,
     ) -> object:
         """Return what serves *call* for *role*, building and caching on a miss.
 
-        A target that serves this op answers both which implementation and how to
-        build it, so neither runs here then. *candidates* defaults to every key
-        installed.
+        The one way an op reaches a kernel. A target that serves this op answers both
+        which implementation and how to build it, so :meth:`entry_for` does not run then.
+
+        Args:
+            role: Which of this op's kernels is being asked for. One name per kernel
+                the op runs, never the name of an implementation it chose.
+            inputs: The tensors this kernel will be handed, one slot per
+                ``signature.inputs`` entry, in that order.
+            call: What describes this call, handed to :meth:`entry_for`. An op with
+                nothing in tree states none.
 
         Raises:
-            ValueError: What :meth:`select_kernel` raises.
-            OpNotAvailableError: What :meth:`get_or_build_kernel` raises.
+            ValueError: What :meth:`entry_for` raises.
+            OpNotAvailableError: What :meth:`_get_or_build_kernel` raises.
         """
-
-        def plan() -> tuple[Hashable, Callable[[], object]]:
-            cls = self.select_kernel(call, candidates)
-            identity, build = cls.entry_for(call, tune=self.tune)
-            return (cls, identity), build
-
-        return self.get_or_build_kernel(role, inputs, plan=plan)
+        return self._get_or_build_kernel(role, inputs, lambda: self.entry_for(role, call))
 
     def _build_external(
         self,
@@ -486,7 +504,7 @@ class Op(ABC):
 
         Empty before the role's first build. For introspection — tests,
         benchmark reporting — never for dispatch: an execution path asks
-        ``get_or_build_kernel`` so a miss builds rather than raises.
+        ``kernel_for`` so a miss builds rather than raises.
         """
         roles = getattr(self, "_kernel_roles", None) or {}
         return MappingProxyType(roles.get(role, {}))

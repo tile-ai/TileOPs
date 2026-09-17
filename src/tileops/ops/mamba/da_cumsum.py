@@ -1,12 +1,13 @@
 import functools
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba import DaCumsumFwdKernel
 from tileops.manifest import load_manifest
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["DaCumsumFwdOp"]
@@ -14,12 +15,13 @@ __all__ = ["DaCumsumFwdOp"]
 
 @functools.lru_cache(maxsize=1)
 def _dt_out_dtypes() -> tuple:
-    """Storage dtypes ``dt_out`` may take, read from the manifest.
+    """Storage dtypes ``dt_out`` may take, read from ``out_dtype``'s declared type.
 
-    No input tensor supplies this dtype — ``dt`` and ``A`` are always float32 —
-    so ``_validate_dtypes`` cannot be the gate.
+    No input tensor supplies this dtype — ``dt`` and ``A`` are always float32 — so
+    ``_validate_dtypes`` cannot be the gate, and the param the caller states it through
+    is where the legal set is declared.
     """
-    expr = load_manifest()["DaCumsumFwdOp"]["signature"]["outputs"]["dt_out"]["dtype"]
+    expr = load_manifest()["DaCumsumFwdOp"]["signature"]["params"]["out_dtype"]["type"]
     return tuple(getattr(torch, name.strip()) for name in expr.split("|"))
 
 
@@ -34,10 +36,12 @@ class DaCumsumFwdOp(Op):
 
     """
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
     def __init__(
         self,
         chunk_len: int,
-        dtype: torch.dtype = torch.float32,
+        out_dtype: torch.dtype = torch.float32,
         dt_softplus: bool = False,
         dt_min: float = 0.0,
         dt_max: float = float("inf"),
@@ -54,17 +58,17 @@ class DaCumsumFwdOp(Op):
             tune:         Whether to autotune tile config on construction.
         """
         declared = _dt_out_dtypes()
-        if dtype not in declared:
+        if out_dtype not in declared:
             supported = ", ".join(str(dt) for dt in declared)
             raise ValueError(
-                f"{type(self).__name__} dt_out dtype must be one of [{supported}], got {dtype}"
+                f"{type(self).__name__} dt_out dtype must be one of [{supported}], got {out_dtype}"
             )
         self.batch = None
         self.num_chunks = None
         self.chunk_len = chunk_len
         self.n_heads = None
         self.seq_len = None
-        self.dtype = dtype
+        self.out_dtype = out_dtype
         self.dt_softplus = dt_softplus
         self.dt_min = dt_min
         self.dt_max = dt_max
@@ -92,7 +96,7 @@ class DaCumsumFwdOp(Op):
             self.chunk_len,
             n_heads,
             seq_len,
-            self.dtype,
+            self.out_dtype,
             self.dt_softplus,
             has_dt_bias,
             self.dt_min,
@@ -100,23 +104,36 @@ class DaCumsumFwdOp(Op):
             device_index,
             self.tune,
         )
-        return self.get_or_build_kernel(
-            "da_cumsum_fwd",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["da_cumsum_fwd"](
-                batch,
-                num_chunks,
-                self.chunk_len,
-                n_heads,
-                seq_len,
-                self.dtype,
-                dt_softplus=self.dt_softplus,
-                has_dt_bias=has_dt_bias,
-                dt_min=self.dt_min,
-                dt_max=self.dt_max,
-                tune=self.tune,
-            ),
+        return self.kernel_for("da_cumsum_fwd", inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, bias presence, clamp range and device."""
+        (
+            batch,
+            num_chunks,
+            chunk_len,
+            n_heads,
+            seq_len,
+            dtype,
+            dt_softplus,
+            has_dt_bias,
+            dt_min,
+            dt_max,
+            _device,
+            tune,
+        ) = call
+        return call, lambda: self.kernel_map["da_cumsum_fwd"](
+            batch,
+            num_chunks,
+            chunk_len,
+            n_heads,
+            seq_len,
+            dtype,
+            dt_softplus=dt_softplus,
+            has_dt_bias=has_dt_bias,
+            dt_min=dt_min,
+            dt_max=dt_max,
+            tune=tune,
         )
 
     def _infer_output_shapes(
@@ -147,6 +164,18 @@ class DaCumsumFwdOp(Op):
             dt_out: (batch, n_heads, num_chunks, chunk_len) dtype — processed dt in target dtype.
             dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum
                 of dA = dt_val * A, computed from fp32 dt_val before casting dt_out.
+        """
+        return self._wrapped(dt, A, dt_bias, self._instance_key)
+
+    def _eager_forward(
+        self,
+        dt: torch.Tensor,
+        A: torch.Tensor,
+        dt_bias: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Validate, resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder.
         """
         if not dt.is_cuda:
             raise ValueError("dt must be a CUDA tensor")

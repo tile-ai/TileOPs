@@ -19,6 +19,7 @@ import torch
 # Modules whose import populates the registry. Add a module here when it
 # gains contract-backing compile tests.
 _EVIDENCE_MODULES = (
+    "tests.ops.test_compile_boundary",
     "tests.ops.test_convolution",
     "tests.ops.test_elementwise_compile",
     "tests.ops.test_moe_compile",
@@ -95,6 +96,53 @@ def assert_op_owns_graph_nodes(op, *inputs, **kwargs) -> None:
         f"{sorted(str(c) for c in calls - declared)}; "
         f"declared: {sorted(str(d) for d in declared)}"
     )
+
+
+def assert_same_result(compiled, eager, *, exact: bool) -> None:
+    """Hold a compiled call to an eager one, or to its shapes and dtypes alone.
+
+    *exact* is false where equality is not a property the kernel has; the caller names
+    which cases those are.
+    """
+    compiled = compiled if isinstance(compiled, tuple) else (compiled,)
+    eager = eager if isinstance(eager, tuple) else (eager,)
+    for got, want in zip(compiled, eager, strict=True):
+        assert got.shape == want.shape and got.dtype == want.dtype
+        if exact:
+            torch.testing.assert_close(got, want)
+
+
+def assert_fake_matches_eager(op, *inputs, **kwargs) -> None:
+    """Hold the fake's output metadata to what the op actually returns.
+
+    The fake is all the compiler learns about this op's node, and a single-node graph that
+    returns directly never forces its answer to be checked against anything.
+    """
+    import torch._subclasses.fake_tensor as fake_tensor
+
+    real = op(*inputs, **kwargs)
+    real = real if isinstance(real, tuple) else (real,)
+
+    mode = fake_tensor.FakeTensorMode()
+    with mode:
+        faked = op(
+            *(None if t is None else mode.from_tensor(t) for t in inputs),
+            **{k: (None if v is None else mode.from_tensor(v)) for k, v in kwargs.items()},
+        )
+    faked = faked if isinstance(faked, tuple) else (faked,)
+
+    assert len(faked) == len(real), (
+        f"{type(op).__name__}: the fake returns {len(faked)} tensors, the op {len(real)}"
+    )
+    for i, (claimed, actual) in enumerate(zip(faked, real, strict=True)):
+        assert claimed.dtype == actual.dtype, (
+            f"{type(op).__name__} output {i}: the fake reports {claimed.dtype}, the op "
+            f"returns {actual.dtype}"
+        )
+        assert tuple(claimed.shape) == tuple(actual.shape), (
+            f"{type(op).__name__} output {i}: the fake reports shape "
+            f"{tuple(claimed.shape)}, the op returns {tuple(actual.shape)}"
+        )
 
 
 def compile_contract_ops() -> frozenset[str]:

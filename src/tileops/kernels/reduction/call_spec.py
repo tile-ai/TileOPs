@@ -24,11 +24,11 @@ class LogicalReduceCall(CallSpec):
     op_kind: str = ""
     dtype: torch.dtype = torch.float16
     keepdim: bool = False
+    m: int = 0
     edge_axes: bool = False
     kept: int = 0
     trail_needs_tiling: bool = False
     reduced_count: int = 0
-    tune: bool = False
 
 
 def logical_reduce_region(call: LogicalReduceCall) -> bool:

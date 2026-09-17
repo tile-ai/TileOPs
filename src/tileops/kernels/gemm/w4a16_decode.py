@@ -181,16 +181,15 @@ class GemmW4A16DecodeKernel(Kernel):
         return call.m == 1
 
     @classmethod
-    def entry_for(cls, call: GemmCall, *, tune: bool) -> tuple:
-        """The cache identity and the thunk that builds this class for *call*."""
+    def entry_for(cls, call: GemmCall) -> tuple:
         index = call.device.index if call.device is not None else None
-        identity = (call.m, call.n, call.k, call.dtype, call.group_size, index)
+        identity = (call.m, call.n, call.k, call.dtype, call.group_size, call.tune, index)
         return identity, lambda: cls(
             call.m,
             call.n,
             call.k,
             call.dtype,
-            tune=tune,
+            tune=call.tune,
             group_size=call.group_size,
             device_index=index,
         )

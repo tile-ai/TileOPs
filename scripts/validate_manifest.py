@@ -815,6 +815,38 @@ def _check_mutated_flag(op_name: str, sig: dict) -> list[str]:
     return errors
 
 
+CALLER_STATED_FLAG = "caller_stated"
+
+
+def _check_caller_stated_flag(op_name: str, sig: dict) -> list[str]:
+    """``caller_stated`` is literal ``true``, and appears only on ``signature.outputs``."""
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+    params = sig.get("params")
+    if isinstance(params, dict):
+        for pname, attrs in params.items():
+            if isinstance(attrs, dict) and CALLER_STATED_FLAG in attrs:
+                err(f"params.{pname} declares {CALLER_STATED_FLAG!r}; only an output is stated")
+    for direction in ("inputs", "outputs"):
+        tensors = sig.get(direction)
+        if not isinstance(tensors, dict):
+            continue
+        for tname, attrs in tensors.items():
+            if not isinstance(attrs, dict) or CALLER_STATED_FLAG not in attrs:
+                continue
+            if direction != "outputs":
+                err(
+                    f"{direction}.{tname} declares {CALLER_STATED_FLAG!r}; an input's dtype "
+                    f"comes with the tensor"
+                )
+            elif attrs[CALLER_STATED_FLAG] is not True:
+                err(
+                    f"outputs.{tname}.{CALLER_STATED_FLAG} must be literal true, got "
+                    f"{attrs[CALLER_STATED_FLAG]!r} (omit the key when the manifest states it)"
+                )
+    return errors
+
+
 def _guard_scopes(node: ast.AST, optional: Collection[str]) -> list[tuple[ast.AST, set[str]]]:
     """Operands of a top-level ``or``, each with the names guarded before it.
 
@@ -1063,6 +1095,7 @@ def _l0_optional(op_name: str, entry: dict, sig: dict) -> list[str]:
     """All optional-input checks for one entry."""
     errors = _check_optional_flag(op_name, sig)
     errors.extend(_check_mutated_flag(op_name, sig))
+    errors.extend(_check_caller_stated_flag(op_name, sig))
     errors.extend(_check_param_domain(op_name, sig))
     optional = _optional_input_names(sig)
     if not optional:
@@ -1609,11 +1642,15 @@ def _check_dtype_combos_same_as_identity(
     op_name: str,
     dtype_combos: list,
     same_as_map: dict[str, str],
+    caller_stated: frozenset = frozenset(),
 ) -> list[str]:
     """Enforce same_as identity in dtype_combos entries.
 
-    Every tensor bound by same_as(ref) must have the exact same dtype as
-    its reference tensor in every combo row.
+    Every tensor bound by same_as(ref) must have the exact same dtype as its reference
+    tensor in every combo row — except an output the caller can state, whose declared
+    dtype is the fallback taken when no ``out_dtype`` is passed. A combo row where the
+    caller stated one is not a violation of the fallback; it is the case the fallback
+    exists to cover the absence of.
     """
     errors: list[str] = []
     err = _emit_to(errors, "dtype", op_name)
@@ -1621,6 +1658,8 @@ def _check_dtype_combos_same_as_identity(
         if not isinstance(combo, dict):
             continue
         for tensor, ref in same_as_map.items():
+            if tensor in caller_stated:
+                continue
             t_in = tensor in combo
             r_in = ref in combo
             if t_in and r_in and combo[tensor] != combo[ref]:
@@ -1679,7 +1718,16 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     dtype_combos = sig.get("dtype_combos", [])
     if isinstance(dtype_combos, list) and dtype_combos:
         same_as_map = _build_same_as_map(all_tensors)
-        errors.extend(_check_dtype_combos_same_as_identity(op_name, dtype_combos, same_as_map))
+        # An output the caller states may depart from its declared fallback in a combo
+        # row. An output the entry leaves unmarked may not: the op decides that one.
+        caller_stated = frozenset(
+            name
+            for name, attrs in (sig.get("outputs") or {}).items()
+            if isinstance(attrs, dict) and attrs.get(CALLER_STATED_FLAG) is True
+        )
+        errors.extend(
+            _check_dtype_combos_same_as_identity(op_name, dtype_combos, same_as_map, caller_stated)
+        )
         # Hard data-validation for combo values, run unconditionally —
         # independent of whether the op overrides ``_validate_dtypes`` —
         # so an un-migrated op carrying invalid combo data still surfaces
@@ -2964,6 +3012,29 @@ def _configured_dtype_name(
     return combo.get(primary) if primary is not None else None
 
 
+def _caller_stated_out_dtype(sig: dict, combo: dict[str, str]) -> dict:
+    """``out_dtype`` implied by *combo*, read off the output the entry says states it.
+
+    The declaration of an output marked ``caller_stated`` is the fallback taken when the
+    argument is absent, so a combo row naming a dtype that fallback cannot produce is only
+    reachable with the argument passed, and a probe that left it unset would see the op
+    reject a row it does in fact accept. An unmarked output names no such argument, whatever
+    its column says (R23).
+    """
+    if OUT_DTYPE_PARAM not in (sig.get("params") or {}):
+        return {}
+    for name, attrs in (sig.get("outputs") or {}).items():
+        if not isinstance(attrs, dict) or attrs.get(CALLER_STATED_FLAG) is not True:
+            continue
+        stated = combo.get(name)
+        if not isinstance(stated, str):
+            continue
+        tensor = _make_mock_tensor(stated)
+        if tensor is not None:
+            return {OUT_DTYPE_PARAM: tensor.dtype}
+    return {}
+
+
 def _combo_accepted(
     cls: type,
     forward_inputs: list[str],
@@ -3025,6 +3096,7 @@ def _combo_accepted(
             configured_t = _make_mock_tensor(configured) if configured else None
             if configured_t is not None:
                 extra_attrs["dtype"] = configured_t.dtype
+        extra_attrs.update(_caller_stated_out_dtype(sig, combo))
     mock_self = _build_mock_self(cls, param_env, extra_attrs)
     # Pre-bind the callable signature so only genuine signature mismatches
     # surface as ``TypeError: ...``. TypeError raised from inside the body
@@ -3807,18 +3879,21 @@ def check_c3_ctor_signature_parity(
         # ``REQUIRED`` or absent means no manifest default.
         manifest_default = pattrs.get("default", _MISSING)
         manifest_has_default = manifest_default is not _MISSING and manifest_default != "REQUIRED"
-        # A ``torch.dtype`` default is spelled by name in YAML ("float16"),
-        # so compare the resolved dtype rather than the spelling. Without this
-        # no entry can declare a dtype default at all.
-        if (
-            manifest_has_default
-            and pattrs.get("type") == "torch.dtype"
-            and isinstance(manifest_default, str)
-        ):
+        # A dtype default is spelled by name in YAML ("float16"), so compare the
+        # resolved dtype rather than the spelling. The declared type is either
+        # ``torch.dtype`` or the union of dtypes the param accepts; both spell
+        # their default the same way.
+        if manifest_has_default and isinstance(manifest_default, str):
             import torch
 
+            declared = str(pattrs.get("type", ""))
+            tokens = [tok for tok in _parse_dtype_expr(declared) if tok != "None"]
+            names_dtypes = declared == "torch.dtype" or (
+                bool(tokens)
+                and all(isinstance(getattr(torch, tok, None), torch.dtype) for tok in tokens)
+            )
             resolved = getattr(torch, manifest_default, None)
-            if isinstance(resolved, torch.dtype):
+            if names_dtypes and isinstance(resolved, torch.dtype):
                 manifest_default = resolved
         code_has_default = code_p.default is not inspect.Parameter.empty
         if manifest_has_default and not code_has_default:
@@ -3972,6 +4047,68 @@ def _tensor_param_names(entry: dict) -> set[str]:
         for name, attrs in params.items()
         if isinstance(attrs, dict) and "tensor" in str(attrs.get("type", "")).lower()
     }
+
+
+OUT_DTYPE_PARAM = "out_dtype"
+
+
+def check_c9_output_dtype_convention(op_name: str, entry: dict, cls: type | None) -> list[str]:
+    """R23: a caller-stated output dtype travels under the name ``out_dtype``, both ways.
+
+    An output's declared dtype resolves to one answer and never names a set: a constant,
+    ``same_as(x)`` or ``promote_int_to_float(x)``. Which outputs the caller may restate is
+    the outputs' own declaration — ``caller_stated: true`` — because an op computing an
+    auxiliary output alongside its result decides that one itself, whatever the caller
+    asked for. The param carrying the caller's answer is named ``out_dtype``, and the two
+    declarations imply each other: the param without a marked output states nothing, and a
+    marked output without the param has no one to state it. Whether the value the attribute
+    holds really is that output's dtype is not decidable here; the compile contract holds
+    the fake to what the op returns.
+    """
+    errors: list[str] = []
+    signature = entry.get("signature") or {}
+    outputs = signature.get("outputs") or {}
+    params = signature.get("params") or {}
+    has_param = OUT_DTYPE_PARAM in params
+    stated = [
+        name
+        for name, attrs in outputs.items()
+        if isinstance(attrs, dict) and attrs.get(CALLER_STATED_FLAG) is True
+    ]
+    if has_param and not stated:
+        errors.append(
+            f"[dtype] {op_name}: declares an {OUT_DTYPE_PARAM!r} param but marks no output "
+            f"{CALLER_STATED_FLAG!r}, so nothing says which output it states"
+        )
+    if stated and not has_param:
+        errors.append(
+            f"[dtype] {op_name}: marks output(s) {stated!r} {CALLER_STATED_FLAG!r} but declares "
+            f"no {OUT_DTYPE_PARAM!r} param for the caller to state them through"
+        )
+
+    for output, attrs in outputs.items():
+        expr = (attrs or {}).get("dtype", "")
+        if "|" in expr:
+            errors.append(
+                f"[dtype] {op_name}: output {output!r} declares {expr!r}, which names a set "
+                f"rather than the one dtype the fake returns; declare the fallback here and "
+                f"the set the caller may ask for as the type of the {OUT_DTYPE_PARAM!r} param"
+            )
+
+    if has_param and cls is not None:
+        import inspect
+
+        try:
+            takes = OUT_DTYPE_PARAM in inspect.signature(cls.__init__).parameters
+        except (TypeError, ValueError):
+            takes = True
+        if not takes:
+            errors.append(
+                f"[dtype] {op_name}: the manifest declares an {OUT_DTYPE_PARAM!r} param "
+                f"that {cls.__name__}.__init__ does not take; the generated fake reads the "
+                f"output dtype off that attribute, so an op that declares it must accept it"
+            )
+    return errors
 
 
 def check_c8_mutated_inputs_parity(
@@ -4281,6 +4418,7 @@ def validate_manifest(
                     warnings=all_warnings,
                 )
             )
+            strict_errors.extend(check_c9_output_dtype_convention(op_name, entry, op_cls))
             strict_errors.extend(check_c6_contract_methods_implemented(op_name, entry, op_cls))
 
         # bench: benchmark uses manifest workloads

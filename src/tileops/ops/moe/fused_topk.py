@@ -4,7 +4,7 @@ from typing import Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe.fused_topk import FusedTopKKernel
 
 from ..op_base import Op
@@ -88,21 +88,30 @@ class FusedTopKOp(Op):
             with_correction_bias,
             inputs[0].dtype,
         )
-        return self.get_or_build_kernel(
-            "fused_topk_kernel",
-            inputs,
-            key=key,
-            build=lambda: self.kernel_map["fused_topk_kernel"](
-                num_tokens=num_tokens,
-                num_experts=num_experts,
-                top_k=top_k,
-                scoring_func=self.scoring_func,
-                renormalize=self.renormalize,
-                with_correction_bias=with_correction_bias,
-                dtype=inputs[0].dtype,
-                config=self.config,
-                device_index=device_index,
-            ),
+        return self.kernel_for("fused_topk_kernel", inputs, key)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, routing rule, bias presence and device."""
+        (
+            num_tokens,
+            num_experts,
+            top_k,
+            scoring_func,
+            renormalize,
+            device_index,
+            with_correction_bias,
+            dtype,
+        ) = call
+        return call, lambda: self.kernel_map["fused_topk_kernel"](
+            num_tokens=num_tokens,
+            num_experts=num_experts,
+            top_k=top_k,
+            scoring_func=scoring_func,
+            renormalize=renormalize,
+            with_correction_bias=with_correction_bias,
+            dtype=dtype,
+            config=self.config,
+            device_index=device_index,
         )
 
     def forward(

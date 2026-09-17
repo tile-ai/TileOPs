@@ -1,7 +1,7 @@
 """TileOPs refuses a call whose declared outputs would all be empty.
 
 One case per distinct shape of the answer, not one per op: the refusal is decided in
-``Op.get_or_build_kernel`` for every family, so a second op of the same shape re-tests
+``Op.kernel_for`` for every family, so a second op of the same shape re-tests
 the same branch.
 """
 

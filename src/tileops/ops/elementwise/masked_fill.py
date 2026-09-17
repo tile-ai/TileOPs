@@ -1,7 +1,7 @@
 """MaskedFill ops (Tensor-value and scalar-value variants)."""
 
 from math import prod
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import torch
 
@@ -12,15 +12,13 @@ from tileops.kernels.elementwise import (
 )
 from tileops.kernels.kernel_base import Kernel
 
-from ..compile_boundary import get_instance
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 from ._base import (
     _PerDtypeKernels,
     _require_one_device,
-    _require_shape_inference,
     _validate_scalar_param_repr,
     broadcast_or_raise,
-    resolve_output_dtype,
 )
 
 
@@ -33,8 +31,9 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
 
     """
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
     _op_name = "masked_fill"
-    _wrapped = None
 
     def __init__(
         self,
@@ -155,8 +154,9 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
 
     """
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
     _op_name = "masked_fill"
-    _wrapped = None
 
     def __init__(
         self,
@@ -263,57 +263,3 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
 # src/tileops/ops/compile_boundary.py.
 
 # Two variants, two operators: their schemas differ by the value tensor.
-_require_shape_inference(MaskedFillFwdOp)
-_require_shape_inference(MaskedFillScalarFwdOp)
-
-
-@torch.library.custom_op("tileops::elementwise_masked_fill_tensor_value", mutates_args=())
-def _masked_fill_tensor_value_fwd(
-    input: torch.Tensor,
-    mask: torch.Tensor,
-    value: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(input, mask, value)
-
-
-@_masked_fill_tensor_value_fwd.register_fake
-def _masked_fill_tensor_value_fwd_fake(
-    input: torch.Tensor,
-    mask: torch.Tensor,
-    value: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(tuple(input.shape), tuple(mask.shape), tuple(value.shape))
-    return input.new_empty(
-        shapes["output"], dtype=resolve_output_dtype(MaskedFillFwdOp.__name__, input.dtype)
-    )
-
-
-@torch.library.custom_op("tileops::elementwise_masked_fill", mutates_args=())
-def _masked_fill_fwd(
-    input: torch.Tensor,
-    mask: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(input, mask)
-
-
-@_masked_fill_fwd.register_fake
-def _masked_fill_fwd_fake(
-    input: torch.Tensor,
-    mask: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(tuple(input.shape), tuple(mask.shape))
-    return input.new_empty(
-        shapes["output"], dtype=resolve_output_dtype(MaskedFillScalarFwdOp.__name__, input.dtype)
-    )
-
-
-MaskedFillFwdOp._wrapped = _masked_fill_tensor_value_fwd
-MaskedFillFwdOp.compile_op_names = ("tileops::elementwise_masked_fill_tensor_value",)
-MaskedFillScalarFwdOp._wrapped = _masked_fill_fwd
-MaskedFillScalarFwdOp.compile_op_names = ("tileops::elementwise_masked_fill",)

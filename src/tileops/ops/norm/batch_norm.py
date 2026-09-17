@@ -26,14 +26,14 @@ from typing import ClassVar, Dict, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm.batch_norm import (
     BatchNormBwdKernel,
     BatchNormFwdInferKernel,
     BatchNormFwdTrainKernel,
 )
 
-from ..compile_boundary import get_instance
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["BatchNormBwdOp", "BatchNormFwdOp"]
@@ -63,7 +63,7 @@ class BatchNormFwdOp(Op):
 
     """
 
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_batch_norm_fwd",)
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -192,20 +192,10 @@ class BatchNormFwdOp(Op):
 
         # ``training`` decides which implementation serves the call, so it belongs in the
         # key; both are fetched under one name, which is what a target is asked to serve.
-        slot = "fwd_train_kernel" if self.training else "fwd_infer_kernel"
-        kernel = self.get_or_build_kernel(
+        kernel = self.kernel_for(
             "batch_norm_fwd",
             (x, running_mean, running_var, weight, bias),
-            # Both paths index the caller's layout, so the spatial extent
-            # changes the kernel that is built.
-            key=(C, L, dtype, self.training, spatial),  # this instance's in-tree cache key
-            build=lambda: (
-                self.kernel_map[slot](
-                    C, L, dtype, self.eps, self.momentum, tune=self.tune, S=spatial
-                )
-                if self.training
-                else self.kernel_map[slot](C, L, dtype, self.eps, tune=self.tune, S=spatial)
-            ),
+            (C, L, dtype, self.training, spatial),
         )
         self.kernel = kernel
 
@@ -219,6 +209,20 @@ class BatchNormFwdOp(Op):
             if handed_over is not original:
                 original.copy_(handed_over)
         return y
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """Training picks the implementation, so it is in the identity.
+
+        Both paths index the caller's layout, so the spatial extent is there too.
+        """
+        channels, length, dtype, training, spatial = call
+        if training:
+            cls = self.kernel_map["fwd_train_kernel"]
+            return call, lambda: cls(
+                channels, length, dtype, self.eps, self.momentum, tune=self.tune, S=spatial
+            )
+        cls = self.kernel_map["fwd_infer_kernel"]
+        return call, lambda: cls(channels, length, dtype, self.eps, tune=self.tune, S=spatial)
 
     def forward(
         self,
@@ -249,9 +253,7 @@ class BatchNormFwdOp(Op):
         Returns:
             Normalized output tensor with the same shape as ``x``.
         """
-        return _batch_norm_fwd_wrapped(
-            x, running_mean, running_var, weight, bias, self._instance_key
-        )
+        return self._wrapped(x, running_mean, running_var, weight, bias, self._instance_key)
 
 
 class BatchNormBwdOp(Op):
@@ -265,7 +267,7 @@ class BatchNormBwdOp(Op):
 
     """
 
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_batch_norm_bwd",)
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -378,14 +380,14 @@ class BatchNormBwdOp(Op):
         weight = weight.contiguous()
         mean = mean.contiguous()
         rstd = rstd.contiguous()
-        kernel = self.get_or_build_kernel(
-            "batch_norm_bwd",
-            (grad_out, x, weight, mean, rstd),
-            key=(C, L, dtype),  # this instance's in-tree cache key
-            build=lambda: self.kernel_map["bwd_kernel"](C, L, dtype, tune=self.tune),
-        )
+        kernel = self.kernel_for("batch_norm_bwd", (grad_out, x, weight, mean, rstd), (C, L, dtype))
         self.kernel = kernel
         return kernel(grad_out, x, weight, mean, rstd)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per channel count, row width and dtype."""
+        channels, length, dtype = call
+        return call, lambda: self.kernel_map["bwd_kernel"](channels, length, dtype, tune=self.tune)
 
     def forward(
         self,
@@ -415,80 +417,4 @@ class BatchNormBwdOp(Op):
             has the same shape as ``x``, ``grad_weight`` has shape $[C]$,
             and ``grad_bias`` has shape $[C]$.
         """
-        return _batch_norm_bwd_wrapped(grad_out, x, weight, mean, rstd, self._instance_key)
-
-
-# torch.compile dispatch boundary (see src/tileops/ops/compile_boundary.py)
-
-
-@torch.library.custom_op(
-    "tileops::norm_batch_norm_fwd",
-    mutates_args=("running_mean", "running_var"),
-)
-def _batch_norm_fwd_wrapped(
-    x: torch.Tensor,
-    running_mean: torch.Tensor,
-    running_var: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    instance = get_instance(instance_key)
-    return instance._eager_forward(x, running_mean, running_var, weight, bias)
-
-
-@_batch_norm_fwd_wrapped.register_fake
-def _batch_norm_fwd_fake(
-    x: torch.Tensor,
-    running_mean: torch.Tensor,
-    running_var: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(
-        tuple(x.shape),
-        tuple(running_mean.shape),
-        tuple(running_var.shape),
-        tuple(weight.shape),
-        tuple(bias.shape),
-    )
-    return x.new_empty(shapes["output"])
-
-
-@torch.library.custom_op("tileops::norm_batch_norm_bwd", mutates_args=())
-def _batch_norm_bwd_wrapped(
-    grad_out: torch.Tensor,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    mean: torch.Tensor,
-    rstd: torch.Tensor,
-    instance_key: str,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    instance = get_instance(instance_key)
-    return instance._eager_forward(grad_out, x, weight, mean, rstd)
-
-
-@_batch_norm_bwd_wrapped.register_fake
-def _batch_norm_bwd_fake(
-    grad_out: torch.Tensor,
-    x: torch.Tensor,
-    weight: torch.Tensor,
-    mean: torch.Tensor,
-    rstd: torch.Tensor,
-    instance_key: str,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(
-        tuple(grad_out.shape),
-        tuple(x.shape),
-        tuple(weight.shape),
-        tuple(mean.shape),
-        tuple(rstd.shape),
-    )
-    return (
-        x.new_empty(shapes["grad_x"]),
-        weight.new_empty(shapes["grad_weight"], dtype=torch.float32),
-        weight.new_empty(shapes["grad_bias"], dtype=torch.float32),
-    )
+        return self._wrapped(grad_out, x, weight, mean, rstd, self._instance_key)

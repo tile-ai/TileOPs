@@ -18,10 +18,10 @@ from typing import ClassVar, Dict, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
 
-from ..compile_boundary import get_instance
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["GroupNormFwdOp"]
@@ -55,7 +55,7 @@ class GroupNormFwdOp(Op):
 
     """
 
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_group_norm_fwd",)
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -158,7 +158,7 @@ class GroupNormFwdOp(Op):
                 shape is incompatible with *x*. Raised from inside the operator, by
                 `_eager_forward`.
         """
-        return _norm_group_norm_fwd(x, weight, bias, self._instance_key)
+        return self._wrapped(x, weight, bias, self._instance_key)
 
     def _eager_forward(
         self,
@@ -196,48 +196,18 @@ class GroupNormFwdOp(Op):
         if affine:
             weight = weight.contiguous()
             bias = bias.contiguous()
-        # The affine pair picks the implementation, so it belongs in the key; both are
-        # fetched under one name, which is what a target is asked to serve.
-        slot = "group_norm" if affine else "group_norm_no_affine"
-        kernel = self.get_or_build_kernel(
-            "group_norm",
-            (x, weight, bias),
-            key=(D, cpg, dtype, affine),  # this instance's in-tree cache key
-            build=lambda: (
-                self.kernel_map[slot](D, self.eps, dtype, self.num_groups, cpg, tune=self.tune)
-                if affine
-                else self.kernel_map[slot](D, self.eps, dtype, tune=self.tune)
-            ),
-        )
+        kernel = self.kernel_for("group_norm", (x, weight, bias), (D, cpg, dtype, affine))
         self.kernel = kernel
 
         # The affine kernel derives each element's channel from its position
         # in the row, so the per-channel affine is applied inside the kernel.
         return kernel(x, weight, bias)
 
-
-@torch.library.custom_op("tileops::norm_group_norm_fwd", mutates_args=())
-def _norm_group_norm_fwd(
-    x: torch.Tensor,
-    weight: Optional[torch.Tensor],
-    bias: Optional[torch.Tensor],
-    instance_key: str,
-) -> torch.Tensor:
-    return get_instance(instance_key)._eager_forward(x, weight, bias)
-
-
-@_norm_group_norm_fwd.register_fake
-def _norm_group_norm_fwd_fake(
-    x: torch.Tensor,
-    weight: Optional[torch.Tensor],
-    bias: Optional[torch.Tensor],
-    instance_key: str,
-) -> torch.Tensor:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(
-        tuple(x.shape),
-        None if weight is None else tuple(weight.shape),
-        None if bias is None else tuple(bias.shape),
-    )
-    # ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
-    return x.new_empty(shapes["output"])
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """The affine pair picks the implementation, so it is in the identity."""
+        d, cpg, dtype, affine = call
+        if affine:
+            cls = self.kernel_map["group_norm"]
+            return call, lambda: cls(d, self.eps, dtype, self.num_groups, cpg, tune=self.tune)
+        cls = self.kernel_map["group_norm_no_affine"]
+        return call, lambda: cls(d, self.eps, dtype, tune=self.tune)

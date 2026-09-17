@@ -248,51 +248,6 @@ def _gated_deltanet_decode_tl(
     return _decode_func
 
 
-@torch.library.custom_op("tileops::gated_deltanet_decode_kernel", mutates_args=())
-def _gated_deltanet_decode_wrapped_kernel(
-    batch: int,
-    head: int,
-    dim_k: int,
-    dim_v: int,
-    k_tile: int,
-    dtype: str,
-    num_stages: int,
-    threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    beta: torch.Tensor,
-    state: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    kernel_fn = _gated_deltanet_decode_tl(batch, head, dim_k, dim_v, k_tile, dtype)(
-        num_stages, threads
-    )
-    return kernel_fn(q, k, v, g, beta, state)
-
-
-@_gated_deltanet_decode_wrapped_kernel.register_fake
-def _gated_deltanet_decode_wrapped_kernel_fake(
-    batch: int,
-    head: int,
-    dim_k: int,
-    dim_v: int,
-    k_tile: int,
-    dtype: str,
-    num_stages: int,
-    threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    beta: torch.Tensor,
-    state: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    o = torch.empty(batch, head, dim_v, dtype=q.dtype, device=q.device)
-    new_state = torch.empty(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
-    return o, new_state
-
-
 class GatedDeltaNetDecodeKernel(Kernel):
     """Gated DeltaNet single-step decode kernel.
 
@@ -329,9 +284,7 @@ class GatedDeltaNetDecodeKernel(Kernel):
         else:
             self.init_config(config, tune=False)
 
-        # Cache the JIT-compiled kernel to avoid re-creation overhead
-        # on every forward call (_gated_deltanet_decode_wrapped_kernel
-        # is kept for torch.compile compatibility).
+        # Cache the JIT-compiled kernel to avoid re-creation overhead on every call.
         self._kernel_fn = _gated_deltanet_decode_tl(
             batch,
             head,

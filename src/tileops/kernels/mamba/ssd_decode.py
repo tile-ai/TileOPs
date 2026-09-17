@@ -226,32 +226,6 @@ def _ssd_decode_kernel(
     return kernel_func
 
 
-@torch.library.custom_op("tileops::ssd_decode", mutates_args=("state",))
-def _ssd_decode_wrapped(
-    batch: int,
-    n_heads: int,
-    d_head: int,
-    d_state: int,
-    n_groups: int,
-    dtype: str,
-    block_p: int,
-    block_n: int,
-    threads: int,
-    A: torch.Tensor,
-    dt: torch.Tensor,
-    x: torch.Tensor,
-    B_in: torch.Tensor,
-    C_in: torch.Tensor,
-    state: torch.Tensor,
-) -> torch.Tensor:
-    return _ssd_decode_kernel(batch, n_heads, d_head, d_state, n_groups, dtype)(
-        block_p,
-        block_n,
-        threads,
-    )(A, dt, x, B_in, C_in, state)
-
-
-@_ssd_decode_wrapped.register_fake
 def _(
     batch: int,
     n_heads: int,
@@ -368,20 +342,8 @@ class SSDDecodeKernel(Kernel):
         C_in: torch.Tensor,
         state: torch.Tensor,
     ) -> torch.Tensor:
-        return _ssd_decode_wrapped(
-            self.batch,
-            self.n_heads,
-            self.d_head,
-            self.d_state,
-            self.n_groups,
-            self.dtype_str,
+        return self.kernel(
             self.config["block_p"],
             self.config["block_n"],
             self.config["threads"],
-            A,
-            dt,
-            x,
-            B_in,
-            C_in,
-            state,
-        )
+        )(A, dt, x, B_in, C_in, state)

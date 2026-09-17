@@ -314,8 +314,7 @@ def _dh_recurrence_bwd_tl(
     return _func
 
 
-@torch.library.custom_op("tileops::deltanet_bwd_kernel", mutates_args=())
-def _deltanet_bwd_wrapped_kernel(
+def _deltanet_bwd_run(
     batch: int,
     head: int,
     seq_len: int,
@@ -388,8 +387,7 @@ def _deltanet_bwd_wrapped_kernel(
     return dq, dk, dv, dbeta
 
 
-@_deltanet_bwd_wrapped_kernel.register_fake
-def _deltanet_bwd_wrapped_kernel_fake(
+def _deltanet_bwd_run_fake(
     batch: int,
     head: int,
     seq_len: int,
@@ -546,7 +544,7 @@ class DeltaNetBwdKernel(Kernel):
         w: torch.Tensor,
         u: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        return _deltanet_bwd_wrapped_kernel(
+        return _deltanet_bwd_run(
             self.batch,
             self.head,
             self.seq_len,

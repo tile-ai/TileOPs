@@ -3,10 +3,10 @@ from typing import ClassVar, Dict, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm import FusedAddLayerNormKernel
 
-from ..compile_boundary import get_instance
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["FusedAddLayerNormFwdOp"]
@@ -39,7 +39,7 @@ class FusedAddLayerNormFwdOp(Op):
 
     """
 
-    compile_op_names: ClassVar[Tuple[str, ...]] = ("tileops::norm_fused_add_layer_norm_fwd",)
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
         self,
@@ -110,7 +110,7 @@ class FusedAddLayerNormFwdOp(Op):
             ValueError: Dtypes or shapes disagree. Raised from inside the operator, by
                 `_eager_forward`.
         """
-        return _norm_fused_add_layer_norm_fwd(x, residual, weight, bias, self._instance_key)
+        return self._wrapped(x, residual, weight, bias, self._instance_key)
 
     def _eager_forward(
         self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
@@ -143,45 +143,18 @@ class FusedAddLayerNormFwdOp(Op):
         residual = residual.contiguous()
         weight = weight.contiguous()
         bias = bias.contiguous()
-        kernel = self.get_or_build_kernel(
+        kernel = self.kernel_for(
             "fused_add_layer_norm",
             (x, residual, weight, bias),
-            key=(n, x.dtype),  # this instance's in-tree cache key
-            build=lambda: self.kernel_map["fused_add_layer_norm"](
-                n,
-                self.eps,
-                x.dtype,
-                tune=self.tune,
-            ),
+            (n, x.dtype),
         )
         self._last_roofline_mn = (x.numel() // n, n)
         y, residual_out = kernel(x, residual, weight, bias)
         return y, residual_out
 
-
-@torch.library.custom_op("tileops::norm_fused_add_layer_norm_fwd", mutates_args=())
-def _norm_fused_add_layer_norm_fwd(
-    x: torch.Tensor,
-    residual: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-    instance_key: str,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    return get_instance(instance_key)._eager_forward(x, residual, weight, bias)
-
-
-@_norm_fused_add_layer_norm_fwd.register_fake
-def _norm_fused_add_layer_norm_fwd_fake(
-    x: torch.Tensor,
-    residual: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor,
-    instance_key: str,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    op = get_instance(instance_key)
-    shapes = op._infer_output_shapes(
-        tuple(x.shape), tuple(residual.shape), tuple(weight.shape), tuple(bias.shape)
-    )
-    # The manifest's shapes, not the kernel's: alignment padding is the kernel's business
-    # and never reaches the op's return.
-    return x.new_empty(shapes["output"]), x.new_empty(shapes["residual_out"])
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per row width and dtype; epsilon is the op's."""
+        n, dtype = call
+        return call, lambda: self.kernel_map["fused_add_layer_norm"](
+            n, self.eps, dtype, tune=self.tune
+        )

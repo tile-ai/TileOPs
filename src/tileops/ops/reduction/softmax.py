@@ -2,18 +2,18 @@
 
 import warnings
 from math import prod
-from typing import Dict, List, Optional, Tuple, Union
+from typing import ClassVar, Dict, List, Optional, Tuple, Union
 
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.reduction.logsumexp import LogSumExpKernel
 from tileops.kernels.reduction.softmax import SoftmaxKernel
 from tileops.manifest.shape_rules import reduced_shape
 
+from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
-from ._boundary import register_reduction_op
 from ._multidim import EmptyDimPolicy, normalize_dim
 
 __all__ = ["LogSoftmaxFwdOp", "LogSumExpFwdOp", "SoftmaxFwdOp", "_SoftmaxBaseOp"]
@@ -41,8 +41,10 @@ class _SoftmaxBaseOp(Op):
 
     """
 
-    # Set by ``register_reduction_op`` on each concrete op; a base registers none.
-    _wrapped = None
+    # One operator, the op's declared inputs in, its declared outputs out. The
+    # registration is generated from the manifest entry by
+    # ``tileops.ops._compile_boundary_codegen``, which a base class with no entry skips.
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     _op_kind: str  # set by subclass
     _kernel_key: str  # set by subclass
@@ -143,22 +145,27 @@ class _SoftmaxBaseOp(Op):
         n = prod(x.shape[a] for a in axes)
         m = prod(d for i, d in enumerate(x.shape) if i not in axes)
         self._last_roofline_spec = (m, n, x.dtype)
-        kernel = self.get_or_build_kernel(
-            self._kernel_key,
-            (x,),
-            # The kernel owns the permute, so the whole shape decides which kernel it is.
-            key=(tuple(x.shape), axes, self.keepdim, x.dtype, x.device.index),
-            build=lambda: self.kernel_map[self._kernel_key](
-                m,
-                n,
-                self._op_kind,
-                x.dtype,
-                tune=self.tune,
-                device_index=x.device.index,
-                **self._kernel_ctor_kwargs(axes),
-            ),
+        kernel = self.kernel_for(
+            "softmax", (x,), (tuple(x.shape), axes, self.keepdim, x.dtype, x.device.index, m, n)
         )
         return kernel(x)
+
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built from the whole shape and the axes it reduces.
+
+        The kernel owns the permute, so the whole shape decides which kernel it is.
+        """
+        shape, axes, keepdim, dtype, device_index, m, n = call
+        cls = self.kernel_map[self._kernel_key]
+        return call, lambda: cls(
+            m,
+            n,
+            self._op_kind,
+            dtype,
+            tune=self.tune,
+            device_index=device_index,
+            **self._kernel_ctor_kwargs(axes),
+        )
 
     def eval_roofline(self) -> tuple[int, int]:
         if self._last_roofline_spec is None:
@@ -293,7 +300,3 @@ class LogSumExpFwdOp(_SoftmaxBaseOp):
     def _kernel_ctor_kwargs(self, axes: "tuple[int, ...]") -> dict:
         """This kernel reduces the axes away, so it is told which and whether they stay."""
         return {"reduce_axes": axes, "keepdim": self.keepdim}
-
-
-for _op_cls in (SoftmaxFwdOp, LogSoftmaxFwdOp, LogSumExpFwdOp):
-    register_reduction_op(_op_cls)

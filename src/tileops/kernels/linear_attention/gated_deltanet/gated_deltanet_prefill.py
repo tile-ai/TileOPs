@@ -1559,8 +1559,7 @@ def _prefill_grouped_replay_bthd_tl(
     return _func
 
 
-@torch.library.custom_op("tileops::gated_deltanet_prefill_fwd_kernel", mutates_args=())
-def _gated_deltanet_prefill_wrapped_kernel(
+def _gated_deltanet_prefill_kernel_call(
     batch: int,
     head: int,
     seq_len: int,
@@ -1713,39 +1712,6 @@ def _gated_deltanet_prefill_wrapped_kernel(
     return o, final_state
 
 
-@_gated_deltanet_prefill_wrapped_kernel.register_fake
-def _gated_deltanet_prefill_wrapped_kernel_fake(
-    batch: int,
-    head: int,
-    seq_len: int,
-    chunk_size: int,
-    dim_k: int,
-    dim_v: int,
-    dtype: str,
-    fused_num_stages: int,
-    fused_threads: int,
-    h_num_stages: int,
-    h_threads: int,
-    h_block_v: int,
-    o_threads: int,
-    layout: str,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    beta: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    del dtype, fused_num_stages, fused_threads, h_num_stages, h_threads, h_block_v, o_threads
-    del k, v, g, beta
-    layout = _normalize_prefill_layout(layout)
-    if layout == "bthd":
-        o = torch.empty(batch, seq_len, head, dim_v, dtype=q.dtype, device=q.device)
-    else:
-        o = torch.empty(batch, head, seq_len, dim_v, dtype=q.dtype, device=q.device)
-    final_state = torch.empty(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
-    return o, final_state
-
-
 class GatedDeltaNetPrefillFwdKernel(Kernel):
     """Gated DeltaNet zero-state prefill.
 
@@ -1850,7 +1816,7 @@ class GatedDeltaNetPrefillFwdKernel(Kernel):
         g: torch.Tensor,
         beta: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _gated_deltanet_prefill_wrapped_kernel(
+        return _gated_deltanet_prefill_kernel_call(
             self.batch,
             self.head,
             self.seq_len,

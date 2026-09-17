@@ -1,6 +1,6 @@
 """Activation elementwise ops (ReLU + parametric/param-free families)."""
 
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 from tileops.backend import Target
 from tileops.kernels.elementwise import (
@@ -24,7 +24,9 @@ from tileops.kernels.elementwise import (
 )
 from tileops.kernels.kernel_base import Kernel
 
+from .._compile_boundary_codegen import OperatorSpec
 from ._base import (
+    INPLACE_ACTIVATION,
     FusedGatedOp,
     UnaryOp,
     _GeluApproximateBase,
@@ -35,6 +37,10 @@ from ._base import (
 
 class ReluFwdOp(_ParamFreeActivationOp):
     """ReLU activation: y = max(x, 0)."""
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
+        INPLACE_ACTIVATION,
+    )
 
     _op_name = "relu"
     kernel_cls = ReluFwdKernel
@@ -76,6 +82,10 @@ class GeluFwdOp(_GeluApproximateBase):
 class SiluFwdOp(_ParamFreeActivationOp):
     """Element-wise SiLU (Swish): y = x * sigmoid(x)."""
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
+        INPLACE_ACTIVATION,
+    )
+
     _op_name = "silu"
     kernel_cls = SiluFwdKernel
     # Manifest: flops = "5 * N". Per roofline.md §1.3:
@@ -105,6 +115,10 @@ class TanhFwdOp(UnaryOp):
 class HardswishFwdOp(_ParamFreeActivationOp):
     """Element-wise HardSwish: y = x * clamp(x + 3, 0, 6) / 6."""
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
+        INPLACE_ACTIVATION,
+    )
+
     _op_name = "hardswish"
     kernel_cls = HardswishFwdKernel
     # Manifest: flops = "4 * N". Per roofline.md §1.3:
@@ -115,6 +129,10 @@ class HardswishFwdOp(_ParamFreeActivationOp):
 
 class HardsigmoidFwdOp(_ParamFreeActivationOp):
     """Element-wise HardSigmoid: y = clamp(x + 3, 0, 6) / 6."""
+
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
+        INPLACE_ACTIVATION,
+    )
 
     _op_name = "hardsigmoid"
     kernel_cls = HardsigmoidFwdKernel
@@ -127,6 +145,10 @@ class HardsigmoidFwdOp(_ParamFreeActivationOp):
 class MishFwdOp(_ParamFreeActivationOp):
     """Element-wise Mish: y = x * tanh(softplus(x))."""
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
+        INPLACE_ACTIVATION,
+    )
+
     _op_name = "mish"
     kernel_cls = MishFwdKernel
     # Manifest: flops = "4 * N". Per roofline.md §1.3:
@@ -138,6 +160,10 @@ class MishFwdOp(_ParamFreeActivationOp):
 class SeluFwdOp(_ParamFreeActivationOp):
     """Element-wise SELU activation."""
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
+        INPLACE_ACTIVATION,
+    )
+
     _op_name = "selu"
     kernel_cls = SeluFwdKernel
     # Manifest: flops = "5 * N" (branch + exp/sub/mul + lambda mul).
@@ -147,8 +173,11 @@ class SeluFwdOp(_ParamFreeActivationOp):
 class LeakyReluFwdOp(_ParametricActivationOp):
     """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
+        INPLACE_ACTIVATION,
+    )
+
     _op_name = "leaky_relu"
-    _wrapped = None
     # Manifest: flops = "2 * N". Per roofline.md §1.3:
     # compare-and-select(1) + mul = 2 per elem.
     FLOPS_PER_ELEM = 2
@@ -187,8 +216,11 @@ class LeakyReluFwdOp(_ParametricActivationOp):
 class EluFwdOp(_ParametricActivationOp):
     """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
+        INPLACE_ACTIVATION,
+    )
+
     _op_name = "elu"
-    _wrapped = None
     # Manifest: flops = "4 * N". Per roofline.md §1.3:
     # compare-and-select(1) + exp + sub + mul = 4 per elem.
     FLOPS_PER_ELEM = 4
@@ -225,8 +257,11 @@ class EluFwdOp(_ParametricActivationOp):
 class HardtanhFwdOp(_ParametricActivationOp):
     """Hardtanh: y = clamp(x, min_val, max_val)."""
 
+    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
+        INPLACE_ACTIVATION,
+    )
+
     _op_name = "hardtanh"
-    _wrapped = None
     # Manifest: flops = "N". Per roofline.md §1.3, two-sided clamp
     # collapses to 1 compare-and-select per output element.
     FLOPS_PER_ELEM = 1
@@ -267,7 +302,6 @@ class SoftplusFwdOp(_ParametricActivationOp):
     """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
 
     _op_name = "softplus"
-    _wrapped = None
     # Manifest: flops = "5 * N". Per roofline.md §1.3:
     # mul-beta + threshold compare-and-select(1) + exp + log1p + div-by-beta
     # = 5 per elem.
