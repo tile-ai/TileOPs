@@ -690,24 +690,44 @@ class BmmTemplateKernel(Kernel):
     """Persistent H200 BMM adapter over :class:`GemmTemplate`.
 
     The template reads the zero-copy ``[batch, n, k]`` view of public
-    ``b[batch, k, n]`` storage. :class:`BmmKernel` serves grids that do not fill
-    the persistent template or whose contiguous extent is not TMA-aligned.
+    ``b[batch, k, n]`` storage. :class:`BmmKernel` serves calls outside
+    :meth:`applies`, and every call that asks to be autotuned: this path takes
+    its configuration from the template selector and has no tuning of its own.
     """
 
     supported_archs: list[int] = [90]
 
+    # The tile ``get_best_config`` picks for this path on H200. Selection and grid
+    # sizing count the same tiles, or the region claimed is not the grid launched.
+    TILE_M: int = 128
+    TILE_N: int = 256
+
+    # Half a persistent wave of those tiles is enough to beat BmmKernel. Fitted on
+    # the manifest workloads: square-b16-512 reaches 128 tiles and wins,
+    # square-b32-256 reaches 64 and loses. Re-fit against benchmarks/ops/bench_bmm.py
+    # whenever the tile above or the epilogue changes.
+    MIN_WAVE_DENOM: int = 2
+
+    @classmethod
+    def _tiles(cls, batch: int, m: int, n: int) -> int:
+        """Output tiles this call launches at :attr:`TILE_M` x :attr:`TILE_N`."""
+        return batch * -(-m // cls.TILE_M) * -(-n // cls.TILE_N)
+
     @classmethod
     def applies(cls, call: BmmCall) -> bool:
         step = 16 // call.dtype.itemsize
-        tile = 128
-        tiles = call.batch * ((call.m + tile - 1) // tile) * ((call.n + tile - 1) // tile)
-        return call.h200 and call.n % step == 0 and tiles > call.sm_count
+        tiles = cls._tiles(call.batch, call.m, call.n)
+        return (
+            not call.tune
+            and call.h200
+            and call.n % step == 0
+            and tiles * cls.MIN_WAVE_DENOM > call.sm_count
+        )
 
-    @staticmethod
-    def _persistent_grid(batch: int, m: int, n: int, physical_sms: int) -> int:
-        """Choose a full-wave H200 grid for the selector's 128x256 tile."""
-        tile_m, tile_n = 128, 256
-        tiles = batch * ((m + tile_m - 1) // tile_m) * ((n + tile_n - 1) // tile_n)
+    @classmethod
+    def _persistent_grid(cls, batch: int, m: int, n: int, physical_sms: int) -> int:
+        """Choose a full-wave H200 grid for the selector's tile."""
+        tiles = cls._tiles(batch, m, n)
         power_of_two_grid = 1 << (physical_sms.bit_length() - 1)
         return power_of_two_grid if tiles % power_of_two_grid == 0 else physical_sms
 
