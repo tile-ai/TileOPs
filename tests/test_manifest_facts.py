@@ -83,6 +83,40 @@ class TestCallVersusValue:
         assert f.optional_names == frozenset({"bias"})
 
 
+class TestDeclaredShapes:
+    """A shape is a fact only where it can be bound as mock dimension names."""
+
+    @staticmethod
+    def _with_output_shape(shape):
+        return F.build(
+            "Op",
+            {
+                "status": "implemented",
+                "signature": {
+                    "inputs": {"x": {"dtype": "float16"}},
+                    "outputs": {"y": {"dtype": "same_as(x)", "shape": shape}},
+                },
+            },
+        )
+
+    def test_identifier_list_is_a_declaration(self):
+        assert self._with_output_shape("[N, C, L]").declared_output_shapes == {"y": ("N", "C", "L")}
+
+    @pytest.mark.parametrize(
+        "shape",
+        ["[4, d]", "[2 * N]", "[]", "", None],
+        ids=["literal", "arithmetic", "empty", "blank", "absent"],
+    )
+    def test_anything_else_declares_nothing(self, shape):
+        """Not 'an empty declaration' — no declaration at all.
+
+        A consumer skips its check when an output declares no bindable shape
+        and runs it when the shape is stated, so collapsing the two would turn
+        a skipped check into a reported violation.
+        """
+        assert self._with_output_shape(shape).declared_output_shapes == {}
+
+
 class TestDtypeFacts:
     def test_same_as_spans_inputs_and_outputs(self):
         f = F.build("Op", _entry())

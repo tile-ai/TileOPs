@@ -81,6 +81,29 @@ class TensorArg:
         return match.group(1) if match else None
 
 
+_SHAPE_DECL_RE = re.compile(r"^\s*\[([^\]]*)\]\s*$")
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _shape_parts(shape: object) -> tuple[str, ...] | None:
+    """Dimension names of a ``[a, b, c]`` declaration, or None.
+
+    None where the declaration cannot be bound as mock dimension names: no
+    shape, an empty one, or one carrying arithmetic or literals such as
+    ``[4, d]``. A consumer distinguishes "declares no bindable shape" from
+    "declares an empty shape", so the two must not collapse.
+    """
+    if not isinstance(shape, str):
+        return None
+    match = _SHAPE_DECL_RE.match(shape)
+    if match is None:
+        return None
+    parts = tuple(part.strip() for part in match.group(1).split(",") if part.strip())
+    if not parts or not all(_IDENT_RE.fullmatch(p) for p in parts):
+        return None
+    return parts
+
+
 @dataclass(frozen=True)
 class Facts:
     """Every derived fact of one entry. Consumers read; they do not re-derive."""
@@ -136,6 +159,32 @@ class Facts:
             ref = arg.same_as
             if ref is not None:
                 out[arg.name] = ref
+        return out
+
+    # -- shape -------------------------------------------------------------
+
+    @property
+    def declared_output_shapes(self) -> Mapping[str, tuple[str, ...]]:
+        """Outputs whose shape the entry writes out, as dimension names.
+
+        An output without a ``shape`` declares none, which is different from
+        declaring an empty one, so it is absent rather than mapped to ``()``.
+        """
+        out: dict[str, tuple[str, ...]] = {}
+        for arg in self.outputs:
+            parts = _shape_parts(arg.shape)
+            if parts is not None:
+                out[arg.name] = parts
+        return out
+
+    @property
+    def declared_input_shapes(self) -> Mapping[str, tuple[str, ...]]:
+        """The same, for everything the call passes."""
+        out: dict[str, tuple[str, ...]] = {}
+        for arg in self.call_tensor_args:
+            parts = _shape_parts(arg.shape)
+            if parts is not None:
+                out[arg.name] = parts
         return out
 
     def arg(self, name: str) -> TensorArg | None:

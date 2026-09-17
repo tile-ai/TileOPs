@@ -2986,15 +2986,11 @@ def check_l2_infer_parity(
     rules = sig.get("shape_rules") or []
     if not isinstance(rules, list):
         rules = []
-    outputs_map = sig.get("outputs") or {}
-    declared_output_shapes: dict[str, list[str]] = {}
-    if isinstance(outputs_map, dict):
-        for oname, oattrs in outputs_map.items():
-            if not isinstance(oattrs, dict):
-                continue
-            parts = _parse_shape_decl(oattrs.get("shape", ""))
-            if parts is not None:
-                declared_output_shapes[oname] = parts
+    # Read off the facts: which outputs write their shape out is one question
+    # with one answer, not something each consumer works out again.
+    declared_output_shapes: dict[str, list[str]] = {
+        name: list(parts) for name, parts in _facts(entry, op_name).declared_output_shapes.items()
+    }
     # Nothing to check: neither rules nor declared output shapes.
     if not rules and not declared_output_shapes:
         return errors
