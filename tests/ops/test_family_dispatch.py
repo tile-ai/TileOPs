@@ -51,6 +51,35 @@ def test_gemm_dispatch(m: int, n: int, trans_a: bool, trans_b: bool, expected: s
 
 
 @pytest.mark.smoke
+def test_square_ws_prefill_region_fills_this_device() -> None:
+    """The persistent prefill bar is the device's SM count, not one board's."""
+    from tileops.kernels.attention.call_spec import AttentionCall, square_ws_prefill_region
+
+    def call(sm_count: int, batch: int) -> AttentionCall:
+        return AttentionCall(
+            arch=_SM90,
+            h200=True,
+            sm_count=sm_count,
+            dtype=torch.bfloat16,
+            batch=batch,
+            heads=1,
+            heads_kv=1,
+            dim=128,
+            max_seqlen_q=256,
+            max_seqlen_kv=256,
+            seqlen_kv=256,
+            is_causal=True,
+        )
+
+    # work_items == batch here: one kv head, one group, and 256 rows making a
+    # single pair of 128-row blocks. A board with fewer SMs fills at a smaller batch.
+    assert square_ws_prefill_region(call(sm_count=100, batch=100))
+    assert not square_ws_prefill_region(call(sm_count=100, batch=99))
+    assert square_ws_prefill_region(call(sm_count=132, batch=132))
+    assert not square_ws_prefill_region(call(sm_count=132, batch=131))
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize(
     ("m", "n", "trans_a", "trans_b", "dim"),
     [

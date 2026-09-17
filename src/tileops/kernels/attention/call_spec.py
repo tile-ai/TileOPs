@@ -33,7 +33,6 @@ __all__ = [
 ATTENTION_DTYPES = (torch.float16, torch.bfloat16)
 
 _WS_BLOCK_M = 128
-_H200_SMS = 132
 # Architecture the warp-specialized prefill kernels are written for. The
 # classes declare it as their ``supported_archs`` and the region below reads
 # the same name, so the two statements of one fact cannot drift apart.
@@ -124,7 +123,10 @@ def square_ws_prefill_region(call: AttentionCall) -> bool:
         return False
     groups = call.heads // call.heads_kv
     work_items = call.batch * call.heads_kv * (m_blocks // 2) * groups
-    return work_items >= _H200_SMS
+    # A persistent kernel earns its prologue once the work fills the grid, so the
+    # bar is the device's own SM count rather than the number the board this was
+    # fitted on happens to report.
+    return work_items >= call.sm_count
 
 
 # Tile heights the warp-specialized paged decode kernel can pick from. A tile
