@@ -964,8 +964,10 @@ def test_small_m_splitk_config_selects_a_shape_band() -> None:
     assert small_m_splitk_config(64, 7168, 18432, 132, "NVIDIA H200") is None
     assert small_m_splitk_config(32, 7168, 2048, 132, "NVIDIA H200") is None
     assert small_m_splitk_config(32, 7168, 18432, 132, "NVIDIA H100") is None
-    # The band is fitted on the board, not on the exact name CUDA reports for it.
+    # The band is fitted on the board, not on the exact name CUDA reports for it,
+    # and the name arrives both as CUDA spells it and through a call record.
     assert small_m_splitk_config(32, 7168, 18432, 132, "NVIDIA H200 NVL") is not None
+    assert small_m_splitk_config(32, 7168, 18432, 132, "nvidia h200") is not None
 
 
 @pytest.mark.smoke
