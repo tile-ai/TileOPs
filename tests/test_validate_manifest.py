@@ -3739,6 +3739,28 @@ class TestComposition:
         errors = validator.check_l0("op", entry, all_op_names=["op"])
         assert any("only allowed on a top-level stage" in e for e in errors)
 
+    def test_non_bool_stage_optional_rejected(self, validator):
+        entry = self._entry([{"name": "s", "kernel": "inner", "optional": "true"}])
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("optional must be a bool" in e for e in errors)
+
+    @pytest.mark.parametrize("condition", ["", "   ", 7], ids=["empty", "blank", "not_a_string"])
+    def test_variant_condition_must_say_something(self, validator, condition):
+        """A condition is prose for the reader, so an empty one states nothing."""
+        entry = self._entry(
+            [
+                {
+                    "name": "s",
+                    "kernel": "inner",
+                    "variants": [
+                        {"name": "a", "condition": condition, "stages": [{"kernel": "inner"}]}
+                    ],
+                }
+            ]
+        )
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("condition must be a non-empty string" in e for e in errors)
+
     def test_delegates_must_resolve(self, validator):
         entry = self._entry([{"name": "s", "kernel": "inner", "delegates": ["NoSuchOp"]}])
         errors = validator.check_l0("op", entry, all_op_names=["op"])
@@ -3801,6 +3823,11 @@ class TestResources:
         entry = self._entry([{"name": "ws", "dtype": "same_as(x)"}])
         assert validator.check_l3("op", entry) == []
 
+    def test_non_bool_workspace_optional_rejected(self, validator):
+        entry = self._entry([{"name": "ws", "dtype": "float16", "optional": 1}])
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("optional must be a bool" in e for e in errors)
+
     def test_shape_is_not_a_workspace_key(self, validator):
         entry = self._entry([{"name": "ws", "dtype": "float16", "shape": "[N]"}])
         errors = validator.check_l0("op", entry, all_op_names=["op"])
@@ -3853,6 +3880,11 @@ class TestRooflineComposition:
         entry = self._entry([{"stage": "stage_a", "source": "pkg.mod.nope"}])
         errors = validator.check_l0("op", entry, all_op_names=["op"])
         assert any("does not resolve to a callable" in e for e in errors)
+
+    def test_non_bool_optional_rejected(self, validator):
+        entry = self._entry([{"stage": "stage_a", "formula": "2 * M", "optional": "yes"}])
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("optional must be a bool" in e for e in errors)
 
     def test_stage_cited_twice_rejected(self, validator):
         entry = self._entry(
