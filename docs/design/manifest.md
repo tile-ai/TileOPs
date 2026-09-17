@@ -238,16 +238,18 @@ Validator enforces `cls.__name__ == manifest_key` exactly — no heuristic resol
 
 ## Entry Structure
 
-| Field                     | Required | Description                                                   |
-| ------------------------- | -------- | ------------------------------------------------------------- |
-| `family`                  | yes      | Op family. See [below](#family).                              |
-| `ref_api`                 | yes      | External API reference, or `"none"` if no direct counterpart. |
-| `status`                  | yes      | `spec-only` or `implemented`.                                 |
-| `torch_compile_fullgraph` | no       | Literal `true` only. See [below](#torch_compile_fullgraph).   |
-| `signature`               | yes      | Op interface. See [Signature](#signature).                    |
-| `workloads`               | yes      | Benchmark shapes/dtypes.                                      |
-| `roofline`                | yes      | Performance model.                                            |
-| `source`                  | yes      | Implementation paths.                                         |
+| Field                     | Required | Description                                                            |
+| ------------------------- | -------- | ---------------------------------------------------------------------- |
+| `family`                  | yes      | Op family. See [below](#family).                                       |
+| `ref_api`                 | yes      | External API reference, or `"none"` if no direct counterpart.          |
+| `status`                  | yes      | `spec-only` or `implemented`.                                          |
+| `torch_compile_fullgraph` | no       | Literal `true` only. See [below](#torch_compile_fullgraph).            |
+| `signature`               | yes      | Op interface. See [Signature](#signature).                             |
+| `composition`             | no       | Internal structure of a composite op. See [Composition](#composition). |
+| `resources`               | no       | Execution resources. See [Resources](#resources).                      |
+| `workloads`               | yes      | Benchmark shapes/dtypes.                                               |
+| `roofline`                | yes      | Performance model.                                                     |
+| `source`                  | yes      | Implementation paths.                                                  |
 
 ### `family`
 
@@ -418,11 +420,133 @@ Shape keys use `<tensor_name>_shape`. Op-specific parameters can be added per en
 
 `workloads` are for benchmark parametrization only, not unit-test coverage.
 
+### Composition
+
+An entry's external contract — `signature`, `shape_rules`, `workloads`, `roofline`, `source` — is
+always present. `composition` adds the internal structure of a composite op and `resources` its
+execution resources; each appears only where the op has one.
+
+`composition` states that one call to the public op is carried out by several stages. It is a
+contract and a validation unit, not a scheduler IR: it generates no forward, takes no part in
+dispatch, and does not require one stage per kernel launch. A phase internal to a single kernel is
+not a stage.
+
+| Field    | Required | Description                         |
+| -------- | -------- | ----------------------------------- |
+| `kind`   | yes      | `composite` — the only value.       |
+| `stages` | yes      | Non-empty list, in execution order. |
+
+Each stage:
+
+| Field       | Required | Description                                                                          |
+| ----------- | -------- | ------------------------------------------------------------------------------------ |
+| `name`      | yes      | Unique within the `composition`. Workspaces and `roofline.composition` cite it.      |
+| `op`        | \*       | Manifest entry name, or a dotted path importing to a class. Exclusive with `kernel`. |
+| `kernel`    | \*       | A key of this entry's `source.kernel_map`. Exclusive with `op`.                      |
+| `delegates` | no       | Ops the stage builds, mirroring the op's `kernel_delegates()`.                       |
+| `variants`  | no       | Mutually exclusive performance paths. Top-level stages only.                         |
+| `optional`  | no       | The stage runs only in some configurations.                                          |
+
+A stage names what runs only through `op` or `kernel`, so the name always resolves: an
+implementation worth naming as a stage is registered as a manifest op.
+
+A `variant` is a performance-relevant branch; its `condition` is prose, as the executable condition
+stays in the op. A workload row declares no variant — which one a call takes is a runtime dispatch
+fact, not a static property of the row. Where one branch covers a whole pipeline, its variants hang
+off the stage referencing that op and the `condition` names the stages they replace.
+
+```yaml
+composition:
+  kind: composite
+  stages:
+  - name: prepare
+    op: PrepareFwdOp
+  - name: compute
+    op: ComputeFwdOp
+    delegates: [InnerFwdOp]
+    variants:
+    - name: tight
+      stages: [{op: InnerFwdOp}]
+    - name: fused
+      condition: "aligned shapes below the small-batch threshold; replaces prepare"
+      stages: [{kernel: fused_compute}]
+```
+
+### Resources
+
+A workspace is scratch the op needs in order to run. What separates it from an input is the value:
+an input's changes the result and the reference API takes it too, while a workspace holds nothing
+meaningful before the call, nothing to rely on after it, and may change shape or layout with the
+backend or the variant.
+
+| Field      | Required | Description                                                     |
+| ---------- | -------- | --------------------------------------------------------------- |
+| `name`     | yes      | Unique, and not also an input name.                             |
+| `dtype`    | yes      | Same syntax as an input's dtype, `same_as(ref)` included.       |
+| `owner`    | \*       | A stage name. Required when the entry declares a `composition`. |
+| `kind`     | no       | `scratch` — the only value.                                     |
+| `optional` | no       | The workspace is not passed in every configuration.             |
+| `note`     | no       | Free text.                                                      |
+
+A workspace is still a `forward()` argument. Everything that builds that argument list from the
+manifest — parameter order, shape inference, dtype validation, the empty-input guard — reads
+`signature.inputs` followed by `resources.workspaces`, in declaration order. Workspace shape stays
+with the op (`workspace_shapes()` or a runtime check); there is no `shape` key here.
+
+Two consumers read `signature.inputs` alone. A `dtype_combos` row is the value contract a caller
+writes against, so it carries no column for a workspace. An inline `roofline` expression resolves
+only over inputs and params, so it cannot name a workspace — the manifest declares no shape for one,
+and that shape may change with the backend or the variant.
+
+```yaml
+resources:
+  workspaces:
+  - name: workspace1
+    dtype: float16 | bfloat16
+    owner: compute
+    kind: scratch
+```
+
+### Nullable outputs
+
+Output names and count are fixed per entry. A return position that always exists but may hold
+`None` declares `nullable: true`; a return whose *number* of values changes with a parameter is two
+entries instead. `nullable` is valid on outputs only — an input that may be omitted uses `optional`.
+
+```yaml
+outputs:
+  aux_output: {dtype: "same_as(x)", nullable: true}
+  main_output: {dtype: "same_as(x)"}
+```
+
 ### Roofline
 
 Roofline metadata is required on every manifest entry. Its modes,
 variable binding rules, formula syntax, consumers, and codegen behavior
 are defined in [roofline.md](roofline.md).
+
+A composite op declares what its cost is made of under `roofline.composition`, alongside either
+roofline mode. An entry with a `composition` must have one. The parent's cost is still computed by its own `flops`/`bytes` or `func`;
+`composition` records the relationship so a missing or double-counted stage is rejected rather than
+silently mispriced. Each row names a `stage` and gives exactly one of `source` (dotted path to the
+formula that stage's cost comes from, resolved as `func` is) or `formula` (prose where no separate
+function exists). Every stage not marked `optional` must appear, and none may appear twice.
+
+`roofline.func` resolves as `module.attribute`, so it names a module-level function; a class method
+path does not import. A composite's formula belongs in `tileops.perf.formulas` alongside those of
+the ops it composes, and the op's `eval_roofline()` calls that same function — two copies of one
+cost drift apart.
+
+```yaml
+roofline:
+  func: "tileops.perf.formulas.composite_fwd_bytes"
+  composition:
+  - stage: compute
+    source: "tileops.perf.formulas.inner_fwd_bytes"
+  - stage: epilogue
+    formula: "2 * num_tokens * hidden_size"
+    optional: true
+```
 
 ### Source
 

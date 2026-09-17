@@ -3,6 +3,7 @@
 from .ops.moe import (
     FusedMoEExpertsFwdOp,
     FusedMoeFwdOp,
+    FusedMoeSharedExpertFwdOp,
     FusedTopKOp,
     IndexedExpertMLPFwdOp,
     MoeExpertMLPFwdOp,
@@ -22,4 +23,5 @@ __all__ = [
     "FusedMoEExpertsFwdOp",
     "IndexedExpertMLPFwdOp",
     "FusedMoeFwdOp",
+    "FusedMoeSharedExpertFwdOp",
 ]

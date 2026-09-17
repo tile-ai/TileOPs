@@ -1,7 +1,7 @@
-"""Tests for SharedFusedMoE — FusedMoE with shared expert support.
+"""Tests for FusedMoeSharedExpertFwdOp — FusedMoE with shared expert support.
 
 Verifies:
-  - SharedFusedMoE returns (shared_output, routed_output) tuple
+  - FusedMoeSharedExpertFwdOp returns (shared_output, routed_output) tuple
   - shared_output matches SharedExpertMLPKernel reference
   - routed_output matches FusedMoe output
   - When shared_ffn_size=None, shared_output is None
@@ -14,15 +14,15 @@ import torch
 from tileops.kernels.gemm.dense import GemmKernel
 from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.moe import SharedExpertMLPKernel
-from tileops.ops.moe import SharedFusedMoE
+from tileops.ops.moe import FusedMoeSharedExpertFwdOp
 from tileops.ops.moe.fused_moe import FusedMoeFwdOp
 from tileops.utils import get_sm_version
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("num_tokens", [32, 512])
-def test_shared_fused_moe_basic(num_tokens):
-    """SharedFusedMoE with shared expert kernel."""
+def test_fused_moe_shared_expert_basic(num_tokens):
+    """FusedMoeSharedExpertFwdOp with shared expert kernel."""
     torch.manual_seed(42)
     T, E, K, H, F, F_s = num_tokens, 8, 2, 64, 32, 16
     dtype = torch.bfloat16
@@ -35,7 +35,7 @@ def test_shared_fused_moe_basic(num_tokens):
     shared_w_gate_up = torch.randn(F_s * 2, H, dtype=dtype, device=dev) * 0.02
     shared_w_down = torch.randn(H, F_s, dtype=dtype, device=dev) * 0.02
 
-    op = SharedFusedMoE(
+    op = FusedMoeSharedExpertFwdOp(
         num_tokens=T,
         num_experts=E,
         top_k=K,
@@ -91,8 +91,8 @@ def test_shared_fused_moe_basic(num_tokens):
 
 
 @pytest.mark.smoke
-def test_shared_fused_moe_none():
-    """SharedFusedMoE with shared_ffn_size=None returns shared_out=None."""
+def test_fused_moe_shared_expert_none():
+    """FusedMoeSharedExpertFwdOp with shared_ffn_size=None returns shared_out=None."""
     torch.manual_seed(42)
     T, E, K, H, F = 16, 4, 2, 32, 16
     dtype = torch.bfloat16
@@ -103,7 +103,7 @@ def test_shared_fused_moe_none():
     w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
 
-    op = SharedFusedMoE(
+    op = FusedMoeSharedExpertFwdOp(
         num_tokens=T,
         num_experts=E,
         top_k=K,
@@ -118,7 +118,7 @@ def test_shared_fused_moe_none():
 
 
 @pytest.mark.smoke
-def test_shared_fused_moe_tp():
+def test_fused_moe_shared_expert_tp():
     """TP sharding: sum of partial outputs matches float32 math reference.
 
     Uses float32 dtype to eliminate bf16 rounding differences between
@@ -174,7 +174,7 @@ def test_shared_fused_moe_tp():
     # TP: accumulate partial outputs to simulate all-reduce
     partial_sum = torch.zeros(T, H, dtype=torch.float32, device=dev)
     for tp_rank in range(tp_size):
-        op_tp = SharedFusedMoE(
+        op_tp = FusedMoeSharedExpertFwdOp(
             num_tokens=T,
             num_experts=E,
             top_k=K,
@@ -205,7 +205,7 @@ def test_shared_fused_moe_tp():
 
 
 @pytest.mark.smoke
-def test_shared_fused_moe_tp_rejects_local_shards():
+def test_fused_moe_shared_expert_tp_rejects_local_shards():
     """TP contract: forward() must reject pre-sharded weights with a clear ValueError.
 
     When tp_size > 1 the op shards weights internally. Callers must always pass
@@ -216,7 +216,7 @@ def test_shared_fused_moe_tp_rejects_local_shards():
     dtype = torch.bfloat16
     dev = "cuda"
 
-    op = SharedFusedMoE(
+    op = FusedMoeSharedExpertFwdOp(
         num_tokens=T,
         num_experts=E,
         top_k=K,
@@ -274,7 +274,7 @@ def test_a_replaced_shared_expert_kernel_is_the_one_built():
             super().__init__(**kwargs)
 
     T, E, K, H, F, F_s = 32, 8, 2, 64, 32, 16
-    op = SharedFusedMoE(
+    op = FusedMoeSharedExpertFwdOp(
         num_tokens=T,
         num_experts=E,
         top_k=K,

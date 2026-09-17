@@ -14,11 +14,11 @@ from .contracts import (
     RoutingEpilogueSpec,
 )
 from .fused_moe import FusedMoe, FusedMoeFwdOp
+from .fused_moe_shared_expert import FusedMoeSharedExpertFwdOp
 from .fused_topk import FusedTopKOp
 from .permute_align import MoePermuteAlignFwdOp
 from .prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from .routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
-from .shared_fused_moe import SharedFusedMoE
 from .staged import (
     MoeExpertMLPFwdOp,
     MoeGroupedGemmFwdOp,
@@ -45,7 +45,7 @@ __all__ = [
     "MoePrePermuteFwdOp",
     "PrepareResult",
     "RoutingEpilogueSpec",
-    "SharedFusedMoE",
+    "FusedMoeSharedExpertFwdOp",
     "WeightedReduce",
     "WeightedReduceNoOp",
 ]

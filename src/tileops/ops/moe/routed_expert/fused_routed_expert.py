@@ -31,6 +31,10 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
     WeightedReduceNoOp.
     """
 
+    # The tight path is what an instance runs until __init__ selects otherwise,
+    # so contract checks that read the op without constructing it see it too.
+    _indexed_mlp: IndexedExpertMLPFwdOp | None = None
+
     def __init__(
         self,
         num_tokens: int,

@@ -1,9 +1,9 @@
-"""SharedFusedMoE — FusedMoE with shared expert support.
+"""FusedMoeSharedExpertFwdOp — FusedMoE with shared expert support.
 
 Combines routed experts (via FusedMoe) with shared experts (SharedExpertMLPKernel).
 
 Usage (single GPU, tp_size=1):
-    op = SharedFusedMoE(
+    op = FusedMoeSharedExpertFwdOp(
         num_tokens=T, num_experts=E, top_k=K,
         hidden_size=H, ffn_size=F,
         shared_ffn_size=F_s,
@@ -15,7 +15,7 @@ Usage (single GPU, tp_size=1):
     )
 
 Usage (TP, tp_size>1):
-    op = SharedFusedMoE(
+    op = FusedMoeSharedExpertFwdOp(
         num_tokens=T, num_experts=E, top_k=K,
         hidden_size=H, ffn_size=F,
         shared_ffn_size=F_s,
@@ -41,10 +41,10 @@ from tileops.kernels.moe import SharedExpertMLPKernel
 from tileops.ops.moe.abc import FusedMoEExpertsModular, FusedMoEPrepareAndFinalize
 from tileops.ops.moe.fused_moe import FusedMoe
 
-__all__ = ["SharedFusedMoE"]
+__all__ = ["FusedMoeSharedExpertFwdOp"]
 
 
-class SharedFusedMoE(FusedMoe):
+class FusedMoeSharedExpertFwdOp(FusedMoe):
     """FusedMoE with shared expert support, optionally TP-aware.
 
     Extends FusedMoe to compute both shared and routed expert outputs.
@@ -102,7 +102,7 @@ class SharedFusedMoE(FusedMoe):
         """
         if shared_ffn_size is not None and activation != "silu_and_mul":
             raise NotImplementedError(
-                "SharedFusedMoE shared-expert path only supports "
+                "FusedMoeSharedExpertFwdOp shared-expert path only supports "
                 f"activation='silu_and_mul', got {activation!r}. "
                 "The routed-experts path is configurable, but "
                 "SharedExpertMLPKernel does not yet plumb activation."
@@ -158,9 +158,9 @@ class SharedFusedMoE(FusedMoe):
     ) -> None:
         """``FusedMoeFwdOp``'s dtype contract, extended to the shared expert's weights.
 
-        Hand-written rather than generated from a manifest entry: this op returns
-        ``None`` for its first output when no shared expert is configured, which the
-        manifest's ``outputs`` cannot declare.
+        Hand-written rather than generated: the manifest declares ``shared_output``
+        as ``nullable``, and generation does not yet emit the presence checks that
+        a nullable return position needs.
         """
         if gating_output.dtype != torch.float32:
             raise ValueError(
@@ -180,20 +180,36 @@ class SharedFusedMoE(FusedMoe):
             if tensor is not None and tensor.dtype != dtype:
                 raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
 
+    def _infer_output_shapes(
+        self,
+        hidden_states_shape: tuple[int, ...],
+        gating_output_shape: tuple[int, ...],
+        w_gate_up_shape: tuple[int, ...],
+        w_down_shape: tuple[int, ...],
+        correction_bias_shape: tuple[int, ...],
+        shared_w_gate_up_shape: tuple[int, ...],
+        shared_w_down_shape: tuple[int, ...],
+    ) -> dict[str, tuple[int, ...]]:
+        """Manifest ``shape_rules``: both halves return one row per token, of the input width.
+
+        ``shared_output`` keeps that shape even where the op returns None for it:
+        the manifest declares the position nullable, not variably shaped.
+        """
+        return {
+            "shared_output": tuple(hidden_states_shape),
+            "routed_output": tuple(hidden_states_shape),
+        }
+
     def eval_roofline(self) -> tuple[int, int]:
         """``FusedMoeFwdOp``'s routed cost plus the shared expert's two GEMMs.
 
         The shared expert runs on this rank's shard, so TP shrinks that half only.
         """
-        from tileops.perf.formulas import fused_moe_fwd_bytes
+        from tileops.perf.formulas import fused_moe_shared_expert_fwd_bytes
 
-        flops, nbytes = fused_moe_fwd_bytes(self)
-        if self._shared_mlp_shard_ffn is not None:
-            elem_bytes = self.dtype.itemsize
-            weights = 3 * self._shared_mlp_shard_ffn * self.hidden_size
-            flops += 2 * self.num_tokens * weights
-            nbytes += (weights + self.num_tokens * self.hidden_size) * elem_bytes
-        return flops, nbytes
+        # The manifest declares this same function as ``roofline.func``, so the
+        # spec's cost and the op's cost cannot drift apart.
+        return fused_moe_shared_expert_fwd_bytes(self)
 
     def _shared_mlp_kernel_for(
         self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype

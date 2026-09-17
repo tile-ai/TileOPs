@@ -652,7 +652,12 @@ class Op(ABC):
         entry = load_manifest().get(type(self).__name__)
         if entry is None:
             return
-        names = tuple(entry["signature"]["inputs"])
+        # A workspace is declared under ``resources`` but passed to forward() like
+        # any other tensor, so it counts toward the argument list this compares.
+        workspaces = (entry.get("resources") or {}).get("workspaces") or []
+        names = tuple(entry["signature"]["inputs"]) + tuple(
+            w["name"] for w in workspaces if isinstance(w, dict) and isinstance(w.get("name"), str)
+        )
         if len(names) != len(inputs):
             return
         try:

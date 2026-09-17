@@ -1,16 +1,16 @@
-"""Distributed TP tests for SharedFusedMoE — shared expert Tensor Parallelism.
+"""Distributed TP tests for FusedMoeSharedExpertFwdOp — shared expert Tensor Parallelism.
 
-Compares TileOPs SharedFusedMoE (tp_size/tp_rank) against vLLM DeepseekV2MLP
+Compares TileOPs FusedMoeSharedExpertFwdOp (tp_size/tp_rank) against vLLM DeepseekV2MLP
 (MergedColumnParallelLinear + RowParallelLinear) in a real multi-GPU TP setup.
 
 Run with:
-    torchrun --nproc_per_node=2 -m pytest tests/ops/test_moe_shared_fused_moe_distributed.py -m smoke -vvs
-    torchrun --nproc_per_node=8 -m pytest tests/ops/test_moe_shared_fused_moe_distributed.py -m full -vvs
+    torchrun --nproc_per_node=2 -m pytest tests/ops/test_moe_fused_moe_shared_expert_distributed.py -m smoke -vvs
+    torchrun --nproc_per_node=8 -m pytest tests/ops/test_moe_fused_moe_shared_expert_distributed.py -m full -vvs
 
 Note: These tests require multiple GPUs and will be skipped in single-GPU / CI environments.
 
 Verifies:
-  - TileOPs SharedFusedMoE TP partial outputs all-reduce to same result as
+  - TileOPs FusedMoeSharedExpertFwdOp TP partial outputs all-reduce to same result as
     vLLM DeepseekV2MLP (which handles TP internally via RowParallelLinear / MergedColumnParallelLinear)
 """
 
@@ -22,7 +22,7 @@ import pytest
 import torch
 import torch.distributed as dist
 
-from tileops.ops.moe import SharedFusedMoE
+from tileops.ops.moe import FusedMoeSharedExpertFwdOp
 
 # Skip entire module if fewer than 2 GPUs
 pytestmark = pytest.mark.skipif(
@@ -124,7 +124,7 @@ class TPFixture:
         return wrapper
 
 
-# Test: TileOPs SharedFusedMoE TP vs vLLM DeepseekV2MLP TP
+# Test: TileOPs FusedMoeSharedExpertFwdOp TP vs vLLM DeepseekV2MLP TP
 
 
 @TPFixture()
@@ -133,7 +133,7 @@ def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
 
     Both compute shared expert output using TP:
       - vLLM: MergedColumnParallelLinear + RowParallelLinear (internal all-reduce)
-      - TileOPs: SharedFusedMoE(tp_size, tp_rank) → partial → manual all-reduce
+      - TileOPs: FusedMoeSharedExpertFwdOp(tp_size, tp_rank) → partial → manual all-reduce
 
     Verifies outputs match after vLLM all-reduce and TileOPs manual all-reduce.
     """
@@ -188,14 +188,14 @@ def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
             with torch.no_grad():
                 vllm_out = vllm_mlp(hidden)  # [T, H] — fully reduced across TP ranks
 
-        # ── TileOPs: SharedFusedMoE TP (partial → manual all-reduce) ─────────────
+        # ── TileOPs: FusedMoeSharedExpertFwdOp TP (partial → manual all-reduce) ─────────────
         # Minimal routed expert placeholders (not under test)
         E, K, F = 8, 2, 32
         gating = torch.randn(T, E, dtype=dtype, device=dev)
         w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
         w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
 
-        op = SharedFusedMoE(
+        op = FusedMoeSharedExpertFwdOp(
             num_tokens=T,
             num_experts=E,
             top_k=K,

@@ -132,8 +132,62 @@ def single_input_workload_contract(
     return shape_key, allowed
 
 
+#: Marks an entry of a forward signature's ``inputs`` that came from
+#: ``resources.workspaces`` rather than ``signature.inputs``.
+WORKSPACE_ATTR = "__workspace__"
+
+
+def forward_signature(entry: dict) -> dict:
+    """``signature`` as ``forward()`` receives it: inputs, then workspaces.
+
+    A workspace is passed to ``forward()`` like any other tensor, so every
+    consumer that builds that argument list from the manifest reads this.
+    Merged workspaces carry :data:`WORKSPACE_ATTR` so a consumer that must
+    treat them differently — ``dtype_combos``, whose rows are the caller's
+    value contract — can tell them apart.
+    """
+    sig = entry.get("signature")
+    sig = sig if isinstance(sig, dict) else {}
+    resources = entry.get("resources")
+    workspaces = (resources or {}).get("workspaces") or []
+    inputs = sig.get("inputs") or {}
+    extra = {
+        w["name"]: {
+            # A workspace declares no shape: its own op owns that.
+            **{k: v for k, v in w.items() if k in {"dtype", "optional", "note"}},
+            WORKSPACE_ATTR: True,
+        }
+        for w in workspaces
+        if isinstance(w, dict) and isinstance(w.get("name"), str) and w["name"] not in inputs
+    }
+    if not extra:
+        return sig
+    merged = dict(sig)
+    merged["inputs"] = {**inputs, **extra}
+    return merged
+
+
+def combo_input_names(sig: dict) -> list[str]:
+    """Input names a ``dtype_combos`` row must cover, in declaration order.
+
+    Workspaces are excluded: a combo row states the dtype combinations a
+    caller may pass, and a workspace's dtype is execution strategy.
+    """
+    inputs = sig.get("inputs")
+    if not isinstance(inputs, dict):
+        return []
+    return [
+        name
+        for name, attrs in inputs.items()
+        if not (isinstance(attrs, dict) and attrs.get(WORKSPACE_ATTR))
+    ]
+
+
 __all__ = [
     "WORKLOAD_RESERVED_KEYS",
+    "WORKSPACE_ATTR",
+    "combo_input_names",
+    "forward_signature",
     "load_manifest",
     "load_workloads",
     "manifest_files",

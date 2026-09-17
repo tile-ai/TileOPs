@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 import torch
 
-from tileops.manifest import try_load_entry
+from tileops.manifest import combo_input_names, forward_signature, try_load_entry
 from tileops.manifest.dtype_rules import parse_tokens, same_as_ref
 
 
@@ -207,7 +207,9 @@ def synthesize_validate_dtypes(
         for name, attrs in inputs.items()
         if isinstance(attrs, dict) and attrs.get("optional") is True
     }
-    required_names = [n for n in input_names if n not in optional_names]
+    # A workspace is a forward argument but never a combo column: the rows
+    # state what a caller may pass, and its dtype is execution strategy.
+    required_names = [n for n in combo_input_names(sig) if n not in optional_names]
     combo_keys: set[tuple] | None = None
     if combos is not None:
         input_names_set = set(required_names)
@@ -329,7 +331,7 @@ def maybe_install_validator(cls: type) -> None:
         entry = try_load_entry(cls.__name__)
         if entry is None:
             return
-        sig = entry.get("signature")
+        sig = forward_signature(entry)
         status = entry.get("status")
     if status != "implemented":
         return

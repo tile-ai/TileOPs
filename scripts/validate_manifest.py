@@ -43,6 +43,11 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 import tileops.manifest as manifest_pkg  # noqa: E402
+from tileops.manifest import (  # noqa: E402
+    WORKSPACE_ATTR,
+    combo_input_names,
+    forward_signature,
+)
 from tileops.manifest.dtype_rules import PROMOTE_INT_TO_FLOAT_RE, SAME_AS_RE  # noqa: E402
 from tileops.manifest.shape_rules import (  # noqa: E402
     dim_range_validity,
@@ -101,7 +106,12 @@ _PROMOTE_TARGET_DTYPE: str = "float32"
 
 # Required top-level fields per op entry
 _REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
-_VALID_TOP_KEYS = _REQUIRED_TOP | {"ref_api", "torch_compile_fullgraph"}
+_VALID_TOP_KEYS = _REQUIRED_TOP | {
+    "ref_api",
+    "torch_compile_fullgraph",
+    "composition",
+    "resources",
+}
 _REQUIRED_SIGNATURE = {"inputs", "outputs"}
 _VALID_SIGNATURE_KEYS = {
     "inputs",
@@ -115,6 +125,22 @@ _REQUIRED_SOURCE = {"kernel", "op", "test", "bench"}
 
 # Valid tensor layout values: what a non-default ``layout`` field may say
 _VALID_LAYOUTS = {"channels_last"}
+
+# composition: the internal structure contract of a composite public op.
+_VALID_COMPOSITION_KEYS = {"kind", "stages"}
+_VALID_COMPOSITION_KINDS = {"composite"}
+_VALID_STAGE_KEYS = {"name", "op", "kernel", "delegates", "variants", "optional"}
+_VALID_VARIANT_KEYS = {"name", "condition", "stages"}
+
+# resources: the execution resource contract. A workspace is scratch the op
+# needs to run, not a value the result depends on, so it is declared here
+# rather than among ``signature.inputs``.
+_VALID_RESOURCE_KEYS = {"workspaces"}
+_VALID_WORKSPACE_KEYS = {"name", "dtype", "owner", "kind", "optional", "note"}
+_VALID_WORKSPACE_KINDS = {"scratch"}
+
+# roofline.composition: which stages the parent's cost is made of.
+_VALID_ROOFLINE_COMPOSITION_KEYS = {"stage", "source", "formula", "optional"}
 
 # Single-axis reference a ``static_dims`` entry takes:
 # `<tensor>.shape[<int_literal_or_identifier>]`
@@ -335,6 +361,17 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
                 continue
             if "dtype" not in attrs:
                 err(f"{direction}.{tname} missing 'dtype'")
+            # ``nullable`` says the return position exists but may hold None.
+            # On an input that role belongs to ``optional``, and accepting both
+            # spellings there would leave two ways to say one thing.
+            if "nullable" in attrs:
+                if direction != "outputs":
+                    err(
+                        f"{direction}.{tname}.nullable is only valid on an output; "
+                        f"an input that may be omitted uses 'optional'"
+                    )
+                elif not isinstance(attrs["nullable"], bool):
+                    err(f"{direction}.{tname}.nullable must be a bool")
             # shape declares one shape. Alternatives would leave every
             # consumer — mock builder, roofline binding, fake — to pick one,
             # so a tensor whose rank or axis order varies omits shape and states its
@@ -557,6 +594,78 @@ def _l0_roofline(op_name: str, entry: dict, roofline: dict) -> list[str]:
                     err(f"roofline.vars key {k!r} must be a string")
                 if not (isinstance(v, str) and v.strip()):
                     err(f"roofline.vars[{k!r}] must be a non-empty string")
+    # ``composition`` says which stages the parent's cost is made of. It is
+    # orthogonal to how that cost is computed, so it coexists with either mode.
+    rl_comp = roofline.get("composition")
+    if rl_comp is None:
+        # A composite that does not say what its cost is made of leaves the
+        # parent's number unaccountable to the stages it declares.
+        if _stage_names(entry):
+            err("entry declares a composition but roofline.composition is missing")
+    else:
+        stage_names = set(_stage_names(entry))
+        if not isinstance(rl_comp, list) or not rl_comp:
+            err("roofline.composition must be a non-empty list")
+        elif not stage_names:
+            err("roofline.composition is set but the entry declares no composition stages")
+        else:
+            cited: set[str] = set()
+            for i, item in enumerate(rl_comp):
+                where = f"roofline.composition[{i}]"
+                if not isinstance(item, dict):
+                    err(f"{where} must be a mapping, got {type(item).__name__}")
+                    continue
+                unknown_c = sorted(repr(k) for k in set(item) - _VALID_ROOFLINE_COMPOSITION_KEYS)
+                if unknown_c:
+                    err(
+                        f"{where} has unknown keys [{', '.join(unknown_c)}]; "
+                        f"valid keys are {sorted(_VALID_ROOFLINE_COMPOSITION_KEYS)}"
+                    )
+                stage = item.get("stage")
+                if not isinstance(stage, str) or not stage.strip():
+                    err(f"{where} must have a non-empty string 'stage'")
+                elif stage not in stage_names:
+                    err(
+                        f"{where}.stage {stage!r} is not a composition stage name {sorted(stage_names)}"
+                    )
+                # Counting one stage twice inflates the parent's declared cost
+                # exactly as quietly as leaving one out deflates it.
+                elif stage in cited:
+                    err(f"{where}.stage {stage!r} is cited twice")
+                else:
+                    cited.add(stage)
+                has_src = "source" in item
+                has_formula = "formula" in item
+                if has_src == has_formula:
+                    err(f"{where} must have exactly one of 'source' or 'formula'")
+                for field in ("source", "formula"):
+                    if field in item and not (isinstance(item[field], str) and item[field].strip()):
+                        err(f"{where}.{field} must be a non-empty string")
+                # ``source`` names the function that stage's cost comes from, and
+                # resolves the same way ``roofline.func`` does.
+                if isinstance(item.get("source"), str) and item["source"].strip():
+                    smod, _, sattr = item["source"].rpartition(".")
+                    try:
+                        starget = importlib.import_module(smod) if smod else None
+                    except ImportError:
+                        starget = None
+                    if starget is None or not callable(getattr(starget, sattr, None)):
+                        err(f"{where}.source {item['source']!r} does not resolve to a callable")
+                if "optional" in item and not isinstance(item["optional"], bool):
+                    err(f"{where}.optional must be a bool")
+            # A stage the entry does not mark optional has a cost, and a parent
+            # that never names it is not accounting for it.
+            required = {
+                st["name"]
+                for st in (entry.get("composition") or {}).get("stages") or []
+                if isinstance(st, dict)
+                and isinstance(st.get("name"), str)
+                and not st.get("optional")
+            }
+            uncited = sorted(required - cited)
+            if uncited:
+                err(f"roofline.composition omits non-optional composition stage(s) {uncited}")
+
     if has_func and isinstance(roofline.get("func"), str):
         mod, _, attr = roofline["func"].rpartition(".")
         try:
@@ -1108,6 +1217,299 @@ def _l0_optional(op_name: str, entry: dict, sig: dict) -> list[str]:
     return errors
 
 
+# ---------------------------------------------------------------------------
+# composition and resources
+# ---------------------------------------------------------------------------
+
+
+def _declared_workspaces(entry: dict) -> list[dict]:
+    """``resources.workspaces`` entries that carry a string name."""
+    resources = entry.get("resources")
+    if not isinstance(resources, dict):
+        return []
+    workspaces = resources.get("workspaces")
+    if not isinstance(workspaces, list):
+        return []
+    return [w for w in workspaces if isinstance(w, dict) and isinstance(w.get("name"), str)]
+
+
+def _forward_signature(entry: dict) -> dict:
+    """``signature`` as ``forward()`` sees it — see ``tileops.manifest``.
+
+    Kept as a module-local name so every parity check reads the same helper the
+    op layer's codegen does.
+    """
+    return forward_signature(entry)
+
+
+def _stage_names(entry: dict) -> list[str]:
+    """Top-level ``composition.stages`` names, in declaration order."""
+    composition = entry.get("composition")
+    if not isinstance(composition, dict):
+        return []
+    stages = composition.get("stages")
+    if not isinstance(stages, list):
+        return []
+    return [st["name"] for st in stages if isinstance(st, dict) and isinstance(st.get("name"), str)]
+
+
+def _op_ref_resolves(ref: str, all_op_names: Collection[str]) -> bool:
+    """Whether a stage's ``op`` names a manifest entry or an importable class.
+
+    A bare name must be a manifest entry; a dotted path is imported. Guessing
+    a package for a bare name would let a typo resolve to an unrelated class.
+    """
+    if ref in all_op_names:
+        return True
+    if "." not in ref:
+        return False
+    mod, _, attr = ref.rpartition(".")
+    try:
+        module = importlib.import_module(mod)
+    except ImportError:
+        return False
+    return isinstance(getattr(module, attr, None), type)
+
+
+def _l0_stage(
+    op_name: str,
+    entry: dict,
+    stage: object,
+    *,
+    where: str,
+    named: bool,
+    all_op_names: Collection[str],
+    kernel_keys: Collection[str],
+    depth: int = 0,
+) -> list[str]:
+    """One ``composition.stages`` element, or one element of a variant's stages."""
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+    if not isinstance(stage, dict):
+        err(f"{where} must be a mapping, got {type(stage).__name__}")
+        return errors
+
+    unknown = sorted(repr(k) for k in set(stage) - _VALID_STAGE_KEYS)
+    if unknown:
+        err(
+            f"{where} has unknown keys [{', '.join(unknown)}]; "
+            f"valid keys are {sorted(_VALID_STAGE_KEYS)}"
+        )
+
+    if named:
+        if not isinstance(stage.get("name"), str) or not stage["name"].strip():
+            err(f"{where} must have a non-empty string 'name'")
+    elif "name" in stage and not isinstance(stage["name"], str):
+        err(f"{where}.name must be a string")
+
+    # A stage names what runs, and the validator has exactly two ways to
+    # confirm that something runs: a manifest op, or a key of this entry's
+    # kernel map. A free-form string would name neither.
+    has_op = "op" in stage
+    has_kernel = "kernel" in stage
+    if has_op == has_kernel:
+        err(f"{where} must have exactly one of 'op' or 'kernel'")
+    if has_op:
+        ref = stage["op"]
+        if not isinstance(ref, str) or not ref.strip():
+            err(f"{where}.op must be a non-empty string")
+        elif not _op_ref_resolves(ref, all_op_names):
+            err(f"{where}.op {ref!r} is neither a manifest entry nor an importable dotted path")
+    if has_kernel:
+        ref = stage["kernel"]
+        if not isinstance(ref, str) or not ref.strip():
+            err(f"{where}.kernel must be a non-empty string")
+        elif ref not in kernel_keys:
+            err(f"{where}.kernel {ref!r} is not a key of source.kernel_map {sorted(kernel_keys)}")
+
+    if "optional" in stage and not isinstance(stage["optional"], bool):
+        err(f"{where}.optional must be a bool")
+
+    delegates = stage.get("delegates")
+    if delegates is not None:
+        if not isinstance(delegates, list):
+            err(f"{where}.delegates must be a list")
+        else:
+            for i, dele in enumerate(delegates):
+                if not isinstance(dele, str) or not dele.strip():
+                    err(f"{where}.delegates[{i}] must be a non-empty string")
+                elif not _op_ref_resolves(dele, all_op_names):
+                    err(
+                        f"{where}.delegates[{i}] {dele!r} is neither a manifest "
+                        f"entry nor an importable dotted path"
+                    )
+
+    variants = stage.get("variants")
+    if variants is not None:
+        if depth:
+            err(f"{where}.variants is only allowed on a top-level stage")
+        elif not isinstance(variants, list) or not variants:
+            err(f"{where}.variants must be a non-empty list")
+        else:
+            seen: set[str] = set()
+            for i, variant in enumerate(variants):
+                vwhere = f"{where}.variants[{i}]"
+                if not isinstance(variant, dict):
+                    err(f"{vwhere} must be a mapping")
+                    continue
+                unknown_v = sorted(repr(k) for k in set(variant) - _VALID_VARIANT_KEYS)
+                if unknown_v:
+                    err(
+                        f"{vwhere} has unknown keys [{', '.join(unknown_v)}]; "
+                        f"valid keys are {sorted(_VALID_VARIANT_KEYS)}"
+                    )
+                vname = variant.get("name")
+                if not isinstance(vname, str) or not vname.strip():
+                    err(f"{vwhere} must have a non-empty string 'name'")
+                elif vname in seen:
+                    err(f"{vwhere}.name {vname!r} is declared twice")
+                else:
+                    seen.add(vname)
+                # ``condition`` is prose for the reader: the executable
+                # condition stays in the op. Nothing here parses it.
+                if "condition" in variant and not (
+                    isinstance(variant["condition"], str) and variant["condition"].strip()
+                ):
+                    err(f"{vwhere}.condition must be a non-empty string")
+                vstages = variant.get("stages")
+                if not isinstance(vstages, list) or not vstages:
+                    err(f"{vwhere}.stages must be a non-empty list")
+                else:
+                    for j, vstage in enumerate(vstages):
+                        errors.extend(
+                            _l0_stage(
+                                op_name,
+                                entry,
+                                vstage,
+                                where=f"{vwhere}.stages[{j}]",
+                                named=False,
+                                all_op_names=all_op_names,
+                                kernel_keys=kernel_keys,
+                                depth=depth + 1,
+                            )
+                        )
+    return errors
+
+
+def _l0_composition(
+    op_name: str,
+    entry: dict,
+    composition: dict,
+    *,
+    all_op_names: Collection[str] = (),
+) -> list[str]:
+    """``composition``: the internal structure of a composite public op."""
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+
+    unknown = sorted(repr(k) for k in set(composition) - _VALID_COMPOSITION_KEYS)
+    if unknown:
+        err(
+            f"composition has unknown keys [{', '.join(unknown)}]; "
+            f"valid keys are {sorted(_VALID_COMPOSITION_KEYS)}"
+        )
+
+    kind = composition.get("kind")
+    if kind not in _VALID_COMPOSITION_KINDS:
+        err(f"composition.kind must be one of {sorted(_VALID_COMPOSITION_KINDS)}, got {kind!r}")
+
+    source = entry.get("source")
+    kernel_map = source.get("kernel_map") if isinstance(source, dict) else None
+    kernel_keys = set(kernel_map) if isinstance(kernel_map, dict) else set()
+
+    stages = composition.get("stages")
+    if not isinstance(stages, list) or not stages:
+        err("composition.stages must be a non-empty list")
+        return errors
+
+    seen: set[str] = set()
+    for i, stage in enumerate(stages):
+        errors.extend(
+            _l0_stage(
+                op_name,
+                entry,
+                stage,
+                where=f"composition.stages[{i}]",
+                named=True,
+                all_op_names=all_op_names,
+                kernel_keys=kernel_keys,
+            )
+        )
+        if isinstance(stage, dict) and isinstance(stage.get("name"), str):
+            if stage["name"] in seen:
+                err(f"composition.stages[{i}].name {stage['name']!r} is declared twice")
+            else:
+                seen.add(stage["name"])
+    return errors
+
+
+def _l0_resources(op_name: str, entry: dict, resources: dict) -> list[str]:
+    """``resources.workspaces``: scratch buffers the op needs to run."""
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+
+    unknown = sorted(repr(k) for k in set(resources) - _VALID_RESOURCE_KEYS)
+    if unknown:
+        err(
+            f"resources has unknown keys [{', '.join(unknown)}]; "
+            f"valid keys are {sorted(_VALID_RESOURCE_KEYS)}"
+        )
+
+    workspaces = resources.get("workspaces")
+    if workspaces is None:
+        return errors
+    if not isinstance(workspaces, list) or not workspaces:
+        err("resources.workspaces must be a non-empty list")
+        return errors
+
+    stage_names = set(_stage_names(entry))
+    has_composition = isinstance(entry.get("composition"), dict)
+    input_names = set((entry.get("signature") or {}).get("inputs") or {})
+    seen: set[str] = set()
+    for i, ws in enumerate(workspaces):
+        where = f"resources.workspaces[{i}]"
+        if not isinstance(ws, dict):
+            err(f"{where} must be a mapping, got {type(ws).__name__}")
+            continue
+        unknown_w = sorted(repr(k) for k in set(ws) - _VALID_WORKSPACE_KEYS)
+        if unknown_w:
+            err(
+                f"{where} has unknown keys [{', '.join(unknown_w)}]; "
+                f"valid keys are {sorted(_VALID_WORKSPACE_KEYS)}"
+            )
+        name = ws.get("name")
+        if not isinstance(name, str) or not name.strip():
+            err(f"{where} must have a non-empty string 'name'")
+        elif name in seen:
+            err(f"{where}.name {name!r} is declared twice")
+        else:
+            seen.add(name)
+            # The same name in both places would leave dtype and shape
+            # checks reading two declarations of one tensor.
+            if name in input_names:
+                err(f"{where}.name {name!r} is also declared in signature.inputs")
+        # dtype is required: dtype parity builds this tensor like any other
+        # forward argument, and an undeclared dtype drops that coverage.
+        if not isinstance(ws.get("dtype"), str) or not ws["dtype"].strip():
+            err(f"{where} must have a non-empty string 'dtype'")
+        kind = ws.get("kind")
+        if kind is not None and kind not in _VALID_WORKSPACE_KINDS:
+            err(f"{where}.kind must be one of {sorted(_VALID_WORKSPACE_KINDS)}, got {kind!r}")
+        if "optional" in ws and not isinstance(ws["optional"], bool):
+            err(f"{where}.optional must be a bool")
+        owner = ws.get("owner")
+        if has_composition:
+            if owner is None:
+                err(f"{where} must have an 'owner' naming a composition stage")
+            elif owner not in stage_names:
+                err(
+                    f"{where}.owner {owner!r} is not a composition stage name {sorted(stage_names)}"
+                )
+        elif owner is not None:
+            err(f"{where}.owner is set but the entry declares no composition")
+    return errors
+
+
 _L0_SECTIONS = (
     ("signature", dict, "a mapping", _l0_signature),
     ("workloads", list, "a list", _l0_workloads),
@@ -1188,6 +1590,19 @@ def check_l0(
             )
 
     errors.extend(_l0_kernel_map(op_name, entry, warnings))
+
+    composition = entry.get("composition")
+    if isinstance(composition, dict):
+        errors.extend(_l0_composition(op_name, entry, composition, all_op_names=all_op_names))
+    elif "composition" in entry:
+        err("composition must be a mapping")
+
+    resources = entry.get("resources")
+    if isinstance(resources, dict):
+        errors.extend(_l0_resources(op_name, entry, resources))
+    elif "resources" in entry:
+        err("resources must be a mapping")
+
     return errors
 
 
@@ -1523,7 +1938,7 @@ def check_l1(
         )
         return errors
 
-    manifest_inputs = sig.get("inputs", {})
+    manifest_inputs = _forward_signature(entry).get("inputs", {})
     manifest_params = sig.get("params", {})
     manifest_static_dims = sig.get("static_dims")
     init_params = _get_init_params(result.cls)
@@ -1685,7 +2100,9 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     """
     errors: list[str] = []
     err = _emit_to(errors, "dtype", op_name)
-    sig = entry.get("signature", {})
+    # Workspaces declare a dtype in the same syntax, so they are checked here
+    # as forward arguments rather than left to L0's non-empty-string rule.
+    sig = _forward_signature(entry)
     raw_inputs = sig.get("inputs")
     raw_outputs = sig.get("outputs")
     inputs = raw_inputs if isinstance(raw_inputs, dict) else {}
@@ -1878,11 +2295,8 @@ def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
         # identity check, so returning silently would let it through.
         errors.extend(_diagnose_unresolvable_signature(op_name, sig))
         return errors
-    inputs = sig.get("inputs") or {}
     optional_names = set(_optional_input_names(sig))
-    declared_input_names: list[str] = (
-        [n for n in inputs if n not in optional_names] if isinstance(inputs, dict) else []
-    )
+    declared_input_names: list[str] = [n for n in combo_input_names(sig) if n not in optional_names]
     for i, combo in enumerate(dtype_combos):
         if not isinstance(combo, dict):
             continue
@@ -2533,7 +2947,7 @@ def check_l2_infer_parity(
         return errors
     warn = _emit_to(warnings, "shape", op_name)
 
-    sig = entry.get("signature", {})
+    sig = _forward_signature(entry)
     rules = sig.get("shape_rules") or []
     if not isinstance(rules, list):
         rules = []
@@ -3035,6 +3449,29 @@ def _caller_stated_out_dtype(sig: dict, combo: dict[str, str]) -> dict:
     return {}
 
 
+def _workspace_probe_dtype(attrs: object, combo: dict[str, str]) -> "str | None":
+    """A concrete dtype for a workspace the probe must pass but no combo names.
+
+    ``same_as(ref)`` follows the row's choice for *ref*. A union prefers a token
+    the row already uses, so an op that wants its workspace to match the
+    activation dtype is probed with a combination it accepts; failing that it
+    takes the first declared token, which the manifest says is legal.
+    """
+    if not (isinstance(attrs, dict) and attrs.get(WORKSPACE_ATTR)):
+        return None
+    dtype_str = attrs.get("dtype")
+    if not isinstance(dtype_str, str):
+        return None
+    same_as = SAME_AS_RE.match(dtype_str.strip())
+    if same_as:
+        return combo.get(same_as.group(1))
+    tokens = _parse_dtype_expr(dtype_str)
+    if not tokens:
+        return None
+    in_row = [t for t in tokens if t in set(combo.values())]
+    return in_row[0] if in_row else tokens[0]
+
+
 def _combo_accepted(
     cls: type,
     forward_inputs: list[str],
@@ -3064,9 +3501,15 @@ def _combo_accepted(
     if validate_fn is None:
         return False, "no _validate_dtypes"
 
+    sig_inputs = (sig or {}).get("inputs") or {}
     tensors: dict = {}
     for name in forward_inputs:
         dtype_name = combo.get(name)
+        if dtype_name is None:
+            # A workspace is a forward argument the op validates, but never a
+            # combo column. Its dtype comes from its own declaration so the
+            # probe can make the call the combo row describes.
+            dtype_name = _workspace_probe_dtype(sig_inputs.get(name), combo)
         if dtype_name is None:
             return False, f"combo missing input {name!r}"
         t = _make_mock_tensor(dtype_name)
@@ -3275,7 +3718,7 @@ def check_l3_validate_dtypes_parity(
         )
         return errors
 
-    sig = entry.get("signature", {})
+    sig = _forward_signature(entry)
     inputs = sig.get("inputs") or {}
     if not isinstance(inputs, dict) or not inputs:
         return errors
@@ -3284,7 +3727,12 @@ def check_l3_validate_dtypes_parity(
     # An optional input is never a dtype_combos column, so a probe that
     # demanded one for it could never be satisfied.
     optional_inputs = set(_optional_input_names(sig))
+    # Two different lists. ``forward_inputs`` is what the call passes, so it
+    # carries the workspaces. ``combo_dims`` is what a dtype_combos row spans,
+    # so it does not: a row states the caller's dtypes, and the probe supplies
+    # a workspace's own declared dtype when it builds the call.
     forward_inputs = [n for n in inputs if n not in optional_inputs]
+    combo_dims = [n for n in combo_input_names(sig) if n not in optional_inputs]
     param_env = _param_env(sig, entry.get("workloads"))
 
     dtype_options = _resolve_tensor_dtype_options(sig)
@@ -3399,7 +3847,7 @@ def check_l3_validate_dtypes_parity(
         # rejected. Enumerate the full Cartesian product and report any
         # non-listed combo that ``_validate_dtypes`` accepts. Breaking on
         # the first rejection would miss a later accepted combo.
-        input_options: list[list[str]] = [dtype_options.get(name, []) for name in forward_inputs]
+        input_options: list[list[str]] = [dtype_options.get(name, []) for name in combo_dims]
         product_size = 1
         for opts in input_options:
             product_size *= max(len(opts), 1)
@@ -3408,12 +3856,12 @@ def check_l3_validate_dtypes_parity(
                 f"Cartesian product of dtype options ({product_size}) "
                 f"exceeds _MAX_DTYPE_COMBOS={_MAX_DTYPE_COMBOS}; "
                 f"non-listed rejection check skipped "
-                f"({len(forward_inputs)} inputs × options "
+                f"({len(combo_dims)} inputs × options "
                 f"{[len(o) for o in input_options]})"
             )
             return errors
         listed_combo_keys = {
-            tuple(combo.get(n) for n in forward_inputs)
+            tuple(combo.get(n) for n in combo_dims)
             for combo in dtype_combos
             if isinstance(combo, dict)
         }
@@ -3422,7 +3870,7 @@ def check_l3_validate_dtypes_parity(
         for tup in itertools.product(*input_options):
             if tup in listed_combo_keys:
                 continue
-            candidate = dict(zip(forward_inputs, tup, strict=True))
+            candidate = dict(zip(combo_dims, tup, strict=True))
             checked_any = True
             accepted, reason = _combo_accepted(
                 cls,
@@ -3451,7 +3899,7 @@ def check_l3_validate_dtypes_parity(
         # covering every input (known to be accepted).
         baseline_combo: dict[str, str] | None = None
         for c in dtype_combos:
-            if isinstance(c, dict) and all(n in c for n in forward_inputs):
+            if isinstance(c, dict) and all(n in c for n in combo_dims):
                 baseline_combo = dict(c)
                 break
         if baseline_combo is not None:
@@ -3943,8 +4391,7 @@ def check_c4_forward_signature_parity(
     if cls is None:
         return errors
 
-    sig = entry.get("signature", {})
-    manifest_inputs = sig.get("inputs") or {}
+    manifest_inputs = _forward_signature(entry).get("inputs") or {}
     if not isinstance(manifest_inputs, dict):
         return errors
     expected = list(manifest_inputs.keys())

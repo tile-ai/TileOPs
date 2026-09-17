@@ -433,7 +433,7 @@ class FusedMoeWorkload(WorkloadBase):
         return hidden, gating, correction_bias, w_gate_up, w_down
 
 
-class SharedFusedMoeWorkload(WorkloadBase):
+class FusedMoeSharedExpertWorkload(WorkloadBase):
     def __init__(
         self,
         num_tokens,
@@ -490,14 +490,23 @@ class SharedFusedMoeWorkload(WorkloadBase):
             )
             * 0.02
         )
-        # Shared expert weights: gate+up concatenated [2*Fs, H], down [H, Fs]
-        shared_w_gate_up = (
-            torch.randn(self.shared_ffn_size * 2, self.hidden_size, dtype=self.dtype, device=dev)
-            * 0.02
-        )
-        shared_w_down = (
-            torch.randn(self.hidden_size, self.shared_ffn_size, dtype=self.dtype, device=dev) * 0.02
-        )
+        # Shared expert weights: gate+up concatenated [2*Fs, H], down [H, Fs].
+        # ``shared_ffn_size is None`` is the routed-only configuration, where the
+        # op takes no shared weights and returns None in their output position.
+        if self.shared_ffn_size is None:
+            shared_w_gate_up = None
+            shared_w_down = None
+        else:
+            shared_w_gate_up = (
+                torch.randn(
+                    self.shared_ffn_size * 2, self.hidden_size, dtype=self.dtype, device=dev
+                )
+                * 0.02
+            )
+            shared_w_down = (
+                torch.randn(self.hidden_size, self.shared_ffn_size, dtype=self.dtype, device=dev)
+                * 0.02
+            )
         return hidden, gating, correction_bias, w_gate_up, w_down, shared_w_gate_up, shared_w_down
 
 

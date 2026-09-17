@@ -3624,3 +3624,467 @@ class TestMutatedInputParity:
             == []
         )
         assert any("publishes no compile_op_names" in w for w in warnings), warnings
+
+
+class TestComposition:
+    """composition: the internal structure contract of a composite public op."""
+
+    @staticmethod
+    def _entry(stages, *, kernel_map=None, **extra):
+        entry = _make_entry(
+            kernel_map=kernel_map if kernel_map is not None else {"inner": "InnerKernel"},
+            composition={"kind": "composite", "stages": stages},
+            **extra,
+        )
+        # A composition without one is its own error, checked in
+        # TestRooflineComposition; these cases are about the stages.
+        entry["roofline"]["composition"] = [
+            {"stage": st["name"], "formula": "1"}
+            for st in stages
+            if isinstance(st, dict) and isinstance(st.get("name"), str)
+        ]
+        return entry
+
+    def test_valid_composition_accepted(self, validator):
+        entry = self._entry(
+            [
+                {"name": "first", "op": "OtherOp"},
+                {"name": "second", "kernel": "inner", "optional": True},
+            ]
+        )
+        errors = validator.check_l0("op", entry, all_op_names=["op", "OtherOp"])
+        assert errors == []
+
+    def test_unknown_kind_rejected(self, validator):
+        entry = self._entry([{"name": "first", "kernel": "inner"}])
+        entry["composition"]["kind"] = "pipeline"
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("composition.kind" in e for e in errors)
+
+    def test_duplicate_stage_name_rejected(self, validator):
+        entry = self._entry(
+            [{"name": "same", "kernel": "inner"}, {"name": "same", "kernel": "inner"}]
+        )
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("declared twice" in e for e in errors)
+
+    def test_stage_needs_exactly_one_reference(self, validator):
+        both = self._entry([{"name": "s", "op": "OtherOp", "kernel": "inner"}])
+        neither = self._entry([{"name": "s"}])
+        for entry in (both, neither):
+            errors = validator.check_l0("op", entry, all_op_names=["op", "OtherOp"])
+            assert any("exactly one of 'op' or 'kernel'" in e for e in errors)
+
+    def test_unresolvable_op_reference_rejected(self, validator):
+        entry = self._entry([{"name": "s", "op": "NoSuchOp"}])
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("neither a manifest entry nor an importable" in e for e in errors)
+
+    def test_dotted_op_path_must_name_a_class(self, validator):
+        ok = self._entry([{"name": "s", "op": "tileops.ops.moe.FusedMoeFwdOp"}])
+        assert validator.check_l0("op", ok, all_op_names=["op"]) == []
+
+        not_a_class = self._entry(
+            [{"name": "s", "op": "tileops.perf.formulas.fused_moe_fwd_bytes"}]
+        )
+        errors = validator.check_l0("op", not_a_class, all_op_names=["op"])
+        assert any("neither a manifest entry nor an importable" in e for e in errors)
+
+    def test_kernel_reference_must_be_a_kernel_map_key(self, validator):
+        entry = self._entry([{"name": "s", "kernel": "absent"}])
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("is not a key of source.kernel_map" in e for e in errors)
+
+    def test_variants_validated_and_named_uniquely(self, validator):
+        entry = self._entry(
+            [
+                {
+                    "name": "s",
+                    "kernel": "inner",
+                    "variants": [
+                        {"name": "a", "stages": [{"kernel": "inner"}]},
+                        {
+                            "name": "a",
+                            "condition": "small routes only",
+                            "stages": [{"kernel": "absent"}],
+                        },
+                    ],
+                }
+            ]
+        )
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("variants[1].name 'a' is declared twice" in e for e in errors)
+        assert any("variants[1].stages[0].kernel 'absent'" in e for e in errors)
+
+    def test_variant_stages_may_not_nest_variants(self, validator):
+        entry = self._entry(
+            [
+                {
+                    "name": "s",
+                    "kernel": "inner",
+                    "variants": [
+                        {
+                            "name": "a",
+                            "stages": [
+                                {
+                                    "kernel": "inner",
+                                    "variants": [{"name": "b", "stages": [{"kernel": "inner"}]}],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        )
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("only allowed on a top-level stage" in e for e in errors)
+
+    def test_delegates_must_resolve(self, validator):
+        entry = self._entry([{"name": "s", "kernel": "inner", "delegates": ["NoSuchOp"]}])
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("delegates[0]" in e for e in errors)
+
+
+class TestResources:
+    """resources.workspaces: scratch buffers declared apart from the inputs."""
+
+    @staticmethod
+    def _entry(workspaces, *, composition=None, **extra):
+        extra["resources"] = {"workspaces": workspaces}
+        if composition is not None:
+            extra["composition"] = composition
+        return _make_entry(**extra)
+
+    def test_leaf_op_workspace_accepted(self, validator):
+        entry = self._entry([{"name": "ws", "dtype": "float16", "kind": "scratch"}])
+        assert validator.check_l0("op", entry, all_op_names=["op"]) == []
+
+    def test_dtype_is_required(self, validator):
+        entry = self._entry([{"name": "ws"}])
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("must have a non-empty string 'dtype'" in e for e in errors)
+
+    def test_name_may_not_also_be_an_input(self, validator):
+        entry = self._entry([{"name": "x", "dtype": "float16"}])
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("also declared in signature.inputs" in e for e in errors)
+
+    def test_owner_required_and_checked_against_stages(self, validator):
+        composition = {"kind": "composite", "stages": [{"name": "stage_a", "kernel": "inner"}]}
+        missing = self._entry(
+            [{"name": "ws", "dtype": "float16"}],
+            composition=composition,
+            kernel_map={"inner": "InnerKernel"},
+        )
+        errors = validator.check_l0("op", missing, all_op_names=["op"])
+        assert any("must have an 'owner'" in e for e in errors)
+
+        wrong = self._entry(
+            [{"name": "ws", "dtype": "float16", "owner": "nope"}],
+            composition=composition,
+            kernel_map={"inner": "InnerKernel"},
+        )
+        errors = validator.check_l0("op", wrong, all_op_names=["op"])
+        assert any("is not a composition stage name" in e for e in errors)
+
+    def test_owner_rejected_without_composition(self, validator):
+        entry = self._entry([{"name": "ws", "dtype": "float16", "owner": "stage_a"}])
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("declares no composition" in e for e in errors)
+
+    def test_workspace_dtype_goes_through_dtype_validation(self, validator):
+        entry = self._entry([{"name": "ws", "dtype": "floatt16"}])
+        errors = validator.check_l3("op", entry)
+        assert any("ws has unrecognized dtype 'floatt16'" in e for e in errors)
+
+    def test_workspace_same_as_resolves_against_inputs(self, validator):
+        entry = self._entry([{"name": "ws", "dtype": "same_as(x)"}])
+        assert validator.check_l3("op", entry) == []
+
+    def test_shape_is_not_a_workspace_key(self, validator):
+        entry = self._entry([{"name": "ws", "dtype": "float16", "shape": "[N]"}])
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("has unknown keys" in e and "shape" in e for e in errors)
+
+    def test_unknown_workspace_kind_rejected(self, validator):
+        entry = self._entry([{"name": "ws", "dtype": "float16", "kind": "persistent"}])
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("kind must be one of" in e for e in errors)
+
+
+class TestNullableOutput:
+    """nullable: a fixed return position that may hold None."""
+
+    def test_nullable_output_accepted(self, validator):
+        entry = _make_entry(outputs={"y": {"dtype": "same_as(x)", "nullable": True}})
+        assert validator.check_l0("op", entry, all_op_names=["op"]) == []
+
+    def test_nullable_input_rejected(self, validator):
+        entry = _make_entry(inputs={"x": {"dtype": "float16", "nullable": True}})
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("only valid on an output" in e for e in errors)
+
+    def test_non_bool_nullable_rejected(self, validator):
+        entry = _make_entry(outputs={"y": {"dtype": "same_as(x)", "nullable": "yes"}})
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("nullable must be a bool" in e for e in errors)
+
+
+class TestRooflineComposition:
+    """roofline.composition: which stages the parent's cost is made of."""
+
+    @staticmethod
+    def _entry(composition_rows, *, stages=None):
+        stages = stages if stages is not None else [{"name": "stage_a", "kernel": "inner"}]
+        entry = _make_entry(
+            kernel_map={"inner": "InnerKernel"},
+            composition={"kind": "composite", "stages": stages},
+        )
+        entry["roofline"]["composition"] = composition_rows
+        return entry
+
+    def test_valid_composition_accepted(self, validator):
+        entry = self._entry(
+            [{"stage": "stage_a", "source": "tileops.perf.formulas.fused_moe_fwd_bytes"}],
+        )
+        assert validator.check_l0("op", entry, all_op_names=["op"]) == []
+
+    def test_unresolvable_source_rejected(self, validator):
+        entry = self._entry([{"stage": "stage_a", "source": "pkg.mod.nope"}])
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("does not resolve to a callable" in e for e in errors)
+
+    def test_stage_cited_twice_rejected(self, validator):
+        entry = self._entry(
+            [
+                {"stage": "stage_a", "formula": "2 * M"},
+                {"stage": "stage_a", "formula": "2 * M"},
+            ]
+        )
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("is cited twice" in e for e in errors)
+
+    def test_non_optional_stage_must_be_cited(self, validator):
+        entry = self._entry(
+            [{"stage": "stage_a", "formula": "2 * M"}],
+            stages=[
+                {"name": "stage_a", "kernel": "inner"},
+                {"name": "stage_b", "kernel": "inner"},
+            ],
+        )
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("omits non-optional composition stage(s) ['stage_b']" in e for e in errors)
+
+    def test_optional_stage_may_be_omitted(self, validator):
+        entry = self._entry(
+            [{"stage": "stage_a", "formula": "2 * M"}],
+            stages=[
+                {"name": "stage_a", "kernel": "inner"},
+                {"name": "stage_b", "kernel": "inner", "optional": True},
+            ],
+        )
+        assert validator.check_l0("op", entry, all_op_names=["op"]) == []
+
+    def test_coexists_with_func_mode(self, validator):
+        entry = self._entry([{"stage": "stage_a", "formula": "2 * M"}])
+        entry["roofline"] = {
+            "func": "tileops.perf.formulas.fused_moe_fwd_bytes",
+            "composition": entry["roofline"]["composition"],
+        }
+        assert validator.check_l0("op", entry, all_op_names=["op"]) == []
+
+    def test_unknown_stage_rejected(self, validator):
+        entry = self._entry([{"stage": "nope", "formula": "2 * M"}])
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("is not a composition stage name" in e for e in errors)
+
+    def test_source_and_formula_are_exclusive(self, validator):
+        both = self._entry(
+            [
+                {
+                    "stage": "stage_a",
+                    "source": "tileops.perf.formulas.fused_moe_fwd_bytes",
+                    "formula": "2 * M",
+                }
+            ]
+        )
+        neither = self._entry([{"stage": "stage_a"}])
+        for entry in (both, neither):
+            errors = validator.check_l0("op", entry, all_op_names=["op"])
+            assert any("exactly one of 'source' or 'formula'" in e for e in errors)
+
+    def test_composition_without_roofline_composition_rejected(self, validator):
+        entry = _make_entry(
+            kernel_map={"inner": "InnerKernel"},
+            composition={"kind": "composite", "stages": [{"name": "stage_a", "kernel": "inner"}]},
+        )
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("roofline.composition is missing" in e for e in errors)
+
+    def test_rejected_without_composition_stages(self, validator):
+        entry = _make_entry()
+        entry["roofline"]["composition"] = [{"stage": "stage_a", "formula": "2 * M"}]
+        errors = validator.check_l0("op", entry, all_op_names=["op"])
+        assert any("declares no composition stages" in e for e in errors)
+
+
+class TestForwardSignatureWithWorkspaces:
+    """A workspace is a forward argument, so parity checks must see it."""
+
+    def test_workspaces_follow_inputs_in_forward_order(self, validator):
+        entry = _make_entry(
+            inputs={"a": {"dtype": "float16"}},
+            resources={"workspaces": [{"name": "ws", "dtype": "float16"}]},
+        )
+        assert list(validator._forward_signature(entry)["inputs"]) == ["a", "ws"]
+
+    def test_entry_without_resources_is_unchanged(self, validator):
+        entry = _make_entry(inputs={"a": {"dtype": "float16"}})
+        assert validator._forward_signature(entry) is entry["signature"]
+
+    def test_l1_expects_workspaces_as_trailing_forward_params(self, validator):
+        entry = _make_entry(
+            inputs={"a": {"dtype": "float16"}},
+            resources={"workspaces": [{"name": "ws", "dtype": "float16"}]},
+        )
+        inputs = validator._forward_signature(entry)["inputs"]
+        assert validator.check_l1_signature("op", inputs, {}, ["a", "ws"]) == []
+        errors = validator.check_l1_signature("op", inputs, {}, ["a"])
+        assert any("do not match manifest order" in e for e in errors)
+
+
+class TestWorkspaceStaysOutOfDtypeCombos:
+    """A workspace is execution strategy, so combo rows do not carry a column for it.
+
+    The rule holds wherever the forward signature is built, not only in
+    ``check_l3``: the dtype-parity probe and the op layer's generated
+    ``_validate_dtypes`` read the same helpers.
+    """
+
+    @staticmethod
+    def _entry_with_combos():
+        return _make_entry(
+            inputs={"x": {"dtype": "float16 | bfloat16"}},
+            outputs={"y": {"dtype": "same_as(x)"}},
+            dtype_combos=[{"x": "float16"}, {"x": "bfloat16"}],
+            resources={"workspaces": [{"name": "ws", "dtype": "float16 | bfloat16"}]},
+        )
+
+    def test_combo_columns_exclude_workspaces(self, validator):
+        from tileops.manifest import combo_input_names
+
+        sig = validator._forward_signature(self._entry_with_combos())
+        assert list(sig["inputs"]) == ["x", "ws"]
+        assert combo_input_names(sig) == ["x"]
+
+    def test_combo_column_check_skips_the_workspace(self, validator):
+        sig = validator._forward_signature(self._entry_with_combos())
+        errors = validator.check_l3_dtype_combos_data("op", sig)
+        assert errors == [], errors
+
+    def test_dtype_parity_probe_supplies_the_workspace_itself(self, validator):
+        """The probe calls _validate_dtypes, which takes the workspace.
+
+        The combo row names no dtype for it, so the probe must take one from the
+        workspace's own declaration rather than report a missing column.
+        """
+        import torch
+
+        seen: dict = {}
+
+        class _Op:
+            def _validate_dtypes(self, x, ws):
+                seen["x"], seen["ws"] = x.dtype, ws.dtype
+                if x.dtype not in (torch.float16, torch.bfloat16):
+                    raise ValueError("x")
+                if ws.dtype not in (torch.float16, torch.bfloat16):
+                    raise ValueError("ws")
+
+        sig = validator._forward_signature(self._entry_with_combos())
+        accepted, reason = validator._combo_accepted(
+            _Op, ["x", "ws"], {"x": "float16"}, {}, sig=sig
+        )
+        assert accepted, reason
+        assert seen == {"x": torch.float16, "ws": torch.float16}
+
+    def test_probe_prefers_a_workspace_dtype_the_row_already_uses(self, validator):
+        """An op wanting its workspace to match the activation must not see a mismatch."""
+        import torch
+
+        seen: dict = {}
+
+        class _Op:
+            def _validate_dtypes(self, x, ws):
+                seen["ws"] = ws.dtype
+                if ws.dtype != x.dtype:
+                    raise ValueError("workspace must match x")
+
+        sig = validator._forward_signature(self._entry_with_combos())
+        # 'bfloat16' is the row's choice and the second token of the union.
+        accepted, reason = validator._combo_accepted(
+            _Op, ["x", "ws"], {"x": "bfloat16"}, {}, sig=sig
+        )
+        assert accepted, reason
+        assert seen["ws"] == torch.bfloat16
+
+    def test_parity_end_to_end_accepts_an_op_with_workspaces_and_combos(self, validator):
+        """The whole L3 parity pass, which is where the combo dimensions matter.
+
+        A listed row spans the caller's inputs only, so the non-listed probe must
+        span those too — enumerating the workspace as a combo dimension makes every
+        candidate key differ from every listed key and reports a false acceptance.
+        """
+        import torch
+
+        entry = self._entry_with_combos()
+
+        class _Op:
+            def _validate_dtypes(self, x, ws):
+                allowed = (torch.float16, torch.bfloat16)
+                if x.dtype not in allowed:
+                    raise ValueError("x")
+                if ws.dtype not in allowed:
+                    raise ValueError("ws")
+
+        warnings: list[str] = []
+        errors = validator.check_l3_validate_dtypes_parity("op", entry, _Op, warnings=warnings)
+        assert errors == [], errors
+
+    def test_probe_still_reports_a_missing_real_input(self, validator):
+        class _Op:
+            def _validate_dtypes(self, x, z):
+                pass
+
+        sig = validator._forward_signature(self._entry_with_combos())
+        accepted, reason = validator._combo_accepted(_Op, ["x", "z"], {"x": "float16"}, {}, sig=sig)
+        assert not accepted and reason == "combo missing input 'z'"
+
+    def test_generated_validator_takes_the_workspace_and_keeps_the_combos(self):
+        import inspect
+
+        from tileops.manifest import forward_signature
+        from tileops.ops._dtype_codegen import synthesize_validate_dtypes
+
+        sig = forward_signature(self._entry_with_combos())
+        fn = synthesize_validate_dtypes("X", sig)
+        assert list(inspect.signature(fn).parameters) == ["self", "x", "ws"]
+
+    def test_combo_row_needs_no_workspace_column(self, validator):
+        entry = _make_entry(
+            inputs={"x": {"dtype": "float16 | bfloat16"}},
+            outputs={"y": {"dtype": "same_as(x)"}},
+            dtype_combos=[{"x": "float16"}, {"x": "bfloat16"}],
+            resources={"workspaces": [{"name": "ws", "dtype": "float16 | bfloat16"}]},
+        )
+        errors = validator.check_l3("op", entry)
+        assert not any("dtype_combos" in e for e in errors), errors
+
+    def test_missing_input_column_still_rejected(self, validator):
+        entry = _make_entry(
+            inputs={"x": {"dtype": "float16"}, "z": {"dtype": "float16"}},
+            outputs={"y": {"dtype": "same_as(x)"}},
+            dtype_combos=[{"x": "float16"}],
+            resources={"workspaces": [{"name": "ws", "dtype": "float16"}]},
+        )
+        errors = validator.check_l3("op", entry)
+        assert any("missing declared input 'z'" in e for e in errors)

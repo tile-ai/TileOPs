@@ -45,6 +45,17 @@ MultiHeadAttentionBwdOp:
 
   roofline:
     func: "tileops.perf.formulas.mha_bwd_roofline"
+    composition:
+    - stage: gqa_backward
+      source: "tileops.perf.formulas.gqa_bwd_roofline"
+
+  composition:
+    kind: composite
+    stages:
+    # MHA is GQA with one KV head per query head: every kernel this op runs is
+    # built by the GQA backward op it delegates to.
+    - name: gqa_backward
+      op: GroupedQueryAttentionBwdOp
 
   source:
     kernel: tileops/kernels/attention/gqa_bwd.py

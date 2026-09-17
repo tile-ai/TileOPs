@@ -38,6 +38,7 @@ __all__ = [
     "fp8_lightning_indexer_roofline",
     "fp8_quant_roofline",
     "fused_moe_fwd_bytes",
+    "fused_moe_shared_expert_fwd_bytes",
     "gated_deltanet_fwd_roofline",
     "ge_fwd_roofline",
     "gemm_fwd_roofline",
@@ -885,6 +886,24 @@ def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
     gating_bytes = num_tokens * num_experts * 4  # float32 logits
     bias_bytes = num_experts * 4 if _supplied(op, "correction_bias") else 0
     return flops, weight_bytes + token_bytes + gating_bytes + bias_bytes
+
+
+def fused_moe_shared_expert_fwd_bytes(op: "Op") -> tuple[int, int]:
+    """Roofline for FusedMoeSharedExpertFwdOp: the routed cost plus the shared expert's two GEMMs.
+
+    The shared expert runs on this rank's shard only, so TP shrinks that half
+    and leaves the routed half untouched. With no shared expert configured the
+    result is the routed cost alone.
+    """
+    flops, nbytes = fused_moe_fwd_bytes(op)
+    shard_ffn = getattr(op, "_shared_mlp_shard_ffn", None)
+    if shard_ffn is None:
+        return flops, nbytes
+    elem_bytes = _dtype_itemsize(op.dtype)
+    weights = 3 * int(shard_ffn) * int(op.hidden_size)
+    flops += 2 * int(op.num_tokens) * weights
+    nbytes += (weights + int(op.num_tokens) * int(op.hidden_size)) * elem_bytes
+    return flops, nbytes
 
 
 def gemm_fwd_roofline(op: "Op") -> tuple[int, int]:
