@@ -422,14 +422,9 @@ Shape keys use `<tensor_name>_shape`. Op-specific parameters can be added per en
 
 ### Composition
 
-An entry's external contract — `signature`, `shape_rules`, `workloads`, `roofline`, `source` — is
-always present. `composition` adds the internal structure of a composite op and `resources` its
-execution resources; each appears only where the op has one.
-
-`composition` states that one call to the public op is carried out by several stages. It is a
-contract and a validation unit, not a scheduler IR: it generates no forward, takes no part in
-dispatch, and does not require one stage per kernel launch. A phase internal to a single kernel is
-not a stage.
+`composition` states that one call to the public op is carried out by several stages. A stage is a
+unit the validator and the cost model address by name; a phase internal to a single kernel is not
+one. The field generates no forward and takes no part in dispatch.
 
 | Field    | Required | Description                         |
 | -------- | -------- | ----------------------------------- |
@@ -446,13 +441,11 @@ Each stage:
 | `variants` | no       | Mutually exclusive performance paths. Top-level stages only.                         |
 | `optional` | no       | The stage runs only in some configurations.                                          |
 
-A stage names what runs only through `op` or `kernel`, so the name always resolves: an
-implementation worth naming as a stage is registered as a manifest op.
+`op` and `kernel` are the only ways to name what runs, so every stage name resolves.
 
-A `variant` is a performance-relevant branch; its `condition` is prose, as the executable condition
-stays in the op. A workload row declares no variant — which one a call takes is a runtime dispatch
-fact, not a static property of the row. Where one branch covers a whole pipeline, its variants hang
-off the stage referencing that op and the `condition` names the stages they replace.
+A variant's `condition` is prose; the executable condition stays in the op. Which variant a call
+takes is a runtime fact, so no workload row declares one. Where a branch replaces several stages, it
+hangs off the stage referencing that op and its `condition` names the stages it replaces.
 
 ```yaml
 composition:
@@ -472,10 +465,10 @@ composition:
 
 ### Resources
 
-A workspace is scratch the op needs in order to run. What separates it from an input is the value:
-an input's changes the result and the reference API takes it too, while a workspace holds nothing
-meaningful before the call, nothing to rely on after it, and may change shape or layout with the
-backend or the variant.
+A workspace is scratch the op needs in order to run. The test against an input is the value: an
+input's value changes the result and the reference API takes it too; a workspace holds nothing
+before the call and nothing to rely on after it, and its shape may change with the backend or the
+variant.
 
 | Field      | Required | Description                                                     |
 | ---------- | -------- | --------------------------------------------------------------- |
@@ -491,10 +484,9 @@ manifest — parameter order, shape inference, dtype validation, the empty-input
 `signature.inputs` followed by `resources.workspaces`, in declaration order. Workspace shape stays
 with the op (`workspace_shapes()` or a runtime check); there is no `shape` key here.
 
-Two consumers read `signature.inputs` alone. A `dtype_combos` row is the value contract a caller
-writes against, so it carries no column for a workspace. An inline `roofline` expression resolves
-only over inputs and params, so it cannot name a workspace — the manifest declares no shape for one,
-and that shape may change with the backend or the variant.
+Two consumers read `signature.inputs` alone: a `dtype_combos` row, which is the value contract a
+caller writes against, and an inline `roofline` expression, which resolves over inputs and params
+only. Neither carries a workspace.
 
 ```yaml
 resources:
@@ -524,16 +516,16 @@ variable binding rules, formula syntax, consumers, and codegen behavior
 are defined in [roofline.md](roofline.md).
 
 A composite op declares what its cost is made of under `roofline.composition`, alongside either
-roofline mode. An entry with a `composition` must have one. The parent's cost is still computed by its own `flops`/`bytes` or `func`;
-`composition` records the relationship so a missing or double-counted stage is rejected rather than
-silently mispriced. Each row names a `stage` and gives exactly one of `source` (dotted path to the
-formula that stage's cost comes from, resolved as `func` is) or `formula` (prose where no separate
-function exists). Every stage not marked `optional` must appear, and none may appear twice.
+roofline mode; an entry with a `composition` must have one. The parent's cost is still computed by
+its own `flops`/`bytes` or `func`. `composition` records which stages that cost covers, so a missing
+or double-counted stage is rejected instead of silently mispriced. Each row names a `stage` and
+gives exactly one of `source` (dotted path to the formula that stage's cost comes from, resolved as
+`func` is) or `formula` (prose where no separate function exists). Every stage not marked `optional`
+appears exactly once.
 
 `roofline.func` resolves as `module.attribute`, so it names a module-level function; a class method
 path does not import. A composite's formula belongs in `tileops.perf.formulas` alongside those of
-the ops it composes, and the op's `eval_roofline()` calls that same function — two copies of one
-cost drift apart.
+the ops it composes, and the op's `eval_roofline()` calls that same function.
 
 ```yaml
 roofline:
