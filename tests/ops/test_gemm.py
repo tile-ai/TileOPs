@@ -9,7 +9,7 @@ from tileops.kernels.gemm import (
     SmallBatchGemmKernel,
 )
 from tileops.kernels.gemm.dense import GemmFp8BlockScaledKernel, _b_eviction
-from tileops.kernels.gemm.heuristics import best_config
+from tileops.kernels.gemm.heuristics import best_config, small_m_splitk_config
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload, quantize_weight_int4
 
@@ -995,6 +995,60 @@ def test_config_selector_declines_a_board_it_was_not_measured_on() -> None:
     assert best_config(1024, 1024, 1024, False, False, 132, "NVIDIA H200") is not None
     assert best_config(1024, 1024, 1024, False, False, 132, "NVIDIA H20-3e") is None
     assert best_config(1024, 1024, 1024, False, False, 132, "no such board") is None
+
+
+@pytest.mark.smoke
+def test_small_m_splitk_config_selects_a_shape_band() -> None:
+    assert small_m_splitk_config(32, 7168, 18432, 132, "NVIDIA H200") == {
+        "block_m": 32,
+        "block_n": 112,
+        "block_k": 128,
+        "num_stages": 2,
+        "threads": 128,
+        "split_k": 4,
+    }
+    assert small_m_splitk_config(64, 7168, 18432, 132, "NVIDIA H200") is None
+    assert small_m_splitk_config(32, 7168, 2048, 132, "NVIDIA H200") is None
+    assert small_m_splitk_config(32, 7168, 18432, 132, "NVIDIA H100") is None
+
+
+@pytest.mark.smoke
+def test_dense_splitk_interfaces_match_reference() -> None:
+    m, n, k = 32, 112, 512
+    a = torch.randn(m, k, dtype=torch.bfloat16, device="cuda")
+    b = torch.randn(n, k, dtype=torch.bfloat16, device="cuda")
+    basic_config = {
+        "block_m": m,
+        "block_n": n,
+        "block_k": 128,
+        "num_stages": 2,
+        "threads": 128,
+        "split_k": 4,
+    }
+    actual = GemmBasicKernel(m, n, k, torch.bfloat16, basic_config, trans_b=True)(a, b)
+    torch.testing.assert_close(actual.float(), a.float() @ b.float().T, rtol=2e-2, atol=1e-1)
+
+    gated_b = torch.randn(2 * n, k, dtype=torch.bfloat16, device="cuda")
+    gated_config = {
+        "block_m": 64,
+        "block_n": n,
+        "block_k": 128,
+        "num_stages": 4,
+        "panel_size": 8,
+        "split_k": 4,
+    }
+    actual = GemmKernel(
+        m,
+        2 * n,
+        k,
+        torch.bfloat16,
+        gated_config,
+        trans_b=True,
+        activation="silu_and_mul",
+    )(a, gated_b)
+    gate, up = (a.float() @ gated_b.float().T).chunk(2, dim=1)
+    expected = torch.nn.functional.silu(gate) * up
+    torch.testing.assert_close(actual.float(), expected, rtol=2e-2, atol=1e-1)
 
 
 @pytest.mark.smoke

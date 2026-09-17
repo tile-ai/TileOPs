@@ -232,6 +232,28 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
     )
 
 
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_dynamo")
+def test_small_route_experts_compile_to_the_indexed_leaf() -> None:
+    tokens, experts_count, top_k, hidden, ffn = 4, 8, 2, 128, 256
+    experts = FusedMoEExpertsFwdOp(tokens, experts_count, top_k, hidden, ffn)
+    ws1_shape, ws2_shape = experts.workspace_shapes(tokens, ffn, hidden, top_k, experts_count)
+    args = (
+        torch.empty(tokens, hidden, dtype=torch.bfloat16, device="cuda"),
+        torch.randn(tokens, hidden, dtype=torch.bfloat16, device="cuda"),
+        torch.randn(experts_count, 2 * ffn, hidden, dtype=torch.bfloat16, device="cuda"),
+        torch.randn(experts_count, hidden, ffn, dtype=torch.bfloat16, device="cuda"),
+        torch.rand(tokens, top_k, dtype=torch.float32, device="cuda"),
+        torch.randint(0, experts_count, (tokens, top_k), dtype=torch.int32, device="cuda"),
+        torch.empty(ws1_shape, dtype=torch.bfloat16, device="cuda"),
+        torch.empty(ws2_shape, dtype=torch.bfloat16, device="cuda"),
+    )
+
+    assert traced_call_targets(experts, *args) == {
+        operator_overload("tileops::moe_indexed_expert_mlp_fwd")
+    }
+
+
 for _op_cls in (
     MoePermuteAlignFwdOp,
     MoePrePermuteFwdOp,

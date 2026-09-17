@@ -1,13 +1,13 @@
 """Benchmark for SharedFusedMoE — FusedMoE with shared expert support.
 
-Covers Kimi K2 configuration (the primary model with shared experts):
-
-  Model    H     F     E    K  Fs     scoring   renorm  bias   scale
-  Kimi K2  7168  2048  384  8  18432  sigmoid   True    True   2.827
+  Model        H     F     E    K  Fs     scoring   renorm  bias   scale
+  Kimi K2      7168  2048  384  8  18432  sigmoid   True    True   2.827
+  DeepSeek-V3  7168  2048  256  8   2048  sigmoid   True    True   2.5
+  GLM-4.5      5120  1536  160  8   1536  sigmoid   True    True   2.5
 
 Baselines:
-  - vllm: fused_topk + fused_experts + F.linear shared MLP. Absent without vLLM
-    installed -- no row is recorded rather than a slower stand-in.
+  - vllm: fused_topk_bias + fused_experts + F.linear shared MLP. Absent without
+    vLLM installed -- no row is recorded rather than a slower stand-in.
 
 FLOPs:
   Routed:  T*K * 6*F*H   (gate+up + down)
@@ -26,8 +26,8 @@ try:
     from vllm.model_executor.layers.fused_moe.fused_moe import (
         fused_experts as _vllm_fused_experts,
     )
-    from vllm.model_executor.layers.fused_moe.router.fused_topk_router import (
-        fused_topk as _vllm_fused_topk,
+    from vllm.model_executor.layers.fused_moe.router.fused_topk_bias_router import (
+        fused_topk_bias as _vllm_fused_topk_bias,
     )
 
     _VLLM_AVAILABLE = True
@@ -43,86 +43,45 @@ from workloads.workload_base import FixtureBase
 
 
 class SharedFusedMoEBenchFixture(FixtureBase):
-    PARAMS = [
-        (
+    @classmethod
+    def get_params(cls):
+        names = (
             "num_tokens, num_experts, top_k, hidden_size, ffn_size, shared_ffn_size,"
             " scoring_func, renormalize, with_correction_bias,"
-            " routed_scaling_factor, dtype",
-            [
-                # ── Kimi K2: E=384, K=8, H=7168, F=2048, Fs=18432, sigmoid+bias ──
-                pytest.param(
-                    1,
-                    384,
-                    8,
-                    7168,
-                    2048,
-                    18432,
-                    "sigmoid",
-                    True,
-                    True,
-                    2.827,
-                    torch.bfloat16,
-                    marks=pytest.mark.full,
-                ),
-                pytest.param(
-                    32,
-                    384,
-                    8,
-                    7168,
-                    2048,
-                    18432,
-                    "sigmoid",
-                    True,
-                    True,
-                    2.827,
-                    torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    512,
-                    384,
-                    8,
-                    7168,
-                    2048,
-                    18432,
-                    "sigmoid",
-                    True,
-                    True,
-                    2.827,
-                    torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    2048,
-                    384,
-                    8,
-                    7168,
-                    2048,
-                    18432,
-                    "sigmoid",
-                    True,
-                    True,
-                    2.827,
-                    torch.bfloat16,
-                    marks=pytest.mark.full,
-                ),
-                pytest.param(
-                    4096,
-                    384,
-                    8,
-                    7168,
-                    2048,
-                    18432,
-                    "sigmoid",
-                    True,
-                    True,
-                    2.827,
-                    torch.bfloat16,
-                    marks=pytest.mark.full,
-                ),
-            ],
+            " routed_scaling_factor, dtype"
         )
-    ]
+        models = (
+            (
+                "kimi-k2",
+                (384, 8, 7168, 2048, 18432, "sigmoid", True, True, 2.827),
+                (1, 32, 64, 128, 512, 2048, 4096),
+            ),
+            (
+                "deepseek-v3",
+                (256, 8, 7168, 2048, 2048, "sigmoid", True, True, 2.5),
+                (1, 32, 64, 128, 512, 2048, 4096),
+            ),
+            (
+                "glm-4.5",
+                (160, 8, 5120, 1536, 1536, "sigmoid", True, True, 2.5),
+                (1, 32, 64, 128, 512, 2048, 4096),
+            ),
+        )
+        values = []
+        for model, config, token_counts in models:
+            for num_tokens in token_counts:
+                smoke = num_tokens == 32 or (model == "kimi-k2" and num_tokens in (64, 512))
+                mark = pytest.mark.smoke if smoke else pytest.mark.full
+                values.append(
+                    pytest.param(
+                        num_tokens,
+                        *config,
+                        torch.bfloat16,
+                        marks=mark,
+                        id=f"{model}-t{num_tokens}",
+                    )
+                )
+        return [(names, values)]
 
 
 class SharedFusedMoEBenchmark(OpBenchmark[SharedFusedMoeWorkload]):
@@ -201,7 +160,7 @@ def test_shared_fused_moe_bench(
         shared_ffn_size=shared_ffn_size,
     )
     bm = SharedFusedMoEBenchmark(op, test)
-    op(
+    tileops_out = op(
         hidden,
         gating,
         w_gate_up,
@@ -237,16 +196,16 @@ def test_shared_fused_moe_bench(
         def _vllm_fn(
             hidden, gating, correction_bias, w_gate_up, w_down, shared_w_gate_up, shared_w_down
         ):
-            tw, tids, _ = _vllm_fused_topk(
+            tw, tids = _vllm_fused_topk_bias(
                 hidden_states=hidden,
                 gating_output=gating.float(),
+                scoring_func=scoring_func,
+                e_score_correction_bias=correction_bias,
                 topk=top_k,
                 renormalize=renormalize,
-                scoring_func=scoring_func,
+                routed_scaling_factor=routed_scaling_factor,
             )
             routed_out = _vllm_fused_experts(hidden, w_gate_up, w_down, tw, tids)
-            if routed_scaling_factor != 1.0:
-                routed_out = routed_out * routed_scaling_factor
             # Shared expert: gate+up GEMM → SiLU → down GEMM
             gate = F.linear(hidden, sw_gate)  # [T, Fs]
             up = F.linear(hidden, sw_up)  # [T, Fs]
@@ -254,10 +213,12 @@ def test_shared_fused_moe_bench(
             shared_out = F.linear(act, sw_d)  # [T, H]
             return shared_out, routed_out
 
-        _vllm_fn(
+        vllm_out = _vllm_fn(
             hidden, gating, correction_bias, w_gate_up, w_down, shared_w_gate_up, shared_w_down
         )  # warmup
         torch.cuda.synchronize()
+        for actual, expected in zip(tileops_out, vllm_out, strict=True):
+            torch.testing.assert_close(actual.float(), expected.float(), rtol=2e-2, atol=1e-1)
 
         functors["vllm"] = (
             _vllm_fn,

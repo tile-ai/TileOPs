@@ -88,10 +88,6 @@ def test_moe_experts_bench(
     test = MoeExpertsWorkload(num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype)
     hidden, w1, w2, topk_weights, topk_ids = test.gen_inputs()
 
-    output = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
-    ws1 = torch.empty(0, dtype=dtype, device="cuda")
-    ws2 = torch.empty(0, dtype=dtype, device="cuda")
-
     experts = FusedMoEExpertsFwdOp(
         num_tokens=num_tokens,
         num_experts=num_experts,
@@ -99,6 +95,12 @@ def test_moe_experts_bench(
         hidden_size=hidden_size,
         ffn_size=ffn_size,
     )
+    output = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
+    ws1_shape, ws2_shape = experts.workspace_shapes(
+        num_tokens, ffn_size, hidden_size, top_k, num_experts
+    )
+    ws1 = torch.empty(ws1_shape, dtype=dtype, device="cuda")
+    ws2 = torch.empty(ws2_shape, dtype=dtype, device="cuda")
     bm = ManifestBenchmark(experts, test)
 
     def _experts_fn(hidden, w1, w2, topk_weights, topk_ids):

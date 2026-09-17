@@ -47,6 +47,7 @@ __all__ = [
     "fp8_ws_config",
     "gemv_config",
     "small_batch_config",
+    "small_m_splitk_config",
     "swap_ab_grid_underfills",
 ]
 
@@ -98,7 +99,9 @@ _CALIBRATIONS = {
         tensor_core_tflops=(
             ("basic", 420.0),
             ("coop2", 525.0),
+            ("coop2s", 600.0),
             ("coop2_splitk", 525.0),
+            ("simple", 500.0),
             ("splitk", 420.0),
         ),
     ),
@@ -120,8 +123,20 @@ class _Cand:
     split_k: int = 1
     stage_n: int = 0
     panel_size: int = 16
+    cluster_m: int = 1
 
     def to_config(self) -> dict:
+        if self.structure == "simple":
+            return {
+                "simple": True,
+                "block_m": self.block_m,
+                "block_n": self.block_n,
+                "block_k": self.block_k,
+                "num_stages": self.num_stages,
+                "threads": 128,
+                "panel_size": self.panel_size,
+                "cluster_m": self.cluster_m,
+            }
         if self.structure == "coop2":
             return {
                 "coop2": True,
@@ -130,6 +145,13 @@ class _Cand:
                 "num_stages": self.num_stages,
                 "group_size_m": 16,
                 "stage_n": self.stage_n,
+            }
+        if self.structure == "coop2s":
+            return {
+                "coop2s": True,
+                "block_n": self.block_n,
+                "block_k": self.block_k,
+                "num_stages": self.num_stages,
             }
         if self.structure == "coop2_splitk":
             return {
@@ -208,7 +230,37 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                     if k_iters % sk == 0 and k_iters // sk >= 4:
                         out.append(_Cand("splitk", bm, bn, bk, ns, split_k=sk, panel_size=ps))
 
+    nn_tiles = (m // 128) * (n // 64)
+    if (
+        not trans_a
+        and not trans_b
+        and m % 128 == 0
+        and n % 64 == 0
+        and k % 64 == 0
+        and nn_tiles <= 2 * sm_count
+        and 6 <= k // 64 <= 32
+    ):
+        out.append(_Cand("coop2s", 128, 64, 64, 6))
+
     if nt:
+        if m <= 128 and m % 64 == 0 and k % 128 == 0:
+            cluster_m = m // 64
+            for bn in (64, 128, 192, 256):
+                if n % bn:
+                    continue
+                ns = _ns_basic(64, bn, 128)
+                if ns >= 3:
+                    out.append(
+                        _Cand(
+                            "simple",
+                            64,
+                            bn,
+                            128,
+                            ns,
+                            panel_size=0 if cluster_m > 1 else 8,
+                            cluster_m=cluster_m,
+                        )
+                    )
         for bn in (64, 128, 192, 256):
             for bk in (32, 64, 128):
                 d = _coop2_ns_sn(bn, bk)
@@ -427,6 +479,34 @@ def small_batch_config(n: int, k: int, sm_count: int) -> dict:
     if n >= 28 * sm_count and k_iters >= 12:
         cfg["num_stages"] = 2
     return cfg
+
+
+def small_m_splitk_config(
+    m: int, n: int, k: int, sm_count: int, device_name: str
+) -> Optional[dict]:
+    """Select the H200 split-K basic GEMM band for a 32-row NT call."""
+    block_k = 128
+    k_tiles = k // block_k
+    if device_name != "NVIDIA H200" or m != 32 or k % block_k or n % 8 or k_tiles < 48:
+        return None
+    block_ns = [block_n for block_n in range(8, 129, 8) if n % block_n == 0]
+    target_n_tiles = max(1, sm_count // 2)
+    block_n = min(block_ns, key=lambda value: abs(n // value - target_n_tiles))
+    n_tiles = n // block_n
+    split_ks = [
+        split_k for split_k in (2, 4) if k_tiles % split_k == 0 and k_tiles // split_k >= 12
+    ]
+    if not split_ks:
+        return None
+    split_k = min(split_ks, key=lambda value: abs(n_tiles * value - 2 * sm_count))
+    return {
+        "block_m": m,
+        "block_n": block_n,
+        "block_k": block_k,
+        "num_stages": 2,
+        "threads": 128,
+        "split_k": split_k,
+    }
 
 
 def _fp8_ws_stages(m: int, block_n: int, block_scaled: bool) -> int:

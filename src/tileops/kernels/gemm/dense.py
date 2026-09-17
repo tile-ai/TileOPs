@@ -1696,7 +1696,13 @@ def _gemm_splitk_kernel(
 
 
 @functools.lru_cache(maxsize=32)
-def _splitk_reduce_kernel(split_k: int, m: int, n: int, dtype: str = "float16") -> Callable:
+def _splitk_reduce_kernel(
+    split_k: int,
+    m: int,
+    n: int,
+    dtype: str = "float16",
+    activation: str = "none",
+) -> Callable:
     """Reduce the split-K fp32 workspace into the final output.
 
     Sums ``w[split_k, m, n]`` over the slice axis in fp32 and casts to the
@@ -1710,8 +1716,17 @@ def _splitk_reduce_kernel(split_k: int, m: int, n: int, dtype: str = "float16") 
     and the span metric charges that idle to us (see ``_splitk_pair``).
     """
     accum_dtype = "float"
+    if activation not in ("none", "silu_and_mul"):
+        raise ValueError(f"unsupported split-K epilogue: {activation}")
+    gated = activation == "silu_and_mul"
+    if gated and n % 2:
+        raise ValueError("silu_and_mul requires an even output width")
+    out_n = n // 2 if gated else n
 
-    @tilelang.jit(compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: gated},
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
     def _splitk_reduce_func(elems_per_cta: int = 1024) -> Callable:
         def _slice_sum(w, gi, gj):
             expr = w[0, gi, gj]
@@ -1722,17 +1737,22 @@ def _splitk_reduce_kernel(split_k: int, m: int, n: int, dtype: str = "float16") 
         @T.prim_func
         def _splitk_reduce_main(
             w: T.Tensor((split_k, m, n), accum_dtype),  # type: ignore
-            c: T.Tensor((m, n), dtype),  # type: ignore
+            c: T.Tensor((m, out_n), dtype),  # type: ignore
         ) -> None:
-            total = m * n
+            total = m * out_n
             with T.Kernel(T.ceildiv(total, elems_per_cta), threads=256) as bx:
                 base = bx * elems_per_cta
                 for t in T.Parallel(elems_per_cta):
                     idx = base + t
                     if idx < total:
-                        gi = idx // n
-                        gj = idx % n
-                        c[gi, gj] = T.cast(_slice_sum(w, gi, gj), dtype)
+                        gi = idx // out_n
+                        gj = idx % out_n
+                        if gated:
+                            gate = _slice_sum(w, gi, gj)
+                            up = _slice_sum(w, gi, out_n + gj)
+                            c[gi, gj] = T.cast(gate * T.sigmoid(gate) * up, dtype)
+                        else:
+                            c[gi, gj] = T.cast(_slice_sum(w, gi, gj), dtype)
 
         return _splitk_reduce_main
 
@@ -2168,6 +2188,7 @@ def _splitk_pair(
     num_stages: int,
     panel_size: int,
     split_k: int,
+    activation: str = "none",
 ) -> tuple[Callable, Callable]:
     """Resolve the (mainloop, reduce) compiled pair for a split-K config.
 
@@ -2191,7 +2212,8 @@ def _splitk_pair(
         mainloop = _gemm_splitk_kernel(m, n, k, trans_a, trans_b, dtype)(
             block_m, block_n, block_k, num_stages, panel_size, split_k
         )
-    return mainloop, _splitk_reduce_kernel(split_k, m, n, dtype)()
+    elems_per_cta = 256 if activation != "none" else 1024
+    return mainloop, _splitk_reduce_kernel(split_k, m, n, dtype, activation)(elems_per_cta)
 
 
 @functools.lru_cache(maxsize=32)
@@ -2208,9 +2230,9 @@ def _gemm_simple_kernel(
     protocol per iteration, idle tail, 128 threads not doing math) outweigh
     the benefit of its hand-managed deeper ring.
 
-    Selected via config only (``simple: True``, pinned per-shape in
-    ``GemmKernel._TUNED_CONFIGS``). Requires tiles that divide the problem
-    exactly; the builder raises ``ValueError`` otherwise.
+    Selected by the dense GEMM heuristic for exactly tiled NT calls. Requires
+    tiles that divide the problem exactly; the builder raises ``ValueError``
+    otherwise.
     """
     if trans_a:
         raise ValueError("_gemm_simple_kernel supports trans_a=False only")
@@ -2362,9 +2384,8 @@ def _gemm_coop2s_kernel(
 
     NN only (``A[m,k] @ B[k,n]``): ``B`` tiles load as ``(block_k, block_n)``
     and feed WGMMA with ``transpose_B=False``. Requires tiles that divide the
-    problem exactly; the builder raises ``ValueError`` otherwise. Selected via
-    config only (``coop2s: True``, pinned per-shape in
-    ``GemmKernel._TUNED_CONFIGS``).
+    problem exactly; the builder raises ``ValueError`` otherwise. The dense
+    selector considers it for exactly tiled small NN calls.
 
     Args:
         m: Rows of ``A`` / ``C``.
@@ -2595,6 +2616,8 @@ class GemmKernel(Kernel):
     loads into a multi-stage SMEM ring, one consumer warpgroup runs the WGMMA
     over K. Structure flags in ``config`` select the coop2 / coop2s /
     coop2_splitk / simple / split-K variants instead (see ``forward``).
+    ``activation="silu_and_mul"`` fuses the gated activation into a split-K
+    reduction and returns ``[M, N / 2]``.
     fp16 / bf16 inputs, fp32 accumulation. Hopper-only — TMA + WGMMA
     require SM90.
     """
@@ -2613,10 +2636,8 @@ class GemmKernel(Kernel):
         shape served by ``coop2`` produced a ``coop2`` config at ``coop2s``' tile
         width, a combination ``_enumerate`` deliberately excludes.
 
-        ``default_config`` applies the same rule to ``_TUNED_CONFIGS`` hits over a
-        narrower flag set; widening it there would stop merging the modal keys
-        into the shipped ``simple`` / ``coop2_splitk`` pins, so the two stay
-        separate deliberately.
+        Selector results already use a complete schema, so this merge behavior
+        applies only to partial configs supplied by a caller.
         """
         if config is not None and any(config.get(f) for f in self._STRUCTURE_FLAGS):
             self.config = dict(config)
@@ -2654,8 +2675,13 @@ class GemmKernel(Kernel):
         trans_a: bool = False,
         trans_b: bool = False,
         device_index: Optional[int] = None,
+        activation: str = "none",
     ) -> None:
         super().__init__(device_index=device_index)
+        if activation not in ("none", "silu_and_mul"):
+            raise ValueError("activation must be 'none' or 'silu_and_mul'")
+        if activation != "none" and n % 2:
+            raise ValueError("silu_and_mul requires an even output width")
         misaligned = _tma_misalignment(m, n, k, dtype, trans_a, trans_b)
         if misaligned is not None:
             raise ValueError(f"{type(self).__name__} cannot serve {m}x{n}x{k}: {misaligned}")
@@ -2665,6 +2691,7 @@ class GemmKernel(Kernel):
         self.dtype = dtype
         self.trans_a = trans_a
         self.trans_b = trans_b
+        self.activation = activation
         self.sm_count = get_sm_count(self.device_index)
         self.device_name = torch.cuda.get_device_name(self.device_index)
 
@@ -2673,47 +2700,13 @@ class GemmKernel(Kernel):
         )
 
         self.init_config(config, tune)
-
-    _TUNED_CONFIGS: dict = {
-        (128, 2112, 7168, False, True, "bfloat16"): {
-            "coop2_splitk": True,
-            "block_n": 64,
-            "block_k": 128,
-            "num_stages": 4,
-            "split_k": 4,
-        },
-        (1024, 1024, 1024, False, False, "float16"): {
-            "coop2s": True,
-            "block_n": 64,
-            "block_k": 64,
-            "num_stages": 6,
-        },
-        (1024, 1024, 1024, False, False, "bfloat16"): {
-            "coop2s": True,
-            "block_n": 64,
-            "block_k": 64,
-            "num_stages": 6,
-        },
-        (128, 7168, 2048, False, True, "bfloat16"): {
-            "simple": True,
-            "block_m": 64,
-            "block_n": 128,
-            "block_k": 128,
-            "num_stages": 4,
-            "threads": 128,
-            "panel_size": 0,
-            "cluster_m": 2,
-        },
-        (64, 7168, 2048, False, True, "bfloat16"): {
-            "simple": True,
-            "block_m": 64,
-            "block_n": 64,
-            "block_k": 128,
-            "num_stages": 4,
-            "threads": 128,
-            "panel_size": 8,
-        },
-    }
+        if activation != "none":
+            split_k = self.config.get("split_k", 1)
+            unsupported = any(
+                self.config.get(flag) for flag in ("simple", "swap_ab", "coop2", "coop2s")
+            )
+            if split_k <= 1 or unsupported:
+                raise ValueError("a fused activation requires a split-K GEMM config")
 
     @property
     def default_config(self) -> dict:
@@ -2725,12 +2718,6 @@ class GemmKernel(Kernel):
             "panel_size": 16,
             "split_k": 1,
         }
-        override = self._TUNED_CONFIGS.get(
-            (self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str)
-        )
-        if override is not None:
-            self_contained = override.get("coop2") or override.get("coop2s")
-            return dict(override) if self_contained else {**modal, **override}
         scored = best_config(
             self.m, self.n, self.k, self.trans_a, self.trans_b, self.sm_count, self.device_name
         )
@@ -2801,8 +2788,10 @@ class GemmKernel(Kernel):
                 cfg["num_stages"],
                 0,
                 cfg["split_k"],
+                self.activation,
             )
-            c = torch.empty((self.m, self.n), dtype=a.dtype, device=a.device)
+            out_n = self.n // 2 if self.activation != "none" else self.n
+            c = torch.empty((self.m, out_n), dtype=a.dtype, device=a.device)
             reduce_(mainloop(a, b), c)
             return c
 
@@ -2823,8 +2812,10 @@ class GemmKernel(Kernel):
                 cfg["num_stages"],
                 cfg["panel_size"],
                 split_k,
+                self.activation,
             )
-            c = torch.empty((self.m, self.n), dtype=a.dtype, device=a.device)
+            out_n = self.n // 2 if self.activation != "none" else self.n
+            c = torch.empty((self.m, out_n), dtype=a.dtype, device=a.device)
             reduce_(mainloop(a, b), c)
             return c
 
@@ -3168,35 +3159,55 @@ def _gemm_basic_kernel(
         block_k: int = 64,
         num_stages: int = 2,
         threads: int = 128,
+        split_k: int = 1,
     ) -> Callable:
         # SMEM tile shapes follow the storage layout; the T.gemm transpose
         # flags reconcile them with the logical (M,K) x (K,N) contraction.
         a_tile = (block_k, block_m) if trans_a else (block_m, block_k)
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
         n_exact = n % block_n == 0
+        k_tiles = T.ceildiv(k, block_k)
+        if split_k < 1 or k_tiles % split_k:
+            raise ValueError("split_k must divide the K tile count")
+        if split_k > 1 and (m % block_m or not n_exact or k % block_k):
+            raise ValueError("split-K basic GEMM requires exact M/N/K tiles")
+        k_slice = k_tiles // split_k
+        output_shape = (m, n) if split_k == 1 else (split_k, m, n)
+        output_dtype = dtype if split_k == 1 else accum_dtype
 
         @T.prim_func
         def _gemm_basic_main(
             a: T.Tensor(a_shape, dtype),  # type: ignore
             b: T.Tensor(b_shape, dtype),  # type: ignore
-            c: T.Tensor((m, n), dtype),  # type: ignore
+            c: T.Tensor(output_shape, output_dtype),  # type: ignore
         ) -> None:
-            with T.Kernel(T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (
+            with T.Kernel(
+                T.ceildiv(n, block_n), T.ceildiv(m, block_m), split_k, threads=threads
+            ) as (
                 bx,
                 by,
+                bz,
             ):
                 a_smem = T.alloc_shared(a_tile, dtype)
                 b_smem = T.alloc_shared(b_tile, dtype)
-                c_smem = T.alloc_shared((block_m, block_n), dtype)
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
 
-                T.annotate_layout(
-                    {
-                        a_smem: tilelang.layout.make_swizzled_layout(a_smem),
-                        b_smem: tilelang.layout.make_swizzled_layout(b_smem),
-                        c_smem: tilelang.layout.make_swizzled_layout(c_smem),
-                    }
-                )
+                if split_k == 1:
+                    c_smem = T.alloc_shared((block_m, block_n), dtype)
+                    T.annotate_layout(
+                        {
+                            a_smem: tilelang.layout.make_swizzled_layout(a_smem),
+                            b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                            c_smem: tilelang.layout.make_swizzled_layout(c_smem),
+                        }
+                    )
+                else:
+                    T.annotate_layout(
+                        {
+                            a_smem: tilelang.layout.make_swizzled_layout(a_smem),
+                            b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                        }
+                    )
 
                 # L2 rasterization: same panel traversal as the BMM kernel.
                 T.use_swizzle(10, enable=True)
@@ -3205,8 +3216,8 @@ def _gemm_basic_kernel(
                 m_start = by * block_m
                 n_start = bx * block_n
 
-                for ki in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
-                    k_start = ki * block_k
+                for ki in T.Pipelined(k_slice, num_stages=num_stages):
+                    k_start = (bz * k_slice + ki) * block_k
                     # M/N tail reads land in c_local rows/cols that the
                     # epilogue guard skips; a K tail would corrupt live
                     # outputs, so block_k must divide k (enforced by the
@@ -3225,6 +3236,7 @@ def _gemm_basic_kernel(
                         T.copy(
                             b[n_start : n_start + block_n, k_start : k_start + block_k],
                             b_smem,
+                            eviction_policy="evict_first" if split_k > 1 else None,
                         )
                     elif n_exact:
                         T.copy(
@@ -3253,12 +3265,20 @@ def _gemm_basic_kernel(
                         policy=T.GemmWarpPolicy.FullRow,
                     )
 
-                # Epilogue: stage fp32 accum through SMEM before the GMEM
-                # store and guard the M/N tails (cf. BmmKernel).
-                T.copy(c_local, c_smem)
-                for i, j in T.Parallel(block_m, block_n):
-                    if m_start + i < m and n_start + j < n:
-                        c[m_start + i, n_start + j] = c_smem[i, j]
+                if split_k == 1:
+                    T.copy(c_local, c_smem)
+                    for i, j in T.Parallel(block_m, block_n):
+                        if m_start + i < m and n_start + j < n:
+                            c[m_start + i, n_start + j] = c_smem[i, j]
+                else:
+                    T.copy(
+                        c_local,
+                        c[
+                            bz,
+                            m_start : m_start + block_m,
+                            n_start : n_start + block_n,
+                        ],
+                    )
 
         return _gemm_basic_main
 
@@ -3319,7 +3339,8 @@ class GemmBasicKernel(Kernel):
     ``T.gemm`` so it runs on pre-SM90 tensor-core targets (sm80 / sm86 /
     sm89). fp16 / bf16 inputs, fp32 accumulation. ``block_k`` must divide
     ``k`` (the smallest fallback is 16); M / N need not be multiples of the
-    block sizes (epilogue guard).
+    block sizes (epilogue guard). A config with ``split_k > 1`` returns the
+    reduced ``[M, N]`` result and requires exact M / N / K tiles.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -3385,6 +3406,7 @@ class GemmBasicKernel(Kernel):
             "block_k": block_k,
             "num_stages": 2,
             "threads": 128,
+            "split_k": 1,
         }
 
     @property
@@ -3396,7 +3418,14 @@ class GemmBasicKernel(Kernel):
         if not block_k_options:
             block_k_options = [16]
         return [
-            {"block_m": bm, "block_n": bn, "block_k": bk, "num_stages": ns, "threads": 128}
+            {
+                "block_m": bm,
+                "block_n": bn,
+                "block_k": bk,
+                "num_stages": ns,
+                "threads": 128,
+                "split_k": 1,
+            }
             for bm in [64, 128]
             for bn in [64, 128]
             for bk in block_k_options
@@ -3409,4 +3438,12 @@ class GemmBasicKernel(Kernel):
         if not hasattr(self, "_compiled_kernel"):
             jit_config = {k: v for k, v in self.config.items() if k != "pass_configs"}
             self._compiled_kernel = self.kernel(**jit_config)
-        return self._compiled_kernel(a, b)
+        result = self._compiled_kernel(a, b)
+        split_k = self.config.get("split_k", 1)
+        if split_k == 1:
+            return result
+        if not hasattr(self, "_compiled_reduce"):
+            self._compiled_reduce = _splitk_reduce_kernel(split_k, self.m, self.n, self.dtype_str)()
+        output = a.new_empty((self.m, self.n))
+        self._compiled_reduce(result, output)
+        return output

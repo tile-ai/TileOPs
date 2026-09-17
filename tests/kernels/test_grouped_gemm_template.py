@@ -8,6 +8,7 @@ import torch
 from tileops.kernels.grouped_gemm.heuristics import (
     GemmDesc,
     GroupedGemmSpec,
+    get_best_config,
     layout_candidates,
     spec_from_config,
 )
@@ -260,6 +261,31 @@ def test_selector_prunes_invalid_layouts():
     grouped = dict(gemm_type=GemmType.M_GROUPED_TIGHT_PSUM, num_groups=128)
     decode = layout_candidates(_desc(4096, 4096, 7168, **grouped))
     assert {layout.block_k for layout in decode} == {64}
+
+
+@pytest.mark.smoke
+def test_selector_short_group_h200_band():
+    grouped = dict(
+        gemm_type=GemmType.M_GROUPED_TIGHT_PSUM,
+        num_groups=160,
+        activation="silu_and_mul",
+    )
+    short = get_best_config(_desc(4096, 3072, 5120, device_name="NVIDIA H200", **grouped))
+    assert (short.block_m, short.block_n, short.block_k) == (64, 128, 128)
+    assert (
+        get_best_config(_desc(16384, 3072, 5120, device_name="NVIDIA H200", **grouped)).block_k
+        == 64
+    )
+    assert (
+        get_best_config(_desc(4096, 3072, 5120, device_name="NVIDIA H100", **grouped)).block_k == 64
+    )
+    plain = {**grouped, "activation": "none"}
+    assert (
+        get_best_config(_desc(4096, 5120, 1536, device_name="NVIDIA H200", **plain)).block_k == 128
+    )
+    assert (
+        get_best_config(_desc(4096, 7168, 2048, device_name="NVIDIA H200", **plain)).block_k == 64
+    )
 
 
 @pytest.mark.full
