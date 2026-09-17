@@ -41,6 +41,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 _SRC = str(REPO_ROOT / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
+# Derived facts live beside this script: they are the validator's own reading
+# of an entry, not something the wheel publishes.
+_SCRIPTS = str(REPO_ROOT / "scripts")
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+
+import _manifest_facts as facts_mod  # noqa: E402
 
 import tileops.manifest as manifest_pkg  # noqa: E402
 from tileops.manifest import (  # noqa: E402
@@ -737,6 +744,11 @@ def _l0_kernel_map(
 
 
 def _optional_input_names(sig: dict) -> list[str]:
+    """Optional tensor names, in declaration order.
+
+    Reads the same signature shape ``Facts`` does; kept as a function because
+    several callers hold a ``sig`` rather than an entry.
+    """
     """Names under ``signature.inputs`` carrying ``optional: true``."""
     inputs = sig.get("inputs")
     if not isinstance(inputs, dict):
@@ -1234,6 +1246,20 @@ def _declared_workspaces(entry: dict) -> list[dict]:
     return [w for w in workspaces if isinstance(w, dict) and isinstance(w.get("name"), str)]
 
 
+def _facts(entry: dict, op_name: str = "") -> "facts_mod.Facts":
+    """The entry's derived facts. Every check reads these, none re-derives them."""
+    return facts_mod.build(op_name, entry)
+
+
+def _facts_from_sig(sig: dict, op_name: str = "") -> "facts_mod.Facts":
+    """Facts for a caller holding only a signature.
+
+    The signature may already carry merged workspaces, which the facts layer
+    tells apart by their marker, so the same derivations apply.
+    """
+    return facts_mod.build(op_name, {"signature": sig})
+
+
 def _forward_signature(entry: dict) -> dict:
     """``signature`` as ``forward()`` sees it — see ``tileops.manifest``.
 
@@ -1244,7 +1270,11 @@ def _forward_signature(entry: dict) -> dict:
 
 
 def _stage_names(entry: dict) -> list[str]:
-    """Top-level ``composition.stages`` names, in declaration order."""
+    """Top-level ``composition.stages`` names, in declaration order.
+
+    Order matters to the callers that print them, so this keeps declaration
+    order while ``Facts.stage_names`` carries the membership test.
+    """
     composition = entry.get("composition")
     if not isinstance(composition, dict):
         return []
@@ -2297,7 +2327,11 @@ def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
         errors.extend(_diagnose_unresolvable_signature(op_name, sig))
         return errors
     optional_names = set(_optional_input_names(sig))
-    declared_input_names: list[str] = [n for n in combo_input_names(sig) if n not in optional_names]
+    # Columns come from the facts layer, which excludes workspaces: a combo row
+    # is the caller's value contract and a workspace's dtype is strategy.
+    declared_input_names: list[str] = [
+        n for n in _facts_from_sig(sig).combo_columns if n not in optional_names
+    ]
     for i, combo in enumerate(dtype_combos):
         if not isinstance(combo, dict):
             continue
