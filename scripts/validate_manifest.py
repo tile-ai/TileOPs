@@ -337,7 +337,7 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
 
     missing_sig = _REQUIRED_SIGNATURE - set(sig.keys())
     if missing_sig:
-        err(f"signature missing: {missing_sig}")
+        err(f"signature missing: {sorted(missing_sig)}")
 
     # inputs/outputs/params names must be strings.
     for field in ("inputs", "outputs", "params"):
@@ -683,7 +683,7 @@ def _l0_source(op_name: str, entry: dict, source: dict) -> list[str]:
     err = _emit_to(errors, "schema", op_name)
     missing_src = _REQUIRED_SOURCE - set(source.keys())
     if missing_src:
-        err(f"source missing fields: {missing_src}")
+        err(f"source missing fields: {sorted(missing_src)}")
     # source.kernel: string or list of strings
     kernel = source.get("kernel")
     if kernel is not None:
@@ -1153,7 +1153,8 @@ def _check_optional_shape_symbol_scope(
     if isinstance(params, dict):
         global_syms |= set(params)
     local_syms: dict[str, str] = {}
-    for name in optional:
+    # Sorted: first binder wins, so iteration order decides the diagnostic.
+    for name in sorted(optional):
         attrs = inputs.get(name)
         if isinstance(attrs, dict):
             for sym in _shape_symbols(attrs.get("shape")) - global_syms:
@@ -1540,7 +1541,7 @@ def check_l0(
     # Top-level required fields
     missing_top = _REQUIRED_TOP - set(entry.keys())
     if missing_top:
-        err(f"missing top-level fields: {missing_top}")
+        err(f"missing top-level fields: {sorted(missing_top)}")
 
     for field, container, desc, section in _L0_SECTIONS:
         value = entry.get(field)
@@ -3046,7 +3047,9 @@ def _probe_infer_parity(
     shape_kwargs: dict[str, object] = {
         f"{name}_shape": tuple(shape) for name, shape in mock_shapes.items()
     }
-    for name in absent:
+    # Sorted: this dict is formatted into diagnostics, and a set's iteration
+    # order varies with PYTHONHASHSEED.
+    for name in sorted(absent):
         shape_kwargs[f"{name}_shape"] = None
     # Bind before calling: only a TypeError from ``bind`` is a signature
     # mismatch. TypeErrors from the body must not be reported as one.
@@ -4920,7 +4923,7 @@ def _parse_levels(argv: list[str]) -> frozenset[str] | None:
         parsed = frozenset(t.strip().lower() for t in raw_str.split(","))
         unknown = parsed - ALL_LEVELS
         if unknown:
-            print(f"ERROR: unknown levels: {unknown}")
+            print(f"ERROR: unknown levels: {sorted(unknown)}")
             print(f"  Valid levels: {', '.join(sorted(ALL_LEVELS))}")
             sys.exit(2)
         return parsed
