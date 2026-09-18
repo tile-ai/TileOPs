@@ -80,58 +80,6 @@ def base_freqs(
     return torch.cos(angles).to(dtype), torch.sin(angles).to(dtype)
 
 
-def _llama31_freqs(
-    head_dim: int,
-    seq_len: int,
-    base: float = 10000.0,
-    scale_factor: float = 8.0,
-    low_freq_factor: float = 1.0,
-    high_freq_factor: float = 4.0,
-    original_max_position: int = 8192,
-    dtype: torch.dtype = torch.float32,
-    device: str = "cuda",
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Llama 3.1 piecewise-scaled frequency computation.
-
-    Args:
-        head_dim: Head dimension.
-        seq_len: Sequence length.
-        base: Frequency base.
-        scale_factor: Scaling factor for low frequencies.
-        low_freq_factor: Threshold for low-frequency wavelengths.
-        high_freq_factor: Threshold for high-frequency wavelengths.
-        original_max_position: Original maximum position length.
-        dtype: Output dtype.
-        device: Torch device.
-
-    Returns:
-        (cos, sin) each of shape (seq_len, head_dim // 2).
-    """
-    half = head_dim // 2
-    freqs = 1.0 / (base ** (torch.arange(0, half, device=device, dtype=torch.float32) / half))
-
-    low_freq_wavelen = original_max_position / low_freq_factor
-    high_freq_wavelen = original_max_position / high_freq_factor
-
-    scaled_freqs = []
-    for freq in freqs:
-        wavelen = 2 * math.pi / freq.item()
-        if wavelen < high_freq_wavelen:
-            scaled_freqs.append(freq)
-        elif wavelen > low_freq_wavelen:
-            scaled_freqs.append(freq / scale_factor)
-        else:
-            smooth = (original_max_position / wavelen - low_freq_factor) / (
-                high_freq_factor - low_freq_factor
-            )
-            scaled_freqs.append((1 - smooth) * freq / scale_factor + smooth * freq)
-
-    freqs = torch.stack(scaled_freqs)
-    t = torch.arange(seq_len, device=device, dtype=torch.float32)
-    angles = torch.outer(t, freqs)
-    return torch.cos(angles).to(dtype), torch.sin(angles).to(dtype)
-
-
 def _yarn_find_correction_dim(
     num_rotations: float, dim: int, base: float, max_position_embeddings: int
 ) -> float:
@@ -153,147 +101,6 @@ def _yarn_find_correction_range(
     low = math.floor(_yarn_find_correction_dim(beta_fast, dim, base, max_position_embeddings))
     high = math.ceil(_yarn_find_correction_dim(beta_slow, dim, base, max_position_embeddings))
     return max(low, 0), min(high, dim - 1)
-
-
-def _yarn_freqs(
-    head_dim: int,
-    seq_len: int,
-    base: float = 10000.0,
-    scale: float = 16.0,
-    original_max_position: int = 4096,
-    beta_fast: float = 32.0,
-    beta_slow: float = 1.0,
-    attn_factor: float = 1.0,
-    dtype: torch.dtype = torch.float32,
-    device: str = "cuda",
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """YaRN frequency computation with NTK-aware interpolation.
-
-    Implements the canonical YaRN formula:
-    1. ``freq_extra`` = original inverse frequencies (for extrapolation dims)
-    2. ``freq_inter`` = NTK-aware scaled inverse frequencies where
-       ``scale`` is applied to the base: ``1/(scale*base)^(2k/d)``
-    3. Linear ramp mask between correction dims blends the two
-    4. ``inv_freq = freq_inter * (1 - mask) + freq_extra * mask``
-
-    Reference: TVM ``rope_freq_yarn`` in position_embedding.py;
-    Peng et al., "YaRN: Efficient Context Window Extension of LLMs".
-
-    Args:
-        head_dim: Head dimension.
-        seq_len: Sequence length.
-        base: Frequency base (theta).
-        scale: Context extension scale factor (scaling_factor).
-        original_max_position: Original max context length.
-        beta_fast: Fast rotation boundary (passed as low_rot).
-        beta_slow: Slow rotation boundary (passed as high_rot).
-        attn_factor: Attention scaling factor (applied to cos/sin output).
-        dtype: Output dtype.
-        device: Torch device.
-
-    Returns:
-        (cos, sin) each of shape (seq_len, head_dim // 2).
-    """
-    half = head_dim // 2
-    dim_indices = torch.arange(0, half, device=device, dtype=torch.float32)
-
-    # Original inverse frequencies (extrapolation)
-    freq_extra = 1.0 / (base ** (dim_indices / half))
-
-    # NTK-aware scaled inverse frequencies (interpolation):
-    # scale is applied to the base, not as a divisor on freq
-    freq_inter = 1.0 / ((scale * base) ** (dim_indices / half))
-
-    # Find correction range
-    low, high = _yarn_find_correction_range(
-        beta_fast,
-        beta_slow,
-        half,
-        base,
-        original_max_position,
-    )
-    # Avoid division by zero when low == high
-    if low == high:
-        high = high + 1
-
-    # Linear ramp mask: 1 near low dims (extrapolation), 0 near high dims (interpolation)
-    inv_freq_mask = 1.0 - torch.clamp(
-        (dim_indices - low) / (high - low),
-        0.0,
-        1.0,
-    )
-
-    # Blend: mask=1 -> freq_extra, mask=0 -> freq_inter
-    inv_freq = freq_inter * (1.0 - inv_freq_mask) + freq_extra * inv_freq_mask
-
-    t = torch.arange(seq_len, device=device, dtype=torch.float32)
-    angles = torch.outer(t, inv_freq)
-    return (torch.cos(angles) * attn_factor).to(dtype), (torch.sin(angles) * attn_factor).to(dtype)
-
-
-def _longrope_freqs(
-    head_dim: int,
-    seq_len: int,
-    base: float = 10000.0,
-    rescale_factors: Optional[torch.Tensor] = None,
-    max_position_embeddings: int = 4096,
-    original_max_position_embeddings: int = 4096,
-    dtype: torch.dtype = torch.float32,
-    device: str = "cuda",
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """LongRoPE per-dimension rescaled frequency computation.
-
-    Implements the canonical LongRoPE formula:
-    1. ``divisor = ext_factors[k] * base^(2k/d)`` (ext_factors multiply the
-       divisor in the inverse-frequency computation)
-    2. ``scaling_factor = sqrt(1 + log(scale) / log(orig_max_pos))``
-       where ``scale = max_pos / orig_max_pos`` (amplitude factor applied
-       to cos/sin output when scale > 1)
-
-    Reference: TVM ``rope_freq_longrope`` in position_embedding.py;
-    Ding et al., "LongRoPE: Extending LLM Context Window Beyond 2M Tokens".
-
-    Args:
-        head_dim: Head dimension.
-        seq_len: Sequence length.
-        base: Frequency base.
-        rescale_factors: Per-dimension rescale factors (ext_factors) of
-            shape (head_dim // 2,). These multiply the divisor in the
-            inverse-frequency formula.
-        max_position_embeddings: Extended max position length.
-        original_max_position_embeddings: Original max position length.
-        dtype: Output dtype.
-        device: Torch device.
-
-    Returns:
-        (cos, sin) each of shape (seq_len, head_dim // 2).
-    """
-    half = head_dim // 2
-    dim_indices = torch.arange(0, half, device=device, dtype=torch.float32)
-    divisor = base ** (dim_indices / half)
-
-    # ext_factors multiply the divisor (matching canonical formula)
-    if rescale_factors is not None:
-        rf = rescale_factors.to(device=device, dtype=torch.float32)
-        divisor = rf * divisor
-
-    freqs = 1.0 / divisor
-
-    # Compute amplitude scaling factor
-    scale = max_position_embeddings / original_max_position_embeddings
-    if scale > 1.0:
-        scaling_factor = math.sqrt(
-            1.0 + math.log(scale) / math.log(original_max_position_embeddings)
-        )
-    else:
-        scaling_factor = 1.0
-
-    t = torch.arange(seq_len, device=device, dtype=torch.float32)
-    angles = torch.outer(t, freqs)
-    return (
-        (torch.cos(angles) * scaling_factor).to(dtype),
-        (torch.sin(angles) * scaling_factor).to(dtype),
-    )
 
 
 class _RopeOpBase(Op):
@@ -726,6 +533,58 @@ class RopeLlama31FwdOp(_RopeOpBase):
     _op_name = "rope_llama31"
     kernel_cls = RopeLlama31Kernel
 
+    @staticmethod
+    def _llama31_freqs(
+        head_dim: int,
+        seq_len: int,
+        base: float = 10000.0,
+        scale_factor: float = 8.0,
+        low_freq_factor: float = 1.0,
+        high_freq_factor: float = 4.0,
+        original_max_position: int = 8192,
+        dtype: torch.dtype = torch.float32,
+        device: str = "cuda",
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Llama 3.1 piecewise-scaled frequency computation.
+
+        Args:
+            head_dim: Head dimension.
+            seq_len: Sequence length.
+            base: Frequency base.
+            scale_factor: Scaling factor for low frequencies.
+            low_freq_factor: Threshold for low-frequency wavelengths.
+            high_freq_factor: Threshold for high-frequency wavelengths.
+            original_max_position: Original maximum position length.
+            dtype: Output dtype.
+            device: Torch device.
+
+        Returns:
+            (cos, sin) each of shape (seq_len, head_dim // 2).
+        """
+        half = head_dim // 2
+        freqs = 1.0 / (base ** (torch.arange(0, half, device=device, dtype=torch.float32) / half))
+
+        low_freq_wavelen = original_max_position / low_freq_factor
+        high_freq_wavelen = original_max_position / high_freq_factor
+
+        scaled_freqs = []
+        for freq in freqs:
+            wavelen = 2 * math.pi / freq.item()
+            if wavelen < high_freq_wavelen:
+                scaled_freqs.append(freq)
+            elif wavelen > low_freq_wavelen:
+                scaled_freqs.append(freq / scale_factor)
+            else:
+                smooth = (original_max_position / wavelen - low_freq_factor) / (
+                    high_freq_factor - low_freq_factor
+                )
+                scaled_freqs.append((1 - smooth) * freq / scale_factor + smooth * freq)
+
+        freqs = torch.stack(scaled_freqs)
+        t = torch.arange(seq_len, device=device, dtype=torch.float32)
+        angles = torch.outer(t, freqs)
+        return torch.cos(angles).to(dtype), torch.sin(angles).to(dtype)
+
     def __init__(
         self,
         layout: str = "1d",
@@ -757,7 +616,7 @@ class RopeLlama31FwdOp(_RopeOpBase):
         super().__init__(layout, kernel_map, tune)
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-        return _llama31_freqs(
+        return RopeLlama31FwdOp._llama31_freqs(
             self.head_dim,
             self.seq_len,
             base=self.base,
@@ -782,6 +641,84 @@ class RopeYarnFwdOp(_RopeOpBase):
 
     _op_name = "rope_yarn"
     kernel_cls = RopeYarnKernel
+
+    @staticmethod
+    def _yarn_freqs(
+        head_dim: int,
+        seq_len: int,
+        base: float = 10000.0,
+        scale: float = 16.0,
+        original_max_position: int = 4096,
+        beta_fast: float = 32.0,
+        beta_slow: float = 1.0,
+        attn_factor: float = 1.0,
+        dtype: torch.dtype = torch.float32,
+        device: str = "cuda",
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """YaRN frequency computation with NTK-aware interpolation.
+
+        Implements the canonical YaRN formula:
+        1. ``freq_extra`` = original inverse frequencies (for extrapolation dims)
+        2. ``freq_inter`` = NTK-aware scaled inverse frequencies where
+           ``scale`` is applied to the base: ``1/(scale*base)^(2k/d)``
+        3. Linear ramp mask between correction dims blends the two
+        4. ``inv_freq = freq_inter * (1 - mask) + freq_extra * mask``
+
+        Reference: TVM ``rope_freq_yarn`` in position_embedding.py;
+        Peng et al., "YaRN: Efficient Context Window Extension of LLMs".
+
+        Args:
+            head_dim: Head dimension.
+            seq_len: Sequence length.
+            base: Frequency base (theta).
+            scale: Context extension scale factor (scaling_factor).
+            original_max_position: Original max context length.
+            beta_fast: Fast rotation boundary (passed as low_rot).
+            beta_slow: Slow rotation boundary (passed as high_rot).
+            attn_factor: Attention scaling factor (applied to cos/sin output).
+            dtype: Output dtype.
+            device: Torch device.
+
+        Returns:
+            (cos, sin) each of shape (seq_len, head_dim // 2).
+        """
+        half = head_dim // 2
+        dim_indices = torch.arange(0, half, device=device, dtype=torch.float32)
+
+        # Original inverse frequencies (extrapolation)
+        freq_extra = 1.0 / (base ** (dim_indices / half))
+
+        # NTK-aware scaled inverse frequencies (interpolation):
+        # scale is applied to the base, not as a divisor on freq
+        freq_inter = 1.0 / ((scale * base) ** (dim_indices / half))
+
+        # Find correction range
+        low, high = _yarn_find_correction_range(
+            beta_fast,
+            beta_slow,
+            half,
+            base,
+            original_max_position,
+        )
+        # Avoid division by zero when low == high
+        if low == high:
+            high = high + 1
+
+        # Linear ramp mask: 1 near low dims (extrapolation), 0 near high dims (interpolation)
+        inv_freq_mask = 1.0 - torch.clamp(
+            (dim_indices - low) / (high - low),
+            0.0,
+            1.0,
+        )
+
+        # Blend: mask=1 -> freq_extra, mask=0 -> freq_inter
+        inv_freq = freq_inter * (1.0 - inv_freq_mask) + freq_extra * inv_freq_mask
+
+        t = torch.arange(seq_len, device=device, dtype=torch.float32)
+        angles = torch.outer(t, inv_freq)
+        return (torch.cos(angles) * attn_factor).to(dtype), (torch.sin(angles) * attn_factor).to(
+            dtype
+        )
 
     def __init__(
         self,
@@ -817,7 +754,7 @@ class RopeYarnFwdOp(_RopeOpBase):
         super().__init__(layout, kernel_map, tune)
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-        return _yarn_freqs(
+        return RopeYarnFwdOp._yarn_freqs(
             self.head_dim,
             self.seq_len,
             base=self.base,
@@ -845,6 +782,71 @@ class RopeLongRopeFwdOp(_RopeOpBase):
 
     _op_name = "rope_longrope"
     kernel_cls = RopeLongRopeKernel
+
+    @staticmethod
+    def _longrope_freqs(
+        head_dim: int,
+        seq_len: int,
+        base: float = 10000.0,
+        rescale_factors: Optional[torch.Tensor] = None,
+        max_position_embeddings: int = 4096,
+        original_max_position_embeddings: int = 4096,
+        dtype: torch.dtype = torch.float32,
+        device: str = "cuda",
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """LongRoPE per-dimension rescaled frequency computation.
+
+        Implements the canonical LongRoPE formula:
+        1. ``divisor = ext_factors[k] * base^(2k/d)`` (ext_factors multiply the
+           divisor in the inverse-frequency computation)
+        2. ``scaling_factor = sqrt(1 + log(scale) / log(orig_max_pos))``
+           where ``scale = max_pos / orig_max_pos`` (amplitude factor applied
+           to cos/sin output when scale > 1)
+
+        Reference: TVM ``rope_freq_longrope`` in position_embedding.py;
+        Ding et al., "LongRoPE: Extending LLM Context Window Beyond 2M Tokens".
+
+        Args:
+            head_dim: Head dimension.
+            seq_len: Sequence length.
+            base: Frequency base.
+            rescale_factors: Per-dimension rescale factors (ext_factors) of
+                shape (head_dim // 2,). These multiply the divisor in the
+                inverse-frequency formula.
+            max_position_embeddings: Extended max position length.
+            original_max_position_embeddings: Original max position length.
+            dtype: Output dtype.
+            device: Torch device.
+
+        Returns:
+            (cos, sin) each of shape (seq_len, head_dim // 2).
+        """
+        half = head_dim // 2
+        dim_indices = torch.arange(0, half, device=device, dtype=torch.float32)
+        divisor = base ** (dim_indices / half)
+
+        # ext_factors multiply the divisor (matching canonical formula)
+        if rescale_factors is not None:
+            rf = rescale_factors.to(device=device, dtype=torch.float32)
+            divisor = rf * divisor
+
+        freqs = 1.0 / divisor
+
+        # Compute amplitude scaling factor
+        scale = max_position_embeddings / original_max_position_embeddings
+        if scale > 1.0:
+            scaling_factor = math.sqrt(
+                1.0 + math.log(scale) / math.log(original_max_position_embeddings)
+            )
+        else:
+            scaling_factor = 1.0
+
+        t = torch.arange(seq_len, device=device, dtype=torch.float32)
+        angles = torch.outer(t, freqs)
+        return (
+            (torch.cos(angles) * scaling_factor).to(dtype),
+            (torch.sin(angles) * scaling_factor).to(dtype),
+        )
 
     def __init__(
         self,
@@ -876,7 +878,7 @@ class RopeLongRopeFwdOp(_RopeOpBase):
         super().__init__(layout, kernel_map, tune)
 
     def _compute_cos_sin(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-        return _longrope_freqs(
+        return RopeLongRopeFwdOp._longrope_freqs(
             self.head_dim,
             self.seq_len,
             base=self.base,

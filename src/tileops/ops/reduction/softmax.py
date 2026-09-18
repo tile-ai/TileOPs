@@ -19,19 +19,6 @@ from ._multidim import EmptyDimPolicy, normalize_dim
 __all__ = ["LogSoftmaxFwdOp", "LogSumExpFwdOp", "SoftmaxFwdOp", "_SoftmaxBaseOp"]
 
 
-def _resolve_implicit_softmax_dim(name: str, ndim: int) -> int:
-    """Mirror ``torch.nn.functional._get_softmax_dim``."""
-    warnings.warn(
-        f"Implicit dimension choice for {name} has been deprecated. "
-        "Change the call to include dim=X as an argument.",
-        UserWarning,
-        stacklevel=3,
-    )
-    if ndim in (0, 1, 3):
-        return 0
-    return 1
-
-
 class _SoftmaxBaseOp(Op):
     """Base class for softmax-family ops.
 
@@ -51,6 +38,19 @@ class _SoftmaxBaseOp(Op):
     _kernel_cls: type  # set by subclass
     _supports_multidim: bool = False  # override to True in reduced-dim ops (e.g. LogSumExpFwdOp)
     _empty_dim_policy: EmptyDimPolicy = "reject"
+
+    @staticmethod
+    def _resolve_implicit_softmax_dim(name: str, ndim: int) -> int:
+        """Mirror ``torch.nn.functional._get_softmax_dim``."""
+        warnings.warn(
+            f"Implicit dimension choice for {name} has been deprecated. "
+            "Change the call to include dim=X as an argument.",
+            UserWarning,
+            stacklevel=3,
+        )
+        if ndim in (0, 1, 3):
+            return 0
+        return 1
 
     def __init__(
         self,
@@ -114,7 +114,7 @@ class _SoftmaxBaseOp(Op):
         # accepts inputs of different ranks, matching F.softmax.
         dim: Union[int, List[int], Tuple[int, ...], None] = self.dim
         if dim is None and not self._supports_multidim:
-            dim = _resolve_implicit_softmax_dim(self._op_kind, x.ndim)
+            dim = _SoftmaxBaseOp._resolve_implicit_softmax_dim(self._op_kind, x.ndim)
         if (isinstance(dim, (list, tuple)) or dim is None) and not self._supports_multidim:
             raise ValueError(
                 f"{type(self).__name__} does not support multi-dim reduction. Use a scalar dim."

@@ -19,6 +19,21 @@ from .heuristics import (
     swap_ab_grid_underfills,
 )
 
+__all__ = [
+    "GemmBasicKernel",
+    "GemmFp8BlockScaledKernel",
+    "GemmFp8EpilogueKernel",
+    "GemmKernel",
+    "GemvKernel",
+    "SmallBatchGemmKernel",
+]
+
+# Everything below is read inside a ``prim_func`` or ``T.macro`` body, which is a
+# closure in a module-level factory and cannot reach ``self``; that is what keeps
+# these at module scope rather than on the kernel classes.
+
+# One named-barrier id per consumer warpgroup: each group arrives on its own
+# barrier (``arrive_count=128``) instead of a block-wide sync.
 _CONSUMER_BAR_WG0 = 8
 _CONSUMER_BAR_WG1 = 9
 
@@ -68,35 +83,6 @@ def _b_eviction(m: int, block_m: int) -> Optional[str]:
     re-reads; above two ``B`` is itself the reused operand.
     """
     return "evict_first" if -(-m // block_m) <= 2 else None
-
-
-__all__ = [
-    "GemmBasicKernel",
-    "GemmFp8BlockScaledKernel",
-    "GemmFp8EpilogueKernel",
-    "GemmKernel",
-    "GemvKernel",
-    "SmallBatchGemmKernel",
-]
-
-
-def _narrow_k_row(k: int, dtype: torch.dtype) -> Optional[str]:
-    """Why a K row is too narrow for one vectorized load, or ``None``.
-
-    ``_gemm_basic_kernel`` loads the innermost (contiguous) dimension in 4-byte
-    units, so a row shorter than that is rejected by the backend. K need not be
-    16-aligned beyond this — the backend zero-pads K tails.
-
-    Read by ``GemmBasicKernel`` twice: during selection, so an unservable K is
-    refused with this reason rather than reaching a builder, and in the
-    constructor, which is also entered directly.
-    """
-    if k * dtype.itemsize >= 4:
-        return None
-    return (
-        f"the pipelined mainloop loads its innermost dimension in 4-byte units, so k "
-        f"must span at least one; k={k} of a {dtype.itemsize}-byte dtype does not"
-    )
 
 
 def _dense_entry(cls: type, call: GemmCall) -> Entry:
@@ -761,7 +747,7 @@ def _gemm_fp8_ws_kernel(
     *,
     sm_count: int,
 ) -> Callable:
-    """Warp-specialized FP8 NT GEMM for Hopper: 1 producer + 2 consumer warpgroups.
+    """Warp-specialized FP8 NT GEMM for SM90: 1 producer + 2 consumer warpgroups.
 
     Same split-A / shared-B layout as :func:`_gemm_coop2_kernel`: a producer
     warpgroup issues the TMA loads, two consumer warpgroups each own 64 of the
@@ -1354,7 +1340,7 @@ def _gemm_kernel(
     *,
     sm_count: int,
 ) -> Callable:
-    """Hand-written warp-specialized GEMM ``C = op(A) @ op(B)`` for Hopper (SM90).
+    """Hand-written warp-specialized GEMM ``C = op(A) @ op(B)`` for SM90.
 
     One producer warpgroup (128 threads) issues TMA loads into a double-buffered
     SMEM ring; one consumer warpgroup (128 threads) runs the WGMMA and accumulates
@@ -1788,9 +1774,9 @@ def _gemm_coop2_kernel(
     *,
     sm_count: int,
 ) -> Callable:
-    """Persistent 2-consumer (cooperative) warp-specialized GEMM for Hopper.
+    """Persistent 2-consumer (cooperative) warp-specialized GEMM for SM90.
 
-    Matches the cuBLAS Hopper cooperative (``coopA``) layout: one producer
+    Matches the cuBLAS cooperative (``coopA``) layout: one producer
     warpgroup (128 threads) plus **two** consumer warpgroups (256 threads,
     384 total). A ``block_m x block_n`` output tile is split along M — each
     consumer owns ``block_m // 2`` rows and runs its own WGMMA; the ``B`` tile
@@ -2579,7 +2565,7 @@ def _(
 
 
 class GemmKernel(Kernel):
-    """Dense GEMM kernel family: hand-written Hopper (SM90) implementations.
+    """Dense GEMM kernel family: hand-written SM90 implementations.
 
     Computes ``C = op(A) @ op(B)`` for any ``(trans_a, trans_b)`` layout. The
     default structure is warp-specialized: one producer warpgroup issues TMA
@@ -2588,8 +2574,8 @@ class GemmKernel(Kernel):
     coop2_splitk / simple / split-K variants instead (see ``forward``).
     ``activation="silu_and_mul"`` fuses the gated activation into a split-K
     reduction and returns ``[M, N / 2]``.
-    fp16 / bf16 inputs, fp32 accumulation. Hopper-only — TMA + WGMMA
-    require SM90.
+    fp16 / bf16 inputs, fp32 accumulation. SM90 only: every structure loads
+    through TMA and runs its math on WGMMA.
     """
 
     supported_archs: list[int] = [90]
@@ -3263,6 +3249,25 @@ class GemmBasicKernel(Kernel):
     supported_archs: list[int] = [80, 86, 89, 90]
     general = True
 
+    @staticmethod
+    def _narrow_k_row(k: int, dtype: torch.dtype) -> Optional[str]:
+        """Why a K row is too narrow for one vectorized load, or ``None``.
+
+        ``_gemm_basic_kernel`` loads the innermost (contiguous) dimension in 4-byte
+        units, so a row shorter than that is rejected by the backend. K need not be
+        16-aligned beyond this — the backend zero-pads K tails.
+
+        Read three times: by ``applies`` and ``refusal``, so an unservable K is
+        refused during selection rather than reaching a builder, and by the
+        constructor, which is also entered directly.
+        """
+        if k * dtype.itemsize >= 4:
+            return None
+        return (
+            f"the pipelined mainloop loads its innermost dimension in 4-byte units, so k "
+            f"must span at least one; k={k} of a {dtype.itemsize}-byte dtype does not"
+        )
+
     @classmethod
     def applies(cls, call: Any) -> bool:
         """Every architecture, less the SM90 shapes :class:`GemmKernel` supersedes.
@@ -3276,7 +3281,7 @@ class GemmBasicKernel(Kernel):
         Why the exclusion is here rather than in ``supported_archs``: that list also
         gates direct construction, and this class runs on SM90.
         """
-        if _narrow_k_row(call.k, call.dtype) is not None:
+        if cls._narrow_k_row(call.k, call.dtype) is not None:
             return False
         if call.arch != 90:
             return True
@@ -3290,7 +3295,7 @@ class GemmBasicKernel(Kernel):
         """The narrow-K reason where that is what refuses, else the base answer."""
         archs = cls.supported_archs
         if archs is not None and call.arch in archs:
-            narrow = _narrow_k_row(call.k, call.dtype)
+            narrow = cls._narrow_k_row(call.k, call.dtype)
             if narrow is not None:
                 return narrow
         return super().refusal(call)
@@ -3312,7 +3317,7 @@ class GemmBasicKernel(Kernel):
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
-        narrow = _narrow_k_row(k, dtype)
+        narrow = self._narrow_k_row(k, dtype)
         if narrow is not None:
             raise ValueError(f"{type(self).__name__} cannot serve k={k}: {narrow}")
         self.m = m
@@ -3328,7 +3333,8 @@ class GemmBasicKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # Modal winner shape of the pipelined BMM kernel (H20-3e manifest).
+        # Modal winner shape of the pipelined BMM kernel across the manifest
+        # workloads, measured on one SM90 board.
         # Prefer block_k dividing k; k with no 32/64 factor (or not
         # 16-aligned at all) falls back to 16 — the mma.sync floor — and
         # the backend zero-pads the K tail.

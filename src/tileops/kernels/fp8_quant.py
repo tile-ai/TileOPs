@@ -14,14 +14,6 @@ __all__ = ["FP8QuantKernel"]
 _AMAX_FLOOR = 1e-4
 
 
-def _pow2_floor(n: int) -> int:
-    """The largest power of two at most *n*, and at least one."""
-    p = 1
-    while p * 2 <= n:
-        p *= 2
-    return p
-
-
 @functools.lru_cache(maxsize=32)
 def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int):
     @tilelang.jit(out_idx=[1, 2])
@@ -131,6 +123,14 @@ class FP8QuantKernel(Kernel):
     _LANE_THREADS: ClassVar[int] = 128
     _ROW_THREADS: ClassVar[int] = 64
 
+    @staticmethod
+    def _pow2_floor(n: int) -> int:
+        """The largest power of two at most *n*, and at least one."""
+        p = 1
+        while p * 2 <= n:
+            p *= 2
+        return p
+
     def __init__(
         self,
         batch: int,
@@ -169,10 +169,10 @@ class FP8QuantKernel(Kernel):
         while odd % 2 == 0:
             odd //= 2
         if odd > 1:
-            return self._ROW_THREADS, min(self._ROW_THREADS, _pow2_floor(rows))
+            return self._ROW_THREADS, min(self._ROW_THREADS, FP8QuantKernel._pow2_floor(rows))
         row_bytes = self.index_dim * self.dtype.itemsize
         widest = self._LANE_THREADS * VECTOR_ACCESS_BYTES // row_bytes
-        return self._LANE_THREADS, _pow2_floor(min(widest, rows))
+        return self._LANE_THREADS, FP8QuantKernel._pow2_floor(min(widest, rows))
 
     @property
     def default_config(self) -> dict:

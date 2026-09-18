@@ -769,22 +769,8 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
     return _func
 
 
-def _major_of(t: torch.Tensor, k_dim: int) -> Major:
-    """K-major when the K dim is the contiguous one, MN-major when the other is."""
-    if t.stride(k_dim) == 1:
-        return Major.K
-    other = t.ndim - 1 if k_dim == t.ndim - 2 else t.ndim - 2
-    if t.stride(other) == 1:
-        return Major.MN
-    raise ValueError(f"neither of the last two dims of a {tuple(t.shape)} tensor is contiguous")
-
-
-def _torch_dtype_str(dtype: torch.dtype) -> str:
-    return str(dtype).split(".")[-1]
-
-
 class GemmTemplate(Kernel):
-    """16-bit grouped GEMM template for Hopper.
+    """16-bit grouped GEMM template for SM90.
 
     ``C = A @ B^T`` per group on bf16 or fp16 operands with fp32 accumulation and
     a ``C`` in the operand dtype or fp32. Majorness is read off the operands'
@@ -819,6 +805,20 @@ class GemmTemplate(Kernel):
     """
 
     supported_archs: list[int] = [90]
+
+    @staticmethod
+    def _torch_dtype_str(dtype: torch.dtype) -> str:
+        return str(dtype).split(".")[-1]
+
+    @staticmethod
+    def _major_of(t: torch.Tensor, k_dim: int) -> Major:
+        """K-major when the K dim is the contiguous one, MN-major when the other is."""
+        if t.stride(k_dim) == 1:
+            return Major.K
+        other = t.ndim - 1 if k_dim == t.ndim - 2 else t.ndim - 2
+        if t.stride(other) == 1:
+            return Major.MN
+        raise ValueError(f"neither of the last two dims of a {tuple(t.shape)} tensor is contiguous")
 
     def __init__(
         self,
@@ -926,10 +926,10 @@ class GemmTemplate(Kernel):
             n=n,
             k=k,
             num_groups=self.num_groups,
-            major_a=_major_of(a, a.ndim - 1),
-            major_b=_major_of(b, b.ndim - 1),
-            ab_dtype=_torch_dtype_str(a.dtype),
-            cd_dtype=_torch_dtype_str(self.output_dtype(a)),
+            major_a=GemmTemplate._major_of(a, a.ndim - 1),
+            major_b=GemmTemplate._major_of(b, b.ndim - 1),
+            ab_dtype=GemmTemplate._torch_dtype_str(a.dtype),
+            cd_dtype=GemmTemplate._torch_dtype_str(self.output_dtype(a)),
             num_sms=self.sm_count,
             static_dims=self.static_dims,
             m_alignment=self.m_alignment,

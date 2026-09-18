@@ -15,10 +15,6 @@ from .common import (
 __all__ = ["AdaptiveMaxPool2dKernel", "AdaptiveMaxPool2dWithIndicesKernel"]
 
 
-def _divisors(value: int) -> Tuple[int, ...]:
-    return tuple(d for d in range(1, value + 1) if value % d == 0)
-
-
 def _spread(values: Tuple[int, ...], limit: int) -> Tuple[int, ...]:
     """At most ``limit`` of ``values``, both ends kept and the rest evenly spaced."""
     if len(values) <= limit:
@@ -46,6 +42,10 @@ class _PlaneStaging:
     # Plane counts a tuning run tries.
     _TUNED_PLANE_COUNTS = 4
 
+    @staticmethod
+    def _divisors(value: int) -> Tuple[int, ...]:
+        return tuple(d for d in range(1, value + 1) if value % d == 0)
+
     def __init__(self, rows: int, h_in: int, w_in: int, dtype: str) -> None:
         self._rows = rows
         self._plane = h_in * w_in
@@ -64,9 +64,11 @@ class _PlaneStaging:
         the reduction reading global memory instead.
         """
         if not fits_static_shared(self._plane, self._dtype):
-            return _divisors(self._rows)
+            return _PlaneStaging._divisors(self._rows)
         return tuple(
-            d for d in _divisors(self._rows) if fits_static_shared(d * self._plane, self._dtype)
+            d
+            for d in _PlaneStaging._divisors(self._rows)
+            if fits_static_shared(d * self._plane, self._dtype)
         )
 
     def threads(self, planes: int) -> int:

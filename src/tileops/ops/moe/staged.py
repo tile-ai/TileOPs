@@ -230,13 +230,6 @@ def _check_layout(layout: object) -> MGroupedLayoutSpec:
     return layout
 
 
-def _rows_of(layout: MGroupedLayoutSpec, a_shape: tuple[int, ...]) -> int:
-    """Materialized rows of ``a``: ``M`` for contiguous, ``E * max_m`` for masked."""
-    if isinstance(layout, MaskedLayoutSpec):
-        return a_shape[0] * a_shape[1]
-    return a_shape[0]
-
-
 class MoeGroupedGemmFwdOp(_StagedOpBase):
     """M-grouped GEMM over expert-materialized rows: ``out[rows of g] = a[rows of g] @ b[g]^T``.
 
@@ -271,6 +264,13 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
         OperatorSpec(),
         OperatorSpec.writes_out("out"),
     )
+
+    @staticmethod
+    def _rows_of(layout: MGroupedLayoutSpec, a_shape: tuple[int, ...]) -> int:
+        """Materialized rows of ``a``: ``M`` for contiguous, ``E * max_m`` for masked."""
+        if isinstance(layout, MaskedLayoutSpec):
+            return a_shape[0] * a_shape[1]
+        return a_shape[0]
 
     @property
     def default_kernel_map(self) -> dict[str, Kernel]:
@@ -375,7 +375,7 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
             raise ValueError(
                 f"a fused gated activation splits b's N={n} into gate and up halves: N must be even"
             )
-        rows = _rows_of(layout, tuple(a.shape))
+        rows = MoeGroupedGemmFwdOp._rows_of(layout, tuple(a.shape))
         expected_meta = layout.metadata_length(rows=rows, num_experts=num_experts)
         if layout_metadata.ndim != 1 or layout_metadata.shape[0] != expected_meta:
             raise ValueError(
@@ -425,7 +425,7 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
         Raises:
             ValueError: ``layout_metadata`` is not the int32 vector the layout expects.
         """
-        rows = _rows_of(self.layout, tuple(a.shape))
+        rows = MoeGroupedGemmFwdOp._rows_of(self.layout, tuple(a.shape))
         expected = self.layout.metadata_length(rows=rows, num_experts=b.shape[0])
         if layout_metadata.dtype is not torch.int32 or tuple(layout_metadata.shape) != (expected,):
             raise ValueError(
