@@ -6,10 +6,9 @@ import torch
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp
 from tileops.perf.formulas import gqa_prefill_paged_with_kv_cache_fwd_roofline
-from workloads.attention.gqa import (
-    GQAPrefillPagedWithKVCacheFwdWorkload,
+from workloads.attention.gqa import GQAPrefillPagedWithKVCacheFwdWorkload, make_cu_seqlens
+from workloads.attention.paged import (
     fill_paged_cache_from_logical,
-    make_cu_seqlens,
     make_fragmented_block_table,
     make_interleaved_block_table,
     make_unit_cache_scales,

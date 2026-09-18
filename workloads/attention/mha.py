@@ -6,7 +6,8 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from workloads.attention.gqa import _compute_gqa_square_lse, make_fragmented_block_table
+from workloads.attention.gqa import _compute_gqa_square_lse
+from workloads.attention.paged import make_fragmented_block_table
 from workloads.workload_base import WorkloadBase
 
 
