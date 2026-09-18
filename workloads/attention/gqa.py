@@ -6,7 +6,7 @@ from itertools import accumulate
 import torch
 import torch.nn.functional as F
 
-from workloads.workload_base import WorkloadBase
+from workloads.workload_base import WORKLOAD_SEED, WorkloadBase
 
 
 def make_cu_seqlens(lengths: list[int]) -> torch.Tensor:
@@ -27,6 +27,28 @@ def make_interleaved_block_table(batch: int, max_pages_per_req: int) -> torch.Te
         pages = list(range(start, start + max_pages_per_req))
         rows.append(pages[::2] + pages[1::2])
     return torch.tensor(rows, device="cuda", dtype=torch.int32).contiguous()
+
+
+def make_fragmented_block_table(
+    batch: int, pages_per_req: int, pool_pages: int, seed: int = WORKLOAD_SEED
+) -> torch.Tensor:
+    """Block table over a fragmented page pool, the layout a serving cache has.
+
+    A pool holding ``batch * pages_per_req`` pages gives every request a
+    disjoint set; a smaller pool gives every request its own permutation of the
+    same pages. The fixed seed keeps two runs on the same layout.
+    """
+    if pages_per_req > pool_pages:
+        raise ValueError(f"a request needs {pages_per_req} pages but the pool holds {pool_pages}")
+    generator = torch.Generator().manual_seed(seed)
+    if pool_pages >= batch * pages_per_req:
+        pages = torch.randperm(pool_pages, generator=generator)[: batch * pages_per_req]
+        table = pages.reshape(batch, pages_per_req)
+    else:
+        table = torch.stack(
+            [torch.randperm(pool_pages, generator=generator)[:pages_per_req] for _ in range(batch)]
+        )
+    return table.to(device="cuda", dtype=torch.int32).contiguous()
 
 
 def paged_cache_row(
@@ -450,16 +472,11 @@ class GroupedQueryAttentionDecodePagedWorkload(WorkloadBase):
         q = torch.randn(self.batch, self.heads, self.dim, dtype=self.dtype, device="cuda")
         k = torch.randn(self.seqlen_kv, self.heads_kv, self.dim, dtype=self.dtype, device="cuda")
         v = torch.randn(self.seqlen_kv, self.heads_kv, self.dim, dtype=self.dtype, device="cuda")
-        block_table = (
-            torch.arange(num_pages, dtype=torch.int32, device="cuda")
-            .unsqueeze(0)
-            .expand(self.batch, -1)
-        )
+        block_table = make_fragmented_block_table(self.batch, num_pages, num_pages)
 
         q = q.contiguous()
         k = k.contiguous()
         v = v.contiguous()
-        block_table = block_table.contiguous()
         real_seqlen_kv = real_seqlen_kv.contiguous()
 
         return q, k, v, real_seqlen_kv, block_table
@@ -597,13 +614,8 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
         v_pages = torch.randn_like(k_pages)
         cu_seqlens_q = make_cu_seqlens(self.q_lens)
         cache_seqlens = torch.tensor(self.cache_lens, dtype=torch.int32, device="cuda")
-        # Identity mapping, not make_interleaved_block_table: a timed run reports the
-        # page walk of a cache that was filled in order, and the correctness of the
-        # walk under a permuted table is the test's question.
-        block_table = (
-            torch.arange(self.batch * self.max_pages_per_req, dtype=torch.int32, device="cuda")
-            .reshape(self.batch, self.max_pages_per_req)
-            .contiguous()
+        block_table = make_fragmented_block_table(
+            self.batch, self.max_pages_per_req, self.batch * self.max_pages_per_req
         )
         return (
             q,

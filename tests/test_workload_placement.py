@@ -46,3 +46,46 @@ def test_tests_do_not_author_gen_inputs() -> None:
 @pytest.mark.smoke
 def test_workloads_carry_no_decisions() -> None:
     assert _methods_named(REPO_ROOT / "workloads", NOT_IN_WORKLOADS.__contains__) == {}
+
+
+def _seeds_global_rng(node: ast.AST) -> bool:
+    """Whether *node* is a call that seeds the global RNG.
+
+    ``torch.manual_seed(...)`` and the imported ``manual_seed(...)`` do.
+    ``generator.manual_seed(...)`` does not: it seeds a generator the workload
+    owns, which is what the rule asks for.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    if isinstance(node.func, ast.Name):
+        return node.func.id == "manual_seed"
+    return (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "manual_seed"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "torch"
+    )
+
+
+def _global_seed_calls(root: Path) -> dict[str, list[str]]:
+    """Map each file under *root* to the calls that seed the global RNG."""
+    offenders = {}
+    for path in sorted(root.rglob("*.py")):
+        hits = [
+            f"line {node.lineno}"
+            for node in ast.walk(ast.parse(path.read_text(), filename=str(path)))
+            if _seeds_global_rng(node)
+        ]
+        if hits:
+            offenders[str(path.relative_to(REPO_ROOT))] = hits
+    return offenders
+
+
+@pytest.mark.smoke
+def test_workloads_do_not_seed_the_global_rng() -> None:
+    """A workload that reseeds the global RNG moves every later draw in the session.
+
+    The conftests seed it once per test; an input that must not move with the
+    stream takes ``WorkloadBase.rng()`` instead.
+    """
+    assert _global_seed_calls(REPO_ROOT / "workloads") == {}

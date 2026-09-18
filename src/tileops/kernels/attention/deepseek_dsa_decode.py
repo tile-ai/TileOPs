@@ -137,6 +137,26 @@ def _sparse_mla_kernel(
         d_tail = tail_dim
         stride_kv = kv_stride
 
+        # Two 128-thread consumer warpgroups take tx < 256; the rest gather KV,
+        # 8 threads to a row, and must tile i_block exactly.
+        consumer_threads = 256
+        producer_threads = threads - consumer_threads
+        if producer_threads <= 0 or producer_threads % 8 != 0:
+            raise ValueError(
+                f"threads={threads} leaves {producer_threads} producer threads; "
+                "the KV gather needs a positive multiple of 8"
+            )
+        producer_rows = producer_threads // 8
+        if i_block % producer_rows != 0:
+            raise ValueError(
+                f"block_i={i_block} is not a multiple of the {producer_rows} rows one "
+                f"gather pass copies with threads={threads}"
+            )
+        if d % 128 != 0:
+            raise ValueError(f"the KV gather walks dim in 128-column steps, dim={d}")
+        if d_tail != 64:
+            raise ValueError(f"the KV tail gather copies exactly 64 columns, tail_dim={d_tail}")
+
         if head_kv > 64:
             if head_kv % 64 != 0:
                 raise ValueError("head_kv should be a multiple of 64")
@@ -204,12 +224,12 @@ def _sparse_mla_kernel(
                 indices_local = T.alloc_local([1], indices_dtype)
 
                 # TODO: Multi buffer
-                bar_k_0_ready = T.alloc_barrier(arrive_count=128)
-                bar_k_1_ready = T.alloc_barrier(arrive_count=128)
-                bar_k_0_free = T.alloc_barrier(arrive_count=256)
-                bar_k_1_free = T.alloc_barrier(arrive_count=256)
-                bar_s_scale_and_s_ready = T.alloc_barrier(arrive_count=256)
-                bar_s_scale_and_s_free = T.alloc_barrier(arrive_count=256)
+                bar_k_0_ready = T.alloc_barrier(arrive_count=producer_threads)
+                bar_k_1_ready = T.alloc_barrier(arrive_count=producer_threads)
+                bar_k_0_free = T.alloc_barrier(arrive_count=consumer_threads)
+                bar_k_1_free = T.alloc_barrier(arrive_count=consumer_threads)
+                bar_s_scale_and_s_ready = T.alloc_barrier(arrive_count=consumer_threads)
+                bar_s_scale_and_s_free = T.alloc_barrier(arrive_count=consumer_threads)
 
                 b_i, g_i = by, bz
                 s_i = (
@@ -218,7 +238,9 @@ def _sparse_mla_kernel(
                     else (bx // replicate_h + (stride_kv - 1 if cp0 else 0))
                 )
                 q_i = q_start_index_s + s_i
-                max_kv_i = (q_i + 1 - stride_kv) // stride_kv
+                # The causal limit, clamped to the rows kv holds: a padded
+                # top-k slot must not address kv past its last row.
+                max_kv_i = T.min((q_i + 1 - stride_kv) // stride_kv, seq_len_kv - 1)
 
                 h0 = g_i * padded_h + (0 if replicate_h == 1 else (bx % replicate_h) * 64)
                 h1 = h0 + h_per_block
@@ -353,17 +375,22 @@ def _sparse_mla_kernel(
                     T.set_max_nreg(80, 0)
                     for i_i in T.serial(T.ceildiv(n_i, 2)):
                         T.barrier_wait(bar_k_0_free[0], ((i_i & 1) ^ 1))
-                        for r in T.serial(4):
+                        for r in T.serial(i_block // producer_rows):
                             indices_local[0] = indices[
-                                b_i, s_i, g_i, (i_i * 2) * i_block + r * 16 + (tx - 256) // 8
+                                b_i,
+                                s_i,
+                                g_i,
+                                (i_i * 2) * i_block + r * producer_rows + (tx - 256) // 8,
                             ]
-                            is_kv_valid[r * 16 + (tx - 256) // 8] = indices_local[0] <= max_kv_i
-                            if is_kv_valid[r * 16 + (tx - 256) // 8]:
+                            is_kv_valid[r * producer_rows + (tx - 256) // 8] = (
+                                indices_local[0] >= 0
+                            ) & (indices_local[0] <= max_kv_i)
+                            if is_kv_valid[r * producer_rows + (tx - 256) // 8]:
                                 with T.attr("default", "async_scope", 1):
-                                    for u in T.serial(4):
+                                    for u in T.serial(d // 128):
                                         for v in T.vectorized(8):
                                             kv_shared_0_l[
-                                                r * 16 + (tx - 256) // 8,
+                                                r * producer_rows + (tx - 256) // 8,
                                                 64 * u + (tx - 256) % 8 * 8 + v,
                                             ] = kv[
                                                 b_i,
@@ -372,7 +399,7 @@ def _sparse_mla_kernel(
                                                 64 * u + (tx - 256) % 8 * 8 + v,
                                             ]
                                             kv_shared_0_r[
-                                                r * 16 + (tx - 256) // 8,
+                                                r * producer_rows + (tx - 256) // 8,
                                                 64 * u + (tx - 256) % 8 * 8 + v,
                                             ] = kv[
                                                 b_i,
@@ -383,24 +410,49 @@ def _sparse_mla_kernel(
                                 with T.attr("default", "async_scope", 1):
                                     for v in T.vectorized(8):
                                         k_tail_shared_0[
-                                            r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 + v
+                                            r * producer_rows + (tx - 256) // 8,
+                                            (tx - 256) % 8 * 8 + v,
                                         ] = kv[
                                             b_i, indices_local[0], g_i, d + (tx - 256) % 8 * 8 + v
                                         ]
+                            else:
+                                # Zero, not stale: the row's softmax weight is zero,
+                                # and zero times a NaN an earlier tile left in shared
+                                # memory is NaN.
+                                for u in T.serial(d // 128):
+                                    for v in T.vectorized(8):
+                                        kv_shared_0_l[
+                                            r * producer_rows + (tx - 256) // 8,
+                                            64 * u + (tx - 256) % 8 * 8 + v,
+                                        ] = 0
+                                        kv_shared_0_r[
+                                            r * producer_rows + (tx - 256) // 8,
+                                            64 * u + (tx - 256) % 8 * 8 + v,
+                                        ] = 0
+                                for v in T.vectorized(8):
+                                    k_tail_shared_0[
+                                        r * producer_rows + (tx - 256) // 8,
+                                        (tx - 256) % 8 * 8 + v,
+                                    ] = 0
                         T.cp_async_barrier_noinc(bar_k_0_ready[0])
 
                         T.barrier_wait(bar_k_1_free[0], ((i_i & 1) ^ 1))
-                        for r in T.serial(4):
+                        for r in T.serial(i_block // producer_rows):
                             indices_local[0] = indices[
-                                b_i, s_i, g_i, (i_i * 2 + 1) * i_block + r * 16 + (tx - 256) // 8
+                                b_i,
+                                s_i,
+                                g_i,
+                                (i_i * 2 + 1) * i_block + r * producer_rows + (tx - 256) // 8,
                             ]
-                            is_kv_valid[r * 16 + (tx - 256) // 8] = indices_local[0] <= max_kv_i
-                            if is_kv_valid[r * 16 + (tx - 256) // 8]:
+                            is_kv_valid[r * producer_rows + (tx - 256) // 8] = (
+                                indices_local[0] >= 0
+                            ) & (indices_local[0] <= max_kv_i)
+                            if is_kv_valid[r * producer_rows + (tx - 256) // 8]:
                                 with T.attr("default", "async_scope", 1):
-                                    for u in T.serial(4):
+                                    for u in T.serial(d // 128):
                                         for v in T.vectorized(8):
                                             kv_shared_1_l[
-                                                r * 16 + (tx - 256) // 8,
+                                                r * producer_rows + (tx - 256) // 8,
                                                 64 * u + (tx - 256) % 8 * 8 + v,
                                             ] = kv[
                                                 b_i,
@@ -409,7 +461,7 @@ def _sparse_mla_kernel(
                                                 64 * u + (tx - 256) % 8 * 8 + v,
                                             ]
                                             kv_shared_1_r[
-                                                r * 16 + (tx - 256) // 8,
+                                                r * producer_rows + (tx - 256) // 8,
                                                 64 * u + (tx - 256) % 8 * 8 + v,
                                             ] = kv[
                                                 b_i,
@@ -420,10 +472,27 @@ def _sparse_mla_kernel(
                                 with T.attr("default", "async_scope", 1):
                                     for v in T.vectorized(8):
                                         k_tail_shared_1[
-                                            r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 + v
+                                            r * producer_rows + (tx - 256) // 8,
+                                            (tx - 256) % 8 * 8 + v,
                                         ] = kv[
                                             b_i, indices_local[0], g_i, d + (tx - 256) % 8 * 8 + v
                                         ]
+                            else:
+                                for u in T.serial(d // 128):
+                                    for v in T.vectorized(8):
+                                        kv_shared_1_l[
+                                            r * producer_rows + (tx - 256) // 8,
+                                            64 * u + (tx - 256) % 8 * 8 + v,
+                                        ] = 0
+                                        kv_shared_1_r[
+                                            r * producer_rows + (tx - 256) // 8,
+                                            64 * u + (tx - 256) % 8 * 8 + v,
+                                        ] = 0
+                                for v in T.vectorized(8):
+                                    k_tail_shared_1[
+                                        r * producer_rows + (tx - 256) // 8,
+                                        (tx - 256) % 8 * 8 + v,
+                                    ] = 0
                         T.cp_async_barrier_noinc(bar_k_1_ready[0])
 
         return _sparse_mla_fwd_main
@@ -607,7 +676,9 @@ def _sparse_mla_basic_kernel(
                     else (bx // replicate_h + (stride_kv - 1 if cp0 else 0))
                 )
                 q_i = q_start_index_s + s_i
-                max_kv_i = (q_i + 1 - stride_kv) // stride_kv
+                # The causal limit, clamped to the rows kv holds: a padded
+                # top-k slot must not address kv past its last row.
+                max_kv_i = T.min((q_i + 1 - stride_kv) // stride_kv, seq_len_kv - 1)
 
                 h0 = g_i * padded_h + (0 if replicate_h == 1 else (bx % replicate_h) * 64)
                 h1 = h0 + h_per_block
@@ -619,22 +690,24 @@ def _sparse_mla_basic_kernel(
                 T.fill(acc_o, 0)
 
                 for i_i in T.Pipelined(n_i, num_stages=num_stages):
-                    # Gather the top-k KV rows selected by indices. Rows whose
-                    # index exceeds max_kv_i are left untouched (stale data);
-                    # the -inf mask below makes their softmax weight zero, so
-                    # stale values never reach the output — the same contract
-                    # as the WGMMA producer warpgroup.
+                    # Gather the selected KV rows; zero the rest, so that the
+                    # zero weight the mask below gives them cannot meet a NaN
+                    # an earlier tile left in shared memory.
                     for r in T.serial(i_block):
                         kv_idx = indices[b_i, s_i, g_i, i_i * i_block + r]
-                        if kv_idx <= max_kv_i:
+                        if (kv_idx >= 0) & (kv_idx <= max_kv_i):
                             T.copy(kv[b_i, kv_idx, g_i, :d], kv_shared[r, :])
                             T.copy(kv[b_i, kv_idx, g_i, d:], kv_tail_shared[r, :])
+                        else:
+                            T.clear(kv_shared[r, :])
+                            T.clear(kv_tail_shared[r, :])
 
                     # acc_s starts at 0 for valid rows / -inf for invalid
                     # ones; the gemms below accumulate onto it.
                     for h_i, bi_i in T.Parallel(h_per_block, i_block):
+                        mask_idx = indices[b_i, s_i, g_i, i_i * i_block + bi_i]
                         acc_s[h_i, bi_i] = T.if_then_else(
-                            indices[b_i, s_i, g_i, i_i * i_block + bi_i] <= max_kv_i,
+                            (mask_idx >= 0) & (mask_idx <= max_kv_i),
                             0,
                             -T.infinity(acc_s.dtype),
                         )

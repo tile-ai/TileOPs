@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from workloads.attention.gqa import _compute_gqa_square_lse
+from workloads.attention.gqa import _compute_gqa_square_lse, make_fragmented_block_table
 from workloads.workload_base import WorkloadBase
 
 
@@ -132,17 +132,11 @@ class MhaDecodePagedWorkload(WorkloadBase):
         )
         k = torch.randn(self.seqlen_kv, self.heads, self.dim, device="cuda", dtype=self.dtype)
         v = torch.randn(self.seqlen_kv, self.heads, self.dim, device="cuda", dtype=self.dtype)
-        # Identity block_table: logical page i -> physical page i (contiguous layout)
-        block_table = (
-            torch.arange(num_pages, dtype=torch.int32, device="cuda")
-            .unsqueeze(0)
-            .expand(self.batch, -1)
-        )
+        block_table = make_fragmented_block_table(self.batch, num_pages, num_pages)
 
         q = q.contiguous()
         k = k.contiguous()
         v = v.contiguous()
-        block_table = block_table.contiguous()
         real_seqlen_kv = real_seqlen_kv.contiguous()
 
         return q, k, v, real_seqlen_kv, block_table
