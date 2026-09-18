@@ -210,7 +210,7 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
 
 @pytest.mark.smoke
 def test_bmm_template_h200_dispatch_region() -> None:
-    """The template claims aligned, untuned H200 calls worth half a persistent wave."""
+    """The template claims aligned H200 calls worth half a persistent wave."""
 
     def call(batch=64, m=128, n=2048, *, h200=True, tune=False):
         return BmmCall(
@@ -231,8 +231,7 @@ def test_bmm_template_h200_dispatch_region() -> None:
     assert not BmmTemplateKernel.applies(call(h200=False))
     # n is TMA-aligned and the shape is large, so only the tile count rejects it.
     assert not BmmTemplateKernel.applies(call(batch=1, m=2048, n=1024))
-    # BmmKernel is the implementation that takes a tune flag.
-    assert not BmmTemplateKernel.applies(call(tune=True))
+    assert BmmTemplateKernel.applies(call(tune=True))
 
 
 @pytest.mark.smoke
