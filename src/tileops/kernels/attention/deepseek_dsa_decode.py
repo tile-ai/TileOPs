@@ -803,7 +803,7 @@ class SparseMlaBasicKernel(Kernel):
     """
     Architecture-agnostic sparse MLA kernel (sm80+).
 
-    ``SparseMlaKernel`` requires Hopper WGMMA plus manual warp specialization;
+    ``SparseMlaKernel`` requires SM90 WGMMA plus manual warp specialization;
     this variant re-implements the same computation with plain ``T.gemm`` and
     ``T.Pipelined`` software pipelining so it runs on any tensor-core target
     (sm80, sm86, sm89). Constructor / forward signatures are identical to
@@ -891,7 +891,7 @@ class SparseMlaBasicKernel(Kernel):
         # instead spreads acc_o across two 128-thread consumer warpgroups.
         # block_i=64 stages 230KB of SMEM for the worst test shape (kv_group=1,
         # h_per_block=64, d=512: q 64KB + q_tail 8KB + 2x (kv 64KB + kv_tail
-        # 8KB) + s 8KB), over the 163KB per-block cap every pre-Hopper card
+        # 8KB) + s 8KB), over the 163KB per-block cap every pre-SM90 card
         # launches with — verified failing on real sm80 hardware. block_i=32
         # halves the pipelined KV tiles to 148KB, which fits sm80; sm89's
         # 99KB cap still needs the smaller h_per_block of a realistic MLA
@@ -907,7 +907,7 @@ class SparseMlaBasicKernel(Kernel):
 
         ``block_i=32`` halves the pipelined KV shared-memory footprint, which
         matters on archs with a tighter per-block shared memory limit
-        (A100 164KB / sm89 100KB vs H100 227KB).
+        (sm80 164KB / sm89 100KB vs sm90 227KB).
 
         Returns:
             list[dict]: Configs with 'block_i', 'threads' and 'num_stages'.

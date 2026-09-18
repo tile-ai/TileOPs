@@ -26,7 +26,7 @@ __all__ = [
 
 @functools.lru_cache(maxsize=64)
 def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> Callable:
-    """Pipelined batched GEMM for Hopper (SM90).
+    """Pipelined batched GEMM for SM90.
 
     Launches a 3D grid ``(ceildiv(n, block_n), ceildiv(m, block_m), batch)``.
     Each block loads its per-batch A/B tiles into SMEM through a ``T.Pipelined``
@@ -821,16 +821,16 @@ class BmmFp8Kernel(Kernel):
         self.out_dtype = out_dtype
         # Dispatch policy (in order of preference):
         #   1) 3-WG WS persistent (best throughput on aligned shapes;
-        #      Hopper only — TMA + WGMMA);
-        #   2) plain persistent (removes wave quantisation; Hopper only —
-        #      the plain T.gemm body could run on pre-Hopper archs but is
+        #      SM90 only — TMA + WGMMA);
+        #   2) plain persistent (removes wave quantisation; SM90 only —
+        #      the plain T.gemm body could run on pre-SM90 archs but is
         #      unvalidated there);
         #   3) classic 3D grid (handles arbitrary M/N tails; plain T.gemm,
         #      runs on any FP8 tensor-core target, sm89+).
         self._sm_count = torch.cuda.get_device_properties(device).multi_processor_count
-        self._is_hopper = cc[0] == 9
-        self._use_ws = self._is_hopper and self._ws_eligible(batch, m, n, k, self._sm_count)
-        self._use_persistent = self._is_hopper and (
+        self._is_sm90 = cc[0] == 9
+        self._use_ws = self._is_sm90 and self._ws_eligible(batch, m, n, k, self._sm_count)
+        self._use_persistent = self._is_sm90 and (
             self._use_ws or self._persistent_eligible(m, n, k, self._use_ws)
         )
         if self._use_ws:
@@ -891,7 +891,7 @@ class BmmFp8Kernel(Kernel):
                 "threads": 384,
                 "group_size_m": 8,
             }
-        if not self._is_hopper:
+        if not self._is_sm90:
             # Sized for the sm89 100KB per-block SMEM cap; K tails are
             # zero-padded by the classic copy path.
             return {
@@ -912,7 +912,7 @@ class BmmFp8Kernel(Kernel):
     @property
     def autotune_configs(self) -> list[dict]:
         if self._use_ws:
-            SMEM_BUDGET_BYTES = 228 * 1024  # H100/H20 shared-memory cap
+            SMEM_BUDGET_BYTES = 228 * 1024  # SM90 shared-memory cap
             configs = []
             for bm in (128,):
                 half_m = bm // 2
@@ -943,7 +943,7 @@ class BmmFp8Kernel(Kernel):
                                 )
             return configs
 
-        if not self._is_hopper:
+        if not self._is_sm90:
             # Classic 3D-grid sweep for the sm89 100KB cap.
             SMEM_BUDGET_BYTES = 100 * 1024
             configs = []

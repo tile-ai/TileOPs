@@ -63,7 +63,7 @@ class SharedExpertMLPKernel(Kernel):
     """Shared expert MLP producing ``[T, H]``.
 
     Inputs are ``hidden[T, H]``, concatenated ``w_gate_up[2F, H]``, and
-    ``w_down[H, F]``. Hopper uses the dense template for wide shared experts
+    ``w_down[H, F]``. SM90 uses the dense template for wide shared experts
     above ``template_min_m``; other calls use the existing dense implementations.
     """
 

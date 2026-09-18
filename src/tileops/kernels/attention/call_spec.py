@@ -209,7 +209,7 @@ def dense_ws_region(call: AttentionCall) -> bool:
 
 
 def decode_bs1_region(call: AttentionCall) -> bool:
-    """The Hopper batch-1 decode region, shared by contiguous and paged decode.
+    """The SM90 batch-1 decode region, shared by contiguous and paged decode.
 
     Owned by the batch-1 kernels; the general decode kernels behind them exclude
     exactly this region, and the paged batch-1 kernel narrows it further with a

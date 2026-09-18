@@ -639,7 +639,7 @@ class GQADecodeKernel(Kernel):
         from tileops.utils import get_sm_version
 
         arch = get_sm_version(device_index)
-        self._is_hopper = arch == 90
+        self._is_sm90 = arch == 90
         if fuse_rope and arch != 90:
             raise ValueError("fused RoPE decode currently requires SM90")
         self.use_ws_rope = fuse_rope
@@ -650,7 +650,7 @@ class GQADecodeKernel(Kernel):
         if self.seqlen_kv <= 0:
             raise ValueError("seq_len_kv must be positive")
         self._use_batched_config = (
-            self._is_hopper
+            self._is_sm90
             and self.batch > 1
             and self.dim == 128
             and self.heads // self.groups <= 8
@@ -819,7 +819,7 @@ class GQADecodeKernel(Kernel):
             return output.unsqueeze(1)
 
         if self.use_ws_rope:
-            # The Hopper producer/consumer kernel supports arbitrary batch
+            # The SM90 producer/consumer kernel supports arbitrary batch
             # sizes; use it here so RoPE stays fused without replacing TMA and
             # WGMMA with scalar global-memory loads.
             from .gqa_decode_bs1 import _gqa_decode_bs1_ctx_run
@@ -897,7 +897,7 @@ class GQADecodeLongContextKernel(GQADecodeKernel):
 
     @classmethod
     def split_tier(cls, call) -> tuple:
-        """As the general decode tier, plus the Hopper tile tier it also compiles."""
+        """As the general decode tier, plus the SM90 tile tier it also compiles."""
         tier = super().split_tier(call)
         if call.arch == 90:
             return (*tier, cls.sequence_bucket(call.seqlen_kv))
@@ -912,7 +912,7 @@ class GQADecodeLongContextKernel(GQADecodeKernel):
     def default_config(self) -> dict:
         return {
             "block_H": 64,
-            "block_N": 128 if self._is_hopper and self.sequence_bucket(self.seqlen_kv) else 64,
+            "block_N": 128 if self._is_sm90 and self.sequence_bucket(self.seqlen_kv) else 64,
             "num_split": 32,
             "num_stages": 2,
             "threads": 128,

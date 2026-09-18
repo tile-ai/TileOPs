@@ -1,4 +1,4 @@
-"""Native-FP8 Dense GQA decode kernels for Hopper."""
+"""Native-FP8 Dense GQA decode kernels for SM90."""
 
 import functools
 from typing import Optional

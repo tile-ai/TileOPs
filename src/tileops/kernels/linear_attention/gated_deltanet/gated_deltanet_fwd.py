@@ -409,7 +409,7 @@ def _gated_deltanet_fwd_production_kernel_call(
 
 
 class GatedDeltaNetFwdProductionKernel(Kernel):
-    """Hopper forward over batch-token-head-dim (BTHD) inputs.
+    """SM90 forward over batch-token-head-dim (BTHD) inputs.
 
     Runs the partitioned production prefill pipeline.
     """

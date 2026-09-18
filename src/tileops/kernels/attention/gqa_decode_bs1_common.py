@@ -1,4 +1,4 @@
-"""Shared macros for Hopper batch=1 GQA decode kernels."""
+"""Shared macros for SM90 batch=1 GQA decode kernels."""
 
 import tilelang
 import tilelang.language as T
@@ -21,7 +21,7 @@ COMPILE_FLAGS = [
 
 
 class GQADecodeBs1KernelMixin:
-    """Shared runtime policy for contiguous and paged Hopper batch=1 decode."""
+    """Shared runtime policy for contiguous and paged SM90 batch=1 decode."""
 
     _MIN_CTX = 1024
     _CTX_SPLIT_CANDIDATES = (32, 16, 8)

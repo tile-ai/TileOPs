@@ -94,7 +94,7 @@ CUDA-capable GPU is required.
 - Python >= 3.10 (CI validates 3.12)
 - PyTorch >= 2.1, < 2.14 (CI validates 2.13)
 - CUDA Toolkit 13.2
-- NVIDIA Hopper (SM_90)
+- A GPU of compute capability 9.0 (SM90)
 - [TileLang](https://github.com/tile-ai/tilelang) >= 0.1.9, < 0.2.0 (CI validates 0.1.11 at a
   pinned main snapshot — see [development.md](docs/development.md#dev-docker-image))
 
