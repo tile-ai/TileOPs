@@ -9,7 +9,12 @@ from typing import ClassVar, Dict, Optional, Set, Tuple
 
 import torch
 
-from tileops.kernels.gemm.bmm import BmmFp8Kernel, BmmKernel, BmmTemplateKernel
+from tileops.kernels.gemm.bmm import (
+    BmmFp8Kernel,
+    BmmFp8TransposeKernel,
+    BmmKernel,
+    BmmTemplateKernel,
+)
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.perf.profile import tensor_core_roof
@@ -183,10 +188,14 @@ class BmmFwdOp(Op):
 class BmmFp8FwdOp(Op):
     """Batched FP8 GEMM: ``d[i] = (a[i] @ b[i]) * scale_a * scale_b``.
 
-    ``trans_b`` states the memory order ``b`` arrives in. ``False`` is torch.bmm's
-    $[B \\times K \\times N]$; the fp8-TN WGMMA kernel wants K innermost, so the op
-    transposes ``b`` before the call and warns once per shape. ``True`` is
-    $[B \\times N \\times K]$, which reaches the kernel as it stands.
+    ``trans_b`` states which axis order ``b`` arrives in: ``False`` is torch.bmm's
+    $[B \\times K \\times N]$, ``True`` is $[B \\times N \\times K]$.
+
+    FP8 WGMMA reads ``b`` K-innermost and has no transposed operand mode, so a
+    ``b`` that does not already lie that way is transposed into a new buffer,
+    costing one extra read and write of it. Which calls pay is decided by ``b``'s
+    strides, not by ``trans_b``: passing ``b`` K-innermost avoids the copy under
+    either value of the flag, and is the faster call.
     """
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
@@ -202,7 +211,9 @@ class BmmFp8FwdOp(Op):
 
         Args:
             out_dtype: Output tensor dtype (``torch.float16`` or ``torch.bfloat16``).
-            trans_b: Whether ``b`` is stored as $[B \\times N \\times K]$ (K innermost).
+            trans_b: Whether ``b``'s axes are $[B \\times N \\times K]$ rather than
+                $[B \\times K \\times N]$. Which of the two is faster is decided by
+                ``b``'s strides, not by this flag.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune (applied when a kernel is first built).
         """
@@ -216,14 +227,14 @@ class BmmFp8FwdOp(Op):
         self.dispatch_kernel(kernel_map)
         self._active_sig: Optional[tuple] = None
         self._active: Optional[Kernel] = None
-        # Shape-signatures whose "slow path" warning has already been emitted, so a
-        # single BmmFp8FwdOp warns once per shape rather than on every forward.
-        self._kn_warned: Set[Tuple[int, int, int, int]] = set()
+        # ``b`` shapes already warned about, so one op warns once per shape.
+        self._kn_warned: Set[Tuple[int, int, int]] = set()
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "bmm_fp8_kernel": BmmFp8Kernel,
+            "bmm_fp8_transpose_kernel": BmmFp8TransposeKernel,
         }
 
     def _validate_dtypes(
@@ -319,8 +330,26 @@ class BmmFp8FwdOp(Op):
             "bmm_fp8_kernel", inputs, (batch, m, n, k, dtype, self.out_dtype, device)
         )
 
+    def _get_transpose_kernel(
+        self,
+        inputs: "tuple[torch.Tensor | None, ...]",
+        batch: int,
+        rows: int,
+        cols: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> Kernel:
+        return self.kernel_for(
+            "bmm_fp8_transpose_kernel", inputs, (batch, rows, cols, dtype, device)
+        )
+
     def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per batch, the three extents, both dtypes and device."""
+        """One implementation per role, built per shape, dtype and device."""
+        if role == "bmm_fp8_transpose_kernel":
+            batch, rows, cols, dtype, device = call
+            return call, lambda: self.kernel_map["bmm_fp8_transpose_kernel"](
+                batch, rows, cols, dtype, device=device, tune=self.tune
+            )
         batch, m, n, k, dtype, out_dtype, device = call
         return call, lambda: self.kernel_map["bmm_fp8_kernel"](
             batch, m, n, k, dtype, out_dtype, device=device, tune=self.tune
@@ -406,28 +435,47 @@ class BmmFp8FwdOp(Op):
             )
             self._active = kernel
             self._active_sig = sig
-        if self.trans_b:
-            b = b.contiguous()
-        else:
-            # Slow path: [B,K,N] layout requires an extra DtoD transpose
-            # before the fp8-TN WGMMA kernel can consume it. Emit a one-shot
-            # warning per (B,M,N,K) shape so users know how to opt into the
-            # zero-copy fast path (pass b as [B,N,K]).
-            shape_key = (self.batch, self.m, self.n, self.k)
-            if shape_key not in self._kn_warned:
-                self._kn_warned.add(shape_key)
-                warnings.warn(
-                    f"BmmFp8FwdOp: b has layout [B,K,N] (shape={self.b_shape}); "
-                    f"triggering an extra transpose(-2,-1).contiguous() DtoD "
-                    f"copy before the fp8-TN WGMMA kernel. For best "
-                    f"performance pass b as [B,N,K] (K-innermost) and construct "
-                    f"with trans_b=True for the zero-copy fast path.",
-                    stacklevel=2,
-                )
-            b = b.transpose(-2, -1).contiguous()
+        b = self._as_k_innermost(b, a.dtype, a.device)
         scale_a = scale_a.reshape(1)
         scale_b = scale_b.reshape(1)
         return self._active(a, b, scale_a, scale_b)
+
+    def _as_k_innermost(
+        self, b: torch.Tensor, dtype: torch.dtype, device: torch.device
+    ) -> torch.Tensor:
+        """Return ``b`` as a contiguous $[B \\times N \\times K]$ tensor.
+
+        ``trans_b`` says which axis carries K; ``b``'s strides say whether any
+        movement is owed.
+
+        Args:
+            b: The right operand as the caller passed it.
+            dtype: Element dtype, part of the transpose kernel's identity.
+            device: Device the transpose would be built for.
+
+        Returns:
+            ``b`` itself when it already lies K-innermost, else a transposed copy.
+        """
+        b_nk = b if self.trans_b else b.transpose(-2, -1)
+        if b_nk.is_contiguous():
+            return b_nk
+        batch, n, k = b_nk.shape
+        if b_nk.stride() == (n * k, 1, n):
+            # A contiguous [B, K, N] seen the other way round, which is the only
+            # stride pattern the transpose kernel reads.
+            shape_key = (batch, n, k)
+            if shape_key not in self._kn_warned:
+                self._kn_warned.add(shape_key)
+                warnings.warn(
+                    f"BmmFp8FwdOp: b (shape={tuple(b.shape)}) does not lie "
+                    f"K-innermost, so it is transposed into a new buffer before "
+                    f"the FP8 WGMMA kernel, which reads only that order. Passing "
+                    f"b K-innermost skips the copy and is the faster call.",
+                    stacklevel=2,
+                )
+            kernel = self._get_transpose_kernel((b,), batch, k, n, dtype, device)
+            return kernel(b_nk.transpose(-2, -1))
+        return b_nk.contiguous()
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

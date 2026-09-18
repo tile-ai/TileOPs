@@ -1,3 +1,5 @@
+from typing import Optional
+
 import pytest
 import torch
 
@@ -54,6 +56,44 @@ def _flashinfer_bmm_fp8_per_tensor_ref(
     )
 
 
+def _flashinfer_bmm_fp8_row(
+    workload: BmmFp8BenchmarkWorkload, *inputs: torch.Tensor
+) -> Optional[tuple]:
+    """The flashinfer entry for this case, or ``None`` when it cannot serve it.
+
+    Preferred, not selected: a row flashinfer cannot run, or whose result
+    disagrees with the reference, drops its tag rather than failing the case.
+
+    Args:
+        workload: The case being timed, which states the reference and tolerance.
+        *inputs: ``a``, ``b``, ``scale_a``, ``scale_b`` as flashinfer takes them.
+
+    Returns:
+        A ``(callable, args)`` pair for :meth:`ManifestBenchmark.compare`.
+    """
+
+    def run(a: torch.Tensor, b: torch.Tensor, sa: torch.Tensor, sb: torch.Tensor):
+        return _flashinfer_bmm_fp8_per_tensor_ref(workload, a, b, sa, sb)
+
+    try:
+        assert_matches_reference(
+            run,
+            workload.torch_fp32_bmm_ref,
+            *inputs,
+            **reference_tolerance(workload.out_dtype),
+        )
+    except (ImportError, RuntimeError) as exc:
+        print(f"  [skip] flashinfer-bmm-fp8: {str(exc).splitlines()[0]}")
+        return None
+    except AssertionError as exc:
+        print(
+            "  [skip] flashinfer-bmm-fp8: disagrees with the reference "
+            f"({str(exc).splitlines()[0]})"
+        )
+        return None
+    return run, inputs
+
+
 @pytest.mark.parametrize(
     "batch, m, n, k, dtype",
     workload_params(load_workloads(BmmFwdOp), fields("b", "m", "n", "k", dtype_last=True)),
@@ -105,16 +145,11 @@ def test_bmm_fp8_kn_bench(
         "torch-fp32-ref": (workload.torch_fp32_bmm_ref, (a, b_kn, scale_a, scale_b)),
     }
 
-    def flashinfer_fn(a_, b_, sa_, sb_):
-        return _flashinfer_bmm_fp8_per_tensor_ref(workload, a_, b_, sa_, sb_)
-
-    # b_kn is already [B, K, N], the order flashinfer's bmm_fp8 reads.
-    try:
-        flashinfer_fn(a, b_kn, scale_a, scale_b)
-    except (ImportError, RuntimeError) as exc:
-        print(f"  [skip] flashinfer-bmm-fp8: {exc}")
-    else:
-        functors["flashinfer-bmm-fp8"] = (flashinfer_fn, (a, b_kn, scale_a, scale_b))
+    # b_kn carries [B, K, N] row-major; flashinfer's contract asks for that shape
+    # column-major, which is the other bench.
+    row = _flashinfer_bmm_fp8_row(workload, a, b_kn, scale_a, scale_b)
+    if row is not None:
+        functors["flashinfer-bmm-fp8"] = row
 
     bm.compare(functors)
 
@@ -143,17 +178,8 @@ def test_bmm_fp8_nk_bench(
         "torch-fp32-ref": (workload.torch_fp32_bmm_ref, (a, b_kn, scale_a, scale_b)),
     }
 
-    def flashinfer_fn(a_, b_, sa_, sb_):
-        return _flashinfer_bmm_fp8_per_tensor_ref(workload, a_, b_, sa_, sb_)
-
-    # flashinfer is optional and shape-sensitive. Probe it once and drop only
-    # its row when it cannot run; skipping the case would take the op's own
-    # numbers down with it.
-    try:
-        flashinfer_fn(a, b_kmajor, scale_a, scale_b)
-    except (ImportError, RuntimeError) as exc:
-        print(f"  [skip] flashinfer-bmm-fp8: {exc}")
-    else:
-        functors["flashinfer-bmm-fp8"] = (flashinfer_fn, (a, b_kmajor, scale_a, scale_b))
+    row = _flashinfer_bmm_fp8_row(workload, a, b_kmajor, scale_a, scale_b)
+    if row is not None:
+        functors["flashinfer-bmm-fp8"] = row
 
     bm.compare(functors)

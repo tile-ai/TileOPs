@@ -99,3 +99,4 @@ BmmFp8FwdOp:
     bench_manifest_driven: true
     kernel_map:
       bmm_fp8_kernel: BmmFp8Kernel
+      bmm_fp8_transpose_kernel: BmmFp8TransposeKernel
