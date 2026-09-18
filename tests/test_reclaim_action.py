@@ -459,7 +459,7 @@ def _evaluate_checks(runs: list[tuple[str, str, str, int]]) -> tuple[str, str]:
     # turn that into an error instead of a wrong answer.
     # check_ever_succeeded is the workflow's one call out to the API; stubbing it
     # against the same synthetic runs keeps the loop text under test verbatim.
-    harness = f"""
+    script = f"""
     set -euo pipefail
     all_runs={json.dumps(checks_json)}
     latest_checks=$(echo "$all_runs" | jq '.check_runs | group_by(.name) | map(max_by(.id))')
@@ -478,7 +478,7 @@ def _evaluate_checks(runs: list[tuple[str, str, str, int]]) -> tuple[str, str]:
     echo "$pending $failed"
     """
     out = subprocess.run(
-        ["bash", "-c", harness], capture_output=True, text=True, check=True
+        ["bash", "-c", script], capture_output=True, text=True, check=True
     ).stdout.split()
     return out[0], (out[1] if len(out) > 1 else "")
 

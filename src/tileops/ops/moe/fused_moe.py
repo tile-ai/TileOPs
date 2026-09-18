@@ -7,7 +7,7 @@ straight from the gating scores (Qwen3 / DeepSeek-V3 style).
 The shared core (`FusedMoe`) wires `FusedTopKOp` (routing),
 `FusedMoEPrepareAndFinalize` (quantization / EP dispatch), and an
 `FusedMoEExpertsModular` implementation (permute + GEMM + unpermute). Shared
-expert handling belongs to `SharedFusedMoE`.
+expert handling belongs to `FusedMoeSharedExpertFwdOp`.
 """
 
 from typing import Dict, Optional
@@ -32,7 +32,7 @@ class FusedMoe(Op):
     """Shared composite implementation for routed MoE FFN ops.
 
     The concrete manifest identity (`FusedMoeFwdOp`) subclasses this; the
-    routing-and-expert pipeline below is shared with `SharedFusedMoE`.
+    routing-and-expert pipeline below is shared with `FusedMoeSharedExpertFwdOp`.
 
     """
 

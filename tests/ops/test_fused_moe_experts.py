@@ -535,13 +535,13 @@ class TestFusedMoeActivationInjection:
             )
 
 
-class TestSharedFusedMoeActivation:
+class TestFusedMoeSharedExpertActivation:
     @pytest.mark.smoke
     def test_activation_forwarded_to_routed_experts(self):
-        """SharedFusedMoE(activation='gelu_and_mul') reaches the routed-experts path."""
-        from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
+        """FusedMoeSharedExpertFwdOp(activation='gelu_and_mul') reaches the routed-experts path."""
+        from tileops.ops.moe.fused_moe_shared_expert import FusedMoeSharedExpertFwdOp
 
-        moe = SharedFusedMoE(
+        moe = FusedMoeSharedExpertFwdOp(
             num_tokens=128,
             num_experts=4,
             top_k=2,
@@ -560,10 +560,10 @@ class TestSharedFusedMoeActivation:
         activation here would silently produce mixed outputs (routed=gelu,
         shared=silu).
         """
-        from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
+        from tileops.ops.moe.fused_moe_shared_expert import FusedMoeSharedExpertFwdOp
 
         with pytest.raises(NotImplementedError, match="shared-expert path only supports"):
-            SharedFusedMoE(
+            FusedMoeSharedExpertFwdOp(
                 num_tokens=128,
                 num_experts=4,
                 top_k=2,
@@ -576,9 +576,9 @@ class TestSharedFusedMoeActivation:
     @pytest.mark.smoke
     def test_shared_expert_with_default_activation_works(self):
         """shared_ffn_size + silu_and_mul (default) is fine."""
-        from tileops.ops.moe.shared_fused_moe import SharedFusedMoE
+        from tileops.ops.moe.fused_moe_shared_expert import FusedMoeSharedExpertFwdOp
 
-        moe = SharedFusedMoE(
+        moe = FusedMoeSharedExpertFwdOp(
             num_tokens=128,
             num_experts=4,
             top_k=2,

@@ -447,7 +447,7 @@ def _fa3_gqa_prefill_paged(test, cache_dtype, fuse_rope, softcap):
 
     shape = (test.batch * test.max_pages_per_req, test.page_size, test.heads_kv, test.dim)
 
-    def _run(q, k_new, v_new, k_pages, v_pages, k_scale, v_scale, cu_q, seqlens, table, max_q):
+    def _run(q, k_new, v_new, k_pages, v_pages, k_scale, v_scale, cu_q, seqlens, table):
         del k_scale, v_scale
         out = flash_attn_with_kvcache(
             q=q,
@@ -459,7 +459,7 @@ def _fa3_gqa_prefill_paged(test, cache_dtype, fuse_rope, softcap):
             page_table=table,
             cu_seqlens_q=cu_q,
             cu_seqlens_k_new=cu_q,
-            max_seqlen_q=max_q,
+            max_seqlen_q=test.max_seqlen_q,
             causal=test.is_causal,
             softcap=float(softcap or 0.0),
         )

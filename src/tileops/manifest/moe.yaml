@@ -71,12 +71,6 @@ FusedMoEExpertsFwdOp:
         dtype: float32
       topk_ids:
         dtype: int32
-      workspace1:
-        dtype: float16 | bfloat16
-        note: scratch buffer, may be empty
-      workspace2:
-        dtype: float16 | bfloat16
-        note: scratch buffer, may be empty
     outputs:
       output: {dtype: "same_as(hidden_states)"}
     params:
@@ -107,6 +101,13 @@ FusedMoEExpertsFwdOp:
   roofline:
     flops: "num_tokens * top_k * 6 * ffn_size * hidden_size"
     bytes: "(num_experts * 3 * ffn_size * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes"
+    composition:
+    - stage: pre_permute
+      formula: "gather only: no flops, one read and one write of the routed rows"
+    - stage: expert_mlp
+      source: "tileops.perf.formulas.moe_expert_mlp_roofline"
+    - stage: post_permute
+      formula: "weighted reduce: 2 * num_tokens * top_k * hidden_size"
 
   source:
     kernel: tileops/kernels/moe/moe_grouped_gemm.py
@@ -118,6 +119,41 @@ FusedMoEExpertsFwdOp:
       contiguous: MoePrePermuteContiguousKernel
       grouped_gemm: MoeGroupedGemmKernel
       unpermute_kernel: MoeUnpermuteKernel
+
+  composition:
+    kind: composite
+    stages:
+    - name: pre_permute
+      op: MoePrePermuteFwdOp
+    - name: expert_mlp
+      op: MoeExpertMLPFwdOp
+      variants:
+      # __init__ picks the path once, for the whole pipeline: the indexed
+      # variant's kernels subsume pre_permute and post_permute as well.
+      - name: tight
+        stages:
+        - op: MoePrePermuteFwdOp
+        - op: MoeExpertMLPFwdOp
+        - op: MoePostPermuteFwdOp
+      - name: indexed_small_route
+        condition: "silu_and_mul, hidden_size % 128 == 0, ffn_size % 256 == 0, and num_tokens <= 32 (or the 64/7168/2048 point); replaces pre_permute and post_permute too"
+        stages:
+        - op: IndexedExpertMLPFwdOp
+    - name: post_permute
+      op: MoePostPermuteFwdOp
+
+  resources:
+    workspaces:
+    - name: workspace1
+      dtype: float16 | bfloat16
+      owner: expert_mlp
+      kind: scratch
+      note: empty on the tight path; route-major gate/up buffer on the indexed path
+    - name: workspace2
+      dtype: float16 | bfloat16
+      owner: expert_mlp
+      kind: scratch
+      note: empty on the tight path; route-major down buffer on the indexed path
 
 IndexedExpertMLPFwdOp:
   # Route-major expert MLP: each of the T * K routes is a row of its expert's GEMM, so
@@ -291,6 +327,11 @@ FusedMoeFwdOp:
 
   roofline:
     func: "tileops.perf.formulas.fused_moe_fwd_bytes"
+    composition:
+    - stage: route_select
+      source: "tileops.perf.formulas.fused_topk_roofline"
+    - stage: routed_experts
+      formula: "num_tokens * top_k * 6 * ffn_size * hidden_size over the experts the call routes to"
 
   source:
     kernel: tileops/ops/moe/fused_moe.py
@@ -303,6 +344,16 @@ FusedMoeFwdOp:
       contiguous: MoePrePermuteContiguousKernel
       grouped_gemm: MoeGroupedGemmKernel
       unpermute_kernel: MoeUnpermuteKernel
+
+  composition:
+    kind: composite
+    stages:
+    - name: route_select
+      op: FusedTopKOp
+    # The tight/indexed branch is chosen inside FusedMoEExpertsFwdOp, whose
+    # entry declares it; repeating it here would be one fact in two places.
+    - name: routed_experts
+      op: FusedMoEExpertsFwdOp
 
 MoePrePermuteFwdOp:
   ref_api: "none"
@@ -416,6 +467,19 @@ MoeExpertMLPFwdOp:
   - {expert_input_shape: [32768, 7168], w_gate_up_shape: [256, 4096, 7168], w_down_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-prefill"}
   roofline:
     func: "tileops.perf.formulas.moe_expert_mlp_roofline"
+    composition:
+    - stage: gate_up
+      source: "tileops.perf.formulas.moe_grouped_gemm_roofline"
+    - stage: down
+      source: "tileops.perf.formulas.moe_grouped_gemm_roofline"
+
+  composition:
+    kind: composite
+    stages:
+    - name: gate_up
+      op: MoeGroupedGemmFwdOp
+    - name: down
+      op: MoeGroupedGemmFwdOp
   source:
     kernel: tileops/kernels/moe/moe_grouped_gemm.py
     op: tileops/ops/moe/staged.py
@@ -460,3 +524,102 @@ MoePostPermuteFwdOp:
     bench_manifest_driven: true
     kernel_map:
       contiguous: _ContiguousPostPermuteKernel
+
+FusedMoeSharedExpertFwdOp:
+  ref_api: "none"
+  # Public op: routed experts plus an optional shared expert. Under TP the
+  # shared half is computed on this rank's shard and the caller all-reduces it.
+  family: moe
+  status: implemented
+
+  signature:
+    inputs:
+      hidden_states: {dtype: "float16 | bfloat16"}
+      gating_output: {dtype: "float32"}
+      w_gate_up: {dtype: "same_as(hidden_states)"}
+      w_down: {dtype: "same_as(hidden_states)"}
+      correction_bias: {dtype: "float32", optional: true}
+      shared_w_gate_up: {dtype: "same_as(hidden_states)", optional: true}
+      shared_w_down: {dtype: "same_as(hidden_states)", optional: true}
+    outputs:
+      shared_output:
+        dtype: "same_as(hidden_states)"
+        nullable: true
+      routed_output: {dtype: "same_as(hidden_states)"}
+    params:
+      num_tokens: {type: int}
+      num_experts: {type: int}
+      top_k: {type: int}
+      hidden_size: {type: int}
+      ffn_size: {type: int}
+      scoring_func: {type: str, default: softmax}
+      renormalize: {type: bool, default: false}
+      routed_scaling_factor: {type: float, default: 1.0}
+      shared_ffn_size: {type: int | None, default: null}
+      tp_size: {type: int, default: 1}
+      tp_rank: {type: int, default: 0}
+      activation: {type: str, default: silu_and_mul, kw_only: true}
+    shape_rules:
+    - "hidden_states.shape == (num_tokens, hidden_size)"
+    - "gating_output.shape == (num_tokens, num_experts)"
+    - "correction_bias is None or correction_bias.shape == (num_experts,)"
+    - "shared_w_gate_up is None or shared_w_gate_up.shape == (2 * shared_ffn_size, hidden_size)"
+    - "shared_w_down is None or shared_w_down.shape == (hidden_size, shared_ffn_size)"
+    - "routed_output.shape == (num_tokens, hidden_size)"
+
+  workloads:
+    # kimi-k2: sigmoid routing with a correction bias, shared expert enabled
+  - {num_tokens: 1, num_experts: 384, top_k: 8, hidden_size: 7168, ffn_size: 2048, shared_ffn_size: 18432, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, correction_bias_shape: [384], shared_w_gate_up_shape: [36864, 7168], shared_w_down_shape: [7168, 18432], dtypes: [bfloat16], label: "kimi-k2-t1"}
+  - {num_tokens: 32, num_experts: 384, top_k: 8, hidden_size: 7168, ffn_size: 2048, shared_ffn_size: 18432, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, correction_bias_shape: [384], shared_w_gate_up_shape: [36864, 7168], shared_w_down_shape: [7168, 18432], dtypes: [bfloat16], label: "kimi-k2-t32"}
+  - {num_tokens: 64, num_experts: 384, top_k: 8, hidden_size: 7168, ffn_size: 2048, shared_ffn_size: 18432, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, correction_bias_shape: [384], shared_w_gate_up_shape: [36864, 7168], shared_w_down_shape: [7168, 18432], dtypes: [bfloat16], label: "kimi-k2-t64"}
+  - {num_tokens: 128, num_experts: 384, top_k: 8, hidden_size: 7168, ffn_size: 2048, shared_ffn_size: 18432, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, correction_bias_shape: [384], shared_w_gate_up_shape: [36864, 7168], shared_w_down_shape: [7168, 18432], dtypes: [bfloat16], label: "kimi-k2-t128"}
+  - {num_tokens: 512, num_experts: 384, top_k: 8, hidden_size: 7168, ffn_size: 2048, shared_ffn_size: 18432, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, correction_bias_shape: [384], shared_w_gate_up_shape: [36864, 7168], shared_w_down_shape: [7168, 18432], dtypes: [bfloat16], label: "kimi-k2-t512"}
+  - {num_tokens: 2048, num_experts: 384, top_k: 8, hidden_size: 7168, ffn_size: 2048, shared_ffn_size: 18432, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, correction_bias_shape: [384], shared_w_gate_up_shape: [36864, 7168], shared_w_down_shape: [7168, 18432], dtypes: [bfloat16], label: "kimi-k2-t2048"}
+  - {num_tokens: 4096, num_experts: 384, top_k: 8, hidden_size: 7168, ffn_size: 2048, shared_ffn_size: 18432, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, correction_bias_shape: [384], shared_w_gate_up_shape: [36864, 7168], shared_w_down_shape: [7168, 18432], dtypes: [bfloat16], label: "kimi-k2-t4096"}
+    # deepseek-v3: sigmoid routing with a correction bias, shared expert enabled
+  - {num_tokens: 1, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, shared_ffn_size: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, correction_bias_shape: [256], shared_w_gate_up_shape: [4096, 7168], shared_w_down_shape: [7168, 2048], dtypes: [bfloat16], label: "deepseek-v3-t1"}
+  - {num_tokens: 32, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, shared_ffn_size: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, correction_bias_shape: [256], shared_w_gate_up_shape: [4096, 7168], shared_w_down_shape: [7168, 2048], dtypes: [bfloat16], label: "deepseek-v3-t32"}
+  - {num_tokens: 64, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, shared_ffn_size: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, correction_bias_shape: [256], shared_w_gate_up_shape: [4096, 7168], shared_w_down_shape: [7168, 2048], dtypes: [bfloat16], label: "deepseek-v3-t64"}
+  - {num_tokens: 128, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, shared_ffn_size: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, correction_bias_shape: [256], shared_w_gate_up_shape: [4096, 7168], shared_w_down_shape: [7168, 2048], dtypes: [bfloat16], label: "deepseek-v3-t128"}
+  - {num_tokens: 512, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, shared_ffn_size: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, correction_bias_shape: [256], shared_w_gate_up_shape: [4096, 7168], shared_w_down_shape: [7168, 2048], dtypes: [bfloat16], label: "deepseek-v3-t512"}
+  - {num_tokens: 2048, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, shared_ffn_size: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, correction_bias_shape: [256], shared_w_gate_up_shape: [4096, 7168], shared_w_down_shape: [7168, 2048], dtypes: [bfloat16], label: "deepseek-v3-t2048"}
+  - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, shared_ffn_size: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, correction_bias_shape: [256], shared_w_gate_up_shape: [4096, 7168], shared_w_down_shape: [7168, 2048], dtypes: [bfloat16], label: "deepseek-v3-t4096"}
+    # glm-4.5: sigmoid routing with a correction bias, shared expert enabled
+  - {num_tokens: 1, num_experts: 160, top_k: 8, hidden_size: 5120, ffn_size: 1536, shared_ffn_size: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, correction_bias_shape: [160], shared_w_gate_up_shape: [3072, 5120], shared_w_down_shape: [5120, 1536], dtypes: [bfloat16], label: "glm-4.5-t1"}
+  - {num_tokens: 32, num_experts: 160, top_k: 8, hidden_size: 5120, ffn_size: 1536, shared_ffn_size: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, correction_bias_shape: [160], shared_w_gate_up_shape: [3072, 5120], shared_w_down_shape: [5120, 1536], dtypes: [bfloat16], label: "glm-4.5-t32"}
+  - {num_tokens: 64, num_experts: 160, top_k: 8, hidden_size: 5120, ffn_size: 1536, shared_ffn_size: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, correction_bias_shape: [160], shared_w_gate_up_shape: [3072, 5120], shared_w_down_shape: [5120, 1536], dtypes: [bfloat16], label: "glm-4.5-t64"}
+  - {num_tokens: 128, num_experts: 160, top_k: 8, hidden_size: 5120, ffn_size: 1536, shared_ffn_size: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, correction_bias_shape: [160], shared_w_gate_up_shape: [3072, 5120], shared_w_down_shape: [5120, 1536], dtypes: [bfloat16], label: "glm-4.5-t128"}
+  - {num_tokens: 512, num_experts: 160, top_k: 8, hidden_size: 5120, ffn_size: 1536, shared_ffn_size: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, correction_bias_shape: [160], shared_w_gate_up_shape: [3072, 5120], shared_w_down_shape: [5120, 1536], dtypes: [bfloat16], label: "glm-4.5-t512"}
+  - {num_tokens: 2048, num_experts: 160, top_k: 8, hidden_size: 5120, ffn_size: 1536, shared_ffn_size: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, correction_bias_shape: [160], shared_w_gate_up_shape: [3072, 5120], shared_w_down_shape: [5120, 1536], dtypes: [bfloat16], label: "glm-4.5-t2048"}
+  - {num_tokens: 4096, num_experts: 160, top_k: 8, hidden_size: 5120, ffn_size: 1536, shared_ffn_size: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, correction_bias_shape: [160], shared_w_gate_up_shape: [3072, 5120], shared_w_down_shape: [5120, 1536], dtypes: [bfloat16], label: "glm-4.5-t4096"}
+    # Qwen3-235B-A22B: routed only — no shared expert, no correction bias
+  - {num_tokens: 512, num_experts: 128, top_k: 8, hidden_size: 7168, ffn_size: 2048, scoring_func: softmax, renormalize: false, dtypes: [bfloat16], label: "qwen3-235b-routed-only"}
+
+  roofline:
+    func: "tileops.perf.formulas.fused_moe_shared_expert_fwd_bytes"
+    composition:
+    - stage: shared_expert
+      formula: "F_s = shared_ffn_size / tp_size; flops 2 * num_tokens * 3 * F_s * hidden_size, bytes (3 * F_s * hidden_size + num_tokens * hidden_size) * elem_bytes"
+      optional: true
+    - stage: routed_moe
+      source: "tileops.perf.formulas.fused_moe_fwd_bytes"
+
+  composition:
+    kind: composite
+    stages:
+    # forward() computes the shared expert before delegating the routed half.
+    - name: shared_expert
+      kernel: shared_expert_mlp
+      optional: true
+    # Routing and the expert MLPs both: this delegates to the whole routed op.
+    - name: routed_moe
+      op: FusedMoeFwdOp
+
+  source:
+    kernel: tileops/kernels/moe/shared_expert_mlp.py
+    op: tileops/ops/moe/fused_moe_shared_expert.py
+    test: tests/ops/test_moe_fused_moe_shared_expert.py
+    bench: benchmarks/ops/bench_moe_fused_moe_shared_expert.py
+    bench_manifest_driven: true
+    kernel_map:
+      shared_expert_mlp: SharedExpertMLPKernel

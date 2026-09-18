@@ -77,6 +77,9 @@ An entry uses one of two modes:
 
 **Func.** Point at `tileops.perf.formulas.<name>`. The callable is human-authored and returns `(flops, bytes)`. **Recommended signature: `func(op)`** — matching the agent-generated `eval_roofline(self)` path, which is what codegen's emitted call assumes. A human author who prefers a different signature owns the resulting integration (e.g., a wrapper). Use `func` when inline arithmetic is insufficient (mixed-precision byte accounting, conditionals, shape traversal, data-dependent logic).
 
+A composite op additionally declares `composition`, naming the stages its cost is made of. It
+coexists with either mode and is specified in [manifest.md § Roofline](manifest.md#roofline).
+
 ```yaml
 # Inline — shape dim names cover all variables
 roofline:

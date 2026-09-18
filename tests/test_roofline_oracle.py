@@ -252,6 +252,8 @@ AUDITED = frozenset(
 # op name -> why the shape-level oracle cannot count its traffic
 EXEMPT: dict[str, str] = {
     "FusedMoeFwdOp": "expert weight traffic depends on the experts selected by topk_ids",
+    "FusedMoeSharedExpertFwdOp": "its routed half is FusedMoeFwdOp's cost, so the same topk_ids "
+    "dependence applies",
 }
 
 # FIXME(staged-rollout): most implemented ops lack a bytes-oracle case.

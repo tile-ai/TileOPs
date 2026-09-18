@@ -73,17 +73,19 @@ _SHAPES = ((1024, 4096), (1024, 10240), (1024, 11008))
 
 
 class FusedGatedBenchmark(BenchmarkBase[FusedGatedBenchCase]):
-    """Bandwidth-oriented benchmark for fused gated ops."""
+    """Times the fused-gated strategy decision.
+
+    Its only caller compares two forced kernel strategies and reads
+    ``device_busy_ms``. Nothing records a row, so there is no throughput to
+    report and both metrics return ``None``; the fused-gated ops publish their
+    own rows through ``ManifestBenchmark``, taking the roofline off the op.
+    """
 
     def calculate_flops(self) -> Optional[float]:
-        # activation + multiply: ~2 flops per element
-        return 2 * self.workload.n_total
+        return None
 
     def calculate_memory(self) -> Optional[float]:
-        t = self.workload
-        elem = t.dtype.itemsize
-        # Read (M, 2N) + write (M, N)
-        return t.n_total * 3 * elem
+        return None
 
 
 # Input generators

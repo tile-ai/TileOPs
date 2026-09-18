@@ -317,6 +317,31 @@ Mamba2FwdOp:
 
   roofline:
     func: "tileops.perf.formulas.mamba2_fwd_roofline"
+    composition:
+    - stage: da_cumsum
+      source: "tileops.perf.formulas.da_cumsum_fwd_roofline"
+    - stage: cb_producer
+      source: "tileops.perf.formulas.cb_producer_roofline"
+    - stage: chunk_state
+      source: "tileops.perf.formulas.ssd_chunk_state_fwd_roofline"
+    - stage: state_passing
+      source: "tileops.perf.formulas.ssd_state_passing_fwd_roofline"
+    - stage: chunk_scan
+      source: "tileops.perf.formulas.ssd_chunk_scan_fwd_roofline"
+
+  composition:
+    kind: composite
+    stages:
+    - name: da_cumsum
+      op: DaCumsumFwdOp
+    - name: cb_producer
+      op: CBProducerFwdOp
+    - name: chunk_state
+      op: SSDChunkStateFwdOp
+    - name: state_passing
+      op: SSDStatePassingFwdOp
+    - name: chunk_scan
+      op: SSDChunkScanFwdOp
 
   source:
     kernel: tileops/ops/mamba/mamba2_fwd.py

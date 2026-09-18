@@ -72,13 +72,13 @@ def test_benchmarks_do_not_author_gen_inputs() -> None:
     assert _scan(_defines_gen_inputs) == {}
 
 
-# A benchmark takes (flops, bytes) from its op — docs/design/roofline.md §4.2. These
-# measure something the manifest does not model, so the arithmetic has nowhere else to
-# live. Each entry goes when its subject gains a manifest entry to take a roofline from.
+# A benchmark takes (flops, bytes) from its op — docs/design/roofline.md §4.2. An entry
+# here declares the two methods for a reason the name below states. An entry whose
+# subject is an op goes as soon as that op gains a manifest entry; an entry whose
+# subject is not an op stays, because a manifest entry is something only an op can have.
 _ROOFLINE_OF_ITS_OWN = {
-    "FusedGatedBenchmark": "times a kernel strategy rather than an op, and publishes nothing",
-    "SharedFusedMoEBenchmark": "SharedFusedMoE has no manifest entry: its first output is "
-    "None when no shared expert is configured, and outputs cannot say that",
+    "FusedGatedBenchmark": "times a forced kernel strategy, which no op can request and "
+    "no report has a row for; both metrics return None",
 }
 
 

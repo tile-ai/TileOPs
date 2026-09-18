@@ -48,7 +48,21 @@
 
 - Merging a signature does not merge the performance account: workload rows stay split by presence, and roofline counts the optional inputs the call actually passed rather than assuming all of them.
 
-- Output names and count are fixed per entry; an op whose return changes with a switch is two entries. Entries that stay separate are independent, sharing only their `source.op` path; no field links them.
+- A composite public op declares `composition: {kind: composite, stages: [...]}`; a leaf op declares none. `composition` is a contract, not a scheduler IR: it drives no dispatch and needs no stage per kernel launch. Rule: [manifest.md](../../docs/design/manifest.md#composition).
+
+- A stage has a unique `name` and exactly one of `op` (manifest entry, or a dotted path importing to a class) or `kernel` (a key of this entry's `source.kernel_map`). A free-form helper string is not a stage reference.
+
+- A `variant` is a mutually exclusive performance path; its `condition` is prose nothing parses. Workload rows never declare a variant — which one a call takes is a runtime dispatch fact.
+
+- Scratch buffers go under `resources.workspaces`, not `signature.inputs`: an input's value changes the result, a workspace's does not. Each needs `name` and `dtype`; `owner` naming a stage is required when the entry declares a `composition`. Shape stays in the op (`workspace_shapes()` or a runtime check) — there is no `shape` key. Rule: [manifest.md](../../docs/design/manifest.md#resources).
+
+- A workspace is still a `forward()` argument: everything building that argument list from the manifest reads `signature.inputs` followed by `resources.workspaces`, in declaration order. `dtype_combos` is the exception — its columns come from `signature.inputs` alone, because a combo row is the caller's value contract.
+
+- A composite declares its cost composition under `roofline.composition`, and an entry with a `composition` must have one: one row per stage, each with exactly one of `source` (dotted path resolving to a callable) or `formula` (prose). Every non-`optional` stage appears exactly once.
+
+- `roofline.func` resolves as `module.attribute`, so it names a module-level function, never a class method path. A composite's formula lives in `tileops.perf.formulas` and the op's `eval_roofline()` calls that same function.
+
+- Output names and count are fixed per entry; an op whose return changes with a switch is two entries. A return position that always exists but may hold `None` declares `nullable: true`, which is valid on outputs only; an input that may be omitted uses `optional`. Entries that stay separate are independent, sharing only their `source.op` path; no field links them.
 
 - The validator parses `shape_rules` and checks where names appear. It does not evaluate them, does not enumerate ways to call the op, and does not stop a call that passes half of a co-occurring group — the op's `forward` raises for that, naming the group.
 

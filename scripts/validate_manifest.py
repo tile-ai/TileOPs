@@ -41,8 +41,18 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 _SRC = str(REPO_ROOT / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
+# Derived facts live beside this script: they are the validator's own reading
+# of an entry, not something the wheel publishes.
+_SCRIPTS = str(REPO_ROOT / "scripts")
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+
+import _manifest_facts as facts_mod  # noqa: E402
 
 import tileops.manifest as manifest_pkg  # noqa: E402
+from tileops.manifest import (  # noqa: E402
+    forward_signature,
+)
 from tileops.manifest.dtype_rules import PROMOTE_INT_TO_FLOAT_RE, SAME_AS_RE  # noqa: E402
 from tileops.manifest.shape_rules import (  # noqa: E402
     dim_range_validity,
@@ -101,20 +111,21 @@ _PROMOTE_TARGET_DTYPE: str = "float32"
 
 # Required top-level fields per op entry
 _REQUIRED_TOP = {"family", "status", "signature", "workloads", "roofline", "source"}
-_VALID_TOP_KEYS = _REQUIRED_TOP | {"ref_api", "torch_compile_fullgraph"}
 _REQUIRED_SIGNATURE = {"inputs", "outputs"}
-_VALID_SIGNATURE_KEYS = {
-    "inputs",
-    "outputs",
-    "params",
-    "shape_rules",
-    "dtype_combos",
-    "static_dims",
-}
 _REQUIRED_SOURCE = {"kernel", "op", "test", "bench"}
 
 # Valid tensor layout values: what a non-default ``layout`` field may say
 _VALID_LAYOUTS = {"channels_last"}
+
+# composition: the internal structure contract of a composite public op.
+_VALID_COMPOSITION_KINDS = {"composite"}
+
+# resources: the execution resource contract. A workspace is scratch the op
+# needs to run, not a value the result depends on, so it is declared here
+# rather than among ``signature.inputs``.
+_VALID_WORKSPACE_KINDS = {"scratch"}
+
+# roofline.composition: which stages the parent's cost is made of.
 
 # Single-axis reference a ``static_dims`` entry takes:
 # `<tensor>.shape[<int_literal_or_identifier>]`
@@ -311,7 +322,7 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
 
     missing_sig = _REQUIRED_SIGNATURE - set(sig.keys())
     if missing_sig:
-        err(f"signature missing: {missing_sig}")
+        err(f"signature missing: {sorted(missing_sig)}")
 
     # inputs/outputs/params names must be strings.
     for field in ("inputs", "outputs", "params"):
@@ -335,6 +346,17 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
                 continue
             if "dtype" not in attrs:
                 err(f"{direction}.{tname} missing 'dtype'")
+            # ``nullable`` says the return position exists but may hold None.
+            # On an input that role belongs to ``optional``, and accepting both
+            # spellings there would leave two ways to say one thing.
+            if "nullable" in attrs:
+                if direction != "outputs":
+                    err(
+                        f"{direction}.{tname}.nullable is only valid on an output; "
+                        f"an input that may be omitted uses 'optional'"
+                    )
+                elif not isinstance(attrs["nullable"], bool):
+                    err(f"{direction}.{tname}.nullable must be a bool")
             # shape declares one shape. Alternatives would leave every
             # consumer — mock builder, roofline binding, fake — to pick one,
             # so a tensor whose rank or axis order varies omits shape and states its
@@ -439,12 +461,15 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
                     continue
                 errors.extend(_check_shape_rule_callables(op_name, i, rule))
 
-    # Unknown signature keys are silently ignored by L1+; reject here.
-    unknown_sig = sorted(repr(k) for k in set(sig) - _VALID_SIGNATURE_KEYS)
+    # Unknown signature keys are silently ignored by L1+; reject here. Both the
+    # leftovers and the accepted set come from the parser, so the message
+    # cannot claim a key is valid that nothing reads.
+    ef = _facts(entry, op_name)
+    unknown_sig = sorted(repr(k) for k in ef.unknown_keys.get(facts_mod.Section.SIGNATURE, ()))
     if unknown_sig:
         err(
             f"unknown signature keys [{', '.join(unknown_sig)}]; valid "
-            f"keys are {sorted(_VALID_SIGNATURE_KEYS)}"
+            f"keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.SIGNATURE])}"
         )
 
     # static_dims must be a mapping of str -> str expression.
@@ -557,6 +582,81 @@ def _l0_roofline(op_name: str, entry: dict, roofline: dict) -> list[str]:
                     err(f"roofline.vars key {k!r} must be a string")
                 if not (isinstance(v, str) and v.strip()):
                     err(f"roofline.vars[{k!r}] must be a non-empty string")
+    # ``composition`` says which stages the parent's cost is made of. It is
+    # orthogonal to how that cost is computed, so it coexists with either mode.
+    rl_comp = roofline.get("composition")
+    if rl_comp is None:
+        # A composite that does not say what its cost is made of leaves the
+        # parent's number unaccountable to the stages it declares.
+        if _stage_names(entry):
+            err("entry declares a composition but roofline.composition is missing")
+    else:
+        stage_names = set(_stage_names(entry))
+        if not isinstance(rl_comp, list) or not rl_comp:
+            err("roofline.composition must be a non-empty list")
+        elif not stage_names:
+            err("roofline.composition is set but the entry declares no composition stages")
+        else:
+            cited: set[str] = set()
+            for i, item in enumerate(rl_comp):
+                where = f"roofline.composition[{i}]"
+                if not isinstance(item, dict):
+                    err(f"{where} must be a mapping, got {type(item).__name__}")
+                    continue
+                unknown_c = sorted(
+                    repr(k)
+                    for k in facts_mod.unknown_keys_of(facts_mod.Section.ROOFLINE_COMPOSITION, item)
+                )
+                if unknown_c:
+                    err(
+                        f"{where} has unknown keys [{', '.join(unknown_c)}]; "
+                        f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.ROOFLINE_COMPOSITION])}"
+                    )
+                stage = item.get("stage")
+                if not isinstance(stage, str) or not stage.strip():
+                    err(f"{where} must have a non-empty string 'stage'")
+                elif stage not in stage_names:
+                    err(
+                        f"{where}.stage {stage!r} is not a composition stage name {sorted(stage_names)}"
+                    )
+                # Counting one stage twice inflates the parent's declared cost
+                # exactly as quietly as leaving one out deflates it.
+                elif stage in cited:
+                    err(f"{where}.stage {stage!r} is cited twice")
+                else:
+                    cited.add(stage)
+                has_src = "source" in item
+                has_formula = "formula" in item
+                if has_src == has_formula:
+                    err(f"{where} must have exactly one of 'source' or 'formula'")
+                for field in ("source", "formula"):
+                    if field in item and not (isinstance(item[field], str) and item[field].strip()):
+                        err(f"{where}.{field} must be a non-empty string")
+                # ``source`` names the function that stage's cost comes from, and
+                # resolves the same way ``roofline.func`` does.
+                if isinstance(item.get("source"), str) and item["source"].strip():
+                    smod, _, sattr = item["source"].rpartition(".")
+                    try:
+                        starget = importlib.import_module(smod) if smod else None
+                    except ImportError:
+                        starget = None
+                    if starget is None or not callable(getattr(starget, sattr, None)):
+                        err(f"{where}.source {item['source']!r} does not resolve to a callable")
+                if "optional" in item and not isinstance(item["optional"], bool):
+                    err(f"{where}.optional must be a bool")
+            # A stage the entry does not mark optional has a cost, and a parent
+            # that never names it is not accounting for it.
+            required = {
+                st["name"]
+                for st in (entry.get("composition") or {}).get("stages") or []
+                if isinstance(st, dict)
+                and isinstance(st.get("name"), str)
+                and not st.get("optional")
+            }
+            uncited = sorted(required - cited)
+            if uncited:
+                err(f"roofline.composition omits non-optional composition stage(s) {uncited}")
+
     if has_func and isinstance(roofline.get("func"), str):
         mod, _, attr = roofline["func"].rpartition(".")
         try:
@@ -574,7 +674,7 @@ def _l0_source(op_name: str, entry: dict, source: dict) -> list[str]:
     err = _emit_to(errors, "schema", op_name)
     missing_src = _REQUIRED_SOURCE - set(source.keys())
     if missing_src:
-        err(f"source missing fields: {missing_src}")
+        err(f"source missing fields: {sorted(missing_src)}")
     # source.kernel: string or list of strings
     kernel = source.get("kernel")
     if kernel is not None:
@@ -628,15 +728,13 @@ def _l0_kernel_map(
 
 
 def _optional_input_names(sig: dict) -> list[str]:
-    """Names under ``signature.inputs`` carrying ``optional: true``."""
-    inputs = sig.get("inputs")
-    if not isinstance(inputs, dict):
-        return []
-    return [
-        name
-        for name, attrs in inputs.items()
-        if isinstance(attrs, dict) and attrs.get("optional") is True
-    ]
+    """Optional tensor names, in declaration order.
+
+    One reading, shared with :func:`_optional_inputs`, which wants the same
+    answer as a set: two implementations of "which inputs are optional" can
+    disagree, and several checks pair the two.
+    """
+    return [a.name for a in _facts_from_sig(sig).call_tensor_args if a.optional]
 
 
 def _type_parts(text: object) -> "set[str] | None":
@@ -1006,6 +1104,9 @@ def _check_optional_in_dtype_positions(
             dtype = attrs.get("dtype")
             if not isinstance(dtype, str):
                 continue
+            # Every mention of a tensor, including inside a union — wider
+            # than the ``same_as`` edge the facts carry, which is the bare
+            # form only.
             for ref in _SAME_AS_RE.findall(dtype):
                 if ref in optional:
                     err(
@@ -1044,7 +1145,8 @@ def _check_optional_shape_symbol_scope(
     if isinstance(params, dict):
         global_syms |= set(params)
     local_syms: dict[str, str] = {}
-    for name in optional:
+    # Sorted: first binder wins, so iteration order decides the diagnostic.
+    for name in sorted(optional):
         attrs = inputs.get(name)
         if isinstance(attrs, dict):
             for sym in _shape_symbols(attrs.get("shape")) - global_syms:
@@ -1108,6 +1210,300 @@ def _l0_optional(op_name: str, entry: dict, sig: dict) -> list[str]:
     return errors
 
 
+# ---------------------------------------------------------------------------
+# composition and resources
+# ---------------------------------------------------------------------------
+
+
+def _declared_workspaces(entry: dict) -> list[dict]:
+    """``resources.workspaces`` entries that carry a string name."""
+    resources = entry.get("resources")
+    if not isinstance(resources, dict):
+        return []
+    workspaces = resources.get("workspaces")
+    if not isinstance(workspaces, list):
+        return []
+    return [w for w in workspaces if isinstance(w, dict) and isinstance(w.get("name"), str)]
+
+
+def _facts(entry: dict, op_name: str = "") -> "facts_mod.Facts":
+    """The entry's derived facts. Every check reads these, none re-derives them."""
+    return facts_mod.build(op_name, entry)
+
+
+def _facts_from_sig(sig: dict, op_name: str = "") -> "facts_mod.Facts":
+    """Facts for a caller holding only a signature.
+
+    The signature may already carry merged workspaces, which the facts layer
+    tells apart by their marker, so the same derivations apply.
+    """
+    return facts_mod.build(op_name, {"signature": sig})
+
+
+def _forward_signature(entry: dict) -> dict:
+    """``signature`` as ``forward()`` sees it — see ``tileops.manifest``.
+
+    Kept as a module-local name so every parity check reads the same helper the
+    op layer's codegen does.
+    """
+    return forward_signature(entry)
+
+
+def _stage_names(entry: dict) -> list[str]:
+    """Top-level ``composition.stages`` names, in declaration order."""
+    return list(_facts(entry).stage_names)
+
+
+def _op_ref_resolves(ref: str, all_op_names: Collection[str]) -> bool:
+    """Whether a stage's ``op`` names a manifest entry or an importable class.
+
+    A bare name must be a manifest entry; a dotted path is imported. Guessing
+    a package for a bare name would let a typo resolve to an unrelated class.
+    """
+    if ref in all_op_names:
+        return True
+    if "." not in ref:
+        return False
+    mod, _, attr = ref.rpartition(".")
+    try:
+        module = importlib.import_module(mod)
+    except ImportError:
+        return False
+    return isinstance(getattr(module, attr, None), type)
+
+
+def _l0_stage(
+    op_name: str,
+    entry: dict,
+    stage: object,
+    *,
+    where: str,
+    named: bool,
+    all_op_names: Collection[str],
+    kernel_keys: Collection[str],
+    depth: int = 0,
+) -> list[str]:
+    """One ``composition.stages`` element, or one element of a variant's stages."""
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+    if not isinstance(stage, dict):
+        err(f"{where} must be a mapping, got {type(stage).__name__}")
+        return errors
+
+    unknown = sorted(repr(k) for k in facts_mod.unknown_keys_of(facts_mod.Section.STAGE, stage))
+    if unknown:
+        err(
+            f"{where} has unknown keys [{', '.join(unknown)}]; "
+            f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.STAGE])}"
+        )
+
+    if named:
+        if not isinstance(stage.get("name"), str) or not stage["name"].strip():
+            err(f"{where} must have a non-empty string 'name'")
+    elif "name" in stage and not isinstance(stage["name"], str):
+        err(f"{where}.name must be a string")
+
+    # A stage names what runs, and the validator has exactly two ways to
+    # confirm that something runs: a manifest op, or a key of this entry's
+    # kernel map. A free-form string would name neither.
+    has_op = "op" in stage
+    has_kernel = "kernel" in stage
+    if has_op == has_kernel:
+        err(f"{where} must have exactly one of 'op' or 'kernel'")
+    if has_op:
+        ref = stage["op"]
+        if not isinstance(ref, str) or not ref.strip():
+            err(f"{where}.op must be a non-empty string")
+        elif not _op_ref_resolves(ref, all_op_names):
+            err(f"{where}.op {ref!r} is neither a manifest entry nor an importable dotted path")
+    if has_kernel:
+        ref = stage["kernel"]
+        if not isinstance(ref, str) or not ref.strip():
+            err(f"{where}.kernel must be a non-empty string")
+        elif ref not in kernel_keys:
+            err(f"{where}.kernel {ref!r} is not a key of source.kernel_map {sorted(kernel_keys)}")
+
+    if "optional" in stage and not isinstance(stage["optional"], bool):
+        err(f"{where}.optional must be a bool")
+
+    variants = stage.get("variants")
+    if variants is not None:
+        if depth:
+            err(f"{where}.variants is only allowed on a top-level stage")
+        elif not isinstance(variants, list) or not variants:
+            err(f"{where}.variants must be a non-empty list")
+        else:
+            seen: set[str] = set()
+            for i, variant in enumerate(variants):
+                vwhere = f"{where}.variants[{i}]"
+                if not isinstance(variant, dict):
+                    err(f"{vwhere} must be a mapping")
+                    continue
+                unknown_v = sorted(
+                    repr(k) for k in facts_mod.unknown_keys_of(facts_mod.Section.VARIANT, variant)
+                )
+                if unknown_v:
+                    err(
+                        f"{vwhere} has unknown keys [{', '.join(unknown_v)}]; "
+                        f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.VARIANT])}"
+                    )
+                vname = variant.get("name")
+                if not isinstance(vname, str) or not vname.strip():
+                    err(f"{vwhere} must have a non-empty string 'name'")
+                elif vname in seen:
+                    err(f"{vwhere}.name {vname!r} is declared twice")
+                else:
+                    seen.add(vname)
+                # ``condition`` is prose for the reader: the executable
+                # condition stays in the op. Nothing here parses it.
+                if "condition" in variant and not (
+                    isinstance(variant["condition"], str) and variant["condition"].strip()
+                ):
+                    err(f"{vwhere}.condition must be a non-empty string")
+                vstages = variant.get("stages")
+                if not isinstance(vstages, list) or not vstages:
+                    err(f"{vwhere}.stages must be a non-empty list")
+                else:
+                    for j, vstage in enumerate(vstages):
+                        errors.extend(
+                            _l0_stage(
+                                op_name,
+                                entry,
+                                vstage,
+                                where=f"{vwhere}.stages[{j}]",
+                                named=False,
+                                all_op_names=all_op_names,
+                                kernel_keys=kernel_keys,
+                                depth=depth + 1,
+                            )
+                        )
+    return errors
+
+
+def _l0_composition(
+    op_name: str,
+    entry: dict,
+    composition: dict,
+    *,
+    all_op_names: Collection[str] = (),
+) -> list[str]:
+    """``composition``: the internal structure of a composite public op."""
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+
+    unknown = sorted(
+        repr(k) for k in facts_mod.unknown_keys_of(facts_mod.Section.COMPOSITION, composition)
+    )
+    if unknown:
+        err(
+            f"composition has unknown keys [{', '.join(unknown)}]; "
+            f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.COMPOSITION])}"
+        )
+
+    kind = composition.get("kind")
+    if kind not in _VALID_COMPOSITION_KINDS:
+        err(f"composition.kind must be one of {sorted(_VALID_COMPOSITION_KINDS)}, got {kind!r}")
+
+    # The dispatch keys a stage may name, read off the facts.
+    kernel_keys = set(_facts(entry, op_name).kernel_map)
+
+    stages = composition.get("stages")
+    if not isinstance(stages, list) or not stages:
+        err("composition.stages must be a non-empty list")
+        return errors
+
+    seen: set[str] = set()
+    for i, stage in enumerate(stages):
+        errors.extend(
+            _l0_stage(
+                op_name,
+                entry,
+                stage,
+                where=f"composition.stages[{i}]",
+                named=True,
+                all_op_names=all_op_names,
+                kernel_keys=kernel_keys,
+            )
+        )
+        if isinstance(stage, dict) and isinstance(stage.get("name"), str):
+            if stage["name"] in seen:
+                err(f"composition.stages[{i}].name {stage['name']!r} is declared twice")
+            else:
+                seen.add(stage["name"])
+    return errors
+
+
+def _l0_resources(op_name: str, entry: dict, resources: dict) -> list[str]:
+    """``resources.workspaces``: scratch buffers the op needs to run."""
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+
+    unknown = sorted(
+        repr(k) for k in facts_mod.unknown_keys_of(facts_mod.Section.RESOURCES, resources)
+    )
+    if unknown:
+        err(
+            f"resources has unknown keys [{', '.join(unknown)}]; "
+            f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.RESOURCES])}"
+        )
+
+    workspaces = resources.get("workspaces")
+    if workspaces is None:
+        return errors
+    if not isinstance(workspaces, list) or not workspaces:
+        err("resources.workspaces must be a non-empty list")
+        return errors
+
+    stage_names = set(_stage_names(entry))
+    has_composition = isinstance(entry.get("composition"), dict)
+    input_names = set((entry.get("signature") or {}).get("inputs") or {})
+    seen: set[str] = set()
+    for i, ws in enumerate(workspaces):
+        where = f"resources.workspaces[{i}]"
+        if not isinstance(ws, dict):
+            err(f"{where} must be a mapping, got {type(ws).__name__}")
+            continue
+        unknown_w = sorted(
+            repr(k) for k in facts_mod.unknown_keys_of(facts_mod.Section.WORKSPACE, ws)
+        )
+        if unknown_w:
+            err(
+                f"{where} has unknown keys [{', '.join(unknown_w)}]; "
+                f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.WORKSPACE])}"
+            )
+        name = ws.get("name")
+        if not isinstance(name, str) or not name.strip():
+            err(f"{where} must have a non-empty string 'name'")
+        elif name in seen:
+            err(f"{where}.name {name!r} is declared twice")
+        else:
+            seen.add(name)
+            # The same name in both places would leave dtype and shape
+            # checks reading two declarations of one tensor.
+            if name in input_names:
+                err(f"{where}.name {name!r} is also declared in signature.inputs")
+        # dtype is required: dtype parity builds this tensor like any other
+        # forward argument, and an undeclared dtype drops that coverage.
+        if not isinstance(ws.get("dtype"), str) or not ws["dtype"].strip():
+            err(f"{where} must have a non-empty string 'dtype'")
+        kind = ws.get("kind")
+        if kind is not None and kind not in _VALID_WORKSPACE_KINDS:
+            err(f"{where}.kind must be one of {sorted(_VALID_WORKSPACE_KINDS)}, got {kind!r}")
+        if "optional" in ws and not isinstance(ws["optional"], bool):
+            err(f"{where}.optional must be a bool")
+        owner = ws.get("owner")
+        if has_composition:
+            if owner is None:
+                err(f"{where} must have an 'owner' naming a composition stage")
+            elif owner not in stage_names:
+                err(
+                    f"{where}.owner {owner!r} is not a composition stage name {sorted(stage_names)}"
+                )
+        elif owner is not None:
+            err(f"{where}.owner is set but the entry declares no composition")
+    return errors
+
+
 _L0_SECTIONS = (
     ("signature", dict, "a mapping", _l0_signature),
     ("workloads", list, "a list", _l0_workloads),
@@ -1138,7 +1534,7 @@ def check_l0(
     # Top-level required fields
     missing_top = _REQUIRED_TOP - set(entry.keys())
     if missing_top:
-        err(f"missing top-level fields: {missing_top}")
+        err(f"missing top-level fields: {sorted(missing_top)}")
 
     for field, container, desc, section in _L0_SECTIONS:
         value = entry.get(field)
@@ -1149,11 +1545,12 @@ def check_l0(
 
     # Unknown top-level keys are ignored by every later level, so reject
     # them here (covers removed fields like parity_opt_out).
-    unknown_top = sorted(repr(k) for k in set(entry) - _VALID_TOP_KEYS)
+    ef_top = _facts(entry, op_name)
+    unknown_top = sorted(repr(k) for k in ef_top.unknown_keys.get(facts_mod.Section.ENTRY, ()))
     if unknown_top:
         err(
             f"unknown entry keys [{', '.join(unknown_top)}]; "
-            f"valid keys are {sorted(_VALID_TOP_KEYS)}"
+            f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.ENTRY])}"
         )
 
     # ref_api: required string — fully qualified PyTorch API equivalent
@@ -1188,6 +1585,19 @@ def check_l0(
             )
 
     errors.extend(_l0_kernel_map(op_name, entry, warnings))
+
+    composition = entry.get("composition")
+    if isinstance(composition, dict):
+        errors.extend(_l0_composition(op_name, entry, composition, all_op_names=all_op_names))
+    elif "composition" in entry:
+        err("composition must be a mapping")
+
+    resources = entry.get("resources")
+    if isinstance(resources, dict):
+        errors.extend(_l0_resources(op_name, entry, resources))
+    elif "resources" in entry:
+        err("resources must be a mapping")
+
     return errors
 
 
@@ -1491,8 +1901,9 @@ def check_l1(
     """
     errors: list[str] = []
     sig = entry.get("signature", {})
-    source = entry.get("source", {})
-    op_file = source.get("op", "")
+    # Via the facts so a source that is not a mapping reads as "no paths"
+    # rather than raising: reporting the malformed entry is the job here.
+    op_file = _facts(entry, op_name).source_paths.get("op", "")
     if not op_file:
         if entry.get("status") == "spec-only":
             if warnings is not None:
@@ -1523,7 +1934,7 @@ def check_l1(
         )
         return errors
 
-    manifest_inputs = sig.get("inputs", {})
+    manifest_inputs = _forward_signature(entry).get("inputs", {})
     manifest_params = sig.get("params", {})
     manifest_static_dims = sig.get("static_dims")
     init_params = _get_init_params(result.cls)
@@ -1548,7 +1959,10 @@ def check_l1(
 def check_l2(op_name: str, entry: dict) -> list[str]:
     """Validate shape_rules are parseable Python expressions."""
     errors: list[str] = []
-    sig = entry.get("signature", {})
+    # A signature that is not a mapping is a schema error, reported there; here
+    # it simply declares no rules rather than raising.
+    sig = entry.get("signature")
+    sig = sig if isinstance(sig, dict) else {}
     rules = sig.get("shape_rules", [])
 
     for i, rule in enumerate(rules):
@@ -1623,21 +2037,6 @@ def _validate_dtype_token(
     return None
 
 
-def _build_same_as_map(all_tensors: dict) -> dict[str, str]:
-    """Map tensor name → same_as reference target for pure same_as dtypes.
-
-    Mixed expressions (``float16 | same_as(x)``) are not tracked.
-    """
-    same_as_map: dict[str, str] = {}
-    for tname, attrs in all_tensors.items():
-        tokens = _parse_dtype_expr(attrs.get("dtype", ""))
-        if len(tokens) == 1:
-            m = _SAME_AS_RE.match(tokens[0])
-            if m:
-                same_as_map[tname] = m.group(1)
-    return same_as_map
-
-
 def _check_dtype_combos_same_as_identity(
     op_name: str,
     dtype_combos: list,
@@ -1685,7 +2084,9 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     """
     errors: list[str] = []
     err = _emit_to(errors, "dtype", op_name)
-    sig = entry.get("signature", {})
+    # Workspaces declare a dtype in the same syntax, so they are checked here
+    # as forward arguments rather than left to L0's non-empty-string rule.
+    sig = _forward_signature(entry)
     raw_inputs = sig.get("inputs")
     raw_outputs = sig.get("outputs")
     inputs = raw_inputs if isinstance(raw_inputs, dict) else {}
@@ -1717,7 +2118,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     # same_as identity constraint in dtype_combos
     dtype_combos = sig.get("dtype_combos", [])
     if isinstance(dtype_combos, list) and dtype_combos:
-        same_as_map = _build_same_as_map(all_tensors)
+        same_as_map = dict(_facts_from_sig(sig).same_as_map)
         # An output the caller states may depart from its declared fallback in a combo
         # row. An output the entry leaves unmarked may not: the op decides that one.
         caller_stated = frozenset(
@@ -1787,15 +2188,7 @@ def _diagnose_unresolvable_signature(op_name: str, sig: dict) -> list[str]:
     # Pure ``same_as(ref)`` edges only — mixed expressions are not part
     # of the cycle graph; a cycle in pure edges is what stalls fixpoint
     # resolution.
-    edges: dict[str, str] = {}
-    for tname, attrs in all_tensors.items():
-        if not isinstance(attrs, dict):
-            continue
-        tokens = _parse_dtype_expr(attrs.get("dtype", ""))
-        if len(tokens) == 1:
-            m = _SAME_AS_RE.match(tokens[0])
-            if m:
-                edges[tname] = m.group(1)
+    edges = dict(_facts_from_sig(sig).same_as_map)
 
     # Dangling references: ``same_as(ref)`` where ``ref`` is not declared.
     dangling: set[str] = set()
@@ -1878,11 +2271,12 @@ def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
         # identity check, so returning silently would let it through.
         errors.extend(_diagnose_unresolvable_signature(op_name, sig))
         return errors
-    inputs = sig.get("inputs") or {}
     optional_names = set(_optional_input_names(sig))
-    declared_input_names: list[str] = (
-        [n for n in inputs if n not in optional_names] if isinstance(inputs, dict) else []
-    )
+    # Columns come from the facts layer, which excludes workspaces: a combo row
+    # is the caller's value contract and a workspace's dtype is strategy.
+    declared_input_names: list[str] = [
+        n for n in _facts_from_sig(sig).combo_columns if n not in optional_names
+    ]
     for i, combo in enumerate(dtype_combos):
         if not isinstance(combo, dict):
             continue
@@ -2090,15 +2484,8 @@ def _input_bound_symbols(sig: dict) -> set[str]:
 
 
 def _optional_inputs(sig: dict) -> set[str]:
-    """Input names declared ``optional: true``."""
-    inputs = sig.get("inputs")
-    if not isinstance(inputs, dict):
-        return set()
-    return {
-        name
-        for name, attrs in inputs.items()
-        if isinstance(name, str) and isinstance(attrs, dict) and attrs.get("optional") is True
-    }
+    """Input names declared ``optional: true``, as a set."""
+    return set(_optional_input_names(sig))
 
 
 # Witness values for a required param the workloads do not pin. Positive and
@@ -2533,19 +2920,15 @@ def check_l2_infer_parity(
         return errors
     warn = _emit_to(warnings, "shape", op_name)
 
-    sig = entry.get("signature", {})
+    sig = _forward_signature(entry)
     rules = sig.get("shape_rules") or []
     if not isinstance(rules, list):
         rules = []
-    outputs_map = sig.get("outputs") or {}
-    declared_output_shapes: dict[str, list[str]] = {}
-    if isinstance(outputs_map, dict):
-        for oname, oattrs in outputs_map.items():
-            if not isinstance(oattrs, dict):
-                continue
-            parts = _parse_shape_decl(oattrs.get("shape", ""))
-            if parts is not None:
-                declared_output_shapes[oname] = parts
+    # Read off the facts: which outputs write their shape out is one question
+    # with one answer, not something each consumer works out again.
+    declared_output_shapes: dict[str, list[str]] = {
+        name: list(parts) for name, parts in _facts(entry, op_name).declared_output_shapes.items()
+    }
     # Nothing to check: neither rules nor declared output shapes.
     if not rules and not declared_output_shapes:
         return errors
@@ -2632,7 +3015,9 @@ def _probe_infer_parity(
     shape_kwargs: dict[str, object] = {
         f"{name}_shape": tuple(shape) for name, shape in mock_shapes.items()
     }
-    for name in absent:
+    # Sorted: this dict is formatted into diagnostics, and a set's iteration
+    # order varies with PYTHONHASHSEED.
+    for name in sorted(absent):
         shape_kwargs[f"{name}_shape"] = None
     # Bind before calling: only a TypeError from ``bind`` is a signature
     # mismatch. TypeErrors from the body must not be reported as one.
@@ -2867,6 +3252,8 @@ def _dtype_options_for_tensor(
     whether that is a temporary state inside the fixpoint loop or a
     permanent failure).
     """
+    # Token-level: a union expands term by term, so this walks the dtype
+    # grammar rather than reading the bare-form edge off the facts.
     out: list[str] = []
     for tok in _parse_dtype_expr(dtype_str):
         m = _SAME_AS_RE.match(tok)
@@ -2957,18 +3344,10 @@ def _primary_dtype_input(
     manifest-derived ``_validate_dtypes`` implementations typically
     compare the op's ``self.dtype`` against the unbound primary input.
     """
-    inputs = sig.get("inputs") or {}
-    if not isinstance(inputs, dict):
-        return None
+    bound = _facts_from_sig(sig).same_as_map
     for name in forward_inputs:
-        attrs = inputs.get(name)
-        if not isinstance(attrs, dict):
-            continue
-        dstr = attrs.get("dtype", "")
-        tokens = _parse_dtype_expr(dstr)
-        if len(tokens) == 1 and _SAME_AS_RE.match(tokens[0]):
-            continue
-        return name
+        if name not in bound:
+            return name
     # Fallback: no fully-free input; use the first declared input even
     # if it's same_as-bound, so ``self.dtype`` is at least non-None.
     return forward_inputs[0] if forward_inputs else None
@@ -3035,6 +3414,27 @@ def _caller_stated_out_dtype(sig: dict, combo: dict[str, str]) -> dict:
     return {}
 
 
+def _workspace_probe_dtype(
+    arg: "facts_mod.TensorArg | None", combo: dict[str, str]
+) -> "str | None":
+    """A concrete dtype for a workspace the probe must pass but no combo names.
+
+    ``same_as(ref)`` follows the row's choice for *ref*. A union prefers a token
+    the row already uses, so an op that wants its workspace to match the
+    activation dtype is probed with a combination it accepts; failing that it
+    takes the first declared token, which the manifest says is legal.
+    """
+    if arg is None or not arg.workspace:
+        return None
+    if arg.same_as is not None:
+        return combo.get(arg.same_as)
+    tokens = _parse_dtype_expr(arg.dtype)
+    if not tokens:
+        return None
+    in_row = [t for t in tokens if t in set(combo.values())]
+    return in_row[0] if in_row else tokens[0]
+
+
 def _combo_accepted(
     cls: type,
     forward_inputs: list[str],
@@ -3064,9 +3464,15 @@ def _combo_accepted(
     if validate_fn is None:
         return False, "no _validate_dtypes"
 
+    sig_facts = _facts_from_sig(sig or {})
     tensors: dict = {}
     for name in forward_inputs:
         dtype_name = combo.get(name)
+        if dtype_name is None:
+            # A workspace is a forward argument the op validates, but never a
+            # combo column. Its dtype comes from its own declaration so the
+            # probe can make the call the combo row describes.
+            dtype_name = _workspace_probe_dtype(sig_facts.arg(name), combo)
         if dtype_name is None:
             return False, f"combo missing input {name!r}"
         t = _make_mock_tensor(dtype_name)
@@ -3275,16 +3681,19 @@ def check_l3_validate_dtypes_parity(
         )
         return errors
 
-    sig = entry.get("signature", {})
-    inputs = sig.get("inputs") or {}
-    if not isinstance(inputs, dict) or not inputs:
+    sig = _forward_signature(entry)
+    ef = _facts(entry, op_name)
+    if not ef.call_tensor_args:
         return errors
 
-    # Only pass tensors corresponding to manifest inputs (forward args).
-    # An optional input is never a dtype_combos column, so a probe that
-    # demanded one for it could never be satisfied.
-    optional_inputs = set(_optional_input_names(sig))
-    forward_inputs = [n for n in inputs if n not in optional_inputs]
+    # Two different lists, both read off the facts. ``forward_inputs`` is what
+    # the call passes, so it carries the workspaces; ``combo_dims`` is what a
+    # dtype_combos row spans, so it does not, and the probe supplies a
+    # workspace's own declared dtype when it builds the call. An optional input
+    # is never a column: a probe demanding one for it could not be satisfied.
+    optional_inputs = set(ef.optional_names)
+    forward_inputs = [n for n in ef.call_names if n not in optional_inputs]
+    combo_dims = list(ef.required_combo_columns)
     param_env = _param_env(sig, entry.get("workloads"))
 
     dtype_options = _resolve_tensor_dtype_options(sig)
@@ -3311,6 +3720,8 @@ def check_l3_validate_dtypes_parity(
                 expanded_combos.append({})
                 continue
             expanded: dict[str, str] = {}
+            # A combo cell, not a signature declaration: the row itself may
+            # write ``same_as(ref)`` in place of a dtype.
             for key, val in combo.items():
                 if isinstance(val, str):
                     m = _SAME_AS_RE.match(val.strip())
@@ -3399,7 +3810,7 @@ def check_l3_validate_dtypes_parity(
         # rejected. Enumerate the full Cartesian product and report any
         # non-listed combo that ``_validate_dtypes`` accepts. Breaking on
         # the first rejection would miss a later accepted combo.
-        input_options: list[list[str]] = [dtype_options.get(name, []) for name in forward_inputs]
+        input_options: list[list[str]] = [dtype_options.get(name, []) for name in combo_dims]
         product_size = 1
         for opts in input_options:
             product_size *= max(len(opts), 1)
@@ -3408,12 +3819,12 @@ def check_l3_validate_dtypes_parity(
                 f"Cartesian product of dtype options ({product_size}) "
                 f"exceeds _MAX_DTYPE_COMBOS={_MAX_DTYPE_COMBOS}; "
                 f"non-listed rejection check skipped "
-                f"({len(forward_inputs)} inputs × options "
+                f"({len(combo_dims)} inputs × options "
                 f"{[len(o) for o in input_options]})"
             )
             return errors
         listed_combo_keys = {
-            tuple(combo.get(n) for n in forward_inputs)
+            tuple(combo.get(n) for n in combo_dims)
             for combo in dtype_combos
             if isinstance(combo, dict)
         }
@@ -3422,7 +3833,7 @@ def check_l3_validate_dtypes_parity(
         for tup in itertools.product(*input_options):
             if tup in listed_combo_keys:
                 continue
-            candidate = dict(zip(forward_inputs, tup, strict=True))
+            candidate = dict(zip(combo_dims, tup, strict=True))
             checked_any = True
             accepted, reason = _combo_accepted(
                 cls,
@@ -3451,7 +3862,7 @@ def check_l3_validate_dtypes_parity(
         # covering every input (known to be accepted).
         baseline_combo: dict[str, str] | None = None
         for c in dtype_combos:
-            if isinstance(c, dict) and all(n in c for n in forward_inputs):
+            if isinstance(c, dict) and all(n in c for n in combo_dims):
                 baseline_combo = dict(c)
                 break
         if baseline_combo is not None:
@@ -3618,38 +4029,18 @@ def _same_as_refs(sig: dict) -> dict[str, str]:
     be exercised against a mismatched dtype and to propagate out-of-union
     substitutions to dependent tensors.
     """
-    refs: dict[str, str] = {}
-    inputs = sig.get("inputs") or {}
-    if not isinstance(inputs, dict):
-        return refs
-    for tname, attrs in inputs.items():
-        if not isinstance(attrs, dict):
-            continue
-        dstr = attrs.get("dtype", "")
-        tokens = _parse_dtype_expr(dstr)
-        if len(tokens) == 1:
-            m = _SAME_AS_RE.match(tokens[0])
-            if m:
-                refs[tname] = m.group(1)
-    return refs
+    return dict(_facts_from_sig(sig).call_same_as_map)
 
 
 def _honours_same_as(sig: dict, candidate: dict[str, str]) -> bool:
-    """Return True when *candidate* satisfies the same_as dtype identity."""
-    inputs = sig.get("inputs") or {}
-    if not isinstance(inputs, dict):
-        return True
-    for tname, attrs in inputs.items():
-        if not isinstance(attrs, dict):
-            continue
-        dstr = attrs.get("dtype", "")
-        tokens = _parse_dtype_expr(dstr)
-        if len(tokens) == 1:
-            m = _SAME_AS_RE.match(tokens[0])
-            if m:
-                ref = m.group(1)
-                if ref in candidate and candidate.get(tname) != candidate[ref]:
-                    return False
+    """Whether *candidate* satisfies the same_as dtype identity.
+
+    A tensor declared ``same_as(ref)`` must carry ref's dtype in the row. A row
+    that states ref but omits the bound tensor does not satisfy it either.
+    """
+    for tname, ref in _facts_from_sig(sig).call_same_as_map.items():
+        if ref in candidate and candidate.get(tname) != candidate[ref]:
+            return False
     return True
 
 
@@ -3943,11 +4334,8 @@ def check_c4_forward_signature_parity(
     if cls is None:
         return errors
 
-    sig = entry.get("signature", {})
-    manifest_inputs = sig.get("inputs") or {}
-    if not isinstance(manifest_inputs, dict):
-        return errors
-    expected = list(manifest_inputs.keys())
+    # What the call passes, in declaration order: inputs then workspaces.
+    expected = list(_facts(entry, op_name).call_names)
 
     positional = _forward_positional_params(cls)
     if positional is None:
@@ -4041,12 +4429,7 @@ def _tensor_param_names(entry: dict) -> set[str]:
     """The entry's tensor-typed params, which is where a caller-supplied output buffer
     is declared: the op writes it and the return aliases it, so it is not an input.
     """
-    params = entry.get("signature", {}).get("params") or {}
-    return {
-        name
-        for name, attrs in params.items()
-        if isinstance(attrs, dict) and "tensor" in str(attrs.get("type", "")).lower()
-    }
+    return set(_facts(entry).tensor_param_names)
 
 
 OUT_DTYPE_PARAM = "out_dtype"
@@ -4066,9 +4449,13 @@ def check_c9_output_dtype_convention(op_name: str, entry: dict, cls: type | None
     the fake to what the op returns.
     """
     errors: list[str] = []
-    signature = entry.get("signature") or {}
+    # Via the facts so a signature that is not a mapping reads as empty rather
+    # than raising: a malformed entry is reported, not crashed on.
+    signature = entry.get("signature")
+    signature = signature if isinstance(signature, dict) else {}
     outputs = signature.get("outputs") or {}
-    params = signature.get("params") or {}
+    outputs = outputs if isinstance(outputs, dict) else {}
+    params = _facts(entry, op_name).params
     has_param = OUT_DTYPE_PARAM in params
     stated = [
         name
@@ -4126,12 +4513,11 @@ def check_c8_mutated_inputs_parity(
     errors: list[str] = []
     if cls is None:
         return errors
-    inputs = entry.get("signature", {}).get("inputs")
-    declared = {
-        name
-        for name, attrs in (inputs or {}).items()
-        if isinstance(attrs, dict) and attrs.get("mutated") is True
-    }
+    ef = _facts(entry, op_name)
+    declared = set(ef.mutated_input_names)
+    # Positional names of the operator's arguments: the caller's inputs, since
+    # a workspace is not part of the mutation contract.
+    inputs = [a.name for a in ef.value_inputs]
     names = getattr(cls, "compile_op_names", ()) or ()
     if not names:
         if declared and warnings is not None:
@@ -4229,21 +4615,13 @@ STRICT_ONLY_TAGS: tuple[str, ...] = (
 
 
 def _is_spec_only(entry: dict) -> bool:
-    """Check if the entry is spec-only.
-
-    Returns True for missing or non-string status (safe default).
-    """
-    status = entry.get("status")
-    if not isinstance(status, str):
-        # Missing or non-string status — treat as spec-only (safe default).
-        # Schema validation catches this; defensive here for --levels bypass.
-        return True
-    return status == "spec-only"
+    """Whether checks needing an implementation stand down — see the facts layer."""
+    return _facts(entry).spec_only
 
 
 def _is_bench_manifest_driven(entry: dict) -> bool:
     """Whether the entry claims its benchmark reads manifest workloads."""
-    return bool(entry.get("source", {}).get("bench_manifest_driven", False))
+    return _facts(entry).bench_manifest_driven
 
 
 def check_bench_declaration(op_name: str, entry: dict) -> list[str]:
@@ -4346,8 +4724,7 @@ def validate_manifest(
             continue
 
         # Resolve Op class once per entry so parity checks can reuse it.
-        source = entry.get("source", {})
-        op_file = source.get("op", "")
+        op_file = _facts(entry, op_name).source_paths.get("op", "")
         resolve_result = _resolve_op_class(op_file, op_name) if op_file else None
         op_cls = resolve_result.cls if resolve_result is not None else None
 
@@ -4424,7 +4801,7 @@ def validate_manifest(
         # bench: benchmark uses manifest workloads
         if "bench" in levels:
             all_errors.extend(check_bench_declaration(op_name, entry))
-            bench_path = entry.get("source", {}).get("bench", "")
+            bench_path = _facts(entry, op_name).source_paths.get("bench", "")
             if bench_path:
                 bench_errors = check_l4_benchmark(op_name, bench_path, repo_root)
                 if _is_bench_manifest_driven(entry):
@@ -4473,7 +4850,7 @@ def _parse_levels(argv: list[str]) -> frozenset[str] | None:
         parsed = frozenset(t.strip().lower() for t in raw_str.split(","))
         unknown = parsed - ALL_LEVELS
         if unknown:
-            print(f"ERROR: unknown levels: {unknown}")
+            print(f"ERROR: unknown levels: {sorted(unknown)}")
             print(f"  Valid levels: {', '.join(sorted(ALL_LEVELS))}")
             sys.exit(2)
         return parsed
