@@ -32,6 +32,13 @@ from __future__ import annotations
 
 from typing import Any
 
+__all__ = [
+    "dim_range_validity",
+    "dim_uniqueness",
+    "reduced_axes",
+    "reduced_shape",
+]
+
 
 def dim_range_validity(x: Any, dim: Any) -> bool:
     """Return True iff every requested axis lies within ``[-x.ndim, x.ndim)``.
@@ -179,11 +186,3 @@ def reduced_shape(shape: Any, dim: Any, keepdim: bool = False, empty_dim: str = 
     if keepdim:
         return tuple(1 if i in axes else d for i, d in enumerate(shape))
     return tuple(d for i, d in enumerate(shape) if i not in axes)
-
-
-__all__ = [
-    "dim_range_validity",
-    "dim_uniqueness",
-    "reduced_axes",
-    "reduced_shape",
-]
