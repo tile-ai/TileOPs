@@ -7,8 +7,10 @@ from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp
 from tileops.perf.formulas import gqa_prefill_paged_with_kv_cache_fwd_roofline
 from workloads.attention.gqa import (
+    GQAPrefillPagedWithKVCacheFwdWorkload,
     fill_paged_cache_from_logical,
     make_cu_seqlens,
+    make_fragmented_block_table,
     make_interleaved_block_table,
     make_unit_cache_scales,
     paged_cache_row,
@@ -798,3 +800,31 @@ def test_gqa_prefill_paged_roofline_accepts_mixed_manifest_workload() -> None:
 
     assert flops > 0
     assert nbytes > 0
+
+
+@pytest.mark.smoke
+def test_paged_workloads_hand_out_a_fragmented_block_table() -> None:
+    """A timed run walks a fragmented pool, so its number is not the best case."""
+    batch, pages_per_req = 4, 8
+    pool_pages = batch * pages_per_req
+
+    disjoint = make_fragmented_block_table(batch, pages_per_req, pool_pages)
+    assert disjoint.shape == (batch, pages_per_req)
+    assert sorted(disjoint.flatten().tolist()) == list(range(pool_pages))
+    assert not torch.equal(
+        disjoint, torch.arange(pool_pages, dtype=torch.int32, device="cuda").reshape(batch, -1)
+    )
+
+    shared = make_fragmented_block_table(batch, pages_per_req, pages_per_req)
+    for row in shared.tolist():
+        assert sorted(row) == list(range(pages_per_req))
+    assert not all(row == sorted(row) for row in shared.tolist())
+
+    assert torch.equal(disjoint, make_fragmented_block_table(batch, pages_per_req, pool_pages))
+
+    case = GQAPrefillPagedWithKVCacheFwdWorkload(
+        2, 16, 4, [64, 64], [128, 128], 64, 128, True, torch.float16
+    )
+    table = case.gen_inputs()[-1]
+    pool = 2 * case.max_pages_per_req
+    assert sorted(table.flatten().tolist()) == list(range(pool))

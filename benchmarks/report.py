@@ -182,6 +182,17 @@ class BenchmarkReport:
             "",
         ]
         lines.extend(_get_env_metadata())
+        # Only a report with paged rows in it states the layout they were timed on.
+        if any(
+            "page_size" in entry["params"]
+            for entries in BenchmarkReport._records.values()
+            for entry in entries
+        ):
+            lines.append(
+                "- **Paged KV layout**: fragmented — each block table is a fixed-seed "
+                "permutation of the page pool, so logical pages sit on unrelated "
+                "physical rows"
+            )
         lines.append("")
 
         # device_busy_ms leads: it is the column implementations are compared on.
