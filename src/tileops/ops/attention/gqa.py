@@ -54,15 +54,6 @@ def _dense_decode_split_capacity(seq_len_kv: int) -> int:
     return min(32, 1 << (full_tiles.bit_length() - 1))
 
 
-def _paged_cache_dtype(cache_dtype: Optional[torch.dtype]) -> Optional[torch.dtype]:
-    """Validate a paged KV cache element type; ``None`` follows the attention dtype."""
-    if cache_dtype is None:
-        return None
-    if cache_dtype != fp8_dtype():
-        _validate_attention_dtype(cache_dtype)
-    return cache_dtype
-
-
 def _validate_positive(**values: int) -> None:
     """Raise for the first named value that is not positive; the name appears
     in the message, so pass the caller's own parameter name."""
@@ -1428,6 +1419,15 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
+    @staticmethod
+    def _paged_cache_dtype(cache_dtype: Optional[torch.dtype]) -> Optional[torch.dtype]:
+        """Validate a paged KV cache element type; ``None`` follows the attention dtype."""
+        if cache_dtype is None:
+            return None
+        if cache_dtype != fp8_dtype():
+            _validate_attention_dtype(cache_dtype)
+        return cache_dtype
+
     def __init__(
         self,
         batch: int,
@@ -1479,7 +1479,9 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         _validate_positive(batch=batch, max_pages_per_req=max_pages_per_req, page_size=page_size)
         if page_size & (page_size - 1) != 0:
             raise ValueError("page_size must be a power of two")
-        cache_dtype = _paged_cache_dtype(cache_dtype)
+        cache_dtype = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp._paged_cache_dtype(
+            cache_dtype
+        )
         fp8_dtype = getattr(torch, "float8_e4m3fn", None)
         if fuse_rope and cache_dtype == fp8_dtype:
             raise ValueError("fuse_rope is not supported with FP8 paged KV cache yet")

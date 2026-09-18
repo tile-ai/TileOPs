@@ -122,7 +122,7 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         Returns:
             Dict[str, Kernel]: A dictionary mapping kernel names to kernel functions.
             The default map includes the "sparse_mla_kernel": the WGMMA
-            warp-specialized SparseMlaKernel on Hopper, and the
+            warp-specialized SparseMlaKernel on SM90, and the
             architecture-agnostic SparseMlaBasicKernel (plain T.gemm) elsewhere.
         """
         return {

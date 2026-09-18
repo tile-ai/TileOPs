@@ -218,65 +218,65 @@ def _conv1d_padding_pair_and_l_out(
     return padding_tuple[0], padding_tuple[0], l_out
 
 
-def _conv1d_l_out(
-    l_in: int,
-    kernel_size: int,
-    stride: int | Tuple[int],
-    padding: int | Tuple[int] | str,
-    dilation: int | Tuple[int],
-) -> int:
-    _, _, l_out = _conv1d_padding_pair_and_l_out(
-        l_in,
-        kernel_size,
-        stride,
-        padding,
-        dilation,
-    )
-    return l_out
-
-
-def _conv1d_call(
-    *,
-    n: int,
-    c_in: int,
-    l_in: int,
-    c_out: int,
-    c_in_g: int,
-    kernel_l: int,
-    stride_l: int,
-    pad_left: int,
-    pad_right: int,
-    dilation_l: int,
-    groups: int,
-    out_l: int,
-    dtype: torch.dtype,
-    has_bias: bool,
-    tune: bool,
-    device: torch.device | None,
-) -> Conv1dCall:
-    """Build the Conv1d dispatch record after op-level validation."""
-    return Conv1dCall(
-        n=n,
-        c_in=c_in,
-        c_out=c_out,
-        c_in_g=c_in_g,
-        l_in=l_in,
-        kernel_l=kernel_l,
-        stride_l=stride_l,
-        pad_left=pad_left,
-        pad_right=pad_right,
-        dilation_l=dilation_l,
-        groups=groups,
-        out_l=out_l,
-        dtype=dtype,
-        has_bias=has_bias,
-        tune=tune,
-        device=device,
-    )
-
-
 class Conv1dFwdOp(Op):
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
+    @staticmethod
+    def _conv1d_call(
+        *,
+        n: int,
+        c_in: int,
+        l_in: int,
+        c_out: int,
+        c_in_g: int,
+        kernel_l: int,
+        stride_l: int,
+        pad_left: int,
+        pad_right: int,
+        dilation_l: int,
+        groups: int,
+        out_l: int,
+        dtype: torch.dtype,
+        has_bias: bool,
+        tune: bool,
+        device: torch.device | None,
+    ) -> Conv1dCall:
+        """Build the Conv1d dispatch record after op-level validation."""
+        return Conv1dCall(
+            n=n,
+            c_in=c_in,
+            c_out=c_out,
+            c_in_g=c_in_g,
+            l_in=l_in,
+            kernel_l=kernel_l,
+            stride_l=stride_l,
+            pad_left=pad_left,
+            pad_right=pad_right,
+            dilation_l=dilation_l,
+            groups=groups,
+            out_l=out_l,
+            dtype=dtype,
+            has_bias=has_bias,
+            tune=tune,
+            device=device,
+        )
+
+    @staticmethod
+    def _conv1d_l_out(
+        l_in: int,
+        kernel_size: int,
+        stride: int | Tuple[int],
+        padding: int | Tuple[int] | str,
+        dilation: int | Tuple[int],
+    ) -> int:
+        _, _, l_out = _conv1d_padding_pair_and_l_out(
+            l_in,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+        )
+        return l_out
 
     def __init__(
         self,
@@ -375,7 +375,7 @@ class Conv1dFwdOp(Op):
         has_bias: bool,
         inputs: tuple[torch.Tensor, ...],
     ) -> Kernel:
-        call = _conv1d_call(
+        call = Conv1dFwdOp._conv1d_call(
             n=n,
             c_in=c_in,
             l_in=l_in,
@@ -506,7 +506,7 @@ class Conv1dFwdOp(Op):
     ) -> Dict[str, tuple[int, int, int]]:
         n, _, l_in = input_shape
         c_out, _, kernel_size = weight_shape
-        l_out = _conv1d_l_out(
+        l_out = Conv1dFwdOp._conv1d_l_out(
             l_in,
             kernel_size,
             self.stride,
@@ -558,10 +558,6 @@ class Conv1dFwdOp(Op):
         return tensor_core_roof(self.dtype)
 
 
-def _pair(value: int | Tuple[int, int]) -> Tuple[int, int]:
-    return _conv_tuple(value, 2, "value", "Conv2d")  # type: ignore[return-value]
-
-
 def _conv_out_dim(
     input_size: int,
     kernel_size: int,
@@ -572,52 +568,56 @@ def _conv_out_dim(
     return (input_size + 2 * padding - dilation * (kernel_size - 1) - 1) // stride + 1
 
 
-def _conv2d_call(
-    *,
-    n: int,
-    c_in: int,
-    h: int,
-    w: int,
-    c_out: int,
-    c_in_g: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride: tuple[int, int],
-    padding: tuple[int, int],
-    dilation: tuple[int, int],
-    groups: int,
-    out_h: int,
-    out_w: int,
-    dtype: torch.dtype,
-    has_bias: bool,
-    tune: bool,
-    device: torch.device | None,
-) -> Conv2dCall:
-    """Build the Conv2d dispatch record after op-level validation."""
-    return Conv2dCall(
-        n=n,
-        c_in=c_in,
-        c_out=c_out,
-        c_in_g=c_in_g,
-        h=h,
-        w=w,
-        kernel_h=kernel_h,
-        kernel_w=kernel_w,
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        groups=groups,
-        out_h=out_h,
-        out_w=out_w,
-        dtype=dtype,
-        has_bias=has_bias,
-        tune=tune,
-        device=device,
-    )
-
-
 class Conv2dFwdOp(Op):
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
+    @staticmethod
+    def _conv2d_call(
+        *,
+        n: int,
+        c_in: int,
+        h: int,
+        w: int,
+        c_out: int,
+        c_in_g: int,
+        kernel_h: int,
+        kernel_w: int,
+        stride: tuple[int, int],
+        padding: tuple[int, int],
+        dilation: tuple[int, int],
+        groups: int,
+        out_h: int,
+        out_w: int,
+        dtype: torch.dtype,
+        has_bias: bool,
+        tune: bool,
+        device: torch.device | None,
+    ) -> Conv2dCall:
+        """Build the Conv2d dispatch record after op-level validation."""
+        return Conv2dCall(
+            n=n,
+            c_in=c_in,
+            c_out=c_out,
+            c_in_g=c_in_g,
+            h=h,
+            w=w,
+            kernel_h=kernel_h,
+            kernel_w=kernel_w,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            out_h=out_h,
+            out_w=out_w,
+            dtype=dtype,
+            has_bias=has_bias,
+            tune=tune,
+            device=device,
+        )
+
+    @staticmethod
+    def _pair(value: int | Tuple[int, int]) -> Tuple[int, int]:
+        return _conv_tuple(value, 2, "value", "Conv2d")  # type: ignore[return-value]
 
     def __init__(
         self,
@@ -648,7 +648,7 @@ class Conv2dFwdOp(Op):
         self.w = None
         self.c_out = None
         self.kernel_size = None
-        self.stride = _pair(stride)
+        self.stride = Conv2dFwdOp._pair(stride)
         self.dilation = _conv_tuple(dilation, 2, "dilation", "Conv2d")
         self.padding = padding
         self.groups = groups
@@ -747,7 +747,7 @@ class Conv2dFwdOp(Op):
         has_bias: bool,
         inputs: tuple[torch.Tensor, ...],
     ) -> Kernel:
-        call = _conv2d_call(
+        call = Conv2dFwdOp._conv2d_call(
             n=n,
             c_in=c_in,
             h=h,
@@ -885,7 +885,7 @@ class Conv2dFwdOp(Op):
     ) -> Dict[str, tuple[int, int, int, int]]:
         n, _, h, w = input_shape
         c_out, _, kernel_h, kernel_w = weight_shape
-        stride = _pair(self.stride)
+        stride = Conv2dFwdOp._pair(self.stride)
         dilation = _conv_tuple(self.dilation, 2, "dilation", "Conv2d")
         padding = _conv_padding_to_tuple(
             self.padding, stride, (kernel_h, kernel_w), "Conv2d", dilation
@@ -945,10 +945,6 @@ class Conv2dFwdOp(Op):
         return tensor_core_roof(self.dtype)
 
 
-def _triple(value: int | Tuple[int, int, int]) -> Tuple[int, int, int]:
-    return _conv_tuple(value, 3, "value", "Conv3d")  # type: ignore[return-value]
-
-
 def _can_use_conv3d_ndhwc(
     *,
     groups: int,
@@ -996,64 +992,68 @@ def _can_use_conv3d_ndhwc(
     )
 
 
-def _conv3d_call(
-    *,
-    n: int,
-    c_in: int,
-    d: int,
-    h: int,
-    w: int,
-    c_out: int,
-    c_in_g: int,
-    kernel_d: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride: tuple[int, int, int],
-    padding: tuple[int, int, int],
-    dilation: tuple[int, int, int],
-    groups: int,
-    out_d: int,
-    out_h: int,
-    out_w: int,
-    dtype: torch.dtype,
-    has_bias: bool,
-    tune: bool,
-    device: torch.device | None,
-) -> Conv3dCall:
-    """Build the Conv3d dispatch record after op-level validation.
-
-    The record carries the public NCDHW/OIDHW convolution semantics and the
-    resolved output shape. Kernel classes use it to state positive regions, so
-    adding a specialized Conv3d implementation does not require the dense
-    fallback to know that implementation by name.
-    """
-    return Conv3dCall(
-        n=n,
-        c_in=c_in,
-        c_out=c_out,
-        c_in_g=c_in_g,
-        d=d,
-        h=h,
-        w=w,
-        kernel_d=kernel_d,
-        kernel_h=kernel_h,
-        kernel_w=kernel_w,
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        groups=groups,
-        out_d=out_d,
-        out_h=out_h,
-        out_w=out_w,
-        dtype=dtype,
-        has_bias=has_bias,
-        tune=tune,
-        device=device,
-    )
-
-
 class Conv3dFwdOp(Op):
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
+    @staticmethod
+    def _conv3d_call(
+        *,
+        n: int,
+        c_in: int,
+        d: int,
+        h: int,
+        w: int,
+        c_out: int,
+        c_in_g: int,
+        kernel_d: int,
+        kernel_h: int,
+        kernel_w: int,
+        stride: tuple[int, int, int],
+        padding: tuple[int, int, int],
+        dilation: tuple[int, int, int],
+        groups: int,
+        out_d: int,
+        out_h: int,
+        out_w: int,
+        dtype: torch.dtype,
+        has_bias: bool,
+        tune: bool,
+        device: torch.device | None,
+    ) -> Conv3dCall:
+        """Build the Conv3d dispatch record after op-level validation.
+
+        The record carries the public NCDHW/OIDHW convolution semantics and the
+        resolved output shape. Kernel classes use it to state positive regions, so
+        adding a specialized Conv3d implementation does not require the dense
+        fallback to know that implementation by name.
+        """
+        return Conv3dCall(
+            n=n,
+            c_in=c_in,
+            c_out=c_out,
+            c_in_g=c_in_g,
+            d=d,
+            h=h,
+            w=w,
+            kernel_d=kernel_d,
+            kernel_h=kernel_h,
+            kernel_w=kernel_w,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            out_d=out_d,
+            out_h=out_h,
+            out_w=out_w,
+            dtype=dtype,
+            has_bias=has_bias,
+            tune=tune,
+            device=device,
+        )
+
+    @staticmethod
+    def _triple(value: int | Tuple[int, int, int]) -> Tuple[int, int, int]:
+        return _conv_tuple(value, 3, "value", "Conv3d")  # type: ignore[return-value]
 
     def __init__(
         self,
@@ -1085,7 +1085,7 @@ class Conv3dFwdOp(Op):
         self.w = None
         self.c_out = None
         self.kernel_size = None
-        self.stride = _triple(stride)
+        self.stride = Conv3dFwdOp._triple(stride)
         self.dilation = _conv_tuple(dilation, 3, "dilation", "Conv3d")
         self.padding = padding
         self.groups = groups
@@ -1198,7 +1198,7 @@ class Conv3dFwdOp(Op):
         has_bias: bool,
         inputs: tuple[torch.Tensor, ...],
     ) -> Kernel:
-        call = _conv3d_call(
+        call = Conv3dFwdOp._conv3d_call(
             n=n,
             c_in=c_in,
             d=d,
@@ -1352,7 +1352,7 @@ class Conv3dFwdOp(Op):
     ) -> Dict[str, tuple[int, int, int, int, int]]:
         n, _, d, h, w = input_shape
         c_out, _, kernel_d, kernel_h, kernel_w = weight_shape
-        stride = _triple(self.stride)
+        stride = Conv3dFwdOp._triple(self.stride)
         dilation = _conv_tuple(self.dilation, 3, "dilation", "Conv3d")
         padding = _conv_padding_to_tuple(
             self.padding, stride, (kernel_d, kernel_h, kernel_w), "Conv3d", dilation

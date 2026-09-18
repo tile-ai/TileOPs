@@ -1,10 +1,10 @@
-"""Warp-specialized batch=1 paged GQA decode kernel (Hopper), context-split.
+"""Warp-specialized batch=1 paged GQA decode kernel (SM90), context-split.
 
 ``GQADecodePagedBs1Kernel`` dispatches on the runtime ``real_seqlen_kv``: lengths >= 1024
 run a context-only warp-specialized split (one TMA producer warp feeding a four-warp
 wgmma consumer warpgroup, exp2-domain online softmax, fp32 partial reduce via a combine
 kernel); shorter lengths fall back to the generic paged non-split decode kernel.
-Logical KV tiles are translated through the page table before TMA. Hopper-only, low-level
+Logical KV tiles are translated through the page table before TMA. SM90-only, low-level
 ``tma_copy`` / ``mbarrier`` / ``wgmma_gemm``.
 """
 
@@ -175,7 +175,7 @@ def _(
 
 
 class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
-    """Hopper warp-specialized batch=1 paged GQA decode kernel.
+    """SM90 warp-specialized batch=1 paged GQA decode kernel.
 
     ``forward`` dispatches on the runtime ``real_seqlen_kv``: >= 1024 runs the context-only
     split, shorter lengths run the generic non-split paged GQA decode kernel.

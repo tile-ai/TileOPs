@@ -14,7 +14,7 @@ from tileops.kernels.grouped_gemm.heuristics import (
 )
 from tileops.kernels.grouped_gemm.template import GemmTemplate, GemmType, Major
 
-pytestmark = pytest.mark.hopper
+pytestmark = pytest.mark.sm90
 
 
 def _batched_operands(g, m, n, k, major_a="k", major_b="k", dtype=torch.bfloat16):

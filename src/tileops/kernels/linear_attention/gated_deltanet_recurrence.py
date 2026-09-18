@@ -364,7 +364,7 @@ class GatedDeltaNetDecodeKernel(Kernel):
 
 
 class GatedDeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
-    """Hopper bfloat16 decode kernel for the DK=DV=128 Gated DeltaNet case.
+    """SM90 bfloat16 decode kernel for the DK=DV=128 Gated DeltaNet case.
 
     This path maps one warp to one (batch, head, V tile).  Two lanes cooperate
     on one output value when v_tile=16: each lane owns half of the K dimension,
@@ -372,7 +372,7 @@ class GatedDeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
     stays live in fp32 registers.  The implementation is intentionally narrow:
     it is used only for bfloat16 DK=DV=128 decode on sm90 devices.
 
-    Unlike the sibling decode kernels, this Hopper-specialized path enables
+    Unlike the sibling decode kernels, this SM90-specialized path enables
     --use_fast_math as an explicit speed/precision trade-off for the narrow
     single-step decode workload.
     """

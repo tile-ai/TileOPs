@@ -11,7 +11,7 @@ import itertools
 import pytest
 import torch
 
-from tileops.kernels.gemm import GemmBasicKernel
+from tileops.kernels.gemm import GemmBasicKernel, GemmKernel
 from tileops.kernels.gemm.call_spec import GemmCall
 from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
 from tileops.ops.gemm.gemm import GemmFwdOp
@@ -87,22 +87,56 @@ def test_square_ws_prefill_region_fills_this_device() -> None:
         pytest.param(8, 1, True, False, "n=1", id="rhs-col-trans-a"),
     ],
 )
-def test_gemm_vector_on_a_transposed_operand_is_refused(
+def test_gemm_vector_on_a_transposed_operand_takes_the_pipelined_mainloop(
     m: int, n: int, trans_a: bool, trans_b: bool, dim: str
 ) -> None:
     """A ``trans_a`` layout puts the vector on an operand's TMA-loaded innermost
-    dimension, where the descriptor needs a multiple of 8 fp16 elements — and the
-    GEMV kernel has no form for these layouts. Selection refuses, naming the
-    dimension; it used to hand these to the general kernel, whose build then died
-    inside TileLang (``T.tma_copy() ... TMA is not available``).
+    dimension, where the descriptor needs a multiple of 8 fp16 elements, and the
+    GEMV kernel has no form for these layouts. ``GemmBasicKernel`` takes them: it
+    loads through ``cp.async``, so the dimension the TMA descriptor cannot address
+    costs it nothing. ``GemmKernel`` still refuses, naming that dimension.
     """
     op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b)
     call = GemmCall(
         arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
     )
 
-    with pytest.raises(ValueError, match=f"multiple of 8 .*and {dim}"):
+    assert op.select_kernel(call) is GemmBasicKernel
+    assert f"and {dim}" in GemmKernel.refusal(call)
+
+
+@pytest.mark.smoke
+def test_gemm_misaligned_k_on_sm90_takes_the_pipelined_mainloop() -> None:
+    """A TMA-misaligned NT shape on SM90 reaches ``GemmBasicKernel``.
+
+    ``GemmKernel`` refuses it because every structure it builds loads through TMA.
+    ``GemmBasicKernel`` excludes only the SM90 shapes TMA can address, so it takes
+    this one — with ``GemmKernel``'s whole architecture excluded instead, the call
+    reached no implementation at all.
+    """
+    op = GemmFwdOp()
+    call = GemmCall(
+        arch=_SM90, sm_count=132, m=1024, n=4096, k=100, dtype=torch.float16, trans_b=True
+    )
+
+    assert op.select_kernel(call) is GemmBasicKernel
+
+
+@pytest.mark.smoke
+def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
+    """``k = 1`` fp16 spans 2 bytes, under the 4-byte load both mainloops issue.
+
+    Neither implementation can serve it. The refusal states the reason during
+    selection rather than letting a builder be entered and raise.
+    """
+    op = GemmFwdOp()
+    call = GemmCall(arch=_SM90, sm_count=132, m=64, n=64, k=1, dtype=torch.float16, trans_b=True)
+
+    with pytest.raises(ValueError, match="k must span at least one"):
         op.select_kernel(call)
+
+    with pytest.raises(ValueError, match="cannot serve k=1"):
+        GemmBasicKernel(64, 64, 1, torch.float16, trans_b=True)
 
 
 @pytest.mark.smoke

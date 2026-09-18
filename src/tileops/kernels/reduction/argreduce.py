@@ -49,12 +49,6 @@ _MIN_CHUNK = 512
 _STRIDED_AXIS_MAX_N = 16
 
 
-def _row_split_candidates(N: int) -> list[int]:
-    """Splits worth ranking for a row of *N*, coarsest first."""
-    ceiling = max(1, N // _MIN_CHUNK)
-    return sorted({c for c in (4, 8, 16, 32, 64) if c <= ceiling} or {1})
-
-
 def _splits_row(M: int, N: int) -> bool:
     """Whether a row is worth splitting across blocks.
 
@@ -68,17 +62,6 @@ def _splits_row(M: int, N: int) -> bool:
     short ones, which is where `dim=None` and small tensors land.
     """
     return N >= _SPLIT_MIN_N and M < _ROWS_SATURATED
-
-
-def _plan_row_split(M: int, N: int) -> int:
-    """Chunks per row when untuned; 1 means the row stays whole.
-
-    Only a default — the split is a tuning parameter, and the best value moves
-    with the shape by more than an order of magnitude.
-    """
-    if not _splits_row(M, N):
-        return 1
-    return max(1, min(16, N // _MIN_CHUNK))
 
 
 def _lanes_per_row(n: int) -> int:
@@ -595,6 +578,23 @@ class ArgreduceKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90, 100]
 
+    @staticmethod
+    def _plan_row_split(M: int, N: int) -> int:
+        """Chunks per row when untuned; 1 means the row stays whole.
+
+        Only a default — the split is a tuning parameter, and the best value moves
+        with the shape by more than an order of magnitude.
+        """
+        if not _splits_row(M, N):
+            return 1
+        return max(1, min(16, N // _MIN_CHUNK))
+
+    @staticmethod
+    def _row_split_candidates(N: int) -> list[int]:
+        """Splits worth ranking for a row of *N*, coarsest first."""
+        ceiling = max(1, N // _MIN_CHUNK)
+        return sorted({c for c in (4, 8, 16, 32, 64) if c <= ceiling} or {1})
+
     def __init__(
         self,
         M: int,
@@ -675,7 +675,7 @@ class ArgreduceKernel(Kernel):
             {
                 "block_m": block_m,
                 "threads": threads,
-                "ctas_per_row": _plan_row_split(self.M, self.N),
+                "ctas_per_row": ArgreduceKernel._plan_row_split(self.M, self.N),
             }
         )
 
@@ -685,7 +685,7 @@ class ArgreduceKernel(Kernel):
             candidates = [
                 {"threads": t, "ctas_per_row": c}
                 for t in (128, 256, 512)
-                for c in _row_split_candidates(self.N)
+                for c in ArgreduceKernel._row_split_candidates(self.N)
             ]
         elif self.strategy == "cta":
             candidates = [{"threads": t} for t in (128, 256, 512, 1024)]

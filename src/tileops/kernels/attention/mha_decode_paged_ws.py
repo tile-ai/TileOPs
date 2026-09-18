@@ -1,4 +1,4 @@
-"""Warp-specialized paged MHA decode for Hopper.
+"""Warp-specialized paged MHA decode for SM90.
 
 ``seqlen_q`` is 1, so the score computation is a matrix-vector product: the M
 axis of an MMA would be 94-98% padding, and the tensor cores buy nothing on a
@@ -355,7 +355,7 @@ def _(
 
 
 class MHADecodePagedWsKernel(Kernel):
-    """Hopper paged MHA decode: hand-written warp specialization, no MMA."""
+    """SM90 paged MHA decode: hand-written warp specialization, no MMA."""
 
     supported_archs: list[int] = [90]
 

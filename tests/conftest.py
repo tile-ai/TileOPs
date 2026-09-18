@@ -107,36 +107,36 @@ def _without_dtype(params: dict) -> tuple[tuple[str, object], ...]:
     )
 
 
-def _is_hopper() -> bool:
+def _is_sm90() -> bool:
     """Whether this machine's first CUDA device is compute capability 9.x."""
     if not torch.cuda.is_available():
         return False
     return torch.cuda.get_device_capability()[0] == 9
 
 
-_hopper_skipped: list[str] = []
+_sm90_skipped: list[str] = []
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """Record a `hopper` test that was skipped, so a Hopper run can refuse it."""
-    if report.when == "setup" and report.skipped and "hopper" in report.keywords:
-        _hopper_skipped.append(report.nodeid)
+    """Record an `sm90` test that was skipped, so an SM90 run can refuse it."""
+    if report.when == "setup" and report.skipped and "sm90" in report.keywords:
+        _sm90_skipped.append(report.nodeid)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """On Hopper, a `hopper` test that was skipped is a failed run, not a pass.
+    """On an SM90 device, a skipped `sm90` test is a failed run, not a pass.
 
-    The mark exists because the kernel needs Hopper. On the hardware it needs,
+    The mark exists because the kernel needs SM90. On the hardware it needs,
     skipping it would leave the only evidence for that kernel unexercised while
     the run still reported green. Collection-time skips are covered too: they
-    surface as setup reports. Deselecting the mark outright (``-m "not hopper"``)
+    surface as setup reports. Deselecting the mark outright (``-m "not sm90"``)
     is not covered, and is not meant to be — that is the operator saying which
     tests to run, not a run losing its evidence.
     """
-    if _hopper_skipped and _is_hopper():
+    if _sm90_skipped and _is_sm90():
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
         raise pytest.UsageError(
-            "hopper-marked tests were skipped on a Hopper device: " + ", ".join(_hopper_skipped)
+            "sm90-marked tests were skipped on an SM90 device: " + ", ".join(_sm90_skipped)
         )
 
 
@@ -145,8 +145,8 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     tier_errors: list[str] = []
     tier_names = ("smoke", "full", "nightly")
     tilelang_019_skip = pytest.mark.skip(reason=TILELANG_019_SKIP_REASON)
-    non_hopper_skip = pytest.mark.skip(reason="needs compute capability 9.x")
-    on_hopper = _is_hopper()
+    non_sm90_skip = pytest.mark.skip(reason="needs compute capability 9.x")
+    on_sm90 = _is_sm90()
 
     for item in items:
         path = str(item.path)
@@ -159,8 +159,8 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         ):
             item.add_marker(tilelang_019_skip)
 
-        if item.get_closest_marker("hopper") is not None and not on_hopper:
-            item.add_marker(non_hopper_skip)
+        if item.get_closest_marker("sm90") is not None and not on_sm90:
+            item.add_marker(non_sm90_skip)
 
         tiers = [name for name in tier_names if item.get_closest_marker(name) is not None]
         if len(tiers) != 1:

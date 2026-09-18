@@ -14,39 +14,6 @@ Entry = tuple[Hashable, Callable[[], object]]
 _INHERIT_SUPPLY_PROG = object()
 
 
-def _int_tensor_input_names(jit_kernel: Any, seeds: Dict[str, Any]) -> list[str]:
-    """Integer tensor parameters *jit_kernel* takes as inputs, outputs excluded.
-
-    Raises:
-        ValueError: When the parameters cannot be read, which the caller treats
-            as unproven rather than safe.
-    """
-    get_tir = getattr(jit_kernel, "get_tir", None)
-    if not callable(get_tir):
-        raise ValueError(
-            f"{jit_kernel!r} does not expose get_tir, so its parameters cannot be read"
-        )
-    try:
-        prim_func = get_tir(**seeds)
-    except Exception as exc:
-        raise ValueError(f"the parameters of {jit_kernel!r} cannot be read: {exc}") from exc
-
-    out_idx = getattr(jit_kernel, "out_idx", None) or []
-    if isinstance(out_idx, int):
-        out_idx = [out_idx]
-    count = len(prim_func.params)
-    outputs = {i + count if i < 0 else i for i in out_idx}
-
-    names = []
-    for i, param in enumerate(prim_func.params):
-        if i in outputs:
-            continue
-        buffer = prim_func.buffer_map.get(param)
-        if buffer is not None and "int" in str(buffer.dtype):
-            names.append(str(param.name))
-    return names
-
-
 class Kernel(ABC):
     dtype: Optional[torch.dtype] = None
     config: Dict[str, Any]
@@ -58,6 +25,39 @@ class Kernel(ABC):
         "npt_arg": "num_per_thread",
         "num_per_thread_arg": "num_per_thread",
     }
+
+    @staticmethod
+    def _int_tensor_input_names(jit_kernel: Any, seeds: Dict[str, Any]) -> list[str]:
+        """Integer tensor parameters *jit_kernel* takes as inputs, outputs excluded.
+
+        Raises:
+            ValueError: When the parameters cannot be read, which the caller treats
+                as unproven rather than safe.
+        """
+        get_tir = getattr(jit_kernel, "get_tir", None)
+        if not callable(get_tir):
+            raise ValueError(
+                f"{jit_kernel!r} does not expose get_tir, so its parameters cannot be read"
+            )
+        try:
+            prim_func = get_tir(**seeds)
+        except Exception as exc:
+            raise ValueError(f"the parameters of {jit_kernel!r} cannot be read: {exc}") from exc
+
+        out_idx = getattr(jit_kernel, "out_idx", None) or []
+        if isinstance(out_idx, int):
+            out_idx = [out_idx]
+        count = len(prim_func.params)
+        outputs = {i + count if i < 0 else i for i in out_idx}
+
+        names = []
+        for i, param in enumerate(prim_func.params):
+            if i in outputs:
+                continue
+            buffer = prim_func.buffer_map.get(param)
+            if buffer is not None and "int" in str(buffer.dtype):
+                names.append(str(param.name))
+        return names
 
     def __init__(self, *args, device_index: "int | None" = None, **kwargs) -> None:
         self.device_index = device_index
@@ -312,7 +312,7 @@ class Kernel(ABC):
         """
         if self.autotune_accepts_random_int_inputs:
             return
-        names = _int_tensor_input_names(jit_kernel, seeds)
+        names = Kernel._int_tensor_input_names(jit_kernel, seeds)
         if not names:
             return
         raise ValueError(

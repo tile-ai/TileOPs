@@ -402,7 +402,7 @@ class DeltaNetDecodeKernel(Kernel):
 
 
 class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
-    """Hopper low-precision decode kernel for the DK=DV=128 DeltaNet case.
+    """SM90 low-precision decode kernel for the DK=DV=128 DeltaNet case.
 
     This is the ungated counterpart of the Gated DeltaNet raw fast path. One
     warp handles one `(batch, head, V tile)`, two lanes cooperate on each

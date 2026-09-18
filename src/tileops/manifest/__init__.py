@@ -21,6 +21,19 @@ from typing import Any
 
 import yaml
 
+__all__ = [
+    "WORKLOAD_RESERVED_KEYS",
+    "WORKSPACE_ATTR",
+    "combo_input_names",
+    "forward_signature",
+    "load_manifest",
+    "load_workloads",
+    "manifest_files",
+    "manifest_key",
+    "single_input_workload_contract",
+    "try_load_entry",
+]
+
 _PACKAGE = "tileops.manifest"
 
 
@@ -181,17 +194,3 @@ def combo_input_names(sig: dict) -> list[str]:
         for name, attrs in inputs.items()
         if not (isinstance(attrs, dict) and attrs.get(WORKSPACE_ATTR))
     ]
-
-
-__all__ = [
-    "WORKLOAD_RESERVED_KEYS",
-    "WORKSPACE_ATTR",
-    "combo_input_names",
-    "forward_signature",
-    "load_manifest",
-    "load_workloads",
-    "manifest_files",
-    "manifest_key",
-    "single_input_workload_contract",
-    "try_load_entry",
-]

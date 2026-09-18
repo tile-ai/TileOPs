@@ -17,7 +17,7 @@ CONV_SWIZZLE_PANEL = 2
 
 
 def conv_num_stages() -> int:
-    """Pipeline depth this target's shared memory holds: three on Hopper, two before."""
+    """Pipeline depth this target's shared memory holds: three on SM90, two before."""
     return 3 if get_sm_version() == 90 else 2
 
 

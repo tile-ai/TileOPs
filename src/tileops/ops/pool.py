@@ -1423,34 +1423,6 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
         return flops, bytes_
 
 
-def _normalize_output_size(
-    output_size: int | None | Tuple[Optional[int], Optional[int]],
-) -> Tuple[Optional[int], Optional[int]]:
-    """Normalize adaptive-pool ``output_size`` to a 2-tuple of ``int | None``.
-
-    Accepts ``None``, an int, or a 2-element tuple/list of ``int | None``
-    (PyTorch-style leniency for list inputs); ``None`` entries — including a
-    scalar ``None`` — resolve to the input size.
-    """
-    if output_size is None:
-        return (None, None)
-    if isinstance(output_size, bool):
-        raise TypeError("output_size must be None, an int, or a tuple of (int | None, int | None)")
-    if isinstance(output_size, int):
-        output_size = (output_size, output_size)
-    if (
-        not isinstance(output_size, (tuple, list))
-        or len(output_size) != 2
-        or any(
-            isinstance(v, bool) or (v is not None and not isinstance(v, int)) for v in output_size
-        )
-    ):
-        raise TypeError("output_size must be None, an int, or a tuple of (int | None, int | None)")
-    if any(v is not None and v <= 0 for v in output_size):
-        raise ValueError("output_size entries must be positive or None")
-    return tuple(output_size)
-
-
 def _validate_adaptive_pool_input_dtypes(self, input: torch.Tensor) -> None:
     """Adaptive-pool dtype validator: FP16/BF16 only (bound per concrete class)."""
     if input.dtype not in {torch.float16, torch.bfloat16}:
@@ -1494,6 +1466,39 @@ class _AdaptivePool2dFwdOpBase(Op):
     _wrapped: ClassVar[Any]
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
+    @staticmethod
+    def _normalize_output_size(
+        output_size: int | None | Tuple[Optional[int], Optional[int]],
+    ) -> Tuple[Optional[int], Optional[int]]:
+        """Normalize adaptive-pool ``output_size`` to a 2-tuple of ``int | None``.
+
+        Accepts ``None``, an int, or a 2-element tuple/list of ``int | None``
+        (PyTorch-style leniency for list inputs); ``None`` entries — including a
+        scalar ``None`` — resolve to the input size.
+        """
+        if output_size is None:
+            return (None, None)
+        if isinstance(output_size, bool):
+            raise TypeError(
+                "output_size must be None, an int, or a tuple of (int | None, int | None)"
+            )
+        if isinstance(output_size, int):
+            output_size = (output_size, output_size)
+        if (
+            not isinstance(output_size, (tuple, list))
+            or len(output_size) != 2
+            or any(
+                isinstance(v, bool) or (v is not None and not isinstance(v, int))
+                for v in output_size
+            )
+        ):
+            raise TypeError(
+                "output_size must be None, an int, or a tuple of (int | None, int | None)"
+            )
+        if any(v is not None and v <= 0 for v in output_size):
+            raise ValueError("output_size entries must be positive or None")
+        return tuple(output_size)
+
     def __init__(
         self,
         output_size: int | None | Tuple[Optional[int], Optional[int]],
@@ -1513,7 +1518,7 @@ class _AdaptivePool2dFwdOpBase(Op):
         self.c_in = None
         self.h_in = None
         self.w_in = None
-        self.output_size = _normalize_output_size(output_size)
+        self.output_size = _AdaptivePool2dFwdOpBase._normalize_output_size(output_size)
         self.dtype = None
         self.target = target
         self.tune = tune

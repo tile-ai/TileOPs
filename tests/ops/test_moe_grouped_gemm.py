@@ -19,7 +19,7 @@ from tileops.ops.moe import (
 )
 from workloads.moe import MoeExpertMLPStagedWorkload, MoeGroupedGemmStagedWorkload
 
-pytestmark = pytest.mark.hopper
+pytestmark = pytest.mark.sm90
 
 _E = 6  # experts; the skewed distribution leaves five of them nearly empty
 

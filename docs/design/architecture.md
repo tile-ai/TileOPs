@@ -102,7 +102,7 @@ Every operator is split into exactly two layers:
 | Layer  |    Name    | Description                                                                                                                                                                               |
 | :----: | :--------: | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **L2** |   **Op**   | Stateless dispatcher. Hardware-agnostic entry point. Compatible with CUDA-Graph; guaranteed `torch.compile` support is per-op, declared via the manifest `torch_compile_fullgraph` field. |
-| **L1** | **Kernel** | TileLang implementation optimized for specific hardware (Hopper, Ampere, etc.).                                                                                                           |
+| **L1** | **Kernel** | TileLang implementation optimized for specific hardware (SM90, SM80, etc.).                                                                                                               |
 
 The Op layer never contains TileLang code. The Kernel layer never validates user input. See [ops-design.md](ops-design.md) for the full boundary specification.
 

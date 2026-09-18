@@ -1,4 +1,4 @@
-"""Warp-specialized batch=1 GQA decode kernel (Hopper), context-split.
+"""Warp-specialized batch=1 GQA decode kernel (SM90), context-split.
 
 ``GQADecodeBs1Kernel`` dispatches on the runtime K/V sequence extent.  Full-dimensional
 RoPE always uses the context-only warp-specialized split; plain and partial-RoPE calls
@@ -6,7 +6,7 @@ retain the generic single-kernel path below their measured or established crosso
 The split path has a TMA producer feeding a four-warp WGMMA consumer, exp2-domain online
 softmax, and FP32 partial reduction through a combine kernel.  Full-dimensional RoPE
 expands the producer into a warpgroup so lookup-table loads and K rotation overlap the
-consumer.  Hopper-only, low-level ``tma_copy`` / ``mbarrier`` / ``wgmma_gemm``.
+consumer.  SM90-only, low-level ``tma_copy`` / ``mbarrier`` / ``wgmma_gemm``.
 """
 
 import functools
@@ -533,7 +533,7 @@ def _(
 
 
 class GQADecodeBs1Kernel(Kernel):
-    """Hopper warp-specialized batch=1 GQA decode kernel with a context-length switch.
+    """SM90 warp-specialized batch=1 GQA decode kernel with a context-length switch.
 
     ``forward`` always uses the context pipeline for full-dimensional RoPE.  Plain calls
     below 640 and partial-RoPE calls below 1024 retain the generic single-kernel path.

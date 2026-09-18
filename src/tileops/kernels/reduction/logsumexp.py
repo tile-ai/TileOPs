@@ -51,6 +51,8 @@ from tileops.kernels.reduction._split_softmax import (
 )
 from tileops.utils import WARP_LANES
 
+__all__ = ["LogSumExpKernel"]
+
 # These two kernels bake tile_n in at build time and default to the wider
 # thread block; AUTOTUNE_THREADS still bounds what the sweep explores.
 _DEFAULT_TUNE_THREADS = 256
@@ -104,8 +106,6 @@ class StreamingLogSumExpPolicy:
 
 
 _STREAM_POLICY = StreamingLogSumExpPolicy()
-
-__all__ = ["LogSumExpKernel"]
 
 
 @functools.lru_cache(maxsize=64)
