@@ -80,6 +80,25 @@ __all__ = [
 ]
 
 
+def _narrow_k_row(k: int, dtype: torch.dtype) -> Optional[str]:
+    """Why a K row is too narrow for one vectorized load, or ``None``.
+
+    ``_gemm_basic_kernel`` loads the innermost (contiguous) dimension in 4-byte
+    units, so a row shorter than that is rejected by the backend. K need not be
+    16-aligned beyond this — the backend zero-pads K tails.
+
+    Read by ``GemmBasicKernel`` twice: during selection, so an unservable K is
+    refused with this reason rather than reaching a builder, and in the
+    constructor, which is also entered directly.
+    """
+    if k * dtype.itemsize >= 4:
+        return None
+    return (
+        f"the pipelined mainloop loads its innermost dimension in 4-byte units, so k "
+        f"must span at least one; k={k} of a {dtype.itemsize}-byte dtype does not"
+    )
+
+
 def _dense_entry(cls: type, call: GemmCall) -> Entry:
     """The entry for a kernel taking ``(m, n, k, dtype)`` and both flags.
 
@@ -3246,11 +3265,35 @@ class GemmBasicKernel(Kernel):
 
     @classmethod
     def applies(cls, call: Any) -> bool:
-        """Every architecture but SM90, where :class:`GemmKernel` supersedes it.
+        """Every architecture, less the SM90 shapes :class:`GemmKernel` supersedes.
 
-        Why: it runs on SM90, so SM90 cannot come out of ``supported_archs``.
+        ``GemmKernel`` serves an SM90 call whose operands TMA can address, so this
+        class states that one exclusion and keeps the rest of SM90 — the pipelined
+        mainloop loads through ``cp.async`` and has no such requirement. Excluding
+        all of SM90 instead left a TMA-misaligned shape with no implementation at
+        all, though this one runs it.
+
+        Why the exclusion is here rather than in ``supported_archs``: that list also
+        gates direct construction, and this class runs on SM90.
         """
-        return call.arch != 90
+        if _narrow_k_row(call.k, call.dtype) is not None:
+            return False
+        if call.arch != 90:
+            return True
+        return (
+            _tma_misalignment(call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b)
+            is not None
+        )
+
+    @classmethod
+    def refusal(cls, call: Any) -> Optional[str]:
+        """The narrow-K reason where that is what refuses, else the base answer."""
+        archs = cls.supported_archs
+        if archs is not None and call.arch in archs:
+            narrow = _narrow_k_row(call.k, call.dtype)
+            if narrow is not None:
+                return narrow
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: GemmCall) -> Entry:
@@ -3269,16 +3312,9 @@ class GemmBasicKernel(Kernel):
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
-        # k only has to span one vectorized load along the innermost (k)
-        # dim: k * itemsize >= 4 bytes (a k=1 fp16/bf16 row is 2 bytes and is
-        # rejected by the backend). k need NOT be 16-aligned — the backend
-        # zero-pads K tails (verified on real sm80 and sm89 hardware).
-        itemsize = torch.empty((), dtype=dtype).element_size()
-        if k * itemsize < 4:
-            raise ValueError(
-                f"GemmBasicKernel requires k * itemsize >= 4 bytes for the "
-                f"vectorized loads, got k={k} of a {itemsize}-byte dtype"
-            )
+        narrow = _narrow_k_row(k, dtype)
+        if narrow is not None:
+            raise ValueError(f"{type(self).__name__} cannot serve k={k}: {narrow}")
         self.m = m
         self.n = n
         self.k = k

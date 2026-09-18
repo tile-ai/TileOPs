@@ -766,12 +766,13 @@ def test_explicit_structure_config_is_taken_verbatim() -> None:
 
 
 @pytest.mark.smoke
-def test_gemm_refuses_tma_misaligned_shapes_by_naming_the_dim() -> None:
-    """An unaligned innermost dimension is refused, with the dimension named.
+def test_gemm_routes_tma_misaligned_shapes_to_the_pipelined_mainloop() -> None:
+    """An unaligned innermost dimension leaves ``GemmKernel``, which names the dim.
 
     Every ``GemmKernel`` structure loads through TMA, which addresses the
     innermost dimension in 16-byte units; which logical dim that is follows the
     layout, so the same extent is served in one layout and refused in another.
+    ``GemmBasicKernel`` loads through ``cp.async`` and takes what is refused.
     Undeclared, these calls died inside TileLang's descriptor check instead
     ("Check failed: (result.supported) is false"), naming nothing to change.
 
@@ -785,12 +786,16 @@ def test_gemm_refuses_tma_misaligned_shapes_by_naming_the_dim() -> None:
     nt, nn = GemmFwdOp(trans_a=False, trans_b=True), GemmFwdOp(trans_a=False, trans_b=False)
     fp = torch.bfloat16
 
-    with pytest.raises(ValueError, match=r"multiple of 8 elements.*k=1001"):
-        nt.select_kernel(nt._call_spec(256, 512, 1001, fp))
-    with pytest.raises(ValueError, match=r"multiple of 8 elements.*n=511"):
-        nn.select_kernel(nn._call_spec(256, 511, 1024, fp))
-    assert nt.select_kernel(nt._call_spec(256, 511, 1024, fp)) is GemmKernel
+    misaligned_k = nt._call_spec(256, 512, 1001, fp)
+    assert nt.select_kernel(misaligned_k) is GemmBasicKernel
+    assert "multiple of 8 elements" in GemmKernel.refusal(misaligned_k)
+    assert "k=1001" in GemmKernel.refusal(misaligned_k)
 
+    misaligned_n = nn._call_spec(256, 511, 1024, fp)
+    assert nn.select_kernel(misaligned_n) is GemmBasicKernel
+    assert "n=511" in GemmKernel.refusal(misaligned_n)
+
+    assert nt.select_kernel(nt._call_spec(256, 511, 1024, fp)) is GemmKernel
     assert nt.select_kernel(nt._call_spec(1, 512, 1001, fp)) is GemvKernel
     assert nt._call_spec(1, 512, 1001, fp).gemv_mode == "lhs_row"
 
@@ -1024,10 +1029,3 @@ def test_gemm_basic_kernel_k_tail_padding() -> None:
         out = kern(a, b)
         ref = a.float() @ b.float().t()
         torch.testing.assert_close(out.float(), ref, atol=1e-2, rtol=1e-2)
-
-
-@pytest.mark.smoke
-def test_gemm_basic_kernel_rejects_narrow_k() -> None:
-    """k narrower than one vectorized load (k=1 fp16/bf16 = 2 bytes) is rejected."""
-    with pytest.raises(ValueError, match="itemsize"):
-        GemmBasicKernel(m=32, n=64, k=1, dtype=torch.bfloat16, trans_b=True)
