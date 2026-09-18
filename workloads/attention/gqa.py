@@ -6,9 +6,7 @@ from itertools import accumulate
 import torch
 import torch.nn.functional as F
 
-from workloads.workload_base import WorkloadBase
-
-BLOCK_TABLE_SEED = 1234
+from workloads.workload_base import WORKLOAD_SEED, WorkloadBase
 
 
 def make_cu_seqlens(lengths: list[int]) -> torch.Tensor:
@@ -32,7 +30,7 @@ def make_interleaved_block_table(batch: int, max_pages_per_req: int) -> torch.Te
 
 
 def make_fragmented_block_table(
-    batch: int, pages_per_req: int, pool_pages: int, seed: int = BLOCK_TABLE_SEED
+    batch: int, pages_per_req: int, pool_pages: int, seed: int = WORKLOAD_SEED
 ) -> torch.Tensor:
     """Block table over a fragmented page pool, the layout a serving cache has.
 

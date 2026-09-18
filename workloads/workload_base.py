@@ -11,10 +11,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any, Callable, TypeVar
+from zlib import crc32
 
 import torch
 
 _F = TypeVar("_F", bound=Callable[..., Any])
+
+WORKLOAD_SEED = 1235
+"""The seed both conftests give the global RNG, and the base of every ``rng()``."""
 
 
 class WorkloadBase(ABC):
@@ -32,6 +36,26 @@ class WorkloadBase(ABC):
     @abstractmethod
     def gen_inputs(self) -> tuple[Any, ...]:
         raise NotImplementedError
+
+    def rng(self, tag: str = "", *, device: torch.device | str = "cpu") -> torch.Generator:
+        """A generator private to this workload class and *tag*.
+
+        The global stream the conftests seed makes a run reproduce the run
+        before it. It does not make one tensor stable: every draw takes the
+        next values in that stream, so adding a draw anywhere earlier moves
+        every draw after it. An input that must not move that way — a page
+        layout a benchmark compares numbers on, say — comes from here instead.
+
+        The seed is derived from the class name and *tag*, so two workloads
+        never draw the same tensor by accident. Each call returns a freshly
+        seeded generator, so two calls to one ``gen_inputs`` return equal
+        inputs.
+
+        A draw on a CUDA tensor needs ``device="cuda"``: a generator only
+        feeds draws on its own device.
+        """
+        seed = (WORKLOAD_SEED ^ crc32(f"{type(self).__name__}:{tag}".encode())) & 0xFFFFFFFF
+        return torch.Generator(device=device).manual_seed(seed)
 
 
 class RandnWorkload(WorkloadBase):

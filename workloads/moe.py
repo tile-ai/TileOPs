@@ -25,11 +25,13 @@ class FusedTopKWorkload(WorkloadBase):
         self.with_correction_bias = with_correction_bias
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        torch.manual_seed(42)
-        gating = torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda")
+        g = self.rng(device="cuda")
+        gating = torch.randn(
+            self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda", generator=g
+        )
         if not self.with_correction_bias:
             return (gating,)
-        bias = torch.randn(self.num_experts, dtype=torch.float32, device="cuda") * 0.1
+        bias = torch.randn(self.num_experts, dtype=torch.float32, device="cuda", generator=g) * 0.1
         return gating, bias
 
 
@@ -288,7 +290,7 @@ class MoeGroupedGemmStagedWorkload(WorkloadBase):
         return math.prod(self.a_shape[:-1])
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        torch.manual_seed(42)
+        g = self.rng(device="cuda")
         dev = "cuda"
         metadata, self.valid_rows = make_expert_layout_metadata(
             self.layout,
@@ -300,8 +302,8 @@ class MoeGroupedGemmStagedWorkload(WorkloadBase):
             max_m=self.max_m,
         )
         # Small scale keeps fp16 accumulation well within the parity tolerance.
-        a = torch.randn(*self.a_shape, dtype=self.dtype, device=dev) * 0.02
-        b = torch.randn(*self.b_shape, dtype=self.dtype, device=dev) * 0.02
+        a = torch.randn(*self.a_shape, dtype=self.dtype, device=dev, generator=g) * 0.02
+        b = torch.randn(*self.b_shape, dtype=self.dtype, device=dev, generator=g) * 0.02
         return a, b, metadata
 
     def ref_program(self, a, b, layout_metadata):
@@ -345,7 +347,12 @@ class MoeExpertMLPStagedWorkload(MoeGroupedGemmStagedWorkload):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         x, w_gate_up, metadata = super().gen_inputs()
-        w_down = torch.randn(*self.w_down_shape, dtype=self.dtype, device="cuda") * 0.02
+        # Its own tag: the base class drew from the untagged stream, and this
+        # draw must not restart it.
+        g = self.rng("w_down", device="cuda")
+        w_down = (
+            torch.randn(*self.w_down_shape, dtype=self.dtype, device="cuda", generator=g) * 0.02
+        )
         return x, w_gate_up, w_down, metadata
 
     def ref_program(self, expert_input, w_gate_up, w_down, layout_metadata):
@@ -391,22 +398,24 @@ class FusedMoeWorkload(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(self):
-        torch.manual_seed(42)
+        g = self.rng(device="cuda")
         dev = "cuda"
         hidden = torch.randn(
             self.num_tokens,
             self.hidden_size,
             dtype=self.dtype,
             device=dev,
+            generator=g,
         )
         gating = torch.randn(
             self.num_tokens,
             self.num_experts,
             dtype=torch.float32,
             device=dev,
+            generator=g,
         )
         correction_bias = (
-            torch.randn(self.num_experts, dtype=torch.float32, device=dev) * 0.1
+            torch.randn(self.num_experts, dtype=torch.float32, device=dev, generator=g) * 0.1
             if self.with_correction_bias
             else None
         )
@@ -417,6 +426,7 @@ class FusedMoeWorkload(WorkloadBase):
                 self.hidden_size,
                 dtype=self.dtype,
                 device=dev,
+                generator=g,
             )
             * 0.02
         )
@@ -427,6 +437,7 @@ class FusedMoeWorkload(WorkloadBase):
                 self.ffn_size,
                 dtype=self.dtype,
                 device=dev,
+                generator=g,
             )
             * 0.02
         )
@@ -461,12 +472,16 @@ class FusedMoeSharedExpertWorkload(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(self):
-        torch.manual_seed(42)
+        g = self.rng(device="cuda")
         dev = "cuda"
-        hidden = torch.randn(self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev)
-        gating = torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device=dev)
+        hidden = torch.randn(
+            self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev, generator=g
+        )
+        gating = torch.randn(
+            self.num_tokens, self.num_experts, dtype=self.dtype, device=dev, generator=g
+        )
         correction_bias = (
-            torch.randn(self.num_experts, dtype=torch.float32, device=dev) * 0.1
+            torch.randn(self.num_experts, dtype=torch.float32, device=dev, generator=g) * 0.1
             if self.with_correction_bias
             else None
         )
@@ -477,6 +492,7 @@ class FusedMoeSharedExpertWorkload(WorkloadBase):
                 self.hidden_size,
                 dtype=self.dtype,
                 device=dev,
+                generator=g,
             )
             * 0.02
         )
@@ -487,6 +503,7 @@ class FusedMoeSharedExpertWorkload(WorkloadBase):
                 self.ffn_size,
                 dtype=self.dtype,
                 device=dev,
+                generator=g,
             )
             * 0.02
         )
@@ -499,12 +516,22 @@ class FusedMoeSharedExpertWorkload(WorkloadBase):
         else:
             shared_w_gate_up = (
                 torch.randn(
-                    self.shared_ffn_size * 2, self.hidden_size, dtype=self.dtype, device=dev
+                    self.shared_ffn_size * 2,
+                    self.hidden_size,
+                    dtype=self.dtype,
+                    device=dev,
+                    generator=g,
                 )
                 * 0.02
             )
             shared_w_down = (
-                torch.randn(self.hidden_size, self.shared_ffn_size, dtype=self.dtype, device=dev)
+                torch.randn(
+                    self.hidden_size,
+                    self.shared_ffn_size,
+                    dtype=self.dtype,
+                    device=dev,
+                    generator=g,
+                )
                 * 0.02
             )
         return hidden, gating, correction_bias, w_gate_up, w_down, shared_w_gate_up, shared_w_down
@@ -520,26 +547,44 @@ class MoeExpertsWorkload(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(self):
-        torch.manual_seed(42)
+        g = self.rng(device="cuda")
         dev = "cuda"
-        hidden = torch.randn(self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev)
+        hidden = torch.randn(
+            self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev, generator=g
+        )
         w1 = (
             torch.randn(
-                self.num_experts, self.ffn_size * 2, self.hidden_size, dtype=self.dtype, device=dev
+                self.num_experts,
+                self.ffn_size * 2,
+                self.hidden_size,
+                dtype=self.dtype,
+                device=dev,
+                generator=g,
             )
             * 0.02
         )
         w2 = (
             torch.randn(
-                self.num_experts, self.hidden_size, self.ffn_size, dtype=self.dtype, device=dev
+                self.num_experts,
+                self.hidden_size,
+                self.ffn_size,
+                dtype=self.dtype,
+                device=dev,
+                generator=g,
             )
             * 0.02
         )
         topk_weights = torch.softmax(
-            torch.randn(self.num_tokens, self.top_k, dtype=torch.float32, device=dev), dim=-1
+            torch.randn(self.num_tokens, self.top_k, dtype=torch.float32, device=dev, generator=g),
+            dim=-1,
         )
         topk_ids = torch.randint(
-            0, self.num_experts, (self.num_tokens, self.top_k), dtype=torch.int32, device=dev
+            0,
+            self.num_experts,
+            (self.num_tokens, self.top_k),
+            dtype=torch.int32,
+            device=dev,
+            generator=g,
         )
         return hidden, w1, w2, topk_weights, topk_ids
 
