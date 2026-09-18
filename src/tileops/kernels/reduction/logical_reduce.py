@@ -399,7 +399,7 @@ def _logical_reduce_kernel_tiled(
     return _func
 
 
-def _logical_entry(cls: type, call: LogicalReduceCall) -> Entry:
+def _logical_entry(cls: type, call: LogicalReduceCall, *, tune: bool) -> Entry:
     """The entry for a logical reduction kernel, which both implementations take.
 
     The device is in the identity: its shared-memory budget decides the plan.
@@ -412,7 +412,7 @@ def _logical_entry(cls: type, call: LogicalReduceCall) -> Entry:
         call.op_kind,
         call.dtype,
         call.keepdim,
-        call.tune,
+        tune,
         index,
     )
     return identity, lambda: cls(
@@ -422,7 +422,7 @@ def _logical_entry(cls: type, call: LogicalReduceCall) -> Entry:
         call.dtype,
         reduce_axes=call.axes,
         keepdim=call.keepdim,
-        tune=call.tune,
+        tune=tune,
         device_index=index,
     )
 
@@ -568,7 +568,7 @@ class LogicalReduceKernel(Kernel):
     @classmethod
     def entry_for(cls, call: LogicalReduceCall) -> Entry:
         """Built from the kept rows, the reduced extent and the layout it permutes."""
-        return _logical_entry(cls, call)
+        return _logical_entry(cls, call, tune=call.tune)
 
     def __init__(
         self,
@@ -743,7 +743,7 @@ class LogicalReduceEdgeFusedKernel(Kernel):
     @classmethod
     def entry_for(cls, call: LogicalReduceCall) -> Entry:
         """Built from the kept rows, the reduced extent and the layout it permutes."""
-        return _logical_entry(cls, call)
+        return _logical_entry(cls, call, tune=False)
 
     def __init__(
         self,

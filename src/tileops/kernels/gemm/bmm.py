@@ -691,8 +691,7 @@ class BmmTemplateKernel(Kernel):
 
     The template reads the zero-copy ``[batch, n, k]`` view of public
     ``b[batch, k, n]`` storage. :class:`BmmKernel` serves calls outside
-    :meth:`applies`, and every call that asks to be autotuned: this path takes
-    its configuration from the template selector and has no tuning of its own.
+    :meth:`applies`; this path takes its configuration from the template selector.
     """
 
     supported_archs: list[int] = [90]
@@ -717,12 +716,7 @@ class BmmTemplateKernel(Kernel):
     def applies(cls, call: BmmCall) -> bool:
         step = 16 // call.dtype.itemsize
         tiles = cls._tiles(call.batch, call.m, call.n)
-        return (
-            not call.tune
-            and call.h200
-            and call.n % step == 0
-            and tiles * cls.MIN_WAVE_DENOM > call.sm_count
-        )
+        return call.h200 and call.n % step == 0 and tiles * cls.MIN_WAVE_DENOM > call.sm_count
 
     @classmethod
     def _persistent_grid(cls, batch: int, m: int, n: int, physical_sms: int) -> int:

@@ -48,7 +48,7 @@ def logical_edge_fused_region(call: LogicalReduceCall) -> bool:
 
     if not logical_reduce_region(call):
         return False
-    if not call.h200 or call.tune:
+    if not call.h200:
         return False
     if not call.edge_axes or call.trail_needs_tiling:
         return False
