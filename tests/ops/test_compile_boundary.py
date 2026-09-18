@@ -65,9 +65,9 @@ from workloads.attention.gqa import (
     GroupedQueryAttentionDecodePagedWorkload,
     GroupedQueryAttentionDenseDecodeWorkload,
     GroupedQueryAttentionSlidingWindowVarlenFwdWorkload,
-    make_unit_cache_scales,
 )
 from workloads.attention.mha import MhaDecodePagedWorkload
+from workloads.attention.paged import make_unit_cache_scales
 from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload
 
 
