@@ -297,6 +297,7 @@ signature:
 | `layout`        | no       | Memory format when non-default (R19).                                                                                                    |
 | `optional`      | no       | `true` when the op may be called without this input (R18). Inputs only.                                                                  |
 | `mutated`       | no       | `true` when the op may write this input (R22). Inputs only.                                                                              |
+| `nullable`      | no       | `true` when this return position may hold `None`. Outputs only. See [Nullable outputs](#nullable-outputs).                               |
 
 **Param fields:** `type`, plus optional `default` and `kw_only`.
 A param that omits `default` MUST have no `__init__` default either: a
@@ -517,8 +518,10 @@ are defined in [roofline.md](roofline.md).
 
 A composite op declares what its cost is made of under `roofline.composition`, alongside either
 roofline mode; an entry with a `composition` must have one. The parent's cost is still computed by
-its own `flops`/`bytes` or `func`. `composition` records which stages that cost covers, so a missing
-or double-counted stage is rejected instead of silently mispriced. Each row names a `stage` and
+its own `flops`/`bytes` or `func`; `composition` records which stages it covers. What the validator
+checks is structural — every stage accounted for, once, against a `source` that resolves — not that
+the parent's number equals the sum of its stages. A parent may drop a stage whose cost is negligible
+at the shapes the op runs at. Each row names a `stage` and
 gives exactly one of `source` (dotted path to the formula that stage's cost comes from, resolved as
 `func` is) or `formula` (prose where no separate function exists). Every stage not marked `optional`
 appears exactly once.

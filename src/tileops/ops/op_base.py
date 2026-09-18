@@ -28,7 +28,7 @@ from tileops.backend import (
 from tileops.backend.dispatch import registered_kernel_builder, select_target
 from tileops.backend.registry import ensure_loaded
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.manifest import load_manifest
+from tileops.manifest import forward_signature, load_manifest
 
 from .compile_boundary import register_instance
 
@@ -654,10 +654,7 @@ class Op(ABC):
             return
         # A workspace is declared under ``resources`` but passed to forward() like
         # any other tensor, so it counts toward the argument list this compares.
-        workspaces = (entry.get("resources") or {}).get("workspaces") or []
-        names = tuple(entry["signature"]["inputs"]) + tuple(
-            w["name"] for w in workspaces if isinstance(w, dict) and isinstance(w.get("name"), str)
-        )
+        names = tuple(forward_signature(entry)["inputs"])
         if len(names) != len(inputs):
             return
         try:
