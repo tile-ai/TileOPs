@@ -231,7 +231,9 @@ ReciprocalFwdOp:
     vars:
       N: "product(input.shape)"
     flops: "N"
-    bytes: "2 * N * elem_bytes"
+    # An integral input promotes to float32 on the way out, so the write is
+    # not priced at the read's element size.
+    bytes: "N * elem_bytes + N * out_elem_bytes"
 
   source:
     kernel: tileops/kernels/elementwise/math_unary.py

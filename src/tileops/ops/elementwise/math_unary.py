@@ -98,7 +98,6 @@ class SignFwdOp(_IntIdentityUnaryOp):
     _op_name = "sign"
     kernel_cls = SignFwdKernel
     # Manifest: flops = "2 * N" (two compares + selects per element).
-    FLOPS_PER_ELEM = 2
     _int_handler = staticmethod(torch.sign)
 
 
@@ -220,7 +219,6 @@ class Log1pFwdOp(UnaryOp):
     _op_name = "log1p"
     kernel_cls = Log1pFwdKernel
     # Manifest: flops = "2 * N" (1 add + 1 log).
-    FLOPS_PER_ELEM = 2
 
 
 class Expm1FwdOp(UnaryOp):
@@ -229,4 +227,3 @@ class Expm1FwdOp(UnaryOp):
     _op_name = "expm1"
     kernel_cls = Expm1FwdKernel
     # Manifest: flops = "2 * N" (1 exp + 1 sub).
-    FLOPS_PER_ELEM = 2

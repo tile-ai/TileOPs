@@ -582,6 +582,13 @@ def _synthesize_inline_mode(
     # the set so later entries may reference earlier locals.
     vars_allowed: set[str] = set(input_names) | set(param_names)
     vars_allowed.add("elem_bytes")
+    # An op whose output dtype is not the input's -- a bool predicate, an
+    # integer input promoted to float -- cannot state its write with
+    # ``elem_bytes`` alone. ``out_elem_bytes`` resolves the single declared
+    # output through the manifest, so the expression stays the only source.
+    single_output = len(sig.get("outputs") or {}) == 1
+    if single_output:
+        vars_allowed.add("out_elem_bytes")
     vars_allowed.update(_VARS_HELPERS.keys())
 
     input_name_set = set(input_names)
@@ -630,6 +637,8 @@ def _synthesize_inline_mode(
     arith_allowed: set[str] = set(vars_block.keys())
     arith_allowed.update(param_names)
     arith_allowed.add("elem_bytes")
+    if single_output:
+        arith_allowed.add("out_elem_bytes")
     arith_allowed.update(_ARITHMETIC_HELPERS.keys())
     _validate_arithmetic_expr(op_name, "flops", flops_expr, arith_allowed)
     _validate_arithmetic_expr(op_name, "bytes", bytes_expr, arith_allowed)
@@ -674,6 +683,10 @@ def _synthesize_inline_mode(
         # ``NameError`` deep in the body.
         src_lines.append(f"    {n} = self.{n}")
     src_lines.append("    elem_bytes = self.dtype.itemsize")
+    if single_output and "out_elem_bytes" in referenced:
+        src_lines.append(
+            f"    out_elem_bytes = _resolve_output_dtype({op_name!r}, self.dtype).itemsize"
+        )
     for name, expr in vars_block.items():
         src_lines.append(f"    {name} = {expr}")
     src_lines.append(f"    _flops = {flops_expr}")
@@ -685,6 +698,10 @@ def _synthesize_inline_mode(
     # by virtue of being a subset of the vars table.
     globs: dict[str, Any] = dict(_VARS_HELPERS)
     globs["_resolve_tensor_binding"] = _resolve_tensor_binding
+    if single_output and "out_elem_bytes" in referenced:
+        from tileops.ops._output_dtype import resolve_output_dtype
+
+        globs["_resolve_output_dtype"] = resolve_output_dtype
     globs["__builtins__"] = {
         "int": int,
         "float": float,

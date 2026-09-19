@@ -241,7 +241,7 @@ Codegen knows how to bind the following names when generating the method body. T
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Tensors   | All `signature.inputs` names, exposed with a `.shape` accessor                                                                               |
 | Params    | All `signature.params` names                                                                                                                 |
-| Constants | `elem_bytes`                                                                                                                                 |
+| Constants | `elem_bytes`; `out_elem_bytes` where the entry declares exactly one output                                                                   |
 | Helpers   | `product`, `isinstance`, `len`, `set`, `tuple`, `list`, `range`, `int`, `float`, `bool`, `min`, `max`, `sum`, `abs`, `log2`, `ceil`, `floor` |
 
 **arithmetic layer**
@@ -249,10 +249,10 @@ Codegen knows how to bind the following names when generating the method body. T
 | Bucket    | Names                             |
 | --------- | --------------------------------- |
 | Variables | Resolved vars from the vars layer |
-| Constants | `elem_bytes`                      |
+| Constants | `elem_bytes`, `out_elem_bytes`    |
 | Helpers   | `ceil`, `floor`, `log2`           |
 
-Adding or removing a helper = edit codegen's binding table. No parallel update in validator or anywhere else is required. If a formula references a name not in this table, codegen fails; the manifest does not land.
+`out_elem_bytes` resolves the declared output dtype through the manifest, so an op whose output dtype is not its input's — a bool predicate, an integral input promoted to float — states its write without a second source. Adding or removing a helper = edit codegen's binding table. No parallel update in validator or anywhere else is required. If a formula references a name not in this table, codegen fails; the manifest does not land.
 
 #### 4.4.5 Runtime Timing
 
