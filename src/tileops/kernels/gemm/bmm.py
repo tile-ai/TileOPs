@@ -19,6 +19,7 @@ from .call_spec import BmmCall
 
 __all__ = [
     "BmmFp8Kernel",
+    "BmmFp8TransposeKernel",
     "BmmKernel",
     "BmmTemplateKernel",
 ]
@@ -584,6 +585,56 @@ def _bmm_fp8_persistent_ws_kernel(
     return _bmm_fp8_persistent_ws_func
 
 
+@functools.lru_cache(maxsize=32)
+def _bmm_fp8_transpose_kernel(batch: int, rows: int, cols: int, dtype: str) -> Callable:
+    """Swap the last two axes of a contiguous ``[batch, rows, cols]`` tensor.
+
+    Args:
+        batch: Leading axis, untouched.
+        rows: Extent of the source's second axis.
+        cols: Extent of the source's third axis.
+        dtype: TileLang dtype string of both tensors.
+
+    Returns:
+        A ``(block, threads)`` builder returning the compiled ``prim_func``.
+    """
+
+    @tilelang.jit(out_idx=[-1], compile_flags=["-O3"])
+    def _bmm_fp8_transpose_func(block: int = 64, threads: int = 128) -> Callable:
+        exact = rows % block == 0 and cols % block == 0
+
+        @T.prim_func
+        def _bmm_fp8_transpose_main(
+            src: T.Tensor((batch, rows, cols), dtype),  # type: ignore
+            dst: T.Tensor((batch, cols, rows), dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(
+                T.ceildiv(cols, block), T.ceildiv(rows, block), batch, threads=threads
+            ) as (bx, by, bz):
+                # The store below reads the tile down a column, which conflicts on
+                # shared-memory banks unless the layout is swizzled.
+                tile = T.alloc_shared((block, block), dtype)
+                T.annotate_layout({tile: tilelang.layout.make_swizzled_layout(tile)})
+                r0, c0 = by * block, bx * block
+                if exact:
+                    T.copy(src[bz, r0 : r0 + block, c0 : c0 + block], tile)
+                else:
+                    for i, j in T.Parallel(block, block):
+                        tile[i, j] = T.if_then_else(
+                            (r0 + i < rows) & (c0 + j < cols),
+                            src[bz, r0 + i, c0 + j],
+                            T.cast(0, dtype),
+                        )
+                # ``i`` innermost keeps the store coalesced: ``dst`` is rows-innermost.
+                for j, i in T.Parallel(block, block):
+                    if (c0 + j < cols) and (r0 + i < rows):
+                        dst[bz, c0 + j, r0 + i] = tile[i, j]
+
+        return _bmm_fp8_transpose_main
+
+    return _bmm_fp8_transpose_func
+
+
 def _(
     batch: int,
     m: int,
@@ -1003,3 +1054,75 @@ class BmmFp8Kernel(Kernel):
         if not hasattr(self, "_compiled_kernel"):
             self._compiled_kernel = self.kernel(**self.config)
         return self._compiled_kernel(a, b, scale_a, scale_b)
+
+
+class BmmFp8TransposeKernel(Kernel):
+    """Swap the last two axes of a contiguous FP8 ``[batch, rows, cols]`` tensor.
+
+    Staged through shared memory so both the load and the store stay coalesced,
+    which a strided element-wise copy cannot be at one byte per element.
+
+    Data movement only: the result is bit-identical to
+    ``src.transpose(-2, -1).contiguous()``.
+    """
+
+    # Square staging tile and the lanes that fill it. Fitted on the FP8 BMM
+    # workloads in benchmarks/ops/bench_bmm.py; re-fit against those when the
+    # staging layout changes. Keep the thread count fixed during autotune so a
+    # BMM tune does not spend most of its time on the copy kernel. TILE must
+    # appear among the candidates.
+    TILE: int = 64
+    THREADS: int = 128
+    TILE_CANDIDATES: tuple[int, ...] = (32, 64, 128)
+    THREAD_CANDIDATES: tuple[int, ...] = (128,)
+
+    def __init__(
+        self,
+        batch: int,
+        rows: int,
+        cols: int,
+        dtype: torch.dtype,
+        device: Optional[torch.device] = None,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ) -> None:
+        """Build the transpose for one shape and dtype.
+
+        Args:
+            batch: Leading axis, untouched.
+            rows: Extent of the source's second axis.
+            cols: Extent of the source's third axis.
+            dtype: Element dtype; ``torch.float8_e4m3fn`` is what the FP8 BMM passes.
+            device: Device the kernel is built for.
+            config: Optional tile override.
+            tune: Whether to autotune the tile.
+        """
+        super().__init__(device_index=(device.index if isinstance(device, torch.device) else None))
+        self.dtype = dtype
+        self.kernel = _bmm_fp8_transpose_kernel(batch, rows, cols, self.dtype_str)
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        return {"block": self.TILE, "threads": self.THREADS}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return [
+            {"block": block, "threads": threads}
+            for block in self.TILE_CANDIDATES
+            for threads in self.THREAD_CANDIDATES
+        ]
+
+    def forward(self, src: torch.Tensor) -> torch.Tensor:
+        """Return ``src`` with its last two axes swapped, contiguous.
+
+        Args:
+            src: Contiguous $[B \\times rows \\times cols]$ tensor.
+
+        Returns:
+            A new contiguous $[B \\times cols \\times rows]$ tensor.
+        """
+        if not hasattr(self, "_compiled_kernel"):
+            self._compiled_kernel = self.kernel(**self.config)
+        return self._compiled_kernel(src)

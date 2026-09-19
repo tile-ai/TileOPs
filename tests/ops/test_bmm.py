@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.gemm.bmm import BmmTemplateKernel
+from tileops.kernels.gemm.bmm import BmmFp8TransposeKernel, BmmTemplateKernel
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.ops import BmmFp8FwdOp, BmmFwdOp
 from workloads.bmm import BmmFp8Workload, BmmWorkload
@@ -490,6 +490,63 @@ def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
     op_kn = BmmFp8FwdOp(out_dtype=torch.bfloat16)  # trans_b=False: b as [B, K, N]
     out_kn = op_kn(a, b_kn, scale_a, scale_b)
     torch.testing.assert_close(out_nk, out_kn, atol=0.0, rtol=0.0)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("block", BmmFp8TransposeKernel.TILE_CANDIDATES)
+def test_bmm_fp8_transpose_kernel_matches_torch(block: int) -> None:
+    """The staging kernel is bit-identical to torch's materialized transpose."""
+    batch, rows, cols = 2, block + 7, 2 * block + 13
+    src = torch.randn(batch, rows, cols, device="cuda").to(torch.float8_e4m3fn)
+    kernel = BmmFp8TransposeKernel(
+        batch,
+        rows,
+        cols,
+        torch.float8_e4m3fn,
+        device=src.device,
+        config={"block": block},
+    )
+
+    out = kernel(src)
+    ref = src.transpose(-2, -1).contiguous()
+    assert out.is_contiguous()
+    assert torch.equal(out, ref)
+
+
+@pytest.mark.smoke
+def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
+    """Extents that leave a tail under every staging tile transpose exactly."""
+    batch, m, n, k = 3, 128, 80, 160
+    assert all(n % tile for tile in BmmFp8TransposeKernel.TILE_CANDIDATES)
+    test = BmmFp8Test(batch, m, n, k, torch.float8_e4m3fn)
+    a, b_kn, scale_a, scale_b = test.gen_inputs()
+    b_nk = b_kn.transpose(-2, -1).contiguous()
+
+    op_kn = BmmFp8FwdOp(out_dtype=torch.bfloat16)
+    op_nk = BmmFp8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
+    out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
+    out_nk = op_nk(a, b_nk, scale_a, scale_b)
+    assert op_kn.built_kernels("bmm_fp8_transpose_kernel")
+    assert not op_nk.built_kernels("bmm_fp8_transpose_kernel")
+    torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
+
+
+@pytest.mark.smoke
+def test_bmm_fp8_no_transpose_when_b_already_k_innermost() -> None:
+    """What decides the copy is ``b``'s strides, not ``trans_b``."""
+    batch, m, n, k = 4, 128, 256, 128
+    test = BmmFp8Test(batch, m, n, k, torch.float8_e4m3fn)
+    a, b_kn, scale_a, scale_b = test.gen_inputs()
+    # [B, K, N] by shape, K-innermost in memory.
+    b_kn_view = b_kn.transpose(-2, -1).contiguous().transpose(-2, -1)
+    assert b_kn_view.stride(-2) == 1
+
+    op = BmmFp8FwdOp(out_dtype=torch.bfloat16)
+    out_view = op(a, b_kn_view, scale_a, scale_b).clone()
+    assert not op.built_kernels("bmm_fp8_transpose_kernel")
+
+    out_kn = BmmFp8FwdOp(out_dtype=torch.bfloat16)(a, b_kn, scale_a, scale_b)
+    torch.testing.assert_close(out_view, out_kn, atol=0.0, rtol=0.0)
 
 
 @pytest.mark.smoke

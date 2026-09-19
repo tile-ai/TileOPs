@@ -51,6 +51,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
     from .fp8_quant import FP8QuantKernel
     from .gemm import (
         BmmFp8Kernel,
+        BmmFp8TransposeKernel,
         BmmKernel,
         BmmTemplateKernel,
         GemmBasicKernel,
@@ -140,6 +141,7 @@ _LAZY = {
     "BatchNormFwdTrainKernel": ".norm",
     "BinaryKernel": ".elementwise",
     "BmmFp8Kernel": ".gemm",
+    "BmmFp8TransposeKernel": ".gemm",
     "BmmKernel": ".gemm",
     "BmmTemplateKernel": ".gemm",
     "Conv1dKernel": ".convolution",
