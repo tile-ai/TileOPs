@@ -36,6 +36,8 @@ class FP8LightningIndexerFwdOp(Op):
         self.index_dim = None
         self.seq_len_kv = None
         self.kv_group = None
+        self.dtype = None
+        self.index_k_scale_shape = None
         self.clean_logits = clean_logits
         self.config = config
         self.tune = tune
@@ -150,6 +152,10 @@ class FP8LightningIndexerFwdOp(Op):
         self.index_dim = index_dim
         self.seq_len_kv = seq_len_kv
         self.kv_group = kv_group
+        # Both of these decide the roofline: the call arrives either as bf16
+        # tensors this op quantizes itself, or as fp8 tensors with the scale.
+        self.dtype = index_q.dtype
+        self.index_k_scale_shape = None if index_k_scale is None else tuple(index_k_scale.shape)
         self.kernel = self._get_kernel(
             (index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale),
             batch,

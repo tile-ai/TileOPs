@@ -114,7 +114,9 @@ def mha_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     flops = 10 * batch * heads * seq_len * seq_len * dim
     if is_causal:
         flops //= 2
-    nbytes = batch * 7 * heads * seq_len * dim * elem_bytes
+    # q, k, v, o and do read; dq, dk and dv written.
+    nbytes = batch * 8 * heads * seq_len * dim * elem_bytes
+    nbytes += batch * heads * seq_len * 4  # lse
     return int(flops), int(nbytes)
 
 
@@ -496,7 +498,9 @@ def gqa_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     flops = 10 * batch * heads * seq_len * seq_len * dim
     if is_causal:
         flops //= 2
-    nbytes = batch * (3 * heads + 4 * heads_kv) * seq_len * dim * elem_bytes
+    # q, o, do and dq carry all heads; k, v, dk and dv carry the KV heads.
+    nbytes = batch * (4 * heads + 4 * heads_kv) * seq_len * dim * elem_bytes
+    nbytes += batch * heads * seq_len * 4  # lse
     return int(flops), int(nbytes)
 
 
@@ -1132,12 +1136,15 @@ def fp8_lightning_indexer_roofline(op: "Op") -> tuple[int, int]:
     q_elems = batch * seq_len * heads * index_dim
     k_elems = batch * seq_len_kv * kv_group * index_dim
     weights = seq_len * heads
-    # The public forward accepts either bf16 tensors that are quantized inside
-    # the op or pre-quantized fp8 tensors. The op does not currently retain
-    # the observed input dtype, so default to bf16 for conservative bandwidth.
+    # The call decides both terms below. Handed bf16 tensors, the op quantizes
+    # them itself and produces the scale, so the fp8 tensors and the scale are
+    # intermediates and the public reads are bf16. Handed fp8 tensors, the
+    # caller supplies the scale and it is a read of its own.
     index_elem = _dtype_itemsize(getattr(op, "dtype", "bfloat16"))
     flops = 2 * scores * index_dim
-    nbytes = (q_elems + k_elems) * index_elem + batch * seq_len_kv * kv_group * 4
+    nbytes = (q_elems + k_elems) * index_elem
+    if _supplied(op, "index_k_scale"):
+        nbytes += batch * seq_len_kv * kv_group * 4
     nbytes += weights * 4
     nbytes += 2 * seq_len * 4 + scores * 4
     return int(flops), int(nbytes)
@@ -1538,7 +1545,6 @@ def _mamba2_fwd_cost(op: Any, *, has_dt_bias: bool, has_initial_states: bool) ->
     dt_softplus = bool(getattr(op, "dt_softplus", False))
 
     tokens = batch * seq_len * n_heads
-    state_elems = batch * num_chunks * n_heads * d_head * d_state
     # FLOPs are the exact sum of the five standalone stage cost helpers, with
     # the state-passing stage running over the flattened d_head * d_state dim.
     flops = (
@@ -1579,13 +1585,8 @@ def _mamba2_fwd_cost(op: Any, *, has_dt_bias: bool, has_initial_states: bool) ->
             if has_initial_states
             else 0
         )
-        # dominant intermediates: cb, chunk states (read + write), dt_out,
-        # dA_cumsum
-        + batch * num_chunks * n_groups * chunk_len**2 * elem_bytes
-        + 2 * state_elems * 4
-        + tokens * elem_bytes
-        + tokens * 4
-        + tokens * d_head * 4  # y out
+        + tokens * d_head * 4  # y
+        + batch * n_heads * d_head * d_state * 4  # final_states
     )
     return int(flops), int(nbytes)
 
@@ -1683,12 +1684,9 @@ def nsa_topk_varlen_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int,
         for length in lens
     )
     flops = 2 * pairs * heads * dim
-    # FIXME(staged-rollout): `lse_in` is declared and passed but never read.
-    #
-    # Broken invariant: every manifest input is read once, and this one is not counted.
-    # Why: the top-k kernel recomputes the lse itself and discards the argument, so
-    #   charging it would price traffic that does not happen.
-    # Cleanup: drop `lse_in` from the signature, or make the kernel read it.
+    # `lse_in` produces no read: the top-k kernel recomputes the lse itself and
+    # discards the argument. A declared input the algorithm does not read is not
+    # counted (roofline.md 1.1).
     nbytes = (c_seq_len * heads * dim + chunk_num * head_kv * dim) * elem_bytes
     nbytes += c_seq_len * head_kv * selected * 4
     nbytes += _nsa_ragged_index_bytes(seq_num, c_seq_len)

@@ -28,7 +28,7 @@ Bound type is whichever term dominates `sol_time` (memory-bound if `memory_time 
 
 The metric is **algorithmic** SOL efficiency. Three statements delimit what a reading means:
 
-1. `bytes_moved` is the algorithm's minimum traffic (each input read once, each output written once), not measured DRAM traffic.
+1. `bytes_moved` is the algorithm's minimum traffic, not measured DRAM traffic: each distinct input storage the algorithm reads counts one read, each public output one write, and a `mutated` input counts both. An intermediate never counts, whatever stage produces it, and a declared input the algorithm does not read produces no traffic.
 1. `total_flops` follows the §1.3 counting convention, not per-instruction hardware cost; the metric does not certify an SFU-bound kernel as at its limit.
 1. The compute roof is the unit an optimal implementation would use (§1.4), not the unit the current kernel runs on.
 

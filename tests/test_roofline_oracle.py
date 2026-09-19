@@ -303,6 +303,119 @@ class TestBytesOracle:
             )
             assert op.eval_roofline()[1] == oracle, label
 
+    def test_batch_norm_counts_the_running_stat_write_only_when_training(self):
+        from tileops.ops.norm.batch_norm import BatchNormFwdOp
+
+        x_shape, channels = (32, 256, 28, 28), 256
+        stats = (((channels,), torch.float32),) * 4  # mean, var, weight, bias
+        for training in (False, True):
+            op = BatchNormFwdOp.__new__(BatchNormFwdOp)
+            op.x_shape = x_shape
+            op.dtype = torch.float16
+            op.training = training
+            oracle = _nbytes(
+                (x_shape, torch.float16),
+                *stats,
+                (x_shape, torch.float16),
+                # running_mean and running_var are mutated: written back too.
+                *((((channels,), torch.float32),) * 2 if training else ()),
+            )
+            assert op.eval_roofline()[1] == oracle, f"training={training}"
+
+    def test_mamba2_counts_the_public_tensors_and_not_the_stage_intermediates(self):
+        from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
+
+        batch, seqlen, n_heads, d_head, d_state, n_groups = 2, 2048, 8, 64, 128, 1
+        chunk_size = 256
+        x_shape = (batch, seqlen, n_heads, d_head)
+        bc_shape = (batch, seqlen, n_groups, d_state)
+        state_shape = (batch, n_heads, d_head, d_state)
+        for has_optional in (False, True):
+            op = Mamba2FwdOp.__new__(Mamba2FwdOp)
+            op.batch, op.seqlen = batch, seqlen
+            op.num_chunks, op.chunk_size = seqlen // chunk_size, chunk_size
+            op.n_heads, op.d_head, op.d_state, op.n_groups = n_heads, d_head, d_state, n_groups
+            op.dtype = torch.float16
+            op.dt_softplus = True
+            op.dt_bias_shape = (n_heads,) if has_optional else None
+            op.initial_states_shape = state_shape if has_optional else None
+            oracle = _nbytes(
+                (x_shape, torch.float16),
+                ((batch, seqlen, n_heads), torch.float32),  # dt
+                ((n_heads,), torch.float32),  # A
+                (bc_shape, torch.float16),  # B
+                (bc_shape, torch.float16),  # C
+                *((((n_heads,), torch.float32),) if has_optional else ()),
+                *(((state_shape, torch.float32),) if has_optional else ()),
+                (x_shape, torch.float32),  # y
+                (state_shape, torch.float32),  # final_states
+            )
+            assert op.eval_roofline()[1] == oracle, f"optional={has_optional}"
+
+    def test_mha_backward_counts_o_and_lse(self):
+        from tileops.ops.attention.mha import MultiHeadAttentionBwdOp
+
+        batch, seq_len, heads, dim = 2, 2048, 16, 128
+        shape = (batch, seq_len, heads, dim)
+        op = MultiHeadAttentionBwdOp.__new__(MultiHeadAttentionBwdOp)
+        op.batch, op.seq_len, op.heads, op.dim = batch, seq_len, heads, dim
+        op.is_causal = True
+        op.dtype = torch.float16
+        oracle = _nbytes(
+            *((shape, torch.float16),) * 5,  # q, k, v, o, do
+            ((batch, heads, seq_len), torch.float32),  # lse
+            *((shape, torch.float16),) * 3,  # dq, dk, dv
+        )
+        assert op.eval_roofline()[1] == oracle
+
+    def test_gqa_backward_prices_the_kv_tensors_at_the_kv_head_count(self):
+        from tileops.ops.attention.gqa import GroupedQueryAttentionBwdOp
+
+        batch, seq_len, heads, heads_kv, dim = 2, 2048, 16, 4, 128
+        q_shape = (batch, seq_len, heads, dim)
+        kv_shape = (batch, seq_len, heads_kv, dim)
+        op = GroupedQueryAttentionBwdOp.__new__(GroupedQueryAttentionBwdOp)
+        op.batch, op.seq_len, op.heads, op.heads_kv, op.dim = batch, seq_len, heads, heads_kv, dim
+        op.is_causal = True
+        op.dtype = torch.float16
+        oracle = _nbytes(
+            *((q_shape, torch.float16),) * 3,  # q, o, do
+            *((kv_shape, torch.float16),) * 2,  # k, v
+            ((batch, heads, seq_len), torch.float32),  # lse
+            (q_shape, torch.float16),  # dq
+            *((kv_shape, torch.float16),) * 2,  # dk, dv
+        )
+        assert op.eval_roofline()[1] == oracle
+
+    def test_fp8_indexer_counts_the_scale_only_when_the_call_supplies_it(self):
+        from tileops.ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
+
+        batch, seq_len, heads, index_dim = 1, 4096, 32, 128
+        seq_len_kv, kv_group = 4096, 1
+        scale_shape = (batch, seq_len_kv, kv_group)
+        # Handed bf16, the op quantizes and produces the scale itself: both are
+        # intermediates. Handed fp8, the caller supplies the scale.
+        calls = {
+            "bf16 inputs": (torch.bfloat16, None),
+            "pre-quantized": (torch.float8_e4m3fn, scale_shape),
+        }
+        for label, (dtype, supplied_scale) in calls.items():
+            op = FP8LightningIndexerFwdOp.__new__(FP8LightningIndexerFwdOp)
+            op.batch, op.seq_len, op.heads, op.index_dim = batch, seq_len, heads, index_dim
+            op.seq_len_kv, op.kv_group = seq_len_kv, kv_group
+            op.dtype = dtype
+            op.index_k_scale_shape = supplied_scale
+            oracle = _nbytes(
+                ((batch, seq_len, heads, index_dim), dtype),  # index_q
+                ((batch, seq_len_kv, kv_group, index_dim), dtype),  # index_k
+                ((seq_len, heads), torch.float32),  # weights
+                ((seq_len,), torch.int32),  # cu_seqlen_ks
+                ((seq_len,), torch.int32),  # cu_seqlen_ke
+                *(((supplied_scale, torch.float32),) if supplied_scale else ()),
+                ((batch, seq_len, seq_len_kv, kv_group), torch.float32),  # logits
+            )
+            assert op.eval_roofline()[1] == oracle, label
+
 
 # Classification registry: every implemented op appears in AUDITED (has a
 # bytes-oracle case above) or PENDING. There is no exemption: an op whose
@@ -313,16 +426,21 @@ AUDITED = frozenset(
     {
         "AddFwdOp",
         "ArgmaxFwdOp",
+        "BatchNormFwdOp",
         "Conv2dFwdOp",
+        "FP8LightningIndexerFwdOp",
         "FusedMoEExpertsFwdOp",
         "FusedMoeFwdOp",
         "FusedMoeSharedExpertFwdOp",
         "GemmFp8FwdOp",
         "GemmW4A16FwdOp",
+        "GroupedQueryAttentionBwdOp",
         "GroupedQueryAttentionDenseFwdOp",
         "IndexedExpertMLPFwdOp",
+        "Mamba2FwdOp",
         "MoePostPermuteFwdOp",
         "MoePrePermuteFwdOp",
+        "MultiHeadAttentionBwdOp",
         "RMSNormFwdOp",
         "VarMeanFwdOp",
     }
@@ -352,7 +470,6 @@ PENDING = frozenset(
         "AvgPool2dFwdOp",
         "AvgPool3dFwdOp",
         "BatchNormBwdOp",
-        "BatchNormFwdOp",
         "BitwiseAndFwdOp",
         "BitwiseNotFwdOp",
         "BitwiseOrFwdOp",
@@ -386,7 +503,6 @@ PENDING = frozenset(
         "ExpFwdOp",
         "Expm1FwdOp",
         "FFTC2CFwdOp",
-        "FP8LightningIndexerFwdOp",
         "FP8QuantFwdOp",
         "FloorDivideFwdOp",
         "FloorFwdOp",
@@ -403,7 +519,6 @@ PENDING = frozenset(
         "GemmFwdOp",
         "GroupNormFwdOp",
         "GroupedGemmFwdOp",
-        "GroupedQueryAttentionBwdOp",
         "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
         "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
         "GroupedQueryAttentionPrefillVarlenFwdOp",
@@ -434,7 +549,6 @@ PENDING = frozenset(
         "LtFwdOp",
         "MHCPostFwdOp",
         "MHCPreFwdOp",
-        "Mamba2FwdOp",
         "MaskedFillFwdOp",
         "MaskedFillScalarFwdOp",
         "MaxPool1dFwdOp",
@@ -452,7 +566,6 @@ PENDING = frozenset(
         "MoeGroupedGemmFwdOp",
         "MoePermuteAlignFwdOp",
         "MulFwdOp",
-        "MultiHeadAttentionBwdOp",
         "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
         "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
         "NSACmpFwdVarlenOp",
