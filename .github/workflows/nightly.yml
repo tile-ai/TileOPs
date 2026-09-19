@@ -298,68 +298,17 @@ jobs:
           name: tileops_benchmark_${{ github.run_id }}_${{ github.run_attempt }}
         continue-on-error: true
 
-      - name: Resolve previous perf history artifact
-        id: perf_history_source
+      - name: Build the perf history window
         if: ${{ always() }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const workflowId = "nightly.yml";
-            const currentRunId = context.runId;
-            const runs = await github.paginate(
-              github.rest.actions.listWorkflowRuns,
-              {
-                owner,
-                repo,
-                workflow_id: workflowId,
-                branch: "main",
-                status: "completed",
-                per_page: 100,
-              },
-            );
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p .perf_history
+          python3 scripts/build_perf_history.py \
+            --url https://github.com/tile-ai/TileOPs-nightly.git \
+            --out .perf_history/perf_history.json
+        shell: bash
 
-            for (const run of runs) {
-              if (run.id === currentRunId || run.conclusion !== "success") {
-                continue;
-              }
-
-              const artifacts = await github.paginate(
-                github.rest.actions.listWorkflowRunArtifacts,
-                {
-                  owner,
-                  repo,
-                  run_id: run.id,
-                  per_page: 100,
-                },
-              );
-
-              const artifact = artifacts.find(
-                (candidate) =>
-                  !candidate.expired && candidate.name === "tileops_perf_history",
-              );
-              if (!artifact) {
-                continue;
-              }
-
-              core.info(
-                `Using perf history artifact from run ${run.id} (${run.html_url})`,
-              );
-              core.setOutput("run_id", String(run.id));
-              return;
-            }
-
-            core.info("No previous perf history artifact found; nightly report will start a new history baseline.");
-
-      - name: Download previous perf history
-        uses: actions/download-artifact@v4
-        if: ${{ always() && steps.perf_history_source.outputs.run_id != '' }}
-        with:
-          name: tileops_perf_history
-          path: .perf_history
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ steps.perf_history_source.outputs.run_id }}
 
       - name: Generate nightly report
         if: ${{ always() }}
@@ -378,7 +327,6 @@ jobs:
             --bench-xml bench_results.xml \
             "${HISTORY_ARGS[@]}" \
             --output nightly_report.md \
-            --history-out perf_history.json \
             --coverage-xml coverage.xml \
             || echo "::warning::nightly_report.py failed"
         shell: bash
@@ -395,19 +343,11 @@ jobs:
           name: tileops_op_test_${{ github.run_id }}_${{ github.run_attempt }}
           path: |
             test_results.xml
+            coverage.xml
             tileops_op_test.log
             nightly_report.md
             htmlcov/
           if-no-files-found: warn
-          retention-days: 14
-
-      - name: Upload perf history
-        uses: actions/upload-artifact@v4
-        if: ${{ always() && hashFiles('perf_history.json') != '' }}
-        with:
-          name: tileops_perf_history
-          path: perf_history.json
-          overwrite: true
           retention-days: 14
 
       - name: Fail op test job if pytest failed
@@ -464,6 +404,9 @@ jobs:
             cp _optest/test_results.xml _publish/test_results.xml
           else
             echo "::warning::test_results.xml missing; page will render without test status"
+          fi
+          if [ -f _optest/coverage.xml ]; then
+            cp _optest/coverage.xml _publish/coverage.xml
           fi
           if [ "$ok" -eq 1 ]; then
             # The environment the benchmark job read off its own machine.
