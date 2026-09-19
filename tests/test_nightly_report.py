@@ -5,6 +5,10 @@ baseline choice, the noise gate, rename recovery, and the previous-run lens.
 """
 
 import importlib.util
+import json
+import subprocess
+import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -16,6 +20,7 @@ REPORT_SCRIPT = REPO_ROOT / "scripts" / "nightly_report.py"
 
 _OP = "FooFwdOp"
 _CONFIG = "test_foo_bench[row-bfloat16]"
+_RUN = {"date": "2026-09-16", "commit": "abc1234", "gpu": "NVIDIA H200", "run_id": "42"}
 
 
 @pytest.fixture(scope="module")
@@ -148,7 +153,7 @@ def test_name_that_ever_shared_a_run_with_the_current_name_is_not_a_rename(repor
 
 def test_history_entry_records_the_percentiles(report):
     """The noise gate needs each run's spread persisted with its reading."""
-    entry = report.build_history_entry(_bench_ops(0.010, p10=0.0099, p90=0.0101))
+    entry = report.build_history_entry(_bench_ops(0.010, p10=0.0099, p90=0.0101), _RUN)
     tileops = entry["ops"][_OP][_CONFIG]["tileops"]
     assert tileops["device_busy_p10_ms"] == 0.0099
     assert tileops["device_busy_p90_ms"] == 0.0101
@@ -245,7 +250,144 @@ def test_annotate_sol_reports_anomalies_and_tags_rows(report):
 def test_history_entry_records_the_sol_reading(report):
     bench_ops = {_OP: {"module": "m", "configs": [_sol_row()]}}
     report.annotate_sol(bench_ops, _PROFILE)
-    entry = report.build_history_entry(bench_ops)
+    entry = report.build_history_entry(bench_ops, _RUN)
     tileops = entry["ops"][_OP][_CONFIG]["tileops"]
     assert tileops["compute_roof"] == "cuda_core.fp32"
     assert tileops["sol"] == {"efficiency": 1.0, "bound": "memory", "latency_bound": False}
+
+
+# The window is rebuilt from the snapshot repository on every run, so what a
+# snapshot cannot supply must not be taken from the machine doing the rebuild.
+
+BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_perf_history.py"
+
+_BENCH_XML = (
+    '<testsuites><testsuite name="bench"><testcase classname="benchmarks.test_foo"'
+    f' name="{_CONFIG}"><properties>'
+    f'<property name="op" value="{_OP}"/>'
+    '<property name="tileops_device_busy_ms" value="0.1"/>'
+    "</properties></testcase></testsuite></testsuites>"
+)
+
+
+_COVERAGE_XML = (
+    "<coverage><packages><package><classes>"
+    '<class filename="src/tileops/ops/foo.py"><lines>'
+    '<line number="1" hits="1"/><line number="2" hits="0"/>'
+    "</lines></class></classes></package></packages></coverage>"
+)
+
+
+def _snapshot_repo(tmp_path, runs, coverage=None):
+    """A clone-shaped repository with one commit per run, oldest first."""
+    repo = tmp_path / "snapshots"
+    repo.mkdir()
+    git = ["git", "-C", str(repo)]
+    subprocess.run([*git, "init", "-q", "-b", "snapshots"], check=True)
+    subprocess.run([*git, "config", "user.email", "t@t"], check=True)
+    subprocess.run([*git, "config", "user.name", "t"], check=True)
+    for meta, bench in runs:
+        (repo / "meta.json").write_text(json.dumps(meta))
+        (repo / "bench_results.xml").write_text(bench)
+        if coverage is not None:
+            (repo / "coverage.xml").write_text(coverage)
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "commit", "-qm", meta["run_id"]], check=True)
+    return repo
+
+
+def _build_window(tmp_path, repo):
+    out = tmp_path / "perf_history.json"
+    result = subprocess.run(
+        [sys.executable, str(BUILD_SCRIPT), "--repo", str(repo), "--out", str(out)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(out.read_text())["runs"]
+
+
+def _days_ago(n):
+    """A date the retention cutoff still admits, whenever the suite runs."""
+    return (date.today() - timedelta(days=n)).isoformat()
+
+
+def _meta(day_offset, run_id):
+    return {
+        "date": _days_ago(day_offset),
+        "commit": f"c{run_id}",
+        "gpu": "NVIDIA H200",
+        "run_id": run_id,
+    }
+
+
+def test_window_entries_carry_the_snapshot_provenance(tmp_path):
+    """Reading the local checkout instead would label every run with today."""
+    repo = _snapshot_repo(tmp_path, [(_meta(3, "1001"), _BENCH_XML)], coverage=_COVERAGE_XML)
+    runs = _build_window(tmp_path, repo)
+    assert [(r["date"], r["commit"], r["run_id"]) for r in runs] == [
+        (_meta(3, "1001")["date"], "c1001", "1001")
+    ]
+    assert runs[0]["coverage"]["op_branches"] == 0
+
+
+def test_the_window_is_the_period_and_one_run_per_date(tmp_path):
+    """A count alone decides neither end, and a twice-run day must not weigh twice."""
+    repo = _snapshot_repo(
+        tmp_path,
+        [
+            (_meta(40, "900"), _BENCH_XML),
+            (_meta(2, "901"), _BENCH_XML),
+            (_meta(1, "902"), _BENCH_XML),
+            (_meta(1, "903"), _BENCH_XML),
+        ],
+    )
+    assert [r["run_id"] for r in _build_window(tmp_path, repo)] == ["901", "903"]
+
+
+def test_a_snapshot_without_benchmark_readings_is_skipped(tmp_path):
+    """A run that published no numbers must not end the window early."""
+    repo = _snapshot_repo(
+        tmp_path,
+        [
+            (_meta(2, "910"), _BENCH_XML),
+            (_meta(1, "911"), "<testsuites/>"),
+        ],
+    )
+    assert [r["run_id"] for r in _build_window(tmp_path, repo)] == ["910"]
+
+
+def test_the_window_is_ordered_by_date_whatever_the_file_order(report):
+    """Newest-first input would make the previous-run comparison the oldest one."""
+    newest_first = [
+        {"date": _days_ago(1), "run_id": "3"},
+        {"date": _days_ago(2), "run_id": "2"},
+    ]
+    assert [r["run_id"] for r in report.history_window(newest_first)] == ["2", "3"]
+
+
+def test_an_unread_window_does_not_read_as_an_empty_one(report):
+    """A failed rebuild leaves every verdict unmade; an empty window does not."""
+    assert report._history_window([], read=False) == "not read"
+    assert report._history_window([], read=True) == "empty"
+    assert report._history_window([{"date": "2026-09-05"}, {"date": "2026-09-18"}], read=True) == (
+        "2 runs, 2026-09-05 to 2026-09-18"
+    )
+
+
+def test_a_named_history_that_does_not_exist_is_refused(tmp_path):
+    """A window the builder failed to write must not read as no history."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPORT_SCRIPT),
+            "--output",
+            str(tmp_path / "report.md"),
+            "--history",
+            str(tmp_path / "absent.json"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "--history file does not exist" in result.stderr

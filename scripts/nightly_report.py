@@ -6,8 +6,7 @@ Usage:
         --test-xml test_results.xml \
         --bench-xml bench_results.xml \
         [--history perf_history.json] \
-        --output nightly_report.md \
-        [--history-out perf_history_updated.json]
+        --output nightly_report.md
 """
 
 import argparse
@@ -316,16 +315,23 @@ def collect_bench_failures(results: list[dict]) -> list[dict]:
 
 def load_history(path: str | None) -> list[dict]:
     """Load perf history JSON, returning list of runs."""
-    if not path or not Path(path).exists():
+    if not path:
         return []
     data = json.loads(Path(path).read_text())
     return data.get("runs", [])
 
 
-def prune_history(runs: list[dict], retention_days: int = HISTORY_RETENTION_DAYS) -> list[dict]:
-    """Remove runs older than retention_days."""
+def history_window(runs: list[dict], retention_days: int = HISTORY_RETENTION_DAYS) -> list[dict]:
+    """The runs the verdicts compare against: one per date, within the period.
+
+    A date carries its last run, and the result is ordered by date whatever
+    order the file held. Dispatching a day by hand as well as by the schedule
+    would otherwise weigh it twice in the median and give it two chances at the
+    window minimum.
+    """
     cutoff = (datetime.now() - timedelta(days=retention_days)).strftime("%Y-%m-%d")
-    return [r for r in runs if r.get("date", "") >= cutoff]
+    kept = {d: r for r in runs if (d := r.get("date") or "") >= cutoff}
+    return sorted(kept.values(), key=lambda r: r["date"])
 
 
 # Verdicts are drawn on device execution time, not on the span that also covers the
@@ -563,19 +569,18 @@ def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# History update
+# History window
 # ---------------------------------------------------------------------------
 
 
-def build_history_entry(bench_ops: dict, coverage: list[dict] | None = None) -> dict:
-    """Build a history entry from current bench results.
+def build_history_entry(bench_ops: dict, run: dict, coverage: list[dict] | None = None) -> dict:
+    """Build the history entry for one nightly run.
 
-    Coverage sits in a key of its own beside ``ops``, which regression
-    detection and pruning do not read, so entries written before it existed
-    stay readable.
+    ``run`` states where the readings came from: ``date``, ``commit``, ``gpu``
+    and, where the snapshot recorded one, ``run_id``. Coverage sits in a key of
+    its own beside ``ops``, which regression detection and pruning do not read,
+    so entries written before it existed stay readable.
     """
-    commit = _get_git_commit()
-    gpu = _get_gpu_name()
     ops_data = {}
     for op, data in (bench_ops or {}).items():
         cfg_data = {}
@@ -618,7 +623,6 @@ def build_history_entry(bench_ops: dict, coverage: list[dict] | None = None) -> 
                     bl_tflops = cfg.get("baseline_tflops")
                     if bl_tflops is not None:
                         entry[tag]["tflops"] = bl_tflops
-            # Additional baselines
             for btag, bl in cfg.get("baselines", {}).items():
                 if btag == cfg.get("baseline_tag"):
                     continue  # already recorded above
@@ -633,11 +637,13 @@ def build_history_entry(bench_ops: dict, coverage: list[dict] | None = None) -> 
         if cfg_data:
             ops_data[op] = cfg_data
     entry = {
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "commit": commit,
-        "gpu": gpu,
+        "date": run["date"],
+        "commit": run["commit"],
+        "gpu": run["gpu"],
         "ops": ops_data,
     }
+    if run.get("run_id"):
+        entry["run_id"] = run["run_id"]
     if coverage:
         entry["coverage"] = _coverage_snapshot(coverage)
     return entry
@@ -653,6 +659,19 @@ def _coverage_snapshot(files: list[dict]) -> dict:
         "op_branches_hit": s["op_branches_hit"],
         "op_branches": s["op_branches"],
     }
+
+
+def _history_window(runs: list[dict], read: bool) -> str:
+    """The span the verdicts were drawn from, as the report captions it.
+
+    An unread window leaves every verdict unmade; an empty one says no prior
+    run falls in the period.
+    """
+    if not read:
+        return "not read"
+    if not runs:
+        return "empty"
+    return f"{len(runs)} runs, {runs[0]['date']} to {runs[-1]['date']}"
 
 
 def _previous_coverage(runs: list[dict]) -> dict | None:
@@ -710,7 +729,7 @@ def _get_gpu_name() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _load_gpu_profile(gpu_name: str) -> dict | None:
+def load_gpu_profile(gpu_name: str) -> dict | None:
     """Profile matching the measured device, or None when none claims it."""
     try:
         from tileops.perf.profile import find_profile
@@ -865,6 +884,7 @@ def generate_report(
     previous_run_shifts: list[dict] | None = None,
     sol_anomalies: list[dict] | None = None,
     have_gpu_profile: bool = False,
+    history_window: str = "not read",
 ) -> str:
     """Generate markdown report."""
     lines = []
@@ -909,6 +929,7 @@ def generate_report(
     lines.append(f"| **Benchmark Failures** | {bench_fail_icon} |")
     lines.append(f"| **Regressions** (vs 14-day median) | {reg_icon} |")
     lines.append(f"| **Baseline Alerts** (< {BASELINE_RATIO_ALERT:.0%}) | {alert_icon} |")
+    lines.append(f"| **History window** | {history_window} |")
     if have_gpu_profile:
         sol_icon = (
             f"{_FAIL} {len(sol_fails)} impossible"
@@ -1208,11 +1229,12 @@ def main():
     parser.add_argument("--bench-xml", help="Path to benchmark JUnit XML")
     parser.add_argument("--history", help="Path to perf_history.json (input)")
     parser.add_argument("--output", required=True, help="Output markdown report path")
-    parser.add_argument("--history-out", help="Path to write updated perf_history.json")
     parser.add_argument("--coverage-xml", help="Path to coverage.py XML report")
     args = parser.parse_args()
 
-    # Parse results
+    if args.history and not Path(args.history).exists():
+        parser.error(f"--history file does not exist: {args.history}")
+
     test_ops = None
     if args.test_xml and Path(args.test_xml).exists():
         test_results = parse_test_xml(args.test_xml)
@@ -1227,13 +1249,12 @@ def main():
         bench_failures = collect_bench_failures(bench_results)
         bench_skips = count_bench_skips(bench_results)
 
-    # Prune first: the carried-over artifact can hold entries older than the
-    # window when a run gap exceeds the retention period, and the verdicts below
-    # are labelled with the 14-day window.
-    gpu_profile = _load_gpu_profile(_get_gpu_name())
+    # The rebuild can reach past the period when a run gap exceeds it, and the
+    # verdicts below are labelled with the 14-day window.
+    gpu_profile = load_gpu_profile(_get_gpu_name())
     sol_anomalies = annotate_sol(bench_ops, gpu_profile) if bench_ops else []
 
-    history_runs = prune_history(load_history(args.history))
+    history_runs = history_window(load_history(args.history))
     regressions = detect_regressions(bench_ops, history_runs) if bench_ops else []
     improvements = detect_improvements(bench_ops, history_runs) if bench_ops else []
     previous_run_shifts = detect_previous_run_shifts(bench_ops, history_runs) if bench_ops else []
@@ -1245,7 +1266,6 @@ def main():
     # Read before this run is appended, so the comparison is against a prior run.
     coverage_prev = _previous_coverage(history_runs)
 
-    # Generate report
     report = generate_report(
         test_ops,
         bench_ops,
@@ -1259,17 +1279,10 @@ def main():
         previous_run_shifts,
         sol_anomalies,
         have_gpu_profile=gpu_profile is not None,
+        history_window=_history_window(history_runs, bool(args.history)),
     )
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")
-
-    # Recorded on coverage alone too, so a night the benchmark job produced
-    # nothing does not drop a reading and leave the next run comparing stale.
-    if args.history_out and (bench_ops or coverage):
-        entry = build_history_entry(bench_ops, coverage)
-        history_runs.append(entry)
-        Path(args.history_out).write_text(json.dumps({"runs": history_runs}, indent=2))
-        print(f"History updated: {args.history_out}")
 
 
 if __name__ == "__main__":
