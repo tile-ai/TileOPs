@@ -462,21 +462,72 @@ class TestBytesOracle:
     def test_masked_fill_counts_the_value_tensor_only_where_it_is_declared(self):
         from tileops.ops.elementwise.masked_fill import MaskedFillFwdOp, MaskedFillScalarFwdOp
 
-        shape = (8, 4096, 4096)
+        # The mask broadcasts against the input, so the two operands and the
+        # output all have different sizes.
+        input_shape, mask_shape, out_shape = (8, 1, 4096), (8, 4096, 4096), (8, 4096, 4096)
         for cls, has_value in ((MaskedFillFwdOp, True), (MaskedFillScalarFwdOp, False)):
             op = cls.__new__(cls)
-            op.input_shape = shape
-            op.mask_shape = shape
+            op.input_shape = input_shape
+            op.mask_shape = mask_shape
             op.dtype = torch.bfloat16
             if has_value:
                 op.value_shape = ()
             oracle = _nbytes(
-                (shape, torch.bfloat16),  # input
-                (shape, torch.bool),  # mask
-                (shape, torch.bfloat16),  # output
+                (input_shape, torch.bfloat16),
+                (mask_shape, torch.bool),
+                (out_shape, torch.bfloat16),
                 *((((), torch.bfloat16),) if has_value else ()),
             )
             assert op.eval_roofline()[1] == oracle, cls.__name__
+
+    def test_where_prices_each_operand_at_its_own_shape(self):
+        from tileops.ops.elementwise.where import WhereFwdOp
+
+        cond_shape, input_shape, other_shape = (8, 4096, 1), (1, 1, 4096), (8, 4096, 4096)
+        op = WhereFwdOp.__new__(WhereFwdOp)
+        op.condition_shape, op.input_shape, op.other_shape = cond_shape, input_shape, other_shape
+        op.dtype = torch.bfloat16
+        oracle = _nbytes(
+            (cond_shape, torch.bool),
+            (input_shape, torch.bfloat16),
+            (other_shape, torch.bfloat16),
+            ((8, 4096, 4096), torch.bfloat16),  # output
+        )
+        assert op.eval_roofline()[1] == oracle
+
+    def test_clamp_counts_only_the_bounds_the_call_passed(self):
+        from tileops.ops.elementwise.clamp import ClampFwdOp
+
+        input_shape, bound_shape, out_shape = (8, 4096, 4096), (1, 1, 4096), (8, 4096, 4096)
+        # (min passed, max passed)
+        for has_min, has_max in ((True, True), (True, False), (False, True)):
+            op = ClampFwdOp.__new__(ClampFwdOp)
+            op.input_shape = input_shape
+            op.min_shape = bound_shape if has_min else None
+            op.max_shape = bound_shape if has_max else None
+            op.dtype = torch.bfloat16
+            oracle = _nbytes(
+                (input_shape, torch.bfloat16),
+                *(((bound_shape, torch.bfloat16),) if has_min else ()),
+                *(((bound_shape, torch.bfloat16),) if has_max else ()),
+                (out_shape, torch.bfloat16),
+            )
+            assert op.eval_roofline()[1] == oracle, f"min={has_min} max={has_max}"
+
+    def test_lerp_tensor_prices_the_broadcast_weight_at_its_own_shape(self):
+        from tileops.ops.elementwise.arithmetic import LerpTensorFwdOp
+
+        input_shape, end_shape, weight_shape = (8, 4096, 4096), (8, 4096, 4096), (1, 1, 4096)
+        op = LerpTensorFwdOp.__new__(LerpTensorFwdOp)
+        op.input_shape, op.end_shape, op.weight_shape = input_shape, end_shape, weight_shape
+        op.dtype = torch.bfloat16
+        oracle = _nbytes(
+            (input_shape, torch.bfloat16),
+            (end_shape, torch.bfloat16),
+            (weight_shape, torch.bfloat16),
+            ((8, 4096, 4096), torch.bfloat16),  # output
+        )
+        assert op.eval_roofline()[1] == oracle
 
 
 # Classification registry: every implemented op appears in AUDITED (has a
@@ -489,6 +540,7 @@ AUDITED = frozenset(
         "AddFwdOp",
         "ArgmaxFwdOp",
         "BatchNormFwdOp",
+        "ClampFwdOp",
         "Conv2dFwdOp",
         "DeltaNetAutogradOp",
         "EngramGateConvBwdOp",
@@ -501,6 +553,7 @@ AUDITED = frozenset(
         "GroupedQueryAttentionBwdOp",
         "GroupedQueryAttentionDenseFwdOp",
         "IndexedExpertMLPFwdOp",
+        "LerpTensorFwdOp",
         "Mamba2FwdOp",
         "MaskedFillFwdOp",
         "MaskedFillScalarFwdOp",
@@ -509,6 +562,7 @@ AUDITED = frozenset(
         "MultiHeadAttentionBwdOp",
         "RMSNormFwdOp",
         "VarMeanFwdOp",
+        "WhereFwdOp",
     }
 )
 
@@ -544,7 +598,6 @@ PENDING = frozenset(
         "BmmFwdOp",
         "CBProducerFwdOp",
         "CeilFwdOp",
-        "ClampFwdOp",
         "ClampScalarFwdOp",
         "Conv1dFwdOp",
         "Conv3dFwdOp",
@@ -602,7 +655,6 @@ PENDING = frozenset(
         "LeFwdOp",
         "LeakyReluFwdOp",
         "LerpFwdOp",
-        "LerpTensorFwdOp",
         "Log1pFwdOp",
         "LogFwdOp",
         "LogSoftmaxFwdOp",
@@ -671,7 +723,6 @@ PENDING = frozenset(
         "TopkSelectorFwdOp",
         "TruncFwdOp",
         "VarFwdOp",
-        "WhereFwdOp",
     }
 )
 

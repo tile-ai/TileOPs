@@ -691,14 +691,15 @@ def where_fwd_roofline(op: "Op") -> tuple[int, int]:
     float input/other dtype, which inline mode cannot express (it binds
     ``elem_bytes`` to a single dtype).
 
-    ``flops = N_total`` (one predicated select per element).
-    ``bytes = N_total + 3 * N_total * elem_bytes`` — logical, post-broadcast:
-    a 1-byte condition read broadcast to ``N_total``, plus input, other, out.
+    ``flops = N_total`` (one predicated select per element). The bool
+    condition costs one byte per element of its own shape, input and other one
+    ``elem_bytes`` each of theirs, and the write is at the broadcast size.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
     flops = n_total
-    nbytes = n_total + 3 * n_total * elem_bytes
+    reads = prod(op.input_shape) + prod(op.other_shape)
+    nbytes = prod(op.condition_shape) + (reads + n_total) * elem_bytes
     return flops, nbytes
 
 
@@ -715,24 +716,28 @@ def clamp_fwd_roofline(op: "Op") -> tuple[int, int]:
     ``torch.clamp(input, min, max)`` with each bound a Tensor or absent,
     broadcasting across the operands present. Per docs/design/roofline.md §1.3 a
     two-sided clamp collapses to one fused compare-and-select, so
-    ``flops = N_total`` either way; bytes read input and each bound that was
-    passed, then write out.
+    ``flops = N_total`` either way. Bytes read input and each bound that was
+    passed, each at its own size, then write out at the broadcast size.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
-    reads = 1 + _supplied(op, "min") + _supplied(op, "max")
-    return n_total, (reads + 1) * n_total * elem_bytes
+    reads = prod(op.input_shape)
+    for bound in ("min", "max"):
+        if _supplied(op, bound):
+            reads += prod(getattr(op, f"{bound}_shape"))
+    return n_total, (reads + n_total) * elem_bytes
 
 
 def lerp_tensor_fwd_roofline(op: "Op") -> tuple[int, int]:
     """Roofline for ``LerpTensorFwdOp`` (Tensor-weight ``torch.lerp``).
 
-    Per output element: 3 flops (sub + mul + add); 3 reads + 1 write at
-    post-broadcast ``N_total``.
+    Per output element: 3 flops (sub + mul + add). Each of input, end and
+    weight is read at its own size; the write is at the broadcast size.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
-    return 3 * n_total, 4 * n_total * elem_bytes
+    reads = prod(op.input_shape) + prod(op.end_shape) + prod(op.weight_shape)
+    return 3 * n_total, (reads + n_total) * elem_bytes
 
 
 # MaskedFill family
@@ -749,14 +754,15 @@ def masked_fill_fwd_roofline(op: "Op") -> tuple[int, int]:
 
     Out-of-place ``Tensor.masked_fill``; output shape is the bidirectional
     broadcast of ``input`` and ``mask``. One predicated select per element →
-    ``flops = N_total``; ``bytes = N_total + 2 * N_total * elem_bytes`` for the
-    1-byte mask read plus input read and out write, plus the 0-dim ``value``
-    the Tensor-value variant declares.
+    ``flops = N_total``. Each operand is read at its own size, not the
+    output's: a broadcast operand occupies one storage however many times the
+    kernel reads it. The mask is bool, one byte per element, and the
+    Tensor-value variant reads its 0-dim ``value`` as well.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
     flops = n_total
-    nbytes = n_total + 2 * n_total * elem_bytes
+    nbytes = prod(op.mask_shape) + prod(op.input_shape) * elem_bytes + n_total * elem_bytes
     if _supplied(op, "value"):
         nbytes += elem_bytes
     return flops, nbytes
