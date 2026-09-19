@@ -145,6 +145,7 @@ class _StubBinaryOp:
     b_numel: int
     N_total: int
     dtype: torch.dtype
+    alpha: int | float = 1  # add/sub price the scale multiply from it
 
 
 @pytest.mark.smoke
@@ -152,9 +153,17 @@ def test_broadcast_binary_helper_no_broadcast():
     """When inputs share the output shape, a_numel == b_numel == N_total."""
     op = _StubBinaryOp(a_numel=1024, b_numel=1024, N_total=1024, dtype=torch.float32)
     flops, nbytes = formulas.add_fwd_roofline(op)
-    assert flops == 2 * 1024
+    assert flops == 1024  # default alpha: one basic arithmetic op per element
     # 2 reads (4 bytes each) + 1 write (4 bytes) per element
     assert nbytes == (1024 + 1024 + 1024) * 4
+
+
+@pytest.mark.smoke
+def test_broadcast_binary_helper_prices_a_real_alpha():
+    """A non-default alpha adds the scale multiply for both add and sub."""
+    op = _StubBinaryOp(a_numel=1024, b_numel=1024, N_total=1024, dtype=torch.float32, alpha=2)
+    assert formulas.add_fwd_roofline(op)[0] == 2048
+    assert formulas.sub_fwd_roofline(op)[0] == 2048
 
 
 @pytest.mark.smoke
