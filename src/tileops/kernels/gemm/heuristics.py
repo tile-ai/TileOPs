@@ -317,8 +317,7 @@ def swap_ab_grid_underfills(n: int, sm_count: int) -> bool:
     The measured n boundary where the operand-swapped grid loses its width
     advantage, written once for its two consumers: ``_swap_ab_stages`` returns
     None below it (the tiny-m band falls to split-K or the plain tile), and
-    ``SmallBatchGemmKernel.applies`` claims exactly this underfilled band at
-    ``m == 2`` — that handoff has no gap and no overlap. Retune the two
+    ``GemvKernel.band_for`` claims exactly this underfilled band at ``m == 2`` — that handoff has no gap and no overlap. Retune the two
     together.
     """
     return -(-n // _SWAP_AB_BLOCK_NN) * 8 < sm_count * 3
@@ -412,7 +411,7 @@ def _best_config_cached(
 def best_config(
     m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int, device_name: str
 ) -> Optional[dict]:
-    """Return the analytically selected ``GemmKernel`` config for a shape.
+    """Return the analytically selected ``GemmTmaKernel`` config for a shape.
 
     Args:
         m: Logical GEMM rows of the output.
@@ -427,7 +426,7 @@ def best_config(
     Returns:
         ``None`` when no profile carries this board's ranking constants, so the
         caller takes its own default rather than a ranking measured elsewhere.
-        Otherwise a config dict in ``GemmKernel`` schema — either the single-consumer
+        Otherwise a config dict in ``GemmTmaKernel`` schema — either the single-consumer
         form (``block_m/block_n/block_k/num_stages/panel_size/split_k``,
         optionally ``simple``) or a structure-flagged form (``coop2`` /
         ``coop2_splitk``). A fresh dict per call: the selection itself is
@@ -442,7 +441,7 @@ def best_config(
 
 
 def gemv_config(k: int) -> dict:
-    """SM90 ``GemvKernel`` config band (single-row / single-column GEMV).
+    """SM90 ``GemvKernel`` config rule for its one-row bands (single-row / single-column GEMV).
 
     GEMV is HBM-bandwidth bound; the lever is memory-level parallelism per
     output row via ``reduce_threads > 32`` (cross-warp SMEM tree reduction,
@@ -467,7 +466,7 @@ def gemv_config(k: int) -> dict:
 
 
 def small_batch_config(n: int, k: int, sm_count: int) -> dict:
-    """``SmallBatchGemmKernel`` (m == 2 NT band) config rule.
+    """``GemvKernel`` config rule for its ``lhs_rows`` band (m == 2 NT).
 
     Modal best across the dispatched band: one output column per block, a
     64-lane reduction over K, 4-deep cp.async ring. One exception: when the

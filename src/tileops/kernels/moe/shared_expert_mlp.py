@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.gemm.dense import GemmBasicKernel, GemmKernel
+from tileops.kernels.gemm.dense import GemmCpAsyncKernel, GemmTmaKernel
 from tileops.kernels.gemm.heuristics import small_m_splitk_config
 from tileops.kernels.grouped_gemm.heuristics import GemmType
 from tileops.kernels.grouped_gemm.template import GemmTemplate
@@ -112,7 +112,7 @@ class SharedExpertMLPKernel(Kernel):
             )
         elif sm_version == 90:
             gemm_config = self.config if config is not None else None
-            self._gemm_gate_up = GemmKernel(
+            self._gemm_gate_up = GemmTmaKernel(
                 m=num_tokens,
                 n=ffn_size * 2,
                 k=hidden_size,
@@ -132,7 +132,7 @@ class SharedExpertMLPKernel(Kernel):
                 else None
             )
             if small_m_config is not None:
-                self._gemm_down = GemmBasicKernel(
+                self._gemm_down = GemmCpAsyncKernel(
                     m=num_tokens,
                     n=hidden_size,
                     k=ffn_size,
@@ -141,7 +141,7 @@ class SharedExpertMLPKernel(Kernel):
                     config=small_m_config,
                 )
             else:
-                self._gemm_down = GemmKernel(
+                self._gemm_down = GemmTmaKernel(
                     m=num_tokens,
                     n=hidden_size,
                     k=ffn_size,
@@ -151,7 +151,7 @@ class SharedExpertMLPKernel(Kernel):
                 )
             gate_config = self._gemm_gate_up.config
             if num_tokens == 32 and gate_config.get("split_k", 1) > 1:
-                self._fused_gate_up = GemmKernel(
+                self._fused_gate_up = GemmTmaKernel(
                     m=num_tokens,
                     n=ffn_size * 2,
                     k=hidden_size,
@@ -161,7 +161,7 @@ class SharedExpertMLPKernel(Kernel):
                     config=gate_config,
                 )
         else:
-            self._gemm_gate_up = GemmBasicKernel(
+            self._gemm_gate_up = GemmCpAsyncKernel(
                 m=num_tokens,
                 n=ffn_size * 2,
                 k=hidden_size,
@@ -169,7 +169,7 @@ class SharedExpertMLPKernel(Kernel):
                 trans_b=True,
                 config=self.config,
             )
-            self._gemm_down = GemmBasicKernel(
+            self._gemm_down = GemmCpAsyncKernel(
                 m=num_tokens,
                 n=hidden_size,
                 k=ffn_size,

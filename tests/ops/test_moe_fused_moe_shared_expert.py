@@ -11,7 +11,7 @@ Verifies:
 import pytest
 import torch
 
-from tileops.kernels.gemm.dense import GemmKernel
+from tileops.kernels.gemm.dense import GemmTmaKernel
 from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.moe import SharedExpertMLPKernel
 from tileops.ops.moe import FusedMoeSharedExpertFwdOp
@@ -69,8 +69,8 @@ def test_fused_moe_shared_expert_basic(num_tokens):
 
     if get_sm_version() == 90:
         shared_kernel = next(iter(op.built_kernels("shared_expert_mlp").values()))
-        assert isinstance(shared_kernel._gemm_gate_up, GemmKernel)
-        assert isinstance(shared_kernel._gemm_down, GemmKernel)
+        assert isinstance(shared_kernel._gemm_gate_up, GemmTmaKernel)
+        assert isinstance(shared_kernel._gemm_down, GemmTmaKernel)
         if T == 512:
             wide = SharedExpertMLPKernel(512, 7168, 18432, dtype)
             assert isinstance(wide._gemm_gate_up, GemmTemplate)

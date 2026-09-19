@@ -4,32 +4,30 @@ The grouped forms are a separate family in ``kernels.grouped_gemm``: they schedu
 over a group offset table rather than a single ``(m, n, k)``.
 """
 
-from .bmm import BmmFp8Kernel, BmmFp8TransposeKernel, BmmKernel, BmmTemplateKernel
+from .bmm import BmmFp8Kernel, BmmFp8TransposeKernel, BmmKernel, BmmPersistentKernel
 from .call_spec import BmmCall, GemmCall
 from .dense import (
-    GemmBasicKernel,
-    GemmFp8BlockScaledKernel,
-    GemmFp8EpilogueKernel,
-    GemmKernel,
+    GemmCpAsyncKernel,
+    GemmFp8BlockScaleKernel,
+    GemmFp8TensorScaleKernel,
+    GemmTmaKernel,
     GemvKernel,
-    SmallBatchGemmKernel,
 )
 from .w4a16 import GemmW4A16Kernel
-from .w4a16_decode import GemmW4A16DecodeKernel
+from .w4a16_gemv import GemmW4A16GemvKernel
 
 __all__ = [
     "BmmCall",
     "BmmFp8Kernel",
     "BmmFp8TransposeKernel",
     "BmmKernel",
-    "BmmTemplateKernel",
-    "GemmBasicKernel",
+    "BmmPersistentKernel",
+    "GemmCpAsyncKernel",
     "GemmCall",
-    "GemmFp8BlockScaledKernel",
-    "GemmFp8EpilogueKernel",
-    "GemmKernel",
-    "GemmW4A16DecodeKernel",
+    "GemmFp8BlockScaleKernel",
+    "GemmFp8TensorScaleKernel",
+    "GemmTmaKernel",
+    "GemmW4A16GemvKernel",
     "GemmW4A16Kernel",
     "GemvKernel",
-    "SmallBatchGemmKernel",
 ]

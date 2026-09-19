@@ -16,11 +16,11 @@ from .w4a16 import GROUP_SIZE
 # cover one group128 and can share its sixteen possible dequantized values.
 BYTES_PER_SLOT = 4
 
-__all__ = ["GemmW4A16DecodeKernel"]
+__all__ = ["GemmW4A16GemvKernel"]
 
 
 @functools.lru_cache(maxsize=32)
-def _gemm_w4a16_decode_kernel(n: int, k: int, dtype: str) -> Callable:
+def _gemm_w4a16_gemv_kernel(n: int, k: int, dtype: str) -> Callable:
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={
@@ -167,7 +167,7 @@ def _gemm_w4a16_decode_kernel(n: int, k: int, dtype: str) -> Callable:
     return build
 
 
-class GemmW4A16DecodeKernel(Kernel):
+class GemmW4A16GemvKernel(Kernel):
     """Fuse nibble unpacking, affine dequantization, and the M=1 GEMV."""
 
     # ``packed_weight`` and ``weight_zero`` are uint8 payloads; the K loop is
@@ -207,7 +207,7 @@ class GemmW4A16DecodeKernel(Kernel):
     ) -> None:
         super().__init__(device_index=device_index)
         if m != 1:
-            raise ValueError(f"GemmW4A16DecodeKernel requires M=1, got {m}")
+            raise ValueError(f"GemmW4A16GemvKernel requires M=1, got {m}")
         if group_size != GROUP_SIZE:
             raise ValueError(f"only group_size={GROUP_SIZE} is supported")
         self.m = m
@@ -215,7 +215,7 @@ class GemmW4A16DecodeKernel(Kernel):
         self.k = k
         self.dtype = dtype
         self.group_size = group_size
-        self.kernel = _gemm_w4a16_decode_kernel(n, k, self.dtype_str)
+        self.kernel = _gemm_w4a16_gemv_kernel(n, k, self.dtype_str)
         self.init_config(config, tune)
         # block_k must tile K exactly; K is a multiple of GROUP_SIZE, so halving
         # a power-of-two block_k always lands on a divisor.
@@ -248,5 +248,5 @@ class GemmW4A16DecodeKernel(Kernel):
         weight_scale: torch.Tensor,
         weight_zero: torch.Tensor,
     ) -> torch.Tensor:
-        compiled = _gemm_w4a16_decode_kernel(self.n, self.k, self.dtype_str)(**self.config)
+        compiled = _gemm_w4a16_gemv_kernel(self.n, self.k, self.dtype_str)(**self.config)
         return compiled(activation, packed_weight, weight_scale, weight_zero)
