@@ -126,6 +126,5 @@ root maps into a subuid namespace, so neither `--cap-add SYS_ADMIN` nor `--privi
 the driver's admin check.
 
 Check a runner with `grep RmProfilingAdminOnly /proc/driver/nvidia/params` (`0` is open) or
-`python scripts/validate_roofline_bytes.py --check-counters`. The audit workflow runs the
-latter before measuring, so an unprovisioned runner fails loudly instead of uploading an empty
-result.
+`python scripts/validate_roofline_bytes.py --check-counters`. Run the latter before measuring;
+an unprovisioned runner then fails at the check instead of reporting an empty result.
