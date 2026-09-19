@@ -187,6 +187,16 @@ class Op(ABC):
             "docs/design/roofline.md §4.4.6 (Evaluator Surface Boundary)"
         )
 
+    def eval_roofline_read_bytes(self) -> int:
+        """The read half of ``eval_roofline()[1]``, for the NCU bytes audit.
+
+        ``(flops, bytes)`` does not carry the read/write split, so an op that
+        goes to the audit (docs/design/roofline.md §4.5) states its read half
+        here. Returning ``NotImplemented`` means the op does not, and the audit
+        reports NO-VERDICT for it rather than inventing a value.
+        """
+        return NotImplemented
+
     def compute_roof(self) -> str:
         """GPU-profile key of the compute unit that prices this op's FLOPs.
 

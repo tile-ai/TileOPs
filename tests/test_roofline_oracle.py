@@ -73,6 +73,7 @@ class TestBytesOracle:
         op.input_shape = a_shape
         op.other_shape = b_shape  # out_shape derives via _infer_output_shapes
         op.dtype = torch.bfloat16
+        op.alpha = 1  # add/sub price the scale multiply from it
         oracle = _nbytes(
             (a_shape, torch.bfloat16),
             (b_shape, torch.bfloat16),

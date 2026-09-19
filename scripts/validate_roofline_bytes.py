@@ -159,24 +159,19 @@ def _pick_workloads(entry: dict, cap: int = 6) -> list[tuple[dict, str]]:
     return [({k: v for k, v in r.items() if k != "__size"}, d) for r, d in ranked[:cap]]
 
 
-def _declared_read_bytes(op, inputs) -> int | None:
-    """The formula's read half, or None when the op declares none.
+def _declared_read_bytes(op) -> int | None:
+    """The op's declared read half, or None when it declares none.
 
-    An op §4.7 routes to this audit declares the half itself. The fallback is
-    the logical extent of the call's distinct input tensors, which matches the
-    formula's read half only for ops that read each input once at its own
-    shape — the ops the oracle already covers exactly.
+    There is no fallback. Summing the call's input tensors is not the read
+    half: an op that reads a subset of an input -- a routed MoE reading the
+    experts its routing selects -- would be charged the whole of it and fail
+    a correct formula.
     """
-    import torch
-
     declared = getattr(op, "eval_roofline_read_bytes", None)
-    if callable(declared):
-        return int(declared())
-    seen: dict[int, int] = {}
-    for value in inputs:
-        if isinstance(value, torch.Tensor):
-            seen[value.data_ptr()] = value.numel() * value.element_size()
-    return sum(seen.values()) or None
+    if not callable(declared):
+        return None
+    value = declared()
+    return None if value is NotImplemented else int(value)
 
 
 def run_child(op_name: str, row_json: str, dtype_str: str) -> None:
@@ -196,7 +191,7 @@ def run_child(op_name: str, row_json: str, dtype_str: str) -> None:
         op(*inputs)  # bind input-inferred roofline vars; build kernels
         torch.cuda.synchronize()
         flops, nbytes = op.eval_roofline()
-        read_bytes = _declared_read_bytes(op, inputs)
+        read_bytes = _declared_read_bytes(op)
         torch.cuda.nvtx.range_push(NVTX_RANGE)
         op(*inputs)
         torch.cuda.nvtx.range_pop()
