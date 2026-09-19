@@ -34,6 +34,10 @@ class _HeuristicPolicy:
     element_bytes: int = 2
     block_k: int = 64
     block_n_step: int = 64
+    # The tile whose whole-tile output buffer costs it a mainloop stage, and the
+    # depth a narrower output staging is worth taking to reach.
+    staged_epilogue_tile: tuple[int, int, int] = (128, 256, 64)
+    staged_epilogue_stages: int = 4
 
     @property
     def barrier_bytes(self) -> int:
@@ -79,6 +83,7 @@ class GemmType(str, enum.Enum):
 
 
 _ALIGNED_TYPES = (GemmType.M_GROUPED_ALIGNED_PER_ROW, GemmType.M_GROUPED_ALIGNED_PSUM)
+_TIGHT_TYPES = (GemmType.M_GROUPED_TIGHT_PER_ROW, GemmType.M_GROUPED_TIGHT_PSUM)
 PER_GROUP_TYPES = (
     GemmType.M_GROUPED_MASKED,
     GemmType.M_GROUPED_ALIGNED_PSUM,
@@ -141,11 +146,11 @@ class GroupedGemmSpec:
         if self.epilogue_stage_n < 0:
             raise ValueError("epilogue_stage_n must be non-negative")
         if self.epilogue_stage_n:
-            if (
-                self.gemm_type not in (GemmType.DENSE, GemmType.BATCHED)
-                or self.activation != "none"
-            ):
-                raise ValueError("epilogue_stage_n only supports an unfused dense or batched GEMM")
+            if self.activation != "none":
+                raise ValueError(
+                    "epilogue_stage_n takes an unfused GEMM: a fused epilogue writes the whole "
+                    "tile into shared memory at once, so its output cannot leave in chunks"
+                )
             if c_tile_n % self.epilogue_stage_n:
                 raise ValueError("epilogue_stage_n must divide the output tile width")
         if self.swizzle_group_m and self.gemm_type is not GemmType.DENSE:
@@ -440,20 +445,36 @@ def _spec(
     )
 
 
+def _staged_epilogue(desc: GemmDesc, layout: _Layout) -> GroupedGemmSpec | None:
+    """A spec that trades a narrower output staging buffer for a deeper mainloop.
+
+    Returns ``None`` where the trade buys no stage, and so only costs the extra
+    staging rounds. The widest chunk that reaches the policy's depth wins.
+    """
+    policy = desc.policy
+    if desc.activation != "none" or not desc.h200:
+        return None
+    if desc.gemm_type in _TIGHT_TYPES:
+        # A tight group's last tile is ragged, and those rows are stored under a
+        # row mask rather than in one wide store. Chunking makes them pay a
+        # staging round each, for a store that was never going to widen; how many
+        # tiles are ragged is a property of the routing, not of the shape.
+        return None
+    if (layout.block_m, layout.block_n, layout.block_k) != policy.staged_epilogue_tile:
+        return None
+    base = _num_stages(desc, layout)
+    for stage_n in (layout.block_n // 2, layout.block_n // 4):
+        stages = _num_stages(desc, layout, epilogue_stage_n=stage_n)
+        if stages > base and stages >= policy.staged_epilogue_stages:
+            return _spec(desc, layout, stages, epilogue_stage_n=stage_n)
+    return None
+
+
 @functools.lru_cache(maxsize=1024)
 def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
     """Return the selected kernel spec for ``desc``."""
     best = _short_group_layout(desc) or _best_layout(desc, layout_candidates(desc))
-    if (
-        desc.h200
-        and desc.gemm_type is GemmType.BATCHED
-        and desc.activation == "none"
-        and (best.block_m, best.block_n, best.block_k) == (128, 256, 64)
-        and _num_stages(desc, best, epilogue_stage_n=128) >= 4
-    ):
-        # Half-width output staging makes a fourth mainloop stage fit on H200.
-        return _spec(desc, best, 4, epilogue_stage_n=128)
-    return _spec(desc, best, _num_stages(desc, best))
+    return _staged_epilogue(desc, best) or _spec(desc, best, _num_stages(desc, best))
 
 
 def spec_from_config(desc: GemmDesc, config: dict) -> GroupedGemmSpec:
