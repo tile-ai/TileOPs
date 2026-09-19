@@ -160,7 +160,7 @@ Verdict lines are rendering thresholds, not CI gates:
 | At ceiling | ≥ 80%     | Done. The HBM ceiling is an envelope over access mixes, and a kernel's own mix caps below it (a perfect 2R:1W kernel reaches ~90% of it, a perfect 1R:1W ~87%); the line sits below every mix's personal ceiling. |
 | Anomaly    | > 105%    | Above the achievable ceiling: the formula or the calibration is wrong. Excluded from "at ceiling".                                                                                                                |
 
-Physics check: every row's implied rates (`bytes / time`, `flops / time`) are compared against the *theoretical* ceilings of its roofs. A breach is physically impossible, so it is reported as a formula error that fails the run's health — a formula edit that inflates work is caught on the next nightly. This check is the standing guard on formula overestimation; equality-level validation belongs to the structural oracle (§4.6), hardware-counter validation to the bytes audit (§4.5).
+Physics check: every row's implied rates (`bytes / time`, `flops / time`) are compared against the *theoretical* ceilings of its roofs. A breach is physically impossible, so it is reported as a formula error that fails the run's health — a formula edit that inflates work is caught on the next nightly. This check is the standing guard on formula overestimation; equality-level validation belongs to the structural oracle (§4.6), read-side hardware-counter validation to the bytes audit (§4.5).
 
 ### 4.4 Op Codegen
 
@@ -282,29 +282,30 @@ Rules:
 
 ### 4.5 Bytes Audit (NCU)
 
-`scripts/validate_roofline_bytes.py` compares each op's `bytes` formula against hardware counters. It exists because the metric's objectivity rests on `bytes` being the true minimum traffic, and an overestimating formula inflates every efficiency reading in a way neither review nor the physics check is guaranteed to catch.
+`scripts/validate_roofline_bytes.py` compares an op's `bytes` formula against DRAM counters. Its verdict covers the read side only: writes still resident in L2 when the kernel ends fall outside the profiled range, so the write side is measured and reported but never judged.
 
-Method, per audited op:
+The read-side bound is conditional, not a theorem. It holds while each kernel is replayed from cold caches, which inflates a multi-kernel op's reads rather than deflating them; a verdict states that premise alongside it.
 
-1. Pick workloads covering the formula's branch signatures (dtype combos, optional-input presence, backend labels), from the manifest's real workloads — never scaled-up shapes, which can cross kernel-selection thresholds and audit an implementation the benchmark does not run.
-1. Run `forward()` once (input-inferred ops bind their roofline variables there), then read `op.eval_roofline()`.
-1. Measure a second `forward()` under Nsight Compute with cache control on, summing `dram__bytes_read.sum + dram__bytes_write.sum` over the call's kernels.
+`(flops, bytes)` does not carry the read/write split, so an op sent here states its read half in `Op.eval_roofline_read_bytes()`. There is no fallback. Summing the call's input tensors is not the read half: an op that reads a subset of an input — a routed MoE reading the experts its routing selects — would be charged the whole of it, and a correct formula would fail. An op that declares nothing gets NO-VERDICT, which is not a pass.
 
-| Verdict | Condition                            | Reading                                                                                                                             |
-| ------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| FAIL    | `measured < formula × (1 − ε)`       | Only a formula overestimate produces it: sector granularity, write-allocate, ECC, and replay cache-flushing all push `measured` up. |
-| WARN    | `measured > formula × 1.5`           | Multi-pass implementation or replay inflation; informational.                                                                       |
-| ERROR   | missing metric or empty kernel range | A broken audit, never a verdict.                                                                                                    |
+| Verdict    | Meaning                                                  |
+| ---------- | -------------------------------------------------------- |
+| FAIL       | Measured reads fall short of the declared read half.     |
+| WARN       | Measured reads far exceed it: multi-pass or replay cost. |
+| ERROR      | The audit did not produce a usable measurement.          |
+| NO-VERDICT | No read half was declared.                               |
 
-Runs on demand (profiling permissions, replay cost) — after a manifest `roofline` edit, and as the mandatory check for ops exempt from the structural oracle (data-dependent traffic the oracle cannot count).
+Workloads come from the manifest's own rows and cover the formula's branch signatures. Scaled-up shapes are not used: they can cross kernel-selection thresholds and audit an implementation the benchmark never runs.
+
+Runs on demand. It needs GPU performance counters, which the driver restricts to admin by default and which a rootless container cannot obtain however privileged it is.
 
 ### 4.6 Structural Oracle (tests)
 
 A CI test recomputes each audited `bytes` value from an independent path — the sizes of the tensors the workload actually binds (each distinct input storage once, each output once) — and requires equality with `eval_roofline()`. The formula and the oracle share only the minimum-traffic definition, so a coefficient slip, a missed output, a wrong `elem_bytes`, or a broadcast counted at the wrong shape breaks the equality.
 
-Ops whose traffic depends on tensor *content* (gather-style indexing) are exempt by explicit list and covered by §4.5 instead. Coverage is golden workloads per op, not randomized sweeps.
+Traffic that depends on tensor *content* is recounted the same way: the case constructs the selecting tensor itself, exactly as it constructs shapes, so content dependence is no reason to exempt an op. Coverage is golden workloads per op, not randomized sweeps.
 
-A completeness test keeps the classification total: every implemented op is audited, exempt with a reason, or on an explicit pending list to burn down. An op added to the manifest fails the test until it is classified.
+A completeness test keeps the classification total: every implemented op is audited or on an explicit pending list to burn down. An op added to the manifest fails the test until it is classified.
 
 ## 5. Reference
 
