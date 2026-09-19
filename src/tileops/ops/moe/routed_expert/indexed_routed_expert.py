@@ -29,8 +29,10 @@ __all__ = ["IndexedExpertMLPFwdOp"]
 class IndexedExpertMLPFwdOp(Op):
     """Route-major expert MLP with device-side reuse dispatch.
 
-    Each of the ``T * K`` routes is a row of its expert's GEMM, so the weights are read
-    once per route rather than once per expert segment. That pays off while the routes
+    Each of the ``T * K`` routes is a row of its expert's GEMM, dispatched per route
+    rather than per expert segment. Routes that share an expert are grouped, and only the
+    leader copies that expert's weights, so the minimum DRAM traffic the roofline prices
+    is one read per distinct expert. That pays off while the routes
     are few; :class:`FusedMoEExpertsFwdOp` picks this op over the staged pipeline on the
     shapes where it does, and requires SM90.
     """
@@ -210,8 +212,6 @@ class IndexedExpertMLPFwdOp(Op):
         workspace2: Tensor,
     ) -> None:
         """Write the weighted and reduced expert result into ``output``."""
-        # Captured outside the wrapped call, which the compiled path would trace.
-        self._roofline_topk_ids = topk_ids
         self._wrapped(
             output,
             hidden_states,
@@ -223,6 +223,9 @@ class IndexedExpertMLPFwdOp(Op):
             workspace2,
             self._instance_key,
         )
+        # Outside the wrapped call, which the compiled path would trace, and after it,
+        # so a call the validation inside rejects leaves no routing for the roofline.
+        self._roofline_topk_ids = topk_ids
 
     def _eager_forward(
         self,

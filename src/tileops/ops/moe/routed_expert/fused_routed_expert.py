@@ -202,7 +202,6 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         workspace2: Tensor,
     ) -> None:
         """Run the local expert pipeline, writing the reduced result into ``output``."""
-        self._roofline_topk_ids = topk_ids
         self._validate_dtypes(
             output,
             hidden_states,
@@ -225,10 +224,13 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
                 workspace1,
                 workspace2,
             )
+            self._roofline_topk_ids = topk_ids
             return
         expert_input, physical_ends, inverse_indices = self._pre_permute(hidden_states, topk_ids)
         expert_output = self._expert_mlp(expert_input, w_gate_up, w_down, physical_ends)
         self._post_permute(expert_output, topk_weights, inverse_indices, out=output)
+        # Set once the call has run, so a rejected one leaves no routing for the roofline.
+        self._roofline_topk_ids = topk_ids
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

@@ -923,8 +923,11 @@ def fused_moe_shared_expert_fwd_bytes(op: "Op") -> tuple[int, int]:
         return flops, nbytes
     elem_bytes = _dtype_itemsize(op.dtype)
     weights = 3 * int(shard_ffn) * int(op.hidden_size)
-    flops += 2 * int(op.num_tokens) * weights
-    nbytes += (weights + int(op.num_tokens) * int(op.hidden_size)) * elem_bytes
+    tokens = int(op.num_tokens)
+    flops += 2 * tokens * weights
+    # Its own read of the hidden states, and the write of ``shared_output``: the op
+    # returns that half separately, so it is an output of its own.
+    nbytes += (weights + 2 * tokens * int(op.hidden_size)) * elem_bytes
     return flops, nbytes
 
 

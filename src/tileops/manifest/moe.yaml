@@ -599,7 +599,7 @@ FusedMoeSharedExpertFwdOp:
     func: "tileops.perf.formulas.fused_moe_shared_expert_fwd_bytes"
     composition:
     - stage: shared_expert
-      formula: "F_s = shared_ffn_size / tp_size; flops 2 * num_tokens * 3 * F_s * hidden_size, bytes (3 * F_s * hidden_size + num_tokens * hidden_size) * elem_bytes"
+      formula: "F_s = shared_ffn_size / tp_size; flops 2 * num_tokens * 3 * F_s * hidden_size, bytes (3 * F_s * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes -- the hidden states read and the shared_output write"
       optional: true
     - stage: routed_moe
       source: "tileops.perf.formulas.fused_moe_fwd_bytes"
