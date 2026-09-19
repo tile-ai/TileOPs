@@ -159,6 +159,14 @@ def test_broadcast_binary_helper_no_broadcast():
 
 
 @pytest.mark.smoke
+def test_broadcast_binary_helper_prices_a_real_alpha():
+    """A non-default alpha adds the scale multiply for both add and sub."""
+    op = _StubBinaryOp(a_numel=1024, b_numel=1024, N_total=1024, dtype=torch.float32, alpha=2)
+    assert formulas.add_fwd_roofline(op)[0] == 2048
+    assert formulas.sub_fwd_roofline(op)[0] == 2048
+
+
+@pytest.mark.smoke
 def test_broadcast_binary_helper_bool_output_byte_accounting():
     """Comparison ops emit a 1-byte output regardless of input dtype."""
     op = _StubBinaryOp(a_numel=1024, b_numel=1024, N_total=1024, dtype=torch.float32)

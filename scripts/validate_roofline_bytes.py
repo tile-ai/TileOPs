@@ -41,6 +41,10 @@ NVTX_RANGE = "tileops_roofline"
 METRICS = "dram__bytes_read.sum,dram__bytes_write.sum"
 # Workloads at least this large keep fixed sector/TLB overheads inside EPS.
 SMALL_WORKLOAD_BYTES = 32 * 2**20
+# The read-side bound holds only under cold-cache replay. Every judged row
+# carries it, so a row copied out of results.json cannot be read as an
+# unconditional hardware measurement.
+COLD_CACHE_PREMISE = "cold-cache replay (ncu --cache-control all)"
 
 
 def _op_class(op_name: str, entry: dict):
@@ -252,6 +256,14 @@ def read_side_verdict(measured_read: float, read_bytes: int | None) -> str:
     return "PASS"
 
 
+def exit_code(counts: dict[str, int]) -> int:
+    """A row the audit ran without reaching a verdict is not a passed one.
+
+    SKIPPED (never run, reason stated) and WARN stay green.
+    """
+    return 1 if any(counts.get(v) for v in ("FAIL", "ERROR", "NO-VERDICT")) else 0
+
+
 def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
     results = []
     cases = _pick_workloads(entry)
@@ -306,6 +318,7 @@ def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
             "measured_read_bytes": int(measured_read),
             "measured_write_bytes": int(measured_write),  # reported, never judged (§4.5)
             "kernels": n_kernels,
+            "measured_under": COLD_CACHE_PREMISE,
             "note": "small workload" if formula < SMALL_WORKLOAD_BYTES else "",
         }
         if verdict == "NO-VERDICT":
@@ -394,6 +407,7 @@ def main() -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    print(f"Read side judged under {COLD_CACHE_PREMISE}; write side reported, never judged.\n")
     all_results = []
     for op_name, entry in sorted(targets.items()):
         rows = audit_one(op_name, entry, out_dir)
@@ -410,10 +424,7 @@ def main() -> None:
     for r in all_results:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
     print(f"\nSummary: {counts} → {out_dir}/results.json")
-    # A row the audit ran without reaching a verdict is not a passed one.
-    # SKIPPED (never run, reason stated) and WARN stay green.
-    failed = ("FAIL", "ERROR", "NO-VERDICT")
-    sys.exit(1 if any(counts.get(v) for v in failed) else 0)
+    sys.exit(exit_code(counts))
 
 
 if __name__ == "__main__":
