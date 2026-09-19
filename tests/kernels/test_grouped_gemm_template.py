@@ -390,6 +390,11 @@ def test_spec_rejects_inconsistent_template_parameters():
     [
         pytest.param([100, 0, 300, 128, 7, 64], dict(block_m=128, block_n=128), id="two-wgs"),
         pytest.param([100, 0, 300, 128, 7, 64], dict(block_m=64, block_n=128), id="one-wg"),
+        pytest.param(
+            [100, 0, 300, 128, 7, 64],
+            dict(block_m=128, block_n=256, epilogue_stage_n=64, num_stages=4),
+            id="chunked-epilogue",
+        ),
     ],
 )
 def test_m_grouped_tight_psum_masks_each_groups_last_tile(sizes, config):

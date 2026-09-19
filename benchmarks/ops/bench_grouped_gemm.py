@@ -18,7 +18,6 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
-    fields,
     workload_params,
 )
 from tileops.manifest import load_workloads
@@ -32,9 +31,23 @@ from workloads.grouped_gemm import (
 _TUNE = True
 
 
+def _grouped_gemm_args(w: dict, dtype: torch.dtype) -> tuple:
+    """Row values, with the row layout last: a row carrying the padded offsets is padded."""
+    return (
+        w["batch_sum"],
+        w["batch_count"],
+        w["n"],
+        w["k"],
+        getattr(torch, w["dtype"]),
+        w["transpose_a"],
+        w["transpose_b"],
+        "batch_padded_offsets_shape" in w,
+    )
+
+
 _GROUPED_GEMM_PARAMS = workload_params(
     load_workloads(GroupedGemmFwdOp),
-    fields("batch_sum", "batch_count", "n", "k", "dtype", "transpose_a", "transpose_b"),
+    _grouped_gemm_args,
     smoke_first=True,
 )
 
@@ -42,16 +55,17 @@ _GROUPED_GEMM_PARAMS = workload_params(
 def _torch_grouped_mm(test: GroupedGemmWorkload, inputs: tuple):
     """``torch._grouped_mm`` over the same groups, or None where it cannot take them.
 
-    Reads B as ``[groups, K, N]`` and takes cumulative group ends, both built here
-    rather than inside the timed callable.
+    Reads B as ``[groups, K, N]`` and takes the group ends of the layout under
+    test -- a padded group ends on its block boundary, and owns the padding rows
+    that trail it -- both built here rather than inside the timed callable.
     """
     if not hasattr(torch, "_grouped_mm"):
         return None
     if test.transpose_a and test.transpose_b:
         return None
 
-    sizes = torch.tensor(test.batch_sizes_list, device=inputs[0].device, dtype=torch.int32)
-    offsets = torch.cumsum(sizes, dim=0).to(torch.int32)
+    ends = test.group_starts_list[1:] + [test.total_rows]
+    offsets = torch.tensor(ends, device=inputs[0].device, dtype=torch.int32)
 
     if test.transpose_a:
 
@@ -71,7 +85,7 @@ def _torch_grouped_mm(test: GroupedGemmWorkload, inputs: tuple):
 
 
 @pytest.mark.parametrize(
-    "batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b",
+    "batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b, padded",
     _GROUPED_GEMM_PARAMS,
 )
 def test_grouped_gemm_bench(
@@ -82,11 +96,19 @@ def test_grouped_gemm_bench(
     dtype: torch.dtype,
     transpose_a: bool,
     transpose_b: bool,
+    padded: bool,
 ) -> None:
-    test = GroupedGemmWorkload(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
+    test = GroupedGemmWorkload(
+        batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b, padded=padded
+    )
     inputs = test.gen_inputs()
 
     op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b, tune=_TUNE)
+    # The layout a row states is a contract the kernel does not re-derive: a padded
+    # call whose groups do not start on a row block reads its neighbour's rows.
+    if not transpose_a:
+        a, batch_sizes, batch_offsets = inputs[0], inputs[2], inputs[3]
+        torch._assert_async(op.layout_guard(a, batch_sizes, batch_offsets, *inputs[4:]))
     bm = ManifestBenchmark(op, test)
 
     functors = {
