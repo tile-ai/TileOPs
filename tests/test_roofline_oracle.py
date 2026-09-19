@@ -387,27 +387,31 @@ class TestBytesOracle:
         )
         assert op.eval_roofline()[1] == oracle
 
-    def test_fp8_indexer_counts_the_scale_only_when_the_call_supplies_it(self):
+    def test_fp8_indexer_prices_each_input_at_its_own_dtype_and_the_scale_by_presence(self):
         from tileops.ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
 
         batch, seq_len, heads, index_dim = 1, 4096, 32, 128
         seq_len_kv, kv_group = 4096, 1
         scale_shape = (batch, seq_len_kv, kv_group)
+        fp8, bf16 = torch.float8_e4m3fn, torch.bfloat16
         # Handed bf16, the op quantizes and produces the scale itself: both are
-        # intermediates. Handed fp8, the caller supplies the scale.
+        # intermediates. Only the pre-quantized call reads a caller's scale, and
+        # only it requires index_q and index_k to share a dtype.
         calls = {
-            "bf16 inputs": (torch.bfloat16, None),
-            "pre-quantized": (torch.float8_e4m3fn, scale_shape),
+            "bf16 inputs": (bf16, bf16, None),
+            "pre-quantized": (fp8, fp8, scale_shape),
+            "fp8 inputs, quantized k": (fp8, fp8, None),
+            "mixed dtypes": (fp8, bf16, None),
         }
-        for label, (dtype, supplied_scale) in calls.items():
+        for label, (q_dtype, k_dtype, supplied_scale) in calls.items():
             op = FP8LightningIndexerFwdOp.__new__(FP8LightningIndexerFwdOp)
             op.batch, op.seq_len, op.heads, op.index_dim = batch, seq_len, heads, index_dim
             op.seq_len_kv, op.kv_group = seq_len_kv, kv_group
-            op.dtype = dtype
+            op.dtype, op.index_k_dtype = q_dtype, k_dtype
             op.index_k_scale_shape = supplied_scale
             oracle = _nbytes(
-                ((batch, seq_len, heads, index_dim), dtype),  # index_q
-                ((batch, seq_len_kv, kv_group, index_dim), dtype),  # index_k
+                ((batch, seq_len, heads, index_dim), q_dtype),  # index_q
+                ((batch, seq_len_kv, kv_group, index_dim), k_dtype),  # index_k
                 ((seq_len, heads), torch.float32),  # weights
                 ((seq_len,), torch.int32),  # cu_seqlen_ks
                 ((seq_len,), torch.int32),  # cu_seqlen_ke
@@ -415,6 +419,64 @@ class TestBytesOracle:
                 ((batch, seq_len, seq_len_kv, kv_group), torch.float32),  # logits
             )
             assert op.eval_roofline()[1] == oracle, label
+
+    def test_deltanet_autograd_counts_only_the_output_it_returns(self):
+        from tileops.ops.linear_attention.deltanet import DeltaNetAutogradOp
+
+        batch, heads, seq_len, dim_k, dim_v = 2, 8, 2048, 128, 128
+        op = DeltaNetAutogradOp.__new__(DeltaNetAutogradOp)
+        op.batch, op.heads, op.seq_len = batch, heads, seq_len
+        op.dim_k, op.dim_v = dim_k, dim_v
+        op.chunk_size = 64
+        op.dtype = torch.float16
+        # The chunk buffers and the per-chunk state stay in the autograd context,
+        # so o is the only output; DeltaNetFwdOp returns them and is priced for it.
+        oracle = _nbytes(
+            ((batch, heads, seq_len, dim_k), torch.float16),  # q
+            ((batch, heads, seq_len, dim_k), torch.float16),  # k
+            ((batch, heads, seq_len, dim_v), torch.float16),  # v
+            ((batch, heads, seq_len), torch.float16),  # beta
+            ((batch, heads, seq_len, dim_v), torch.float16),  # o
+        )
+        assert op.eval_roofline()[1] == oracle
+
+    def test_engram_gate_conv_backward_counts_the_six_gradient_rows(self):
+        from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp
+
+        m, seq_len, d = 4, 2048, 512
+        rows = (m, seq_len, d)
+        op = EngramGateConvBwdOp.__new__(EngramGateConvBwdOp)
+        op.M, op.seq_len, op.d = m, seq_len, d
+        op.dtype = torch.float16
+        oracle = _nbytes(
+            *((rows, torch.float16),) * 5,  # dY, H, k, v, vhat
+            *((((d,), torch.float16),) * 2),  # rms_w_h, rms_w_v
+            ((4, d), torch.float16),  # conv_w
+            *((((m, seq_len), torch.float32),) * 4),  # alpha, rrms_h, rrms_k, rrms_v
+            *((rows, torch.float16),) * 3,  # dH, dk, dv
+            *((((d,), torch.float32),) * 2),  # drms_w_h, drms_w_v
+            ((4, d), torch.float32),  # dconv_w
+        )
+        assert op.eval_roofline()[1] == oracle
+
+    def test_masked_fill_counts_the_value_tensor_only_where_it_is_declared(self):
+        from tileops.ops.elementwise.masked_fill import MaskedFillFwdOp, MaskedFillScalarFwdOp
+
+        shape = (8, 4096, 4096)
+        for cls, has_value in ((MaskedFillFwdOp, True), (MaskedFillScalarFwdOp, False)):
+            op = cls.__new__(cls)
+            op.input_shape = shape
+            op.mask_shape = shape
+            op.dtype = torch.bfloat16
+            if has_value:
+                op.value_shape = ()
+            oracle = _nbytes(
+                (shape, torch.bfloat16),  # input
+                (shape, torch.bool),  # mask
+                (shape, torch.bfloat16),  # output
+                *((((), torch.bfloat16),) if has_value else ()),
+            )
+            assert op.eval_roofline()[1] == oracle, cls.__name__
 
 
 # Classification registry: every implemented op appears in AUDITED (has a
@@ -428,6 +490,8 @@ AUDITED = frozenset(
         "ArgmaxFwdOp",
         "BatchNormFwdOp",
         "Conv2dFwdOp",
+        "DeltaNetAutogradOp",
+        "EngramGateConvBwdOp",
         "FP8LightningIndexerFwdOp",
         "FusedMoEExpertsFwdOp",
         "FusedMoeFwdOp",
@@ -438,6 +502,8 @@ AUDITED = frozenset(
         "GroupedQueryAttentionDenseFwdOp",
         "IndexedExpertMLPFwdOp",
         "Mamba2FwdOp",
+        "MaskedFillFwdOp",
+        "MaskedFillScalarFwdOp",
         "MoePostPermuteFwdOp",
         "MoePrePermuteFwdOp",
         "MultiHeadAttentionBwdOp",
@@ -488,7 +554,6 @@ PENDING = frozenset(
         "CumsumFwdOp",
         "DaCumsumFwdOp",
         "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
-        "DeltaNetAutogradOp",
         "DeltaNetBwdOp",
         "DeltaNetDecodeFwdOp",
         "DeltaNetFwdOp",
@@ -496,7 +561,6 @@ PENDING = frozenset(
         "DropoutFwdOp",
         "EluFwdOp",
         "EngramDecodeFwdOp",
-        "EngramGateConvBwdOp",
         "EngramGateConvFwdOp",
         "EqFwdOp",
         "ErfFwdOp",
@@ -549,8 +613,6 @@ PENDING = frozenset(
         "LtFwdOp",
         "MHCPostFwdOp",
         "MHCPreFwdOp",
-        "MaskedFillFwdOp",
-        "MaskedFillScalarFwdOp",
         "MaxPool1dFwdOp",
         "MaxPool1dIndicesFwdOp",
         "MaxPool2dFwdOp",

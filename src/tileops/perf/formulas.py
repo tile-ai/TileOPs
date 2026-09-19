@@ -300,6 +300,23 @@ def deltanet_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, in
     return int(flops), int(nbytes)
 
 
+def deltanet_autograd_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for the DeltaNet autograd forward, head-major.
+
+    Same arithmetic as ``deltanet_fwd_roofline``. The chunk buffers and the
+    per-chunk state that ``DeltaNetFwdOp`` returns stay in the autograd context
+    here, so they are intermediates. In: q, k, v, beta. Out: the output.
+    """
+    data = _shape_or_attrs(op, kwargs)
+    batch, heads, seq_len, dim_k, dim_v = _chunkwise_dims_bhsd(data)
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    flops = 2 * batch * heads * seq_len * dim_k * dim_v
+    per_token = 2 * dim_k + 2 * dim_v + 1
+    nbytes = batch * heads * seq_len * per_token * elem_bytes
+    return int(flops), int(nbytes)
+
+
 def deltanet_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     """Roofline for the chunked DeltaNet backward, head-major.
 
@@ -733,13 +750,15 @@ def masked_fill_fwd_roofline(op: "Op") -> tuple[int, int]:
     Out-of-place ``Tensor.masked_fill``; output shape is the bidirectional
     broadcast of ``input`` and ``mask``. One predicated select per element →
     ``flops = N_total``; ``bytes = N_total + 2 * N_total * elem_bytes`` for the
-    1-byte mask read plus input read and out write. The 0-dim ``value`` read
-    (Tensor-value variant) is negligible.
+    1-byte mask read plus input read and out write, plus the 0-dim ``value``
+    the Tensor-value variant declares.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
     flops = n_total
     nbytes = n_total + 2 * n_total * elem_bytes
+    if _supplied(op, "value"):
+        nbytes += elem_bytes
     return flops, nbytes
 
 
@@ -1136,13 +1155,16 @@ def fp8_lightning_indexer_roofline(op: "Op") -> tuple[int, int]:
     q_elems = batch * seq_len * heads * index_dim
     k_elems = batch * seq_len_kv * kv_group * index_dim
     weights = seq_len * heads
-    # The call decides both terms below. Handed bf16 tensors, the op quantizes
-    # them itself and produces the scale, so the fp8 tensors and the scale are
-    # intermediates and the public reads are bf16. Handed fp8 tensors, the
-    # caller supplies the scale and it is a read of its own.
-    index_elem = _dtype_itemsize(getattr(op, "dtype", "bfloat16"))
+    # The call decides all three terms below. Handed bf16 tensors, the op
+    # quantizes them itself and produces the scale, so the fp8 tensors and the
+    # scale are intermediates and the public reads are bf16. Handed fp8 tensors,
+    # the caller supplies the scale and it is a read of its own. index_q and
+    # index_k carry their own dtypes: the signature lets them differ, and only
+    # the pre-quantized path requires both to be fp8.
+    q_elem = _dtype_itemsize(getattr(op, "dtype", "bfloat16"))
+    k_elem = _dtype_itemsize(getattr(op, "index_k_dtype", None) or "bfloat16")
     flops = 2 * scores * index_dim
-    nbytes = (q_elems + k_elems) * index_elem
+    nbytes = q_elems * q_elem + k_elems * k_elem
     if _supplied(op, "index_k_scale"):
         nbytes += batch * seq_len_kv * kv_group * 4
     nbytes += weights * 4
@@ -1171,7 +1193,7 @@ def _engram_elem_bytes(op: "Op") -> int:
 def engram_gate_conv_fwd_roofline(op: "Op") -> tuple[int, int]:
     m = int(op.M)
     seq_len = int(op.seq_len)
-    d = int(getattr(op, "d_padded", op.d))
+    d = int(op.d)
     elem = _engram_elem_bytes(op)
     flops = m * seq_len * (24 * d) + 20 * m * seq_len
     nbytes = (5 * m * seq_len * d) * elem + 4 * m * seq_len * 4 + 6 * d * elem
@@ -1181,11 +1203,12 @@ def engram_gate_conv_fwd_roofline(op: "Op") -> tuple[int, int]:
 def engram_gate_conv_bwd_roofline(op: "Op") -> tuple[int, int]:
     m = int(op.M)
     seq_len = int(op.seq_len)
-    d = int(getattr(op, "d_padded", op.d))
+    d = int(op.d)
     elem = _engram_elem_bytes(op)
     fwd_flops = m * seq_len * (24 * d) + 20 * m * seq_len
     read_bytes = 5 * m * seq_len * d * elem + 6 * d * elem + 4 * m * seq_len * 4
-    write_bytes = 3 * m * seq_len * d * elem + 10 * d * 4 + m * seq_len * d * 4
+    # dH, dk and dv, then drms_w_h, drms_w_v and dconv_w over 6 * d fp32 rows.
+    write_bytes = 3 * m * seq_len * d * elem + 6 * d * 4
     return int(fwd_flops * 2.5), int(read_bytes + write_bytes)
 
 
