@@ -178,7 +178,10 @@ GroupedGemmFwdOp:
       b: {dtype: "same_as(a)"}
       batch_sizes: {dtype: "int32", shape: "[batch_count]"}
       batch_offsets: {dtype: "int32", shape: "[batch_count]"}
-      batch_padded_offsets: {dtype: "int32", shape: "[batch_count]"}
+      # Passing this input states a's rows are padded: every group starts on the
+      # kernel's row block, so no tile spans two groups. Omitting it states tight
+      # rows. A contract -- the kernel reads whole tiles either way.
+      batch_padded_offsets: {dtype: "int32", shape: "[batch_count]", optional: true}
     outputs:
       output: {dtype: "same_as(a)"}
     params:
@@ -187,7 +190,9 @@ GroupedGemmFwdOp:
     shape_rules:
     - "batch_sizes.ndim == 1"
     - "batch_offsets.shape == batch_sizes.shape"
-    - "batch_padded_offsets.shape == batch_sizes.shape"
+    - "batch_padded_offsets is None or batch_padded_offsets.shape == batch_sizes.shape"
+    # Groups along K carry no row padding, so a padded layout takes transpose_a false.
+    - "batch_padded_offsets is None or not transpose_a"
     - "a.ndim == 2"
     - "b.ndim == (2 if transpose_a else 3)"
     - "a.shape[0] > 0 and a.shape[1] > 0"
@@ -201,7 +206,9 @@ GroupedGemmFwdOp:
 
   workloads:
   - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: true, dtypes: [float16], label: "nt-batch16-m4096-n4096-k4096"}
-  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: bfloat16, transpose_a: false, transpose_b: true, dtypes: [bfloat16], label: "nt-batch16-m4096-n4096-k4096"}
+  # Declared padded: 256 rows per group already sits on the row block, so this row
+  # holds the same bytes as the tight ones and measures what the statement buys.
+  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: bfloat16, transpose_a: false, transpose_b: true, batch_padded_offsets_shape: [16], dtypes: [bfloat16], label: "nt-padded-batch16-m4096-n4096-k4096"}
   - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: false, dtypes: [float16], label: "nn-batch16-m4096-n4096-k4096"}
   - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: true, transpose_b: false, dtypes: [float16], label: "tn-batch16-m4096-n4096-k4096"}
 

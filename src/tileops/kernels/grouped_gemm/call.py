@@ -12,7 +12,7 @@ __all__ = ["GroupedGemmCall"]
 
 @dataclasses.dataclass(frozen=True)
 class GroupedGemmCall(CallSpec):
-    """One grouped GEMM over a tight, per-group row layout.
+    """One grouped GEMM over a per-group row layout, tight or padded.
 
     ``numel`` and ``num_experts`` are the declared spread, not the routed one: the
     routing lands on the device, so a region over these holds for every call.
@@ -25,3 +25,5 @@ class GroupedGemmCall(CallSpec):
     dtype: Optional[torch.dtype] = None
     transpose_a: bool = False
     transpose_b: bool = True
+    # The caller stated a's rows are padded so that no tile spans two groups.
+    padded: bool = False

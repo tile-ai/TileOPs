@@ -12,11 +12,12 @@ from tileops.kernels.kernel_base import Entry, Kernel
 __all__ = ["GroupedGemmPersistentKernel"]
 
 
-def grouped_gemm_entry(cls: type, call: GroupedGemmCall) -> Entry:
+def grouped_gemm_entry(cls: type, call: GroupedGemmCall, **extra: object) -> Entry:
     """The entry for a grouped-GEMM candidate: both take the same construction arguments.
 
     The device index is in the identity because the kernel is compiled for the
-    architecture it is built on.
+    architecture it is built on. *extra* carries the construction arguments only
+    one candidate takes, and joins the identity so its builds stay apart.
     """
     index = call.device.index if call.device is not None else None
     identity = (
@@ -29,6 +30,7 @@ def grouped_gemm_entry(cls: type, call: GroupedGemmCall) -> Entry:
         call.transpose_b,
         call.tune,
         index,
+        *sorted(extra.items()),
     )
     return identity, lambda: cls(
         call.numel,
@@ -39,6 +41,7 @@ def grouped_gemm_entry(cls: type, call: GroupedGemmCall) -> Entry:
         transpose_a=call.transpose_a,
         transpose_b=call.transpose_b,
         tune=call.tune,
+        **extra,
     )
 
 
@@ -46,20 +49,26 @@ class GroupedGemmPersistentKernel(Kernel):
     """``GroupedGemmFwdOp``'s NT / NN / TN / TT on the SM90 GEMM template.
 
     An adapter: the op builds a kernel as ``cls(batch_sum, batch_count, n, k, ...)``
-    and calls it with the tight group tables, while the template speaks GEMM
-    types and psum metadata. The two M-grouped layouts (NT, NN) run
-    ``M_GROUPED_TIGHT_PSUM`` on ``batch_offsets + batch_sizes``; an NN ``b`` is
-    the transposed view of its ``[E, K, N]`` storage. The two K-grouped layouts
-    (TN, TT) run ``K_GROUPED_CONTIGUOUS`` on ``batch_sizes`` over the transposed
-    views of ``a`` and ``b``, so a TT ``b`` keeps its ``[K, batch_sum]`` storage
-    K-major. ``batch_padded_offsets`` is not read: the template pads nothing.
+    and calls it with the group tables, while the template speaks GEMM types and
+    psum metadata. The two M-grouped layouts (NT, NN) take their psum ends from the
+    row table the call states: ``batch_offsets + batch_sizes`` for tight rows under
+    ``M_GROUPED_TIGHT_PSUM``, or ``batch_padded_offsets + batch_sizes`` for padded
+    rows under ``M_GROUPED_ALIGNED_PSUM``, whose groups start on a row block so no
+    tile spans two of them. An NN ``b`` is the transposed view of its ``[E, K, N]``
+    storage. The two K-grouped layouts (TN, TT) run ``K_GROUPED_CONTIGUOUS`` on
+    ``batch_sizes`` over the transposed views of ``a`` and ``b``, so a TT ``b``
+    keeps its ``[K, batch_sum]`` storage K-major; groups split K there, which
+    carries no row padding.
 
     Claims bf16 or fp16 operands whose TMA-addressed extents are multiples of 8:
     every contiguous operand extent and the output row pitch. ``GroupedGemmKernel``
-    stays the general candidate for the rest.
+    stays the general candidate for the rest of the tight calls.
     """
 
     supported_archs: list[int] = [90]
+    # The row block a padded layout starts its groups on: the template's
+    # m_alignment, which an aligned GEMM type takes as its block_m.
+    row_block: int = 128
 
     @classmethod
     def applies(cls, call) -> bool:
@@ -73,7 +82,8 @@ class GroupedGemmPersistentKernel(Kernel):
 
     @classmethod
     def entry_for(cls, call: GroupedGemmCall) -> Entry:
-        return grouped_gemm_entry(cls, call)
+        """A padded call is a separate build: it runs a different GEMM type."""
+        return grouped_gemm_entry(cls, call, padded=call.padded)
 
     def __init__(
         self,
@@ -84,6 +94,7 @@ class GroupedGemmPersistentKernel(Kernel):
         dtype: torch.dtype = torch.float16,
         transpose_a: bool = False,
         transpose_b: bool = True,
+        padded: bool = False,
         tune: bool = False,
     ) -> None:
         """Bind the layout; shapes and the tile come from each call."""
@@ -95,8 +106,16 @@ class GroupedGemmPersistentKernel(Kernel):
         self.dtype = dtype
         self.transpose_a = transpose_a
         self.transpose_b = transpose_b
-        gemm_type = GemmType.K_GROUPED_CONTIGUOUS if transpose_a else GemmType.M_GROUPED_TIGHT_PSUM
-        self.inner = GemmTemplate(gemm_type, num_groups=batch_count, tune=tune)
+        self.padded = padded
+        if transpose_a:
+            gemm_type = GemmType.K_GROUPED_CONTIGUOUS
+        elif padded:
+            gemm_type = GemmType.M_GROUPED_ALIGNED_PSUM
+        else:
+            gemm_type = GemmType.M_GROUPED_TIGHT_PSUM
+        self.inner = GemmTemplate(
+            gemm_type, num_groups=batch_count, m_alignment=self.row_block, tune=tune
+        )
 
     def forward(
         self,
@@ -113,5 +132,7 @@ class GroupedGemmPersistentKernel(Kernel):
             b_logical = b if self.transpose_b else b.transpose(0, 1)
             return self.inner(a.transpose(0, 1), b_logical, grouped_layout=batch_sizes, out=out)
         b_logical = b if self.transpose_b else b.transpose(1, 2)
-        ends = batch_offsets + batch_sizes
-        return self.inner(a, b_logical, grouped_layout=ends, out=out)
+        # Both M-grouped types read psum ends; the layout the call stated decides
+        # which row table they start from.
+        starts = batch_padded_offsets if self.padded else batch_offsets
+        return self.inner(a, b_logical, grouped_layout=starts + batch_sizes, out=out)

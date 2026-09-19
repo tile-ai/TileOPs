@@ -28,9 +28,20 @@ class GroupedGemmFwdOp(Op):
     | ``(False, False)`` | NN | $C = A \\mathbin{@} B$ |
     | ``(True, False)`` | TN | $C = A^{\\top} \\mathbin{@} B$ |
     | ``(True, True)`` | TT | $C = A^{\\top} \\mathbin{@} B^{\\top}$ |
+
+    Rows may reach the two M-grouped layouts (NT, NN) packed tight or padded, and
+    ``batch_padded_offsets`` states which: passing it says every group starts on a
+    row block, so no tile spans two groups, and the op then runs a kernel that
+    stores whole tiles and keeps a deeper mainloop. The statement is a contract --
+    a padded layout whose groups do not in fact start on a row block reads a
+    neighbouring group's rows. Omit it for tight rows, which cost a row mask on
+    each group's last tile. Groups split K under ``transpose_a``, which carries no
+    row padding, so that layout takes no padded table.
     """
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    #: Rows a padded layout starts each group on, for a caller to pad against.
+    row_block: ClassVar[int] = GroupedGemmPersistentKernel.row_block
 
     def __init__(
         self,
@@ -74,25 +85,34 @@ class GroupedGemmFwdOp(Op):
         b: torch.Tensor,
         batch_sizes: torch.Tensor,
         batch_offsets: torch.Tensor,
-        batch_padded_offsets: torch.Tensor,
-    ) -> tuple[int, int, int, int, torch.dtype, int | None]:
+        batch_padded_offsets: Optional[torch.Tensor] = None,
+    ) -> tuple[int, int, int, int, torch.dtype, int | None, bool]:
         if not a.is_cuda or not b.is_cuda:
             raise ValueError("a and b must be CUDA tensors")
         if a.dtype != b.dtype:
             raise ValueError(f"a and b must have the same dtype, got {a.dtype} and {b.dtype}")
         if a.dtype not in (torch.float16, torch.bfloat16):
             raise ValueError(f"a.dtype must be float16 or bfloat16, got {a.dtype}")
-        if batch_sizes.ndim != 1 or batch_offsets.ndim != 1 or batch_padded_offsets.ndim != 1:
+        padded = batch_padded_offsets is not None
+        tables = [batch_sizes, batch_offsets] + ([batch_padded_offsets] if padded else [])
+        if any(t.ndim != 1 for t in tables):
             raise ValueError("batch metadata tensors must be 1D")
         batch_count = batch_sizes.shape[0]
-        if batch_offsets.shape[0] != batch_count or batch_padded_offsets.shape[0] != batch_count:
+        if any(t.shape[0] != batch_count for t in tables):
             raise ValueError("batch metadata tensors must have matching lengths")
-        if (
-            batch_sizes.dtype != torch.int32
-            or batch_offsets.dtype != torch.int32
-            or batch_padded_offsets.dtype != torch.int32
-        ):
+        if any(t.dtype != torch.int32 for t in tables):
             raise ValueError("batch metadata tensors must use int32 dtype")
+        if padded and self.transpose_a:
+            raise ValueError(
+                "GroupedGemmFwdOp takes no batch_padded_offsets when transpose_a=True: "
+                "the groups split K there, and K carries no row padding"
+            )
+        if padded and a.shape[0] % self.row_block:
+            raise ValueError(
+                f"a padded layout runs every group to a {self.row_block}-row block, so a "
+                f"holds a multiple of {self.row_block} rows; got {a.shape[0]}. Rows packed "
+                f"tight are the call without batch_padded_offsets"
+            )
 
         if not self.transpose_a:
             if a.ndim != 2 or b.ndim != 3:
@@ -120,7 +140,7 @@ class GroupedGemmFwdOp(Op):
                 raise ValueError(
                     f"GroupedGemmFwdOp expected b batch_sum dimension {batch_sum}, got {b_batch_sum}"
                 )
-        return batch_sum, batch_count, n, k, a.dtype, a.device.index
+        return batch_sum, batch_count, n, k, a.dtype, a.device.index, padded
 
     def _get_kernel(
         self,
@@ -131,6 +151,7 @@ class GroupedGemmFwdOp(Op):
         k: int,
         dtype: torch.dtype,
         device_index: int | None,
+        padded: bool,
     ) -> Kernel:
         call = GroupedGemmCall(
             arch=get_sm_version(device_index),
@@ -141,10 +162,43 @@ class GroupedGemmFwdOp(Op):
             dtype=dtype,
             transpose_a=self.transpose_a,
             transpose_b=self.transpose_b,
+            padded=padded,
             tune=self.tune,
             device=None if device_index is None else torch.device("cuda", device_index),
         )
         return self.kernel_for("grouped_gemm", inputs, call)
+
+    def layout_guard(
+        self,
+        a: torch.Tensor,
+        batch_sizes: torch.Tensor,
+        batch_offsets: torch.Tensor,
+        batch_padded_offsets: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Asynchronous bool: the tables describe the row layout the call states.
+
+        What only the device-resident values can answer -- a host check would
+        synchronise, so ``forward`` never runs this. Tests and benchmarks consume
+        it through ``torch._assert_async``. Groups run in order and stay inside
+        ``a``; a padded layout additionally starts every group on a row block, the
+        property that lets the kernel store whole tiles.
+
+        Args:
+            a: The activations the call passes.
+            batch_sizes: Rows per group, 1D ``torch.int32``.
+            batch_offsets: Start row of each group under a tight layout.
+            batch_padded_offsets: Start row of each group under a padded layout,
+                or ``None`` for a tight one.
+
+        Returns:
+            A 0-d ``torch.bool`` tensor on ``a``'s device.
+        """
+        starts = batch_offsets if batch_padded_offsets is None else batch_padded_offsets
+        ends = starts + batch_sizes
+        ok = (starts[1:] >= ends[:-1]).all() & (ends[-1] <= a.shape[0]) & (starts[0] == 0)
+        if batch_padded_offsets is not None:
+            ok = ok & (starts % self.row_block == 0).all()
+        return ok
 
     def _infer_output_shapes(
         self,
@@ -152,7 +206,7 @@ class GroupedGemmFwdOp(Op):
         b_shape: tuple[int, ...],
         batch_sizes_shape: tuple[int, ...],
         batch_offsets_shape: tuple[int, ...],
-        batch_padded_offsets_shape: tuple[int, ...],
+        batch_padded_offsets_shape: Optional[tuple[int, ...]] = None,
     ) -> dict[str, tuple[int, ...]]:
         """Manifest ``shape_rules``: ``transpose_a`` decides whether the groups stay an axis."""
         if self.transpose_a:
@@ -167,7 +221,7 @@ class GroupedGemmFwdOp(Op):
         b: torch.Tensor,
         batch_sizes: torch.Tensor,
         batch_offsets: torch.Tensor,
-        batch_padded_offsets: torch.Tensor,
+        batch_padded_offsets: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run one GEMM per group, with the groups packed along a single axis.
 
@@ -178,8 +232,10 @@ class GroupedGemmFwdOp(Op):
                 ``transpose_a`` is false, or $[\\mathit{batch\\_sum} \\times N]$ when it is.
             batch_sizes: Rows per group, 1D ``torch.int32``.
             batch_offsets: Start row of each group in ``a``, 1D ``torch.int32``.
-            batch_padded_offsets: Start row of each group in the padded output,
-                1D ``torch.int32``.
+            batch_padded_offsets: Start row of each group in ``a`` under a padded
+                layout, 1D ``torch.int32``. Passing it states that every group
+                starts on a row block; omit it when the rows are packed tight.
+                Takes ``transpose_a`` false.
 
         Returns:
             The per-group products, $[\\mathit{batch\\_sum} \\times N]$, in the dtype of
@@ -188,13 +244,14 @@ class GroupedGemmFwdOp(Op):
         Raises:
             ValueError: ``a`` or ``b`` is not on CUDA, their dtypes differ or are
                 neither float16 nor bfloat16, the metadata tensors are not 1D int32 of
-                equal length, or the operand ranks and dims disagree with the layout
-                flags.
+                equal length, ``batch_padded_offsets`` arrives under ``transpose_a``,
+                or the operand ranks and dims disagree with the layout flags.
 
         Example:
             ```python linenums="1"
-            op = GroupedGemmFwdOp()               # NT by default
-            d = op(a, b, batch_sizes, batch_offsets, batch_padded_offsets)
+            op = GroupedGemmFwdOp()                          # NT by default
+            d = op(a, b, batch_sizes, batch_offsets)         # rows packed tight
+            d = op(a, b, batch_sizes, batch_offsets, batch_padded_offsets)  # padded
             ```
         """
         return self._wrapped(
@@ -207,13 +264,13 @@ class GroupedGemmFwdOp(Op):
         b: torch.Tensor,
         batch_sizes: torch.Tensor,
         batch_offsets: torch.Tensor,
-        batch_padded_offsets: torch.Tensor,
+        batch_padded_offsets: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Validate, resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        batch_sum, batch_count, n, k, dtype, device_index = self._resolve_spec(
+        batch_sum, batch_count, n, k, dtype, device_index, padded = self._resolve_spec(
             a,
             b,
             batch_sizes,
@@ -233,6 +290,7 @@ class GroupedGemmFwdOp(Op):
             k,
             dtype,
             device_index,
+            padded,
         )
         return self.kernel(a, b, batch_sizes, batch_offsets, batch_padded_offsets)
 

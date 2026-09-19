@@ -3,6 +3,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.grouped_gemm import GroupedGemmCall, GroupedGemmKernel
+from tileops.kernels.grouped_gemm.heuristics import GemmType
 from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
 from tileops.utils import get_sm_version
 from workloads.grouped_gemm import (
@@ -193,3 +194,54 @@ def test_selection_prefers_the_template_where_tma_can_address_the_operands(
         transpose_b=transpose_b,
     )
     assert op.select_kernel(call).__name__ == expected
+
+
+# What stating a padded row layout does
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "batch_sum, batch_count",
+    [
+        pytest.param(4096, 16, id="groups-already-on-a-block"),
+        pytest.param(4099, 6, id="groups-need-padding"),
+    ],
+)
+def test_padded_layout_runs_the_aligned_kernel(batch_sum: int, batch_count: int):
+    """Passing the padded offsets states the layout, and the op runs its kernel.
+
+    The second case pads for real: no group's row count is a multiple of the row
+    block, so the tiles the aligned kernel stores whole reach rows the tight
+    layout would have masked.
+    """
+    test = GroupedGemmTest(
+        batch_sum, batch_count, 4864, 4096, torch.bfloat16, False, True, padded=True
+    )
+    op = GroupedGemmFwdOp()
+    test.check(op, *test.gen_inputs())
+    assert op.kernel.inner.gemm_type is GemmType.M_GROUPED_ALIGNED_PSUM
+
+
+@pytest.mark.smoke
+def test_padded_offsets_are_refused_when_the_groups_split_k():
+    """Groups along K carry no row padding, so TN / TT take no padded table."""
+    test = GroupedGemmTest(4096, 16, 4096, 4096, torch.float16, True, False)
+    a, b, batch_sizes, batch_offsets = test.gen_inputs()
+    op = GroupedGemmFwdOp(transpose_a=True, transpose_b=False)
+    with pytest.raises(ValueError, match="no batch_padded_offsets"):
+        op(a, b, batch_sizes, batch_offsets, batch_offsets)
+
+
+@pytest.mark.smoke
+def test_the_general_kernel_does_not_serve_a_padded_call():
+    """It reads the tight prefix sum, so a padded layout is not its to serve."""
+    call = GroupedGemmCall(
+        arch=get_sm_version(),
+        numel=4096,
+        num_experts=16,
+        n=4096,
+        k=4096,
+        dtype=torch.float16,
+        padded=True,
+    )
+    assert not GroupedGemmKernel.applies(call)

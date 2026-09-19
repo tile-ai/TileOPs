@@ -191,6 +191,11 @@ class GroupedGemmKernel(Kernel):
     general: bool = True
 
     @classmethod
+    def applies(cls, call) -> bool:
+        """Serves a tight row layout: every group starts where the last one ended."""
+        return not call.padded
+
+    @classmethod
     def entry_for(cls, call: GroupedGemmCall) -> Entry:
         return grouped_gemm_entry(cls, call)
 
