@@ -99,8 +99,8 @@ FusedMoEExpertsFwdOp:
   - {num_tokens: 4096, num_experts: 256, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [float16, bfloat16], label: "deepseek-v3-prefill"}
 
   roofline:
-    flops: "num_tokens * top_k * 6 * ffn_size * hidden_size"
-    bytes: "(num_experts * 3 * ffn_size * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes"
+    # Only the experts topk_ids selects are read, so the weight term needs the call.
+    func: "tileops.perf.formulas.routed_expert_mlp_roofline"
     composition:
     - stage: pre_permute
       formula: "gather only: no flops, one read and one write of the routed rows"
@@ -217,8 +217,8 @@ IndexedExpertMLPFwdOp:
   - {num_tokens: 32, num_experts: 128, top_k: 8, hidden_size: 7168, ffn_size: 2048, dtypes: [float16, bfloat16], label: "qwen3-235b-decode-32"}
 
   roofline:
-    flops: "num_tokens * top_k * 6 * ffn_size * hidden_size"
-    bytes: "(num_experts * 3 * ffn_size * hidden_size + 2 * num_tokens * hidden_size) * elem_bytes"
+    # Only the experts topk_ids selects are read, so the weight term needs the call.
+    func: "tileops.perf.formulas.routed_expert_mlp_roofline"
 
   source:
     kernel: tileops/kernels/moe/indexed_expert_gemm.py

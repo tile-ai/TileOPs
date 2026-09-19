@@ -196,6 +196,30 @@ class TestBytesOracle:
         with pytest.raises(RuntimeError, match="requires a prior forward"):
             op.eval_roofline()
 
+    def test_routed_expert_mlp_counts_active_experts_and_the_routing(self):
+        from tileops.moe import IndexedExpertMLPFwdOp
+
+        tokens, experts, top_k, hidden, ffn = 2, 8, 2, 64, 32
+        op = IndexedExpertMLPFwdOp.__new__(IndexedExpertMLPFwdOp)
+        op.num_tokens, op.num_experts, op.top_k = tokens, experts, top_k
+        op.hidden_size, op.ffn_size = hidden, ffn
+        op.dtype = torch.bfloat16
+        # Only experts 0, 3 and 7 receive rows.
+        op._roofline_topk_ids = torch.tensor([[0, 3], [3, 7]], dtype=torch.int32)
+        oracle = _nbytes(
+            ((tokens, hidden), torch.bfloat16),  # hidden states in
+            ((3, 2 * ffn, hidden), torch.bfloat16),  # active w_gate_up
+            ((3, hidden, ffn), torch.bfloat16),  # active w_down
+            ((tokens, top_k), torch.int32),  # topk_ids
+            ((tokens, top_k), torch.float32),  # topk_weights
+            ((tokens, hidden), torch.bfloat16),  # output
+        )
+        assert op.eval_roofline()[1] == oracle
+
+        del op._roofline_topk_ids
+        with pytest.raises(RuntimeError, match="requires a prior forward"):
+            op.eval_roofline()
+
     def test_gqa_dense_counts_qkv_output_and_the_optional_inputs(self):
         from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
 
@@ -232,7 +256,8 @@ class TestBytesOracle:
 
 # Classification registry: every implemented op appears in exactly one of
 # AUDITED (has a bytes-oracle case above), EXEMPT (traffic depends on tensor
-# content; audited by the NCU script instead, roofline.md §4.5), or PENDING.
+# content, which this oracle cannot recount; roofline.md §4.5 covers it where
+# scripts/validate_roofline_bytes.py can build its inputs), or PENDING.
 # Adding an op to the manifest forces a choice here.
 AUDITED = frozenset(
     {
@@ -251,9 +276,11 @@ AUDITED = frozenset(
 
 # op name -> why the shape-level oracle cannot count its traffic
 EXEMPT: dict[str, str] = {
+    "FusedMoEExpertsFwdOp": "expert weight traffic depends on the experts selected by topk_ids",
     "FusedMoeFwdOp": "expert weight traffic depends on the experts selected by topk_ids",
     "FusedMoeSharedExpertFwdOp": "its routed half is FusedMoeFwdOp's cost, so the same topk_ids "
     "dependence applies",
+    "IndexedExpertMLPFwdOp": "expert weight traffic depends on the experts selected by topk_ids",
 }
 
 # FIXME(staged-rollout): most implemented ops lack a bytes-oracle case.
@@ -320,7 +347,6 @@ PENDING = frozenset(
         "FloorFwdOp",
         "FusedAddLayerNormFwdOp",
         "FusedAddRMSNormFwdOp",
-        "FusedMoEExpertsFwdOp",
         "FusedTopKOp",
         "GLABwdOp",
         "GLADecodeFwdOp",
@@ -341,7 +367,6 @@ PENDING = frozenset(
         "HardsigmoidFwdOp",
         "HardswishFwdOp",
         "HardtanhFwdOp",
-        "IndexedExpertMLPFwdOp",
         "InfNormFwdOp",
         "InstanceNormFwdOp",
         "IsfiniteFwdOp",

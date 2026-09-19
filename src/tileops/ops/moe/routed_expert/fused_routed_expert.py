@@ -7,6 +7,7 @@ from typing import Dict, Optional
 from torch import Tensor
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.perf.formulas import routed_expert_mlp_roofline
 from tileops.perf.profile import tensor_core_roof
 
 from ...op_base import Op
@@ -110,17 +111,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         return tight if self._indexed_mlp is None else (*tight, self._indexed_mlp)
 
     def eval_roofline(self) -> tuple[int, int]:
-        """Manifest ``roofline``: three F x H weight planes per local expert."""
-        if self.dtype is None:
-            raise ValueError(
-                f"{type(self).__name__}.eval_roofline() requires a prior forward() to bind dtype"
-            )
-        flops = self.num_tokens * self.top_k * 6 * self.ffn_size * self.hidden_size
-        nbytes = (
-            self.num_experts * 3 * self.ffn_size * self.hidden_size
-            + 2 * self.num_tokens * self.hidden_size
-        ) * self.dtype.itemsize
-        return int(flops), int(nbytes)
+        return routed_expert_mlp_roofline(self)
 
     def _validate_dtypes(
         self,
@@ -211,6 +202,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         workspace2: Tensor,
     ) -> None:
         """Run the local expert pipeline, writing the reduced result into ``output``."""
+        self._roofline_topk_ids = topk_ids
         self._validate_dtypes(
             output,
             hidden_states,

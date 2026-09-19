@@ -868,24 +868,46 @@ def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
     """
     num_tokens = int(op.num_tokens)
     num_experts = int(op.num_experts)
-    top_k = int(op.top_k)
-    hidden_size = int(op.hidden_size)
-    ffn_size = int(op.ffn_size)
+    flops, nbytes = _routed_expert_core(op)
+    gating_bytes = num_tokens * num_experts * 4  # float32 logits
+    bias_bytes = num_experts * 4 if _supplied(op, "correction_bias") else 0
+    return flops, nbytes + gating_bytes + bias_bytes
+
+
+def _routed_expert_core(op: "Op") -> tuple[int, int]:
+    """FLOPs and the weight-plus-token bytes shared by every routed expert MLP.
+
+    An expert no route selects contributes no weight traffic, so the weight term
+    follows the call's ``topk_ids`` rather than ``num_experts``. What each op adds
+    on top is the routing it reads: gating logits where it selects the experts
+    itself, the ids and weights where they arrive ready-made.
+    """
     topk_ids = getattr(op, "_roofline_topk_ids", None)
     if topk_ids is None:
         raise RuntimeError(
-            "FusedMoeFwdOp.eval_roofline() requires a prior forward() "
+            f"{type(op).__name__}.eval_roofline() requires a prior forward() "
             "to determine the active experts"
         )
+    num_tokens = int(op.num_tokens)
+    top_k = int(op.top_k)
+    hidden_size = int(op.hidden_size)
+    ffn_size = int(op.ffn_size)
     elem_bytes = _dtype_itemsize(op.dtype)
     active_experts = int(topk_ids.unique().numel())
 
     flops = num_tokens * top_k * 6 * ffn_size * hidden_size
     weight_bytes = active_experts * 3 * ffn_size * hidden_size * elem_bytes
     token_bytes = 2 * num_tokens * hidden_size * elem_bytes
-    gating_bytes = num_tokens * num_experts * 4  # float32 logits
-    bias_bytes = num_experts * 4 if _supplied(op, "correction_bias") else 0
-    return flops, weight_bytes + token_bytes + gating_bytes + bias_bytes
+    return flops, weight_bytes + token_bytes
+
+
+def routed_expert_mlp_roofline(op: "Op") -> tuple[int, int]:
+    """Roofline for the expert MLP ops, which are handed their routing.
+
+    ``topk_ids`` is int32 and ``topk_weights`` float32, four bytes each per route.
+    """
+    flops, nbytes = _routed_expert_core(op)
+    return flops, nbytes + int(op.num_tokens) * int(op.top_k) * (4 + 4)
 
 
 def fused_moe_shared_expert_fwd_bytes(op: "Op") -> tuple[int, int]:

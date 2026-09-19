@@ -13,6 +13,7 @@ from tileops.kernels.moe.indexed_expert_gemm import (
     IndexedRouteStatsKernel,
     IndexedWeightedReduceKernel,
 )
+from tileops.perf.formulas import routed_expert_mlp_roofline
 from tileops.perf.profile import tensor_core_roof
 from tileops.utils import get_sm_version
 
@@ -108,14 +109,7 @@ class IndexedExpertMLPFwdOp(Op):
         return {"output": tuple(hidden_states_shape)}
 
     def eval_roofline(self) -> tuple[int, int]:
-        if self.dtype is None:
-            raise RuntimeError("eval_roofline requires a prior forward call")
-        flops = self.num_tokens * self.top_k * 6 * self.ffn_size * self.hidden_size
-        nbytes = (
-            self.num_experts * 3 * self.ffn_size * self.hidden_size
-            + 2 * self.num_tokens * self.hidden_size
-        ) * self.dtype.itemsize
-        return int(flops), int(nbytes)
+        return routed_expert_mlp_roofline(self)
 
     def workspace_shapes(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
         """The two scratch buffers the caller allocates, in elements."""
@@ -216,6 +210,8 @@ class IndexedExpertMLPFwdOp(Op):
         workspace2: Tensor,
     ) -> None:
         """Write the weighted and reduced expert result into ``output``."""
+        # Captured outside the wrapped call, which the compiled path would trace.
+        self._roofline_topk_ids = topk_ids
         self._wrapped(
             output,
             hidden_states,
