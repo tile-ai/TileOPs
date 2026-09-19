@@ -493,6 +493,27 @@ def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("block", BmmFp8TransposeKernel.TILE_CANDIDATES)
+def test_bmm_fp8_transpose_kernel_matches_torch(block: int) -> None:
+    """The staging kernel is bit-identical to torch's materialized transpose."""
+    batch, rows, cols = 2, block + 7, 2 * block + 13
+    src = torch.randn(batch, rows, cols, device="cuda").to(torch.float8_e4m3fn)
+    kernel = BmmFp8TransposeKernel(
+        batch,
+        rows,
+        cols,
+        torch.float8_e4m3fn,
+        device=src.device,
+        config={"block": block},
+    )
+
+    out = kernel(src)
+    ref = src.transpose(-2, -1).contiguous()
+    assert out.is_contiguous()
+    assert torch.equal(out, ref)
+
+
+@pytest.mark.smoke
 def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
     """Extents that leave a tail under every staging tile transpose exactly."""
     batch, m, n, k = 3, 128, 80, 160

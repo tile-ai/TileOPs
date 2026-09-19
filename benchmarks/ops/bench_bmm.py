@@ -61,8 +61,9 @@ def _flashinfer_bmm_fp8_row(
 ) -> Optional[tuple]:
     """The flashinfer entry for this case, or ``None`` when it cannot serve it.
 
-    Preferred, not selected: a row flashinfer cannot run, or whose result
-    disagrees with the reference, drops its tag rather than failing the case.
+    Preferred, not selected: a flashinfer row that cannot run drops its tag
+    rather than failing the case. If flashinfer runs but disagrees with the
+    reference, that is a correctness signal and should fail the benchmark.
 
     Args:
         workload: The case being timed, which states the reference and tolerance.
@@ -86,11 +87,9 @@ def _flashinfer_bmm_fp8_row(
         print(f"  [skip] flashinfer-bmm-fp8: {str(exc).splitlines()[0]}")
         return None
     except AssertionError as exc:
-        print(
-            "  [skip] flashinfer-bmm-fp8: disagrees with the reference "
-            f"({str(exc).splitlines()[0]})"
-        )
-        return None
+        raise AssertionError(
+            f"flashinfer-bmm-fp8 disagrees with the reference: {str(exc).splitlines()[0]}"
+        ) from exc
     return run, inputs
 
 

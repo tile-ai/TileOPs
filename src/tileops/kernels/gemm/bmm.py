@@ -1068,11 +1068,13 @@ class BmmFp8TransposeKernel(Kernel):
 
     # Square staging tile and the lanes that fill it. Fitted on the FP8 BMM
     # workloads in benchmarks/ops/bench_bmm.py; re-fit against those when the
-    # staging layout changes. TILE and THREADS must appear among the candidates.
+    # staging layout changes. Keep the thread count fixed during autotune so a
+    # BMM tune does not spend most of its time on the copy kernel. TILE must
+    # appear among the candidates.
     TILE: int = 64
     THREADS: int = 128
     TILE_CANDIDATES: tuple[int, ...] = (32, 64, 128)
-    THREAD_CANDIDATES: tuple[int, ...] = (128, 256, 512)
+    THREAD_CANDIDATES: tuple[int, ...] = (128,)
 
     def __init__(
         self,
