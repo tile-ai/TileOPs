@@ -106,7 +106,7 @@ def _make_prim_func(
     # Whole output tiles across more than one wave: the store of a tile can then
     # overlap the next tile's epilogue, and every tile writes a full TMA box. A
     # partial tile or a single wave takes the synchronous copy instead. Narrower
-    # than BmmTemplateKernel.applies, which decides only which kernel runs.
+    # than BmmPersistentKernel.applies, which decides only which kernel runs.
     batched_async_store = (
         batched
         and shape_m > 0

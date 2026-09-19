@@ -63,10 +63,9 @@ GemmFwdOp:
     bench: benchmarks/ops/bench_gemm.py
     bench_manifest_driven: true
     kernel_map:
-      gemm_kernel: GemmKernel
-      gemm_basic_kernel: GemmBasicKernel
+      gemm_tma_kernel: GemmTmaKernel
+      gemm_cp_async_kernel: GemmCpAsyncKernel
       gemv_kernel: GemvKernel
-      small_batch_kernel: SmallBatchGemmKernel
 
 GemmFp8FwdOp:
   ref_api: "torch._scaled_mm"
@@ -117,8 +116,8 @@ GemmFp8FwdOp:
     bench: benchmarks/ops/bench_gemm.py
     bench_manifest_driven: true
     kernel_map:
-      gemm_fp8_epilogue_kernel: GemmFp8EpilogueKernel
-      gemm_fp8_block_scaled_kernel: GemmFp8BlockScaledKernel
+      gemm_fp8_tensor_scale_kernel: GemmFp8TensorScaleKernel
+      gemm_fp8_block_scale_kernel: GemmFp8BlockScaleKernel
 
 GemmW4A16FwdOp:
   ref_api: "none"
@@ -164,7 +163,7 @@ GemmW4A16FwdOp:
     bench_manifest_driven: true
     kernel_map:
       gemm_w4a16_kernel: GemmW4A16Kernel
-      gemm_w4a16_decode_kernel: GemmW4A16DecodeKernel
+      gemm_w4a16_gemv_kernel: GemmW4A16GemvKernel
 
 GroupedGemmFwdOp:
   ref_api: "none"

@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.gemm.bmm import BmmFp8TransposeKernel, BmmTemplateKernel
+from tileops.kernels.gemm.bmm import BmmFp8TransposeKernel, BmmPersistentKernel
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.ops import BmmFp8FwdOp, BmmFwdOp
 from workloads.bmm import BmmFp8Workload, BmmWorkload
@@ -209,8 +209,8 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
 
 
 @pytest.mark.smoke
-def test_bmm_template_h200_dispatch_region() -> None:
-    """The template claims aligned H200 calls worth half a persistent wave."""
+def test_bmm_persistent_h200_dispatch_region() -> None:
+    """The persistent path claims aligned H200 calls worth half a persistent wave."""
 
     def call(batch=64, m=128, n=2048, *, h200=True, tune=False):
         return BmmCall(
@@ -225,17 +225,17 @@ def test_bmm_template_h200_dispatch_region() -> None:
             tune=tune,
         )
 
-    assert BmmTemplateKernel.applies(call())
-    assert not BmmTemplateKernel.applies(call(batch=32, m=256, n=256))
-    assert not BmmTemplateKernel.applies(call(m=200, n=300))
-    assert not BmmTemplateKernel.applies(call(h200=False))
+    assert BmmPersistentKernel.applies(call())
+    assert not BmmPersistentKernel.applies(call(batch=32, m=256, n=256))
+    assert not BmmPersistentKernel.applies(call(m=200, n=300))
+    assert not BmmPersistentKernel.applies(call(h200=False))
     # n is TMA-aligned and the shape is large, so only the tile count rejects it.
-    assert not BmmTemplateKernel.applies(call(batch=1, m=2048, n=1024))
-    assert BmmTemplateKernel.applies(call(tune=True))
+    assert not BmmPersistentKernel.applies(call(batch=1, m=2048, n=1024))
+    assert BmmPersistentKernel.applies(call(tune=True))
 
 
 @pytest.mark.smoke
-def test_bmm_template_region_holds_manifest_workloads() -> None:
+def test_bmm_persistent_region_holds_manifest_workloads() -> None:
     """The two manifest workloads nearest the wave threshold keep their routing."""
     for batch, m, n, k, claimed in [
         (16, 512, 512, 512, True),
@@ -251,7 +251,7 @@ def test_bmm_template_region_holds_manifest_workloads() -> None:
             h200=True,
             sm_count=132,
         )
-        assert BmmTemplateKernel.applies(call) is claimed, call
+        assert BmmPersistentKernel.applies(call) is claimed, call
 
 
 class BmmFp8Fixture(FixtureBase):

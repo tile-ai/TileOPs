@@ -4,15 +4,14 @@ import torch
 
 from tileops.kernels.gemm.call_spec import GemmCall
 from tileops.kernels.gemm.dense import (
-    GemmBasicKernel,
-    GemmFp8BlockScaledKernel,
-    GemmFp8EpilogueKernel,
-    GemmKernel,
+    GemmCpAsyncKernel,
+    GemmFp8BlockScaleKernel,
+    GemmFp8TensorScaleKernel,
+    GemmTmaKernel,
     GemvKernel,
-    SmallBatchGemmKernel,
 )
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE, GemmW4A16Kernel
-from tileops.kernels.gemm.w4a16_decode import GemmW4A16DecodeKernel
+from tileops.kernels.gemm.w4a16_gemv import GemmW4A16GemvKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
@@ -64,10 +63,9 @@ class GemmFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "gemm_kernel": GemmKernel,
-            "gemm_basic_kernel": GemmBasicKernel,
+            "gemm_tma_kernel": GemmTmaKernel,
+            "gemm_cp_async_kernel": GemmCpAsyncKernel,
             "gemv_kernel": GemvKernel,
-            "small_batch_kernel": SmallBatchGemmKernel,
         }
 
     def _infer_mnk(self, a: torch.Tensor, b: torch.Tensor) -> Tuple[int, int, int]:
@@ -200,8 +198,8 @@ class GemmFp8FwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "gemm_fp8_epilogue_kernel": GemmFp8EpilogueKernel,
-            "gemm_fp8_block_scaled_kernel": GemmFp8BlockScaledKernel,
+            "gemm_fp8_tensor_scale_kernel": GemmFp8TensorScaleKernel,
+            "gemm_fp8_block_scale_kernel": GemmFp8BlockScaleKernel,
         }
 
     def _validate_dtypes(
@@ -428,7 +426,7 @@ class GemmW4A16FwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "gemm_w4a16_kernel": GemmW4A16Kernel,
-            "gemm_w4a16_decode_kernel": GemmW4A16DecodeKernel,
+            "gemm_w4a16_gemv_kernel": GemmW4A16GemvKernel,
         }
 
     def _validate_dtypes(

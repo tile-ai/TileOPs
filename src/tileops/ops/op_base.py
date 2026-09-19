@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import math
 import warnings
 from abc import ABC, abstractmethod
@@ -7,6 +8,7 @@ from typing import (
     Callable,
     ClassVar,
     Hashable,
+    Iterable,
     Iterator,
     Mapping,
     Optional,
@@ -50,6 +52,32 @@ class _Unresolved:
 # ``Op._builder`` before the first call. Distinct from ``None``, the decided answer
 # "run the in-tree implementation".
 _UNRESOLVED = _Unresolved()
+
+
+@functools.lru_cache(maxsize=1)
+def _declared_dispatch_keys() -> frozenset[str]:
+    """Every dispatch key the manifest declares, across all ops.
+
+    A key outside this set names no op's kernel anywhere: a typo, or a name that
+    was renamed out of existence. A key inside it may still be unknown to the op
+    being constructed, because a composite hands each sub-op the whole set the
+    caller gave it and one sub-op's key is another's stranger.
+
+    An empty set disables the check: a manifest that cannot be read says nothing about
+    which keys exist, and refusing every override on that basis would stop ops that are
+    otherwise fine from constructing.
+    """
+    keys: set[str] = set()
+    try:
+        entries = load_manifest().values()
+    except Exception:  # noqa: BLE001 - an unreadable manifest disables the check, not the op
+        return frozenset()
+    for entry in entries:
+        source = entry.get("source") if isinstance(entry, dict) else None
+        declared = source.get("kernel_map") if isinstance(source, dict) else None
+        if isinstance(declared, dict):
+            keys.update(declared)
+    return frozenset(keys)
 
 
 class Op(ABC):
@@ -204,21 +232,56 @@ class Op(ABC):
         """
         return "cuda_core.fp32"
 
+    def _refuse_unknown_keys(self, override: dict[str, Kernel], own: "Iterable[str]") -> None:
+        """Raise for a replacement under a name neither this op nor any other has.
+
+        Such a name replaces nothing, and the call that follows runs the shipped
+        implementation as if the caller had asked for it — which is what a key that was
+        renamed looks like from the outside. A name some other op has is left alone: a
+        composite hands every sub-op the whole set, so one sub-op's key reaches the rest.
+        *own* covers an op the manifest does not describe, such as one a test declares.
+        Only an op with a map of its own asks this: a composite stores what it is given
+        verbatim and hands it down, and the sub-op that owns the name is the one that can
+        tell a stale key from a sibling's.
+
+        Raises:
+            ValueError: *override* names a key nothing declares.
+        """
+        declared = _declared_dispatch_keys()
+        if not declared:
+            return
+        stale = sorted(set(override) - declared - set(own))
+        if stale:
+            raise ValueError(
+                f"{type(self).__name__} was given kernel_map keys no op has: {stale}. "
+                f"A key nothing declares replaces nothing, so the call would run the "
+                f"shipped implementation. This op's keys: {sorted(own)}"
+            )
+
     def _install_kernel_map(self, candidate_map: Optional[dict[str, Kernel]] = None) -> None:
         """Install the resolved kernel map onto ``self.kernel_map``.
 
         An entry of ``default_kernel_map`` is replaced by *candidate_map*'s under the
-        same name. Resolving a kernel *class* needs no device, so construction does
-        not probe one: an op constructs wherever it is imported, and a target that
-        cannot run it surfaces when a kernel is first selected, built or called.
+        same name. A name no op in the library declares is refused; a name this op does
+        not have but another does is kept out of the resolved map and ignored, because
+        that is how a composite's sub-ops see each other's keys. Resolving a
+        kernel *class* needs no device, so construction does not probe one: an op
+        constructs wherever it is imported, and a target that cannot run it surfaces when
+        a kernel is first selected, built or called.
+
+        Raises:
+            ValueError: What :meth:`_refuse_unknown_keys` raises.
         """
         default_map = self.default_kernel_map
         override = dict(candidate_map) if candidate_map else {}
         if default_map is None or len(default_map) == 0:
-            # Composite op: store override verbatim.
+            # Composite op: store override verbatim. Its keys belong to the sub-ops it
+            # builds, which is where a name nothing declares is refused.
             self.kernel_map = override
             self._overridden_keys = frozenset(override)
             return
+        if override:
+            self._refuse_unknown_keys(override, default_map)
         resolved: dict[str, Kernel] = {}
         for name, default_kernel in default_map.items():
             resolved[name] = override.get(name, default_kernel)

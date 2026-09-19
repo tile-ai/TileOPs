@@ -21,7 +21,7 @@ __all__ = [
     "BmmFp8Kernel",
     "BmmFp8TransposeKernel",
     "BmmKernel",
-    "BmmTemplateKernel",
+    "BmmPersistentKernel",
 ]
 
 
@@ -730,14 +730,14 @@ class BmmKernel(Kernel):
         return [c for c in configs if self.k % c["block_k"] == 0]
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        # Call the compiled JIT directly (cf. GemmKernel); the torch custom-op
+        # Call the compiled JIT directly (cf. GemmTmaKernel); the torch custom-op
         # is retained only for torch.compile compatibility.
         if not hasattr(self, "_compiled_kernel"):
             self._compiled_kernel = self.kernel(**self.config)
         return self._compiled_kernel(a, b)
 
 
-class BmmTemplateKernel(Kernel):
+class BmmPersistentKernel(Kernel):
     """Persistent H200 BMM adapter over :class:`GemmTemplate`.
 
     The template reads the zero-copy ``[batch, n, k]`` view of public

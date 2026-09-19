@@ -13,7 +13,7 @@ from tileops.kernels.gemm.bmm import (
     BmmFp8Kernel,
     BmmFp8TransposeKernel,
     BmmKernel,
-    BmmTemplateKernel,
+    BmmPersistentKernel,
 )
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -59,7 +59,7 @@ class BmmFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
-            "bmm_template_kernel": BmmTemplateKernel,
+            "bmm_persistent_kernel": BmmPersistentKernel,
             "bmm_kernel": BmmKernel,
         }
 

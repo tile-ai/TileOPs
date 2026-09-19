@@ -64,15 +64,15 @@ def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
     The override is the reason the call was made; falling back to the stock
     kernel would report a result the caller believes came from theirs.
     """
-    from tileops.kernels.gemm import GemmKernel
+    from tileops.kernels.gemm import GemmTmaKernel
     from tileops.ops import GemmFwdOp
 
     incompatible_archs = _make_incompatible_arch_list()
 
-    class IncompatibleGemm(GemmKernel):
+    class IncompatibleGemm(GemmTmaKernel):
         supported_archs = incompatible_archs
 
-    op = GemmFwdOp(kernel_map={"gemm_kernel": IncompatibleGemm})
+    op = GemmFwdOp(kernel_map={"gemm_tma_kernel": IncompatibleGemm})
 
     with pytest.raises(ValueError, match="the kernel supplied for"):
         op._get_kernel((), op._call_spec(128, 128, 128, torch.float16))
@@ -81,19 +81,19 @@ def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
 @pytest.mark.smoke
 def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     """The auto-discovery path is refused at the same point, the same way."""
-    from tileops.kernels.gemm import GemmKernel
+    from tileops.kernels.gemm import GemmTmaKernel
     from tileops.ops import GemmFwdOp
 
     incompatible_archs = _make_incompatible_arch_list()
 
-    class IncompatibleGemm(GemmKernel):
+    class IncompatibleGemm(GemmTmaKernel):
         supported_archs = incompatible_archs
 
     class AutoDiscoveredIncompatibleOp(GemmFwdOp):
         @property
         def default_kernel_map(self) -> dict[str, Kernel]:
             defaults = super().default_kernel_map
-            return {**defaults, "gemm_kernel": IncompatibleGemm}
+            return {**defaults, "gemm_tma_kernel": IncompatibleGemm}
 
     op = AutoDiscoveredIncompatibleOp()
 

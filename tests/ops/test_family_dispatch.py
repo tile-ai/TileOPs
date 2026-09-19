@@ -11,7 +11,7 @@ import itertools
 import pytest
 import torch
 
-from tileops.kernels.gemm import GemmBasicKernel, GemmKernel
+from tileops.kernels.gemm import GemmCpAsyncKernel, GemmTmaKernel
 from tileops.kernels.gemm.call_spec import GemmCall
 from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
 from tileops.ops.gemm.gemm import GemmFwdOp
@@ -35,9 +35,9 @@ _SM80 = 80
     [
         pytest.param(1, 8, False, True, "GemvKernel", id="lhs-row"),
         pytest.param(8, 1, False, False, "GemvKernel", id="rhs-col"),
-        pytest.param(1, 8, False, False, "GemmKernel", id="lhs-row-wrong-layout"),
-        pytest.param(8, 1, False, True, "GemmKernel", id="rhs-col-wrong-layout"),
-        pytest.param(8, 8, False, False, "GemmKernel", id="neither-is-a-vector"),
+        pytest.param(1, 8, False, False, "GemmTmaKernel", id="lhs-row-wrong-layout"),
+        pytest.param(8, 1, False, True, "GemmTmaKernel", id="rhs-col-wrong-layout"),
+        pytest.param(8, 8, False, False, "GemmTmaKernel", id="neither-is-a-vector"),
         pytest.param(1, 1, False, False, "GemvKernel", id="both-are-vectors"),
     ],
 )
@@ -92,26 +92,26 @@ def test_gemm_vector_on_a_transposed_operand_takes_the_pipelined_mainloop(
 ) -> None:
     """A ``trans_a`` layout puts the vector on an operand's TMA-loaded innermost
     dimension, where the descriptor needs a multiple of 8 fp16 elements, and the
-    GEMV kernel has no form for these layouts. ``GemmBasicKernel`` takes them: it
+    GEMV kernel has no form for these layouts. ``GemmCpAsyncKernel`` takes them: it
     loads through ``cp.async``, so the dimension the TMA descriptor cannot address
-    costs it nothing. ``GemmKernel`` still refuses, naming that dimension.
+    costs it nothing. ``GemmTmaKernel`` still refuses, naming that dimension.
     """
     op = GemmFwdOp(trans_a=trans_a, trans_b=trans_b)
     call = GemmCall(
         arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
     )
 
-    assert op.select_kernel(call) is GemmBasicKernel
-    assert f"and {dim}" in GemmKernel.refusal(call)
+    assert op.select_kernel(call) is GemmCpAsyncKernel
+    assert f"and {dim}" in GemmTmaKernel.refusal(call)
 
 
 @pytest.mark.smoke
 def test_gemm_misaligned_k_on_sm90_takes_the_pipelined_mainloop() -> None:
-    """A TMA-misaligned NT shape on SM90 reaches ``GemmBasicKernel``.
+    """A TMA-misaligned NT shape on SM90 reaches ``GemmCpAsyncKernel``.
 
-    ``GemmKernel`` refuses it because every structure it builds loads through TMA.
-    ``GemmBasicKernel`` excludes only the SM90 shapes TMA can address, so it takes
-    this one — with ``GemmKernel``'s whole architecture excluded instead, the call
+    ``GemmTmaKernel`` refuses it because every structure it builds loads through TMA.
+    ``GemmCpAsyncKernel`` excludes only the SM90 shapes TMA can address, so it takes
+    this one — with ``GemmTmaKernel``'s whole architecture excluded instead, the call
     reached no implementation at all.
     """
     op = GemmFwdOp()
@@ -119,7 +119,7 @@ def test_gemm_misaligned_k_on_sm90_takes_the_pipelined_mainloop() -> None:
         arch=_SM90, sm_count=132, m=1024, n=4096, k=100, dtype=torch.float16, trans_b=True
     )
 
-    assert op.select_kernel(call) is GemmBasicKernel
+    assert op.select_kernel(call) is GemmCpAsyncKernel
 
 
 @pytest.mark.smoke
@@ -136,7 +136,7 @@ def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
         op.select_kernel(call)
 
     with pytest.raises(ValueError, match="cannot serve k=1"):
-        GemmBasicKernel(64, 64, 1, torch.float16, trans_b=True)
+        GemmCpAsyncKernel(64, 64, 1, torch.float16, trans_b=True)
 
 
 @pytest.mark.smoke
@@ -144,7 +144,7 @@ def test_gemm_uses_basic_mainloop_off_sm90() -> None:
     op = GemmFwdOp()
     call = GemmCall(arch=_SM80, m=1, n=8, k=64, dtype=torch.float16, trans_b=True)
 
-    assert op.select_kernel(call) is GemmBasicKernel
+    assert op.select_kernel(call) is GemmCpAsyncKernel
 
 
 # --- DeltaNet decode: fp32 has its own kernel; the raw-CUDA one serves 16-bit
@@ -195,6 +195,31 @@ def test_gemv_kernel_claims_the_layouts_it_was_written_for() -> None:
             arch=_SM90, m=m, n=n, k=64, dtype=torch.float16, trans_a=trans_a, trans_b=trans_b
         )
         assert GemvKernel.applies(call) is expected, (m, n, trans_a, trans_b)
+        assert (GemvKernel.band_for(call) is not None) is expected
+
+
+@pytest.mark.smoke
+def test_gemv_kernel_takes_its_two_row_band_only_where_the_grid_underfills() -> None:
+    """The ``lhs_rows`` band: m == 2 NT, and only while a 64-wide n-tiling underfills."""
+    from tileops.kernels.gemm import GemvKernel
+
+    def call(m: int, n: int, trans_b: bool = True) -> GemmCall:
+        return GemmCall(
+            arch=_SM90,
+            sm_count=132,
+            m=m,
+            n=n,
+            k=7168,
+            dtype=torch.float16,
+            trans_b=trans_b,
+        )
+
+    # The band is ceil(n / 64) * 8 < 132 * 3 = 396: n = 3136 gives 49 tiles (392), n = 3200 gives 50 (400).
+    assert GemvKernel.band_for(call(2, 2112)) == "lhs_rows"
+    assert GemvKernel.band_for(call(2, 3136)) == "lhs_rows"
+    assert GemvKernel.band_for(call(2, 3200)) is None
+    assert GemvKernel.band_for(call(3, 2112)) is None
+    assert GemvKernel.band_for(call(2, 2112, trans_b=False)) is None
 
 
 # --- Dense GQA: one row per region, plus each boundary between two of them.

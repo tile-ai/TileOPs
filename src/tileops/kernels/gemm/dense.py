@@ -20,12 +20,11 @@ from .heuristics import (
 )
 
 __all__ = [
-    "GemmBasicKernel",
-    "GemmFp8BlockScaledKernel",
-    "GemmFp8EpilogueKernel",
-    "GemmKernel",
+    "GemmCpAsyncKernel",
+    "GemmFp8BlockScaleKernel",
+    "GemmFp8TensorScaleKernel",
+    "GemmTmaKernel",
     "GemvKernel",
-    "SmallBatchGemmKernel",
 ]
 
 # Everything below is read inside a ``prim_func`` or ``T.macro`` body, which is a
@@ -48,7 +47,7 @@ def _tma_misalignment(
 ) -> Optional[str]:
     """Why TMA cannot address these operands, or ``None`` when it can.
 
-    Every structure ``GemmKernel`` builds loads its tiles through TMA, whose
+    Every structure ``GemmTmaKernel`` builds loads its tiles through TMA, whose
     descriptors address the innermost (contiguous) dimension in 16-byte units —
     so that extent must be a multiple of ``16 / itemsize`` elements, 8 for
     fp16 / bf16. Which logical dim is innermost follows the layout: ``K`` for a
@@ -287,7 +286,7 @@ class _GemmFp8Kernel(Kernel):
         return compiled(a, b, scale_a, scale_b)
 
 
-class GemmFp8EpilogueKernel(_GemmFp8Kernel):
+class GemmFp8TensorScaleKernel(_GemmFp8Kernel):
     """FP8 NT GEMM for per-tensor scales; the two scalars land in the epilogue."""
 
     BLOCK_SCALED = False
@@ -297,7 +296,7 @@ class GemmFp8EpilogueKernel(_GemmFp8Kernel):
         return call.scale_a_shape == (1, 1) and call.scale_b_shape == (1, 1)
 
 
-class GemmFp8BlockScaledKernel(_GemmFp8Kernel):
+class GemmFp8BlockScaleKernel(_GemmFp8Kernel):
     """FP8 NT GEMM for block128 scale grids; each K-step's partial is scaled and folded in."""
 
     BLOCK_SCALED = True
@@ -1351,7 +1350,7 @@ def _gemm_kernel(
     fire on top of this manual layout.
 
     Operands must satisfy TMA's innermost-dimension alignment, which
-    ``_tma_misalignment`` states and ``GemmKernel`` refuses on.
+    ``_tma_misalignment`` states and ``GemmTmaKernel`` refuses on.
 
     Args:
         m: Rows of ``op(A)`` / ``C``.
@@ -1557,7 +1556,7 @@ def _gemm_splitk_kernel(
     K slice and writes an fp32 partial tile to the workspace
     ``w[split_k, m, n]``; ``_splitk_reduce_kernel`` then sums the slices and
     casts to the storage dtype. Splitting only pays off when the natural
-    (M, N) grid underfills the GPU — see ``GemmKernel.forward`` for the
+    (M, N) grid underfills the GPU — see ``GemmTmaKernel.forward`` for the
     dispatch. ``split_k`` must divide the K-tile count evenly.
 
     Args:
@@ -2564,7 +2563,7 @@ def _(
     return torch.empty((m, n), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
-class GemmKernel(Kernel):
+class GemmTmaKernel(Kernel):
     """Dense GEMM kernel family: hand-written SM90 implementations.
 
     Computes ``C = op(A) @ op(B)`` for any ``(trans_a, trans_b)`` layout. The
@@ -2801,10 +2800,10 @@ def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> 
     One ``tvm_thread_allreduce`` over the ``tk`` reduce lanes runs per output
     row.
 
-    Serves both bandwidth-mode kernels of this family: ``SmallBatchGemmKernel``
-    at its dispatched ``m``, and ``GemvKernel`` at ``m = 1`` (the matrix-vector
-    case is this kernel with a one-row ``A``, not a separate implementation —
-    ``for mi in T.serial(1)`` folds away).
+    Serves every band of ``GemvKernel``: the two one-row bands at ``m = 1`` and the
+    ``lhs_rows`` band at its dispatched ``m`` (the matrix-vector case is this kernel
+    with a one-row ``A``, not a separate implementation — ``for mi in T.serial(1)``
+    folds away).
 
     The epilogue write is N-tail guarded, which is load-bearing rather than
     defensive: ``gemv_config`` selects ``block_n = 2`` for ``k >= 12288``, and
@@ -2913,25 +2912,60 @@ def _bandwidth_autotune_grid(rts: tuple, bns: tuple, nss: tuple) -> list[dict]:
 
 
 class GemvKernel(Kernel):
-    """Matrix-vector product; serves the layouts a vector operand can take.
+    """The bandwidth-bound band of ``GemmFwdOp``: at most two rows contracted over K.
 
-    ``mode`` names the vector operand, so ``forward`` takes the two matrices the op
-    was handed and flattens the right one: the contracted body is always
-    ``[1, k] @ ... -> [1, out]``.
+    Three bands build one body, :func:`_gemm_small_batch_kernel`, which reduces over
+    K on CUDA cores: the two layouts a vector operand can take, and the ``m == 2`` NT
+    calls whose 64-wide n-tiling still underfills a wave. They differ in the region
+    they serve and in the config band they pick, which is what :meth:`band_for` and
+    :attr:`default_config` state; the body is the same, so they are one class.
+
+    Args:
+        band: Which band this instance serves, one of :attr:`BANDS`.
+        m: Rows of the product.
+        n: Columns of the product.
+        k: Contraction dim.
+        dtype: Input/output torch dtype (fp16 / bf16); fp32 accumulation.
+        config: Optional explicit config; defaults to :attr:`default_config`.
+        tune: Whether to autotune over :attr:`autotune_configs`.
+        device_index: Device whose SM count and name pick the config.
     """
 
     supported_archs: list[int] = [90]
 
+    #: The bands this class serves. ``lhs_row`` and ``rhs_col`` name the vector
+    #: operand; ``lhs_rows`` is the two-row NT band.
+    BANDS: tuple[str, ...] = ("lhs_row", "rhs_col", "lhs_rows")
+
     @classmethod
-    def applies(cls, call) -> bool:
-        return call.gemv_mode is not None
+    def band_for(cls, call: GemmCall) -> Optional[str]:
+        """The band serving *call*, or ``None`` when this class does not serve it.
+
+        Read by :meth:`applies` and by :meth:`entry_for`, so the region is stated once.
+        """
+        if call.gemv_mode is not None:
+            return call.gemv_mode
+        if call.trans_a or not call.trans_b or call.m != 2:
+            return None
+        if not swap_ab_grid_underfills(call.n, call.sm_count):
+            return None
+        return "lhs_rows"
+
+    @classmethod
+    def applies(cls, call: GemmCall) -> bool:
+        return cls.band_for(call) is not None
 
     @classmethod
     def entry_for(cls, call: GemmCall) -> Entry:
+        """The cache identity and the thunk that builds this class for *call*.
+
+        The device is in the identity: the ``lhs_rows`` band's config reads its SM count.
+        """
         index = call.device.index if call.device is not None else None
-        identity = (call.gemv_mode, call.m, call.n, call.k, call.dtype, call.tune, index)
+        band = cls.band_for(call)
+        identity = (band, call.m, call.n, call.k, call.dtype, call.tune, index)
         return identity, lambda: cls(
-            call.gemv_mode,
+            band,
             call.m,
             call.n,
             call.k,
@@ -2942,7 +2976,7 @@ class GemvKernel(Kernel):
 
     def __init__(
         self,
-        mode: str,
+        band: str,
         m: int,
         n: int,
         k: int,
@@ -2952,114 +2986,41 @@ class GemvKernel(Kernel):
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
-        self.mode = mode
+        if band not in self.BANDS:
+            raise ValueError(f"{type(self).__name__} serves bands {self.BANDS}, got {band!r}")
+        self.band = band
         self.m = m
         self.n = n
         self.k = k
         self.dtype = dtype
-        # The other operand's free dim, which is what the body produces.
-        self.out_len = n if mode == "lhs_row" else m
-
-        self.kernel = _gemm_small_batch_kernel(1, self.out_len, k, self.dtype_str)
-
+        # What the body produces: the other operand's free dim, one row per row of ``a``.
+        rows, self.out_len = (m, n) if band == "lhs_rows" else (1, n if band == "lhs_row" else m)
+        self.kernel = _gemm_small_batch_kernel(rows, self.out_len, k, self.dtype_str)
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
+        if self.band == "lhs_rows":
+            return small_batch_config(self.n, self.k, get_sm_count(self.device_index))
         return gemv_config(self.k)
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if self.band == "lhs_rows":
+            return _bandwidth_autotune_grid((32, 64, 128), (1, 2, 4), (2, 3, 4, 5))
         return _bandwidth_autotune_grid((32, 64, 128, 256), (1, 2, 4, 8, 16), (1, 2, 3, 4, 5, 6))
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        vector, matrix = (a, b) if self.mode == "lhs_row" else (b, a)
-        out = self.kernel(
+        kernel = self.kernel(
             self.config["block_n"],
             self.config["reduce_threads"],
             self.config["num_stages"],
-        )(vector.reshape(1, -1).contiguous(), matrix)
-        return out.reshape(1, self.n) if self.mode == "lhs_row" else out.reshape(self.m, 1)
-
-
-class SmallBatchGemmKernel(Kernel):
-    """Small-batch (small-m, NT) kernel-mode of ``GemmFwdOp`` — a batched GEMV.
-
-    Builds :func:`_gemm_small_batch_kernel`, the same body :class:`GemvKernel`
-    builds at ``m = 1``; the two classes differ only in the region they serve and
-    the config band they pick. Its inner loop pays ``m`` FMAs and ``m`` converts
-    per weight element on CUDA cores, so its lead over the tensor-core
-    ``GemmKernel`` shrinks as ``m`` grows; :meth:`applies` states the band.
-
-    Scope: SM90, NT only — ``B`` is ``[N,K]``, so K is contiguous and the
-    reduction over it coalesces; no other layout has that property. The kernel is
-    correct for any ``m``; the band above is what it claims.
-
-    Args:
-        m: Batch rows.
-        n: Output columns.
-        k: Contraction dim.
-        dtype: Input/output torch dtype (fp16 / bf16); fp32 accumulation.
-        config: Optional explicit config; defaults to :attr:`default_config`.
-        tune: Whether to autotune over :attr:`autotune_configs`.
-    """
-
-    supported_archs: list[int] = [90]
-
-    @classmethod
-    def applies(cls, call) -> bool:
-        """``m == 2`` NT, while a 64-wide n-tiling still underfills a wave.
-
-        Above that fill a generic config streams the same weights with no padded
-        ``A`` re-read and wins; ``m == 1`` belongs to :class:`GemvKernel`.
-        """
-        if call.trans_a or not call.trans_b or call.m != 2:
-            return False
-        return swap_ab_grid_underfills(call.n, call.sm_count)
-
-    @classmethod
-    def entry_for(cls, call: GemmCall) -> Entry:
-        """The cache identity and the thunk that builds this class for *call*.
-
-        The device is in the identity: its SM count picks the config band.
-        """
-        index = call.device.index if call.device is not None else None
-        return (call.m, call.n, call.k, call.dtype, call.tune, index), lambda: cls(
-            call.m, call.n, call.k, call.dtype, tune=call.tune, device_index=index
         )
-
-    def __init__(
-        self,
-        m: int,
-        n: int,
-        k: int,
-        dtype: torch.dtype,
-        config: Optional[dict] = None,
-        tune: bool = False,
-        device_index: Optional[int] = None,
-    ) -> None:
-        super().__init__(device_index=device_index)
-        self.m = m
-        self.n = n
-        self.k = k
-        self.dtype = dtype
-        self.kernel = _gemm_small_batch_kernel(m, n, k, self.dtype_str)
-        self.init_config(config, tune)
-
-    @property
-    def default_config(self) -> dict:
-        return small_batch_config(self.n, self.k, get_sm_count(self.device_index))
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return _bandwidth_autotune_grid((32, 64, 128), (1, 2, 4), (2, 3, 4, 5))
-
-    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return self.kernel(
-            self.config["block_n"],
-            self.config["reduce_threads"],
-            self.config["num_stages"],
-        )(a, b)
+        if self.band == "lhs_rows":
+            return kernel(a, b)
+        vector, matrix = (a, b) if self.band == "lhs_row" else (b, a)
+        out = kernel(vector.reshape(1, -1).contiguous(), matrix)
+        return out.reshape(1, self.n) if self.band == "lhs_row" else out.reshape(self.m, 1)
 
 
 @functools.lru_cache(maxsize=32)
@@ -3234,11 +3195,11 @@ def _(
     return torch.empty((m, n), dtype=a.dtype, device=a.device)
 
 
-class GemmBasicKernel(Kernel):
+class GemmCpAsyncKernel(Kernel):
     """Dense GEMM kernel: pipelined, architecture-agnostic (sm80+).
 
     Computes ``C = op(A) @ op(B)`` for any ``(trans_a, trans_b)`` layout —
-    the same contract as ``GemmKernel`` — via ``T.Pipelined`` + plain
+    the same contract as ``GemmTmaKernel`` — via ``T.Pipelined`` + plain
     ``T.gemm`` so it runs on pre-SM90 tensor-core targets (sm80 / sm86 /
     sm89). fp16 / bf16 inputs, fp32 accumulation. ``block_k`` must divide
     ``k`` (the smallest fallback is 16); M / N need not be multiples of the
@@ -3270,9 +3231,9 @@ class GemmBasicKernel(Kernel):
 
     @classmethod
     def applies(cls, call: Any) -> bool:
-        """Every architecture, less the SM90 shapes :class:`GemmKernel` supersedes.
+        """Every architecture, less the SM90 shapes :class:`GemmTmaKernel` supersedes.
 
-        ``GemmKernel`` serves an SM90 call whose operands TMA can address, so this
+        ``GemmTmaKernel`` serves an SM90 call whose operands TMA can address, so this
         class states that one exclusion and keeps the rest of SM90 — the pipelined
         mainloop loads through ``cp.async`` and has no such requirement. Excluding
         all of SM90 instead left a TMA-misaligned shape with no implementation at

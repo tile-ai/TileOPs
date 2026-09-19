@@ -528,3 +528,54 @@ def test_no_abstract_op_class_is_instantiated_anywhere():
                 if re.search(rf"(?<![\w.]){name}\(", line):
                     offenders.append(f"{path.relative_to(root)}:{lineno} {name}")
     assert offenders == [], offenders
+
+
+_RENAMED_KEYS = [
+    "gemm_kernel",
+    "gemm_basic_kernel",
+    "small_batch_kernel",
+    "gemm_fp8_epilogue_kernel",
+    "gemm_fp8_block_scaled_kernel",
+    "gemm_w4a16_decode_kernel",
+    "bmm_template_kernel",
+]
+
+
+@pytest.mark.parametrize("stale", _RENAMED_KEYS)
+def test_a_key_no_op_declares_is_refused(stale: str) -> None:
+    """A name nothing in the library has replaces nothing, so construction refuses it.
+
+    Every key this rename retired is one: dropping it silently would hand the caller the
+    shipped implementation under the name it asked to replace.
+    """
+    from tileops.kernels.gemm import GemmTmaKernel
+    from tileops.ops import GemmFwdOp
+
+    with pytest.raises(ValueError, match="no op has"):
+        GemmFwdOp(kernel_map={stale: GemmTmaKernel})
+
+
+def test_a_key_another_op_declares_passes_through() -> None:
+    """A composite hands every sub-op the whole set, so a sibling's key is not an error."""
+    from tileops.kernels.gemm import GemmTmaKernel
+    from tileops.ops import GemmFwdOp
+
+    op = GemmFwdOp(kernel_map={"shared_expert_mlp": GemmTmaKernel})
+    assert "shared_expert_mlp" not in op.kernel_map
+    assert op._overridden_keys == frozenset()
+
+
+def test_an_unreadable_manifest_disables_the_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A manifest that cannot be read says nothing about which keys exist."""
+    from tileops.kernels.gemm import GemmTmaKernel
+    from tileops.ops import GemmFwdOp
+
+    def unreadable() -> dict:
+        raise RuntimeError("no manifest here")
+
+    op_base._declared_dispatch_keys.cache_clear()
+    monkeypatch.setattr(op_base, "load_manifest", unreadable)
+    try:
+        GemmFwdOp(kernel_map={"gemm_kernel": GemmTmaKernel})
+    finally:
+        op_base._declared_dispatch_keys.cache_clear()
