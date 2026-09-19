@@ -223,6 +223,20 @@ class TestFusedMoEExpertsFwdOp:
         torch.testing.assert_close(out.float(), expected.float(), rtol=3e-2, atol=3e-2)
 
     @pytest.mark.smoke
+    def test_a_call_leaves_the_roofline_its_active_experts(self):
+        """Without the capture in forward(), the window prices all E experts."""
+        experts, args = _small_route_case([[0, 3], [3, 7], [0, 7], [3, 0]])
+        experts.forward(*args)
+
+        T, K, H, F_dim = 4, 2, 128, 256
+        elem = args[1].element_size()
+        active = 3  # experts 0, 3 and 7
+        expected = active * 3 * F_dim * H * elem + 2 * T * H * elem + T * K * (4 + 4)
+        assert experts.eval_roofline()[1] == expected
+        assert experts._indexed_mlp is not None, "case no longer exercises the indexed path"
+        assert experts._indexed_mlp.eval_roofline()[1] == expected
+
+    @pytest.mark.smoke
     def test_workspace_shapes(self, moe_meta):
         d = moe_meta
         experts = FusedMoEExpertsFwdOp(

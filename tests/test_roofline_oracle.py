@@ -196,6 +196,79 @@ class TestBytesOracle:
         with pytest.raises(RuntimeError, match="requires a prior forward"):
             op.eval_roofline()
 
+    def test_routed_expert_mlp_counts_active_experts_and_the_routing(self):
+        from tileops.moe import IndexedExpertMLPFwdOp
+
+        tokens, experts, top_k, hidden, ffn = 2, 8, 2, 64, 32
+        op = IndexedExpertMLPFwdOp.__new__(IndexedExpertMLPFwdOp)
+        op.num_tokens, op.num_experts, op.top_k = tokens, experts, top_k
+        op.hidden_size, op.ffn_size = hidden, ffn
+        op.dtype = torch.bfloat16
+        # Only experts 0, 3 and 7 receive rows.
+        op._roofline_topk_ids = torch.tensor([[0, 3], [3, 7]], dtype=torch.int32)
+        oracle = _nbytes(
+            ((tokens, hidden), torch.bfloat16),  # hidden states in
+            ((3, 2 * ffn, hidden), torch.bfloat16),  # active w_gate_up
+            ((3, hidden, ffn), torch.bfloat16),  # active w_down
+            ((tokens, top_k), torch.int32),  # topk_ids
+            ((tokens, top_k), torch.float32),  # topk_weights
+            ((tokens, hidden), torch.bfloat16),  # output
+        )
+        assert op.eval_roofline()[1] == oracle
+
+        del op._roofline_topk_ids
+        with pytest.raises(RuntimeError, match="requires a prior forward"):
+            op.eval_roofline()
+
+    def test_fused_moe_experts_counts_active_experts_and_the_routing(self):
+        from tileops.moe import FusedMoEExpertsFwdOp
+
+        tokens, experts, top_k, hidden, ffn = 2, 8, 2, 64, 32
+        op = FusedMoEExpertsFwdOp.__new__(FusedMoEExpertsFwdOp)
+        op.num_tokens, op.num_experts, op.top_k = tokens, experts, top_k
+        op.hidden_size, op.ffn_size = hidden, ffn
+        op.dtype = torch.bfloat16
+        # Only experts 0, 3 and 7 receive rows.
+        op._roofline_topk_ids = torch.tensor([[0, 3], [3, 7]], dtype=torch.int32)
+        oracle = _nbytes(
+            ((tokens, hidden), torch.bfloat16),  # hidden states in
+            ((3, 2 * ffn, hidden), torch.bfloat16),  # active w_gate_up
+            ((3, hidden, ffn), torch.bfloat16),  # active w_down
+            ((tokens, top_k), torch.int32),  # topk_ids
+            ((tokens, top_k), torch.float32),  # topk_weights
+            ((tokens, hidden), torch.bfloat16),  # output
+        )
+        assert op.eval_roofline()[1] == oracle
+
+    def test_shared_expert_adds_its_shard_to_the_routed_cost(self):
+        from tileops.moe import FusedMoeSharedExpertFwdOp
+
+        tokens, experts, top_k, hidden, ffn = 2, 8, 2, 64, 32
+        shard_ffn = 16
+        op = FusedMoeSharedExpertFwdOp.__new__(FusedMoeSharedExpertFwdOp)
+        op.num_tokens, op.num_experts, op.top_k = tokens, experts, top_k
+        op.hidden_size, op.ffn_size = hidden, ffn
+        op.dtype = torch.bfloat16
+        op.correction_bias_shape = None
+        op._roofline_topk_ids = torch.tensor([[0, 3], [3, 7]], dtype=torch.int32)
+        routed = _nbytes(
+            ((tokens, hidden), torch.bfloat16),  # hidden states in
+            ((3, 2 * ffn, hidden), torch.bfloat16),  # active w_gate_up
+            ((3, hidden, ffn), torch.bfloat16),  # active w_down
+            ((tokens, experts), torch.float32),  # gating logits
+            ((tokens, hidden), torch.bfloat16),  # output
+        )
+        op._shared_mlp_shard_ffn = None
+        assert op.eval_roofline()[1] == routed
+
+        op._shared_mlp_shard_ffn = shard_ffn
+        shared = _nbytes(
+            ((3 * shard_ffn, hidden), torch.bfloat16),  # this rank's shared weights
+            ((tokens, hidden), torch.bfloat16),  # its own read of the hidden states
+            ((tokens, hidden), torch.bfloat16),  # shared_output, returned separately
+        )
+        assert op.eval_roofline()[1] == routed + shared
+
     def test_gqa_dense_counts_qkv_output_and_the_optional_inputs(self):
         from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
 
@@ -230,18 +303,23 @@ class TestBytesOracle:
             assert op.eval_roofline()[1] == oracle, label
 
 
-# Classification registry: every implemented op appears in exactly one of
-# AUDITED (has a bytes-oracle case above), EXEMPT (traffic depends on tensor
-# content; audited by the NCU script instead, roofline.md §4.5), or PENDING.
+# Classification registry: every implemented op appears in AUDITED (has a
+# bytes-oracle case above) or PENDING. There is no exemption: an op whose
+# traffic depends on tensor content is recounted the same way, with the case
+# constructing the selecting tensor itself, exactly as it constructs shapes.
 # Adding an op to the manifest forces a choice here.
 AUDITED = frozenset(
     {
         "AddFwdOp",
         "ArgmaxFwdOp",
         "Conv2dFwdOp",
+        "FusedMoEExpertsFwdOp",
+        "FusedMoeFwdOp",
+        "FusedMoeSharedExpertFwdOp",
         "GemmFp8FwdOp",
         "GemmW4A16FwdOp",
         "GroupedQueryAttentionDenseFwdOp",
+        "IndexedExpertMLPFwdOp",
         "MoePostPermuteFwdOp",
         "MoePrePermuteFwdOp",
         "RMSNormFwdOp",
@@ -249,16 +327,9 @@ AUDITED = frozenset(
     }
 )
 
-# op name -> why the shape-level oracle cannot count its traffic
-EXEMPT: dict[str, str] = {
-    "FusedMoeFwdOp": "expert weight traffic depends on the experts selected by topk_ids",
-    "FusedMoeSharedExpertFwdOp": "its routed half is FusedMoeFwdOp's cost, so the same topk_ids "
-    "dependence applies",
-}
-
 # FIXME(staged-rollout): most implemented ops lack a bytes-oracle case.
 #
-# Broken invariant: every implemented op is AUDITED or EXEMPT.
+# Broken invariant: every implemented op is AUDITED.
 # Why: the oracle landed with the SOL metric; cases are added family by
 #   family, highest formula complexity first.
 # Cleanup: PENDING is empty; delete it and this marker.
@@ -320,7 +391,6 @@ PENDING = frozenset(
         "FloorFwdOp",
         "FusedAddLayerNormFwdOp",
         "FusedAddRMSNormFwdOp",
-        "FusedMoEExpertsFwdOp",
         "FusedTopKOp",
         "GLABwdOp",
         "GLADecodeFwdOp",
@@ -341,7 +411,6 @@ PENDING = frozenset(
         "HardsigmoidFwdOp",
         "HardswishFwdOp",
         "HardtanhFwdOp",
-        "IndexedExpertMLPFwdOp",
         "InfNormFwdOp",
         "InstanceNormFwdOp",
         "IsfiniteFwdOp",
@@ -436,12 +505,12 @@ def test_every_implemented_op_is_classified():
     from tileops.manifest import load_manifest
 
     implemented = {name for name, e in load_manifest().items() if e.get("status") == "implemented"}
-    classified = AUDITED | set(EXEMPT) | PENDING
+    classified = AUDITED | PENDING
     assert implemented - classified == set(), (
         f"unclassified implemented ops: {sorted(implemented - classified)}; "
-        "add an oracle case (AUDITED), an EXEMPT reason, or a PENDING entry"
+        "add an oracle case (AUDITED) or a PENDING entry"
     )
     assert classified - implemented == set(), (
         f"stale registry entries: {sorted(classified - implemented)}"
     )
-    assert not (AUDITED & PENDING) and not (AUDITED & set(EXEMPT))
+    assert not (AUDITED & PENDING)

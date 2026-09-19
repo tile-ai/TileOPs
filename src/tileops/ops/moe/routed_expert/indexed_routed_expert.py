@@ -13,6 +13,7 @@ from tileops.kernels.moe.indexed_expert_gemm import (
     IndexedRouteStatsKernel,
     IndexedWeightedReduceKernel,
 )
+from tileops.perf.formulas import routed_expert_mlp_roofline
 from tileops.perf.profile import tensor_core_roof
 from tileops.utils import get_sm_version
 
@@ -28,8 +29,10 @@ __all__ = ["IndexedExpertMLPFwdOp"]
 class IndexedExpertMLPFwdOp(Op):
     """Route-major expert MLP with device-side reuse dispatch.
 
-    Each of the ``T * K`` routes is a row of its expert's GEMM, so the weights are read
-    once per route rather than once per expert segment. That pays off while the routes
+    Each of the ``T * K`` routes is a row of its expert's GEMM, dispatched per route
+    rather than per expert segment. Routes that share an expert are grouped, and only the
+    leader copies that expert's weights, so the minimum DRAM traffic the roofline prices
+    is one read per distinct expert. That pays off while the routes
     are few; :class:`FusedMoEExpertsFwdOp` picks this op over the staged pipeline on the
     shapes where it does, and requires SM90.
     """
@@ -108,14 +111,7 @@ class IndexedExpertMLPFwdOp(Op):
         return {"output": tuple(hidden_states_shape)}
 
     def eval_roofline(self) -> tuple[int, int]:
-        if self.dtype is None:
-            raise RuntimeError("eval_roofline requires a prior forward call")
-        flops = self.num_tokens * self.top_k * 6 * self.ffn_size * self.hidden_size
-        nbytes = (
-            self.num_experts * 3 * self.ffn_size * self.hidden_size
-            + 2 * self.num_tokens * self.hidden_size
-        ) * self.dtype.itemsize
-        return int(flops), int(nbytes)
+        return routed_expert_mlp_roofline(self)
 
     def workspace_shapes(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
         """The two scratch buffers the caller allocates, in elements."""
@@ -227,6 +223,9 @@ class IndexedExpertMLPFwdOp(Op):
             workspace2,
             self._instance_key,
         )
+        # Outside the wrapped call, which the compiled path would trace, and after it,
+        # so a call the validation inside rejects leaves no routing for the roofline.
+        self._roofline_topk_ids = topk_ids
 
     def _eager_forward(
         self,
