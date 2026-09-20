@@ -1,5 +1,6 @@
 """Correctness tests for the persistent grouped GEMM template."""
 
+import dataclasses
 import math
 
 import pytest
@@ -339,6 +340,64 @@ def test_selector_stages_h200_batched_epilogue():
     # The band is fitted on the board, not on the exact name CUDA reports for it.
     nvl = get_best_config(_desc(1024, 1024, 1024, num_groups=8, device_name="NVIDIA H200 NVL"))
     assert nvl.epilogue_stage_n == 128
+
+
+@pytest.mark.smoke
+def test_grouped_selector_calibration_preserves_dense_and_k_grouped_choices():
+    """Keep the measured dense and K-grouped winners while fitting M-grouped."""
+    dense = get_best_config(
+        _desc(
+            512,
+            36864,
+            7168,
+            gemm_type=GemmType.DENSE,
+            activation="silu_and_mul",
+            device_name="NVIDIA H200",
+        )
+    )
+    assert (dense.block_m, dense.block_n, dense.num_stages) == (128, 192, 4)
+
+    k_grouped = get_best_config(
+        _desc(
+            4096,
+            4096,
+            4096,
+            gemm_type=GemmType.K_GROUPED_CONTIGUOUS,
+            num_groups=16,
+            major_a=Major.MN,
+            major_b=Major.MN,
+            device_name="NVIDIA H200",
+        )
+    )
+    assert (k_grouped.block_m, k_grouped.block_n, k_grouped.num_stages) == (128, 256, 4)
+    assert k_grouped.epilogue_stage_n == 64
+
+
+@pytest.mark.smoke
+def test_grouped_selector_calibration_stays_on_physical_psum_layouts():
+    tight = _desc(
+        16 * 128,
+        1536,
+        2048,
+        gemm_type=GemmType.M_GROUPED_TIGHT_PSUM,
+        num_groups=16,
+        device_name="NVIDIA H200",
+    )
+    assert all(layout.block_n != 192 for layout in layout_candidates(tight))
+
+    padded = _desc(
+        16 * 3328,
+        1536,
+        2048,
+        gemm_type=GemmType.M_GROUPED_ALIGNED_PSUM,
+        num_groups=16,
+        m_alignment=128,
+        device_name="NVIDIA H200",
+    )
+    assert all(layout.block_n != 192 for layout in layout_candidates(padded))
+    assert get_best_config(padded).epilogue_stage_n == 64
+    beyond = dataclasses.replace(padded, m=16 * (3328 + 128))
+    assert get_best_config(beyond).epilogue_stage_n == 0
 
 
 @pytest.mark.full

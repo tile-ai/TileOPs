@@ -56,14 +56,15 @@ class _HeuristicPolicy:
     shallow_wave_limit: int = 4
     shallow_tiles_per_sm: float = 2.5
     hiding_stages: int = 4
-    # Tile widths to keep out of the candidate set. A WGMMA whose N is not a power
-    # of two issues as two instructions and carries the register pressure of the
-    # wider one, which the cycle model below does not see: it prices a tile by
-    # block_m + block_n, so it reads 192 as cheap wherever 192 divides n. On a
-    # tight layout it is far worse than that -- across five model families a
-    # 192-wide tile runs 1.6-3.3x slower than the next candidate, and one shape
-    # ran the same tile at 148us tight against 38us padded. Excluding it outright
-    # costs one padded shape 6%, which is the most it was ever measured to win.
+    # Tile widths to keep out of the calibrated physical-psum candidate sets.
+    # A WGMMA whose N is not a power of two issues as two instructions and carries
+    # the register pressure of the wider one, which the cycle model below does not
+    # see: it prices a tile by block_m + block_n, so it reads 192 as cheap wherever
+    # 192 divides n. On the measured tight layout it is far worse than that --
+    # across five model families a 192-wide tile runs 1.6-3.3x slower than the next
+    # candidate, and one shape ran the same tile at 148us tight against 38us
+    # padded. Both physical-psum layouts were included in the acceptance sweep;
+    # non-M-grouped layouts were not, so the exclusion stays on those two layouts.
     block_n_excluded: tuple[int, ...] = (192,)
 
     @property
@@ -111,6 +112,10 @@ class GemmType(str, enum.Enum):
 
 _ALIGNED_TYPES = (GemmType.M_GROUPED_ALIGNED_PER_ROW, GemmType.M_GROUPED_ALIGNED_PSUM)
 _TIGHT_TYPES = (GemmType.M_GROUPED_TIGHT_PER_ROW, GemmType.M_GROUPED_TIGHT_PSUM)
+_CALIBRATED_PSUM_TYPES = (
+    GemmType.M_GROUPED_TIGHT_PSUM,
+    GemmType.M_GROUPED_ALIGNED_PSUM,
+)
 PER_GROUP_TYPES = (
     GemmType.M_GROUPED_MASKED,
     GemmType.M_GROUPED_ALIGNED_PSUM,
@@ -354,11 +359,11 @@ def layout_candidates(desc: GemmDesc) -> list[_Layout]:
         # Masked and tight rows have no alignment to honour; short groups want 64.
         block_m_candidates = [64, 128]
 
-    block_n_candidates = [
-        bn
-        for bn in range(desc.policy.block_n_step, 256 + 1, desc.policy.block_n_step)
-        if bn not in desc.policy.block_n_excluded
-    ]
+    block_n_candidates = list(range(desc.policy.block_n_step, 256 + 1, desc.policy.block_n_step))
+    if desc.gemm_type in _CALIBRATED_PSUM_TYPES:
+        block_n_candidates = [
+            bn for bn in block_n_candidates if bn not in desc.policy.block_n_excluded
+        ]
 
     candidates = []
     for block_m in block_m_candidates:
@@ -430,7 +435,8 @@ def _num_cycles(desc: GemmDesc, layout: _Layout) -> tuple[int, int]:
     # whose output buffer leaves room for three stages -- as cheapest exactly
     # where it measures slowest.
     if (
-        num_waves < desc.policy.shallow_wave_limit
+        desc.gemm_type in _CALIBRATED_PSUM_TYPES
+        and num_waves < desc.policy.shallow_wave_limit
         and num_blocks / desc.num_sms < desc.policy.shallow_tiles_per_sm
     ):
         stages = _num_stages(desc, layout)
@@ -510,7 +516,10 @@ def _staged_epilogue(desc: GemmDesc, layout: _Layout) -> GroupedGemmSpec | None:
         return None
     if (layout.block_m, layout.block_n, layout.block_k) != policy.staged_epilogue_tile:
         return None
-    if _num_cycles(desc, layout)[0] >= policy.staged_epilogue_wave_limit:
+    if (
+        desc.gemm_type is GemmType.M_GROUPED_ALIGNED_PSUM
+        and _num_cycles(desc, layout)[0] >= policy.staged_epilogue_wave_limit
+    ):
         return None
     base = _num_stages(desc, layout)
     for stage_n in (layout.block_n // 2, layout.block_n // 4):
