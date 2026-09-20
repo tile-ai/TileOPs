@@ -1,10 +1,16 @@
 import pytest
 import torch
 
+from tests.test_base import TestBase
 from tileops.backend import TensorSpec, registry
 from tileops.ops import GatedDeltaNetFwdOp
+from workloads.linear_attention import GatedDeltaNetFwdWorkload
 
 pytestmark = pytest.mark.smoke
+
+
+class GatedDeltaNetFwdTest(GatedDeltaNetFwdWorkload, TestBase):
+    pass
 
 
 @pytest.fixture(autouse=True)
@@ -17,6 +23,38 @@ def isolated_registry():
     registry._loaded = True
     yield
     registry.restore(state)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
+    reason="the migrated dense-prefill specialization requires SM90",
+)
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+def test_gated_deltanet_dense_prefill_matches_reference(dtype: torch.dtype) -> None:
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(1, 64, 2, 128, dtype)
+    inputs = test.gen_inputs()
+    op = GatedDeltaNetFwdOp()
+    atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
+    test.check(op, *inputs, atol=atol, rtol=rtol)
+
+    initial_state = torch.zeros(1, 2, 128, 128, dtype=torch.float32, device="cuda")
+    with pytest.raises(ValueError, match="initial_state"):
+        op(*inputs, initial_state=initial_state)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
+    reason="the migrated dense-prefill specialization requires SM90",
+)
+def test_gated_deltanet_partitioned_dense_prefill_matches_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise warmup, state correction, and partitioned forward together."""
+    monkeypatch.setenv("TILEOPS_GDN_PREFILL_MAX_LOCAL_CHUNKS", "4")
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(1, 512, 2, 128, torch.bfloat16)
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
 
 
 def test_gated_deltanet_contract_reaches_target_builder() -> None:

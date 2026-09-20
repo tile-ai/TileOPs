@@ -122,6 +122,65 @@ class GLADecodeWorkload(WorkloadBase):
         return o.to(self.dtype), new_state.to(self.dtype)
 
 
+class GatedDeltaNetFwdWorkload(WorkloadBase):
+    """Equal-length BTHD Gated DeltaNet inference prefill."""
+
+    def __init__(
+        self,
+        batch: int,
+        seq_len: int,
+        heads: int,
+        dim: int,
+        dtype: torch.dtype,
+        scale: float | None = None,
+    ) -> None:
+        self.batch = batch
+        self.seq_len = seq_len
+        self.heads = heads
+        self.dim = dim
+        self.dtype = dtype
+        self.scale = scale
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        shape = (self.batch, self.seq_len, self.heads, self.dim)
+        q = torch.randn(shape, device="cuda", dtype=self.dtype) * 0.1
+        k = torch.randn(shape, device="cuda", dtype=self.dtype) * 0.1
+        v = torch.randn(shape, device="cuda", dtype=self.dtype) * 0.1
+        g = -torch.rand(shape[:3], device="cuda", dtype=self.dtype)
+        beta = torch.rand(shape[:3], device="cuda", dtype=self.dtype) * 0.5
+        return q, k, v, g, beta
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        scale = self.dim**-0.5 if self.scale is None else self.scale
+        state = torch.zeros(
+            self.batch,
+            self.heads,
+            self.dim,
+            self.dim,
+            dtype=torch.float32,
+            device=q.device,
+        )
+        outputs = []
+        for token in range(self.seq_len):
+            q_t = q[:, token].float() * scale
+            k_t = k[:, token].float()
+            v_t = v[:, token].float()
+            decay = g[:, token].float().exp()
+            beta_t = beta[:, token].float()
+            old_value = torch.einsum("bhkv,bhk->bhv", state, k_t)
+            value = beta_t.unsqueeze(-1) * (v_t - decay.unsqueeze(-1) * old_value)
+            state = decay[..., None, None] * state + k_t.unsqueeze(-1) * value.unsqueeze(-2)
+            outputs.append(torch.einsum("bhk,bhkv->bhv", q_t, state))
+        return torch.stack(outputs, dim=1).to(q.dtype), state
+
+
 class GLAChunkwiseWorkload(WorkloadBase):
     def __init__(
         self,

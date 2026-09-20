@@ -1,10 +1,10 @@
 from .gated_deltanet_bwd import GatedDeltaNetBwdKernel
 from .gated_deltanet_fwd import GatedDeltaNetFwdKernel, GatedDeltaNetFwdProductionKernel
-from .gated_deltanet_prefill import GatedDeltaNetPrefillFwdKernel
+from .prefill import GatedDeltaNetDensePrefillFwdKernel
 
 __all__ = [
     "GatedDeltaNetBwdKernel",
+    "GatedDeltaNetDensePrefillFwdKernel",
     "GatedDeltaNetFwdKernel",
     "GatedDeltaNetFwdProductionKernel",
-    "GatedDeltaNetPrefillFwdKernel",
 ]

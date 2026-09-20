@@ -59,16 +59,22 @@ GatedDeltaNetFwdOp:
       - "state_v_first or final_state.shape[1:] == (HV, K, V)"
       - "not state_v_first or final_state.shape[1:] == (HV, V, K)"
 
-  workloads: []
+  workloads:
+  - {q_shape: [1, 4096, 16, 128], k_shape: [1, 4096, 16, 128], v_shape: [1, 4096, 16, 128], g_shape: [1, 4096, 16], beta_shape: [1, 4096, 16], dtypes: [float16, bfloat16], label: "serving-prefill-medium"}
+  - {q_shape: [1, 12288, 16, 128], k_shape: [1, 12288, 16, 128], v_shape: [1, 12288, 16, 128], g_shape: [1, 12288, 16], beta_shape: [1, 12288, 16], dtypes: [float16, bfloat16], label: "serving-prefill-long-irregular"}
+  - {q_shape: [1, 32768, 16, 128], k_shape: [1, 32768, 16, 128], v_shape: [1, 32768, 16, 128], g_shape: [1, 32768, 16], beta_shape: [1, 32768, 16], dtypes: [float16, bfloat16], label: "serving-prefill-long"}
 
   roofline:
     func: "tileops.perf.formulas.gated_deltanet_fwd_roofline"
 
   source:
-    kernel: tileops/ops/linear_attention/gated_deltanet.py
+    kernel: tileops/kernels/linear_attention/gated_deltanet/prefill/dense.py
+    kernel_map:
+      gated_deltanet_dense_prefill: GatedDeltaNetDensePrefillFwdKernel
     op: tileops/ops/linear_attention/gated_deltanet.py
     test: tests/ops/test_gated_deltanet.py
-    bench: null
+    bench: benchmarks/ops/bench_gated_deltanet.py
+    bench_manifest_driven: true
 
 DeltaNetDecodeFwdOp:
   # Single-token ungated DeltaNet decode. Like GDN decode, state ownership is
