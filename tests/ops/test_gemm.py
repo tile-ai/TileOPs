@@ -466,6 +466,14 @@ class GemmW4A16Fixture(FixtureBase):
                     id="full-w4a16-m1",
                 ),
                 pytest.param(
+                    1,
+                    8192,
+                    8192,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-w4a16-warp-rows",
+                ),
+                pytest.param(
                     16,
                     1024,
                     1024,

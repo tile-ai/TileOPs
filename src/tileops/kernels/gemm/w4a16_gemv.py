@@ -8,6 +8,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_sm_version
 
 from .call_spec import GemmCall
 from .w4a16 import GROUP_SIZE
@@ -36,13 +37,19 @@ def _gemm_w4a16_gemv_kernel(n: int, k: int, dtype: str) -> Callable:
         block_k: int = 1024,
         threads: int = 128,
         num_stages: int = 2,
+        warp_rows: bool = False,
     ) -> Callable:
         if block_k % GROUP_SIZE != 0:
             raise ValueError(f"block_k={block_k} must be a multiple of {GROUP_SIZE}")
         if threads % 32 != 0 or (block_n * block_k // 8) % threads != 0:
             raise ValueError("decode tiles must divide into whole warps of eight-weight slots")
+        if warp_rows and (block_k % 256 or block_n % (threads // 32)):
+            raise ValueError("warp rows require whole 256-weight chunks and whole rows per warp")
         packed_k = block_k // 2
         tile_groups = block_k // GROUP_SIZE
+        row_slots = 32 if warp_rows else block_k // 8
+        carried_sums = block_n * row_slots // threads
+        words = block_k // 256 if warp_rows else 1
 
         @T.prim_func
         def main(
@@ -66,8 +73,12 @@ def _gemm_w4a16_gemv_kernel(n: int, k: int, dtype: str) -> Callable:
                 scale_local = T.alloc_local((1,), "float32")
                 zero_local = T.alloc_local((1,), "int32")
                 # Carry sums across K and reduce across threads only once.
-                products_local = T.alloc_local((block_n * block_k // (8 * threads),), "float32")
+                products_local = T.alloc_local((carried_sums,), "float32")
                 tx = T.get_thread_binding(0)
+                if warp_rows:
+                    T.annotate_layout(
+                        {packed_shared: tilelang.layout.make_swizzled_layout(packed_shared)}
+                    )
                 T.annotate_layout(
                     {
                         products: T.Fragment(
@@ -124,43 +135,53 @@ def _gemm_w4a16_gemv_kernel(n: int, k: int, dtype: str) -> Callable:
                                 T.cast(0, "uint8"),
                             )
 
-                    for chunk in T.serial(block_n * block_k // (8 * threads)):
+                    for chunk in T.serial(carried_sums):
                         index = chunk * threads + tx
-                        row = index // (block_k // 8)
-                        col = index % (block_k // 8)
-                        for v in T.vectorized(8):
-                            activation_local[v] = activation_shared[0, col * 8 + v]
-                        for v in T.vectorized(4):
-                            packed_local[v] = packed_shared[row, col * 4 + v]
-                        scale_local[0] = scale_shared[row, col // 16]
-                        zero_local[0] = T.cast(zero_shared[row, col // 16], "int32")
-                        # Each half-warp holds the complete lookup for its
-                        # group. Preserve FP32 affine math and A16 rounding,
-                        # but evaluate it sixteen times per group, not 128.
-                        lookup_local[0] = T.cast(
-                            T.cast(
-                                T.cast(tx % 16 - zero_local[0], "float32") * scale_local[0], dtype
-                            ),
-                            "float32",
-                        )
-                        for v in T.unroll(8):
-                            quantized = (
-                                T.cast(packed_local[v // 2], "int32") >> (4 * (v % 2))
-                            ) & 15
-                            dequantized = T.shfl_sync(lookup_local[0], quantized, width=16)
-                            products_local[chunk] += (
-                                T.cast(activation_local[v], "float32") * dequantized
+                        row = index // row_slots
+                        for word in T.serial(words):
+                            col = index % row_slots + word * 32
+                            for v in T.vectorized(8):
+                                activation_local[v] = activation_shared[0, col * 8 + v]
+                            for v in T.vectorized(4):
+                                packed_local[v] = packed_shared[row, col * 4 + v]
+                            scale_local[0] = scale_shared[row, col // 16]
+                            zero_local[0] = T.cast(zero_shared[row, col // 16], "int32")
+                            # Each half-warp holds the complete lookup for its
+                            # group, preserving FP32 affine math and A16 rounding.
+                            lookup_local[0] = T.cast(
+                                T.cast(
+                                    T.cast(tx % 16 - zero_local[0], "float32") * scale_local[0],
+                                    dtype,
+                                ),
+                                "float32",
                             )
-                for chunk in T.serial(block_n * block_k // (8 * threads)):
-                    index = chunk * threads + tx
-                    products[index // (block_k // 8), index % (block_k // 8)] = products_local[
-                        chunk
-                    ]
-
-                T.reduce_sum(products, partial, dim=1)
-                for i in T.Parallel(block_n):
-                    if n_start + i < n:
-                        output[0, n_start + i] = T.cast(partial[i], dtype)
+                            for v in T.unroll(8):
+                                quantized = (
+                                    T.cast(packed_local[v // 2], "int32") >> (4 * (v % 2))
+                                ) & 15
+                                dequantized = T.shfl_sync(lookup_local[0], quantized, width=16)
+                                products_local[chunk] += (
+                                    T.cast(activation_local[v], "float32") * dequantized
+                                )
+                if warp_rows:
+                    # Each row stays in one warp throughout K. This avoids the
+                    # shared-memory exchange needed by a row spanning warps.
+                    for chunk in T.serial(carried_sums):
+                        for shift in T.unroll(5):
+                            products_local[chunk] += T.shfl_xor(products_local[chunk], 1 << shift)
+                        row = chunk * (threads // 32) + tx // 32
+                        if tx % 32 == 0 and n_start + row < n:
+                            output[0, n_start + row] = T.cast(products_local[chunk], dtype)
+                else:
+                    for chunk in T.serial(carried_sums):
+                        index = chunk * threads + tx
+                        products[index // (block_k // 8), index % (block_k // 8)] = products_local[
+                            chunk
+                        ]
+                    T.reduce_sum(products, partial, dim=1)
+                    for i in T.Parallel(block_n):
+                        if n_start + i < n:
+                            output[0, n_start + i] = T.cast(partial[i], dtype)
 
         return main
 
@@ -224,14 +245,34 @@ class GemmW4A16GemvKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        # Limit the new mapping to the measured Hopper W4 case until the other
+        # GEMV regions have been evaluated. Sixteen rows give 512 CTAs here.
+        warp_rows = (
+            self.n == 8192
+            and self.k == 8192
+            and self.dtype == torch.float16
+            and get_sm_version(self.device_index) == 90
+        )
         # 32 rows of N per CTA still leaves 224 CTAs at the manifest's smallest
         # N. A wider K tile amortizes staging the lookup metadata.
-        return {"block_n": 32, "block_k": 1024, "threads": 128, "num_stages": 2}
+        return {
+            "block_n": 16 if warp_rows else 32,
+            "block_k": 1024,
+            "threads": 128,
+            "num_stages": 2,
+            "warp_rows": warp_rows,
+        }
 
     @property
     def autotune_configs(self) -> list[dict]:
         return [
-            {"block_n": block_n, "block_k": block_k, "threads": threads, "num_stages": num_stages}
+            {
+                "block_n": block_n,
+                "block_k": block_k,
+                "threads": threads,
+                "num_stages": num_stages,
+                "warp_rows": self.default_config["warp_rows"],
+            }
             for block_n in (8, 16, 32)
             for block_k in (256, 512, 1024)
             for threads in (128, 256)
