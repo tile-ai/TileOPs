@@ -318,6 +318,8 @@ A few ops move an amount their inputs' values decide: a routed MoE reads the exp
 
 Two conditions follow. The formula reads the call's semantic inputs — the routing, the offsets, the block table — and never a quantity it computed for itself, which would make a recount an identity. And a workload row builds those inputs the same way every time, from a generator of its own rather than the global stream, because a draw added anywhere upstream otherwise moves the traffic and with it the efficiency the row reports.
 
+A recount of such an op builds the same two kinds of tensor the call does: the bulk operands on the meta device, which carry shape and dtype and no storage, and the metadata whose values decide the traffic for real. Where the row states what those values are — a packed batch's lengths, whose running sum is its bounds — the recount restates them and stays generated. Where it does not — a selection drawn per call — the recount runs the workload that draws it, and the op sits at the second level with that written beside the case.
+
 ## 5. Reference
 
 ### 5.1 GPU Profile

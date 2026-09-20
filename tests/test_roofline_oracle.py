@@ -23,8 +23,10 @@ def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None
     """Sum the named tensors a call binds, and require the names to be the signature's.
 
     A hand-written case states a tensor per name, ``None`` for an optional input the
-    call does not pass or for a workspace, which D2 excludes, and a ``<name>_write``
-    entry for a write that is not an output's -- a ``mutated`` input's. Every declared input and output has to appear,
+    call does not pass or for a workspace, which D2 excludes, a ``<name>_write``
+    entry for a write that is not an output's -- a ``mutated`` input's -- and
+    ``<name>_unread=True`` for an input the call passes and the algorithm does not
+    read. Every declared input and output has to appear,
     and a name the signature does not declare is rejected, so a case cannot quietly
     drop, duplicate or substitute one of them.
     """
@@ -33,17 +35,34 @@ def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None
     signature = load_manifest()[op_name]["signature"]
     inputs = signature.get("inputs") or {}
     outputs = signature.get("outputs") or {}
-    declared = set(inputs) | set(outputs) | {f"{name}_write" for name in inputs}
+    declared = (
+        set(inputs)
+        | set(outputs)
+        | {f"{name}_write" for name in inputs}
+        | {f"{name}_unread" for name in inputs}
+    )
     unknown = sorted(set(tensors) - declared)
     assert not unknown, f"{op_name}: {unknown} are not in the signature"
-    missing = sorted((set(inputs) | set(outputs)) - set(tensors))
+    unread = {name for name in inputs if tensors.get(f"{name}_unread")}
+    accounted = set(tensors) | unread
+    missing = sorted((set(inputs) | set(outputs)) - accounted)
     assert not missing, f"{op_name}: the case says nothing about {missing}"
     for name, spec in inputs.items():
+        if name in unread:
+            # Declared and passed, and the algorithm does not read it: no traffic
+            # (docs/design/roofline.md 1.2).
+            continue
         if tensors[name] is not None:
             continue
         excusable = (spec or {}).get("optional") or name.startswith("workspace")
         assert excusable, f"{op_name}: {name} is not optional and the case passes None"
-    return _nbytes(*(entry for entry in tensors.values() if entry is not None))
+    return _nbytes(
+        *(
+            entry
+            for name, entry in tensors.items()
+            if entry is not None and not name.endswith("_unread")
+        )
+    )
 
 
 class TestBytesOracle:
@@ -713,6 +732,41 @@ class TestBytesOracle:
         )
         assert nsa_fwd_varlen_roofline(bound)[1] == oracle
 
+    def test_nsa_topk_does_not_charge_the_lse_it_recomputes(self):
+        """`lse_in` is declared and passed, and the top-k kernel recomputes the lse
+        and discards the argument. A declared input the algorithm does not read
+        produces no traffic (docs/design/roofline.md 1.2), and the contract does not
+        say which inputs those are."""
+        from tileops.perf.formulas import nsa_topk_varlen_roofline
+
+        seq_num, c_seq_len, heads, head_kv, dim = 8, 8192, 32, 2, 128
+        chunk_num, selected, block = 256, 16, 32
+        lengths = [c_seq_len // seq_num] * seq_num
+        bounds = [0]
+        for length in lengths:
+            bounds.append(bounds[-1] + length)
+        offsets = torch.tensor(bounds, dtype=torch.int32)
+        bound = {
+            "q_shape": (c_seq_len, heads, dim),
+            "k_cmp_shape": (chunk_num, head_kv, dim),
+            "offsets_shape": (seq_num + 1,),
+            "offsets": offsets,
+            "bs": block,
+            "selected_block_num": selected,
+            "dtype": "float16",
+        }
+        oracle = _ledger(
+            "NSATopkVarlenOp",
+            q=((c_seq_len, heads, dim), torch.float16),
+            k_cmp=((chunk_num, head_kv, dim), torch.float16),
+            lse_in_unread=True,
+            offsets=((seq_num + 1,), torch.int32),
+            chunk_offsets=((seq_num + 1,), torch.int32),
+            token_indices=((c_seq_len, 2), torch.int32),
+            block_indices=((c_seq_len, head_kv, selected), torch.int32),
+        )
+        assert nsa_topk_varlen_roofline(bound)[1] == oracle
+
 
 # Coverage levels (docs/design/roofline.md 4.6). Every implemented op sits at
 # exactly one, and the level says what an independent recount rests on.
@@ -757,6 +811,7 @@ HAND_WRITTEN = {
     "GroupedQueryAttentionDenseFwdOp": "the op gathers its optional tensors into the call before pricing it",
     "GroupedQueryAttentionPrefillVarlenFwdOp": "the op reads its per-request lengths off the call it ran",
     "NSAFwdVarlenOp": "how much it reads follows the values in `block_counts`",
+    "NSATopkVarlenOp": "`lse_in` is passed and the kernel recomputes the lse instead of reading it",
     "IndexedExpertMLPFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "InstanceNormFwdOp": "whether the running statistics are read follows `use_input_stats`",
     "MoePrePermuteFwdOp": "its outputs' extents follow the layout spec the call passes",
@@ -771,8 +826,6 @@ NOT_RECOUNTABLE = {
     "MoeExpertMLPFwdOp": "the layout metadata's extent follows the layout spec",
     "MoeGroupedGemmFwdOp": "the layout metadata's extent follows the layout spec",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp": _PACKED_LAYOUT,
-    "NSACmpFwdVarlenOp": "it reads the request bounds out of `offsets`, which a meta tensor carries none of",
-    "NSATopkVarlenOp": "it reads the request bounds out of `offsets`, which a meta tensor carries none of",
 }
 
 

@@ -151,6 +151,14 @@ def _instance(cls: type, params: dict) -> Any:
 #: binder needs the tensors, so each entry below restates the row's dims as the
 #: shapes the signature declares. It states shapes only: what those tensors cost
 #: stays with the formula on one side and the count above on the other.
+def _packed_bounds(lengths: "list[int]") -> torch.Tensor:
+    """The cumulative bounds a packed batch carries, from the row's own lengths."""
+    bounds = [0]
+    for length in lengths:
+        bounds.append(bounds[-1] + int(length))
+    return torch.tensor(bounds, dtype=torch.int32)
+
+
 def _kv_pair(row: dict) -> dict:
     kv = tuple(row["kv_shape"])
     return {"k_shape": kv, "v_shape": kv}
@@ -277,6 +285,26 @@ _ROW_SUPPLEMENT = {
             }
         )
         for name in ("Conv1dFwdOp", "Conv2dFwdOp", "Conv3dFwdOp")
+    },
+    # NSA compression and top-k read the request bounds out of `offsets`. The row
+    # states the lengths, so the tensor is their running sum, not an invention.
+    "NSACmpFwdVarlenOp": lambda row: {
+        "q_shape": (row["c_seq_len"], row["heads"], row["dim_k"]),
+        "k_cmp_shape": (row["chunk_num"], row["head_kv"], row["dim_k"]),
+        "v_cmp_shape": (row["chunk_num"], row["head_kv"], row["dim_v"]),
+        "chunk_offsets_shape": (row["seq_num"] + 1,),
+        "token_indices_shape": (row["c_seq_len"], 2),
+        "offsets": _packed_bounds(row["seq_lens"]),
+        "offsets_shape": (row["seq_num"] + 1,),
+    },
+    "NSATopkVarlenOp": lambda row: {
+        "q_shape": (row["c_seq_len"], row["heads"], row["dim"]),
+        "k_cmp_shape": (row["chunk_num"], row["head_kv"], row["dim"]),
+        "lse_in_shape": (row["c_seq_len"], row["heads"]),
+        "chunk_offsets_shape": (row["seq_num"] + 1,),
+        "token_indices_shape": (row["c_seq_len"], 2),
+        "offsets": _packed_bounds(row["seq_lens"]),
+        "offsets_shape": (row["seq_num"] + 1,),
     },
     "MoePermuteAlignFwdOp": lambda row: {"topk_ids_shape": (row["total_tokens"], row["top_k"])},
     "MeanPoolingFwdOp": lambda row: {
@@ -457,7 +485,16 @@ def bind_case(op_name: str, entry: dict, row: dict, call_dtype: torch.dtype) -> 
         setattr(op, key, tuple(value) if isinstance(value, list) else value)
     for name, shape in zip(order, shapes, strict=True):
         dtype = _resolve_dtype((inputs[name] or {}).get("dtype"), call_dtype, inputs)
-        setattr(op, name, None if shape is None else torch.empty(shape, dtype=dtype, device="meta"))
+        # D6: a bulk tensor is meta, and metadata a formula reads the values of is
+        # built for real. A supplement hands the built one back under the input's
+        # own name; its values restate what the row already says.
+        built = row.get(name)
+        if isinstance(built, torch.Tensor):
+            setattr(op, name, built)
+        else:
+            setattr(
+                op, name, None if shape is None else torch.empty(shape, dtype=dtype, device="meta")
+            )
         setattr(op, f"{name}_shape", shape)
         # An op whose inputs may differ in dtype reads them one per tensor.
         if getattr(op, f"{name}_dtype", None) is None:
