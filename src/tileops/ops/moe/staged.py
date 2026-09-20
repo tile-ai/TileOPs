@@ -16,7 +16,6 @@ from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, Pre
 from tileops.ops._compile_boundary_codegen import OperatorSpec
 from tileops.ops._output_dtype import output_dtype
 from tileops.ops.op_base import Op
-from tileops.perf.formulas import moe_expert_mlp_roofline, moe_grouped_gemm_roofline
 from tileops.perf.profile import tensor_core_roof
 from tileops.utils import get_sm_version, is_h200
 
@@ -154,6 +153,13 @@ class MoePrePermuteFwdOp(_StagedOpBase):
         }
 
     def eval_roofline(self) -> tuple[int, int]:
+        """The one op whose entry codegen cannot serve.
+
+        Its three outputs' extents come from the ``MGroupedLayoutSpec`` the call
+        passes, and the vars layer binds inputs and params, never outputs. The
+        entry states the same sum in the shape the layer could express it; this
+        reads the layout the call actually chose.
+        """
         if self.input_shapes is None or self.dtype is None:
             raise RuntimeError("eval_roofline requires a prior forward call")
         hidden_shape, ids_shape = self.input_shapes
@@ -320,9 +326,6 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
         if getattr(self, "activation", None) is not None:
             n //= 2
         return {"output": (*tuple(a_shape)[:-1], n)}
-
-    def eval_roofline(self) -> tuple[int, int]:
-        return moe_grouped_gemm_roofline(self)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -526,9 +529,6 @@ class MoeExpertMLPFwdOp(_StagedOpBase):
         layout_metadata_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
         return {"output": (*tuple(expert_input_shape)[:-1], w_down_shape[1])}
-
-    def eval_roofline(self) -> tuple[int, int]:
-        return moe_expert_mlp_roofline(self)
 
     def compute_roof(self) -> str:
         """The two GEMMs dominate the FLOPs; priced on tensor cores."""

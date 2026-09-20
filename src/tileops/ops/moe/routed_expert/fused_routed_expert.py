@@ -7,7 +7,6 @@ from typing import Dict, Optional
 from torch import Tensor
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.perf.formulas import routed_expert_mlp_roofline
 from tileops.perf.profile import tensor_core_roof
 
 from ...op_base import Op
@@ -109,9 +108,6 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
     def kernel_delegates(self) -> tuple[Op, ...]:
         tight = (self._pre_permute, self._expert_mlp, self._post_permute)
         return tight if self._indexed_mlp is None else (*tight, self._indexed_mlp)
-
-    def eval_roofline(self) -> tuple[int, int]:
-        return routed_expert_mlp_roofline(self)
 
     def _validate_dtypes(
         self,

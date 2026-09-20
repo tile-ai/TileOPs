@@ -13,7 +13,6 @@ from tileops.kernels.moe.indexed_expert_gemm import (
     IndexedRouteStatsKernel,
     IndexedWeightedReduceKernel,
 )
-from tileops.perf.formulas import routed_expert_mlp_roofline
 from tileops.perf.profile import tensor_core_roof
 from tileops.utils import get_sm_version
 
@@ -109,9 +108,6 @@ class IndexedExpertMLPFwdOp(Op):
     ) -> dict[str, tuple[int, ...]]:
         """Manifest ``shape_rules``: the caller's buffer holds one row per token."""
         return {"output": tuple(hidden_states_shape)}
-
-    def eval_roofline(self) -> tuple[int, int]:
-        return routed_expert_mlp_roofline(self)
 
     def workspace_shapes(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
         """The two scratch buffers the caller allocates, in elements."""

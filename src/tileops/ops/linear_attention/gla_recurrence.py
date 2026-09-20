@@ -166,11 +166,6 @@ class GLADecodeFwdOp(Op):
                 f"new_state must have shape {state_shape}, got {tuple(new_state.shape)}"
             )
 
-    def eval_roofline(self) -> tuple[int, int]:
-        from tileops.perf.formulas import gla_decode_roofline
-
-        return gla_decode_roofline(self)
-
     def forward(
         self,
         q: torch.Tensor,

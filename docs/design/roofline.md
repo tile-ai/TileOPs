@@ -172,6 +172,8 @@ Codegen is the authoritative gate for name and form correctness. A formula refer
 
 For each op, codegen emits an `eval_roofline()` method returning `(flops: int, bytes: int)`. The method signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md); this document specifies only how the body is generated from the manifest.
 
+An op that defines the method itself keeps it, and codegen installs nothing. That is for an op whose call needs translating before the formula sees it — packed lengths read off cumulative bounds, an optional tensor set the row does not carry — or whose entry the vars layer cannot express. It is four ops today, and each one's entry says which. Everywhere else the entry is what runs, so changing it changes the number.
+
 ```python
 def eval_roofline(self) -> tuple[int, int]:
     x = _resolve_tensor_binding(self, "x", "SomeFwdOp", optional=False)
@@ -270,7 +272,7 @@ Non-runtime consumers must instantiate the Op (or read pre-computed `(flops, byt
 
 #### 4.4.6 Evaluator Surface Boundary
 
-Roofline expressions live in exactly one place at runtime: the plain Python body that codegen emits into each op's `eval_roofline()`. No standalone roofline evaluator exists.
+Roofline expressions live in one place at runtime: the plain Python body that codegen emits into each op's `eval_roofline()`, or the method an op defines for itself under §4.4.1. No standalone roofline evaluator exists, and neither surface parses a formula string.
 
 | Surface                           | Scope | Interprets roofline expressions? |
 | --------------------------------- | ----- | -------------------------------- |

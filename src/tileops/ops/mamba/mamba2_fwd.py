@@ -97,11 +97,6 @@ class Mamba2FwdOp(Op):
         # to the sub-ops it builds, and each of those is a replacement point.
         return {}
 
-    def eval_roofline(self) -> tuple[int, int]:
-        from tileops.perf.formulas import mamba2_fwd_roofline
-
-        return mamba2_fwd_roofline(self)
-
     def _validate_dtypes(
         self,
         x: torch.Tensor,

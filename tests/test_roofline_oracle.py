@@ -738,7 +738,15 @@ _UNDECLARED_TABLE = (
 )
 
 #: Level two: a case above recounts these by hand. The value says why the
-#: contract cannot, which is what the hand-written case supplies.
+#: generated case cannot, which is what the hand-written one supplies.
+#:
+#: Two kinds sit here. For most, the binder cannot build the call at all. For
+#: five -- BatchNorm, InstanceNorm, the two GQA entries and MoePrePermute -- it
+#: builds one and counts something that is not this call's traffic, because a
+#: param decides whether an input is read or written, or the op translates the
+#: call before the formula sees it. Those five are the ones where a formula
+#: defect would look like the stated reason, so their cases are what check them
+#: and `_ledger` is what checks the cases.
 HAND_WRITTEN = {
     "BatchNormFwdOp": "whether the running statistics are written follows `training`",
     "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
@@ -746,7 +754,7 @@ HAND_WRITTEN = {
     "FusedMoeSharedExpertFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "GemmFp8FwdOp": "the scale tensors' extents follow the scaling mode, not the dims",
     "GemmW4A16FwdOp": "the packed weight and its group metadata have a quantized layout",
-    "GroupedQueryAttentionDenseFwdOp": "the optional scale and RoPE tensors vary per call",
+    "GroupedQueryAttentionDenseFwdOp": "the op gathers its optional tensors into the call before pricing it",
     "GroupedQueryAttentionPrefillVarlenFwdOp": "the op reads its per-request lengths off the call it ran",
     "NSAFwdVarlenOp": "how much it reads follows the values in `block_counts`",
     "IndexedExpertMLPFwdOp": "the routed weight reads follow the values in `topk_ids`",
@@ -789,8 +797,8 @@ def _binder_builds(op_name: str) -> bool:
         cases = list(manifest_cases(op_name))
     except NotBindableError:
         return False
-    except Exception:
-        return False
+    # Anything else -- a broken supplement, a constructor regression, a binder
+    # defect -- is a failure to report, not a reason to call an op unrecountable.
     return bool(cases)
 
 
