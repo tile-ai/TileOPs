@@ -38,6 +38,33 @@ class _HeuristicPolicy:
     # depth a narrower output staging is worth taking to reach.
     staged_epilogue_tile: tuple[int, int, int] = (128, 256, 64)
     staged_epilogue_stages: int = 4
+    # The staged epilogue buys a mainloop stage and pays a store round per tile.
+    # The stage is worth that only while an SM's tiles cannot cover each other's
+    # TMA latency; past this many waves they can, and the extra round is all
+    # that is left. Measured over 32 padded shapes on five model families: below
+    # it staging wins by 2.5-7%, above it it loses by 2.5-4.4%, and the crossover
+    # sits between 16 and 24 waves.
+    staged_epilogue_wave_limit: int = 20
+    # A tile hides its TMA latency behind the next tile, so the pipeline depth it
+    # affords only decides when there is no next tile: few waves *and* too few
+    # tiles to fill the SMs. Either alone is not it -- three waves over a full
+    # device still overlaps. hiding_stages is the depth past which deepening the
+    # ring buys nothing, and lands on the same four stages the staged epilogue
+    # above is there to reach. All three are read off the measured inversions on
+    # five model families, where the model's ranking and the device's agree
+    # outside the shallow region and invert inside it.
+    shallow_wave_limit: int = 4
+    shallow_tiles_per_sm: float = 2.5
+    hiding_stages: int = 4
+    # Tile widths to keep out of the candidate set. A WGMMA whose N is not a power
+    # of two issues as two instructions and carries the register pressure of the
+    # wider one, which the cycle model below does not see: it prices a tile by
+    # block_m + block_n, so it reads 192 as cheap wherever 192 divides n. On a
+    # tight layout it is far worse than that -- across five model families a
+    # 192-wide tile runs 1.6-3.3x slower than the next candidate, and one shape
+    # ran the same tile at 148us tight against 38us padded. Excluding it outright
+    # costs one padded shape 6%, which is the most it was ever measured to win.
+    block_n_excluded: tuple[int, ...] = (192,)
 
     @property
     def barrier_bytes(self) -> int:
@@ -327,7 +354,11 @@ def layout_candidates(desc: GemmDesc) -> list[_Layout]:
         # Masked and tight rows have no alignment to honour; short groups want 64.
         block_m_candidates = [64, 128]
 
-    block_n_candidates = list(range(desc.policy.block_n_step, 256 + 1, desc.policy.block_n_step))
+    block_n_candidates = [
+        bn
+        for bn in range(desc.policy.block_n_step, 256 + 1, desc.policy.block_n_step)
+        if bn not in desc.policy.block_n_excluded
+    ]
 
     candidates = []
     for block_m in block_m_candidates:
@@ -389,7 +420,23 @@ def _num_cycles(desc: GemmDesc, layout: _Layout) -> tuple[int, int]:
     l2_cycles = (bytes_l2_ab + bytes_cd) * num_blocks // l2_bandwidth_per_cycle
     l1_cycles = (bytes_l1_ab + bytes_l1_tc + bytes_cd) * num_blocks // l1_bandwidth_per_cycle
     wave_efficiency = num_blocks / (num_waves * desc.num_sms)
-    return num_waves, int(max(l1_cycles, l2_cycles) / wave_efficiency)
+    cycles = max(l1_cycles, l2_cycles) / wave_efficiency
+
+    # Over many waves a tile's TMA latency hides under the next tile, and the
+    # bandwidth terms above decide. Over few waves *on a device the tiles do not
+    # fill* there is no next tile: an SM runs one or two, and what it can overlap
+    # is its own pipeline, so a shallow ring stalls however little it moves. The
+    # model prices no pipeline, which is why it reads the widest tile -- the one
+    # whose output buffer leaves room for three stages -- as cheapest exactly
+    # where it measures slowest.
+    if (
+        num_waves < desc.policy.shallow_wave_limit
+        and num_blocks / desc.num_sms < desc.policy.shallow_tiles_per_sm
+    ):
+        stages = _num_stages(desc, layout)
+        deficit = max(0, desc.policy.hiding_stages - stages)
+        cycles *= 1.0 + deficit / desc.policy.hiding_stages
+    return num_waves, int(cycles)
 
 
 def _best_layout(desc: GemmDesc, candidates: list[_Layout]) -> _Layout:
@@ -448,8 +495,9 @@ def _spec(
 def _staged_epilogue(desc: GemmDesc, layout: _Layout) -> GroupedGemmSpec | None:
     """A spec that trades a narrower output staging buffer for a deeper mainloop.
 
-    Returns ``None`` where the trade buys no stage, and so only costs the extra
-    staging rounds. The widest chunk that reaches the policy's depth wins.
+    Returns ``None`` where the trade buys no stage, or where the mainloop is deep
+    enough in waves not to need one, and so only costs the extra staging rounds.
+    The widest chunk that reaches the policy's depth wins.
     """
     policy = desc.policy
     if desc.activation != "none" or not desc.h200:
@@ -461,6 +509,8 @@ def _staged_epilogue(desc: GemmDesc, layout: _Layout) -> GroupedGemmSpec | None:
         # tiles are ragged is a property of the routing, not of the shape.
         return None
     if (layout.block_m, layout.block_n, layout.block_k) != policy.staged_epilogue_tile:
+        return None
+    if _num_cycles(desc, layout)[0] >= policy.staged_epilogue_wave_limit:
         return None
     base = _num_stages(desc, layout)
     for stage_n in (layout.block_n // 2, layout.block_n // 4):
