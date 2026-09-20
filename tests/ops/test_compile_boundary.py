@@ -28,6 +28,7 @@ from tileops.ops.attention.gqa import (
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
     GroupedQueryAttentionSlidingWindowVarlenFwdOp,
+    GroupedQueryAttentionVarlenFwdOp,
 )
 from tileops.ops.attention.mha import (
     MultiHeadAttentionBwdOp,
@@ -85,10 +86,10 @@ def _attention_cases():
         op = GroupedQueryAttentionBwdOp(1, _HEADS, _HEADS_KV, 256, _DIM, is_causal=True)
         return op, case.gen_inputs()
 
-    def gqa_prefill_varlen():
+    def gqa_varlen():
         lens = [128, 128]
         case = GQAPrefillVarlenFwdWorkload(2, _HEADS, _HEADS_KV, lens, lens, _DIM, True, _DTYPE)
-        op = GroupedQueryAttentionPrefillVarlenFwdOp(max_seqlen_q=128, max_seqlen_kv=128)
+        op = GroupedQueryAttentionVarlenFwdOp()
         return op, case.gen_inputs()
 
     def gqa_sliding_window_varlen():
@@ -96,14 +97,22 @@ def _attention_cases():
         case = GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(
             2, lens, lens, _HEADS, _HEADS_KV, _DIM, True, 64, -1, _DTYPE
         )
+        op = GroupedQueryAttentionVarlenFwdOp(is_causal=True, window_size_left=64)
+        return op, case.gen_inputs()
+
+    def gqa_prefill_varlen_compat():
+        lens = [128, 128]
+        case = GQAPrefillVarlenFwdWorkload(2, _HEADS, _HEADS_KV, lens, lens, _DIM, True, _DTYPE)
+        op = GroupedQueryAttentionPrefillVarlenFwdOp(128, 128)
+        return op, case.gen_inputs()
+
+    def gqa_sliding_window_varlen_compat():
+        lens = [128, 128]
+        case = GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(
+            2, lens, lens, _HEADS, _HEADS_KV, _DIM, True, 64, -1, _DTYPE
+        )
         op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(
-            batch=2,
-            heads=_HEADS,
-            heads_kv=_HEADS_KV,
-            dim=_DIM,
-            max_seqlen_q=case.max_seqlen_q,
-            is_causal=True,
-            window_size_left=64,
+            2, _HEADS, _HEADS_KV, _DIM, 128, window_size_left=64
         )
         return op, case.gen_inputs()
 
@@ -193,8 +202,10 @@ def _attention_cases():
     return (
         ("gqa-dense", gqa_dense),
         ("gqa-bwd", gqa_bwd),
-        ("gqa-prefill-varlen", gqa_prefill_varlen),
+        ("gqa-varlen", gqa_varlen),
         ("gqa-sliding-window-varlen", gqa_sliding_window_varlen),
+        ("gqa-prefill-varlen-compat", gqa_prefill_varlen_compat),
+        ("gqa-sliding-window-varlen-compat", gqa_sliding_window_varlen_compat),
         ("gqa-prefill-paged", gqa_prefill_paged),
         ("gqa-decode-paged", gqa_decode_paged),
         ("mha-bwd", mha_bwd),

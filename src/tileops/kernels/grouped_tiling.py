@@ -56,6 +56,25 @@ class GroupTiling:
         return group_tile_cumsum
 
     @property
+    def cumsum_offsets(self):
+        """Build the tile-count prefix sum from packed row offsets.
+
+        ``offsets[g + 1] - offsets[g]`` is the row count of group ``g``.
+        Varlen operators already receive that representation, so they should
+        not materialize a second sizes tensor merely to schedule row tiles.
+        """
+        num_groups, block_m = self.num_groups, self.block_m
+
+        @T.macro
+        def group_tile_cumsum_offsets(offsets, s_cum):
+            s_cum[0] = T.int32(0)
+            for g in T.serial(num_groups):
+                size = offsets[g + 1] - offsets[g]
+                s_cum[g + 1] = s_cum[g] + (size + T.int32(block_m - 1)) // T.int32(block_m)
+
+        return group_tile_cumsum_offsets
+
+    @property
     def decode(self):
         """Macro searching ``s_cum`` for the group owning one M tile id.
 

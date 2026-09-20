@@ -202,9 +202,9 @@ def gqa_decode_paged_args(
     )
 
 
-def gqa_prefill_varlen_args(
+def gqa_varlen_args(
     workload: dict[str, Any],
-) -> tuple[int, list[int], list[int], int, int, int, bool]:
+) -> tuple[int, list[int], list[int], int, int, int, bool, int, int]:
     batch = workload["batch"]
     q_lens = list(workload.get("q_lens") or [workload["total_q"] // batch] * batch)
     kv_lens = list(workload.get("kv_lens") or [workload["total_kv"] // batch] * batch)
@@ -216,19 +216,29 @@ def gqa_prefill_varlen_args(
         workload["heads_kv"],
         workload["dim"],
         workload.get("is_causal", True),
+        workload.get("window_size_left", -1),
+        workload.get("window_size_right", -1),
     )
+
+
+def gqa_prefill_varlen_args(
+    workload: dict[str, Any],
+) -> tuple[int, list[int], list[int], int, int, int, bool]:
+    """Compatibility workload adapter for the implemented prefill Varlen Op."""
+    return gqa_varlen_args(workload)[:7]
 
 
 def gqa_sliding_window_varlen_args(
     workload: dict[str, Any],
 ) -> tuple[int, list[int], list[int], int, int, int, bool, int, int]:
+    """Compatibility workload adapter for the implemented sliding Varlen Op."""
     batch = workload["batch"]
     q_lens = list(workload.get("q_lens") or [workload["total_q"] // batch] * batch)
-    k_lens = list(workload.get("k_lens") or [workload["total_k"] // batch] * batch)
+    kv_lens = list(workload.get("k_lens") or [workload["total_k"] // batch] * batch)
     return (
         batch,
         q_lens,
-        k_lens,
+        kv_lens,
         workload["heads"],
         workload["heads_kv"],
         workload["dim"],
