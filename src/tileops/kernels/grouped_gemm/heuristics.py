@@ -34,10 +34,14 @@ class _HeuristicPolicy:
     element_bytes: int = 2
     block_k: int = 64
     block_n_step: int = 64
-    # The tile whose whole-tile output buffer costs it a mainloop stage, and the
-    # depth a narrower output staging is worth taking to reach.
-    staged_epilogue_tile: tuple[int, int, int] = (128, 256, 64)
+    # The depth a narrower output staging is worth taking to reach, and the
+    # depth past which it is not worth taking at all. A stage is worth about
+    # 1/(stages - 1) of an arrival, so the sixth buys a fifth of what the fourth
+    # did while the store rounds cost the same either way: measured over 184
+    # descriptors, staging a ring that already holds six stages lost on every
+    # one it moved, by up to 17.7%, and staging a shallower one won 15 of 16.
     staged_epilogue_stages: int = 4
+    staged_epilogue_depth_cap: int = 6
     # The staged epilogue buys a mainloop stage and pays a store round per tile.
     # The stage is worth that only while an SM's tiles cannot cover each other's
     # TMA latency; past this many waves they can, and the extra round is all
@@ -575,7 +579,7 @@ def _staged_epilogue(desc: GemmDesc, layout: _Layout) -> GroupedGemmSpec | None:
         # staging round each, for a store that was never going to widen; how many
         # tiles are ragged is a property of the routing, not of the shape.
         return None
-    if (layout.block_m, layout.block_n, layout.block_k) != policy.staged_epilogue_tile:
+    if _num_stages(desc, layout) >= policy.staged_epilogue_depth_cap:
         return None
     if (
         desc.gemm_type is GemmType.M_GROUPED_ALIGNED_PSUM

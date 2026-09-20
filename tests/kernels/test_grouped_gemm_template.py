@@ -437,7 +437,7 @@ def test_grouped_selector_calibration_stays_on_physical_psum_layouts():
         ),
         pytest.param(
             dict(m=1024, n=1024, k=1024, num_groups=8, cd_dtype="float32"),
-            (128, 192, 64, 3, 0),
+            (128, 192, 64, 4, 96),
             id="batched-fp32",
         ),
         pytest.param(
@@ -509,7 +509,7 @@ def test_grouped_selector_calibration_stays_on_physical_psum_layouts():
                 num_groups=16,
                 m_alignment=64,
             ),
-            (64, 256, 64, 4, 0),
+            (64, 256, 64, 5, 128),
             id="aligned-per-row-64",
         ),
         pytest.param(
@@ -521,7 +521,7 @@ def test_grouped_selector_calibration_stays_on_physical_psum_layouts():
                 num_groups=16,
                 m_alignment=256,
             ),
-            (256, 128, 64, 3, 0),
+            (256, 128, 64, 4, 32),
             id="aligned-per-row-256",
         ),
         pytest.param(
