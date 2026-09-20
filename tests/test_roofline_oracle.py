@@ -620,6 +620,99 @@ class TestBytesOracle:
             )
             assert op.eval_roofline()[1] == oracle, f"use_input_stats={use_input_stats}"
 
+    def test_gqa_prefill_varlen_counts_its_packed_tensors_and_bounds(self):
+        from tileops.ops.attention.gqa import GroupedQueryAttentionPrefillVarlenFwdOp
+
+        batch, heads, heads_kv, dim = 4, 32, 8, 128
+        q_lens = [512] * batch
+        total_q = total_kv = sum(q_lens)
+        bounds = [0]
+        for length in q_lens:
+            bounds.append(bounds[-1] + length)
+        cu = torch.tensor(bounds, dtype=torch.int32)
+        op = GroupedQueryAttentionPrefillVarlenFwdOp.__new__(
+            GroupedQueryAttentionPrefillVarlenFwdOp
+        )
+        # The op turns the call's cumulative bounds into per-request lengths before
+        # it prices anything, so the case states the bounds the call carried.
+        op._roofline_kwargs = {
+            "q_shape": (total_q, heads, dim),
+            "k_shape": (total_kv, heads_kv, dim),
+            "batch": batch,
+            "max_seqlen_q": max(q_lens),
+            "max_seqlen_kv": max(q_lens),
+            "is_causal": True,
+            "dtype": "float16",
+            "cu_seqlens_q": cu,
+            "cu_seqlens_kv": cu,
+        }
+        oracle = _ledger(
+            "GroupedQueryAttentionPrefillVarlenFwdOp",
+            q=((total_q, heads, dim), torch.float16),
+            k=((total_kv, heads_kv, dim), torch.float16),
+            v=((total_kv, heads_kv, dim), torch.float16),
+            cu_seqlens_q=((batch + 1,), torch.int32),
+            cu_seqlens_kv=((batch + 1,), torch.int32),
+            o=((total_q, heads, dim), torch.float16),
+        )
+        assert op.eval_roofline()[1] == oracle
+
+    def test_nsa_forward_counts_the_blocks_its_selection_kept(self):
+        """How much this call reads follows `block_counts`, so the case runs the
+        workload that builds it rather than inventing a selection of its own."""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA required to build the workload")
+        from tileops.perf.formulas import nsa_fwd_varlen_roofline
+        from workloads.attention.deepseek import NsaFwdWorkload
+
+        batch, heads, head_kv, dim = 4, 16, 1, 64
+        c_seq_len, block_size, selected = 8192, 32, 4
+        workload = NsaFwdWorkload(
+            batch=batch, heads=heads, c_seq_len=c_seq_len, dim=dim, is_causal=True,
+            scale=0.1, block_size=block_size, groups=heads, selected_blocks=selected,
+            dtype=torch.float16, accum_dtype=torch.float32, seq_lens=[c_seq_len // batch] * batch,
+        )  # fmt: skip
+        q, k, v, block_indices, block_counts, offsets, token_indices = workload.gen_inputs()[:7]
+
+        # The blocks the kernel reads: for each token and KV head, the kept picks
+        # whose block starts at or before that token. Counted here from the
+        # tensors, not from the formula's own walk of them.
+        kept = block_counts.reshape(-1).tolist()
+        picks = block_indices.reshape(-1, selected).tolist()
+        positions = token_indices[:, 1].tolist()
+        tiles = sum(
+            sum(1 for start in row[:n] if 0 <= start * block_size <= positions[i // head_kv])
+            for i, (n, row) in enumerate(zip(kept, picks, strict=True))
+        )
+        gathered = tiles * block_size * dim
+
+        bound = {
+            f"{name}_shape": tuple(tensor.shape)
+            for name, tensor in (
+                ("q", q), ("k", k), ("v", v), ("block_indices", block_indices),
+                ("block_counts", block_counts), ("offsets", offsets),
+                ("token_indices", token_indices),
+            )
+        }  # fmt: skip
+        bound.update(
+            block_indices=block_indices, block_counts=block_counts, offsets=offsets,
+            token_indices=token_indices, block_size=block_size, is_causal=True,
+            dtype="float16",
+        )  # fmt: skip
+        oracle = _ledger(
+            "NSAFwdVarlenOp",
+            q=((c_seq_len, heads, dim), torch.float16),
+            # k and v are read through the selection, not end to end
+            k=((gathered,), torch.float16),
+            v=((gathered,), torch.float16),
+            block_indices=(tuple(block_indices.shape), torch.int32),
+            block_counts=(tuple(block_counts.shape), torch.int32),
+            offsets=(tuple(offsets.shape), torch.int32),
+            token_indices=(tuple(token_indices.shape), torch.int32),
+            o_slc=((c_seq_len, heads, dim), torch.float16),
+        )
+        assert nsa_fwd_varlen_roofline(bound)[1] == oracle
+
 
 # Coverage levels (docs/design/roofline.md 4.6). Every implemented op sits at
 # exactly one, and the level says what an independent recount rests on.
@@ -654,6 +747,8 @@ HAND_WRITTEN = {
     "GemmFp8FwdOp": "the scale tensors' extents follow the scaling mode, not the dims",
     "GemmW4A16FwdOp": "the packed weight and its group metadata have a quantized layout",
     "GroupedQueryAttentionDenseFwdOp": "the optional scale and RoPE tensors vary per call",
+    "GroupedQueryAttentionPrefillVarlenFwdOp": "the op reads its per-request lengths off the call it ran",
+    "NSAFwdVarlenOp": "how much it reads follows the values in `block_counts`",
     "IndexedExpertMLPFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "InstanceNormFwdOp": "whether the running statistics are read follows `use_input_stats`",
     "MoePrePermuteFwdOp": "its outputs' extents follow the layout spec the call passes",
@@ -665,16 +760,11 @@ NOT_RECOUNTABLE = {
     "GroupedGemmFwdOp": "the per-group extents come from the batch metadata tensors",
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp": _PACKED_LAYOUT,
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": _PACKED_LAYOUT,
-    "GroupedQueryAttentionPrefillVarlenFwdOp": _PACKED_LAYOUT,
-    "GroupedQueryAttentionSlidingWindowVarlenFwdOp": _PACKED_LAYOUT,
-    "MeanPoolingFwdOp": _PACKED_LAYOUT,
     "MoeExpertMLPFwdOp": "the layout metadata's extent follows the layout spec",
     "MoeGroupedGemmFwdOp": "the layout metadata's extent follows the layout spec",
-    "MoePermuteAlignFwdOp": "the row gives the route counts, not the `topk_ids` tensor",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp": _PACKED_LAYOUT,
-    "NSACmpFwdVarlenOp": _PACKED_LAYOUT,
-    "NSAFwdVarlenOp": _PACKED_LAYOUT,
-    "NSATopkVarlenOp": _PACKED_LAYOUT,
+    "NSACmpFwdVarlenOp": "it reads the request bounds out of `offsets`, which a meta tensor carries none of",
+    "NSATopkVarlenOp": "it reads the request bounds out of `offsets`, which a meta tensor carries none of",
 }
 
 

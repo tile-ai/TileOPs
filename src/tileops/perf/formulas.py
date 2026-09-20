@@ -619,6 +619,10 @@ def gqa_sliding_window_varlen_fwd_roofline(
     nbytes = (
         total_q * heads * dim + 2 * total_k * heads_kv * dim + total_q * heads * dim
     ) * elem_bytes
+    # The two cumulative-length tensors the kernel walks to find each request's
+    # bounds, one bound per request plus the zero. The packed prefill sibling
+    # counts them; this one did not.
+    nbytes += 2 * (batch + 1) * 4
     return int(flops), int(nbytes)
 
 

@@ -278,6 +278,26 @@ _ROW_SUPPLEMENT = {
         )
         for name in ("Conv1dFwdOp", "Conv2dFwdOp", "Conv3dFwdOp")
     },
+    "MoePermuteAlignFwdOp": lambda row: {"topk_ids_shape": (row["total_tokens"], row["top_k"])},
+    "MeanPoolingFwdOp": lambda row: {
+        "x_shape": (row["batch"], row["seq_len"], row["heads"], row["dim"])
+    },
+    # Packed-batch attention: the row gives the totals and the request count, and
+    # the cumulative-length tensors hold one bound per request plus the zero.
+    "GroupedQueryAttentionPrefillVarlenFwdOp": lambda row: {
+        "q_shape": (row["total_q"], row["heads"], row["dim"]),
+        "k_shape": (row["total_kv"], row["heads_kv"], row["dim"]),
+        "v_shape": (row["total_kv"], row["heads_kv"], row["dim"]),
+        "cu_seqlens_q_shape": (row["batch"] + 1,),
+        "cu_seqlens_kv_shape": (row["batch"] + 1,),
+    },
+    "GroupedQueryAttentionSlidingWindowVarlenFwdOp": lambda row: {
+        "q_shape": (row["total_q"], row["heads"], row["dim"]),
+        "k_shape": (row["total_k"], row["heads_kv"], row["dim"]),
+        "v_shape": (row["total_k"], row["heads_kv"], row["dim"]),
+        "cu_seqlens_q_shape": (row["batch"] + 1,),
+        "cu_seqlens_k_shape": (row["batch"] + 1,),
+    },
     "DropoutFwdOp": lambda row: {"N_total": prod(row["input_shape"])},
     "FFTC2CFwdOp": lambda row: {"n": row["input_shape"][-1]},
     "FusedTopKOp": lambda row: {"gating_output_shape": (row["num_tokens"], row["num_experts"])},
