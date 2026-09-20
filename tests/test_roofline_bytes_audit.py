@@ -1,6 +1,7 @@
 """Verdict logic of scripts/validate_roofline_bytes.py (roofline.md §4.5)."""
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,8 +41,116 @@ class TestReadSideVerdict:
     def test_an_undeclared_read_half_yields_no_verdict(self):
         assert audit.read_side_verdict(MEASURED_READ, None) == "NO-VERDICT"
 
-    def test_a_zero_read_half_is_a_broken_declaration(self):
-        assert audit.read_side_verdict(MEASURED_READ, 0) == "ERROR"
+    def test_a_call_that_reads_nothing_has_no_ratio_to_be_judged_by(self):
+        """Dropout at p == 1 writes zeros and reads none of its input, which is a
+        read half of zero: a legitimate declaration, and not one a ratio judges."""
+        assert audit.read_side_verdict(MEASURED_READ, 0) == "SKIPPED"
+
+    def test_a_negative_read_half_is_a_broken_declaration(self):
+        assert audit.read_side_verdict(MEASURED_READ, -1) == "ERROR"
+
+    def test_a_waived_shortfall_is_reported_not_judged(self):
+        """A kernel may predicate away the load of a position whose value decides
+        nothing, so reading less than the call binds is not the formula's fault."""
+        assert audit.read_side_verdict(READ_BYTES * 0.5, READ_BYTES, bound=False) == "EXEMPT"
+
+
+class TestReadBoundException:
+    """The exception covers the calls its condition names and no others."""
+
+    ENTRY = {
+        "signature": {"params": {"p": {"default": 0.5}, "training": {"default": True}}},
+        "roofline": {
+            "read_bound_exception": {
+                "when": "training and 0.0 < p < 1.0",
+                "reason": "the mask can predicate away a dropped position's load",
+            }
+        },
+    }
+
+    def test_a_row_inside_the_condition_is_waived(self):
+        assert audit.read_bound_exception(self.ENTRY, {"p": 0.5, "training": True})
+
+    def test_a_row_outside_it_is_judged(self):
+        """Eval mode copies the input, so the full read really is required."""
+        assert audit.read_bound_exception(self.ENTRY, {"p": 0.5, "training": False}) == ""
+        assert audit.read_bound_exception(self.ENTRY, {"p": 0.0, "training": True}) == ""
+
+    def test_a_row_that_omits_the_key_falls_back_to_the_param_default(self):
+        assert audit.read_bound_exception(self.ENTRY, {"p": 0.5})
+
+    def test_the_condition_reads_the_element_type_the_row_expands_to(self, tmp_path):
+        """A row states a dtype axis; the call runs one of them, and whether a load
+        can be predicated away can follow it. The audited row is what the condition
+        sees, so this goes through the run that produces a verdict."""
+        entry = {
+            "signature": {"params": {}},
+            "roofline": {
+                "read_bound_exception": {
+                    "when": "dtype == 'float16'",
+                    "reason": "the packed load covers a dropped position",
+                }
+            },
+            "workloads": [
+                {"x_shape": [64], "dtypes": ["float16", "float32"], "label": "row"},
+            ],
+        }
+        verdicts = {}
+        for dtype_str in ("float16", "float32"):
+            rows = self._audited(entry, dtype_str, tmp_path)
+            verdicts[dtype_str] = rows[0]["verdict"]
+        assert verdicts == {"float16": "EXEMPT", "float32": "FAIL"}
+
+    @staticmethod
+    def _audited(entry: dict, dtype_str: str, tmp_path) -> list[dict]:
+        """Run audit_one over one dtype, with the profiler and its CSV stubbed.
+
+        The child would need a GPU and ncu needs counters no test has, so what
+        is exercised here is what the audit does with a measurement: which row
+        and dtype reach the condition.
+        """
+        import subprocess
+        from unittest import mock
+
+        declared, measured = 1024, 512  # a shortfall, whatever the dtype
+        emitted = json.dumps(
+            {"formula_flops": 0, "formula_bytes": declared * 2, "read_bytes": declared}
+        )
+        row = dict(entry["workloads"][0], dtypes=[dtype_str])
+        with (
+            mock.patch.object(audit, "_pick_workloads", return_value=[(row, dtype_str)]),
+            mock.patch.object(
+                subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, stdout=emitted, stderr=""),
+            ),
+            mock.patch.object(audit, "_parse_ncu_csv", return_value=((measured, 0.0), 1)),
+        ):
+            return audit.audit_one("Op", entry, tmp_path)
+
+    def test_an_op_whose_every_row_is_waived_is_named(self):
+        """Its read half went unjudged, which a run has to say rather than count as
+        checked."""
+        results = [
+            {"op": "Waived", "verdict": "EXEMPT"},
+            {"op": "Waived", "verdict": "SKIPPED"},
+            {"op": "Judged", "verdict": "EXEMPT"},
+            {"op": "Judged", "verdict": "PASS"},
+        ]
+        assert audit.fully_waived(results) == ["Waived"]
+
+    def test_an_entry_without_the_exception_waives_nothing(self):
+        assert audit.read_bound_exception({"roofline": {}}, {"p": 0.5}) == ""
+
+    def test_the_manifest_states_both_halves_wherever_it_waives(self):
+        from tileops.manifest import load_manifest
+
+        for name, entry in load_manifest().items():
+            stated = (entry.get("roofline") or {}).get("read_bound_exception")
+            if stated is None:
+                continue
+            assert stated.get("when", "").strip(), name
+            assert stated.get("reason", "").strip(), name
 
 
 class TestDeclaredReadHalf:
@@ -100,8 +209,13 @@ class TestExitCode:
     def test_a_no_verdict_row_fails_the_run(self):
         assert audit.exit_code({"PASS": 10, "NO-VERDICT": 1}) == 1
 
-    def test_warn_and_skipped_stay_green(self):
-        assert audit.exit_code({"PASS": 2, "WARN": 1, "SKIPPED": 3}) == 0
+    def test_warn_skipped_and_exempt_stay_green(self):
+        assert audit.exit_code({"PASS": 2, "WARN": 1, "SKIPPED": 3, "EXEMPT": 2}) == 0
+
+    def test_a_verdict_nothing_reads_is_not_a_pass(self):
+        """Green is an allowlist: a run whose rows carry a spelling this file does
+        not know has not been judged, whatever that spelling was meant to say."""
+        assert audit.exit_code({"PASS": 2, "EXEMPTED": 1}) == 1
 
 
 class TestReadHalfAfterACall:

@@ -1767,7 +1767,7 @@ def nsa_topk_varlen_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int,
     flops = 2 * pairs * heads * dim
     # `lse_in` produces no read: the top-k kernel recomputes the lse itself and
     # discards the argument. A declared input the algorithm does not read is not
-    # counted (roofline.md 1.1).
+    # counted (roofline.md 1.2).
     nbytes = (c_seq_len * heads * dim + chunk_num * head_kv * dim) * elem_bytes
     nbytes += c_seq_len * head_kv * selected * 4
     nbytes += _nsa_ragged_index_bytes(seq_num, c_seq_len)

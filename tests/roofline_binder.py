@@ -144,13 +144,13 @@ def _instance(cls: type, params: dict) -> Any:
     return op
 
 
-#: Shapes a workload row implies but does not spell out, per op.
-#:
-#: A row states the dims a benchmark needs -- ``m``, ``n``, ``k``, ``seq_len`` --
-#: and leaves the tensors those dims describe to the op's own construction. The
-#: binder needs the tensors, so each entry below restates the row's dims as the
-#: shapes the signature declares. It states shapes only: what those tensors cost
-#: stays with the formula on one side and the count above on the other.
+# Shapes a workload row implies but does not spell out, per op.
+#
+# A row states the dims a benchmark needs -- ``m``, ``n``, ``k``, ``seq_len`` --
+# and leaves the tensors those dims describe to the op's own construction. The
+# binder needs the tensors, so each entry below restates the row's dims as the
+# shapes the signature declares. It states shapes only: what those tensors cost
+# stays with the formula on one side and the count above on the other.
 def _packed_bounds(lengths: "list[int]") -> torch.Tensor:
     """The cumulative bounds a packed batch carries, from the row's own lengths."""
     bounds = [0]

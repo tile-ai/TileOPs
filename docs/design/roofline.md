@@ -123,6 +123,7 @@ Every roofline entry MUST satisfy:
 - Required fields per mode: inline has `flops` and `bytes`; func has `func`.
 - Mode exclusivity: `flops`/`bytes`/`vars` and `func` do not coexist.
 - Field types: `flops`/`bytes`/`func` are non-empty strings; `vars` is a mapping of str → non-empty str.
+- `read_bound_exception`, where present, is a mapping of `when` and `reason`, both non-empty strings. `when` joins tests over the call with `and` or `or` — each a name, a negated name, or a comparison of names and literals — over params, the workload keys that state what the call does, and `dtype`, the element type the row expands to; never `label` or `dtypes`, which say how a row is reported. Every clause, at every depth, has to read something the call decides — a comparison chain one link at a time, since it stops at the first false link — and no link may compare a value with itself: a clause that settles before a name is read would waive every call (§4.5).
 - `func` dotted path resolves at import time.
 
 Out of the validator's scope:
@@ -172,7 +173,7 @@ Codegen is the authoritative gate for name and form correctness. A formula refer
 
 Codegen emits an `eval_roofline()` method returning `(flops: int, bytes: int)` for every op that does not define one. The method signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md); this document specifies only how the body is generated from the manifest.
 
-An op that defines the method itself keeps it, and codegen installs nothing. That is for an op whose call needs translating before the formula sees it — packed lengths read off cumulative bounds, an optional tensor set the row does not carry — or whose entry the vars layer cannot express. It is four ops today, and each one's entry says which. Everywhere else the entry is what runs, so changing it changes the number.
+An op that defines the method itself keeps it, and codegen installs nothing. That is for an op whose call needs translating before the formula sees it — packed lengths read off cumulative bounds, an optional tensor set the row does not carry — or whose entry the vars layer cannot express. It is three ops today, and each one's entry says which. Everywhere else the entry is what runs, so changing it changes the number.
 
 ```python
 def eval_roofline(self) -> tuple[int, int]:
@@ -291,14 +292,20 @@ Rules:
 
 The read-side bound is conditional, not a theorem. It holds while each kernel is replayed from cold caches, which inflates a multi-kernel op's reads rather than deflating them; a verdict states that premise alongside it.
 
+It carries a second premise: that every conforming implementation must fetch what the formula charges. Where a call's read half is the whole of an input because no smaller subset is *the* subset this call reads — a dropout draws its dropped positions at run time, and charging `1 - p` would be an expected fraction, which §4.7 rules out — an implementation may still predicate those loads away and read less. An entry states where in `roofline.read_bound_exception`, a `when` naming params and workload keys with the `reason` it holds for. The audit evaluates `when` against the row it measured: a shortfall inside the condition comes back EXEMPT, and the same op's other rows are judged like any other. The condition is what keeps the exception from covering the calls the premise still holds for — a dropout in eval mode copies its input and reads all of it.
+
+What the condition may not do is repeat the values the op's rows happen to carry: `p == 0.5` would waive every dropout row the audit runs today and say nothing about why. The form the validator enforces — every clause, at every depth, reading the call — refuses a condition that holds whatever the call does, and no check beyond it can tell a property from a value that happens to match today's rows. Review is what separates those, and the `reason` is what it reads: it names the behaviour that lets an implementation read less, and the entry earns the exception from a measurement of that behaviour, never from an argument that it is plausible.
+
 `(flops, bytes)` does not carry the read/write split, so an op sent here states its read half in `Op.eval_roofline_read_bytes()`. There is no fallback. Summing the call's input tensors is not the read half: an op that reads a subset of an input — a routed MoE reading the experts its routing selects — would be charged the whole of it, and a correct formula would fail. An op that declares nothing gets NO-VERDICT, which is not a pass.
 
-| Verdict    | Meaning                                                  |
-| ---------- | -------------------------------------------------------- |
-| FAIL       | Measured reads fall short of the declared read half.     |
-| WARN       | Measured reads far exceed it: multi-pass or replay cost. |
-| ERROR      | The audit did not produce a usable measurement.          |
-| NO-VERDICT | No read half was declared.                               |
+| Verdict    | Meaning                                                                |
+| ---------- | ---------------------------------------------------------------------- |
+| FAIL       | Measured reads fall short of the declared read half.                   |
+| WARN       | Measured reads far exceed it: multi-pass or replay cost.               |
+| EXEMPT     | They fall short inside a `read_bound_exception`: reported, not judged. |
+| SKIPPED    | Never run, or the formula declares no read at all.                     |
+| ERROR      | The audit did not produce a usable measurement.                        |
+| NO-VERDICT | No read half was declared.                                             |
 
 The read half comes off `bytes` by subtracting the write half the contract settles, and pricing the outputs needs the shapes the call carried. An op keeps only what its own `eval_roofline` needs — an element count, a dtype — so `tileops.ops.op_base.record_roofline_calls()` makes `Op.__call__` remember each input tensor's shape and dtype, and the audit turns it on around the call it reads the declaration off. It is off everywhere else: it costs about a microsecond per call, a fifth of a small kernel's launch, and a benchmark row would carry it.
 

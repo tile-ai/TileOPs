@@ -844,6 +844,14 @@ DropoutFwdOp:
 
   roofline:
     func: "tileops.perf.formulas.dropout_roofline"
+    # Which positions a call drops is drawn at run time, so no smaller subset of
+    # the input is the one this call reads, and the read half stays the whole of
+    # it. A kernel may still skip a dropped position's load, which is what the
+    # exception below states. Outside its condition the declared read half
+    # stands: eval mode and p == 0 copy the input, p == 1 declares no read.
+    read_bound_exception:
+      when: "training and 0.0 < p < 1.0"
+      reason: "the mask can predicate away a dropped position's load"
 
   source:
     kernel: tileops/kernels/dropout.py

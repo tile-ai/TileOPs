@@ -19,6 +19,10 @@ def _nbytes(*tensors: tuple[tuple[int, ...], torch.dtype]) -> int:
     return sum(prod(shape) * dtype.itemsize for shape, dtype in tensors)
 
 
+# Ops a hand-written case recounted in this run, which the completeness test reads.
+_RECOUNTED: set[str] = set()
+
+
 def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None") -> int:
     """Sum the named tensors a call binds, and require the names to be the signature's.
 
@@ -43,6 +47,7 @@ def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None
     )
     unknown = sorted(set(tensors) - declared)
     assert not unknown, f"{op_name}: {unknown} are not in the signature"
+    _RECOUNTED.add(op_name)
     written = {name for name in inputs if tensors.get(f"{name}_write") is not None}
     undeclared = sorted(name for name in written if not (inputs[name] or {}).get("mutated"))
     assert not undeclared, (
@@ -882,6 +887,31 @@ class TestBytesOracle:
         )
         assert gqa_prefill_paged_with_kv_cache_fwd_roofline(short)[1] == oracle_short
 
+    def test_dropout_short_circuits_read_and_write_what_they_touch(self):
+        """The generated case covers the masking path its workloads state. The three
+        short-circuit paths have no row -- the manifest keeps them out of the
+        release-facing rows -- so they are recounted here: eval mode and `p == 0`
+        copy, and `p == 1` writes zeros without reading the input."""
+        from tileops.perf.formulas import dropout_roofline
+
+        n = 1024 * 4096
+
+        def bound(p, training=True):
+            op = type("_Bound", (), {})()
+            op.N_total, op.dtype, op.p, op.training = n, torch.float16, p, training
+            return op
+
+        copied = _ledger(
+            "DropoutFwdOp",
+            input=((n,), torch.float16),
+            output=((n,), torch.float16),
+        )
+        assert dropout_roofline(bound(0.5, training=False))[1] == copied
+        assert dropout_roofline(bound(0.0))[1] == copied
+
+        zeroed = _ledger("DropoutFwdOp", input_unread=True, output=((n,), torch.float16))
+        assert dropout_roofline(bound(1.0))[1] == zeroed
+
     def test_grouped_gemm_does_not_charge_the_padding_offsets_it_ignores(self):
         """`batch_padded_offsets` is declared and passed, and no kernel indexes it:
         the templates pad nothing. A declared input the algorithm does not read
@@ -911,9 +941,12 @@ class TestBytesOracle:
 # exactly one, and the level says what an independent recount rests on.
 #
 #   one   The binder builds the case from the manifest: signature, one workload
-#         row, dtypes, mutation. It shares only the minimum-traffic definition
-#         with the formula. Computed, not listed -- adding an op earns this
-#         level or fails the completeness test below.
+#         row, dtypes, mutation. It never reads the `roofline` block, and what it
+#         does share with the formula is written down: the minimum-traffic
+#         definition, the op's own `_infer_output_shapes`, and the manifest's
+#         output-dtype resolution (docs/design/roofline.md 4.6). Computed, not
+#         listed -- adding an op earns this level or fails the completeness test
+#         below.
 #   two   The binder cannot build the call and a case above does it by hand,
 #         with what the case shares written next to it.
 #   three No independent recount is available yet. Marked with what is missing,
@@ -923,16 +956,16 @@ class TestBytesOracle:
 # row does not reach -- an optional input present and absent, a second dtype
 # pairing -- and do not change the op's level.
 
-#: Level two: a case above recounts these by hand. The value says why the
-#: generated case cannot, which is what the hand-written one supplies.
-#:
-#: Two kinds sit here. For most, the binder cannot build the call at all. For
-#: five -- BatchNorm, InstanceNorm, the two GQA entries and MoePrePermute -- it
-#: builds one and counts something that is not this call's traffic, because a
-#: param decides whether an input is read or written, or the op translates the
-#: call before the formula sees it. Those five are the ones where a formula
-#: defect would look like the stated reason, so their cases are what check them
-#: and `_ledger` is what checks the cases.
+# Level two: a case above recounts these by hand. The value says why the
+# generated case cannot, which is what the hand-written one supplies.
+#
+# Two kinds sit here. For most, the binder cannot build the call at all. For
+# five -- BatchNorm, InstanceNorm, the two GQA entries and MoePrePermute -- it
+# builds one and counts something that is not this call's traffic, because a
+# param decides whether an input is read or written, or the op translates the
+# call before the formula sees it. Those five are the ones where a formula
+# defect would look like the stated reason, so their cases are what check them
+# and `_ledger` is what checks the cases.
 HAND_WRITTEN = {
     "BatchNormFwdOp": "whether the running statistics are written follows `training`",
     "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
@@ -951,8 +984,8 @@ HAND_WRITTEN = {
     "MoePrePermuteFwdOp": "its outputs' extents follow the layout spec the call passes",
 }
 
-#: Level three: no independent recount is available. Empty, and an entry here has
-#: to say what is missing rather than that nobody has got to it.
+# Level three: no independent recount is available. Empty, and an entry here has
+# to say what is missing rather than that nobody has got to it.
 NOT_RECOUNTABLE: dict[str, str] = {}
 
 
@@ -1071,19 +1104,12 @@ class TestCoverageLevels:
 
         `_ledger` is what makes that mechanical: a case that drops, duplicates or
         substitutes one of them fails there rather than agreeing with a formula
-        that made the same mistake.
+        that made the same mistake. It records the op it recounted, so what this
+        reads is the cases that ran, not the text of the file they live in.
         """
-        import pathlib
-
-        source = pathlib.Path(__file__).read_text()
-        cases = source[: source.index("# Coverage levels")]
-        missing = sorted(
-            name
-            for name in HAND_WRITTEN
-            if f'_ledger(\n            "{name}"' not in cases
-            and f'_ledger("{name}"' not in cases
-            and f'_ledger(\n                "{name}"' not in cases
-        )
+        if not _RECOUNTED:
+            pytest.skip("this selection ran no hand-written case, so none is recorded")
+        missing = sorted(set(HAND_WRITTEN) - _RECOUNTED)
         assert not missing, (
             f"declared level two with no _ledger case above: {missing}; a case that "
             "sums anonymous tuples cannot be checked against the signature"

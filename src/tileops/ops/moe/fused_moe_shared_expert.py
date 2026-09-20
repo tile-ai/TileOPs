@@ -206,17 +206,6 @@ class FusedMoeSharedExpertFwdOp(FusedMoe):
             "routed_output": tuple(hidden_states_shape),
         }
 
-    def eval_roofline(self) -> tuple[int, int]:
-        """``FusedMoeFwdOp``'s routed cost plus the shared expert's two GEMMs.
-
-        The shared expert runs on this rank's shard, so TP shrinks that half only.
-        """
-        from tileops.perf.formulas import fused_moe_shared_expert_fwd_bytes
-
-        # The manifest declares this same function as ``roofline.func``, so the
-        # spec's cost and the op's cost cannot drift apart.
-        return fused_moe_shared_expert_fwd_bytes(self)
-
     def _shared_mlp_kernel_for(
         self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype
     ) -> Kernel:

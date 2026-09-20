@@ -5,10 +5,13 @@ Spec: docs/design/roofline.md §4.5. For each audited op, one ``forward()``
 runs under Nsight Compute with cache control on, and ``dram__bytes_read.sum``
 over the call's kernels is compared against the formula's read half:
 
-- measured_read < read_bytes × (1 − EPS)  → FAIL  (read-side overestimate)
+- measured_read < read_bytes × (1 − EPS)  → FAIL  (read-side overestimate), or
+                                            EXEMPT where the entry's
+                                            ``read_bound_exception`` covers
+                                            this row (reported, not judged)
 - measured_read > read_bytes × OVER       → WARN  (multi-pass / replay inflation)
-- missing metric, empty range, or a
-  declared read half of zero              → ERROR (never a verdict)
+- missing metric or empty range            → ERROR (never a verdict)
+- a declared read half of zero             → SKIPPED (nothing to judge it by)
 - read half undeclared                    → NO-VERDICT (not a pass)
 
 Write traffic is measured and reported, never judged: lines still dirty in L2
@@ -38,6 +41,8 @@ from pathlib import Path
 EPS = 0.05  # counter noise allowance below the formula
 OVER = 1.5  # informational ceiling above the formula
 NVTX_RANGE = "tileops_roofline"
+# Verdicts a green run may contain; see exit_code().
+GREEN_VERDICTS = frozenset({"PASS", "WARN", "EXEMPT", "SKIPPED"})
 METRICS = "dram__bytes_read.sum,dram__bytes_write.sum"
 # Workloads at least this large keep fixed sector/TLB overheads inside EPS.
 SMALL_WORKLOAD_BYTES = 32 * 2**20
@@ -260,25 +265,89 @@ def _parse_ncu_csv(path: Path) -> tuple[tuple[float, float] | None, int]:
     return (read, write), len(per_kernel)
 
 
-def read_side_verdict(measured_read: float, read_bytes: int | None) -> str:
-    """§4.5's verdict table. Write traffic never reaches it."""
+def read_side_verdict(
+    measured_read: float,
+    read_bytes: int | None,
+    bound: bool = True,
+) -> str:
+    """§4.5's verdict table. Write traffic never reaches it.
+
+    FAIL says the formula charged reads the implementation did not make. That
+    reading holds only where every conforming implementation must fetch what the
+    formula charges. Where this call is one the entry's ``read_bound_exception``
+    covers, *bound* is false and a shortfall comes back EXEMPT: measured,
+    reported, and not a verdict on the formula.
+    """
     if read_bytes is None:
         return "NO-VERDICT"
-    if read_bytes <= 0:
-        return "ERROR"  # a declaration of zero reads is a broken one
+    if read_bytes < 0:
+        return "ERROR"  # a negative read half is a broken declaration
+    if read_bytes == 0:
+        # A call that reads none of its inputs -- dropout at p == 1 writes zeros
+        # -- states a read half of zero, and there is no ratio to judge it by.
+        return "SKIPPED"
     if measured_read < read_bytes * (1 - EPS):
-        return "FAIL"
+        return "FAIL" if bound else "EXEMPT"
     if measured_read > read_bytes * OVER:
         return "WARN"
     return "PASS"
 
 
-def exit_code(counts: dict[str, int]) -> int:
-    """A row the audit ran without reaching a verdict is not a passed one.
+def read_bound_exception(entry: dict, row: dict, dtype_str: str | None = None) -> str:
+    """The reason this row's read half is not a bound, or ``""``.
 
-    SKIPPED (never run, reason stated) and WARN stay green.
+    The exception states the condition it holds under, and a row outside that
+    condition is judged like any other: a dropout that trains with 0 < p < 1 may
+    skip a dropped position's load, and the same op in eval mode reads all of
+    its input.
     """
-    return 1 if any(counts.get(v) for v in ("FAIL", "ERROR", "NO-VERDICT")) else 0
+    exception = (entry.get("roofline") or {}).get("read_bound_exception") or {}
+    when = (exception.get("when") or "").strip()
+    reason = (exception.get("reason") or "").strip()
+    if not when or not reason:
+        return ""
+    names = {
+        name: spec.get("default")
+        for name, spec in ((entry.get("signature") or {}).get("params") or {}).items()
+        if isinstance(spec, dict)
+    }
+    names.update({k: v for k, v in row.items() if not k.startswith("__")})
+    # The row carries the dtype axis; the call runs one element type off it.
+    if dtype_str is not None:
+        names["dtype"] = dtype_str
+    try:
+        holds = eval(when, {"__builtins__": {}}, names)  # noqa: S307 - validator limits the form
+    except Exception:
+        return ""  # a condition this row cannot answer does not waive anything
+    return reason if holds else ""
+
+
+def exit_code(counts: dict[str, int]) -> int:
+    """Zero means no unwaived failure, not that every row was judged.
+
+    Three verdicts are green: SKIPPED (never run, reason stated), WARN (more
+    traffic than the formula charges, which passed the lower-bound check) and
+    EXEMPT (a shortfall the entry's ``read_bound_exception`` covers, measured
+    and not judged). Anything else, including a verdict this function does not
+    know, is red: a spelling nobody reads is not a pass.
+    """
+    return 0 if set(counts) <= GREEN_VERDICTS else 1
+
+
+def fully_waived(results: list[dict]) -> list[str]:
+    """Ops whose every judged row came back EXEMPT.
+
+    The exception states the calls whose read half is not a bound, and an op
+    whose rows are all such calls leaves that half unchecked. The audit reports
+    it: the alternative, failing the run, would push a short-circuit row into
+    the release-facing workloads, which the benchmark then measures.
+    """
+    judged: dict[str, set[str]] = {}
+    for row in results:
+        if row["verdict"] in ("SKIPPED", "ERROR"):
+            continue
+        judged.setdefault(row["op"], set()).add(row["verdict"])
+    return sorted(op for op, verdicts in judged.items() if verdicts == {"EXEMPT"})
 
 
 def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
@@ -326,7 +395,8 @@ def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
             )
             continue
         measured_read, measured_write = measured
-        verdict = read_side_verdict(measured_read, read_bytes)
+        waived = read_bound_exception(entry, row, dtype_str)
+        verdict = read_side_verdict(measured_read, read_bytes, bound=not waived)
         row_out = {
             **base,
             "verdict": verdict,
@@ -338,8 +408,12 @@ def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
             "measured_under": COLD_CACHE_PREMISE,
             "note": "small workload" if formula < SMALL_WORKLOAD_BYTES else "",
         }
+        if verdict == "EXEMPT":
+            row_out["reason"] = waived
         if verdict == "NO-VERDICT":
             row_out["reason"] = "read half undeclared"
+        elif verdict == "SKIPPED":
+            row_out["reason"] = "the formula declares no read"
         elif verdict == "ERROR":
             row_out["reason"] = f"declared read half is {read_bytes}"
         else:
@@ -441,6 +515,10 @@ def main() -> None:
     for r in all_results:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
     print(f"\nSummary: {counts} → {out_dir}/results.json")
+    for op_name in fully_waived(all_results):
+        # Every row of this op fell inside its exception, so the run judged the
+        # formula's read half nowhere. The rows are still measured and reported.
+        print(f"  every audited row of {op_name} is EXEMPT: its read half went unjudged")
     sys.exit(exit_code(counts))
 
 

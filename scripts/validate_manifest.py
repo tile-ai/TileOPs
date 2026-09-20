@@ -559,6 +559,166 @@ def _l0_workloads(op_name: str, entry: dict, workloads: list) -> list[str]:
     return errors
 
 
+def _is_literal(node: ast.expr) -> bool:
+    """A literal, including a signed number: ``-1`` parses as a negated constant."""
+    if isinstance(node, ast.Constant):
+        return True
+    return (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, (ast.USub, ast.UAdd))
+        and isinstance(node.operand, ast.Constant)
+    )
+
+
+def _l0_read_bound_exception(op_name: str, entry: dict, roofline: dict) -> list[str]:
+    """``roofline.read_bound_exception``: where a read shortfall is not a defect.
+
+    The audit reads a measured shortfall as the formula charging reads the
+    implementation did not make. That holds only where every conforming
+    implementation must fetch what the formula charges, and an entry states
+    where it does not (docs/design/roofline.md §4.5). The exception carries the
+    reason and the condition it holds under, which the audit evaluates against
+    the row it measured.
+
+    The condition joins tests over the call with ``and`` or ``or``: a name, a
+    negated name, or a comparison of names against literals. Every one of them,
+    at every depth, has to read something the call decides, so no clause settles
+    the condition before a name is read -- which is what a waiver of the whole
+    op would be. A comparison chain counts one link at a time, because it stops
+    at the first false link.
+    """
+    errors: list[str] = []
+    err = _emit_to(errors, "schema", op_name)
+    exception = roofline.get("read_bound_exception")
+    if exception is None:
+        return errors
+    if not isinstance(exception, dict):
+        err("roofline.read_bound_exception must be a mapping with 'when' and 'reason'")
+        return errors
+    unknown = sorted(repr(k) for k in set(exception) - {"when", "reason"})
+    if unknown:
+        err(
+            f"roofline.read_bound_exception has unknown keys [{', '.join(unknown)}]; "
+            "valid keys are ['reason', 'when']"
+        )
+    for field in ("when", "reason"):
+        value = exception.get(field)
+        if not (isinstance(value, str) and value.strip()):
+            err(f"roofline.read_bound_exception.{field} must be a non-empty string")
+    when = exception.get("when")
+    if not isinstance(when, str) or not when.strip():
+        return errors
+    try:
+        tree = ast.parse(when, mode="eval").body
+    except SyntaxError as exc:
+        err(f"roofline.read_bound_exception.when does not parse: {exc}")
+        return errors
+
+    # The audit evaluates the text, so nothing in it may reach beyond a name and
+    # a comparison: no call, no attribute, no subscript.
+    allowed = (
+        ast.BoolOp,
+        ast.And,
+        ast.Or,
+        ast.UnaryOp,
+        ast.Not,
+        ast.USub,
+        ast.UAdd,
+        ast.Compare,
+        ast.Name,
+        ast.Load,
+        ast.Constant,
+        ast.Eq,
+        ast.NotEq,
+        ast.Lt,
+        ast.LtE,
+        ast.Gt,
+        ast.GtE,
+        ast.Is,
+        ast.IsNot,
+    )
+    for node in ast.walk(tree):
+        if not isinstance(node, allowed):
+            err(
+                f"roofline.read_bound_exception.when compares names and literals and "
+                f"nothing else, got {type(node).__name__} in {when!r}"
+            )
+            return errors
+
+    # Every clause reads the call, however they are joined: an ``and`` whose
+    # clauses all read it cannot hold regardless of the call, and neither can an
+    # ``or``. A comparison takes names and literals, so no clause hides a
+    # sub-expression that decides it before a name is read.
+    names: set[str] = set()
+
+    def check(node: ast.expr) -> None:
+        if isinstance(node, ast.BoolOp):
+            for value in node.values:
+                check(value)
+            return
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            check(node.operand)
+            return
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+            return
+        if isinstance(node, ast.Compare):
+            sides = [node.left, *node.comparators]
+            if any(not (isinstance(side, ast.Name) or _is_literal(side)) for side in sides):
+                err(
+                    f"roofline.read_bound_exception.when compares something other than "
+                    f"a name or a literal in {when!r}: {ast.unparse(node)!r}"
+                )
+                return
+            # A chain is a clause per link, because it stops at the first false
+            # one: ``1 > 2 < p`` never reads p, and negated it waives the call.
+            for left, right in zip(sides, sides[1:], strict=False):
+                pair = [left, right]
+                named = {side.id for side in pair if isinstance(side, ast.Name)}
+                if not named:
+                    err(
+                        f"roofline.read_bound_exception.when has a clause reading "
+                        f"nothing the call decides in {when!r}: "
+                        f"{ast.unparse(left)} ... {ast.unparse(right)}"
+                    )
+                names.update(named)
+                # ``0 <= axis <= 0`` selects one value and repeats a constant across
+                # links; ``p == p`` compares a value with itself inside one.
+                if ast.dump(left) == ast.dump(right):
+                    err(
+                        f"roofline.read_bound_exception.when compares a value with "
+                        f"itself in {when!r}, which the call cannot make false"
+                    )
+            return
+        err(
+            f"roofline.read_bound_exception.when takes a name, a negated name or a "
+            f"comparison, joined by 'and' or 'or'; got {type(node).__name__} in {when!r}"
+        )
+
+    check(tree)
+
+    signature = entry.get("signature")
+    declared = signature.get("params") if isinstance(signature, dict) else None
+    params = set(declared) if isinstance(declared, dict) else set()
+    workloads = entry.get("workloads")
+    rows = workloads if isinstance(workloads, list) else []
+    # ``label`` reports a row and ``dtypes`` is the axis it expands over, neither
+    # of which states what a call does. The element type the row expands to is
+    # call state, and the audit binds it as ``dtype``.
+    bookkeeping = {"label", "dtypes", "bench_skip_reason"}
+    readable = (
+        params
+        | {k for row in rows if isinstance(row, dict) for k in row if k not in bookkeeping}
+        | {"dtype"}
+    )
+    for name in sorted(names - readable):
+        err(
+            f"roofline.read_bound_exception.when names {name!r}, which is neither a "
+            f"param nor a workload key stating what the call does"
+        )
+    return errors
+
+
 def _l0_roofline(op_name: str, entry: dict, roofline: dict) -> list[str]:
     """Roofline structural rules per docs/design/roofline.md §4.1."""
     errors: list[str] = []
@@ -572,6 +732,7 @@ def _l0_roofline(op_name: str, entry: dict, roofline: dict) -> list[str]:
     for field in ("flops", "bytes", "func"):
         if field in roofline and not (isinstance(roofline[field], str) and roofline[field].strip()):
             err(f"roofline.{field} must be a non-empty string")
+    errors += _l0_read_bound_exception(op_name, entry, roofline)
     rl_vars = roofline.get("vars")
     if rl_vars is not None:
         if not isinstance(rl_vars, dict):
