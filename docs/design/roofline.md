@@ -106,7 +106,7 @@ roofline:
 - **Schema validator / CI** — structural checks only (schema, mode exclusivity, `func` importability). Does **not** execute formulas or hold a helper whitelist. Spec: §4.1.
 - **Benchmark layer** — instantiates an Op per workload and reads `(flops, bytes)` from `op.eval_roofline()`. Hardcoded formulas in benchmark files are a CI failure. Spec: §4.2.
 - **Roofline tool (M5)** — reads per-workload `(flops, bytes)`, the roof key, and timing from benchmark output, prices them against the GPU profile (§5.1), and emits SOL efficiency and verdicts. Spec: §4.3.
-- **Op codegen** — generates each op's `eval_roofline()` method; is the authoritative gate for name and form correctness. Spec: §4.4.
+- **Op codegen** — generates an op's `eval_roofline()` method unless the op defines one itself (§4.4.1); is the authoritative gate for name and form correctness. Spec: §4.4.
 
 Two auditors check the field's values rather than consume them: the structural oracle (§4.6) and the NCU bytes audit (§4.5).
 
@@ -137,7 +137,7 @@ Validator holds no callables, no sample bindings, no `__builtins__` sandbox. Add
 
 Contract:
 
-- Instantiate the Op for each workload and call `op.eval_roofline()` to obtain `(flops, bytes)`. No manifest-level helper exists — roofline evaluation lives only inside each Op's generated method.
+- Instantiate the Op for each workload and call `op.eval_roofline()` to obtain `(flops, bytes)`. No manifest-level helper exists — roofline evaluation lives inside that method, whether codegen wrote it or the op did.
 - `ManifestBenchmark(op, workload)` and `workloads_to_params(..., include_extra=True)` are the canonical consumers; non-reserved workload keys forward as op-call params passed to the Op's `__init__`.
 - A benchmark file that computes FLOPs or bytes locally is a CI failure.
 - Benchmark output must record the `(flops, bytes)` from `op.eval_roofline()` and the roof key from `op.compute_roof()` (§1.4), so M5 reads the numbers without re-instantiating ops.
@@ -170,7 +170,7 @@ Codegen is the authoritative gate for name and form correctness. A formula refer
 
 #### 4.4.1 Method Template
 
-For each op, codegen emits an `eval_roofline()` method returning `(flops: int, bytes: int)`. The method signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md); this document specifies only how the body is generated from the manifest.
+Codegen emits an `eval_roofline()` method returning `(flops: int, bytes: int)` for every op that does not define one. The method signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md); this document specifies only how the body is generated from the manifest.
 
 An op that defines the method itself keeps it, and codegen installs nothing. That is for an op whose call needs translating before the formula sees it — packed lengths read off cumulative bounds, an optional tensor set the row does not carry — or whose entry the vars layer cannot express. It is four ops today, and each one's entry says which. Everywhere else the entry is what runs, so changing it changes the number.
 
