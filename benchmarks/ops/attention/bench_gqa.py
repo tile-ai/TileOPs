@@ -465,6 +465,40 @@ def _fa3_gqa_varlen(
     return _run
 
 
+def _flashinfer_gqa_varlen(
+    test: GQAPrefillVarlenFwdWorkload,
+    window_size_left: int,
+    window_size_right: int,
+    *inputs: torch.Tensor,
+):
+    """FlashInfer ragged-prefill baseline over the same packed-varlen layout."""
+    if window_size_right >= 0:
+        return None
+    try:
+        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper
+    except ImportError:
+        return None
+
+    q, _k, _v, cu_seqlens_q, cu_seqlens_kv = inputs
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
+    wrapper = BatchPrefillWithRaggedKVCacheWrapper(workspace, kv_layout="NHD")
+    wrapper.plan(
+        qo_indptr=cu_seqlens_q,
+        kv_indptr=cu_seqlens_kv,
+        num_qo_heads=test.heads,
+        num_kv_heads=test.heads_kv,
+        head_dim_qk=test.dim,
+        causal=test.is_causal,
+        window_left=window_size_left,
+        q_data_type=q.dtype,
+    )
+
+    def _run(q, k, v, _cu_seqlens_q, _cu_seqlens_kv):
+        return wrapper.run(q, k, v)
+
+    return _run
+
+
 _GQA_VARLEN_FWD_BENCH_PARAMS = workload_params(
     load_workloads(GroupedQueryAttentionVarlenFwdOp),
     then_dtype(gqa_varlen_args, tune=False),
@@ -520,6 +554,14 @@ def test_gqa_varlen_fwd_bench(
             fa3_fn, functors["torch-ref"], *inputs, **reference_tolerance(dtype)
         )
         functors["fa3"] = fa3_fn
+    flashinfer_fn = _flashinfer_gqa_varlen(
+        test, window_size_left, window_size_right, *inputs
+    )
+    if flashinfer_fn is not None:
+        assert_matches_reference(
+            flashinfer_fn, functors["torch-ref"], *inputs, **reference_tolerance(dtype)
+        )
+        functors["flashinfer"] = flashinfer_fn
     bm.compare(functors, *inputs)
 
 
