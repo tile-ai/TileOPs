@@ -38,6 +38,10 @@ AvgPool1dFwdOp:
 
   roofline:
     vars:
+      # The dims the signature's shape string names, bound from the tensor.
+      N: "input.shape[0]"
+      C: "input.shape[1]"
+      L_in: "input.shape[2]"
       kW: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
       sW: "kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
       pW: "padding[0] if isinstance(padding, (tuple, list)) else padding"
@@ -98,6 +102,11 @@ AvgPool2dFwdOp:
 
   roofline:
     vars:
+      # The dims the signature's shape string names, bound from the tensor.
+      N: "input.shape[0]"
+      C: "input.shape[1]"
+      H_in: "input.shape[2]"
+      W_in: "input.shape[3]"
       kH: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
       kW: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
       sH: "kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
@@ -165,6 +174,12 @@ AvgPool3dFwdOp:
 
   roofline:
     vars:
+      # The dims the signature's shape string names, bound from the tensor.
+      N: "input.shape[0]"
+      C: "input.shape[1]"
+      D_in: "input.shape[2]"
+      H_in: "input.shape[3]"
+      W_in: "input.shape[4]"
       kD: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
       kH: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) else kernel_size"
       kW: "kernel_size[2] if isinstance(kernel_size, (tuple, list)) else kernel_size"
@@ -231,6 +246,10 @@ MaxPool1dFwdOp:
 
   roofline:
     vars:
+      # The dims the signature's shape string names, bound from the tensor.
+      N: "input.shape[0]"
+      C: "input.shape[1]"
+      L_in: "input.shape[2]"
       kW: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
       sW: "kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
       pW: "padding[0] if isinstance(padding, (tuple, list)) else padding"
@@ -289,6 +308,10 @@ MaxPool1dIndicesFwdOp:
 
   roofline:
     vars:
+      # The dims the signature's shape string names, bound from the tensor.
+      N: "input.shape[0]"
+      C: "input.shape[1]"
+      L_in: "input.shape[2]"
       kW: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
       sW: "kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
       pW: "padding[0] if isinstance(padding, (tuple, list)) else padding"
@@ -353,6 +376,11 @@ MaxPool2dFwdOp:
 
   roofline:
     vars:
+      # The dims the signature's shape string names, bound from the tensor.
+      N: "input.shape[0]"
+      C: "input.shape[1]"
+      H_in: "input.shape[2]"
+      W_in: "input.shape[3]"
       kH: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
       kW: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
       sH: "kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
@@ -423,6 +451,11 @@ MaxPool2dIndicesFwdOp:
 
   roofline:
     vars:
+      # The dims the signature's shape string names, bound from the tensor.
+      N: "input.shape[0]"
+      C: "input.shape[1]"
+      H_in: "input.shape[2]"
+      W_in: "input.shape[3]"
       kH: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
       kW: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
       sH: "kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
@@ -499,6 +532,12 @@ MaxPool3dFwdOp:
 
   roofline:
     vars:
+      # The dims the signature's shape string names, bound from the tensor.
+      N: "input.shape[0]"
+      C: "input.shape[1]"
+      D_in: "input.shape[2]"
+      H_in: "input.shape[3]"
+      W_in: "input.shape[4]"
       kD: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
       kH: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
       kW: "kernel_size[2] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 2 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
@@ -581,6 +620,12 @@ MaxPool3dIndicesFwdOp:
 
   roofline:
     vars:
+      # The dims the signature's shape string names, bound from the tensor.
+      N: "input.shape[0]"
+      C: "input.shape[1]"
+      D_in: "input.shape[2]"
+      H_in: "input.shape[3]"
+      W_in: "input.shape[4]"
       kD: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
       kH: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
       kW: "kernel_size[2] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 2 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"

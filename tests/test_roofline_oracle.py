@@ -31,10 +31,12 @@ class TestBytesOracle:
         out_h = out_w = 54  # stride 1, no padding
         for has_bias in (True, False):
             op = Conv2dFwdOp.__new__(Conv2dFwdOp)
-            op._last_roofline_spec = (
-                n, c_in, h, w, c_out, c_in_g, kh, kw, out_h, out_w,
-                torch.float16, has_bias,
-            )  # fmt: skip
+            op.input_shape = (n, c_in, h, w)
+            op.weight_shape = (c_out, c_in_g, kh, kw)
+            op.bias_shape = (c_out,) if has_bias else None
+            op.bias = None
+            op.dtype = torch.float16
+            op.stride, op.padding, op.dilation, op.groups = 1, 0, 1, 1
             oracle = _nbytes(
                 ((n, c_in, h, w), torch.float16),
                 ((c_out, c_in_g, kh, kw), torch.float16),
@@ -86,7 +88,10 @@ class TestBytesOracle:
 
         m, n = 8192, 4096
         op = VarMeanFwdOp.__new__(VarMeanFwdOp)
-        op._last_roofline_mn = (m, n)
+        op.x_shape = (m, n)
+        op.dim = -1
+        op.keepdim = False
+        op.correction = 1
         op.dtype = torch.float32
         oracle = _nbytes(
             ((m, n), torch.float32),
@@ -100,7 +105,9 @@ class TestBytesOracle:
 
         m, n = 8192, 4096
         op = ArgmaxFwdOp.__new__(ArgmaxFwdOp)
-        op._last_roofline_mn = (m, n)
+        op.x_shape = (m, n)
+        op.dim = -1
+        op.keepdim = False
         op.dtype = torch.float16
         oracle = _nbytes(((m, n), torch.float16), ((m,), torch.int64))
         assert op.eval_roofline()[1] == oracle

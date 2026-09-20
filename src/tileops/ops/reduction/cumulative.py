@@ -54,6 +54,8 @@ class CumulativeOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         self._last_roofline_mn: Optional[Tuple[int, int]] = None
+        # What the manifest roofline resolves ``x`` through.
+        self.x_shape: Optional[Tuple[int, ...]] = None
 
     def _infer_output_shapes(self, x_shape: Tuple[int, ...]) -> Dict[str, Tuple[int, ...]]:
         """Manifest ``shape_rules``: a scan writes one element per input element."""
@@ -62,23 +64,6 @@ class CumulativeOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"cumulative_fwd": CumulativeKernel}
-
-    def eval_roofline(self) -> Tuple[int, int]:
-        if self._last_roofline_mn is None:
-            raise RuntimeError(
-                f"{type(self).__name__}.eval_roofline() requires a prior "
-                "forward() call to bind dynamic input shape (M)"
-            )
-        M, N = self._last_roofline_mn
-        if self.dtype is None:
-            raise RuntimeError(
-                f"{type(self).__name__}.eval_roofline() requires a prior "
-                "forward() call to bind dtype"
-            )
-        elem_bytes = self.dtype.itemsize
-        # Per row: N-1 ops (running sum/prod) ≈ M*N flops total.
-        # Read x + write y = 2 * M * N elements.
-        return (M * N, 2 * M * N * elem_bytes)
 
     def _validate_and_normalize_dim(self, x: torch.Tensor) -> int:
         """Validate the input and return the non-negative axis to scan.
@@ -115,6 +100,7 @@ class CumulativeOp(Op):
         # From the shape, not from ``numel``: an empty scanned axis makes ``n`` zero.
         m = prod(d for i, d in enumerate(x.shape) if i != axis)
         self._last_roofline_mn = (m, n)
+        self.x_shape = tuple(x.shape)
         kernel = self.kernel_for(
             "cumulative_fwd", (x,), (tuple(x.shape), axis, x.dtype, x.device.index, m, n)
         )

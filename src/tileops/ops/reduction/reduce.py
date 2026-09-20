@@ -117,6 +117,8 @@ class _ReduceOpBase(Op):
         self._validate_dim()
         self.dispatch_kernel(kernel_map)
         self._last_roofline_mn: tuple[int, int] | None = None
+        # What the manifest roofline resolves ``x`` through.
+        self.x_shape: tuple[int, ...] | None = None
 
     def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
         """Manifest ``shape_rules``: the reduced axes leave, or stay as size 1."""
@@ -292,6 +294,7 @@ class _ReduceOpBase(Op):
         self.dtype = x.dtype
         self._validate_scalar_dim()
         self._last_roofline_mn = (1, 1)
+        self.x_shape = tuple(x.shape)
         return self._scalar_forward(x)
 
     def _maybe_noop(self, x: torch.Tensor) -> Optional[torch.Tensor]:
@@ -321,64 +324,12 @@ class _ReduceOpBase(Op):
         # for the read plus the output term, instead of collapsing to
         # zero, which would under-count the actual data-movement cost.
         self._last_roofline_mn = (x.numel(), 1)
+        self.x_shape = tuple(x.shape)
         # ``copy=True`` because the operator this runs inside may not return an alias of
         # its input, and ``to`` hands back the same object when the dtype already matches
         # — which a bool input to All or Any does.
         out_dtype = self._noop_output_dtype()
         return x.clone() if out_dtype is None else x.to(out_dtype, copy=True)
-
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_mn is None:
-            raise RuntimeError(
-                f"{type(self).__name__}.eval_roofline() requires a prior forward() "
-                "call to bind dynamic input shape"
-            )
-        M, N = self._last_roofline_mn
-        if self.dtype is None:
-            raise RuntimeError(
-                f"{type(self).__name__}.eval_roofline() requires a prior forward() "
-                "call to bind dtype"
-            )
-        elem_bytes = self.dtype.itemsize
-        op_kind = self._op_kind
-
-        if op_kind == "mean":
-            flops = M * (N + 1)
-            mem_bytes = (M * N + M) * elem_bytes
-        elif op_kind == "std":
-            flops = 5 * M * N + M
-            mem_bytes = (M * N + M) * elem_bytes
-        elif op_kind == "var":
-            flops = 5 * M * N
-            mem_bytes = (M * N + M) * elem_bytes
-        elif op_kind == "var_mean":
-            flops = 5 * M * N
-            mem_bytes = (M * N + 2 * M) * elem_bytes
-        elif op_kind in {"argmax", "argmin"}:
-            flops = M * N
-            mem_bytes = M * N * elem_bytes + M * 8
-        elif op_kind in {"all", "any"}:
-            flops = M * N
-            mem_bytes = M * N * elem_bytes + M
-        elif op_kind == "count_nonzero":
-            flops = 2 * M * N
-            mem_bytes = M * N * elem_bytes + M * 8
-        elif op_kind == "l1":
-            flops = 2 * M * N
-            mem_bytes = (M * N + M) * elem_bytes
-        elif op_kind == "l2":
-            flops = 2 * M * N + M
-            mem_bytes = (M * N + M) * elem_bytes
-        elif op_kind == "inf":
-            flops = 2 * M * N
-            mem_bytes = (M * N + M) * elem_bytes
-        else:
-            flops = M * N
-            mem_bytes = (M * N + M) * elem_bytes
-
-        return flops, mem_bytes
-
-    # Kernel cache
 
     def _build_kernel_kwargs(
         self, shape: "tuple[int, ...]", axes: "tuple[int, ...]", device_index: "int | None"
@@ -447,6 +398,7 @@ class _ReduceOpBase(Op):
         n = prod(x.shape[a] for a in axes)
         m = prod(d for i, d in enumerate(x.shape) if i not in axes)
         self._last_roofline_mn = (m, n)
+        self.x_shape = tuple(x.shape)
         return x, self.kernel_for("reduce", (x,), self._call(x, axes, m, n))
 
 

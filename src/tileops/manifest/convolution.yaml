@@ -61,6 +61,18 @@ Conv1dFwdOp:
 
   roofline:
     vars:
+      # The dims the signature's shape strings name, bound from the tensors.
+      N: "input.shape[0]"
+      C_in: "input.shape[1]"
+      L_in: "input.shape[2]"
+      C_out: "weight.shape[0]"
+      C_in_g: "weight.shape[1]"
+      kW: "weight.shape[2]"
+      sW: "stride[0] if isinstance(stride, (tuple, list)) else stride"
+      dW: "dilation[0] if isinstance(dilation, (tuple, list)) else dilation"
+      # padding is an int, a per-axis tuple, or 'same' / 'valid'.
+      pW: "(dW * (kW - 1)) // 2 if padding == 'same' else (0 if padding == 'valid' else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
+      L_out: "L_in if padding == 'same' else (L_in + 2 * pW - dW * (kW - 1) - 1) // sW + 1"
       has_bias: "bias is not None"
     flops: "2 * N * C_out * L_out * C_in_g * kW + (N * C_out * L_out if has_bias else 0)"
     bytes: "(N * C_in * L_in + C_out * C_in_g * kW + N * C_out * L_out + (C_out if has_bias else 0)) * elem_bytes"
@@ -167,6 +179,24 @@ Conv2dFwdOp:
 
   roofline:
     vars:
+      # The dims the signature's shape strings name, bound from the tensors.
+      N: "input.shape[0]"
+      C_in: "input.shape[1]"
+      H: "input.shape[2]"
+      W: "input.shape[3]"
+      C_out: "weight.shape[0]"
+      C_in_g: "weight.shape[1]"
+      kH: "weight.shape[2]"
+      kW: "weight.shape[3]"
+      sH: "stride[0] if isinstance(stride, (tuple, list)) and len(stride) > 0 else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      sW: "stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      dH: "dilation[0] if isinstance(dilation, (tuple, list)) and len(dilation) > 0 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      dW: "dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      # padding is an int, a per-axis tuple, or 'same' / 'valid'.
+      pH: "(dH * (kH - 1)) // 2 if padding == 'same' else (0 if padding == 'valid' else (padding[0] if isinstance(padding, (tuple, list)) and len(padding) > 0 else (padding[0] if isinstance(padding, (tuple, list)) else padding)))"
+      pW: "(dW * (kW - 1)) // 2 if padding == 'same' else (0 if padding == 'valid' else (padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding)))"
+      out_H: "H if padding == 'same' else (H + 2 * pH - dH * (kH - 1) - 1) // sH + 1"
+      out_W: "W if padding == 'same' else (W + 2 * pW - dW * (kW - 1) - 1) // sW + 1"
       has_bias: "bias is not None"
     flops: "2 * N * C_out * out_H * out_W * C_in_g * kH * kW + (N * C_out * out_H * out_W if has_bias else 0)"
     bytes: "(N * C_in * H * W + C_out * C_in_g * kH * kW + N * C_out * out_H * out_W + (C_out if has_bias else 0)) * elem_bytes"
@@ -255,6 +285,30 @@ Conv3dFwdOp:
 
   roofline:
     vars:
+      # The dims the signature's shape strings name, bound from the tensors.
+      N: "input.shape[0]"
+      C_in: "input.shape[1]"
+      D: "input.shape[2]"
+      H: "input.shape[3]"
+      W: "input.shape[4]"
+      C_out: "weight.shape[0]"
+      C_in_g: "weight.shape[1]"
+      kD: "weight.shape[2]"
+      kH: "weight.shape[3]"
+      kW: "weight.shape[4]"
+      sD: "stride[0] if isinstance(stride, (tuple, list)) and len(stride) > 0 else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      sH: "stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      sW: "stride[2] if isinstance(stride, (tuple, list)) and len(stride) > 2 else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
+      dD: "dilation[0] if isinstance(dilation, (tuple, list)) and len(dilation) > 0 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      dH: "dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      dW: "dilation[2] if isinstance(dilation, (tuple, list)) and len(dilation) > 2 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
+      # padding is an int, a per-axis tuple, or 'same' / 'valid'.
+      pD: "(dD * (kD - 1)) // 2 if padding == 'same' else (0 if padding == 'valid' else (padding[0] if isinstance(padding, (tuple, list)) and len(padding) > 0 else (padding[0] if isinstance(padding, (tuple, list)) else padding)))"
+      pH: "(dH * (kH - 1)) // 2 if padding == 'same' else (0 if padding == 'valid' else (padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding)))"
+      pW: "(dW * (kW - 1)) // 2 if padding == 'same' else (0 if padding == 'valid' else (padding[2] if isinstance(padding, (tuple, list)) and len(padding) > 2 else (padding[0] if isinstance(padding, (tuple, list)) else padding)))"
+      out_D: "D if padding == 'same' else (D + 2 * pD - dD * (kD - 1) - 1) // sD + 1"
+      out_H: "H if padding == 'same' else (H + 2 * pH - dH * (kH - 1) - 1) // sH + 1"
+      out_W: "W if padding == 'same' else (W + 2 * pW - dW * (kW - 1) - 1) // sW + 1"
       has_bias: "bias is not None"
     flops: "2 * N * C_out * out_D * out_H * out_W * C_in_g * kD * kH * kW + (N * C_out * out_D * out_H * out_W if has_bias else 0)"
     bytes: "(N * C_in * D * H * W + C_out * C_in_g * kD * kH * kW + N * C_out * out_D * out_H * out_W + (C_out if has_bias else 0)) * elem_bytes"

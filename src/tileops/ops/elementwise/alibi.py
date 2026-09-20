@@ -69,10 +69,6 @@ class AlibiFwdOp(Op):
     def total_memory(self) -> int:
         return self.num_heads * self.seq_len * self.seq_len * self.out_dtype.itemsize
 
-    def eval_roofline(self) -> tuple[int, int]:
-        n_elem = self.num_heads * self.seq_len * self.seq_len
-        return 3 * n_elem, self.total_memory
-
     def entry_for(self, role: str, call: torch.dtype) -> Entry:
         """One implementation, built per dtype; the extents are the op's."""
         return call, lambda: self._build(call)

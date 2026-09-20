@@ -316,6 +316,10 @@ class Conv1dFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self._last_roofline_spec: Optional[tuple] = None
+        # What the manifest roofline resolves the tensors through.
+        self.input_shape = None
+        self.weight_shape = None
+        self.bias_shape = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -485,6 +489,10 @@ class Conv1dFwdOp(Op):
         self.padding_pair = (pad_left, pad_right)
         self.out_l = out_l
         self.dtype = dtype
+        # What the manifest roofline resolves the tensors through.
+        self.input_shape = tuple(input.shape)
+        self.weight_shape = tuple(weight.shape)
+        self.bias_shape = None if bias is None else tuple(bias.shape)
         self._last_roofline_spec = (
             n,
             c_in,
@@ -529,29 +537,6 @@ class Conv1dFwdOp(Op):
             )
         if bias is not None and bias.dtype != input.dtype:
             raise ValueError(f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}")
-
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_spec is None:
-            raise RuntimeError("Conv1dFwdOp.eval_roofline() requires a prior forward() call")
-        (
-            n,
-            c_in,
-            l_in,
-            c_out,
-            c_in_g,
-            kernel_l,
-            out_l,
-            dtype,
-            has_bias,
-        ) = self._last_roofline_spec
-        out_elems = n * c_out * out_l
-        # bias adds one addition per output element and one read per channel.
-        flops = 2 * out_elems * c_in_g * kernel_l + (out_elems if has_bias else 0)
-        elem_bytes = torch.tensor([], dtype=dtype).element_size()
-        bytes_ = (
-            n * c_in * l_in + c_out * c_in_g * kernel_l + out_elems + (c_out if has_bias else 0)
-        ) * elem_bytes
-        return int(flops), int(bytes_)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -658,6 +643,10 @@ class Conv2dFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self._last_roofline_spec: Optional[tuple] = None
+        # What the manifest roofline resolves the tensors through.
+        self.input_shape = None
+        self.weight_shape = None
+        self.bias_shape = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -861,6 +850,10 @@ class Conv2dFwdOp(Op):
         self.out_h = out_h
         self.out_w = out_w
         self.dtype = dtype
+        # What the manifest roofline resolves the tensors through.
+        self.input_shape = tuple(input.shape)
+        self.weight_shape = tuple(weight.shape)
+        self.bias_shape = None if bias is None else tuple(bias.shape)
         self._last_roofline_spec = (
             n,
             c_in,
@@ -910,35 +903,6 @@ class Conv2dFwdOp(Op):
             )
         if bias is not None and bias.dtype != input.dtype:
             raise ValueError(f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}")
-
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_spec is None:
-            raise RuntimeError("Conv2dFwdOp.eval_roofline() requires a prior forward() call")
-        (
-            n,
-            c_in,
-            h,
-            w,
-            c_out,
-            c_in_g,
-            kernel_h,
-            kernel_w,
-            out_h,
-            out_w,
-            dtype,
-            has_bias,
-        ) = self._last_roofline_spec
-        out_elems = n * c_out * out_h * out_w
-        # bias adds one addition per output element and one read per channel.
-        flops = 2 * out_elems * c_in_g * kernel_h * kernel_w + (out_elems if has_bias else 0)
-        elem_bytes = torch.tensor([], dtype=dtype).element_size()
-        bytes_ = (
-            n * c_in * h * w
-            + c_out * c_in_g * kernel_h * kernel_w
-            + out_elems
-            + (c_out if has_bias else 0)
-        ) * elem_bytes
-        return int(flops), int(bytes_)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -1095,6 +1059,10 @@ class Conv3dFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self._last_roofline_spec: Optional[tuple] = None
+        # What the manifest roofline resolves the tensors through.
+        self.input_shape = None
+        self.weight_shape = None
+        self.bias_shape = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -1325,6 +1293,10 @@ class Conv3dFwdOp(Op):
         self.out_h = out_h
         self.out_w = out_w
         self.dtype = dtype
+        # What the manifest roofline resolves the tensors through.
+        self.input_shape = tuple(input.shape)
+        self.weight_shape = tuple(weight.shape)
+        self.bias_shape = None if bias is None else tuple(bias.shape)
         self._last_roofline_spec = (
             n,
             c_in,
@@ -1378,48 +1350,6 @@ class Conv3dFwdOp(Op):
             )
         if bias is not None and bias.dtype != input.dtype:
             raise ValueError(f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}")
-
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_spec is None:
-            raise RuntimeError("Conv3dFwdOp.eval_roofline() requires a prior forward() call")
-        (
-            n,
-            c_in,
-            d,
-            h,
-            w,
-            c_out,
-            c_in_g,
-            kernel_d,
-            kernel_h,
-            kernel_w,
-            out_d,
-            out_h,
-            out_w,
-            dtype,
-            has_bias,
-        ) = self._last_roofline_spec
-        out_elems = n * c_out * out_d * out_h * out_w
-        # bias adds one addition per output element and one read per channel.
-        flops = 2 * out_elems * c_in_g * kernel_d * kernel_h * kernel_w + (
-            out_elems if has_bias else 0
-        )
-        elem_bytes = torch.tensor([], dtype=dtype).element_size()
-        traffic_elems = (
-            n * c_in * d * h * w
-            + c_out * c_in_g * kernel_d * kernel_h * kernel_w
-            + out_elems
-            + (c_out if has_bias else 0)
-        )
-        if isinstance(self.kernel, Conv3dNdhwcKernel):
-            # The channels-last fast path materializes input, weight, and output
-            # staging buffers. Count their lower-bound traffic so roofline does
-            # not compare this algorithm against the semantic conv bytes only.
-            traffic_elems += n * c_in * d * h * w
-            traffic_elems += c_out * c_in_g * kernel_d * kernel_h * kernel_w
-            traffic_elems += 2 * out_elems
-        bytes_ = traffic_elems * elem_bytes
-        return int(flops), int(bytes_)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
