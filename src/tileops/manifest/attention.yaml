@@ -222,16 +222,127 @@ GroupedQueryAttentionVarlenFwdOp:
       - "o.shape == (T_q, H, D)"
       - "H % H_kv == 0"
 
-  workloads: []
+  workloads:
+    - {total_q: 2048, total_kv: 2048, batch: 4, heads: 32, heads_kv: 8, dim: 128, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-uniform"}
+    - {total_q: 1024, total_kv: 3072, batch: 2, heads: 32, heads_kv: 8, dim: 128, q_lens: [512, 512], kv_lens: [1024, 2048], is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-q-lt-kv"}
+    - {total_q: 1024, total_kv: 3072, batch: 2, heads: 64, heads_kv: 8, dim: 128, q_lens: [512, 512], kv_lens: [1024, 2048], is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-q-lt-kv"}
+    - {total_q: 2048, total_kv: 2048, batch: 4, heads: 32, heads_kv: 8, dim: 128, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], is_causal: true, window_size_left: 256, dtypes: [float16, bfloat16], label: "llama-8b-short-w256"}
+    - {total_q: 8192, total_kv: 8192, batch: 4, heads: 32, heads_kv: 8, dim: 128, q_lens: [2048, 2048, 2048, 2048], kv_lens: [2048, 2048, 2048, 2048], is_causal: true, window_size_left: 1024, dtypes: [float16, bfloat16], label: "llama-8b-long-w1024"}
+    - {total_q: 2048, total_kv: 2048, batch: 4, heads: 64, heads_kv: 8, dim: 128, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], is_causal: true, window_size_left: 256, dtypes: [float16, bfloat16], label: "llama-70b-short-w256"}
+    - {total_q: 8192, total_kv: 8192, batch: 4, heads: 64, heads_kv: 8, dim: 128, q_lens: [2048, 2048, 2048, 2048], kv_lens: [2048, 2048, 2048, 2048], is_causal: true, window_size_left: 1024, dtypes: [float16, bfloat16], label: "llama-70b-long-w1024"}
 
   roofline:
+    func: "tileops.perf.formulas.gqa_varlen_fwd_roofline"
+
+  source:
+    kernel:
+      - tileops/kernels/attention/gqa_prefill_varlen_fwd.py
+      - tileops/kernels/attention/gqa_sliding_window_varlen_fwd.py
+    kernel_map:
+      gqa_varlen: GQAPrefillVarlenFwdKernel
+      gqa_varlen_sliding_window: GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
+    op: tileops/ops/attention/gqa.py
+    test: tests/ops/attention/test_gqa_varlen.py
+    bench: benchmarks/ops/attention/bench_gqa.py
+
+# Compatibility contracts kept implemented until the unified Varlen Op has
+# migrated its remaining FP8 and RoPE capabilities.
+GroupedQueryAttentionPrefillVarlenFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+  torch_compile_fullgraph: true
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+      cu_seqlens_q: {dtype: "int32"}
+      cu_seqlens_kv: {dtype: "int32"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params:
+      max_seqlen_q: {type: int}
+      max_seqlen_kv: {type: int}
+      is_causal: {type: bool, default: true}
+      sm_scale: {type: "float | None", default: null}
+      softcap: {type: "float | None", default: null}
+      validate_inputs: {type: bool, default: false}
+    shape_rules:
+      - "q.shape == (total_q, H, D)"
+      - "k.shape == (total_kv, H_kv, D)"
+      - "v.shape == (total_kv, H_kv, D)"
+      - "cu_seqlens_q.shape == (B + 1,)"
+      - "cu_seqlens_kv.shape == (B + 1,)"
+      - "o.shape == (total_q, H, D)"
+      - "H % H_kv == 0"
+
+  workloads:
+    - {total_q: 2048, total_kv: 2048, batch: 4, heads: 32, heads_kv: 8, dim: 128, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-uniform"}
+    - {total_q: 1024, total_kv: 3072, batch: 2, heads: 32, heads_kv: 8, dim: 128, q_lens: [512, 512], kv_lens: [1024, 2048], max_seqlen_q: 512, max_seqlen_kv: 2048, is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-q-lt-kv"}
+    - {total_q: 1024, total_kv: 3072, batch: 2, heads: 64, heads_kv: 8, dim: 128, q_lens: [512, 512], kv_lens: [1024, 2048], max_seqlen_q: 512, max_seqlen_kv: 2048, is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-q-lt-kv"}
+
+  roofline:
+    # The formula prices per-request lengths, which the call passes as cumulative
+    # bounds. The op differences them and answers this one; see its eval_roofline.
     func: "tileops.perf.formulas.gqa_prefill_varlen_fwd_roofline"
 
   source:
-    kernel: []
+    kernel: tileops/kernels/attention/gqa_prefill_varlen_fwd.py
+    kernel_map:
+      gqa_prefill_varlen_fwd_kernel: GQAPrefillVarlenFwdKernel
     op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa.py
+    test: tests/ops/attention/test_gqa_varlen.py
     bench: benchmarks/ops/attention/bench_gqa.py
+    bench_manifest_driven: true
+
+GroupedQueryAttentionSlidingWindowVarlenFwdOp:
+  ref_api: "none"
+  family: attention
+  status: implemented
+  torch_compile_fullgraph: true
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16"}
+      k: {dtype: "same_as(q)"}
+      v: {dtype: "same_as(q)"}
+      cu_seqlens_q: {dtype: "int32"}
+      cu_seqlens_k: {dtype: "int32"}
+    outputs:
+      o: {dtype: "same_as(q)"}
+    params:
+      is_causal: {type: bool, default: true}
+      window_size_left: {type: int, default: -1}
+      window_size_right: {type: int, default: -1}
+      max_seqlen_q: {type: int}
+    shape_rules:
+      - "q.shape == (total_q, H, D)"
+      - "k.shape == (total_k, H_kv, D)"
+      - "v.shape == (total_k, H_kv, D)"
+      - "cu_seqlens_q.shape == (B + 1,)"
+      - "cu_seqlens_k.shape == (B + 1,)"
+      - "o.shape == (total_q, H, D)"
+      - "H % H_kv == 0"
+
+  workloads:
+    - {total_q: 2048, total_k: 2048, batch: 4, heads: 32, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 256, max_seqlen_q: 512, dtypes: [float16, bfloat16], label: "llama-8b-short-w256"}
+    - {total_q: 8192, total_k: 8192, batch: 4, heads: 32, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 1024, max_seqlen_q: 2048, dtypes: [float16, bfloat16], label: "llama-8b-long-w1024"}
+    - {total_q: 2048, total_k: 2048, batch: 4, heads: 64, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 256, max_seqlen_q: 512, dtypes: [float16, bfloat16], label: "llama-70b-short-w256"}
+    - {total_q: 8192, total_k: 8192, batch: 4, heads: 64, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 1024, max_seqlen_q: 2048, dtypes: [float16, bfloat16], label: "llama-70b-long-w1024"}
+
+  roofline:
+    func: "tileops.perf.formulas.gqa_sliding_window_varlen_fwd_roofline"
+
+  source:
+    kernel: tileops/kernels/attention/gqa_sliding_window_varlen_fwd.py
+    kernel_map:
+      gqa_sliding_window_varlen_fwd_kernel: GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
+    op: tileops/ops/attention/gqa.py
+    test: tests/ops/attention/test_gqa_varlen.py
+    bench: benchmarks/ops/attention/bench_gqa.py
+    bench_manifest_driven: true
 
 GroupedQueryAttentionPagedFwdOp:
   ref_api: "none"
@@ -545,110 +656,6 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_decode_paged.py
     bench: benchmarks/ops/attention/bench_gqa_decode_paged.py
-    bench_manifest_driven: true
-
-# ---------------------------------------------------------------------------
-# attention — sliding window
-# ---------------------------------------------------------------------------
-
-GroupedQueryAttentionPrefillVarlenFwdOp:
-  ref_api: "none"
-  family: attention
-  status: implemented
-  torch_compile_fullgraph: true
-
-  signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k: {dtype: "same_as(q)"}
-      v: {dtype: "same_as(q)"}
-      cu_seqlens_q: {dtype: "int32"}
-      cu_seqlens_kv: {dtype: "int32"}
-    outputs:
-      o: {dtype: "same_as(q)"}
-    params:
-      max_seqlen_q: {type: int}
-      max_seqlen_kv: {type: int}
-      is_causal: {type: bool, default: true}
-      sm_scale: {type: "float | None", default: null}
-      softcap: {type: "float | None", default: null}
-      validate_inputs: {type: bool, default: false}
-    shape_rules:
-      - "q.shape == (total_q, H, D)"
-      - "k.shape == (total_kv, H_kv, D)"
-      - "v.shape == (total_kv, H_kv, D)"
-      - "cu_seqlens_q.shape == (B + 1,)"
-      - "cu_seqlens_kv.shape == (B + 1,)"
-      - "o.shape == (total_q, H, D)"
-      - "H % H_kv == 0"
-
-  workloads:
-    # Causal prefill aligns each request bottom-right, so a request whose kv run is
-    # longer than its q run is the case the mask has to get right.
-    - {total_q: 2048, total_kv: 2048, batch: 4, heads: 32, heads_kv: 8, dim: 128, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-uniform"}
-    - {total_q: 1024, total_kv: 3072, batch: 2, heads: 32, heads_kv: 8, dim: 128, q_lens: [512, 512], kv_lens: [1024, 2048], max_seqlen_q: 512, max_seqlen_kv: 2048, is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-q-lt-kv"}
-    - {total_q: 1024, total_kv: 3072, batch: 2, heads: 64, heads_kv: 8, dim: 128, q_lens: [512, 512], kv_lens: [1024, 2048], max_seqlen_q: 512, max_seqlen_kv: 2048, is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-q-lt-kv"}
-
-  roofline:
-    # Per-request lengths are derived from the call's cumulative bounds.
-    func: "tileops.perf.formulas.gqa_prefill_varlen_fwd_roofline"
-
-  source:
-    kernel: tileops/kernels/attention/gqa_fwd.py
-    kernel_map:
-      gqa_prefill_varlen_fwd_kernel: GQAPrefillVarlenFwdKernel
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa.py
-    bench: benchmarks/ops/attention/bench_gqa.py
-    bench_manifest_driven: true
-
-GroupedQueryAttentionSlidingWindowVarlenFwdOp:
-  ref_api: "none"
-  family: attention
-  status: implemented
-  torch_compile_fullgraph: true
-
-  signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k: {dtype: "same_as(q)"}
-      v: {dtype: "same_as(q)"}
-      cu_seqlens_q: {dtype: "int32"}
-      cu_seqlens_k: {dtype: "int32"}
-    outputs:
-      o: {dtype: "same_as(q)"}
-    params:
-      is_causal: {type: bool, default: true}
-      window_size_left: {type: int, default: -1}
-      window_size_right: {type: int, default: -1}
-      max_seqlen_q: {type: int}
-    shape_rules:
-      - "q.shape == (total_q, H, D)"
-      - "k.shape == (total_k, H_kv, D)"
-      - "v.shape == (total_k, H_kv, D)"
-      - "cu_seqlens_q.shape == (B + 1,)"
-      - "cu_seqlens_k.shape == (B + 1,)"
-      - "o.shape == (total_q, H, D)"
-      - "H % H_kv == 0"
-
-  workloads:
-    # Llama-3.1-8B (H=32, H_kv=8, D=128), short seq
-    - {total_q: 2048, total_k: 2048, batch: 4, heads: 32, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 256, max_seqlen_q: 512, dtypes: [float16, bfloat16], label: "llama-8b-short-w256"}
-    - {total_q: 8192, total_k: 8192, batch: 4, heads: 32, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 1024, max_seqlen_q: 2048, dtypes: [float16, bfloat16], label: "llama-8b-long-w1024"}
-    # Llama-3.1-70B (H=64, H_kv=8, D=128)
-    - {total_q: 2048, total_k: 2048, batch: 4, heads: 64, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 256, max_seqlen_q: 512, dtypes: [float16, bfloat16], label: "llama-70b-short-w256"}
-    - {total_q: 8192, total_k: 8192, batch: 4, heads: 64, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 1024, max_seqlen_q: 2048, dtypes: [float16, bfloat16], label: "llama-70b-long-w1024"}
-
-  roofline:
-    func: "tileops.perf.formulas.gqa_sliding_window_varlen_fwd_roofline"
-
-  source:
-    kernel: tileops/kernels/attention/gqa_sliding_window_varlen_fwd.py
-    kernel_map:
-      gqa_sliding_window_varlen_fwd_kernel: GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa_sliding_window_varlen.py
-    bench: benchmarks/ops/attention/bench_gqa_sliding_window_varlen.py
     bench_manifest_driven: true
 
 # ---------------------------------------------------------------------------

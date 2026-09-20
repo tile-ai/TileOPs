@@ -1,96 +1,37 @@
-"""Tests for GroupedQueryAttentionSlidingWindowVarlenFwdOp against a pure-PyTorch reference."""
+"""Varlen GQA tests against a pure-PyTorch reference."""
 
 import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.manifest import load_workloads
-from tileops.ops import GroupedQueryAttentionSlidingWindowVarlenFwdOp
+from tileops.ops import (
+    GroupedQueryAttentionPrefillVarlenFwdOp,
+    GroupedQueryAttentionSlidingWindowVarlenFwdOp,
+    GroupedQueryAttentionVarlenFwdOp,
+)
 from tileops.perf.formulas import (
     gqa_prefill_varlen_fwd_roofline,
     gqa_sliding_window_varlen_fwd_roofline,
+    gqa_varlen_fwd_roofline,
 )
 from workloads.attention.gqa import (
-    GroupedQueryAttentionSlidingWindowVarlenFwdWorkload,
+    GroupedQueryAttentionVarlenFwdWorkload,
 )
 
 
-class GroupedQueryAttentionSlidingWindowVarlenFwdTest(
-    GroupedQueryAttentionSlidingWindowVarlenFwdWorkload, TestBase
-):
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_k: torch.Tensor,
-    ) -> torch.Tensor:
-        """Pure-PyTorch reference: per-sample masked softmax attention.
-
-        offset = seqlen_k - seqlen_q aligns the causal mask bottom-right
-        (FA3 convention).  When seqlen_q == seqlen_k, offset=0 and the mask
-        reduces to the standard causal mask.
-        """
-        groups = self.heads // self.heads_kv
-        scale = self.dim**-0.5
-        outputs = []
-
-        for i in range(self.batch):
-            q_start = cu_seqlens_q[i].item()
-            q_end = cu_seqlens_q[i + 1].item()
-            kv_start = cu_seqlens_k[i].item()
-            kv_end = cu_seqlens_k[i + 1].item()
-
-            q_i = q[q_start:q_end]  # [seqlen_q, heads,    dim]
-            k_i = k[kv_start:kv_end]  # [seqlen_k, heads_kv, dim]
-            v_i = v[kv_start:kv_end]
-
-            seqlen_q = q_end - q_start
-            seqlen_k = kv_end - kv_start
-            # offset: aligns causal mask to bottom-right corner
-            offset = seqlen_k - seqlen_q
-
-            # Expand KV for GQA
-            k_exp = k_i.repeat_interleave(groups, dim=1).float()  # [sk, H, D]
-            v_exp = v_i.repeat_interleave(groups, dim=1).float()
-
-            # [H, seqlen_q, seqlen_k]
-            scores = (
-                torch.matmul(
-                    q_i.float().transpose(0, 1),  # [H, sq, D]
-                    k_exp.transpose(0, 1).transpose(-2, -1),  # [H, D, sk]
-                )
-                * scale
-            )
-
-            # Build attention mask
-            q_pos = torch.arange(seqlen_q, device=q.device).unsqueeze(1)
-            k_pos = torch.arange(seqlen_k, device=q.device).unsqueeze(0)
-            mask = torch.zeros(seqlen_q, seqlen_k, dtype=torch.bool, device=q.device)
-            if self.is_causal:
-                mask = mask | (k_pos > q_pos + offset)
-            if self.wl >= 0:
-                mask = mask | (k_pos < q_pos + offset - self.wl)
-            if self.wr >= 0:
-                mask = mask | (k_pos > q_pos + offset + self.wr)
-
-            scores = scores.masked_fill(mask.unsqueeze(0), float("-inf"))
-            probs = torch.softmax(scores, dim=-1).nan_to_num()
-            out_i = torch.matmul(probs, v_exp.transpose(0, 1))  # [H, sq, D]
-            outputs.append(out_i.transpose(0, 1).to(q.dtype))  # [sq, H, D]
-
-        return torch.cat(outputs, dim=0)  # [total_q, H, D]
+class GroupedQueryAttentionVarlenFwdTest(GroupedQueryAttentionVarlenFwdWorkload, TestBase):
+    pass
 
 
-class GroupedQueryAttentionSlidingWindowVarlenFwdFixture(FixtureBase):
+class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
     # Parameters: (batch, seqlens_q, seqlens_k, heads, heads_kv, dim,
     #              is_causal, wl, wr, dtype, tune)
     PARAMS = [
         (
             "batch, seqlens_q, seqlens_k, heads, heads_kv, dim, is_causal, wl, wr, dtype, tune",
             [
-                # ── Prefill: seqlen_q == seqlen_k (offset=0) ─────────────────────
+                # Prefill: seqlen_q == seqlen_k (offset=0)
                 pytest.param(
                     2,
                     [256, 512],
@@ -131,8 +72,36 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdFixture(FixtureBase):
                     -1,
                     torch.float16,
                     False,
-                    marks=pytest.mark.full,
+                    marks=pytest.mark.smoke,
                 ),  # causal + wl
+                pytest.param(
+                    1,
+                    [128],
+                    [128],
+                    8,
+                    2,
+                    128,
+                    True,
+                    64,
+                    -1,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.smoke,
+                ),  # D=128 uses the two-stage sliding pipeline
+                pytest.param(
+                    1,
+                    [6],
+                    [2],
+                    8,
+                    2,
+                    64,
+                    True,
+                    -1,
+                    -1,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.smoke,
+                ),  # leading queries have no visible key
                 pytest.param(
                     2,
                     [256, 512],
@@ -161,7 +130,7 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                 ),  # window
-                # ── KV-cache: seqlen_k > seqlen_q (offset > 0) ───────────────────
+                # KV-cache: seqlen_k > seqlen_q (offset > 0)
                 pytest.param(
                     2,
                     [64, 128],
@@ -204,7 +173,7 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                 ),  # window kvcache
-                # ── bfloat16 ─────────────────────────────────────────────────────
+                # bfloat16
                 pytest.param(
                     2,
                     [256, 512],
@@ -219,7 +188,7 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                 ),  # window bf16
-                # ── GQA ratios ───────────────────────────────────────────────────
+                # GQA ratios
                 pytest.param(
                     2,
                     [256, 512],
@@ -248,7 +217,7 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                 ),  # ratio 16:1
-                # ── Mixed lengths within batch ────────────────────────────────────
+                # Mixed lengths within batch
                 pytest.param(
                     3,
                     [128, 256, 384],
@@ -263,7 +232,7 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                 ),
-                # ── Right window only ─────────────────────────────────────────────
+                # Right window only
                 pytest.param(
                     2,
                     [256, 512],
@@ -278,7 +247,7 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                 ),  # right window
-                # ── wl=0 boundary ────────────────────────────────────────────────
+                # wl=0 boundary
                 pytest.param(
                     2,
                     [128, 256],
@@ -298,8 +267,8 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdFixture(FixtureBase):
     ]
 
 
-@GroupedQueryAttentionSlidingWindowVarlenFwdFixture
-def test_gqa_sliding_window_varlen_fwd_op(
+@GroupedQueryAttentionVarlenFwdFixture
+def test_gqa_varlen_fwd_op(
     batch: int,
     seqlens_q: list[int],
     seqlens_k: list[int],
@@ -312,21 +281,100 @@ def test_gqa_sliding_window_varlen_fwd_op(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
-    test = GroupedQueryAttentionSlidingWindowVarlenFwdTest(
+    test = GroupedQueryAttentionVarlenFwdTest(
         batch, seqlens_q, seqlens_k, heads, heads_kv, dim, is_causal, wl, wr, dtype
     )
-    op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        dim=dim,
-        max_seqlen_q=test.max_seqlen_q,
+    op = GroupedQueryAttentionVarlenFwdOp(
         is_causal=is_causal,
         window_size_left=wl,
         window_size_right=wr,
-        tune=tune,
     )
-    test.check(op, *test.gen_inputs(), atol=1e-2, rtol=1e-2)
+    test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_legacy_varlen_ops_remain_implemented_during_migration() -> None:
+    regular = GroupedQueryAttentionVarlenFwdTest(
+        2, [65, 127], [129, 255], 8, 2, 64, True, -1, -1, torch.float16
+    )
+    regular_op = GroupedQueryAttentionPrefillVarlenFwdOp(127, 255, is_causal=True)
+    regular.check(regular_op, *regular.gen_inputs(), atol=1e-3, rtol=1e-3)
+
+    windowed = GroupedQueryAttentionVarlenFwdTest(
+        2, [65, 127], [129, 255], 8, 2, 64, True, 64, -1, torch.float16
+    )
+    windowed_op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(
+        2,
+        8,
+        2,
+        64,
+        127,
+        is_causal=True,
+        window_size_left=64,
+    )
+    windowed.check(windowed_op, *windowed.gen_inputs(), atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_varlen_reuses_one_op_across_dynamic_packed_totals() -> None:
+    op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
+    for q_lens, kv_lens in (([31, 65], [63, 129]), ([127, 3], [255, 7])):
+        test = GroupedQueryAttentionVarlenFwdTest(
+            2, q_lens, kv_lens, 8, 2, 64, True, -1, -1, torch.float16
+        )
+        test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_varlen_regular_forwards_scale_and_softcap() -> None:
+    test = GroupedQueryAttentionVarlenFwdTest(
+        2,
+        [65, 127],
+        [129, 255],
+        8,
+        2,
+        64,
+        True,
+        -1,
+        -1,
+        torch.float16,
+        sm_scale=0.125,
+        softcap=5.0,
+    )
+    op = GroupedQueryAttentionVarlenFwdOp(
+        is_causal=True,
+        sm_scale=0.125,
+        softcap=5.0,
+    )
+    test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "q_lens, kv_lens",
+    [([0, 65], [0, 129]), ([4, 4], [0, 8])],
+)
+def test_varlen_handles_empty_requests_and_per_request_kv(
+    q_lens: list[int], kv_lens: list[int]
+) -> None:
+    test = GroupedQueryAttentionVarlenFwdTest(
+        2, q_lens, kv_lens, 8, 2, 64, True, -1, -1, torch.float16
+    )
+    op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
+    test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_varlen_rejects_invalid_cumulative_lengths_contract() -> None:
+    test = GroupedQueryAttentionVarlenFwdTest(
+        2, [8, 8], [16, 16], 8, 2, 64, True, -1, -1, torch.float16
+    )
+    q, k, v, cu_q, cu_kv = test.gen_inputs()
+    op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
+    with pytest.raises(ValueError, match="int32"):
+        op(q, k, v, cu_q.to(torch.int64), cu_kv)
+    with pytest.raises(ValueError, match="same shape"):
+        op(q, k, v, cu_q, cu_kv[:-1])
 
 
 # ----------------------------------------------------------------------
@@ -339,11 +387,16 @@ ELEM_BYTES = 2
 
 
 def _varlen_kwargs(**overrides: object) -> dict:
-    """Payload shaped like ``GroupedQueryAttentionPrefillVarlenFwdOp.eval_roofline``."""
+    """Payload shaped like ``GroupedQueryAttentionVarlenFwdOp.eval_roofline``."""
     kwargs = {
         "q_shape": (BATCH * SEQ, HEADS, DIM),
         "k_shape": (BATCH * SEQ, HEADS_KV, DIM),
         "batch": BATCH,
+        "total_q": BATCH * SEQ,
+        "total_k": BATCH * SEQ,
+        "heads": HEADS,
+        "heads_kv": HEADS_KV,
+        "dim": DIM,
         "max_seqlen_q": SEQ,
         "max_seqlen_kv": SEQ,
         "q_lens": [SEQ] * BATCH,
@@ -379,10 +432,10 @@ def test_varlen_non_causal_counts_full_product() -> None:
     ("q_lens", "kv_lens", "visible"),
     [
         # Short query run against a longer key run: bottom-right aligned, so
-        # query i sees keys 0..i+4 — 5 + 6 = 11 scores.
+        # query i sees keys 0..i+4: 5 + 6 = 11 scores.
         ([2], [6], 11),
         # Long query run against a short key run: the first four queries see
-        # nothing, the last two see 1 and 2 keys — 3 scores.
+        # nothing, the last two see 1 and 2 keys: 3 scores.
         ([6], [2], 3),
         # Mixed batch: 1 + 11 + 3 = 15.
         ([1, 2, 6], [1, 6, 2], 15),
@@ -460,9 +513,25 @@ def test_varlen_fills_requests_to_max_len_when_lengths_absent() -> None:
     assert flops == _varlen_flops(22)
 
 
+@pytest.mark.parametrize("window_size_left", [-1, 3])
+@pytest.mark.smoke
+def test_varlen_roofline_accepts_manifest_op_call(window_size_left: int) -> None:
+    """The manifest calls its roofline function with the bound Op instance."""
+    payload = _varlen_kwargs(window_size_left=window_size_left, window_size_right=-1)
+    op = GroupedQueryAttentionVarlenFwdOp.__new__(GroupedQueryAttentionVarlenFwdOp)
+    op._roofline_kwargs = payload
+    expected = (
+        gqa_sliding_window_varlen_fwd_roofline(**payload)
+        if window_size_left != -1
+        else gqa_prefill_varlen_fwd_roofline(**payload)
+    )
+
+    assert gqa_varlen_fwd_roofline(op) == expected
+
+
 @pytest.mark.smoke
 def test_sliding_window_varlen_offsets_short_queries_to_sequence_end() -> None:
-    """A 2-query, 6-key request aligns bottom-right: rows [4, 4] — 8 scores."""
+    """A 2-query, 6-key request aligns bottom-right: rows [4, 4], 8 scores."""
     flops, _ = gqa_sliding_window_varlen_fwd_roofline(
         batch=1,
         heads=HEADS,
@@ -497,9 +566,30 @@ def test_sliding_window_varlen_windows_each_request_separately() -> None:
 
 
 @pytest.mark.smoke
-def test_sliding_window_manifest_workloads_are_evaluable() -> None:
+def test_sliding_window_varlen_counts_cu_seqlens_bytes() -> None:
+    """Sliding-window traffic includes both cumulative-length arrays."""
+    _, nbytes = gqa_sliding_window_varlen_fwd_roofline(
+        batch=BATCH,
+        heads=HEADS,
+        heads_kv=HEADS_KV,
+        dim=DIM,
+        q_lens=[SEQ] * BATCH,
+        kv_lens=[SEQ] * BATCH,
+        is_causal=True,
+        window_size_left=3,
+        dtype=torch.float16,
+    )
+
+    q_elems = BATCH * SEQ * HEADS * DIM
+    kv_elems = BATCH * SEQ * HEADS_KV * DIM
+    expected = (2 * q_elems + 2 * kv_elems) * ELEM_BYTES + 2 * (BATCH + 1) * 4
+    assert nbytes == expected
+
+
+@pytest.mark.smoke
+def test_varlen_manifest_workloads_are_evaluable() -> None:
     """Every declared workload binds to its formula without a missing key."""
-    for workload in load_workloads("GroupedQueryAttentionSlidingWindowVarlenFwdOp"):
-        flops, nbytes = gqa_sliding_window_varlen_fwd_roofline(**workload)
+    for workload in load_workloads("GroupedQueryAttentionVarlenFwdOp"):
+        flops, nbytes = gqa_varlen_fwd_roofline(**workload)
         assert flops > 0, workload["label"]
         assert nbytes > 0, workload["label"]

@@ -24,7 +24,6 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
-    GroupedQueryAttentionPrefillVarlenFwdOp,
 )
 from tileops.utils import get_sm_version
 from workloads.attention.gqa import (
@@ -599,51 +598,6 @@ class GroupedQueryAttentionBwdFixture(FixtureBase):
             ],
         ),
     ]
-
-
-@pytest.mark.smoke
-def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
-    q_lens, kv_lens = [64, 32], [128, 96]
-    heads, heads_kv, dim = 8, 2, 64
-    q = torch.randn(sum(q_lens), heads, dim, device="cuda", dtype=torch.float16).contiguous()
-    k = torch.randn(sum(kv_lens), heads_kv, dim, device="cuda", dtype=torch.float16).contiguous()
-    v = torch.randn_like(k)
-    cu_q = torch.tensor(
-        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32
-    )
-    cu_kv = torch.tensor(
-        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32
-    )
-
-    op = GroupedQueryAttentionPrefillVarlenFwdOp(
-        max(q_lens), max(kv_lens), True, validate_inputs=True
-    )
-    with pytest.raises(ValueError, match="Expected k shape"):
-        op(q, k[:, :, :-1].contiguous(), v, cu_q, cu_kv)
-    with pytest.raises(ValueError, match="cu_seqlens_q\\[-1\\].*must equal"):
-        op(q[:-1], k, v, cu_q, cu_kv)
-    with pytest.raises(ValueError, match="max_seqlen_q"):
-        bad_op = GroupedQueryAttentionPrefillVarlenFwdOp(
-            max(q_lens) - 1, max(kv_lens), True, validate_inputs=True
-        )
-        bad_op(q, k, v, cu_q, cu_kv)
-    bad_cu = torch.tensor([0, 128, 96], device="cuda", dtype=torch.int32)
-    with pytest.raises(ValueError, match="cu_seqlens_q must be non-decreasing"):
-        op(q, k, v, bad_cu, cu_kv)
-
-
-@pytest.mark.smoke
-def test_gqa_prefill_varlen_rejects_unsupported_dtype() -> None:
-    """The element type now arrives with the tensors, so the rejection does too."""
-    op = GroupedQueryAttentionPrefillVarlenFwdOp(max_seqlen_q=64, max_seqlen_kv=128)
-    kwargs = {"dtype": torch.float32, "device": "cuda"}
-    q = torch.randn(64, 8, 64, **kwargs)
-    k = torch.randn(128, 2, 64, **kwargs)
-    v = torch.randn(128, 2, 64, **kwargs)
-    cu_q = torch.tensor([0, 64], device="cuda", dtype=torch.int32)
-    cu_kv = torch.tensor([0, 128], device="cuda", dtype=torch.int32)
-    with pytest.raises(ValueError, match="Expected dtype torch.float16 or torch.bfloat16"):
-        op(q, k, v, cu_q, cu_kv)
 
 
 @GroupedQueryAttentionBwdFixture

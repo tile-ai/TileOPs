@@ -685,6 +685,48 @@ class TestBytesOracle:
         )
         assert op.eval_roofline()[1] == oracle
 
+    def test_gqa_sliding_window_varlen_counts_its_packed_tensors_and_bounds(self):
+        from tileops.ops.attention.gqa import GroupedQueryAttentionSlidingWindowVarlenFwdOp
+
+        batch, heads, heads_kv, dim = 4, 32, 8, 128
+        q_lens = [512] * batch
+        total_q = total_k = sum(q_lens)
+        bounds = [0]
+        for length in q_lens:
+            bounds.append(bounds[-1] + length)
+        cu = torch.tensor(bounds, dtype=torch.int32)
+        op = GroupedQueryAttentionSlidingWindowVarlenFwdOp.__new__(
+            GroupedQueryAttentionSlidingWindowVarlenFwdOp
+        )
+        # The window narrows which keys each query attends, which moves the flops and
+        # leaves the traffic alone: the call still reads every packed tensor once.
+        op._roofline_kwargs = {
+            "q_shape": (total_q, heads, dim),
+            "k_shape": (total_k, heads_kv, dim),
+            "batch": batch,
+            "heads": heads,
+            "heads_kv": heads_kv,
+            "dim": dim,
+            "total_q": total_q,
+            "total_k": total_k,
+            "is_causal": True,
+            "window_size_left": 256,
+            "window_size_right": -1,
+            "dtype": torch.float16,
+            "cu_seqlens_q": cu,
+            "cu_seqlens_kv": cu,
+        }
+        oracle = _ledger(
+            "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
+            q=((total_q, heads, dim), torch.float16),
+            k=((total_k, heads_kv, dim), torch.float16),
+            v=((total_k, heads_kv, dim), torch.float16),
+            cu_seqlens_q=((batch + 1,), torch.int32),
+            cu_seqlens_k=((batch + 1,), torch.int32),
+            o=((total_q, heads, dim), torch.float16),
+        )
+        assert op.eval_roofline()[1] == oracle
+
     def test_nsa_forward_counts_the_blocks_its_selection_kept(self):
         """How much this call reads follows `block_counts`, so the case runs the
         workload that builds it rather than inventing a selection of its own."""
@@ -973,6 +1015,7 @@ HAND_WRITTEN = {
     "GemmW4A16FwdOp": "the packed weight and its group metadata have a quantized layout",
     "GroupedQueryAttentionDenseFwdOp": "which optional tensors the call passed decides the traffic",
     "GroupedQueryAttentionPrefillVarlenFwdOp": "the per-request lengths the call packed decide the traffic",
+    "GroupedQueryAttentionSlidingWindowVarlenFwdOp": "the per-request lengths the call packed decide the traffic",
     "GroupedGemmFwdOp": "`batch_padded_offsets` is passed and no kernel indexes it",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": "it reads the pages its block table names, not the pool",
     "NSAFwdVarlenOp": "how much it reads follows the values in `block_counts`",

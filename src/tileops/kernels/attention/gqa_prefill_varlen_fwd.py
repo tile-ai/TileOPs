@@ -11,12 +11,13 @@ prefill contract when q_len may be smaller than kv_len.
 
 import functools
 import itertools
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from ..grouped_tiling import GroupTiling
 from .call_spec import uses_sliding_window
 from .online_softmax import (
     LOG2E,
@@ -24,7 +25,7 @@ from .online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-from .packed_prefill import PackedPrefillKernel
+from .varlen import VarlenKernel, varlen_entry
 
 __all__ = ["GQAPrefillVarlenFwdKernel"]
 
@@ -34,8 +35,6 @@ def _gqa_prefill_varlen_fwd_kernel(
     batch: int,
     heads: int,
     heads_kv: int,
-    total_q: int,
-    total_kv: int,
     dim: int,
     is_causal: bool,
     sm_scale: Optional[float] = None,
@@ -51,7 +50,7 @@ def _gqa_prefill_varlen_fwd_kernel(
     accum_dtype = "float"
 
     @tilelang.jit(
-        out_idx=[7, 8],
+        out_idx=[5],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
@@ -60,6 +59,8 @@ def _gqa_prefill_varlen_fwd_kernel(
     def _gqa_prefill_varlen_fwd_func(
         block_m: int, block_n: int, num_stages: int, threads: int
     ) -> Callable:
+        total_q = T.dynamic("total_q")
+        total_kv = T.dynamic("total_kv")
         q_shape = (total_q, heads, dim)
         kv_shape = (total_kv, heads_kv, dim)
         online_softmax = make_online_softmax_with_mask_guard(scale, accum_dtype, block_m, block_n)
@@ -69,6 +70,8 @@ def _gqa_prefill_varlen_fwd_kernel(
             else None
         )
         rescale = make_rescale(block_m, dim)
+        q_tiling = GroupTiling(batch, block_m)
+        num_q_tiles = q_tiling.tile_upper_bound(total_q)
 
         @T.prim_func
         def _gqa_prefill_varlen_fwd_main(
@@ -77,19 +80,13 @@ def _gqa_prefill_varlen_fwd_kernel(
             v: T.Tensor(kv_shape, dtype),  # type: ignore
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),  # type: ignore
             cu_seqlens_kv: T.Tensor([batch + 1], T.int32),  # type: ignore
-            max_seqlen_q: T.int32,  # type: ignore
-            max_seqlen_kv: T.int32,  # type: ignore
             output: T.Tensor(q_shape, dtype),  # type: ignore
-            lse: T.Tensor([heads, total_q], accum_dtype),  # type: ignore
         ) -> None:
-            with T.Kernel(T.ceildiv(max_seqlen_q, block_m), heads, batch, threads=threads) as (
-                bx,
-                by,
-                bz,
-            ):
+            with T.Kernel(num_q_tiles, heads, threads=threads) as (q_tile, by):
                 q_shared = T.alloc_shared([block_m, dim], dtype)
                 k_shared = T.alloc_shared([block_n, dim], dtype)
                 v_shared = T.alloc_shared([block_n, dim], dtype)
+                tile_cum = T.alloc_shared([batch + 1], "int32")
                 acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
                 acc_s_cast = T.alloc_fragment([block_m, block_n], dtype)
                 acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
@@ -99,191 +96,142 @@ def _gqa_prefill_varlen_fwd_kernel(
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
                 logsum = T.alloc_fragment([block_m], accum_dtype)
                 inv_logsum = T.alloc_fragment([block_m], accum_dtype)
+                lo = T.alloc_local([1], "int32")
+                hi = T.alloc_local([1], "int32")
+                q_row = T.alloc_local([1], "int32")
+                request = T.alloc_local([1], "int32")
 
-                q_start = cu_seqlens_q[bz]
-                kv_start = cu_seqlens_kv[bz]
-                q_len = cu_seqlens_q[bz + 1] - q_start
-                kv_len = cu_seqlens_kv[bz + 1] - kv_start
-                causal_offset = kv_len - q_len
-                cur_kv_head = by // groups
+                q_tiling.cumsum_offsets(cu_seqlens_q, tile_cum)
+                T.sync_threads()
+                if q_tile < tile_cum[batch]:
+                    q_tiling.decode(q_tile, tile_cum, lo, hi, request, q_row)
 
-                if (bx + 1) * block_m <= q_len:
-                    T.copy(
-                        q[q_start + bx * block_m : q_start + (bx + 1) * block_m, by, :],
-                        q_shared,
-                        disable_tma=True,
-                    )
-                else:
-                    for i, d in T.Parallel(block_m, dim):
-                        q_pos = bx * block_m + i
-                        if q_pos < q_len:
-                            q_shared[i, d] = q[q_start + q_pos, by, d]
-                        else:
-                            q_shared[i, d] = T.cast(0, dtype)
+                    q_start = cu_seqlens_q[request[0]]
+                    kv_start = cu_seqlens_kv[request[0]]
+                    q_len = cu_seqlens_q[request[0] + 1] - q_start
+                    kv_len = cu_seqlens_kv[request[0] + 1] - kv_start
+                    causal_offset = kv_len - q_len
+                    cur_kv_head = by // groups
 
-                T.clear(acc_o)
-                T.clear(logsum)
-                T.fill(scores_max, -T.infinity(accum_dtype))
-
-                loop_range = (
-                    T.ceildiv(T.min(kv_len, causal_offset + (bx + 1) * block_m), block_n)
-                    if is_causal
-                    else T.ceildiv(kv_len, block_n)
-                )
-
-                for k_idx in T.Pipelined(loop_range, num_stages=num_stages):
-                    tile_start = k_idx * block_n
-                    tile_end = (k_idx + 1) * block_n
-                    if tile_end <= kv_len:
+                    if q_row[0] + block_m <= q_len:
                         T.copy(
-                            k[kv_start + tile_start : kv_start + tile_end, cur_kv_head, :],
-                            k_shared,
-                            disable_tma=True,
-                        )
-                        T.copy(
-                            v[kv_start + tile_start : kv_start + tile_end, cur_kv_head, :],
-                            v_shared,
+                            q[q_start + q_row[0] : q_start + q_row[0] + block_m, by, :],
+                            q_shared,
                             disable_tma=True,
                         )
                     else:
-                        for j, d in T.Parallel(block_n, dim):
-                            kv_pos = tile_start + j
-                            if kv_pos < kv_len:
-                                k_shared[j, d] = k[kv_start + kv_pos, cur_kv_head, d]
-                                v_shared[j, d] = v[kv_start + kv_pos, cur_kv_head, d]
+                        for i, d in T.Parallel(block_m, dim):
+                            q_pos = q_row[0] + i
+                            if q_pos < q_len:
+                                q_shared[i, d] = q[q_start + q_pos, by, d]
                             else:
-                                k_shared[j, d] = T.cast(0, dtype)
-                                v_shared[j, d] = T.cast(0, dtype)
+                                q_shared[i, d] = T.cast(0, dtype)
 
-                    for i, j in T.Parallel(block_m, block_n):
-                        q_pos = bx * block_m + i
-                        kv_pos = tile_start + j
-                        if is_causal:
-                            valid = (
-                                (q_pos < q_len)
-                                & (kv_pos < kv_len)
-                                & (kv_pos <= q_pos + causal_offset)
+                    T.clear(acc_o)
+                    T.clear(logsum)
+                    T.fill(scores_max, -T.infinity(accum_dtype))
+
+                    loop_range = (
+                        T.max(
+                            0,
+                            T.ceildiv(T.min(kv_len, causal_offset + q_row[0] + block_m), block_n),
+                        )
+                        if is_causal
+                        else T.ceildiv(kv_len, block_n)
+                    )
+
+                    for k_idx in T.Pipelined(loop_range, num_stages=num_stages):
+                        tile_start = k_idx * block_n
+                        tile_end = (k_idx + 1) * block_n
+                        if tile_end <= kv_len:
+                            T.copy(
+                                k[kv_start + tile_start : kv_start + tile_end, cur_kv_head, :],
+                                k_shared,
+                                disable_tma=True,
                             )
-                            acc_s[i, j] = T.if_then_else(valid, 0, -T.infinity(acc_s.dtype))
+                            T.copy(
+                                v[kv_start + tile_start : kv_start + tile_end, cur_kv_head, :],
+                                v_shared,
+                                disable_tma=True,
+                            )
                         else:
-                            valid = (q_pos < q_len) & (kv_pos < kv_len)
-                            acc_s[i, j] = T.if_then_else(valid, 0, -T.infinity(acc_s.dtype))
-                    T.gemm(
-                        q_shared,
-                        k_shared,
-                        acc_s,
-                        transpose_B=True,
-                        policy=T.GemmWarpPolicy.FullRow,
-                    )
-                    if use_softcap:
-                        apply_softcap(acc_s)
-                    online_softmax(
-                        acc_s,
-                        scores_max,
-                        scores_max_prev,
-                        scores_scale,
-                        scores_sum,
-                        logsum,
-                    )
-                    T.copy(acc_s, acc_s_cast)
-                    rescale(acc_o, scores_scale)
-                    T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                            for j, d in T.Parallel(block_n, dim):
+                                kv_pos = tile_start + j
+                                if kv_pos < kv_len:
+                                    k_shared[j, d] = k[kv_start + kv_pos, cur_kv_head, d]
+                                    v_shared[j, d] = v[kv_start + kv_pos, cur_kv_head, d]
+                                else:
+                                    k_shared[j, d] = T.cast(0, dtype)
+                                    v_shared[j, d] = T.cast(0, dtype)
 
-                if (bx + 1) * block_m <= q_len:
-                    for i in T.Parallel(block_m):
-                        inv_logsum[i] = T.cast(1, accum_dtype) / logsum[i]
-                    for i, j in T.Parallel(block_m, dim):
-                        acc_o[i, j] *= inv_logsum[i]
-                    T.copy(
-                        acc_o,
-                        output[q_start + bx * block_m : q_start + (bx + 1) * block_m, by, :],
-                        disable_tma=True,
-                    )
-                    for i in T.Parallel(block_m):
-                        logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
-                    T.copy(
-                        logsum,
-                        lse[by, q_start + bx * block_m : q_start + (bx + 1) * block_m],
-                        disable_tma=True,
-                    )
-                else:
-                    for i in T.Parallel(block_m):
-                        q_pos = bx * block_m + i
-                        if q_pos < q_len:
-                            inv_logsum[i] = T.cast(1, accum_dtype) / logsum[i]
-                    for i, j in T.Parallel(block_m, dim):
-                        q_pos = bx * block_m + i
-                        if q_pos < q_len:
-                            output[q_start + q_pos, by, j] = acc_o[i, j] * inv_logsum[i]
-                    for i in T.Parallel(block_m):
-                        q_pos = bx * block_m + i
-                        if q_pos < q_len:
-                            lse[by, q_start + q_pos] = T.log2(logsum[i]) + scores_max[i] * scale
+                        for i, j in T.Parallel(block_m, block_n):
+                            q_pos = q_row[0] + i
+                            kv_pos = tile_start + j
+                            if is_causal:
+                                valid = (
+                                    (q_pos < q_len)
+                                    & (kv_pos < kv_len)
+                                    & (kv_pos <= q_pos + causal_offset)
+                                )
+                                acc_s[i, j] = T.if_then_else(valid, 0, -T.infinity(acc_s.dtype))
+                            else:
+                                valid = (q_pos < q_len) & (kv_pos < kv_len)
+                                acc_s[i, j] = T.if_then_else(valid, 0, -T.infinity(acc_s.dtype))
+                        T.gemm(
+                            q_shared,
+                            k_shared,
+                            acc_s,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullRow,
+                        )
+                        if use_softcap:
+                            apply_softcap(acc_s)
+                        online_softmax(
+                            acc_s,
+                            scores_max,
+                            scores_max_prev,
+                            scores_scale,
+                            scores_sum,
+                            logsum,
+                        )
+                        T.copy(acc_s, acc_s_cast)
+                        rescale(acc_o, scores_scale)
+                        T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+
+                    if q_row[0] + block_m <= q_len:
+                        for i in T.Parallel(block_m):
+                            inv_logsum[i] = T.if_then_else(
+                                logsum[i] > 0,
+                                T.cast(1, accum_dtype) / logsum[i],
+                                T.cast(0, accum_dtype),
+                            )
+                        for i, j in T.Parallel(block_m, dim):
+                            acc_o[i, j] *= inv_logsum[i]
+                        T.copy(
+                            acc_o,
+                            output[q_start + q_row[0] : q_start + q_row[0] + block_m, by, :],
+                            disable_tma=True,
+                        )
+                    else:
+                        for i in T.Parallel(block_m):
+                            q_pos = q_row[0] + i
+                            if q_pos < q_len:
+                                inv_logsum[i] = T.if_then_else(
+                                    logsum[i] > 0,
+                                    T.cast(1, accum_dtype) / logsum[i],
+                                    T.cast(0, accum_dtype),
+                                )
+                        for i, j in T.Parallel(block_m, dim):
+                            q_pos = q_row[0] + i
+                            if q_pos < q_len:
+                                output[q_start + q_pos, by, j] = acc_o[i, j] * inv_logsum[i]
 
         return _gqa_prefill_varlen_fwd_main
 
     return _gqa_prefill_varlen_fwd_func
 
 
-def _gqa_prefill_varlen_fwd_run(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    total_q: int,
-    total_kv: int,
-    dim: int,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    num_stages: int,
-    threads: int,
-    max_seqlen_q: int,
-    max_seqlen_kv: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
-    cu_seqlens_kv: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    return _gqa_prefill_varlen_fwd_kernel(
-        batch, heads, heads_kv, total_q, total_kv, dim, is_causal, sm_scale, softcap, dtype
-    )(block_m, block_n, num_stages, threads)(
-        q, k, v, cu_seqlens_q, cu_seqlens_kv, max_seqlen_q, max_seqlen_kv
-    )
-
-
-def _(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    total_q: int,
-    total_kv: int,
-    dim: int,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    num_stages: int,
-    threads: int,
-    max_seqlen_q: int,
-    max_seqlen_kv: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
-    cu_seqlens_kv: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    fake_o = torch.empty([total_q, heads, dim], dtype=q.dtype, device=q.device)
-    fake_lse = fake_o.new_empty([heads, total_q])
-    return fake_o, fake_lse
-
-
-class GQAPrefillVarlenFwdKernel(PackedPrefillKernel):
+class GQAPrefillVarlenFwdKernel(VarlenKernel):
     """Ragged packed prefill: per-request ranges of unequal length.
 
     Serves the requests the dense implementations cannot: a caller that asked
@@ -295,16 +243,27 @@ class GQAPrefillVarlenFwdKernel(PackedPrefillKernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        if call.is_fp8 or uses_sliding_window(call):
+        if call.is_fp8 or call.fuse_rope or uses_sliding_window(call):
             return False
         if call.backend == "varlen":
             return True
         return call.backend == "auto" and not call.is_uniform
 
-    def _build_program(self) -> None:
-        # The program is specialized on the packed totals, which are known per
-        # call, so there is nothing to build until forward runs.
-        self.kernel = None
+    @classmethod
+    def entry_for(cls, call):
+        return varlen_entry(cls, call)
+
+    def _make_kernel(self) -> Callable:
+        return _gqa_prefill_varlen_fwd_kernel(
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.dim,
+            self.is_causal,
+            self.sm_scale,
+            self.softcap,
+            self.dtype_str,
+        )
 
     @property
     def default_config(self) -> dict:
@@ -332,29 +291,13 @@ class GQAPrefillVarlenFwdKernel(PackedPrefillKernel):
         q_scale: Optional[torch.Tensor] = None,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        total_q, total_kv = q.shape[0], k.shape[0]
-        output, _ = _gqa_prefill_varlen_fwd_run(
-            self.batch,
-            self.heads,
-            self.heads_kv,
-            total_q,
-            total_kv,
-            self.dim,
-            self.is_causal,
-            self.sm_scale,
-            self.softcap,
-            self.dtype_str,
+        output = self.kernel(
             self.config["block_m"],
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-            self.max_seqlen_q,
-            self.max_seqlen_kv,
-            q,
-            k,
-            v,
-            cu_seqlens_q,
-            cu_seqlens_kv,
-        )
+        )(q, k, v, cu_seqlens_q, cu_seqlens_kv)
         return output

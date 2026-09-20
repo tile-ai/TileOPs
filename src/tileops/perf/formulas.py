@@ -50,6 +50,7 @@ __all__ = [
     "gqa_prefill_paged_with_kv_cache_fwd_roofline",
     "gqa_prefill_varlen_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
+    "gqa_varlen_fwd_roofline",
     "grouped_gemm_roofline",
     "gt_fwd_roofline",
     "le_fwd_roofline",
@@ -422,8 +423,8 @@ def gqa_prefill_varlen_fwd_roofline(
     total_q, heads, dim = q_shape
     total_kv, heads_kv, _ = k_shape
     batch = int(data["batch"])
-    max_seqlen_q = int(data["max_seqlen_q"])
-    max_seqlen_kv = int(data["max_seqlen_kv"])
+    max_seqlen_q = int(data.get("max_seqlen_q", total_q))
+    max_seqlen_kv = int(data.get("max_seqlen_kv", total_kv))
     is_causal = bool(data.get("is_causal", True))
     elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
 
@@ -615,10 +616,16 @@ def gqa_sliding_window_varlen_fwd_roofline(
     heads_kv = int(data["heads_kv"])
     dim = int(data["dim"])
     total_q = int(data.get("total_q", 0))
-    total_k = int(data.get("total_k", 0))
+    total_k = int(data.get("total_k", data.get("total_kv", 0)))
     max_seqlen_q = int(data.get("max_seqlen_q", total_q // batch if batch else total_q))
     q_lens = data.get("q_lens")
-    k_lens = data.get("k_lens")
+    k_lens = data.get("k_lens", data.get("kv_lens"))
+    if q_lens is None and (cu_seqlens_q := data.get("cu_seqlens_q")) is not None:
+        values = [int(x) for x in cu_seqlens_q.detach().cpu().tolist()]
+        q_lens = [values[idx + 1] - values[idx] for idx in range(len(values) - 1)]
+    if k_lens is None and (cu_seqlens_kv := data.get("cu_seqlens_kv")) is not None:
+        values = [int(x) for x in cu_seqlens_kv.detach().cpu().tolist()]
+        k_lens = [values[idx + 1] - values[idx] for idx in range(len(values) - 1)]
     if q_lens is None:
         q_lens = _distribute_total(total_q, batch, max_seqlen_q)
     if k_lens is None:
@@ -651,6 +658,16 @@ def gqa_sliding_window_varlen_fwd_roofline(
     # counts them; this one did not.
     nbytes += 2 * (batch + 1) * 4
     return int(flops), int(nbytes)
+
+
+def gqa_varlen_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Route unified Varlen GQA workloads to the matching cost model."""
+    data = _shape_or_attrs(op, kwargs)
+    if data.get("_roofline_kwargs") is not None:
+        data = dict(data["_roofline_kwargs"])
+    if int(data.get("window_size_left", -1)) != -1 or int(data.get("window_size_right", -1)) != -1:
+        return gqa_sliding_window_varlen_fwd_roofline(**data)
+    return gqa_prefill_varlen_fwd_roofline(**data)
 
 
 def deepseek_mla_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
