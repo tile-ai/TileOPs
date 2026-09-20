@@ -300,6 +300,8 @@ The read-side bound is conditional, not a theorem. It holds while each kernel is
 | ERROR      | The audit did not produce a usable measurement.          |
 | NO-VERDICT | No read half was declared.                               |
 
+The read half comes off `bytes` by subtracting the write half the contract settles, and pricing the outputs needs the shapes the call carried. An op keeps only what its own `eval_roofline` needs — an element count, a dtype — so `tileops.ops.op_base.record_roofline_calls()` makes `Op.__call__` remember each input tensor's shape and dtype, and the audit turns it on around the call it reads the declaration off. It is off everywhere else: it costs about a microsecond per call, a fifth of a small kernel's launch, and a benchmark row would carry it.
+
 Workloads come from the manifest's own rows and cover the formula's branch signatures. Scaled-up shapes are not used: they can cross kernel-selection thresholds and audit an implementation the benchmark never runs.
 
 Runs on demand. It needs GPU performance counters, which the driver restricts to admin by default and which a rootless container cannot obtain however privileged it is.

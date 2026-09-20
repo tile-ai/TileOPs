@@ -80,6 +80,41 @@ def _declared_dispatch_keys() -> frozenset[str]:
     return frozenset(keys)
 
 
+_RECORDING_CALLS = False
+
+
+def record_roofline_calls(enabled: bool = True) -> None:
+    """Have every op call remember its input tensors' shapes and dtypes.
+
+    ``Op.eval_roofline_read_bytes()`` prices the write half from the output
+    shapes, which the call's input shapes decide, and an op keeps only what its
+    own ``eval_roofline`` needs -- an element count, a dtype. The recording
+    supplies the rest, and the NCU bytes audit turns it on around the call it
+    reads the declaration off (docs/design/roofline.md §4.5).
+
+    Off by default: it costs about a microsecond per call, which is a fifth of
+    a small kernel's launch, and every benchmark row would carry it.
+    """
+    global _RECORDING_CALLS
+    _RECORDING_CALLS = enabled
+
+
+@functools.lru_cache(maxsize=None)
+def _forward_input_names(op_name: str) -> tuple[str, ...]:
+    """The op's ``forward`` input names, or empty when the manifest has none.
+
+    Cached per op: every call records its tensors, and reading the manifest
+    each time costs more than the rest of the recording together.
+    """
+    entry = load_manifest().get(op_name)
+    if entry is None:
+        return ()
+    try:
+        return tuple(forward_signature(entry)["inputs"])
+    except Exception:
+        return ()
+
+
 class Op(ABC):
     """Base class for TileOPs operations.
 
@@ -262,8 +297,12 @@ class Op(ABC):
         inputs = signature.get("inputs") or {}
         outputs = signature.get("outputs") or {}
         order = list(inputs)
+        recorded = getattr(self, "_roofline_call_tensors", None) or {}
         shapes = []
         for name in order:
+            if name in recorded:
+                shapes.append(recorded[name][0])
+                continue
             bound = getattr(self, name, None)
             shape = getattr(bound, "shape", None) or getattr(self, f"{name}_shape", None)
             shapes.append(None if shape is None else tuple(shape))
@@ -288,8 +327,11 @@ class Op(ABC):
             shape = shapes[order.index(name)]
             if shape is None:
                 continue
-            bound = getattr(self, name, None)
-            elem = getattr(getattr(bound, "dtype", None), "itemsize", None)
+            if name in recorded:
+                elem = recorded[name][1].itemsize
+            else:
+                bound = getattr(self, name, None)
+                elem = getattr(getattr(bound, "dtype", None), "itemsize", None)
             if elem is None:
                 return NotImplemented
             total += math.prod(shape) * elem
@@ -768,14 +810,44 @@ class Op(ABC):
         for good.
         """
         if self._builder is not _UNRESOLVED:
-            return self.forward(*args, **kwargs)
+            result = self.forward(*args, **kwargs)
+            if _RECORDING_CALLS:
+                self._record_roofline_call(args, kwargs)
+            return result
 
         self._resolve_builder(args, kwargs)
         try:
-            return self.forward(*args, **kwargs)
+            result = self.forward(*args, **kwargs)
         except Exception:
             self._unsettle()
             raise
+        if _RECORDING_CALLS:
+            self._record_roofline_call(args, kwargs)
+        return result
+
+    def _record_roofline_call(self, args: tuple, kwargs: dict) -> None:
+        """Remember each input tensor's shape and dtype, for the read half.
+
+        An op keeps whatever its own ``eval_roofline`` needs and nothing more,
+        so a call that binds an element count leaves no shape behind for
+        ``_roofline_write_bytes`` to price the outputs from. Recording it here
+        costs one dict per call and makes the read half available after any
+        call, not only one an oracle built by setting attributes.
+        """
+        if torch.compiler.is_compiling():
+            return  # the audit measures eager calls, and this would break the graph
+        names = _forward_input_names(type(self).__name__)
+        if not names:
+            return
+        # A call may omit an optional input, so the lists need not be equal.
+        recorded = {}
+        for name, value in zip(names, args, strict=False):
+            if isinstance(value, torch.Tensor):
+                recorded[name] = (tuple(value.shape), value.dtype)
+        for name, value in kwargs.items():
+            if name in names and isinstance(value, torch.Tensor):
+                recorded[name] = (tuple(value.shape), value.dtype)
+        self._roofline_call_tensors = recorded
 
     def _refuse_empty_input(self, inputs: "Sequence[torch.Tensor | None]") -> None:
         """Raise for a call whose every declared output would hold no elements.

@@ -54,7 +54,6 @@ def _op_class(op_name: str, entry: dict):
 
 def _single_input_case(op_name: str, entry: dict, row: dict, dtype):
     """(op, inputs) via the manifest single-tensor-input contract, or None."""
-    import torch
 
     from tileops.manifest import single_input_workload_contract
 
@@ -67,18 +66,32 @@ def _single_input_case(op_name: str, entry: dict, row: dict, dtype):
     reserved = {"label", "dtypes", "bench_skip_reason", shape_key}
     params = {k: v for k, v in row.items() if k not in reserved and not k.startswith("__")}
     op = _op_class(op_name, entry)(**params)
-    # Positive, away from zero: valid for every unary domain (log, rsqrt, ...);
-    # the counters read traffic, not values.
-    x = torch.rand(tuple(row[shape_key]), dtype=dtype, device="cuda") + 0.5
+    x = _sample(tuple(row[shape_key]), dtype)
     return op, (x,)
 
 
-def _gemm_case(op_name: str, entry: dict, row: dict, dtype):
+def _sample(shape: tuple, dtype) -> "object":
+    """A valid input of *dtype*; the counters read traffic, not values."""
     import torch
 
-    op = _op_class(op_name, entry)()
-    a = torch.randn(row["m"], row["k"], dtype=dtype, device="cuda")
-    b = torch.randn(row["k"], row["n"], dtype=dtype, device="cuda")
+    if dtype is torch.bool:
+        return torch.ones(shape, dtype=torch.bool, device="cuda")
+    if not dtype.is_floating_point:
+        return torch.ones(shape, dtype=dtype, device="cuda")
+    # Positive, away from zero: valid for every unary domain (log, rsqrt, ...).
+    return torch.rand(shape, dtype=dtype, device="cuda") + 0.5
+
+
+def _gemm_case(op_name: str, entry: dict, row: dict, dtype):
+    """The row names the layout, and the operands are stored in it."""
+    import torch
+
+    trans_a = bool(row.get("trans_a", False))
+    trans_b = bool(row.get("trans_b", True))
+    op = _op_class(op_name, entry)(trans_a=trans_a, trans_b=trans_b)
+    m, n, k = row["m"], row["n"], row["k"]
+    a = torch.randn(*((k, m) if trans_a else (m, k)), dtype=dtype, device="cuda")
+    b = torch.randn(*((n, k) if trans_b else (k, n)), dtype=dtype, device="cuda")
     return op, (a, b)
 
 
@@ -86,8 +99,9 @@ def _bmm_case(op_name: str, entry: dict, row: dict, dtype):
     import torch
 
     op = _op_class(op_name, entry)()
-    a = torch.randn(row["batch"], row["m"], row["k"], dtype=dtype, device="cuda")
-    b = torch.randn(row["batch"], row["k"], row["n"], dtype=dtype, device="cuda")
+    batch, m, n, k = row["b"], row["m"], row["n"], row["k"]
+    a = torch.randn(batch, m, k, dtype=dtype, device="cuda")
+    b = torch.randn(batch, k, n, dtype=dtype, device="cuda")
     return op, (a, b)
 
 
@@ -183,7 +197,10 @@ def run_child(op_name: str, row_json: str, dtype_str: str) -> None:
     import torch
 
     from tileops.manifest import load_manifest
+    from tileops.ops.op_base import record_roofline_calls
 
+    # The read half needs the shapes the call carried; ops do not keep them.
+    record_roofline_calls()
     entry = load_manifest()[op_name]
     dtype = getattr(torch, dtype_str)
     case = _build_case(op_name, entry, json.loads(row_json), dtype)
