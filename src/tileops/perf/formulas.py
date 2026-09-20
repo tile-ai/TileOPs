@@ -1104,15 +1104,19 @@ def moe_expert_mlp_roofline(op: "Op") -> tuple[int, int]:
 def rope_roofline(op: "Op") -> tuple[int, int]:
     seq_len = int(op.seq_len)
     head_dim = int(op.head_dim)
-    batch = int(getattr(op, "batch", 1))
-    num_heads = int(getattr(op, "num_heads", 1))
     layout = getattr(op, "layout", "1d")
     elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
-    outer = batch * num_heads if layout == "2d" else 1
+    # A 1d call carries neither, and a call that has not run a 2d one leaves them unset.
+    outer = (
+        int(getattr(op, "batch", 1) or 1) * int(getattr(op, "num_heads", 1) or 1)
+        if layout == "2d"
+        else 1
+    )
     x_elems = outer * seq_len * head_dim
-    cos_sin_elems = seq_len * (head_dim // 2) * 2
+    # The cos/sin table is the op's own: the signature declares it as no input, and an
+    # implementation that computes the angles in the kernel reads none of it.
     flops = 4 * x_elems
-    nbytes = (2 * x_elems + cos_sin_elems) * elem
+    nbytes = 2 * x_elems * elem
     return int(flops), int(nbytes)
 
 
@@ -1120,13 +1124,11 @@ def rope_position_ids_roofline(op: "Op") -> tuple[int, int]:
     num_tokens = int(op.num_tokens)
     num_heads = int(op.num_heads)
     head_dim = int(op.head_dim)
-    rotary_dim = int(getattr(op, "rotary_dim", head_dim) or head_dim)
-    max_position = int(op.max_position)
     elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
     x_elems = num_tokens * num_heads * head_dim
-    cos_sin_elems = max_position * (rotary_dim // 2) * 2
+    # x read and written, plus the position ids. The cos/sin table is the op's own.
     pos_elems = num_tokens
-    return int(4 * x_elems), int((2 * x_elems + cos_sin_elems) * elem + pos_elems * 4)
+    return int(4 * x_elems), int(2 * x_elems * elem + pos_elems * 4)
 
 
 def dropout_roofline(op: "Op") -> tuple[int, int]:
@@ -1245,9 +1247,12 @@ def fft_c2c_roofline(op: "Op") -> tuple[int, int]:
 
     n = int(op.n)
     elem = _dtype_itemsize(getattr(op, "dtype", "complex64"))
-    # Runtime batch is inferred from the input and kernel cache. Before a
-    # forward call, the constructed default kernel represents batch=1.
-    batch = int(getattr(getattr(op, "kernel", None), "batch_size", 1) or 1)
+    # From the call's own shape. Reading the kernel's batch size made the number
+    # depend on which kernel served the call, and answered 1 before any did.
+    shape = getattr(op, "input_shape", None)
+    batch = 1
+    for extent in (shape or ())[:-1]:
+        batch *= int(extent)
     return int(batch * 5 * n * math.log2(n)), int(batch * 2 * n * elem)
 
 
@@ -1398,7 +1403,9 @@ def da_cumsum_fwd_roofline(op: "Op") -> tuple[int, int]:
         int(op.batch),
         int(op.seq_len),
         int(op.n_heads),
-        _dtype_itemsize(getattr(op, "dtype", "float32")),
+        # dt_out is caller-stated: the op carries the dtype the call asked for on
+        # ``out_dtype``, and never sets a ``dtype`` of its own.
+        _dtype_itemsize(getattr(op, "out_dtype", None) or "float32"),
         has_dt_bias=_supplied(op, "dt_bias"),
         dt_softplus=bool(getattr(op, "dt_softplus", False)),
     )

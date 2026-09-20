@@ -305,7 +305,13 @@ A CI test recomputes each audited `bytes` value from an independent path — the
 
 Traffic that depends on tensor *content* is recounted the same way: the case constructs the selecting tensor itself, exactly as it constructs shapes, so content dependence is no reason to exempt an op. Coverage is golden workloads per op, not randomized sweeps.
 
-Coverage is three levels, and an op sits at exactly one. At level one a binder builds the case from the manifest — the signature, one workload row, the dtypes, the mutation marks — so the case and the formula share only the minimum-traffic definition; an op reaches this level by being recountable, not by being listed. Level two is a hand-written reference for a call the contract does not settle, with what the case shares written beside it. Level three is an op no independent recount reaches yet, marked with what is missing and asserted against nothing. A completeness test keeps the three total: an op added to the manifest is recounted by the binder or fails until it is placed.
+Coverage is three levels, and an op sits at exactly one. At level one a binder builds the case from the manifest — the signature, one workload row, the dtypes, the mutation marks — and an op reaches this level by being recountable, not by being listed. What that case shares with the formula is the minimum-traffic definition, the op's own statement of its output extents, and the manifest's resolution of an output's dtype; the `roofline` block is not among them. Level two is a hand-written reference for a call the contract does not settle, with what the case shares written beside it. Level three is an op no independent recount reaches yet, marked with what is missing and asserted against nothing. A completeness test keeps the three total: an op added to the manifest is recounted by the binder or fails until it is placed.
+
+### 4.7 Value-Determined Traffic
+
+A few ops move an amount their inputs' values decide: a routed MoE reads the experts `topk_ids` names, a sparse attention reads the blocks its selection kept. Their formulas read those inputs, which is what makes the number the call's own rather than an estimate from the shapes.
+
+Two conditions follow. The formula reads the call's semantic inputs — the routing, the offsets, the block table — and never a quantity it computed for itself, which would make a recount an identity. And a workload row builds those inputs the same way every time, from a generator of its own rather than the global stream, because a draw added anywhere upstream otherwise moves the traffic and with it the efficiency the row reports.
 
 ## 5. Reference
 

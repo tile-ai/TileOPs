@@ -6,10 +6,20 @@ it counts the traffic the contract implies -- one read per distinct input storag
 the call binds, one write per public output, both for a ``mutated`` input -- and
 the caller requires the two to be equal.
 
-It shares only the minimum-traffic definition with the formula (roofline.md 1.2).
-Shapes come from the workload row, dtypes from the signature's dtype expressions,
-and output shapes from the op's ``_infer_output_shapes``, which is the contract's
-own statement of them; none of it reads the ``roofline`` block.
+What it shares with the formula, and nothing beyond it: the minimum-traffic
+definition (roofline.md 1.2), the op's ``_infer_output_shapes`` for the output
+extents, and ``_output_dtype`` for an output's dtype. Those last two are the
+contract's own statements, and the formula reaches them through codegen, so a
+defect in either moves both sides together. Shapes otherwise come from the
+workload row and the signature's ``shape`` strings; the ``roofline`` block is
+never read.
+
+One rule the contract does not settle, and the binder assumes: a ``mutated``
+input is written in addition to the outputs unless it is itself an output name
+or the signature declares an ``inplace`` param, in which case that write is the
+output's. For the nine activation ops this holds either way -- both modes move
+one input-sized read and one input-sized write -- but the contract does not say
+which storage the output lands in.
 
 An op the binder cannot drive raises `NotBindableError`, which names what the contract
 did not settle. That is the entry condition for the other two coverage levels.
@@ -71,9 +81,30 @@ def _resolve_dtype(expr: Any, call_dtype: torch.dtype, inputs: dict, depth: int 
     return _torch_dtype(tokens[0]) or call_dtype
 
 
+def _names_a_dtype(declared: Any) -> bool:
+    """Whether a param's declared type is a set of dtype names."""
+    if not isinstance(declared, str):
+        return False
+    # ``int``, ``float``, ``bool`` and ``complex`` name a torch dtype and a Python
+    # type both; a param declared with them is the Python one.
+    ambiguous = {"int", "float", "bool", "complex", "None"}
+    tokens = [token.strip() for token in declared.split("|")]
+    named = [token for token in tokens if token not in ambiguous]
+    return bool(named) and all(_torch_dtype(token) is not None for token in named)
+
+
 def _param_value(spec: dict, row: dict, name: str) -> Any:
-    """A param's value for this row, with a dtype-typed one resolved to a torch dtype."""
+    """A param's value for this row, with a dtype-typed one resolved to a torch dtype.
+
+    A dtype-typed param the row does not name follows the row's own dtype, which is
+    what a benchmark passes: ``DaCumsumFwdOp(out_dtype=dtype)`` writes ``dt_out`` in
+    the dtype the case runs at, not in the declaration's fallback.
+    """
     value = row.get(name, (spec or {}).get("default"))
+    if name not in row and _names_a_dtype((spec or {}).get("type")):
+        called_with = (row.get("dtypes") or [None])[0]
+        if _torch_dtype(called_with or "") is not None:
+            return _torch_dtype(called_with)
     if isinstance(value, str) and _torch_dtype(value) is not None:
         return _torch_dtype(value)
     if isinstance(value, list):
@@ -177,10 +208,6 @@ _ROW_SUPPLEMENT = {
         "a_shape": (row["k"], row["m"]) if row.get("trans_a") else (row["m"], row["k"]),
         "b_shape": (row["n"], row["k"]) if row.get("trans_b") else (row["k"], row["n"]),
     },
-    "BmmFwdOp": lambda row: {
-        "a_shape": (row["b"], row["m"], row["k"]),
-        "b_shape": (row["b"], row["k"], row["n"]),
-    },
     # Normalization: the affine pair spans the normalized axes.
     "LayerNormFwdOp": _normalized_pair("weight", "bias"),
     "RMSNormFwdOp": _normalized_pair("weight"),
@@ -212,6 +239,95 @@ _ROW_SUPPLEMENT = {
     # signature calls it, and that is the name its formula reads.
     "LerpFwdOp": lambda row: {"other_shape": tuple(row["end_shape"])},
     "PowFwdOp": lambda row: {"other_shape": tuple(row["exponent_shape"])},
+    # RoPE rows give the extents; the layout says how they lay out.
+    **{
+        name: (
+            lambda row: {
+                "x_shape": (
+                    (row["batch"], row["num_heads"], row["seq_len"], row["head_dim"])
+                    if row.get("layout") == "2d"
+                    else (row["seq_len"], row["head_dim"])
+                )
+            }
+        )
+        for name in (
+            "RopeNeoxFwdOp",
+            "RopeNonNeoxFwdOp",
+            "RopeLlama31FwdOp",
+            "RopeYarnFwdOp",
+            "RopeLongRopeFwdOp",
+        )
+    },
+    # Dims a func-mode formula reads off the instance, named as the row names them.
+    "BmmFwdOp": lambda row: {
+        "batch": row["b"],
+        "a_shape": (row["b"], row["m"], row["k"]),
+        "b_shape": (row["b"], row["k"], row["n"]),
+    },
+    # Conv rows give the kernel extents and the output channel count; the weight's
+    # input-channel extent is the input's divided by the groups.
+    **{
+        name: (
+            lambda row: {
+                "weight_shape": (
+                    row["C_out"],
+                    row["input_shape"][1] // row.get("groups", 1),
+                    *(row[axis] for axis in ("kD", "kH", "kW") if axis in row),
+                )
+            }
+        )
+        for name in ("Conv1dFwdOp", "Conv2dFwdOp", "Conv3dFwdOp")
+    },
+    "DropoutFwdOp": lambda row: {"N_total": prod(row["input_shape"])},
+    "FFTC2CFwdOp": lambda row: {"n": row["input_shape"][-1]},
+    "FusedTopKOp": lambda row: {"gating_output_shape": (row["num_tokens"], row["num_experts"])},
+    "DaCumsumFwdOp": lambda row: {
+        "batch": row["dt_shape"][0],
+        "seq_len": row["dt_shape"][1],
+        "n_heads": row["dt_shape"][2],
+    },
+    "SSDChunkStateFwdOp": lambda row: {
+        "batch": row["x_shape"][0],
+        "seq_len": row["x_shape"][1],
+        "n_heads": row["x_shape"][2],
+        "d_head": row["x_shape"][3],
+        "d_state": row["Bmat_shape"][3],
+        "n_groups": row["Bmat_shape"][2],
+        "chunk_len": row["dt_shape"][3],
+        "num_chunks": row["dt_shape"][2],
+    },
+    "SSDChunkScanFwdOp": lambda row: {
+        "batch": row["x_shape"][0],
+        "seq_len": row["x_shape"][1],
+        "n_heads": row["x_shape"][2],
+        "d_head": row["x_shape"][3],
+        "d_state": row["C_shape"][3],
+        "n_groups": row["C_shape"][2],
+        "chunk_len": row["dt_shape"][3],
+        "num_chunks": row["dt_shape"][2],
+    },
+    "SSDStatePassingFwdOp": lambda row: {
+        "batch": row["states_shape"][0],
+        "num_chunks": row["states_shape"][1],
+        "n_heads": row["dA_chunk_cumsum_shape"][1],
+        "d_state": row["states_shape"][3],
+    },
+    "Mamba2FwdOp": lambda row: {
+        "batch": row["x_shape"][0],
+        "seqlen": row["x_shape"][1],
+        "n_heads": row["x_shape"][2],
+        "d_head": row["x_shape"][3],
+        "d_state": row["B_shape"][3],
+        "n_groups": row["B_shape"][2],
+        "num_chunks": row["x_shape"][1] // 256,
+    },
+    "SSDDecodeFwdOp": lambda row: {
+        "batch": row["x_shape"][0],
+        "n_heads": row["x_shape"][1],
+        "d_head": row["x_shape"][2],
+        "d_state": row["state_shape"][3],
+        "n_groups": row["B_in_shape"][1],
+    },
 }
 
 
@@ -254,6 +370,10 @@ def _declared_shapes(inputs: dict, row: dict, params: dict) -> dict:
     derived: dict[str, tuple[int, ...]] = {}
     for name, attrs in inputs.items():
         if f"{name}_shape" in row:
+            continue
+        if (attrs or {}).get("optional"):
+            # A row omits an optional input because the call does not pass it.
+            # Deriving its shape would price a tensor the call never binds.
             continue
         axes = _dim_symbols(((attrs or {}).get("shape") or ""))
         if not axes:

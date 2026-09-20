@@ -19,6 +19,33 @@ def _nbytes(*tensors: tuple[tuple[int, ...], torch.dtype]) -> int:
     return sum(prod(shape) * dtype.itemsize for shape, dtype in tensors)
 
 
+def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None") -> int:
+    """Sum the named tensors a call binds, and require the names to be the signature's.
+
+    A hand-written case states a tensor per name, ``None`` for an optional input the
+    call does not pass or for a workspace, which D2 excludes, and a ``<name>_write``
+    entry for a write that is not an output's -- a ``mutated`` input's. Every declared input and output has to appear,
+    and a name the signature does not declare is rejected, so a case cannot quietly
+    drop, duplicate or substitute one of them.
+    """
+    from tileops.manifest import load_manifest
+
+    signature = load_manifest()[op_name]["signature"]
+    inputs = signature.get("inputs") or {}
+    outputs = signature.get("outputs") or {}
+    declared = set(inputs) | set(outputs) | {f"{name}_write" for name in inputs}
+    unknown = sorted(set(tensors) - declared)
+    assert not unknown, f"{op_name}: {unknown} are not in the signature"
+    missing = sorted((set(inputs) | set(outputs)) - set(tensors))
+    assert not missing, f"{op_name}: the case says nothing about {missing}"
+    for name, spec in inputs.items():
+        if tensors[name] is not None:
+            continue
+        excusable = (spec or {}).get("optional") or name.startswith("workspace")
+        assert excusable, f"{op_name}: {name} is not optional and the case passes None"
+    return _nbytes(*(entry for entry in tensors.values() if entry is not None))
+
+
 class TestBytesOracle:
     # __new__ + attribute binding keeps the oracle CUDA-free; each case binds
     # exactly the state the op's eval_roofline reads after a forward().
@@ -57,13 +84,14 @@ class TestBytesOracle:
             op.scale_a_shape = (m, 1)
             op.scale_b_shape = (1, n)
             op.has_bias = has_bias
-            oracle = _nbytes(
-                ((m, k), torch.float8_e4m3fn),
-                ((k, n), torch.float8_e4m3fn),
-                ((m, n), torch.bfloat16),
-                ((m, 1), torch.float32),
-                ((1, n), torch.float32),
-                *((((n,), torch.bfloat16),) if has_bias else ()),
+            oracle = _ledger(
+                "GemmFp8FwdOp",
+                a=((m, k), torch.float8_e4m3fn),
+                b=((k, n), torch.float8_e4m3fn),
+                scale_a=((m, 1), torch.float32),
+                scale_b=((1, n), torch.float32),
+                bias=(((n,), torch.bfloat16) if has_bias else None),
+                d=((m, n), torch.bfloat16),
             )
             assert op.eval_roofline()[1] == oracle, f"has_bias={has_bias}"
 
@@ -136,12 +164,13 @@ class TestBytesOracle:
         op.num_local_experts = experts
         op.input_shapes = [(tokens, hidden), (tokens, top_k)]
         op.dtype = torch.bfloat16
-        oracle = _nbytes(
-            ((tokens, hidden), torch.bfloat16),
-            ((tokens, top_k), torch.int32),
-            ((tokens * top_k, hidden), torch.bfloat16),
-            ((experts,), torch.int32),
-            ((tokens * top_k,), torch.int32),
+        oracle = _ledger(
+            "MoePrePermuteFwdOp",
+            hidden_states=((tokens, hidden), torch.bfloat16),
+            local_expert_ids=((tokens, top_k), torch.int32),
+            expert_input=((tokens * top_k, hidden), torch.bfloat16),
+            layout_metadata=((experts,), torch.int32),
+            inverse_indices=((tokens * top_k,), torch.int32),
         )
         assert op.eval_roofline()[1] == oracle
 
@@ -172,11 +201,14 @@ class TestBytesOracle:
         op.dtype = torch.float16
         op.group_size = group_size
         groups = k // group_size
-        oracle = (
-            _nbytes(((m, k), torch.float16), ((m, n), torch.float16))
-            + n * k // 2  # int4 weights: two per byte
-            + n * groups * 4  # per-group scales, float32
-            + n * groups * 1  # per-group zero points, int8
+        oracle = _ledger(
+            "GemmW4A16FwdOp",
+            activation=((m, k), torch.float16),
+            # int4 weights, two per byte, stated as the bytes they occupy
+            packed_weight=((n, k // 2), torch.int8),
+            weight_scale=((n, groups), torch.float32),
+            weight_zero=((n, groups), torch.int8),
+            output=((m, n), torch.float16),
         )
         assert op.eval_roofline()[1] == oracle
 
@@ -192,13 +224,14 @@ class TestBytesOracle:
             op.correction_bias_shape = (experts,) if has_bias else None
             # Only experts 0, 3 and 7 receive rows.
             op._roofline_topk_ids = torch.tensor([[0, 3], [3, 7]], dtype=torch.int32)
-            oracle = _nbytes(
-                ((tokens, hidden), torch.bfloat16),  # hidden states in
-                ((3, 2 * ffn, hidden), torch.bfloat16),  # active w_gate_up
-                ((3, hidden, ffn), torch.bfloat16),  # active w_down
-                ((tokens, experts), torch.float32),  # gating logits
-                ((tokens, hidden), torch.bfloat16),  # output
-                *((((experts,), torch.float32),) if has_bias else ()),
+            oracle = _ledger(
+                "FusedMoeFwdOp",
+                hidden_states=((tokens, hidden), torch.bfloat16),
+                gating_output=((tokens, experts), torch.float32),
+                w_gate_up=((3, 2 * ffn, hidden), torch.bfloat16),  # active experts only
+                w_down=((3, hidden, ffn), torch.bfloat16),  # active experts only
+                correction_bias=(((experts,), torch.float32) if has_bias else None),
+                output=((tokens, hidden), torch.bfloat16),
             )
             assert op.eval_roofline()[1] == oracle, f"has_bias={has_bias}"
 
@@ -216,13 +249,18 @@ class TestBytesOracle:
         op.dtype = torch.bfloat16
         # Only experts 0, 3 and 7 receive rows.
         op._roofline_topk_ids = torch.tensor([[0, 3], [3, 7]], dtype=torch.int32)
-        oracle = _nbytes(
-            ((tokens, hidden), torch.bfloat16),  # hidden states in
-            ((3, 2 * ffn, hidden), torch.bfloat16),  # active w_gate_up
-            ((3, hidden, ffn), torch.bfloat16),  # active w_down
-            ((tokens, top_k), torch.int32),  # topk_ids
-            ((tokens, top_k), torch.float32),  # topk_weights
-            ((tokens, hidden), torch.bfloat16),  # output
+        oracle = _ledger(
+            "IndexedExpertMLPFwdOp",
+            hidden_states=((tokens, hidden), torch.bfloat16),
+            w_gate_up=((3, 2 * ffn, hidden), torch.bfloat16),  # active experts only
+            w_down=((3, hidden, ffn), torch.bfloat16),  # active experts only
+            topk_ids=((tokens, top_k), torch.int32),
+            topk_weights=((tokens, top_k), torch.float32),
+            # the pre-allocated buffer is the output, written once; the workspaces
+            # carry WORKSPACE_ATTR and D2 excludes them
+            output=((tokens, hidden), torch.bfloat16),
+            workspace1=None,
+            workspace2=None,
         )
         assert op.eval_roofline()[1] == oracle
 
@@ -240,13 +278,14 @@ class TestBytesOracle:
         op.dtype = torch.bfloat16
         # Only experts 0, 3 and 7 receive rows.
         op._roofline_topk_ids = torch.tensor([[0, 3], [3, 7]], dtype=torch.int32)
-        oracle = _nbytes(
-            ((tokens, hidden), torch.bfloat16),  # hidden states in
-            ((3, 2 * ffn, hidden), torch.bfloat16),  # active w_gate_up
-            ((3, hidden, ffn), torch.bfloat16),  # active w_down
-            ((tokens, top_k), torch.int32),  # topk_ids
-            ((tokens, top_k), torch.float32),  # topk_weights
-            ((tokens, hidden), torch.bfloat16),  # output
+        oracle = _ledger(
+            "FusedMoEExpertsFwdOp",
+            hidden_states=((tokens, hidden), torch.bfloat16),
+            w_gate_up=((3, 2 * ffn, hidden), torch.bfloat16),  # active experts only
+            w_down=((3, hidden, ffn), torch.bfloat16),  # active experts only
+            topk_ids=((tokens, top_k), torch.int32),
+            topk_weights=((tokens, top_k), torch.float32),
+            output=((tokens, hidden), torch.bfloat16),
         )
         assert op.eval_roofline()[1] == oracle
 
@@ -261,12 +300,17 @@ class TestBytesOracle:
         op.dtype = torch.bfloat16
         op.correction_bias_shape = None
         op._roofline_topk_ids = torch.tensor([[0, 3], [3, 7]], dtype=torch.int32)
-        routed = _nbytes(
-            ((tokens, hidden), torch.bfloat16),  # hidden states in
-            ((3, 2 * ffn, hidden), torch.bfloat16),  # active w_gate_up
-            ((3, hidden, ffn), torch.bfloat16),  # active w_down
-            ((tokens, experts), torch.float32),  # gating logits
-            ((tokens, hidden), torch.bfloat16),  # output
+        routed = _ledger(
+            "FusedMoeSharedExpertFwdOp",
+            hidden_states=((tokens, hidden), torch.bfloat16),
+            gating_output=((tokens, experts), torch.float32),
+            w_gate_up=((3, 2 * ffn, hidden), torch.bfloat16),  # active experts only
+            w_down=((3, hidden, ffn), torch.bfloat16),  # active experts only
+            correction_bias=None,
+            shared_w_gate_up=None,
+            shared_w_down=None,
+            routed_output=((tokens, hidden), torch.bfloat16),
+            shared_output=None,
         )
         op._shared_mlp_shard_ffn = None
         assert op.eval_roofline()[1] == routed
@@ -303,12 +347,18 @@ class TestBytesOracle:
                 "out_dtype": out_dtype,
                 "optional_shapes": optional,
             }
-            oracle = _nbytes(
-                (q_shape, dtype),
-                (kv_shape, dtype),
-                (kv_shape, dtype),
-                (q_shape, out_dtype),
-                *optional,
+            scales, tables = (optional, ()) if len(optional) == 3 else ((), optional)
+            oracle = _ledger(
+                "GroupedQueryAttentionDenseFwdOp",
+                q=(q_shape, dtype),
+                k=(kv_shape, dtype),
+                v=(kv_shape, dtype),
+                q_scale=(scales[0] if scales else None),
+                k_scale=(scales[1] if scales else None),
+                v_scale=(scales[2] if scales else None),
+                rope_cos=(tables[0] if tables else None),
+                rope_sin=(tables[1] if tables else None),
+                o=(q_shape, out_dtype),
             )
             assert op.eval_roofline()[1] == oracle, label
 
@@ -316,18 +366,24 @@ class TestBytesOracle:
         from tileops.ops.norm.batch_norm import BatchNormFwdOp
 
         x_shape, channels = (32, 256, 28, 28), 256
-        stats = (((channels,), torch.float32),) * 4  # mean, var, weight, bias
         for training in (False, True):
             op = BatchNormFwdOp.__new__(BatchNormFwdOp)
             op.x_shape = x_shape
             op.dtype = torch.float16
             op.training = training
-            oracle = _nbytes(
-                (x_shape, torch.float16),
-                *stats,
-                (x_shape, torch.float16),
+            stat = ((channels,), torch.float32)
+            written_back = stat if training else None
+            oracle = _ledger(
+                "BatchNormFwdOp",
+                x=(x_shape, torch.float16),
+                running_mean=stat,
+                running_var=stat,
+                weight=stat,
+                bias=stat,
+                output=(x_shape, torch.float16),
                 # running_mean and running_var are mutated: written back too.
-                *((((channels,), torch.float32),) * 2 if training else ()),
+                running_mean_write=written_back,
+                running_var_write=written_back,
             )
             assert op.eval_roofline()[1] == oracle, f"training={training}"
 
@@ -552,10 +608,15 @@ class TestBytesOracle:
             op.use_input_stats = use_input_stats
             op.dtype = torch.float16
             reads_stats = not use_input_stats
-            oracle = _nbytes(
-                (x_shape, torch.float16),
-                *((((channels,), torch.float32),) * 2 if reads_stats else ()),
-                (x_shape, torch.float16),
+            stat = ((channels,), torch.float32) if reads_stats else None
+            oracle = _ledger(
+                "InstanceNormFwdOp",
+                x=(x_shape, torch.float16),
+                running_mean=stat,
+                running_var=stat,
+                weight=None,
+                bias=None,
+                output=(x_shape, torch.float16),
             )
             assert op.eval_roofline()[1] == oracle, f"use_input_stats={use_input_stats}"
 
@@ -579,9 +640,6 @@ class TestBytesOracle:
 _PACKED_LAYOUT = (
     "the workload row states the packed layout by its lengths, not the tensors the call binds"
 )
-_FORWARD_BOUND_DIMS = (
-    "the formula reads dims a forward binds, under names the signature does not state"
-)
 _UNDECLARED_TABLE = (
     "the formula counts the cos/sin table the op owns, which the signature declares as no input"
 )
@@ -590,7 +648,6 @@ _UNDECLARED_TABLE = (
 #: contract cannot, which is what the hand-written case supplies.
 HAND_WRITTEN = {
     "BatchNormFwdOp": "whether the running statistics are written follows `training`",
-    "Conv2dFwdOp": "the row gives the kernel extents, not the weight tensor",
     "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "FusedMoeFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "FusedMoeSharedExpertFwdOp": "the routed weight reads follow the values in `topk_ids`",
@@ -599,20 +656,12 @@ HAND_WRITTEN = {
     "GroupedQueryAttentionDenseFwdOp": "the optional scale and RoPE tensors vary per call",
     "IndexedExpertMLPFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "InstanceNormFwdOp": "whether the running statistics are read follows `use_input_stats`",
-    "Mamba2FwdOp": _FORWARD_BOUND_DIMS,
     "MoePrePermuteFwdOp": "its outputs' extents follow the layout spec the call passes",
 }
 
 #: Level three: no independent recount yet. The value says what is missing.
 NOT_RECOUNTABLE = {
-    "BmmFp8FwdOp": _FORWARD_BOUND_DIMS,
-    "BmmFwdOp": _FORWARD_BOUND_DIMS,
-    "Conv1dFwdOp": "the row gives the kernel extents, not the weight tensor",
-    "Conv3dFwdOp": "the row gives the kernel extents, not the weight tensor",
-    "DaCumsumFwdOp": _FORWARD_BOUND_DIMS,
-    "DropoutFwdOp": _FORWARD_BOUND_DIMS,
-    "FFTC2CFwdOp": _FORWARD_BOUND_DIMS,
-    "FusedTopKOp": "the row gives the expert counts, not the gating tensor",
+    "BmmFp8FwdOp": "the scale tensors' extents follow the scaling mode, not the dims",
     "GroupedGemmFwdOp": "the per-group extents come from the batch metadata tensors",
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp": _PACKED_LAYOUT,
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": _PACKED_LAYOUT,
@@ -626,16 +675,6 @@ NOT_RECOUNTABLE = {
     "NSACmpFwdVarlenOp": _PACKED_LAYOUT,
     "NSAFwdVarlenOp": _PACKED_LAYOUT,
     "NSATopkVarlenOp": _PACKED_LAYOUT,
-    "RopeLlama31FwdOp": _UNDECLARED_TABLE,
-    "RopeLongRopeFwdOp": _UNDECLARED_TABLE,
-    "RopeNeoxFwdOp": _UNDECLARED_TABLE,
-    "RopeNeoxPositionIdsFwdOp": _UNDECLARED_TABLE,
-    "RopeNonNeoxFwdOp": _UNDECLARED_TABLE,
-    "RopeYarnFwdOp": _UNDECLARED_TABLE,
-    "SSDChunkScanFwdOp": _FORWARD_BOUND_DIMS,
-    "SSDChunkStateFwdOp": _FORWARD_BOUND_DIMS,
-    "SSDDecodeFwdOp": _FORWARD_BOUND_DIMS,
-    "SSDStatePassingFwdOp": _FORWARD_BOUND_DIMS,
 }
 
 
@@ -647,8 +686,13 @@ def _implemented_ops() -> list[str]:
     )
 
 
-def _binder_drives(op_name: str) -> bool:
-    """Whether the manifest alone builds a case for *op_name* that the formula matches."""
+def _binder_builds(op_name: str) -> bool:
+    """Whether the manifest alone builds a case for *op_name*.
+
+    The formula is not called here. Whether it agrees, or even returns, is a
+    separate question: a formula that raises is a defect, and treating that as
+    "the binder cannot build this" would let it qualify for level three.
+    """
     from tests.roofline_binder import NotBindableError, manifest_cases
 
     try:
@@ -657,13 +701,19 @@ def _binder_drives(op_name: str) -> bool:
         return False
     except Exception:
         return False
-    for _label, _dtype, op, oracle in cases:
-        try:
-            if op.eval_roofline()[1] != oracle:
-                return False
-        except Exception:
-            return False
-    return True
+    return bool(cases)
+
+
+def _binder_agrees(op_name: str) -> bool:
+    """Whether the formula returns what the binder's recount implies."""
+    from tests.roofline_binder import manifest_cases
+
+    try:
+        return all(
+            op.eval_roofline()[1] == oracle for _l, _d, op, oracle in manifest_cases(op_name)
+        )
+    except Exception:
+        return False
 
 
 class TestCoverageLevels:
@@ -691,14 +741,53 @@ class TestCoverageLevels:
         unknown = sorted((set(HAND_WRITTEN) | set(NOT_RECOUNTABLE)) - set(_implemented_ops()))
         assert not unknown, f"declared but not implemented: {unknown}"
 
-    def test_a_declared_op_is_one_the_binder_cannot_drive(self):
+    def test_a_declared_op_is_one_the_manifest_does_not_already_check(self):
         """Level two and three are for ops the manifest cannot recount, not a queue."""
         promotable = sorted(
-            name for name in {**HAND_WRITTEN, **NOT_RECOUNTABLE} if _binder_drives(name)
+            name
+            for name in {**HAND_WRITTEN, **NOT_RECOUNTABLE}
+            if _binder_builds(name) and _binder_agrees(name)
         )
         assert not promotable, (
-            f"the binder now drives {promotable}; move them out of HAND_WRITTEN / "
-            "NOT_RECOUNTABLE so the generated case is what checks them"
+            f"the binder now recounts {promotable} and the formula agrees; move them out "
+            "of HAND_WRITTEN / NOT_RECOUNTABLE so the generated case is what checks them"
+        )
+
+    def test_level_three_is_for_a_call_the_binder_cannot_build(self):
+        """A recount the binder can build and the formula disagrees with is a defect.
+
+        Level three says no independent recount is available. If the binder builds one,
+        one is available, and a disagreement is then the formula's, not a coverage gap:
+        it belongs at level two with the condition the contract omits written next to it.
+        """
+        buildable = sorted(name for name in NOT_RECOUNTABLE if _binder_builds(name))
+        assert not buildable, (
+            f"the binder builds a recount for {buildable}; they are not level three, and "
+            "a disagreement there is a formula defect"
+        )
+
+    def test_every_level_two_op_has_a_case_that_names_its_tensors(self):
+        """Level two is a hand-written reference, so the reference has to be here,
+        and it has to account for the signature's tensors by name.
+
+        `_ledger` is what makes that mechanical: a case that drops, duplicates or
+        substitutes one of them fails there rather than agreeing with a formula
+        that made the same mistake.
+        """
+        import pathlib
+
+        source = pathlib.Path(__file__).read_text()
+        cases = source[: source.index("# Coverage levels")]
+        missing = sorted(
+            name
+            for name in HAND_WRITTEN
+            if f'_ledger(\n            "{name}"' not in cases
+            and f'_ledger("{name}"' not in cases
+            and f'_ledger(\n                "{name}"' not in cases
+        )
+        assert not missing, (
+            f"declared level two with no _ledger case above: {missing}; a case that "
+            "sums anonymous tuples cannot be checked against the signature"
         )
 
     def test_a_reason_says_what_is_missing(self):
@@ -706,3 +795,52 @@ class TestCoverageLevels:
             for name, reason in level.items():
                 assert reason and not reason.endswith("."), name
                 assert len(reason.split()) >= 5, f"{name}: {reason!r} says too little"
+
+
+class TestValueDeterminedTraffic:
+    """Ops whose `bytes` follows an input's values must build that input the same
+    way every time (docs/design/roofline.md 4.7). The global stream does not give
+    that: a draw added anywhere earlier moves every draw after it."""
+
+    def test_the_nsa_forward_workload_prices_the_same_call_twice(self):
+        pytest.importorskip("torch")
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA required to build the workload")
+        from tileops.perf.formulas import nsa_fwd_varlen_roofline
+        from workloads.attention.deepseek import NsaFwdWorkload
+
+        def priced(extra_draw: bool, *, builds: int = 1) -> int:
+            torch.manual_seed(1235)
+            if extra_draw:
+                torch.randn(7, device="cuda")
+            workload = NsaFwdWorkload(
+                batch=4, heads=16, c_seq_len=8192, dim=64, is_causal=True, scale=0.1,
+                block_size=32, groups=16, selected_blocks=16, dtype=torch.float16,
+                accum_dtype=torch.float32, seq_lens=[2048] * 4,
+            )  # fmt: skip
+            for _ in range(builds - 1):
+                workload.gen_inputs()
+            q, k, v, block_indices, block_counts, offsets, token_indices = workload.gen_inputs()[:7]
+            bound = {
+                f"{name}_shape": tuple(tensor.shape)
+                for name, tensor in (
+                    ("q", q), ("k", k), ("v", v), ("block_indices", block_indices),
+                    ("block_counts", block_counts), ("offsets", offsets),
+                    ("token_indices", token_indices),
+                )
+            }  # fmt: skip
+            bound.update(
+                block_indices=block_indices,
+                block_counts=block_counts,
+                offsets=offsets,
+                token_indices=token_indices,
+                block_size=32,
+                is_causal=True,
+                dtype="float16",
+            )
+            return nsa_fwd_varlen_roofline(bound)[1]
+
+        # A draw added upstream must not move it, and neither must building the
+        # same workload a second time.
+        assert priced(False) == priced(True)
+        assert priced(False) == priced(False, builds=3)

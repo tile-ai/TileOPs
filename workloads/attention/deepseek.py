@@ -71,10 +71,14 @@ class NsaFwdWorkload(WorkloadBase):
         self.head_kv = self.heads // self.groups
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        # block_counts and block_indices decide how much this call reads, so its
+        # roofline moves with them. They come from this workload's own generator,
+        # not the global stream, which a draw added anywhere upstream shifts.
+        g = self.rng(device="cuda")
         offsets = _packed_offsets(self.seq_lens, self.batch, self.c_seq_len, 16)
 
         def _shuffled(n_head: int) -> torch.Tensor:
-            perm = torch.randperm(self.c_seq_len, device="cuda")
+            perm = torch.randperm(self.c_seq_len, device="cuda", generator=g)
             return (
                 torch.linspace(0, 1, steps=self.c_seq_len, dtype=self.dtype, device="cuda")[perm]
                 .view(self.c_seq_len, 1, 1)
@@ -96,9 +100,9 @@ class NsaFwdWorkload(WorkloadBase):
         # one random key per candidate is a batched randperm; the ineligible tail sorts
         # last under +inf, and a pick that reaches there becomes a c_seq_len slot, which
         # the kernel and the reference both read as "attends to nothing".
-        keys = torch.rand((self.c_seq_len, self.head_kv, n_cand), device="cuda").masked_fill(
-            torch.arange(n_cand, device="cuda") >= chunks[:, None, None], float("inf")
-        )
+        keys = torch.rand(
+            (self.c_seq_len, self.head_kv, n_cand), device="cuda", generator=g
+        ).masked_fill(torch.arange(n_cand, device="cuda") >= chunks[:, None, None], float("inf"))
         picked = keys.argsort(-1)[..., : self.selected_blocks]
         block_indices = (
             torch.where(picked < chunks[:, None, None], picked, self.c_seq_len)
@@ -111,6 +115,7 @@ class NsaFwdWorkload(WorkloadBase):
             (self.c_seq_len, self.head_kv),
             dtype=torch.int32,
             device="cuda",
+            generator=g,
         )
         return (
             q,
