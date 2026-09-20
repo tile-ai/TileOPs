@@ -79,6 +79,17 @@ def test_layout_presets_resolve_from_manifest_rows() -> None:
         layout_from_preset("padded")
 
 
+def test_aligned_pre_permute_capacity_is_a_gemm_legal_row_extent() -> None:
+    """Worst-case padding capacity still satisfies the aligned GEMM contract."""
+    alignment = 128
+    op = MoePrePermuteFwdOp(ContiguousLayoutSpec.aligned_per_row(alignment), num_local_experts=16)
+    shapes = op._infer_output_shapes((256, 2048), (256, 2))
+    rows = shapes["expert_input"][0]
+    assert rows == 2560
+    assert rows % alignment == 0
+    assert shapes["layout_metadata"] == (rows,)
+
+
 def test_default_public_surface_hides_kernel_author_and_metadata_types() -> None:
     for name in (
         "MGroupedGemmCall",

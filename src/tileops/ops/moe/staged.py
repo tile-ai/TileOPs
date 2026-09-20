@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import ClassVar, Mapping
 
 import torch
@@ -145,6 +146,7 @@ class MoePrePermuteFwdOp(_StagedOpBase):
             capacity = rows
             if per_row and getattr(layout, "packing", None) is ContiguousPacking.ALIGNED:
                 capacity += self.num_local_experts * (layout.alignment - 1)
+                capacity = math.ceil(capacity / layout.alignment) * layout.alignment
             expert_input = (capacity, hidden_states_shape[1])
             metadata_rows = capacity if per_row else self.num_local_experts
         return {
