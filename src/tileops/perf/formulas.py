@@ -1045,8 +1045,10 @@ def gemm_w4a16_fwd_roofline(op: "Op") -> tuple[int, int]:
 def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
     batch_sum = int(op.batch_sum)
     batch_count = int(op.batch_count)
-    n = int(getattr(op, "N", getattr(op, "n", 0)))
-    k = int(getattr(op, "K", getattr(op, "k", 0)))
+    # The op carries both spellings and leaves one unset, so a default on the
+    # missing name is not enough.
+    n = int(getattr(op, "N", None) or getattr(op, "n", 0))
+    k = int(getattr(op, "K", None) or getattr(op, "k", 0))
     elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
 
     flops = 2 * batch_sum * n * k
@@ -1058,7 +1060,10 @@ def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
         memory_a = batch_sum * n
         memory_c = batch_count * n * k
         memory_b = k * batch_sum if bool(op.transpose_b) else batch_sum * k
-    return int(flops), int((memory_a + memory_b + memory_c) * elem)
+    # The three int32 tensors that say where each group starts and how long it is;
+    # the kernel walks all of them.
+    metadata_bytes = 3 * batch_count * 4
+    return int(flops), int((memory_a + memory_b + memory_c) * elem + metadata_bytes)
 
 
 def _staged_moe_input_shapes(op: "Op") -> tuple:

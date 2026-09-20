@@ -306,6 +306,77 @@ _ROW_SUPPLEMENT = {
         "offsets": _packed_bounds(row["seq_lens"]),
         "offsets_shape": (row["seq_num"] + 1,),
     },
+    # Per-tensor scales: two fp32 scalars, which is what the formula's trailing 8
+    # bytes are.
+    "BmmFp8FwdOp": lambda row: {
+        "batch": row["b"],
+        "a_shape": (row["b"], row["m"], row["k"]),
+        "b_shape": (row["b"], row["k"], row["n"]),
+        "scale_a_shape": (),
+        "scale_b_shape": (),
+    },
+    # The row gives the packed row total, the group count and the two inner dims;
+    # the three int32 metadata tensors hold one entry per group.
+    "GroupedGemmFwdOp": lambda row: {
+        # transpose_a is the form whose output keeps the group axis: the packed rows
+        # are the contraction, and b is two-dimensional.
+        "a_shape": (
+            (row["batch_sum"], row["n"]) if row.get("transpose_a") else (row["batch_sum"], row["k"])
+        ),
+        "b_shape": (
+            (
+                (row["k"], row["batch_sum"])
+                if row.get("transpose_b")
+                else (row["batch_sum"], row["k"])
+            )
+            if row.get("transpose_a")
+            else (
+                (row["batch_count"], row["n"], row["k"])
+                if row.get("transpose_b")
+                else (row["batch_count"], row["k"], row["n"])
+            )
+        ),
+        "batch_sizes_shape": (row["batch_count"],),
+        "batch_offsets_shape": (row["batch_count"],),
+        "batch_padded_offsets_shape": (row["batch_count"],),
+    },
+    # A physical-psum layout's metadata holds one segment end per expert, and the
+    # expert count is the weight tensor's leading extent.
+    "MoeExpertMLPFwdOp": lambda row: {
+        "layout_metadata_shape": (row["w_gate_up_shape"][0],),
+        "input_shapes": [
+            tuple(row["expert_input_shape"]),
+            tuple(row["w_gate_up_shape"]),
+            tuple(row["w_down_shape"]),
+            (row["w_gate_up_shape"][0],),
+        ],
+    },
+    "MoeGroupedGemmFwdOp": lambda row: {
+        "layout_metadata_shape": (row["b_shape"][0],),
+        "input_shapes": [
+            tuple(row["a_shape"]),
+            tuple(row["b_shape"]),
+            (row["b_shape"][0],),
+        ],
+    },
+    # Paged decode: the cache is one page pool, and the call carries a length per
+    # request plus the pages that request's tokens sit in.
+    "MultiHeadAttentionDecodePagedWithKVCacheFwdOp": lambda row: {
+        **_kv_pair(row),
+        "real_seqlen_kv_shape": (row["q_shape"][0],),
+        "block_table_shape": (
+            row["q_shape"][0],
+            max(1, -(-row["kv_shape"][0] // row["page_size"])),
+        ),
+    },
+    "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp": lambda row: {
+        **_kv_pair(row),
+        "real_seqlen_kv_shape": (row["q_shape"][0],),
+        "block_table_shape": (
+            row["q_shape"][0],
+            max(1, -(-row["kv_shape"][0] // row["page_size"])),
+        ),
+    },
     "MoePermuteAlignFwdOp": lambda row: {"topk_ids_shape": (row["total_tokens"], row["top_k"])},
     "MeanPoolingFwdOp": lambda row: {
         "x_shape": (row["batch"], row["seq_len"], row["heads"], row["dim"])
@@ -436,8 +507,14 @@ def _declared_shapes(inputs: dict, row: dict, params: dict) -> dict:
     return derived
 
 
-def bind_case(op_name: str, entry: dict, row: dict, call_dtype: torch.dtype) -> tuple[Any, int]:
-    """Return ``(bound op, oracle bytes)`` for one workload row.
+def bind_case(
+    op_name: str, entry: dict, row: dict, call_dtype: torch.dtype
+) -> tuple[Any, int, int]:
+    """Return ``(bound op, oracle bytes, oracle read bytes)`` for one workload row.
+
+    The read side is separate because the NCU audit judges that half alone
+    (docs/design/roofline.md 4.5), and an op derives it by subtracting the write
+    side the contract settles.
 
     Raises:
         NotBindableError: The row does not give a required input's shape, the op's shape
@@ -510,26 +587,27 @@ def bind_case(op_name: str, entry: dict, row: dict, call_dtype: torch.dtype) -> 
     # input is written too, unless that write is already an output's: an op with an
     # ``inplace`` param may write into the input it read, and an input that is also
     # an output name is that output.
-    total = 0
+    reads = 0
+    writes = 0
     has_inplace = "inplace" in params
     for name, shape in zip(order, shapes, strict=True):
         if shape is None:
             continue
         dtype = _resolve_dtype((inputs[name] or {}).get("dtype"), call_dtype, inputs)
         nbytes = prod(shape) * torch.empty((), dtype=dtype).element_size()
-        total += nbytes
+        reads += nbytes
         if (inputs[name] or {}).get("mutated") and name not in outputs and not has_inplace:
-            total += nbytes
+            writes += nbytes
     for name, shape in out_shapes.items():
         # Through the op, so an output the entry marks ``caller_stated`` follows the
         # dtype this call asked for rather than the declaration's fallback.
         dtype = output_dtype(op, name, call_dtype)
-        total += prod(shape) * torch.empty((), dtype=dtype).element_size()
-    return op, total
+        writes += prod(shape) * torch.empty((), dtype=dtype).element_size()
+    return op, reads + writes, reads
 
 
 def manifest_cases(op_name: str):
-    """Yield ``(label, dtype, op, oracle bytes)`` for every row and dtype of *op_name*."""
+    """Yield ``(label, dtype, op, oracle bytes, oracle read bytes)`` per row and dtype."""
     entry = load_manifest()[op_name]
     rows = load_workloads(op_name)
     if not rows:
@@ -537,5 +615,5 @@ def manifest_cases(op_name: str):
     for row in rows:
         for dtype_name in row.get("dtypes") or ["float16"]:
             call_dtype = _torch_dtype(dtype_name) or torch.float16
-            op, oracle = bind_case(op_name, entry, row, call_dtype)
-            yield row.get("label", "workload"), dtype_name, op, oracle
+            op, oracle, reads = bind_case(op_name, entry, row, call_dtype)
+            yield row.get("label", "workload"), dtype_name, op, oracle, reads

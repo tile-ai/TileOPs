@@ -767,6 +767,52 @@ class TestBytesOracle:
         )
         assert nsa_topk_varlen_roofline(bound)[1] == oracle
 
+    def test_gqa_prefill_paged_reads_the_pages_the_block_table_selects(self):
+        """The cache is one pool and the call touches the pages its block table
+        names, so the recount prices that subset rather than the pool. The scales
+        travel with every call and the kernel reads them only for fp8 pages."""
+        from tileops.perf.formulas import gqa_prefill_paged_with_kv_cache_fwd_roofline
+
+        batch, heads, heads_kv, dim = 8, 32, 8, 256
+        q_lens = [1024] * batch
+        cache_lens = [32768] * batch
+        total_q, cached = sum(q_lens), sum(cache_lens)
+        page_size, max_pages_per_req = 64, 528
+        bound = {
+            "total_q": total_q,
+            "batch": batch,
+            "q_lens": q_lens,
+            "cache_lens": cache_lens,
+            "heads": heads,
+            "heads_kv": heads_kv,
+            "dim": dim,
+            "page_size": page_size,
+            "max_pages_per_req": max_pages_per_req,
+            "max_seqlen_q": max(q_lens),
+            "is_causal": True,
+            "dtype": "float16",
+        }
+        new_kv = ((total_q, heads_kv, dim), torch.float16)
+        oracle = _ledger(
+            "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
+            q=((total_q, heads, dim), torch.float16),
+            k_new=new_kv,
+            v_new=new_kv,
+            # the cached tokens the block table points at, not the whole pool
+            k_pages=((cached, heads_kv, dim), torch.float16),
+            v_pages=((cached, heads_kv, dim), torch.float16),
+            # the new tokens are appended into those same pages
+            k_pages_write=new_kv,
+            v_pages_write=new_kv,
+            k_scale_unread=True,
+            v_scale_unread=True,
+            cu_seqlens_q=((batch + 1,), torch.int32),
+            cache_seqlens=((batch,), torch.int32),
+            block_table=((batch, max_pages_per_req), torch.int32),
+            o=((total_q, heads, dim), torch.float16),
+        )
+        assert gqa_prefill_paged_with_kv_cache_fwd_roofline(bound)[1] == oracle
+
 
 # Coverage levels (docs/design/roofline.md 4.6). Every implemented op sits at
 # exactly one, and the level says what an independent recount rests on.
@@ -783,13 +829,6 @@ class TestBytesOracle:
 # Some level-one ops also keep a case above. Those cover a branch one workload
 # row does not reach -- an optional input present and absent, a second dtype
 # pairing -- and do not change the op's level.
-
-_PACKED_LAYOUT = (
-    "the workload row states the packed layout by its lengths, not the tensors the call binds"
-)
-_UNDECLARED_TABLE = (
-    "the formula counts the cos/sin table the op owns, which the signature declares as no input"
-)
 
 #: Level two: a case above recounts these by hand. The value says why the
 #: generated case cannot, which is what the hand-written one supplies.
@@ -810,6 +849,7 @@ HAND_WRITTEN = {
     "GemmW4A16FwdOp": "the packed weight and its group metadata have a quantized layout",
     "GroupedQueryAttentionDenseFwdOp": "the op gathers its optional tensors into the call before pricing it",
     "GroupedQueryAttentionPrefillVarlenFwdOp": "the op reads its per-request lengths off the call it ran",
+    "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": "it reads the pages its block table names, not the pool",
     "NSAFwdVarlenOp": "how much it reads follows the values in `block_counts`",
     "NSATopkVarlenOp": "`lse_in` is passed and the kernel recomputes the lse instead of reading it",
     "IndexedExpertMLPFwdOp": "the routed weight reads follow the values in `topk_ids`",
@@ -817,16 +857,9 @@ HAND_WRITTEN = {
     "MoePrePermuteFwdOp": "its outputs' extents follow the layout spec the call passes",
 }
 
-#: Level three: no independent recount yet. The value says what is missing.
-NOT_RECOUNTABLE = {
-    "BmmFp8FwdOp": "the scale tensors' extents follow the scaling mode, not the dims",
-    "GroupedGemmFwdOp": "the per-group extents come from the batch metadata tensors",
-    "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp": _PACKED_LAYOUT,
-    "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": _PACKED_LAYOUT,
-    "MoeExpertMLPFwdOp": "the layout metadata's extent follows the layout spec",
-    "MoeGroupedGemmFwdOp": "the layout metadata's extent follows the layout spec",
-    "MultiHeadAttentionDecodePagedWithKVCacheFwdOp": _PACKED_LAYOUT,
-}
+#: Level three: no independent recount is available. Empty, and an entry here has
+#: to say what is missing rather than that nobody has got to it.
+NOT_RECOUNTABLE: dict[str, str] = {}
 
 
 def _implemented_ops() -> list[str]:
@@ -861,7 +894,7 @@ def _binder_agrees(op_name: str) -> bool:
 
     try:
         return all(
-            op.eval_roofline()[1] == oracle for _l, _d, op, oracle in manifest_cases(op_name)
+            op.eval_roofline()[1] == oracle for _l, _d, op, oracle, _r in manifest_cases(op_name)
         )
     except Exception:
         return False
@@ -881,8 +914,29 @@ class TestCoverageLevels:
                 cases = list(manifest_cases(op_name))
             except NotBindableError as exc:  # pragma: no cover - the next test names it
                 raise AssertionError(f"{op_name} is level one but does not bind: {exc}") from exc
-            for label, dtype, op, oracle in cases:
+            for label, dtype, op, oracle, _reads in cases:
                 assert op.eval_roofline()[1] == oracle, f"{op_name} {label} {dtype}"
+                checked += 1
+        assert checked > 0
+
+    def test_a_generated_case_agrees_on_the_read_half(self):
+        """The audit judges the read side alone, and an op derives it by taking the
+        write side the contract settles off its `bytes` (roofline.md 4.5). Where the
+        binder recounts the op, the two halves have to be the same halves."""
+        from tests.roofline_binder import NotBindableError, manifest_cases
+
+        checked = 0
+        for op_name in _implemented_ops():
+            if op_name in HAND_WRITTEN or op_name in NOT_RECOUNTABLE:
+                continue
+            try:
+                cases = list(manifest_cases(op_name))
+            except NotBindableError:  # pragma: no cover - another test names it
+                continue
+            for label, dtype, op, _oracle, reads in cases:
+                declared = op.eval_roofline_read_bytes()
+                assert declared is not NotImplemented, f"{op_name} {label} {dtype}"
+                assert declared == reads, f"{op_name} {label} {dtype}"
                 checked += 1
         assert checked > 0
 

@@ -218,12 +218,68 @@ class Op(ABC):
     def eval_roofline_read_bytes(self) -> int:
         """The read half of ``eval_roofline()[1]``, for the NCU bytes audit.
 
-        ``(flops, bytes)`` does not carry the read/write split, so an op that
-        goes to the audit (docs/design/roofline.md §4.5) states its read half
-        here. Returning ``NotImplemented`` means the op does not, and the audit
-        reports NO-VERDICT for it rather than inventing a value.
+        ``(flops, bytes)`` does not carry the split, and the write half is the
+        one the contract settles: every declared output is written once, and a
+        ``mutated`` input that is not itself an output is written once more.
+        The read half is what remains, so an op that reads a subset of an input
+        -- a routed MoE reading the experts its routing selects -- comes out
+        right without saying anything, because its ``bytes`` already counted
+        that subset (docs/design/roofline.md §4.5).
+
+        Returns:
+            The read half in bytes, or ``NotImplemented`` when the call has not
+            bound what the write half needs, which the audit reports as
+            NO-VERDICT rather than inventing a value.
         """
-        return NotImplemented
+        write_bytes = self._roofline_write_bytes()
+        if write_bytes is NotImplemented:
+            return NotImplemented
+        return int(self.eval_roofline()[1]) - write_bytes
+
+    def _roofline_write_bytes(self) -> int:
+        """Bytes this call writes, from the signature alone."""
+        from tileops.manifest import load_manifest
+        from tileops.ops._output_dtype import output_dtype
+
+        entry = load_manifest().get(type(self).__name__)
+        if entry is None:
+            return NotImplemented
+        signature = entry.get("signature") or {}
+        inputs = signature.get("inputs") or {}
+        outputs = signature.get("outputs") or {}
+        order = list(inputs)
+        shapes = []
+        for name in order:
+            bound = getattr(self, name, None)
+            shape = getattr(bound, "shape", None) or getattr(self, f"{name}_shape", None)
+            shapes.append(None if shape is None else tuple(shape))
+        try:
+            out_shapes = self._infer_output_shapes(*shapes)
+        except Exception:
+            return NotImplemented
+        dtype = getattr(self, "dtype", None)
+        total = 0
+        for name, shape in out_shapes.items():
+            try:
+                elem = output_dtype(self, name, dtype).itemsize
+            except Exception:
+                return NotImplemented
+            total += math.prod(shape) * elem
+        # A ``mutated`` input is written too, unless that write is the output's:
+        # an op with an ``inplace`` param may write into the input it read.
+        has_inplace = "inplace" in (signature.get("params") or {})
+        for name, spec in inputs.items():
+            if not (spec or {}).get("mutated") or name in outputs or has_inplace:
+                continue
+            shape = shapes[order.index(name)]
+            if shape is None:
+                continue
+            bound = getattr(self, name, None)
+            elem = getattr(getattr(bound, "dtype", None), "itemsize", None)
+            if elem is None:
+                return NotImplemented
+            total += math.prod(shape) * elem
+        return total
 
     def compute_roof(self) -> str:
         """GPU-profile key of the compute unit that prices this op's FLOPs.
