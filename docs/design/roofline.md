@@ -305,7 +305,7 @@ A CI test recomputes each audited `bytes` value from an independent path — the
 
 Traffic that depends on tensor *content* is recounted the same way: the case constructs the selecting tensor itself, exactly as it constructs shapes, so content dependence is no reason to exempt an op. Coverage is golden workloads per op, not randomized sweeps.
 
-A completeness test keeps the classification total: every implemented op is audited or on an explicit pending list to burn down. An op added to the manifest fails the test until it is classified.
+Coverage is three levels, and an op sits at exactly one. At level one a binder builds the case from the manifest — the signature, one workload row, the dtypes, the mutation marks — so the case and the formula share only the minimum-traffic definition; an op reaches this level by being recountable, not by being listed. Level two is a hand-written reference for a call the contract does not settle, with what the case shares written beside it. Level three is an op no independent recount reaches yet, marked with what is missing and asserted against nothing. A completeness test keeps the three total: an op added to the manifest is recounted by the binder or fails until it is placed.
 
 ## 5. Reference
 

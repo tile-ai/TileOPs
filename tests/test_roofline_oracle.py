@@ -560,214 +560,149 @@ class TestBytesOracle:
             assert op.eval_roofline()[1] == oracle, f"use_input_stats={use_input_stats}"
 
 
-# Classification registry: every implemented op appears in AUDITED (has a
-# bytes-oracle case above) or PENDING. There is no exemption: an op whose
-# traffic depends on tensor content is recounted the same way, with the case
-# constructing the selecting tensor itself, exactly as it constructs shapes.
-# Adding an op to the manifest forces a choice here.
-AUDITED = frozenset(
-    {
-        "AddFwdOp",
-        "ArgmaxFwdOp",
-        "BatchNormFwdOp",
-        "ClampFwdOp",
-        "Conv2dFwdOp",
-        "DeltaNetAutogradOp",
-        "EngramGateConvBwdOp",
-        "FP8LightningIndexerFwdOp",
-        "FusedMoEExpertsFwdOp",
-        "FusedMoeFwdOp",
-        "FusedMoeSharedExpertFwdOp",
-        "GemmFp8FwdOp",
-        "GemmW4A16FwdOp",
-        "GroupedQueryAttentionBwdOp",
-        "GroupedQueryAttentionDenseFwdOp",
-        "IndexedExpertMLPFwdOp",
-        "InstanceNormFwdOp",
-        "LerpTensorFwdOp",
-        "Mamba2FwdOp",
-        "MaskedFillFwdOp",
-        "MaskedFillScalarFwdOp",
-        "MoePostPermuteFwdOp",
-        "MoePrePermuteFwdOp",
-        "MultiHeadAttentionBwdOp",
-        "RMSNormFwdOp",
-        "VarMeanFwdOp",
-        "WhereFwdOp",
-    }
-)
-
-# FIXME(staged-rollout): most implemented ops lack a bytes-oracle case.
+# Coverage levels (docs/design/roofline.md 4.6). Every implemented op sits at
+# exactly one, and the level says what an independent recount rests on.
 #
-# Broken invariant: every implemented op is AUDITED.
-# Why: the oracle landed with the SOL metric; cases are added family by
-#   family, highest formula complexity first.
-# Cleanup: PENDING is empty; delete it and this marker.
-PENDING = frozenset(
-    {
-        "AbsFwdOp",
-        "AdaLayerNormFwdOp",
-        "AdaLayerNormZeroFwdOp",
-        "AdaptiveAvgPool2dFwdOp",
-        "AdaptiveMaxPool2dFwdOp",
-        "AdaptiveMaxPool2dIndicesFwdOp",
-        "AlibiFwdOp",
-        "AllFwdOp",
-        "AmaxFwdOp",
-        "AminFwdOp",
-        "AnyFwdOp",
-        "ArgminFwdOp",
-        "AvgPool1dFwdOp",
-        "AvgPool2dFwdOp",
-        "AvgPool3dFwdOp",
-        "BatchNormBwdOp",
-        "BitwiseAndFwdOp",
-        "BitwiseNotFwdOp",
-        "BitwiseOrFwdOp",
-        "BitwiseXorFwdOp",
-        "BmmFp8FwdOp",
-        "BmmFwdOp",
-        "CBProducerFwdOp",
-        "CeilFwdOp",
-        "ClampScalarFwdOp",
-        "Conv1dFwdOp",
-        "Conv3dFwdOp",
-        "CosFwdOp",
-        "CountNonzeroFwdOp",
-        "CumprodFwdOp",
-        "CumsumFwdOp",
-        "DaCumsumFwdOp",
-        "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
-        "DeltaNetBwdOp",
-        "DeltaNetDecodeFwdOp",
-        "DeltaNetFwdOp",
-        "DivFwdOp",
-        "DropoutFwdOp",
-        "EluFwdOp",
-        "EngramDecodeFwdOp",
-        "EngramGateConvFwdOp",
-        "EqFwdOp",
-        "ErfFwdOp",
-        "ExpFwdOp",
-        "Expm1FwdOp",
-        "FFTC2CFwdOp",
-        "FP8QuantFwdOp",
-        "FloorDivideFwdOp",
-        "FloorFwdOp",
-        "FusedAddLayerNormFwdOp",
-        "FusedAddRMSNormFwdOp",
-        "FusedTopKOp",
-        "GLABwdOp",
-        "GLADecodeFwdOp",
-        "GLAFwdOp",
-        "GeFwdOp",
-        "GeluAndMulFwdOp",
-        "GeluFwdOp",
-        "GeluTanhAndMulFwdOp",
-        "GemmFwdOp",
-        "GroupNormFwdOp",
-        "GroupedGemmFwdOp",
-        "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
-        "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
-        "GroupedQueryAttentionPrefillVarlenFwdOp",
-        "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
-        "GtFwdOp",
-        "HardsigmoidFwdOp",
-        "HardswishFwdOp",
-        "HardtanhFwdOp",
-        "InfNormFwdOp",
-        "IsfiniteFwdOp",
-        "IsinfFwdOp",
-        "IsnanFwdOp",
-        "L1NormFwdOp",
-        "L2NormFwdOp",
-        "LayerNormFwdOp",
-        "LeFwdOp",
-        "LeakyReluFwdOp",
-        "LerpFwdOp",
-        "Log1pFwdOp",
-        "LogFwdOp",
-        "LogSoftmaxFwdOp",
-        "LogSumExpFwdOp",
-        "LogicalAndFwdOp",
-        "LogicalNotFwdOp",
-        "LogicalOrFwdOp",
-        "LtFwdOp",
-        "MHCPostFwdOp",
-        "MHCPreFwdOp",
-        "MaxPool1dFwdOp",
-        "MaxPool1dIndicesFwdOp",
-        "MaxPool2dFwdOp",
-        "MaxPool2dIndicesFwdOp",
-        "MaxPool3dFwdOp",
-        "MaxPool3dIndicesFwdOp",
-        "MaximumFwdOp",
-        "MeanFwdOp",
-        "MeanPoolingFwdOp",
-        "MinimumFwdOp",
-        "MishFwdOp",
-        "MoeExpertMLPFwdOp",
-        "MoeGroupedGemmFwdOp",
-        "MoePermuteAlignFwdOp",
-        "MulFwdOp",
-        "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
-        "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
-        "NSACmpFwdVarlenOp",
-        "NSAFwdVarlenOp",
-        "NSATopkVarlenOp",
-        "NanToNumFwdOp",
-        "NeFwdOp",
-        "NegFwdOp",
-        "PowFwdOp",
-        "PreluFwdOp",
-        "ProdFwdOp",
-        "ReciprocalFwdOp",
-        "ReluFwdOp",
-        "RemainderFwdOp",
-        "RopeLlama31FwdOp",
-        "RopeLongRopeFwdOp",
-        "RopeNeoxFwdOp",
-        "RopeNeoxPositionIdsFwdOp",
-        "RopeNonNeoxFwdOp",
-        "RopeYarnFwdOp",
-        "RoundFwdOp",
-        "RsqrtFwdOp",
-        "SSDChunkScanFwdOp",
-        "SSDChunkStateFwdOp",
-        "SSDDecodeFwdOp",
-        "SSDStatePassingFwdOp",
-        "SeluFwdOp",
-        "SigmoidFwdOp",
-        "SignFwdOp",
-        "SiluAndMulFwdOp",
-        "SiluFwdOp",
-        "SinFwdOp",
-        "SinusoidalFwdOp",
-        "SoftmaxFwdOp",
-        "SoftplusFwdOp",
-        "SqrtFwdOp",
-        "StdFwdOp",
-        "SubFwdOp",
-        "SumFwdOp",
-        "TanhFwdOp",
-        "TopkSelectorFwdOp",
-        "TruncFwdOp",
-        "VarFwdOp",
-    }
+#   one   The binder builds the case from the manifest: signature, one workload
+#         row, dtypes, mutation. It shares only the minimum-traffic definition
+#         with the formula. Computed, not listed -- adding an op earns this
+#         level or fails the completeness test below.
+#   two   The binder cannot build the call and a case above does it by hand,
+#         with what the case shares written next to it.
+#   three No independent recount is available yet. Marked with what is missing,
+#         and asserted against nothing.
+#
+# Some level-one ops also keep a case above. Those cover a branch one workload
+# row does not reach -- an optional input present and absent, a second dtype
+# pairing -- and do not change the op's level.
+
+_PACKED_LAYOUT = (
+    "the workload row states the packed layout by its lengths, not the tensors the call binds"
+)
+_FORWARD_BOUND_DIMS = (
+    "the formula reads dims a forward binds, under names the signature does not state"
+)
+_UNDECLARED_TABLE = (
+    "the formula counts the cos/sin table the op owns, which the signature declares as no input"
 )
 
+#: Level two: a case above recounts these by hand. The value says why the
+#: contract cannot, which is what the hand-written case supplies.
+HAND_WRITTEN = {
+    "BatchNormFwdOp": "whether the running statistics are written follows `training`",
+    "Conv2dFwdOp": "the row gives the kernel extents, not the weight tensor",
+    "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
+    "FusedMoeFwdOp": "the routed weight reads follow the values in `topk_ids`",
+    "FusedMoeSharedExpertFwdOp": "the routed weight reads follow the values in `topk_ids`",
+    "GemmFp8FwdOp": "the scale tensors' extents follow the scaling mode, not the dims",
+    "GemmW4A16FwdOp": "the packed weight and its group metadata have a quantized layout",
+    "GroupedQueryAttentionDenseFwdOp": "the optional scale and RoPE tensors vary per call",
+    "IndexedExpertMLPFwdOp": "the routed weight reads follow the values in `topk_ids`",
+    "InstanceNormFwdOp": "whether the running statistics are read follows `use_input_stats`",
+    "Mamba2FwdOp": _FORWARD_BOUND_DIMS,
+    "MoePrePermuteFwdOp": "its outputs' extents follow the layout spec the call passes",
+}
 
-def test_every_implemented_op_is_classified():
-    """A new op cannot ship a bytes formula nothing accounts for."""
+#: Level three: no independent recount yet. The value says what is missing.
+NOT_RECOUNTABLE = {
+    "BmmFp8FwdOp": _FORWARD_BOUND_DIMS,
+    "BmmFwdOp": _FORWARD_BOUND_DIMS,
+    "Conv1dFwdOp": "the row gives the kernel extents, not the weight tensor",
+    "Conv3dFwdOp": "the row gives the kernel extents, not the weight tensor",
+    "DaCumsumFwdOp": _FORWARD_BOUND_DIMS,
+    "DropoutFwdOp": _FORWARD_BOUND_DIMS,
+    "FFTC2CFwdOp": _FORWARD_BOUND_DIMS,
+    "FusedTopKOp": "the row gives the expert counts, not the gating tensor",
+    "GroupedGemmFwdOp": "the per-group extents come from the batch metadata tensors",
+    "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp": _PACKED_LAYOUT,
+    "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": _PACKED_LAYOUT,
+    "GroupedQueryAttentionPrefillVarlenFwdOp": _PACKED_LAYOUT,
+    "GroupedQueryAttentionSlidingWindowVarlenFwdOp": _PACKED_LAYOUT,
+    "MeanPoolingFwdOp": _PACKED_LAYOUT,
+    "MoeExpertMLPFwdOp": "the layout metadata's extent follows the layout spec",
+    "MoeGroupedGemmFwdOp": "the layout metadata's extent follows the layout spec",
+    "MoePermuteAlignFwdOp": "the row gives the route counts, not the `topk_ids` tensor",
+    "MultiHeadAttentionDecodePagedWithKVCacheFwdOp": _PACKED_LAYOUT,
+    "NSACmpFwdVarlenOp": _PACKED_LAYOUT,
+    "NSAFwdVarlenOp": _PACKED_LAYOUT,
+    "NSATopkVarlenOp": _PACKED_LAYOUT,
+    "RopeLlama31FwdOp": _UNDECLARED_TABLE,
+    "RopeLongRopeFwdOp": _UNDECLARED_TABLE,
+    "RopeNeoxFwdOp": _UNDECLARED_TABLE,
+    "RopeNeoxPositionIdsFwdOp": _UNDECLARED_TABLE,
+    "RopeNonNeoxFwdOp": _UNDECLARED_TABLE,
+    "RopeYarnFwdOp": _UNDECLARED_TABLE,
+    "SSDChunkScanFwdOp": _FORWARD_BOUND_DIMS,
+    "SSDChunkStateFwdOp": _FORWARD_BOUND_DIMS,
+    "SSDDecodeFwdOp": _FORWARD_BOUND_DIMS,
+    "SSDStatePassingFwdOp": _FORWARD_BOUND_DIMS,
+}
+
+
+def _implemented_ops() -> list[str]:
     from tileops.manifest import load_manifest
 
-    implemented = {name for name, e in load_manifest().items() if e.get("status") == "implemented"}
-    classified = AUDITED | PENDING
-    assert implemented - classified == set(), (
-        f"unclassified implemented ops: {sorted(implemented - classified)}; "
-        "add an oracle case (AUDITED) or a PENDING entry"
+    return sorted(
+        name for name, entry in load_manifest().items() if entry.get("status") == "implemented"
     )
-    assert classified - implemented == set(), (
-        f"stale registry entries: {sorted(classified - implemented)}"
-    )
-    assert not (AUDITED & PENDING)
+
+
+def _binder_drives(op_name: str) -> bool:
+    """Whether the manifest alone builds a case for *op_name* that the formula matches."""
+    from tests.roofline_binder import NotBindableError, manifest_cases
+
+    try:
+        cases = list(manifest_cases(op_name))
+    except NotBindableError:
+        return False
+    except Exception:
+        return False
+    for _label, _dtype, op, oracle in cases:
+        try:
+            if op.eval_roofline()[1] != oracle:
+                return False
+        except Exception:
+            return False
+    return True
+
+
+class TestCoverageLevels:
+    """Every implemented op sits at exactly one level, and the level is the truth."""
+
+    def test_a_generated_case_equals_its_op(self):
+        from tests.roofline_binder import NotBindableError, manifest_cases
+
+        checked = 0
+        for op_name in _implemented_ops():
+            if op_name in HAND_WRITTEN or op_name in NOT_RECOUNTABLE:
+                continue
+            try:
+                cases = list(manifest_cases(op_name))
+            except NotBindableError as exc:  # pragma: no cover - the next test names it
+                raise AssertionError(f"{op_name} is level one but does not bind: {exc}") from exc
+            for label, dtype, op, oracle in cases:
+                assert op.eval_roofline()[1] == oracle, f"{op_name} {label} {dtype}"
+                checked += 1
+        assert checked > 0
+
+    def test_every_implemented_op_sits_at_one_level(self):
+        both = sorted(set(HAND_WRITTEN) & set(NOT_RECOUNTABLE))
+        assert not both, f"declared at two levels: {both}"
+        unknown = sorted((set(HAND_WRITTEN) | set(NOT_RECOUNTABLE)) - set(_implemented_ops()))
+        assert not unknown, f"declared but not implemented: {unknown}"
+
+    def test_a_declared_op_is_one_the_binder_cannot_drive(self):
+        """Level two and three are for ops the manifest cannot recount, not a queue."""
+        promotable = sorted(
+            name for name in {**HAND_WRITTEN, **NOT_RECOUNTABLE} if _binder_drives(name)
+        )
+        assert not promotable, (
+            f"the binder now drives {promotable}; move them out of HAND_WRITTEN / "
+            "NOT_RECOUNTABLE so the generated case is what checks them"
+        )
+
+    def test_a_reason_says_what_is_missing(self):
+        for level in (HAND_WRITTEN, NOT_RECOUNTABLE):
+            for name, reason in level.items():
+                assert reason and not reason.endswith("."), name
+                assert len(reason.split()) >= 5, f"{name}: {reason!r} says too little"

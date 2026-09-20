@@ -763,7 +763,9 @@ def masked_fill_fwd_roofline(op: "Op") -> tuple[int, int]:
     elem_bytes = op.dtype.itemsize
     flops = n_total
     nbytes = prod(op.mask_shape) + prod(op.input_shape) * elem_bytes + n_total * elem_bytes
-    if _supplied(op, "value"):
+    # The scalar variant declares ``value`` as a param and reads no tensor for it,
+    # so the shape binding is what separates the two, not the name.
+    if getattr(op, "value_shape", None) is not None:
         nbytes += elem_bytes
     return flops, nbytes
 
