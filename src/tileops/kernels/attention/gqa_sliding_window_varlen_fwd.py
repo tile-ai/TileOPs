@@ -35,11 +35,11 @@ __all__ = [
 def _make_apply_mask(
     is_causal, has_window, window_size_left, window_size_right, accum_dtype, block_m, block_n
 ):
-    """Create a masked attention score initialization macro.
+    """Create a macro that masks invalid attention scores.
 
     All parameters are compile-time constants baked into the macro via closure.
-    The macro writes 0 or ``-infinity`` into ``acc_s`` depending on the mask
-    conditions, using four compile-time paths:
+    The macro writes ``-infinity`` only for invalid scores, using four
+    compile-time paths:
 
     - causal + window (left only)
     - causal only
@@ -69,17 +69,15 @@ def _make_apply_mask(
                 )
                 q_oob = bx * block_m + i >= q_len
                 k_oob = k_idx * block_n + j >= kv_len
-                acc_s[i, j] = T.if_then_else(
-                    causal_mask or left_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
-                )
+                if causal_mask or left_mask or q_oob or k_oob:
+                    acc_s[i, j] = -T.infinity(accum_dtype)
         elif is_causal:
             for i, j in T.Parallel(block_m, block_n):
                 causal_mask = k_idx * block_n + j > bx * block_m + i + offset
                 q_oob = bx * block_m + i >= q_len
                 k_oob = k_idx * block_n + j >= kv_len
-                acc_s[i, j] = T.if_then_else(
-                    causal_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
-                )
+                if causal_mask or q_oob or k_oob:
+                    acc_s[i, j] = -T.infinity(accum_dtype)
         elif has_window:
             for i, j in T.Parallel(block_m, block_n):
                 left_mask = (window_size_left >= 0) and (
@@ -90,14 +88,14 @@ def _make_apply_mask(
                 )
                 q_oob = bx * block_m + i >= q_len
                 k_oob = k_idx * block_n + j >= kv_len
-                acc_s[i, j] = T.if_then_else(
-                    left_mask or right_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
-                )
+                if left_mask or right_mask or q_oob or k_oob:
+                    acc_s[i, j] = -T.infinity(accum_dtype)
         else:
             for i, j in T.Parallel(block_m, block_n):
                 q_oob = bx * block_m + i >= q_len
                 k_oob = k_idx * block_n + j >= kv_len
-                acc_s[i, j] = T.if_then_else(q_oob or k_oob, -T.infinity(accum_dtype), 0)
+                if q_oob or k_oob:
+                    acc_s[i, j] = -T.infinity(accum_dtype)
 
     return apply_mask
 
@@ -198,8 +196,39 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
                 k_shared,
                 disable_tma=True,
             )
-            apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset)
-            T.gemm(q_shared, k_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+            T.gemm(
+                q_shared,
+                k_shared,
+                acc_s,
+                transpose_B=True,
+                policy=T.GemmWarpPolicy.FullRow,
+                clear_accum=True,
+            )
+            tile_start = k_idx * block_n
+            tile_end = tile_start + block_n
+            q_start = bx * block_m
+            right_is_full = (
+                tile_end <= q_start + offset + 1
+                if is_causal
+                else (
+                    tile_end <= q_start + offset + window_size_right + 1
+                    if window_size_right >= 0
+                    else True
+                )
+            )
+            left_is_full = (
+                tile_start >= q_start + block_m - 1 + offset - window_size_left
+                if window_size_left >= 0
+                else True
+            )
+            full_tile = (
+                (q_start + block_m <= q_len)
+                & (tile_end <= kv_len)
+                & right_is_full
+                & left_is_full
+            )
+            if not full_tile:
+                apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset)
 
         @T.macro
         def mma1(
