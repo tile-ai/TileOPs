@@ -360,14 +360,14 @@ earlier in the same expression. Every other position states something that must 
 every call, and absence is not a value — it is the name having no referent — so an
 unconditional declaration that depends on it means nothing on the call that omits it.
 
-| position                             | rule                                                                                                                                            |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `shape_rules`                        | every occurrence of `X` that is not itself a presence test needs a disjunct `X is None` among the leading operands of the rule's top-level `or` |
-| `roofline` `vars`                    | `X` may appear only as `X is None` or `X is not None`; `X.shape`, `X.ndim`, `X[...]` are rejected even under a guard                            |
-| `roofline` `flops` / `bytes`         | no `X` at all — the arithmetic layer reads `vars`, params and `elem_bytes`, so a presence test reaches it through a `vars` entry                |
-| `dtype_combos` row                   | no column keyed by `X` — a row assigns a dtype on every call it covers, and an absent input has none                                            |
-| any `dtype` expression               | `same_as(X)` is rejected — an absent input has no dtype to resolve to                                                                           |
-| required input's or output's `shape` | may not use a symbol first bound in `X`'s `shape`                                                                                               |
+| position                             | rule                                                                                                                                               |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `shape_rules`                        | every occurrence of `X` that is not itself a presence test needs a disjunct `X is None` among the leading operands of the rule's top-level `or`    |
+| `roofline` `vars`                    | `X` may appear only as `X is None` or `X is not None`; `X.shape`, `X.ndim`, `X[...]` are rejected even under a guard                               |
+| `roofline` `flops` / `bytes`         | no `X` at all — the arithmetic layer reads `vars`, params, `elem_bytes` and `out_elem_bytes`, so a presence test reaches it through a `vars` entry |
+| `dtype_combos` row                   | no column keyed by `X` — a row assigns a dtype on every call it covers, and an absent input has none                                               |
+| any `dtype` expression               | `same_as(X)` is rejected — an absent input has no dtype to resolve to                                                                              |
+| required input's or output's `shape` | may not use a symbol first bound in `X`'s `shape`                                                                                                  |
 
 The guard is `X is None or <condition>`, never `X is not None and <condition>`:
 `shape_rules` entries are conjuncts, so the second form reports a legal absent call as a

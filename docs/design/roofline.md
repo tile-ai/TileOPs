@@ -73,7 +73,7 @@ An entry uses one of two modes:
 | Inline | `vars?` + `flops`/`bytes` | Formula fits a Python expression. |
 | Func   | `func: "module.path"`     | Formula needs real Python logic.  |
 
-**Inline.** Roofline variables come from `shape` dim names where possible. Anything `shape` cannot supply — arbitrary-rank dims, slice products, shape-derived quantities — is declared in `vars`. `flops` and `bytes` are Python expressions over all resolved variables + `elem_bytes` + approved helpers (§4.4.4). `elem_bytes` is the byte size of the first input's dtype. **Ops whose `bytes` depend on multiple input dtypes (mixed-precision GEMM, Attention, etc.) cannot be expressed in inline mode** and must use `func`.
+**Inline.** Roofline variables come from `shape` dim names where possible. Anything `shape` cannot supply — arbitrary-rank dims, slice products, shape-derived quantities — is declared in `vars`. `flops` and `bytes` are Python expressions over all resolved variables + `elem_bytes` + approved helpers (§4.4.4). `elem_bytes` is the byte size of the dtype the call bound; `out_elem_bytes` is the declared output's, so an entry whose write is not its read's dtype — a bool predicate, an integral input promoted to float — states that much inline. **An op whose `bytes` depends on more than those two dtypes (mixed-precision GEMM, Attention, a per-operand quantization) cannot be expressed in inline mode** and must use `func`.
 
 **Func.** Point at `tileops.perf.formulas.<name>`. The callable is human-authored and returns `(flops, bytes)`. **Recommended signature: `func(op)`** — matching the agent-generated `eval_roofline(self)` path, which is what codegen's emitted call assumes. A human author who prefers a different signature owns the resulting integration (e.g., a wrapper). Use `func` when inline arithmetic is insufficient (mixed-precision byte accounting, conditionals, shape traversal, data-dependent logic).
 
@@ -174,14 +174,17 @@ For each op, codegen emits an `eval_roofline()` method returning `(flops: int, b
 
 ```python
 def eval_roofline(self) -> tuple[int, int]:
-    M = self.M
-    N = self.N
+    x = _resolve_tensor_binding(self, "x", "SomeFwdOp", optional=False)
+    M = product(x.shape[:dim])
+    N = x.shape[dim]
     elem_bytes = self.dtype.itemsize
     return (
         4 * M * N,
         (2 * M * N + N) * elem_bytes,
     )
 ```
+
+A tensor resolves through `self.<name>` or `self.<name>_shape`, so an op binds what its entry reads on every call. Exposing neither raises `ValueError` naming the op and the input, which is the author's wiring; exposing one and leaving it unset raises `RuntimeError`, which is a caller who has not run `forward()`.
 
 #### 4.4.2 Manifest Inputs
 
