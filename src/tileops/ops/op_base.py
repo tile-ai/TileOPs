@@ -835,7 +835,10 @@ class Op(ABC):
         call, not only one an oracle built by setting attributes.
         """
         if torch.compiler.is_compiling():
-            return  # the audit measures eager calls, and this would break the graph
+            # Building the dict would break the graph, and a record kept from an
+            # earlier eager call would describe the wrong one.
+            self._roofline_call_tensors = None
+            return
         names = _forward_input_names(type(self).__name__)
         if not names:
             return

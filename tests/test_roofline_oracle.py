@@ -784,6 +784,9 @@ class TestBytesOracle:
         cache_lens = [32768] * batch
         total_q, cached = sum(q_lens), sum(cache_lens)
         page_size, max_pages_per_req = 64, 528
+        # The call indexes the block table as far as each request's pages reach;
+        # the rest of the row is capacity it never reads.
+        pages_named = sum(-(-(q + c) // page_size) for q, c in zip(q_lens, cache_lens, strict=True))
         bound = {
             "total_q": total_q,
             "batch": batch,
@@ -814,7 +817,7 @@ class TestBytesOracle:
             v_scale_unread=True,
             cu_seqlens_q=((batch + 1,), torch.int32),
             cache_seqlens=((batch,), torch.int32),
-            block_table=((batch, max_pages_per_req), torch.int32),
+            block_table=((pages_named,), torch.int32),
             o=((total_q, heads, dim), torch.float16),
         )
         assert gqa_prefill_paged_with_kv_cache_fwd_roofline(bound)[1] == oracle
@@ -835,7 +838,7 @@ class TestBytesOracle:
             v_scale=((1,), torch.float32),
             cu_seqlens_q=((batch + 1,), torch.int32),
             cache_seqlens=((batch,), torch.int32),
-            block_table=((batch, max_pages_per_req), torch.int32),
+            block_table=((pages_named,), torch.int32),
             o=((total_q, heads, dim), torch.float16),
         )
         assert (
@@ -844,6 +847,40 @@ class TestBytesOracle:
             ]
             == quantized
         )
+
+        # One token against an empty or single-page cache: each request names one
+        # or two entries, most of the table names nothing, and the page count is
+        # a ceiling of a length that does not divide by the page size.
+        short_q = [1] * batch
+        short_cache = [0, 64] * (batch // 2)
+        short_named = sum(
+            -(-(q + c) // page_size) for q, c in zip(short_q, short_cache, strict=True)
+        )
+        short = dict(
+            bound,
+            total_q=sum(short_q),
+            q_lens=short_q,
+            cache_lens=short_cache,
+            max_seqlen_q=max(short_q),
+        )
+        short_new_kv = ((sum(short_q), heads_kv, dim), torch.float16)
+        oracle_short = _ledger(
+            "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
+            q=((sum(short_q), heads, dim), torch.float16),
+            k_new=short_new_kv,
+            v_new=short_new_kv,
+            k_pages=((sum(short_cache), heads_kv, dim), torch.float16),
+            v_pages=((sum(short_cache), heads_kv, dim), torch.float16),
+            k_pages_write=short_new_kv,
+            v_pages_write=short_new_kv,
+            k_scale_unread=True,
+            v_scale_unread=True,
+            cu_seqlens_q=((batch + 1,), torch.int32),
+            cache_seqlens=((batch,), torch.int32),
+            block_table=((short_named,), torch.int32),
+            o=((sum(short_q), heads, dim), torch.float16),
+        )
+        assert gqa_prefill_paged_with_kv_cache_fwd_roofline(short)[1] == oracle_short
 
     def test_grouped_gemm_does_not_charge_the_padding_offsets_it_ignores(self):
         """`batch_padded_offsets` is declared and passed, and no kernel indexes it:

@@ -499,7 +499,13 @@ def gqa_prefill_paged_with_kv_cache_fwd_roofline(
     new_kv_elems = 2 * total_q * heads_kv * dim
     append_kv_elems = new_kv_elems
     o_elems = q_elems
-    metadata_bytes = (batch + 1) * 4 + batch * 4 + batch * max_pages_per_req * 4
+    # The call indexes the block table only as far as each request's pages reach,
+    # and the rest of the row is capacity the algorithm never reads.
+    pages_named = sum(
+        -(-(int(old_len) + int(q_len)) // page_size)
+        for q_len, old_len in zip(q_lens, cache_lens, strict=True)
+    )
+    metadata_bytes = (batch + 1) * 4 + batch * 4 + pages_named * 4
     if quantized:
         metadata_bytes += 2 * 4
     nbytes = (q_elems + new_kv_elems + o_elems) * elem_bytes
