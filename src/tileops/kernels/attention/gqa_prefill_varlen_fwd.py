@@ -164,26 +164,37 @@ def _gqa_prefill_varlen_fwd_kernel(
                                     k_shared[j, d] = T.cast(0, dtype)
                                     v_shared[j, d] = T.cast(0, dtype)
 
-                        for i, j in T.Parallel(block_m, block_n):
-                            q_pos = q_row[0] + i
-                            kv_pos = tile_start + j
-                            if is_causal:
-                                valid = (
-                                    (q_pos < q_len)
-                                    & (kv_pos < kv_len)
-                                    & (kv_pos <= q_pos + causal_offset)
-                                )
-                                acc_s[i, j] = T.if_then_else(valid, 0, -T.infinity(acc_s.dtype))
-                            else:
-                                valid = (q_pos < q_len) & (kv_pos < kv_len)
-                                acc_s[i, j] = T.if_then_else(valid, 0, -T.infinity(acc_s.dtype))
                         T.gemm(
                             q_shared,
                             k_shared,
                             acc_s,
                             transpose_B=True,
                             policy=T.GemmWarpPolicy.FullRow,
+                            clear_accum=True,
                         )
+                        full_tile = (
+                            (q_row[0] + block_m <= q_len)
+                            & (tile_end <= kv_len)
+                            & (
+                                (tile_end <= q_row[0] + causal_offset + 1)
+                                if is_causal
+                                else True
+                            )
+                        )
+                        if not full_tile:
+                            for i, j in T.Parallel(block_m, block_n):
+                                q_pos = q_row[0] + i
+                                kv_pos = tile_start + j
+                                if is_causal:
+                                    valid = (
+                                        (q_pos < q_len)
+                                        & (kv_pos < kv_len)
+                                        & (kv_pos <= q_pos + causal_offset)
+                                    )
+                                else:
+                                    valid = (q_pos < q_len) & (kv_pos < kv_len)
+                                if not valid:
+                                    acc_s[i, j] = -T.infinity(acc_s.dtype)
                         if use_softcap:
                             apply_softcap(acc_s)
                         online_softmax(
