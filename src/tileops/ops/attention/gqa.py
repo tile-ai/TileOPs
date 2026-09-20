@@ -20,6 +20,7 @@ from tileops.kernels.attention import (
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
     GQAPrefillVarlenFwdKernel,
+    GQAPrefillVarlenWsKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -680,6 +681,7 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "gqa_varlen": GQAPrefillVarlenFwdKernel,
+            "gqa_varlen_ws": GQAPrefillVarlenWsKernel,
             "gqa_varlen_sliding_window": GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
         }
 

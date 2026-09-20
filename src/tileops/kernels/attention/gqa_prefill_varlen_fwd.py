@@ -251,6 +251,7 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    general: bool = True
 
     @classmethod
     def applies(cls, call) -> bool:
