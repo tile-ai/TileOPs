@@ -158,7 +158,7 @@ class TestDeclaredReadHalf:
 
     class _Undeclared:
         def eval_roofline_read_bytes(self):
-            return NotImplemented
+            return None
 
     class _Declared:
         def eval_roofline_read_bytes(self):
@@ -228,27 +228,26 @@ class TestReadHalfAfterACall:
         output shapes, which the call's input shapes decide, so `Op.__call__` records
         them."""
         from tileops.ops.dropout import DropoutFwdOp
-        from tileops.ops.op_base import record_roofline_calls
+        from tileops.ops.op_base import _recording_roofline_calls
 
         op = DropoutFwdOp(p=0.5)
         x = torch.rand(2048, 4096, dtype=torch.float16, device="cuda")
-        record_roofline_calls()
-        try:
+        with _recording_roofline_calls():
             op(x)
-        finally:
-            record_roofline_calls(False)
         assert op.eval_roofline_read_bytes() == x.numel() * x.element_size()
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="the audit calls the op")
-    def test_a_call_outside_the_audit_records_nothing(self):
-        """The recording costs about a microsecond, which is a fifth of a small
-        kernel's launch, so every other call must stay clear of it."""
+    def test_a_call_outside_the_block_records_nothing(self):
+        """The recording costs about a microsecond a call, which every other caller
+        must stay clear of."""
         from tileops.ops.dropout import DropoutFwdOp
-        from tileops.ops.op_base import record_roofline_calls
+        from tileops.ops.op_base import _recording_roofline_calls
 
-        record_roofline_calls(False)
         op = DropoutFwdOp(p=0.5)
-        op(torch.rand(64, 64, dtype=torch.float16, device="cuda"))
+        x = torch.rand(64, 64, dtype=torch.float16, device="cuda")
+        with _recording_roofline_calls():
+            op(x)
+        op(x)
         assert getattr(op, "_roofline_call_tensors", None) is None
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="the audit calls the op")

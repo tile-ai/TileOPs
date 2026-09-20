@@ -36,6 +36,12 @@ class FusedMoe(Op):
 
     """
 
+    def roofline_inputs(self) -> dict[str, int]:
+        """The experts this call's routing selected, which its weight reads follow."""
+        from tileops.perf.formulas import routed_expert_active_experts
+
+        return {"active_experts": routed_expert_active_experts(self)}
+
     def __init__(
         self,
         num_tokens: int,
@@ -232,12 +238,6 @@ class FusedMoeFwdOp(FusedMoe):
     ``sigmoid(score) + correction_bias`` while the final weights use the
     original (unbiased) scores, renormalized.
     """
-
-    def roofline_inputs(self) -> dict[str, int]:
-        """The experts this call's routing selected, which its weight reads follow."""
-        from tileops.perf.formulas import routed_expert_active_experts
-
-        return {"active_experts": routed_expert_active_experts(self)}
 
     def __init__(
         self,

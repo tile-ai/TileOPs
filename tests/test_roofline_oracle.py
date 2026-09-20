@@ -1061,7 +1061,7 @@ class TestCoverageLevels:
                 continue
             for label, dtype, op, _oracle, reads in cases:
                 declared = op.eval_roofline_read_bytes()
-                assert declared is not NotImplemented, f"{op_name} {label} {dtype}"
+                assert declared is not None, f"{op_name} {label} {dtype}"
                 assert declared == reads, f"{op_name} {label} {dtype}"
                 checked += 1
         assert checked > 0

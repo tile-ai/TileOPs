@@ -443,9 +443,6 @@ _ROW_SUPPLEMENT = {
 }
 
 
-_SHAPE_LITERAL = {"ast": None}
-
-
 def _dim_symbols(declaration: str) -> list[str]:
     """The per-axis expressions a signature ``shape`` string states."""
     body = declaration.strip()

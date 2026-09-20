@@ -1419,7 +1419,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
-    def eval_roofline_read_bytes(self) -> int:
+    def eval_roofline_read_bytes(self) -> "int | None":
         """Not derivable here: the call writes part of the pool, not all of it.
 
         ``k_pages`` and ``v_pages`` are mutated, and the base class takes a
@@ -1427,7 +1427,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         appends the new tokens into pages the block table names and leaves the
         rest untouched, so that subtraction would understate the read half.
         """
-        return NotImplemented
+        return None
 
     @staticmethod
     def _paged_cache_dtype(cache_dtype: Optional[torch.dtype]) -> Optional[torch.dtype]:

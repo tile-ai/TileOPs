@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import functools
 import math
@@ -83,19 +84,26 @@ def _declared_dispatch_keys() -> frozenset[str]:
 _RECORDING_CALLS = False
 
 
-def record_roofline_calls(enabled: bool = True) -> None:
-    """Have every op call remember its input tensors' shapes and dtypes.
+@contextlib.contextmanager
+def _recording_roofline_calls() -> "Iterator[None]":
+    """Have every op call inside this block remember its input shapes and dtypes.
 
     ``eval_roofline_read_bytes()`` prices the write half from the output
     shapes, which the input shapes decide, and an op keeps only what its own
-    ``eval_roofline`` needs. The NCU bytes audit turns this on around the call
-    it reads that declaration off.
+    ``eval_roofline`` needs. The NCU bytes audit wraps the call it reads that
+    declaration off.
 
-    Off by default: it costs about a microsecond per call, which every
-    benchmark row would otherwise carry.
+    Instrumentation, not operator interface, and off outside the block: the
+    recording costs about a microsecond per call, which every benchmark row
+    would otherwise carry.
     """
     global _RECORDING_CALLS
-    _RECORDING_CALLS = enabled
+    previous = _RECORDING_CALLS
+    _RECORDING_CALLS = True
+    try:
+        yield
+    finally:
+        _RECORDING_CALLS = previous
 
 
 @functools.lru_cache(maxsize=None)
@@ -149,6 +157,8 @@ class Op(ABC):
     # Dispatch keys the caller replaced through ``kernel_map=``.
     _overridden_keys: frozenset = frozenset()
     dtype: Optional[torch.dtype] = None
+    # This call's input shapes and dtypes, while a recording block is open.
+    _roofline_call_tensors: Optional[dict] = None
     device: Optional[Union[torch.device, str]] = "cuda"
     input_shapes: Optional[list[tuple]] = None
     # Whether kernels this op builds tune themselves. A ctor kwarg on the ops
@@ -249,7 +259,7 @@ class Op(ABC):
             "docs/design/roofline.md §4.4.6 (Evaluator Surface Boundary)"
         )
 
-    def eval_roofline_read_bytes(self) -> int:
+    def eval_roofline_read_bytes(self) -> Optional[int]:
         """The read half of ``eval_roofline()[1]``, for the NCU bytes audit.
 
         ``bytes`` minus the write half, which the signature settles: every
@@ -258,12 +268,12 @@ class Op(ABC):
         ``bytes`` already counted that part.
 
         Returns:
-            The read half in bytes, or ``NotImplemented`` when the call has not
-            bound what the write half needs.
+            The read half in bytes, or ``None`` when the call has not bound what
+            the write half needs.
         """
         write_bytes = self._roofline_write_bytes()
-        if write_bytes is NotImplemented:
-            return NotImplemented
+        if write_bytes is None:
+            return None
         return int(self.eval_roofline()[1]) - write_bytes
 
     def roofline_inputs(self) -> "dict[str, int]":
@@ -278,14 +288,15 @@ class Op(ABC):
         """
         return {}
 
-    def _roofline_write_bytes(self) -> int:
-        """Bytes this call writes, from the signature alone."""
+    def _roofline_write_bytes(self) -> Optional[int]:
+        """Bytes this call writes, from the signature alone, or ``None`` when the
+        call has not bound the shapes or dtypes that price them."""
         from tileops.manifest import load_manifest
         from tileops.ops._output_dtype import output_dtype
 
         entry = load_manifest().get(type(self).__name__)
         if entry is None:
-            return NotImplemented
+            return None
         signature = entry.get("signature") or {}
         inputs = signature.get("inputs") or {}
         outputs = signature.get("outputs") or {}
@@ -302,14 +313,14 @@ class Op(ABC):
         try:
             out_shapes = self._infer_output_shapes(*shapes)
         except Exception:
-            return NotImplemented
+            return None
         dtype = getattr(self, "dtype", None)
         total = 0
         for name, shape in out_shapes.items():
             try:
                 elem = output_dtype(self, name, dtype).itemsize
             except Exception:
-                return NotImplemented
+                return None
             total += math.prod(shape) * elem
         # A ``mutated`` input is written too, unless that write is the output's:
         # an op with an ``inplace`` param may write into the input it read.
@@ -326,7 +337,7 @@ class Op(ABC):
                 bound = getattr(self, name, None)
                 elem = getattr(getattr(bound, "dtype", None), "itemsize", None)
             if elem is None:
-                return NotImplemented
+                return None
             total += math.prod(shape) * elem
         return total
 
@@ -804,8 +815,8 @@ class Op(ABC):
         """
         if self._builder is not _UNRESOLVED:
             result = self.forward(*args, **kwargs)
-            if _RECORDING_CALLS:
-                self._record_roofline_call(args, kwargs)
+            if _RECORDING_CALLS or self._roofline_call_tensors is not None:
+                self._track_roofline_call(args, kwargs)
             return result
 
         self._resolve_builder(args, kwargs)
@@ -814,15 +825,18 @@ class Op(ABC):
         except Exception:
             self._unsettle()
             raise
-        if _RECORDING_CALLS:
-            self._record_roofline_call(args, kwargs)
+        if _RECORDING_CALLS or self._roofline_call_tensors is not None:
+            self._track_roofline_call(args, kwargs)
         return result
 
-    def _record_roofline_call(self, args: tuple, kwargs: dict) -> None:
-        """Remember each input tensor's shape and dtype, for the read half."""
-        if torch.compiler.is_compiling():
-            # Building the dict would break the graph, and a record kept from an
-            # earlier eager call would describe the wrong one.
+    def _track_roofline_call(self, args: tuple, kwargs: dict) -> None:
+        """Keep the record of this call's input tensors current.
+
+        Outside a recording block, and under ``torch.compile`` where building
+        the dict would break the graph, the record is dropped rather than left
+        describing an earlier call.
+        """
+        if not _RECORDING_CALLS or torch.compiler.is_compiling():
             self._roofline_call_tensors = None
             return
         names = _forward_input_names(type(self).__name__)

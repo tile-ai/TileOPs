@@ -693,10 +693,6 @@ def _synthesize_inline_mode(
         src_lines.append(f"    {n} = self.{n}")
     if "elem_bytes" in referenced:
         src_lines.append("    elem_bytes = self.dtype.itemsize")
-    elif single_output and "out_elem_bytes" in referenced and not input_names:
-        # No tensor input: there is no ``self.dtype`` to read, and the
-        # declaration answers without one.
-        src_lines.append("    self.dtype = None")
     if single_output and "out_elem_bytes" in referenced:
         # Through ``output_dtype``, so a ``caller_stated`` output follows the
         # dtype the call asked for. An op with no tensor input has no

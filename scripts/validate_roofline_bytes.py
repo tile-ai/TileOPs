@@ -194,7 +194,7 @@ def _declared_read_bytes(op) -> int | None:
     if not callable(declared):
         return None
     value = declared()
-    return None if value is NotImplemented else int(value)
+    return None if value is None else int(value)
 
 
 def run_child(op_name: str, row_json: str, dtype_str: str) -> None:
@@ -202,10 +202,8 @@ def run_child(op_name: str, row_json: str, dtype_str: str) -> None:
     import torch
 
     from tileops.manifest import load_manifest
-    from tileops.ops.op_base import record_roofline_calls
+    from tileops.ops.op_base import _recording_roofline_calls
 
-    # The read half needs the shapes the call carried; ops do not keep them.
-    record_roofline_calls()
     entry = load_manifest()[op_name]
     dtype = getattr(torch, dtype_str)
     case = _build_case(op_name, entry, json.loads(row_json), dtype)
@@ -213,7 +211,8 @@ def run_child(op_name: str, row_json: str, dtype_str: str) -> None:
         print(json.dumps({"error": "no input builder"}))
         sys.exit(3)
     op, inputs = case
-    with torch.no_grad():
+    # The read half needs the shapes the call carried; ops do not keep them.
+    with torch.no_grad(), _recording_roofline_calls():
         op(*inputs)  # bind input-inferred roofline vars; build kernels
         torch.cuda.synchronize()
         flops, nbytes = op.eval_roofline()
