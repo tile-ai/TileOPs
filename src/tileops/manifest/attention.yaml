@@ -316,8 +316,10 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
       q: {dtype: "float16 | bfloat16"}
       k_new: {dtype: "same_as(q)"}
       v_new: {dtype: "same_as(q)"}
-      k_pages: {dtype: "float16 | bfloat16 | float8_e4m3fn"}
-      v_pages: {dtype: "same_as(k_pages)"}
+      # The new tokens are appended into the pool, so the call writes these as
+      # well as reading the pages the block table names.
+      k_pages: {dtype: "float16 | bfloat16 | float8_e4m3fn", mutated: true}
+      v_pages: {dtype: "same_as(k_pages)", mutated: true}
       k_scale: {dtype: "float32"}
       v_scale: {dtype: "float32"}
       cu_seqlens_q: {dtype: "int32"}

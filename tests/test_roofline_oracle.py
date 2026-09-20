@@ -43,6 +43,12 @@ def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None
     )
     unknown = sorted(set(tensors) - declared)
     assert not unknown, f"{op_name}: {unknown} are not in the signature"
+    written = {name for name in inputs if tensors.get(f"{name}_write") is not None}
+    undeclared = sorted(name for name in written if not (inputs[name] or {}).get("mutated"))
+    assert not undeclared, (
+        f"{op_name}: {undeclared} are written by the case and the signature does not "
+        "mark them mutated; the write half a read half is taken off reads that marker"
+    )
     unread = {name for name in inputs if tensors.get(f"{name}_unread")}
     accounted = set(tensors) | unread
     missing = sorted((set(inputs) | set(outputs)) - accounted)
@@ -813,6 +819,56 @@ class TestBytesOracle:
         )
         assert gqa_prefill_paged_with_kv_cache_fwd_roofline(bound)[1] == oracle
 
+        # An fp8 pool stores one byte per element, and the kernel reads both
+        # scales to dequantize what it loads and to quantize what it appends.
+        fp8 = torch.float8_e4m3fn
+        quantized = _ledger(
+            "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
+            q=((total_q, heads, dim), torch.float16),
+            k_new=new_kv,
+            v_new=new_kv,
+            k_pages=((cached, heads_kv, dim), fp8),
+            v_pages=((cached, heads_kv, dim), fp8),
+            k_pages_write=((total_q, heads_kv, dim), fp8),
+            v_pages_write=((total_q, heads_kv, dim), fp8),
+            k_scale=((1,), torch.float32),
+            v_scale=((1,), torch.float32),
+            cu_seqlens_q=((batch + 1,), torch.int32),
+            cache_seqlens=((batch,), torch.int32),
+            block_table=((batch, max_pages_per_req), torch.int32),
+            o=((total_q, heads, dim), torch.float16),
+        )
+        assert (
+            gqa_prefill_paged_with_kv_cache_fwd_roofline(dict(bound, cache_dtype="float8_e4m3fn"))[
+                1
+            ]
+            == quantized
+        )
+
+    def test_grouped_gemm_does_not_charge_the_padding_offsets_it_ignores(self):
+        """`batch_padded_offsets` is declared and passed, and no kernel indexes it:
+        the templates pad nothing. A declared input the algorithm does not read
+        produces no traffic, and the contract does not say which inputs those are."""
+        from tileops.perf.formulas import grouped_gemm_roofline
+
+        batch_sum, batch_count, n, k = 4096, 16, 4096, 4096
+        op = type("_Bound", (), {})()
+        op.batch_sum, op.batch_count = batch_sum, batch_count
+        op.n, op.k, op.N, op.K = n, k, None, None
+        op.transpose_a, op.transpose_b = False, True
+        op.dtype = torch.float16
+        groups = ((batch_count,), torch.int32)
+        oracle = _ledger(
+            "GroupedGemmFwdOp",
+            a=((batch_sum, k), torch.float16),
+            b=((batch_count, n, k), torch.float16),
+            batch_sizes=groups,
+            batch_offsets=groups,
+            batch_padded_offsets_unread=True,
+            output=((batch_sum, n), torch.float16),
+        )
+        assert grouped_gemm_roofline(op)[1] == oracle
+
 
 # Coverage levels (docs/design/roofline.md 4.6). Every implemented op sits at
 # exactly one, and the level says what an independent recount rests on.
@@ -849,6 +905,7 @@ HAND_WRITTEN = {
     "GemmW4A16FwdOp": "the packed weight and its group metadata have a quantized layout",
     "GroupedQueryAttentionDenseFwdOp": "the op gathers its optional tensors into the call before pricing it",
     "GroupedQueryAttentionPrefillVarlenFwdOp": "the op reads its per-request lengths off the call it ran",
+    "GroupedGemmFwdOp": "`batch_padded_offsets` is passed and no kernel indexes it",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": "it reads the pages its block table names, not the pool",
     "NSAFwdVarlenOp": "how much it reads follows the values in `block_counts`",
     "NSATopkVarlenOp": "`lse_in` is passed and the kernel recomputes the lse instead of reading it",

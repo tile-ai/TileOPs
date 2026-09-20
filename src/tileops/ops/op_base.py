@@ -236,6 +236,20 @@ class Op(ABC):
             return NotImplemented
         return int(self.eval_roofline()[1]) - write_bytes
 
+    def roofline_inputs(self) -> "dict[str, int]":
+        """What decided this call's ``bytes``, where the values decided it.
+
+        A routed MoE reads the experts its routing selected and a sparse
+        attention the blocks its selection kept, so two rows with one shape can
+        move different amounts. The benchmark records this beside the reading so
+        a number that moved says why (docs/design/roofline.md §4.7).
+
+        Nothing judges it: it is not part of ``(flops, bytes)`` and no check
+        reads it, so an op that answers nothing loses an explanation rather than
+        a guarantee. Empty unless the op's traffic follows its inputs' values.
+        """
+        return {}
+
     def _roofline_write_bytes(self) -> int:
         """Bytes this call writes, from the signature alone."""
         from tileops.manifest import load_manifest

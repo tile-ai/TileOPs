@@ -40,6 +40,12 @@ class IndexedExpertMLPFwdOp(Op):
     # operator is the writing one.
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec.writes_out("output"),)
 
+    def roofline_inputs(self) -> dict[str, int]:
+        """The experts this call's routing selected, which its weight reads follow."""
+        from tileops.perf.formulas import routed_expert_active_experts
+
+        return {"active_experts": routed_expert_active_experts(self)}
+
     def __init__(
         self,
         num_tokens: int,

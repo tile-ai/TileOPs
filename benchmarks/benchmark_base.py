@@ -173,7 +173,24 @@ class BenchmarkBase(Generic[W], ABC):
         roof = self.compute_roof()
         if roof is not None:
             result["compute_roof"] = roof
+        # What decided this call's bytes, where its inputs' values decided it
+        # (docs/design/roofline.md 4.7). Nothing judges it; a row that moved says
+        # why without the reader re-deriving it.
+        decided_by = self._roofline_inputs()
+        if decided_by:
+            result["roofline_inputs"] = decided_by
         return result
+
+    def _roofline_inputs(self) -> dict:
+        """The op's diagnostic mapping, or nothing when it declares none."""
+        reader = getattr(getattr(self, "op", None), "roofline_inputs", None)
+        if reader is None:
+            return {}
+        try:
+            return dict(reader())
+        except Exception:
+            # A diagnostic never fails a measurement.
+            return {}
 
 
 # Manifest-driven benchmark helpers

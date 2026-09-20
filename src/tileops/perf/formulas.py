@@ -174,7 +174,13 @@ def _dtype_itemsize(dtype: Any) -> int:
         return 4
     if "float64" in dtype_name or "int64" in dtype_name:
         return 8
-    if "bool" in dtype_name or "int8" in dtype_name or "uint8" in dtype_name:
+    if (
+        "bool" in dtype_name
+        or "int8" in dtype_name
+        or "uint8" in dtype_name
+        or "float8" in dtype_name
+        or "fp8" in dtype_name
+    ):
         return 1
     return 2
 
@@ -483,15 +489,22 @@ def gqa_prefill_paged_with_kv_cache_fwd_roofline(
         )
     flops = 4 * heads * visible * dim
 
+    # The cache may hold a narrower dtype than the query, and then the call also
+    # reads the two scales that dequantize it.
+    cache_bytes = _dtype_itemsize(data.get("cache_dtype") or data.get("dtype", "float16"))
+    quantized = cache_bytes != elem_bytes
+
     q_elems = total_q * heads * dim
     old_kv_elems = 2 * old_kv_tokens * heads_kv * dim
     new_kv_elems = 2 * total_q * heads_kv * dim
     append_kv_elems = new_kv_elems
     o_elems = q_elems
     metadata_bytes = (batch + 1) * 4 + batch * 4 + batch * max_pages_per_req * 4
-    nbytes = (
-        q_elems + old_kv_elems + new_kv_elems + append_kv_elems + o_elems
-    ) * elem_bytes + metadata_bytes
+    if quantized:
+        metadata_bytes += 2 * 4
+    nbytes = (q_elems + new_kv_elems + o_elems) * elem_bytes
+    nbytes += (old_kv_elems + append_kv_elems) * cache_bytes
+    nbytes += metadata_bytes
     return int(flops), int(nbytes)
 
 
@@ -923,6 +936,20 @@ def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
     return flops, nbytes + gating_bytes + bias_bytes
 
 
+def routed_expert_active_experts(op: "Op") -> int:
+    """Experts the call's routing selected, which is what its weight reads follow.
+
+    One implementation, two readers: the cost below, and the op's
+    ``roofline_inputs()``, which reports the count beside the reading.
+    """
+    topk_ids = getattr(op, "_roofline_topk_ids", None)
+    if topk_ids is None:
+        raise RuntimeError(
+            f"{type(op).__name__} needs a prior forward() to determine the active experts"
+        )
+    return int(topk_ids.unique().numel())
+
+
 def _routed_expert_core(op: "Op") -> tuple[int, int]:
     """FLOPs and the weight-plus-token bytes shared by every routed expert MLP.
 
@@ -942,7 +969,7 @@ def _routed_expert_core(op: "Op") -> tuple[int, int]:
     hidden_size = int(op.hidden_size)
     ffn_size = int(op.ffn_size)
     elem_bytes = _dtype_itemsize(op.dtype)
-    active_experts = int(topk_ids.unique().numel())
+    active_experts = routed_expert_active_experts(op)
 
     flops = num_tokens * top_k * 6 * ffn_size * hidden_size
     weight_bytes = active_experts * 3 * ffn_size * hidden_size * elem_bytes
@@ -1060,9 +1087,10 @@ def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
         memory_a = batch_sum * n
         memory_c = batch_count * n * k
         memory_b = k * batch_sum if bool(op.transpose_b) else batch_sum * k
-    # The three int32 tensors that say where each group starts and how long it is;
-    # the kernel walks all of them.
-    metadata_bytes = 3 * batch_count * 4
+    # Two of the three int32 tensors: the kernels index batch_sizes and
+    # batch_offsets, and take batch_padded_offsets without reading it -- the
+    # templates pad nothing.
+    metadata_bytes = 2 * batch_count * 4
     return int(flops), int((memory_a + memory_b + memory_c) * elem + metadata_bytes)
 
 

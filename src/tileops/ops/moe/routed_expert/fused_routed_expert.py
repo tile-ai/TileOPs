@@ -35,6 +35,12 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
     # so contract checks that read the op without constructing it see it too.
     _indexed_mlp: IndexedExpertMLPFwdOp | None = None
 
+    def roofline_inputs(self) -> dict[str, int]:
+        """The experts this call's routing selected, which its weight reads follow."""
+        from tileops.perf.formulas import routed_expert_active_experts
+
+        return {"active_experts": routed_expert_active_experts(self)}
+
     def __init__(
         self,
         num_tokens: int,
