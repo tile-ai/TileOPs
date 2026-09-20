@@ -147,3 +147,55 @@ def test_a_logical_reduction_of_one_element_matches_torch(
     assert y.dtype == out_dtype, f"{op_name}: {y.dtype}"
     assert y.shape == ref.shape, f"{op_name} dim={dim}: {y.shape} vs {ref.shape}"
     torch.testing.assert_close(y, ref, atol=0, rtol=0)
+
+
+#: How each op's manifest formula prices a scalar: one element read, then what it
+#: writes. ``all``/``any`` write one byte, ``count_nonzero`` one int64, the rest one
+#: element of the input dtype; ``var_mean`` writes two.
+_SCALAR_WRITE_BYTES = {
+    "SumFwdOp": lambda e: e,
+    "MeanFwdOp": lambda e: e,
+    "AmaxFwdOp": lambda e: e,
+    "AminFwdOp": lambda e: e,
+    "ProdFwdOp": lambda e: e,
+    "VarFwdOp": lambda e: e,
+    "StdFwdOp": lambda e: e,
+    "VarMeanFwdOp": lambda e: 2 * e,
+    "AllFwdOp": lambda e: 1,
+    "AnyFwdOp": lambda e: 1,
+    "CountNonzeroFwdOp": lambda e: 8,
+}
+
+#: Every dim form a scalar reduction accepts, the singleton sequences included: each
+#: one reaches ``dim % x.ndim`` in the manifest formula by a different branch.
+_SCALAR_ROOFLINE_DIMS = [None, 0, -1, (), [], [0], [-1], (0,), (-1,)]
+_SCALAR_ROOFLINE_DIM_IDS = [
+    "dim=None", "dim=0", "dim=-1", "dim=()", "dim=[]",
+    "dim=[0]", "dim=[-1]", "dim=(0,)", "dim=(-1,)",
+]  # fmt: skip
+
+
+@pytest.mark.smoke
+@pytest.mark.filterwarnings("ignore:.*degrees of freedom:UserWarning")
+@pytest.mark.parametrize("op_name", sorted(_SCALAR_WRITE_BYTES))
+@pytest.mark.parametrize("dim", _SCALAR_ROOFLINE_DIMS, ids=_SCALAR_ROOFLINE_DIM_IDS)
+def test_the_scalar_path_prices_one_element_whatever_dim_names(op_name, dim) -> None:
+    """A 0-D input has no axis to reduce, so every ``dim`` form prices one element.
+
+    The manifest formulas take ``dim % x.ndim``, which is a division by zero at this
+    extent; the entries carry the guard that makes it one element instead.
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for forward call")
+    try:
+        op = _op(op_name, dim=dim)
+    except (TypeError, ValueError):
+        pytest.skip(f"{op_name} does not accept dim={dim!r}")
+    x = torch.tensor(3.0, device="cuda", dtype=torch.float32)
+    try:
+        op(x)
+    except (TypeError, ValueError):
+        pytest.skip(f"{op_name} does not accept a 0-D input with dim={dim!r}")
+
+    _, nbytes = op.eval_roofline()
+    assert nbytes == x.element_size() + _SCALAR_WRITE_BYTES[op_name](x.element_size())
