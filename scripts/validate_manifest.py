@@ -573,19 +573,16 @@ def _is_literal(node: ast.expr) -> bool:
 def _l0_read_bound_exception(op_name: str, entry: dict, roofline: dict) -> list[str]:
     """``roofline.read_bound_exception``: where a read shortfall is not a defect.
 
-    The audit reads a measured shortfall as the formula charging reads the
-    implementation did not make. That holds only where every conforming
-    implementation must fetch what the formula charges, and an entry states
-    where it does not (docs/design/roofline.md §4.5). The exception carries the
-    reason and the condition it holds under, which the audit evaluates against
-    the row it measured.
+    The NCU bytes audit reads a measured read shortfall as the formula charging
+    reads the implementation did not make. An entry states the calls where that
+    does not hold: ``reason`` says why, and ``when`` says which calls, which the
+    audit evaluates against the row it measured.
 
-    The condition joins tests over the call with ``and`` or ``or``: a name, a
-    negated name, or a comparison of names against literals. Every one of them,
-    at every depth, has to read something the call decides, so no clause settles
-    the condition before a name is read -- which is what a waiver of the whole
-    op would be. A comparison chain counts one link at a time, because it stops
-    at the first false link.
+    ``when`` joins names, negated names and comparisons of names against
+    literals with ``and`` or ``or``. Every clause, at every depth, must read
+    something the call decides -- a comparison chain one link at a time, since
+    it stops at the first false link -- so none settles the condition on its
+    own, which would waive every call of the op.
     """
     errors: list[str] = []
     err = _emit_to(errors, "schema", op_name)

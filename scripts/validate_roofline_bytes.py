@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Audit manifest ``bytes`` formulas against NCU DRAM counters.
 
-Spec: docs/design/roofline.md §4.5. For each audited op, one ``forward()``
-runs under Nsight Compute with cache control on, and ``dram__bytes_read.sum``
-over the call's kernels is compared against the formula's read half:
+For each audited op, one ``forward()`` runs under Nsight Compute with cache
+control on, and ``dram__bytes_read.sum`` over the call's kernels is compared
+against the formula's read half:
 
 - measured_read < read_bytes × (1 − EPS)  → FAIL  (read-side overestimate), or
                                             EXEMPT where the entry's
@@ -237,7 +237,7 @@ def _parse_ncu_csv(path: Path) -> tuple[tuple[float, float] | None, int]:
     """((read bytes, write bytes) over profiled kernels, kernel count).
 
     The two directions stay apart: only the read side carries a verdict
-    (§4.5). None on any gap — an absent metric is never read as zero.
+    None on any gap — an absent metric is never read as zero.
     """
     text = path.read_text(errors="replace")
     lines = [ln for ln in text.splitlines() if ln.startswith('"')]
@@ -270,13 +270,13 @@ def read_side_verdict(
     read_bytes: int | None,
     bound: bool = True,
 ) -> str:
-    """§4.5's verdict table. Write traffic never reaches it.
+    """The verdict for one measured row. Write traffic never reaches it.
 
-    FAIL says the formula charged reads the implementation did not make. That
-    reading holds only where every conforming implementation must fetch what the
-    formula charges. Where this call is one the entry's ``read_bound_exception``
-    covers, *bound* is false and a shortfall comes back EXEMPT: measured,
-    reported, and not a verdict on the formula.
+    FAIL says the formula charged reads the implementation did not make, which
+    holds only where every conforming implementation must fetch what the
+    formula charges. Where *bound* is false -- the entry's
+    ``read_bound_exception`` covers this call -- a shortfall is EXEMPT instead:
+    measured and reported, not a verdict on the formula.
     """
     if read_bytes is None:
         return "NO-VERDICT"
@@ -294,12 +294,9 @@ def read_side_verdict(
 
 
 def read_bound_exception(entry: dict, row: dict, dtype_str: str | None = None) -> str:
-    """The reason this row's read half is not a bound, or ``""``.
+    """The reason this row's read half is not a lower bound, or ``""``.
 
-    The exception states the condition it holds under, and a row outside that
-    condition is judged like any other: a dropout that trains with 0 < p < 1 may
-    skip a dropped position's load, and the same op in eval mode reads all of
-    its input.
+    A row outside the exception's condition is judged like any other.
     """
     exception = (entry.get("roofline") or {}).get("read_bound_exception") or {}
     when = (exception.get("when") or "").strip()
@@ -335,12 +332,10 @@ def exit_code(counts: dict[str, int]) -> int:
 
 
 def fully_waived(results: list[dict]) -> list[str]:
-    """Ops whose every judged row came back EXEMPT.
+    """Ops whose every judged row came back EXEMPT, leaving the read half unchecked.
 
-    The exception states the calls whose read half is not a bound, and an op
-    whose rows are all such calls leaves that half unchecked. The audit reports
-    it: the alternative, failing the run, would push a short-circuit row into
-    the release-facing workloads, which the benchmark then measures.
+    Reported rather than failed: failing would push a row the exception does not
+    cover into the release-facing workloads, which the benchmark then measures.
     """
     judged: dict[str, set[str]] = {}
     for row in results:
@@ -403,7 +398,9 @@ def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
             "formula_bytes": int(formula),
             "read_bytes": read_bytes,
             "measured_read_bytes": int(measured_read),
-            "measured_write_bytes": int(measured_write),  # reported, never judged (§4.5)
+            # Lines still dirty in L2 are written back outside the range, so
+            # this is reported and never judged.
+            "measured_write_bytes": int(measured_write),
             "kernels": n_kernels,
             "measured_under": COLD_CACHE_PREMISE,
             "note": "small workload" if formula < SMALL_WORKLOAD_BYTES else "",

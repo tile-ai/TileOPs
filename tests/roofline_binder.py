@@ -6,23 +6,20 @@ it counts the traffic the contract implies -- one read per distinct input storag
 the call binds, one write per public output, both for a ``mutated`` input -- and
 the caller requires the two to be equal.
 
-What it shares with the formula, and nothing beyond it: the minimum-traffic
-definition (roofline.md 1.2), the op's ``_infer_output_shapes`` for the output
-extents, and ``_output_dtype`` for an output's dtype. Those last two are the
-contract's own statements, and the formula reaches them through codegen, so a
+Shared with the formula, and nothing beyond it: the minimum-traffic definition,
+the op's ``_infer_output_shapes`` for the output extents, and ``_output_dtype``
+for an output's dtype. The formula reaches those last two through codegen, so a
 defect in either moves both sides together. Shapes otherwise come from the
 workload row and the signature's ``shape`` strings; the ``roofline`` block is
 never read.
 
-One rule the contract does not settle, and the binder assumes: a ``mutated``
-input is written in addition to the outputs unless it is itself an output name
-or the signature declares an ``inplace`` param, in which case that write is the
-output's. For the nine activation ops this holds either way -- both modes move
-one input-sized read and one input-sized write -- but the contract does not say
-which storage the output lands in.
+One rule the contract does not settle, which the binder assumes: a ``mutated``
+input is written in addition to the outputs, unless it is itself an output name
+or the signature declares an ``inplace`` param, where that write is the
+output's.
 
-An op the binder cannot drive raises `NotBindableError`, which names what the contract
-did not settle. That is the entry condition for the other two coverage levels.
+An op the binder cannot drive raises `NotBindableError` naming what the contract
+did not settle, which is the entry condition for the other two coverage levels.
 """
 
 from __future__ import annotations
@@ -144,13 +141,9 @@ def _instance(cls: type, params: dict) -> Any:
     return op
 
 
-# Shapes a workload row implies but does not spell out, per op.
-#
-# A row states the dims a benchmark needs -- ``m``, ``n``, ``k``, ``seq_len`` --
-# and leaves the tensors those dims describe to the op's own construction. The
-# binder needs the tensors, so each entry below restates the row's dims as the
-# shapes the signature declares. It states shapes only: what those tensors cost
-# stays with the formula on one side and the count above on the other.
+# Shapes a workload row implies but does not spell out, per op. A row states the
+# dims a benchmark needs; each entry restates them as the shapes the signature
+# declares, and states nothing about what those tensors cost.
 def _packed_bounds(lengths: "list[int]") -> torch.Tensor:
     """The cumulative bounds a packed batch carries, from the row's own lengths."""
     bounds = [0]
@@ -512,9 +505,8 @@ def bind_case(
 ) -> tuple[Any, int, int]:
     """Return ``(bound op, oracle bytes, oracle read bytes)`` for one workload row.
 
-    The read side is separate because the NCU audit judges that half alone
-    (docs/design/roofline.md 4.5), and an op derives it by subtracting the write
-    side the contract settles.
+    The read side is separate because the NCU audit judges that half alone, and
+    an op derives it by subtracting the write side the signature settles.
 
     Raises:
         NotBindableError: The row does not give a required input's shape, the op's shape
@@ -562,7 +554,7 @@ def bind_case(
         setattr(op, key, tuple(value) if isinstance(value, list) else value)
     for name, shape in zip(order, shapes, strict=True):
         dtype = _resolve_dtype((inputs[name] or {}).get("dtype"), call_dtype, inputs)
-        # D6: a bulk tensor is meta, and metadata a formula reads the values of is
+        # A bulk tensor is meta; metadata a formula reads the values of is
         # built for real. A supplement hands the built one back under the input's
         # own name; its values restate what the row already says.
         built = row.get(name)

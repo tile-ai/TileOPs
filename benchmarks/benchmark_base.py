@@ -173,9 +173,8 @@ class BenchmarkBase(Generic[W], ABC):
         roof = self.compute_roof()
         if roof is not None:
             result["compute_roof"] = roof
-        # What decided this call's bytes, where its inputs' values decided it
-        # (docs/design/roofline.md 4.7). Nothing judges it; a row that moved says
-        # why without the reader re-deriving it.
+        # What decided this call's bytes, where its inputs' values decided it.
+        # Nothing judges it; it explains a number that moved.
         decided_by = self._roofline_inputs()
         if decided_by:
             result["roofline_inputs"] = decided_by

@@ -86,14 +86,13 @@ _RECORDING_CALLS = False
 def record_roofline_calls(enabled: bool = True) -> None:
     """Have every op call remember its input tensors' shapes and dtypes.
 
-    ``Op.eval_roofline_read_bytes()`` prices the write half from the output
-    shapes, which the call's input shapes decide, and an op keeps only what its
-    own ``eval_roofline`` needs -- an element count, a dtype. The recording
-    supplies the rest, and the NCU bytes audit turns it on around the call it
-    reads the declaration off (docs/design/roofline.md §4.5).
+    ``eval_roofline_read_bytes()`` prices the write half from the output
+    shapes, which the input shapes decide, and an op keeps only what its own
+    ``eval_roofline`` needs. The NCU bytes audit turns this on around the call
+    it reads that declaration off.
 
-    Off by default: it costs about a microsecond per call, which is a fifth of
-    a small kernel's launch, and every benchmark row would carry it.
+    Off by default: it costs about a microsecond per call, which every
+    benchmark row would otherwise carry.
     """
     global _RECORDING_CALLS
     _RECORDING_CALLS = enabled
@@ -253,18 +252,14 @@ class Op(ABC):
     def eval_roofline_read_bytes(self) -> int:
         """The read half of ``eval_roofline()[1]``, for the NCU bytes audit.
 
-        ``(flops, bytes)`` does not carry the split, and the write half is the
-        one the contract settles: every declared output is written once, and a
-        ``mutated`` input that is not itself an output is written once more.
-        The read half is what remains, so an op that reads a subset of an input
-        -- a routed MoE reading the experts its routing selects -- comes out
-        right without saying anything, because its ``bytes`` already counted
-        that subset (docs/design/roofline.md §4.5).
+        ``bytes`` minus the write half, which the signature settles: every
+        declared output once, plus a ``mutated`` input that is not an output.
+        An op that reads only part of an input needs no override -- its
+        ``bytes`` already counted that part.
 
         Returns:
             The read half in bytes, or ``NotImplemented`` when the call has not
-            bound what the write half needs, which the audit reports as
-            NO-VERDICT rather than inventing a value.
+            bound what the write half needs.
         """
         write_bytes = self._roofline_write_bytes()
         if write_bytes is NotImplemented:
@@ -272,16 +267,14 @@ class Op(ABC):
         return int(self.eval_roofline()[1]) - write_bytes
 
     def roofline_inputs(self) -> "dict[str, int]":
-        """What decided this call's ``bytes``, where the values decided it.
+        """What decided this call's ``bytes``, where its inputs' values decided it.
 
-        A routed MoE reads the experts its routing selected and a sparse
-        attention the blocks its selection kept, so two rows with one shape can
-        move different amounts. The benchmark records this beside the reading so
-        a number that moved says why (docs/design/roofline.md §4.7).
+        Two calls of one shape can move different amounts -- a routed MoE reads
+        the experts its routing selected -- and the benchmark records this
+        beside the reading so such a number says why it moved.
 
-        Nothing judges it: it is not part of ``(flops, bytes)`` and no check
-        reads it, so an op that answers nothing loses an explanation rather than
-        a guarantee. Empty unless the op's traffic follows its inputs' values.
+        Nothing judges it, and it is not part of ``(flops, bytes)``. Empty
+        unless the op's traffic follows its inputs' values.
         """
         return {}
 
@@ -826,14 +819,7 @@ class Op(ABC):
         return result
 
     def _record_roofline_call(self, args: tuple, kwargs: dict) -> None:
-        """Remember each input tensor's shape and dtype, for the read half.
-
-        An op keeps whatever its own ``eval_roofline`` needs and nothing more,
-        so a call that binds an element count leaves no shape behind for
-        ``_roofline_write_bytes`` to price the outputs from. Recording it here
-        costs one dict per call and makes the read half available after any
-        call, not only one an oracle built by setting attributes.
-        """
+        """Remember each input tensor's shape and dtype, for the read half."""
         if torch.compiler.is_compiling():
             # Building the dict would break the graph, and a record kept from an
             # earlier eager call would describe the wrong one.

@@ -1054,7 +1054,7 @@ def test_conv3d_dispatches_ndhwc_kernel_no_bias() -> None:
 def test_conv3d_roofline_ignores_the_serving_kernel_layout_traffic() -> None:
     """The channels-last kernel stages input, weight and output. Those buffers are
     intermediates of one implementation, and the roofline is the algorithm's minimum
-    traffic (docs/design/roofline.md 1.2), so the number does not move with them."""
+    traffic, so the number does not move with them."""
     op = Conv3dFwdOp(stride=1, padding=1)
     x = torch.randn(1, 32, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()

@@ -29,6 +29,7 @@ Bound type is whichever term dominates `sol_time` (memory-bound if `memory_time 
 The metric is **algorithmic** SOL efficiency. Three statements delimit what a reading means:
 
 1. `bytes_moved` is the algorithm's minimum traffic, not measured DRAM traffic: each distinct input storage the algorithm reads counts one read, each public output one write, and a `mutated` input counts both. An intermediate never counts, whatever stage produces it, and a declared input the algorithm does not read produces no traffic.
+1. The metric is defined on a call that binds one storage per declared input, which is what every `workloads` row binds. An aliasing call — `add(x, x)` — is priced at two operands, above what it moves: the metric does not describe that call, and the formula is not wrong. Pricing it would require every multi-operand op to expose storage identity to its formula, which the oracle's meta tensors cannot carry.
 1. `total_flops` follows the §1.3 counting convention, not per-instruction hardware cost; the metric does not certify an SFU-bound kernel as at its limit.
 1. The compute roof is the unit an optimal implementation would use (§1.4), not the unit the current kernel runs on.
 
@@ -123,7 +124,7 @@ Every roofline entry MUST satisfy:
 - Required fields per mode: inline has `flops` and `bytes`; func has `func`.
 - Mode exclusivity: `flops`/`bytes`/`vars` and `func` do not coexist.
 - Field types: `flops`/`bytes`/`func` are non-empty strings; `vars` is a mapping of str → non-empty str.
-- `read_bound_exception`, where present, is a mapping of `when` and `reason`, both non-empty strings. `when` joins tests over the call with `and` or `or` — each a name, a negated name, or a comparison of names and literals — over params, the workload keys that state what the call does, and `dtype`, the element type the row expands to; never `label` or `dtypes`, which say how a row is reported. Every clause, at every depth, has to read something the call decides — a comparison chain one link at a time, since it stops at the first false link — and no link may compare a value with itself: a clause that settles before a name is read would waive every call (§4.5).
+- `read_bound_exception`, where present, is a mapping of `when` and `reason`, both non-empty strings. `when` joins names, negated names and comparisons of names against literals with `and` or `or`, over params, the workload keys stating what the call does, and `dtype`. Every clause, at every depth, must read the call, so none can settle the condition on its own — that would waive every call of the op (§4.5).
 - `func` dotted path resolves at import time.
 
 Out of the validator's scope:
@@ -173,7 +174,7 @@ Codegen is the authoritative gate for name and form correctness. A formula refer
 
 Codegen emits an `eval_roofline()` method returning `(flops: int, bytes: int)` for every op that does not define one. The method signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md); this document specifies only how the body is generated from the manifest.
 
-An op that defines the method itself keeps it, and codegen installs nothing. That is for an op whose call needs translating before the formula sees it — packed lengths read off cumulative bounds, an optional tensor set the row does not carry — or whose entry the vars layer cannot express. It is three ops today, and each one's entry says which. Everywhere else the entry is what runs, so changing it changes the number.
+An op that defines the method itself keeps it, and codegen installs nothing. That is for an op whose call needs translating before the formula sees it — packed lengths read off cumulative bounds, an optional tensor set the row does not carry — or whose entry the vars layer cannot express, and its entry says which. Everywhere else the entry is what runs, so changing it changes the number.
 
 ```python
 def eval_roofline(self) -> tuple[int, int]:
@@ -187,7 +188,7 @@ def eval_roofline(self) -> tuple[int, int]:
     )
 ```
 
-A tensor resolves through `self.<name>` or `self.<name>_shape`, so an op binds what its entry reads on every call. Exposing neither raises `ValueError` naming the op and the input, which is the author's wiring; exposing one and leaving it unset raises `RuntimeError`, which is a caller who has not run `forward()`.
+A tensor resolves through `self.<name>` or `self.<name>_shape`, so an op binds what its entry reads. Exposing neither is the author's wiring and raises `ValueError`; exposing one and leaving it unset is a caller who has not run `forward()` and raises `RuntimeError`.
 
 #### 4.4.2 Manifest Inputs
 
@@ -292,9 +293,11 @@ Rules:
 
 The read-side bound is conditional, not a theorem. It holds while each kernel is replayed from cold caches, which inflates a multi-kernel op's reads rather than deflating them; a verdict states that premise alongside it.
 
-It carries a second premise: that every conforming implementation must fetch what the formula charges. Where a call's read half is the whole of an input because no smaller subset is *the* subset this call reads — a dropout draws its dropped positions at run time, and charging `1 - p` would be an expected fraction, which §4.7 rules out — an implementation may still predicate those loads away and read less. An entry states where in `roofline.read_bound_exception`, a `when` naming params and workload keys with the `reason` it holds for. The audit evaluates `when` against the row it measured: a shortfall inside the condition comes back EXEMPT, and the same op's other rows are judged like any other. The condition is what keeps the exception from covering the calls the premise still holds for — a dropout in eval mode copies its input and reads all of it.
+It carries a second premise: that every conforming implementation must fetch what the formula charges. Some calls break it. Where an input's value decides nothing at some positions, a kernel may predicate those loads away and read less than the call binds, while the formula still charges the whole input — the positions are chosen at run time, and charging a fraction of them would be an expected value, not this call's traffic (§4.7).
 
-What the condition may not do is repeat the values the op's rows happen to carry: `p == 0.5` would waive every dropout row the audit runs today and say nothing about why. The form the validator enforces — every clause, at every depth, reading the call — refuses a condition that holds whatever the call does, and no check beyond it can tell a property from a value that happens to match today's rows. Review is what separates those, and the `reason` is what it reads: it names the behaviour that lets an implementation read less, and the entry earns the exception from a measurement of that behaviour, never from an argument that it is plausible.
+An entry states such calls in `roofline.read_bound_exception`: a `when` over the call, and the `reason` the premise fails there. The audit evaluates `when` against the row it measured, and a shortfall inside the condition is EXEMPT — measured, reported, not a verdict on the formula. Rows outside it are judged as before, which is why the exception carries a condition rather than covering the op.
+
+The condition's form is checked, its aptness is not: no check tells a property of the call from a value that matches today's rows. Review reads the `reason`, and an entry earns the exception from a measurement of the behaviour it names.
 
 `(flops, bytes)` does not carry the read/write split, so an op sent here states its read half in `Op.eval_roofline_read_bytes()`. There is no fallback. Summing the call's input tensors is not the read half: an op that reads a subset of an input — a routed MoE reading the experts its routing selects — would be charged the whole of it, and a correct formula would fail. An op that declares nothing gets NO-VERDICT, which is not a pass.
 
@@ -307,7 +310,7 @@ What the condition may not do is repeat the values the op's rows happen to carry
 | ERROR      | The audit did not produce a usable measurement.                        |
 | NO-VERDICT | No read half was declared.                                             |
 
-The read half comes off `bytes` by subtracting the write half the contract settles, and pricing the outputs needs the shapes the call carried. An op keeps only what its own `eval_roofline` needs — an element count, a dtype — so `tileops.ops.op_base.record_roofline_calls()` makes `Op.__call__` remember each input tensor's shape and dtype, and the audit turns it on around the call it reads the declaration off. It is off everywhere else: it costs about a microsecond per call, a fifth of a small kernel's launch, and a benchmark row would carry it.
+The read half comes off `bytes` by subtracting the write half the contract settles, and pricing the outputs needs the shapes the call carried. An op keeps only what its own `eval_roofline` needs, so `tileops.ops.op_base.record_roofline_calls()` makes `Op.__call__` remember each input tensor's shape and dtype. The audit turns it on around the call it reads the declaration off, and it is off everywhere else: it costs about a microsecond per call, which a benchmark row would otherwise carry.
 
 Workloads come from the manifest's own rows and cover the formula's branch signatures. Scaled-up shapes are not used: they can cross kernel-selection thresholds and audit an implementation the benchmark never runs.
 
@@ -319,15 +322,25 @@ A CI test recomputes each audited `bytes` value from an independent path — the
 
 Traffic that depends on tensor *content* is recounted the same way: the case constructs the selecting tensor itself, exactly as it constructs shapes, so content dependence is no reason to exempt an op. Coverage is golden workloads per op, not randomized sweeps.
 
-Coverage is three levels, and an op sits at exactly one. At level one a binder builds the case from the manifest — the signature, one workload row, the dtypes, the mutation marks — and an op reaches this level by being recountable, not by being listed. What that case shares with the formula is the minimum-traffic definition, the op's own statement of its output extents, and the manifest's resolution of an output's dtype; the `roofline` block is not among them. Level two is a hand-written reference for a call the contract does not settle, with what the case shares written beside it. Level three is an op no independent recount reaches yet, marked with what is missing and asserted against nothing. A completeness test keeps the three total: an op added to the manifest is recounted by the binder or fails until it is placed.
+Coverage is three levels and an op sits at exactly one:
+
+| Level | Case                                                                                                                                                            | Shares with the formula                                                                                                                           |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One   | A binder builds it from the signature, one workload row, the dtypes and the mutation marks. An op reaches this level by being recountable, not by being listed. | The minimum-traffic definition, the op's statement of its output extents, and the manifest's output-dtype resolution. Never the `roofline` block. |
+| Two   | Hand-written, for a call the contract does not settle.                                                                                                          | Written beside the case.                                                                                                                          |
+| Three | None: marked with what is missing, asserted against nothing.                                                                                                    | —                                                                                                                                                 |
+
+A completeness test keeps the three total: an op added to the manifest is recounted by the binder or fails until it is placed.
 
 ### 4.7 Value-Determined Traffic
 
-A few ops move an amount their inputs' values decide: a routed MoE reads the experts `topk_ids` names, a sparse attention reads the blocks its selection kept. Their formulas read those inputs, which is what makes the number the call's own rather than an estimate from the shapes.
+A few ops move an amount their inputs' values decide: a routed MoE reads the experts `topk_ids` names, a sparse attention the blocks its selection kept. Such a formula prices this call, not an average over calls of that shape, which imposes three rules.
 
-Two conditions follow. The formula reads the call's semantic inputs — the routing, the offsets, the block table — and never a quantity it computed for itself, which would make a recount an identity. And a workload row builds those inputs the same way every time, from a generator of its own rather than the global stream, because a draw added anywhere upstream otherwise moves the traffic and with it the efficiency the row reports.
+- It reads the call's semantic inputs — the routing, the offsets, the block table — and never a quantity it computed for itself, which would make a recount an identity.
+- Its workload row builds those inputs from a generator of its own, not the global stream: a draw added anywhere upstream would otherwise move the traffic and the efficiency the row reports.
+- It states what decided the number in `Op.roofline_inputs()`, which the benchmark records beside the reading. Nothing judges it; it is what makes a moved number readable.
 
-A recount of such an op builds the same two kinds of tensor the call does: the bulk operands on the meta device, which carry shape and dtype and no storage, and the metadata whose values decide the traffic for real. Where the row states what those values are — a packed batch's lengths, whose running sum is its bounds — the recount restates them and stays generated. Where it does not — a selection drawn per call — the recount runs the workload that draws it, and the op sits at the second level with that written beside the case.
+A recount builds the call's two kinds of tensor: bulk operands on the meta device, and the metadata whose values decide the traffic with those values. Where the row states them — a packed batch's lengths — the recount restates them and stays at level one. Where the values are drawn per call, the recount runs the workload that draws them, and the op sits at level two.
 
 ## 5. Reference
 

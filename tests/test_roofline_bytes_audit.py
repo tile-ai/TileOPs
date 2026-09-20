@@ -264,7 +264,7 @@ class TestReadHalfAfterACall:
 
 
 class TestRooflineInputsRecording:
-    """What decided a call's bytes travels with the reading (roofline.md 4.7)."""
+    """What decided a call's bytes travels with the reading."""
 
     @staticmethod
     def _reported(reader):

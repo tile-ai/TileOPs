@@ -27,7 +27,7 @@ def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None
     """Sum the named tensors a call binds, and require the names to be the signature's.
 
     A hand-written case states a tensor per name, ``None`` for an optional input the
-    call does not pass or for a workspace, which D2 excludes, a ``<name>_write``
+    call does not pass or for a workspace, which the metric excludes, a ``<name>_write``
     entry for a write that is not an output's -- a ``mutated`` input's -- and
     ``<name>_unread=True`` for an input the call passes and the algorithm does not
     read. Every declared input and output has to appear,
@@ -60,8 +60,7 @@ def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None
     assert not missing, f"{op_name}: the case says nothing about {missing}"
     for name, spec in inputs.items():
         if name in unread:
-            # Declared and passed, and the algorithm does not read it: no traffic
-            # (docs/design/roofline.md 1.2).
+            # Declared and passed, and the algorithm does not read it: no traffic.
             continue
         if tensors[name] is not None:
             continue
@@ -287,7 +286,7 @@ class TestBytesOracle:
             topk_ids=((tokens, top_k), torch.int32),
             topk_weights=((tokens, top_k), torch.float32),
             # the pre-allocated buffer is the output, written once; the workspaces
-            # carry WORKSPACE_ATTR and D2 excludes them
+            # carry WORKSPACE_ATTR, which the metric excludes
             output=((tokens, hidden), torch.bfloat16),
             workspace1=None,
             workspace2=None,
@@ -746,7 +745,7 @@ class TestBytesOracle:
     def test_nsa_topk_does_not_charge_the_lse_it_recomputes(self):
         """`lse_in` is declared and passed, and the top-k kernel recomputes the lse
         and discards the argument. A declared input the algorithm does not read
-        produces no traffic (docs/design/roofline.md 1.2), and the contract does not
+        produces no traffic, and the contract does not
         say which inputs those are."""
         from tileops.perf.formulas import nsa_topk_varlen_roofline
 
@@ -937,14 +936,14 @@ class TestBytesOracle:
         assert grouped_gemm_roofline(op)[1] == oracle
 
 
-# Coverage levels (docs/design/roofline.md 4.6). Every implemented op sits at
+# Coverage levels. Every implemented op sits at
 # exactly one, and the level says what an independent recount rests on.
 #
 #   one   The binder builds the case from the manifest: signature, one workload
 #         row, dtypes, mutation. It never reads the `roofline` block, and what it
 #         does share with the formula is written down: the minimum-traffic
 #         definition, the op's own `_infer_output_shapes`, and the manifest's
-#         output-dtype resolution (docs/design/roofline.md 4.6). Computed, not
+#         output-dtype resolution. Computed, not
 #         listed -- adding an op earns this level or fails the completeness test
 #         below.
 #   two   The binder cannot build the call and a case above does it by hand,
@@ -1048,7 +1047,7 @@ class TestCoverageLevels:
 
     def test_a_generated_case_agrees_on_the_read_half(self):
         """The audit judges the read side alone, and an op derives it by taking the
-        write side the contract settles off its `bytes` (roofline.md 4.5). Where the
+        write side the signature settles off its `bytes`. Where the
         binder recounts the op, the two halves have to be the same halves."""
         from tests.roofline_binder import NotBindableError, manifest_cases
 
@@ -1124,7 +1123,7 @@ class TestCoverageLevels:
 
 class TestValueDeterminedTraffic:
     """Ops whose `bytes` follows an input's values must build that input the same
-    way every time (docs/design/roofline.md 4.7). The global stream does not give
+    way every time. The global stream does not give
     that: a draw added anywhere earlier moves every draw after it."""
 
     def test_the_nsa_forward_workload_prices_the_same_call_twice(self):
