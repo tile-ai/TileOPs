@@ -306,6 +306,38 @@ class _Layout:
     block_k: int
 
 
+@dataclasses.dataclass(frozen=True)
+class _LayoutFeatures:
+    """What one candidate tile does with one call, before any of it is priced.
+
+    Everything here follows from the descriptor and the tile; a cost model reads
+    these and adds the constants. The byte fields are whole-call totals over
+    ``num_blocks`` tiles, so a per-tile figure divides by that count.
+    """
+
+    num_m_blocks: int
+    num_n_blocks: int
+    num_blocks: int
+
+    # Waves of the persistent grid, tiles the last one leaves running, and the
+    # share of the grid's block slots a wave actually fills.
+    num_waves: int
+    last_wave_util: int
+    wave_efficiency: float
+    tiles_per_sm: float
+
+    # The contraction one tile runs; K-grouped splits K between its groups.
+    effective_k: int
+    k_tiles: int
+
+    l1_bytes: int
+    l2_bytes: int
+    output_bytes: int
+
+    num_stages: int
+    wgmma_issues: int
+
+
 def _align(x: int, a: int) -> int:
     return (x + a - 1) // a * a
 
@@ -395,37 +427,67 @@ def _num_m_blocks(desc: GemmDesc, block_m: int) -> int:
     return math.ceil(desc.get_expected_m() / block_m)
 
 
-def _num_cycles(desc: GemmDesc, layout: _Layout) -> tuple[int, int]:
-    """Return the estimated number of waves and execution cycles."""
+def _wgmma_issues(block_n: int) -> int:
+    """WGMMA instructions one k-step of a ``block_n``-wide tile issues.
+
+    The accumulator is built from the power-of-two widths ``block_n`` decomposes
+    into, so a 192-wide tile issues the 128 and the 64 separately.
+    """
+    return bin(block_n).count("1")
+
+
+def _layout_features(desc: GemmDesc, layout: _Layout) -> _LayoutFeatures:
+    """What ``layout`` makes this call do. Counted, not priced: nothing here is fitted."""
+    num_m_blocks = _num_m_blocks(desc, layout.block_m)
+    num_n_blocks = math.ceil(desc.n / layout.block_n)
     num_blocks = (
-        _num_m_blocks(desc, layout.block_m)
-        * math.ceil(desc.n / layout.block_n)
-        * (desc.num_groups if desc.gemm_type in _FLAT_LIKE_TYPES else 1)
+        num_m_blocks * num_n_blocks * (desc.num_groups if desc.gemm_type in _FLAT_LIKE_TYPES else 1)
     )
     num_waves = math.ceil(num_blocks / desc.num_sms)
-    if num_blocks == 0:  # a call with no rows or no columns runs nothing
-        return 0, 0
 
-    l2_bandwidth_per_cycle = int(min(64.0 * desc.num_sms, 8e6 / 1.3e3))
-    l1_bandwidth_per_cycle = 128 * desc.num_sms
-    elem_ab = desc.policy.element_bytes
-    elem_cd = 4 if desc.cd_dtype == "float32" else 2
-
-    k = desc.k
+    effective_k = desc.k
     if desc.gemm_type is GemmType.K_GROUPED_CONTIGUOUS:
         # The groups split K between them; a tile runs the mean group's contraction.
-        k = math.ceil(desc.k / desc.num_groups)
+        effective_k = math.ceil(desc.k / desc.num_groups)
+
+    elem_ab = desc.policy.element_bytes
+    elem_cd = 4 if desc.cd_dtype == "float32" else 2
     c_width = layout.block_n // 2 if desc.fused else layout.block_n
-    bytes_l2_ab = k * (layout.block_m + layout.block_n) * elem_ab
-    bytes_l1_ab = k * (layout.block_m + layout.block_n) * elem_ab
-    bytes_l1_tc = k * (max(desc.policy.wgmma_m, layout.block_m) + layout.block_n) * elem_ab
+    bytes_l2_ab = effective_k * (layout.block_m + layout.block_n) * elem_ab
+    bytes_l1_ab = effective_k * (layout.block_m + layout.block_n) * elem_ab
+    bytes_l1_tc = effective_k * (max(desc.policy.wgmma_m, layout.block_m) + layout.block_n)
+    bytes_l1_tc *= elem_ab
     bytes_l1_tc += layout.block_m * c_width * elem_cd
     bytes_cd = layout.block_m * c_width * elem_cd
 
-    l2_cycles = (bytes_l2_ab + bytes_cd) * num_blocks // l2_bandwidth_per_cycle
-    l1_cycles = (bytes_l1_ab + bytes_l1_tc + bytes_cd) * num_blocks // l1_bandwidth_per_cycle
-    wave_efficiency = num_blocks / (num_waves * desc.num_sms)
-    cycles = max(l1_cycles, l2_cycles) / wave_efficiency
+    return _LayoutFeatures(
+        num_m_blocks=num_m_blocks,
+        num_n_blocks=num_n_blocks,
+        num_blocks=num_blocks,
+        num_waves=num_waves,
+        last_wave_util=num_blocks - (num_waves - 1) * desc.num_sms if num_blocks else 0,
+        wave_efficiency=num_blocks / (num_waves * desc.num_sms) if num_blocks else 0.0,
+        tiles_per_sm=num_blocks / desc.num_sms,
+        effective_k=effective_k,
+        k_tiles=math.ceil(effective_k / layout.block_k),
+        l1_bytes=(bytes_l1_ab + bytes_l1_tc + bytes_cd) * num_blocks,
+        l2_bytes=(bytes_l2_ab + bytes_cd) * num_blocks,
+        output_bytes=bytes_cd * num_blocks,
+        num_stages=_num_stages(desc, layout),
+        wgmma_issues=_wgmma_issues(layout.block_n),
+    )
+
+
+def _legacy_cost(desc: GemmDesc, layout: _Layout, features: _LayoutFeatures) -> int:
+    """Estimated cycles: the bandwidth a wave moves, over how full that wave is."""
+    if features.num_blocks == 0:  # a call with no rows or no columns runs nothing
+        return 0
+
+    l2_bandwidth_per_cycle = int(min(64.0 * desc.num_sms, 8e6 / 1.3e3))
+    l1_bandwidth_per_cycle = 128 * desc.num_sms
+    l2_cycles = features.l2_bytes // l2_bandwidth_per_cycle
+    l1_cycles = features.l1_bytes // l1_bandwidth_per_cycle
+    cycles = max(l1_cycles, l2_cycles) / features.wave_efficiency
 
     # Over many waves a tile's TMA latency hides under the next tile, and the
     # bandwidth terms above decide. Over few waves *on a device the tiles do not
@@ -436,18 +498,17 @@ def _num_cycles(desc: GemmDesc, layout: _Layout) -> tuple[int, int]:
     # where it measures slowest.
     if (
         desc.gemm_type in _CALIBRATED_PSUM_TYPES
-        and num_waves < desc.policy.shallow_wave_limit
-        and num_blocks / desc.num_sms < desc.policy.shallow_tiles_per_sm
+        and features.num_waves < desc.policy.shallow_wave_limit
+        and features.tiles_per_sm < desc.policy.shallow_tiles_per_sm
     ):
-        stages = _num_stages(desc, layout)
-        deficit = max(0, desc.policy.hiding_stages - stages)
+        deficit = max(0, desc.policy.hiding_stages - features.num_stages)
         cycles *= 1.0 + deficit / desc.policy.hiding_stages
-    return num_waves, int(cycles)
+    return int(cycles)
 
 
 def _best_layout(desc: GemmDesc, candidates: list[_Layout]) -> _Layout:
     """The tile the cycle model prefers."""
-    return min(candidates, key=lambda lay: _num_cycles(desc, lay)[1])
+    return min(candidates, key=lambda lay: _legacy_cost(desc, lay, _layout_features(desc, lay)))
 
 
 def _short_group_layout(desc: GemmDesc) -> _Layout | None:
@@ -518,7 +579,7 @@ def _staged_epilogue(desc: GemmDesc, layout: _Layout) -> GroupedGemmSpec | None:
         return None
     if (
         desc.gemm_type is GemmType.M_GROUPED_ALIGNED_PSUM
-        and _num_cycles(desc, layout)[0] >= policy.staged_epilogue_wave_limit
+        and _layout_features(desc, layout).num_waves >= policy.staged_epilogue_wave_limit
     ):
         return None
     base = _num_stages(desc, layout)
