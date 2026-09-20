@@ -303,16 +303,6 @@ class BatchNormBwdOp(Op):
             "grad_bias": channels,
         }
 
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_spec is None:
-            raise RuntimeError("BatchNormBwdOp.eval_roofline() requires a prior forward() call")
-        C, L, dtype = self._last_roofline_spec
-        elem_bytes = dtype.itemsize
-        return (
-            8 * C * L,
-            3 * C * L * elem_bytes + 3 * C * 4,
-        )
-
     def _resolve_spec(
         self, grad_out: torch.Tensor, x: torch.Tensor
     ) -> Tuple[int, int, torch.dtype]:
@@ -366,6 +356,8 @@ class BatchNormBwdOp(Op):
         self._validate_channel_tensor("mean", mean, C, grad_out.device, torch.float32)
         self._validate_channel_tensor("rstd", rstd, C, grad_out.device, torch.float32)
         self._bind_spec(C, L, dtype)
+        # What the manifest roofline resolves ``grad_out`` through.
+        self.grad_out_shape = tuple(grad_out.shape)
         grad_out = grad_out.contiguous()
         x = x.contiguous()
         weight = weight.contiguous()

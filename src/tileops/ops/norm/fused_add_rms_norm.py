@@ -76,19 +76,6 @@ class FusedAddRMSNormFwdOp(Op):
         """Manifest ``shape_rules``: both outputs have ``x``'s shape."""
         return {"output": tuple(x_shape), "residual_out": tuple(x_shape)}
 
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_mn is None or self.dtype is None:
-            raise RuntimeError(
-                f"{type(self).__name__}.eval_roofline() requires a prior "
-                "forward() call to bind input shape and dtype"
-            )
-        M, N = self._last_roofline_mn
-        elem_bytes = self.dtype.itemsize
-        return (
-            5 * M * N,
-            (4 * M * N + N) * elem_bytes,
-        )
-
     def forward(
         self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -142,6 +129,8 @@ class FusedAddRMSNormFwdOp(Op):
             (n, x.dtype),
         )
         self._last_roofline_mn = (x.numel() // n, n)
+        # What the manifest roofline resolves ``x`` through.
+        self.x_shape = tuple(x.shape)
         y, residual_out = kernel(x, residual, weight)
         return y, residual_out
 

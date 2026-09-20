@@ -99,16 +99,6 @@ class RMSNormFwdOp(Op):
         """Manifest ``shape_rules``: ``output.shape == x.shape``."""
         return {"output": tuple(x_shape)}
 
-    def eval_roofline(self) -> Tuple[int, int]:
-        if self._last_m is None or self.dtype is None:
-            raise RuntimeError(
-                "RMSNormFwdOp.eval_roofline() requires a prior forward() "
-                "call to bind the leading-dims product and the dtype."
-            )
-        m, n = self._last_m, self.N
-        elem_bytes = self.dtype.itemsize
-        return (4 * m * n, (2 * m * n + n) * elem_bytes)
-
     def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         """Apply RMS normalization over the trailing ``normalized_shape``.
 
@@ -153,6 +143,8 @@ class RMSNormFwdOp(Op):
         weight = weight.contiguous()
         kernel = self.kernel_for("rms_norm", (x, weight), x.dtype)
         self._last_m = x.numel() // self.N
+        # What the manifest roofline resolves ``x`` through.
+        self.x_shape = tuple(x.shape)
         return kernel(x, weight)
 
     def entry_for(self, role: str, call: torch.dtype) -> Entry:

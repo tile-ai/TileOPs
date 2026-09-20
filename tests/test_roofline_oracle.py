@@ -117,8 +117,8 @@ class TestBytesOracle:
 
         m, n = 16384, 8192
         op = RMSNormFwdOp.__new__(RMSNormFwdOp)
-        op._last_m = m
-        op.N = n
+        op.x_shape = (m, n)
+        op.normalized_shape = (n,)
         op.dtype = torch.float16
         oracle = _nbytes(
             ((m, n), torch.float16),
@@ -151,7 +151,9 @@ class TestBytesOracle:
         tokens, top_k, hidden = 512, 2, 128
         rows = tokens * top_k
         op = MoePostPermuteFwdOp.__new__(MoePostPermuteFwdOp)
-        op.input_shapes = [(rows, hidden), (tokens, top_k), (rows,)]
+        op.expert_output_shape = (rows, hidden)
+        op.topk_weights_shape = (tokens, top_k)
+        op.inverse_indices_shape = (rows,)
         op.dtype = torch.bfloat16
         oracle = _nbytes(
             ((rows, hidden), torch.bfloat16),
@@ -536,6 +538,27 @@ class TestBytesOracle:
         )
         assert op.eval_roofline()[1] == oracle
 
+    def test_instance_norm_counts_the_running_stats_only_in_eval_mode(self):
+        from tileops.ops.norm.instance_norm import InstanceNormFwdOp
+
+        x_shape, channels = (8, 128, 32, 32), 128
+        # running_mean and running_var normalize the input only when the op was
+        # built with use_input_stats=False; otherwise they are not read.
+        for use_input_stats in (True, False):
+            op = InstanceNormFwdOp.__new__(InstanceNormFwdOp)
+            op.x_shape = x_shape
+            op.weight_shape = op.bias_shape = None
+            op.running_mean_shape = op.running_var_shape = (channels,)
+            op.use_input_stats = use_input_stats
+            op.dtype = torch.float16
+            reads_stats = not use_input_stats
+            oracle = _nbytes(
+                (x_shape, torch.float16),
+                *((((channels,), torch.float32),) * 2 if reads_stats else ()),
+                (x_shape, torch.float16),
+            )
+            assert op.eval_roofline()[1] == oracle, f"use_input_stats={use_input_stats}"
+
 
 # Classification registry: every implemented op appears in AUDITED (has a
 # bytes-oracle case above) or PENDING. There is no exemption: an op whose
@@ -560,6 +583,7 @@ AUDITED = frozenset(
         "GroupedQueryAttentionBwdOp",
         "GroupedQueryAttentionDenseFwdOp",
         "IndexedExpertMLPFwdOp",
+        "InstanceNormFwdOp",
         "LerpTensorFwdOp",
         "Mamba2FwdOp",
         "MaskedFillFwdOp",
@@ -652,7 +676,6 @@ PENDING = frozenset(
         "HardswishFwdOp",
         "HardtanhFwdOp",
         "InfNormFwdOp",
-        "InstanceNormFwdOp",
         "IsfiniteFwdOp",
         "IsinfFwdOp",
         "IsnanFwdOp",

@@ -92,13 +92,6 @@ class MoePermuteAlignFwdOp(Op):
             "num_tokens_post_pad": (1,),
         }
 
-    def eval_roofline(self) -> tuple[int, int]:
-        max_padded, num_blocks = self._padded_extents(self.numel)
-        return (
-            0,
-            self.numel * 4 + max_padded * 4 + num_blocks * 4 + 4,
-        )
-
     def forward(self, topk_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run permute-align.
 
