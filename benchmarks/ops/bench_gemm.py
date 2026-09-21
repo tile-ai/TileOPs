@@ -300,6 +300,34 @@ def _flashinfer_fp8_per_tensor_unsupported_reason(device: torch.device) -> Optio
 _W4A16_BASELINE_MAX_DRIFT = 1e-2
 
 
+def _require_w4a16_baseline(tag: str) -> None:
+    """Raise unless *tag* can run, rather than quietly leaving it out.
+
+    Args:
+        tag: The baseline entry to check, as the row names it.
+
+    Raises:
+        RuntimeError: vLLM is absent, or its build registers no such operator.
+    """
+    try:
+        import vllm._custom_ops  # noqa: F401  (registers the operators below)
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise RuntimeError(
+            f"the W4A16 rows compare against {tag}, which needs the `vllm` of the "
+            f"`bench` extra: {exc}"
+        ) from exc
+
+    # `vllm._custom_ops` wraps every operator whether or not the build compiled
+    # it, so ask the registry the wrapper calls into.
+    entry_point = {"marlin": "marlin_gemm"}[tag.split("-")[0]]
+    if not hasattr(torch.ops._C, entry_point):
+        raise RuntimeError(
+            f"this vLLM build registers no {entry_point}, so the W4A16 rows cannot "
+            f"be compared against {tag}; it was built without the architecture "
+            "that kernel needs"
+        )
+
+
 def _prepare_marlin_w4a16_baseline(
     m: int,
     n: int,
@@ -391,63 +419,6 @@ def _prepare_marlin_w4a16_baseline(
         )
 
     return _run_marlin, (activation, qweight, scales, zeros, workspace)
-
-
-def _prepare_machete_w4a16_baseline(
-    m: int,
-    n: int,
-    k: int,
-    activation: torch.Tensor,
-    packed_weight: torch.Tensor,
-    weight_scale: torch.Tensor,
-    weight_zero: torch.Tensor,
-) -> tuple[Callable[..., torch.Tensor], tuple[Any, ...]]:
-    """Machete, vLLM's CUTLASS mixed-input GEMM, on the same logical weights.
-
-    Marlin is the faster of the two while the token count is small, and Machete
-    takes over once the shape is a real GEMM, so the pair brackets the W4A16
-    state of the art across this op's workloads.
-    """
-    from vllm import _custom_ops as ops
-    from vllm.model_executor.layers.quantization.utils.machete_utils import (
-        check_machete_supports_shape,
-    )
-    from vllm.model_executor.layers.quantization.utils.quant_utils import (
-        pack_quantized_values_into_int32,
-    )
-    from vllm.scalar_type import scalar_types
-
-    supported, reason = check_machete_supports_shape(k, n)
-    if not supported:
-        raise ValueError(f"Machete W4A16 baseline does not take this shape: {reason}")
-
-    weight_type = scalar_types.uint4
-    packed_i32 = packed_weight.to(torch.int32)
-    logical_q = torch.stack((packed_i32 & 0xF, packed_i32 >> 4), dim=-1).reshape(n, k)
-    # Machete reads B K-major with K packed into int32, through its own prepack.
-    b_q = pack_quantized_values_into_int32(logical_q.T.contiguous(), weight_type, packed_dim=0)
-    b_q = ops.machete_prepack_B(
-        b_q.t().contiguous().t(),
-        a_type=activation.dtype,
-        b_type=weight_type,
-        group_scales_type=activation.dtype,
-    )
-    scales = weight_scale.T.to(activation.dtype).contiguous()
-    # Machete takes the zero point pre-scaled and negated: it adds this term
-    # rather than subtracting the zero before the multiply.
-    zeros = (-1.0 * scales * weight_zero.T.to(activation.dtype)).contiguous()
-
-    def _run_machete(a: torch.Tensor, b: torch.Tensor, s: torch.Tensor, z: torch.Tensor):
-        return ops.machete_mm(
-            a=a,
-            b_q=b,
-            b_type=weight_type,
-            b_group_scales=s,
-            b_group_zeros=z,
-            b_group_size=GROUP_SIZE,
-        )
-
-    return _run_machete, (activation, b_q, scales, zeros)
 
 
 def _gemm_args(w: dict, dtype: torch.dtype) -> tuple:
@@ -622,20 +593,17 @@ def test_gemm_w4a16_bench(
     }
 
     # Every arm reorders the same logical weight its own way, here, outside the
-    # timed region. Both run on every row: Marlin leads at a few tokens and
-    # Machete from a few dozen, so timing one of them reports a win the other
-    # would have taken.
+    # timed region.
     logical = (inputs[0], workload.row_major_weight, inputs[2], inputs[3])
     candidates: list[tuple[str, Callable[..., Any]]] = [
         (f"marlin-{mode}", functools.partial(_prepare_marlin_w4a16_baseline, m, n, k, fp32))
         for mode, fp32 in (("fp32", True), ("fp16", False))
     ]
-    candidates.append(("machete", functools.partial(_prepare_machete_w4a16_baseline, m, n, k)))
-
     for tag, prepare in candidates:
+        _require_w4a16_baseline(tag)
         try:
             baseline, baseline_inputs = prepare(*logical)
-        except (ImportError, ModuleNotFoundError, ValueError) as exc:
+        except ValueError as exc:
             # A shape the baseline's packing cannot address drops its tag.
             print(f"  [skip] {tag}: {exc}")
             continue
