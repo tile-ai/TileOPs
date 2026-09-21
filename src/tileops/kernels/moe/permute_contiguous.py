@@ -1,5 +1,6 @@
 """Layout-specialized contiguous materialization for staged MoE PrePermute."""
 
+import math
 from typing import Optional
 
 import tilelang
@@ -364,7 +365,8 @@ class MoePrePermuteContiguousKernel(Kernel):
         self.capacity = (
             self.numel
             if self.layout_key == "tight_physical_psum"
-            else self.numel + self.num_experts * (self.alignment - 1)
+            else math.ceil((self.numel + self.num_experts * (self.alignment - 1)) / self.alignment)
+            * self.alignment
         )
         self.init_config(config, tune)
 

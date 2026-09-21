@@ -140,18 +140,17 @@ def test_supply_prog_keeps_every_row_in_the_k_loop():
     params = [
         _FakeKernelParam("float16", [batch_sum, k]),
         _FakeKernelParam("float16", [batch_count, n, k]),
-        *(_FakeKernelParam("int32", [batch_count]) for _ in range(3)),
+        *(_FakeKernelParam("int32", [batch_count]) for _ in range(2)),
     ]
     supplied = kernel.autotune_supply_prog(params)
 
     assert [list(t.shape) for t in supplied] == [p.shape for p in params]
-    sizes, offsets, padded_offsets = supplied[2:]
+    sizes, offsets = supplied[2:]
     assert int(sizes.sum()) == batch_sum
     assert int(offsets[0]) == 0 and int(offsets[-1]) == batch_sum - int(sizes[-1])
-    assert int(padded_offsets[-1]) + int(sizes[-1]) == batch_sum
 
-    # A fourth such parameter must fail rather than silently receive the offsets.
-    with pytest.raises(RuntimeError, match="expects 3 int32"):
+    # A third such parameter must fail rather than silently receive the offsets.
+    with pytest.raises(RuntimeError, match="expects 2 int32"):
         kernel.autotune_supply_prog(params + [_FakeKernelParam("int32", [batch_count])])
 
 
