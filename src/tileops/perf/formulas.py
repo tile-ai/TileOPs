@@ -1002,7 +1002,9 @@ def gemm_w4a16_fwd_roofline(op: "Op") -> tuple[int, int]:
     flops = 2 * m * n * k
     activation_bytes = m * k * elem_bytes
     packed_weight_bytes = n * k // 2
-    metadata_bytes = n * groups * (4 + 1)
+    # One scale in the activation dtype plus one UINT8 zero point per
+    # (row, group), matching the manifest's weight_scale / weight_zero dtypes.
+    metadata_bytes = n * groups * (elem_bytes + 1)
     output_bytes = m * n * elem_bytes
     return int(flops), int(activation_bytes + packed_weight_bytes + metadata_bytes + output_bytes)
 

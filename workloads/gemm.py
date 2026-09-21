@@ -102,8 +102,16 @@ class GemmFp8Workload(WorkloadBase):
 def quantize_weight_int4(
     weight: torch.Tensor,
     group_size: int = W4A16_GROUP_SIZE,
+    scale_dtype: torch.dtype = torch.float16,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Affine group-wise quantize and pack a logical ``[N, K]`` weight tensor."""
+    """Affine group-wise quantize and pack a logical ``[N, K]`` weight tensor.
+
+    Args:
+        weight: Logical weight, $[N \\times K]$.
+        group_size: How many K values one scale and zero point cover.
+        scale_dtype: Storage dtype of the scale, which follows the activation
+            dtype an INT4 checkpoint is served at.
+    """
     if weight.ndim != 2:
         raise ValueError(f"weight must be rank 2, got shape {tuple(weight.shape)}")
     n, k = weight.shape
@@ -115,19 +123,28 @@ def quantize_weight_int4(
     grouped = weight.float().reshape(n, k // group_size, group_size)
     group_min = grouped.amin(dim=-1).clamp_max(0)
     group_max = grouped.amax(dim=-1).clamp_min(0)
-    scale = ((group_max - group_min) / 15.0).clamp_min(1e-12)
-    zero = torch.round(-group_min / scale).clamp(0, 15).to(torch.uint8)
+    # The scale is stored in `scale_dtype`, so round to it before deriving
+    # anything from it: the zero point, the nibbles and the dequantized
+    # reference all have to describe the weight the kernel reconstructs from
+    # the stored value. Clamping after the cast keeps a degenerate all-zero
+    # group on the smallest normal of that dtype rather than at an FP32
+    # epsilon that flushes to zero in FP16.
+    scale = (
+        ((group_max - group_min) / 15.0).to(scale_dtype).clamp_min(torch.finfo(scale_dtype).tiny)
+    )
+    scale_f = scale.float()
+    zero = torch.round(-group_min / scale_f).clamp(0, 15).to(torch.uint8)
     quantized = (
-        torch.round(grouped / scale.unsqueeze(-1) + zero.float().unsqueeze(-1))
+        torch.round(grouped / scale_f.unsqueeze(-1) + zero.float().unsqueeze(-1))
         .clamp(0, 15)
         .to(torch.uint8)
     )
 
     unsigned = quantized.reshape(n, k)
     packed = unsigned[:, 0::2] | (unsigned[:, 1::2] << 4)
-    dequantized = ((quantized.float() - zero.float().unsqueeze(-1)) * scale.unsqueeze(-1)).reshape(
-        n, k
-    )
+    dequantized = (
+        (quantized.float() - zero.float().unsqueeze(-1)) * scale_f.unsqueeze(-1)
+    ).reshape(n, k)
     return packed.contiguous(), scale.contiguous(), zero.contiguous(), dequantized
 
 
@@ -151,7 +168,7 @@ class GemmW4A16Workload(WorkloadBase):
         activation = torch.randn(self.m, self.k, device="cuda", dtype=self.dtype)
         source_weight = torch.randn(self.n, self.k, device="cuda", dtype=torch.float32) * 0.25
         packed, scale, zero, dequantized = quantize_weight_int4(
-            source_weight, group_size=self.group_size
+            source_weight, group_size=self.group_size, scale_dtype=self.dtype
         )
         self._dequantized_weight = dequantized.to(self.dtype).contiguous()
         return activation, packed, scale, zero

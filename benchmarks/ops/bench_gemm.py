@@ -338,7 +338,7 @@ def _prepare_marlin_w4a16_baseline(
         get_weight_perm(4),
     )
     scales = marlin_permute_scales(
-        weight_scale.T.to(torch.float16).contiguous(),
+        weight_scale.T.to(activation.dtype).contiguous(),
         k,
         n,
         GROUP_SIZE,

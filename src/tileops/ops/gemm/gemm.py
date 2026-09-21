@@ -395,6 +395,42 @@ class GemmW4A16FwdOp(Op):
     and the high nibble stores odd K. ``weight_scale`` and ``weight_zero`` are
     group128 metadata with shape $[N \\times K/128]$. The product is
     ``activation @ W.T``.
+
+    ``weight_scale`` is stored in the activation dtype, the format an INT4
+    checkpoint is served at and the only one the INT4 kernels this op is
+    compared against accept. A caller holding FP32 scales casts them once at
+    load time; the cast is not applied per call, so a scale outside the range
+    of that dtype must be rescaled before quantization.
+
+    What the op takes on:
+
+    - **$N$ is unconstrained.** The kernels predicate the weight-row tail, so no
+      shape is padded at load and no output is sliced per call. A tensor-parallel
+      shard whose $N$ is not a multiple of a tile is served directly.
+    - **$K$ must be a multiple of ``group_size``**, because one weight tile
+      carries one group's scale.
+    - **One entry point, whatever the token count.** Which kernel runs is chosen
+      from $M$ inside the op; a caller never selects one.
+    - **Every product is exact and $K$ accumulates in FP32.** Rounding each
+      product to FP16 measures faster and is not done: the dequantized
+      reference and the INT4 kernels this op is compared against both keep
+      their products exact, so approximating here would be a deviation only
+      this op makes.
+
+    What it does not do, and what to do instead:
+
+    - **No symmetric mode.** ``weight_zero`` is always read, so symmetric
+      quantization is expressed by filling it with the constant zero point the
+      scheme centers on. That is exact; what is missing is only the path that
+      drops the subtraction, which is one operation per weight.
+    - **``group_size`` is 128.** Other group sizes, including per-channel, are
+      refused at construction rather than served slowly.
+    - **No fused bias**, and no batched weight: ``activation`` and
+      ``packed_weight`` are rank 2. Add a bias to the result.
+    - **Activations are FP16.** Both kernels are written over a dtype parameter
+      and reproduce the reference in BF16 exactly, so this is a declaration the
+      op has not taken on rather than a limit of the code; the BF16 GEMV band
+      is the slower of the two and closing that comes first.
     """
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
@@ -444,9 +480,10 @@ class GemmW4A16FwdOp(Op):
             raise ValueError(
                 f"GemmW4A16FwdOp expects uint8 packed_weight, got {packed_weight.dtype}"
             )
-        if weight_scale.dtype != torch.float32:
+        if weight_scale.dtype != activation.dtype:
             raise ValueError(
-                f"GemmW4A16FwdOp expects float32 weight_scale, got {weight_scale.dtype}"
+                f"GemmW4A16FwdOp expects weight_scale in the activation dtype "
+                f"{activation.dtype}, got {weight_scale.dtype}"
             )
         if weight_zero.dtype != torch.uint8:
             raise ValueError(f"GemmW4A16FwdOp expects uint8 weight_zero, got {weight_zero.dtype}")
@@ -541,7 +578,8 @@ class GemmW4A16FwdOp(Op):
             activation: Activations, $[M \\times K]$, ``torch.float16``.
             packed_weight: Weights, $[N \\times K/2]$, ``torch.uint8`` — two INT4
                 values per byte, even $K$ in the low nibble.
-            weight_scale: Group scales, $[N \\times K/128]$, ``torch.float32``.
+            weight_scale: Group scales, $[N \\times K/128]$, in the activation
+                dtype.
             weight_zero: Group zero points, $[N \\times K/128]$, ``torch.uint8``.
 
         Returns:

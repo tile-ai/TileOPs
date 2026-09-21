@@ -556,19 +556,22 @@ def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("k_index", [0, 127, 128, 383])
-def test_gemm_w4a16_gemv_preserves_fp32_scale(k_index: int) -> None:
-    """A basis vector exposes exact nibble, group, and weight-rounding errors."""
+def test_gemm_w4a16_gemv_is_exact_on_a_basis_vector(k_index: int) -> None:
+    """A basis vector exposes exact nibble, group, and zero-point indexing errors."""
     n, k = 35, 384
     rows = torch.arange(n)[:, None]
     quantized = (rows + torch.arange(k)[None, :]) % 16
     zero = ((3 * rows + torch.arange(k // 128)[None, :]) % 16).to(torch.uint8)
-    scale = 0.03137 + torch.arange(n * (k // 128), dtype=torch.float32).reshape(n, -1) * 0.001147
+    # Every (row, group) gets its own scale, so reading the wrong one is visible.
+    scale = (
+        0.03137 + torch.arange(n * (k // 128), dtype=torch.float32).reshape(n, -1) * 0.001147
+    ).to(torch.float16)
     packed = (quantized[:, 0::2] | (quantized[:, 1::2] << 4)).to(torch.uint8)
     group = k_index // 128
     centered = quantized[:, k_index].float() - zero[:, group].float()
-    expected = (centered * scale[:, group]).half()[None, :]
-    # These scales distinguish the contract from rounding scales to A16 first.
-    assert not torch.equal(expected[0], (centered * scale[:, group].half().float()).half())
+    # One weight reaches the output, so the scaled product must be bit-exact:
+    # the stored scale widens to FP32 and rounds to FP16 once, on the store.
+    expected = (centered * scale[:, group].float()).half()[None, :]
     activation = torch.zeros((1, k), device="cuda", dtype=torch.float16)
     activation[0, k_index] = 1
     actual = GemmW4A16FwdOp()(activation, packed.cuda(), scale.cuda(), zero.cuda())
@@ -589,8 +592,12 @@ def test_quantize_weight_int4_keeps_one_sided_groups_in_range() -> None:
 
     assert torch.equal(zero, torch.tensor([[0], [15]], dtype=torch.uint8))
     assert torch.all(scale > 0)
-    torch.testing.assert_close(dequantized[0].max(), weight[0].max())
-    torch.testing.assert_close(dequantized[1].min(), weight[1].min())
+    # The group extremum lands on the top nibble rather than being clipped, but
+    # the scale is stored in FP16, so it reproduces to that scale's resolution
+    # (one ULP, 2**-11) and not exactly.
+    fp16_scale_ulp = 2.0**-11
+    torch.testing.assert_close(dequantized[0].max(), weight[0].max(), rtol=fp16_scale_ulp, atol=0)
+    torch.testing.assert_close(dequantized[1].min(), weight[1].min(), rtol=fp16_scale_ulp, atol=0)
 
 
 @pytest.mark.smoke
@@ -702,6 +709,19 @@ def test_gemm_w4a16_rejects_invalid_metadata_shapes() -> None:
 
     with pytest.raises(ValueError, match="packed_weight shape mismatch"):
         op(activation, packed_weight[:, :-1], weight_scale, weight_zero)
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_rejects_a_scale_outside_the_activation_dtype() -> None:
+    """Marlin reads the scale as the activation type and Machete refuses to prepack
+    anything else, so a scale in another dtype is a caller error, not a cast to make.
+    """
+    test = GemmW4A16Test(64, 64, 128, torch.float16)
+    activation, packed_weight, weight_scale, weight_zero = test.gen_inputs()
+    op = GemmW4A16FwdOp()
+
+    with pytest.raises(ValueError, match="weight_scale in the activation dtype"):
+        op(activation, packed_weight, weight_scale.float(), weight_zero)
 
 
 @GemvBoundaryFixture

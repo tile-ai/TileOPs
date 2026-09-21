@@ -129,7 +129,7 @@ GemmW4A16FwdOp:
     inputs:
       activation: {dtype: "float16", shape: "[M, K]"}
       packed_weight: {dtype: "uint8", shape: "[N, K_PACKED]"}
-      weight_scale: {dtype: "float32", shape: "[N, GROUPS]"}
+      weight_scale: {dtype: "same_as(activation)", shape: "[N, GROUPS]"}
       weight_zero: {dtype: "uint8", shape: "[N, GROUPS]"}
     outputs:
       output: {dtype: "same_as(activation)", shape: "[M, N]"}

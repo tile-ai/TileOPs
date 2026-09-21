@@ -236,7 +236,7 @@ def _gemm_cases():
         return GemmW4A16FwdOp(), (
             _x(_M, _K),
             torch.randint(0, 255, (_N, _K // 2), dtype=torch.uint8, device="cuda"),
-            _x(_N, _K // group, dtype=torch.float32).abs(),
+            _x(_N, _K // group).abs(),  # the scale follows the activation dtype
             torch.randint(0, 15, (_N, _K // group), dtype=torch.uint8, device="cuda"),
         )
 

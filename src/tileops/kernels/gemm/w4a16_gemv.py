@@ -48,14 +48,14 @@ def _gemm_w4a16_gemv_kernel(n: int, k: int, dtype: str) -> Callable:
         def main(
             activation: T.Tensor((1, k), dtype),  # type: ignore
             packed_weight: T.Tensor((n, k // 2), "uint8"),  # type: ignore
-            weight_scale: T.Tensor((n, k // GROUP_SIZE), "float32"),  # type: ignore
+            weight_scale: T.Tensor((n, k // GROUP_SIZE), dtype),  # type: ignore
             weight_zero: T.Tensor((n, k // GROUP_SIZE), "uint8"),  # type: ignore
             output: T.Tensor((1, n), dtype),  # type: ignore
         ) -> None:
             with T.Kernel(T.ceildiv(n, block_n), threads=threads) as bx:
                 activation_shared = T.alloc_shared((1, block_k), dtype)
                 packed_shared = T.alloc_shared((block_n, packed_k), "uint8")
-                scale_shared = T.alloc_shared((block_n, tile_groups), "float32")
+                scale_shared = T.alloc_shared((block_n, tile_groups), dtype)
                 zero_shared = T.alloc_shared((block_n, tile_groups), "uint8")
                 products = T.alloc_fragment((block_n, packed_k // BYTES_PER_SLOT), "float")
                 partial = T.alloc_fragment((block_n,), "float")
@@ -116,7 +116,7 @@ def _gemm_w4a16_gemv_kernel(n: int, k: int, dtype: str) -> Callable:
                             scale_shared[i, g] = T.if_then_else(
                                 n_start + i < n,
                                 weight_scale[n_start + i, kk * tile_groups + g],
-                                T.cast(0, "float32"),
+                                T.cast(0, dtype),
                             )
                             zero_shared[i, g] = T.if_then_else(
                                 n_start + i < n,
@@ -132,7 +132,7 @@ def _gemm_w4a16_gemv_kernel(n: int, k: int, dtype: str) -> Callable:
                             activation_local[v] = activation_shared[0, col * 8 + v]
                         for v in T.vectorized(4):
                             packed_local[v] = packed_shared[row, col * 4 + v]
-                        scale_local[0] = scale_shared[row, col // 16]
+                        scale_local[0] = T.cast(scale_shared[row, col // 16], "float32")
                         zero_local[0] = T.cast(zero_shared[row, col // 16], "int32")
                         # Each half-warp holds the complete lookup for its
                         # group. Preserve FP32 affine math and A16 rounding,

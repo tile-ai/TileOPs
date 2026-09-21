@@ -53,7 +53,7 @@ def _gemm_w4a16_kernel(
         def main(
             activation: T.Tensor((m, k), dtype),  # type: ignore
             packed_weight: T.Tensor((n, k // 2), "uint8"),  # type: ignore
-            weight_scale: T.Tensor((n, k // group_size), "float32"),  # type: ignore
+            weight_scale: T.Tensor((n, k // group_size), dtype),  # type: ignore
             weight_zero: T.Tensor((n, k // group_size), "uint8"),  # type: ignore
             output: T.Tensor((m, n), dtype),  # type: ignore
         ) -> None:
@@ -65,7 +65,7 @@ def _gemm_w4a16_kernel(
                 activation_shared = T.alloc_shared((block_m, block_k), dtype)
                 weight_shared = T.alloc_shared((block_n, block_k), dtype)
                 packed_weight_shared = T.alloc_shared((block_n, block_k // 2), "uint8")
-                weight_scale_shared = T.alloc_shared((block_n,), "float32")
+                weight_scale_shared = T.alloc_shared((block_n,), dtype)
                 weight_zero_shared = T.alloc_shared((block_n,), "uint8")
                 output_local = T.alloc_fragment((block_m, block_n), "float")
                 packed_local = T.alloc_local((4,), "uint8")
@@ -112,7 +112,7 @@ def _gemm_w4a16_kernel(
                         weight_scale_shared[i] = T.if_then_else(
                             n_start + i < n,
                             weight_scale[n_start + i, k_start // group_size],
-                            T.cast(0, "float32"),
+                            T.cast(0, dtype),
                         )
                         weight_zero_shared[i] = T.if_then_else(
                             n_start + i < n,
@@ -123,7 +123,7 @@ def _gemm_w4a16_kernel(
                     for chunk in T.serial(block_n * block_k // 2 // (threads * 4)):
                         packed_base = chunk * threads * 4 + tx * 4
                         scale_row = packed_base // (block_k // 2)
-                        scale_local[0] = T.cast(weight_scale_shared[scale_row], dtype)
+                        scale_local[0] = weight_scale_shared[scale_row]
                         zero_local[0] = T.cast(weight_zero_shared[scale_row], dtype)
 
                         for v in T.vectorized(4):

@@ -166,8 +166,8 @@ class TestBytesOracle:
         oracle = (
             _nbytes(((m, k), torch.float16), ((m, n), torch.float16))
             + n * k // 2  # int4 weights: two per byte
-            + n * groups * 4  # per-group scales, float32
-            + n * groups * 1  # per-group zero points, int8
+            + n * groups * 2  # per-group scales, in the activation dtype
+            + n * groups * 1  # per-group zero points, uint8
         )
         assert op.eval_roofline()[1] == oracle
 
