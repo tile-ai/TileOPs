@@ -389,7 +389,10 @@ def _make_prim_func(
             g = C_l[i, j]
             u = C_up[i, j]
             if activation == "silu_and_mul":
-                C_s[i, j] = T.cast(g * T.sigmoid(g) * u, cd_dtype)
+                # sigmoid(g) as 0.5 + 0.5 * tanh(g / 2): identical output, and
+                # SM90 retires tanhf far cheaper than T.sigmoid's expf + division.
+                half = T.cast(0.5, accum_dtype)
+                C_s[i, j] = T.cast(g * (half + half * T.tanh(half * g)) * u, cd_dtype)
             else:  # gelu_and_mul, exact erf form
                 half = T.cast(0.5, accum_dtype)
                 one = T.cast(1.0, accum_dtype)
