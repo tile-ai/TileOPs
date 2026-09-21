@@ -738,6 +738,11 @@ def _synthesize_inline_mode(
     return fn
 
 
+# Set on every ``eval_roofline`` this module builds. Absent on a method an op
+# defines itself, which is what the ownership guard reads.
+SYNTHESIZED = "__tileops_synthesized_roofline__"
+
+
 def synthesize_eval_roofline(
     op_name: str,
     *,
@@ -770,8 +775,14 @@ def synthesize_eval_roofline(
     if has_func and has_inline:
         raise ValueError(f"{op_name}: roofline cannot mix func and inline modes")
     if has_func:
-        return _synthesize_func_mode(op_name, roofline["func"])
-    return _synthesize_inline_mode(op_name, roofline, signature)
+        fn = _synthesize_func_mode(op_name, roofline["func"])
+    else:
+        fn = _synthesize_inline_mode(op_name, roofline, signature)
+    # What tells a generated evaluator from one an op wrote: the installer
+    # stands aside for a hand-written method, and only this marker says which
+    # of the two an op ended up with.
+    setattr(fn, SYNTHESIZED, True)
+    return fn
 
 
 def maybe_install_eval_roofline(cls: type) -> None:

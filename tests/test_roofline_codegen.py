@@ -120,3 +120,124 @@ class TestRealOpSmoke:
         flops, total_bytes = op.eval_roofline()
         assert flops == 6 * N
         assert total_bytes == 2 * N * elem
+
+
+# Ops whose `eval_roofline` the installer stands aside for. The value names the
+# class that owns the method and the codegen capability its absence rests on:
+# when that capability lands, the entry goes and the method with it.
+HAND_EVALUATED = {
+    "MoePrePermuteFwdOp": (
+        "MoePrePermuteFwdOp",
+        "its output extents follow the layout spec the call passes, and the "
+        "vars layer binds inputs and params only",
+    ),
+}
+
+
+class TestEvaluatorOwnership:
+    """Who owns `eval_roofline`, op by op.
+
+    The installer stands aside without a word for a class that defines the
+    method itself, so an op can leave the manifest behind by adding one method.
+    That is how 98 of 175 entries came to state a formula nothing ran.
+    """
+
+    @staticmethod
+    def _owner(cls):
+        """The class whose `eval_roofline` an instance of *cls* would call."""
+        for base in cls.__mro__:
+            if "eval_roofline" in base.__dict__:
+                return base
+        return None
+
+    def _implemented(self):
+        import importlib
+
+        from tileops.manifest import load_manifest
+
+        for name, entry in load_manifest().items():
+            if entry.get("status") != "implemented":
+                continue
+            module = entry["source"]["op"].removesuffix(".py").replace("/", ".")
+            cls = getattr(importlib.import_module(module), name, None)
+            if cls is not None:
+                yield name, cls
+
+    def test_the_manifest_entry_is_what_runs_unless_an_op_is_registered(self):
+        from tileops.ops._roofline_codegen import SYNTHESIZED
+
+        unregistered = []
+        for name, cls in self._implemented():
+            owner = self._owner(cls)
+            if getattr(owner.__dict__["eval_roofline"], SYNTHESIZED, False):
+                continue
+            if name not in HAND_EVALUATED:
+                unregistered.append(f"{name} (owned by {owner.__name__})")
+        assert not unregistered, (
+            f"these ops evaluate their own roofline and say nowhere why: {unregistered}; "
+            "their manifest entry states a formula nothing runs"
+        )
+
+    def test_a_registered_op_owns_the_method_where_it_says(self):
+        from tileops.ops._roofline_codegen import SYNTHESIZED
+
+        implemented = dict(self._implemented())
+        stale = sorted(set(HAND_EVALUATED) - set(implemented))
+        assert not stale, f"registered but not implemented: {stale}"
+        for name, (expected_owner, reason) in HAND_EVALUATED.items():
+            owner = self._owner(implemented[name])
+            assert not getattr(owner.__dict__["eval_roofline"], SYNTHESIZED, False), (
+                f"{name} is registered as hand-evaluated and codegen now serves it; drop the entry"
+            )
+            assert owner.__name__ == expected_owner, f"{name}: {owner.__name__}"
+            assert reason and not reason.endswith("."), name
+
+
+class TestCallPayload:
+    """A formula reads the call an op ran, not what its constructor defaulted to."""
+
+    def test_an_op_that_has_not_run_says_so(self):
+        """Distinct from the ValueError an unwired op raises: this one is the
+        caller's sequencing, and the audit reports it as such."""
+        from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
+
+        op = GroupedQueryAttentionDenseFwdOp.__new__(GroupedQueryAttentionDenseFwdOp)
+        op._roofline_kwargs = None
+        with pytest.raises(RuntimeError, match="requires a prior forward"):
+            op.eval_roofline()
+
+    def test_a_payload_that_is_not_a_mapping_is_the_author_s_wiring(self):
+        from tileops.perf.formulas import _shape_or_attrs
+
+        class _Miswired:
+            def __init__(self):
+                self._roofline_kwargs = (1, 2)
+
+        with pytest.raises(ValueError, match="mapping"):
+            _shape_or_attrs(_Miswired(), {})
+
+    def test_the_payload_wins_over_a_construction_default(self):
+        """`out_dtype` is settled at construction and restated by the call; the
+        call is what moved the bytes."""
+        import torch
+
+        from tileops.perf.formulas import _shape_or_attrs
+
+        class _Op:
+            def __init__(self):
+                self.out_dtype = torch.float32
+                self._roofline_kwargs = {"out_dtype": torch.float16, "q_shape": (1, 2, 3, 4)}
+
+        data = _shape_or_attrs(_Op(), {})
+        assert data["out_dtype"] is torch.float16
+        assert data["q_shape"] == (1, 2, 3, 4)
+
+    def test_an_attribute_the_payload_omits_survives(self):
+        from tileops.perf.formulas import _shape_or_attrs
+
+        class _Op:
+            def __init__(self):
+                self.is_causal = True
+                self._roofline_kwargs = {"q_shape": (1, 2, 3, 4)}
+
+        assert _shape_or_attrs(_Op(), {})["is_causal"] is True

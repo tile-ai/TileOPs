@@ -174,7 +174,7 @@ Codegen is the authoritative gate for name and form correctness. A formula refer
 
 Codegen emits an `eval_roofline()` method returning `(flops: int, bytes: int)` for every op that does not define one. The method signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md); this document specifies only how the body is generated from the manifest.
 
-An op that defines the method itself keeps it, and codegen installs nothing. That is for an op whose call needs translating before the formula sees it — packed lengths read off cumulative bounds, an optional tensor set the row does not carry — or whose entry the vars layer cannot express, and its entry says which. Everywhere else the entry is what runs, so changing it changes the number.
+An op that defines the method itself keeps it, and codegen installs nothing. That is for an op whose entry the vars layer cannot express, and its entry says which. Where a formula needs what the call bound rather than what the op was built with, the op states it in `_roofline_kwargs` and the formula reads it — the entry still runs. Everywhere else the entry is what runs, so changing it changes the number.
 
 ```python
 def eval_roofline(self) -> tuple[int, int]:

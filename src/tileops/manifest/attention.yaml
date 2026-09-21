@@ -147,8 +147,7 @@ GroupedQueryAttentionDenseFwdOp:
 
   roofline:
     # The call decides which optional tensors it passes, and the formula prices
-    # the set it ran with. The op gathers that set and answers this one; see
-    # its eval_roofline.
+    # the set it ran with; the op states that set for it in _roofline_kwargs.
     func: "tileops.perf.formulas.gqa_fwd_roofline"
 
   source:
@@ -593,7 +592,7 @@ GroupedQueryAttentionPrefillVarlenFwdOp:
 
   roofline:
     # The formula prices per-request lengths, which the call passes as cumulative
-    # bounds. The op differences them and answers this one; see its eval_roofline.
+    # bounds; the op states those bounds for it in _roofline_kwargs.
     func: "tileops.perf.formulas.gqa_prefill_varlen_fwd_roofline"
 
   source:

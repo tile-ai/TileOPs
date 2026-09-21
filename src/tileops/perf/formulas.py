@@ -85,12 +85,40 @@ __all__ = [
 ]
 
 
+#: What an op stores for the call it ran, where the formula prices something the
+#: op's attributes cannot state on their own: the optional tensors a call
+#: passed, the bounds it packed its requests into.
+CALL_PAYLOAD = "_roofline_kwargs"
+
+
 def _shape_or_attrs(op: Any | None, kwargs: dict[str, Any]) -> dict[str, Any]:
-    if op is not None and not isinstance(op, dict):
-        return vars(op)
+    """What a formula reads: the op's attributes, overlaid with the call's payload.
+
+    The payload wins where both name a thing, because it describes the call
+    that ran while an attribute may hold what construction defaulted to.
+
+    Raises:
+        RuntimeError: The op declares a payload and has not run a call.
+        ValueError: The payload is neither a mapping nor None, which is the
+            author's wiring rather than the caller's sequencing.
+    """
+    if op is None:
+        return kwargs
     if isinstance(op, dict):
         return op
-    return kwargs
+    data = dict(vars(op))
+    if CALL_PAYLOAD not in data:
+        return data
+    payload = data.pop(CALL_PAYLOAD)
+    if payload is None:
+        raise RuntimeError(f"{type(op).__name__}.eval_roofline() requires a prior forward() call")
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"{type(op).__name__} stores {CALL_PAYLOAD} as {type(payload).__name__}; "
+            "a formula reads it as a mapping of what the call bound"
+        )
+    data.update(payload)
+    return data
 
 
 def mha_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -395,8 +423,6 @@ def gqa_prefill_varlen_fwd_roofline(
     Causal mode uses bottom-right alignment independently per request.
     """
     data = _shape_or_attrs(op, kwargs)
-    if "q_shape" not in data and data.get("_roofline_kwargs") is not None:
-        data = dict(data["_roofline_kwargs"])
     q_shape = data["q_shape"]
     k_shape = data["k_shape"]
     total_q, heads, dim = q_shape
