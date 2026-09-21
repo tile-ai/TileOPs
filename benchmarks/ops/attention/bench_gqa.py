@@ -466,7 +466,7 @@ def _fa3_gqa_varlen(
 
 
 def _flashinfer_gqa_varlen(
-    test: GQAPrefillVarlenFwdWorkload,
+    test: GroupedQueryAttentionVarlenFwdWorkload,
     window_size_left: int,
     window_size_right: int,
     *inputs: torch.Tensor,
@@ -554,9 +554,7 @@ def test_gqa_varlen_fwd_bench(
             fa3_fn, functors["torch-ref"], *inputs, **reference_tolerance(dtype)
         )
         functors["fa3"] = fa3_fn
-    flashinfer_fn = _flashinfer_gqa_varlen(
-        test, window_size_left, window_size_right, *inputs
-    )
+    flashinfer_fn = _flashinfer_gqa_varlen(test, window_size_left, window_size_right, *inputs)
     if flashinfer_fn is not None:
         assert_matches_reference(
             flashinfer_fn, functors["torch-ref"], *inputs, **reference_tolerance(dtype)

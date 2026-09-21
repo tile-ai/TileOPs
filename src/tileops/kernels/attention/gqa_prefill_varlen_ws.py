@@ -528,48 +528,15 @@ class GQAPrefillVarlenWsKernel(VarlenKernel):
     def entry_for(cls, call):
         return varlen_entry(cls, call)
 
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        dim: int,
-        is_causal: bool,
-        dtype: torch.dtype,
-        sm_scale: Optional[float] = None,
-        softcap: float = 0.0,
-        window_size_left: int = -1,
-        window_size_right: int = -1,
-        accum_dtype: torch.dtype = torch.float32,
-        config: Optional[dict] = None,
-        tune: bool = False,
-        *,
-        device_index: Optional[int] = None,
-    ) -> None:
-        super().__init__(
-            batch,
-            heads,
-            heads_kv,
-            dim,
-            is_causal,
-            dtype,
-            sm_scale,
-            softcap,
-            window_size_left,
-            window_size_right,
-            accum_dtype,
-            config,
-            tune,
-            device_index=device_index,
-        )
-        self.kernel = _gqa_prefill_varlen_ws_kernel(
-            batch,
-            heads,
-            heads_kv,
-            dim,
-            is_causal,
+    def _make_kernel(self):
+        return _gqa_prefill_varlen_ws_kernel(
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.dim,
+            self.is_causal,
             self.sm_scale,
-            softcap,
+            self.softcap,
             self.dtype_str,
         )
 

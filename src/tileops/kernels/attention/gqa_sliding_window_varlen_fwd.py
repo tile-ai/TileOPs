@@ -222,10 +222,7 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
                 else True
             )
             full_tile = (
-                (q_start + block_m <= q_len)
-                & (tile_end <= kv_len)
-                & right_is_full
-                & left_is_full
+                (q_start + block_m <= q_len) & (tile_end <= kv_len) & right_is_full & left_is_full
             )
             if not full_tile:
                 apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset)

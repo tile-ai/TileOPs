@@ -175,11 +175,7 @@ def _gqa_prefill_varlen_fwd_kernel(
                         full_tile = (
                             (q_row[0] + block_m <= q_len)
                             & (tile_end <= kv_len)
-                            & (
-                                (tile_end <= q_row[0] + causal_offset + 1)
-                                if is_causal
-                                else True
-                            )
+                            & ((tile_end <= q_row[0] + causal_offset + 1) if is_causal else True)
                         )
                         if not full_tile:
                             for i, j in T.Parallel(block_m, block_n):
