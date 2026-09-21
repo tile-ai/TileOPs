@@ -27,53 +27,57 @@ __all__ = [
 
 @dataclasses.dataclass(frozen=True)
 class _HeuristicPolicy:
-    smem_capacity: int = 232448
-    max_stages: int = 16
-    smem_alignment_slack: int = 6 * 1024
+    """The constants the selector reads, in three kinds a reader must tell apart.
+
+    Hardware facts describe an SM90 device. Fitted values are only as good as
+    the measurement behind them; refitting one means forcing every legal config
+    of a descriptor through ``spec_from_config``, checking it against a
+    reference, and timing the candidate set interleaved in one repeat loop in a
+    fresh order each round -- medians of seven rounds on an idle device. The
+    exclusion is neither: it patches a tile the cost function misprices.
+    """
+
+    # Hardware, SM90.
+    smem_capacity: int = 232448  # shared memory one CTA can be given
     wgmma_m: int = 64
     element_bytes: int = 2
+    max_stages: int = 16
+    smem_alignment_slack: int = 6 * 1024
+
+    # The candidate set `layout_candidates` enumerates.
     block_k: int = 64
     block_n_step: int = 64
-    # The depth a narrower output staging is worth taking to reach, and the
-    # depth past which it is not worth taking at all. A stage is worth about
-    # 1/(stages - 1) of an arrival, so the sixth buys a fifth of what the fourth
-    # did while the store rounds cost the same either way: measured over 184
-    # descriptors, staging a ring that already holds six stages lost on every
-    # one it moved, by up to 17.7%, and staging a shallower one won 15 of 16.
+    block_n_max: int = 256
+
+    # Fitted: depth to reach, depth past which not to bother, wave count past
+    # which the store rounds are all that is left.
     staged_epilogue_stages: int = 4
     staged_epilogue_depth_cap: int = 6
-    # The staged epilogue buys a mainloop stage and pays a store round per tile.
-    # The stage is worth that only while an SM's tiles cannot cover each other's
-    # TMA latency; past this many waves they can, and the extra round is all
-    # that is left. Measured over 32 padded shapes on five model families: below
-    # it staging wins by 2.5-7%, above it it loses by 2.5-4.4%, and the crossover
-    # sits between 16 and 24 waves.
     staged_epilogue_wave_limit: int = 20
-    # A tile hides its TMA latency behind the next tile, so the pipeline depth it
-    # affords only decides when there is no next tile: few waves *and* too few
-    # tiles to fill the SMs. Either alone is not it -- three waves over a full
-    # device still overlaps. hiding_stages is the depth past which deepening the
-    # ring buys nothing, and lands on the same four stages the staged epilogue
-    # above is there to reach. All three are read off the measured inversions on
-    # five model families, where the model's ranking and the device's agree
-    # outside the shallow region and invert inside it.
+
+    # Fitted: a shallow ring only costs where both hold -- few waves, and too
+    # few tiles to fill the SMs.
     shallow_wave_limit: int = 4
     shallow_tiles_per_sm: float = 2.5
     hiding_stages: int = 4
-    # Tile widths to keep out of the calibrated physical-psum candidate sets.
-    # A WGMMA whose N is not a power of two issues as two instructions and carries
-    # the register pressure of the wider one, which the cycle model below does not
-    # see: it prices a tile by block_m + block_n, so it reads 192 as cheap wherever
-    # 192 divides n. On the measured tight layout it is far worse than that --
-    # across five model families a 192-wide tile runs 1.6-3.3x slower than the next
-    # candidate, and one shape ran the same tile at 148us tight against 38us
-    # padded. Both physical-psum layouts were included in the acceptance sweep;
-    # non-M-grouped layouts were not, so the exclusion stays on those two layouts.
+
+    # Fitted: the band where one tile beats whatever the cost function scores.
+    short_group_rows: int = 32
+    short_group_min_k: int = 1024
+    short_group_unfused_max_n: int = 5120
+    short_group_tile: tuple[int, int, int] = (64, 128, 128)
+
+    # A patch, not a fit: the cost function prices a tile by block_m + block_n
+    # and so reads a 192-wide tile as cheap, while its WGMMA issues twice.
     block_n_excluded: tuple[int, ...] = (192,)
 
     @property
     def barrier_bytes(self) -> int:
         return self.max_stages * 8 * 2
+
+
+#: One instance for the process: nothing varies it per call.
+_POLICY = _HeuristicPolicy()
 
 
 class GemmType(str, enum.Enum):
@@ -269,9 +273,17 @@ class GemmDesc:
     expected_m: int = 0
     activation: str = "none"
     device_name: str = ""
-    policy: _HeuristicPolicy = dataclasses.field(
-        default_factory=_HeuristicPolicy, init=False, repr=False
-    )
+
+    @property
+    def policy(self) -> _HeuristicPolicy:
+        """The selector's constants. A module singleton, not per-descriptor state.
+
+        A field would join this frozen dataclass's equality, and so the key of
+        ``get_best_config``'s cache and of anything comparing two descriptors --
+        which silently makes descriptors from two builds of the selector
+        incomparable.
+        """
+        return _POLICY
 
     @property
     def fused(self) -> bool:
@@ -319,27 +331,17 @@ class _LayoutFeatures:
     ``num_blocks`` tiles, so a per-tile figure divides by that count.
     """
 
-    num_m_blocks: int
-    num_n_blocks: int
     num_blocks: int
 
-    # Waves of the persistent grid, tiles the last one leaves running, and the
-    # share of the grid's block slots a wave actually fills.
+    # Waves of the persistent grid, the share of a wave's block slots that are
+    # filled, and the tiles an SM runs.
     num_waves: int
-    last_wave_util: int
     wave_efficiency: float
     tiles_per_sm: float
 
-    # The contraction one tile runs; K-grouped splits K between its groups.
-    effective_k: int
-    k_tiles: int
-
     l1_bytes: int
     l2_bytes: int
-    output_bytes: int
-
     num_stages: int
-    wgmma_issues: int
 
 
 def _align(x: int, a: int) -> int:
@@ -395,18 +397,19 @@ def layout_candidates(desc: GemmDesc) -> list[_Layout]:
         # Masked and tight rows have no alignment to honour; short groups want 64.
         block_m_candidates = [64, 128]
 
-    block_n_candidates = list(range(desc.policy.block_n_step, 256 + 1, desc.policy.block_n_step))
+    policy = desc.policy
+    block_n_candidates = list(
+        range(policy.block_n_step, policy.block_n_max + 1, policy.block_n_step)
+    )
     if desc.gemm_type in _CALIBRATED_PSUM_TYPES:
-        block_n_candidates = [
-            bn for bn in block_n_candidates if bn not in desc.policy.block_n_excluded
-        ]
+        block_n_candidates = [bn for bn in block_n_candidates if bn not in policy.block_n_excluded]
 
     candidates = []
     for block_m in block_m_candidates:
         for block_n in block_n_candidates:
             if block_m > 128 and block_n > 128:
                 continue
-            layout = _Layout(block_m, block_n, desc.policy.block_k)
+            layout = _Layout(block_m, block_n, policy.block_k)
             stages = _num_stages(desc, layout)
             if stages < 3 or (block_m * block_n < 128 * 192 and stages < 4):
                 continue
@@ -429,15 +432,6 @@ def _num_m_blocks(desc: GemmDesc, block_m: int) -> int:
             rows_per_group = desc.m / max(1, desc.num_groups)
         return desc.num_groups * math.ceil(rows_per_group / block_m)
     return math.ceil(desc.get_expected_m() / block_m)
-
-
-def _wgmma_issues(block_n: int) -> int:
-    """WGMMA instructions one k-step of a ``block_n``-wide tile issues.
-
-    The accumulator is built from the power-of-two widths ``block_n`` decomposes
-    into, so a 192-wide tile issues the 128 and the 64 separately.
-    """
-    return bin(block_n).count("1")
 
 
 def _layout_features(desc: GemmDesc, layout: _Layout) -> _LayoutFeatures:
@@ -465,24 +459,17 @@ def _layout_features(desc: GemmDesc, layout: _Layout) -> _LayoutFeatures:
     bytes_cd = layout.block_m * c_width * elem_cd
 
     return _LayoutFeatures(
-        num_m_blocks=num_m_blocks,
-        num_n_blocks=num_n_blocks,
         num_blocks=num_blocks,
         num_waves=num_waves,
-        last_wave_util=num_blocks - (num_waves - 1) * desc.num_sms if num_blocks else 0,
         wave_efficiency=num_blocks / (num_waves * desc.num_sms) if num_blocks else 0.0,
         tiles_per_sm=num_blocks / desc.num_sms,
-        effective_k=effective_k,
-        k_tiles=math.ceil(effective_k / layout.block_k),
         l1_bytes=(bytes_l1_ab + bytes_l1_tc + bytes_cd) * num_blocks,
         l2_bytes=(bytes_l2_ab + bytes_cd) * num_blocks,
-        output_bytes=bytes_cd * num_blocks,
         num_stages=_num_stages(desc, layout),
-        wgmma_issues=_wgmma_issues(layout.block_n),
     )
 
 
-def _legacy_cost(desc: GemmDesc, layout: _Layout, features: _LayoutFeatures) -> int:
+def _tile_cycles(desc: GemmDesc, layout: _Layout, features: _LayoutFeatures) -> int:
     """Estimated cycles: the bandwidth a wave moves, over how full that wave is."""
     if features.num_blocks == 0:  # a call with no rows or no columns runs nothing
         return 0
@@ -512,21 +499,23 @@ def _legacy_cost(desc: GemmDesc, layout: _Layout, features: _LayoutFeatures) -> 
 
 def _best_layout(desc: GemmDesc, candidates: list[_Layout]) -> _Layout:
     """The tile the cycle model prefers."""
-    return min(candidates, key=lambda lay: _legacy_cost(desc, lay, _layout_features(desc, lay)))
+    return min(candidates, key=lambda lay: _tile_cycles(desc, lay, _layout_features(desc, lay)))
 
 
 def _short_group_layout(desc: GemmDesc) -> _Layout | None:
+    """The tile pinned for short tight groups, or ``None`` outside that band."""
+    policy = desc.policy
     rows_per_group = math.ceil(desc.m / desc.num_groups)
     if (
         desc.h200
         and desc.gemm_type is GemmType.M_GROUPED_TIGHT_PSUM
         and desc.ab_dtype == desc.cd_dtype
         and desc.activation in ("none", "silu_and_mul")
-        and rows_per_group <= 32
-        and desc.k >= 1024
-        and (desc.activation != "none" or desc.n <= 5120)
+        and rows_per_group <= policy.short_group_rows
+        and desc.k >= policy.short_group_min_k
+        and (desc.activation != "none" or desc.n <= policy.short_group_unfused_max_n)
     ):
-        return _Layout(64, 128, 128)
+        return _Layout(*policy.short_group_tile)
     return None
 
 

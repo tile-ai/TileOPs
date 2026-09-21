@@ -400,170 +400,89 @@ def test_grouped_selector_calibration_stays_on_physical_psum_layouts():
     assert get_best_config(beyond).epilogue_stage_n == 0
 
 
+def _mg(gemm_type, rows_per_group, n, k, groups=16, **kw):
+    """One m-grouped or K-grouped descriptor, given the rows each group carries."""
+    return dict(gemm_type=gemm_type, m=rows_per_group * groups, n=n, k=k, num_groups=groups, **kw)
+
+
+_MN_MAJOR = dict(major_a=Major.MN, major_b=Major.MN)
+
 # The spec the selector returns today for one descriptor per gemm type, per
 # device branch and per layout family, as (block_m, block_n, block_k,
 # num_stages, epilogue_stage_n). Purpose: regression. The selection is a fitted
 # model, so a change that moves any row here changes what ships for that whole
 # family and has to be re-measured rather than re-recorded.
+_GOLDEN_SPECS = {
+    "dense": (dict(gemm_type=GemmType.DENSE, m=4096, n=4096, k=4096), (128, 256, 64, 4, 128)),
+    "dense-gated": (
+        dict(gemm_type=GemmType.DENSE, m=512, n=36864, k=7168, activation="silu_and_mul"),
+        (128, 192, 64, 4, 0),
+    ),
+    "dense-h100": (
+        dict(gemm_type=GemmType.DENSE, m=4096, n=4096, k=4096, device_name="NVIDIA H100"),
+        (128, 256, 64, 3, 0),
+    ),
+    "batched": (dict(m=1024, n=1024, k=1024, num_groups=8), (128, 256, 64, 4, 128)),
+    "batched-fp32": (
+        dict(m=1024, n=1024, k=1024, num_groups=8, cd_dtype="float32"),
+        (128, 192, 64, 4, 96),
+    ),
+    "batched-mn-major": (
+        dict(m=2048, n=2048, k=512, num_groups=4, **_MN_MAJOR),
+        (128, 256, 64, 4, 128),
+    ),
+    "tight-psum-decode": (
+        _mg(GemmType.M_GROUPED_TIGHT_PSUM, 8, 4096, 7168),
+        (64, 128, 128, 4, 0),
+    ),
+    "tight-psum-prefill": (
+        _mg(GemmType.M_GROUPED_TIGHT_PSUM, 2048, 4096, 7168),
+        (128, 256, 64, 3, 0),
+    ),
+    "tight-per-row": (
+        _mg(GemmType.M_GROUPED_TIGHT_PER_ROW, 512, 7168, 2048),
+        (128, 256, 64, 3, 0),
+    ),
+    "aligned-psum-staged": (
+        _mg(GemmType.M_GROUPED_ALIGNED_PSUM, 512, 1536, 2048),
+        (128, 256, 64, 4, 64),
+    ),
+    "aligned-psum-many-waves": (
+        _mg(GemmType.M_GROUPED_ALIGNED_PSUM, 4096, 4096, 7168),
+        (128, 256, 64, 3, 0),
+    ),
+    "aligned-per-row-64": (
+        _mg(GemmType.M_GROUPED_ALIGNED_PER_ROW, 512, 3072, 5120, m_alignment=64),
+        (64, 256, 64, 5, 128),
+    ),
+    "aligned-per-row-256": (
+        _mg(GemmType.M_GROUPED_ALIGNED_PER_ROW, 512, 3072, 5120, m_alignment=256),
+        (256, 128, 64, 4, 32),
+    ),
+    "masked": (
+        dict(
+            gemm_type=GemmType.M_GROUPED_MASKED,
+            m=1024,
+            n=4096,
+            k=7168,
+            num_groups=8,
+            expected_m=256,
+        ),
+        (128, 256, 64, 4, 64),
+    ),
+    "k-grouped": (
+        _mg(GemmType.K_GROUPED_CONTIGUOUS, 256, 4096, 4096, **_MN_MAJOR),
+        (128, 256, 64, 4, 64),
+    ),
+    "k-grouped-short": (
+        _mg(GemmType.K_GROUPED_CONTIGUOUS, 256, 2048, 512, groups=8, **_MN_MAJOR),
+        (128, 256, 64, 4, 64),
+    ),
+}
+
+
 @pytest.mark.full
-@pytest.mark.parametrize(
-    "fields,expected",
-    [
-        pytest.param(
-            dict(gemm_type=GemmType.DENSE, m=4096, n=4096, k=4096),
-            (128, 256, 64, 4, 128),
-            id="dense",
-        ),
-        pytest.param(
-            dict(
-                gemm_type=GemmType.DENSE,
-                m=512,
-                n=36864,
-                k=7168,
-                activation="silu_and_mul",
-            ),
-            (128, 192, 64, 4, 0),
-            id="dense-gated",
-        ),
-        pytest.param(
-            dict(gemm_type=GemmType.DENSE, m=4096, n=4096, k=4096, device_name="NVIDIA H100"),
-            (128, 256, 64, 3, 0),
-            id="dense-h100",
-        ),
-        pytest.param(
-            dict(m=1024, n=1024, k=1024, num_groups=8),
-            (128, 256, 64, 4, 128),
-            id="batched",
-        ),
-        pytest.param(
-            dict(m=1024, n=1024, k=1024, num_groups=8, cd_dtype="float32"),
-            (128, 192, 64, 4, 96),
-            id="batched-fp32",
-        ),
-        pytest.param(
-            dict(m=2048, n=2048, k=512, num_groups=4, major_a=Major.MN, major_b=Major.MN),
-            (128, 256, 64, 4, 128),
-            id="batched-mn-major",
-        ),
-        pytest.param(
-            dict(
-                gemm_type=GemmType.M_GROUPED_TIGHT_PSUM,
-                m=16 * 8,
-                n=4096,
-                k=7168,
-                num_groups=16,
-            ),
-            (64, 128, 128, 4, 0),
-            id="tight-psum-decode",
-        ),
-        pytest.param(
-            dict(
-                gemm_type=GemmType.M_GROUPED_TIGHT_PSUM,
-                m=16 * 2048,
-                n=4096,
-                k=7168,
-                num_groups=16,
-            ),
-            (128, 256, 64, 3, 0),
-            id="tight-psum-prefill",
-        ),
-        pytest.param(
-            dict(
-                gemm_type=GemmType.M_GROUPED_TIGHT_PER_ROW,
-                m=16 * 512,
-                n=7168,
-                k=2048,
-                num_groups=16,
-            ),
-            (128, 256, 64, 3, 0),
-            id="tight-per-row",
-        ),
-        pytest.param(
-            dict(
-                gemm_type=GemmType.M_GROUPED_ALIGNED_PSUM,
-                m=16 * 512,
-                n=1536,
-                k=2048,
-                num_groups=16,
-            ),
-            (128, 256, 64, 4, 64),
-            id="aligned-psum-staged",
-        ),
-        pytest.param(
-            dict(
-                gemm_type=GemmType.M_GROUPED_ALIGNED_PSUM,
-                m=16 * 4096,
-                n=4096,
-                k=7168,
-                num_groups=16,
-            ),
-            (128, 256, 64, 3, 0),
-            id="aligned-psum-many-waves",
-        ),
-        pytest.param(
-            dict(
-                gemm_type=GemmType.M_GROUPED_ALIGNED_PER_ROW,
-                m=16 * 512,
-                n=3072,
-                k=5120,
-                num_groups=16,
-                m_alignment=64,
-            ),
-            (64, 256, 64, 5, 128),
-            id="aligned-per-row-64",
-        ),
-        pytest.param(
-            dict(
-                gemm_type=GemmType.M_GROUPED_ALIGNED_PER_ROW,
-                m=16 * 512,
-                n=3072,
-                k=5120,
-                num_groups=16,
-                m_alignment=256,
-            ),
-            (256, 128, 64, 4, 32),
-            id="aligned-per-row-256",
-        ),
-        pytest.param(
-            dict(
-                gemm_type=GemmType.M_GROUPED_MASKED,
-                m=1024,
-                n=4096,
-                k=7168,
-                num_groups=8,
-                expected_m=256,
-            ),
-            (128, 256, 64, 4, 64),
-            id="masked",
-        ),
-        pytest.param(
-            dict(
-                gemm_type=GemmType.K_GROUPED_CONTIGUOUS,
-                m=4096,
-                n=4096,
-                k=4096,
-                num_groups=16,
-                major_a=Major.MN,
-                major_b=Major.MN,
-            ),
-            (128, 256, 64, 4, 64),
-            id="k-grouped",
-        ),
-        pytest.param(
-            dict(
-                gemm_type=GemmType.K_GROUPED_CONTIGUOUS,
-                m=2048,
-                n=2048,
-                k=512,
-                num_groups=8,
-                major_a=Major.MN,
-                major_b=Major.MN,
-            ),
-            (128, 256, 64, 4, 64),
-            id="k-grouped-short",
-        ),
-    ],
-)
+@pytest.mark.parametrize("fields,expected", _GOLDEN_SPECS.values(), ids=_GOLDEN_SPECS)
 def test_selector_golden_specs(fields, expected):
     spec = get_best_config(_desc(**{"device_name": "NVIDIA H200", **fields}))
     got = (spec.block_m, spec.block_n, spec.block_k, spec.num_stages, spec.epilogue_stage_n)
