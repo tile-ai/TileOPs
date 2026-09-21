@@ -153,6 +153,21 @@ GemmW4A16FwdOp:
   - {m: 1, n: 8192, k: 16384, dtypes: [float16], label: "decode-hbm-streaming-threshold"}
   - {m: 1, n: 7168, k: 20480, dtypes: [float16], label: "decode-non-power2-low-cta"}
   - {m: 1, n: 8192, k: 81920, dtypes: [float16], label: "decode-long-k-pressure"}
+  # The token axis at one shape. Server batching lands here, and the kernel
+  # picks a different tile at each of these counts.
+  - {m: 2, n: 8192, k: 8192, dtypes: [float16], label: "batched-decode-two-requests"}
+  - {m: 8, n: 8192, k: 8192, dtypes: [float16], label: "batched-decode-server-batch"}
+  - {m: 32, n: 8192, k: 8192, dtypes: [float16], label: "batched-decode-wide-batch"}
+  - {m: 128, n: 8192, k: 8192, dtypes: [float16], label: "chunked-prefill-tile"}
+  - {m: 512, n: 8192, k: 8192, dtypes: [float16], label: "prefill-mlp-up-projection"}
+  # Hidden sizes other than 8192, where the decode rows above do not predict the
+  # result: at 4096 and 5120 this op loses the token counts it wins at 8192.
+  - {m: 1, n: 4096, k: 14336, dtypes: [float16], label: "decode-llama3-8b-mlp-down"}
+  - {m: 128, n: 4096, k: 14336, dtypes: [float16], label: "prefill-llama3-8b-mlp-down"}
+  - {m: 128, n: 5120, k: 25600, dtypes: [float16], label: "prefill-qwen3-32b-mlp-down"}
+  # A tensor-parallel shard: N is a fraction of the layer's, so the grid is far
+  # smaller than the machine and the per-CTA work dominates.
+  - {m: 1, n: 1024, k: 8192, dtypes: [float16], label: "decode-tp8-attention-out"}
 
   roofline:
     func: "tileops.perf.formulas.gemm_w4a16_fwd_roofline"

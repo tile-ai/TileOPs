@@ -294,6 +294,12 @@ def _flashinfer_fp8_per_tensor_unsupported_reason(device: torch.device) -> Optio
     return None
 
 
+# Relative to the output's own scale. Two implementations of the same
+# dequantization differ by 1e-4 here; a baseline given the wrong weight layout
+# differs by ~1.
+_W4A16_BASELINE_MAX_DRIFT = 1e-2
+
+
 def _prepare_marlin_w4a16_baseline(
     m: int,
     n: int,
@@ -385,6 +391,63 @@ def _prepare_marlin_w4a16_baseline(
         )
 
     return _run_marlin, (activation, qweight, scales, zeros, workspace)
+
+
+def _prepare_machete_w4a16_baseline(
+    m: int,
+    n: int,
+    k: int,
+    activation: torch.Tensor,
+    packed_weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    weight_zero: torch.Tensor,
+) -> tuple[Callable[..., torch.Tensor], tuple[Any, ...]]:
+    """Machete, vLLM's CUTLASS mixed-input GEMM, on the same logical weights.
+
+    Marlin is the faster of the two while the token count is small, and Machete
+    takes over once the shape is a real GEMM, so the pair brackets the W4A16
+    state of the art across this op's workloads.
+    """
+    from vllm import _custom_ops as ops
+    from vllm.model_executor.layers.quantization.utils.machete_utils import (
+        check_machete_supports_shape,
+    )
+    from vllm.model_executor.layers.quantization.utils.quant_utils import (
+        pack_quantized_values_into_int32,
+    )
+    from vllm.scalar_type import scalar_types
+
+    supported, reason = check_machete_supports_shape(k, n)
+    if not supported:
+        raise ValueError(f"Machete W4A16 baseline does not take this shape: {reason}")
+
+    weight_type = scalar_types.uint4
+    packed_i32 = packed_weight.to(torch.int32)
+    logical_q = torch.stack((packed_i32 & 0xF, packed_i32 >> 4), dim=-1).reshape(n, k)
+    # Machete reads B K-major with K packed into int32, through its own prepack.
+    b_q = pack_quantized_values_into_int32(logical_q.T.contiguous(), weight_type, packed_dim=0)
+    b_q = ops.machete_prepack_B(
+        b_q.t().contiguous().t(),
+        a_type=activation.dtype,
+        b_type=weight_type,
+        group_scales_type=activation.dtype,
+    )
+    scales = weight_scale.T.to(activation.dtype).contiguous()
+    # Machete takes the zero point pre-scaled and negated: it adds this term
+    # rather than subtracting the zero before the multiply.
+    zeros = (-1.0 * scales * weight_zero.T.to(activation.dtype)).contiguous()
+
+    def _run_machete(a: torch.Tensor, b: torch.Tensor, s: torch.Tensor, z: torch.Tensor):
+        return ops.machete_mm(
+            a=a,
+            b_q=b,
+            b_type=weight_type,
+            b_group_scales=s,
+            b_group_zeros=z,
+            b_group_size=GROUP_SIZE,
+        )
+
+    return _run_machete, (activation, b_q, scales, zeros)
 
 
 def _gemm_args(w: dict, dtype: torch.dtype) -> tuple:
@@ -558,35 +621,38 @@ def test_gemm_w4a16_bench(
         "torch-dequantized-matmul": workload.torch_dequantized_matmul,
     }
 
-    if m == 1:
-        for reduce_mode, use_fp32_reduce in (("fp32", True), ("fp16", False)):
-            try:
-                # Every arm gets the same logical weight and reorders it its
-                # own way, here, outside the timed region.
-                marlin, marlin_inputs = _prepare_marlin_w4a16_baseline(
-                    m,
-                    n,
-                    k,
-                    use_fp32_reduce,
-                    inputs[0],
-                    workload.row_major_weight,
-                    inputs[2],
-                    inputs[3],
-                )
-            except (ImportError, ModuleNotFoundError) as exc:
-                print(f"  [skip] marlin-{reduce_mode}: {exc}")
-                continue
-            actual = marlin(*marlin_inputs)
-            if actual.shape != (m, n) or not torch.isfinite(actual).all():
-                raise RuntimeError("Marlin W4A16 baseline smoke check failed")
-            # A baseline that does not reproduce the reference is dropped from
-            # the comparison rather than compared against under a wrong layout.
-            try:
-                torch.testing.assert_close(actual, expected, atol=7e-2, rtol=5e-2)
-            except AssertionError as exc:
-                print(f"  [skip] marlin-{reduce_mode} disagrees with the reference: {exc}")
-                continue
-            torch.cuda.synchronize()
-            functors[f"marlin-{reduce_mode}"] = (marlin, marlin_inputs)
+    # Every arm reorders the same logical weight its own way, here, outside the
+    # timed region. Both run on every row: Marlin leads at a few tokens and
+    # Machete from a few dozen, so timing one of them reports a win the other
+    # would have taken.
+    logical = (inputs[0], workload.row_major_weight, inputs[2], inputs[3])
+    candidates: list[tuple[str, Callable[..., Any]]] = [
+        (f"marlin-{mode}", functools.partial(_prepare_marlin_w4a16_baseline, m, n, k, fp32))
+        for mode, fp32 in (("fp32", True), ("fp16", False))
+    ]
+    candidates.append(("machete", functools.partial(_prepare_machete_w4a16_baseline, m, n, k)))
+
+    for tag, prepare in candidates:
+        try:
+            baseline, baseline_inputs = prepare(*logical)
+        except (ImportError, ModuleNotFoundError, ValueError) as exc:
+            # A shape the baseline's packing cannot address drops its tag.
+            print(f"  [skip] {tag}: {exc}")
+            continue
+        actual = baseline(*baseline_inputs)
+        if actual.shape != (m, n) or not torch.isfinite(actual).all():
+            raise RuntimeError(f"{tag} W4A16 baseline smoke check failed")
+        # The question here is whether the baseline was handed the right weights,
+        # not whether it is as accurate as this op, so the error is judged
+        # against the output's own scale. A wrong layout reads as O(1); a
+        # different accumulation order over a long K reads as O(1e-3). An
+        # elementwise tolerance cannot tell them apart, because one output of a
+        # long dot product lands near zero and no absolute bound survives it.
+        drift = (actual.float() - expected.float()).abs().mean() / expected.float().abs().mean()
+        if drift > _W4A16_BASELINE_MAX_DRIFT:
+            print(f"  [skip] {tag} disagrees with the reference: mean error is {drift:.1%}")
+            continue
+        torch.cuda.synchronize()
+        functors[tag] = (baseline, baseline_inputs)
 
     bm.compare(functors, *inputs)
