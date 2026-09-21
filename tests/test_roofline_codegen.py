@@ -170,6 +170,8 @@ class TestEvaluatorOwnership:
         for name, cls in self._implemented():
             owner = self._owner(cls)
             if getattr(owner.__dict__["eval_roofline"], SYNTHESIZED, False):
+                # Generated for this class, not inherited from another op's entry.
+                assert owner is cls, f"{name} runs {owner.__name__}'s entry, not its own"
                 continue
             if name not in HAND_EVALUATED:
                 unregistered.append(f"{name} (owned by {owner.__name__})")
@@ -241,3 +243,64 @@ class TestCallPayload:
                 self._roofline_kwargs = {"q_shape": (1, 2, 3, 4)}
 
         assert _shape_or_attrs(_Op(), {})["is_causal"] is True
+
+
+class TestInheritedEvaluator:
+    """An op that subclasses another op answers its own entry.
+
+    The installer stands aside for a hand-written method, and a generated one on
+    a parent looks the same from the child's side. Standing aside there would
+    run the parent's formula for the child's entry, which is the bypass this
+    module exists to prevent.
+    """
+
+    @staticmethod
+    def _op(name, bytes_expr, base=None):
+        from tileops.ops.op_base import Op
+
+        return type(
+            name,
+            (base or Op,),
+            {
+                "__manifest_status__": "implemented",
+                "__manifest_signature__": {
+                    "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
+                    "outputs": {"y": {"dtype": "same_as(x)"}},
+                },
+                "__manifest_roofline__": {
+                    "vars": {"N": "x.shape[0]"},
+                    "flops": "N",
+                    "bytes": bytes_expr,
+                },
+                "forward": lambda self, *a, **kw: None,
+                "_infer_output_shapes": lambda self, x_shape: {"y": x_shape},
+                "_validate_dtypes": lambda self, *a: None,
+                "default_kernel_map": property(lambda self: {}),
+            },
+        )
+
+    def test_a_subclass_runs_its_own_entry(self):
+        import torch
+
+        from tileops.ops._roofline_codegen import SYNTHESIZED
+
+        parent = self._op("_ParentOp", "2 * N * elem_bytes")
+        child = self._op("_ChildOp", "4 * N * elem_bytes", base=parent)
+
+        assert getattr(child.__dict__.get("eval_roofline"), SYNTHESIZED, False), (
+            "the child inherited the parent's generated evaluator"
+        )
+        instance = child.__new__(child)
+        instance.x_shape, instance.dtype = (128,), torch.float16
+        assert instance.eval_roofline()[1] == 4 * 128 * 2
+
+    def test_a_hand_written_parent_still_serves_its_subclass(self):
+        from tileops.ops.op_base import Op
+
+        class _Base(Op):
+            def eval_roofline(self):
+                return (1, 2)
+
+        child = self._op("_HandChildOp", "9 * N * elem_bytes", base=_Base)
+        assert "eval_roofline" not in child.__dict__
+        assert child.__new__(child).eval_roofline() == (1, 2)

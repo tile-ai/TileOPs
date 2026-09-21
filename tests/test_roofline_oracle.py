@@ -662,8 +662,8 @@ class TestBytesOracle:
         op = GroupedQueryAttentionPrefillVarlenFwdOp.__new__(
             GroupedQueryAttentionPrefillVarlenFwdOp
         )
-        # The op turns the call's cumulative bounds into per-request lengths before
-        # it prices anything, so the case states the bounds the call carried.
+        # The formula differences the call's cumulative bounds into per-request
+        # lengths, so the case states the bounds the call carried.
         op._roofline_kwargs = {
             "q_shape": (total_q, heads, dim),
             "k_shape": (total_kv, heads_kv, dim),

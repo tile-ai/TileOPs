@@ -813,10 +813,16 @@ def maybe_install_eval_roofline(cls: type) -> None:
     for base in cls.__mro__:
         if base is Op:
             break
-        if "eval_roofline" in base.__dict__:
-            # Manual override on cls or an intermediate base (e.g. UnaryOp,
-            # SoftmaxBase) — preserve it.
-            return
+        inherited = base.__dict__.get("eval_roofline")
+        if inherited is None:
+            continue
+        if getattr(inherited, SYNTHESIZED, False):
+            # A parent's generated evaluator answers that parent's entry. This
+            # class has an entry of its own, so it gets its own method.
+            break
+        # Manual override on cls or an intermediate base (e.g. UnaryOp,
+        # SoftmaxBase) — preserve it.
+        return
 
     roofline = getattr(cls, "__manifest_roofline__", None)
     sig = getattr(cls, "__manifest_signature__", None)
