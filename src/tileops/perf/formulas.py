@@ -85,9 +85,6 @@ __all__ = [
 ]
 
 
-# MHA prefill
-
-
 def _shape_or_attrs(op: Any | None, kwargs: dict[str, Any]) -> dict[str, Any]:
     if op is not None and not isinstance(op, dict):
         return vars(op)
@@ -118,9 +115,6 @@ def mha_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     nbytes = batch * 8 * heads * seq_len * dim * elem_bytes
     nbytes += batch * heads * seq_len * 4  # lse
     return int(flops), int(nbytes)
-
-
-# GQA prefill
 
 
 def gqa_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -540,9 +534,6 @@ def gqa_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     return int(flops), int(nbytes)
 
 
-# MHA decode
-
-
 def mha_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     """Roofline for paged MHA decode with KV cache."""
     data = _shape_or_attrs(op, kwargs)
@@ -567,9 +558,6 @@ def mha_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int
     )
     nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes + metadata_bytes
     return int(flops), int(nbytes)
-
-
-# GQA decode
 
 
 def gqa_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -645,9 +633,6 @@ def gqa_sliding_window_varlen_fwd_roofline(
     return int(flops), int(nbytes)
 
 
-# DeepSeek MLA / DSA decode
-
-
 def deepseek_mla_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     """Roofline for DeepSeek MLA decode with KV cache."""
     data = _shape_or_attrs(op, kwargs)
@@ -704,9 +689,6 @@ def deepseek_dsa_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[
     return int(flops), int(nbytes)
 
 
-# Elementwise — mixed-dtype ops requiring func-mode roofline
-
-
 def where_fwd_roofline(op: "Op") -> tuple[int, int]:
     """Roofline for ``torch.where`` forward (bool condition + float input/other).
 
@@ -726,8 +708,6 @@ def where_fwd_roofline(op: "Op") -> tuple[int, int]:
     return flops, nbytes
 
 
-# Clamp family (Tensor-bound variants)
-#
 # Func mode: ``N_total`` is post-broadcast, and ``broadcast_shapes`` is not in
 # the inline vars-layer namespace (docs/design/roofline.md §4.4.4), so inline
 # codegen cannot bind it. ``ClampScalarFwdOp`` stays inline — no broadcasting.
@@ -763,8 +743,6 @@ def lerp_tensor_fwd_roofline(op: "Op") -> tuple[int, int]:
     return 3 * n_total, (reads + n_total) * elem_bytes
 
 
-# MaskedFill family
-#
 # Func mode: out-of-place ``masked_fill`` broadcasts ``input`` against ``mask``
 # bidirectionally, and ``broadcast_shapes`` is not in the inline vars-layer
 # namespace (docs/design/roofline.md §4.4.4). One function serves both the
@@ -903,9 +881,6 @@ def bitwise_or_fwd_roofline(op: "Op") -> tuple[int, int]:
 
 def bitwise_xor_fwd_roofline(op: "Op") -> tuple[int, int]:
     return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
-
-
-# MoE
 
 
 def fused_topk_roofline(op: "Op") -> tuple[int, int]:

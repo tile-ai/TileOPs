@@ -83,6 +83,10 @@ dtype_combos:
 
 **R13. `shape_rules`.** Python expressions for shape relationships. Required when `shape` alone cannot fully specify output shape.
 
+**R13a. `tensor.shape == (<names>)` declares a shape.** With bare identifiers on the right it states the tensor's rank and names its axes, and those names are in scope for every rule, in any order. Reusing one asserts equality, as shared names in `shape` do (R11). An op declaring `shape` per tensor says the same thing there instead.
+
+**R13b. Every other rule is an assertion.** It is evaluated on its own, over the names R13a and the evaluation context supply. An equality outside R13a's form binds nothing, so a rule reading a name neither supplies asserts nothing. The conv and pool entries that define helpers this way are tracked in [#2161](https://github.com/tile-ai/TileOPs/issues/2161).
+
 **R14. Reduction `dim` semantics.** Live in `shape_rules`, written with the helpers in [`shape_rules.py`](../../src/tileops/manifest/shape_rules.py) — `dim_range_validity`, `dim_uniqueness`, `reduced_axes`, `reduced_shape` — which the op layer calls too, so the two cannot disagree. What an empty `dim` sequence means is per-op and named in the call.
 
 **R15. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. `--check-op <name>` forces L0-L4 on the targeted entry.
@@ -148,7 +152,7 @@ def forward(self, x: torch.Tensor):
 
 ### Evaluation context
 
-Shared with `shape_rules`: all `signature.inputs` tensor names (with `.shape` accessor) and all `signature.params` names.
+Shared with `shape_rules`: all `signature.inputs` tensor names (with `.shape` accessor), all `signature.params` names, and the dimension names the rules themselves introduce (R13a).
 
 ### Multi-input example — LinearFwdOp
 
