@@ -67,7 +67,6 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                 C: T.Tensor(C_shape, dtype),  # type: ignore
                 batch_sizes: T.Tensor([batch_count], "int32"),
                 batch_offsets: T.Tensor([batch_count], "int32"),
-                batch_padded_offsets: T.Tensor([batch_count], "int32"),
             ):
                 with T.Kernel(_num_pid_m * _num_pid_n, threads=threads) as (pid,):
                     A_shared = T.alloc_shared(A_shared_shape, dtype)
@@ -137,7 +136,6 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                 C: T.Tensor(C_shape, dtype),  # type: ignore
                 batch_sizes: T.Tensor([batch_count], "int32"),
                 batch_offsets: T.Tensor([batch_count], "int32"),
-                batch_padded_offsets: T.Tensor([batch_count], "int32"),
             ):
                 with T.Kernel(
                     batch_count, T.ceildiv(N, block_n) * T.ceildiv(K, block_k), threads=threads
@@ -231,10 +229,9 @@ class GroupedGemmKernel(Kernel):
     def autotune_supply_prog(self):
         """Supply autotuning the batch metadata a real call carries.
 
-        Both templates read a group's row count out of this metadata. Both offset
-        vectors take the tight prefix sum, which puts
-        ``batch_padded_offsets[-1] + batch_sizes[-1]`` at ``batch_sum`` and so
-        keeps every tile in the K-loop.
+        Both patterns read a group's row count and its start row out of this
+        metadata. The starts take the tight prefix sum, which puts the last
+        group's end at ``batch_sum`` and so keeps every tile inside ``A``.
         """
         from tilelang.utils.device import get_current_device
         from tilelang.utils.tensor import get_tensor_supply
@@ -251,15 +248,14 @@ class GroupedGemmKernel(Kernel):
             offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
 
             # Matched by position among themselves: the prim_func takes
-            # batch_sizes, then batch_offsets, then batch_padded_offsets.
+            # batch_sizes, then batch_offsets.
             is_metadata = [
                 str(p.dtype) == "int32" and list(p.shape) == [batch_count] for p in params
             ]
-            if sum(is_metadata) != 3:
+            if sum(is_metadata) != 2:
                 raise RuntimeError(
-                    f"autotuning {type(self).__name__} expects 3 int32 [{batch_count}] "
-                    f"parameters (batch_sizes, batch_offsets, batch_padded_offsets), "
-                    f"got {sum(is_metadata)}"
+                    f"autotuning {type(self).__name__} expects 2 int32 [{batch_count}] "
+                    f"parameters (batch_sizes, batch_offsets), got {sum(is_metadata)}"
                 )
 
             seen = 0
@@ -315,4 +311,5 @@ class GroupedGemmKernel(Kernel):
             self.config["num_stages"],
             self.config["threads"],
         )
-        return kernel(A, B, batch_sizes, batch_offsets, batch_padded_offsets)
+        # batch_padded_offsets is the op's third table; no pattern here reads it.
+        return kernel(A, B, batch_sizes, batch_offsets)
