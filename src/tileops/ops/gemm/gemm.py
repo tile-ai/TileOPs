@@ -10,8 +10,8 @@ from tileops.kernels.gemm.dense import (
     GemmTmaKernel,
     GemvKernel,
 )
-from tileops.kernels.gemm.w4a16 import GROUP_SIZE, GemmW4A16Kernel
-from tileops.kernels.gemm.w4a16_gemv import GemmW4A16GemvKernel
+from tileops.kernels.gemm.w4a16 import GROUP_SIZE, MMA_STEP_K, GemmW4A16Kernel
+from tileops.kernels.gemm.w4a16_repack import W4A16RepackKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
@@ -391,46 +391,46 @@ class GemmW4A16FwdOp(Op):
     """Dense W4A16 NT GEMM with group-wise affine weight dequantization.
 
     Public layout is ``activation``: $[M \\times K]$ and ``packed_weight``: $[N \\times K/2]$.
-    Two unsigned INT4 values are packed per byte: the low nibble stores even K
-    and the high nibble stores odd K. ``weight_scale`` and ``weight_zero`` are
-    group128 metadata with shape $[N \\times K/128]$. The product is
-    ``activation @ W.T``.
+    Two unsigned INT4 values are packed per byte. ``weight_scale`` and
+    ``weight_zero`` are group128 metadata with shape $[N \\times K/128]$. The
+    product is ``activation @ W.T``.
 
-    ``weight_scale`` is stored in the activation dtype, the format an INT4
-    checkpoint is served at and the only one the INT4 kernels this op is
-    compared against accept. A caller holding FP32 scales casts them once at
-    load time; the cast is not applied per call, so a scale outside the range
-    of that dtype must be rescaled before quantization.
+    ``packed_weight`` must be what ``repack`` returns. Call it once when a
+    checkpoint loads, on the row-major packing (even $K$ in the low nibble), and
+    keep all three results: the permutation costs about as much as one GEMM over
+    the same weight, so it is not an inference-path step.
+
+    **Nothing about the tensor records which order it is in.** A weight that has
+    not been through the repack has the same shape and dtype and produces wrong
+    numbers rather than an error.
+
+    ``weight_scale`` is stored in the activation dtype. A caller holding FP32
+    scales casts them once at load time; the cast is not applied per call, so a
+    scale outside the range of that dtype must be rescaled before quantization.
 
     What the op takes on:
 
-    - **$N$ is unconstrained.** The kernels predicate the weight-row tail, so no
-      shape is padded at load and no output is sliced per call. A tensor-parallel
-      shard whose $N$ is not a multiple of a tile is served directly.
+    - **$N$ is unconstrained.** The weight-row tail is predicated, so no shape is
+      padded at load and no output is sliced per call.
     - **$K$ must be a multiple of ``group_size``**, because one weight tile
       carries one group's scale.
     - **One entry point, whatever the token count.** Which kernel runs is chosen
       from $M$ inside the op; a caller never selects one.
-    - **Every product is exact and $K$ accumulates in FP32.** Rounding each
-      product to FP16 measures faster and is not done: the dequantized
-      reference and the INT4 kernels this op is compared against both keep
-      their products exact, so approximating here would be a deviation only
-      this op makes.
+    - **Every product is exact and $K$ accumulates in FP32.** Products are not
+      rounded to FP16, which would be faster and less accurate than the
+      dequantized reference.
 
     What it does not do, and what to do instead:
 
     - **No symmetric mode.** ``weight_zero`` is always read, so symmetric
-      quantization is expressed by filling it with the constant zero point the
-      scheme centers on. That is exact; what is missing is only the path that
-      drops the subtraction, which is one operation per weight.
+      quantization is expressed by filling it with the scheme's constant zero
+      point, which is exact.
     - **``group_size`` is 128.** Other group sizes, including per-channel, are
       refused at construction rather than served slowly.
     - **No fused bias**, and no batched weight: ``activation`` and
       ``packed_weight`` are rank 2. Add a bias to the result.
-    - **Activations are FP16.** Both kernels are written over a dtype parameter
-      and reproduce the reference in BF16 exactly, so this is a declaration the
-      op has not taken on rather than a limit of the code; the BF16 GEMV band
-      is the slower of the two and closing that comes first.
+    - **Activations are FP16.** BF16 is a declaration the op has not taken on
+      rather than a limit of the kernels.
     """
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
@@ -462,8 +462,58 @@ class GemmW4A16FwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "gemm_w4a16_kernel": GemmW4A16Kernel,
-            "gemm_w4a16_gemv_kernel": GemmW4A16GemvKernel,
         }
+
+    @staticmethod
+    def repack(
+        packed_weight: torch.Tensor,
+        weight_scale: torch.Tensor,
+        weight_zero: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Put a checkpoint's weight into the order ``forward`` reads.
+
+        The weight keeps its dtype and shape and differs only in the order of the
+        nibbles inside each K step, which nothing about the tensor records: an
+        unrepacked weight handed to ``forward`` produces wrong numbers, not an
+        error. The scale and the zero point pass through unchanged and are
+        returned so that a kernel later needing them rearranged costs no
+        signature change.
+
+        Args:
+            packed_weight: Row-major packed weights, $[N \\times K/2]$, ``torch.uint8``:
+                two INT4 per byte, even $K$ in the low nibble.
+            weight_scale: Group scales, $[N \\times K/128]$, ``torch.float16``.
+            weight_zero: Group zero points, $[N \\times K/128]$, ``torch.uint8``.
+
+        Returns:
+            The reordered weight, then the scale and the zero point as given.
+
+        Raises:
+            ValueError: A dtype is not the one above, the weight is not rank 2,
+                its row length is not a multiple of one MMA K step, or the
+                metadata is not shaped $[N \\times GROUPS]$.
+        """
+        if packed_weight.dtype != torch.uint8:
+            raise ValueError(f"repack expects uint8 packed_weight, got {packed_weight.dtype}")
+        if weight_scale.dtype != torch.float16:
+            raise ValueError(f"repack expects float16 weight_scale, got {weight_scale.dtype}")
+        if weight_zero.dtype != torch.uint8:
+            raise ValueError(f"repack expects uint8 weight_zero, got {weight_zero.dtype}")
+        if packed_weight.ndim != 2:
+            raise ValueError(f"repack expects a rank-2 weight, got {packed_weight.ndim}")
+        n, packed_k = packed_weight.shape
+        if packed_k % (MMA_STEP_K // 2):
+            raise ValueError(
+                f"repack needs K/2={packed_k} to be a multiple of {MMA_STEP_K // 2}, the"
+                " packed width of one MMA K step"
+            )
+        if weight_scale.shape[0] != n or tuple(weight_zero.shape) != tuple(weight_scale.shape):
+            raise ValueError(
+                "repack expects group metadata shaped [N, GROUPS], got "
+                f"{tuple(weight_scale.shape)} and {tuple(weight_zero.shape)} for N={n}"
+            )
+        kernel = W4A16RepackKernel(n, packed_k, device_index=packed_weight.device.index)
+        return kernel(packed_weight), weight_scale, weight_zero
 
     def _validate_dtypes(
         self,
@@ -576,8 +626,8 @@ class GemmW4A16FwdOp(Op):
 
         Args:
             activation: Activations, $[M \\times K]$, ``torch.float16``.
-            packed_weight: Weights, $[N \\times K/2]$, ``torch.uint8`` — two INT4
-                values per byte, even $K$ in the low nibble.
+            packed_weight: Weights, $[N \\times K/2]$, ``torch.uint8``, in the order
+                ``repack`` returns.
             weight_scale: Group scales, $[N \\times K/128]$, in the activation
                 dtype.
             weight_zero: Group zero points, $[N \\times K/128]$, ``torch.uint8``.

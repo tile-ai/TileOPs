@@ -128,6 +128,8 @@ GemmW4A16FwdOp:
   signature:
     inputs:
       activation: {dtype: "float16", shape: "[M, K]"}
+      # The order GemmW4A16FwdOp.repack produces, which nothing about the tensor
+      # records: the pairing is a contract, not a checkable property.
       packed_weight: {dtype: "uint8", shape: "[N, K_PACKED]"}
       weight_scale: {dtype: "same_as(activation)", shape: "[N, GROUPS]"}
       weight_zero: {dtype: "uint8", shape: "[N, GROUPS]"}
@@ -163,7 +165,7 @@ GemmW4A16FwdOp:
     bench_manifest_driven: true
     kernel_map:
       gemm_w4a16_kernel: GemmW4A16Kernel
-      gemm_w4a16_gemv_kernel: GemmW4A16GemvKernel
+
 
 GroupedGemmFwdOp:
   ref_api: "none"

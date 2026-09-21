@@ -3,6 +3,9 @@ import torch
 from workloads.workload_base import WorkloadBase
 
 W4A16_GROUP_SIZE = 128
+# Lanes sharing a weight row in the A fragment the prepacked GEMM reads. Fixes
+# the permutation below, so it is not a knob: another value is another layout.
+W4A16_REPACK_LANES = 4
 
 
 class GemmWorkload(WorkloadBase):
@@ -148,6 +151,49 @@ def quantize_weight_int4(
     return packed.contiguous(), scale.contiguous(), zero.contiguous(), dequantized
 
 
+def repack_w4a16_weight(packed: torch.Tensor, step_k: int = 128) -> torch.Tensor:
+    """Reorder each K step of a ``[N, K/2]`` packed weight for the A fragment.
+
+    The shape is unchanged. Within every ``step_k // 2`` bytes the nibbles are
+    permuted so that a lane reads one contiguous 32-bit word and
+    ``tileops_w4a16_dequant_word`` turns it into eight weights with four LOP3s:
+    word ``(c, wd)`` takes nibble ``j`` from the low half of source byte
+    ``16*wd + 4*j + c`` and nibble ``j+4`` from its high half, which is exactly
+    the pair fragment positions ``32*wd + 8*j + 2*c + {0,1}`` want.
+
+    Args:
+        packed: Row-major packed weights, ``[N, K/2]``, ``torch.uint8``.
+        step_k: Weights per MMA step; ``step_k // 2`` must be a multiple of 16.
+
+    Returns:
+        A contiguous ``[N, K/2]`` ``torch.uint8`` tensor in the layout
+        :class:`GemmW4A16Kernel` reads.
+
+    Example:
+        >>> prepacked = repack_w4a16_weight(packed_weight)
+    """
+    n, kp = packed.shape
+    step = step_k // 2
+    if kp % step or step % (4 * W4A16_REPACK_LANES):
+        raise ValueError(
+            f"K/2={kp} must be a multiple of step_k/2={step}, which must itself be"
+            f" a multiple of {4 * W4A16_REPACK_LANES}"
+        )
+    n_steps = kp // step
+    words_per_lane = step // (4 * W4A16_REPACK_LANES)
+    grouped = packed.view(n, n_steps, step).to(torch.int32)
+    low, high = grouped & 0xF, (grouped >> 4) & 0xF
+    out = torch.zeros(n, n_steps, step // 4, dtype=torch.int32, device=packed.device)
+    for lane in range(W4A16_REPACK_LANES):
+        for word in range(words_per_lane):
+            acc = torch.zeros(n, n_steps, dtype=torch.int32, device=packed.device)
+            for pair in range(4):
+                src = 16 * word + 4 * pair + lane
+                acc = acc | (low[:, :, src] << (4 * pair)) | (high[:, :, src] << (4 * pair + 16))
+            out[:, :, lane * words_per_lane + word] = acc
+    return out.reshape(n, kp // 4).view(torch.uint8).reshape(n, kp).contiguous()
+
+
 class GemmW4A16Workload(WorkloadBase):
     def __init__(
         self,
@@ -163,21 +209,37 @@ class GemmW4A16Workload(WorkloadBase):
         self.dtype = dtype
         self.group_size = group_size
         self._dequantized_weight: torch.Tensor | None = None
+        self._row_major_weight: torch.Tensor | None = None
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """The op's inputs, with the weight already in the order it reads.
+
+        The repack is what a serving stack does once when a checkpoint loads, so
+        it belongs outside anything timed -- which is also what makes a
+        comparison against Marlin or Machete even: each of them builds its own
+        layout here too.
+        """
         activation = torch.randn(self.m, self.k, device="cuda", dtype=self.dtype)
         source_weight = torch.randn(self.n, self.k, device="cuda", dtype=torch.float32) * 0.25
         packed, scale, zero, dequantized = quantize_weight_int4(
             source_weight, group_size=self.group_size, scale_dtype=self.dtype
         )
         self._dequantized_weight = dequantized.to(self.dtype).contiguous()
-        return activation, packed, scale, zero
+        self._row_major_weight = packed
+        return activation, repack_w4a16_weight(packed), scale, zero
 
     @property
     def dequantized_weight(self) -> torch.Tensor:
         if self._dequantized_weight is None:
             raise RuntimeError("dequantized_weight is available after gen_inputs()")
         return self._dequantized_weight
+
+    @property
+    def row_major_weight(self) -> torch.Tensor:
+        """The same weight before the repack, which a baseline reorders its own way."""
+        if self._row_major_weight is None:
+            raise RuntimeError("row_major_weight is available after gen_inputs()")
+        return self._row_major_weight
 
     def ref_program(
         self,

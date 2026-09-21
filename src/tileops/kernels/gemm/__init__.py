@@ -14,7 +14,7 @@ from .dense import (
     GemvKernel,
 )
 from .w4a16 import GemmW4A16Kernel
-from .w4a16_gemv import GemmW4A16GemvKernel
+from .w4a16_repack import W4A16RepackKernel
 
 __all__ = [
     "BmmCall",
@@ -27,7 +27,7 @@ __all__ = [
     "GemmFp8BlockScaleKernel",
     "GemmFp8TensorScaleKernel",
     "GemmTmaKernel",
-    "GemmW4A16GemvKernel",
     "GemmW4A16Kernel",
     "GemvKernel",
+    "W4A16RepackKernel",
 ]

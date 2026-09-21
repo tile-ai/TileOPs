@@ -18,7 +18,11 @@ from benchmarks.timing import bench_kernel, median_busy_ms
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE
 from tileops.manifest import load_workloads
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
-from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload
+from workloads.gemm import (
+    GemmFp8Workload,
+    GemmW4A16Workload,
+    GemmWorkload,
+)
 
 _FP8_BLOCK = 128
 
@@ -557,12 +561,17 @@ def test_gemm_w4a16_bench(
     if m == 1:
         for reduce_mode, use_fp32_reduce in (("fp32", True), ("fp16", False)):
             try:
+                # Every arm gets the same logical weight and reorders it its
+                # own way, here, outside the timed region.
                 marlin, marlin_inputs = _prepare_marlin_w4a16_baseline(
                     m,
                     n,
                     k,
                     use_fp32_reduce,
-                    *inputs,
+                    inputs[0],
+                    workload.row_major_weight,
+                    inputs[2],
+                    inputs[3],
                 )
             except (ImportError, ModuleNotFoundError) as exc:
                 print(f"  [skip] marlin-{reduce_mode}: {exc}")

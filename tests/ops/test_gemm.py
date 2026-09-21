@@ -5,7 +5,9 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.gemm import (
     GemmCpAsyncKernel,
     GemmTmaKernel,
+    GemmW4A16Kernel,
     GemvKernel,
+    W4A16RepackKernel,
 )
 from tileops.kernels.gemm.dense import (
     GemmFp8BlockScaleKernel,
@@ -18,8 +20,19 @@ from tileops.kernels.gemm.heuristics import (
     small_batch_config,
     small_m_splitk_config,
 )
+from tileops.kernels.gemm.w4a16 import (
+    _SM90_SMEM_BYTES,
+    _legal_configs,
+    _smem_bytes,
+)
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
-from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload, quantize_weight_int4
+from workloads.gemm import (
+    GemmFp8Workload,
+    GemmW4A16Workload,
+    GemmWorkload,
+    quantize_weight_int4,
+    repack_w4a16_weight,
+)
 
 
 class GemmTest(GemmWorkload, TestBase):
@@ -479,7 +492,7 @@ class GemmW4A16Fixture(FixtureBase):
                     384,
                     torch.float16,
                     marks=pytest.mark.full,
-                    id="full-w4a16-gemv-short-k-n-tail",
+                    id="full-w4a16-decode-short-k-n-tail",
                 ),
                 pytest.param(
                     1,
@@ -487,7 +500,7 @@ class GemmW4A16Fixture(FixtureBase):
                     1024,
                     torch.float16,
                     marks=pytest.mark.full,
-                    id="full-w4a16-gemv-n-tail",
+                    id="full-w4a16-decode-n-tail",
                 ),
                 pytest.param(
                     1,
@@ -495,7 +508,7 @@ class GemmW4A16Fixture(FixtureBase):
                     8192,
                     torch.float16,
                     marks=pytest.mark.full,
-                    id="full-w4a16-gemv-staged-k",
+                    id="full-w4a16-decode-staged-k",
                 ),
                 pytest.param(
                     17,
@@ -555,12 +568,22 @@ def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("k_index", [0, 127, 128, 383])
-def test_gemm_w4a16_gemv_is_exact_on_a_basis_vector(k_index: int) -> None:
-    """A basis vector exposes exact nibble, group, and zero-point indexing errors."""
+# 1 and 200 are positions the repack moves; 0, 127, 128 and 383 are step
+# boundaries, which it happens to fix -- only 24 of 384 positions are fixed, and
+# the four this case started with were all of them.
+@pytest.mark.parametrize("k_index", [0, 1, 127, 128, 200, 383])
+def test_gemm_w4a16_is_exact_on_a_basis_vector(k_index: int) -> None:
+    """A basis vector exposes exact nibble, group, and zero-point indexing errors.
+
+    The weight is drawn rather than written as ``(row + col) % 16``: the repack
+    moves a nibble to another position in the same step but never changes its
+    index modulo 16, so a weight with that period reads the same whether or not
+    it was repacked, and the case cannot see a permutation error at all.
+    """
     n, k = 35, 384
+    torch.manual_seed(0)
     rows = torch.arange(n)[:, None]
-    quantized = (rows + torch.arange(k)[None, :]) % 16
+    quantized = torch.randint(0, 16, (n, k))
     zero = ((3 * rows + torch.arange(k // 128)[None, :]) % 16).to(torch.uint8)
     # Every (row, group) gets its own scale, so reading the wrong one is visible.
     scale = (
@@ -574,7 +597,8 @@ def test_gemm_w4a16_gemv_is_exact_on_a_basis_vector(k_index: int) -> None:
     expected = (centered * scale[:, group].float()).half()[None, :]
     activation = torch.zeros((1, k), device="cuda", dtype=torch.float16)
     activation[0, k_index] = 1
-    actual = GemmW4A16FwdOp()(activation, packed.cuda(), scale.cuda(), zero.cuda())
+    prepacked = repack_w4a16_weight(packed)
+    actual = GemmW4A16FwdOp()(activation, prepacked.cuda(), scale.cuda(), zero.cuda())
     torch.testing.assert_close(actual.cpu(), expected, atol=0, rtol=0)
 
 
@@ -1104,3 +1128,135 @@ def test_gemm_cp_async_kernel_k_tail_padding() -> None:
         out = kern(a, b)
         ref = a.float() @ b.float().t()
         torch.testing.assert_close(out.float(), ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("m", [32, 100, 256])
+def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
+    """The kernel agrees with the reference at token counts its tiles do not divide.
+
+    ``m`` covers one tile tier boundary each way and a token count that is not a
+    multiple of any of them, which is the case the ceiling-divided grid has to
+    predicate rather than round up.
+    """
+    test = GemmW4A16Test(m, 1024, 512, torch.float16)
+    # gen_inputs already hands over the repacked order the kernel reads.
+    activation, prepacked, scale, zero = test.gen_inputs()
+    kernel = GemmW4A16Kernel(m, 1024, 512, torch.float16)
+    actual = kernel(activation, prepacked, scale, zero)
+    torch.testing.assert_close(
+        actual, test.ref_program(activation, prepacked, scale, zero), atol=7e-2, rtol=5e-2
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(("n", "k"), [(1024, 512), (8192, 8192), (7168, 20480)])
+def test_gemm_w4a16_offers_only_buildable_tiles(n: int, k: int) -> None:
+    """Every tile the config space offers is one the kernel can build.
+
+    A 64-row weight tile handed to two math warpgroups is silently wrong, so the
+    space must not contain one whatever the cost model would score it.
+    """
+    for m in (1, 2, 8, 32, 33, 64, 96, 128, 257, 4096):
+        for config in _legal_configs(m, n, k, 128):
+            math_threads = config["threads"] - config["tma_threads"]
+            assert math_threads >= 128 * (config["block_n"] // 64), f"m={m} offers {config}"
+            assert not (config["block_n"] == 64 and math_threads > 128), f"m={m} offers {config}"
+            assert 1 <= config["block_k"] // config["step_k"] <= 4
+            assert config["block_k"] % 128 == 0
+            shared = _smem_bytes(
+                config["block_m"],
+                config["block_n"],
+                config["block_k"],
+                config["num_stages"],
+                config["threads"],
+                k,
+                128,
+                config["tma_threads"],
+            )
+            assert shared <= _SM90_SMEM_BYTES, f"m={m} offers {config} needing {shared} bytes"
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(("n", "k"), [(1024, 512), (8192, 8192), (7168, 20480)])
+def test_gemm_w4a16_picks_a_tile_per_token_band(n: int, k: int) -> None:
+    """The token count selects between tiles rather than one serving everything."""
+    tiles = {
+        tuple(sorted(GemmW4A16Kernel(m, n, k, torch.float16).config.items()))
+        for m in (1, 32, 65, 97, 129, 200, 257, 1024, 4096)
+    }
+    assert len(tiles) >= 4
+
+
+@pytest.mark.smoke
+def test_repack_w4a16_weight_permutes_nibbles_inside_a_step() -> None:
+    """The reorder stays inside a K step, so the tensor is still ``[N, K/2]``.
+
+    It moves nibbles rather than whole bytes -- that is what lets one LOP3 on a
+    32-bit word produce a fragment-ordered pair -- so the invariant is the nibble
+    multiset of each step, not the byte one.
+    """
+    packed = torch.randint(0, 256, (7, 256), dtype=torch.uint8)
+
+    repacked = repack_w4a16_weight(packed)
+
+    assert repacked.shape == packed.shape
+    assert repacked.is_contiguous()
+
+    def nibbles(tile: torch.Tensor) -> torch.Tensor:
+        return torch.cat([tile & 0xF, tile >> 4], dim=1).sort(dim=1).values
+
+    step = 64
+    for start in range(0, packed.shape[1], step):
+        torch.testing.assert_close(
+            nibbles(repacked[:, start : start + step]),
+            nibbles(packed[:, start : start + step]),
+        )
+    with pytest.raises(ValueError, match="must be a multiple of"):
+        repack_w4a16_weight(packed, step_k=384)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(("n", "k"), [(64, 256), (1024, 512)])
+def test_w4a16_repack_kernel_matches_the_reference(n: int, k: int) -> None:
+    """The kernel and the tensor-expression repack agree bit for bit.
+
+    They are the same permutation, and the kernel exists only because the torch
+    form takes 2.8 ms on a 32 MB weight against its 0.03 ms.
+    """
+    packed = torch.randint(0, 256, (n, k // 2), dtype=torch.uint8, device="cuda")
+
+    actual = W4A16RepackKernel(n, k // 2)(packed)
+
+    assert actual.dtype == torch.uint8
+    assert actual.shape == packed.shape
+    assert torch.equal(actual, repack_w4a16_weight(packed))
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_repack_feeds_forward() -> None:
+    """The load-time path a caller takes: ``repack`` once, then ``forward``."""
+    test = GemmW4A16Test(64, 1024, 512, torch.float16)
+    activation, _, scale, zero = test.gen_inputs()
+    packed = test.row_major_weight
+
+    prepacked, scale_out, zero_out = GemmW4A16FwdOp.repack(packed, scale, zero)
+    assert scale_out is scale and zero_out is zero
+    actual = GemmW4A16FwdOp()(activation, prepacked, scale, zero)
+
+    torch.testing.assert_close(
+        actual, test.ref_program(activation, packed, scale, zero), atol=7e-2, rtol=5e-2
+    )
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_repack_refuses_a_partial_k_step() -> None:
+    """A row that does not divide into whole MMA K steps has no repacked order."""
+    scale = torch.zeros((8, 1), dtype=torch.float16, device="cuda")
+    zero = torch.zeros((8, 1), dtype=torch.uint8, device="cuda")
+    with pytest.raises(ValueError, match="multiple of 64"):
+        GemmW4A16FwdOp.repack(torch.zeros((8, 96), dtype=torch.uint8, device="cuda"), scale, zero)
+    with pytest.raises(ValueError, match="float16 weight_scale"):
+        GemmW4A16FwdOp.repack(
+            torch.zeros((8, 64), dtype=torch.uint8, device="cuda"), scale.float(), zero
+        )
