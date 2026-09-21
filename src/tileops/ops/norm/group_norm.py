@@ -102,16 +102,6 @@ class GroupNormFwdOp(Op):
         """Manifest ``shape_rules``: ``output.shape == x.shape``."""
         return {"output": tuple(x_shape)}
 
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_spec is None:
-            raise RuntimeError("GroupNormFwdOp.eval_roofline() requires a prior forward() call")
-        N, C, spatial_size, dtype, affine = self._last_roofline_spec
-        elem_bytes = dtype.itemsize
-        return (
-            (5 if affine else 3) * N * C * spatial_size,
-            (2 * N * C * spatial_size + (2 * C if affine else 0)) * elem_bytes,
-        )
-
     def _resolve_spec(self, x: torch.Tensor) -> Tuple[int, int, int, int, int, torch.dtype]:
         if x.ndim < 2:
             raise ValueError("x must have shape (N, C, *spatial)")
@@ -190,6 +180,10 @@ class GroupNormFwdOp(Op):
                     raise ValueError(f"Expected {name} shape ({C},), got {tuple(t.shape)}")
 
         self._bind_spec(N, C, spatial_size, dtype, affine)
+        # What the manifest roofline resolves the tensors through.
+        self.x_shape = tuple(x.shape)
+        self.weight_shape = None if weight is None else tuple(weight.shape)
+        self.bias_shape = None if bias is None else tuple(bias.shape)
 
         # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()

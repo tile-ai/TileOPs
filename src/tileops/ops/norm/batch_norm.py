@@ -97,7 +97,8 @@ class BatchNormFwdOp(Op):
 
         self.dispatch_kernel(kernel_map)
         self.kernel: Optional[Kernel] = None
-        self._last_roofline_spec: Optional[tuple[int, int, torch.dtype]] = None
+        # The manifest roofline reads x through this binding.
+        self.x_shape: Optional[tuple[int, ...]] = None
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -116,16 +117,6 @@ class BatchNormFwdOp(Op):
     ) -> Dict[str, Tuple[int, ...]]:
         """Manifest ``shape_rules``: ``output.shape == x.shape``."""
         return {"output": tuple(x_shape)}
-
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_spec is None:
-            raise RuntimeError("BatchNormFwdOp.eval_roofline() requires a prior forward() call")
-        C, L, dtype = self._last_roofline_spec
-        elem_bytes = dtype.itemsize
-        return (
-            10 * C * L,
-            2 * C * L * elem_bytes + 4 * C * 4,
-        )
 
     def _resolve_spec(self, x: torch.Tensor) -> Tuple[int, int, torch.dtype]:
         """Validate input metadata and return (C, L, dtype)."""
@@ -157,10 +148,10 @@ class BatchNormFwdOp(Op):
         if tensor.ndim != 1 or tensor.shape[0] != C:
             raise ValueError(f"Expected {name} shape ({C},), got {tuple(tensor.shape)}")
 
-    def _bind_spec(self, C: int, L: int, dtype: torch.dtype) -> None:
+    def _bind_spec(self, x: torch.Tensor, dtype: torch.dtype) -> None:
         """Bind what ``eval_roofline`` reads off the call that just ran."""
         self.dtype = dtype
-        self._last_roofline_spec = (C, L, dtype)
+        self.x_shape = tuple(x.shape)
 
     def _eager_forward(
         self,
@@ -175,7 +166,7 @@ class BatchNormFwdOp(Op):
         self._validate_channel_tensor("running_var", running_var, C, x.device, torch.float32)
         self._validate_channel_tensor("weight", weight, C, x.device, torch.float32)
         self._validate_channel_tensor("bias", bias, C, x.device, torch.float32)
-        self._bind_spec(C, L, dtype)
+        self._bind_spec(x, dtype)
 
         # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
@@ -312,16 +303,6 @@ class BatchNormBwdOp(Op):
             "grad_bias": channels,
         }
 
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_spec is None:
-            raise RuntimeError("BatchNormBwdOp.eval_roofline() requires a prior forward() call")
-        C, L, dtype = self._last_roofline_spec
-        elem_bytes = dtype.itemsize
-        return (
-            8 * C * L,
-            3 * C * L * elem_bytes + 3 * C * 4,
-        )
-
     def _resolve_spec(
         self, grad_out: torch.Tensor, x: torch.Tensor
     ) -> Tuple[int, int, torch.dtype]:
@@ -375,6 +356,8 @@ class BatchNormBwdOp(Op):
         self._validate_channel_tensor("mean", mean, C, grad_out.device, torch.float32)
         self._validate_channel_tensor("rstd", rstd, C, grad_out.device, torch.float32)
         self._bind_spec(C, L, dtype)
+        # What the manifest roofline resolves ``grad_out`` through.
+        self.grad_out_shape = tuple(grad_out.shape)
         grad_out = grad_out.contiguous()
         x = x.contiguous()
         weight = weight.contiguous()

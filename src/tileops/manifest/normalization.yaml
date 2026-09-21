@@ -344,8 +344,9 @@ BatchNormFwdOp:
       L: "product(x.shape) // x.shape[1]"
     # 2-pass: compute mean/var over L elements per channel, then normalize. ≈ 10*C*L
     flops: "10 * C * L"
-    # Read x + write output (elem_bytes each) + float32 params (weight, bias, running_mean, running_var)
-    bytes: "2 * C * L * elem_bytes + 4 * C * 4"
+    # Read x + write output (elem_bytes each) + float32 params (weight, bias, running_mean, running_var).
+    # running_mean and running_var are mutated, so training adds their write.
+    bytes: "2 * C * L * elem_bytes + 4 * C * 4 + (2 * C * 4 if training else 0)"
 
   source:
     kernel: tileops/kernels/norm/batch_norm.py
@@ -400,7 +401,9 @@ BatchNormBwdOp:
     # Backward: 3 reductions + elementwise ≈ 8*C*L
     flops: "8 * C * L"
     # Read grad_out + x + write grad_x (elem_bytes each) + float32 read weight + write grad_weight, grad_bias
-    bytes: "3 * C * L * elem_bytes + 3 * C * 4"
+    # grad_out and x read, grad_x written; weight, mean and rstd read; and the
+    # two parameter gradients written.
+    bytes: "3 * C * L * elem_bytes + 3 * C * 4 + 2 * C * 4"
 
   source:
     kernel: tileops/kernels/norm/batch_norm.py

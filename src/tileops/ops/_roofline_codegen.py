@@ -79,9 +79,11 @@ def _resolve_tensor_binding(
     2. ``self.<name>_shape`` is a shape tuple/list; wrapped in a
        `_ShapeProxy` for uniform ``.shape``/``.ndim`` access.
 
-    Anything else raises `ValueError`, naming the op and the input, so a
-    missing binding is diagnosable rather than a vacuous ``'NoneType' object has
-    no attribute 'shape'`` from inside the generated body.
+    An op that exposes the binding but has not filled it raises `RuntimeError`
+    naming the op: forward() has not run. An op that exposes neither attribute
+    raises `ValueError`, which is the author's wiring, not the caller's
+    sequencing; either beats a vacuous ``'NoneType' object has no attribute
+    'shape'`` from inside the generated body.
 
     An ``optional: true`` input binds to ``None`` when the op exposes it as
     ``None`` under either convention — the call did not pass it, and R18.1
@@ -111,6 +113,13 @@ def _resolve_tensor_binding(
         return _ShapeProxy(tuple(shape_attr))
     if optional and (direct is None or shape_attr is None):
         return None
+    if direct is None or shape_attr is None:
+        # The op exposes the binding and has not filled it: the caller has not
+        # run forward() yet. An absent attribute is the author's wiring and
+        # falls through to the ValueError below.
+        raise RuntimeError(
+            f"{op_name}.eval_roofline() requires a prior forward() call to bind {name!r}"
+        )
     raise ValueError(
         f"{op_name}: cannot resolve roofline input {name!r}; expected "
         f"either self.{name} (with .shape/.ndim) or self.{name}_shape "
@@ -582,6 +591,13 @@ def _synthesize_inline_mode(
     # the set so later entries may reference earlier locals.
     vars_allowed: set[str] = set(input_names) | set(param_names)
     vars_allowed.add("elem_bytes")
+    # An op whose output dtype is not the input's -- a bool predicate, an
+    # integer input promoted to float -- cannot state its write with
+    # ``elem_bytes`` alone. ``out_elem_bytes`` resolves the single declared
+    # output through the manifest, so the expression stays the only source.
+    single_output = len(sig.get("outputs") or {}) == 1
+    if single_output:
+        vars_allowed.add("out_elem_bytes")
     vars_allowed.update(_VARS_HELPERS.keys())
 
     input_name_set = set(input_names)
@@ -630,6 +646,8 @@ def _synthesize_inline_mode(
     arith_allowed: set[str] = set(vars_block.keys())
     arith_allowed.update(param_names)
     arith_allowed.add("elem_bytes")
+    if single_output:
+        arith_allowed.add("out_elem_bytes")
     arith_allowed.update(_ARITHMETIC_HELPERS.keys())
     _validate_arithmetic_expr(op_name, "flops", flops_expr, arith_allowed)
     _validate_arithmetic_expr(op_name, "bytes", bytes_expr, arith_allowed)
@@ -673,7 +691,16 @@ def _synthesize_inline_mode(
         # ``AttributeError`` naming the op rather than a downstream
         # ``NameError`` deep in the body.
         src_lines.append(f"    {n} = self.{n}")
-    src_lines.append("    elem_bytes = self.dtype.itemsize")
+    if "elem_bytes" in referenced:
+        src_lines.append("    elem_bytes = self.dtype.itemsize")
+    if single_output and "out_elem_bytes" in referenced:
+        # Through ``output_dtype``, so a ``caller_stated`` output follows the
+        # dtype the call asked for. An op with no tensor input has no
+        # ``self.dtype``; the declaration answers without one.
+        out_name = next(iter(sig.get("outputs") or {}))
+        src_lines.append(
+            f"    out_elem_bytes = _output_dtype(self, {out_name!r}, self.dtype).itemsize"
+        )
     for name, expr in vars_block.items():
         src_lines.append(f"    {name} = {expr}")
     src_lines.append(f"    _flops = {flops_expr}")
@@ -685,6 +712,10 @@ def _synthesize_inline_mode(
     # by virtue of being a subset of the vars table.
     globs: dict[str, Any] = dict(_VARS_HELPERS)
     globs["_resolve_tensor_binding"] = _resolve_tensor_binding
+    if single_output and "out_elem_bytes" in referenced:
+        from tileops.ops._output_dtype import output_dtype
+
+        globs["_output_dtype"] = output_dtype
     globs["__builtins__"] = {
         "int": int,
         "float": float,

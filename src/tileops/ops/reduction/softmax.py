@@ -75,6 +75,8 @@ class _SoftmaxBaseOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         self._last_roofline_spec: tuple[int, int, torch.dtype] | None = None
+        # What the manifest roofline resolves ``x`` through.
+        self.x_shape: tuple[int, ...] | None = None
 
     def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
         """Manifest ``shape_rules``: normalizing over an axis keeps the shape."""
@@ -145,6 +147,8 @@ class _SoftmaxBaseOp(Op):
         n = prod(x.shape[a] for a in axes)
         m = prod(d for i, d in enumerate(x.shape) if i not in axes)
         self._last_roofline_spec = (m, n, x.dtype)
+        self.x_shape = tuple(x.shape)
+        self.dtype = x.dtype
         kernel = self.kernel_for(
             "softmax", (x,), (tuple(x.shape), axes, self.keepdim, x.dtype, x.device.index, m, n)
         )
@@ -165,24 +169,6 @@ class _SoftmaxBaseOp(Op):
             tune=self.tune,
             device_index=device_index,
             **self._kernel_ctor_kwargs(axes),
-        )
-
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_spec is None:
-            raise RuntimeError(
-                f"{type(self).__name__}.eval_roofline() requires a prior forward() "
-                "call to bind dynamic input shape"
-            )
-        M, N, dtype = self._last_roofline_spec
-        elem_bytes = dtype.itemsize
-        if self._op_kind == "softmax":
-            return 5 * M * N, 2 * M * N * elem_bytes
-        if self._op_kind == "log_softmax":
-            return 5 * M * N, 2 * M * N * elem_bytes
-        if self._op_kind == "logsumexp":
-            return 4 * M * N, (M * N + M) * elem_bytes
-        raise NotImplementedError(
-            f"{type(self).__name__} has unknown roofline op kind {self._op_kind!r}"
         )
 
 

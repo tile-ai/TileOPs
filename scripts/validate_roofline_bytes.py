@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Audit manifest ``bytes`` formulas against NCU DRAM counters.
 
-Spec: docs/design/roofline.md §4.5. For each audited op, one ``forward()``
-runs under Nsight Compute with cache control on, and ``dram__bytes_read.sum``
-over the call's kernels is compared against the formula's read half:
+For each audited op, one ``forward()`` runs under Nsight Compute with cache
+control on, and ``dram__bytes_read.sum`` over the call's kernels is compared
+against the formula's read half:
 
-- measured_read < read_bytes × (1 − EPS)  → FAIL  (read-side overestimate)
+- measured_read < read_bytes × (1 − EPS)  → FAIL  (read-side overestimate), or
+                                            EXEMPT where the entry's
+                                            ``read_bound_exception`` covers
+                                            this row (reported, not judged)
 - measured_read > read_bytes × OVER       → WARN  (multi-pass / replay inflation)
-- missing metric, empty range, or a
-  declared read half of zero              → ERROR (never a verdict)
+- missing metric or empty range            → ERROR (never a verdict)
+- a declared read half of zero             → SKIPPED (nothing to judge it by)
 - read half undeclared                    → NO-VERDICT (not a pass)
 
 Write traffic is measured and reported, never judged: lines still dirty in L2
@@ -38,6 +41,8 @@ from pathlib import Path
 EPS = 0.05  # counter noise allowance below the formula
 OVER = 1.5  # informational ceiling above the formula
 NVTX_RANGE = "tileops_roofline"
+# Verdicts a green run may contain; see exit_code().
+GREEN_VERDICTS = frozenset({"PASS", "WARN", "EXEMPT", "SKIPPED"})
 METRICS = "dram__bytes_read.sum,dram__bytes_write.sum"
 # Workloads at least this large keep fixed sector/TLB overheads inside EPS.
 SMALL_WORKLOAD_BYTES = 32 * 2**20
@@ -54,7 +59,6 @@ def _op_class(op_name: str, entry: dict):
 
 def _single_input_case(op_name: str, entry: dict, row: dict, dtype):
     """(op, inputs) via the manifest single-tensor-input contract, or None."""
-    import torch
 
     from tileops.manifest import single_input_workload_contract
 
@@ -67,18 +71,32 @@ def _single_input_case(op_name: str, entry: dict, row: dict, dtype):
     reserved = {"label", "dtypes", "bench_skip_reason", shape_key}
     params = {k: v for k, v in row.items() if k not in reserved and not k.startswith("__")}
     op = _op_class(op_name, entry)(**params)
-    # Positive, away from zero: valid for every unary domain (log, rsqrt, ...);
-    # the counters read traffic, not values.
-    x = torch.rand(tuple(row[shape_key]), dtype=dtype, device="cuda") + 0.5
+    x = _sample(tuple(row[shape_key]), dtype)
     return op, (x,)
 
 
-def _gemm_case(op_name: str, entry: dict, row: dict, dtype):
+def _sample(shape: tuple, dtype) -> "object":
+    """A valid input of *dtype*; the counters read traffic, not values."""
     import torch
 
-    op = _op_class(op_name, entry)()
-    a = torch.randn(row["m"], row["k"], dtype=dtype, device="cuda")
-    b = torch.randn(row["k"], row["n"], dtype=dtype, device="cuda")
+    if dtype is torch.bool:
+        return torch.ones(shape, dtype=torch.bool, device="cuda")
+    if not dtype.is_floating_point:
+        return torch.ones(shape, dtype=dtype, device="cuda")
+    # Positive, away from zero: valid for every unary domain (log, rsqrt, ...).
+    return torch.rand(shape, dtype=dtype, device="cuda") + 0.5
+
+
+def _gemm_case(op_name: str, entry: dict, row: dict, dtype):
+    """The row names the layout, and the operands are stored in it."""
+    import torch
+
+    trans_a = bool(row.get("trans_a", False))
+    trans_b = bool(row.get("trans_b", True))
+    op = _op_class(op_name, entry)(trans_a=trans_a, trans_b=trans_b)
+    m, n, k = row["m"], row["n"], row["k"]
+    a = torch.randn(*((k, m) if trans_a else (m, k)), dtype=dtype, device="cuda")
+    b = torch.randn(*((n, k) if trans_b else (k, n)), dtype=dtype, device="cuda")
     return op, (a, b)
 
 
@@ -86,8 +104,9 @@ def _bmm_case(op_name: str, entry: dict, row: dict, dtype):
     import torch
 
     op = _op_class(op_name, entry)()
-    a = torch.randn(row["batch"], row["m"], row["k"], dtype=dtype, device="cuda")
-    b = torch.randn(row["batch"], row["k"], row["n"], dtype=dtype, device="cuda")
+    batch, m, n, k = row["b"], row["m"], row["n"], row["k"]
+    a = torch.randn(batch, m, k, dtype=dtype, device="cuda")
+    b = torch.randn(batch, k, n, dtype=dtype, device="cuda")
     return op, (a, b)
 
 
@@ -175,7 +194,7 @@ def _declared_read_bytes(op) -> int | None:
     if not callable(declared):
         return None
     value = declared()
-    return None if value is NotImplemented else int(value)
+    return None if value is None else int(value)
 
 
 def run_child(op_name: str, row_json: str, dtype_str: str) -> None:
@@ -183,6 +202,7 @@ def run_child(op_name: str, row_json: str, dtype_str: str) -> None:
     import torch
 
     from tileops.manifest import load_manifest
+    from tileops.ops.op_base import _recording_roofline_calls
 
     entry = load_manifest()[op_name]
     dtype = getattr(torch, dtype_str)
@@ -191,7 +211,8 @@ def run_child(op_name: str, row_json: str, dtype_str: str) -> None:
         print(json.dumps({"error": "no input builder"}))
         sys.exit(3)
     op, inputs = case
-    with torch.no_grad():
+    # The read half needs the shapes the call carried; ops do not keep them.
+    with torch.no_grad(), _recording_roofline_calls():
         op(*inputs)  # bind input-inferred roofline vars; build kernels
         torch.cuda.synchronize()
         flops, nbytes = op.eval_roofline()
@@ -215,7 +236,7 @@ def _parse_ncu_csv(path: Path) -> tuple[tuple[float, float] | None, int]:
     """((read bytes, write bytes) over profiled kernels, kernel count).
 
     The two directions stay apart: only the read side carries a verdict
-    (§4.5). None on any gap — an absent metric is never read as zero.
+    None on any gap — an absent metric is never read as zero.
     """
     text = path.read_text(errors="replace")
     lines = [ln for ln in text.splitlines() if ln.startswith('"')]
@@ -243,25 +264,84 @@ def _parse_ncu_csv(path: Path) -> tuple[tuple[float, float] | None, int]:
     return (read, write), len(per_kernel)
 
 
-def read_side_verdict(measured_read: float, read_bytes: int | None) -> str:
-    """§4.5's verdict table. Write traffic never reaches it."""
+def read_side_verdict(
+    measured_read: float,
+    read_bytes: int | None,
+    bound: bool = True,
+) -> str:
+    """The verdict for one measured row. Write traffic never reaches it.
+
+    FAIL says the formula charged reads the implementation did not make, which
+    holds only where every conforming implementation must fetch what the
+    formula charges. Where *bound* is false -- the entry's
+    ``read_bound_exception`` covers this call -- a shortfall is EXEMPT instead:
+    measured and reported, not a verdict on the formula.
+    """
     if read_bytes is None:
         return "NO-VERDICT"
-    if read_bytes <= 0:
-        return "ERROR"  # a declaration of zero reads is a broken one
+    if read_bytes < 0:
+        return "ERROR"  # a negative read half is a broken declaration
+    if read_bytes == 0:
+        # A call that reads none of its inputs -- dropout at p == 1 writes zeros
+        # -- states a read half of zero, and there is no ratio to judge it by.
+        return "SKIPPED"
     if measured_read < read_bytes * (1 - EPS):
-        return "FAIL"
+        return "FAIL" if bound else "EXEMPT"
     if measured_read > read_bytes * OVER:
         return "WARN"
     return "PASS"
 
 
-def exit_code(counts: dict[str, int]) -> int:
-    """A row the audit ran without reaching a verdict is not a passed one.
+def read_bound_exception(entry: dict, row: dict, dtype_str: str | None = None) -> str:
+    """The reason this row's read half is not a lower bound, or ``""``.
 
-    SKIPPED (never run, reason stated) and WARN stay green.
+    A row outside the exception's condition is judged like any other.
     """
-    return 1 if any(counts.get(v) for v in ("FAIL", "ERROR", "NO-VERDICT")) else 0
+    exception = (entry.get("roofline") or {}).get("read_bound_exception") or {}
+    when = (exception.get("when") or "").strip()
+    reason = (exception.get("reason") or "").strip()
+    if not when or not reason:
+        return ""
+    names = {
+        name: spec.get("default")
+        for name, spec in ((entry.get("signature") or {}).get("params") or {}).items()
+        if isinstance(spec, dict)
+    }
+    names.update({k: v for k, v in row.items() if not k.startswith("__")})
+    # The row carries the dtype axis; the call runs one element type off it.
+    if dtype_str is not None:
+        names["dtype"] = dtype_str
+    try:
+        holds = eval(when, {"__builtins__": {}}, names)  # noqa: S307 - validator limits the form
+    except Exception:
+        return ""  # a condition this row cannot answer does not waive anything
+    return reason if holds else ""
+
+
+def exit_code(counts: dict[str, int]) -> int:
+    """Zero means no unwaived failure, not that every row was judged.
+
+    Three verdicts are green: SKIPPED (never run, reason stated), WARN (more
+    traffic than the formula charges, which passed the lower-bound check) and
+    EXEMPT (a shortfall the entry's ``read_bound_exception`` covers, measured
+    and not judged). Anything else, including a verdict this function does not
+    know, is red: a spelling nobody reads is not a pass.
+    """
+    return 0 if set(counts) <= GREEN_VERDICTS else 1
+
+
+def fully_waived(results: list[dict]) -> list[str]:
+    """Ops whose every judged row came back EXEMPT, leaving the read half unchecked.
+
+    Reported rather than failed: failing would push a row the exception does not
+    cover into the release-facing workloads, which the benchmark then measures.
+    """
+    judged: dict[str, set[str]] = {}
+    for row in results:
+        if row["verdict"] in ("SKIPPED", "ERROR"):
+            continue
+        judged.setdefault(row["op"], set()).add(row["verdict"])
+    return sorted(op for op, verdicts in judged.items() if verdicts == {"EXEMPT"})
 
 
 def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
@@ -309,20 +389,27 @@ def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
             )
             continue
         measured_read, measured_write = measured
-        verdict = read_side_verdict(measured_read, read_bytes)
+        waived = read_bound_exception(entry, row, dtype_str)
+        verdict = read_side_verdict(measured_read, read_bytes, bound=not waived)
         row_out = {
             **base,
             "verdict": verdict,
             "formula_bytes": int(formula),
             "read_bytes": read_bytes,
             "measured_read_bytes": int(measured_read),
-            "measured_write_bytes": int(measured_write),  # reported, never judged (§4.5)
+            # Lines still dirty in L2 are written back outside the range, so
+            # this is reported and never judged.
+            "measured_write_bytes": int(measured_write),
             "kernels": n_kernels,
             "measured_under": COLD_CACHE_PREMISE,
             "note": "small workload" if formula < SMALL_WORKLOAD_BYTES else "",
         }
+        if verdict == "EXEMPT":
+            row_out["reason"] = waived
         if verdict == "NO-VERDICT":
             row_out["reason"] = "read half undeclared"
+        elif verdict == "SKIPPED":
+            row_out["reason"] = "the formula declares no read"
         elif verdict == "ERROR":
             row_out["reason"] = f"declared read half is {read_bytes}"
         else:
@@ -424,6 +511,10 @@ def main() -> None:
     for r in all_results:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
     print(f"\nSummary: {counts} → {out_dir}/results.json")
+    for op_name in fully_waived(all_results):
+        # Every row of this op fell inside its exception, so the run judged the
+        # formula's read half nowhere. The rows are still measured and reported.
+        print(f"  every audited row of {op_name} is EXEMPT: its read half went unjudged")
     sys.exit(exit_code(counts))
 
 

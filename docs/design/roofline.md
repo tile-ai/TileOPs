@@ -28,7 +28,8 @@ Bound type is whichever term dominates `sol_time` (memory-bound if `memory_time 
 
 The metric is **algorithmic** SOL efficiency. Three statements delimit what a reading means:
 
-1. `bytes_moved` is the algorithm's minimum traffic (each input read once, each output written once), not measured DRAM traffic.
+1. `bytes_moved` is the algorithm's minimum traffic, not measured DRAM traffic: each distinct input storage the algorithm reads counts one read, each public output one write, and a `mutated` input counts both. An intermediate never counts, whatever stage produces it, and a declared input the algorithm does not read produces no traffic.
+1. The metric is defined on a call that binds one storage per declared input, which is what every `workloads` row binds. An aliasing call — `add(x, x)` — is priced at two operands, above what it moves: the metric does not describe that call, and the formula is not wrong. Pricing it would require every multi-operand op to expose storage identity to its formula, which the oracle's meta tensors cannot carry.
 1. `total_flops` follows the §1.3 counting convention, not per-instruction hardware cost; the metric does not certify an SFU-bound kernel as at its limit.
 1. The compute roof is the unit an optimal implementation would use (§1.4), not the unit the current kernel runs on.
 
@@ -73,7 +74,7 @@ An entry uses one of two modes:
 | Inline | `vars?` + `flops`/`bytes` | Formula fits a Python expression. |
 | Func   | `func: "module.path"`     | Formula needs real Python logic.  |
 
-**Inline.** Roofline variables come from `shape` dim names where possible. Anything `shape` cannot supply — arbitrary-rank dims, slice products, shape-derived quantities — is declared in `vars`. `flops` and `bytes` are Python expressions over all resolved variables + `elem_bytes` + approved helpers (§4.4.4). `elem_bytes` is the byte size of the first input's dtype. **Ops whose `bytes` depend on multiple input dtypes (mixed-precision GEMM, Attention, etc.) cannot be expressed in inline mode** and must use `func`.
+**Inline.** Roofline variables come from `shape` dim names where possible. Anything `shape` cannot supply — arbitrary-rank dims, slice products, shape-derived quantities — is declared in `vars`. `flops` and `bytes` are Python expressions over all resolved variables + `elem_bytes` + approved helpers (§4.4.4). `elem_bytes` is the byte size of the dtype the call bound; `out_elem_bytes` is the declared output's, so an entry whose write is not its read's dtype — a bool predicate, an integral input promoted to float — states that much inline. **An op whose `bytes` depends on more than those two dtypes (mixed-precision GEMM, Attention, a per-operand quantization) cannot be expressed in inline mode** and must use `func`.
 
 **Func.** Point at `tileops.perf.formulas.<name>`. The callable is human-authored and returns `(flops, bytes)`. **Recommended signature: `func(op)`** — matching the agent-generated `eval_roofline(self)` path, which is what codegen's emitted call assumes. A human author who prefers a different signature owns the resulting integration (e.g., a wrapper). Use `func` when inline arithmetic is insufficient (mixed-precision byte accounting, conditionals, shape traversal, data-dependent logic).
 
@@ -106,7 +107,7 @@ roofline:
 - **Schema validator / CI** — structural checks only (schema, mode exclusivity, `func` importability). Does **not** execute formulas or hold a helper whitelist. Spec: §4.1.
 - **Benchmark layer** — instantiates an Op per workload and reads `(flops, bytes)` from `op.eval_roofline()`. Hardcoded formulas in benchmark files are a CI failure. Spec: §4.2.
 - **Roofline tool (M5)** — reads per-workload `(flops, bytes)`, the roof key, and timing from benchmark output, prices them against the GPU profile (§5.1), and emits SOL efficiency and verdicts. Spec: §4.3.
-- **Op codegen** — generates each op's `eval_roofline()` method; is the authoritative gate for name and form correctness. Spec: §4.4.
+- **Op codegen** — generates an op's `eval_roofline()` method unless the op defines one itself (§4.4.1); is the authoritative gate for name and form correctness. Spec: §4.4.
 
 Two auditors check the field's values rather than consume them: the structural oracle (§4.6) and the NCU bytes audit (§4.5).
 
@@ -123,6 +124,7 @@ Every roofline entry MUST satisfy:
 - Required fields per mode: inline has `flops` and `bytes`; func has `func`.
 - Mode exclusivity: `flops`/`bytes`/`vars` and `func` do not coexist.
 - Field types: `flops`/`bytes`/`func` are non-empty strings; `vars` is a mapping of str → non-empty str.
+- `read_bound_exception`, where present, is a mapping of `when` and `reason`, both non-empty strings. `when` joins names, negated names and comparisons of names against literals with `and` or `or`, over params, the workload keys stating what the call does, and `dtype`. Every clause, at every depth, must read the call, so none can settle the condition on its own — that would waive every call of the op (§4.5).
 - `func` dotted path resolves at import time.
 
 Out of the validator's scope:
@@ -137,7 +139,7 @@ Validator holds no callables, no sample bindings, no `__builtins__` sandbox. Add
 
 Contract:
 
-- Instantiate the Op for each workload and call `op.eval_roofline()` to obtain `(flops, bytes)`. No manifest-level helper exists — roofline evaluation lives only inside each Op's generated method.
+- Instantiate the Op for each workload and call `op.eval_roofline()` to obtain `(flops, bytes)`. No manifest-level helper exists — roofline evaluation lives inside that method, whether codegen wrote it or the op did.
 - `ManifestBenchmark(op, workload)` and `workloads_to_params(..., include_extra=True)` are the canonical consumers; non-reserved workload keys forward as op-call params passed to the Op's `__init__`.
 - A benchmark file that computes FLOPs or bytes locally is a CI failure.
 - Benchmark output must record the `(flops, bytes)` from `op.eval_roofline()` and the roof key from `op.compute_roof()` (§1.4), so M5 reads the numbers without re-instantiating ops.
@@ -170,18 +172,23 @@ Codegen is the authoritative gate for name and form correctness. A formula refer
 
 #### 4.4.1 Method Template
 
-For each op, codegen emits an `eval_roofline()` method returning `(flops: int, bytes: int)`. The method signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md); this document specifies only how the body is generated from the manifest.
+Codegen emits an `eval_roofline()` method returning `(flops: int, bytes: int)` for every op that does not define one. The method signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md); this document specifies only how the body is generated from the manifest.
+
+An op that defines the method itself keeps it, and codegen installs nothing. That is for an op whose call needs translating before the formula sees it — packed lengths read off cumulative bounds, an optional tensor set the row does not carry — or whose entry the vars layer cannot express, and its entry says which. Everywhere else the entry is what runs, so changing it changes the number.
 
 ```python
 def eval_roofline(self) -> tuple[int, int]:
-    M = self.M
-    N = self.N
+    x = _resolve_tensor_binding(self, "x", "SomeFwdOp", optional=False)
+    M = product(x.shape[:dim])
+    N = x.shape[dim]
     elem_bytes = self.dtype.itemsize
     return (
         4 * M * N,
         (2 * M * N + N) * elem_bytes,
     )
 ```
+
+A tensor resolves through `self.<name>` or `self.<name>_shape`, so an op binds what its entry reads. Exposing neither is the author's wiring and raises `ValueError`; exposing one and leaving it unset is a caller who has not run `forward()` and raises `RuntimeError`.
 
 #### 4.4.2 Manifest Inputs
 
@@ -241,7 +248,7 @@ Codegen knows how to bind the following names when generating the method body. T
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Tensors   | All `signature.inputs` names, exposed with a `.shape` accessor                                                                               |
 | Params    | All `signature.params` names                                                                                                                 |
-| Constants | `elem_bytes`                                                                                                                                 |
+| Constants | `elem_bytes`; `out_elem_bytes` where the entry declares exactly one output                                                                   |
 | Helpers   | `product`, `isinstance`, `len`, `set`, `tuple`, `list`, `range`, `int`, `float`, `bool`, `min`, `max`, `sum`, `abs`, `log2`, `ceil`, `floor` |
 
 **arithmetic layer**
@@ -249,10 +256,10 @@ Codegen knows how to bind the following names when generating the method body. T
 | Bucket    | Names                             |
 | --------- | --------------------------------- |
 | Variables | Resolved vars from the vars layer |
-| Constants | `elem_bytes`                      |
+| Constants | `elem_bytes`, `out_elem_bytes`    |
 | Helpers   | `ceil`, `floor`, `log2`           |
 
-Adding or removing a helper = edit codegen's binding table. No parallel update in validator or anywhere else is required. If a formula references a name not in this table, codegen fails; the manifest does not land.
+`out_elem_bytes` resolves the declared output dtype through the manifest, so an op whose output dtype is not its input's — a bool predicate, an integral input promoted to float — states its write without a second source. Adding or removing a helper = edit codegen's binding table. No parallel update in validator or anywhere else is required. If a formula references a name not in this table, codegen fails; the manifest does not land.
 
 #### 4.4.5 Runtime Timing
 
@@ -267,7 +274,7 @@ Non-runtime consumers must instantiate the Op (or read pre-computed `(flops, byt
 
 #### 4.4.6 Evaluator Surface Boundary
 
-Roofline expressions live in exactly one place at runtime: the plain Python body that codegen emits into each op's `eval_roofline()`. No standalone roofline evaluator exists.
+Roofline expressions live in one place at runtime: the plain Python body that codegen emits into each op's `eval_roofline()`, or the method an op defines for itself under §4.4.1. No standalone roofline evaluator exists, and neither surface parses a formula string.
 
 | Surface                           | Scope | Interprets roofline expressions? |
 | --------------------------------- | ----- | -------------------------------- |
@@ -286,14 +293,24 @@ Rules:
 
 The read-side bound is conditional, not a theorem. It holds while each kernel is replayed from cold caches, which inflates a multi-kernel op's reads rather than deflating them; a verdict states that premise alongside it.
 
+It carries a second premise: that every conforming implementation must fetch what the formula charges. Some calls break it. Where an input's value decides nothing at some positions, a kernel may predicate those loads away and read less than the call binds, while the formula still charges the whole input — the positions are chosen at run time, and charging a fraction of them would be an expected value, not this call's traffic (§4.7).
+
+An entry states such calls in `roofline.read_bound_exception`: a `when` over the call, and the `reason` the premise fails there. The audit evaluates `when` against the row it measured, and a shortfall inside the condition is EXEMPT — measured, reported, not a verdict on the formula. Rows outside it are judged as before, which is why the exception carries a condition rather than covering the op.
+
+The condition's form is checked, its aptness is not: no check tells a property of the call from a value that matches today's rows. Review reads the `reason`, and an entry earns the exception from a measurement of the behaviour it names.
+
 `(flops, bytes)` does not carry the read/write split, so an op sent here states its read half in `Op.eval_roofline_read_bytes()`. There is no fallback. Summing the call's input tensors is not the read half: an op that reads a subset of an input — a routed MoE reading the experts its routing selects — would be charged the whole of it, and a correct formula would fail. An op that declares nothing gets NO-VERDICT, which is not a pass.
 
-| Verdict    | Meaning                                                  |
-| ---------- | -------------------------------------------------------- |
-| FAIL       | Measured reads fall short of the declared read half.     |
-| WARN       | Measured reads far exceed it: multi-pass or replay cost. |
-| ERROR      | The audit did not produce a usable measurement.          |
-| NO-VERDICT | No read half was declared.                               |
+| Verdict    | Meaning                                                                |
+| ---------- | ---------------------------------------------------------------------- |
+| FAIL       | Measured reads fall short of the declared read half.                   |
+| WARN       | Measured reads far exceed it: multi-pass or replay cost.               |
+| EXEMPT     | They fall short inside a `read_bound_exception`: reported, not judged. |
+| SKIPPED    | Never run, or the formula declares no read at all.                     |
+| ERROR      | The audit did not produce a usable measurement.                        |
+| NO-VERDICT | No read half was declared.                                             |
+
+The read half comes off `bytes` by subtracting the write half the contract settles, and pricing the outputs needs the shapes the call carried. An op keeps only what its own `eval_roofline` needs, so `tileops.ops.op_base.record_roofline_calls()` makes `Op.__call__` remember each input tensor's shape and dtype. The audit turns it on around the call it reads the declaration off, and it is off everywhere else: it costs about a microsecond per call, which a benchmark row would otherwise carry.
 
 Workloads come from the manifest's own rows and cover the formula's branch signatures. Scaled-up shapes are not used: they can cross kernel-selection thresholds and audit an implementation the benchmark never runs.
 
@@ -305,7 +322,25 @@ A CI test recomputes each audited `bytes` value from an independent path — the
 
 Traffic that depends on tensor *content* is recounted the same way: the case constructs the selecting tensor itself, exactly as it constructs shapes, so content dependence is no reason to exempt an op. Coverage is golden workloads per op, not randomized sweeps.
 
-A completeness test keeps the classification total: every implemented op is audited or on an explicit pending list to burn down. An op added to the manifest fails the test until it is classified.
+Coverage is three levels and an op sits at exactly one:
+
+| Level | Case                                                                                                                                                            | Shares with the formula                                                                                                                           |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One   | A binder builds it from the signature, one workload row, the dtypes and the mutation marks. An op reaches this level by being recountable, not by being listed. | The minimum-traffic definition, the op's statement of its output extents, and the manifest's output-dtype resolution. Never the `roofline` block. |
+| Two   | Hand-written, for a call the contract does not settle.                                                                                                          | Written beside the case.                                                                                                                          |
+| Three | None: marked with what is missing, asserted against nothing.                                                                                                    | —                                                                                                                                                 |
+
+A completeness test keeps the three total: an op added to the manifest is recounted by the binder or fails until it is placed.
+
+### 4.7 Value-Determined Traffic
+
+A few ops move an amount their inputs' values decide: a routed MoE reads the experts `topk_ids` names, a sparse attention the blocks its selection kept. Such a formula prices this call, not an average over calls of that shape, which imposes three rules.
+
+- It reads the call's semantic inputs — the routing, the offsets, the block table — and never a quantity it computed for itself, which would make a recount an identity.
+- Its workload row builds those inputs from a generator of its own, not the global stream: a draw added anywhere upstream would otherwise move the traffic and the efficiency the row reports.
+- It states what decided the number in `Op.roofline_inputs()`, which the benchmark records beside the reading. Nothing judges it; it is what makes a moved number readable.
+
+A recount builds the call's two kinds of tensor: bulk operands on the meta device, and the metadata whose values decide the traffic with those values. Where the row states them — a packed batch's lengths — the recount restates them and stays at level one. Where the values are drawn per call, the recount runs the workload that draws them, and the op sits at level two.
 
 ## 5. Reference
 

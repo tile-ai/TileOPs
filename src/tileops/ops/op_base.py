@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import functools
 import math
@@ -80,6 +81,47 @@ def _declared_dispatch_keys() -> frozenset[str]:
     return frozenset(keys)
 
 
+_RECORDING_CALLS = False
+
+
+@contextlib.contextmanager
+def _recording_roofline_calls() -> "Iterator[None]":
+    """Have every op call inside this block remember its input shapes and dtypes.
+
+    ``eval_roofline_read_bytes()`` prices the write half from the output
+    shapes, which the input shapes decide, and an op keeps only what its own
+    ``eval_roofline`` needs. The NCU bytes audit wraps the call it reads that
+    declaration off.
+
+    Instrumentation, not operator interface, and off outside the block: the
+    recording costs about a microsecond per call, which every benchmark row
+    would otherwise carry.
+    """
+    global _RECORDING_CALLS
+    previous = _RECORDING_CALLS
+    _RECORDING_CALLS = True
+    try:
+        yield
+    finally:
+        _RECORDING_CALLS = previous
+
+
+@functools.lru_cache(maxsize=None)
+def _forward_input_names(op_name: str) -> tuple[str, ...]:
+    """The op's ``forward`` input names, or empty when the manifest has none.
+
+    Cached per op: every call records its tensors, and reading the manifest
+    each time costs more than the rest of the recording together.
+    """
+    entry = load_manifest().get(op_name)
+    if entry is None:
+        return ()
+    try:
+        return tuple(forward_signature(entry)["inputs"])
+    except Exception:
+        return ()
+
+
 class Op(ABC):
     """Base class for TileOPs operations.
 
@@ -115,6 +157,8 @@ class Op(ABC):
     # Dispatch keys the caller replaced through ``kernel_map=``.
     _overridden_keys: frozenset = frozenset()
     dtype: Optional[torch.dtype] = None
+    # This call's input shapes and dtypes, while a recording block is open.
+    _roofline_call_tensors: Optional[dict] = None
     device: Optional[Union[torch.device, str]] = "cuda"
     input_shapes: Optional[list[tuple]] = None
     # Whether kernels this op builds tune themselves. A ctor kwarg on the ops
@@ -215,15 +259,87 @@ class Op(ABC):
             "docs/design/roofline.md §4.4.6 (Evaluator Surface Boundary)"
         )
 
-    def eval_roofline_read_bytes(self) -> int:
+    def eval_roofline_read_bytes(self) -> Optional[int]:
         """The read half of ``eval_roofline()[1]``, for the NCU bytes audit.
 
-        ``(flops, bytes)`` does not carry the read/write split, so an op that
-        goes to the audit (docs/design/roofline.md §4.5) states its read half
-        here. Returning ``NotImplemented`` means the op does not, and the audit
-        reports NO-VERDICT for it rather than inventing a value.
+        ``bytes`` minus the write half, which the signature settles: every
+        declared output once, plus a ``mutated`` input that is not an output.
+        An op that reads only part of an input needs no override -- its
+        ``bytes`` already counted that part.
+
+        Returns:
+            The read half in bytes, or ``None`` when the call has not bound what
+            the write half needs.
         """
-        return NotImplemented
+        write_bytes = self._roofline_write_bytes()
+        if write_bytes is None:
+            return None
+        return int(self.eval_roofline()[1]) - write_bytes
+
+    def roofline_inputs(self) -> "dict[str, int]":
+        """What decided this call's ``bytes``, where its inputs' values decided it.
+
+        Two calls of one shape can move different amounts -- a routed MoE reads
+        the experts its routing selected -- and the benchmark records this
+        beside the reading so such a number says why it moved.
+
+        Nothing judges it, and it is not part of ``(flops, bytes)``. Empty
+        unless the op's traffic follows its inputs' values.
+        """
+        return {}
+
+    def _roofline_write_bytes(self) -> Optional[int]:
+        """Bytes this call writes, from the signature alone, or ``None`` when the
+        call has not bound the shapes or dtypes that price them."""
+        from tileops.manifest import load_manifest
+        from tileops.ops._output_dtype import output_dtype
+
+        entry = load_manifest().get(type(self).__name__)
+        if entry is None:
+            return None
+        signature = entry.get("signature") or {}
+        inputs = signature.get("inputs") or {}
+        outputs = signature.get("outputs") or {}
+        order = list(inputs)
+        recorded = getattr(self, "_roofline_call_tensors", None) or {}
+        shapes = []
+        for name in order:
+            if name in recorded:
+                shapes.append(recorded[name][0])
+                continue
+            bound = getattr(self, name, None)
+            shape = getattr(bound, "shape", None) or getattr(self, f"{name}_shape", None)
+            shapes.append(None if shape is None else tuple(shape))
+        try:
+            out_shapes = self._infer_output_shapes(*shapes)
+        except Exception:
+            return None
+        dtype = getattr(self, "dtype", None)
+        total = 0
+        for name, shape in out_shapes.items():
+            try:
+                elem = output_dtype(self, name, dtype).itemsize
+            except Exception:
+                return None
+            total += math.prod(shape) * elem
+        # A ``mutated`` input is written too, unless that write is the output's:
+        # an op with an ``inplace`` param may write into the input it read.
+        has_inplace = "inplace" in (signature.get("params") or {})
+        for name, spec in inputs.items():
+            if not (spec or {}).get("mutated") or name in outputs or has_inplace:
+                continue
+            shape = shapes[order.index(name)]
+            if shape is None:
+                continue
+            if name in recorded:
+                elem = recorded[name][1].itemsize
+            else:
+                bound = getattr(self, name, None)
+                elem = getattr(getattr(bound, "dtype", None), "itemsize", None)
+            if elem is None:
+                return None
+            total += math.prod(shape) * elem
+        return total
 
     def compute_roof(self) -> str:
         """GPU-profile key of the compute unit that prices this op's FLOPs.
@@ -698,14 +814,43 @@ class Op(ABC):
         for good.
         """
         if self._builder is not _UNRESOLVED:
-            return self.forward(*args, **kwargs)
+            result = self.forward(*args, **kwargs)
+            if _RECORDING_CALLS or self._roofline_call_tensors is not None:
+                self._track_roofline_call(args, kwargs)
+            return result
 
         self._resolve_builder(args, kwargs)
         try:
-            return self.forward(*args, **kwargs)
+            result = self.forward(*args, **kwargs)
         except Exception:
             self._unsettle()
             raise
+        if _RECORDING_CALLS or self._roofline_call_tensors is not None:
+            self._track_roofline_call(args, kwargs)
+        return result
+
+    def _track_roofline_call(self, args: tuple, kwargs: dict) -> None:
+        """Keep the record of this call's input tensors current.
+
+        Outside a recording block, and under ``torch.compile`` where building
+        the dict would break the graph, the record is dropped rather than left
+        describing an earlier call.
+        """
+        if not _RECORDING_CALLS or torch.compiler.is_compiling():
+            self._roofline_call_tensors = None
+            return
+        names = _forward_input_names(type(self).__name__)
+        if not names:
+            return
+        # A call may omit an optional input, so the lists need not be equal.
+        recorded = {}
+        for name, value in zip(names, args, strict=False):
+            if isinstance(value, torch.Tensor):
+                recorded[name] = (tuple(value.shape), value.dtype)
+        for name, value in kwargs.items():
+            if name in names and isinstance(value, torch.Tensor):
+                recorded[name] = (tuple(value.shape), value.dtype)
+        self._roofline_call_tensors = recorded
 
     def _refuse_empty_input(self, inputs: "Sequence[torch.Tensor | None]") -> None:
         """Raise for a call whose every declared output would hold no elements.

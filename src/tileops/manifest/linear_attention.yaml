@@ -202,7 +202,7 @@ DeltaNetAutogradOp:
   workloads:
   - {q_shape: [2, 4, 2048, 64], k_shape: [2, 4, 2048, 64], v_shape: [2, 4, 2048, 64], beta_shape: [2, 4, 2048], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-autograd-b2-s2k-h4-d64"}
   - {q_shape: [2, 4, 8192, 64], k_shape: [2, 4, 8192, 64], v_shape: [2, 4, 8192, 64], beta_shape: [2, 4, 8192], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-autograd-b2-s8k-h4-d64"}
-  roofline: {func: tileops.perf.formulas.deltanet_fwd_roofline}
+  roofline: {func: tileops.perf.formulas.deltanet_autograd_fwd_roofline}
   source:
     kernel: tileops/kernels/linear_attention/deltanet/deltanet_fwd.py
     kernel_map:

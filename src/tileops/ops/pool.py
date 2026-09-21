@@ -512,6 +512,8 @@ class _AvgPoolFwdOpBase(Op):
             kernel_map is not None and self._spatial_slot in kernel_map
         )
         self._last_roofline_spec: Optional[tuple] = None
+        # What the manifest roofline resolves ``input`` through.
+        self.input_shape: Optional[tuple] = None
 
     @property
     def _generic_slot(self) -> str:
@@ -643,6 +645,8 @@ class _AvgPoolFwdOpBase(Op):
             setattr(self, f"out_{name}", size)
         self.dtype = dtype
         self._last_roofline_spec = resolved
+        # What the manifest roofline resolves ``input`` through.
+        self.input_shape = tuple(input.shape)
         return out
 
 
@@ -701,15 +705,6 @@ class AvgPool1dFwdOp(_AvgPoolFwdOpBase):
             "avg_pool1d_kernel": AvgPool1dKernel,
             "avg_pool1d_spatial_kernel": AvgPool1dSpatialKernel,
         }
-
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_spec is None:
-            raise RuntimeError("AvgPool1dFwdOp.eval_roofline() requires a prior forward() call")
-        n, c_in, l_in, out_l, dtype = self._last_roofline_spec
-        elem_bytes = torch.empty((), dtype=dtype).element_size()
-        flops = n * c_in * out_l * self.kernel_size
-        bytes_ = (n * c_in * l_in + n * c_in * out_l) * elem_bytes
-        return flops, bytes_
 
 
 class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
@@ -772,47 +767,6 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
             and self.divisor_override is None
             and self._spatial_slot in self.kernel_map
         )
-
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_spec is None:
-            raise RuntimeError(
-                "AvgPool2dFwdOp.eval_roofline() requires a prior forward() "
-                "call to bind input shape and dtype"
-            )
-        n, c_in, h_in, w_in, out_h, out_w, dtype = self._last_roofline_spec
-        elem_bytes = torch.empty((), dtype=dtype).element_size()
-        flops = n * c_in * out_h * out_w * self.kernel_size[0] * self.kernel_size[1]
-        bytes_ = (n * c_in * h_in * w_in + n * c_in * out_h * out_w) * elem_bytes
-        return flops, bytes_
-
-
-def _max_pool_roofline(op: "_MaxPoolFwdOpBase", *, indices: bool) -> tuple[int, int]:
-    """Shared max-pool roofline: flops = out_elems * prod(kernel); bytes in+out."""
-    if op._last_roofline_spec is None:
-        raise RuntimeError(
-            f"{type(op).__name__}.eval_roofline() requires a prior forward() "
-            "call to bind input shape and dtype"
-        )
-    spec = op._last_roofline_spec
-    nd = op.ndim
-    n, c_in = spec[0], spec[1]
-    in_dims = spec[2 : 2 + nd]
-    out_dims = spec[2 + nd : 2 + 2 * nd]
-    dtype = spec[-1]
-    elem_bytes = torch.empty((), dtype=dtype).element_size()
-    in_elems = n * c_in
-    out_elems = n * c_in
-    for size in in_dims:
-        in_elems *= size
-    for size in out_dims:
-        out_elems *= size
-    flops = out_elems
-    for k in op.kernel_size:
-        flops *= k
-    bytes_ = (in_elems + out_elems) * elem_bytes
-    if indices:
-        bytes_ += out_elems * 8
-    return flops, bytes_
 
 
 class _MaxPoolFwdOpBase(Op):
@@ -882,6 +836,8 @@ class _MaxPoolFwdOpBase(Op):
                 f"{self.__class__.__name__} requires {self._kernel_slot!r} in kernel_map"
             )
         self._last_roofline_spec: Optional[tuple] = None
+        # What the manifest roofline resolves ``input`` through.
+        self.input_shape: Optional[tuple] = None
 
     def _resolve_input(self, input: torch.Tensor) -> tuple:
         nd = self.ndim
@@ -999,6 +955,8 @@ class _MaxPoolFwdOpBase(Op):
             setattr(self, f"out_{name}", size)
         self.dtype = dtype
         self._last_roofline_spec = resolved
+        # What the manifest roofline resolves ``input`` through.
+        self.input_shape = tuple(input.shape)
         return out
 
 
@@ -1049,9 +1007,6 @@ class MaxPool1dFwdOp(_MaxPoolFwdOpBase):
         return {
             "max_pool1d_kernel": MaxPool1dKernel,
         }
-
-    def eval_roofline(self) -> tuple[int, int]:
-        return _max_pool_roofline(self, indices=False)
 
 
 class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
@@ -1114,9 +1069,6 @@ class MaxPool1dIndicesFwdOp(_MaxPoolFwdOpBase):
         """
         return type(self)._wrapped(input, self._instance_key)
 
-    def eval_roofline(self) -> tuple[int, int]:
-        return _max_pool_roofline(self, indices=True)
-
 
 class MaxPool2dFwdOp(_MaxPoolFwdOpBase):
     """Max pooling over PyTorch-compatible NCHW inputs (return_indices=False)."""
@@ -1165,9 +1117,6 @@ class MaxPool2dFwdOp(_MaxPoolFwdOpBase):
         return {
             "max_pool2d_kernel": MaxPool2dKernel,
         }
-
-    def eval_roofline(self) -> tuple[int, int]:
-        return _max_pool_roofline(self, indices=False)
 
 
 class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
@@ -1230,9 +1179,6 @@ class MaxPool2dIndicesFwdOp(_MaxPoolFwdOpBase):
         """
         return type(self)._wrapped(input, self._instance_key)
 
-    def eval_roofline(self) -> tuple[int, int]:
-        return _max_pool_roofline(self, indices=True)
-
 
 class MaxPool3dFwdOp(_MaxPoolFwdOpBase):
     """Max pooling over PyTorch-compatible NCDHW inputs (return_indices=False)."""
@@ -1281,9 +1227,6 @@ class MaxPool3dFwdOp(_MaxPoolFwdOpBase):
         return {
             "max_pool3d_kernel": MaxPool3dKernel,
         }
-
-    def eval_roofline(self) -> tuple[int, int]:
-        return _max_pool_roofline(self, indices=False)
 
 
 class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
@@ -1346,9 +1289,6 @@ class MaxPool3dIndicesFwdOp(_MaxPoolFwdOpBase):
         """
         return type(self)._wrapped(input, self._instance_key)
 
-    def eval_roofline(self) -> tuple[int, int]:
-        return _max_pool_roofline(self, indices=True)
-
 
 class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
     """Average pooling over PyTorch-compatible NCDHW inputs."""
@@ -1401,52 +1341,11 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
             "avg_pool3d_spatial_kernel": AvgPool3dSpatialKernel,
         }
 
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_spec is None:
-            raise RuntimeError(
-                "AvgPool3dFwdOp.eval_roofline() requires a prior forward() "
-                "call to bind input shape and dtype"
-            )
-        n, c_in, d_in, h_in, w_in, out_d, out_h, out_w, dtype = self._last_roofline_spec
-        elem_bytes = torch.empty((), dtype=dtype).element_size()
-        flops = (
-            n
-            * c_in
-            * out_d
-            * out_h
-            * out_w
-            * self.kernel_size[0]
-            * self.kernel_size[1]
-            * self.kernel_size[2]
-        )
-        bytes_ = (n * c_in * d_in * h_in * w_in + n * c_in * out_d * out_h * out_w) * elem_bytes
-        return flops, bytes_
-
 
 def _validate_adaptive_pool_input_dtypes(self, input: torch.Tensor) -> None:
     """Adaptive-pool dtype validator: FP16/BF16 only (bound per concrete class)."""
     if input.dtype not in {torch.float16, torch.bfloat16}:
         raise ValueError(f"input.dtype must be float16 or bfloat16, got {input.dtype}")
-
-
-def _adaptive_pool2d_roofline(op: "_AdaptivePool2dFwdOpBase", *, indices: bool) -> tuple[int, int]:
-    """Shared adaptive-pool roofline mirroring the manifest formulas."""
-    if op._last_roofline_spec is None:
-        raise RuntimeError(
-            f"{type(op).__name__}.eval_roofline() requires a prior forward() "
-            "call to bind input shape and dtype"
-        )
-    n, c_in, h_in, w_in, out_h, out_w, dtype = op._last_roofline_spec
-    elem_bytes = torch.empty((), dtype=dtype).element_size()
-    # Exact adaptive-bin scan: bins are [floor(o*in/out), ceil((o+1)*in/out))
-    # and adjacent bins overlap by one row/col unless out | j*in.
-    scan_h = h_in + sum(1 for j in range(1, out_h) if (j * h_in) % out_h != 0)
-    scan_w = w_in + sum(1 for o in range(1, out_w) if (o * w_in) % out_w != 0)
-    flops = n * c_in * scan_h * scan_w
-    bytes_ = (n * c_in * h_in * w_in + n * c_in * out_h * out_w) * elem_bytes
-    if indices:
-        bytes_ += n * c_in * out_h * out_w * 8
-    return flops, bytes_
 
 
 class _AdaptivePool2dFwdOpBase(Op):
@@ -1528,6 +1427,8 @@ class _AdaptivePool2dFwdOpBase(Op):
                 f"{type(self).__name__} requires {self._kernel_slot!r} in kernel_map"
             )
         self._last_roofline_spec: Optional[tuple] = None
+        # What the manifest roofline resolves ``input`` through.
+        self.input_shape: Optional[tuple] = None
 
     def _resolve_out_dims(self, h_in: int, w_in: int) -> tuple[int, int]:
         # Manifest parity probes call _infer_output_shapes on a mock self
@@ -1591,6 +1492,8 @@ class _AdaptivePool2dFwdOpBase(Op):
         self.out_w = out_w
         self.dtype = dtype
         self._last_roofline_spec = (n, c_in, h_in, w_in, out_h, out_w, dtype)
+        # What the manifest roofline resolves ``input`` through.
+        self.input_shape = tuple(x.shape)
         if self._returns_indices:
             out, indices = result
             if squeezed:
@@ -1650,9 +1553,6 @@ class AdaptiveAvgPool2dFwdOp(_AdaptivePool2dFwdOpBase):
             "adaptive_avg_pool2d_kernel": AdaptiveAvgPool2dKernel,
         }
 
-    def eval_roofline(self) -> tuple[int, int]:
-        return _adaptive_pool2d_roofline(self, indices=False)
-
 
 class AdaptiveMaxPool2dFwdOp(_AdaptivePool2dFwdOpBase):
     """Adaptive max pooling over CHW/NCHW inputs (return_indices=False)."""
@@ -1688,9 +1588,6 @@ class AdaptiveMaxPool2dFwdOp(_AdaptivePool2dFwdOpBase):
         return {
             "adaptive_max_pool2d_kernel": AdaptiveMaxPool2dKernel,
         }
-
-    def eval_roofline(self) -> tuple[int, int]:
-        return _adaptive_pool2d_roofline(self, indices=False)
 
 
 class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
@@ -1739,6 +1636,3 @@ class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
             ``output``, ``indices``, as the manifest declares.
         """
         return type(self)._wrapped(input, self._instance_key)
-
-    def eval_roofline(self) -> tuple[int, int]:
-        return _adaptive_pool2d_roofline(self, indices=True)

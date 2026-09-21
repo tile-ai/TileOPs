@@ -76,16 +76,6 @@ class AdaLayerNormZeroFwdOp(Op):
         """Manifest ``shape_rules``: ``output.shape == x.shape``."""
         return {"output": tuple(x_shape)}
 
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_mn is None or self.dtype is None:
-            raise RuntimeError(
-                f"{type(self).__name__}.eval_roofline() requires a prior "
-                "forward() call to bind input shape and dtype"
-            )
-        M, N = self._last_roofline_mn
-        elem_bytes = self.dtype.itemsize
-        return 6 * M * N, 5 * M * N * elem_bytes
-
     def forward(
         self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor, gate: torch.Tensor
     ) -> torch.Tensor:
@@ -136,6 +126,8 @@ class AdaLayerNormZeroFwdOp(Op):
         n = x.shape[-1]
         kernel = self.kernel_for("ada_layer_norm", (x, scale, shift, gate), (n, x.dtype))
         self._last_roofline_mn = (x.numel() // n, n)
+        # What the manifest roofline resolves ``x`` through.
+        self.x_shape = tuple(x.shape)
         return kernel(x, scale, shift, gate)
 
     def entry_for(self, role: str, call: tuple) -> Entry:

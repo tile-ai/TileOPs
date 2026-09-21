@@ -380,6 +380,9 @@ MoePrePermuteFwdOp:
   - {hidden_states_shape: [32, 128], local_expert_ids_shape: [32, 2], num_local_experts: 4, layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "small"}
   - {hidden_states_shape: [512, 128], local_expert_ids_shape: [512, 2], num_local_experts: 4, layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "prefill"}
   roofline:
+    # expert_input, layout_metadata and inverse_indices are outputs whose extents
+    # the chosen MGroupedLayoutSpec decides, and the vars layer binds inputs and
+    # params only. The op answers this one; see its eval_roofline.
     flops: "0"
     bytes: "(hidden_states.numel() + expert_input.numel()) * elem_bytes + (local_expert_ids.numel() + layout_metadata.numel() + inverse_indices.numel()) * 4"
   source:
@@ -514,8 +517,15 @@ MoePostPermuteFwdOp:
   - {expert_output_shape: [64, 128], topk_weights_shape: [32, 2], inverse_indices_shape: [64], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "small"}
   - {expert_output_shape: [1024, 128], topk_weights_shape: [512, 2], inverse_indices_shape: [1024], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "prefill"}
   roofline:
-    flops: "2 * topk_weights.numel() * expert_output.shape[-1]"
-    bytes: "(expert_output.numel() + output.numel()) * elem_bytes + (topk_weights.numel() + inverse_indices.numel()) * 4"
+    vars:
+      # output.shape == (topk_weights.shape[0], expert_output.shape[-1]), per shape_rules.
+      tokens: "topk_weights.shape[0]"
+      top_k: "topk_weights.shape[1]"
+      hidden: "expert_output.shape[-1]"
+      rows: "product(expert_output.shape) // expert_output.shape[-1]"
+      index_elems: "product(inverse_indices.shape)"
+    flops: "2 * tokens * top_k * hidden"
+    bytes: "(rows * hidden + tokens * hidden) * elem_bytes + (tokens * top_k + index_elems) * 4"
   source:
     kernel: tileops/ops/moe/staged.py
     op: tileops/ops/moe/staged.py

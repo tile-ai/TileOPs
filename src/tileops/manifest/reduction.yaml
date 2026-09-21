@@ -136,8 +136,11 @@ LogSumExpFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}))"
-      N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim}))"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) else set(range(nd))))"
+      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
+      N: "product(x.shape[i] for i in axes)"
     # Per row: max (N) + sub (N) + exp (N) + sum (N) + log+add (≈1) ≈ 4N,
     # matching SoftmaxFwdOp's convention where max and the broadcast sub each
     # cost N. FLOP convention: 1 cmp+sel = 1 fp op.
@@ -194,8 +197,11 @@ SumFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
+      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
+      N: "product(x.shape[i] for i in axes)"
     # N-1 additions per output element
     flops: "M * N"
     # Read x + write output
@@ -242,8 +248,11 @@ MeanFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
+      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
+      N: "product(x.shape[i] for i in axes)"
     # N additions + 1 division per output element
     flops: "M * (N + 1)"
     # Read x + write output
@@ -286,8 +295,11 @@ AmaxFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
+      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
+      N: "product(x.shape[i] for i in axes)"
     # N-1 comparisons per output element
     flops: "M * N"
     # Read x + write output
@@ -330,8 +342,11 @@ AminFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
+      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
+      N: "product(x.shape[i] for i in axes)"
     # N-1 comparisons per output element
     flops: "M * N"
     # Read x + write output
@@ -382,8 +397,11 @@ ProdFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i != dim % x.ndim)"
-      N: "x.shape[dim % x.ndim]"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      ax: "None if x.ndim == 0 else dim % nd"
+      M: "product(x.shape[i] for i in range(x.ndim) if i != ax)"
+      N: "1 if ax is None else x.shape[ax]"
     # N-1 multiplications per output element
     flops: "M * N"
     # Read x + write output
@@ -431,8 +449,11 @@ VarFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
+      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
+      N: "product(x.shape[i] for i in axes)"
     # Welford: mean update (2 ops) + variance update (3 ops) per element = 5N
     flops: "5 * M * N"
     # Read x + write output
@@ -476,8 +497,11 @@ StdFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
+      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
+      N: "product(x.shape[i] for i in axes)"
     # Welford (5N) + sqrt per output element
     flops: "5 * M * N + M"
     # Read x + write output
@@ -523,8 +547,11 @@ VarMeanFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
+      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
+      N: "product(x.shape[i] for i in axes)"
     # Welford: single pass computes both mean and variance
     flops: "5 * M * N"
     # Read x + write var + write mean
@@ -664,8 +691,11 @@ AllFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
-      N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) else set(range(nd))))"
+      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
+      N: "product(x.shape[i] for i in axes)"
     # N-1 logical AND per output element
     flops: "M * N"
     # Read x (elem_bytes) + write output (1 byte for bool)
@@ -711,8 +741,11 @@ AnyFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
-      N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) else set(range(x.ndim))))"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) else set(range(nd))))"
+      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
+      N: "product(x.shape[i] for i in axes)"
     # N-1 logical OR per output element
     flops: "M * N"
     # Read x (elem_bytes) + write output (1 byte for bool)
@@ -755,8 +788,11 @@ CountNonzeroFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
+      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
+      N: "product(x.shape[i] for i in axes)"
     # Compare + conditional add per element
     flops: "2 * M * N"
     # Read x (elem_bytes) + write output (8 bytes for int64)
@@ -810,8 +846,11 @@ L1NormFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
+      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
+      N: "product(x.shape[i] for i in axes)"
     # abs + add per element
     flops: "2 * M * N"
     # Read x + write output
@@ -860,8 +899,11 @@ L2NormFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
+      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
+      N: "product(x.shape[i] for i in axes)"
     # square + add per element, then sqrt
     flops: "2 * M * N + M"
     # Read x + write output
@@ -910,8 +952,11 @@ InfNormFwdOp:
 
   roofline:
     vars:
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
-      N: "product(x.shape[i] for i in ({dim % x.ndim} if isinstance(dim, int) else {d % x.ndim for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(x.ndim))))"
+      # A 0-d input reduces to itself: no axis, so M and N are both 1.
+      nd: "max(x.ndim, 1)"
+      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
+      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
+      N: "product(x.shape[i] for i in axes)"
     # abs + max per element
     flops: "2 * M * N"
     # Read x + write output

@@ -1017,6 +1017,148 @@ class TestOptionalInputs:
         errors = validator.check_l0("Op", entry)
         assert any("names optional input 'w'" in e for e in errors), errors
 
+    def test_read_bound_exception_states_a_condition_and_a_reason(self, validator):
+        """It lifts a verdict the audit would otherwise reach, so it says when and why."""
+        entry = self._entry()
+        entry["roofline"]["read_bound_exception"] = {"reason": "the kernel may skip a load"}
+        errors = validator.check_l0("Op", entry)
+        assert any("read_bound_exception.when" in e for e in errors), errors
+
+        entry["roofline"]["read_bound_exception"] = {
+            "when": "w_shape is None",
+            "reason": "the kernel may skip a load",
+        }
+        assert validator.check_l0("Op", entry) == []
+
+    @pytest.mark.parametrize("signature", [[], {"params": [{}]}, {"params": 1}])
+    def test_read_bound_exception_survives_a_malformed_signature(self, validator, signature):
+        """A helper that raises while another section is being reported hides it."""
+        entry = self._entry()
+        entry["signature"] = signature
+        entry["roofline"]["read_bound_exception"] = {
+            "when": "w_shape is None",
+            "reason": "the kernel may skip a load",
+        }
+        assert any("signature" in e for e in validator.check_l0("Op", entry))
+
+    def test_read_bound_exception_condition_reads_the_dtype_and_not_the_bookkeeping(
+        self, validator
+    ):
+        """The element type a row expands to is call state; how a row is reported
+        and which axis it expands over are not."""
+        entry = self._entry()
+        entry["roofline"]["read_bound_exception"] = {
+            "when": "dtype == 'float16'",
+            "reason": "the packed load covers a skipped position",
+        }
+        assert validator.check_l0("Op", entry) == []
+
+        for name in ("label", "dtypes", "bench_skip_reason"):
+            entry = self._entry()
+            entry["workloads"][0][name] = "x"
+            entry["roofline"]["read_bound_exception"] = {
+                "when": f"{name} == 'x'",
+                "reason": "the packed load covers a skipped position",
+            }
+            errors = validator.check_l0("Op", entry)
+            assert any(f"names {name!r}" in e for e in errors), (name, errors)
+
+    @pytest.mark.parametrize(
+        "written", ["len(str(w_shape)) > 0", "w_shape.ndim > 0", "w_shape[0] > 0"]
+    )
+    def test_read_bound_exception_condition_reaches_nothing_but_names(self, validator, written):
+        """The audit evaluates the text, so it holds names, literals and comparisons."""
+        entry = self._entry()
+        entry["roofline"]["read_bound_exception"] = {
+            "when": written,
+            "reason": "the kernel may skip a load",
+        }
+        errors = validator.check_l0("Op", entry)
+        assert any("names and literals" in e for e in errors), errors
+
+    def test_read_bound_exception_condition_reads_the_call_in_every_clause(self, validator):
+        """Each clause has to read something the call decides, or it settles the
+        condition by itself -- the op-wide waiver this field refuses."""
+        for written in ("True", "0 < 1", "w_shape is None and True"):
+            entry = self._entry()
+            entry["roofline"]["read_bound_exception"] = {
+                "when": written,
+                "reason": "the kernel may skip a load",
+            }
+            errors = validator.check_l0("Op", entry)
+            assert any("read_bound_exception.when" in e for e in errors), (written, errors)
+
+    def test_read_bound_exception_condition_joins_cases_that_each_read_the_call(self, validator):
+        """Two element types can be exceptional and a third not, and whichever arm
+        holds has read the call."""
+        entry = self._entry()
+        entry["roofline"]["read_bound_exception"] = {
+            "when": "dtype == 'float16' or dtype == 'bfloat16'",
+            "reason": "the packed load covers a skipped position",
+        }
+        assert validator.check_l0("Op", entry) == []
+
+    @pytest.mark.parametrize(
+        "written",
+        [
+            "(True or w_shape) == True",
+            "w_shape is None or True",
+            # A chain stops at the first false link, so this one never reads w_shape.
+            "not (1 > 2 < w_shape)",
+        ],
+    )
+    def test_read_bound_exception_condition_hides_no_clause_inside_another(
+        self, validator, written
+    ):
+        """A clause that settles before a name is read waives every call, whether it
+        stands on its own or sits inside a comparison."""
+        entry = self._entry()
+        entry["roofline"]["read_bound_exception"] = {
+            "when": written,
+            "reason": "the kernel may skip a load",
+        }
+        errors = validator.check_l0("Op", entry)
+        assert any("read_bound_exception.when" in e for e in errors), (written, errors)
+
+    def test_read_bound_exception_condition_may_not_compare_a_value_with_itself(self, validator):
+        entry = self._entry()
+        entry["roofline"]["read_bound_exception"] = {
+            "when": "w_shape == w_shape",
+            "reason": "the kernel may skip a load",
+        }
+        errors = validator.check_l0("Op", entry)
+        assert any("with itself" in e for e in errors), errors
+
+    def test_read_bound_exception_condition_compares_against_a_signed_literal(self, validator):
+        """`-1` parses as a negated constant, and `dim == -1` is an ordinary call test."""
+        entry = self._entry()
+        entry["signature"]["params"] = {"dim": {"type": "int", "default": -1}}
+        entry["roofline"]["read_bound_exception"] = {
+            "when": "dim == -1",
+            "reason": "the kernel may skip a load",
+        }
+        assert validator.check_l0("Op", entry) == []
+
+    def test_read_bound_exception_condition_may_state_a_range(self, validator):
+        """A chain states a range: each link reads the call, and repeating a bound
+        across two links is not a value compared with itself."""
+        entry = self._entry()
+        entry["signature"]["params"] = {"axis": {"type": "int", "default": 0}}
+        entry["roofline"]["read_bound_exception"] = {
+            "when": "0 <= axis <= 0",
+            "reason": "the kernel may skip a load",
+        }
+        assert validator.check_l0("Op", entry) == []
+
+    def test_read_bound_exception_condition_names_a_param_or_workload_key(self, validator):
+        entry = self._entry()
+        entry["roofline"]["read_bound_exception"] = {
+            "when": "sparsity > 0",
+            "reason": "the kernel may skip a load",
+        }
+        errors = validator.check_l0("Op", entry)
+        assert any("'sparsity'" in e for e in errors), errors
+
     def test_dtype_combos_column_rejected(self, validator):
         entry = self._entry()
         entry["signature"]["dtype_combos"] = [

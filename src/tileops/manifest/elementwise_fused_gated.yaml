@@ -34,7 +34,7 @@ SiluAndMulFwdOp:
   roofline:
     vars:
       M: "x.shape[0]"
-      N: "output.shape[1]"
+      N: "x.shape[1] // 2"
     # FLOPs: silu(gate) = gate * sigmoid(gate); sigmoid = neg + exp + add +
     # recip = 4. silu adds one mul (= 5). Final mul-by-value = 1. Total 6
     # per output element. N output elements per row, M rows.
@@ -76,7 +76,7 @@ GeluAndMulFwdOp:
   roofline:
     vars:
       M: "x.shape[0]"
-      N: "output.shape[1]"
+      N: "x.shape[1] // 2"
     # FLOPs: gelu(gate) = gate * 0.5 * (1 + erf(gate / sqrt(2))).
     # div(1) + erf(1) + add(1) + mul-by-half(1) + mul-by-gate(1) = 5;
     # final mul-by-value = 1. Total 6 per output element.
@@ -117,7 +117,7 @@ GeluTanhAndMulFwdOp:
   roofline:
     vars:
       M: "x.shape[0]"
-      N: "output.shape[1]"
+      N: "x.shape[1] // 2"
     # FLOPs: gelu_tanh(g) = 0.5 * g * (1 + tanh(sqrt(2/pi) * (g + 0.044715 * g^3))).
     # cube(2 muls) + mul-coeff(1) + add(1) + mul-sqrt(1) + tanh(1) + add(1)
     # + mul-half(1) + mul-by-gate(1) = 9; final mul-by-value = 1. Total 10

@@ -115,17 +115,6 @@ class InstanceNormFwdOp(Op):
         """Manifest ``shape_rules``: ``output.shape == x.shape``."""
         return {"output": tuple(x_shape)}
 
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_roofline_spec is None:
-            raise RuntimeError("InstanceNormFwdOp.eval_roofline() requires a prior forward() call")
-        N, C, spatial_size, dtype, affine, tracks_stats = self._last_roofline_spec
-        elem_bytes = dtype.itemsize
-        flops = (5 if affine else 3) * N * C * spatial_size
-        nbytes = (2 * N * C * spatial_size + (2 * C if affine else 0)) * elem_bytes + (
-            4 * C * 4 if tracks_stats else 0
-        )
-        return flops, nbytes
-
     def _validate_dtypes(
         self,
         x: torch.Tensor,
@@ -306,6 +295,12 @@ class InstanceNormFwdOp(Op):
             self._validate_running_stats("running_mean", running_mean, x.device, C)
             self._validate_running_stats("running_var", running_var, x.device, C)
         self._bind_spec(N, C, spatial, spatial_size, dtype, affine, tracks_stats)
+        # What the manifest roofline resolves the tensors through.
+        self.x_shape = tuple(x.shape)
+        self.weight_shape = None if weight is None else tuple(weight.shape)
+        self.bias_shape = None if bias is None else tuple(bias.shape)
+        self.running_mean_shape = None if running_mean is None else tuple(running_mean.shape)
+        self.running_var_shape = None if running_var is None else tuple(running_var.shape)
 
         if not self.use_input_stats:
             # Eval-mode path: y = (x - running_mean[c]) / sqrt(running_var[c] + eps).

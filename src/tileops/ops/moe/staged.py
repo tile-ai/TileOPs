@@ -16,7 +16,6 @@ from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, Pre
 from tileops.ops._compile_boundary_codegen import OperatorSpec
 from tileops.ops._output_dtype import output_dtype
 from tileops.ops.op_base import Op
-from tileops.perf.formulas import moe_expert_mlp_roofline, moe_grouped_gemm_roofline
 from tileops.perf.profile import tensor_core_roof
 from tileops.utils import get_sm_version, is_h200
 
@@ -154,6 +153,13 @@ class MoePrePermuteFwdOp(_StagedOpBase):
         }
 
     def eval_roofline(self) -> tuple[int, int]:
+        """The one op whose entry codegen cannot serve.
+
+        Its three outputs' extents come from the ``MGroupedLayoutSpec`` the call
+        passes, and the vars layer binds inputs and params, never outputs. The
+        entry states the same sum in the shape the layer could express it; this
+        reads the layout the call actually chose.
+        """
         if self.input_shapes is None or self.dtype is None:
             raise RuntimeError("eval_roofline requires a prior forward call")
         hidden_shape, ids_shape = self.input_shapes
@@ -320,9 +326,6 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
         if getattr(self, "activation", None) is not None:
             n //= 2
         return {"output": (*tuple(a_shape)[:-1], n)}
-
-    def eval_roofline(self) -> tuple[int, int]:
-        return moe_grouped_gemm_roofline(self)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -527,9 +530,6 @@ class MoeExpertMLPFwdOp(_StagedOpBase):
     ) -> dict[str, tuple[int, ...]]:
         return {"output": (*tuple(expert_input_shape)[:-1], w_down_shape[1])}
 
-    def eval_roofline(self) -> tuple[int, int]:
-        return moe_expert_mlp_roofline(self)
-
     def compute_roof(self) -> str:
         """The two GEMMs dominate the FLOPs; priced on tensor cores."""
         return tensor_core_roof(self.dtype)
@@ -625,20 +625,6 @@ class MoePostPermuteFwdOp(_StagedOpBase):
     ) -> dict[str, tuple[int, ...]]:
         return {"output": (topk_weights_shape[0], expert_output_shape[-1])}
 
-    def eval_roofline(self) -> tuple[int, int]:
-        if self.input_shapes is None or self.dtype is None:
-            raise RuntimeError("eval_roofline requires a prior forward call")
-        expert_shape, weights_shape, inverse_shape = self.input_shapes
-        rows = 1
-        for dim in expert_shape[:-1]:
-            rows *= dim
-        hidden = expert_shape[-1]
-        tokens, top_k = weights_shape
-        flops = 2 * tokens * top_k * hidden
-        nbytes = (rows * hidden + tokens * hidden) * self.dtype.itemsize
-        nbytes += (weights_shape[0] * weights_shape[1] + inverse_shape[0]) * 4
-        return int(flops), int(nbytes)
-
     def make_call(
         self,
         expert_output: torch.Tensor,
@@ -726,6 +712,10 @@ class MoePostPermuteFwdOp(_StagedOpBase):
             tuple(topk_weights.shape),
             tuple(inverse_indices.shape),
         ]
+        # What the manifest roofline resolves the tensors through.
+        self.expert_output_shape = tuple(expert_output.shape)
+        self.topk_weights_shape = tuple(topk_weights.shape)
+        self.inverse_indices_shape = tuple(inverse_indices.shape)
         kernel = self.kernel_for(
             "post_permute", (expert_output, topk_weights, inverse_indices), call
         )

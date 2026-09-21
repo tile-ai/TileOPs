@@ -46,7 +46,6 @@ class ReluFwdOp(_ParamFreeActivationOp):
     kernel_cls = ReluFwdKernel
     # Manifest: flops = "N". Per roofline.md §1.3, one
     # compare-and-select counts as 1 FLOP per element.
-    FLOPS_PER_ELEM = 1
 
 
 class GeluFwdOp(_GeluApproximateBase):
@@ -71,7 +70,6 @@ class GeluFwdOp(_GeluApproximateBase):
     # Manifest: flops = "5 * N". Per roofline.md §1.3:
     # gelu(x) = x * 0.5 * (1 + erf(x/sqrt(2))) =
     # div + erf(transcendental) + add + mul-by-half + mul = 5 per elem.
-    FLOPS_PER_ELEM = 5
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -90,7 +88,6 @@ class SiluFwdOp(_ParamFreeActivationOp):
     kernel_cls = SiluFwdKernel
     # Manifest: flops = "5 * N". Per roofline.md §1.3:
     # sigmoid = neg + exp + add + recip = 4; silu adds one mul = 5 per elem.
-    FLOPS_PER_ELEM = 5
 
 
 class SigmoidFwdOp(UnaryOp):
@@ -99,7 +96,6 @@ class SigmoidFwdOp(UnaryOp):
     _op_name = "sigmoid"
     kernel_cls = SigmoidFwdKernel
     # Manifest: flops = "4 * N" (sigmoid(x) = 1 / (1 + exp(-x)) ≈ 4 ops/elem).
-    FLOPS_PER_ELEM = 4
 
 
 class TanhFwdOp(UnaryOp):
@@ -109,7 +105,6 @@ class TanhFwdOp(UnaryOp):
     kernel_cls = TanhFwdKernel
     # Manifest: flops = "N". Per roofline.md §1.3, tanh is one
     # transcendental call = 1 FLOP per element.
-    FLOPS_PER_ELEM = 1
 
 
 class HardswishFwdOp(_ParamFreeActivationOp):
@@ -124,7 +119,6 @@ class HardswishFwdOp(_ParamFreeActivationOp):
     # Manifest: flops = "4 * N". Per roofline.md §1.3:
     # hardswish(x) = x * relu6(x+3)/6 =
     # add + two-sided-clamp(1) + mul + div = 4 per elem.
-    FLOPS_PER_ELEM = 4
 
 
 class HardsigmoidFwdOp(_ParamFreeActivationOp):
@@ -139,7 +133,6 @@ class HardsigmoidFwdOp(_ParamFreeActivationOp):
     # Manifest: flops = "3 * N". Per roofline.md §1.3:
     # hardsigmoid(x) = relu6(x+3)/6 =
     # add + two-sided-clamp(1) + div = 3 per elem.
-    FLOPS_PER_ELEM = 3
 
 
 class MishFwdOp(_ParamFreeActivationOp):
@@ -154,7 +147,6 @@ class MishFwdOp(_ParamFreeActivationOp):
     # Manifest: flops = "4 * N". Per roofline.md §1.3:
     # mish(x) = x * tanh(softplus(x));
     # softplus = exp + log1p = 2; tanh(transcendental) + final mul = 4 per elem.
-    FLOPS_PER_ELEM = 4
 
 
 class SeluFwdOp(_ParamFreeActivationOp):
@@ -167,7 +159,6 @@ class SeluFwdOp(_ParamFreeActivationOp):
     _op_name = "selu"
     kernel_cls = SeluFwdKernel
     # Manifest: flops = "5 * N" (branch + exp/sub/mul + lambda mul).
-    FLOPS_PER_ELEM = 5
 
 
 class LeakyReluFwdOp(_ParametricActivationOp):
@@ -180,7 +171,6 @@ class LeakyReluFwdOp(_ParametricActivationOp):
     _op_name = "leaky_relu"
     # Manifest: flops = "2 * N". Per roofline.md §1.3:
     # compare-and-select(1) + mul = 2 per elem.
-    FLOPS_PER_ELEM = 2
 
     _scalar_params = ("negative_slope",)
 
@@ -223,7 +213,6 @@ class EluFwdOp(_ParametricActivationOp):
     _op_name = "elu"
     # Manifest: flops = "4 * N". Per roofline.md §1.3:
     # compare-and-select(1) + exp + sub + mul = 4 per elem.
-    FLOPS_PER_ELEM = 4
 
     _scalar_params = ("alpha",)
 
@@ -264,7 +253,6 @@ class HardtanhFwdOp(_ParametricActivationOp):
     _op_name = "hardtanh"
     # Manifest: flops = "N". Per roofline.md §1.3, two-sided clamp
     # collapses to 1 compare-and-select per output element.
-    FLOPS_PER_ELEM = 1
 
     _scalar_params = ("min_val", "max_val")
 
@@ -305,7 +293,6 @@ class SoftplusFwdOp(_ParametricActivationOp):
     # Manifest: flops = "5 * N". Per roofline.md §1.3:
     # mul-beta + threshold compare-and-select(1) + exp + log1p + div-by-beta
     # = 5 per elem.
-    FLOPS_PER_ELEM = 5
 
     _scalar_params = ("beta", "threshold")
 
@@ -361,4 +348,3 @@ class GeluTanhAndMulFwdOp(FusedGatedOp):
 
     _op_name = "gelu_tanh_and_mul"
     kernel_cls = GeluTanhAndMulFwdKernel
-    FLOPS_PER_ELEM = 10

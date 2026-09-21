@@ -267,7 +267,6 @@ class UnaryOp(_PerDtypeKernels, Op):
     # coefficient on ``N``. Subclasses override when the op is more than one
     # arithmetic op per element (e.g. ``sigmoid`` ≈ 4, ``tanh`` ≈ 5). The
     # base class default of 1 covers the common ``flops: "N"`` entries.
-    FLOPS_PER_ELEM: int = 1
 
     def __init__(
         self,
@@ -338,21 +337,6 @@ class UnaryOp(_PerDtypeKernels, Op):
             )
         out = resolve_output_dtype(type(self).__name__, self.dtype)
         return self.N_total * (self.dtype.itemsize + out.itemsize)
-
-    def eval_roofline(self) -> tuple[int, int]:
-        """Return ``(flops, bytes)`` for this unary elementwise op instance.
-
-        Mirrors the elementwise_unary_math manifest roofline:
-        ``flops = FLOPS_PER_ELEM * N`` and
-        ``bytes = N * input_elem_bytes + N * output_elem_bytes``. Subclasses
-        whose manifest entry uses a higher coefficient (e.g. ``sigmoid`` →
-        ``4 * N``, ``tanh`` → ``5 * N``) override ``FLOPS_PER_ELEM``. For ops
-        whose output dtype matches the input (e.g. ``neg``, ``abs``), bytes
-        collapse to ``2 * N * elem_bytes``; for ops with a smaller output
-        dtype (e.g. ``isnan`` / ``isinf`` / ``isfinite`` / ``logical_not`` →
-        bool), the manifest's output dtype already captures it.
-        """
-        return self.FLOPS_PER_ELEM * self.N_total, int(self.total_memory)
 
     def _validate_input(self, input: torch.Tensor) -> None:
         """Validate the input against the manifest dtype union."""
@@ -544,7 +528,6 @@ class FusedGatedOp(_PerDtypeKernels, Op):
     kernel_cls: type
     _op_name: str
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
-    FLOPS_PER_ELEM: int = 6
 
     def __init__(
         self,
@@ -600,12 +583,6 @@ class FusedGatedOp(_PerDtypeKernels, Op):
         m, n = self._dims()
         out_elem = resolve_output_dtype(type(self).__name__, self.dtype).itemsize
         return m * 2 * n * self.dtype.itemsize + m * n * out_elem
-
-    def eval_roofline(self) -> tuple[int, int]:
-        if self.dtype is None:
-            raise RuntimeError("Fused gated roofline is available after first forward")
-        m, n = self._dims()
-        return self.FLOPS_PER_ELEM * m * n, int(self.total_memory)
 
     def _build(self, dtype: torch.dtype, m: int, n: int):
         impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
@@ -675,7 +652,7 @@ class _ParamFreeActivationOp(_UnaryActivationMixin, UnaryOp):
     Centralizes the canonical constructor used by activations whose only
     manifest-declared parameter is ``inplace`` (ReLU, SiLU, HardSwish,
     HardSigmoid, Mish, SELU). Each leaf only declares its op-specific
-    class fields (``_op_name``, ``kernel_cls``, ``FLOPS_PER_ELEM``,
+    class fields (``_op_name``, ``kernel_cls``,
     docstring); ``forward``/``_eager_forward`` come from
     ``_UnaryActivationMixin`` / ``UnaryOp``.
     """

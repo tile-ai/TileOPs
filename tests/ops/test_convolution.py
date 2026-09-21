@@ -1051,7 +1051,10 @@ def test_conv3d_dispatches_ndhwc_kernel_no_bias() -> None:
 
 
 @pytest.mark.smoke
-def test_conv3d_ndhwc_kernel_roofline_counts_layout_traffic() -> None:
+def test_conv3d_roofline_ignores_the_serving_kernel_layout_traffic() -> None:
+    """The channels-last kernel stages input, weight and output. Those buffers are
+    intermediates of one implementation, and the roofline is the algorithm's minimum
+    traffic, so the number does not move with them."""
     op = Conv3dFwdOp(stride=1, padding=1)
     x = torch.randn(1, 32, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
@@ -1063,9 +1066,7 @@ def test_conv3d_ndhwc_kernel_roofline_counts_layout_traffic() -> None:
     out_elems = 1 * 64 * 8 * 16 * 16
     input_elems = 1 * 32 * 8 * 16 * 16
     weight_elems = 64 * 32 * 3 * 3 * 3
-    semantic_bytes = (input_elems + weight_elems + out_elems) * x.element_size()
-    layout_bytes = (input_elems + weight_elems + 2 * out_elems) * x.element_size()
-    assert nbytes == semantic_bytes + layout_bytes
+    assert nbytes == (input_elems + weight_elems + out_elems) * x.element_size()
 
 
 @pytest.mark.smoke

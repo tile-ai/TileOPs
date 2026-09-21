@@ -34,6 +34,7 @@ class FFTC2CFwdOp(Op):
             kernel_map: Optional custom kernel mapping for testing
         """
         self.n = None
+        self.input_shape = None
         self.dtype = None
         self.tune = tune
 
@@ -129,6 +130,9 @@ class FFTC2CFwdOp(Op):
 
         self.n = n
         self.dtype = x.dtype
+        # What the manifest roofline resolves ``input`` through: the batch extent
+        # is the call's, not the kernel cache's.
+        self.input_shape = tuple(original_shape)
         self.twiddle_real, self.twiddle_imag = self._get_lut(n, x.dtype, x.device)
         kernel = self.kernel_for(
             "fft_c2c_kernel", (input,), (n, batch_size, x.dtype, x.device.index)

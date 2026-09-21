@@ -69,10 +69,6 @@ class SinusoidalFwdOp(Op):
     def total_memory(self) -> int:
         return self.seq_len * self.d_model * self.out_dtype.itemsize
 
-    def eval_roofline(self) -> tuple[int, int]:
-        n_elem = self.seq_len * self.d_model
-        return 6 * n_elem, self.total_memory
-
     def entry_for(self, role: str, call: torch.dtype) -> Entry:
         """One implementation, built per dtype; the extents are the op's."""
         return call, lambda: self._build(call)

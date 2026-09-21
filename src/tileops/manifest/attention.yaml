@@ -146,6 +146,9 @@ GroupedQueryAttentionDenseFwdOp:
     - {q_shape: [1, 256, 8, 128], kv_shape: [1, 1792, 2, 128], q_scale_shape: [1, 2], k_scale_shape: [1, 2], v_scale_shape: [1, 2], dtype: float16, dtypes: [float8_e4m3fn], label: "prefill-scaled-q256-kv1792"}
 
   roofline:
+    # The call decides which optional tensors it passes, and the formula prices
+    # the set it ran with. The op gathers that set and answers this one; see
+    # its eval_roofline.
     func: "tileops.perf.formulas.gqa_fwd_roofline"
 
   source:
@@ -316,8 +319,10 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
       q: {dtype: "float16 | bfloat16"}
       k_new: {dtype: "same_as(q)"}
       v_new: {dtype: "same_as(q)"}
-      k_pages: {dtype: "float16 | bfloat16 | float8_e4m3fn"}
-      v_pages: {dtype: "same_as(k_pages)"}
+      # The new tokens are appended into the pool, so the call writes these as
+      # well as reading the pages the block table names.
+      k_pages: {dtype: "float16 | bfloat16 | float8_e4m3fn", mutated: true}
+      v_pages: {dtype: "same_as(k_pages)", mutated: true}
       k_scale: {dtype: "float32"}
       v_scale: {dtype: "float32"}
       cu_seqlens_q: {dtype: "int32"}
@@ -587,6 +592,8 @@ GroupedQueryAttentionPrefillVarlenFwdOp:
     - {total_q: 1024, total_kv: 3072, batch: 2, heads: 64, heads_kv: 8, dim: 128, q_lens: [512, 512], kv_lens: [1024, 2048], max_seqlen_q: 512, max_seqlen_kv: 2048, is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-q-lt-kv"}
 
   roofline:
+    # The formula prices per-request lengths, which the call passes as cumulative
+    # bounds. The op differences them and answers this one; see its eval_roofline.
     func: "tileops.perf.formulas.gqa_prefill_varlen_fwd_roofline"
 
   source:

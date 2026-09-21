@@ -82,19 +82,6 @@ class LayerNormFwdOp(Op):
         """Manifest ``shape_rules``: ``output.shape == x.shape``."""
         return {"output": tuple(x_shape)}
 
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._last_m is None or self.dtype is None:
-            raise RuntimeError(
-                "LayerNormFwdOp.eval_roofline() requires a prior forward() "
-                "call to bind the leading-dims product and the dtype."
-            )
-        elem_bytes = self.dtype.itemsize
-        m = self._last_m
-        return (
-            5 * m * self.N,
-            (2 * m * self.N + 2 * self.N) * elem_bytes,
-        )
-
     def forward(
         self,
         x: torch.Tensor,
@@ -155,6 +142,8 @@ class LayerNormFwdOp(Op):
         bias = bias.contiguous()
         kernel = self.kernel_for("layer_norm", (x, weight, bias), x.dtype)
         self._last_m = x.numel() // self.N
+        # What the manifest roofline resolves ``x`` through.
+        self.x_shape = tuple(x.shape)
         return kernel(x, weight, bias)
 
     def entry_for(self, role: str, call: torch.dtype) -> Entry:

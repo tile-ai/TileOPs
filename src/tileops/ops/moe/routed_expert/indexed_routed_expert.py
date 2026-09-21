@@ -13,7 +13,6 @@ from tileops.kernels.moe.indexed_expert_gemm import (
     IndexedRouteStatsKernel,
     IndexedWeightedReduceKernel,
 )
-from tileops.perf.formulas import routed_expert_mlp_roofline
 from tileops.perf.profile import tensor_core_roof
 from tileops.utils import get_sm_version
 
@@ -40,6 +39,12 @@ class IndexedExpertMLPFwdOp(Op):
     # The op writes the caller's ``output`` buffer and returns nothing, so its single
     # operator is the writing one.
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec.writes_out("output"),)
+
+    def roofline_inputs(self) -> dict[str, int]:
+        """The experts this call's routing selected, which its weight reads follow."""
+        from tileops.perf.formulas import routed_expert_active_experts
+
+        return {"active_experts": routed_expert_active_experts(self)}
 
     def __init__(
         self,
@@ -109,9 +114,6 @@ class IndexedExpertMLPFwdOp(Op):
     ) -> dict[str, tuple[int, ...]]:
         """Manifest ``shape_rules``: the caller's buffer holds one row per token."""
         return {"output": tuple(hidden_states_shape)}
-
-    def eval_roofline(self) -> tuple[int, int]:
-        return routed_expert_mlp_roofline(self)
 
     def workspace_shapes(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
         """The two scratch buffers the caller allocates, in elements."""

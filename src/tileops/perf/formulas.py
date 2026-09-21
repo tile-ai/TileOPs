@@ -85,9 +85,6 @@ __all__ = [
 ]
 
 
-# MHA prefill
-
-
 def _shape_or_attrs(op: Any | None, kwargs: dict[str, Any]) -> dict[str, Any]:
     if op is not None and not isinstance(op, dict):
         return vars(op)
@@ -114,11 +111,10 @@ def mha_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     flops = 10 * batch * heads * seq_len * seq_len * dim
     if is_causal:
         flops //= 2
-    nbytes = batch * 7 * heads * seq_len * dim * elem_bytes
+    # q, k, v, o and do read; dq, dk and dv written.
+    nbytes = batch * 8 * heads * seq_len * dim * elem_bytes
+    nbytes += batch * heads * seq_len * 4  # lse
     return int(flops), int(nbytes)
-
-
-# GQA prefill
 
 
 def gqa_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -172,7 +168,13 @@ def _dtype_itemsize(dtype: Any) -> int:
         return 4
     if "float64" in dtype_name or "int64" in dtype_name:
         return 8
-    if "bool" in dtype_name or "int8" in dtype_name or "uint8" in dtype_name:
+    if (
+        "bool" in dtype_name
+        or "int8" in dtype_name
+        or "uint8" in dtype_name
+        or "float8" in dtype_name
+        or "fp8" in dtype_name
+    ):
         return 1
     return 2
 
@@ -295,6 +297,23 @@ def deltanet_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, in
     per_token = (2 * dim_k + dim_v + 1) + (dim_v + 2 * chunk + dim_k + dim_v)
     state = batch * heads * (seq_len // chunk + 1) * dim_k * dim_v
     nbytes = batch * heads * seq_len * per_token * elem_bytes + state * 4
+    return int(flops), int(nbytes)
+
+
+def deltanet_autograd_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Roofline for the DeltaNet autograd forward, head-major.
+
+    Same arithmetic as ``deltanet_fwd_roofline``. The chunk buffers and the
+    per-chunk state that ``DeltaNetFwdOp`` returns stay in the autograd context
+    here, so they are intermediates. In: q, k, v, beta. Out: the output.
+    """
+    data = _shape_or_attrs(op, kwargs)
+    batch, heads, seq_len, dim_k, dim_v = _chunkwise_dims_bhsd(data)
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+
+    flops = 2 * batch * heads * seq_len * dim_k * dim_v
+    per_token = 2 * dim_k + 2 * dim_v + 1
+    nbytes = batch * heads * seq_len * per_token * elem_bytes
     return int(flops), int(nbytes)
 
 
@@ -464,15 +483,28 @@ def gqa_prefill_paged_with_kv_cache_fwd_roofline(
         )
     flops = 4 * heads * visible * dim
 
+    # The cache may hold a narrower dtype than the query, and then the call also
+    # reads the two scales that dequantize it.
+    cache_bytes = _dtype_itemsize(data.get("cache_dtype") or data.get("dtype", "float16"))
+    quantized = cache_bytes != elem_bytes
+
     q_elems = total_q * heads * dim
     old_kv_elems = 2 * old_kv_tokens * heads_kv * dim
     new_kv_elems = 2 * total_q * heads_kv * dim
     append_kv_elems = new_kv_elems
     o_elems = q_elems
-    metadata_bytes = (batch + 1) * 4 + batch * 4 + batch * max_pages_per_req * 4
-    nbytes = (
-        q_elems + old_kv_elems + new_kv_elems + append_kv_elems + o_elems
-    ) * elem_bytes + metadata_bytes
+    # The call indexes the block table only as far as each request's pages reach,
+    # and the rest of the row is capacity the algorithm never reads.
+    pages_named = sum(
+        -(-(int(old_len) + int(q_len)) // page_size)
+        for q_len, old_len in zip(q_lens, cache_lens, strict=True)
+    )
+    metadata_bytes = (batch + 1) * 4 + batch * 4 + pages_named * 4
+    if quantized:
+        metadata_bytes += 2 * 4
+    nbytes = (q_elems + new_kv_elems + o_elems) * elem_bytes
+    nbytes += (old_kv_elems + append_kv_elems) * cache_bytes
+    nbytes += metadata_bytes
     return int(flops), int(nbytes)
 
 
@@ -496,11 +528,10 @@ def gqa_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     flops = 10 * batch * heads * seq_len * seq_len * dim
     if is_causal:
         flops //= 2
-    nbytes = batch * (3 * heads + 4 * heads_kv) * seq_len * dim * elem_bytes
+    # q, o, do and dq carry all heads; k, v, dk and dv carry the KV heads.
+    nbytes = batch * (4 * heads + 4 * heads_kv) * seq_len * dim * elem_bytes
+    nbytes += batch * heads * seq_len * 4  # lse
     return int(flops), int(nbytes)
-
-
-# MHA decode
 
 
 def mha_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -527,9 +558,6 @@ def mha_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int
     )
     nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes + metadata_bytes
     return int(flops), int(nbytes)
-
-
-# GQA decode
 
 
 def gqa_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -598,10 +626,11 @@ def gqa_sliding_window_varlen_fwd_roofline(
     nbytes = (
         total_q * heads * dim + 2 * total_k * heads_kv * dim + total_q * heads * dim
     ) * elem_bytes
+    # The two cumulative-length tensors the kernel walks to find each request's
+    # bounds, one bound per request plus the zero. The packed prefill sibling
+    # counts them; this one did not.
+    nbytes += 2 * (batch + 1) * 4
     return int(flops), int(nbytes)
-
-
-# DeepSeek MLA / DSA decode
 
 
 def deepseek_mla_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -660,9 +689,6 @@ def deepseek_dsa_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[
     return int(flops), int(nbytes)
 
 
-# Elementwise — mixed-dtype ops requiring func-mode roofline
-
-
 def where_fwd_roofline(op: "Op") -> tuple[int, int]:
     """Roofline for ``torch.where`` forward (bool condition + float input/other).
 
@@ -670,19 +696,18 @@ def where_fwd_roofline(op: "Op") -> tuple[int, int]:
     float input/other dtype, which inline mode cannot express (it binds
     ``elem_bytes`` to a single dtype).
 
-    ``flops = N_total`` (one predicated select per element).
-    ``bytes = N_total + 3 * N_total * elem_bytes`` — logical, post-broadcast:
-    a 1-byte condition read broadcast to ``N_total``, plus input, other, out.
+    ``flops = N_total`` (one predicated select per element). The bool
+    condition costs one byte per element of its own shape, input and other one
+    ``elem_bytes`` each of theirs, and the write is at the broadcast size.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
     flops = n_total
-    nbytes = n_total + 3 * n_total * elem_bytes
+    reads = prod(op.input_shape) + prod(op.other_shape)
+    nbytes = prod(op.condition_shape) + (reads + n_total) * elem_bytes
     return flops, nbytes
 
 
-# Clamp family (Tensor-bound variants)
-#
 # Func mode: ``N_total`` is post-broadcast, and ``broadcast_shapes`` is not in
 # the inline vars-layer namespace (docs/design/roofline.md §4.4.4), so inline
 # codegen cannot bind it. ``ClampScalarFwdOp`` stays inline — no broadcasting.
@@ -694,28 +719,30 @@ def clamp_fwd_roofline(op: "Op") -> tuple[int, int]:
     ``torch.clamp(input, min, max)`` with each bound a Tensor or absent,
     broadcasting across the operands present. Per docs/design/roofline.md §1.3 a
     two-sided clamp collapses to one fused compare-and-select, so
-    ``flops = N_total`` either way; bytes read input and each bound that was
-    passed, then write out.
+    ``flops = N_total`` either way. Bytes read input and each bound that was
+    passed, each at its own size, then write out at the broadcast size.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
-    reads = 1 + _supplied(op, "min") + _supplied(op, "max")
-    return n_total, (reads + 1) * n_total * elem_bytes
+    reads = prod(op.input_shape)
+    for bound in ("min", "max"):
+        if _supplied(op, bound):
+            reads += prod(getattr(op, f"{bound}_shape"))
+    return n_total, (reads + n_total) * elem_bytes
 
 
 def lerp_tensor_fwd_roofline(op: "Op") -> tuple[int, int]:
     """Roofline for ``LerpTensorFwdOp`` (Tensor-weight ``torch.lerp``).
 
-    Per output element: 3 flops (sub + mul + add); 3 reads + 1 write at
-    post-broadcast ``N_total``.
+    Per output element: 3 flops (sub + mul + add). Each of input, end and
+    weight is read at its own size; the write is at the broadcast size.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
-    return 3 * n_total, 4 * n_total * elem_bytes
+    reads = prod(op.input_shape) + prod(op.end_shape) + prod(op.weight_shape)
+    return 3 * n_total, (reads + n_total) * elem_bytes
 
 
-# MaskedFill family
-#
 # Func mode: out-of-place ``masked_fill`` broadcasts ``input`` against ``mask``
 # bidirectionally, and ``broadcast_shapes`` is not in the inline vars-layer
 # namespace (docs/design/roofline.md §4.4.4). One function serves both the
@@ -728,14 +755,19 @@ def masked_fill_fwd_roofline(op: "Op") -> tuple[int, int]:
 
     Out-of-place ``Tensor.masked_fill``; output shape is the bidirectional
     broadcast of ``input`` and ``mask``. One predicated select per element →
-    ``flops = N_total``; ``bytes = N_total + 2 * N_total * elem_bytes`` for the
-    1-byte mask read plus input read and out write. The 0-dim ``value`` read
-    (Tensor-value variant) is negligible.
+    ``flops = N_total``. Each operand is read at its own size, not the
+    output's: a broadcast operand occupies one storage however many times the
+    kernel reads it. The mask is bool, one byte per element, and the
+    Tensor-value variant reads its 0-dim ``value`` as well.
     """
     n_total = int(op.N_total)
     elem_bytes = op.dtype.itemsize
     flops = n_total
-    nbytes = n_total + 2 * n_total * elem_bytes
+    nbytes = prod(op.mask_shape) + prod(op.input_shape) * elem_bytes + n_total * elem_bytes
+    # The scalar variant declares ``value`` as a param and reads no tensor for it,
+    # so the shape binding is what separates the two, not the name.
+    if getattr(op, "value_shape", None) is not None:
+        nbytes += elem_bytes
     return flops, nbytes
 
 
@@ -851,9 +883,6 @@ def bitwise_xor_fwd_roofline(op: "Op") -> tuple[int, int]:
     return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
 
 
-# MoE
-
-
 def fused_topk_roofline(op: "Op") -> tuple[int, int]:
     """Roofline for FusedTopKOp: score every logit, then keep the top k of them.
 
@@ -888,6 +917,20 @@ def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
     return flops, nbytes + gating_bytes + bias_bytes
 
 
+def routed_expert_active_experts(op: "Op") -> int:
+    """Experts the call's routing selected, which is what its weight reads follow.
+
+    One implementation, two readers: the cost below, and the op's
+    ``roofline_inputs()``, which reports the count beside the reading.
+    """
+    topk_ids = getattr(op, "_roofline_topk_ids", None)
+    if topk_ids is None:
+        raise RuntimeError(
+            f"{type(op).__name__} needs a prior forward() to determine the active experts"
+        )
+    return int(topk_ids.unique().numel())
+
+
 def _routed_expert_core(op: "Op") -> tuple[int, int]:
     """FLOPs and the weight-plus-token bytes shared by every routed expert MLP.
 
@@ -907,7 +950,7 @@ def _routed_expert_core(op: "Op") -> tuple[int, int]:
     hidden_size = int(op.hidden_size)
     ffn_size = int(op.ffn_size)
     elem_bytes = _dtype_itemsize(op.dtype)
-    active_experts = int(topk_ids.unique().numel())
+    active_experts = routed_expert_active_experts(op)
 
     flops = num_tokens * top_k * 6 * ffn_size * hidden_size
     weight_bytes = active_experts * 3 * ffn_size * hidden_size * elem_bytes
@@ -1010,8 +1053,10 @@ def gemm_w4a16_fwd_roofline(op: "Op") -> tuple[int, int]:
 def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
     batch_sum = int(op.batch_sum)
     batch_count = int(op.batch_count)
-    n = int(getattr(op, "N", getattr(op, "n", 0)))
-    k = int(getattr(op, "K", getattr(op, "k", 0)))
+    # The op carries both spellings and leaves one unset, so a default on the
+    # missing name is not enough.
+    n = int(getattr(op, "N", None) or getattr(op, "n", 0))
+    k = int(getattr(op, "K", None) or getattr(op, "k", 0))
     elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
 
     flops = 2 * batch_sum * n * k
@@ -1023,7 +1068,11 @@ def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
         memory_a = batch_sum * n
         memory_c = batch_count * n * k
         memory_b = k * batch_sum if bool(op.transpose_b) else batch_sum * k
-    return int(flops), int((memory_a + memory_b + memory_c) * elem)
+    # Two of the three int32 tensors: the kernels index batch_sizes and
+    # batch_offsets, and take batch_padded_offsets without reading it -- the
+    # templates pad nothing.
+    metadata_bytes = 2 * batch_count * 4
+    return int(flops), int((memory_a + memory_b + memory_c) * elem + metadata_bytes)
 
 
 def _staged_moe_input_shapes(op: "Op") -> tuple:
@@ -1073,15 +1122,19 @@ def moe_expert_mlp_roofline(op: "Op") -> tuple[int, int]:
 def rope_roofline(op: "Op") -> tuple[int, int]:
     seq_len = int(op.seq_len)
     head_dim = int(op.head_dim)
-    batch = int(getattr(op, "batch", 1))
-    num_heads = int(getattr(op, "num_heads", 1))
     layout = getattr(op, "layout", "1d")
     elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
-    outer = batch * num_heads if layout == "2d" else 1
+    # A 1d call carries neither, and a call that has not run a 2d one leaves them unset.
+    outer = (
+        int(getattr(op, "batch", 1) or 1) * int(getattr(op, "num_heads", 1) or 1)
+        if layout == "2d"
+        else 1
+    )
     x_elems = outer * seq_len * head_dim
-    cos_sin_elems = seq_len * (head_dim // 2) * 2
+    # The cos/sin table is the op's own: the signature declares it as no input, and an
+    # implementation that computes the angles in the kernel reads none of it.
     flops = 4 * x_elems
-    nbytes = (2 * x_elems + cos_sin_elems) * elem
+    nbytes = 2 * x_elems * elem
     return int(flops), int(nbytes)
 
 
@@ -1089,13 +1142,11 @@ def rope_position_ids_roofline(op: "Op") -> tuple[int, int]:
     num_tokens = int(op.num_tokens)
     num_heads = int(op.num_heads)
     head_dim = int(op.head_dim)
-    rotary_dim = int(getattr(op, "rotary_dim", head_dim) or head_dim)
-    max_position = int(op.max_position)
     elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
     x_elems = num_tokens * num_heads * head_dim
-    cos_sin_elems = max_position * (rotary_dim // 2) * 2
+    # x read and written, plus the position ids. The cos/sin table is the op's own.
     pos_elems = num_tokens
-    return int(4 * x_elems), int((2 * x_elems + cos_sin_elems) * elem + pos_elems * 4)
+    return int(4 * x_elems), int(2 * x_elems * elem + pos_elems * 4)
 
 
 def dropout_roofline(op: "Op") -> tuple[int, int]:
@@ -1132,12 +1183,18 @@ def fp8_lightning_indexer_roofline(op: "Op") -> tuple[int, int]:
     q_elems = batch * seq_len * heads * index_dim
     k_elems = batch * seq_len_kv * kv_group * index_dim
     weights = seq_len * heads
-    # The public forward accepts either bf16 tensors that are quantized inside
-    # the op or pre-quantized fp8 tensors. The op does not currently retain
-    # the observed input dtype, so default to bf16 for conservative bandwidth.
-    index_elem = _dtype_itemsize(getattr(op, "dtype", "bfloat16"))
+    # The call decides all three terms below. Handed bf16 tensors, the op
+    # quantizes them itself and produces the scale, so the fp8 tensors and the
+    # scale are intermediates and the public reads are bf16. Handed fp8 tensors,
+    # the caller supplies the scale and it is a read of its own. index_q and
+    # index_k carry their own dtypes: the signature lets them differ, and only
+    # the pre-quantized path requires both to be fp8.
+    q_elem = _dtype_itemsize(getattr(op, "dtype", "bfloat16"))
+    k_elem = _dtype_itemsize(getattr(op, "index_k_dtype", None) or "bfloat16")
     flops = 2 * scores * index_dim
-    nbytes = (q_elems + k_elems) * index_elem + batch * seq_len_kv * kv_group * 4
+    nbytes = q_elems * q_elem + k_elems * k_elem
+    if _supplied(op, "index_k_scale"):
+        nbytes += batch * seq_len_kv * kv_group * 4
     nbytes += weights * 4
     nbytes += 2 * seq_len * 4 + scores * 4
     return int(flops), int(nbytes)
@@ -1164,7 +1221,7 @@ def _engram_elem_bytes(op: "Op") -> int:
 def engram_gate_conv_fwd_roofline(op: "Op") -> tuple[int, int]:
     m = int(op.M)
     seq_len = int(op.seq_len)
-    d = int(getattr(op, "d_padded", op.d))
+    d = int(op.d)
     elem = _engram_elem_bytes(op)
     flops = m * seq_len * (24 * d) + 20 * m * seq_len
     nbytes = (5 * m * seq_len * d) * elem + 4 * m * seq_len * 4 + 6 * d * elem
@@ -1174,11 +1231,12 @@ def engram_gate_conv_fwd_roofline(op: "Op") -> tuple[int, int]:
 def engram_gate_conv_bwd_roofline(op: "Op") -> tuple[int, int]:
     m = int(op.M)
     seq_len = int(op.seq_len)
-    d = int(getattr(op, "d_padded", op.d))
+    d = int(op.d)
     elem = _engram_elem_bytes(op)
     fwd_flops = m * seq_len * (24 * d) + 20 * m * seq_len
     read_bytes = 5 * m * seq_len * d * elem + 6 * d * elem + 4 * m * seq_len * 4
-    write_bytes = 3 * m * seq_len * d * elem + 10 * d * 4 + m * seq_len * d * 4
+    # dH, dk and dv, then drms_w_h, drms_w_v and dconv_w over 6 * d fp32 rows.
+    write_bytes = 3 * m * seq_len * d * elem + 6 * d * 4
     return int(fwd_flops * 2.5), int(read_bytes + write_bytes)
 
 
@@ -1207,9 +1265,12 @@ def fft_c2c_roofline(op: "Op") -> tuple[int, int]:
 
     n = int(op.n)
     elem = _dtype_itemsize(getattr(op, "dtype", "complex64"))
-    # Runtime batch is inferred from the input and kernel cache. Before a
-    # forward call, the constructed default kernel represents batch=1.
-    batch = int(getattr(getattr(op, "kernel", None), "batch_size", 1) or 1)
+    # From the call's own shape. Reading the kernel's batch size made the number
+    # depend on which kernel served the call, and answered 1 before any did.
+    shape = getattr(op, "input_shape", None)
+    batch = 1
+    for extent in (shape or ())[:-1]:
+        batch *= int(extent)
     return int(batch * 5 * n * math.log2(n)), int(batch * 2 * n * elem)
 
 
@@ -1360,7 +1421,9 @@ def da_cumsum_fwd_roofline(op: "Op") -> tuple[int, int]:
         int(op.batch),
         int(op.seq_len),
         int(op.n_heads),
-        _dtype_itemsize(getattr(op, "dtype", "float32")),
+        # dt_out is caller-stated: the op carries the dtype the call asked for on
+        # ``out_dtype``, and never sets a ``dtype`` of its own.
+        _dtype_itemsize(getattr(op, "out_dtype", None) or "float32"),
         has_dt_bias=_supplied(op, "dt_bias"),
         dt_softplus=bool(getattr(op, "dt_softplus", False)),
     )
@@ -1538,7 +1601,6 @@ def _mamba2_fwd_cost(op: Any, *, has_dt_bias: bool, has_initial_states: bool) ->
     dt_softplus = bool(getattr(op, "dt_softplus", False))
 
     tokens = batch * seq_len * n_heads
-    state_elems = batch * num_chunks * n_heads * d_head * d_state
     # FLOPs are the exact sum of the five standalone stage cost helpers, with
     # the state-passing stage running over the flattened d_head * d_state dim.
     flops = (
@@ -1579,13 +1641,8 @@ def _mamba2_fwd_cost(op: Any, *, has_dt_bias: bool, has_initial_states: bool) ->
             if has_initial_states
             else 0
         )
-        # dominant intermediates: cb, chunk states (read + write), dt_out,
-        # dA_cumsum
-        + batch * num_chunks * n_groups * chunk_len**2 * elem_bytes
-        + 2 * state_elems * 4
-        + tokens * elem_bytes
-        + tokens * 4
-        + tokens * d_head * 4  # y out
+        + tokens * d_head * 4  # y
+        + batch * n_heads * d_head * d_state * 4  # final_states
     )
     return int(flops), int(nbytes)
 
@@ -1683,12 +1740,9 @@ def nsa_topk_varlen_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int,
         for length in lens
     )
     flops = 2 * pairs * heads * dim
-    # FIXME(staged-rollout): `lse_in` is declared and passed but never read.
-    #
-    # Broken invariant: every manifest input is read once, and this one is not counted.
-    # Why: the top-k kernel recomputes the lse itself and discards the argument, so
-    #   charging it would price traffic that does not happen.
-    # Cleanup: drop `lse_in` from the signature, or make the kernel read it.
+    # `lse_in` produces no read: the top-k kernel recomputes the lse itself and
+    # discards the argument, and a declared input the algorithm does not read
+    # moves no bytes.
     nbytes = (c_seq_len * heads * dim + chunk_num * head_kv * dim) * elem_bytes
     nbytes += c_seq_len * head_kv * selected * 4
     nbytes += _nsa_ragged_index_bytes(seq_num, c_seq_len)

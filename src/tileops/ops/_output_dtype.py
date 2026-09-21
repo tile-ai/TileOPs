@@ -95,14 +95,15 @@ def resolve_output_dtype(
     return resolved
 
 
-def output_dtype(op: object, output: str, input_dtype: torch.dtype) -> torch.dtype:
+def output_dtype(op: object, output: str, input_dtype: "torch.dtype | None") -> torch.dtype:
     """The dtype *op* writes *output* in.
 
     Args:
         op: The op instance, read for its ``out_dtype`` where the entry marks the output.
         output: Which output to answer for.
         input_dtype: Dtype of the input the output's declaration refers to, used when the
-            caller states nothing.
+            caller states nothing. ``None`` where the op takes no tensor input, whose
+            declaration names a dtype outright.
 
     Returns:
         The caller's dtype where the entry marks *output* ``caller_stated: true`` and the
