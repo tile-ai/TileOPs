@@ -193,6 +193,7 @@ GroupedQueryAttentionVarlenFwdOp:
       pos_encoding_mode: {type: str, default: none}
       rotary_dim: {type: "int | None", default: null}
       rope_layout: {type: str, default: neox}
+      validate_inputs: {type: bool, default: false}
     dtype_combos:
       - {q: float16, k: float16, v: float16, cu_seqlens_q: int32, cu_seqlens_kv: int32, o: float16}
       - {q: bfloat16, k: bfloat16, v: bfloat16, cu_seqlens_q: int32, cu_seqlens_kv: int32, o: bfloat16}
@@ -202,8 +203,9 @@ GroupedQueryAttentionVarlenFwdOp:
       - "q.shape == (T_q, H, D)"
       - "k.shape == (T_kv, H_kv, D)"
       - "v.shape == (T_kv, H_kv, D)"
-      - "cu_seqlens_q.ndim == 1"
+      - "cu_seqlens_q.shape == (B + 1,)"
       - "cu_seqlens_kv.shape == cu_seqlens_q.shape"
+      - "(window_size_left == -1 and window_size_right == -1) or (sm_scale is None and (softcap is None or softcap == 0))"
       - "(q_scale is None) == (k_scale is None)"
       - "(q_scale is None) == (v_scale is None)"
       - "q_scale is None or (q_scale.ndim == 2 and q_scale.shape[0] + 1 == cu_seqlens_q.shape[0] and q_scale.shape[1] == H_kv)"

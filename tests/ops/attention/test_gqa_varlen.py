@@ -376,6 +376,35 @@ def test_varlen_rejects_invalid_cumulative_lengths_contract() -> None:
     with pytest.raises(ValueError, match="same shape"):
         op(q, k, v, cu_q, cu_kv[:-1])
 
+    checked = GroupedQueryAttentionVarlenFwdOp(is_causal=True, validate_inputs=True)
+    with pytest.raises(ValueError, match=r"cu_seqlens_q\[-1\] must equal"):
+        checked(q[:-1], k, v, cu_q, cu_kv)
+    with pytest.raises(ValueError, match=r"cu_seqlens_kv\[-1\] must equal"):
+        checked(q, k[:-1], v[:-1], cu_q, cu_kv)
+    with pytest.raises(ValueError, match="cu_seqlens_q must be non-decreasing"):
+        checked(q, k, v, torch.tensor([0, 17, 16], device=q.device, dtype=torch.int32), cu_kv)
+
+
+@pytest.mark.smoke
+def test_varlen_compatibility_validates_lengths_and_dtype() -> None:
+    test = GroupedQueryAttentionVarlenFwdTest(
+        2, [8, 8], [16, 16], 8, 2, 64, True, -1, -1, torch.float16
+    )
+    q, k, v, cu_q, cu_kv = test.gen_inputs()
+    old = GroupedQueryAttentionPrefillVarlenFwdOp(7, 16, validate_inputs=True)
+    with pytest.raises(ValueError, match="max_seqlen_q"):
+        old(q, k, v, cu_q, cu_kv)
+
+    new = GroupedQueryAttentionVarlenFwdOp()
+    with pytest.raises(ValueError, match="float16, bfloat16, or float8_e4m3fn"):
+        new(q.float(), k.float(), v.float(), cu_q, cu_kv)
+
+
+@pytest.mark.parametrize("parameter", [{"sm_scale": 0.125}, {"softcap": 5.0}])
+def test_varlen_rejects_unimplemented_window_score_combinations(parameter: dict) -> None:
+    with pytest.raises(ValueError, match="windowed Varlen GQA does not yet support"):
+        GroupedQueryAttentionVarlenFwdOp(window_size_left=32, **parameter)
+
 
 # ----------------------------------------------------------------------
 # Visible-score accounting for the packed-varlen and sliding-window GQA rooflines.

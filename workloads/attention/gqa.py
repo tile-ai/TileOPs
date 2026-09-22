@@ -650,7 +650,10 @@ class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
             if self.wr >= 0:
                 visible &= kv_pos <= q_pos + self.wr
             scores = scores.masked_fill(~visible.view(1, q_len, kv_len), float("-inf"))
-            probs = torch.softmax(scores, dim=-1).nan_to_num()
+            probs = torch.softmax(scores, dim=-1)
+            probs = torch.where(
+                visible.any(dim=-1).view(1, q_len, 1), probs, torch.zeros_like(probs)
+            )
             outputs.append(torch.matmul(probs, v_i).transpose(0, 1).to(q.dtype).contiguous())
         return torch.cat(outputs, dim=0)
 

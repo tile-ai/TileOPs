@@ -617,9 +617,11 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
         pos_encoding_mode: str = "none",
         rotary_dim: Optional[int] = None,
         rope_layout: str = "neox",
+        validate_inputs: bool = False,
         *,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         target: Target = None,
+        tune: bool = False,
     ) -> None:
         """Configure packed variable-length GQA semantics.
 
@@ -633,8 +635,10 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
             pos_encoding_mode: ``"none"`` or ``"rope"``.
             rotary_dim: Even rotated width; ``None`` uses the full head dimension.
             rope_layout: ``"neox"`` or ``"interleaved"``.
+            validate_inputs: Check cumulative offsets against packed tensors on the CPU.
             kernel_map: Optional in-tree kernel overrides.
             target: Backend target, or ``None`` to resolve from the input device.
+            tune: Autotune a kernel when it is first built.
         """
         if window_size_left < -1:
             raise ValueError("window_size_left must be -1 (unlimited) or >= 0")
@@ -652,19 +656,26 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
             raise ValueError("rope_layout must be 'neox' or 'interleaved'")
         if out_dtype is not None:
             _validate_attention_dtype(out_dtype)
+        resolved_softcap = _score_softcap(softcap)
+        if (window_size_left != -1 or window_size_right != -1) and (
+            sm_scale is not None or resolved_softcap != 0.0
+        ):
+            raise ValueError("windowed Varlen GQA does not yet support sm_scale or softcap")
 
         self.is_causal = is_causal
         self.sm_scale = sm_scale
-        self.softcap = _score_softcap(softcap)
+        self.softcap = resolved_softcap
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
         self.out_dtype = out_dtype
         self.pos_encoding_mode = pos_encoding_mode
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
+        self.validate_inputs = validate_inputs
         self.target = target
         self._roofline_kwargs: Optional[dict] = None
         self._last_input_dtype: Optional[torch.dtype] = None
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
 
     @property
@@ -846,6 +857,19 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
             if tuple(scale.shape) != (batch, heads_kv):
                 raise ValueError(f"{name} must have shape {(batch, heads_kv)}")
 
+        if self.validate_inputs:
+            for name, offsets, total in (
+                ("cu_seqlens_q", cu_seqlens_q, q.shape[0]),
+                ("cu_seqlens_kv", cu_seqlens_kv, k.shape[0]),
+            ):
+                bounds = [int(value) for value in offsets.detach().cpu().tolist()]
+                if bounds[0] != 0:
+                    raise ValueError(f"{name}[0] must equal 0")
+                if bounds[-1] != total:
+                    raise ValueError(f"{name}[-1] must equal {total}")
+                if any(end < start for start, end in zip(bounds, bounds[1:], strict=True)):
+                    raise ValueError(f"{name} must be non-decreasing")
+
         if (rope_cos is None) != (rope_sin is None):
             raise ValueError("rope_cos and rope_sin must be supplied together")
         if self.pos_encoding_mode != "rope":
@@ -997,6 +1021,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(GroupedQueryAttentionVarlenFwdOp):
             is_causal=is_causal,
             sm_scale=sm_scale,
             softcap=softcap,
+            validate_inputs=validate_inputs,
             kernel_map=remapped,
         )
         self.tune = tune

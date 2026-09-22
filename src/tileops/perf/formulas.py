@@ -663,8 +663,15 @@ def gqa_sliding_window_varlen_fwd_roofline(
 def gqa_varlen_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     """Route unified Varlen GQA workloads to the matching cost model."""
     data = _shape_or_attrs(op, kwargs)
-    if data.get("_roofline_kwargs") is not None:
-        data = dict(data["_roofline_kwargs"])
+    if "q_shape" not in data:
+        data["q_shape"] = (data["total_q"], data["heads"], data["dim"])
+        data["k_shape"] = (
+            data.get("total_kv", data.get("total_k")),
+            data["heads_kv"],
+            data["dim"],
+        )
+    if "kv_lens" in data and "k_lens" not in data:
+        data["k_lens"] = data["kv_lens"]
     if int(data.get("window_size_left", -1)) != -1 or int(data.get("window_size_right", -1)) != -1:
         return gqa_sliding_window_varlen_fwd_roofline(**data)
     return gqa_prefill_varlen_fwd_roofline(**data)

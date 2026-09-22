@@ -122,6 +122,7 @@ def test_gqa_bwd_bench(
         functors["torch-sdpa"] = _torch_gqa_bwd(test)
 
     bm.compare(functors, *inputs)
+    # No FlashInfer baseline for bwd (FlashInfer has no backward API)
 
 
 _GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = workload_params(
@@ -215,7 +216,6 @@ def test_gqa_sliding_window_varlen_fwd_bench(
         assert_matches_reference(fa3_fn, test.ref_program, *inputs, **reference_tolerance(dtype))
         functors["fa3"] = fa3_fn
     bm.compare(functors, *inputs)
-    # No FlashInfer baseline for bwd (FlashInfer has no backward API)
 
 
 def _fa3_gqa_dense_decode(test: GroupedQueryAttentionDenseDecodeWorkload):
