@@ -122,29 +122,11 @@ class TestRealOpSmoke:
         assert total_bytes == 2 * N * elem
 
 
-# Ops whose `eval_roofline` the installer stands aside for. The value names the
-# class that owns the method and the codegen capability its absence rests on:
-# when that capability lands, the entry goes and the method with it.
-HAND_EVALUATED = {
-    "MoePrePermuteFwdOp": (
-        "MoePrePermuteFwdOp",
-        "its output extents follow the layout spec the call passes, and the "
-        "vars layer binds inputs and params only",
-    ),
-}
-
-
 class TestEvaluatorOwnership:
-    """Who owns `eval_roofline`, op by op.
-
-    The installer stands aside without a word for a class that defines the
-    method itself, so an op can leave the manifest behind by adding one method.
-    That is how 98 of 175 entries came to state a formula nothing ran.
-    """
+    """Enforce evaluator ownership for implemented manifest entries."""
 
     @staticmethod
     def _owner(cls):
-        """The class whose `eval_roofline` an instance of *cls* would call."""
         for base in cls.__mro__:
             if "eval_roofline" in base.__dict__:
                 return base
@@ -163,44 +145,22 @@ class TestEvaluatorOwnership:
             if cls is not None:
                 yield name, cls
 
-    def test_the_manifest_entry_is_what_runs_unless_an_op_is_registered(self):
-        from tileops.ops._roofline_codegen import SYNTHESIZED
+    def test_each_op_owns_a_generated_evaluator(self):
+        from tileops.ops._roofline_codegen import SYNTHESIZED_ATTR
 
-        unregistered = []
+        invalid = []
         for name, cls in self._implemented():
             owner = self._owner(cls)
-            if getattr(owner.__dict__["eval_roofline"], SYNTHESIZED, False):
-                # Generated for this class, not inherited from another op's entry.
-                assert owner is cls, f"{name} runs {owner.__name__}'s entry, not its own"
-                continue
-            if name not in HAND_EVALUATED:
-                unregistered.append(f"{name} (owned by {owner.__name__})")
-        assert not unregistered, (
-            f"these ops evaluate their own roofline and say nowhere why: {unregistered}; "
-            "their manifest entry states a formula nothing runs"
-        )
-
-    def test_a_registered_op_owns_the_method_where_it_says(self):
-        from tileops.ops._roofline_codegen import SYNTHESIZED
-
-        implemented = dict(self._implemented())
-        stale = sorted(set(HAND_EVALUATED) - set(implemented))
-        assert not stale, f"registered but not implemented: {stale}"
-        for name, (expected_owner, reason) in HAND_EVALUATED.items():
-            owner = self._owner(implemented[name])
-            assert not getattr(owner.__dict__["eval_roofline"], SYNTHESIZED, False), (
-                f"{name} is registered as hand-evaluated and codegen now serves it; drop the entry"
-            )
-            assert owner.__name__ == expected_owner, f"{name}: {owner.__name__}"
-            assert reason and not reason.endswith("."), name
+            generated = getattr(owner.__dict__["eval_roofline"], SYNTHESIZED_ATTR, False)
+            if owner is not cls or not generated:
+                invalid.append(f"{name} (owned by {owner.__name__})")
+        assert not invalid, f"ops without their own generated evaluator: {invalid}"
 
 
 class TestCallPayload:
-    """A formula reads the call an op ran, not what its constructor defaulted to."""
+    """Call-bound formula inputs override construction-bound state."""
 
-    def test_an_op_that_has_not_run_says_so(self):
-        """Distinct from the ValueError an unwired op raises: this one is the
-        caller's sequencing, and the audit reports it as such."""
+    def test_requires_prior_forward(self):
         from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
 
         op = GroupedQueryAttentionDenseFwdOp.__new__(GroupedQueryAttentionDenseFwdOp)
@@ -208,7 +168,7 @@ class TestCallPayload:
         with pytest.raises(RuntimeError, match="requires a prior forward"):
             op.eval_roofline()
 
-    def test_a_payload_that_is_not_a_mapping_is_the_author_s_wiring(self):
+    def test_rejects_non_mapping_payload(self):
         from tileops.perf.formulas import _shape_or_attrs
 
         class _Miswired:
@@ -218,9 +178,7 @@ class TestCallPayload:
         with pytest.raises(ValueError, match="mapping"):
             _shape_or_attrs(_Miswired(), {})
 
-    def test_the_payload_wins_over_a_construction_default(self):
-        """`out_dtype` is settled at construction and restated by the call; the
-        call is what moved the bytes."""
+    def test_payload_overrides_instance_state(self):
         import torch
 
         from tileops.perf.formulas import _shape_or_attrs
@@ -234,7 +192,7 @@ class TestCallPayload:
         assert data["out_dtype"] is torch.float16
         assert data["q_shape"] == (1, 2, 3, 4)
 
-    def test_an_attribute_the_payload_omits_survives(self):
+    def test_payload_preserves_other_instance_state(self):
         from tileops.perf.formulas import _shape_or_attrs
 
         class _Op:
@@ -246,13 +204,7 @@ class TestCallPayload:
 
 
 class TestInheritedEvaluator:
-    """An op that subclasses another op answers its own entry.
-
-    The installer stands aside for a hand-written method, and a generated one on
-    a parent looks the same from the child's side. Standing aside there would
-    run the parent's formula for the child's entry, which is the bypass this
-    module exists to prevent.
-    """
+    """A subclass with a manifest entry owns its generated evaluator."""
 
     @staticmethod
     def _op(name, bytes_expr, base=None):
@@ -282,19 +234,21 @@ class TestInheritedEvaluator:
     def test_a_subclass_runs_its_own_entry(self):
         import torch
 
-        from tileops.ops._roofline_codegen import SYNTHESIZED
+        from tileops.ops._roofline_codegen import SYNTHESIZED_ATTR
 
         parent = self._op("_ParentOp", "2 * N * elem_bytes")
         child = self._op("_ChildOp", "4 * N * elem_bytes", base=parent)
 
-        assert getattr(child.__dict__.get("eval_roofline"), SYNTHESIZED, False), (
+        assert getattr(child.__dict__.get("eval_roofline"), SYNTHESIZED_ATTR, False), (
             "the child inherited the parent's generated evaluator"
         )
         instance = child.__new__(child)
         instance.x_shape, instance.dtype = (128,), torch.float16
         assert instance.eval_roofline()[1] == 4 * 128 * 2
 
-    def test_a_hand_written_parent_still_serves_its_subclass(self):
+    def test_an_explicit_parent_does_not_replace_the_child_entry(self):
+        import torch
+
         from tileops.ops.op_base import Op
 
         class _Base(Op):
@@ -302,5 +256,6 @@ class TestInheritedEvaluator:
                 return (1, 2)
 
         child = self._op("_HandChildOp", "9 * N * elem_bytes", base=_Base)
-        assert "eval_roofline" not in child.__dict__
-        assert child.__new__(child).eval_roofline() == (1, 2)
+        instance = child.__new__(child)
+        instance.x_shape, instance.dtype = (8,), torch.float16
+        assert instance.eval_roofline() == (8, 9 * 8 * 2)

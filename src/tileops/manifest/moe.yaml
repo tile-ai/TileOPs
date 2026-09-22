@@ -380,11 +380,7 @@ MoePrePermuteFwdOp:
   - {hidden_states_shape: [32, 128], local_expert_ids_shape: [32, 2], num_local_experts: 4, layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "small"}
   - {hidden_states_shape: [512, 128], local_expert_ids_shape: [512, 2], num_local_experts: 4, layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "prefill"}
   roofline:
-    # expert_input, layout_metadata and inverse_indices are outputs whose extents
-    # the chosen MGroupedLayoutSpec decides, and the vars layer binds inputs and
-    # params only. The op answers this one; see its eval_roofline.
-    flops: "0"
-    bytes: "(hidden_states.numel() + expert_input.numel()) * elem_bytes + (local_expert_ids.numel() + layout_metadata.numel() + inverse_indices.numel()) * 4"
+    func: "tileops.perf.formulas.moe_pre_permute_roofline"
   source:
     kernel: tileops/kernels/moe/permute_contiguous.py
     op: tileops/ops/moe/staged.py

@@ -69,6 +69,7 @@ __all__ = [
     "minimum_fwd_roofline",
     "moe_expert_mlp_roofline",
     "moe_grouped_gemm_roofline",
+    "moe_pre_permute_roofline",
     "mul_fwd_roofline",
     "ne_fwd_roofline",
     "pow_fwd_roofline",
@@ -85,36 +86,29 @@ __all__ = [
 ]
 
 
-#: What an op stores for the call it ran, where the formula prices something the
-#: op's attributes cannot state on their own: the optional tensors a call
-#: passed, the bounds it packed its requests into.
-CALL_PAYLOAD = "_roofline_kwargs"
+_CALL_PAYLOAD_ATTR = "_roofline_kwargs"
 
 
 def _shape_or_attrs(op: Any | None, kwargs: dict[str, Any]) -> dict[str, Any]:
-    """What a formula reads: the op's attributes, overlaid with the call's payload.
-
-    The payload wins where both name a thing, because it describes the call
-    that ran while an attribute may hold what construction defaulted to.
+    """Return formula inputs, with call-bound state overriding instance state.
 
     Raises:
-        RuntimeError: The op declares a payload and has not run a call.
-        ValueError: The payload is neither a mapping nor None, which is the
-            author's wiring rather than the caller's sequencing.
+        RuntimeError: The op declares call-bound state but has not run a call.
+        ValueError: The call-bound state is neither a mapping nor ``None``.
     """
     if op is None:
         return kwargs
     if isinstance(op, dict):
         return op
     data = dict(vars(op))
-    if CALL_PAYLOAD not in data:
+    if _CALL_PAYLOAD_ATTR not in data:
         return data
-    payload = data.pop(CALL_PAYLOAD)
+    payload = data.pop(_CALL_PAYLOAD_ATTR)
     if payload is None:
         raise RuntimeError(f"{type(op).__name__}.eval_roofline() requires a prior forward() call")
     if not isinstance(payload, dict):
         raise ValueError(
-            f"{type(op).__name__} stores {CALL_PAYLOAD} as {type(payload).__name__}; "
+            f"{type(op).__name__} stores {_CALL_PAYLOAD_ATTR} as {type(payload).__name__}; "
             "a formula reads it as a mapping of what the call bound"
         )
     data.update(payload)
@@ -1131,6 +1125,24 @@ def moe_grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
     nbytes = (rows * k + num_experts * n * k) * elem + rows * n_out * out_elem
     nbytes += int(meta_shape[0]) * 4
     return int(flops), int(nbytes)
+
+
+def moe_pre_permute_roofline(op: "Op") -> tuple[int, int]:
+    """Roofline for layout-dependent pre-permute outputs."""
+    input_shapes = getattr(op, "input_shapes", None)
+    dtype = getattr(op, "dtype", None)
+    if input_shapes is None or dtype is None:
+        raise RuntimeError(f"{type(op).__name__}.eval_roofline() requires a prior forward() call")
+
+    hidden_shape, ids_shape = input_shapes
+    output_shapes = op._infer_output_shapes(hidden_shape, ids_shape)
+    nbytes = (prod(hidden_shape) + prod(output_shapes["expert_input"])) * dtype.itemsize
+    nbytes += (
+        prod(ids_shape)
+        + prod(output_shapes["layout_metadata"])
+        + prod(output_shapes["inverse_indices"])
+    ) * 4
+    return 0, int(nbytes)
 
 
 def moe_expert_mlp_roofline(op: "Op") -> tuple[int, int]:
