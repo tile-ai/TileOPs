@@ -34,8 +34,8 @@ Resource model mirrors ``tileops/kernels/gemm.py``:
 - coop2*: ``block_m`` fixed at 128 (two 64-row consumers), SMEM
   ``ns*(128+bn)*bk*2 + 2*stage_buf*64*stage_n*2``, NT only, persistent grid;
 - pingpong: ``block_m`` fixed at 128 (two consumers on alternate tiles, each a
-  whole 128-row accumulator), SMEM ``ns*(128+bn)*bk*2 + 2*128*stage_n*2``, NT
-  only, persistent grid of more than ``2 * sm_count`` tiles, ``n % 8 == 0``;
+  whole 128-row accumulator), SMEM ``ns*(128+bn)*bk*2 + 2*stage_buf*128*stage_n*2``,
+  NT only, persistent grid of more than ``2 * sm_count`` tiles, ``n % 8 == 0``;
 - split-K variants require ``ceildiv(k, bk) % split_k == 0``.
 """
 
@@ -77,6 +77,7 @@ _NS_CAP = {"basic": 4, "splitk": 4, "coop2": 4, "coop2_splitk": 4, "pingpong": 6
 
 # Epilogue staging slices are TMA boxes: 16-byte rows at this family's 2-byte dtype.
 _PINGPONG_SLICE_STEP = 8
+_PINGPONG_STAGE_BUF = 2
 
 
 @dataclass(frozen=True)
@@ -182,6 +183,7 @@ class _Cand:
                 "num_stages": self.num_stages,
                 "group_size_m": 16,
                 "stage_n": self.stage_n,
+                "stage_buf": self.stage_buf,
             }
         if self.structure == "coop2_splitk":
             return {
@@ -272,13 +274,13 @@ def _coop2_block_ns() -> tuple:
 
 
 def _pingpong_stage_plan(bn: int, bk: int):
-    """``(num_stages, stage_n)`` for a ping-pong tile, or ``None`` if none fits.
+    """``(num_stages, stage_n, stage_buf)`` for a ping-pong tile, or ``None`` if none fits.
 
-    The epilogue hides under the other consumer's mainloop, so its slice width buys
-    nothing and the ring takes the SMEM first: the deepest ring under ``_NS_CAP``
-    that still leaves room for one staging tile per consumer, then the widest
-    TMA-legal slice that fits beside it. 176 lands five stages with 16-column
-    slices; 128 lands six with 64.
+    The ring takes the SMEM first: the deepest under ``_NS_CAP`` that still leaves
+    room for two staging tiles per consumer, then the widest TMA-legal slice that
+    fits beside them. Two tiles rather than one because each CTA's last epilogue is
+    the one nothing hides, and with one tile it waited on every store. 176 lands
+    five stages with 16-column slices; 128 lands six with 32.
     """
     ring = (128 + bn) * bk * 2
     for ns in range(_NS_CAP["pingpong"], 2, -1):
@@ -286,11 +288,11 @@ def _pingpong_stage_plan(bn: int, bk: int):
         widths = (
             sn
             for sn in range(bn, 0, -_PINGPONG_SLICE_STEP)
-            if bn % sn == 0 and 2 * 128 * sn * 2 <= room
+            if bn % sn == 0 and 2 * _PINGPONG_STAGE_BUF * 128 * sn * 2 <= room
         )
         sn = next(widths, None)
         if sn is not None:
-            return ns, sn
+            return ns, sn, _PINGPONG_STAGE_BUF
     return None
 
 
@@ -375,9 +377,9 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                 plan = _pingpong_stage_plan(bn, 64)
                 if plan is None:
                     continue
-                ns, sn = plan
+                ns, sn, buf = plan
                 if math.ceil(m / 128) * math.ceil(n / bn) >= 2 * sm_count:
-                    out.append(_Cand("pingpong", 128, bn, 64, ns, stage_n=sn))
+                    out.append(_Cand("pingpong", 128, bn, 64, ns, stage_n=sn, stage_buf=buf))
     return out
 
 

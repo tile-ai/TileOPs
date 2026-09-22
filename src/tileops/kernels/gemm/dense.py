@@ -2095,10 +2095,13 @@ def _gemm_pingpong_kernel(
     ``B`` is not shared between the consumers (each tile is one consumer's), so the
     natural tile is narrower than coop2's: 176 wide lands ``2112 = 12 x 176`` and
     the same 128x176 tiling cuBLASLt's best Hopper kernel uses. The epilogue
-    stages ``stage_n``-column slices through one staging tile per consumer; its
-    speed is irrelevant while it hides, so the slice is whatever leaves room for
-    the deepest ring. TMA stores clip at the tensor bounds, so M / N tail tiles
-    take the same path as full ones; the scalar tail of coop2 would not hide.
+    stages ``stage_n``-column slices through ``stage_buf`` staging tiles per
+    consumer, rotating so a slice waits only for the store that used its tile
+    ``stage_buf`` slices ago. Hidden epilogues do not care, but each CTA's last
+    one is exposed, and with a single tile it serialised eleven store round
+    trips: 2.9k cycles per launch, the whole intercept gap to cuBLASLt. TMA
+    stores clip at the tensor bounds, so M / N tail tiles take the same path as
+    full ones; the scalar tail of coop2 would not hide.
 
     Args:
         m: Rows of ``A`` / ``C``.
@@ -2112,7 +2115,8 @@ def _gemm_pingpong_kernel(
 
     Returns:
         A ``@tilelang.jit`` factory; calling it with ``(block_n, block_k,
-        num_stages, group_size_m, stage_n)`` returns the compiled ``prim_func``.
+        num_stages, group_size_m, stage_n, stage_buf)`` returns the compiled
+        ``prim_func``.
 
     Raises:
         ValueError: Not NT, ``n % 8``, a ``stage_n`` that is not a multiple of 8
@@ -2140,12 +2144,16 @@ def _gemm_pingpong_kernel(
         num_stages: int = 5,
         group_size_m: int = 16,
         stage_n: int = 16,
+        stage_buf: int = 2,
     ) -> Callable:
         if stage_n % 8 or block_n % stage_n:
             raise ValueError(
                 f"pingpong stage_n must be a multiple of 8 dividing block_n={block_n}, got {stage_n}"
             )
+        if stage_buf < 1:
+            raise ValueError(f"pingpong stage_buf must be at least 1, got {stage_buf}")
         n_chunks = block_n // stage_n
+        nbuf = min(stage_buf, n_chunks)
         b_evict = _b_eviction(m, block_m)
         nr = (block_m * block_n) // 128
         num_pid_m = -(-m // block_m)
@@ -2213,14 +2221,16 @@ def _gemm_pingpong_kernel(
                     T.wait_wgmma(0)
                     T.barrier_arrive(ab_empty[ps[0]])
                     T.warpgroup_fence_operand(c_local, num_regs=nr)
+                    T.tma_store_wait(0)
                     for ch in range(n_chunks):
                         c0 = ch * stage_n
-                        T.tma_store_wait(0)
+                        r0 = (ch % nbuf) * block_m
+                        T.tma_store_wait(nbuf - 1)
                         T.sync_threads(barrier_id=bar_id, arrive_count=128)
-                        T.copy(c_local[:, c0 : c0 + stage_n], c_smem)
+                        T.copy(c_local[:, c0 : c0 + stage_n], c_smem[r0 : r0 + block_m, :])
                         T.fence_proxy_async()
                         T.sync_threads(barrier_id=bar_id, arrive_count=128)
-                        T.tma_copy(c_smem, c[m_start, n_start + c0])
+                        T.tma_copy(c_smem[r0 : r0 + block_m, :], c[m_start, n_start + c0])
             T.tma_store_wait(0)
 
         @T.prim_func
@@ -2234,8 +2244,8 @@ def _gemm_pingpong_kernel(
                 b_smem = T.alloc_shared((num_stages, block_n, block_k), dtype)
                 c_local_0 = T.alloc_fragment((block_m, block_n), accum_dtype)
                 c_local_1 = T.alloc_fragment((block_m, block_n), accum_dtype)
-                c_smem_0 = T.alloc_shared((block_m, stage_n), dtype)
-                c_smem_1 = T.alloc_shared((block_m, stage_n), dtype)
+                c_smem_0 = T.alloc_shared((nbuf * block_m, stage_n), dtype)
+                c_smem_1 = T.alloc_shared((nbuf * block_m, stage_n), dtype)
 
                 T.annotate_layout(
                     {
@@ -3038,6 +3048,7 @@ class GemmTmaKernel(Kernel):
                 cfg["num_stages"],
                 cfg["group_size_m"],
                 cfg["stage_n"],
+                cfg.get("stage_buf", 2),
             )
             return compiled(a, b)
 

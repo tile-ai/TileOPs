@@ -991,14 +991,20 @@ def test_b_tile_eviction_hint_follows_the_m_tile_count() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("block_n, num_stages, stage_n", [(176, 5, 16), (176, 4, 88), (128, 6, 64)])
-def test_pingpong_staging_matches_reference(block_n: int, num_stages: int, stage_n: int) -> None:
-    """Shape coverage: the ping-pong epilogue at its shipped slice and two others.
+@pytest.mark.parametrize(
+    "block_n, num_stages, stage_n, stage_buf",
+    [(176, 5, 16, 2), (176, 5, 16, 1), (176, 4, 88, 1), (128, 6, 32, 2)],
+)
+def test_pingpong_staging_matches_reference(
+    block_n: int, num_stages: int, stage_n: int, stage_buf: int
+) -> None:
+    """Shape coverage: the ping-pong epilogue at its shipped staging and three others.
 
-    ``stage_n`` only has to be a TMA-legal divisor of ``block_n``; the slice hides
-    under the other consumer's mainloop, so the plan takes whatever leaves room for
-    the deepest ring. 2080 is not a multiple of 176 and 4000 not of 128, so the
-    last row and column of tiles are ragged and store through TMA's clipping.
+    ``stage_n`` only has to be a TMA-legal divisor of ``block_n`` and ``stage_buf``
+    sets how many slices are in flight, including one (every store waited on) and a
+    count that does not divide the eleven slices of 176. 2080 is not a multiple of
+    176 and 4000 not of 128, so the last row and column of tiles are ragged and store
+    through TMA's clipping.
     """
     m, n, k = 4000, 2080, 256
     test = GemmTest(m, n, k, torch.bfloat16, False, True)
@@ -1017,6 +1023,7 @@ def test_pingpong_staging_matches_reference(block_n: int, num_stages: int, stage
             "num_stages": num_stages,
             "group_size_m": 16,
             "stage_n": stage_n,
+            "stage_buf": stage_buf,
         },
     )
     torch.testing.assert_close(kernel.forward(a, b), torch.matmul(a, b.T), atol=1.6e-2, rtol=1.6e-2)
