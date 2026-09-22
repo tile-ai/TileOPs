@@ -102,7 +102,6 @@ def _gqa_prefill_varlen_fwd_kernel(
                 request = T.alloc_local([1], "int32")
 
                 q_tiling.cumsum_offsets(cu_seqlens_q, tile_cum)
-                T.sync_threads()
                 if q_tile < tile_cum[batch]:
                     q_tiling.decode(q_tile, tile_cum, lo, hi, request, q_row)
 

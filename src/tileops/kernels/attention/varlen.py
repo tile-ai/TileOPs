@@ -91,8 +91,9 @@ class VarlenKernel(Kernel):
         heads_kv = self.heads_kv
         dim = self.dim
         dtype = self.dtype
-        # Exercise more than one 128-token tile without making tuning inputs
-        # depend on any particular manifest workload.
+        # Two 128-token tiles exercise the tiled loop while keeping every
+        # candidate probe bounded. This is a synthetic tuning point, not a
+        # claim that one config is optimal for every packed total.
         tokens_per_request = 256
         total = batch * tokens_per_request
 

@@ -249,7 +249,6 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
                 T.annotate_layout({o_shared: tilelang.layout.make_swizzled_layout(o_shared)})
 
                 q_tiling.cumsum_offsets(cu_seqlens_q, tile_cum)
-                T.sync_threads()
                 if q_tile < tile_cum[batch]:
                     q_tiling.decode(q_tile, tile_cum, lo, hi, request, q_row)
 
