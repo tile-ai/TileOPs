@@ -738,6 +738,9 @@ def _synthesize_inline_mode(
     return fn
 
 
+SYNTHESIZED_ATTR = "__tileops_synthesized_roofline__"
+
+
 def synthesize_eval_roofline(
     op_name: str,
     *,
@@ -770,43 +773,20 @@ def synthesize_eval_roofline(
     if has_func and has_inline:
         raise ValueError(f"{op_name}: roofline cannot mix func and inline modes")
     if has_func:
-        return _synthesize_func_mode(op_name, roofline["func"])
-    return _synthesize_inline_mode(op_name, roofline, signature)
+        fn = _synthesize_func_mode(op_name, roofline["func"])
+    else:
+        fn = _synthesize_inline_mode(op_name, roofline, signature)
+    setattr(fn, SYNTHESIZED_ATTR, True)
+    return fn
 
 
 def maybe_install_eval_roofline(cls: type) -> None:
-    """Install a synthesized ``eval_roofline`` on *cls* when warranted.
+    """Install the manifest-derived ``eval_roofline`` for an implemented op.
 
-    Resolution order mirrors ``_dtype_codegen.maybe_install_validator``:
-
-    1. Class-attached ``__manifest_roofline__`` + ``__manifest_status__``
-       + ``__manifest_signature__`` (used by unit tests and bypass paths).
-    2. Manifest entry whose key matches ``cls.__name__``.
-
-    Conditions for installation:
-
-    - Resolved status is ``"implemented"``.
-    - No class in ``cls.__mro__`` other than the L1 ``Op`` base supplies
-      its own ``eval_roofline`` (direct overrides on ``cls`` and inherited
-      overrides on intermediate base classes such as ``UnaryOp`` are both
-      honored verbatim).
-    - The manifest roofline block parses successfully under
-      ``synthesize_eval_roofline``.
-
-    Synthesis failures are swallowed so an irregular manifest entry
-    leaves the base stub in place rather than blocking class
-    construction; the validator catches the resulting C7 error.
+    Class-attached manifest metadata takes precedence over the entry named by
+    ``cls.__name__``. Invalid formulas leave the inherited method in place and
+    are reported by manifest validation.
     """
-    from tileops.ops.op_base import Op
-
-    for base in cls.__mro__:
-        if base is Op:
-            break
-        if "eval_roofline" in base.__dict__:
-            # Manual override on cls or an intermediate base (e.g. UnaryOp,
-            # SoftmaxBase) — preserve it.
-            return
-
     roofline = getattr(cls, "__manifest_roofline__", None)
     sig = getattr(cls, "__manifest_signature__", None)
     status = getattr(cls, "__manifest_status__", None)

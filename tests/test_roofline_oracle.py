@@ -662,8 +662,7 @@ class TestBytesOracle:
         op = GroupedQueryAttentionPrefillVarlenFwdOp.__new__(
             GroupedQueryAttentionPrefillVarlenFwdOp
         )
-        # The op turns the call's cumulative bounds into per-request lengths before
-        # it prices anything, so the case states the bounds the call carried.
+        # The formula derives per-request lengths from these cumulative bounds.
         op._roofline_kwargs = {
             "q_shape": (total_q, heads, dim),
             "k_shape": (total_kv, heads_kv, dim),
@@ -972,8 +971,8 @@ HAND_WRITTEN = {
     "FusedMoeSharedExpertFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "GemmFp8FwdOp": "the scale tensors' extents follow the scaling mode, not the dims",
     "GemmW4A16FwdOp": "the packed weight and its group metadata have a quantized layout",
-    "GroupedQueryAttentionDenseFwdOp": "the op gathers its optional tensors into the call before pricing it",
-    "GroupedQueryAttentionPrefillVarlenFwdOp": "the op reads its per-request lengths off the call it ran",
+    "GroupedQueryAttentionDenseFwdOp": "which optional tensors the call passed decides the traffic",
+    "GroupedQueryAttentionPrefillVarlenFwdOp": "the per-request lengths the call packed decide the traffic",
     "GroupedGemmFwdOp": "`batch_padded_offsets` is passed and no kernel indexes it",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": "it reads the pages its block table names, not the pool",
     "NSAFwdVarlenOp": "how much it reads follows the values in `block_counts`",

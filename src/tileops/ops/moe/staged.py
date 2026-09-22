@@ -154,28 +154,6 @@ class MoePrePermuteFwdOp(_StagedOpBase):
             "inverse_indices": (rows,),
         }
 
-    def eval_roofline(self) -> tuple[int, int]:
-        """The one op whose entry codegen cannot serve.
-
-        Its three outputs' extents come from the ``MGroupedLayoutSpec`` the call
-        passes, and the vars layer binds inputs and params, never outputs. The
-        entry states the same sum in the shape the layer could express it; this
-        reads the layout the call actually chose.
-        """
-        if self.input_shapes is None or self.dtype is None:
-            raise RuntimeError("eval_roofline requires a prior forward call")
-        hidden_shape, ids_shape = self.input_shapes
-        tokens, hidden = hidden_shape
-        rows = tokens * ids_shape[1]
-        output_shapes = self._infer_output_shapes(hidden_shape, ids_shape)
-        expert_numel = 1
-        for dim in output_shapes["expert_input"]:
-            expert_numel *= dim
-        metadata_numel = output_shapes["layout_metadata"][0]
-        nbytes = (tokens * hidden + expert_numel) * self.dtype.itemsize
-        nbytes += (ids_shape[0] * ids_shape[1] + rows + metadata_numel) * 4
-        return 0, int(nbytes)
-
     def make_call(
         self,
         hidden_states: torch.Tensor,

@@ -120,3 +120,142 @@ class TestRealOpSmoke:
         flops, total_bytes = op.eval_roofline()
         assert flops == 6 * N
         assert total_bytes == 2 * N * elem
+
+
+class TestEvaluatorOwnership:
+    """Enforce evaluator ownership for implemented manifest entries."""
+
+    @staticmethod
+    def _owner(cls):
+        for base in cls.__mro__:
+            if "eval_roofline" in base.__dict__:
+                return base
+        return None
+
+    def _implemented(self):
+        import importlib
+
+        from tileops.manifest import load_manifest
+
+        for name, entry in load_manifest().items():
+            if entry.get("status") != "implemented":
+                continue
+            module = entry["source"]["op"].removesuffix(".py").replace("/", ".")
+            cls = getattr(importlib.import_module(module), name, None)
+            if cls is not None:
+                yield name, cls
+
+    def test_each_op_owns_a_generated_evaluator(self):
+        from tileops.ops._roofline_codegen import SYNTHESIZED_ATTR
+
+        invalid = []
+        for name, cls in self._implemented():
+            owner = self._owner(cls)
+            generated = getattr(owner.__dict__["eval_roofline"], SYNTHESIZED_ATTR, False)
+            if owner is not cls or not generated:
+                invalid.append(f"{name} (owned by {owner.__name__})")
+        assert not invalid, f"ops without their own generated evaluator: {invalid}"
+
+
+class TestCallPayload:
+    """Call-bound formula inputs override construction-bound state."""
+
+    def test_requires_prior_forward(self):
+        from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
+
+        op = GroupedQueryAttentionDenseFwdOp.__new__(GroupedQueryAttentionDenseFwdOp)
+        op._roofline_kwargs = None
+        with pytest.raises(RuntimeError, match="requires a prior forward"):
+            op.eval_roofline()
+
+    def test_rejects_non_mapping_payload(self):
+        from tileops.perf.formulas import _shape_or_attrs
+
+        class _Miswired:
+            def __init__(self):
+                self._roofline_kwargs = (1, 2)
+
+        with pytest.raises(ValueError, match="mapping"):
+            _shape_or_attrs(_Miswired(), {})
+
+    def test_payload_overrides_instance_state(self):
+        import torch
+
+        from tileops.perf.formulas import _shape_or_attrs
+
+        class _Op:
+            def __init__(self):
+                self.out_dtype = torch.float32
+                self._roofline_kwargs = {"out_dtype": torch.float16, "q_shape": (1, 2, 3, 4)}
+
+        data = _shape_or_attrs(_Op(), {})
+        assert data["out_dtype"] is torch.float16
+        assert data["q_shape"] == (1, 2, 3, 4)
+
+    def test_payload_preserves_other_instance_state(self):
+        from tileops.perf.formulas import _shape_or_attrs
+
+        class _Op:
+            def __init__(self):
+                self.is_causal = True
+                self._roofline_kwargs = {"q_shape": (1, 2, 3, 4)}
+
+        assert _shape_or_attrs(_Op(), {})["is_causal"] is True
+
+
+class TestInheritedEvaluator:
+    """A subclass with a manifest entry owns its generated evaluator."""
+
+    @staticmethod
+    def _op(name, bytes_expr, base=None):
+        from tileops.ops.op_base import Op
+
+        return type(
+            name,
+            (base or Op,),
+            {
+                "__manifest_status__": "implemented",
+                "__manifest_signature__": {
+                    "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
+                    "outputs": {"y": {"dtype": "same_as(x)"}},
+                },
+                "__manifest_roofline__": {
+                    "vars": {"N": "x.shape[0]"},
+                    "flops": "N",
+                    "bytes": bytes_expr,
+                },
+                "forward": lambda self, *a, **kw: None,
+                "_infer_output_shapes": lambda self, x_shape: {"y": x_shape},
+                "_validate_dtypes": lambda self, *a: None,
+                "default_kernel_map": property(lambda self: {}),
+            },
+        )
+
+    def test_a_subclass_runs_its_own_entry(self):
+        import torch
+
+        from tileops.ops._roofline_codegen import SYNTHESIZED_ATTR
+
+        parent = self._op("_ParentOp", "2 * N * elem_bytes")
+        child = self._op("_ChildOp", "4 * N * elem_bytes", base=parent)
+
+        assert getattr(child.__dict__.get("eval_roofline"), SYNTHESIZED_ATTR, False), (
+            "the child inherited the parent's generated evaluator"
+        )
+        instance = child.__new__(child)
+        instance.x_shape, instance.dtype = (128,), torch.float16
+        assert instance.eval_roofline()[1] == 4 * 128 * 2
+
+    def test_an_explicit_parent_does_not_replace_the_child_entry(self):
+        import torch
+
+        from tileops.ops.op_base import Op
+
+        class _Base(Op):
+            def eval_roofline(self):
+                return (1, 2)
+
+        child = self._op("_HandChildOp", "9 * N * elem_bytes", base=_Base)
+        instance = child.__new__(child)
+        instance.x_shape, instance.dtype = (8,), torch.float16
+        assert instance.eval_roofline() == (8, 9 * 8 * 2)

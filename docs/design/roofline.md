@@ -172,9 +172,7 @@ Codegen is the authoritative gate for name and form correctness. A formula refer
 
 #### 4.4.1 Method Template
 
-Codegen emits an `eval_roofline()` method returning `(flops: int, bytes: int)` for every op that does not define one. The method signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md); this document specifies only how the body is generated from the manifest.
-
-An op that defines the method itself keeps it, and codegen installs nothing. That is for an op whose call needs translating before the formula sees it — packed lengths read off cumulative bounds, an optional tensor set the row does not carry — or whose entry the vars layer cannot express, and its entry says which. Everywhere else the entry is what runs, so changing it changes the number.
+Every implemented manifest entry is served by a generated `eval_roofline()` method returning `(flops: int, bytes: int)`. The method belongs to that entry: a subclass with its own entry receives its own evaluator rather than inheriting another entry's formula. The method signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md); this document specifies only how the body is generated from the manifest.
 
 ```python
 def eval_roofline(self) -> tuple[int, int]:
@@ -195,7 +193,7 @@ A tensor resolves through `self.<name>` or `self.<name>_shape`, so an op binds w
 For each manifest entry, codegen reads one of:
 
 - **Inline** — `vars` (optional), `flops`, `bytes`. All are Python expression source strings. Codegen emits the method body per §4.4.3.
-- **Func** — `func` (dotted module path resolving to a human-authored callable). Codegen emits `return <func>(self)` as the method body. This presumes the **recommended** signature `func(op) -> tuple[int, int]` (returning `(flops, bytes)`), aligned with the agent-generated `eval_roofline(self)` shape. The recommendation is not a gate: codegen does not introspect the callable, and an author choosing another signature owns making it work with the emitted call (e.g. a thin wrapper at the dotted path).
+- **Func** — `func` (dotted module path resolving to a callable with signature `func(op) -> tuple[int, int]`). Codegen emits `return <func>(self)` as the method body. The callable reads construction-bound and call-bound state from the op; call-bound state is authoritative when both provide the same input.
 
 #### 4.4.3 Expression Layers
 

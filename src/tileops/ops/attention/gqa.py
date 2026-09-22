@@ -357,15 +357,6 @@ class GroupedQueryAttentionDenseFwdOp(Op):
             if table is not None and table.dtype != declared:
                 raise ValueError(f"{name} must have dtype {declared}")
 
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._roofline_kwargs is None:
-            raise RuntimeError(
-                f"{type(self).__name__}.eval_roofline() requires a prior forward() call"
-            )
-        from tileops.perf.formulas import gqa_fwd_roofline
-
-        return gqa_fwd_roofline(**self._roofline_kwargs)
-
     def compute_roof(self) -> str:
         """Dense attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self._last_input_dtype)
@@ -1239,11 +1230,6 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {"gqa_prefill_varlen_fwd_kernel": GQAPrefillVarlenFwdKernel}
 
-    @staticmethod
-    def _lengths_from_cu_seqlens(cu_seqlens: torch.Tensor) -> list[int]:
-        values = [int(x) for x in cu_seqlens.detach().cpu().tolist()]
-        return [values[idx + 1] - values[idx] for idx in range(len(values) - 1)]
-
     def _validate_forward_inputs(
         self,
         q: torch.Tensor,
@@ -1391,18 +1377,6 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
             "dtype": self.dtype,
         }
         return output
-
-    def eval_roofline(self) -> tuple[int, int]:
-        if self._roofline_kwargs is None:
-            raise RuntimeError(
-                f"{type(self).__name__}.eval_roofline() requires a prior forward() call"
-            )
-        from tileops.perf.formulas import gqa_prefill_varlen_fwd_roofline
-
-        kwargs = dict(self._roofline_kwargs)
-        kwargs["q_lens"] = self._lengths_from_cu_seqlens(kwargs.pop("cu_seqlens_q"))
-        kwargs["kv_lens"] = self._lengths_from_cu_seqlens(kwargs.pop("cu_seqlens_kv"))
-        return gqa_prefill_varlen_fwd_roofline(**kwargs)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
