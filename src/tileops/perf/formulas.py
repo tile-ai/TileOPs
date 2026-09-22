@@ -27,6 +27,7 @@ __all__ = [
     "deepseek_dsa_decode_roofline",
     "deepseek_mla_decode_roofline",
     "deltanet_decode_roofline",
+    "deltanet_inference_roofline",
     "div_fwd_roofline",
     "dropout_roofline",
     "engram_decode_roofline",
@@ -239,6 +240,21 @@ def deltanet_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int,
     flops = 2 * batch * heads * (3 * dim_k * dim_v + dim_k)
     nbytes = batch * heads * (2 * dim_k + 2 * dim_v + 1 + 2 * dim_k * dim_v)
     return int(flops), int(nbytes * elem_bytes)
+
+
+def deltanet_inference_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
+    """Algorithmic lower bound for BTHD ungated DeltaNet inference."""
+    data = _shape_or_attrs(op, kwargs)
+    batch, seq_len, heads, dim_k = data["q_shape"]
+    dim_v = data["v_shape"][-1]
+    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+    flops = batch * seq_len * heads * (6 * dim_k * dim_v + 2 * dim_k)
+    tensor_elements = batch * seq_len * heads * (2 * dim_k + 2 * dim_v + 1)
+    state_elements = batch * heads * dim_k * dim_v
+    nbytes = tensor_elements * elem_bytes + state_elements * 4
+    if data.get("initial_state"):
+        nbytes += state_elements * 4
+    return int(flops), int(nbytes)
 
 
 def gated_deltanet_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:

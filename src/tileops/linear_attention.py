@@ -5,6 +5,7 @@ from .ops.linear_attention import (
     DeltaNetBwdOp,
     DeltaNetDecodeFwdOp,
     DeltaNetFwdOp,
+    DeltaNetInferenceFwdOp,
     GatedDeltaNetFwdOp,
     GLABwdOp,
     GLADecodeFwdOp,
@@ -14,6 +15,7 @@ from .ops.linear_attention import (
 __all__ = [
     "DeltaNetAutogradOp",
     "DeltaNetFwdOp",
+    "DeltaNetInferenceFwdOp",
     "DeltaNetBwdOp",
     "DeltaNetDecodeFwdOp",
     "GatedDeltaNetFwdOp",

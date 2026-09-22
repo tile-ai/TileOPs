@@ -1,4 +1,5 @@
 from .deltanet import DeltaNetAutogradOp, DeltaNetBwdOp, DeltaNetFwdOp
+from .deltanet_inference import DeltaNetInferenceFwdOp
 from .deltanet_recurrence import DeltaNetDecodeFwdOp
 from .gated_deltanet import GatedDeltaNetFwdOp
 from .gla import GLABwdOp, GLAFwdOp
@@ -8,6 +9,7 @@ __all__: list[str] = [
     "DeltaNetBwdOp",
     "DeltaNetDecodeFwdOp",
     "DeltaNetFwdOp",
+    "DeltaNetInferenceFwdOp",
     "DeltaNetAutogradOp",
     "GatedDeltaNetFwdOp",
     "GLABwdOp",

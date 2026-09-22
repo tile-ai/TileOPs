@@ -16,6 +16,7 @@ import pytest
 import torch
 from fla.ops.delta_rule import chunk_delta_rule
 
+from benchmarks.baselines import assert_matches_reference, reference_tolerance
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
     backward_of,
@@ -23,8 +24,8 @@ from benchmarks.benchmark_base import (
     workload_params,
 )
 from tileops.manifest import load_workloads
-from tileops.ops import DeltaNetAutogradOp, DeltaNetBwdOp, DeltaNetFwdOp
-from workloads.linear_attention import DeltaNetFwdWorkload
+from tileops.ops import DeltaNetAutogradOp, DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetInferenceFwdOp
+from workloads.linear_attention import DeltaNetFwdWorkload, DeltaNetInferenceWorkload
 
 
 def _to_fla_layout(q, k, v, beta):
@@ -42,6 +43,30 @@ def _deltanet_args(workload: dict) -> tuple[int, int, int, int, int, int]:
     batch, heads, seq_len, dim_k = workload["q_shape"]
     dim_v = workload["v_shape"][3]
     return batch, seq_len, heads, dim_k, dim_v, workload.get("chunk_size", 64)
+
+
+def _inference_args(workload: dict) -> tuple[int, int, int, int]:
+    return workload["q_shape"]
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len, heads, dim, dtype",
+    workload_params(
+        load_workloads(DeltaNetInferenceFwdOp), then_dtype(_inference_args), smoke_first=True
+    ),
+)
+def test_deltanet_dense_prefill_bench(
+    batch: int, seq_len: int, heads: int, dim: int, dtype: torch.dtype
+) -> None:
+    workload = DeltaNetInferenceWorkload(batch, seq_len, heads, dim, dtype)
+    inputs = workload.gen_inputs()
+    op = DeltaNetInferenceFwdOp()
+
+    def fla(q, k, v, beta, initial_state):
+        return chunk_delta_rule(q, k, v, beta, initial_state=initial_state, output_final_state=True)
+
+    assert_matches_reference(op, fla, *inputs, **reference_tolerance(dtype))
+    ManifestBenchmark(op, workload).compare({"tileops": op, "fla": fla}, *inputs)
 
 
 @pytest.mark.parametrize(

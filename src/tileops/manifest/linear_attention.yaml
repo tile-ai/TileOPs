@@ -3,6 +3,60 @@
 # Source of truth for linear-attention op interfaces. Spec-only entries define
 # the public Op contract before the implementation is wired up.
 
+DeltaNetInferenceFwdOp:
+  # One inference contract for equal-length prefill, packed varlen, and decode.
+  # The five training buffers of the old chunkwise forward are not public outputs.
+  ref_api: "fla.ops.delta_rule.chunk_delta_rule"
+  family: linear_attention
+  status: spec-only
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, T, H, K]"}
+      k: {dtype: "same_as(q)", shape: "[B, T, H, K]"}
+      v: {dtype: "same_as(q)", shape: "[B, T, H, V]"}
+      beta: {dtype: "same_as(q)", shape: "[B, T, H]"}
+      initial_state: {dtype: "float32", optional: true}
+      cu_seqlens: {dtype: "int64", optional: true}
+      cu_seqlens_cpu: {dtype: "int64", optional: true}
+    outputs:
+      o: {dtype: "same_as(q)", shape: "[B, T, H, V]"}
+      final_state: {dtype: "float32"}
+    params:
+      scale: {type: "float | None", default: null}
+      use_qk_l2norm_in_kernel: {type: bool, default: false}
+    shape_rules:
+    - "k.shape == q.shape"
+    - "v.shape == (B, T, H, V)"
+    - "beta.shape == (B, T, H)"
+    - "cu_seqlens is None or (B == 1 and cu_seqlens.ndim == 1 and cu_seqlens.shape[0] >= 2)"
+    - "cu_seqlens_cpu is None or cu_seqlens is not None"
+    - "cu_seqlens_cpu is None or cu_seqlens is None or cu_seqlens_cpu.shape == cu_seqlens.shape"
+    - "initial_state is None or initial_state.ndim == 4"
+    - "initial_state is None or cu_seqlens is not None or initial_state.shape == (B, H, K, V)"
+    - "initial_state is None or cu_seqlens is None or initial_state.shape[0] + 1 == cu_seqlens.shape[0]"
+    - "initial_state is None or initial_state.shape[1:] == (H, K, V)"
+    - "o.shape == (B, T, H, V)"
+    - "final_state.ndim == 4"
+    - "cu_seqlens is not None or final_state.shape == (B, H, K, V)"
+    - "cu_seqlens is None or final_state.shape[0] + 1 == cu_seqlens.shape[0]"
+    - "final_state.shape[1:] == (H, K, V)"
+
+  workloads:
+  - {q_shape: [2, 2048, 4, 64], k_shape: [2, 2048, 4, 64], v_shape: [2, 2048, 4, 64], beta_shape: [2, 2048, 4], dtypes: [bfloat16], label: "prefill-medium"}
+  - {q_shape: [2, 8192, 4, 64], k_shape: [2, 8192, 4, 64], v_shape: [2, 8192, 4, 64], beta_shape: [2, 8192, 4], dtypes: [bfloat16], label: "prefill-long"}
+  - {q_shape: [2, 16384, 4, 64], k_shape: [2, 16384, 4, 64], v_shape: [2, 16384, 4, 64], beta_shape: [2, 16384, 4], dtypes: [bfloat16], label: "prefill-very-long"}
+  - {q_shape: [1, 4096, 16, 128], k_shape: [1, 4096, 16, 128], v_shape: [1, 4096, 16, 128], beta_shape: [1, 4096, 16], dtypes: [bfloat16], label: "prefill-wide"}
+  roofline: {func: tileops.perf.formulas.deltanet_inference_roofline}
+  source:
+    kernel: tileops/kernels/linear_attention/deltanet/dense_prefill.py
+    kernel_map:
+      deltanet_dense_prefill: DeltaNetDensePrefillFwdKernel
+    op: tileops/ops/linear_attention/deltanet_inference.py
+    test: tests/ops/test_deltanet_inference.py
+    bench: benchmarks/ops/bench_deltanet.py
+    bench_manifest_driven: true
+
 GatedDeltaNetFwdOp:
   # Inference contract shared by equal-length, packed-varlen, prefill, and
   # single-token decode calls. Unlike the FLA reference, this contract always
