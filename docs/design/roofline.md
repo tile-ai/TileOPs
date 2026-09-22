@@ -158,10 +158,10 @@ M5 reads pre-computed numbers and never instantiates an Op (§4.4.6).
 
 Verdict lines are rendering thresholds, not CI gates:
 
-| Verdict    | Condition | Meaning                                                                                                                                                                                                           |
-| ---------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| At ceiling | ≥ 80%     | Done. The HBM ceiling is an envelope over access mixes, and a kernel's own mix caps below it (a perfect 2R:1W kernel reaches ~90% of it, a perfect 1R:1W ~87%); the line sits below every mix's personal ceiling. |
-| Anomaly    | > 105%    | Above the achievable ceiling: the formula or the calibration is wrong. Excluded from "at ceiling".                                                                                                                |
+| Verdict    | Condition | Meaning                                                                                                                                        |
+| ---------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| At ceiling | ≥ 80%     | Done. The HBM ceiling is an envelope over access mixes and a kernel's own mix caps below it; the line sits below every mix's personal ceiling. |
+| Anomaly    | > 105%    | Above the achievable ceiling: the formula or the calibration is wrong. Excluded from "at ceiling".                                             |
 
 Physics check: every row's implied rates (`bytes / time`, `flops / time`) are compared against the *theoretical* ceilings of its roofs. A breach is physically impossible, so it is reported as a formula error that fails the run's health — a formula edit that inflates work is caught on the next nightly. This check is the standing guard on formula overestimation; equality-level validation belongs to the structural oracle (§4.6), read-side hardware-counter validation to the bytes audit (§4.5).
 
@@ -188,7 +188,7 @@ For each entry, codegen reads one of:
 
 Inline mode has two layers, emitted as two sequential blocks.
 
-- **vars layer** — shape-derived resolution. Tensor shape access, slicing, `product()`, `range()`, small comprehensions.
+- **vars layer** — shape-derived resolution. Tensor shape access, slicing, `product()`, `range()`, small comprehensions. Entries resolve in declaration order and each may read the ones above it, so a formula names an intermediate once and builds on it.
 - **arithmetic layer** — `flops` and `bytes` over the resolved variables, the element-size constants and approved helpers only. No tensor access, shape slicing, comprehensions, attributes or arbitrary calls.
 
 The layers are what keeps a formula readable and recountable, so a vars expression must not be inlined into an arithmetic expression: that collapses the two and puts shape traversal where the arithmetic layer forbids it. A formula the arithmetic layer cannot carry switches to `func` mode (§2.2) rather than extending inline formulas into a mini-language.
