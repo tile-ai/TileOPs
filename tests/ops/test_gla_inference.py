@@ -96,13 +96,16 @@ def test_gla_inference_rejects_invalid_state_and_gate() -> None:
     reason="the in-tree dense prefill requires SM90",
 )
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
-def test_gla_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
+@pytest.mark.parametrize("seq_len, dim", [(128, 64), (128, 128), (1024, 64)])
+def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: int) -> None:
     torch.manual_seed(2160)
-    test = GLAInferenceTest(2, 128, 4, 64, 64, dtype, has_initial_state=True)
+    test = GLAInferenceTest(2, seq_len, 4, dim, dim, dtype, has_initial_state=True)
     inputs = test.gen_inputs()
     op = GLAInferenceFwdOp()
     test.check(op, *inputs, atol=0.03, rtol=0.03)
     test.check(op, *inputs[:4], atol=0.03, rtol=0.03)
+    inputs[3].mul_(3.0)
+    test.check(op, *inputs, atol=0.03, rtol=0.03)
 
 
 @pytest.mark.skipif(

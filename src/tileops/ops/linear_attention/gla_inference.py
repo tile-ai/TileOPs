@@ -7,7 +7,9 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.gla.dense_prefill import GLADensePrefillFwdKernel
+from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import (
+    GLADensePrefillSubchunkKernel,
+)
 from tileops.perf.formulas import gla_fwd_roofline
 from tileops.perf.profile import tensor_core_roof
 
@@ -42,7 +44,7 @@ class GLAInferenceFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gla_dense_prefill": GLADensePrefillFwdKernel}
+        return {"gla_dense_prefill": GLADensePrefillSubchunkKernel}
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         del role

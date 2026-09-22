@@ -341,9 +341,9 @@ GLAInferenceFwdOp:
   - {q_shape: [2, 16384, 4, 64], k_shape: [2, 16384, 4, 64], v_shape: [2, 16384, 4, 64], g_shape: [2, 16384, 4, 64], initial_state_shape: [2, 4, 64, 64], dtypes: [bfloat16], label: "prefill-very-long"}
   roofline: {func: tileops.perf.formulas.gla_fwd_roofline}
   source:
-    kernel: tileops/kernels/linear_attention/gla/dense_prefill.py
+    kernel: tileops/kernels/linear_attention/gla/dense_prefill_subchunk.py
     kernel_map:
-      gla_dense_prefill: GLADensePrefillFwdKernel
+      gla_dense_prefill: GLADensePrefillSubchunkKernel
     op: tileops/ops/linear_attention/gla_inference.py
     test: tests/ops/test_gla_inference.py
     bench: benchmarks/ops/bench_gla_inference.py
