@@ -13,16 +13,17 @@ from tileops.kernels.kernel_base import Kernel
 __all__ = ["IndexedExpertGemmTemplate"]
 
 
-def _route_metadata_size(num_experts: int, num_routes: int, group_capacity: int) -> int:
-    return num_experts + num_routes + num_experts * group_capacity
+# Rows one leader route computes for its expert: the kernel's M tile.
+_GROUP_ROWS = 16
 
 
-def _group_capacity(num_tokens: int) -> int:
-    return min(num_tokens, 16)
+def _route_metadata_size(num_experts: int, num_routes: int, num_tokens: int) -> int:
+    """Per-expert route counts, per-route ranks, then up to num_tokens routes listed per expert."""
+    return num_experts + num_routes + num_experts * num_tokens
 
 
 @functools.lru_cache(maxsize=32)
-def _route_stats(num_tokens: int, top_k: int, num_experts: int, group_capacity: int):
+def _route_stats(num_tokens: int, top_k: int, num_experts: int):
     num_routes = num_tokens * top_k
     rank_base = num_experts
     list_base = num_experts + num_routes
@@ -33,7 +34,7 @@ def _route_stats(num_tokens: int, top_k: int, num_experts: int, group_capacity: 
         def main(
             expert_ids: T.Tensor((num_tokens, top_k), "int32"),
             metadata: T.Tensor(
-                (_route_metadata_size(num_experts, num_routes, group_capacity),), "int32"
+                (_route_metadata_size(num_experts, num_routes, num_tokens),), "int32"
             ),
         ):
             with T.Kernel(1, threads=threads):
@@ -44,8 +45,8 @@ def _route_stats(num_tokens: int, top_k: int, num_experts: int, group_capacity: 
                     expert = expert_ids[route // top_k, route % top_k]
                     rank = T.atomic_add(metadata[expert], 1, return_prev=True)
                     metadata[rank_base + route] = rank
-                    if rank < group_capacity:
-                        metadata[list_base + expert * group_capacity + rank] = route
+                    if rank < num_tokens:
+                        metadata[list_base + expert * num_tokens + rank] = route
 
         return main
 
@@ -63,14 +64,13 @@ def _indexed_expert_gemm(
     activation: str,
     route_input: bool,
     dispatch_mode: str,
-    group_capacity: int,
 ):
     num_routes = num_tokens * top_k
     gated = activation != "none"
     weight_n = 2 * n if gated else n
     a_shape = (num_tokens, top_k, k) if route_input else (num_tokens, k)
     metadata_size = (
-        _route_metadata_size(num_experts, num_routes, group_capacity)
+        _route_metadata_size(num_experts, num_routes, num_tokens)
         if dispatch_mode == "grouped"
         else 1
     )
@@ -84,7 +84,7 @@ def _indexed_expert_gemm(
         pass_configs={PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True},
     )
     def _kernel(block_n: int, block_k: int, threads: int, num_stages: int):
-        block_m = 16
+        block_m = _GROUP_ROWS
 
         @T.prim_func
         def main(
@@ -100,15 +100,22 @@ def _indexed_expert_gemm(
                 n_block = pid % n_blocks
                 route_count = T.alloc_var("int32", init=1)
                 is_leader = T.alloc_var("int32", init=1)
+                group_start = T.alloc_var("int32", init=0)
                 token = route // top_k
                 slot = route % top_k
                 expert = expert_ids[token, slot]
                 if dispatch_mode == "grouped":
-                    count = route_metadata[expert]
-                    if count <= group_capacity:
-                        route_count = count
-                        if route_metadata[rank_base + route] != 0:
+                    # The listed routes of an expert form groups of block_m rows; the first
+                    # route of each group computes the whole group and the others exit. A
+                    # route past the list (a token naming one expert twice) computes alone.
+                    rank = route_metadata[rank_base + route]
+                    if rank < num_tokens:
+                        group_start = rank - rank % block_m
+                        if rank != group_start:
                             is_leader = 0
+                        route_count = T.min(
+                            block_m, T.min(route_metadata[expert], num_tokens) - group_start
+                        )
 
                 a_shared = T.alloc_shared((block_m, block_k), dtype)
                 weight_shared = T.alloc_shared((2 * block_n if gated else block_n, block_k), dtype)
@@ -133,7 +140,7 @@ def _indexed_expert_gemm(
                                 offset = ko * block_k + ki
                                 if mi < route_count:
                                     selected_route = route_metadata[
-                                        list_base + expert * group_capacity + mi
+                                        list_base + expert * num_tokens + group_start + mi
                                     ]
                                     selected_token = selected_route // top_k
                                     selected_slot = selected_route % top_k
@@ -184,7 +191,7 @@ def _indexed_expert_gemm(
                             col = n_block * block_n + j
                             if mi < route_count and col < n:
                                 selected_route = route_metadata[
-                                    list_base + expert * group_capacity + mi
+                                    list_base + expert * num_tokens + group_start + mi
                                 ]
                                 selected_token = selected_route // top_k
                                 selected_slot = selected_route % top_k
@@ -246,8 +253,7 @@ class IndexedRouteStatsKernel(Kernel):
         self.num_tokens = num_tokens
         self.top_k = top_k
         self.num_experts = num_experts
-        self.group_capacity = _group_capacity(num_tokens)
-        self.kernel = _route_stats(num_tokens, top_k, num_experts, self.group_capacity)
+        self.kernel = _route_stats(num_tokens, top_k, num_experts)
         self.init_config()
 
     @property
@@ -260,7 +266,7 @@ class IndexedRouteStatsKernel(Kernel):
 
     @staticmethod
     def required_output_size(num_tokens: int, top_k: int, num_experts: int) -> int:
-        return _route_metadata_size(num_experts, num_tokens * top_k, _group_capacity(num_tokens))
+        return _route_metadata_size(num_experts, num_tokens * top_k, num_tokens)
 
     def forward(self, expert_ids: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
         expected = (self.num_tokens, self.top_k)
@@ -309,7 +315,6 @@ class IndexedExpertGemmTemplate(Kernel):
         self.activation = activation
         self.route_input = route_input
         self.dispatch_mode = dispatch_mode
-        self.group_capacity = _group_capacity(num_tokens)
         self.kernel = _indexed_expert_gemm(
             num_tokens,
             top_k,
@@ -320,7 +325,6 @@ class IndexedExpertGemmTemplate(Kernel):
             activation,
             route_input,
             dispatch_mode,
-            self.group_capacity,
         )
         self.init_config(config)
 
@@ -370,9 +374,7 @@ class IndexedExpertGemmTemplate(Kernel):
                 raise ValueError("route_metadata is required for grouped dispatch")
             route_metadata = expert_ids.reshape(-1)[:1]
         expected_metadata = (
-            _route_metadata_size(
-                self.num_experts, self.num_tokens * self.top_k, self.group_capacity
-            )
+            _route_metadata_size(self.num_experts, self.num_tokens * self.top_k, self.num_tokens)
             if self.dispatch_mode == "grouped"
             else 1
         )

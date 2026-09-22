@@ -237,11 +237,13 @@ class TestFusedMoEExpertsFwdOp:
         assert experts._indexed_mlp.eval_roofline()[1] == expected
 
     @pytest.mark.smoke
-    @pytest.mark.parametrize("num_tokens,indexed", [(32, True), (64, False)])
-    def test_indexed_path_ends_at_32_tokens(self, num_tokens, indexed):
-        """Regression: 64 tokens on the DeepSeek-V3 shape used to take the indexed path."""
+    @pytest.mark.parametrize(
+        "num_tokens,num_experts,indexed",
+        [(64, 256, True), (65, 256, False), (40, 160, True), (41, 160, False)],
+    )
+    def test_indexed_path_ends_at_two_routes_per_expert(self, num_tokens, num_experts, indexed):
         experts = FusedMoEExpertsFwdOp(
-            num_tokens=num_tokens, num_experts=256, top_k=8, hidden_size=7168, ffn_size=2048
+            num_tokens=num_tokens, num_experts=num_experts, top_k=8, hidden_size=7168, ffn_size=2048
         )
         assert (experts._indexed_mlp is not None) is indexed
 

@@ -93,9 +93,10 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
             activation == "silu_and_mul"
             and hidden_size % 128 == 0
             and ffn_size % 256 == 0
-            # The indexed path re-reads an expert's weights once per route block, so
-            # past 32 tokens the contiguous path wins on every measured model.
-            and num_tokens <= 32
+            # The indexed path reads an expert's weights once per 16 routes, so its cost
+            # grows with routes per expert; up to two per expert it beats the contiguous
+            # path on every measured model, past that the re-reads outweigh its lead.
+            and num_tokens * top_k <= 2 * num_experts
         )
         self._indexed_mlp = (
             IndexedExpertMLPFwdOp(
