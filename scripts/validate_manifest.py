@@ -1827,9 +1827,17 @@ def check_roofline_synthesis(op_name: str, entry: dict) -> list[str]:
     """
     if _is_spec_only(entry) or not isinstance(entry.get("roofline"), dict):
         return []
+    # check_l0 owns the shape of these; codegen rejects them too, and reporting
+    # both says one defect twice.
     sig = entry.get("signature")
-    if sig is not None and not isinstance(sig, dict):
-        return []  # check_l0 reports the container; codegen would say it twice
+    if sig is not None:
+        if not isinstance(sig, dict):
+            return []
+        if any(
+            sig.get(block) is not None and not isinstance(sig.get(block), dict)
+            for block in ("inputs", "outputs", "params")
+        ):
+            return []
     try:
         from tileops.ops._roofline_codegen import synthesize_eval_roofline
     except Exception as exc:  # noqa: BLE001 - importing codegen runs its module body

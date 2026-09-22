@@ -784,10 +784,21 @@ def synthesize_eval_roofline(
         raise ValueError(
             f"{op_name}: manifest roofline is missing or empty; cannot synthesize eval_roofline"
         )
-    if signature is not None and not isinstance(signature, dict):
-        raise ValueError(
-            f"{op_name}: manifest signature must be a mapping, got {type(signature).__name__}"
-        )
+    if signature is not None:
+        if not isinstance(signature, dict):
+            raise ValueError(
+                f"{op_name}: manifest signature must be a mapping, got {type(signature).__name__}"
+            )
+        # Read below to name tensors and params and to find the single output.
+        # A non-mapping reads as empty rather than as absent, which would make
+        # an undeclared name look declared.
+        for block in ("inputs", "outputs", "params"):
+            value = signature.get(block)
+            if value is not None and not isinstance(value, dict):
+                raise ValueError(
+                    f"{op_name}: manifest signature.{block} must be a mapping, got "
+                    f"{type(value).__name__}"
+                )
     has_func = "func" in roofline
     has_inline = "flops" in roofline or "bytes" in roofline or "vars" in roofline
     if has_func and has_inline:

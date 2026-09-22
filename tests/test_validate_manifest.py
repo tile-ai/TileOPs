@@ -4350,11 +4350,14 @@ class TestRooflineSynthesisReported:
         assert any(other_error in e for e in errors), errors
         assert any("unknown name 'NOPE'" in e for e in errors), errors
 
-    def test_a_malformed_signature_is_reported_not_raised(self, validator, tmp_path):
+    @pytest.mark.parametrize("signature", ["not a mapping", {"inputs": 5}], ids=["whole", "nested"])
+    def test_a_malformed_signature_is_reported_once(self, validator, tmp_path, signature):
+        """check_l0 owns the container; codegen must not say the same thing again."""
         entry = _make_entry(status="implemented", kernel_map={})
-        entry["signature"] = "not a mapping"
+        entry["signature"] = signature
         errors, _ = self._run(validator, self._tree(tmp_path), entry)
-        assert any("signature must be a mapping" in e for e in errors), errors
+        assert any("signature" in e and "must be a" in e for e in errors), errors
+        assert sum("must be a mapping" in e or "must be a dict" in e for e in errors) == 1, errors
 
     def test_a_raising_synthesis_is_reported_not_propagated(self, validator, monkeypatch):
         """Anything but ValueError is a defect in what the formula reaches."""

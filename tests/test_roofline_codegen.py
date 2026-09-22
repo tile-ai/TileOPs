@@ -135,6 +135,27 @@ class TestTotalContract:
                 signature="not a mapping",
             )
 
+    @pytest.mark.parametrize("block", ["inputs", "outputs", "params"])
+    def test_a_non_mapping_signature_block_is_a_verdict(self, block):
+        """A non-mapping reads as empty, which would make a name look declared."""
+        from tileops.ops._roofline_codegen import synthesize_eval_roofline
+
+        signature = {"inputs": {}, block: 5}
+        with pytest.raises(ValueError, match=f"signature.{block} must be a mapping"):
+            synthesize_eval_roofline(
+                "FakeOp", roofline={"flops": "1", "bytes": "1"}, signature=signature
+            )
+
+    def test_mixing_both_modes_is_a_verdict(self):
+        from tileops.ops._roofline_codegen import synthesize_eval_roofline
+
+        with pytest.raises(ValueError, match="cannot mix func and inline"):
+            synthesize_eval_roofline(
+                "FakeOp",
+                roofline={"func": "tileops.perf.formulas.fused_moe_fwd_bytes", "flops": "1"},
+                signature=None,
+            )
+
     def test_a_raising_func_attribute_is_a_verdict(self):
         import sys
         import types
