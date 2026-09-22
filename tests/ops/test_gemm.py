@@ -20,6 +20,7 @@ from tileops.kernels.gemm.heuristics import (
     small_batch_config,
     small_m_splitk_config,
 )
+from tileops.kernels.gemm.w4a16 import _stage_meta_per_tile
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import (
     GemmFp8Workload,
@@ -1108,17 +1109,60 @@ def test_gemm_cp_async_kernel_k_tail_padding() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("m", [100, 257])
+def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
+    test = GemmW4A16Test(m, 1024, 512, torch.float16)
+    activation, prepacked, scale, zero = test.gen_inputs()
+    kernel = GemmW4A16Kernel(m, 1024, 512, torch.float16)
+    torch.testing.assert_close(
+        kernel(activation, prepacked, scale, zero),
+        test.ref_program(activation, prepacked, scale, zero),
+        atol=7e-2,
+        rtol=5e-2,
+    )
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
+    groups_at_crossover = 256  # 64 rows * 256 groups * 3 bytes = 48 KiB.
+    assert not _stage_meta_per_tile(128, 512, 64, groups_at_crossover)
+    assert _stage_meta_per_tile(128, 512, 64, groups_at_crossover + 1)
+    assert not _stage_meta_per_tile(256, 512, 64, groups_at_crossover + 1)
+
+    test = GemmW4A16Test(1, 64, 32896, torch.float16)
+    activation, prepacked, scale, zero = test.gen_inputs()
+    kernel = GemmW4A16Kernel(1, 64, 32896, torch.float16)
+    assert _stage_meta_per_tile(
+        kernel.config["threads"], kernel.config["block_k"], 64, 32896 // 128
+    )
+    torch.testing.assert_close(
+        kernel(activation, prepacked, scale, zero),
+        test.ref_program(activation, prepacked, scale, zero),
+        atol=7e-2,
+        rtol=5e-2,
+    )
+
+
+@pytest.mark.smoke
 def test_gemm_w4a16_slices_k_only_where_the_grid_underfills() -> None:
     assert GemmW4A16Kernel(1, 1024, 8192, torch.float16).config["split_k"] > 1
     assert GemmW4A16Kernel(1, 8192, 8192, torch.float16).config["split_k"] == 1
 
 
 @pytest.mark.smoke
-def test_gemm_w4a16_sliced_k_matches_the_reference() -> None:
+@pytest.mark.parametrize("split_k", [2, 8])
+def test_gemm_w4a16_sliced_k_matches_the_reference(split_k: int) -> None:
+    """The fp32 partials reduce to what the whole K loop computes."""
     test = GemmW4A16Test(1, 1024, 8192, torch.float16)
     activation, prepacked, scale, zero = test.gen_inputs()
-    kernel = GemmW4A16Kernel(1, 1024, 8192, torch.float16)
-    assert kernel.config["split_k"] > 1
+    base = GemmW4A16Kernel(1, 1024, 8192, torch.float16).config
+    kernel = GemmW4A16Kernel(
+        1,
+        1024,
+        8192,
+        torch.float16,
+        config={**base, "block_k": 256, "num_stages": 4, "split_k": split_k},
+    )
     torch.testing.assert_close(
         kernel(activation, prepacked, scale, zero),
         test.ref_program(activation, prepacked, scale, zero),
@@ -1178,8 +1222,9 @@ def test_repack_w4a16_weight_permutes_nibbles_inside_a_step() -> None:
 
 
 @pytest.mark.smoke
-def test_w4a16_repack_kernel_matches_the_reference() -> None:
-    n, k = 64, 256
+@pytest.mark.parametrize(("n", "k"), [(64, 256), (1024, 512)])
+def test_w4a16_repack_kernel_matches_the_reference(n: int, k: int) -> None:
+    """The kernel and the tensor-expression repack agree bit for bit."""
     packed = torch.randint(0, 256, (n, k // 2), dtype=torch.uint8, device="cuda")
 
     actual = W4A16RepackKernel(n, k // 2)(packed)
