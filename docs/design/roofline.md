@@ -126,7 +126,7 @@ Every roofline entry MUST satisfy:
 - Field types: `flops`/`bytes`/`func` are non-empty strings; `vars` is a mapping of str → non-empty str.
 - `read_bound_exception`, where present, is a mapping of `when` and `reason`, both non-empty strings. `when` joins names, negated names and comparisons of names against literals with `and` or `or`, over params, the workload keys stating what the call does, and `dtype`. Every clause, at every depth, must read the call, so none can settle the condition on its own — that would waive every call of the op (§4.5).
 - `func` dotted path resolves at import time.
-- An implemented entry's formula synthesizes. The validator does not judge the formula: it asks codegen and reports the refusal.
+- An implemented entry's formula synthesizes. The validator does not judge the formula: it asks codegen and reports the refusal. Codegen answers every entry with a verdict, so this stays a data check and needs no runtime.
 
 Rules the validator does not own:
 
@@ -170,6 +170,8 @@ Physics check: every row's implied rates (`bytes / time`, `flops / time`) are co
 Codegen runs for `status: implemented` entries only. `spec-only` entries — where either the implementation does not exist or the Op interface does not yet match the manifest — are skipped; codegen re-evaluates them once the status flips.
 
 Codegen is the authoritative gate for name and form correctness. A formula referencing an unknown name or violating a layer's form constraints fails codegen; a manifest that fails codegen cannot land. Numeric correctness is exercised by tests, not codegen.
+
+The gate answers every entry it is handed: a malformed block is a verdict, not an exception for the caller to classify. Deciding the answer reads the entry and nothing else — no op instance, no tensor library, no device — which is what lets the validator (§4.1) ask the question wherever the manifest can be read.
 
 #### 4.4.1 Generated Method
 
