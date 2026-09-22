@@ -950,13 +950,9 @@ def test_coop2_epilogue_staging_matches_reference(
 ) -> None:
     """Shape coverage: the coop2 epilogue over one, two and four staging tiles.
 
-    A ``block_n``-wide output tile always leaves as ``block_n / stage_n`` slices; what
-    ``stage_buf`` sets is how many of them are in flight, from one (each TMA store waited
-    on before the next slice is written) to all four (none waited on within a tile). Four
-    tiles only fit alongside a three-deep mainloop ring, which is why the depth moves with
-    the count. 176 is not a whole number of swizzle atoms, so it stages the whole tile
-    through one buffer, and 3072 is not a multiple of it, so its last column of tiles is
-    ragged.
+    Four tiles only fit beside a three-deep ring. 176 is not a whole number of swizzle
+    atoms, so it stages the whole tile once, and 3072 is not a multiple of it, so its
+    last column of tiles is ragged.
     """
     m, n, k = 1536, 3072, 256
     test = GemmTest(m, n, k, torch.bfloat16, False, True)
@@ -1000,11 +996,9 @@ def test_pingpong_staging_matches_reference(
 ) -> None:
     """Shape coverage: the ping-pong epilogue at its shipped staging and three others.
 
-    ``stage_n`` only has to be a TMA-legal divisor of ``block_n`` and ``stage_buf``
-    sets how many slices are in flight, including one (every store waited on) and a
-    count that does not divide the eleven slices of 176. 2080 is not a multiple of
-    176 and 4000 not of 128, so the last row and column of tiles are ragged and store
-    through TMA's clipping.
+    The count includes one tile and one that does not divide the eleven slices of 176;
+    2080 is not a multiple of 176 and 4000 not of 128, so the tail tiles store through
+    TMA's clipping.
     """
     m, n, k = 4000, 2080, 256
     test = GemmTest(m, n, k, torch.bfloat16, False, True)
@@ -1031,12 +1025,9 @@ def test_pingpong_staging_matches_reference(
 
 @pytest.mark.smoke
 def test_pingpong_refuses_a_grid_its_second_consumer_cannot_share() -> None:
-    """A grid of at most ``sm_count`` tiles gives the odd consumer nothing to do.
-
-    TileLang then proves its TMA store dead and rejects the build with a message
-    naming no shape; the builder refuses first, and the selector never offers
-    ping-pong below two tiles per CTA.
-    """
+    """A grid of at most ``sm_count`` tiles leaves the odd consumer idle: the builder
+    refuses before TileLang rejects its dead TMA store, and the selector never offers
+    ping-pong below two tiles per CTA."""
     build = _gemm_pingpong_kernel(1024, 2112, 256, False, True, "bfloat16", sm_count=132)
     with pytest.raises(ValueError, match="more than 132 tiles"):
         build(176, 64, 5, 16, 16)

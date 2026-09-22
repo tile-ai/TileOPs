@@ -36,9 +36,7 @@ __all__ = [
 _CONSUMER_BAR_WG0 = 8
 _CONSUMER_BAR_WG1 = 9
 
-# Columns in one 128-byte swizzle atom at this family's 2-byte activation dtype,
-# and so the width of one coop2 epilogue staging tile. Mirrors
-# ``heuristics._SWIZZLE_ATOM_N``, which is what picks the config.
+# Columns in one 128-byte swizzle atom at 2 bytes per element; ``heuristics._SWIZZLE_ATOM_N``.
 _COOP2_STAGE_N = 64
 
 # Fixed by the two-consumer split and by the block128 scale grid; not tunable.
@@ -1795,15 +1793,10 @@ def _gemm_coop2_kernel(
     (``group_size_m``) keeps concurrently-resident CTAs on a shared ``B`` column
     stripe for L2 reuse.
 
-    The epilogue carries across tiles the same way. Each consumer leaves its
-    output tile as ``block_n / stage_n`` slices through ``stage_buf`` staging
-    tiles in turn, waiting only until ``stage_buf - 1`` stores are still in
-    flight — so a slice's store runs while the next is written, and the last
-    slice of a tile stores through the next tile's whole mainloop. Waiting on
-    every store instead (``stage_buf = 1``) is what the measured 4.2k cycles per
-    tile of exposed epilogue was mostly made of. Each consumer drains at the end
-    of its persistent loop: a store still reading a staging tile when the CTA
-    exits would be reading shared memory the device has already handed on.
+    The epilogue carries across tiles the same way: each consumer stores its tile
+    as ``block_n / stage_n`` slices through ``stage_buf`` rotating staging tiles,
+    waiting only until ``stage_buf - 1`` stores are in flight, and drains once at
+    the end of its persistent loop so no store still reads shared memory at exit.
 
     NT only (``A[m,k] @ B[n,k]ᵀ``): the split-A layout and shared ``B`` ring are
     specific to a non-transposed ``A`` and transposed ``B``. Other layouts fall
@@ -1846,30 +1839,18 @@ def _gemm_coop2_kernel(
         half_m = block_m // 2
         b_evict = _b_eviction(m, block_m)
         nr = (half_m * block_n) // 128
-        if stage_n > 0:
-            sn = stage_n
-        elif block_n % _COOP2_STAGE_N == 0:
-            sn = _COOP2_STAGE_N
-        else:
-            sn = block_n
+        sn = stage_n or (_COOP2_STAGE_N if block_n % _COOP2_STAGE_N == 0 else block_n)
         if block_n % sn:
             raise ValueError(f"coop2 stage_n must divide block_n={block_n}, got {stage_n}")
         n_chunks = block_n // sn
-        nbuf = n_chunks if stage_buf <= 0 else stage_buf
+        nbuf = stage_buf or n_chunks
         if sn != _COOP2_STAGE_N and nbuf != 1:
             raise ValueError(
-                f"coop2 stage_n must be {_COOP2_STAGE_N} when staging tiles are stacked "
-                f"(stage_buf={nbuf}), got {sn}: a row sub-range of a swizzled tile is a "
-                "valid TMA box only while the tile is one 128-byte swizzle atom wide. Two "
-                "atoms interleave across the row group and the slice stops being a "
-                "bijection. A single buffer is never sliced, so any width goes."
+                f"coop2 stage_n must be {_COOP2_STAGE_N} to row-stack {nbuf} staging tiles "
+                f"into valid TMA boxes, got {sn}"
             )
         if n_chunks % nbuf:
-            raise ValueError(
-                f"coop2 stage_buf must divide the {n_chunks} epilogue slices, got {stage_buf}: "
-                "the slice counter restarts at every tile, so a count that does not divide "
-                "them reuses a buffer while its store is still outstanding."
-            )
+            raise ValueError(f"coop2 stage_buf must divide the {n_chunks} slices, got {stage_buf}")
         num_pid_m = -(-m // block_m)
         num_pid_n = -(-n // block_n)
         total_tiles = num_pid_m * num_pid_n
@@ -2078,30 +2059,19 @@ def _gemm_pingpong_kernel(
 ) -> Callable:
     """Ping-pong GEMM (NT): two consumer warpgroups on alternate tiles, one at a time.
 
-    Same producer / ring as ``_gemm_coop2_kernel``, but each consumer holds a whole
-    ``128 x block_n`` accumulator and the two take turns: consumer 0 runs the
-    even persistent-loop iterations, consumer 1 the odd ones, and a consumer's
-    mainloop may start only once the other has issued its last WGMMA (``go``
-    barriers). One consumer's epilogue therefore runs entirely under the other's
-    mainloop, and the tensor core never waits for a store. In coop2 both
-    consumers finish a tile together and idle it for the whole epilogue, a fixed
-    3-5k cycles per tile that is 9-18% of a 32-iteration mainloop.
+    Same producer and ring as ``_gemm_coop2_kernel``, but each consumer holds a whole
+    ``128 x block_n`` accumulator and takes every other persistent-loop tile. A
+    consumer's mainloop starts only once the other has issued its last WGMMA (the
+    ``go`` barriers), so one consumer's epilogue runs under the other's mainloop and
+    the tensor core never waits for a store; coop2's consumers finish a tile together
+    and idle it for 3-5k cycles per tile. The handshake is also what keeps the ring's
+    parity waits sound: a consumer two phases ahead reads the older phase as complete.
 
-    The strict alternation also keeps the ring's parity waits sound: a consumer
-    waiting two phases ahead of the barrier would read the older phase as
-    complete. That is what happens without the ``go`` handshake, and it corrupts
-    the arrival counts.
-
-    ``B`` is not shared between the consumers (each tile is one consumer's), so the
-    natural tile is narrower than coop2's: 176 wide lands ``2112 = 12 x 176`` and
-    the same 128x176 tiling cuBLASLt's best Hopper kernel uses. The epilogue
-    stages ``stage_n``-column slices through ``stage_buf`` staging tiles per
-    consumer, rotating so a slice waits only for the store that used its tile
-    ``stage_buf`` slices ago. Hidden epilogues do not care, but each CTA's last
-    one is exposed, and with a single tile it serialised eleven store round
-    trips: 2.9k cycles per launch, the whole intercept gap to cuBLASLt. TMA
-    stores clip at the tensor bounds, so M / N tail tiles take the same path as
-    full ones; the scalar tail of coop2 would not hide.
+    Each tile is one consumer's, so ``B`` is not shared and the tile is narrower than
+    coop2's; 176 is the tiling cuBLASLt's best Hopper kernel uses. The epilogue
+    rotates ``stage_buf`` staging tiles of ``stage_n`` columns, waiting only for the
+    store that used the same tile ``stage_buf`` slices ago, and M / N tail tiles store
+    through TMA's bounds clipping.
 
     Args:
         m: Rows of ``A`` / ``C``.
@@ -2120,16 +2090,13 @@ def _gemm_pingpong_kernel(
 
     Raises:
         ValueError: Not NT, ``n % 8``, a ``stage_n`` that is not a multiple of 8
-            dividing ``block_n``, or a grid of at most ``sm_count`` tiles, which
-            leaves the second consumer provably idle and TileLang's copy analysis
-            then rejects its TMA store.
+            dividing ``block_n``, or a grid of at most ``sm_count`` tiles, which leaves
+            the second consumer provably idle and TileLang then rejects its TMA store.
     """
     if trans_a or not trans_b:
         raise ValueError("_gemm_pingpong_kernel is NT-only (trans_a=False, trans_b=True)")
     if n % 8:
-        raise ValueError(
-            f"_gemm_pingpong_kernel stores C through TMA, which needs n % 8 == 0, got n={n}"
-        )
+        raise ValueError(f"_gemm_pingpong_kernel stores C through TMA, needs n % 8 == 0, got {n}")
     accum_dtype = "float"
     block_m = 128
 
@@ -2161,8 +2128,7 @@ def _gemm_pingpong_kernel(
         total_tiles = num_pid_m * num_pid_n
         if total_tiles <= sm_count:
             raise ValueError(
-                f"pingpong needs more than {sm_count} tiles so both consumers have work, "
-                f"got {total_tiles} at block_n={block_n}; use coop2 for this grid"
+                f"pingpong needs more than {sm_count} tiles, got {total_tiles} at block_n={block_n}"
             )
         max_waves = -(-total_tiles // sm_count) + 1
         k_iters = T.ceildiv(k, block_k)
@@ -2177,22 +2143,11 @@ def _gemm_pingpong_kernel(
             nt[0] = (flat_id % gin) // gsize
 
         @T.macro
-        def consumer(
-            parity,
-            c_local,
-            c_smem,
-            bar_id,
-            pid,
-            mt,
-            nt,
-            a_smem,
-            b_smem,
-            ab_full,
-            ab_empty,
-            go,
-            ps,
-            c,
-        ):
+        def consumer(parity, c_local, c_smem, pid, a_smem, b_smem, ab_full, ab_empty, go, c):
+            bar_id = _CONSUMER_BAR_WG0 + parity
+            ps = T.alloc_local((1,), "int32")
+            mt = T.alloc_local((1,), "int32")
+            nt = T.alloc_local((1,), "int32")
             for w in T.serial(max_waves):
                 flat_id = T.int32(sm_count) * w + pid
                 if (w % 2 == parity) and (flat_id < total_tiles):
@@ -2261,8 +2216,6 @@ def _gemm_pingpong_kernel(
                 go = T.alloc_barrier([128, 128])
 
                 gi_prod = T.alloc_var("int32", init=0)
-                ps0 = T.alloc_local((1,), "int32")
-                ps1 = T.alloc_local((1,), "int32")
                 mt = T.alloc_local((1,), "int32")
                 nt = T.alloc_local((1,), "int32")
 
@@ -2295,40 +2248,10 @@ def _gemm_pingpong_kernel(
                                 gi_prod = gi_prod + 1
                 elif tx < 256:
                     T.inc_max_nreg(240)
-                    consumer(
-                        0,
-                        c_local_0,
-                        c_smem_0,
-                        _CONSUMER_BAR_WG0,
-                        pid,
-                        mt,
-                        nt,
-                        a_smem,
-                        b_smem,
-                        ab_full,
-                        ab_empty,
-                        go,
-                        ps0,
-                        c,
-                    )
+                    consumer(0, c_local_0, c_smem_0, pid, a_smem, b_smem, ab_full, ab_empty, go, c)
                 else:
                     T.inc_max_nreg(240)
-                    consumer(
-                        1,
-                        c_local_1,
-                        c_smem_1,
-                        _CONSUMER_BAR_WG1,
-                        pid,
-                        mt,
-                        nt,
-                        a_smem,
-                        b_smem,
-                        ab_full,
-                        ab_empty,
-                        go,
-                        ps1,
-                        c,
-                    )
+                    consumer(1, c_local_1, c_smem_1, pid, a_smem, b_smem, ab_full, ab_empty, go, c)
 
         return _gemm_pingpong_main
 

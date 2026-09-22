@@ -61,10 +61,7 @@ _MAX_ACCUM_REGS = 200
 
 TINY_M_BLOCK_N = 128
 
-# Columns in one 128-byte swizzle atom at this family's 2-byte activation dtype.
-# Staging tiles stacked along rows must be exactly this wide for a row sub-range
-# to stay a valid TMA box; a block_n that is not a whole number of atoms gets one
-# full-width tile instead and waits on every store.
+# Columns in one 128-byte swizzle atom at 2 bytes per element.
 _SWIZZLE_ATOM_N = 64
 
 # Shortest K slice the FP8 split-K path pays for.
@@ -116,10 +113,7 @@ _CALIBRATIONS = {
             ("coop2", 525.0),
             ("coop2s", 600.0),
             ("coop2_splitk", 525.0),
-            # Hides its epilogue under the other consumer's mainloop, so it runs
-            # 2-10% faster than coop2 at equal tile efficiency; the constant is set
-            # where the ranking matches the measured winners (4096x4096x7168 stays
-            # on coop2's exact 256 tiling, the DeepSeek-V3 prefill rows move).
+            # Fitted so 4096x4096x7168 stays on coop2/256 and the DeepSeek-V3 prefill rows move.
             ("pingpong", 555.0),
             ("simple", 500.0),
             ("splitk", 420.0),
@@ -221,17 +215,10 @@ def _ns_basic(bm: int, bn: int, bk: int) -> int:
 def _coop2_stage_plan(bn: int, bk: int):
     """``(num_stages, stage_n, stage_buf)``, or ``None`` for a ``bn`` that does not fit.
 
-    A staging tile has to be exactly one swizzle atom wide for its row sub-range to stay
-    a valid TMA box, so ``stage_n`` is never a choice. What is a choice is how many of
-    them each consumer gets: the epilogue cycles them so a slice's TMA store is still in
-    flight while the next slice is written, and one more buffer is one less store the
-    consumer waits on. The mainloop ring outranks that -- it is sized first, to the
-    ``_NS_CAP`` depth a two-buffer epilogue leaves room for -- and the buffers then take
-    what is left, down to the largest count that still divides the slices evenly.
-
-    A ``bn`` that is not a whole number of atoms (176) cannot be sliced, so it stages
-    the whole tile through one buffer. That epilogue is the slow one, and the tile
-    still wins where it lands the grid on a full last wave that 192 and 256 miss.
+    The ring is sized first, to the ``_NS_CAP`` depth two atom-wide staging tiles per
+    consumer leave room for; the tiles then take what is left, down to the largest
+    count dividing the slices. A ``bn`` that is not a whole number of atoms cannot be
+    row-stacked into valid TMA boxes and stages the whole tile through one buffer.
     """
     ring = (128 + bn) * bk * 2
     if bn % _SWIZZLE_ATOM_N:
@@ -263,34 +250,24 @@ def _wide_wgmma_n() -> bool:
     return hasattr(wgmma_macro_generator, "select_wgmma_inst_n")
 
 
-def _coop2_block_ns() -> tuple:
-    """The coop2 ``block_n`` candidates.
-
-    2112 = 12 x 176, so on the DeepSeek-V3 gate-up width the 176 tile lands 384 CTAs on
-    132 SMs (last wave 91% full) where 192 lands 352 (67%): measured 0.867 -> 0.986 of
-    cuBLASLt's own 176-wide kernel on 4096x2112x7168.
-    """
-    return (64, 128, 176, 192, 256) if _wide_wgmma_n() else (64, 128, 192, 256)
-
-
 def _pingpong_stage_plan(bn: int, bk: int):
     """``(num_stages, stage_n, stage_buf)`` for a ping-pong tile, or ``None`` if none fits.
 
-    The ring takes the SMEM first: the deepest under ``_NS_CAP`` that still leaves
-    room for two staging tiles per consumer, then the widest TMA-legal slice that
-    fits beside them. Two tiles rather than one because each CTA's last epilogue is
-    the one nothing hides, and with one tile it waited on every store. 176 lands
-    five stages with 16-column slices; 128 lands six with 32.
+    The deepest ring under ``_NS_CAP`` that leaves room for two staging tiles per
+    consumer, then the widest TMA-legal slice beside them: 176 lands five stages with
+    16-column slices, 128 six with 32.
     """
     ring = (128 + bn) * bk * 2
     for ns in range(_NS_CAP["pingpong"], 2, -1):
         room = _SMEM_BUDGET - ns * ring
-        widths = (
-            sn
-            for sn in range(bn, 0, -_PINGPONG_SLICE_STEP)
-            if bn % sn == 0 and 2 * _PINGPONG_STAGE_BUF * 128 * sn * 2 <= room
+        sn = next(
+            (
+                sn
+                for sn in range(bn, 0, -_PINGPONG_SLICE_STEP)
+                if bn % sn == 0 and 2 * _PINGPONG_STAGE_BUF * 128 * sn * 2 <= room
+            ),
+            None,
         )
-        sn = next(widths, None)
         if sn is not None:
             return ns, sn, _PINGPONG_STAGE_BUF
     return None
@@ -352,7 +329,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                             cluster_m=cluster_m,
                         )
                     )
-        for bn in _coop2_block_ns():
+        for bn in (64, 128, 176, 192, 256) if _wide_wgmma_n() else (64, 128, 192, 256):
             for bk in (32, 64, 128):
                 d = _coop2_stage_plan(bn, bk)
                 if d is None:
@@ -370,16 +347,10 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                     for sk in (2, 4, 8):
                         if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= sm_count:
                             out.append(_Cand("coop2_splitk", 128, bn, bk, ns_sk, split_k=sk))
-        # Ping-pong needs a second tile per CTA for its second consumer, and stores
-        # C through TMA, which addresses n in 16-byte units.
-        if _wide_wgmma_n() and n % 8 == 0:
-            for bn in (176,):
-                plan = _pingpong_stage_plan(bn, 64)
-                if plan is None:
-                    continue
-                ns, sn, buf = plan
-                if math.ceil(m / 128) * math.ceil(n / bn) >= 2 * sm_count:
-                    out.append(_Cand("pingpong", 128, bn, 64, ns, stage_n=sn, stage_buf=buf))
+        plan = _pingpong_stage_plan(176, 64) if _wide_wgmma_n() else None
+        if plan and n % 8 == 0 and math.ceil(m / 128) * math.ceil(n / 176) >= 2 * sm_count:
+            ns, sn, buf = plan
+            out.append(_Cand("pingpong", 128, 176, 64, ns, stage_n=sn, stage_buf=buf))
     return out
 
 
