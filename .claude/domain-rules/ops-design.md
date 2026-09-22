@@ -22,7 +22,7 @@
 
 - PyTorch fallback at forward time is permitted only when TileLang cannot express the operation at the required shape AND no closed-form replacement exists in tensor primitives; document the call site with the blocking limitation and a tracking issue. Helper conveniences (`x.float().mean(...)` for clarity) are out of scope — the rule targets full-operator delegation.
 
-- Inline roofline state contract: for every `signature.inputs` / `signature.params` name **referenced** by the op's manifest `roofline` expressions, the op exposes it on `self`. Inputs: `self.<input>` with `.shape` and `.ndim`, OR `self.<input>_shape` as a shape tuple/list. Params: `self.<param>`. Unreferenced names need not be exposed. See [docs/design/roofline.md §4.4.3](../../docs/design/roofline.md).
+- Inline roofline state contract: for every `signature.inputs` / `signature.params` name **referenced** by the op's manifest `roofline` expressions, the op exposes it on `self`. Inputs: `self.<input>` with `.shape` and `.ndim`, OR `self.<input>_shape` as a shape tuple/list. Params: `self.<param>`. Unreferenced names need not be exposed. See [docs/design/roofline.md §4.4.1](../../docs/design/roofline.md).
 
 - Dynamo-traced `forward` MUST NOT construct a `Kernel` or enter a TileLang builder; call-time kernel resolution goes through the compile dispatch boundary. See [ops-design.md](../../docs/design/ops-design.md#compile-dispatch-boundary).
 
