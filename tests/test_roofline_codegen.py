@@ -146,6 +146,18 @@ class TestTotalContract:
                 "FakeOp", roofline={"flops": "1", "bytes": "1"}, signature=signature
             )
 
+    @pytest.mark.parametrize("bad", [[], "", False, 0, ["a"]], ids=repr)
+    def test_a_non_mapping_vars_is_a_verdict(self, bad):
+        """A falsey one must not read as an absent one."""
+        from tileops.ops._roofline_codegen import synthesize_eval_roofline
+
+        with pytest.raises(ValueError, match="roofline.vars must be a mapping"):
+            synthesize_eval_roofline(
+                "FakeOp",
+                roofline={"vars": bad, "flops": "1", "bytes": "1"},
+                signature={"inputs": {"x": {"dtype": "float16"}}},
+            )
+
     def test_mixing_both_modes_is_a_verdict(self):
         from tileops.ops._roofline_codegen import synthesize_eval_roofline
 

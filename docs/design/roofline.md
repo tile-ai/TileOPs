@@ -170,7 +170,14 @@ Codegen runs for `status: implemented` entries only. `spec-only` entries — whe
 
 Codegen is the authoritative gate for name and form correctness. A formula referencing an unknown name or violating a layer's form constraints fails codegen; a manifest that fails codegen cannot land. Numeric correctness is exercised by tests, not codegen.
 
-The gate answers with a verdict for every `roofline` and `signature` block it is handed, whatever shape they are in. A caller reports what it raises and classifies nothing.
+The two gates divide by question, not by field. §4.1 rules on whether the blocks are structurally
+what the spec says; codegen rules on whether the formula is legal. Neither withholds its answer because the
+other has one, so a formula defect is reported however the rest of the entry reads: a precondition
+wide enough to suppress the overlap also suppresses a defect that merely sits beside an unrelated
+one. The exception is a signature too malformed to say what names the formula may use, where the
+structural verdict is the only one there is.
+
+Codegen states a rejection as a verdict rather than leaving a caller to classify an exception.
 
 An inline entry is decided from the entry alone — no op instance, no tensor library, no device — which is what lets the validator (§4.1) ask the question wherever the manifest can be read. A `func` entry additionally imports the module its path names, so what that module needs at import, deciding the entry needs too. A formula callable that pulls a runtime into an import therefore costs the manifest a check it could otherwise run anywhere.
 

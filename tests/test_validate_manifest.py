@@ -251,6 +251,13 @@ class TestSchema:
         errors = validator.check_l0("bad_op", 123)
         assert any("must be a mapping" in e for e in errors)
 
+    @pytest.mark.parametrize("dtype", [{"junk": [1]}, 5, ["float16"]], ids=["dict", "int", "list"])
+    def test_non_string_dtype_rejected(self, validator, dtype):
+        """The dtype level splits this declaration; a non-string raised there."""
+        entry = _make_entry(outputs={"y": {"dtype": dtype}})
+        errors = validator.check_l0("my_op", entry, all_op_names=["my_op"])
+        assert any("outputs.y.dtype must be a string" in e for e in errors), errors
+
     def test_missing_or_mistyped_fields_rejected(self, validator):
         """Case table: each row mutates one field and pins its schema branch."""
 
@@ -4333,31 +4340,26 @@ class TestRooflineSynthesisReported:
         assert any("forbidden construct Subscript" in e for e in errors), errors
 
     @pytest.mark.parametrize(
-        "break_field, other_error",
+        "break_field",
         [
-            (lambda e: e["source"].update(op="gone.py"), "source.op is not a file"),
-            (lambda e: e.update(workloads="not a list"), "workloads must be a list"),
+            lambda e: e["signature"].update(shape_rules=["y.shape ==== x.shape"]),
+            lambda e: e.update(workloads="not a list"),
+            lambda e: e["source"].update(op="gone.py"),
+            lambda e: e["signature"]["inputs"].update(z="not a dict"),
         ],
-        ids=["source", "workloads"],
+        ids=["shape_rules", "workloads", "source", "input-decl"],
     )
-    def test_another_broken_field_does_not_hide_the_formula(
-        self, validator, tmp_path, break_field, other_error
-    ):
+    def test_no_other_broken_field_suppresses_the_formula(self, validator, tmp_path, break_field):
+        """The verdict must not depend on the rest of the entry being clean.
+
+        Any precondition wide enough to stop a malformed block being reported
+        twice also hides a formula defect sitting beside an unrelated one.
+        """
         entry = _make_entry(status="implemented", kernel_map={})
         entry["roofline"]["flops"] = "NOPE * 2"
         break_field(entry)
         errors, _ = self._run(validator, self._tree(tmp_path), entry)
-        assert any(other_error in e for e in errors), errors
         assert any("unknown name 'NOPE'" in e for e in errors), errors
-
-    @pytest.mark.parametrize("signature", ["not a mapping", {"inputs": 5}], ids=["whole", "nested"])
-    def test_a_malformed_signature_is_reported_once(self, validator, tmp_path, signature):
-        """check_l0 owns the container; codegen must not say the same thing again."""
-        entry = _make_entry(status="implemented", kernel_map={})
-        entry["signature"] = signature
-        errors, _ = self._run(validator, self._tree(tmp_path), entry)
-        assert any("signature" in e and "must be a" in e for e in errors), errors
-        assert sum("must be a mapping" in e or "must be a dict" in e for e in errors) == 1, errors
 
     def test_a_raising_synthesis_is_reported_not_propagated(self, validator, monkeypatch):
         """Anything but ValueError is a defect in what the formula reaches."""

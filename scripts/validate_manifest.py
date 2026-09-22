@@ -346,6 +346,11 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
                 continue
             if "dtype" not in attrs:
                 err(f"{direction}.{tname} missing 'dtype'")
+            elif not isinstance(attrs["dtype"], str):
+                err(
+                    f"{direction}.{tname}.dtype must be a string, got "
+                    f"{type(attrs['dtype']).__name__}"
+                )
             # ``nullable`` says the return position exists but may hold None.
             # On an input that role belongs to ``optional``, and accepting both
             # spellings there would leave two ways to say one thing.
@@ -1820,24 +1825,15 @@ def check_roofline_synthesis(op_name: str, entry: dict) -> list[str]:
     (``docs/design/roofline.md`` §4.1) and is the only place naming the illegal
     name or construct; this reports what it raises and mirrors no rule.
 
-    Reads the ``roofline`` and ``signature`` blocks and nothing else, so no
-    other broken field suppresses it. Where one of those two is itself
-    malformed, :func:`check_l0` is the reporter and this stays silent rather
-    than saying one defect twice.
+    Runs for every implemented entry that has a ``roofline`` block, whatever
+    else in the entry is broken. An entry malformed in a way :func:`check_l0`
+    also rules on draws a line from each, which is the price of the formula
+    verdict never going missing: any precondition wide enough to suppress the
+    duplicate also suppresses a formula defect that an unrelated field happens
+    to sit beside.
     """
     if _is_spec_only(entry) or not isinstance(entry.get("roofline"), dict):
         return []
-    # check_l0 owns the shape of these; codegen rejects them too, and reporting
-    # both says one defect twice.
-    sig = entry.get("signature")
-    if sig is not None:
-        if not isinstance(sig, dict):
-            return []
-        if any(
-            sig.get(block) is not None and not isinstance(sig.get(block), dict)
-            for block in ("inputs", "outputs", "params")
-        ):
-            return []
     try:
         from tileops.ops._roofline_codegen import synthesize_eval_roofline
     except Exception as exc:  # noqa: BLE001 - importing codegen runs its module body
@@ -2211,6 +2207,10 @@ def _parse_dtype_expr(dtype_str: str) -> list[str]:
     trailing or doubled ``|`` must surface downstream as an unknown-dtype
     error rather than being silently dropped.
     """
+    if not isinstance(dtype_str, str):
+        # The level owes a verdict on whatever the YAML held, so a non-string
+        # becomes one unknown token rather than an exception out of ``split``.
+        return [repr(dtype_str)]
     return [t.strip() for t in dtype_str.split("|")]
 
 

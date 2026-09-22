@@ -582,9 +582,10 @@ def _synthesize_inline_mode(
         raise ValueError(
             f"{op_name}: inline-mode roofline must declare both flops and bytes as strings"
         )
-    vars_block = roofline.get("vars") or {}
-    if not isinstance(vars_block, dict):
+    vars_block = roofline.get("vars")
+    if vars_block is not None and not isinstance(vars_block, dict):
         raise ValueError(f"{op_name}: roofline.vars must be a mapping when present")
+    vars_block = vars_block or {}
 
     sig = signature or {}
     inputs = sig.get("inputs") or {}
