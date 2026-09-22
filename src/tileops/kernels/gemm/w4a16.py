@@ -46,6 +46,7 @@ class _Calibration:
     tie_window: float = 0.02
     reduce_bytes_per_ms: float = 1.5e9
     launch_ms: float = 0.0015
+    meta_staging_crossover_bytes: int = 48 * 1024
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,13 @@ _CONFIG_SPACE = _ConfigSpace()
 __all__ = ["GROUP_SIZE", "GemmW4A16Kernel"]
 
 
+def _stage_meta_per_tile(threads: int, block_k: int, block_n: int, all_groups: int) -> bool:
+    """Return whether metadata is staged per K tile instead of once per CTA."""
+    return threads == 128 and (
+        block_k <= 256 or block_n * all_groups * 3 > _H200_CALIBRATION.meta_staging_crossover_bytes
+    )
+
+
 def _smem_bytes(
     block_m: int,
     block_n: int,
@@ -81,7 +89,7 @@ def _smem_bytes(
     group_size: int,
 ) -> int:
     """Return dynamic shared memory required by one CTA."""
-    per_tile_meta = threads == 128 and block_k <= 256
+    per_tile_meta = _stage_meta_per_tile(threads, block_k, block_n, k // group_size)
     meta_groups = (
         block_k // group_size if per_tile_meta else -(-k // block_k) * (block_k // group_size)
     )
@@ -238,7 +246,7 @@ def _gemm_w4a16_kernel(
         # Per-K-tile staging frees shared budget at the cost of re-reading. The
         # thread guard is not a trade-off: two math warpgroups writing the tile
         # inside the pipelined loop hang the GPU.
-        per_tile_meta = threads == 128 and block_k <= 256
+        per_tile_meta = _stage_meta_per_tile(threads, block_k, block_n, all_groups)
         meta_groups = tile_groups if per_tile_meta else padded_groups
         tiles_m = -(-m // block_m)
         tiles_n = -(-n // block_n)
