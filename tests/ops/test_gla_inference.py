@@ -5,7 +5,11 @@ import torch
 
 from tests.test_base import TestBase
 from tileops.backend import TensorSpec, registry
+from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
+    GLADensePrefillPartitionedKernel,
+)
 from tileops.ops import GLAInferenceFwdOp
+from tileops.utils import is_h200
 from workloads.linear_attention import GLAInferenceWorkload
 
 pytestmark = pytest.mark.smoke
@@ -106,6 +110,26 @@ def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: in
     test.check(op, *inputs[:4], atol=0.03, rtol=0.03)
     inputs[3].mul_(3.0)
     test.check(op, *inputs, atol=0.03, rtol=0.03)
+
+
+@pytest.mark.skipif(not is_h200(), reason="partitioned prefill is selected on H200")
+@pytest.mark.parametrize(
+    "dtype,has_initial_state,gate_scale",
+    [(torch.bfloat16, True, 1.0), (torch.float16, False, 3.0)],
+)
+def test_gla_long_prefill_uses_partitioned_kernel(
+    dtype: torch.dtype, has_initial_state: bool, gate_scale: float
+) -> None:
+    torch.manual_seed(2160)
+    test = GLAInferenceTest(2, 16384, 4, 64, 64, dtype, has_initial_state)
+    inputs = test.gen_inputs()
+    inputs[3].mul_(gate_scale)
+    op = GLAInferenceFwdOp()
+    test.check(op, *inputs, atol=0.03, rtol=0.03)
+    assert any(
+        isinstance(kernel, GLADensePrefillPartitionedKernel)
+        for kernel in op.built_kernels("gla_dense_prefill").values()
+    )
 
 
 @pytest.mark.skipif(

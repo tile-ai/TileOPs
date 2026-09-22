@@ -24,6 +24,7 @@ def _gla_fwd_a_kernel(
     chunk_size: int,
     scale: float,
     dtype: str,
+    gate_dtype: str = "float32",
 ):
     """Use tensor-core products between 16-token blocks; keep diagonal exact."""
     num_chunks = seq_len // chunk_size
@@ -36,7 +37,7 @@ def _gla_fwd_a_kernel(
         def _main(
             q: T.Tensor([batch, seq_len, heads, dim_k], dtype),
             k: T.Tensor([batch, seq_len, heads, dim_k], dtype),
-            g_cumsum: T.Tensor([batch, seq_len, heads, dim_k], "float32"),
+            g_cumsum: T.Tensor([batch, seq_len, heads, dim_k], gate_dtype),
             a: T.Tensor([batch, seq_len, heads, chunk_size], dtype),
         ):
             with T.Kernel(

@@ -7,11 +7,15 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
+    GLADensePrefillPartitionedKernel,
+)
 from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import (
     GLADensePrefillSubchunkKernel,
 )
 from tileops.perf.formulas import gla_fwd_roofline
 from tileops.perf.profile import tensor_core_roof
+from tileops.utils import is_h200
 
 from ..op_base import Op
 
@@ -44,7 +48,10 @@ class GLAInferenceFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gla_dense_prefill": GLADensePrefillSubchunkKernel}
+        return {
+            "gla_dense_prefill_partitioned": GLADensePrefillPartitionedKernel,
+            "gla_dense_prefill_subchunk": GLADensePrefillSubchunkKernel,
+        }
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         del role
@@ -65,7 +72,22 @@ class GLAInferenceFwdOp(Op):
                 "the in-tree GLA dense-prefill kernel does not yet support "
                 + ", ".join(unsupported)
             )
-        return call, lambda: self.kernel_map["gla_dense_prefill"](
+        # A 16-chunk partition creates enough independent CTAs only for long
+        # calls. Shorter calls keep the existing serial-state specialization.
+        partition_ctas = batch * heads * (seq_len // 1024)
+        kernel_key = (
+            "gla_dense_prefill_partitioned"
+            if (
+                seq_len >= 16384
+                and dim_k == 64
+                and dim_v == 64
+                and seq_len % 1024 == 0
+                and partition_ctas >= 128
+                and is_h200(device.index)
+            )
+            else "gla_dense_prefill_subchunk"
+        )
+        return call, lambda: self.kernel_map[kernel_key](
             batch=batch,
             seq_len=seq_len,
             heads=heads,

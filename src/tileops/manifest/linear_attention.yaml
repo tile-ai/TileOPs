@@ -343,7 +343,8 @@ GLAInferenceFwdOp:
   source:
     kernel: tileops/kernels/linear_attention/gla/dense_prefill_subchunk.py
     kernel_map:
-      gla_dense_prefill: GLADensePrefillSubchunkKernel
+      gla_dense_prefill_partitioned: GLADensePrefillPartitionedKernel
+      gla_dense_prefill_subchunk: GLADensePrefillSubchunkKernel
     op: tileops/ops/linear_attention/gla_inference.py
     test: tests/ops/test_gla_inference.py
     bench: benchmarks/ops/bench_gla_inference.py
