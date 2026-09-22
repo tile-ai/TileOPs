@@ -1824,9 +1824,9 @@ def check_roofline_synthesis(op_name: str, entry: dict) -> list[str]:
     (``docs/design/roofline.md`` §4.1) and is the only place naming the illegal
     name or construct; this reports what it raises and mirrors no rule.
 
-    Call only for an entry whose :func:`check_l0` returned no errors: a
-    malformed ``signature`` or ``roofline`` container makes codegen raise on
-    the container instead of returning a formula verdict.
+    Call only for an entry whose :func:`check_l0` returned no errors. Codegen
+    rejects a malformed container with a verdict of its own, and reporting both
+    says one defect twice.
     """
     if _is_spec_only(entry) or not isinstance(entry.get("roofline"), dict):
         return []
@@ -1847,13 +1847,6 @@ def check_roofline_synthesis(op_name: str, entry: dict) -> list[str]:
         text = str(exc)
         prefix = "" if text.startswith(f"{op_name}:") else f"{op_name}: "
         return [f"[schema] {prefix}{text}"]
-    except ModuleNotFoundError as exc:
-        # An ``out_elem_bytes`` formula imports ``_output_dtype``, which needs
-        # torch. A warning would let a run pass without the gate having run.
-        return [
-            f"[schema] {op_name}: roofline synthesis needs a dependency this "
-            f"environment does not have ({exc})"
-        ]
     except Exception as exc:  # noqa: BLE001 - see below
         # Codegen raises ValueError for every verdict it has a name for, so
         # anything else is a defect in what the formula reaches. The type keeps
@@ -4934,7 +4927,9 @@ def validate_manifest(
             )
             # Independent fields: one broken field does not hide the other.
             schema_errors = [*structural_errors, *check_source_paths(op_name, entry, repo_root)]
-            # Gated on check_l0 alone: codegen needs the containers it validated.
+            # Gated on check_l0 alone: a container it rejected would be
+            # reported a second time by codegen, and a bad source path is
+            # an unrelated field that must not hide the formula.
             if not structural_errors:
                 schema_errors.extend(check_roofline_synthesis(op_name, entry))
             all_errors.extend(schema_errors)

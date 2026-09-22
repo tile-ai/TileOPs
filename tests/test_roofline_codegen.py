@@ -122,6 +122,66 @@ class TestRealOpSmoke:
         assert total_bytes == 2 * N * elem
 
 
+class TestTotalContract:
+    """Codegen answers a data defect with a verdict, never with a crash."""
+
+    def test_a_non_mapping_signature_is_a_verdict(self):
+        from tileops.ops._roofline_codegen import synthesize_eval_roofline
+
+        with pytest.raises(ValueError, match="signature must be a mapping"):
+            synthesize_eval_roofline(
+                "FakeOp",
+                roofline={"flops": "1", "bytes": "1"},
+                signature="not a mapping",
+            )
+
+    def test_a_raising_func_attribute_is_a_verdict(self):
+        import sys
+        import types
+
+        from tileops.ops._roofline_codegen import synthesize_eval_roofline
+
+        class Boom(types.ModuleType):
+            def __getattr__(self, name):
+                raise RuntimeError("module said no")
+
+        sys.modules["_codegen_boom"] = Boom("_codegen_boom")
+        try:
+            with pytest.raises(ValueError, match="RuntimeError: module said no"):
+                synthesize_eval_roofline(
+                    "FakeOp", roofline={"func": "_codegen_boom.fn"}, signature=None
+                )
+        finally:
+            del sys.modules["_codegen_boom"]
+
+    def test_checking_a_formula_needs_no_torch(self):
+        """An `out_elem_bytes` formula binds the resolver, it does not import it."""
+        import subprocess
+        import sys
+        import textwrap
+
+        probe = textwrap.dedent(
+            """
+            import sys
+            sys.modules["torch"] = None  # any import of it raises
+            from tileops.ops._roofline_codegen import synthesize_eval_roofline
+            synthesize_eval_roofline(
+                "FakeOp",
+                roofline={"vars": {"N": "product(x.shape)"},
+                          "flops": "N", "bytes": "N * out_elem_bytes"},
+                signature={"inputs": {"x": {"dtype": "float16"}},
+                           "outputs": {"y": {"dtype": "bool"}}},
+            )
+            print("ok")
+            """
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+        )
+        assert out.returncode == 0, out.stderr
+        assert "ok" in out.stdout
+
+
 class TestEvaluatorOwnership:
     """Enforce evaluator ownership for implemented manifest entries."""
 

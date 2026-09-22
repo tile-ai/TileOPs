@@ -171,7 +171,13 @@ def _resolve_func_path(path: str) -> Callable[..., Any]:
         raise ValueError(
             f"cannot resolve roofline.func {path!r}: import {mod_path!r} failed ({exc})"
         ) from exc
-    fn = getattr(mod, attr, None)
+    try:
+        fn = getattr(mod, attr, None)
+    except Exception as exc:
+        raise ValueError(
+            f"cannot resolve roofline.func {path!r}: reading {attr!r} raised "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
     if not callable(fn):
         raise ValueError(
             f"cannot resolve roofline.func {path!r}: {attr!r} is not a callable on {mod_path!r}"
@@ -713,9 +719,7 @@ def _synthesize_inline_mode(
     globs: dict[str, Any] = dict(_VARS_HELPERS)
     globs["_resolve_tensor_binding"] = _resolve_tensor_binding
     if single_output and "out_elem_bytes" in referenced:
-        from tileops.ops._output_dtype import output_dtype
-
-        globs["_output_dtype"] = output_dtype
+        globs["_output_dtype"] = _output_dtype_on_call
     globs["__builtins__"] = {
         "int": int,
         "float": float,
@@ -736,6 +740,18 @@ def _synthesize_inline_mode(
     fn.__name__ = "eval_roofline"
     fn.__qualname__ = f"{op_name}.eval_roofline"
     return fn
+
+
+def _output_dtype_on_call(op: Any, name: str, fallback: Any) -> Any:
+    """Resolve an output's dtype, importing the resolver when the body runs.
+
+    Synthesis binds this name into the generated globals. Checking a formula's
+    names and forms needs no torch, and the resolver pulls it in, so the import
+    belongs to the call and not to the check.
+    """
+    from tileops.ops._output_dtype import output_dtype
+
+    return output_dtype(op, name, fallback)
 
 
 SYNTHESIZED_ATTR = "__tileops_synthesized_roofline__"
@@ -767,6 +783,10 @@ def synthesize_eval_roofline(
     if not isinstance(roofline, dict) or not roofline:
         raise ValueError(
             f"{op_name}: manifest roofline is missing or empty; cannot synthesize eval_roofline"
+        )
+    if signature is not None and not isinstance(signature, dict):
+        raise ValueError(
+            f"{op_name}: manifest signature must be a mapping, got {type(signature).__name__}"
         )
     has_func = "func" in roofline
     has_inline = "flops" in roofline or "bytes" in roofline or "vars" in roofline
