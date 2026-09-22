@@ -81,6 +81,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GLABwdKernel,
         GLADecodeFP32Kernel,
         GLADecodeKernel,
+        GLADensePrefillFwdKernel,
         GLAFwdKernel,
     )
     from .mhc import (
