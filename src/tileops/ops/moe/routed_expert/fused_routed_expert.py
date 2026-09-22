@@ -93,9 +93,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
             activation == "silu_and_mul"
             and hidden_size % 128 == 0
             and ffn_size % 256 == 0
-            and (
-                num_tokens <= 32 or (num_tokens == 64 and hidden_size == 7168 and ffn_size == 2048)
-            )
+            and num_tokens * top_k <= 2 * num_experts
         )
         self._indexed_mlp = (
             IndexedExpertMLPFwdOp(
