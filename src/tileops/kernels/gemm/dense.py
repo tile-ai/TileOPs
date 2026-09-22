@@ -36,6 +36,11 @@ __all__ = [
 _CONSUMER_BAR_WG0 = 8
 _CONSUMER_BAR_WG1 = 9
 
+# Columns in one 128-byte swizzle atom at this family's 2-byte activation dtype,
+# and so the width of one coop2 epilogue staging tile. Mirrors
+# ``heuristics._SWIZZLE_ATOM_N``, which is what picks the config.
+_COOP2_STAGE_N = 64
+
 # Fixed by the two-consumer split and by the block128 scale grid; not tunable.
 _FP8_WS_BLOCK_M = 128
 _FP8_WS_HALF_M = _FP8_WS_BLOCK_M // 2
@@ -1790,6 +1795,16 @@ def _gemm_coop2_kernel(
     (``group_size_m``) keeps concurrently-resident CTAs on a shared ``B`` column
     stripe for L2 reuse.
 
+    The epilogue carries across tiles the same way. Each consumer leaves its
+    output tile as ``block_n / stage_n`` slices through ``stage_buf`` staging
+    tiles in turn, waiting only until ``stage_buf - 1`` stores are still in
+    flight — so a slice's store runs while the next is written, and the last
+    slice of a tile stores through the next tile's whole mainloop. Waiting on
+    every store instead (``stage_buf = 1``) is what the measured 4.2k cycles per
+    tile of exposed epilogue was mostly made of. Each consumer drains at the end
+    of its persistent loop: a store still reading a staging tile when the CTA
+    exits would be reading shared memory the device has already handed on.
+
     NT only (``A[m,k] @ B[n,k]ᵀ``): the split-A layout and shared ``B`` ring are
     specific to a non-transposed ``A`` and transposed ``B``. Other layouts fall
     back to ``_gemm_kernel``. M / N tails are handled by a predicated scalar
@@ -1807,7 +1822,8 @@ def _gemm_coop2_kernel(
 
     Returns:
         A ``@tilelang.jit`` factory; calling it with ``(block_n, block_k,
-        num_stages, group_size_m, stage_n)`` returns the compiled ``prim_func``.
+        num_stages, group_size_m, stage_n, stage_buf)`` returns the compiled
+        ``prim_func``.
     """
     if trans_a or not trans_b:
         raise ValueError("_gemm_coop2_kernel is NT-only (trans_a=False, trans_b=True)")
@@ -1825,12 +1841,35 @@ def _gemm_coop2_kernel(
         num_stages: int = 3,
         group_size_m: int = 16,
         stage_n: int = 0,
+        stage_buf: int = 0,
     ) -> Callable:
         half_m = block_m // 2
         b_evict = _b_eviction(m, block_m)
         nr = (half_m * block_n) // 128
-        sn = block_n if stage_n <= 0 else stage_n
+        if stage_n > 0:
+            sn = stage_n
+        elif block_n % _COOP2_STAGE_N == 0:
+            sn = _COOP2_STAGE_N
+        else:
+            sn = block_n
+        if block_n % sn:
+            raise ValueError(f"coop2 stage_n must divide block_n={block_n}, got {stage_n}")
         n_chunks = block_n // sn
+        nbuf = n_chunks if stage_buf <= 0 else stage_buf
+        if sn != _COOP2_STAGE_N and nbuf != 1:
+            raise ValueError(
+                f"coop2 stage_n must be {_COOP2_STAGE_N} when staging tiles are stacked "
+                f"(stage_buf={nbuf}), got {sn}: a row sub-range of a swizzled tile is a "
+                "valid TMA box only while the tile is one 128-byte swizzle atom wide. Two "
+                "atoms interleave across the row group and the slice stops being a "
+                "bijection. A single buffer is never sliced, so any width goes."
+            )
+        if n_chunks % nbuf:
+            raise ValueError(
+                f"coop2 stage_buf must divide the {n_chunks} epilogue slices, got {stage_buf}: "
+                "the slice counter restarts at every tile, so a count that does not divide "
+                "them reuses a buffer while its store is still outstanding."
+            )
         num_pid_m = -(-m // block_m)
         num_pid_n = -(-n // block_n)
         total_tiles = num_pid_m * num_pid_n
@@ -1860,8 +1899,8 @@ def _gemm_coop2_kernel(
                 c_local_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
                 c_cast_0 = T.alloc_fragment((half_m, block_n), dtype)
                 c_cast_1 = T.alloc_fragment((half_m, block_n), dtype)
-                c_smem_0 = T.alloc_shared((half_m, sn), dtype)
-                c_smem_1 = T.alloc_shared((half_m, sn), dtype)
+                c_smem_0 = T.alloc_shared((nbuf * half_m, sn), dtype)
+                c_smem_1 = T.alloc_shared((nbuf * half_m, sn), dtype)
 
                 T.annotate_layout(
                     {
@@ -1950,15 +1989,23 @@ def _gemm_coop2_kernel(
                             if arows == T.int32(half_m) and acols == T.int32(block_n):
                                 for ch in range(n_chunks):
                                     c0 = ch * sn
-                                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG0, arrive_count=128)
-                                    T.copy(c_cast_0[:, c0 : c0 + sn], c_smem_0)
+                                    r0 = (ch % nbuf) * half_m
+                                    T.tma_store_wait(nbuf - 1)
+                                    T.copy(
+                                        c_cast_0[:, c0 : c0 + sn],
+                                        c_smem_0[r0 : r0 + half_m, :],
+                                    )
                                     T.fence_proxy_async()
                                     T.sync_threads(barrier_id=_CONSUMER_BAR_WG0, arrive_count=128)
-                                    T.copy(c_smem_0, c[m_start, n_start + c0])
+                                    T.tma_copy(
+                                        c_smem_0[r0 : r0 + half_m, :],
+                                        c[m_start, n_start + c0],
+                                    )
                             else:
                                 for i, j in T.Parallel(half_m, block_n):
                                     if i < arows and j < acols:
                                         c[m_start + i, n_start + j] = c_cast_0[i, j]
+                    T.tma_store_wait(0)
 
                 else:
                     T.inc_max_nreg(240)
@@ -1996,19 +2043,286 @@ def _gemm_coop2_kernel(
                             if arows == T.int32(half_m) and acols == T.int32(block_n):
                                 for ch in range(n_chunks):
                                     c0 = ch * sn
-                                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG1, arrive_count=128)
-                                    T.copy(c_cast_1[:, c0 : c0 + sn], c_smem_1)
+                                    r0 = (ch % nbuf) * half_m
+                                    T.tma_store_wait(nbuf - 1)
+                                    T.copy(
+                                        c_cast_1[:, c0 : c0 + sn],
+                                        c_smem_1[r0 : r0 + half_m, :],
+                                    )
                                     T.fence_proxy_async()
                                     T.sync_threads(barrier_id=_CONSUMER_BAR_WG1, arrive_count=128)
-                                    T.copy(c_smem_1, c[m_start + half_m, n_start + c0])
+                                    T.tma_copy(
+                                        c_smem_1[r0 : r0 + half_m, :],
+                                        c[m_start + half_m, n_start + c0],
+                                    )
                             elif arows > T.int32(0):
                                 for i, j in T.Parallel(half_m, block_n):
                                     if i < arows and j < acols:
                                         c[m_start + half_m + i, n_start + j] = c_cast_1[i, j]
+                    T.tma_store_wait(0)
 
         return _gemm_coop2_main
 
     return _gemm_coop2_func
+
+
+@functools.lru_cache(maxsize=32)
+def _gemm_pingpong_kernel(
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype: str = "float16",
+    sm_count: int = 132,
+) -> Callable:
+    """Ping-pong GEMM (NT): two consumer warpgroups on alternate tiles, one at a time.
+
+    Same producer / ring as ``_gemm_coop2_kernel``, but each consumer holds a whole
+    ``128 x block_n`` accumulator and the two take turns: consumer 0 runs the
+    even persistent-loop iterations, consumer 1 the odd ones, and a consumer's
+    mainloop may start only once the other has issued its last WGMMA (``go``
+    barriers). One consumer's epilogue therefore runs entirely under the other's
+    mainloop, and the tensor core never waits for a store. In coop2 both
+    consumers finish a tile together and idle it for the whole epilogue, a fixed
+    3-5k cycles per tile that is 9-18% of a 32-iteration mainloop.
+
+    The strict alternation also keeps the ring's parity waits sound: a consumer
+    waiting two phases ahead of the barrier would read the older phase as
+    complete. That is what happens without the ``go`` handshake, and it corrupts
+    the arrival counts.
+
+    ``B`` is not shared between the consumers (each tile is one consumer's), so the
+    natural tile is narrower than coop2's: 176 wide lands ``2112 = 12 x 176`` and
+    the same 128x176 tiling cuBLASLt's best Hopper kernel uses. The epilogue
+    stages ``stage_n``-column slices through one staging tile per consumer; its
+    speed is irrelevant while it hides, so the slice is whatever leaves room for
+    the deepest ring. TMA stores clip at the tensor bounds, so M / N tail tiles
+    take the same path as full ones; the scalar tail of coop2 would not hide.
+
+    Args:
+        m: Rows of ``A`` / ``C``.
+        n: Columns of ``op(B)`` / ``C``. Must be a multiple of 8: the ``C`` TMA
+            descriptor addresses it in 16-byte units.
+        k: Contraction dim.
+        trans_a: Must be ``False``.
+        trans_b: Must be ``True``.
+        dtype: Activation / weight dtype string (``"float16"`` / ``"bfloat16"``).
+        sm_count: Persistent grid size.
+
+    Returns:
+        A ``@tilelang.jit`` factory; calling it with ``(block_n, block_k,
+        num_stages, group_size_m, stage_n)`` returns the compiled ``prim_func``.
+
+    Raises:
+        ValueError: Not NT, ``n % 8``, a ``stage_n`` that is not a multiple of 8
+            dividing ``block_n``, or a grid of at most ``sm_count`` tiles, which
+            leaves the second consumer provably idle and TileLang's copy analysis
+            then rejects its TMA store.
+    """
+    if trans_a or not trans_b:
+        raise ValueError("_gemm_pingpong_kernel is NT-only (trans_a=False, trans_b=True)")
+    if n % 8:
+        raise ValueError(
+            f"_gemm_pingpong_kernel stores C through TMA, which needs n % 8 == 0, got n={n}"
+        )
+    accum_dtype = "float"
+    block_m = 128
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={"tl.disable_warp_specialized": True},
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _gemm_pingpong_func(
+        block_n: int = 176,
+        block_k: int = 64,
+        num_stages: int = 5,
+        group_size_m: int = 16,
+        stage_n: int = 16,
+    ) -> Callable:
+        if stage_n % 8 or block_n % stage_n:
+            raise ValueError(
+                f"pingpong stage_n must be a multiple of 8 dividing block_n={block_n}, got {stage_n}"
+            )
+        n_chunks = block_n // stage_n
+        b_evict = _b_eviction(m, block_m)
+        nr = (block_m * block_n) // 128
+        num_pid_m = -(-m // block_m)
+        num_pid_n = -(-n // block_n)
+        total_tiles = num_pid_m * num_pid_n
+        if total_tiles <= sm_count:
+            raise ValueError(
+                f"pingpong needs more than {sm_count} tiles so both consumers have work, "
+                f"got {total_tiles} at block_n={block_n}; use coop2 for this grid"
+            )
+        max_waves = -(-total_tiles // sm_count) + 1
+        k_iters = T.ceildiv(k, block_k)
+
+        @T.macro
+        def decode(flat_id, mt, nt):
+            gin = T.int32(group_size_m * num_pid_n)
+            gid = flat_id // gin
+            first_m = gid * T.int32(group_size_m)
+            gsize = T.min(T.int32(group_size_m), T.int32(num_pid_m) - first_m)
+            mt[0] = first_m + (flat_id % gin) % gsize
+            nt[0] = (flat_id % gin) // gsize
+
+        @T.macro
+        def consumer(
+            parity,
+            c_local,
+            c_smem,
+            bar_id,
+            pid,
+            mt,
+            nt,
+            a_smem,
+            b_smem,
+            ab_full,
+            ab_empty,
+            go,
+            ps,
+            c,
+        ):
+            for w in T.serial(max_waves):
+                flat_id = T.int32(sm_count) * w + pid
+                if (w % 2 == parity) and (flat_id < total_tiles):
+                    decode(flat_id, mt, nt)
+                    m_start = mt[0] * block_m
+                    n_start = nt[0] * block_n
+                    if w > 0:
+                        T.barrier_wait(go[parity], ((w // 2) + parity + 1) & 1)
+                    for ki in T.Pipelined(k_iters, num_stages=0):
+                        gi = w * k_iters + ki
+                        slot = gi % num_stages
+                        T.barrier_wait(ab_full[slot], (gi // num_stages) & 1)
+                        T.wgmma_gemm(
+                            a_smem[slot, :, :],
+                            b_smem[slot, :, :],
+                            c_local,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullRow,
+                            clear_accum=(ki == 0),
+                        )
+                        if ki > 0:
+                            T.wait_wgmma(1)
+                            T.barrier_arrive(ab_empty[ps[0]])
+                        ps[0] = slot
+                    T.barrier_arrive(go[1 - parity])
+                    T.wait_wgmma(0)
+                    T.barrier_arrive(ab_empty[ps[0]])
+                    T.warpgroup_fence_operand(c_local, num_regs=nr)
+                    for ch in range(n_chunks):
+                        c0 = ch * stage_n
+                        T.tma_store_wait(0)
+                        T.sync_threads(barrier_id=bar_id, arrive_count=128)
+                        T.copy(c_local[:, c0 : c0 + stage_n], c_smem)
+                        T.fence_proxy_async()
+                        T.sync_threads(barrier_id=bar_id, arrive_count=128)
+                        T.tma_copy(c_smem, c[m_start, n_start + c0])
+            T.tma_store_wait(0)
+
+        @T.prim_func
+        def _gemm_pingpong_main(
+            a: T.Tensor((m, k), dtype),  # type: ignore
+            b: T.Tensor((n, k), dtype),  # type: ignore
+            c: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(sm_count, threads=384) as (pid,):
+                a_smem = T.alloc_shared((num_stages, block_m, block_k), dtype)
+                b_smem = T.alloc_shared((num_stages, block_n, block_k), dtype)
+                c_local_0 = T.alloc_fragment((block_m, block_n), accum_dtype)
+                c_local_1 = T.alloc_fragment((block_m, block_n), accum_dtype)
+                c_smem_0 = T.alloc_shared((block_m, stage_n), dtype)
+                c_smem_1 = T.alloc_shared((block_m, stage_n), dtype)
+
+                T.annotate_layout(
+                    {
+                        a_smem: tilelang.layout.make_swizzled_layout(a_smem),
+                        b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                        c_smem_0: tilelang.layout.make_swizzled_layout(c_smem_0),
+                        c_smem_1: tilelang.layout.make_swizzled_layout(c_smem_1),
+                    }
+                )
+
+                ab_full = T.alloc_barrier([128] * num_stages)
+                ab_empty = T.alloc_barrier([128] * num_stages)
+                go = T.alloc_barrier([128, 128])
+
+                gi_prod = T.alloc_var("int32", init=0)
+                ps0 = T.alloc_local((1,), "int32")
+                ps1 = T.alloc_local((1,), "int32")
+                mt = T.alloc_local((1,), "int32")
+                nt = T.alloc_local((1,), "int32")
+
+                tx = T.get_thread_binding()
+
+                if tx < 128:
+                    T.dec_max_nreg(24)
+                    for w in T.serial(max_waves):
+                        flat_id = T.int32(sm_count) * w + pid
+                        if flat_id < total_tiles:
+                            decode(flat_id, mt, nt)
+                            m_start = mt[0] * block_m
+                            n_start = nt[0] * block_n
+                            for ki in T.Pipelined(k_iters, num_stages=0):
+                                slot = gi_prod % num_stages
+                                ks = ki * block_k
+                                T.barrier_wait(ab_empty[slot], ((gi_prod // num_stages) & 1) ^ 1)
+                                T.tma_copy(
+                                    a[m_start : m_start + block_m, ks : ks + block_k],
+                                    a_smem[slot, :, :],
+                                    barrier=ab_full[slot],
+                                )
+                                T.tma_copy(
+                                    b[n_start : n_start + block_n, ks : ks + block_k],
+                                    b_smem[slot, :, :],
+                                    barrier=ab_full[slot],
+                                    eviction_policy=b_evict,
+                                )
+                                T.barrier_arrive(ab_full[slot])
+                                gi_prod = gi_prod + 1
+                elif tx < 256:
+                    T.inc_max_nreg(240)
+                    consumer(
+                        0,
+                        c_local_0,
+                        c_smem_0,
+                        _CONSUMER_BAR_WG0,
+                        pid,
+                        mt,
+                        nt,
+                        a_smem,
+                        b_smem,
+                        ab_full,
+                        ab_empty,
+                        go,
+                        ps0,
+                        c,
+                    )
+                else:
+                    T.inc_max_nreg(240)
+                    consumer(
+                        1,
+                        c_local_1,
+                        c_smem_1,
+                        _CONSUMER_BAR_WG1,
+                        pid,
+                        mt,
+                        nt,
+                        a_smem,
+                        b_smem,
+                        ab_full,
+                        ab_empty,
+                        go,
+                        ps1,
+                        c,
+                    )
+
+        return _gemm_pingpong_main
+
+    return _gemm_pingpong_func
 
 
 @functools.lru_cache(maxsize=32)
@@ -2570,7 +2884,7 @@ class GemmTmaKernel(Kernel):
     default structure is warp-specialized: one producer warpgroup issues TMA
     loads into a multi-stage SMEM ring, one consumer warpgroup runs the WGMMA
     over K. Structure flags in ``config`` select the coop2 / coop2s /
-    coop2_splitk / simple / split-K variants instead (see ``forward``).
+    coop2_splitk / pingpong / simple / split-K variants instead (see ``forward``).
     ``activation="silu_and_mul"`` fuses the gated activation into a split-K
     reduction and returns ``[M, N / 2]``.
     fp16 / bf16 inputs, fp32 accumulation. SM90 only: every structure loads
@@ -2580,7 +2894,7 @@ class GemmTmaKernel(Kernel):
     supported_archs: list[int] = [90]
     general = True
 
-    _STRUCTURE_FLAGS = ("coop2", "coop2s", "coop2_splitk", "simple", "swap_ab")
+    _STRUCTURE_FLAGS = ("coop2", "coop2s", "coop2_splitk", "pingpong", "simple", "swap_ab")
 
     def init_config(self, config: Optional[dict] = None, tune: bool = False) -> None:
         """Take a structure-flagged explicit config verbatim.
@@ -2657,7 +2971,8 @@ class GemmTmaKernel(Kernel):
         if activation != "none":
             split_k = self.config.get("split_k", 1)
             unsupported = any(
-                self.config.get(flag) for flag in ("simple", "swap_ab", "coop2", "coop2s")
+                self.config.get(flag)
+                for flag in ("simple", "swap_ab", "coop2", "coop2s", "pingpong")
             )
             if split_k <= 1 or unsupported:
                 raise ValueError("a fused activation requires a split-K GEMM config")
@@ -2707,6 +3022,25 @@ class GemmTmaKernel(Kernel):
             )(cfg["block_n"], cfg["block_k"], cfg["num_stages"])
             return compiled(a, b)
 
+        if self.config.get("pingpong"):
+            cfg = self.config
+            compiled = _gemm_pingpong_kernel(
+                self.m,
+                self.n,
+                self.k,
+                self.trans_a,
+                self.trans_b,
+                self.dtype_str,
+                sm_count=self.sm_count,
+            )(
+                cfg["block_n"],
+                cfg["block_k"],
+                cfg["num_stages"],
+                cfg["group_size_m"],
+                cfg["stage_n"],
+            )
+            return compiled(a, b)
+
         if self.config.get("coop2"):
             cfg = self.config
             compiled = _gemm_coop2_kernel(
@@ -2723,6 +3057,7 @@ class GemmTmaKernel(Kernel):
                 cfg["num_stages"],
                 cfg["group_size_m"],
                 cfg.get("stage_n", 0),
+                cfg.get("stage_buf", 0),
             )
             return compiled(a, b)
 

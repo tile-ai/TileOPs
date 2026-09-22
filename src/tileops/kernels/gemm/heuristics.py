@@ -32,7 +32,10 @@ Resource model mirrors ``tileops/kernels/gemm.py``:
 - basic/splitk: SMEM ``ns*(bm+bn)*bk*2 + bm*bn*2``, accum regs
   ``bm*bn/128 <= 200``;
 - coop2*: ``block_m`` fixed at 128 (two 64-row consumers), SMEM
-  ``ns*(128+bn)*bk*2 + 2*64*sn*2``, NT only, persistent grid;
+  ``ns*(128+bn)*bk*2 + 2*stage_buf*64*stage_n*2``, NT only, persistent grid;
+- pingpong: ``block_m`` fixed at 128 (two consumers on alternate tiles, each a
+  whole 128-row accumulator), SMEM ``ns*(128+bn)*bk*2 + 2*128*stage_n*2``, NT
+  only, persistent grid of more than ``2 * sm_count`` tiles, ``n % 8 == 0``;
 - split-K variants require ``ceildiv(k, bk) % split_k == 0``.
 """
 
@@ -58,13 +61,22 @@ _MAX_ACCUM_REGS = 200
 
 TINY_M_BLOCK_N = 128
 
+# Columns in one 128-byte swizzle atom at this family's 2-byte activation dtype.
+# Staging tiles stacked along rows must be exactly this wide for a row sub-range
+# to stay a valid TMA box; a block_n that is not a whole number of atoms gets one
+# full-width tile instead and waits on every store.
+_SWIZZLE_ATOM_N = 64
+
 # Shortest K slice the FP8 split-K path pays for.
 _FP8_MIN_SLICE_K_TILES = 12
 
 _SWAP_AB_BLOCK_NN = 64
 SWAP_AB_MPAD = 8
 
-_NS_CAP = {"basic": 4, "splitk": 4, "coop2": 4, "coop2_splitk": 4}
+_NS_CAP = {"basic": 4, "splitk": 4, "coop2": 4, "coop2_splitk": 4, "pingpong": 6}
+
+# Epilogue staging slices are TMA boxes: 16-byte rows at this family's 2-byte dtype.
+_PINGPONG_SLICE_STEP = 8
 
 
 @dataclass(frozen=True)
@@ -103,6 +115,11 @@ _CALIBRATIONS = {
             ("coop2", 525.0),
             ("coop2s", 600.0),
             ("coop2_splitk", 525.0),
+            # Hides its epilogue under the other consumer's mainloop, so it runs
+            # 2-10% faster than coop2 at equal tile efficiency; the constant is set
+            # where the ranking matches the measured winners (4096x4096x7168 stays
+            # on coop2's exact 256 tiling, the DeepSeek-V3 prefill rows move).
+            ("pingpong", 555.0),
             ("simple", 500.0),
             ("splitk", 420.0),
         ),
@@ -124,6 +141,7 @@ class _Cand:
     num_stages: int
     split_k: int = 1
     stage_n: int = 0
+    stage_buf: int = 0
     panel_size: int = 16
     cluster_m: int = 1
 
@@ -147,6 +165,7 @@ class _Cand:
                 "num_stages": self.num_stages,
                 "group_size_m": 16,
                 "stage_n": self.stage_n,
+                "stage_buf": self.stage_buf,
             }
         if self.structure == "coop2s":
             return {
@@ -154,6 +173,15 @@ class _Cand:
                 "block_n": self.block_n,
                 "block_k": self.block_k,
                 "num_stages": self.num_stages,
+            }
+        if self.structure == "pingpong":
+            return {
+                "pingpong": True,
+                "block_n": self.block_n,
+                "block_k": self.block_k,
+                "num_stages": self.num_stages,
+                "group_size_m": 16,
+                "stage_n": self.stage_n,
             }
         if self.structure == "coop2_splitk":
             return {
@@ -188,23 +216,82 @@ def _ns_basic(bm: int, bn: int, bk: int) -> int:
     return min(_NS_CAP["basic"], (_SMEM_BUDGET - bm * bn * 2) // ring)
 
 
-def _coop2_ns_sn(bn: int, bk: int):
-    """Deepest ring under ``_NS_CAP`` the SMEM budget allows; shrink the epilogue
-    staging chunk (stage_n) when that buys another pipeline stage."""
+def _coop2_stage_plan(bn: int, bk: int):
+    """``(num_stages, stage_n, stage_buf)``, or ``None`` for a ``bn`` that does not fit.
+
+    A staging tile has to be exactly one swizzle atom wide for its row sub-range to stay
+    a valid TMA box, so ``stage_n`` is never a choice. What is a choice is how many of
+    them each consumer gets: the epilogue cycles them so a slice's TMA store is still in
+    flight while the next slice is written, and one more buffer is one less store the
+    consumer waits on. The mainloop ring outranks that -- it is sized first, to the
+    ``_NS_CAP`` depth a two-buffer epilogue leaves room for -- and the buffers then take
+    what is left, down to the largest count that still divides the slices evenly.
+
+    A ``bn`` that is not a whole number of atoms (176) cannot be sliced, so it stages
+    the whole tile through one buffer. That epilogue is the slow one, and the tile
+    still wins where it lands the grid on a full last wave that 192 and 256 miss.
+    """
     ring = (128 + bn) * bk * 2
-    best = None
-    for sn in (bn, bn // 2, bn // 4):
-        if sn < 32 or bn % sn:
-            continue
-        ns = min(_NS_CAP["coop2"], (_SMEM_BUDGET - 2 * 64 * sn * 2) // ring)
-        if ns < 3:
-            continue
-        if best is None or (ns, sn) > best[:2]:
-            best = (ns, sn)
-    if best is None:
+    if bn % _SWIZZLE_ATOM_N:
+        ns = min(_NS_CAP["coop2"], (_SMEM_BUDGET - 2 * 64 * bn * 2) // ring)
+        return (ns, bn, 1) if ns >= 3 else None
+    tile_pair = 2 * 64 * _SWIZZLE_ATOM_N * 2
+    ns = min(_NS_CAP["coop2"], (_SMEM_BUDGET - 2 * tile_pair) // ring)
+    if ns < 3:
         return None
-    ns, sn = best
-    return ns, (0 if sn == bn else sn)
+    room = (_SMEM_BUDGET - ns * ring) // tile_pair
+    n_chunks = bn // _SWIZZLE_ATOM_N
+    buf = max(b for b in range(1, n_chunks + 1) if n_chunks % b == 0 and b <= room)
+    return ns, _SWIZZLE_ATOM_N, buf
+
+
+# FIXME(staged-rollout): 176-wide tiles are offered only when tilelang can emit them whole
+#
+# Broken invariant: the candidate set depends on the installed compiler.
+# Why: before ``select_wgmma_inst_n`` (tilelang 0.1.14) the WGMMA width was
+#     ``gcd(block_n, 256)``, so 176 shattered into eleven n16 instructions and ran 2x
+#     slower than 256; the runner image still builds a tilelang from before the fix.
+# Cleanup: once the runner image carries tilelang >= 0.1.14, drop this and the
+#     conditionals on it.
+@functools.lru_cache(maxsize=1)
+def _wide_wgmma_n() -> bool:
+    """Whether tilelang emits a non-power-of-two ``block_n`` as one WGMMA."""
+    from tilelang.cuda.intrinsics.macro import wgmma_macro_generator
+
+    return hasattr(wgmma_macro_generator, "select_wgmma_inst_n")
+
+
+def _coop2_block_ns() -> tuple:
+    """The coop2 ``block_n`` candidates.
+
+    2112 = 12 x 176, so on the DeepSeek-V3 gate-up width the 176 tile lands 384 CTAs on
+    132 SMs (last wave 91% full) where 192 lands 352 (67%): measured 0.867 -> 0.986 of
+    cuBLASLt's own 176-wide kernel on 4096x2112x7168.
+    """
+    return (64, 128, 176, 192, 256) if _wide_wgmma_n() else (64, 128, 192, 256)
+
+
+def _pingpong_stage_plan(bn: int, bk: int):
+    """``(num_stages, stage_n)`` for a ping-pong tile, or ``None`` if none fits.
+
+    The epilogue hides under the other consumer's mainloop, so its slice width buys
+    nothing and the ring takes the SMEM first: the deepest ring under ``_NS_CAP``
+    that still leaves room for one staging tile per consumer, then the widest
+    TMA-legal slice that fits beside it. 176 lands five stages with 16-column
+    slices; 128 lands six with 64.
+    """
+    ring = (128 + bn) * bk * 2
+    for ns in range(_NS_CAP["pingpong"], 2, -1):
+        room = _SMEM_BUDGET - ns * ring
+        widths = (
+            sn
+            for sn in range(bn, 0, -_PINGPONG_SLICE_STEP)
+            if bn % sn == 0 and 2 * 128 * sn * 2 <= room
+        )
+        sn = next(widths, None)
+        if sn is not None:
+            return ns, sn
+    return None
 
 
 def _stage_rule_ok(bm: int, bn: int, ns: int) -> bool:
@@ -263,24 +350,34 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                             cluster_m=cluster_m,
                         )
                     )
-        for bn in (64, 128, 192, 256):
+        for bn in _coop2_block_ns():
             for bk in (32, 64, 128):
-                d = _coop2_ns_sn(bn, bk)
+                d = _coop2_stage_plan(bn, bk)
                 if d is None:
                     continue
-                ns, sn = d
+                ns, sn, buf = d
                 if not _stage_rule_ok(128, bn, ns):
                     continue
-                coop2_ok = bn >= 192
+                coop2_ok = bn >= 176
                 mn_tiles = math.ceil(m / 128) * math.ceil(n / bn)
                 if coop2_ok and mn_tiles >= sm_count:
-                    out.append(_Cand("coop2", 128, bn, bk, ns, stage_n=sn))
+                    out.append(_Cand("coop2", 128, bn, bk, ns, stage_n=sn, stage_buf=buf))
                 k_iters = math.ceil(k / bk)
                 ns_sk = min(ns, _NS_CAP["coop2_splitk"])
                 if ns_sk >= 3 and bn <= 128:
                     for sk in (2, 4, 8):
                         if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= sm_count:
                             out.append(_Cand("coop2_splitk", 128, bn, bk, ns_sk, split_k=sk))
+        # Ping-pong needs a second tile per CTA for its second consumer, and stores
+        # C through TMA, which addresses n in 16-byte units.
+        if _wide_wgmma_n() and n % 8 == 0:
+            for bn in (176,):
+                plan = _pingpong_stage_plan(bn, 64)
+                if plan is None:
+                    continue
+                ns, sn = plan
+                if math.ceil(m / 128) * math.ceil(n / bn) >= 2 * sm_count:
+                    out.append(_Cand("pingpong", 128, bn, 64, ns, stage_n=sn))
     return out
 
 

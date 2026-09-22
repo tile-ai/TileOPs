@@ -14,6 +14,7 @@ from tileops.kernels.gemm.dense import (
     GemmFp8BlockScaleKernel,
     _b_eviction,
     _bandwidth_autotune_grid,
+    _gemm_pingpong_kernel,
 )
 from tileops.kernels.gemm.heuristics import (
     best_config,
@@ -301,6 +302,28 @@ class GemmFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                     id="full-bf16-coop2-mn-tail",
+                ),
+                pytest.param(
+                    4096,
+                    2112,
+                    256,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-pingpong-persistent",
+                ),
+                pytest.param(
+                    4000,
+                    2080,
+                    256,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-pingpong-mn-tail",
                 ),
                 pytest.param(
                     64,
@@ -919,11 +942,21 @@ def test_gemm_refuses_non_matrix_operands_before_building_anything() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("num_stages, stage_n", [(3, 0), (4, 128)])
-def test_coop2_epilogue_chunking_matches_reference(num_stages: int, stage_n: int) -> None:
-    """Shape coverage: the coop2 epilogue staged in one SMEM chunk and in two.
+@pytest.mark.parametrize(
+    "block_n, num_stages, stage_buf", [(256, 4, 1), (256, 4, 2), (256, 3, 4), (176, 4, 1)]
+)
+def test_coop2_epilogue_staging_matches_reference(
+    block_n: int, num_stages: int, stage_buf: int
+) -> None:
+    """Shape coverage: the coop2 epilogue over one, two and four staging tiles.
 
-    ``stage_n`` cuts a ``block_n``-wide output tile into ``block_n / stage_n`` chunks.
+    A ``block_n``-wide output tile always leaves as ``block_n / stage_n`` slices; what
+    ``stage_buf`` sets is how many of them are in flight, from one (each TMA store waited
+    on before the next slice is written) to all four (none waited on within a tile). Four
+    tiles only fit alongside a three-deep mainloop ring, which is why the depth moves with
+    the count. 176 is not a whole number of swizzle atoms, so it stages the whole tile
+    through one buffer, and 3072 is not a multiple of it, so its last column of tiles is
+    ragged.
     """
     m, n, k = 1536, 3072, 256
     test = GemmTest(m, n, k, torch.bfloat16, False, True)
@@ -937,11 +970,12 @@ def test_coop2_epilogue_chunking_matches_reference(num_stages: int, stage_n: int
         trans_b=True,
         config={
             "coop2": True,
-            "block_n": 256,
+            "block_n": block_n,
             "block_k": 64,
             "num_stages": num_stages,
             "group_size_m": 16,
-            "stage_n": stage_n,
+            "stage_n": 0,
+            "stage_buf": stage_buf,
         },
     )
     torch.testing.assert_close(kernel.forward(a, b), torch.matmul(a, b.T), atol=1.6e-2, rtol=1.6e-2)
@@ -954,6 +988,52 @@ def test_b_tile_eviction_hint_follows_the_m_tile_count() -> None:
     assert _b_eviction(128, 64) == "evict_first"
     assert _b_eviction(129, 64) is None
     assert _b_eviction(4096, 128) is None
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("block_n, num_stages, stage_n", [(176, 5, 16), (176, 4, 88), (128, 6, 64)])
+def test_pingpong_staging_matches_reference(block_n: int, num_stages: int, stage_n: int) -> None:
+    """Shape coverage: the ping-pong epilogue at its shipped slice and two others.
+
+    ``stage_n`` only has to be a TMA-legal divisor of ``block_n``; the slice hides
+    under the other consumer's mainloop, so the plan takes whatever leaves room for
+    the deepest ring. 2080 is not a multiple of 176 and 4000 not of 128, so the
+    last row and column of tiles are ragged and store through TMA's clipping.
+    """
+    m, n, k = 4000, 2080, 256
+    test = GemmTest(m, n, k, torch.bfloat16, False, True)
+    a, b = test.gen_inputs()
+    kernel = GemmTmaKernel(
+        m,
+        n,
+        k,
+        torch.bfloat16,
+        trans_a=False,
+        trans_b=True,
+        config={
+            "pingpong": True,
+            "block_n": block_n,
+            "block_k": 64,
+            "num_stages": num_stages,
+            "group_size_m": 16,
+            "stage_n": stage_n,
+        },
+    )
+    torch.testing.assert_close(kernel.forward(a, b), torch.matmul(a, b.T), atol=1.6e-2, rtol=1.6e-2)
+
+
+@pytest.mark.smoke
+def test_pingpong_refuses_a_grid_its_second_consumer_cannot_share() -> None:
+    """A grid of at most ``sm_count`` tiles gives the odd consumer nothing to do.
+
+    TileLang then proves its TMA store dead and rejects the build with a message
+    naming no shape; the builder refuses first, and the selector never offers
+    ping-pong below two tiles per CTA.
+    """
+    build = _gemm_pingpong_kernel(1024, 2112, 256, False, True, "bfloat16", sm_count=132)
+    with pytest.raises(ValueError, match="more than 132 tiles"):
+        build(176, 64, 5, 16, 16)
+    assert not best_config(1024, 2112, 256, False, True, 132, "NVIDIA H200").get("pingpong")
 
 
 @pytest.mark.smoke
@@ -979,6 +1059,8 @@ def test_structure_routing_matches_test_ids() -> None:
         ("smoke-bf16-square", 1024, 1024, 1024, torch.bfloat16, False, "coop2s"),
         ("full-bf16-coop2-persistent", 1536, 2112, 256, torch.bfloat16, True, "coop2"),
         ("full-bf16-coop2-mn-tail", 1440, 2080, 256, torch.bfloat16, True, "coop2"),
+        ("full-bf16-pingpong-persistent", 4096, 2112, 256, torch.bfloat16, True, "pingpong"),
+        ("full-bf16-pingpong-mn-tail", 4000, 2080, 256, torch.bfloat16, True, "pingpong"),
         ("full-bf16-simple-plain", 64, 7168, 2048, torch.bfloat16, True, "simple"),
         ("full-bf16-simple-cluster", 128, 7168, 2048, torch.bfloat16, True, "simple"),
         ("full-fp16-nt-dense-ws", 128, 2112, 4096, torch.float16, True, "coop2_splitk"),
