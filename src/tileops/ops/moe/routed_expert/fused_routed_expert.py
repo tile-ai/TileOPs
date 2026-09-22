@@ -93,9 +93,9 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
             activation == "silu_and_mul"
             and hidden_size % 128 == 0
             and ffn_size % 256 == 0
-            and (
-                num_tokens <= 32 or (num_tokens == 64 and hidden_size == 7168 and ffn_size == 2048)
-            )
+            # The indexed path re-reads an expert's weights once per route block, so
+            # past 32 tokens the contiguous path wins on every measured model.
+            and num_tokens <= 32
         )
         self._indexed_mlp = (
             IndexedExpertMLPFwdOp(
