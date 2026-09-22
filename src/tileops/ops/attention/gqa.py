@@ -867,7 +867,7 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
                     raise ValueError(f"{name}[0] must equal 0")
                 if bounds[-1] != total:
                     raise ValueError(f"{name}[-1] must equal {total}")
-                if any(end < start for start, end in zip(bounds, bounds[1:], strict=True)):
+                if any(end < start for start, end in zip(bounds[:-1], bounds[1:], strict=True)):
                     raise ValueError(f"{name} must be non-decreasing")
 
         if (rope_cos is None) != (rope_sin is None):
@@ -1093,8 +1093,8 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(GroupedQueryAttentionVarlenFwdOp):
             raise ValueError("cu_seqlens_q must span the packed q tensor")
         if cu_kv[0] != 0 or cu_kv[-1] != k.shape[0]:
             raise ValueError("cu_seqlens_kv must span the packed k/v tensors")
-        q_lens = [end - start for start, end in zip(cu_q, cu_q[1:], strict=True)]
-        kv_lens = [end - start for start, end in zip(cu_kv, cu_kv[1:], strict=True)]
+        q_lens = [end - start for start, end in zip(cu_q[:-1], cu_q[1:], strict=True)]
+        kv_lens = [end - start for start, end in zip(cu_kv[:-1], cu_kv[1:], strict=True)]
         if any(length <= 0 for length in q_lens):
             raise ValueError("all q sequence lengths must be positive")
         if any(length <= 0 for length in kv_lens):
