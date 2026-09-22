@@ -51,8 +51,25 @@ _MAX_SHARED_BYTES = 48 * 1024
 
 
 def _shared_bytes(block_h: int, chunk_len: int) -> int:
-    """Bytes the two float32 (block_h, chunk_len + _ROW_PAD) tiles take."""
-    return 2 * block_h * (chunk_len + _ROW_PAD) * 4
+    """Bytes a block's shared tiles take, bounding the group sums by a quarter row."""
+    return block_h * (2 * (chunk_len + _ROW_PAD) * 4 + chunk_len)
+
+
+def _scan_groups(block_h: int, threads: int, chunk_len: int) -> int:
+    """Threads that share one row's scan, each taking at least four of its positions.
+
+    The row scan is two-level: every group reduces its own run, the runs are scanned
+    against each other, and each position adds the run before it. Wider groups shorten
+    that middle scan; runs below four positions stop paying for the split.
+    """
+    groups = 1
+    while (
+        groups * 2 <= threads // block_h
+        and chunk_len % (groups * 2) == 0
+        and chunk_len // (groups * 2) >= 4
+    ):
+        groups *= 2
+    return groups
 
 
 def _head_tile(n_heads: int, chunk_len: int) -> int:
@@ -96,8 +113,11 @@ def _da_cumsum_fwd_kernel(
     and written back with chunk_len on it. A tile that instead scans ``dt`` in place
     leaves one warp reading H floats apart, which costs eight sectors per useful one.
 
-    The scan runs over the padded row width, so the pad columns are zeroed rather than
-    left undefined; they sit past every real position and never reach an output.
+    The row scan is two-level. ``T.cumsum`` alone walks a row as one warp's worth of
+    32-position segments chained by a carry, which on a 256-position row is 8 serial
+    segments while the block's other warps idle. Here each group reduces its own run
+    in registers, ``T.cumsum`` scans the per-run totals, and the write-out adds the
+    run before it -- the same arithmetic against a far shorter dependence chain.
 
     ``block_h`` (heads per CTA) and ``threads`` are supplied by the returned
     ``kernel_func``.
@@ -113,6 +133,9 @@ def _da_cumsum_fwd_kernel(
 
     @tilelang.jit(out_idx=[-2, -1])
     def kernel_func(block_h: int, threads: int):
+        groups = _scan_groups(block_h, threads, Q)
+        span = Q // groups
+
         @T.prim_func
         def da_cumsum_fwd_main(
             dt: T.Tensor((B, S, H), accum_dtype),  # type: ignore
@@ -124,11 +147,9 @@ def _da_cumsum_fwd_kernel(
             with T.Kernel(B * C, T.ceildiv(H, block_h), threads=threads) as (bc, bh_tile):
                 dt_shared = T.alloc_shared((block_h, row_stride), accum_dtype)
                 dA_shared = T.alloc_shared((block_h, row_stride), accum_dtype)
+                run_sum = T.alloc_shared((block_h, groups), accum_dtype)
                 b = bc // C
                 c = bc % C
-
-                for head, pad in T.Parallel(block_h, _ROW_PAD):
-                    dA_shared[head, Q + pad] = T.float32(0.0)
 
                 for pos, head in T.Parallel(Q, block_h):
                     bh = bh_tile * block_h + head
@@ -152,14 +173,32 @@ def _da_cumsum_fwd_kernel(
                     dA_shared[head, pos] = val * T.if_then_else(in_b, A[safe_bh], T.float32(0.0))
 
                 T.sync_threads()
-                T.cumsum(dA_shared, dim=1)
+
+                for head, g in T.Parallel(block_h, groups):
+                    run = T.alloc_local((span,), accum_dtype)
+                    for j in T.serial(span):
+                        run[j] = dA_shared[head, g * span + j]
+                    if span > 1:
+                        for j in T.serial(span - 1):
+                            run[j + 1] = run[j + 1] + run[j]
+                    for j in T.serial(span):
+                        dA_shared[head, g * span + j] = run[j]
+                    run_sum[head, g] = run[span - 1]
+
+                T.sync_threads()
+                T.cumsum(run_sum, dim=1)
                 T.sync_threads()
 
                 for head, pos in T.Parallel(block_h, Q):
                     bh = bh_tile * block_h + head
                     with T.If(bh < H), T.Then():
+                        carry = T.if_then_else(
+                            pos >= span,
+                            run_sum[head, T.max(pos // span - 1, 0)],
+                            T.float32(0.0),
+                        )
                         dt_out[b, bh, c, pos] = T.cast(dt_shared[head, pos], dtype)
-                        dA_cumsum[b, bh, c, pos] = dA_shared[head, pos]
+                        dA_cumsum[b, bh, c, pos] = dA_shared[head, pos] + carry
 
         return da_cumsum_fwd_main
 
