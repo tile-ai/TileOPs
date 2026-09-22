@@ -136,7 +136,7 @@ FusedMoEExpertsFwdOp:
         - op: MoeExpertMLPFwdOp
         - op: MoePostPermuteFwdOp
       - name: indexed_small_route
-        condition: "silu_and_mul, hidden_size % 128 == 0, ffn_size % 256 == 0, and num_tokens <= 32 (or the 64/7168/2048 point); replaces pre_permute and post_permute too"
+        condition: "silu_and_mul, hidden_size % 128 == 0, ffn_size % 256 == 0, and num_tokens * top_k <= 2 * num_experts; replaces pre_permute and post_permute too"
         stages:
         - op: IndexedExpertMLPFwdOp
     - name: post_permute
