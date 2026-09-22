@@ -400,6 +400,7 @@ def test_varlen_compatibility_validates_lengths_and_dtype() -> None:
         new(q.float(), k.float(), v.float(), cu_q, cu_kv)
 
 
+@pytest.mark.smoke
 @pytest.mark.parametrize("parameter", [{"sm_scale": 0.125}, {"softcap": 5.0}])
 def test_varlen_rejects_unimplemented_window_score_combinations(parameter: dict) -> None:
     with pytest.raises(ValueError, match="windowed Varlen GQA does not yet support"):

@@ -662,7 +662,7 @@ def gqa_sliding_window_varlen_fwd_roofline(
 
 def gqa_varlen_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
     """Route unified Varlen GQA workloads to the matching cost model."""
-    data = _shape_or_attrs(op, kwargs)
+    data = dict(_shape_or_attrs(op, kwargs))
     if "q_shape" not in data:
         data["q_shape"] = (data["total_q"], data["heads"], data["dim"])
         data["k_shape"] = (
