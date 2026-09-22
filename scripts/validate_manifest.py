@@ -836,10 +836,6 @@ def _l0_roofline(op_name: str, entry: dict, roofline: dict) -> list[str]:
             if uncited:
                 err(f"roofline.composition omits non-optional composition stage(s) {uncited}")
 
-    if has_func and isinstance(roofline.get("func"), str):
-        why = _callable_resolution_failure(roofline["func"])
-        if why is not None:
-            err(f"roofline.func {roofline['func']!r} does not resolve to a callable: {why}")
     return errors
 
 
@@ -1824,12 +1820,16 @@ def check_roofline_synthesis(op_name: str, entry: dict) -> list[str]:
     (``docs/design/roofline.md`` §4.1) and is the only place naming the illegal
     name or construct; this reports what it raises and mirrors no rule.
 
-    Call only for an entry whose :func:`check_l0` returned no errors. Codegen
-    rejects a malformed container with a verdict of its own, and reporting both
-    says one defect twice.
+    Reads the ``roofline`` and ``signature`` blocks and nothing else, so no
+    other broken field suppresses it. Where one of those two is itself
+    malformed, :func:`check_l0` is the reporter and this stays silent rather
+    than saying one defect twice.
     """
     if _is_spec_only(entry) or not isinstance(entry.get("roofline"), dict):
         return []
+    sig = entry.get("signature")
+    if sig is not None and not isinstance(sig, dict):
+        return []  # check_l0 reports the container; codegen would say it twice
     try:
         from tileops.ops._roofline_codegen import synthesize_eval_roofline
     except Exception as exc:  # noqa: BLE001 - importing codegen runs its module body
@@ -4925,13 +4925,12 @@ def validate_manifest(
                 warnings=all_warnings,
                 all_op_names=ops.keys(),
             )
-            # Independent fields: one broken field does not hide the other.
-            schema_errors = [*structural_errors, *check_source_paths(op_name, entry, repo_root)]
-            # Gated on check_l0 alone: a container it rejected would be
-            # reported a second time by codegen, and a bad source path is
-            # an unrelated field that must not hide the formula.
-            if not structural_errors:
-                schema_errors.extend(check_roofline_synthesis(op_name, entry))
+            # Independent fields: one broken field does not hide the others.
+            schema_errors = [
+                *structural_errors,
+                *check_source_paths(op_name, entry, repo_root),
+                *check_roofline_synthesis(op_name, entry),
+            ]
             all_errors.extend(schema_errors)
             # C7 would report the same entry as a bare stub; this continue
             # keeps the synthesis verdict the only line for it.

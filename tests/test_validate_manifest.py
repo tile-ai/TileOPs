@@ -815,16 +815,6 @@ class TestRooflineStructuralRules:
                 {"flops": "2*M*N", "bytes": "M*N", "vars": {4: "M"}},
                 ["key", "must be a string"],
             ),
-            (
-                "unresolvable func",
-                {"func": "tileops.perf.formulas.no_such_formula"},
-                ["does not resolve"],
-            ),
-            (
-                "non-callable func (callable() predicate, not hasattr)",
-                {"func": "tileops.perf.formulas.__doc__"},
-                ["does not resolve"],
-            ),
         ]
         for desc, roofline, substrings in cases:
             entry = _make_entry()
@@ -4342,12 +4332,22 @@ class TestRooflineSynthesisReported:
         errors, _ = self._run(validator, self._tree(tmp_path), entry)
         assert any("forbidden construct Subscript" in e for e in errors), errors
 
-    def test_a_broken_source_path_does_not_hide_the_formula(self, validator, tmp_path):
+    @pytest.mark.parametrize(
+        "break_field, other_error",
+        [
+            (lambda e: e["source"].update(op="gone.py"), "source.op is not a file"),
+            (lambda e: e.update(workloads="not a list"), "workloads must be a list"),
+        ],
+        ids=["source", "workloads"],
+    )
+    def test_another_broken_field_does_not_hide_the_formula(
+        self, validator, tmp_path, break_field, other_error
+    ):
         entry = _make_entry(status="implemented", kernel_map={})
         entry["roofline"]["flops"] = "NOPE * 2"
-        entry["source"]["op"] = "gone.py"
+        break_field(entry)
         errors, _ = self._run(validator, self._tree(tmp_path), entry)
-        assert any("source.op is not a file" in e for e in errors), errors
+        assert any(other_error in e for e in errors), errors
         assert any("unknown name 'NOPE'" in e for e in errors), errors
 
     def test_a_malformed_signature_is_reported_not_raised(self, validator, tmp_path):
@@ -4386,24 +4386,18 @@ class TestRooflineSynthesisReported:
         errors = validator.check_roofline_synthesis("my_op", _make_entry(status="implemented"))
         assert errors == ["[schema] my_op: roofline.func 'pkg.mod.fn' does not resolve"]
 
-    def test_a_raising_func_module_keeps_its_cause(self, validator):
-        """The structural lookup reports the cause, not just the verdict."""
-        import sys
-        import types
-
-        class Boom(types.ModuleType):
-            def __getattr__(self, name):
-                raise RuntimeError("module said no")
-
-        sys.modules["_roofline_boom"] = Boom("_roofline_boom")
-        try:
-            entry = _make_entry(status="implemented")
-            entry["roofline"] = {"func": "_roofline_boom.fn"}
-            errors = validator.check_l0("my_op", entry, all_op_names=["my_op"])
-        finally:
-            del sys.modules["_roofline_boom"]
-        assert any("does not resolve to a callable" in e for e in errors), errors
-        assert any("RuntimeError: module said no" in e for e in errors), errors
+    @pytest.mark.parametrize(
+        "func_path",
+        ["tileops.perf.formulas.no_such_formula", "tileops.perf.formulas.__doc__"],
+        ids=["missing", "not-callable"],
+    )
+    def test_an_unresolvable_func_is_reported(self, validator, tmp_path, func_path):
+        """Codegen owns func legality; check_l0 no longer makes a second ruling."""
+        entry = _make_entry(status="implemented", kernel_map={})
+        entry["roofline"] = {"func": func_path}
+        errors, _ = self._run(validator, self._tree(tmp_path), entry)
+        assert any("cannot resolve roofline.func" in e for e in errors), errors
+        assert sum("roofline.func" in e for e in errors) == 1, errors
 
     def test_spec_only_entries_are_not_synthesized(self, validator, tmp_path):
         entry = _make_entry(status="spec-only", kernel_map={})
