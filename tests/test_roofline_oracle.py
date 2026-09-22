@@ -235,7 +235,7 @@ class TestBytesOracle:
             activation=((m, k), torch.float16),
             # int4 weights, two per byte, stated as the bytes they occupy
             packed_weight=((n, k // 2), torch.int8),
-            weight_scale=((n, groups), torch.float32),
+            weight_scale=((n, groups), torch.float16),
             weight_zero=((n, groups), torch.int8),
             output=((m, n), torch.float16),
         )

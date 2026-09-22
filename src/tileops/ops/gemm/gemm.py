@@ -1,3 +1,4 @@
+import warnings
 from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
@@ -10,8 +11,8 @@ from tileops.kernels.gemm.dense import (
     GemmTmaKernel,
     GemvKernel,
 )
-from tileops.kernels.gemm.w4a16 import GROUP_SIZE, GemmW4A16Kernel
-from tileops.kernels.gemm.w4a16_gemv import GemmW4A16GemvKernel
+from tileops.kernels.gemm.w4a16 import _LAYOUT, GROUP_SIZE, GemmW4A16Kernel
+from tileops.kernels.gemm.w4a16_repack import W4A16RepackKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
@@ -390,11 +391,11 @@ class GemmFp8FwdOp(Op):
 class GemmW4A16FwdOp(Op):
     """Dense W4A16 NT GEMM with group-wise affine weight dequantization.
 
-    Public layout is ``activation``: $[M \\times K]$ and ``packed_weight``: $[N \\times K/2]$.
-    Two unsigned INT4 values are packed per byte: the low nibble stores even K
-    and the high nibble stores odd K. ``weight_scale`` and ``weight_zero`` are
-    group128 metadata with shape $[N \\times K/128]$. The product is
-    ``activation @ W.T``.
+    Inputs are activation ``[M, K]``, prepacked weight ``[N, K/2]``, and scale
+    and zero-point tensors ``[N, K/128]``. ``repack`` converts a row-major packed
+    weight once at load time; the two layouts have the same shape and dtype and
+    cannot be distinguished at runtime. The output is ``activation @ W.T`` with
+    shape ``[M, N]``.
     """
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
@@ -410,14 +411,22 @@ class GemmW4A16FwdOp(Op):
         Args:
             group_size: Manifest ``params.group_size``, ``int``, default ``128``.
             kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
+            tune: Accepted for the common op interface and ignored with a warning.
+                W4A16 uses its calibrated selector because generic autotuning cannot
+                time the composite path.
         """
         if group_size != GROUP_SIZE:
             raise ValueError(
                 f"GemmW4A16FwdOp currently supports group_size={GROUP_SIZE}, got {group_size}"
             )
         self.group_size = group_size
-        self.tune = tune
+        if tune:
+            warnings.warn(
+                "GemmW4A16FwdOp does not support generic autotuning; using the calibrated selector",
+                UserWarning,
+                stacklevel=2,
+            )
+        self.tune = False
         self.dispatch_kernel(kernel_map)
         self._active_sig: Optional[tuple] = None
         self._active: Optional[Kernel] = None
@@ -426,8 +435,43 @@ class GemmW4A16FwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "gemm_w4a16_kernel": GemmW4A16Kernel,
-            "gemm_w4a16_gemv_kernel": GemmW4A16GemvKernel,
         }
+
+    def autotune(self) -> None:
+        """Keep the op out of tuned mode until composite-path tuning is supported."""
+        warnings.warn(
+            "GemmW4A16FwdOp does not support generic autotuning; using the calibrated selector",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    @staticmethod
+    def repack(packed_weight: torch.Tensor) -> torch.Tensor:
+        """Put a row-major packed weight into the order ``forward`` reads.
+
+        Args:
+            packed_weight: Row-major packed weights, $[N \\times K/2]$, ``torch.uint8``:
+                two INT4 per byte, even $K$ in the low nibble.
+
+        Returns:
+            A prepacked tensor with the same shape and dtype.
+
+        Raises:
+            ValueError: The input is not a rank-2 uint8 tensor whose K dimension
+                contains whole MMA steps.
+        """
+        if packed_weight.dtype != torch.uint8:
+            raise ValueError(f"repack expects uint8 packed_weight, got {packed_weight.dtype}")
+        if packed_weight.ndim != 2:
+            raise ValueError(f"repack expects a rank-2 weight, got {packed_weight.ndim}")
+        n, packed_k = packed_weight.shape
+        if packed_k % (_LAYOUT.mma_step_k // 2):
+            raise ValueError(
+                f"repack needs K/2={packed_k} to be a multiple of {_LAYOUT.mma_step_k // 2}, the"
+                " packed width of one MMA K step"
+            )
+        kernel = W4A16RepackKernel(n, packed_k, device_index=packed_weight.device.index)
+        return kernel(packed_weight)
 
     def _validate_dtypes(
         self,
@@ -444,9 +488,10 @@ class GemmW4A16FwdOp(Op):
             raise ValueError(
                 f"GemmW4A16FwdOp expects uint8 packed_weight, got {packed_weight.dtype}"
             )
-        if weight_scale.dtype != torch.float32:
+        if weight_scale.dtype != activation.dtype:
             raise ValueError(
-                f"GemmW4A16FwdOp expects float32 weight_scale, got {weight_scale.dtype}"
+                f"GemmW4A16FwdOp expects weight_scale in the activation dtype "
+                f"{activation.dtype}, got {weight_scale.dtype}"
             )
         if weight_zero.dtype != torch.uint8:
             raise ValueError(f"GemmW4A16FwdOp expects uint8 weight_zero, got {weight_zero.dtype}")
@@ -539,9 +584,10 @@ class GemmW4A16FwdOp(Op):
 
         Args:
             activation: Activations, $[M \\times K]$, ``torch.float16``.
-            packed_weight: Weights, $[N \\times K/2]$, ``torch.uint8`` — two INT4
-                values per byte, even $K$ in the low nibble.
-            weight_scale: Group scales, $[N \\times K/128]$, ``torch.float32``.
+            packed_weight: Weights, $[N \\times K/2]$, ``torch.uint8``, in the order
+                ``repack`` returns.
+            weight_scale: Group scales, $[N \\times K/128]$, in the activation
+                dtype.
             weight_zero: Group zero points, $[N \\times K/128]$, ``torch.uint8``.
 
         Returns:
