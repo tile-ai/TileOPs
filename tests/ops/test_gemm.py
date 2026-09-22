@@ -17,6 +17,7 @@ from tileops.kernels.gemm.dense import (
     _gemm_pingpong_kernel,
 )
 from tileops.kernels.gemm.heuristics import (
+    _wide_wgmma_n,
     best_config,
     gemv_config,
     small_batch_config,
@@ -1052,13 +1053,16 @@ def test_structure_routing_matches_test_ids() -> None:
     if get_sm_version() != 90:
         pytest.skip("structure routing is SM90-specific")
 
+    # The 176-wide tiles are offered only where tilelang emits them whole; elsewhere
+    # these two shapes fall back to coop2 and keep their coverage there.
+    pingpong = "pingpong" if _wide_wgmma_n() else "coop2"
     expected = [
         ("smoke-fp16-square", 1024, 1024, 1024, torch.float16, False, "coop2s"),
         ("smoke-bf16-square", 1024, 1024, 1024, torch.bfloat16, False, "coop2s"),
         ("full-bf16-coop2-persistent", 1536, 2112, 256, torch.bfloat16, True, "coop2"),
         ("full-bf16-coop2-mn-tail", 1440, 2080, 256, torch.bfloat16, True, "coop2"),
-        ("full-bf16-pingpong-persistent", 4096, 2112, 256, torch.bfloat16, True, "pingpong"),
-        ("full-bf16-pingpong-mn-tail", 4000, 2080, 256, torch.bfloat16, True, "pingpong"),
+        ("full-bf16-pingpong-persistent", 4096, 2112, 256, torch.bfloat16, True, pingpong),
+        ("full-bf16-pingpong-mn-tail", 4000, 2080, 256, torch.bfloat16, True, pingpong),
         ("full-bf16-simple-plain", 64, 7168, 2048, torch.bfloat16, True, "simple"),
         ("full-bf16-simple-cluster", 128, 7168, 2048, torch.bfloat16, True, "simple"),
         ("full-fp16-nt-dense-ws", 128, 2112, 4096, torch.float16, True, "coop2_splitk"),
