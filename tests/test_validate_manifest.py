@@ -79,7 +79,13 @@ def _make_entry(
             {"x_shape": [1, 4096], "dtypes": ["float16"]},
             {"x_shape": [8, 8192], "dtypes": ["float16"]},
         ],
-        "roofline": {"flops": "2 * M", "bytes": "M * 2"},
+        # Must synthesize: the schema level feeds every implemented entry
+        # through the roofline codegen.
+        "roofline": {
+            "vars": {"N": "product(x.shape)"},
+            "flops": "2 * N",
+            "bytes": "N * elem_bytes",
+        },
         "source": source,
     }
     if status is not None:
@@ -4257,3 +4263,150 @@ class TestWorkspaceStaysOutOfDtypeCombos:
         )
         errors = validator.check_l3("op", entry)
         assert any("missing declared input 'z'" in e for e in errors)
+
+
+class TestRooflineSynthesisReported:
+    """An unsynthesizable roofline block names the illegal construct.
+
+    Without it the entry surfaces only as C7's ``eval_roofline is the Op base
+    stub``, which names the symptom.
+    """
+
+    @staticmethod
+    def _tree(tmp_path):
+        """A repo root whose source paths exist, so only roofline can fail."""
+        (tmp_path / "src").mkdir()
+        for rel in ("src/k.py", "src/o.py", "t.py", "b.py"):
+            (tmp_path / rel).write_text("# placeholder\n")
+        return tmp_path
+
+    def _run(self, validator, tmp_path, entry):
+        manifest_file = _write_manifest(tmp_path, {"my_op": entry})
+        return validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            levels=frozenset({"schema"}),
+        )
+
+    def test_unknown_name_is_reported_with_op_and_field(self, validator, tmp_path):
+        entry = _make_entry(status="implemented", kernel_map={})
+        entry["roofline"]["flops"] = "NOPE * 2"
+        errors, _ = self._run(validator, self._tree(tmp_path), entry)
+        assert errors == [
+            "[schema] my_op: roofline.flops references unknown name 'NOPE'; "
+            "allowed names are ['N', 'ceil', 'elem_bytes', 'floor', 'log2', 'out_elem_bytes']"
+        ]
+
+    def test_reports_the_reason_not_the_stub(self, validator, tmp_path, monkeypatch):
+        """The synthesis verdict replaces C7's, it does not accompany it.
+
+        Runs the level C7 lives in, against an op class carrying no
+        ``eval_roofline``.
+        """
+        from tileops.ops.op_base import Op
+
+        class StubOp(Op):
+            def __init__(self, N, dtype):
+                self.N = N
+                self.dtype = dtype
+
+            def forward(self, x):
+                return x
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        monkeypatch.setattr(
+            validator,
+            "_resolve_op_class",
+            lambda op_file, op_name: validator._ResolveResult(
+                cls=StubOp if op_name == "my_op" else None
+            ),
+        )
+        entry = _make_entry(status="implemented", kernel_map={})
+        entry["roofline"]["flops"] = "NOPE * 2"
+        manifest_file = _write_manifest(self._tree(tmp_path), {"my_op": entry})
+        errors, _ = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            levels=frozenset({"schema", "signature"}),
+            strict_parity=True,
+        )
+        assert any("unknown name 'NOPE'" in e for e in errors), errors
+        assert not any("is the Op base stub" in e for e in errors), errors
+
+    def test_forbidden_construct_is_reported(self, validator, tmp_path):
+        entry = _make_entry(status="implemented", kernel_map={})
+        entry["roofline"]["flops"] = "N[0]"
+        errors, _ = self._run(validator, self._tree(tmp_path), entry)
+        assert any("forbidden construct Subscript" in e for e in errors), errors
+
+    def test_a_broken_source_path_does_not_hide_the_formula(self, validator, tmp_path):
+        entry = _make_entry(status="implemented", kernel_map={})
+        entry["roofline"]["flops"] = "NOPE * 2"
+        entry["source"]["op"] = "gone.py"
+        errors, _ = self._run(validator, self._tree(tmp_path), entry)
+        assert any("source.op is not a file" in e for e in errors), errors
+        assert any("unknown name 'NOPE'" in e for e in errors), errors
+
+    def test_a_malformed_signature_is_reported_not_raised(self, validator, tmp_path):
+        entry = _make_entry(status="implemented", kernel_map={})
+        entry["signature"] = "not a mapping"
+        errors, _ = self._run(validator, self._tree(tmp_path), entry)
+        assert any("signature must be a mapping" in e for e in errors), errors
+
+    def test_a_raising_synthesis_is_reported_not_propagated(self, validator, monkeypatch):
+        """Anything but ValueError is a defect in what the formula reaches."""
+
+        import tileops.ops._roofline_codegen as codegen
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("module said no")
+
+        monkeypatch.setattr(codegen, "synthesize_eval_roofline", _boom)
+        errors = validator.check_roofline_synthesis("my_op", _make_entry(status="implemented"))
+        assert errors == ["[schema] my_op: roofline synthesis raised RuntimeError: module said no"]
+
+    def test_a_message_already_naming_the_op_is_not_prefixed_twice(self, validator):
+        entry = _make_entry(status="implemented")
+        entry["roofline"]["flops"] = "NOPE * 2"
+        errors = validator.check_roofline_synthesis("my_op", entry)
+        assert len(errors) == 1
+        assert errors[0].count("my_op") == 1, errors
+
+    def test_a_message_not_naming_the_op_gains_the_prefix(self, validator, monkeypatch):
+        """``_resolve_func_path``'s messages carry the field, not the op."""
+        import tileops.ops._roofline_codegen as codegen
+
+        def _raise(*_args, **_kwargs):
+            raise ValueError("roofline.func 'pkg.mod.fn' does not resolve")
+
+        monkeypatch.setattr(codegen, "synthesize_eval_roofline", _raise)
+        errors = validator.check_roofline_synthesis("my_op", _make_entry(status="implemented"))
+        assert errors == ["[schema] my_op: roofline.func 'pkg.mod.fn' does not resolve"]
+
+    def test_a_raising_func_module_keeps_its_cause(self, validator):
+        """The structural lookup reports the cause, not just the verdict."""
+        import sys
+        import types
+
+        class Boom(types.ModuleType):
+            def __getattr__(self, name):
+                raise RuntimeError("module said no")
+
+        sys.modules["_roofline_boom"] = Boom("_roofline_boom")
+        try:
+            entry = _make_entry(status="implemented")
+            entry["roofline"] = {"func": "_roofline_boom.fn"}
+            errors = validator.check_l0("my_op", entry, all_op_names=["my_op"])
+        finally:
+            del sys.modules["_roofline_boom"]
+        assert any("does not resolve to a callable" in e for e in errors), errors
+        assert any("RuntimeError: module said no" in e for e in errors), errors
+
+    def test_spec_only_entries_are_not_synthesized(self, validator, tmp_path):
+        entry = _make_entry(status="spec-only", kernel_map={})
+        entry["roofline"]["flops"] = "NOPE * 2"
+        errors, _ = self._run(validator, self._tree(tmp_path), entry)
+        assert errors == [], errors

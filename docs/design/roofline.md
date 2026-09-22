@@ -104,7 +104,7 @@ roofline:
 
 `src/tileops/manifest/` is the source of truth for the `roofline` field. Four modules read it:
 
-- **Schema validator / CI** — structural checks only (schema, mode exclusivity, `func` importability). Does **not** execute formulas or hold a helper whitelist. Spec: §4.1.
+- **Schema validator / CI** — structural checks (schema, mode exclusivity, `func` importability), plus a call into codegen's synthesis whose error it reports. Does **not** execute formulas or hold a helper whitelist of its own. Spec: §4.1.
 - **Benchmark layer** — instantiates an Op per workload and reads `(flops, bytes)` from `op.eval_roofline()`. Hardcoded formulas in benchmark files are a CI failure. Spec: §4.2.
 - **Roofline tool (M5)** — reads per-workload `(flops, bytes)`, the roof key, and timing from benchmark output, prices them against the GPU profile (§5.1), and emits SOL efficiency and verdicts. Spec: §4.3.
 - **Op codegen** — generates an op's `eval_roofline()` method unless the op defines one itself (§4.4.1); is the authoritative gate for name and form correctness. Spec: §4.4.
@@ -117,7 +117,9 @@ Tests and workloads are not consumers: they may supply shapes and dtypes but mus
 
 ### 4.1 Schema Validator / CI
 
-Runs on every PR touching `src/tileops/manifest/`. Scope is structural.
+Runs on every PR touching `src/tileops/manifest/`. Scope is structural, plus one call into
+codegen per implemented entry, so a formula that cannot be synthesized reports the reason codegen
+gives for it.
 
 Every roofline entry MUST satisfy:
 
@@ -127,13 +129,20 @@ Every roofline entry MUST satisfy:
 - `read_bound_exception`, where present, is a mapping of `when` and `reason`, both non-empty strings. `when` joins names, negated names and comparisons of names against literals with `and` or `or`, over params, the workload keys stating what the call does, and `dtype`. Every clause, at every depth, must read the call, so none can settle the condition on its own — that would waive every call of the op (§4.5).
 - `func` dotted path resolves at import time.
 
-Out of the validator's scope:
+For every entry with `status: implemented` and a `roofline` block, the validator calls
+`synthesize_eval_roofline` and reports the raised message as one `[schema]` error, under the
+op's name. It runs only
+after that entry's structural checks pass, because a malformed `signature` or `roofline` container
+makes codegen raise on the container rather than on the formula. A failing `source` path does not
+suppress it: the two are independent fields and both are reported.
 
-- Name whitelist — a formula's names are checked by codegen (§4.4), which owns the binding table. Validator does not mirror it.
+Rules the validator does not hold:
+
+- Name whitelist — a formula's names are checked by codegen (§4.4), which owns the binding table. Validator does not mirror it; it reports what codegen raises.
 - Form checks (layer violations, forbidden AST nodes) — codegen refuses to emit invalid forms.
 - Numeric checks (finite / non-negative / numeric) — tests exercise generated `eval_roofline()` on each workload.
 
-Validator holds no callables, no sample bindings, no `__builtins__` sandbox. Adding a helper does not touch the validator.
+Validator holds no whitelist, no binding table, no sample bindings and no `__builtins__` sandbox. Adding a helper does not touch the validator. Synthesis returns a callable, which the validator discards unexecuted — it is asking whether the formula compiles, not what it computes.
 
 ### 4.2 Benchmark Layer
 

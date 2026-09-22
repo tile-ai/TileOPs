@@ -716,6 +716,28 @@ def _l0_read_bound_exception(op_name: str, entry: dict, roofline: dict) -> list[
     return errors
 
 
+def _callable_resolution_failure(path: str) -> str | None:
+    """The cause of ``module.path.attr`` not naming a callable, None when it does.
+
+    Importing runs the module body and an attribute may be served by a
+    ``__getattr__``, so either step raises anything. The cause carries the
+    exception type: a raising module is a defect in what the manifest points
+    at, not in the manifest.
+    """
+    mod_path, _, attr = path.rpartition(".")
+    if not mod_path:
+        return "not a dotted module.attr path"
+    try:
+        target = importlib.import_module(mod_path)
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        return f"importing {mod_path!r} raised {type(exc).__name__}: {exc}"
+    try:
+        found = getattr(target, attr, None)
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        return f"reading {attr!r} raised {type(exc).__name__}: {exc}"
+    return None if callable(found) else f"{attr!r} is not a callable on {mod_path!r}"
+
+
 def _l0_roofline(op_name: str, entry: dict, roofline: dict) -> list[str]:
     """Roofline structural rules per docs/design/roofline.md §4.1."""
     errors: list[str] = []
@@ -793,13 +815,12 @@ def _l0_roofline(op_name: str, entry: dict, roofline: dict) -> list[str]:
                 # ``source`` names the function that stage's cost comes from, and
                 # resolves the same way ``roofline.func`` does.
                 if isinstance(item.get("source"), str) and item["source"].strip():
-                    smod, _, sattr = item["source"].rpartition(".")
-                    try:
-                        starget = importlib.import_module(smod) if smod else None
-                    except ImportError:
-                        starget = None
-                    if starget is None or not callable(getattr(starget, sattr, None)):
-                        err(f"{where}.source {item['source']!r} does not resolve to a callable")
+                    why = _callable_resolution_failure(item["source"])
+                    if why is not None:
+                        err(
+                            f"{where}.source {item['source']!r} does not resolve "
+                            f"to a callable: {why}"
+                        )
                 if "optional" in item and not isinstance(item["optional"], bool):
                     err(f"{where}.optional must be a bool")
             # A stage the entry does not mark optional has a cost, and a parent
@@ -816,13 +837,9 @@ def _l0_roofline(op_name: str, entry: dict, roofline: dict) -> list[str]:
                 err(f"roofline.composition omits non-optional composition stage(s) {uncited}")
 
     if has_func and isinstance(roofline.get("func"), str):
-        mod, _, attr = roofline["func"].rpartition(".")
-        try:
-            target = importlib.import_module(mod) if mod else None
-        except ImportError:
-            target = None
-        if target is None or not callable(getattr(target, attr, None)):
-            err(f"roofline.func {roofline['func']!r} does not resolve to a callable")
+        why = _callable_resolution_failure(roofline["func"])
+        if why is not None:
+            err(f"roofline.func {roofline['func']!r} does not resolve to a callable: {why}")
     return errors
 
 
@@ -1798,6 +1815,51 @@ def check_kernel_map_parity(
             f"{dict(sorted(declared.items()))}, code has {dict(sorted(actual.items()))}"
         )
     return errors
+
+
+def check_roofline_synthesis(op_name: str, entry: dict) -> list[str]:
+    """Report why an implemented entry's ``roofline`` block cannot synthesize.
+
+    Codegen owns the name whitelist and the AST form rules
+    (``docs/design/roofline.md`` §4.1) and is the only place naming the illegal
+    name or construct; this reports what it raises and mirrors no rule.
+
+    Call only for an entry whose :func:`check_l0` returned no errors: a
+    malformed ``signature`` or ``roofline`` container makes codegen raise on
+    the container instead of returning a formula verdict.
+    """
+    if _is_spec_only(entry) or not isinstance(entry.get("roofline"), dict):
+        return []
+    try:
+        from tileops.ops._roofline_codegen import synthesize_eval_roofline
+    except Exception as exc:  # noqa: BLE001 - importing codegen runs its module body
+        return [
+            f"[schema] {op_name}: roofline codegen is unavailable ({type(exc).__name__}: {exc})"
+        ]
+    try:
+        synthesize_eval_roofline(
+            op_name,
+            roofline=entry["roofline"],
+            signature=entry.get("signature"),
+        )
+    except ValueError as exc:
+        # The formula verdict. Codegen names the field, not always the op.
+        text = str(exc)
+        prefix = "" if text.startswith(f"{op_name}:") else f"{op_name}: "
+        return [f"[schema] {prefix}{text}"]
+    except ModuleNotFoundError as exc:
+        # An ``out_elem_bytes`` formula imports ``_output_dtype``, which needs
+        # torch. A warning would let a run pass without the gate having run.
+        return [
+            f"[schema] {op_name}: roofline synthesis needs a dependency this "
+            f"environment does not have ({exc})"
+        ]
+    except Exception as exc:  # noqa: BLE001 - see below
+        # Codegen raises ValueError for every verdict it has a name for, so
+        # anything else is a defect in what the formula reaches. The type keeps
+        # it distinguishable from a manifest defect.
+        return [f"[schema] {op_name}: roofline synthesis raised {type(exc).__name__}: {exc}"]
+    return []
 
 
 def check_source_paths(op_name: str, entry: dict, repo_root: Path) -> list[str]:
@@ -4864,14 +4926,20 @@ def validate_manifest(
 
         # schema: YAML structure validation
         if "schema" in levels:
-            schema_errors = check_l0(
+            structural_errors = check_l0(
                 op_name,
                 entry,
                 warnings=all_warnings,
                 all_op_names=ops.keys(),
             )
-            schema_errors.extend(check_source_paths(op_name, entry, repo_root))
+            # Independent fields: one broken field does not hide the other.
+            schema_errors = [*structural_errors, *check_source_paths(op_name, entry, repo_root)]
+            # Gated on check_l0 alone: codegen needs the containers it validated.
+            if not structural_errors:
+                schema_errors.extend(check_roofline_synthesis(op_name, entry))
             all_errors.extend(schema_errors)
+            # C7 would report the same entry as a bare stub; this continue
+            # keeps the synthesis verdict the only line for it.
             if schema_errors:
                 continue
 
