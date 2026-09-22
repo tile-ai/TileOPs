@@ -1164,6 +1164,10 @@ def test_gemm_w4a16_offers_only_buildable_tiles(n: int, k: int) -> None:
             assert not (config["block_n"] == 64 and math_threads > 128), f"m={m} offers {config}"
             assert 1 <= config["block_k"] // config["step_k"] <= 4
             assert config["block_k"] % 128 == 0
+            k_iters = -(-k // config["block_k"])
+            assert k_iters % config["split_k"] == 0
+            assert config["split_k"] == 1 or k_iters // config["split_k"] >= 2
+            assert not (config["tma_threads"] and config["split_k"] > 1)
             shared = _smem_bytes(
                 config["block_m"],
                 config["block_n"],
@@ -1186,6 +1190,36 @@ def test_gemm_w4a16_picks_a_tile_per_token_band(n: int, k: int) -> None:
         for m in (1, 32, 65, 97, 129, 200, 257, 1024, 4096)
     }
     assert len(tiles) >= 4
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_slices_k_only_where_the_grid_underfills() -> None:
+    """One token on a narrow N leaves most SMs idle; a wide N or many tokens do not."""
+    assert GemmW4A16Kernel(1, 1024, 8192, torch.float16).config["split_k"] > 1
+    assert GemmW4A16Kernel(1, 8192, 8192, torch.float16).config["split_k"] == 1
+    assert GemmW4A16Kernel(128, 8192, 8192, torch.float16).config["split_k"] == 1
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("split_k", [2, 8])
+def test_gemm_w4a16_sliced_k_matches_the_reference(split_k: int) -> None:
+    """The fp32 partials reduce to what the whole K loop computes."""
+    test = GemmW4A16Test(1, 1024, 8192, torch.float16)
+    activation, prepacked, scale, zero = test.gen_inputs()
+    base = GemmW4A16Kernel(1, 1024, 8192, torch.float16).config
+    kernel = GemmW4A16Kernel(
+        1,
+        1024,
+        8192,
+        torch.float16,
+        config={**base, "block_k": 256, "num_stages": 4, "split_k": split_k},
+    )
+    torch.testing.assert_close(
+        kernel(activation, prepacked, scale, zero),
+        test.ref_program(activation, prepacked, scale, zero),
+        atol=7e-2,
+        rtol=5e-2,
+    )
 
 
 @pytest.mark.smoke

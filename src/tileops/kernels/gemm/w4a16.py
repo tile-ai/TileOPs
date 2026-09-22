@@ -26,6 +26,7 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.utils import get_sm_count, is_h200
 
 from .call_spec import GemmCall
+from .dense import _splitk_reduce_kernel
 
 # Weights are quantized per group of this many K elements, which fixes the
 # ``[N, K / GROUP_SIZE]`` shape of weight_scale and weight_zero.
@@ -132,6 +133,17 @@ _H200_COST_HAND_WRITTEN = {
 # Costs this close are a tie the fit cannot call; the wider K tile wins it.
 _H200_COST_TIE_WINDOW = 0.02
 
+# What a split-K launch pays beyond its mainloop: the fp32 partials written and
+# read back, plus the reduce launch. The form is `heuristics.py`'s; the numbers
+# are H200 like the fit above. Zero cost at split_k == 1.
+_H200_REDUCE_BYTES_PER_MS = 1.5e9
+_H200_LAUNCH_MS = 0.0015
+
+# Ways to slice K across grid z. Only worth it where the tile grid leaves SMs
+# idle -- one token on a narrow N -- which is what the penalty above lets the
+# cost model decide.
+_SPLIT_K_CANDIDATES = (1, 2, 4, 8, 16)
+
 
 @functools.lru_cache(maxsize=8)
 def _warn_off_calibration_board(device_index: Optional[int]) -> None:
@@ -151,18 +163,25 @@ def _config_cost(m: int, n: int, k: int, cfg: dict, sms: int) -> float:
     block_m, block_n = cfg["block_m"], cfg["block_n"]
     block_k, num_stages, threads = cfg["block_k"], cfg["num_stages"], cfg["threads"]
     tma_threads = cfg.get("tma_threads", 0)
+    split_k = cfg.get("split_k", 1)
     c = _H200_COST_HAND_WRITTEN if tma_threads else _H200_COST_AUTOMATIC
-    waves = -(-((-(-m // block_m)) * (-(-n // block_n))) // sms)
+    # Each CTA runs k / split_k of the loop, and there are split_k times as many.
+    k_eff = k / split_k
+    waves = -(-((-(-m // block_m)) * (-(-n // block_n)) * split_k) // sms)
     # block_n is the WGMMA M.
     math_warpgroups = min((threads - tma_threads) // 128, block_n // 64)
     rows_per_warpgroup = block_n / math_warpgroups
     specialized = threads > 128 and not tma_threads
-    return waves * (
-        rows_per_warpgroup * k * (c["dequant"] + c["dequant_ws"] * specialized)
-        + rows_per_warpgroup * block_m * k * (c["mma"] + c["mma_big"] * (block_m >= 256))
-        + (k / block_k) * (c["iter_ws"] * specialized + c["iter_ns"] / num_stages)
+    cost = waves * (
+        rows_per_warpgroup * k_eff * (c["dequant"] + c["dequant_ws"] * specialized)
+        + rows_per_warpgroup * block_m * k_eff * (c["mma"] + c["mma_big"] * (block_m >= 256))
+        + (k_eff / block_k) * (c["iter_ws"] * specialized + c["iter_ns"] / num_stages)
         + c["wave"]
     )
+    if split_k > 1:
+        reduce_bytes = split_k * m * n * 4 + m * n * 2
+        cost += reduce_bytes / _H200_REDUCE_BYTES_PER_MS + _H200_LAUNCH_MS
+    return cost
 
 
 def _legal_configs(m: int, n: int, k: int, group_size: int):
@@ -184,6 +203,7 @@ def _legal_configs(m: int, n: int, k: int, group_size: int):
                 if block_n == 64 and math_threads > 128:
                     continue
                 for block_k in (128, 256, 512):
+                    k_iters = -(-k // block_k)
                     for num_stages in (2, 3, 4):
                         if (
                             _smem_bytes(
@@ -199,27 +219,50 @@ def _legal_configs(m: int, n: int, k: int, group_size: int):
                             > _SM90_SMEM_BYTES
                         ):
                             continue
-                        yield {
-                            "block_m": block_m,
-                            "block_n": block_n,
-                            "block_k": block_k,
-                            "step_k": MMA_STEP_K,
-                            "num_stages": num_stages,
-                            "threads": threads,
-                            "producer_reg": _PRODUCER_REG if threads > 128 else 0,
-                            "consumer_reg": _CONSUMER_REG if threads > 128 else 0,
-                            "tma_threads": tma_threads,
-                        }
+                        for split_k in _SPLIT_K_CANDIDATES:
+                            # The hand-written ring is not sliced; a slice must
+                            # divide the loop evenly and leave it two tiles to
+                            # pipeline.
+                            if split_k > 1 and (
+                                tma_threads or k_iters % split_k or k_iters // split_k < 2
+                            ):
+                                continue
+                            yield {
+                                "block_m": block_m,
+                                "block_n": block_n,
+                                "block_k": block_k,
+                                "step_k": MMA_STEP_K,
+                                "num_stages": num_stages,
+                                "threads": threads,
+                                "producer_reg": _PRODUCER_REG if threads > 128 else 0,
+                                "consumer_reg": _CONSUMER_REG if threads > 128 else 0,
+                                "tma_threads": tma_threads,
+                                "split_k": split_k,
+                            }
+
+
+# What identifies a tile shape, as opposed to how its K loop is sliced.
+_TILE_KEYS = ("block_m", "block_n", "block_k", "num_stages", "threads", "tma_threads")
 
 
 def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
-    """The cheapest legal tile under :func:`_config_cost`, widest K tile on a tie."""
-    scored = [(_config_cost(m, n, k, cfg, sms), cfg) for cfg in _legal_configs(m, n, k, group_size)]
+    """The cheapest legal tile under :func:`_config_cost`, then the cheapest slicing of it.
+
+    The fit ranks whole tiles against each other; it was not fitted to rank a
+    sliced tile of one shape against a whole tile of another, and at one token
+    it credits a second warpgroup with bandwidth an SM does not have. So the
+    tile is chosen unsliced, widest K tile on a tie, and only that tile's own
+    ``split_k`` variants compete afterwards.
+    """
+    legal = list(_legal_configs(m, n, k, group_size))
+    scored = [(_config_cost(m, n, k, cfg, sms), cfg) for cfg in legal if cfg["split_k"] == 1]
     if not scored:
         raise ValueError(f"no legal W4A16 tile for m={m}, n={n}, k={k}")
     floor = min(cost for cost, _ in scored) * (1 + _H200_COST_TIE_WINDOW)
     tied = [(cost, cfg) for cost, cfg in scored if cost <= floor]
-    return min(tied, key=lambda t: (-t[1]["block_k"], t[0]))[1]
+    tile = min(tied, key=lambda t: (-t[1]["block_k"], t[0]))[1]
+    slicings = [cfg for cfg in legal if all(cfg[key] == tile[key] for key in _TILE_KEYS)]
+    return min(slicings, key=lambda cfg: _config_cost(m, n, k, cfg, sms))
 
 
 @functools.lru_cache(maxsize=32)
@@ -249,6 +292,7 @@ def _gemm_w4a16_kernel(
         consumer_reg: int = _CONSUMER_REG,
         tma_threads: int = 0,
         swizzle_packed: bool = True,
+        split_k: int = 1,
     ) -> Callable:
         packed_k = block_k // 2
         run = (step_k // 2) // _LANES
@@ -278,6 +322,12 @@ def _gemm_w4a16_kernel(
                 f"threads={threads} leaves {math_threads} for math beside a "
                 f"{tma_threads}-thread producer; it must be a positive multiple of 128"
             )
+        if split_k > 1 and (tma_threads or k_iters % split_k):
+            raise ValueError(
+                f"split_k={split_k} must divide the {k_iters} K tiles and needs the "
+                "compiler-pipelined path"
+            )
+        k_slice = k_iters // split_k
 
         @T.macro
         def decode_step(
@@ -558,79 +608,73 @@ def _gemm_w4a16_kernel(
                         output[m_start : m_start + block_m, n_start : n_start + block_n],
                     )
 
-        @T.prim_func
-        def main(
-            activation: T.Tensor((m, k), dtype),  # type: ignore
-            packed_weight: T.Tensor((n, k // 8), "uint32"),  # type: ignore
-            weight_scale: T.Tensor((n, all_groups), dtype),  # type: ignore
-            weight_zero: T.Tensor((n, all_groups), "uint8"),  # type: ignore
-            output: T.Tensor((m, n), dtype),  # type: ignore
-        ) -> None:
-            with T.Kernel(tiles_m, tiles_n, threads=threads) as (bx, by):
-                activation_shared = T.alloc_shared((block_m, block_k), dtype)
-                packed_shared = T.alloc_shared((block_n, packed_k // 4), "uint32")
-                # Only the K tile's own groups.
-                scale_shared = T.alloc_shared((block_n, meta_groups), dtype)
-                zero_shared = T.alloc_shared((block_n, meta_groups), "uint8")
-                # One per sub-step, so none is overwritten while its WGMMA is
-                # still reading; that keeps `steps - 1` in flight.
-                frag_a = T.alloc_fragment((block_n, step_k), dtype)
-                frag_b = T.alloc_fragment((block_n, step_k), dtype)
-                frag_c = T.alloc_fragment((block_n, step_k), dtype)
-                frag_d = T.alloc_fragment((block_n, step_k), dtype)
-                output_local = T.alloc_fragment((block_n, block_m), "float")
-                out_shared = T.alloc_shared((block_m, block_n), dtype)
-                run_local = T.alloc_local((run // 4,), "uint32")
-                scale_local = T.alloc_local((1,), dtype)
+        @T.macro
+        def tile_body(
+            kk_first,
+            kk_count,
+            activation,
+            packed_weight,
+            weight_scale,
+            weight_zero,
+            activation_shared,
+            packed_shared,
+            scale_shared,
+            zero_shared,
+            frag_a,
+            frag_b,
+            frag_c,
+            frag_d,
+            output_local,
+            run_local,
+            scale_local,
+            m_start,
+            n_start,
+        ):
+            """Accumulate K tiles ``kk_first .. kk_first + kk_count`` into ``output_local``."""
+            if not per_tile_meta:
+                for i, g in T.Parallel(block_n, padded_groups):
+                    g_src = T.min(g, all_groups - 1)
+                    scale_shared[i, g] = weight_scale[n_start + i, g_src]
+                    zero_shared[i, g] = weight_zero[n_start + i, g_src]
+            T.clear(output_local)
 
-                layouts = {
-                    activation_shared: tilelang.layout.make_swizzled_layout(activation_shared)
-                }
-                if swizzle_packed:
-                    # Every packed row starts in the same bank, and only the
-                    # half-bank swizzle removes the resulting conflicts.
-                    layouts[packed_shared] = tilelang.layout.make_half_bank_swizzled_layout(
-                        packed_shared
-                    )
-                T.annotate_layout(layouts)
-
-                # Minimum budget to the producer, the rest to the consumers.
-                if producer_reg > 0:
-                    T.annotate_producer_reg_dealloc(producer_reg)
-                if consumer_reg > 0:
-                    T.annotate_consumer_reg_alloc(consumer_reg)
-
-                m_start = bx * block_m
-                n_start = by * block_n
-                if not per_tile_meta:
-                    for i, g in T.Parallel(block_n, padded_groups):
-                        g_src = T.min(g, all_groups - 1)
+            for kk_local in T.Pipelined(kk_count, num_stages=num_stages):
+                kk = kk_local if kk_first == 0 else kk_first + kk_local
+                k_start = kk * block_k
+                if per_tile_meta:
+                    for i, g in T.Parallel(block_n, tile_groups):
+                        g_src = T.min(k_start // group_size + g, all_groups - 1)
                         scale_shared[i, g] = weight_scale[n_start + i, g_src]
                         zero_shared[i, g] = weight_zero[n_start + i, g_src]
-                T.clear(output_local)
+                T.copy(
+                    activation[m_start : m_start + block_m, k_start : k_start + block_k],
+                    activation_shared,
+                )
+                T.copy(
+                    packed_weight[
+                        n_start : n_start + block_n,
+                        k_start // 8 : k_start // 8 + packed_k // 4,
+                    ],
+                    packed_shared,
+                )
 
-                for kk in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
-                    k_start = kk * block_k
-                    if per_tile_meta:
-                        for i, g in T.Parallel(block_n, tile_groups):
-                            g_src = T.min(k_start // group_size + g, all_groups - 1)
-                            scale_shared[i, g] = weight_scale[n_start + i, g_src]
-                            zero_shared[i, g] = weight_zero[n_start + i, g_src]
-                    T.copy(
-                        activation[m_start : m_start + block_m, k_start : k_start + block_k],
-                        activation_shared,
-                    )
-                    T.copy(
-                        packed_weight[
-                            n_start : n_start + block_n,
-                            k_start // 8 : k_start // 8 + packed_k // 4,
-                        ],
-                        packed_shared,
-                    )
-
+                sub_step(
+                    0,
+                    frag_a,
+                    packed_shared,
+                    scale_shared,
+                    zero_shared,
+                    activation_shared,
+                    output_local,
+                    run_local,
+                    scale_local,
+                    k_start,
+                    steps > 1,
+                )
+                if steps > 1:
                     sub_step(
-                        0,
-                        frag_a,
+                        1,
+                        frag_b,
                         packed_shared,
                         scale_shared,
                         zero_shared,
@@ -641,50 +685,130 @@ def _gemm_w4a16_kernel(
                         k_start,
                         steps > 1,
                     )
-                    if steps > 1:
-                        sub_step(
-                            1,
-                            frag_b,
-                            packed_shared,
-                            scale_shared,
-                            zero_shared,
-                            activation_shared,
-                            output_local,
-                            run_local,
-                            scale_local,
-                            k_start,
-                            steps > 1,
-                        )
-                    if steps > 2:
-                        sub_step(
-                            2,
-                            frag_c,
-                            packed_shared,
-                            scale_shared,
-                            zero_shared,
-                            activation_shared,
-                            output_local,
-                            run_local,
-                            scale_local,
-                            k_start,
-                            steps > 1,
-                        )
-                    if steps > 3:
-                        sub_step(
-                            3,
-                            frag_d,
-                            packed_shared,
-                            scale_shared,
-                            zero_shared,
-                            activation_shared,
-                            output_local,
-                            run_local,
-                            scale_local,
-                            k_start,
-                            steps > 1,
-                        )
-                    if steps > 1:
-                        T.wait_wgmma(0)
+                if steps > 2:
+                    sub_step(
+                        2,
+                        frag_c,
+                        packed_shared,
+                        scale_shared,
+                        zero_shared,
+                        activation_shared,
+                        output_local,
+                        run_local,
+                        scale_local,
+                        k_start,
+                        steps > 1,
+                    )
+                if steps > 3:
+                    sub_step(
+                        3,
+                        frag_d,
+                        packed_shared,
+                        scale_shared,
+                        zero_shared,
+                        activation_shared,
+                        output_local,
+                        run_local,
+                        scale_local,
+                        k_start,
+                        steps > 1,
+                    )
+                if steps > 1:
+                    T.wait_wgmma(0)
+
+        def _tile_buffers(out_dtype):
+            """The shared and register tiles one CTA of the pipelined path holds."""
+            activation_shared = T.alloc_shared((block_m, block_k), dtype)
+            packed_shared = T.alloc_shared((block_n, packed_k // 4), "uint32")
+            # Only the K tile's own groups.
+            scale_shared = T.alloc_shared((block_n, meta_groups), dtype)
+            zero_shared = T.alloc_shared((block_n, meta_groups), "uint8")
+            # One per sub-step, so none is overwritten while its WGMMA is
+            # still reading; that keeps `steps - 1` in flight.
+            frag_a = T.alloc_fragment((block_n, step_k), dtype)
+            frag_b = T.alloc_fragment((block_n, step_k), dtype)
+            frag_c = T.alloc_fragment((block_n, step_k), dtype)
+            frag_d = T.alloc_fragment((block_n, step_k), dtype)
+            output_local = T.alloc_fragment((block_n, block_m), "float")
+            out_shared = T.alloc_shared((block_m, block_n), out_dtype)
+            run_local = T.alloc_local((run // 4,), "uint32")
+            scale_local = T.alloc_local((1,), dtype)
+
+            layouts = {activation_shared: tilelang.layout.make_swizzled_layout(activation_shared)}
+            if swizzle_packed:
+                # Every packed row starts in the same bank, and only the
+                # half-bank swizzle removes the resulting conflicts.
+                layouts[packed_shared] = tilelang.layout.make_half_bank_swizzled_layout(
+                    packed_shared
+                )
+            T.annotate_layout(layouts)
+
+            return (
+                activation_shared,
+                packed_shared,
+                scale_shared,
+                zero_shared,
+                frag_a,
+                frag_b,
+                frag_c,
+                frag_d,
+                output_local,
+                run_local,
+                scale_local,
+                out_shared,
+            )
+
+        @T.prim_func
+        def main(
+            activation: T.Tensor((m, k), dtype),  # type: ignore
+            packed_weight: T.Tensor((n, k // 8), "uint32"),  # type: ignore
+            weight_scale: T.Tensor((n, all_groups), dtype),  # type: ignore
+            weight_zero: T.Tensor((n, all_groups), "uint8"),  # type: ignore
+            output: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(tiles_m, tiles_n, threads=threads) as (bx, by):
+                (
+                    activation_shared,
+                    packed_shared,
+                    scale_shared,
+                    zero_shared,
+                    frag_a,
+                    frag_b,
+                    frag_c,
+                    frag_d,
+                    output_local,
+                    run_local,
+                    scale_local,
+                    out_shared,
+                ) = _tile_buffers(dtype)
+                # Minimum budget to the producer, the rest to the consumers.
+                if producer_reg > 0:
+                    T.annotate_producer_reg_dealloc(producer_reg)
+                if consumer_reg > 0:
+                    T.annotate_consumer_reg_alloc(consumer_reg)
+                m_start = bx * block_m
+                n_start = by * block_n
+                tile_body(
+                    0,
+                    k_iters,
+                    activation,
+                    packed_weight,
+                    weight_scale,
+                    weight_zero,
+                    activation_shared,
+                    packed_shared,
+                    scale_shared,
+                    zero_shared,
+                    frag_a,
+                    frag_b,
+                    frag_c,
+                    frag_d,
+                    output_local,
+                    run_local,
+                    scale_local,
+                    m_start,
+                    n_start,
+                )
                 for i, j in T.Parallel(block_n, block_m):
                     out_shared[j, i] = T.cast(output_local[i, j], dtype)
                 T.copy(
@@ -692,7 +816,68 @@ def _gemm_w4a16_kernel(
                     output[m_start : m_start + block_m, n_start : n_start + block_n],
                 )
 
-        return specialized if tma_threads else main
+        @T.prim_func
+        def sliced(
+            activation: T.Tensor((m, k), dtype),  # type: ignore
+            packed_weight: T.Tensor((n, k // 8), "uint32"),  # type: ignore
+            weight_scale: T.Tensor((n, all_groups), dtype),  # type: ignore
+            weight_zero: T.Tensor((n, all_groups), "uint8"),  # type: ignore
+            partials: T.Tensor((split_k, m, n), "float"),  # type: ignore
+        ) -> None:
+            """`main` over one K slice per grid-z index, leaving fp32 partials to reduce."""
+            with T.Kernel(tiles_m, tiles_n, split_k, threads=threads) as (bx, by, bz):
+                (
+                    activation_shared,
+                    packed_shared,
+                    scale_shared,
+                    zero_shared,
+                    frag_a,
+                    frag_b,
+                    frag_c,
+                    frag_d,
+                    output_local,
+                    run_local,
+                    scale_local,
+                    out_shared,
+                ) = _tile_buffers("float")
+                # Minimum budget to the producer, the rest to the consumers.
+                if producer_reg > 0:
+                    T.annotate_producer_reg_dealloc(producer_reg)
+                if consumer_reg > 0:
+                    T.annotate_consumer_reg_alloc(consumer_reg)
+                m_start = bx * block_m
+                n_start = by * block_n
+                tile_body(
+                    bz * k_slice,
+                    k_slice,
+                    activation,
+                    packed_weight,
+                    weight_scale,
+                    weight_zero,
+                    activation_shared,
+                    packed_shared,
+                    scale_shared,
+                    zero_shared,
+                    frag_a,
+                    frag_b,
+                    frag_c,
+                    frag_d,
+                    output_local,
+                    run_local,
+                    scale_local,
+                    m_start,
+                    n_start,
+                )
+                for i, j in T.Parallel(block_n, block_m):
+                    out_shared[j, i] = output_local[i, j]
+                T.copy(
+                    out_shared,
+                    partials[bz, m_start : m_start + block_m, n_start : n_start + block_n],
+                )
+
+        if tma_threads:
+            return specialized
+        return sliced if split_k > 1 else main
 
     return build
 
@@ -774,6 +959,10 @@ class GemmW4A16Kernel(Kernel):
         self.m_pad = -(-m // self.config["block_m"]) * self.config["block_m"]
         if self.m_pad != m:
             self.kernel = _gemm_w4a16_kernel(self.m_pad, n, k, self.dtype_str, group_size)
+        split_k = self.config.get("split_k", 1)
+        self._reduce = (
+            _splitk_reduce_kernel(split_k, self.m_pad, n, self.dtype_str)() if split_k > 1 else None
+        )
 
     @property
     def default_config(self) -> dict:
@@ -828,5 +1017,12 @@ class GemmW4A16Kernel(Kernel):
             padded[: self.m] = activation
             activation = padded
         # The kernel decodes 32-bit words; the operand stays UINT8 for the caller.
-        out = compiled(activation, packed_weight.view(torch.uint32), weight_scale, weight_zero)
+        words = packed_weight.view(torch.uint32)
+        if self._reduce is None:
+            out = compiled(activation, words, weight_scale, weight_zero)
+        else:
+            # Allocated before the mainloop launches, so the allocation does
+            # not sit between the two kernels.
+            out = activation.new_empty((self.m_pad, self.n))
+            self._reduce(compiled(activation, words, weight_scale, weight_zero), out)
         return out[: self.m] if self.m_pad != self.m else out
