@@ -43,100 +43,48 @@ from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["DaCumsumFwdKernel"]
 
+_ROW_PAD = 4
+_MAX_SHARED_BYTES = 48 * 1024
+_DTYPE_BYTES = {"float16": 2, "bfloat16": 2, "float32": 4}
 
-@functools.lru_cache(maxsize=32)
-def _da_cumsum_fwd_placed_kernel(
-    batch: int,
-    num_chunks: int,
-    chunk_len: int,
-    n_heads: int,
-    seq_len: int,
-    dtype: str,
-    dt_softplus: bool = False,
-    has_dt_bias: bool = False,
-    dt_min: float = 0.0,
-    dt_max: float = float("inf"),
-) -> Callable:
-    """Build the placed HIR realization: two batch/chunk rows per CTA.
 
-    The authored placed HIR folds ``(batch, num_chunks)`` into one work axis.
-    This kernel keeps that ownership through the launch and reuses the bias/A
-    vectors across both rows before the per-row chunk scans.
+def _shared_bytes(block_h: int, chunk_len: int) -> int:
+    """Bytes a block's shared tiles take, bounding the run sums by a quarter row."""
+    return block_h * ((chunk_len + _ROW_PAD) * 4 + chunk_len)
+
+
+def _scan_groups(block_h: int, threads: int, chunk_len: int) -> int:
+    """Threads that share one row's scan, each taking a run of at least four positions."""
+    groups = 1
+    while (
+        groups * 2 <= threads // block_h
+        and chunk_len % (groups * 2) == 0
+        and chunk_len // (groups * 2) >= 4
+    ):
+        groups *= 2
+    return groups
+
+
+def _head_tile(n_heads: int, chunk_len: int) -> int:
+    """Widest power-of-two head tile the heads and the shared budget allow, at most eight.
+
+    A row stride of ``chunk_len + _ROW_PAD`` puts head ``h`` and position ``p`` on bank
+    ``(4h + p) % 32``, so eight heads is the widest a warp's head-major write spreads
+    over all 32 banks. The pad stays a multiple of 4 so the chunk-major read-back of a
+    row keeps its 16-byte vectors.
     """
-    accum_dtype = "float"
-    B = batch
-    C = num_chunks
-    Q = chunk_len
-    H = n_heads
-    S = seq_len
-    ROWS_PER_CTA = 2
+    tile = 8
+    while tile > 1 and (tile > n_heads or _shared_bytes(tile, chunk_len) > _MAX_SHARED_BYTES):
+        tile //= 2
+    return tile
 
-    @tilelang.jit(
-        out_idx=[-2, -1],
-        pass_configs={"tl.disable_data_race_check": True},
-    )
-    def kernel_func(block_h: int, threads: int):
-        BLOCK_H = block_h
 
-        @T.prim_func
-        def da_cumsum_fwd_placed_main(
-            dt: T.Tensor((B, S, H), accum_dtype),  # type: ignore
-            A: T.Tensor((H,), accum_dtype),  # type: ignore
-            dt_bias: T.Tensor((H,), accum_dtype),  # type: ignore
-            dt_out: T.Tensor((B, H, C, Q), dtype),  # type: ignore
-            dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),  # type: ignore
-        ):
-            with T.Kernel(
-                T.ceildiv(B * C, ROWS_PER_CTA),
-                T.ceildiv(H, BLOCK_H),
-                threads=threads,
-            ) as (bc_tile, bh_tile):
-                dA_shared = T.alloc_shared((ROWS_PER_CTA * BLOCK_H, Q), accum_dtype)
-
-                # Each parallel tuple owns one distinct (row, head, pos).
-                # TileLang's conservative verifier cannot prove this mapping.
-                for row, head, pos in T.Parallel(ROWS_PER_CTA, BLOCK_H, Q):
-                    bc = bc_tile * ROWS_PER_CTA + row
-                    bh = bh_tile * BLOCK_H + head
-                    valid = T.And(bc < B * C, bh < H)
-                    safe_bc = T.min(bc, B * C - 1)
-                    safe_b = safe_bc // C
-                    safe_c = safe_bc % C
-                    safe_h = T.min(bh, H - 1)
-                    seq = safe_c * Q + pos
-                    val = T.if_then_else(valid, dt[safe_b, seq, safe_h], T.float32(0.0))
-
-                    if has_dt_bias:
-                        val = val + T.if_then_else(bh < H, dt_bias[safe_h], T.float32(0.0))
-                    if dt_softplus:
-                        val = T.if_then_else(
-                            val <= T.float32(20.0),
-                            T.log(T.float32(1.0) + T.exp(val)),
-                            val,
-                        )
-                    val = T.min(T.max(val, T.float32(dt_min)), T.float32(dt_max))
-                    val = T.if_then_else(valid, val, T.float32(0.0))
-                    with T.If(valid), T.Then():
-                        dt_out[bc // C, bh, bc % C, pos] = T.cast(val, dtype)
-                    slot = row * BLOCK_H + head
-                    dA_shared[slot, pos] = val * T.if_then_else(bh < H, A[safe_h], T.float32(0.0))
-
-                T.sync_threads()
-                T.cumsum(dA_shared, dim=1)
-                T.sync_threads()
-
-                for row, head, pos in T.Parallel(ROWS_PER_CTA, BLOCK_H, Q):
-                    bc = bc_tile * ROWS_PER_CTA + row
-                    bh = bh_tile * BLOCK_H + head
-                    with T.If(T.And(bc < B * C, bh < H)), T.Then():
-                        bb = bc // C
-                        cc = bc % C
-                        slot = row * BLOCK_H + head
-                        dA_cumsum[bb, bh, cc, pos] = dA_shared[slot, pos]
-
-        return da_cumsum_fwd_placed_main
-
-    return kernel_func
+def _thread_count(block_h: int, chunk_len: int) -> int:
+    """Largest power of two up to 512 that every thread still has a tile element for."""
+    threads = 32
+    while threads * 2 <= min(512, block_h * chunk_len):
+        threads *= 2
+    return threads
 
 
 @functools.lru_cache(maxsize=32)
@@ -152,16 +100,21 @@ def _da_cumsum_fwd_kernel(
     dt_min: float = 0.0,
     dt_max: float = float("inf"),
 ) -> Callable:
-    """Build a TileLang parallel dA_cumsum kernel.
+    """Build the chunk-local dA cumsum kernel: one CTA per (batch, chunk, head tile).
 
-    Grid layout: (batch, num_chunks, ceil(n_heads / block_h)).
-    Each block loads a (block_h, chunk_len) tile of dt values, applies
-    bias/softplus/clamp per element in parallel, multiplies by A to get dA,
-    then calls T.cumsum along the chunk dimension.  This eliminates the serial
-    Q-step scan of the previous kernel and matches mamba_ssm's tl.cumsum approach.
+    ``dt`` is contiguous in H while both outputs are contiguous in chunk_len, so the
+    tile is loaded with H on the fastest thread axis, transposed through one shared
+    tile, and written back with chunk_len on it.
 
-    ``block_h``, the number of heads a block covers, is supplied by the returned
-    ``kernel_func`` and must satisfy ``block_h * chunk_len <= 1024``.
+    The row scan is two-level: each thread group stores its run of processed dt to
+    ``dt_out``, scales it by A and scans it in registers, ``T.cumsum`` scans the run
+    totals, and the write-out adds the run before it. ``T.cumsum`` over the whole row
+    would chain its 32-position segments serially while the block's other warps idle.
+
+    Rows past ``n_heads`` read a clamped head and are never stored.
+
+    ``block_h`` (heads per CTA) and ``threads`` are supplied by the returned
+    ``kernel_func``.
     """
     accum_dtype = "float"
 
@@ -170,78 +123,75 @@ def _da_cumsum_fwd_kernel(
     Q = chunk_len
     H = n_heads
     S = seq_len
+    row_stride = Q + _ROW_PAD
 
     @tilelang.jit(out_idx=[-2, -1])
     def kernel_func(block_h: int, threads: int):
+        groups = _scan_groups(block_h, threads, Q)
+        span = Q // groups
+        store_loop = T.vectorized if span * _DTYPE_BYTES[dtype] <= 16 else T.serial
+
         @T.prim_func
-        def da_cumsum_fwd_legacy_main(
-            dt: T.Tensor((B, S, H), accum_dtype),  # type: ignore  # raw dt input
+        def da_cumsum_fwd_main(
+            dt: T.Tensor((B, S, H), accum_dtype),  # type: ignore
             A: T.Tensor((H,), accum_dtype),  # type: ignore
             dt_bias: T.Tensor((H,), accum_dtype),  # type: ignore
-            dt_out: T.Tensor((B, H, C, Q), dtype),  # type: ignore  # Output in dtype for chunk_scan
-            dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),  # type: ignore  # Keep float32 for precision
+            dt_out: T.Tensor((B, H, C, Q), dtype),  # type: ignore
+            dA_cumsum: T.Tensor((B, H, C, Q), accum_dtype),  # type: ignore
         ):
-            # Grid: one block per (batch, chunk, head-tile).
-            # block_h heads are processed together in parallel within each block.
-            with T.Kernel(B, C, T.ceildiv(H, block_h), threads=threads) as (bb, bc, bh_tile):
-                # Shared tiles for (block_h, Q) dt and dA values.
-                # Two tiles: one for dt_out, one for dA (will be overwritten by cumsum).
-                dt_shared = T.alloc_shared((block_h, Q), accum_dtype)
-                dA_shared = T.alloc_shared((block_h, Q), accum_dtype)
+            with T.Kernel(B * C, T.ceildiv(H, block_h), threads=threads) as (bc, bh_tile):
+                row_shared = T.alloc_shared((block_h, row_stride), accum_dtype)
+                run_sum = T.alloc_shared((block_h, groups), accum_dtype)
+                b = bc // C
+                c = bc % C
 
-                # ── Step 1: load raw dt, apply transforms, compute dA ─────────
-                # All (block_h × Q) elements are processed in parallel.
-                for i, j in T.Parallel(block_h, Q):
-                    bh = bh_tile * block_h + i
-                    seq_idx = bc * Q + j
-                    in_b = T.And(bh < H, seq_idx < S)
-
-                    # Clamp indices to valid range before memory reads.
-                    # T.if_then_else lowers to a select instruction (not a branch),
-                    # so both arms are evaluated — out-of-bounds indices must be
-                    # clamped to prevent illegal memory access on padding threads.
-                    safe_bh = T.min(bh, H - 1)
-                    safe_seq_idx = T.min(seq_idx, S - 1)
-
-                    val = T.if_then_else(in_b, dt[bb, safe_seq_idx, safe_bh], T.float32(0.0))
-
+                for pos, head in T.Parallel(Q, block_h):
+                    safe_bh = T.min(bh_tile * block_h + head, H - 1)
+                    val = T.alloc_var(accum_dtype)
+                    val = dt[b, c * Q + pos, safe_bh]
                     if has_dt_bias:
-                        bias = T.if_then_else(bh < H, dt_bias[safe_bh], T.float32(0.0))
-                        val = val + bias
-
-                    # Optional softplus (log(1+exp(x))) with large-value bypass.
+                        val = val + dt_bias[safe_bh]
                     if dt_softplus:
                         val = T.if_then_else(
                             val <= T.float32(20.0),
                             T.log(T.float32(1.0) + T.exp(val)),
                             val,
                         )
-
-                    val = T.min(T.max(val, T.float32(dt_min)), T.float32(dt_max))
-
-                    # Re-apply out-of-bounds zero mask after nonlinearities.
-                    val = T.if_then_else(in_b, val, T.float32(0.0))
-
-                    # Compute A[h] * dt_val for the cumsum input.
-                    a_val = T.if_then_else(bh < H, A[safe_bh], T.float32(0.0))
-
-                    dt_shared[i, j] = val
-                    dA_shared[i, j] = val * a_val
+                    row_shared[head, pos] = T.min(T.max(val, T.float32(dt_min)), T.float32(dt_max))
 
                 T.sync_threads()
-                # ── Step 2: parallel prefix sum along Q dimension ────────────
-                # T.cumsum operates in-place on the shared tile, replacing each
-                # element with the inclusive prefix sum up to that position.
-                T.cumsum(dA_shared, dim=1)
+
+                for head, g in T.Parallel(block_h, groups):
+                    bh = bh_tile * block_h + head
+                    run = T.alloc_local((span,), accum_dtype)
+                    for j in T.serial(span):
+                        run[j] = row_shared[head, g * span + j]
+                    with T.If(bh < H), T.Then():
+                        for j in store_loop(span):
+                            dt_out[b, bh, c, g * span + j] = T.cast(run[j], dtype)
+                    for j in T.serial(span):
+                        run[j] = run[j] * A[T.min(bh, H - 1)]
+                    for j in T.serial(span - 1):
+                        run[j + 1] = run[j + 1] + run[j]
+                    for j in T.serial(span):
+                        row_shared[head, g * span + j] = run[j]
+                    run_sum[head, g] = run[span - 1]
+
+                T.sync_threads()
+                T.cumsum(run_sum, dim=1)
                 T.sync_threads()
 
-                # ── Step 3: write outputs ─────────────────────────────────────
-                for i, j in T.Parallel(block_h, Q):
-                    with T.If(bh_tile * block_h + i < H), T.Then():
-                        dt_out[bb, bh_tile * block_h + i, bc, j] = T.cast(dt_shared[i, j], dtype)
-                        dA_cumsum[bb, bh_tile * block_h + i, bc, j] = dA_shared[i, j]
+                for head, pos in T.Parallel(block_h, Q):
+                    bh = bh_tile * block_h + head
+                    with T.If(bh < H), T.Then():
+                        carry = T.if_then_else(
+                            pos >= span,
+                            run_sum[head, T.max(pos // span - 1, 0)],
+                            T.float32(0.0),
+                        )
+                        dA_cumsum[b, bh, c, pos] = row_shared[head, pos] + carry
 
-        return da_cumsum_fwd_legacy_main
+        return da_cumsum_fwd_main
 
     return kernel_func
 
@@ -275,10 +225,6 @@ class DaCumsumFwdKernel(Kernel):
 
     Applies optional per-head bias, optional softplus activation, and clamping to
     raw dt values, then computes the chunk-local inclusive prefix sum of dA = dt * A.
-
-    Uses a parallel tile approach: each CUDA block processes block_h heads × chunk_len
-    positions simultaneously, with T.cumsum for the prefix scan — matching the
-    parallelism of mamba_ssm's tl.cumsum Triton kernel.
 
     Inputs:
         dt      (batch, seq_len, n_heads) float32 — raw dt values.
@@ -327,7 +273,7 @@ class DaCumsumFwdKernel(Kernel):
         self.dt_min = dt_min
         self.dt_max = dt_max
         self.dtype = dtype
-        self.kernel = _da_cumsum_fwd_placed_kernel(
+        self.kernel = _da_cumsum_fwd_kernel(
             batch,
             num_chunks,
             chunk_len,
@@ -343,24 +289,24 @@ class DaCumsumFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        # One head per tile on the narrowest shape, two elsewhere: a wider tile
-        # spends threads a single-row batch has no work for.
-        block_h = 1 if self.batch == 1 and self.n_heads == 48 else 2
-        return {"block_h": block_h, "threads": min(block_h * self.chunk_len, 1024)}
+        block_h = _head_tile(self.n_heads, self.chunk_len)
+        return {"block_h": block_h, "threads": _thread_count(block_h, self.chunk_len)}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # Sweep block_h ∈ {1, 2, 4, 8, 16} subject to:
-        #   - block_h * chunk_len <= 1024  (threads budget)
-        #   - block_h <= n_heads           (no more tile rows than heads)
-        valid = []
+        # The default leads so a shape too narrow for every swept pair still has one.
+        valid = [self.default_config]
         for bh in [1, 2, 4, 8, 16]:
             if bh > self.n_heads:
                 break
-            if bh * self.chunk_len > 1024:
+            if _shared_bytes(bh, self.chunk_len) > _MAX_SHARED_BYTES:
                 break
-            threads = bh * self.chunk_len
-            valid.append({"block_h": bh, "threads": threads})
+            for threads in [128, 256, 512, 1024]:
+                if threads > bh * self.chunk_len:
+                    break
+                candidate = {"block_h": bh, "threads": threads}
+                if candidate not in valid:
+                    valid.append(candidate)
         return valid
 
     def forward(
