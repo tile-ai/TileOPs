@@ -75,7 +75,8 @@ def _torch_ref_moe_activation(hidden, w1, w2, topk_weights, topk_ids, activation
 
 
 def _small_route_case(ids, dtype=torch.bfloat16):
-    T, E, K, H, F_dim = 4, 8, 2, 128, 256
+    T, K, H, F_dim = len(ids), len(ids[0]), 128, 256
+    E = max(8, max(max(row) for row in ids) + 1)
     hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
     w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
     w2 = torch.randn(E, H, F_dim, dtype=dtype, device="cuda") * 0.02
@@ -237,6 +238,17 @@ class TestFusedMoEExpertsFwdOp:
         assert experts._indexed_mlp.eval_roofline()[1] == expected
 
     @pytest.mark.smoke
+    @pytest.mark.parametrize(
+        "num_tokens,num_experts,indexed",
+        [(64, 256, True), (65, 256, False)],
+    )
+    def test_indexed_path_ends_at_two_routes_per_expert(self, num_tokens, num_experts, indexed):
+        experts = FusedMoEExpertsFwdOp(
+            num_tokens=num_tokens, num_experts=num_experts, top_k=8, hidden_size=7168, ffn_size=2048
+        )
+        assert (experts._indexed_mlp is not None) is indexed
+
+    @pytest.mark.smoke
     def test_workspace_shapes(self, moe_meta):
         d = moe_meta
         experts = FusedMoEExpertsFwdOp(
@@ -256,8 +268,9 @@ class TestFusedMoEExpertsFwdOp:
             [[0, 1], [2, 3], [4, 5], [6, 7]],
             [[0, 1], [0, 1], [0, 2], [0, 2]],
             [[0, 0], [0, 0], [0, 0], [0, 0]],
+            [[0, expert] for expert in range(1, 18)],
         ],
-        ids=["dispersed", "reused", "group-capacity-fallback"],
+        ids=["dispersed", "reused", "duplicate-fallback", "second-route-group"],
     )
     @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
     def test_small_route_branch_matches_reference(self, ids, dtype):
