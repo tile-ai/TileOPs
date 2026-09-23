@@ -32,6 +32,7 @@ from __future__ import annotations
 import ast
 import importlib
 import math
+import unicodedata
 from dataclasses import dataclass, field
 from math import prod
 from typing import Any, Callable
@@ -95,6 +96,31 @@ _ARITHMETIC_ALLOWED_NODES: tuple[type[ast.AST], ...] = (
 # one into the generated body yields a SyntaxError rather than a diagnostic.
 _KEYWORDS = frozenset(__import__("keyword").kwlist) | frozenset(__import__("keyword").softkwlist)
 
+# Names the generated body binds for itself. A declared name landing on one is
+# shadowed by it or shadows it: a param called ``self`` emits ``self = self.self``
+# and every later line reads the param where the op was meant.
+EMITTER_NAMES = frozenset(
+    {
+        "self",
+        "_flops",
+        "_bytes",
+        "elem_bytes",
+        "out_elem_bytes",
+        "_resolve_tensor_binding",
+        "_output_dtype",
+    }
+)
+
+
+def normalized(name: str) -> str:
+    """The identifier Python will see.
+
+    The parser normalizes identifiers to NFKC, so two names that differ as
+    strings can be one name in the emitted body. Comparing raw strings lets the
+    second assignment overwrite the first with no collision ever found.
+    """
+    return unicodedata.normalize("NFKC", name)
+
 
 # Predicates the manifest schema level already rules on. The analysis still
 # judges them -- it needs the answers to decide whether a plan can be built --
@@ -107,9 +133,11 @@ SCHEMA_OWNED_CODES = frozenset(
         "inline.missing-expressions",
         "roofline.mixed-modes",
         "vars.not-a-mapping",
-        "vars.key",
+        "vars.key-not-a-string",
         "vars.not-a-string",
-        "func.path",
+        "vars.empty",
+        "flops.empty",
+        "bytes.empty",
     }
 )
 
@@ -467,6 +495,9 @@ def _analyse_vars_expr(
     optional_names: set[str],
 ) -> None:
     """Parse and walk one vars-layer expression, reporting what it carries."""
+    if not expr.strip():
+        pass_.report("vars.empty", path, "", f"roofline.{path} is empty")
+        return
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as exc:
@@ -477,7 +508,26 @@ def _analyse_vars_expr(
             f"roofline.{path} is not a valid Python expression ({exc})",
         )
         return
-    _VarsExprWalker(pass_, path, allowed, input_names, optional_names).visit(tree)
+    except (RecursionError, MemoryError, ValueError) as exc:
+        # Nesting deep enough to exhaust the parser is a defect in the entry,
+        # and saying so is the only way this stays total.
+        pass_.report(
+            "vars.unparsable",
+            path,
+            type(exc).__name__,
+            f"roofline.{path} could not be parsed ({type(exc).__name__}); the "
+            f"expression is nested too deeply to analyse",
+        )
+        return
+    try:
+        _VarsExprWalker(pass_, path, allowed, input_names, optional_names).visit(tree)
+    except RecursionError:
+        pass_.report(
+            "vars.unparsable",
+            path,
+            "RecursionError",
+            f"roofline.{path} is nested too deeply to analyse",
+        )
 
 
 def _analyse_arithmetic_expr(
@@ -494,18 +544,29 @@ def _analyse_arithmetic_expr(
     :class:`Unjudged` naming that fact rather than a false accusation, because
     the name might have been declared in the part that could not be read.
     """
+    path = f"roofline.{label}"
+    if not expr.strip():
+        pass_.report(f"{label}.empty", path, "", f"roofline.{label} is empty")
+        return
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as exc:
         pass_.report(
             f"{label}.syntax",
-            f"roofline.{label}",
+            path,
             "",
             f"roofline.{label} is not a valid Python expression ({exc})",
         )
         return
-
-    path = f"roofline.{label}"
+    except (RecursionError, MemoryError, ValueError) as exc:
+        pass_.report(
+            f"{label}.unparsable",
+            path,
+            type(exc).__name__,
+            f"roofline.{label} could not be parsed ({type(exc).__name__}); the "
+            f"expression is nested too deeply to analyse",
+        )
+        return
     for node in ast.walk(tree):
         if not isinstance(node, _ARITHMETIC_ALLOWED_NODES):
             pass_.report(
@@ -612,7 +673,7 @@ def _referenced_names(*exprs: str | None) -> set[str]:
             continue
         try:
             tree = ast.parse(expr, mode="eval")
-        except SyntaxError:
+        except (SyntaxError, RecursionError, MemoryError, ValueError):
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Name):
@@ -657,6 +718,26 @@ def _string_keys(pass_: _Pass, fact: Fact, where: str) -> tuple[list[str], bool]
             )
             clean = False
             continue
+        if normalized(key) in EMITTER_NAMES:
+            pass_.report(
+                "signature.reserved-name",
+                where,
+                key,
+                f"{where} declares {key!r}, which the generated body binds for itself; "
+                f"a formula reading it would read that binding, not the declaration",
+            )
+            clean = False
+            continue
+        if normalized(key) in {normalized(n) for n in names}:
+            pass_.report(
+                "signature.duplicate-name",
+                where,
+                key,
+                f"{where} declares {key!r}, which Python reads as a name already "
+                f"declared here; the second binding would shadow the first",
+            )
+            clean = False
+            continue
         names.append(key)
     return names, clean
 
@@ -669,7 +750,7 @@ def _names_a_tensor(expr: str) -> bool:
     """
     try:
         tree = ast.parse(expr, mode="eval")
-    except SyntaxError:
+    except (SyntaxError, RecursionError, MemoryError, ValueError):
         return False
     return any(
         isinstance(node, ast.Attribute) and node.attr in VARS_ATTR_WHITELIST
@@ -765,6 +846,23 @@ def _analyse_inline(
     vars_allowed.update(VARS_HELPERS)
 
     input_name_set = set(input_names)
+    # An input whose attributes could not be read states no optionality. Binding
+    # it as not-optional would be inventing the fact, so the input is recorded
+    # here and only blocks emission if the formula binds it.
+    unreadable_attrs = {
+        name
+        for name, attrs in (inputs.value.items() if inputs.usable else ())
+        if isinstance(name, str) and not isinstance(attrs, dict)
+    }
+    for name in sorted(unreadable_attrs):
+        pass_.report(
+            "signature.input-attributes",
+            f"signature.inputs[{name!r}]",
+            name,
+            f"signature.inputs[{name!r}] is not a mapping, so whether the input is "
+            f"optional cannot be read",
+            blocking=False,
+        )
     optional_names = {
         name
         for name, attrs in (inputs.value.items() if inputs.usable else ())
@@ -787,12 +885,29 @@ def _analyse_inline(
     vars_program: list[tuple[str, str]] = []
     for name, expr in vars_block.items():
         path = f"vars[{name!r}]"
-        if not isinstance(name, str) or not name.isidentifier():
+        if not isinstance(name, str):
             pass_.report(
-                "vars.key",
+                "vars.key-not-a-string",
                 f"roofline.{path}",
                 repr(name),
                 f"roofline.vars key {name!r} is not a valid Python identifier",
+            )
+            continue
+        if not name.isidentifier():
+            pass_.report(
+                "vars.key-not-an-identifier",
+                f"roofline.{path}",
+                name,
+                f"roofline.vars key {name!r} is not a valid Python identifier",
+            )
+            continue
+        if normalized(name) in EMITTER_NAMES:
+            pass_.report(
+                "vars.key-reserved",
+                f"roofline.{path}",
+                name,
+                f"roofline.vars key {name!r} is a name the generated body binds for "
+                f"itself; the assignment would shadow it",
             )
             continue
         if name in _KEYWORDS:
@@ -814,7 +929,7 @@ def _analyse_inline(
             # does not draw a second, misleading "unknown name".
             vars_allowed.add(name)
             continue
-        if name in vars_allowed:
+        if normalized(name) in {normalized(n) for n in vars_allowed}:
             # The emitted body assigns ``<name> = <expr>``, which would shadow
             # the colliding binding for every later expression.
             collides_with_signature = name in input_name_set or name in set(param_names)
@@ -899,6 +1014,13 @@ def _analyse_inline(
     if wants_out_elem_bytes and out_name is None:
         return None
 
+    if unreadable_attrs & referenced:
+        # The formula binds an input whose optionality was not readable.
+        pass_.defer(
+            "signature.inputs",
+            f"whether {sorted(unreadable_attrs & referenced)} are optional",
+        )
+        return None
     bindings = [
         Binding(name=n, kind="input", optional=n in optional_names)
         for n in input_names

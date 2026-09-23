@@ -529,6 +529,24 @@ class TestTotality:
         # Nothing emits from an entry this broken.
         assert result.plan is None or not result.blocking
 
+    @pytest.mark.parametrize(
+        "expr",
+        ["1" + "+1" * 500, "-" * 10000 + "1"],
+        ids=["deep-binop", "deep-unary"],
+    )
+    def test_an_expression_too_deep_to_parse_is_a_verdict(self, expr):
+        """Exhausting the parser raised RecursionError or MemoryError, which the
+        installer would have let take down the importing module."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"N": expr}, "flops": "N", "bytes": "1"},
+            signature={"inputs": {}, "outputs": {"y": {}}},
+        )
+        assert result.plan is None
+        assert result.diagnostics
+
     def test_a_self_referential_entry_does_not_hang(self):
         from tileops.manifest.roofline_analysis import analyze_roofline
 
@@ -547,6 +565,81 @@ class TestTotality:
         assert result.diagnostics
         for d in result.diagnostics:
             assert d.message.startswith("FakeOp: "), d.message
+
+
+class TestNameSafety:
+    """A declared name must mean in the emitted body what it meant in the entry."""
+
+    SIG = {"inputs": {}, "outputs": {"y": {}}}
+
+    def test_two_names_python_reads_as_one_collide(self):
+        """The parser normalizes identifiers, so `K` and `KELVIN SIGN` are one name.
+
+        Comparing the raw strings let the second assignment overwrite the first
+        with no collision found, and the evaluator returned the later value.
+        """
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"K": "1", "\u212a": "2"}, "flops": "K", "bytes": "1"},
+            signature=self.SIG,
+        )
+        assert [d.code for d in result.diagnostics] == ["vars.collision"]
+        assert result.plan is None
+
+    @pytest.mark.parametrize("name", sorted({"self", "elem_bytes", "_flops"}))
+    def test_a_name_the_body_binds_for_itself_is_refused(self, name):
+        """A param called `self` emits `self = self.self`, and every later line
+        then reads the param where the op was meant."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {}, "flops": name, "bytes": "1"},
+            signature={**self.SIG, "params": {name: {"type": "int"}}},
+        )
+        assert result.plan is None
+        assert any(d.code == "signature.reserved-name" for d in result.diagnostics)
+
+    def test_a_vars_key_the_body_binds_for_itself_is_refused(self):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"_flops": "1"}, "flops": "1", "bytes": "1"},
+            signature=self.SIG,
+        )
+        assert [d.code for d in result.diagnostics] == ["vars.key-reserved"]
+        assert result.plan is None
+
+
+class TestUnreadableInputAttributes:
+    """An input whose attributes will not read states no optionality."""
+
+    def test_an_unread_optionality_is_not_invented(self):
+        """Binding it as not-optional would decide the fact rather than read it."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N"},
+            signature={"inputs": {"x": 5}, "outputs": {"y": {}}},
+        )
+        assert [d.code for d in result.diagnostics] == ["signature.input-attributes"]
+        assert result.plan is None
+        assert [u.missing for u in result.unjudged] == ["signature.inputs"]
+
+    def test_an_unread_optionality_on_an_input_nothing_binds_still_emits(self):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {}, "flops": "1", "bytes": "1"},
+            signature={"inputs": {"x": 5}, "outputs": {"y": {}}},
+        )
+        assert [d.code for d in result.diagnostics] == ["signature.input-attributes"]
+        assert result.plan is not None
 
 
 class TestCallPayload:

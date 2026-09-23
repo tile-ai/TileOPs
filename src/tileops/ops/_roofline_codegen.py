@@ -190,7 +190,13 @@ def maybe_install_eval_roofline(cls: type) -> None:
             "roofline is required of every entry (validate_manifest.py, _REQUIRED_TOP), "
             "so reaching here means the manifest has not been validated"
         )
-    result = analyze_roofline(cls.__name__, roofline=roofline, signature=sig)
+    try:
+        result = analyze_roofline(cls.__name__, roofline=roofline, signature=sig)
+    except Exception:  # noqa: BLE001 - totality is a claim, so class creation checks it
+        # The analysis is total over entry data. Reaching here is a defect in it,
+        # and one entry must not take down the import of every op in its module.
+        cls.eval_roofline = Op.eval_roofline  # type: ignore[assignment]
+        return
     if result.plan is None:
         cls.eval_roofline = Op.eval_roofline  # type: ignore[assignment]
         return
