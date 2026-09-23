@@ -1243,8 +1243,23 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(GroupedQueryAttentionVarlenF
             raise ValueError("k/v shape does not match the legacy Op constructor")
         if cu_seqlens_q.shape[0] != self.batch + 1:
             raise ValueError("cu_seqlens_q length does not match batch")
-        lengths = cu_seqlens_q[1:] - cu_seqlens_q[:-1]
-        if int(lengths.max().item()) > self.max_seqlen_q:
+        bounds_by_name = {}
+        for name, offsets, total in (
+            ("cu_seqlens_q", cu_seqlens_q, q.shape[0]),
+            ("cu_seqlens_kv", cu_seqlens_kv, k.shape[0]),
+        ):
+            bounds = [int(value) for value in offsets.detach().cpu().tolist()]
+            if bounds[0] != 0:
+                raise ValueError(f"{name}[0] must equal 0")
+            if any(end < start for start, end in zip(bounds[:-1], bounds[1:], strict=True)):
+                raise ValueError(f"{name} must be non-decreasing")
+            if bounds[-1] > total:
+                raise ValueError(f"{name}[-1] must not exceed {total}")
+            bounds_by_name[name] = bounds
+        q_bounds = bounds_by_name["cu_seqlens_q"]
+        if max(end - start for start, end in zip(q_bounds[:-1], q_bounds[1:], strict=True)) > (
+            self.max_seqlen_q
+        ):
             raise ValueError("max_seqlen_q is smaller than an actual q sequence")
 
     def forward(

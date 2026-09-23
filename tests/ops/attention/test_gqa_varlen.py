@@ -401,6 +401,30 @@ def test_varlen_compatibility_validates_lengths_and_dtype() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("cu_q_values", "cu_kv_values", "message"),
+    [
+        ([1, 8, 16], [0, 16, 32], r"cu_seqlens_q\[0\] must equal 0"),
+        ([0, 8, 16], [0, 24, 16], "cu_seqlens_kv must be non-decreasing"),
+        ([0, 8, 20], [0, 16, 32], r"cu_seqlens_q\[-1\] must not exceed 16"),
+    ],
+)
+def test_sliding_varlen_compatibility_rejects_invalid_offsets(
+    cu_q_values: list[int], cu_kv_values: list[int], message: str
+) -> None:
+    test = GroupedQueryAttentionVarlenFwdTest(
+        2, [8, 8], [16, 16], 8, 2, 64, True, 32, -1, torch.float16
+    )
+    q, k, v, _, _ = test.gen_inputs()
+    cu_q = torch.tensor(cu_q_values, dtype=torch.int32, device=q.device)
+    cu_kv = torch.tensor(cu_kv_values, dtype=torch.int32, device=q.device)
+    op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(2, 8, 2, 64, 8, window_size_left=32)
+
+    with pytest.raises(ValueError, match=message):
+        op(q, k, v, cu_q, cu_kv)
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("parameter", [{"sm_scale": 0.125}, {"softcap": 5.0}])
 def test_varlen_rejects_unimplemented_window_score_combinations(parameter: dict) -> None:
     with pytest.raises(ValueError, match="windowed Varlen GQA does not yet support"):
