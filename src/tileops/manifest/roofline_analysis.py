@@ -765,6 +765,7 @@ def _report_malformed_signature(
     params: Fact,
     *,
     needed: frozenset[str],
+    signature: Any = None,
 ) -> None:
     """Report each signature block that could not be read.
 
@@ -774,6 +775,17 @@ def _report_malformed_signature(
     ``needed`` names the blocks this formula reaches for, and only those are
     blocking.
     """
+    if signature is not None and not isinstance(signature, dict):
+        # The whole block, rather than one of its parts. It settles nothing, so
+        # it is needed exactly when any part would have been.
+        pass_.report(
+            "signature.not-a-mapping",
+            "signature",
+            type(signature).__name__,
+            f"manifest signature must be a mapping, got {type(signature).__name__}",
+            blocking=bool(needed),
+        )
+        return
     for block, fact in (("inputs", inputs), ("outputs", outputs), ("params", params)):
         if fact.state is not MALFORMED:
             continue
@@ -793,6 +805,7 @@ def _analyse_inline(
     inputs: Fact,
     outputs: Fact,
     params: Fact,
+    signature: Any,
 ) -> RooflinePlan | None:
     """Judge an inline block and build its plan when every needed fact is there.
 
@@ -994,7 +1007,9 @@ def _analyse_inline(
             needed.add("inputs")
         if not params_ok:
             needed.add("params")
-    _report_malformed_signature(pass_, inputs, outputs, params, needed=frozenset(needed))
+    _report_malformed_signature(
+        pass_, inputs, outputs, params, needed=frozenset(needed), signature=signature
+    )
 
     if not outputs.usable and wants_out_elem_bytes:
         pass_.defer(
@@ -1064,14 +1079,6 @@ def analyze_roofline(
         )
         return AnalysisResult(tuple(pass_.diagnostics), tuple(pass_.unjudged), None)
 
-    if signature is not None and not isinstance(signature, dict):
-        pass_.report(
-            "signature.not-a-mapping",
-            "signature",
-            type(signature).__name__,
-            f"manifest signature must be a mapping, got {type(signature).__name__}",
-        )
-
     inputs = _mapping_fact(signature, "inputs")
     outputs = _mapping_fact(signature, "outputs")
     params = _mapping_fact(signature, "params")
@@ -1091,7 +1098,9 @@ def analyze_roofline(
     if has_func:
         # Func mode reads no signature, so an unreadable block is a defect the
         # entry still carries but not one that stops this evaluator.
-        _report_malformed_signature(pass_, inputs, outputs, params, needed=frozenset())
+        _report_malformed_signature(
+            pass_, inputs, outputs, params, needed=frozenset(), signature=signature
+        )
         fn = _resolve_func(pass_, roofline["func"])
         plan = (
             None
@@ -1104,7 +1113,7 @@ def analyze_roofline(
             )
         )
     else:
-        plan = _analyse_inline(pass_, op_name, roofline, inputs, outputs, params)
+        plan = _analyse_inline(pass_, op_name, roofline, inputs, outputs, params, signature)
 
     if any(d.blocking for d in pass_.diagnostics):
         plan = None

@@ -126,14 +126,41 @@ class TestTotalContract:
     """Codegen answers a data defect with a verdict, never with a crash."""
 
     def test_a_non_mapping_signature_is_a_verdict(self):
-        from tileops.ops._roofline_codegen import synthesize_eval_roofline
+        """Reported whether or not the formula reads anything from it."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
 
-        with pytest.raises(ValueError, match="signature must be a mapping"):
-            synthesize_eval_roofline(
-                "FakeOp",
-                roofline={"flops": "1", "bytes": "1"},
-                signature="not a mapping",
-            )
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"flops": "1", "bytes": "1"},
+            signature="not a mapping",
+        )
+        assert [d.code for d in result.diagnostics] == ["signature.not-a-mapping"]
+
+    def test_a_non_mapping_signature_stops_a_formula_that_reads_it(self):
+        """The whole block settles nothing, so it is needed exactly when a part
+        of it would have been."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N"},
+            signature="not a mapping",
+        )
+        assert result.plan is None
+        assert ("signature.not-a-mapping", True) in {
+            (d.code, d.blocking) for d in result.diagnostics
+        }
+
+    def test_a_non_mapping_signature_does_not_stop_a_formula_that_does_not(self):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"flops": "1", "bytes": "1"},
+            signature="not a mapping",
+        )
+        assert result.plan is not None
+        assert not result.blocking
 
     @pytest.mark.parametrize("block", ["inputs", "outputs", "params"])
     def test_a_non_mapping_signature_block_is_a_verdict(self, block):
