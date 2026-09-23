@@ -43,13 +43,8 @@ from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["DaCumsumFwdKernel"]
 
-# Shared rows are chunk_len + _ROW_PAD wide. The pad keeps the head-major write off a
-# single bank; keeping it a multiple of 4 keeps the chunk-major read-back vectorized.
 _ROW_PAD = 4
-# Two tiles have to fit the shared memory a block gets without opting in to more.
 _MAX_SHARED_BYTES = 48 * 1024
-
-
 _DTYPE_BYTES = {"float16": 2, "bfloat16": 2, "float32": 4}
 
 
@@ -59,12 +54,7 @@ def _shared_bytes(block_h: int, chunk_len: int) -> int:
 
 
 def _scan_groups(block_h: int, threads: int, chunk_len: int) -> int:
-    """Threads that share one row's scan, each taking at least four of its positions.
-
-    The row scan is two-level: every group reduces its own run, the runs are scanned
-    against each other, and each position adds the run before it. Wider groups shorten
-    that middle scan; runs below four positions stop paying for the split.
-    """
+    """Threads that share one row's scan, each taking a run of at least four positions."""
     groups = 1
     while (
         groups * 2 <= threads // block_h
@@ -78,9 +68,10 @@ def _scan_groups(block_h: int, threads: int, chunk_len: int) -> int:
 def _head_tile(n_heads: int, chunk_len: int) -> int:
     """Widest power-of-two head tile the heads and the shared budget allow, at most eight.
 
-    Eight is where a warp's head-major write still lands one element per bank: a row
-    stride of ``chunk_len + 4`` puts head ``h`` and position ``p`` on bank
-    ``(4h + p) % 32``, which a ninth head starts repeating.
+    A row stride of ``chunk_len + _ROW_PAD`` puts head ``h`` and position ``p`` on bank
+    ``(4h + p) % 32``, so eight heads is the widest a warp's head-major write spreads
+    over all 32 banks. The pad stays a multiple of 4 so the chunk-major read-back of a
+    row keeps its 16-byte vectors.
     """
     tile = 8
     while tile > 1 and (tile > n_heads or _shared_bytes(tile, chunk_len) > _MAX_SHARED_BYTES):
@@ -112,20 +103,15 @@ def _da_cumsum_fwd_kernel(
     """Build the chunk-local dA cumsum kernel: one CTA per (batch, chunk, head tile).
 
     ``dt`` is contiguous in H while both outputs are contiguous in chunk_len, so the
-    tile is loaded with H on the fastest thread axis, transposed through shared memory,
-    and written back with chunk_len on it. A tile that instead scans ``dt`` in place
-    leaves one warp reading H floats apart, which costs eight sectors per useful one.
+    tile is loaded with H on the fastest thread axis, transposed through one shared
+    tile, and written back with chunk_len on it.
 
-    The row scan is two-level. ``T.cumsum`` alone walks a row as one warp's worth of
-    32-position segments chained by a carry, which on a 256-position row is 8 serial
-    segments while the block's other warps idle. Here each group reduces its own run
-    in registers, ``T.cumsum`` scans the per-run totals, and the write-out adds the
-    run before it -- the same arithmetic against a far shorter dependence chain.
+    The row scan is two-level: each thread group stores its run of processed dt to
+    ``dt_out``, scales it by A and scans it in registers, ``T.cumsum`` scans the run
+    totals, and the write-out adds the run before it. ``T.cumsum`` over the whole row
+    would chain its 32-position segments serially while the block's other warps idle.
 
-    One tile carries the row through both halves: the transpose fills it with the
-    processed dt, and the group that holds a run stores that run to ``dt_out`` -- a
-    run is contiguous there -- before scaling it by A and scanning it in place. A
-    second tile for the dA values would be written and read once more for nothing.
+    Rows past ``n_heads`` read a clamped head and are never stored.
 
     ``block_h`` (heads per CTA) and ``threads`` are supplied by the returned
     ``kernel_func``.
@@ -143,7 +129,6 @@ def _da_cumsum_fwd_kernel(
     def kernel_func(block_h: int, threads: int):
         groups = _scan_groups(block_h, threads, Q)
         span = Q // groups
-        # A run reaches dt_out in one store when it fits a 16-byte transaction.
         store_loop = T.vectorized if span * _DTYPE_BYTES[dtype] <= 16 else T.serial
 
         @T.prim_func
@@ -161,24 +146,18 @@ def _da_cumsum_fwd_kernel(
                 c = bc % C
 
                 for pos, head in T.Parallel(Q, block_h):
-                    bh = bh_tile * block_h + head
-                    in_b = bh < H
-                    safe_bh = T.min(bh, H - 1)
-
+                    safe_bh = T.min(bh_tile * block_h + head, H - 1)
                     val = T.alloc_var(accum_dtype)
-                    val = T.if_then_else(in_b, dt[b, c * Q + pos, safe_bh], T.float32(0.0))
+                    val = dt[b, c * Q + pos, safe_bh]
                     if has_dt_bias:
-                        val = val + T.if_then_else(in_b, dt_bias[safe_bh], T.float32(0.0))
+                        val = val + dt_bias[safe_bh]
                     if dt_softplus:
                         val = T.if_then_else(
                             val <= T.float32(20.0),
                             T.log(T.float32(1.0) + T.exp(val)),
                             val,
                         )
-                    val = T.min(T.max(val, T.float32(dt_min)), T.float32(dt_max))
-                    val = T.if_then_else(in_b, val, T.float32(0.0))
-
-                    row_shared[head, pos] = val
+                    row_shared[head, pos] = T.min(T.max(val, T.float32(dt_min)), T.float32(dt_max))
 
                 T.sync_threads()
 
@@ -190,12 +169,10 @@ def _da_cumsum_fwd_kernel(
                     with T.If(bh < H), T.Then():
                         for j in store_loop(span):
                             dt_out[b, bh, c, g * span + j] = T.cast(run[j], dtype)
-                    scale = T.if_then_else(bh < H, A[T.min(bh, H - 1)], T.float32(0.0))
                     for j in T.serial(span):
-                        run[j] = run[j] * scale
-                    if span > 1:
-                        for j in T.serial(span - 1):
-                            run[j + 1] = run[j + 1] + run[j]
+                        run[j] = run[j] * A[T.min(bh, H - 1)]
+                    for j in T.serial(span - 1):
+                        run[j + 1] = run[j + 1] + run[j]
                     for j in T.serial(span):
                         row_shared[head, g * span + j] = run[j]
                     run_sum[head, g] = run[span - 1]
@@ -248,11 +225,6 @@ class DaCumsumFwdKernel(Kernel):
 
     Applies optional per-head bias, optional softplus activation, and clamping to
     raw dt values, then computes the chunk-local inclusive prefix sum of dA = dt * A.
-
-    One block owns block_h heads of one (batch, chunk) tile. The tile is read with
-    the head axis on the fastest thread axis, so the read of ``dt`` is coalesced on
-    its own contiguous axis, transposed through shared memory, scanned with T.cumsum
-    along chunk_len and written back coalesced on the outputs' contiguous axis.
 
     Inputs:
         dt      (batch, seq_len, n_heads) float32 — raw dt values.
@@ -322,11 +294,7 @@ class DaCumsumFwdKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # The default leads, so a shape whose tile admits no swept pair still has one.
-        # Sweep block_h ∈ {1, 2, 4, 8, 16} subject to:
-        #   - block_h <= n_heads             (no more tile rows than heads)
-        #   - shared tiles within _MAX_SHARED_BYTES
-        # and, per block_h, every thread count the tile has an element for.
+        # The default leads so a shape too narrow for every swept pair still has one.
         valid = [self.default_config]
         for bh in [1, 2, 4, 8, 16]:
             if bh > self.n_heads:
