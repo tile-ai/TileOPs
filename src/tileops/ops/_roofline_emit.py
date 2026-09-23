@@ -1,11 +1,11 @@
 """Emit an ``eval_roofline`` from a plan. Decides nothing.
 
-Every choice this module acts on -- which locals to bind, whether the formula
-reads ``elem_bytes``, which output prices the write -- was made by
+Which locals to bind, whether the formula reads ``elem_bytes``, which output
+prices the write: all of it is decided in
 :mod:`tileops.manifest.roofline_analysis` and travels in the plan. Nothing here
 reads a manifest block, re-parses an expression, or produces a message an entry
-author would act on: a defect that reaches this module is a defect in the
-analysis, and the assertions say so.
+author would act on. A defect reaching this module is a defect in the analysis,
+which is what the assertions state.
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ def _emit_func_mode(plan: RooflinePlan) -> Callable[..., tuple[int, int]]:
 def _emit_inline_mode(plan: RooflinePlan) -> Callable[..., tuple[int, int]]:
     """Write the plan out as a plain function and compile it.
 
-    The expressions are copied verbatim, so the generated body parses nothing
-    and evaluates no string at call time.
+    The expressions are copied verbatim: the generated body parses nothing and
+    evaluates no string at call time.
     """
     from tileops.ops._roofline_codegen import _output_dtype_on_call, _resolve_tensor_binding
 

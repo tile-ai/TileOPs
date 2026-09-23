@@ -92,15 +92,12 @@ _ARITHMETIC_ALLOWED_NODES: tuple[type[ast.AST], ...] = (
     ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
 )  # fmt: skip
 
-# A name that parses as an identifier but cannot be assigned to. Interpolating
-# one into the generated body yields a SyntaxError rather than a diagnostic.
-# Reserved words only. A soft keyword -- ``match``, ``case``, ``type``, ``_`` --
-# binds a local perfectly well, and ``type`` is an ordinary param name.
+# Reserved words only: a soft keyword (``match``, ``case``, ``type``, ``_``)
+# binds a local.
 _KEYWORDS = frozenset(__import__("keyword").kwlist)
 
-# Names the generated body binds for itself. A declared name landing on one is
-# shadowed by it or shadows it: a param called ``self`` emits ``self = self.self``
-# and every later line reads the param where the op was meant.
+# Names the generated body binds for itself. A declared name landing on one
+# shadows it, or is shadowed by it.
 EMITTER_NAMES = frozenset(
     {
         "self",
@@ -118,18 +115,14 @@ def normalized(name: str) -> str:
     """The identifier Python will see.
 
     The parser normalizes identifiers to NFKC, so two names that differ as
-    strings can be one name in the emitted body. Comparing raw strings lets the
-    second assignment overwrite the first with no collision ever found.
+    strings can be one name in the emitted body.
     """
     return unicodedata.normalize("NFKC", name)
 
 
-# Predicates the manifest schema level already rules on. The analysis still
-# judges them -- it needs the answers to decide whether a plan can be built --
-# but a consumer that runs alongside that level renders only what it alone
-# owns. Partitioning by owner is what keeps one defect to one line; matching
-# message text, or collapsing by code, would either miss a rewording or discard
-# two real defects that happen to share a kind.
+# Predicates the manifest schema level rules on. The analysis judges them too,
+# because it needs the answers to decide whether a plan can be built, and a
+# consumer running alongside that level renders only what it alone owns.
 SCHEMA_OWNED_CODES = frozenset(
     {
         "roofline.absent",
@@ -142,9 +135,7 @@ SCHEMA_OWNED_CODES = frozenset(
         "flops.empty",
         "bytes.empty",
         "func.not-a-string",
-        # `_l0_signature` rules on the signature's shape; the analysis needs the
-        # same answers to decide whether a plan can be built, and says so only
-        # through whether it builds one.
+        # `_l0_signature` rules on the signature's shape.
         "signature.not-a-mapping",
         "signature.inputs.not-a-mapping",
         "signature.outputs.not-a-mapping",
@@ -228,9 +219,7 @@ class RooflinePlan:
 
     Emission walks ``bindings`` in order, binds ``elem_bytes`` and
     ``out_elem_bytes`` exactly when told to, assigns ``vars_program`` in order
-    and returns the two expressions. It reads no signature and re-parses
-    nothing: a plan that left any of that to be rediscovered would put analysis
-    back into emission.
+    and returns the two expressions. It reads no signature and re-parses nothing.
     """
 
     op_name: str
@@ -314,9 +303,8 @@ class _VarsExprWalker(ast.NodeVisitor):
 
     Scope-aware: comprehensions push a child scope holding their generator
     targets, so a loop variable resolves inside the comprehension and nowhere
-    else. Unlike a gate that raises, this keeps walking after a defect, so two
-    unknown names in one expression yield two diagnostics with different
-    subjects.
+    else. The walk continues past a defect, so two unknown names in one
+    expression are two diagnostics with different subjects.
     """
 
     def __init__(
@@ -333,14 +321,12 @@ class _VarsExprWalker(ast.NodeVisitor):
         self._path = path
         self._optional_names = set(optional_names)
         self._input_names = set(input_names)
-        # Whether the declared inputs could be read at all. While they cannot,
-        # nothing here knows which names are tensors, so the judgments that turn
-        # on that are left to the unjudged line rather than guessed at.
+        # While the declared inputs cannot be read, which names are tensors is
+        # not known, and the judgments that turn on it are left unjudged.
         self._inputs_unreadable = inputs_unreadable
         # Each scope maps a name to what it is. A comprehension target is a
-        # local whatever an outer name of the same spelling happens to be, so
-        # the kind has to travel with the binding: tracking only that a name is
-        # bound reads ``[x.shape for x in range(1)]`` as a tensor read.
+        # local whatever an outer name of the same spelling is, so the kind
+        # travels with the binding.
         outer: dict[str, str] = {}
         for name in allowed:
             outer[name] = "input" if name in self._input_names else "name"
@@ -383,8 +369,7 @@ class _VarsExprWalker(ast.NodeVisitor):
         try:
             for gen in node.generators:  # type: ignore[attr-defined]
                 if getattr(gen, "is_async", 0):
-                    # The emitted body is a plain function, so an async
-                    # comprehension in it does not compile.
+                    # The emitted body is a plain function.
                     self._report(
                         "vars.async-comprehension",
                         "",
@@ -453,9 +438,8 @@ class _VarsExprWalker(ast.NodeVisitor):
                 f"{node.attr!r}; vars-layer allows only {sorted(VARS_ATTR_WHITELIST)!r}",
             )
             return
-        # ``.shape`` / ``.ndim`` are valid only taken directly off a declared
-        # tensor input. Chained access, a subscripted operand and a local name
-        # all reject here rather than producing a body that dies at call time.
+        # ``.shape`` / ``.ndim`` are valid only directly off a declared tensor
+        # input: not chained, not subscripted, not on a local.
         if not isinstance(node.value, ast.Name) or self._kind(node.value.id) != "input":
             if self._inputs_unreadable:
                 return
@@ -476,8 +460,7 @@ class _VarsExprWalker(ast.NodeVisitor):
                 f"roofline.{self._path} performs a non-helper call (only whitelisted "
                 f"helper names may be invoked)",
             )
-        # A comprehension target of the same spelling is not the helper: calling
-        # it calls whatever the comprehension bound.
+        # A comprehension target of the same spelling is not the helper.
         elif node.func.id not in VARS_HELPERS or self._kind(node.func.id) == "local":
             self._report(
                 "vars.unknown-helper",
@@ -566,8 +549,7 @@ def _analyse_vars_expr(
         )
         return
     except (RecursionError, MemoryError, ValueError) as exc:
-        # Nesting deep enough to exhaust the parser is a defect in the entry,
-        # and saying so is the only way this stays total.
+        # Nesting deep enough to exhaust the parser is a defect in the entry.
         pass_.report(
             "vars.unparsable",
             path,
@@ -738,9 +720,8 @@ class _FreeNames(ast.NodeVisitor):
     """Names an expression reads from outside itself.
 
     A comprehension binds its targets in a scope of its own, so the ``x`` in
-    ``len([1 for x in range(3)])`` is that comprehension's and not the declared
-    input of the same name. Counting it would bind an input the formula never
-    reads, and refuse the entry when that input's declaration is unreadable.
+    ``len([1 for x in range(3)])`` is that comprehension's and not a declared
+    input of the same name.
     """
 
     def __init__(self) -> None:
@@ -789,8 +770,7 @@ class _FreeNames(ast.NodeVisitor):
 def _referenced_names(*exprs: str | None) -> set[str]:
     """Names any of the given expressions reads from outside itself.
 
-    Analysis owns this: deciding which locals the body binds is a judgment, and
-    leaving it to emission would put a second parse behind the boundary.
+    Analysis owns this: which locals the body binds is a judgment.
     """
     walker = _FreeNames()
     for expr in exprs:
@@ -811,11 +791,10 @@ def _string_keys(pass_: _Pass, fact: Fact, where: str) -> tuple[list[str], bool]
     """Declared names of one signature block, and whether all keys were usable.
 
     A key that is not a string, or is a keyword, cannot become a local in the
-    generated body. Reporting it here is what keeps it from reaching a name set
-    and failing later as a ``TypeError`` out of ``sorted``.
+    generated body, and is reported rather than counted among the names.
     """
     if fact.state is ABSENT:
-        # Nothing declared is not a defect: an op with no params declares none.
+        # Nothing declared is not a defect.
         return [], True
     if not fact.usable:
         return [], False
@@ -864,9 +843,8 @@ def _string_keys(pass_: _Pass, fact: Fact, where: str) -> tuple[list[str], bool]
             )
             clean = False
             continue
-        # The spelling Python will see. The emitted body reads `self.<name>`,
-        # and an attribute name normalizes the same way, so this is the name on
-        # both sides.
+        # The spelling Python will see. An attribute name normalizes the same
+        # way, so `self.<name>` reads this name too.
         names.append(normalized(key))
     return names, clean
 
@@ -898,15 +876,12 @@ def _report_malformed_signature(
 ) -> None:
     """Report each signature block that could not be read.
 
-    Whether one of these stops emission is not a property of the defect: a
-    formula that never says ``out_elem_bytes`` is complete without a readable
-    ``outputs``, and the same malformed block would stop a formula that does.
-    ``needed`` names the blocks this formula reaches for, and only those are
-    blocking.
+    Whether one stops emission is not a property of the defect but of the
+    formula: ``needed`` names the blocks this one reaches for, and only those
+    are blocking.
     """
     if signature is not None and not isinstance(signature, dict):
-        # The whole block, rather than one of its parts. It settles nothing, so
-        # it is needed exactly when any part would have been.
+        # The whole block settles nothing, so it is needed when any part is.
         pass_.report(
             "signature.not-a-mapping",
             "signature",
@@ -969,8 +944,7 @@ def _analyse_inline(
     input_names, inputs_clean = _string_keys(pass_, inputs, "signature.inputs")
     param_names, params_clean = _string_keys(pass_, params, "signature.params")
     # Read in full, which an absent block is: declaring nothing is a complete
-    # answer. A block with one unreadable key is not -- it states an incomplete
-    # set of names, which settles no more than an unreadable block does.
+    # answer, while a block with one unreadable key states an incomplete one.
     inputs_ok = inputs.state is ABSENT or (inputs.usable and inputs_clean)
     params_ok = params.state is ABSENT or (params.usable and params_clean)
 
@@ -989,9 +963,8 @@ def _analyse_inline(
     vars_allowed.update(VARS_HELPERS)
 
     input_name_set = set(input_names)
-    # An input whose attributes could not be read states no optionality. Binding
-    # it as not-optional would be inventing the fact, so the input is recorded
-    # here and only blocks emission if the formula binds it.
+    # An input whose attributes could not be read states no optionality, so it
+    # blocks emission only where the formula binds it.
     unreadable_attrs = {
         normalized(name)
         for name, attrs in (inputs.value.items() if inputs.usable else ())
@@ -1068,13 +1041,13 @@ def _analyse_inline(
                 type(expr).__name__,
                 f"roofline.vars[{name!r}] must be a string expression",
             )
-            # Declared but unusable: still in scope, so a later entry naming it
-            # does not draw a second, misleading "unknown name".
+            # Declared but unusable: still in scope, so a later entry naming
+            # it does not also draw "unknown name".
             vars_allowed.add(normalized(name))
             continue
         if normalized(name) in vars_allowed:
-            # The emitted body assigns ``<name> = <expr>``, which would shadow
-            # the colliding binding for every later expression.
+            # The emitted body assigns ``<name> = <expr>``, shadowing the
+            # colliding binding for every later expression.
             collides_with_signature = normalized(name) in input_name_set | set(param_names)
             pass_.report(
                 "vars.collision",
@@ -1111,18 +1084,14 @@ def _analyse_inline(
 
     referenced = _referenced_names(*(e for _, e in vars_program), flops_expr, bytes_expr)
 
-    # Emission binds what the formula reads and nothing else: declaring a param
-    # the roofline never names is legitimate, and binding it anyway would
-    # require every op to expose every param.
+    # Emission binds what the formula reads and nothing else: a param the
+    # roofline never names is not bound, and need not be exposed.
     wants_out_elem_bytes = "out_elem_bytes" in referenced
 
-    # One name, one source. The body binds inputs and then params, so a name
-    # declared in both binds twice and the second wins; a name shared with a
-    # helper binds over the helper for every later line. Neither is visible in
-    # the entry, and both fail only when the evaluator runs. Declaring the name
-    # is not itself the defect -- an op may declare a param called ``min`` and
-    # never say it in a formula -- so the line is drawn where the formula reads
-    # it, which is where the binding would be emitted.
+    # One name, one source. The body binds inputs then params, so a name in
+    # both binds twice, and a name shared with a helper binds over it. Declaring
+    # such a name is allowed; reading it is not, which is where the binding
+    # would be emitted.
     for name in sorted(referenced & set(input_names) & set(param_names)):
         pass_.report(
             "signature.name-in-two-blocks",
@@ -1141,19 +1110,16 @@ def _analyse_inline(
         )
 
     # Which blocks this formula reaches for. One it never names may be
-    # unreadable without stopping it: the defect is still reported, just not as
-    # one that prevents emission. The same rule governs all three blocks --
-    # singling one out is how a formula that reads nothing from a malformed
-    # block still lost its evaluator.
+    # unreadable without stopping it: reported, but not blocking. The same rule
+    # governs all three.
     needed: set[str] = set()
     if wants_out_elem_bytes:
         needed.add("outputs")
     if any(_names_a_tensor(e) for _, e in vars_program):
         # Only a declared input carries ``.shape`` / ``.ndim``.
         needed.add("inputs")
-    # A name nothing else accounts for was meant to be an input or a param. Which
-    # of the two cannot be settled while either is unreadable, so an unreadable
-    # one is needed.
+    # A name nothing else accounts for is an input or a param, and which cannot
+    # be settled while either is unreadable.
     accounted = (
         {n for n, _ in vars_program}
         | set(VARS_HELPERS)
@@ -1171,7 +1137,7 @@ def _analyse_inline(
     )
 
     # A judgment left unreached is worth a line only for a fact this formula
-    # wanted: a constant formula is not waiting on an unreadable block.
+    # wanted.
     for missing, what in vars_unresolved.items():
         if missing.rsplit(".", 1)[-1] in needed:
             pass_.defer(missing, f"vars-layer name legality, for want of {what}")
@@ -1189,11 +1155,8 @@ def _analyse_inline(
             "the declared output has no usable name, so out_elem_bytes cannot resolve it",
         )
 
-    # A block is unreadable either because it is not a mapping -- which
-    # ``_report_malformed_signature`` has just ruled blocking -- or because a key
-    # in it could not be read, which leaves the declared names incomplete without
-    # any diagnostic being blocking. Both leave the same question open, so both
-    # stop the plan when the formula wanted an answer.
+    # A block is unreadable when it is not a mapping, and equally when a key in
+    # it could not be read: both leave the declared names incomplete.
     for block, ok in (("inputs", inputs_ok), ("params", params_ok)):
         if block in needed and not ok:
             pass_.defer(
@@ -1274,8 +1237,7 @@ def analyze_roofline(
 
     plan: RooflinePlan | None
     if has_func:
-        # Func mode reads no signature, so an unreadable block is a defect the
-        # entry still carries but not one that stops this evaluator.
+        # Func mode reads no signature.
         _report_malformed_signature(
             pass_, inputs, outputs, params, needed=frozenset(), signature=signature
         )

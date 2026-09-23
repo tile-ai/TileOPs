@@ -119,9 +119,8 @@ def synthesize_eval_roofline(
 ) -> Callable[..., tuple[int, int]]:
     """Analyse a roofline block and emit its method, raising on the first defect.
 
-    A compatibility shape over :func:`analyze_roofline` plus
-    :func:`emit_eval_roofline`, for callers that want one call and an exception.
-    Anything wanting every defect calls the analyzer, which reports them all;
+    One call and an exception, over :func:`analyze_roofline` plus
+    :func:`emit_eval_roofline`. A caller wanting every defect calls the analyzer;
     this raises the first, in the order the analysis found it.
 
     Raises:
@@ -154,14 +153,12 @@ def maybe_install_eval_roofline(cls: type) -> None:
 
     An entry the analysis cannot build a plan for binds the abstract
     ``Op.eval_roofline``, which makes the class uninstantiable and is what
-    ``check_c6`` names. Leaving the attribute alone instead would hand the answer
-    to MRO lookup, and a parent carrying its own generated evaluator would answer
-    with its formula -- a plausible number belonging to another op. Raising here
-    would instead take down the import of whichever module defines the op, over
-    one entry an author is still editing. For an entry read from the manifest,
-    ``check_roofline_synthesis`` reports every defect under the op's name; the
-    validator reads the manifest, so it does not see a formula a class attached
-    to itself.
+    ``check_c6`` names. Binding it is what keeps MRO lookup from answering with a
+    parent's evaluator, which would price this op by another's formula. Raising
+    instead would take down the import of whichever module defines the op. For an
+    entry read from the manifest, ``check_roofline_synthesis`` reports every
+    defect under the op's name; the validator reads the manifest, so a formula a
+    class attached to itself is not among them.
 
     An implemented entry with no usable ``roofline`` is neither. The field is
     required of every entry regardless of status, so an absent, empty or
@@ -193,8 +190,7 @@ def maybe_install_eval_roofline(cls: type) -> None:
     try:
         result = analyze_roofline(cls.__name__, roofline=roofline, signature=sig)
     except Exception:  # noqa: BLE001 - totality is a claim, so class creation checks it
-        # The analysis is total over entry data. Reaching here is a defect in it,
-        # and one entry must not take down the import of every op in its module.
+        # The analysis is total over entry data; reaching here is a defect in it.
         cls.eval_roofline = Op.eval_roofline  # type: ignore[assignment]
         return
     if result.plan is None:

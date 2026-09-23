@@ -102,12 +102,13 @@ roofline:
 
 ## 3. Consumers
 
-`src/tileops/manifest/` is the source of truth for the `roofline` field. Four modules read it:
+`src/tileops/manifest/` is the source of truth for the `roofline` field. Five modules read it:
 
-- **Schema validator / CI** — structural checks (schema, mode exclusivity, `func` importability), and it fails an entry whose formula codegen refuses. Does **not** execute formulas or hold a helper whitelist. Spec: §4.1.
+- **Roofline analysis** — reads an entry once and answers two questions: every defect it carries, and whether it can be emitted. Owns the name and form rules. Spec: §4.4.
+- **Schema validator / CI** — structural checks (schema, mode exclusivity, `func` importability), and it renders the analysis's defects. Does **not** execute formulas or hold a helper whitelist. Spec: §4.1.
 - **Benchmark layer** — instantiates an Op per workload and reads `(flops, bytes)` from `op.eval_roofline()`. Hardcoded formulas in benchmark files are a CI failure. Spec: §4.2.
 - **Roofline tool (M5)** — reads per-workload `(flops, bytes)`, the roof key, and timing from benchmark output, prices them against the GPU profile (§5.1), and emits SOL efficiency and verdicts. Spec: §4.3.
-- **Op codegen** — generates the `eval_roofline()` method of every implemented entry (§4.4.1); is the authoritative gate for name and form correctness. Spec: §4.4.
+- **Op codegen** — emits the `eval_roofline()` method of every implemented entry (§4.4.1) from what the analysis decided. Judges nothing. Spec: §4.4.
 
 Two auditors check the field's values rather than consume them: the structural oracle (§4.6) and the NCU bytes audit (§4.5).
 
@@ -125,11 +126,11 @@ Every roofline entry MUST satisfy:
 - Mode exclusivity: `flops`/`bytes`/`vars` and `func` do not coexist.
 - Field types: `flops`/`bytes`/`func` are non-empty strings; `vars` is a mapping of str → non-empty str.
 - `read_bound_exception`, where present, is a mapping of `when` and `reason`, both non-empty strings. `when` joins names, negated names and comparisons of names against literals with `and` or `or`, over params, the workload keys stating what the call does, and `dtype`. Every clause, at every depth, must read the call, so none can settle the condition on its own — that would waive every call of the op (§4.5).
-- An implemented entry's formula synthesizes. The validator does not judge the formula: it asks codegen and reports the refusal, which for a `func` entry covers whether the dotted path resolves.
+- An implemented entry's formula analyses cleanly. The validator does not judge the formula: it renders what the analysis found, which for a `func` entry covers whether the dotted path resolves.
 
 Rules the validator does not own:
 
-- Name whitelist — a formula's names are checked by codegen (§4.4), which owns the binding table. Validator does not mirror it; it reports what codegen says.
+- Name whitelist — a formula's names are checked by the analysis (§4.4), which owns the binding table. Validator does not mirror it; it renders what the analysis says.
 - Form checks — codegen refuses invalid forms. Validator does not mirror them either; the refusal is what it reports.
 - Numeric checks (finite / non-negative / numeric) — outside the validator entirely; tests exercise generated `eval_roofline()` on each workload.
 
@@ -166,12 +167,20 @@ Physics check: every row's implied rates (`bytes / time`, `flops / time`) are co
 
 ### 4.4 Op Codegen
 
-Codegen runs for `status: implemented` entries only. `spec-only` entries — where either the implementation does not exist or the Op interface does not yet match the manifest — are skipped; codegen re-evaluates them once the status flips.
+Analysis and emission both run for `status: implemented` entries only. `spec-only` entries — where either the implementation does not exist or the Op interface does not yet match the manifest — are skipped, and are re-read once the status flips.
 
-Codegen is the authoritative gate for name and form correctness. A formula referencing an unknown name or violating a layer's form constraints fails codegen; a manifest that fails codegen cannot land. Numeric correctness is exercised by tests, not codegen.
+The analysis is the authoritative gate for name and form correctness. A formula referencing an unknown name or violating a layer's form constraints fails it, and a manifest that fails it cannot land. Numeric correctness is exercised by tests.
+
+Analysis and emission are separate: analysis reads the entry and decides, emission writes the method from those decisions and decides nothing. Three properties follow, and each is a rule:
+
+- **Total.** Analysis accepts whatever YAML produced and never raises on it. A defect is a verdict, not an exception.
+- **Lossless.** A fact is absent, malformed or valid, and the three are distinguished. Collapsing the first two makes a missing dependency indistinguishable from a satisfied one.
+- **Accumulating.** A defect does not stop the pass. A judgment that cannot be reached for want of a fact is recorded as unreached, naming the fact.
+
+Whether a defect stops emission follows the formula rather than the defect: a malformed `outputs` blocks a formula that reads `out_elem_bytes` and not one that never does. A name the formula reads resolves from one place only — declared twice, or shared with a helper, it would bind twice in the emitted body.
 
 The two gates divide by question, not by field. §4.1 rules on whether the blocks are structurally
-what the spec says; codegen rules on whether the formula is legal. Neither withholds its answer because the
+what the spec says; the analysis rules on whether the formula is legal. Neither withholds its answer because the
 other has one, so a formula defect is reported however the rest of the entry reads: a precondition
 wide enough to suppress the overlap also suppresses a defect that merely sits beside an unrelated
 one. The exception is a signature too malformed to say what names the formula may use, where the

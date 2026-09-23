@@ -137,8 +137,7 @@ class TestTotalContract:
         assert [d.code for d in result.diagnostics] == ["signature.not-a-mapping"]
 
     def test_a_non_mapping_signature_stops_a_formula_that_reads_it(self):
-        """The whole block settles nothing, so it is needed exactly when a part
-        of it would have been."""
+        """The whole block settles nothing, so it is needed when a part is."""
         from tileops.manifest.roofline_analysis import analyze_roofline
 
         result = analyze_roofline(
@@ -306,11 +305,9 @@ class TestPartialSignature:
 
     @pytest.mark.parametrize("name", [7, "class"], ids=["non-string", "keyword"])
     def test_a_name_that_cannot_bind_a_local_is_a_verdict(self, name):
-        """Reached `sorted()` as a TypeError before, or emitted a SyntaxError.
-
-        No expression can name either -- one is not a string and the other does
-        not parse -- so the formula cannot be reaching for it, and the evaluator
-        still emits while the entry still draws the line.
+        """No expression can name either: one is not a string, the other does not
+        parse. The formula is not reaching for it, so the entry draws the line
+        and the evaluator still emits.
         """
         from tileops.manifest.roofline_analysis import analyze_roofline
 
@@ -400,9 +397,8 @@ class TestInstallOutcomes:
 
     @pytest.mark.parametrize("block", [None, "flops: N", []])
     def test_a_loaded_entry_without_a_usable_roofline_raises(self, block, monkeypatch):
-        """The production path: the entry comes from the manifest loader. An
-        absent key reaches here as ``None``, which the class-attached path
-        cannot express — it falls back to the loader instead."""
+        """The loader path. An absent key reaches here as ``None``, which the
+        class-attached path cannot express."""
         import tileops.ops._roofline_codegen as codegen
 
         entry = {"status": "implemented", "signature": {"inputs": {}, "outputs": {}}}
@@ -429,9 +425,8 @@ class TestInstallOutcomes:
         assert _BadFormula.__dict__["eval_roofline"] is Op.eval_roofline
 
     def test_a_refused_formula_does_not_fall_through_to_the_parent(self):
-        """Binding the stub is what keeps a child off its parent's formula.
-        Leaving the attribute alone hands the answer to MRO lookup, and the
-        child would be priced by an entry that is not its own."""
+        """Binding the stub is what keeps MRO lookup from pricing the child by
+        its parent's entry."""
         import torch
 
         from tileops.ops.op_base import Op
@@ -469,10 +464,10 @@ class TestInstallOutcomes:
 
 
 class TestThroughClassCreation:
-    """What a real ``class X(Op)`` ends up with, not what the installer returns.
+    """What a real ``class X(Op)`` ends up with.
 
-    ``Op.__init_subclass__`` runs three other codegen passes around this one;
-    calling the installer alone would not exercise the path an op arrives by.
+    ``Op.__init_subclass__`` runs three other codegen passes around this one, so
+    this is the path an op actually arrives by.
     """
 
     BASE = {
@@ -562,8 +557,8 @@ class TestTotality:
         ids=["deep-binop", "deep-unary"],
     )
     def test_an_expression_too_deep_to_parse_is_a_verdict(self, expr):
-        """Exhausting the parser raised RecursionError or MemoryError, which the
-        installer would have let take down the importing module."""
+        """Exhausting the parser is a verdict, not an exception out of the
+        analysis."""
         from tileops.manifest.roofline_analysis import analyze_roofline
 
         result = analyze_roofline(
@@ -600,11 +595,8 @@ class TestNameSafety:
     SIG = {"inputs": {}, "outputs": {"y": {}}}
 
     def test_two_names_python_reads_as_one_collide(self):
-        """The parser normalizes identifiers, so `K` and `KELVIN SIGN` are one name.
-
-        Comparing the raw strings let the second assignment overwrite the first
-        with no collision found, and the evaluator returned the later value.
-        """
+        """The parser normalizes identifiers, so `K` and `KELVIN SIGN` are one
+        name, and the second assignment would shadow the first."""
         from tileops.manifest.roofline_analysis import analyze_roofline
 
         result = analyze_roofline(
@@ -617,8 +609,8 @@ class TestNameSafety:
 
     @pytest.mark.parametrize("name", sorted({"self", "elem_bytes", "_flops"}))
     def test_a_name_the_body_binds_for_itself_is_refused(self, name):
-        """A param called `self` emits `self = self.self`, and every later line
-        then reads the param where the op was meant."""
+        """A param called `self` emits `self = self.self`, after which every line
+        reads the param rather than the op."""
         from tileops.manifest.roofline_analysis import analyze_roofline
 
         result = analyze_roofline(
@@ -630,8 +622,7 @@ class TestNameSafety:
         assert any(d.code == "signature.reserved-name" for d in result.diagnostics)
 
     def test_a_key_that_normalizes_to_a_keyword_is_refused(self):
-        """`\uff49\uff46` normalizes to `if`; the check ran on the original
-        spelling, so the plan carried a name the body could not assign to."""
+        """`\uff49\uff46` normalizes to `if`, which the body cannot assign to."""
         from tileops.manifest.roofline_analysis import analyze_roofline
 
         result = analyze_roofline(
@@ -657,9 +648,8 @@ class TestNameSafety:
 class TestOneNameOneSource:
     """A name the formula reads must come from one place.
 
-    The body binds inputs then params, so a name in both binds twice and the
-    second wins; a name shared with a helper binds over it. Neither shows in the
-    entry and both fail only when the evaluator runs.
+    The body binds inputs then params, so a name in both binds twice, and a name
+    shared with a helper binds over it.
     """
 
     OUT = {"y": {}}
@@ -687,7 +677,7 @@ class TestOneNameOneSource:
         assert [d.code for d in result.diagnostics] == ["signature.name-shadows-helper"]
 
     def test_declaring_a_helper_name_without_reading_it_is_allowed(self):
-        """Real entries declare `min` and `max` without saying them in a formula."""
+        """Declaring a helper name is allowed; reading it is not."""
         from tileops.manifest.roofline_analysis import analyze_roofline
 
         result = analyze_roofline(
@@ -705,7 +695,7 @@ class TestNormalizedNamesResolve:
     @pytest.mark.parametrize("where", ["vars", "params"])
     def test_a_name_needing_normalization_is_found(self, where):
         """`\u212a` is the Kelvin sign; Python reads it as `K`, and so must the
-        allowed-name set, or a valid formula is refused for an unknown name."""
+        allowed-name set."""
         from tileops.manifest.roofline_analysis import analyze_roofline
 
         kelvin = "\u212a"
@@ -785,8 +775,7 @@ class TestEmittableByConstruction:
 
     def test_a_block_read_in_part_stops_a_formula_that_reads_it(self):
         """A mapping with an unreadable key is a valid mapping stating an
-        incomplete set of names, so nothing about it was blocking and the plan
-        was built with the name missing."""
+        incomplete set of names, which the formula's own names may need."""
         from tileops.manifest.roofline_analysis import analyze_roofline
 
         result = analyze_roofline(
@@ -811,13 +800,10 @@ class TestEmittableByConstruction:
 
 class TestComprehensionShadowing:
     """A comprehension target is a local, whatever an outer name of that
-    spelling happens to be.
+    spelling is.
 
-    Tracking only that a name is bound reads `[x.shape for x in range(1)]` as a
-    tensor read when an input is called `x`, and lets `[sum(...) for sum in ...]`
-    call an integer. Tracking the kind settles both, and stops a plain
-    `[x for x in range(3)]` being refused because an unrelated input shares the
-    name.
+    Its kind, not only that it is bound, decides whether `.shape` on it is a
+    tensor read and whether calling it calls a helper.
     """
 
     IN = {"x": {"dtype": "float16"}}
