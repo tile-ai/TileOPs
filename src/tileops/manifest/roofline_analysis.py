@@ -130,6 +130,7 @@ def normalized(name: str) -> str:
 # two real defects that happen to share a kind.
 SCHEMA_OWNED_CODES = frozenset(
     {
+        "roofline.absent",
         "inline.missing-expressions",
         "roofline.mixed-modes",
         "vars.not-a-mapping",
@@ -138,6 +139,15 @@ SCHEMA_OWNED_CODES = frozenset(
         "vars.empty",
         "flops.empty",
         "bytes.empty",
+        "func.not-a-string",
+        # `_l0_signature` rules on the signature's shape; the analysis needs the
+        # same answers to decide whether a plan can be built, and says so only
+        # through whether it builds one.
+        "signature.not-a-mapping",
+        "signature.inputs.not-a-mapping",
+        "signature.outputs.not-a-mapping",
+        "signature.params.not-a-mapping",
+        "signature.input-attributes",
     }
 )
 
@@ -620,11 +630,20 @@ def _analyse_arithmetic_expr(
 def _resolve_func(pass_: _Pass, path: Any) -> Callable[..., Any] | None:
     """Resolve ``module.path.callable``, reporting why it did not resolve."""
     where = "roofline.func"
-    if not isinstance(path, str) or "." not in path:
+    if not isinstance(path, str) or not path.strip():
+        # The schema level rules on the field's type and emptiness.
+        pass_.report(
+            "func.not-a-string",
+            where,
+            type(path).__name__,
+            f"roofline.func must be a dotted module.attr path, got {path!r}",
+        )
+        return None
+    if "." not in path:
         pass_.report(
             "func.path",
             where,
-            "",
+            path,
             f"roofline.func must be a dotted module.attr path, got {path!r}",
         )
         return None
@@ -661,13 +680,65 @@ def _resolve_func(pass_: _Pass, path: Any) -> Callable[..., Any] | None:
     return fn
 
 
+class _FreeNames(ast.NodeVisitor):
+    """Names an expression reads from outside itself.
+
+    A comprehension binds its targets in a scope of its own, so the ``x`` in
+    ``len([1 for x in range(3)])`` is that comprehension's and not the declared
+    input of the same name. Counting it would bind an input the formula never
+    reads, and refuse the entry when that input's declaration is unreadable.
+    """
+
+    def __init__(self) -> None:
+        self.free: set[str] = set()
+        self._bound: list[set[str]] = []
+
+    def _is_local(self, name: str) -> bool:
+        return any(name in scope for scope in self._bound)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load) and not self._is_local(node.id):
+            self.free.add(node.id)
+
+    def _targets(self, target: ast.AST, scope: set[str]) -> None:
+        if isinstance(target, ast.Name):
+            scope.add(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                self._targets(elt, scope)
+        elif isinstance(target, ast.Starred):
+            self._targets(target.value, scope)
+
+    def _comp(self, node: ast.AST) -> None:
+        self._bound.append(set())
+        try:
+            for gen in node.generators:  # type: ignore[attr-defined]
+                self.visit(gen.iter)
+                self._targets(gen.target, self._bound[-1])
+                for cond in gen.ifs:
+                    self.visit(cond)
+            if isinstance(node, ast.DictComp):
+                self.visit(node.key)
+                self.visit(node.value)
+            else:
+                self.visit(node.elt)  # type: ignore[attr-defined]
+        finally:
+            self._bound.pop()
+
+    # ast.NodeVisitor dispatch hooks: names must match AST class names.
+    visit_ListComp = _comp  # noqa: N815
+    visit_SetComp = _comp  # noqa: N815
+    visit_DictComp = _comp  # noqa: N815
+    visit_GeneratorExp = _comp  # noqa: N815
+
+
 def _referenced_names(*exprs: str | None) -> set[str]:
-    """Names any of the given expressions reads.
+    """Names any of the given expressions reads from outside itself.
 
     Analysis owns this: deciding which locals the body binds is a judgment, and
     leaving it to emission would put a second parse behind the boundary.
     """
-    names: set[str] = set()
+    walker = _FreeNames()
     for expr in exprs:
         if not isinstance(expr, str):
             continue
@@ -675,10 +746,11 @@ def _referenced_names(*exprs: str | None) -> set[str]:
             tree = ast.parse(expr, mode="eval")
         except (SyntaxError, RecursionError, MemoryError, ValueError):
             continue
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Name):
-                names.add(node.id)
-    return names
+        try:
+            walker.visit(tree)
+        except RecursionError:
+            continue
+    return walker.free
 
 
 def _string_keys(pass_: _Pass, fact: Fact, where: str) -> tuple[list[str], bool]:
@@ -728,7 +800,7 @@ def _string_keys(pass_: _Pass, fact: Fact, where: str) -> tuple[list[str], bool]
             )
             clean = False
             continue
-        if normalized(key) in {normalized(n) for n in names}:
+        if normalized(key) in names:
             pass_.report(
                 "signature.duplicate-name",
                 where,
@@ -738,7 +810,10 @@ def _string_keys(pass_: _Pass, fact: Fact, where: str) -> tuple[list[str], bool]
             )
             clean = False
             continue
-        names.append(key)
+        # The spelling Python will see. The emitted body reads `self.<name>`,
+        # and an attribute name normalizes the same way, so this is the name on
+        # both sides.
+        names.append(normalized(key))
     return names, clean
 
 
@@ -863,7 +938,7 @@ def _analyse_inline(
     # it as not-optional would be inventing the fact, so the input is recorded
     # here and only blocks emission if the formula binds it.
     unreadable_attrs = {
-        name
+        normalized(name)
         for name, attrs in (inputs.value.items() if inputs.usable else ())
         if isinstance(name, str) and not isinstance(attrs, dict)
     }
@@ -877,7 +952,7 @@ def _analyse_inline(
             blocking=False,
         )
     optional_names = {
-        name
+        normalized(name)
         for name, attrs in (inputs.value.items() if inputs.usable else ())
         if isinstance(name, str) and isinstance(attrs, dict) and attrs.get("optional") is True
     }
@@ -940,12 +1015,12 @@ def _analyse_inline(
             )
             # Declared but unusable: still in scope, so a later entry naming it
             # does not draw a second, misleading "unknown name".
-            vars_allowed.add(name)
+            vars_allowed.add(normalized(name))
             continue
-        if normalized(name) in {normalized(n) for n in vars_allowed}:
+        if normalized(name) in vars_allowed:
             # The emitted body assigns ``<name> = <expr>``, which would shadow
             # the colliding binding for every later expression.
-            collides_with_signature = name in input_name_set or name in set(param_names)
+            collides_with_signature = normalized(name) in input_name_set | set(param_names)
             pass_.report(
                 "vars.collision",
                 f"roofline.{path}",
@@ -954,14 +1029,11 @@ def _analyse_inline(
                 f"(input / param / helper / elem_bytes / earlier var)",
             )
             if not collides_with_signature:
-                vars_program.append((name, expr))
+                vars_program.append((normalized(name), expr))
             continue
         _analyse_vars_expr(pass_, path, expr, vars_allowed, input_name_set, optional_names)
-        vars_allowed.add(name)
-        vars_program.append((name, expr))
-
-    for missing, what in vars_unresolved.items():
-        pass_.defer(missing, f"vars-layer name legality, for want of {what}")
+        vars_allowed.add(normalized(name))
+        vars_program.append((normalized(name), expr))
 
     arith_allowed: set[str] = {name for name, _ in vars_program}
     arith_allowed.update(param_names)
@@ -980,6 +1052,30 @@ def _analyse_inline(
     # the roofline never names is legitimate, and binding it anyway would
     # require every op to expose every param.
     wants_out_elem_bytes = "out_elem_bytes" in referenced
+
+    # One name, one source. The body binds inputs and then params, so a name
+    # declared in both binds twice and the second wins; a name shared with a
+    # helper binds over the helper for every later line. Neither is visible in
+    # the entry, and both fail only when the evaluator runs. Declaring the name
+    # is not itself the defect -- an op may declare a param called ``min`` and
+    # never say it in a formula -- so the line is drawn where the formula reads
+    # it, which is where the binding would be emitted.
+    for name in sorted(referenced & set(input_names) & set(param_names)):
+        pass_.report(
+            "signature.name-in-two-blocks",
+            "signature",
+            name,
+            f"{name!r} is declared as both an input and a param, and the formula "
+            f"reads it; the emitted body would bind it twice and the second would win",
+        )
+    for name in sorted(referenced & (set(input_names) | set(param_names)) & set(VARS_HELPERS)):
+        pass_.report(
+            "signature.name-shadows-helper",
+            "signature",
+            name,
+            f"{name!r} is declared in the signature and is also a vars-layer helper, "
+            f"and the formula reads it; binding it would shadow the helper",
+        )
 
     # Which blocks this formula reaches for. One it never names may be
     # unreadable without stopping it: the defect is still reported, just not as
@@ -1010,6 +1106,12 @@ def _analyse_inline(
     _report_malformed_signature(
         pass_, inputs, outputs, params, needed=frozenset(needed), signature=signature
     )
+
+    # A judgment left unreached is worth a line only for a fact this formula
+    # wanted: a constant formula is not waiting on an unreadable block.
+    for missing, what in vars_unresolved.items():
+        if missing.rsplit(".", 1)[-1] in needed:
+            pass_.defer(missing, f"vars-layer name legality, for want of {what}")
 
     if not outputs.usable and wants_out_elem_bytes:
         pass_.defer(

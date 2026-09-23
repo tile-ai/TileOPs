@@ -641,6 +641,99 @@ class TestNameSafety:
         assert result.plan is None
 
 
+class TestOneNameOneSource:
+    """A name the formula reads must come from one place.
+
+    The body binds inputs then params, so a name in both binds twice and the
+    second wins; a name shared with a helper binds over it. Neither shows in the
+    entry and both fail only when the evaluator runs.
+    """
+
+    OUT = {"y": {}}
+
+    def test_a_name_in_both_blocks_is_refused_when_read(self):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N"},
+            signature={"inputs": {"x": {}}, "params": {"x": {}}, "outputs": self.OUT},
+        )
+        assert result.plan is None
+        assert [d.code for d in result.diagnostics] == ["signature.name-in-two-blocks"]
+
+    def test_a_declared_name_shadowing_a_helper_is_refused_when_read(self):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"N": "sum(range(3))"}, "flops": "N", "bytes": "1"},
+            signature={"inputs": {}, "params": {"sum": {}}, "outputs": self.OUT},
+        )
+        assert result.plan is None
+        assert [d.code for d in result.diagnostics] == ["signature.name-shadows-helper"]
+
+    def test_declaring_a_helper_name_without_reading_it_is_allowed(self):
+        """Real entries declare `min` and `max` without saying them in a formula."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {}, "flops": "1", "bytes": "1"},
+            signature={"inputs": {}, "params": {"min": {}}, "outputs": self.OUT},
+        )
+        assert result.plan is not None
+        assert not result.diagnostics
+
+
+class TestNormalizedNamesResolve:
+    """A name Python normalizes must resolve, not just collide."""
+
+    @pytest.mark.parametrize("where", ["vars", "params"])
+    def test_a_name_needing_normalization_is_found(self, where):
+        """`\u212a` is the Kelvin sign; Python reads it as `K`, and so must the
+        allowed-name set, or a valid formula is refused for an unknown name."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        kelvin = "\u212a"
+        roofline = {"vars": {}, "flops": "K", "bytes": "1"}
+        signature = {"inputs": {}, "outputs": {"y": {}}}
+        if where == "vars":
+            roofline["vars"] = {kelvin: "1"}
+        else:
+            signature["params"] = {kelvin: {"type": "int"}}
+        result = analyze_roofline("FakeOp", roofline=roofline, signature=signature)
+        assert not result.diagnostics
+        assert result.plan is not None
+
+
+class TestComprehensionLocals:
+    """A comprehension's target is its own, not a declared input of that name."""
+
+    def test_a_comprehension_local_is_not_an_input_read(self):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"N": "len([1 for x in range(3)])"}, "flops": "N", "bytes": "1"},
+            signature={"inputs": {"x": 5}, "outputs": {"y": {}}},
+        )
+        # The unreadable declaration is still reported; it just does not refuse a
+        # formula that never reads that input.
+        assert result.plan is not None
+
+    def test_a_comprehension_local_is_not_bound(self):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"N": "len([1 for x in range(3)])"}, "flops": "N", "bytes": "1"},
+            signature={"inputs": {"x": {"dtype": "float16"}}, "outputs": {"y": {}}},
+        )
+        assert result.plan is not None
+        assert [b.name for b in result.plan.bindings] == []
+
+
 class TestUnreadableInputAttributes:
     """An input whose attributes will not read states no optionality."""
 
