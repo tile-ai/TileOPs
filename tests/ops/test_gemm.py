@@ -20,7 +20,7 @@ from tileops.kernels.gemm.heuristics import (
     small_batch_config,
     small_m_splitk_config,
 )
-from tileops.kernels.gemm.w4a16 import _stage_meta_per_tile
+from tileops.kernels.gemm.w4a16 import GROUP_SIZE, _select_config, _stage_meta_per_tile
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from workloads.gemm import (
     GemmFp8Workload,
@@ -1199,6 +1199,42 @@ def test_gemm_w4a16_autotune_keeps_composite_runtime_state() -> None:
     with pytest.warns(UserWarning, match="does not support generic autotuning"):
         new_op = GemmW4A16FwdOp(tune=True)
     assert new_op.tune is False
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_select_config_streams_only_the_underfilled_grid() -> None:
+    """Stream-K takes the long-K decode row, whose 128 N tiles leave SMs idle, and no other."""
+    assert _select_config(1, 8192, 81920, GROUP_SIZE, sms=132)["stream_ctas"] == 132
+    assert _select_config(1, 8192, 8192, GROUP_SIZE, sms=132)["stream_ctas"] == 0
+    assert _select_config(128, 4096, 14336, GROUP_SIZE, sms=132)["stream_ctas"] == 0
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_stream_k_matches_the_unstreamed_tile() -> None:
+    """Stream-K over 5 CTAs agrees with the same tile run whole.
+
+    ``n=192`` is three N tiles, so tile 1 spans three CTAs (the slot limit), and
+    ``k=33280`` (65 K tiles) puts a CTA boundary inside a tile while keeping
+    per-tile metadata staging.
+    """
+    m, n, k = 1, 192, 33280
+    test = GemmW4A16Test(m, n, k, torch.float16)
+    inputs = test.gen_inputs()
+    tile = {
+        "block_m": 8,
+        "block_n": 64,
+        "block_k": 512,
+        "num_stages": 2,
+        "threads": 128,
+        "producer_reg": 0,
+        "consumer_reg": 0,
+        "split_k": 1,
+    }
+    streamed = GemmW4A16Kernel(m, n, k, torch.float16, config={**tile, "stream_ctas": 5})(*inputs)
+    whole = GemmW4A16Kernel(m, n, k, torch.float16, config={**tile, "stream_ctas": 0})(*inputs)
+    # The FP32 partials of up to three CTAs are summed in a different order.
+    torch.testing.assert_close(streamed, whole, atol=1e-5, rtol=2e-3)
+    torch.testing.assert_close(streamed, test.ref_program(*inputs), atol=7e-2, rtol=5e-2)
 
 
 @pytest.mark.smoke
