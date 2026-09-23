@@ -102,8 +102,16 @@ class GemmFp8Workload(WorkloadBase):
 def quantize_weight_int4(
     weight: torch.Tensor,
     group_size: int = W4A16_GROUP_SIZE,
+    scale_dtype: torch.dtype = torch.float16,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Affine group-wise quantize and pack a logical ``[N, K]`` weight tensor."""
+    """Affine group-wise quantize and pack a logical ``[N, K]`` weight tensor.
+
+    Args:
+        weight: Logical weight, $[N \\times K]$.
+        group_size: How many K values one scale and zero point cover.
+        scale_dtype: Storage dtype of the scale, which follows the activation
+            dtype an INT4 checkpoint is served at.
+    """
     if weight.ndim != 2:
         raise ValueError(f"weight must be rank 2, got shape {tuple(weight.shape)}")
     n, k = weight.shape
@@ -115,20 +123,52 @@ def quantize_weight_int4(
     grouped = weight.float().reshape(n, k // group_size, group_size)
     group_min = grouped.amin(dim=-1).clamp_max(0)
     group_max = grouped.amax(dim=-1).clamp_min(0)
-    scale = ((group_max - group_min) / 15.0).clamp_min(1e-12)
-    zero = torch.round(-group_min / scale).clamp(0, 15).to(torch.uint8)
+    scale = (
+        ((group_max - group_min) / 15.0).to(scale_dtype).clamp_min(torch.finfo(scale_dtype).tiny)
+    )
+    scale_f = scale.float()
+    zero = torch.round(-group_min / scale_f).clamp(0, 15).to(torch.uint8)
     quantized = (
-        torch.round(grouped / scale.unsqueeze(-1) + zero.float().unsqueeze(-1))
+        torch.round(grouped / scale_f.unsqueeze(-1) + zero.float().unsqueeze(-1))
         .clamp(0, 15)
         .to(torch.uint8)
     )
 
     unsigned = quantized.reshape(n, k)
     packed = unsigned[:, 0::2] | (unsigned[:, 1::2] << 4)
-    dequantized = ((quantized.float() - zero.float().unsqueeze(-1)) * scale.unsqueeze(-1)).reshape(
-        n, k
-    )
+    dequantized = (
+        (quantized.float() - zero.float().unsqueeze(-1)) * scale_f.unsqueeze(-1)
+    ).reshape(n, k)
     return packed.contiguous(), scale.contiguous(), zero.contiguous(), dequantized
+
+
+def repack_w4a16_weight(packed: torch.Tensor) -> torch.Tensor:
+    """Reorder a row-major ``[N, K/2]`` uint8 weight for W4A16 GEMM.
+
+    Args:
+        packed: Row-major packed weights, ``[N, K/2]``, ``torch.uint8``.
+
+    Returns:
+        A contiguous tensor with the same shape and dtype in the prepacked layout.
+    """
+    n, kp = packed.shape
+    step = 64
+    lanes = 4
+    if kp % step:
+        raise ValueError(f"K/2={kp} must be a multiple of {step}")
+    n_steps = kp // step
+    words_per_lane = step // (4 * lanes)
+    grouped = packed.view(n, n_steps, step).to(torch.int32)
+    low, high = grouped & 0xF, (grouped >> 4) & 0xF
+    out = torch.zeros(n, n_steps, step // 4, dtype=torch.int32, device=packed.device)
+    for lane in range(lanes):
+        for word in range(words_per_lane):
+            acc = torch.zeros(n, n_steps, dtype=torch.int32, device=packed.device)
+            for pair in range(4):
+                src = 16 * word + 4 * pair + lane
+                acc = acc | (low[:, :, src] << (4 * pair)) | (high[:, :, src] << (4 * pair + 16))
+            out[:, :, lane * words_per_lane + word] = acc
+    return out.reshape(n, kp // 4).view(torch.uint8).reshape(n, kp).contiguous()
 
 
 class GemmW4A16Workload(WorkloadBase):
@@ -146,21 +186,31 @@ class GemmW4A16Workload(WorkloadBase):
         self.dtype = dtype
         self.group_size = group_size
         self._dequantized_weight: torch.Tensor | None = None
+        self._row_major_weight: torch.Tensor | None = None
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return activation, prepacked weight, scale, and zero point."""
         activation = torch.randn(self.m, self.k, device="cuda", dtype=self.dtype)
         source_weight = torch.randn(self.n, self.k, device="cuda", dtype=torch.float32) * 0.25
         packed, scale, zero, dequantized = quantize_weight_int4(
-            source_weight, group_size=self.group_size
+            source_weight, group_size=self.group_size, scale_dtype=self.dtype
         )
         self._dequantized_weight = dequantized.to(self.dtype).contiguous()
-        return activation, packed, scale, zero
+        self._row_major_weight = packed
+        return activation, repack_w4a16_weight(packed), scale, zero
 
     @property
     def dequantized_weight(self) -> torch.Tensor:
         if self._dequantized_weight is None:
             raise RuntimeError("dequantized_weight is available after gen_inputs()")
         return self._dequantized_weight
+
+    @property
+    def row_major_weight(self) -> torch.Tensor:
+        """The same weight before the repack, which a baseline reorders its own way."""
+        if self._row_major_weight is None:
+            raise RuntimeError("row_major_weight is available after gen_inputs()")
+        return self._row_major_weight
 
     def ref_program(
         self,

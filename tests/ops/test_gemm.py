@@ -5,7 +5,9 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.gemm import (
     GemmCpAsyncKernel,
     GemmTmaKernel,
+    GemmW4A16Kernel,
     GemvKernel,
+    W4A16RepackKernel,
 )
 from tileops.kernels.gemm.dense import (
     GemmFp8BlockScaleKernel,
@@ -18,8 +20,15 @@ from tileops.kernels.gemm.heuristics import (
     small_batch_config,
     small_m_splitk_config,
 )
+from tileops.kernels.gemm.w4a16 import _stage_meta_per_tile
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
-from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload, quantize_weight_int4
+from workloads.gemm import (
+    GemmFp8Workload,
+    GemmW4A16Workload,
+    GemmWorkload,
+    quantize_weight_int4,
+    repack_w4a16_weight,
+)
 
 
 class GemmTest(GemmWorkload, TestBase):
@@ -479,7 +488,7 @@ class GemmW4A16Fixture(FixtureBase):
                     384,
                     torch.float16,
                     marks=pytest.mark.full,
-                    id="full-w4a16-gemv-short-k-n-tail",
+                    id="full-w4a16-decode-short-k-n-tail",
                 ),
                 pytest.param(
                     1,
@@ -487,7 +496,7 @@ class GemmW4A16Fixture(FixtureBase):
                     1024,
                     torch.float16,
                     marks=pytest.mark.full,
-                    id="full-w4a16-gemv-n-tail",
+                    id="full-w4a16-decode-n-tail",
                 ),
                 pytest.param(
                     1,
@@ -495,7 +504,7 @@ class GemmW4A16Fixture(FixtureBase):
                     8192,
                     torch.float16,
                     marks=pytest.mark.full,
-                    id="full-w4a16-gemv-staged-k",
+                    id="full-w4a16-decode-staged-k",
                 ),
                 pytest.param(
                     17,
@@ -555,23 +564,25 @@ def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("k_index", [0, 127, 128, 383])
-def test_gemm_w4a16_gemv_preserves_fp32_scale(k_index: int) -> None:
-    """A basis vector exposes exact nibble, group, and weight-rounding errors."""
+@pytest.mark.parametrize("k_index", [0, 1, 127, 128, 200, 383])
+def test_gemm_w4a16_is_exact_on_a_basis_vector(k_index: int) -> None:
+    """Check nibble, group, and zero-point indexing."""
     n, k = 35, 384
+    torch.manual_seed(0)
     rows = torch.arange(n)[:, None]
-    quantized = (rows + torch.arange(k)[None, :]) % 16
+    quantized = torch.randint(0, 16, (n, k))
     zero = ((3 * rows + torch.arange(k // 128)[None, :]) % 16).to(torch.uint8)
-    scale = 0.03137 + torch.arange(n * (k // 128), dtype=torch.float32).reshape(n, -1) * 0.001147
+    scale = (
+        0.03137 + torch.arange(n * (k // 128), dtype=torch.float32).reshape(n, -1) * 0.001147
+    ).to(torch.float16)
     packed = (quantized[:, 0::2] | (quantized[:, 1::2] << 4)).to(torch.uint8)
     group = k_index // 128
     centered = quantized[:, k_index].float() - zero[:, group].float()
-    expected = (centered * scale[:, group]).half()[None, :]
-    # These scales distinguish the contract from rounding scales to A16 first.
-    assert not torch.equal(expected[0], (centered * scale[:, group].half().float()).half())
+    expected = (centered * scale[:, group].float()).half()[None, :]
     activation = torch.zeros((1, k), device="cuda", dtype=torch.float16)
     activation[0, k_index] = 1
-    actual = GemmW4A16FwdOp()(activation, packed.cuda(), scale.cuda(), zero.cuda())
+    prepacked = repack_w4a16_weight(packed)
+    actual = GemmW4A16FwdOp()(activation, prepacked.cuda(), scale.cuda(), zero.cuda())
     torch.testing.assert_close(actual.cpu(), expected, atol=0, rtol=0)
 
 
@@ -589,8 +600,9 @@ def test_quantize_weight_int4_keeps_one_sided_groups_in_range() -> None:
 
     assert torch.equal(zero, torch.tensor([[0], [15]], dtype=torch.uint8))
     assert torch.all(scale > 0)
-    torch.testing.assert_close(dequantized[0].max(), weight[0].max())
-    torch.testing.assert_close(dequantized[1].min(), weight[1].min())
+    fp16_scale_ulp = 2.0**-11
+    torch.testing.assert_close(dequantized[0].max(), weight[0].max(), rtol=fp16_scale_ulp, atol=0)
+    torch.testing.assert_close(dequantized[1].min(), weight[1].min(), rtol=fp16_scale_ulp, atol=0)
 
 
 @pytest.mark.smoke
@@ -702,6 +714,16 @@ def test_gemm_w4a16_rejects_invalid_metadata_shapes() -> None:
 
     with pytest.raises(ValueError, match="packed_weight shape mismatch"):
         op(activation, packed_weight[:, :-1], weight_scale, weight_zero)
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_rejects_a_scale_outside_the_activation_dtype() -> None:
+    test = GemmW4A16Test(64, 64, 128, torch.float16)
+    activation, packed_weight, weight_scale, weight_zero = test.gen_inputs()
+    op = GemmW4A16FwdOp()
+
+    with pytest.raises(ValueError, match="weight_scale in the activation dtype"):
+        op(activation, packed_weight, weight_scale.float(), weight_zero)
 
 
 @GemvBoundaryFixture
@@ -1084,3 +1106,149 @@ def test_gemm_cp_async_kernel_k_tail_padding() -> None:
         out = kern(a, b)
         ref = a.float() @ b.float().t()
         torch.testing.assert_close(out.float(), ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("m", [100, 257])
+def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
+    test = GemmW4A16Test(m, 1024, 512, torch.float16)
+    activation, prepacked, scale, zero = test.gen_inputs()
+    kernel = GemmW4A16Kernel(m, 1024, 512, torch.float16)
+    torch.testing.assert_close(
+        kernel(activation, prepacked, scale, zero),
+        test.ref_program(activation, prepacked, scale, zero),
+        atol=7e-2,
+        rtol=5e-2,
+    )
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
+    groups_at_crossover = 256  # 64 rows * 256 groups * 3 bytes = 48 KiB.
+    assert not _stage_meta_per_tile(128, 512, 64, groups_at_crossover)
+    assert _stage_meta_per_tile(128, 512, 64, groups_at_crossover + 1)
+    assert not _stage_meta_per_tile(256, 512, 64, groups_at_crossover + 1)
+
+    test = GemmW4A16Test(1, 64, 32896, torch.float16)
+    activation, prepacked, scale, zero = test.gen_inputs()
+    kernel = GemmW4A16Kernel(1, 64, 32896, torch.float16)
+    assert _stage_meta_per_tile(
+        kernel.config["threads"], kernel.config["block_k"], 64, 32896 // 128
+    )
+    torch.testing.assert_close(
+        kernel(activation, prepacked, scale, zero),
+        test.ref_program(activation, prepacked, scale, zero),
+        atol=7e-2,
+        rtol=5e-2,
+    )
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_slices_k_only_where_the_grid_underfills() -> None:
+    assert GemmW4A16Kernel(1, 1024, 8192, torch.float16).config["split_k"] > 1
+    assert GemmW4A16Kernel(1, 8192, 8192, torch.float16).config["split_k"] == 1
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("split_k", [2, 8])
+def test_gemm_w4a16_sliced_k_matches_the_reference(split_k: int) -> None:
+    """The fp32 partials reduce to what the whole K loop computes."""
+    test = GemmW4A16Test(1, 1024, 8192, torch.float16)
+    activation, prepacked, scale, zero = test.gen_inputs()
+    base = GemmW4A16Kernel(1, 1024, 8192, torch.float16).config
+    kernel = GemmW4A16Kernel(
+        1,
+        1024,
+        8192,
+        torch.float16,
+        config={**base, "block_k": 256, "num_stages": 4, "split_k": split_k},
+    )
+    torch.testing.assert_close(
+        kernel(activation, prepacked, scale, zero),
+        test.ref_program(activation, prepacked, scale, zero),
+        atol=7e-2,
+        rtol=5e-2,
+    )
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_autotune_keeps_composite_runtime_state() -> None:
+    test = GemmW4A16Test(1, 1024, 8192, torch.float16)
+    inputs = test.gen_inputs()
+    op = GemmW4A16FwdOp()
+    expected = op(*inputs)
+    kernel = op.kernel
+    state = (dict(kernel.config), kernel.m_pad, kernel.kernel, kernel._reduce)
+
+    with pytest.warns(UserWarning, match="does not support generic autotuning"):
+        op.autotune()
+
+    assert op.tune is False
+    assert (kernel.config, kernel.m_pad, kernel.kernel, kernel._reduce) == state
+    torch.testing.assert_close(op(*inputs), expected, atol=0, rtol=0)
+
+    next_test = GemmW4A16Test(2, 1024, 8192, torch.float16)
+    next_inputs = next_test.gen_inputs()
+    torch.testing.assert_close(
+        op(*next_inputs),
+        next_test.ref_program(*next_inputs),
+        atol=7e-2,
+        rtol=5e-2,
+    )
+
+    with pytest.warns(UserWarning, match="does not support generic autotuning"):
+        new_op = GemmW4A16FwdOp(tune=True)
+    assert new_op.tune is False
+
+
+@pytest.mark.smoke
+def test_repack_w4a16_weight_permutes_nibbles_inside_a_step() -> None:
+    packed = torch.randint(0, 256, (7, 256), dtype=torch.uint8)
+
+    repacked = repack_w4a16_weight(packed)
+
+    assert repacked.shape == packed.shape
+    assert repacked.is_contiguous()
+
+    def nibbles(tile: torch.Tensor) -> torch.Tensor:
+        return torch.cat([tile & 0xF, tile >> 4], dim=1).sort(dim=1).values
+
+    step = 64
+    for start in range(0, packed.shape[1], step):
+        torch.testing.assert_close(
+            nibbles(repacked[:, start : start + step]),
+            nibbles(packed[:, start : start + step]),
+        )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(("n", "k"), [(64, 256), (1024, 512)])
+def test_w4a16_repack_kernel_matches_the_reference(n: int, k: int) -> None:
+    """The kernel and the tensor-expression repack agree bit for bit."""
+    packed = torch.randint(0, 256, (n, k // 2), dtype=torch.uint8, device="cuda")
+
+    actual = W4A16RepackKernel(n, k // 2)(packed)
+
+    assert actual.dtype == torch.uint8
+    assert actual.shape == packed.shape
+    assert torch.equal(actual, repack_w4a16_weight(packed))
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_repack_feeds_forward() -> None:
+    test = GemmW4A16Test(64, 1024, 512, torch.float16)
+    activation, _, scale, zero = test.gen_inputs()
+    packed = test.row_major_weight
+
+    prepacked = GemmW4A16FwdOp.repack(packed)
+    actual = GemmW4A16FwdOp()(activation, prepacked, scale, zero)
+
+    torch.testing.assert_close(
+        actual, test.ref_program(activation, packed, scale, zero), atol=7e-2, rtol=5e-2
+    )
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_repack_refuses_a_partial_k_step() -> None:
+    with pytest.raises(ValueError, match="multiple of 64"):
+        GemmW4A16FwdOp.repack(torch.zeros((8, 96), dtype=torch.uint8, device="cuda"))

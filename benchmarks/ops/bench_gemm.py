@@ -312,6 +312,8 @@ def _prepare_marlin_w4a16_baseline(
     )
     from vllm.scalar_type import scalar_types
 
+    if not hasattr(torch.ops._C, "marlin_gemm"):
+        raise RuntimeError("this vLLM build does not include marlin_gemm")
     if k % 16 or k % GROUP_SIZE or n % 64:
         raise ValueError("Marlin W4A16 benchmark requires K % 128 == 0 and N % 64 == 0")
 
@@ -338,7 +340,7 @@ def _prepare_marlin_w4a16_baseline(
         get_weight_perm(4),
     )
     scales = marlin_permute_scales(
-        weight_scale.T.to(torch.float16).contiguous(),
+        weight_scale.T.to(activation.dtype).contiguous(),
         k,
         n,
         GROUP_SIZE,
@@ -554,30 +556,21 @@ def test_gemm_w4a16_bench(
         "torch-dequantized-matmul": workload.torch_dequantized_matmul,
     }
 
-    if m == 1:
-        for reduce_mode, use_fp32_reduce in (("fp32", True), ("fp16", False)):
-            try:
-                marlin, marlin_inputs = _prepare_marlin_w4a16_baseline(
-                    m,
-                    n,
-                    k,
-                    use_fp32_reduce,
-                    *inputs,
-                )
-            except (ImportError, ModuleNotFoundError) as exc:
-                print(f"  [skip] marlin-{reduce_mode}: {exc}")
-                continue
-            actual = marlin(*marlin_inputs)
-            if actual.shape != (m, n) or not torch.isfinite(actual).all():
-                raise RuntimeError("Marlin W4A16 baseline smoke check failed")
-            # A baseline that does not reproduce the reference is dropped from
-            # the comparison rather than compared against under a wrong layout.
-            try:
-                torch.testing.assert_close(actual, expected, atol=7e-2, rtol=5e-2)
-            except AssertionError as exc:
-                print(f"  [skip] marlin-{reduce_mode} disagrees with the reference: {exc}")
-                continue
-            torch.cuda.synchronize()
-            functors[f"marlin-{reduce_mode}"] = (marlin, marlin_inputs)
+    logical = (inputs[0], workload.row_major_weight, inputs[2], inputs[3])
+    for mode, use_fp32_reduce in (("fp32", True), ("fp16", False)):
+        tag = f"marlin-{mode}"
+        try:
+            baseline, baseline_inputs = _prepare_marlin_w4a16_baseline(
+                m, n, k, use_fp32_reduce, *logical
+            )
+        except ValueError as exc:
+            print(f"  [skip] {tag}: {exc}")
+            continue
+        actual = baseline(*baseline_inputs)
+        if actual.shape != (m, n) or not torch.isfinite(actual).all():
+            raise RuntimeError(f"{tag} W4A16 baseline smoke check failed")
+        torch.testing.assert_close(actual, expected, atol=7e-2, rtol=5e-2)
+        torch.cuda.synchronize()
+        functors[tag] = (baseline, baseline_inputs)
 
     bm.compare(functors, *inputs)
