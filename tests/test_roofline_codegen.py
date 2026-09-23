@@ -137,14 +137,21 @@ class TestTotalContract:
 
     @pytest.mark.parametrize("block", ["inputs", "outputs", "params"])
     def test_a_non_mapping_signature_block_is_a_verdict(self, block):
-        """A non-mapping reads as empty, which would make a name look declared."""
-        from tileops.ops._roofline_codegen import synthesize_eval_roofline
+        """A non-mapping reads as empty, which would make a name look declared.
 
-        signature = {"inputs": {}, block: 5}
-        with pytest.raises(ValueError, match=f"signature.{block} must be a mapping"):
-            synthesize_eval_roofline(
-                "FakeOp", roofline={"flops": "1", "bytes": "1"}, signature=signature
-            )
+        The verdict stands whether or not the formula reaches for that block;
+        whether it also stops emission is
+        `TestPartialSignature`'s subject.
+        """
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"flops": "1", "bytes": "1"},
+            signature={"inputs": {}, block: 5},
+        )
+        assert [d.code for d in result.diagnostics] == [f"signature.{block}.not-a-mapping"]
+        assert f"signature.{block} must be a mapping" in result.diagnostics[0].message
 
     @pytest.mark.parametrize("bad", [[], "", False, 0, ["a"]], ids=repr)
     def test_a_non_mapping_vars_is_a_verdict(self, bad):
@@ -215,6 +222,77 @@ class TestTotalContract:
         assert "ok" in out.stdout
 
 
+class TestPartialSignature:
+    """A block the formula never reads may be unreadable without stopping it."""
+
+    def test_unread_outputs_does_not_stop_emission(self):
+        """`out_elem_bytes` is the only thing `outputs` settles for a formula."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"flops": "1", "bytes": "1"},
+            signature={"inputs": {}, "outputs": 9},
+        )
+        assert [d.code for d in result.diagnostics] == ["signature.outputs.not-a-mapping"]
+        assert result.plan is not None
+        assert not result.blocking
+
+    def test_read_outputs_does_stop_emission(self):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"flops": "1", "bytes": "out_elem_bytes"},
+            signature={"inputs": {}, "outputs": 9},
+        )
+        assert result.plan is None
+        assert any(
+            d.code == "signature.outputs.not-a-mapping" and d.blocking for d in result.diagnostics
+        )
+
+    def test_a_malformed_signature_does_not_hide_the_formula_defect(self):
+        """The defect this restructure exists to stop hiding."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"flops": "NOPE", "bytes": "1"},
+            signature={"inputs": 5, "outputs": {"y": {}}},
+        )
+        codes = {d.code for d in result.diagnostics}
+        assert "arith.unknown-name" in codes
+        assert "signature.inputs.not-a-mapping" in codes
+
+    def test_two_defects_in_one_expression_are_two_diagnostics(self):
+        """`subject` is what keeps the second from collapsing into the first."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"flops": "AAA + BBB", "bytes": "1"},
+            signature={"inputs": {}, "outputs": {"y": {}}},
+        )
+        unknown = [d for d in result.diagnostics if d.code == "arith.unknown-name"]
+        assert sorted(d.subject for d in unknown) == ["AAA", "BBB"]
+        assert len({d.identity for d in unknown}) == 2
+
+    @pytest.mark.parametrize("name", [7, "class"], ids=["non-string", "keyword"])
+    def test_a_name_that_cannot_bind_a_local_is_a_verdict(self, name):
+        """Reached `sorted()` as a TypeError before, or emitted a SyntaxError."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"flops": "1", "bytes": "1"},
+            signature={"inputs": {}, "outputs": {"y": {}}, "params": {name: {"type": "int"}}},
+        )
+        assert result.plan is None
+        assert [d.code for d in result.diagnostics] == [
+            "signature.non-string-name" if name == 7 else "signature.unusable-name"
+        ]
+
+
 class TestEvaluatorOwnership:
     """Enforce evaluator ownership for implemented manifest entries."""
 
@@ -239,7 +317,7 @@ class TestEvaluatorOwnership:
                 yield name, cls
 
     def test_each_op_owns_a_generated_evaluator(self):
-        from tileops.ops._roofline_codegen import SYNTHESIZED_ATTR
+        from tileops.ops._roofline_emit import SYNTHESIZED_ATTR
 
         invalid = []
         for name, cls in self._implemented():
@@ -357,6 +435,114 @@ class TestInstallOutcomes:
             child()
 
 
+class TestThroughClassCreation:
+    """What a real ``class X(Op)`` ends up with, not what the installer returns.
+
+    ``Op.__init_subclass__`` runs three other codegen passes around this one;
+    calling the installer alone would not exercise the path an op arrives by.
+    """
+
+    BASE = {
+        "__manifest_status__": "implemented",
+        "__manifest_signature__": {
+            "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
+            "outputs": {"y": {"dtype": "same_as(x)"}},
+        },
+        "forward": lambda self, *a, **kw: None,
+        "_infer_output_shapes": lambda self, x_shape: {"y": x_shape},
+        "_validate_dtypes": lambda self, *a: None,
+        "default_kernel_map": property(lambda self: {}),
+    }
+    GOOD = {"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N * elem_bytes"}
+    BAD = {"vars": {}, "flops": "NOPE", "bytes": "1"}
+
+    def _build(self, name, roofline, base=None, signature=None):
+        from tileops.ops.op_base import Op
+
+        body = {**self.BASE, "__manifest_roofline__": roofline}
+        if signature is not None:
+            body["__manifest_signature__"] = signature
+        return type(name, (base or Op,), body)
+
+    def test_a_sound_entry_arrives_with_a_generated_evaluator(self):
+        import torch
+
+        from tileops.ops._roofline_emit import SYNTHESIZED_ATTR
+
+        cls = self._build("_ClassGood", self.GOOD)
+        assert getattr(cls.__dict__["eval_roofline"], SYNTHESIZED_ATTR, False)
+        op = cls.__new__(cls)
+        op.x_shape, op.dtype = (10,), torch.float16
+        assert op.eval_roofline() == (10, 20)
+
+    def test_a_refused_entry_arrives_abstract(self):
+        from tileops.ops.op_base import Op
+
+        cls = self._build("_ClassBad", self.BAD)
+        assert cls.__dict__["eval_roofline"] is Op.eval_roofline
+        with pytest.raises(TypeError, match="abstract"):
+            cls()
+
+    def test_a_refused_child_does_not_inherit_its_parent_formula(self):
+        from tileops.ops.op_base import Op
+
+        parent = self._build("_ClassParent", self.GOOD)
+        child = self._build("_ClassChild", self.BAD, base=parent)
+        assert child.eval_roofline is Op.eval_roofline
+
+    def test_an_unread_malformed_block_still_arrives_generated(self):
+        """`outputs` settles only `out_elem_bytes`, which this formula never says."""
+        from tileops.ops._roofline_emit import SYNTHESIZED_ATTR
+
+        cls = self._build(
+            "_ClassPartial",
+            self.GOOD,
+            signature={"inputs": {"x": {"dtype": "float16", "shape": "[N]"}}, "outputs": 9},
+        )
+        assert getattr(cls.__dict__["eval_roofline"], SYNTHESIZED_ATTR, False)
+
+
+class TestTotality:
+    """The analysis answers whatever YAML produced, without raising."""
+
+    @pytest.mark.parametrize(
+        "roofline",
+        [None, 5, "flops: N", [], {}, {"flops": {"nested": 1}, "bytes": 2}],
+        ids=["none", "scalar", "string", "list", "empty", "nested"],
+    )
+    @pytest.mark.parametrize(
+        "signature",
+        [None, 5, {}, {"inputs": 5}, {"inputs": {7: {}}}, {"outputs": []}],
+        ids=["none", "scalar", "empty", "bad-inputs", "bad-key", "bad-outputs"],
+    )
+    def test_no_shape_of_entry_raises(self, roofline, signature):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline("FakeOp", roofline=roofline, signature=signature)
+        assert isinstance(result.diagnostics, tuple)
+        # Nothing emits from an entry this broken.
+        assert result.plan is None or not result.blocking
+
+    def test_a_self_referential_entry_does_not_hang(self):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        loop: dict = {"flops": "1", "bytes": "1"}
+        loop["vars"] = loop
+        analyze_roofline("FakeOp", roofline=loop, signature={"inputs": {}})
+
+    def test_every_message_names_the_op(self):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"N": "nope.shape[0]"}, "flops": "ALSO_NOPE", "bytes": "1"},
+            signature={"inputs": {}, "outputs": {"y": {}}},
+        )
+        assert result.diagnostics
+        for d in result.diagnostics:
+            assert d.message.startswith("FakeOp: "), d.message
+
+
 class TestCallPayload:
     """Call-bound formula inputs override construction-bound state."""
 
@@ -434,7 +620,7 @@ class TestInheritedEvaluator:
     def test_a_subclass_runs_its_own_entry(self):
         import torch
 
-        from tileops.ops._roofline_codegen import SYNTHESIZED_ATTR
+        from tileops.ops._roofline_emit import SYNTHESIZED_ATTR
 
         parent = self._op("_ParentOp", "2 * N * elem_bytes")
         child = self._op("_ChildOp", "4 * N * elem_bytes", base=parent)

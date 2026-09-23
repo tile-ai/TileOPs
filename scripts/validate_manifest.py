@@ -1819,44 +1819,47 @@ def check_kernel_map_parity(
 
 
 def check_roofline_synthesis(op_name: str, entry: dict) -> list[str]:
-    """Report why an implemented entry's ``roofline`` block cannot synthesize.
+    """Report every defect in an implemented entry's ``roofline`` block.
 
-    Codegen owns the name whitelist and the AST form rules
-    (``docs/design/roofline.md`` §4.1) and is the only place naming the illegal
-    name or construct; this reports what it raises and mirrors no rule.
+    The analysis owns the formula language -- the legal names and the AST forms
+    (``docs/design/roofline.md`` §4.1) -- and is the only place naming the
+    illegal name or construct. This renders what it found and mirrors no rule.
 
-    Runs for every implemented entry that has a ``roofline`` block, whatever
-    else in the entry is broken. An entry malformed in a way :func:`check_l0`
-    also rules on draws a line from each, which is the price of the formula
-    verdict never going missing: any precondition wide enough to suppress the
-    duplicate also suppresses a formula defect that an unrelated field happens
-    to sit beside.
+    It renders only the codes the schema level does not already own, so an entry
+    wrong in two ways draws one line from each owner rather than two from one.
+    A judgment the analysis could not reach, because the fact it needed could
+    not be read, is reported as such: silence there would let a formula defect
+    pass for a verdict.
     """
     if _is_spec_only(entry) or not isinstance(entry.get("roofline"), dict):
         return []
     try:
-        from tileops.ops._roofline_codegen import synthesize_eval_roofline
-    except Exception as exc:  # noqa: BLE001 - importing codegen runs its module body
+        from tileops.manifest.roofline_analysis import (
+            SCHEMA_OWNED_CODES,
+            analyze_roofline,
+        )
+    except Exception as exc:  # noqa: BLE001 - importing the analysis runs its module body
         return [
-            f"[schema] {op_name}: roofline codegen is unavailable ({type(exc).__name__}: {exc})"
+            f"[schema] {op_name}: roofline analysis is unavailable ({type(exc).__name__}: {exc})"
         ]
     try:
-        synthesize_eval_roofline(
+        result = analyze_roofline(
             op_name,
             roofline=entry["roofline"],
             signature=entry.get("signature"),
         )
-    except ValueError as exc:
-        # The formula verdict. Codegen names the field, not always the op.
-        text = str(exc)
-        prefix = "" if text.startswith(f"{op_name}:") else f"{op_name}: "
-        return [f"[schema] {prefix}{text}"]
-    except Exception as exc:  # noqa: BLE001 - see below
-        # Codegen raises ValueError for every verdict it has a name for, so
-        # anything else is a defect in what the formula reaches. The type keeps
-        # it distinguishable from a manifest defect.
-        return [f"[schema] {op_name}: roofline synthesis raised {type(exc).__name__}: {exc}"]
-    return []
+    except Exception as exc:  # noqa: BLE001 - totality is a claim, so it is checked
+        # The analysis is total over entry data; reaching here is a defect in it,
+        # and one entry must not take the run down with it.
+        return [f"[schema] {op_name}: roofline analysis raised {type(exc).__name__}: {exc}"]
+    errors = [
+        f"[schema] {d.message}" for d in result.diagnostics if d.code not in SCHEMA_OWNED_CODES
+    ]
+    errors += [
+        f"[schema] {op_name}: {u.judgment} was not judged; {u.missing} could not be read"
+        for u in result.unjudged
+    ]
+    return errors
 
 
 def check_source_paths(op_name: str, entry: dict, repo_root: Path) -> list[str]:

@@ -4361,17 +4361,20 @@ class TestRooflineSynthesisReported:
         errors, _ = self._run(validator, self._tree(tmp_path), entry)
         assert any("unknown name 'NOPE'" in e for e in errors), errors
 
-    def test_a_raising_synthesis_is_reported_not_propagated(self, validator, monkeypatch):
-        """Anything but ValueError is a defect in what the formula reaches."""
+    def test_a_raising_analysis_is_reported_not_propagated(self, validator, monkeypatch):
+        """The analysis is total, so a raise from it is its own defect.
 
-        import tileops.ops._roofline_codegen as codegen
+        One entry must not take the run down, and the line says which entry and
+        which exception rather than reporting nothing.
+        """
+        import tileops.manifest.roofline_analysis as analysis
 
         def _boom(*_args, **_kwargs):
             raise RuntimeError("module said no")
 
-        monkeypatch.setattr(codegen, "synthesize_eval_roofline", _boom)
+        monkeypatch.setattr(analysis, "analyze_roofline", _boom)
         errors = validator.check_roofline_synthesis("my_op", _make_entry(status="implemented"))
-        assert errors == ["[schema] my_op: roofline synthesis raised RuntimeError: module said no"]
+        assert errors == ["[schema] my_op: roofline analysis raised RuntimeError: module said no"]
 
     def test_a_message_already_naming_the_op_is_not_prefixed_twice(self, validator):
         entry = _make_entry(status="implemented")
@@ -4380,16 +4383,35 @@ class TestRooflineSynthesisReported:
         assert len(errors) == 1
         assert errors[0].count("my_op") == 1, errors
 
-    def test_a_message_not_naming_the_op_gains_the_prefix(self, validator, monkeypatch):
-        """``_resolve_func_path``'s messages carry the field, not the op."""
-        import tileops.ops._roofline_codegen as codegen
+    @staticmethod
+    def _unresolvable_func(roofline):
+        """A clean func-mode block: leaving an inline key would mix the modes."""
+        for inline_key in ("flops", "bytes", "vars"):
+            roofline.pop(inline_key, None)
+        roofline["func"] = "pkg.mod.fn"
 
-        def _raise(*_args, **_kwargs):
-            raise ValueError("roofline.func 'pkg.mod.fn' does not resolve")
+    @pytest.mark.parametrize(
+        "break_roofline",
+        [
+            lambda r: r.update(flops="NOPE * 2"),
+            _unresolvable_func,
+            lambda r: r.update(vars={"N": "output.shape[0]"}),
+        ],
+        ids=["unknown-name", "unresolvable-func", "bad-vars"],
+    )
+    def test_every_reported_message_names_the_op_once(self, validator, break_roofline):
+        """Naming the op is structural now: the analysis prefixes every message.
 
-        monkeypatch.setattr(codegen, "synthesize_eval_roofline", _raise)
-        errors = validator.check_roofline_synthesis("my_op", _make_entry(status="implemented"))
-        assert errors == ["[schema] my_op: roofline.func 'pkg.mod.fn' does not resolve"]
+        The old seam prefixed those that did not, which meant a reworded message
+        could arrive naming the op twice or not at all.
+        """
+        entry = _make_entry(status="implemented")
+        break_roofline(entry["roofline"])
+        errors = validator.check_roofline_synthesis("my_op", entry)
+        assert errors
+        for line in errors:
+            assert line.startswith("[schema] my_op: "), line
+            assert line.count("my_op") == 1, line
 
     @pytest.mark.parametrize(
         "func_path",
