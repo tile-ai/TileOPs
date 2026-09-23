@@ -94,7 +94,9 @@ _ARITHMETIC_ALLOWED_NODES: tuple[type[ast.AST], ...] = (
 
 # A name that parses as an identifier but cannot be assigned to. Interpolating
 # one into the generated body yields a SyntaxError rather than a diagnostic.
-_KEYWORDS = frozenset(__import__("keyword").kwlist) | frozenset(__import__("keyword").softkwlist)
+# Reserved words only. A soft keyword -- ``match``, ``case``, ``type``, ``_`` --
+# binds a local perfectly well, and ``type`` is an ordinary param name.
+_KEYWORDS = frozenset(__import__("keyword").kwlist)
 
 # Names the generated body binds for itself. A declared name landing on one is
 # shadowed by it or shadows it: a param called ``self`` emits ``self = self.self``
@@ -380,6 +382,15 @@ class _VarsExprWalker(ast.NodeVisitor):
         self._scopes.append({})
         try:
             for gen in node.generators:  # type: ignore[attr-defined]
+                if getattr(gen, "is_async", 0):
+                    # The emitted body is a plain function, so an async
+                    # comprehension in it does not compile.
+                    self._report(
+                        "vars.async-comprehension",
+                        "",
+                        f"roofline.{self._path} uses an async comprehension, which the "
+                        f"generated body cannot contain",
+                    )
                 self.visit(gen.iter)
                 self._collect_targets(gen.target, self._scopes[-1])
                 for cond in gen.ifs:
@@ -957,10 +968,11 @@ def _analyse_inline(
 
     input_names, inputs_clean = _string_keys(pass_, inputs, "signature.inputs")
     param_names, params_clean = _string_keys(pass_, params, "signature.params")
-    # Usable means read in full: a block with one unreadable key states an
-    # incomplete set of names, which settles no more than an unreadable block.
-    inputs_ok = inputs.usable and inputs_clean
-    params_ok = params.usable and params_clean
+    # Read in full, which an absent block is: declaring nothing is a complete
+    # answer. A block with one unreadable key is not -- it states an incomplete
+    # set of names, which settles no more than an unreadable block does.
+    inputs_ok = inputs.state is ABSENT or (inputs.usable and inputs_clean)
+    params_ok = params.state is ABSENT or (params.usable and params_clean)
 
     # ``out_elem_bytes`` exists only for a single declared output: it resolves
     # that one output's dtype, and there is no answer for several.
@@ -1176,6 +1188,19 @@ def _analyse_inline(
             "",
             "the declared output has no usable name, so out_elem_bytes cannot resolve it",
         )
+
+    # A block is unreadable either because it is not a mapping -- which
+    # ``_report_malformed_signature`` has just ruled blocking -- or because a key
+    # in it could not be read, which leaves the declared names incomplete without
+    # any diagnostic being blocking. Both leave the same question open, so both
+    # stop the plan when the formula wanted an answer.
+    for block, ok in (("inputs", inputs_ok), ("params", params_ok)):
+        if block in needed and not ok:
+            pass_.defer(
+                f"signature.{block}",
+                f"which names signature.{block} declares, which this formula reads",
+            )
+            return None
 
     if any(d.blocking for d in pass_.diagnostics) or not exprs_usable or not vars_usable:
         return None

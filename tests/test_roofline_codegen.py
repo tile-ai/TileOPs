@@ -747,6 +747,68 @@ class TestComprehensionLocals:
         assert [b.name for b in result.plan.bindings] == []
 
 
+class TestEmittableByConstruction:
+    """A plan the analysis builds must be a plan emission can compile and run."""
+
+    OUT = {"y": {}}
+
+    def test_an_async_comprehension_is_refused(self):
+        """The generated body is a plain function, so it cannot hold one."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={
+                "vars": {"N": "len([x async for x in range(1)])"},
+                "flops": "N",
+                "bytes": "1",
+            },
+            signature={"inputs": {}, "outputs": self.OUT},
+        )
+        assert result.plan is None
+        assert [d.code for d in result.diagnostics] == ["vars.async-comprehension"]
+
+    @pytest.mark.parametrize("name", ["type", "match", "case"])
+    def test_a_soft_keyword_is_an_ordinary_name(self, name):
+        """`type` is a plausible param name, and `type = 1` is valid Python."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+        from tileops.ops._roofline_emit import emit_eval_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {name: "1"}, "flops": name, "bytes": "1"},
+            signature={"inputs": {}, "outputs": self.OUT},
+        )
+        assert not result.diagnostics
+        assert result.plan is not None
+        emit_eval_roofline(result.plan)
+
+    def test_a_block_read_in_part_stops_a_formula_that_reads_it(self):
+        """A mapping with an unreadable key is a valid mapping stating an
+        incomplete set of names, so nothing about it was blocking and the plan
+        was built with the name missing."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N"},
+            signature={"inputs": {7: {}}, "outputs": self.OUT},
+        )
+        assert result.plan is None
+        assert [u.missing for u in result.unjudged] == ["signature.inputs"] * len(result.unjudged)
+
+    def test_a_block_read_in_part_does_not_stop_a_formula_that_does_not(self):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {}, "flops": "1", "bytes": "1"},
+            signature={"inputs": {7: {}}, "outputs": self.OUT},
+        )
+        assert result.plan is not None
+        assert not result.unjudged
+
+
 class TestComprehensionShadowing:
     """A comprehension target is a local, whatever an outer name of that
     spelling happens to be.
