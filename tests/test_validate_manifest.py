@@ -4262,6 +4262,92 @@ class TestWorkspaceStaysOutOfDtypeCombos:
         assert any("missing declared input 'z'" in e for e in errors)
 
 
+class TestDiagnosticOwnership:
+    """Each roofline defect class is ruled on by exactly one of the two.
+
+    The partition is by code: the analysis judges every predicate, because it
+    needs the answers to decide whether a plan can be built, and renders only
+    what the schema level does not already own. Getting the set wrong drops a
+    defect entirely, which is the failure this keeps reintroducing, so every
+    code in it is checked against a schema level that really reports it.
+    """
+
+    ENTRY = {
+        "family": "x",
+        "status": "implemented",
+        "workloads": [],
+        "source": {"kernel": "k", "op": "o", "test": "t", "bench": "b"},
+        "signature": {
+            "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
+            "outputs": {"y": {"dtype": "same_as(x)", "shape": "[N]"}},
+        },
+    }
+    OUT = {"y": {"dtype": "same_as(x)", "shape": "[N]"}}
+
+    # One entry per owned code, and the phrase the schema level answers with.
+    OWNED = {
+        "roofline.absent": ({}, None, "flops + bytes"),
+        "inline.missing-expressions": ({"vars": {}}, None, "flops + bytes"),
+        "roofline.mixed-modes": ({"func": "a.b", "flops": "1"}, None, "exclusive"),
+        "vars.not-a-mapping": ({"vars": 5, "flops": "1", "bytes": "1"}, None, "vars must be a mapping"),
+        "vars.key-not-a-string": ({"vars": {7: "1"}, "flops": "1", "bytes": "1"}, None, "vars key"),
+        "vars.not-a-string": ({"vars": {"N": 5}, "flops": "1", "bytes": "1"}, None, "non-empty string"),
+        "vars.empty": ({"vars": {"N": "  "}, "flops": "1", "bytes": "1"}, None, "non-empty string"),
+        "flops.empty": ({"vars": {}, "flops": "", "bytes": "1"}, None, "roofline.flops must be"),
+        "bytes.empty": ({"vars": {}, "flops": "1", "bytes": ""}, None, "roofline.bytes must be"),
+        "func.not-a-string": ({"func": 5}, None, "roofline.func must be"),
+        "signature.not-a-mapping": ({"vars": {}, "flops": "1", "bytes": "1"}, 5, "signature"),
+        "signature.inputs.not-a-mapping": (
+            {"vars": {}, "flops": "1", "bytes": "1"},
+            {"inputs": 5, "outputs": OUT},
+            "inputs must be",
+        ),
+        "signature.outputs.not-a-mapping": (
+            {"vars": {}, "flops": "1", "bytes": "1"},
+            {"inputs": {}, "outputs": 5},
+            "outputs must be",
+        ),
+        "signature.params.not-a-mapping": (
+            {"vars": {}, "flops": "1", "bytes": "1"},
+            {"inputs": {}, "outputs": OUT, "params": 5},
+            "params must be",
+        ),
+        "signature.input-attributes": (
+            {"vars": {}, "flops": "1", "bytes": "1"},
+            {"inputs": {"x": 5}, "outputs": OUT},
+            "must be a dict",
+        ),
+    }  # fmt: skip
+
+    def test_the_owned_set_names_every_code_listed_here(self):
+        from tileops.manifest.roofline_analysis import SCHEMA_OWNED_CODES
+
+        assert set(self.OWNED) == set(SCHEMA_OWNED_CODES)
+
+    @pytest.mark.parametrize("code", sorted(OWNED))
+    def test_an_owned_code_is_ruled_on_by_the_schema_level(self, validator, code):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        roofline, signature, phrase = self.OWNED[code]
+        entry = {**self.ENTRY, "roofline": roofline}
+        if signature is not None:
+            entry["signature"] = signature
+
+        found = analyze_roofline("op", roofline=roofline, signature=entry["signature"]).diagnostics
+        assert code in {d.code for d in found}, "the entry no longer triggers this code"
+        assert any(phrase in line for line in validator.check_l0("op", entry)), (
+            f"{code} is owned by the schema level, which does not rule on it"
+        )
+
+    @pytest.mark.parametrize("code", sorted(OWNED))
+    def test_an_owned_code_is_not_rendered_twice(self, validator, code):
+        roofline, signature, _ = self.OWNED[code]
+        entry = {**self.ENTRY, "roofline": roofline}
+        if signature is not None:
+            entry["signature"] = signature
+        assert validator.check_roofline_synthesis("op", entry) == []
+
+
 class TestRooflineSynthesisReported:
     """An unsynthesizable roofline block names the illegal construct.
 
