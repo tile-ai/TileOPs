@@ -626,11 +626,9 @@ def _analyse_arithmetic_expr(
             continue
         if isinstance(node, ast.Name) and node.id not in allowed:
             if unresolved:
-                for missing in unresolved:
-                    pass_.defer(
-                        missing,
-                        f"whether {node.id!r} in roofline.{label} names something declared",
-                    )
+                # The block that would settle this name is unreadable. One line
+                # per block, raised where the plan is refused, rather than one
+                # per name that could have come from it.
                 continue
             pass_.report(
                 "arith.unknown-name",
@@ -989,11 +987,6 @@ def _analyse_inline(
     # declared in the part that could not be read. Which fact matters differs
     # by layer -- the arithmetic layer never sees inputs -- so the two sets are
     # kept apart rather than merged into "the signature is unreadable".
-    vars_unresolved: dict[str, str] = {}
-    if not inputs_ok and inputs.state is not ABSENT:
-        vars_unresolved["signature.inputs"] = "declared input names"
-    if not params_ok and params.state is not ABSENT:
-        vars_unresolved["signature.params"] = "declared param names"
     arith_unresolved: dict[str, str] = {}
     if not params_ok and params.state is not ABSENT:
         arith_unresolved["signature.params"] = "declared param names"
@@ -1136,11 +1129,9 @@ def _analyse_inline(
         pass_, inputs, outputs, params, needed=frozenset(needed), signature=signature
     )
 
-    # A judgment left unreached is worth a line only for a fact this formula
-    # wanted.
-    for missing, what in vars_unresolved.items():
-        if missing.rsplit(".", 1)[-1] in needed:
-            pass_.defer(missing, f"vars-layer name legality, for want of {what}")
+    # A block the formula wanted and could not read is one unjudged line, raised
+    # below where the plan is refused. Naming each judgment it cost would say
+    # the same thing once per name.
 
     if not outputs.usable and wants_out_elem_bytes:
         pass_.defer(
@@ -1226,34 +1217,37 @@ def analyze_roofline(
 
     has_func = "func" in roofline
     has_inline = "flops" in roofline or "bytes" in roofline or "vars" in roofline
-    if has_func and has_inline:
+    mixed = has_func and has_inline
+    if mixed:
         pass_.report(
             "roofline.mixed-modes",
             "roofline",
             "",
             "roofline cannot mix func and inline modes",
         )
-        return AnalysisResult(tuple(pass_.diagnostics), tuple(pass_.unjudged), None)
 
-    plan: RooflinePlan | None
+    plan: RooflinePlan | None = None
+    # Both halves are judged when both are present. Stopping at the mode
+    # verdict would leave whichever half is also wrong unreported, which is the
+    # suppression this boundary exists to remove.
     if has_func:
-        # Func mode reads no signature.
-        _report_malformed_signature(
-            pass_, inputs, outputs, params, needed=frozenset(), signature=signature
-        )
+        if not has_inline:
+            # Func mode reads no signature.
+            _report_malformed_signature(
+                pass_, inputs, outputs, params, needed=frozenset(), signature=signature
+            )
         fn = _resolve_func(pass_, roofline["func"])
-        plan = (
-            None
-            if fn is None
-            else RooflinePlan(
+        if fn is not None and not mixed:
+            plan = RooflinePlan(
                 op_name=op_name,
                 mode="func",
                 func=fn,
                 func_path=roofline["func"],
             )
-        )
-    else:
-        plan = _analyse_inline(pass_, op_name, roofline, inputs, outputs, params, signature)
+    if has_inline or not has_func:
+        inline_plan = _analyse_inline(pass_, op_name, roofline, inputs, outputs, params, signature)
+        if not mixed:
+            plan = inline_plan
 
     if any(d.blocking for d in pass_.diagnostics):
         plan = None

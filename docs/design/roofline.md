@@ -131,7 +131,7 @@ Every roofline entry MUST satisfy:
 Rules the validator does not own:
 
 - Name whitelist — a formula's names are checked by the analysis (§4.4), which owns the binding table. Validator does not mirror it; it renders what the analysis says.
-- Form checks — codegen refuses invalid forms. Validator does not mirror them either; the refusal is what it reports.
+- Form checks — the analysis refuses invalid forms. Validator does not mirror them either; it renders what the analysis found.
 - Numeric checks (finite / non-negative / numeric) — outside the validator entirely; tests exercise generated `eval_roofline()` on each workload.
 
 Validator holds no helper callables, no sample bindings, no `__builtins__` sandbox. Adding a helper does not touch the validator.
@@ -186,7 +186,7 @@ wide enough to suppress the overlap also suppresses a defect that merely sits be
 one. The exception is a signature too malformed to say what names the formula may use, where the
 structural verdict is the only one there is.
 
-Codegen states a rejection as a verdict rather than leaving a caller to classify an exception.
+A rejection is a verdict rather than an exception for a caller to classify.
 
 An inline entry is decided from the entry alone — no op instance, no tensor library, no device — which is what lets the validator (§4.1) ask the question wherever the manifest can be read. A `func` entry additionally imports the module its path names, so what that module needs at import, deciding the entry needs too. A formula callable that pulls a runtime into an import therefore costs the manifest a check it could otherwise run anywhere.
 
@@ -212,13 +212,13 @@ Inline mode has two layers, emitted as two sequential blocks.
 
 The layers are what keeps a formula readable and recountable, so a vars expression must not be inlined into an arithmetic expression: that collapses the two and puts shape traversal where the arithmetic layer forbids it. A formula the arithmetic layer cannot carry switches to `func` mode (§2.2) rather than extending inline formulas into a mini-language.
 
-Both expression strings are copied verbatim into plain Python. Codegen resolves every name against the namespace (§4.4.4) and checks the arithmetic layer's form at generation time; a formula failing either does not land (§4.1).
+Both expression strings are copied verbatim into plain Python. The analysis resolves every name against the namespace (§4.4.4) and checks the arithmetic layer's form; a formula failing either does not land (§4.1).
 
 Reduction dim handling in the vars layer follows the manifest `shape_rules` contract: validate range, normalize against `ndim`, reject duplicate axes for sequence dims. A roofline expression must not silently normalize an invalid axis.
 
 #### 4.4.4 Namespace
 
-Codegen's binding table is the single source of truth for what an inline formula may reference, and it states the allowed names when it refuses one. The buckets:
+One binding table is the single source of truth for what an inline formula may reference, and a refusal states the allowed names. The buckets:
 
 | Layer      | May reference                                                                                                          |
 | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
@@ -227,7 +227,7 @@ Codegen's binding table is the single source of truth for what an inline formula
 
 Two element-size constants exist. `elem_bytes` prices the input dtype; `out_elem_bytes` resolves the declared output dtype through the manifest, so an op whose output dtype is not its input's — a bool predicate, an integral input promoted to float — states its write without a second source. It is available where the entry declares exactly one output.
 
-Adding or removing a helper is an edit to codegen's binding table and to nothing else.
+A helper is added or removed in the binding table and nowhere else.
 
 #### 4.4.5 Evaluation Timing
 
@@ -239,7 +239,7 @@ A consumer that is not the op itself instantiates the Op or reads pre-computed `
 
 Roofline expressions live in exactly one place at runtime: the plain Python body of each op's `eval_roofline()`. Two surfaces are rejected and must not be built — an op-local AST evaluator, and a manifest-level roofline evaluator that any consumer could call for `(flops, bytes)`.
 
-Neither the generated body nor anything else parses, AST-analyzes or evaluates a formula string at run time. Codegen does the name and form check when it generates, and copies validated expressions into plain Python.
+Neither the generated body nor anything else parses, AST-analyzes or evaluates a formula string at run time. The name and form check happens once, before emission, which copies the checked expressions into plain Python.
 
 ### 4.5 Bytes Audit (NCU)
 

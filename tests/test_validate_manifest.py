@@ -4288,7 +4288,13 @@ class TestDiagnosticOwnership:
     OWNED = {
         "roofline.absent": ({}, None, "flops + bytes"),
         "inline.missing-expressions": ({"vars": {}}, None, "flops + bytes"),
-        "roofline.mixed-modes": ({"func": "a.b", "flops": "1"}, None, "exclusive"),
+        # A func that resolves, so the only defect is the mode itself: both
+        # halves are judged now, and a broken one would add its own line.
+        "roofline.mixed-modes": (
+            {"func": "tileops.perf.formulas._binary_broadcast_roofline", "flops": "1"},
+            None,
+            "exclusive",
+        ),
         "vars.not-a-mapping": ({"vars": 5, "flops": "1", "bytes": "1"}, None, "vars must be a mapping"),
         "vars.key-not-a-string": ({"vars": {7: "1"}, "flops": "1", "bytes": "1"}, None, "vars key"),
         "vars.not-a-string": ({"vars": {"N": 5}, "flops": "1", "bytes": "1"}, None, "non-empty string"),

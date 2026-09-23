@@ -191,6 +191,38 @@ class TestTotalContract:
                 signature={"inputs": {"x": {"dtype": "float16"}}},
             )
 
+    def test_mixing_both_modes_does_not_hide_either_half(self):
+        """Both halves are present, so both are judged: stopping at the mode
+        verdict leaves whichever half is also wrong unreported."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"func": "no.such.callable", "flops": "NOPE", "bytes": "1"},
+            signature={"inputs": {}, "outputs": {"y": {}}},
+        )
+        assert result.plan is None
+        assert {d.code for d in result.diagnostics} == {
+            "roofline.mixed-modes",
+            "func.import",
+            "arith.unknown-name",
+        }
+
+    def test_mixing_both_modes_emits_nothing_even_when_both_halves_are_sound(self):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={
+                "func": "tileops.perf.formulas._binary_broadcast_roofline",
+                "flops": "1",
+                "bytes": "1",
+            },
+            signature={"inputs": {}, "outputs": {"y": {}}},
+        )
+        assert result.plan is None
+        assert [d.code for d in result.diagnostics] == ["roofline.mixed-modes"]
+
     def test_mixing_both_modes_is_a_verdict(self):
         from tileops.ops._roofline_codegen import synthesize_eval_roofline
 
