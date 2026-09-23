@@ -205,10 +205,10 @@ class BmmFp8FwdOp(Op):
         self,
         out_dtype: torch.dtype = torch.bfloat16,
         trans_b: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -217,10 +217,10 @@ class BmmFp8FwdOp(Op):
             trans_b: Whether ``b``'s axes are $[B \\times N \\times K]$ rather than
                 $[B \\times K \\times N]$. Which of the two is faster is decided by
                 ``b``'s strides, not by this flag.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune (applied when a kernel is first built).
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune (applied when a kernel is first built).
         """
         if out_dtype not in (torch.float16, torch.bfloat16):
             raise ValueError(

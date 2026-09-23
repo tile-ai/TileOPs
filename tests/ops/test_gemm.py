@@ -1198,7 +1198,7 @@ def test_gemm_w4a16_autotune_keeps_composite_runtime_state() -> None:
     )
 
     with pytest.warns(UserWarning, match="does not support generic autotuning"):
-        new_op = GemmW4A16FwdOp(tune=True, target=BUILTIN)
+        new_op = GemmW4A16FwdOp(tune=True)
     assert new_op.tune is False
 
 

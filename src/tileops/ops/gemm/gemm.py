@@ -176,19 +176,19 @@ class GemmFp8FwdOp(Op):
     def __init__(
         self,
         out_dtype: torch.dtype = torch.bfloat16,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             out_dtype: Output dtype.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
         """
         if out_dtype not in (torch.float16, torch.bfloat16):
             raise ValueError(
@@ -409,21 +409,21 @@ class GemmW4A16FwdOp(Op):
     def __init__(
         self,
         group_size: int = GROUP_SIZE,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             group_size: Manifest ``params.group_size``, ``int``, default ``128``.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional kernel override dict.
             tune: Accepted for the common op interface and ignored with a warning.
                 W4A16 uses its calibrated selector because generic autotuning cannot
                 time the composite path.
-            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-                in-tree kernels, or ``None`` to decide from the input device.
         """
         if group_size != GROUP_SIZE:
             raise ValueError(

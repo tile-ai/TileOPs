@@ -1605,14 +1605,14 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         cache_dtype: Optional[torch.dtype] = None,
         sm_scale: Optional[float] = None,
         softcap: Optional[float] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         fuse_rope: bool = False,
         rope_base: float = 10000.0,
         max_position: Optional[int] = None,
         rotary_dim: Optional[int] = None,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -1625,14 +1625,14 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             cache_dtype: Manifest ``params.cache_dtype``, ``dtype | None``, default ``None``.
             sm_scale: Manifest ``params.sm_scale``, ``float | None``, default ``None``.
             softcap: Manifest ``params.softcap``, ``float | None``, default ``None``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
             fuse_rope: Manifest ``params.fuse_rope``, ``bool``, default ``False``.
             rope_base: Manifest ``params.rope_base``, ``float``, default ``10000.0``.
             max_position: Manifest ``params.max_position``, ``int | None``, default ``None``.
             rotary_dim: Manifest ``params.rotary_dim``, ``int | None``, default ``None``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
         """
         _validate_gqa_dims(heads, heads_kv, dim)
         _validate_positive(max_seqlen_q=max_seqlen_q)

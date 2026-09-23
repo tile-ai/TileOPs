@@ -27,17 +27,17 @@ class SSDStatePassingFwdOp(Op):
 
     def __init__(
         self,
-        tune: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
-            tune:               Whether to autotune tile config on construction.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
+            tune:               Whether to autotune tile config on construction.
         """
         self.batch = None
         self.num_chunks = None
