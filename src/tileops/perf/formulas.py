@@ -250,7 +250,9 @@ def deltanet_inference_roofline(op: Any | None = None, **kwargs: Any) -> tuple[i
     elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
     flops = batch * seq_len * heads * (6 * dim_k * dim_v + 2 * dim_k)
     tensor_elements = batch * seq_len * heads * (2 * dim_k + 2 * dim_v + 1)
-    state_elements = batch * heads * dim_k * dim_v
+    cu_shape = data.get("cu_seqlens_shape")
+    state_batch = cu_shape[0] - 1 if cu_shape is not None else batch
+    state_elements = state_batch * heads * dim_k * dim_v
     nbytes = tensor_elements * elem_bytes + state_elements * 4
     if data.get("initial_state"):
         nbytes += state_elements * 4

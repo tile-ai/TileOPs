@@ -1,9 +1,11 @@
 """The inference DeltaNet contract, before the in-tree kernels are migrated."""
 
+from functools import partial
+
 import pytest
 import torch
 
-from tests.test_base import TestBase
+from tests.test_base import TestBase, allclose_compare
 from tileops.backend import TensorSpec, registry
 from tileops.ops import DeltaNetInferenceFwdOp
 from workloads.linear_attention import DeltaNetInferenceWorkload
@@ -58,9 +60,10 @@ def test_deltanet_inference_reaches_target_with_optional_inputs() -> None:
 
     assert o.shape == v.shape
     assert final_state.shape == initial_state.shape
-    decode_q = torch.randn(1, 1, 2, 8, dtype=torch.float32)
-    decode_v = torch.randn(1, 1, 2, 6, dtype=torch.float32)
-    decode_beta = torch.rand(1, 1, 2, dtype=torch.float32)
+    assert op.eval_roofline()[1] == 2348
+    decode_q = torch.randn(1, 1, 2, 8, dtype=torch.float16)
+    decode_v = torch.randn(1, 1, 2, 6, dtype=torch.float16)
+    decode_beta = torch.rand(1, 1, 2, dtype=torch.float16)
     decode_state = torch.zeros(1, 2, 8, 6, dtype=torch.float32)
     decode_o, decode_final_state = op(decode_q, decode_q, decode_v, decode_beta, decode_state)
     assert decode_o.shape == decode_v.shape
@@ -93,6 +96,8 @@ def test_deltanet_inference_rejects_invalid_state() -> None:
         DeltaNetInferenceFwdOp().forward(q, k, v, beta, torch.empty(1, 2, 6, 8))
     with pytest.raises(ValueError, match="requires cu_seqlens"):
         DeltaNetInferenceFwdOp().forward(q, k, v, beta, cu_seqlens_cpu=torch.tensor([0, 1]))
+    with pytest.raises(ValueError, match="float16 or bfloat16"):
+        DeltaNetInferenceFwdOp().forward(q.float(), k.float(), v.float(), beta.float())
 
 
 @pytest.mark.skipif(
@@ -105,8 +110,18 @@ def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
     test = DeltaNetInferenceTest(2, 128, 4, 64, dtype)
     inputs = test.gen_inputs()
     op = DeltaNetInferenceFwdOp()
-    test.check(op, *inputs, atol=0.03, rtol=0.03)
-    test.check(op, *inputs[:4], atol=0.03, rtol=0.03)
+    if dtype == torch.float16:
+        # The output meets the standard 1e-3 tolerance. The FP32 final state
+        # has a measured 2.10e-3 maximum error for seeded and zero-state calls.
+        compare = [
+            partial(allclose_compare, atol=1e-3, rtol=1e-3),
+            partial(allclose_compare, atol=3e-3, rtol=1e-3),
+        ]
+        test.check(op, *inputs, compare=compare)
+        test.check(op, *inputs[:4], compare=compare)
+    else:
+        test.check(op, *inputs, atol=1.6e-2, rtol=1.6e-2)
+        test.check(op, *inputs[:4], atol=1.6e-2, rtol=1.6e-2)
 
 
 @pytest.mark.skipif(
@@ -117,7 +132,7 @@ def test_deltanet_partitioned_prefill_matches_fla(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("TILEOPS_DELTANET_PREFILL_MAX_LOCAL_CHUNKS", "4")
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(2, 512, 4, 64, torch.bfloat16)
-    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs(), atol=0.03, rtol=0.03)
+    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
 
 
 @pytest.mark.skipif(
@@ -127,4 +142,4 @@ def test_deltanet_partitioned_prefill_matches_fla(monkeypatch: pytest.MonkeyPatc
 def test_deltanet_wide_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(1, 256, 4, 128, torch.bfloat16)
-    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs(), atol=0.03, rtol=0.03)
+    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)

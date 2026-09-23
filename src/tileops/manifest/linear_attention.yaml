@@ -12,7 +12,7 @@ DeltaNetInferenceFwdOp:
 
   signature:
     inputs:
-      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, T, H, K]"}
+      q: {dtype: "float16 | bfloat16", shape: "[B, T, H, K]"}
       k: {dtype: "same_as(q)", shape: "[B, T, H, K]"}
       v: {dtype: "same_as(q)", shape: "[B, T, H, V]"}
       beta: {dtype: "same_as(q)", shape: "[B, T, H]"}

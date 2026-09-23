@@ -175,8 +175,8 @@ class DeltaNetInferenceFwdOp(Op):
         cu_seqlens: Optional[torch.Tensor] = None,
         cu_seqlens_cpu: Optional[torch.Tensor] = None,
     ) -> None:
-        if q.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-            raise ValueError("q must have float16, bfloat16, or float32 dtype")
+        if q.dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError("q must have float16 or bfloat16 dtype")
         for name, tensor in (("k", k), ("v", v), ("beta", beta)):
             if tensor.dtype != q.dtype:
                 raise ValueError(f"{name} must have the same dtype as q")
@@ -194,6 +194,7 @@ class DeltaNetInferenceFwdOp(Op):
             v_shape=self.v_shape,
             dtype=self.dtype,
             initial_state=self.has_initial_state,
+            cu_seqlens_shape=self.cu_seqlens_shape,
         )
 
     def compute_roof(self) -> str:
@@ -221,6 +222,7 @@ class DeltaNetInferenceFwdOp(Op):
         self.v_shape = tuple(v.shape)
         self.dtype = q.dtype
         self.has_initial_state = initial_state is not None
+        self.cu_seqlens_shape = tuple(cu_seqlens.shape) if cu_seqlens is not None else None
         batch, seq_len, heads, dim_k = q.shape
         call = (
             batch,
