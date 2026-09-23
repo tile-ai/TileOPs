@@ -274,23 +274,40 @@ class TestInstallOutcomes:
         maybe_install_eval_roofline(_SpecOnly)
         assert "eval_roofline" not in _SpecOnly.__dict__
 
-    def test_an_implemented_entry_without_a_roofline_block_raises(self):
-        """``roofline`` is required of every entry, so its absence is not a
-        configuration codegen may pass over. Compare
-        ``test_an_unsynthesizable_formula_installs_nothing``: a formula the
-        author is still editing must not take down the import."""
+    def test_an_implemented_entry_with_an_empty_roofline_raises(self):
+        """An empty block is as absent as no key: ``roofline`` is required of
+        every entry, so it is not a configuration codegen may pass over."""
         from tileops.ops._roofline_codegen import maybe_install_eval_roofline
 
-        class _NoRoofline:
+        class _EmptyRoofline:
             __manifest_status__ = "implemented"
             __manifest_roofline__ = {}
             __manifest_signature__ = {"inputs": {}, "outputs": {}}
 
         with pytest.raises(ValueError, match="declares no roofline block"):
-            maybe_install_eval_roofline(_NoRoofline)
+            maybe_install_eval_roofline(_EmptyRoofline)
 
-    def test_an_unsynthesizable_formula_installs_nothing(self):
+    @pytest.mark.parametrize("block", [None, "flops: N", []])
+    def test_a_loaded_entry_without_a_usable_roofline_raises(self, block, monkeypatch):
+        """The production path: the entry comes from the manifest loader. An
+        absent key reaches here as ``None``, which the class-attached path
+        cannot express — it falls back to the loader instead."""
+        import tileops.ops._roofline_codegen as codegen
+
+        entry = {"status": "implemented", "signature": {"inputs": {}, "outputs": {}}}
+        if block is not None:
+            entry["roofline"] = block
+        monkeypatch.setattr(codegen, "try_load_entry", lambda name: entry)
+
+        class _Loaded:
+            pass
+
+        with pytest.raises(ValueError, match="declares no roofline block"):
+            codegen.maybe_install_eval_roofline(_Loaded)
+
+    def test_an_unsynthesizable_formula_installs_the_base_stub(self):
         from tileops.ops._roofline_codegen import maybe_install_eval_roofline
+        from tileops.ops.op_base import Op
 
         class _BadFormula:
             __manifest_status__ = "implemented"
@@ -298,7 +315,46 @@ class TestInstallOutcomes:
             __manifest_signature__ = {"inputs": {}, "outputs": {}}
 
         maybe_install_eval_roofline(_BadFormula)
-        assert "eval_roofline" not in _BadFormula.__dict__
+        assert _BadFormula.__dict__["eval_roofline"] is Op.eval_roofline
+
+    def test_a_refused_formula_does_not_fall_through_to_the_parent(self):
+        """Binding the stub is what keeps a child off its parent's formula.
+        Leaving the attribute alone hands the answer to MRO lookup, and the
+        child would be priced by an entry that is not its own."""
+        import torch
+
+        from tileops.ops.op_base import Op
+
+        common = {
+            "__manifest_status__": "implemented",
+            "__manifest_signature__": {
+                "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
+                "outputs": {"y": {"dtype": "same_as(x)"}},
+            },
+            "forward": lambda self, *a, **kw: None,
+            "_infer_output_shapes": lambda self, x_shape: {"y": x_shape},
+            "_validate_dtypes": lambda self, *a: None,
+            "default_kernel_map": property(lambda self: {}),
+        }
+        parent = type(
+            "_PricedParent",
+            (Op,),
+            {**common, "__manifest_roofline__": {
+                "vars": {"N": "x.shape[0]"}, "flops": "N", "bytes": "7 * N * elem_bytes"}},
+        )  # fmt: skip
+        child = type(
+            "_RefusedChild",
+            (parent,),
+            {**common, "__manifest_roofline__": {
+                "vars": {"N": "x.shape[0]"}, "flops": "NOPE * 2", "bytes": "N * elem_bytes"}},
+        )  # fmt: skip
+
+        assert child.eval_roofline is Op.eval_roofline
+        op = parent.__new__(parent)
+        op.x_shape, op.dtype = (10,), torch.float16
+        assert op.eval_roofline() == (10, 140)
+        with pytest.raises(TypeError, match="abstract"):
+            child()
 
 
 class TestCallPayload:

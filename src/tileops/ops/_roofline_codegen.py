@@ -818,17 +818,23 @@ def maybe_install_eval_roofline(cls: type) -> None:
     Class-attached manifest metadata takes precedence over the entry named by
     ``cls.__name__``.
 
-    Three outcomes leave the class alone. A subclass with no manifest entry is
-    not an op — intermediate bases such as ``UnaryOp`` sit here. An entry that
-    is not ``implemented`` has nothing to evaluate yet. A formula codegen
-    refuses leaves ``Op.eval_roofline`` in place, which
-    ``check_roofline_synthesis`` reports under the op's name with the reason;
-    raising instead would take down ``import tileops.ops`` over one entry an
-    author is still editing.
+    Two outcomes leave the class alone: a subclass with no manifest entry is
+    not an op — intermediate bases such as ``UnaryOp`` sit here — and an entry
+    that is not ``implemented`` has nothing to evaluate yet.
 
-    The fourth is not an outcome. ``roofline`` is a required top-level field
-    checked regardless of status, so an implemented entry carries one, and a
-    missing block raises rather than passing for a configuration.
+    A formula codegen refuses binds the abstract ``Op.eval_roofline``, which
+    makes the class uninstantiable and is what ``check_c6`` names. Leaving the
+    attribute alone instead would hand the answer to MRO lookup, and a parent
+    carrying its own generated evaluator would answer with its formula — a
+    plausible number belonging to another op. Raising here would instead take
+    down the import of whichever module defines the op, over one entry an
+    author is still editing; ``check_roofline_synthesis`` reports the reason
+    under the op's name.
+
+    An implemented entry with no usable ``roofline`` is none of the three.
+    The field is required of every entry regardless of status, so an absent,
+    empty or non-mapping block means the manifest was never validated, and
+    that raises rather than passing for a configuration.
     """
     roofline = getattr(cls, "__manifest_roofline__", None)
     sig = getattr(cls, "__manifest_signature__", None)
@@ -857,5 +863,12 @@ def maybe_install_eval_roofline(cls: type) -> None:
             signature=sig,
         )
     except ValueError:
+        # Not a no-op: without an assignment the class inherits whatever
+        # ``eval_roofline`` the MRO offers, which for a subclass of an op is
+        # the parent's generated formula. Bind the abstract base so a refused
+        # formula is uninstantiable rather than quietly priced as its parent.
+        from tileops.ops.op_base import Op
+
+        cls.eval_roofline = Op.eval_roofline  # type: ignore[assignment]
         return
     cls.eval_roofline = fn  # type: ignore[assignment]
