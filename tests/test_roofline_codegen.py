@@ -681,6 +681,170 @@ class TestNoDefectHidesAnother:
         assert not lost, lost
 
 
+class TestEveryPlanRuns:
+    """A plan the analysis builds emits, compiles and returns two ints.
+
+    The other half of the boundary's contract, and the one that failed by
+    example three times -- an async comprehension, a param named `self`, a
+    fullwidth keyword. A cross product holds it instead: the entry is named
+    for a real single-output op, because `out_elem_bytes` resolves the
+    declared output's dtype through the manifest by the class's name.
+    """
+
+    OP = "SiluAndMulFwdOp"
+    SIG = {
+        "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
+        "outputs": {"output": {"dtype": "same_as(x)"}},
+        "params": {"alpha": {"type": "float"}},
+    }
+    ROOFLINE = {"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N * elem_bytes"}
+
+    # Defects and rarely-written-but-legal forms alike: the ones that yield a
+    # plan are the ones this holds.
+    INJECT = {
+        "async-comprehension": (
+            "vars-a",
+            lambda r, g: r["vars"].update(A="len([q async for q in range(1)])"),
+        ),
+        "soft-keyword": ("vars-t", lambda r, g: r["vars"].update(type="1")),
+        "nfkc-name": ("vars-k", lambda r, g: r["vars"].update(**{"\u212a": "1"})),
+        "keyword-fullwidth": ("vars-w", lambda r, g: r["vars"].update(**{"\uff49\uff46": "1"})),
+        "param-self": (
+            "params",
+            lambda r, g: (
+                g.update(params={"self": {"type": "int"}}),
+                r.update(flops="N * self"),
+            ),
+        ),
+        "param-shadows-helper": (
+            "params",
+            lambda r, g: (
+                g.update(params={"sum": {"type": "int"}}),
+                r["vars"].update(S="sum(d for d in x.shape)"),
+            ),
+        ),
+        "name-in-two-blocks": ("params2", lambda r, g: g.update(params={"x": {"type": "int"}})),
+        "out-elem-bytes": ("bytes", lambda r, g: r.update(bytes="N * out_elem_bytes")),
+        "optional-input": (
+            "inputs",
+            lambda r, g: g["inputs"].update(b={"dtype": "float16", "optional": True}),
+        ),
+        "reads-optional": ("vars-o", lambda r, g: r["vars"].update(H="1 if b is None else 2")),
+        "comprehension": ("vars-c", lambda r, g: r["vars"].update(C="sum(d for d in x.shape)")),
+        "helper-chain": (
+            "vars-h",
+            lambda r, g: r["vars"].update(Hh="max(1, min(2, len(x.shape)))"),
+        ),
+        "param-read": ("flops", lambda r, g: r.update(flops="N * alpha")),
+        "deep-expression": ("vars-d", lambda r, g: r["vars"].update(D="1" + "+1" * 400)),
+        "unused-param": (
+            "params3",
+            lambda r, g: g.setdefault("params", {}).update(u={"type": "int"}),
+        ),
+        "vars-key-reserved": (
+            "vars-r",
+            lambda r, g: (r["vars"].update(_flops="1"), r.update(flops="_flops")),
+        ),
+    }
+
+    def _probe_op(self):
+        import torch
+
+        op = type(self.OP, (), {})()
+        op.x_shape, op.x = (8,), torch.empty((8,), dtype=torch.float16, device="meta")
+        op.b_shape, op.b = None, None
+        op.dtype, op.alpha, op.u = torch.float16, 2.0, 1
+        # Names a declared param may legally carry, which the body must not read
+        # in place of its own bindings.
+        op.self = 1
+        op.sum = 1
+        return op
+
+    def _plan(self, names):
+        """The plan for these injectors, or None if the entry was refused."""
+        import copy
+
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        roofline, signature = copy.deepcopy(self.ROOFLINE), copy.deepcopy(self.SIG)
+        for name in names:
+            self.INJECT[name][1](roofline, signature)
+        return analyze_roofline(self.OP, roofline=roofline, signature=signature).plan
+
+    @staticmethod
+    def _plan_defects(plan):
+        """Ways a plan cannot be emitted soundly, whatever a probe object holds.
+
+        One attribute cannot be both a tensor and a param's value, so a name
+        bound twice is not observable by running the evaluator against any one
+        object. It is observable here.
+        """
+        from tileops.manifest.roofline_analysis import EMITTER_NAMES, VARS_HELPERS
+
+        names = [b.name for b in plan.bindings]
+        defects = []
+        if len(names) != len(set(names)):
+            defects.append(f"binds a name twice: {names}")
+        for name in names:
+            if name in EMITTER_NAMES:
+                defects.append(f"binds {name!r}, which the body binds for itself")
+            if name in VARS_HELPERS:
+                defects.append(f"binds {name!r}, which shadows the helper of that name")
+        for name, _ in plan.vars_program:
+            if name in EMITTER_NAMES or name in VARS_HELPERS:
+                defects.append(f"assigns {name!r}, which is not the author's to bind")
+        return defects
+
+    def _run(self, names):
+        """The value the plan for these injectors computes, or None if refused."""
+        import copy
+
+        from tileops.manifest.roofline_analysis import analyze_roofline
+        from tileops.ops._roofline_emit import emit_eval_roofline
+
+        roofline, signature = copy.deepcopy(self.ROOFLINE), copy.deepcopy(self.SIG)
+        for name in names:
+            self.INJECT[name][1](roofline, signature)
+        result = analyze_roofline(self.OP, roofline=roofline, signature=signature)
+        if result.plan is None:
+            return None
+        return emit_eval_roofline(result.plan)(self._probe_op())
+
+    def test_the_sound_entry_runs(self):
+        assert self._run([]) == (8, 16)
+
+    @pytest.mark.parametrize("name", sorted(INJECT))
+    def test_each_injector_alone_either_refuses_or_runs(self, name):
+        value = self._run([name])
+        assert value is None or (
+            isinstance(value, tuple) and [type(v) for v in value] == [int, int]
+        )
+
+    def test_no_pair_yields_a_plan_that_cannot_run(self):
+        import itertools
+
+        broken = []
+        for a, b in itertools.combinations(sorted(self.INJECT), 2):
+            if self.INJECT[a][0] == self.INJECT[b][0]:
+                continue
+            try:
+                value = self._run([a, b])
+            except Exception as exc:  # noqa: BLE001 - that it raises is the failure
+                broken.append(f"{a} + {b}: {type(exc).__name__}: {exc}")
+                continue
+            if value is not None and [type(v) for v in value] != [int, int]:
+                broken.append(f"{a} + {b}: returned {value!r}")
+            plan = self._plan([a, b])
+            if plan is not None:
+                broken += [f"{a} + {b}: {d}" for d in self._plan_defects(plan)]
+        assert not broken, broken
+
+    @pytest.mark.parametrize("name", sorted(INJECT))
+    def test_no_plan_binds_a_name_it_does_not_own(self, name):
+        plan = self._plan([name])
+        assert plan is None or not self._plan_defects(plan)
+
+
 class TestTotality:
     """The analysis answers whatever YAML produced, without raising."""
 
