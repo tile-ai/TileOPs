@@ -845,6 +845,95 @@ class TestEveryPlanRuns:
         assert plan is None or not self._plan_defects(plan)
 
 
+class TestNothingLegalIsRefused:
+    """A formula the spec allows is accepted, and draws nothing.
+
+    The other two matrices ask what a wrong entry draws. This one asks what a
+    right one does not: a gate tightened against a defect can refuse a form the
+    spec permits, and no defect corpus would notice.
+    """
+
+    OP = "SiluAndMulFwdOp"
+    SIG = {
+        "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
+        "outputs": {"output": {"dtype": "same_as(x)"}},
+        "params": {"alpha": {"type": "float"}},
+    }
+    ROOFLINE = {"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N * elem_bytes"}
+
+    # Every one of these is legal: it appears in the manifest, or §4.4.3 permits it.
+    LEGAL = {
+        "optional-input": (
+            "in-b",
+            lambda r, g: g["inputs"].update(b={"dtype": "float16", "optional": True}),
+        ),
+        "presence-test": (
+            "v-h",
+            lambda r, g: (
+                g["inputs"].update(b={"dtype": "float16", "optional": True}),
+                r["vars"].update(H="1 if b is None else 2"),
+            ),
+        ),
+        "comprehension": ("v-c", lambda r, g: r["vars"].update(C="sum(d for d in x.shape)")),
+        "nested-helpers": ("v-n", lambda r, g: r["vars"].update(Nn="max(1, min(2, len(x.shape)))")),
+        "isinstance-branch": (
+            "v-i",
+            lambda r, g: r["vars"].update(
+                I="alpha[0] if isinstance(alpha, (tuple, list)) else alpha"
+            ),
+        ),
+        "earlier-var": ("v-e", lambda r, g: r["vars"].update(E="N * 2")),
+        "shape-index": ("v-s", lambda r, g: r["vars"].update(S="x.shape[0]")),
+        "ndim": ("v-d", lambda r, g: r["vars"].update(D="x.ndim")),
+        "soft-keyword-name": ("v-t", lambda r, g: r["vars"].update(type="1")),
+        "nfkc-name": ("v-k", lambda r, g: r["vars"].update(**{"\u212a": "1"})),
+        "out-elem-bytes": ("bytes", lambda r, g: r.update(bytes="N * out_elem_bytes")),
+        "param-in-arithmetic": ("flops", lambda r, g: r.update(flops="N * alpha")),
+        "numeric-helpers": (
+            "flops2",
+            lambda r, g: r.update(flops="ceil(N / 2) + floor(N / 3) + log2(N + 1)"),
+        ),
+        "conditional-arithmetic": (
+            "bytes2",
+            lambda r, g: r.update(bytes="(N if N > 0 else 1) * elem_bytes"),
+        ),
+        "unread-param": ("p-u", lambda r, g: g["params"].update(unused={"type": "int"})),
+        "unread-input": ("in-u", lambda r, g: g["inputs"].update(w={"dtype": "float16"})),
+    }
+
+    def _refusal(self, names):
+        """Why these legal forms were refused, or None if they were accepted."""
+        import copy
+
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        roofline, signature = copy.deepcopy(self.ROOFLINE), copy.deepcopy(self.SIG)
+        for name in names:
+            self.LEGAL[name][1](roofline, signature)
+        result = analyze_roofline(self.OP, roofline=roofline, signature=signature)
+        if result.plan is None:
+            return [d.code for d in result.diagnostics] or ["refused without saying why"]
+        if result.diagnostics:
+            return [f"accepted but still drew {[d.code for d in result.diagnostics]}"]
+        return None
+
+    @pytest.mark.parametrize("name", sorted(LEGAL))
+    def test_each_legal_form_is_accepted_alone(self, name):
+        assert self._refusal([name]) is None
+
+    def test_no_pair_of_legal_forms_is_refused(self):
+        import itertools
+
+        refused = []
+        for a, b in itertools.combinations(sorted(self.LEGAL), 2):
+            if self.LEGAL[a][0] == self.LEGAL[b][0]:
+                continue
+            why = self._refusal([a, b])
+            if why is not None:
+                refused.append(f"{a} + {b}: {why}")
+        assert not refused, refused
+
+
 class TestTotality:
     """The analysis answers whatever YAML produced, without raising."""
 
