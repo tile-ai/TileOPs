@@ -629,6 +629,19 @@ class TestNameSafety:
         assert result.plan is None
         assert any(d.code == "signature.reserved-name" for d in result.diagnostics)
 
+    def test_a_key_that_normalizes_to_a_keyword_is_refused(self):
+        """`\uff49\uff46` normalizes to `if`; the check ran on the original
+        spelling, so the plan carried a name the body could not assign to."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"\uff49\uff46": "1"}, "flops": "1", "bytes": "1"},
+            signature={"inputs": {}, "outputs": {"y": {}}},
+        )
+        assert result.plan is None
+        assert [d.code for d in result.diagnostics] == ["vars.key-keyword"]
+
     def test_a_vars_key_the_body_binds_for_itself_is_refused(self):
         from tileops.manifest.roofline_analysis import analyze_roofline
 
@@ -732,6 +745,64 @@ class TestComprehensionLocals:
         )
         assert result.plan is not None
         assert [b.name for b in result.plan.bindings] == []
+
+
+class TestComprehensionShadowing:
+    """A comprehension target is a local, whatever an outer name of that
+    spelling happens to be.
+
+    Tracking only that a name is bound reads `[x.shape for x in range(1)]` as a
+    tensor read when an input is called `x`, and lets `[sum(...) for sum in ...]`
+    call an integer. Tracking the kind settles both, and stops a plain
+    `[x for x in range(3)]` being refused because an unrelated input shares the
+    name.
+    """
+
+    IN = {"x": {"dtype": "float16"}}
+    OUT = {"y": {}}
+
+    def _run(self, expr, inputs):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        return analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"N": expr}, "flops": "N", "bytes": "1"},
+            signature={"inputs": inputs, "outputs": self.OUT},
+        )
+
+    def test_a_target_shadowing_an_input_is_not_a_tensor(self):
+        result = self._run("len([x.shape for x in range(1)])", self.IN)
+        assert result.plan is None
+        assert [d.code for d in result.diagnostics] == ["vars.attribute-operand"]
+
+    def test_a_target_shadowing_a_helper_is_not_the_helper(self):
+        result = self._run("len([sum(range(2)) for sum in range(1)])", {})
+        assert result.plan is None
+        assert [d.code for d in result.diagnostics] == ["vars.unknown-helper"]
+
+    def test_a_target_sharing_an_input_name_is_still_legal(self):
+        from tileops.ops._roofline_emit import emit_eval_roofline
+
+        result = self._run("len([x for x in range(3)])", self.IN)
+        assert not result.diagnostics
+        assert result.plan is not None
+        emit_eval_roofline(result.plan)
+
+
+class TestUnreadableInputsAreNotGuessed:
+    """While the declared inputs cannot be read, which names are tensors is not
+    known, so the judgments that turn on it are left to the unjudged line."""
+
+    def test_no_verdict_is_claimed_on_a_name_that_might_be_an_input(self):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N"},
+            signature={"inputs": 5, "outputs": {"y": {}}},
+        )
+        assert result.plan is None
+        assert [d.code for d in result.diagnostics] == ["signature.inputs.not-a-mapping"]
 
 
 class TestUnreadableInputAttributes:

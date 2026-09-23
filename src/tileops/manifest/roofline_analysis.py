@@ -148,6 +148,7 @@ SCHEMA_OWNED_CODES = frozenset(
         "signature.outputs.not-a-mapping",
         "signature.params.not-a-mapping",
         "signature.input-attributes",
+        "signature.non-string-name",
     }
 )
 
@@ -323,22 +324,42 @@ class _VarsExprWalker(ast.NodeVisitor):
         allowed: set[str],
         input_names: set[str],
         optional_names: set[str],
+        *,
+        inputs_unreadable: bool = False,
     ) -> None:
         self._pass = pass_
         self._path = path
         self._optional_names = set(optional_names)
         self._input_names = set(input_names)
-        self._scopes: list[set[str]] = [set(allowed)]
+        # Whether the declared inputs could be read at all. While they cannot,
+        # nothing here knows which names are tensors, so the judgments that turn
+        # on that are left to the unjudged line rather than guessed at.
+        self._inputs_unreadable = inputs_unreadable
+        # Each scope maps a name to what it is. A comprehension target is a
+        # local whatever an outer name of the same spelling happens to be, so
+        # the kind has to travel with the binding: tracking only that a name is
+        # bound reads ``[x.shape for x in range(1)]`` as a tensor read.
+        outer: dict[str, str] = {}
+        for name in allowed:
+            outer[name] = "input" if name in self._input_names else "name"
+        self._scopes: list[dict[str, str]] = [outer]
 
     def _report(self, code: str, subject: str, message: str) -> None:
         self._pass.report(code, self._path, subject, message)
 
-    def _is_bound(self, name: str) -> bool:
-        return any(name in scope for scope in self._scopes)
+    def _kind(self, name: str) -> str | None:
+        """What this name is where it stands, innermost binding first."""
+        for scope in reversed(self._scopes):
+            if name in scope:
+                return scope[name]
+        return None
 
-    def _collect_targets(self, target: ast.AST, scope: set[str]) -> None:
+    def _is_bound(self, name: str) -> bool:
+        return self._kind(name) is not None
+
+    def _collect_targets(self, target: ast.AST, scope: dict[str, str]) -> None:
         if isinstance(target, ast.Name):
-            scope.add(target.id)
+            scope[target.id] = "local"
             return
         if isinstance(target, (ast.Tuple, ast.List)):
             for elt in target.elts:
@@ -356,7 +377,7 @@ class _VarsExprWalker(ast.NodeVisitor):
     def _visit_comp(self, node: ast.AST) -> None:
         # Python binds a generator's target after evaluating its iterable, so
         # ``sum(d for d in d)`` is a NameError at run time and must fail here.
-        self._scopes.append(set())
+        self._scopes.append({})
         try:
             for gen in node.generators:  # type: ignore[attr-defined]
                 self.visit(gen.iter)
@@ -378,14 +399,17 @@ class _VarsExprWalker(ast.NodeVisitor):
     visit_GeneratorExp = _visit_comp  # noqa: N815
 
     def visit_Name(self, node: ast.Name) -> None:
-        if not self._is_bound(node.id):
+        kind = self._kind(node.id)
+        if kind is None:
+            if self._inputs_unreadable:
+                return
             self._report(
                 "vars.unknown-name",
                 node.id,
                 f"roofline.{self._path} references unknown name {node.id!r}",
             )
             return
-        if node.id in self._input_names:
+        if kind == "input":
             self._report(
                 "vars.tensor-as-value",
                 node.id,
@@ -396,7 +420,11 @@ class _VarsExprWalker(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         base = node.value
-        if isinstance(base, ast.Name) and base.id in self._optional_names:
+        if (
+            isinstance(base, ast.Name)
+            and self._kind(base.id) == "input"
+            and base.id in self._optional_names
+        ):
             self._report(
                 "vars.optional-read",
                 base.id,
@@ -417,7 +445,9 @@ class _VarsExprWalker(ast.NodeVisitor):
         # ``.shape`` / ``.ndim`` are valid only taken directly off a declared
         # tensor input. Chained access, a subscripted operand and a local name
         # all reject here rather than producing a body that dies at call time.
-        if not isinstance(node.value, ast.Name) or node.value.id not in self._input_names:
+        if not isinstance(node.value, ast.Name) or self._kind(node.value.id) != "input":
+            if self._inputs_unreadable:
+                return
             self._report(
                 "vars.attribute-operand",
                 node.attr,
@@ -426,12 +456,6 @@ class _VarsExprWalker(ast.NodeVisitor):
                 f"signature.inputs name",
             )
             return
-        if not self._is_bound(node.value.id):
-            self._report(
-                "vars.unknown-name",
-                node.value.id,
-                f"roofline.{self._path} references unknown name {node.value.id!r}",
-            )
 
     def visit_Call(self, node: ast.Call) -> None:
         if not isinstance(node.func, ast.Name):
@@ -441,7 +465,9 @@ class _VarsExprWalker(ast.NodeVisitor):
                 f"roofline.{self._path} performs a non-helper call (only whitelisted "
                 f"helper names may be invoked)",
             )
-        elif node.func.id not in VARS_HELPERS:
+        # A comprehension target of the same spelling is not the helper: calling
+        # it calls whatever the comprehension bound.
+        elif node.func.id not in VARS_HELPERS or self._kind(node.func.id) == "local":
             self._report(
                 "vars.unknown-helper",
                 node.func.id,
@@ -455,7 +481,11 @@ class _VarsExprWalker(ast.NodeVisitor):
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
         base = node.value
-        if isinstance(base, ast.Name) and base.id in self._optional_names:
+        if (
+            isinstance(base, ast.Name)
+            and self._kind(base.id) == "input"
+            and base.id in self._optional_names
+        ):
             self._report(
                 "vars.optional-subscript",
                 base.id,
@@ -481,7 +511,11 @@ class _VarsExprWalker(ast.NodeVisitor):
         left, right = node.left, node.comparators[0]
         if not isinstance(right, ast.Constant) or right.value is not None:
             return None
-        if isinstance(left, ast.Name) and left.id in self._optional_names:
+        if (
+            isinstance(left, ast.Name)
+            and self._kind(left.id) == "input"
+            and left.id in self._optional_names
+        ):
             return left
         return None
 
@@ -503,6 +537,8 @@ def _analyse_vars_expr(
     allowed: set[str],
     input_names: set[str],
     optional_names: set[str],
+    *,
+    inputs_unreadable: bool = False,
 ) -> None:
     """Parse and walk one vars-layer expression, reporting what it carries."""
     if not expr.strip():
@@ -530,7 +566,14 @@ def _analyse_vars_expr(
         )
         return
     try:
-        _VarsExprWalker(pass_, path, allowed, input_names, optional_names).visit(tree)
+        _VarsExprWalker(
+            pass_,
+            path,
+            allowed,
+            input_names,
+            optional_names,
+            inputs_unreadable=inputs_unreadable,
+        ).visit(tree)
     except RecursionError:
         pass_.report(
             "vars.unparsable",
@@ -779,7 +822,7 @@ def _string_keys(pass_: _Pass, fact: Fact, where: str) -> tuple[list[str], bool]
             )
             clean = False
             continue
-        if not key.isidentifier() or key in _KEYWORDS:
+        if not key.isidentifier() or normalized(key) in _KEYWORDS:
             pass_.report(
                 "signature.unusable-name",
                 where,
@@ -998,7 +1041,7 @@ def _analyse_inline(
                 f"itself; the assignment would shadow it",
             )
             continue
-        if name in _KEYWORDS:
+        if normalized(name) in _KEYWORDS:
             pass_.report(
                 "vars.key-keyword",
                 f"roofline.{path}",
@@ -1031,7 +1074,15 @@ def _analyse_inline(
             if not collides_with_signature:
                 vars_program.append((normalized(name), expr))
             continue
-        _analyse_vars_expr(pass_, path, expr, vars_allowed, input_name_set, optional_names)
+        _analyse_vars_expr(
+            pass_,
+            path,
+            expr,
+            vars_allowed,
+            input_name_set,
+            optional_names,
+            inputs_unreadable=not inputs_ok and inputs.state is not ABSENT,
+        )
         vars_allowed.add(normalized(name))
         vars_program.append((normalized(name), expr))
 

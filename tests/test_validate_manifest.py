@@ -4317,6 +4317,11 @@ class TestDiagnosticOwnership:
             {"inputs": {"x": 5}, "outputs": OUT},
             "must be a dict",
         ),
+        "signature.non-string-name": (
+            {"vars": {}, "flops": "1", "bytes": "1"},
+            {"inputs": {7: {"dtype": "float16"}}, "outputs": OUT},
+            "has non-string names",
+        ),
     }  # fmt: skip
 
     def test_the_owned_set_names_every_code_listed_here(self):
