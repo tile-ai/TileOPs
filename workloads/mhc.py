@@ -49,7 +49,7 @@ class MHCPreWorkload(WorkloadBase):
 
     def ref_program(
         self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return mhc_pre_ref(
             self.batch,
             self.n_expand,
@@ -103,11 +103,12 @@ def mhc_pre_ref(
     alpha_res,
     sinkhorn_repeat: int,
     eps: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Reference for the MHC pre-projection stage.
 
     Returns:
-        ``(x_res_ref, x_layer_ref)``, both bfloat16.
+        ``(x_res_ref, x_layer_ref, h_post_ref)``: the first two bfloat16, ``h_post_ref``
+        float32.
     """
 
     xsqr = x * x
@@ -118,14 +119,17 @@ def mhc_pre_ref(
         H[i, :] = x[i, :].float() @ phi
 
     H_pre_ref = H[:, :n_expand]
+    H_post_ref = H[:, n_expand : 2 * n_expand]
     H_res_ref = H[:, 2 * n_expand :]
     H_res_ref = H_res_ref.reshape(batch, n_expand, n_expand)
 
     b_pre_ref = b[:n_expand]
+    b_post_ref = b[n_expand : 2 * n_expand]
     b_res_ref = b[2 * n_expand :]
     b_res_ref = b_res_ref.reshape([n_expand, n_expand])
 
     H_pre_ref = torch.sigmoid(alpha_pre * H_pre_ref / r_ref.unsqueeze(-1) + b_pre_ref)
+    H_post_ref = 2 * torch.sigmoid(alpha_post * H_post_ref / r_ref.unsqueeze(-1) + b_post_ref)
     H_res_ref = alpha_res * H_res_ref / r_ref.unsqueeze(-1).unsqueeze(-1) + b_res_ref
 
     H_res_ref_tmp = H_res_ref.max(dim=-1, keepdim=True).values
@@ -151,4 +155,4 @@ def mhc_pre_ref(
 
     x_res_ref = x_res_ref.bfloat16()
     x_layer_ref = x_layer_ref.bfloat16()
-    return x_res_ref, x_layer_ref
+    return x_res_ref, x_layer_ref, H_post_ref

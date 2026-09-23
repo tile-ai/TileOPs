@@ -1391,7 +1391,7 @@ def mhc_pre_roofline(op: "Op") -> tuple[int, int]:
     phi_bytes = x_dim * phi_dim * 4
     b_bytes = phi_dim * 4
     x_bytes = batch * x_dim * x_elem
-    output_bytes = batch * (x_dim + c_x) * x_elem
+    output_bytes = batch * (x_dim + c_x) * x_elem + batch * n_expand * 4
     nbytes = phi_bytes + b_bytes + x_bytes + output_bytes
     return int(flops), int(nbytes)
 
