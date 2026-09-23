@@ -434,7 +434,7 @@ def _validate_vars_expr(
     allowed_names: set[str],
     input_names: set[str],
     optional_names: set[str] | None = None,
-) -> ast.Expression:
+) -> None:
     """Parse and AST-check a vars-layer expression.
 
     Vars-layer permits ``.shape`` / ``.ndim`` access on tensor inputs,
@@ -444,8 +444,9 @@ def _validate_vars_expr(
     ``optional: true`` input inside ``is None`` / ``is not None``;
     comprehension target
     names bind to a child scope reachable only inside the comprehension.
-    Forbidden constructs raise ``ValueError`` so class construction
-    fails before the manifest lands.
+    A forbidden construct raises ``ValueError``, which fails synthesis; the
+    parsed tree is not returned, because the emitted body is built from the
+    expression text rather than from this tree.
     """
     try:
         tree = ast.parse(expr, mode="eval")
@@ -460,7 +461,6 @@ def _validate_vars_expr(
         input_names,
         optional_names,
     ).visit(tree)
-    return tree
 
 
 # Positive allowlist for arithmetic-layer AST nodes. Anything else
@@ -511,7 +511,7 @@ def _validate_arithmetic_expr(
     label: str,
     expr: str,
     allowed_names: set[str],
-) -> ast.Expression:
+) -> None:
     """Parse and AST-check an arithmetic-layer expression.
 
     Per ``docs/design/roofline.md`` §4.4.3, the arithmetic layer
@@ -552,7 +552,6 @@ def _validate_arithmetic_expr(
                     f"helper {node.func.id!r}; allowed callees are "
                     f"{sorted(_ARITHMETIC_HELPERS)!r}"
                 )
-    return tree
 
 
 def _synthesize_inline_mode(
@@ -815,9 +814,21 @@ def synthesize_eval_roofline(
 def maybe_install_eval_roofline(cls: type) -> None:
     """Install the manifest-derived ``eval_roofline`` for an implemented op.
 
+    Called for every subclass; the entry decides whether anything is installed.
     Class-attached manifest metadata takes precedence over the entry named by
-    ``cls.__name__``. Invalid formulas leave the inherited method in place and
-    are reported by manifest validation.
+    ``cls.__name__``.
+
+    Three outcomes leave the class alone. A subclass with no manifest entry is
+    not an op — intermediate bases such as ``UnaryOp`` sit here. An entry that
+    is not ``implemented`` has nothing to evaluate yet. A formula codegen
+    refuses leaves ``Op.eval_roofline`` in place, which
+    ``check_roofline_synthesis`` reports under the op's name with the reason;
+    raising instead would take down ``import tileops.ops`` over one entry an
+    author is still editing.
+
+    The fourth is not an outcome. ``roofline`` is a required top-level field
+    checked regardless of status, so an implemented entry carries one, and a
+    missing block raises rather than passing for a configuration.
     """
     roofline = getattr(cls, "__manifest_roofline__", None)
     sig = getattr(cls, "__manifest_signature__", None)
@@ -831,8 +842,14 @@ def maybe_install_eval_roofline(cls: type) -> None:
         status = entry.get("status")
     if status != "implemented":
         return
-    if roofline is None:
-        return
+    # Absence, not content: an empty or non-mapping block is as missing as no
+    # key at all, and both are states the manifest is not allowed to be in.
+    if not isinstance(roofline, dict) or not roofline:
+        raise ValueError(
+            f"{cls.__name__}: entry is implemented but declares no roofline block. "
+            "roofline is required of every entry (validate_manifest.py, _REQUIRED_TOP), "
+            "so reaching here means the manifest has not been validated"
+        )
     try:
         fn = synthesize_eval_roofline(
             cls.__name__,

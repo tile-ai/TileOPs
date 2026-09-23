@@ -250,6 +250,57 @@ class TestEvaluatorOwnership:
         assert not invalid, f"ops without their own generated evaluator: {invalid}"
 
 
+class TestInstallOutcomes:
+    """What ``maybe_install_eval_roofline`` does with each kind of entry."""
+
+    def test_a_subclass_without_an_entry_installs_nothing(self):
+        from tileops.ops._roofline_codegen import maybe_install_eval_roofline
+        from tileops.ops.op_base import Op
+
+        class _NotAManifestOp(Op):
+            pass
+
+        maybe_install_eval_roofline(_NotAManifestOp)
+        assert "eval_roofline" not in _NotAManifestOp.__dict__
+
+    def test_a_spec_only_entry_installs_nothing(self):
+        from tileops.ops._roofline_codegen import maybe_install_eval_roofline
+
+        class _SpecOnly:
+            __manifest_status__ = "spec-only"
+            __manifest_roofline__ = {"flops": "N", "bytes": "N * elem_bytes"}
+            __manifest_signature__ = {"inputs": {}, "outputs": {}}
+
+        maybe_install_eval_roofline(_SpecOnly)
+        assert "eval_roofline" not in _SpecOnly.__dict__
+
+    def test_an_implemented_entry_without_a_roofline_block_raises(self):
+        """``roofline`` is required of every entry, so its absence is not a
+        configuration codegen may pass over. Compare
+        ``test_an_unsynthesizable_formula_installs_nothing``: a formula the
+        author is still editing must not take down the import."""
+        from tileops.ops._roofline_codegen import maybe_install_eval_roofline
+
+        class _NoRoofline:
+            __manifest_status__ = "implemented"
+            __manifest_roofline__ = {}
+            __manifest_signature__ = {"inputs": {}, "outputs": {}}
+
+        with pytest.raises(ValueError, match="declares no roofline block"):
+            maybe_install_eval_roofline(_NoRoofline)
+
+    def test_an_unsynthesizable_formula_installs_nothing(self):
+        from tileops.ops._roofline_codegen import maybe_install_eval_roofline
+
+        class _BadFormula:
+            __manifest_status__ = "implemented"
+            __manifest_roofline__ = {"flops": "NOPE * 2", "bytes": "N * elem_bytes"}
+            __manifest_signature__ = {"inputs": {}, "outputs": {}}
+
+        maybe_install_eval_roofline(_BadFormula)
+        assert "eval_roofline" not in _BadFormula.__dict__
+
+
 class TestCallPayload:
     """Call-bound formula inputs override construction-bound state."""
 
