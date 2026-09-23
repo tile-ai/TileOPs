@@ -279,7 +279,12 @@ class TestPartialSignature:
 
     @pytest.mark.parametrize("name", [7, "class"], ids=["non-string", "keyword"])
     def test_a_name_that_cannot_bind_a_local_is_a_verdict(self, name):
-        """Reached `sorted()` as a TypeError before, or emitted a SyntaxError."""
+        """Reached `sorted()` as a TypeError before, or emitted a SyntaxError.
+
+        No expression can name either -- one is not a string and the other does
+        not parse -- so the formula cannot be reaching for it, and the evaluator
+        still emits while the entry still draws the line.
+        """
         from tileops.manifest.roofline_analysis import analyze_roofline
 
         result = analyze_roofline(
@@ -287,10 +292,11 @@ class TestPartialSignature:
             roofline={"flops": "1", "bytes": "1"},
             signature={"inputs": {}, "outputs": {"y": {}}, "params": {name: {"type": "int"}}},
         )
-        assert result.plan is None
         assert [d.code for d in result.diagnostics] == [
             "signature.non-string-name" if name == 7 else "signature.unusable-name"
         ]
+        assert not result.blocking
+        assert result.plan is not None
 
 
 class TestEvaluatorOwnership:

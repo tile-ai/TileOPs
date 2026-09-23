@@ -642,6 +642,7 @@ def _string_keys(pass_: _Pass, fact: Fact, where: str) -> tuple[list[str], bool]
                 repr(key),
                 f"{where} declares {key!r}, which is not a name; a declared name binds "
                 f"a local in the generated body and must be a string",
+                blocking=False,
             )
             clean = False
             continue
@@ -652,6 +653,7 @@ def _string_keys(pass_: _Pass, fact: Fact, where: str) -> tuple[list[str], bool]
                 key,
                 f"{where} declares {key!r}, which cannot bind a local in the generated "
                 f"body (not an identifier, or a Python keyword)",
+                blocking=False,
             )
             clean = False
             continue
@@ -743,6 +745,10 @@ def _analyse_inline(
 
     input_names, inputs_clean = _string_keys(pass_, inputs, "signature.inputs")
     param_names, params_clean = _string_keys(pass_, params, "signature.params")
+    # Usable means read in full: a block with one unreadable key states an
+    # incomplete set of names, which settles no more than an unreadable block.
+    inputs_ok = inputs.usable and inputs_clean
+    params_ok = params.usable and params_clean
 
     # ``out_elem_bytes`` exists only for a single declared output: it resolves
     # that one output's dtype, and there is no answer for several.
@@ -770,12 +776,12 @@ def _analyse_inline(
     # by layer -- the arithmetic layer never sees inputs -- so the two sets are
     # kept apart rather than merged into "the signature is unreadable".
     vars_unresolved: dict[str, str] = {}
-    if inputs.state is MALFORMED:
+    if not inputs_ok and inputs.state is not ABSENT:
         vars_unresolved["signature.inputs"] = "declared input names"
-    if params.state is MALFORMED:
+    if not params_ok and params.state is not ABSENT:
         vars_unresolved["signature.params"] = "declared param names"
     arith_unresolved: dict[str, str] = {}
-    if params.state is MALFORMED:
+    if not params_ok and params.state is not ABSENT:
         arith_unresolved["signature.params"] = "declared param names"
 
     vars_program: list[tuple[str, str]] = []
@@ -847,18 +853,32 @@ def _analyse_inline(
     # require every op to expose every param.
     wants_out_elem_bytes = "out_elem_bytes" in referenced
 
-    # Which blocks this formula reaches for. A block it never names may be
+    # Which blocks this formula reaches for. One it never names may be
     # unreadable without stopping it: the defect is still reported, just not as
-    # one that prevents emission.
+    # one that prevents emission. The same rule governs all three blocks --
+    # singling one out is how a formula that reads nothing from a malformed
+    # block still lost its evaluator.
     needed: set[str] = set()
     if wants_out_elem_bytes:
         needed.add("outputs")
-    if referenced - set(arith_allowed) - {n for n, _ in vars_program}:
-        # A name the arithmetic layer does not resolve may have been a param
-        # in the part that could not be read.
-        needed.add("params")
-    if any(isinstance(e, str) and _names_a_tensor(e) for _, e in vars_program):
+    if any(_names_a_tensor(e) for _, e in vars_program):
+        # Only a declared input carries ``.shape`` / ``.ndim``.
         needed.add("inputs")
+    # A name nothing else accounts for was meant to be an input or a param. Which
+    # of the two cannot be settled while either is unreadable, so an unreadable
+    # one is needed.
+    accounted = (
+        {n for n, _ in vars_program}
+        | set(VARS_HELPERS)
+        | {"elem_bytes", "out_elem_bytes"}
+        | set(input_names)
+        | set(param_names)
+    )
+    if referenced - accounted:
+        if not inputs_ok:
+            needed.add("inputs")
+        if not params_ok:
+            needed.add("params")
     _report_malformed_signature(pass_, inputs, outputs, params, needed=frozenset(needed))
 
     if not outputs.usable and wants_out_elem_bytes:
@@ -875,8 +895,6 @@ def _analyse_inline(
         )
 
     if any(d.blocking for d in pass_.diagnostics) or not exprs_usable or not vars_usable:
-        return None
-    if not inputs_clean or not params_clean:
         return None
     if wants_out_elem_bytes and out_name is None:
         return None
