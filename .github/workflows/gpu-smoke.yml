@@ -263,11 +263,21 @@ jobs:
             # config, etc.) that must still trigger GPU smoke even without
             # Python changes to avoid security bypass.
             has_python="false"
+            has_contract="false"
             has_high_risk="false"
             for path in "${changed_files[@]}"; do
               if [[ "$path" == *.py ]]; then
                 has_python="true"
               fi
+              # The op contract is YAML. A roofline formula, a shape rule or a workload
+              # row changes what the contract tests assert while changing no Python, and
+              # the skip below would take the recount check -- the only layer that judges
+              # a `bytes` total against the tensors a call binds -- out of the run.
+              case "$path" in
+                src/tileops/manifest/*.yaml)
+                  has_contract="true"
+                  ;;
+              esac
               if [[ "$is_fork" == "true" ]]; then
                 case "$path" in
                   .github/workflows/*|pyproject.toml|requirements*.txt|requirements*.in|setup.py|setup.cfg|Dockerfile*|scripts/bootstrap*|scripts/install*)
@@ -276,9 +286,10 @@ jobs:
                 esac
               fi
             done
-            if [[ "$has_python" == "false" && "$has_high_risk" == "false" ]]; then
+            if [[ "$has_python" == "false" && "$has_contract" == "false" \
+                  && "$has_high_risk" == "false" ]]; then
               skip_gpu_smoke="true"
-              reason="No Python files changed; GPU smoke skipped."
+              reason="No Python or manifest files changed; GPU smoke skipped."
               {
                 echo "skip_gpu_smoke=$skip_gpu_smoke"
                 echo "is_fork=$is_fork"
@@ -332,6 +343,11 @@ jobs:
 
               case "$path" in
                 .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|.github/workflows/auto-label.yml|.github/workflows/stale-issues.yml|*.md)
+                  ;;
+                src/tileops/manifest/*.yaml)
+                  scope="full-smoke"
+                  reason="Manifest contract changed in $path; the recount and parity tests judge it."
+                  break
                   ;;
                 tests/ops/test_*.py|tests/ops/*/test_*.py)
                   add_target "$path"
