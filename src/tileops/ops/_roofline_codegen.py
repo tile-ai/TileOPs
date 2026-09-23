@@ -828,8 +828,10 @@ def maybe_install_eval_roofline(cls: type) -> None:
     carrying its own generated evaluator would answer with its formula — a
     plausible number belonging to another op. Raising here would instead take
     down the import of whichever module defines the op, over one entry an
-    author is still editing; ``check_roofline_synthesis`` reports the reason
-    under the op's name.
+    author is still editing. For an entry read from the manifest,
+    ``check_roofline_synthesis`` reports the reason under the op's name; the
+    validator reads the manifest, so it does not see a formula a class
+    attached to itself.
 
     An implemented entry with no usable ``roofline`` is none of the three.
     The field is required of every entry regardless of status, so an absent,
