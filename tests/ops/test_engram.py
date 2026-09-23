@@ -97,7 +97,9 @@ class EngramDecodeFixture(FixtureBase):
             [
                 pytest.param(1, 512, 256, 12, 4, 3, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param(1, 512, 256, 12, 4, 3, torch.bfloat16, False, marks=pytest.mark.smoke),
-                pytest.param(4, 1024, 512, 20, 4, 5, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(17, 519, 256, 12, 4, 3, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(1, 512, 256, 1, 1, 1, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(4, 1024, 512, 20, 4, 5, torch.float16, True, marks=pytest.mark.full),
                 pytest.param(8, 512, 256, 18, 4, 3, torch.bfloat16, False, marks=pytest.mark.full),
             ],
         ),
