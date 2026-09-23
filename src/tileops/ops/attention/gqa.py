@@ -721,7 +721,10 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
                     )
                 work = max(0, math.ceil(visible_kv / self._PLAN_BLOCK_M))
                 tiles.append((work, request, row))
-        tiles.sort(key=lambda tile: tile[0], reverse=True)
+        # Keep the rows of each request adjacent so successive CTA groups can
+        # reuse that request's K/V working set from L2.  Within a request,
+        # schedule the longest-visible rows first.
+        tiles.sort(key=lambda tile: (tile[1], -tile[0]))
         tile_to_request = [request for _, request, _ in tiles]
         tile_row = [row for _, _, row in tiles]
 

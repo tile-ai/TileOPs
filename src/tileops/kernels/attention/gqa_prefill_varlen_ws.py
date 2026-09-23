@@ -1,6 +1,7 @@
 """SM90 warp-specialized packed variable-length GQA prefill kernel."""
 
 import functools
+import os
 from typing import Optional
 
 import tilelang
@@ -23,6 +24,9 @@ NSK = 2
 NSV = 2
 THREADS = 384
 NMMA = 256
+_GQA_WS_HELPER_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "_gqa_ws_helper.h")
+)
 
 _pc = {
     tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
@@ -39,6 +43,8 @@ _cf = [
     "--expt-relaxed-constexpr",
     "--expt-extended-lambda",
     "-DNDEBUG",
+    "-include",
+    _GQA_WS_HELPER_PATH,
 ]
 
 
@@ -81,6 +87,15 @@ def _gqa_prefill_varlen_ws_kernel(
                 acc_s[i, j] == -T.infinity(accum), -T.infinity(accum), capped
             )
 
+    @T.macro
+    def partial_row_sum(acc_s, row_sum):
+        T.call_extern(
+            "handle",
+            "tl::gqa_partial_row_sum_raw_acc_64x128",
+            acc_s.data,
+            row_sum.data,
+        )
+
     @T.prim_func
     def main(
         Q: T.Tensor([total_q, H, D], dtype),
@@ -92,7 +107,12 @@ def _gqa_prefill_varlen_ws_kernel(
         TileRequest: T.Tensor([num_q_tiles], "int32"),
         TileRow: T.Tensor([num_q_tiles], "int32"),
     ):
-        with T.Kernel(num_q_tiles, H, threads=threads) as (bx, by):
+        # Tile-major flattening keeps all heads of the same (pre-sorted) Q tile
+        # adjacent.  CUDA therefore sees one globally work-ordered queue instead
+        # of restarting the heavy-to-light order independently for every head.
+        with T.Kernel(num_q_tiles * H, threads=threads) as work:
+            bx = work // H
+            by = work % H
             Qs = T.alloc_shared([2, half, D], dtype)
             Ks = T.alloc_shared([nsK, block_N, D], dtype)
             Vs = T.alloc_shared([nsV, block_N, D], dtype)
@@ -224,7 +244,7 @@ def _gqa_prefill_varlen_ws_kernel(
                     T.reduce_max(acc_s, sm, dim=1, clear=False)
                     for i, j in T.Parallel(half, block_N):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                    T.reduce_sum(acc_s, ss, dim=1)
+                    partial_row_sum(acc_s, ss)
                     for i in T.Parallel(half):
                         logsum[i] = ss[i]
                     T.copy(acc_s, pcast)
@@ -267,7 +287,7 @@ def _gqa_prefill_varlen_ws_kernel(
                             alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
                         for i, j in T.Parallel(half, block_N):
                             acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                        T.reduce_sum(acc_s, ss, dim=1)
+                        partial_row_sum(acc_s, ss)
                         T.wait_wgmma(0)
                         T.mbarrier_arrive(vfree[svp])
                         for i in T.Parallel(half):
@@ -314,7 +334,7 @@ def _gqa_prefill_varlen_ws_kernel(
                             alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
                         for i, j in T.Parallel(half, block_N):
                             acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                        T.reduce_sum(acc_s, ss, dim=1)
+                        partial_row_sum(acc_s, ss)
                         T.wait_wgmma(0)
                         T.mbarrier_arrive(vfree[svp])
                         for i in T.Parallel(half):
@@ -328,6 +348,9 @@ def _gqa_prefill_varlen_ws_kernel(
                     T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
                     T.wait_wgmma(0)
                     T.mbarrier_arrive(vfree[svp])
+                    for i in T.Parallel(half):
+                        logsum[i] = logsum[i] + T.shfl_xor(logsum[i], 1)
+                        logsum[i] = logsum[i] + T.shfl_xor(logsum[i], 2)
                     if q0 + r0 + half <= q_len and (
                         not is_causal or kv_len >= q_len
                     ):
@@ -400,7 +423,7 @@ def _gqa_prefill_varlen_ws_kernel(
                     T.reduce_max(acc_s, sm, dim=1, clear=False)
                     for i, j in T.Parallel(half, block_N):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                    T.reduce_sum(acc_s, ss, dim=1)
+                    partial_row_sum(acc_s, ss)
                     for i in T.Parallel(half):
                         logsum[i] = ss[i]
                     T.copy(acc_s, pcast)
@@ -443,7 +466,7 @@ def _gqa_prefill_varlen_ws_kernel(
                             alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
                         for i, j in T.Parallel(half, block_N):
                             acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                        T.reduce_sum(acc_s, ss, dim=1)
+                        partial_row_sum(acc_s, ss)
                         T.wait_wgmma(0)
                         T.mbarrier_arrive(vfree[svp_wg1])
                         for i in T.Parallel(half):
@@ -492,7 +515,7 @@ def _gqa_prefill_varlen_ws_kernel(
                             alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
                         for i, j in T.Parallel(half, block_N):
                             acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                        T.reduce_sum(acc_s, ss, dim=1)
+                        partial_row_sum(acc_s, ss)
                         T.wait_wgmma(0)
                         T.mbarrier_arrive(vfree[svp_wg1_tail])
                         for i in T.Parallel(half):
@@ -508,6 +531,9 @@ def _gqa_prefill_varlen_ws_kernel(
                     )
                     T.wait_wgmma(0)
                     T.mbarrier_arrive(vfree[svp_wg1_final])
+                    for i in T.Parallel(half):
+                        logsum[i] = logsum[i] + T.shfl_xor(logsum[i], 1)
+                        logsum[i] = logsum[i] + T.shfl_xor(logsum[i], 2)
                     if q0 + r0 + half <= q_len and (
                         not is_causal or kv_len >= q_len
                     ):
