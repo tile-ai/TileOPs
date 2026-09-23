@@ -150,7 +150,6 @@ class MHCPreFwdOp(Op):
             x,
             b,
             self.alpha_pre,
-            self.alpha_post,
             self.alpha_res,
             self.sinkhorn_repeat,
             self.sinkhorn_eps,
