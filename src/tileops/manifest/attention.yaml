@@ -239,9 +239,11 @@ GroupedQueryAttentionVarlenFwdOp:
   source:
     kernel:
       - tileops/kernels/attention/gqa_prefill_varlen_fwd.py
+      - tileops/kernels/attention/gqa_prefill_varlen_ws.py
       - tileops/kernels/attention/gqa_sliding_window_varlen_fwd.py
     kernel_map:
       gqa_varlen: GQAPrefillVarlenFwdKernel
+      gqa_varlen_ws: GQAPrefillVarlenWsKernel
       gqa_varlen_sliding_window: GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
     op: tileops/ops/attention/gqa.py
     test: tests/ops/attention/test_gqa_varlen.py
