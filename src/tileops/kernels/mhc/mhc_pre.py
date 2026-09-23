@@ -6,7 +6,6 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.attention.online_softmax import LOG2E
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["MHCPreKernel"]
@@ -105,17 +104,11 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
 
                 inv_r = 1 / (T.sqrt(h_shared[phi_dim]) / x_dim**0.5 + 0.0001)
                 for j in T.Parallel(n_expand):
-                    h_pre_shared[j] = 1 / (
-                        1 + T.exp2(-(alpha_pre * inv_r * h_shared[j] + b[j]) * LOG2E)
-                    )
+                    h_pre_shared[j] = T.sigmoid(alpha_pre * inv_r * h_shared[j] + b[j])
                 if bc == 0:
                     for j in T.Parallel(n_expand):
-                        h_post[bx, j] = 2 / (
-                            1
-                            + T.exp2(
-                                -(alpha_post * inv_r * h_shared[n_expand + j] + b[n_expand + j])
-                                * LOG2E
-                            )
+                        h_post[bx, j] = 2 * T.sigmoid(
+                            alpha_post * inv_r * h_shared[n_expand + j] + b[n_expand + j]
                         )
                 for i, k in T.Parallel(n_expand, n_expand):
                     h_res[i, k] = (
@@ -124,7 +117,7 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
                     )
                 T.reduce_max(h_res, row, dim=1)
                 for i, k in T.Parallel(n_expand, n_expand):
-                    h_res[i, k] = T.exp2((h_res[i, k] - row[i]) * LOG2E)
+                    h_res[i, k] = T.exp(h_res[i, k] - row[i])
                 for _ in T.Serial(sinkhorn_repeat):
                     T.reduce_sum(h_res, row, dim=1)
                     for i, k in T.Parallel(n_expand, n_expand):
