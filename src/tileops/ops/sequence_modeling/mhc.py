@@ -99,10 +99,14 @@ class MHCPreFwdOp(Op):
         x_shape: tuple[int, ...],
         b_shape: tuple[int, ...],
     ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: ``x_res`` follows *x*; ``x_layer`` is its per-expansion slice."""
+        """Manifest ``outputs``: ``x_res`` follows *x*; the others are per expansion."""
         batch, expanded = x_shape
         n_expand = self._n_expand_from_phi_dim(phi_shape[1])
-        return {"x_res": (batch, expanded), "x_layer": (batch, expanded // n_expand)}
+        return {
+            "x_res": (batch, expanded),
+            "x_layer": (batch, expanded // n_expand),
+            "h_post": (batch, n_expand),
+        }
 
     def forward(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Run the op on the inputs the manifest declares.
@@ -113,7 +117,7 @@ class MHCPreFwdOp(Op):
             b: Input tensor, dtype ``float32``.
 
         Returns:
-            ``x_res``, ``x_layer``, as the manifest declares.
+            ``x_res``, ``x_layer``, ``h_post``, as the manifest declares.
         """
         return self._wrapped(phi, x, b, self._instance_key)
 
@@ -150,6 +154,7 @@ class MHCPreFwdOp(Op):
             x,
             b,
             self.alpha_pre,
+            self.alpha_post,
             self.alpha_res,
             self.sinkhorn_repeat,
             self.sinkhorn_eps,

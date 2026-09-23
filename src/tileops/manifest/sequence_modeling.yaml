@@ -212,6 +212,7 @@ MHCPreFwdOp:
     outputs:
       x_res: {dtype: "bfloat16", shape: "[batch, n_expand * c_x]"}
       x_layer: {dtype: "bfloat16", shape: "[batch, c_x]"}
+      h_post: {dtype: "float32", shape: "[batch, n_expand]"}
     params:
       alpha_pre: {type: float}
       alpha_post: {type: float}

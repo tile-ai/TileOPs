@@ -19,7 +19,8 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
     ``_project`` gives each ``block_K`` slice of ``x @ phi`` its own CTA and writes that
     slice's partial products, plus its partial ``sum(x * x)`` in the last column, to
     ``partial``. ``_mix`` reduces those partials per batch row, derives ``H_pre`` and the
-    Sinkhorn-normalised ``H_res``, and applies them to one ``block_C`` column tile of ``x``.
+    Sinkhorn-normalised ``H_res``, and applies them to one ``block_C`` column tile of ``x``;
+    the first column tile also writes ``H_post``.
     """
     dtype = "float32"
     x_dim = n_expand * c_x
@@ -74,11 +75,13 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
             x: T.Tensor([batch, x_dim], x_dtype),
             b: T.Tensor([phi_dim], dtype),
             alpha_pre: T.float,
+            alpha_post: T.float,
             alpha_res: T.float,
             sinkhorn_repeat: T.int,
             sinkhorn_eps: T.float,
             x_res: T.Tensor([batch, x_dim], x_dtype),
             x_layer: T.Tensor([batch, c_x], x_dtype),
+            h_post: T.Tensor([batch, n_expand], dtype),
         ):
             with T.Kernel(T.ceildiv(c_x, block_C), batch, threads=128) as (bc, bx):
                 h_shared = T.alloc_shared([phi_dim + 1], dtype)
@@ -105,6 +108,15 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
                     h_pre_shared[j] = 1 / (
                         1 + T.exp2(-(alpha_pre * inv_r * h_shared[j] + b[j]) * LOG2E)
                     )
+                if bc == 0:
+                    for j in T.Parallel(n_expand):
+                        h_post[bx, j] = 2 / (
+                            1
+                            + T.exp2(
+                                -(alpha_post * inv_r * h_shared[n_expand + j] + b[n_expand + j])
+                                * LOG2E
+                            )
+                        )
                 for i, k in T.Parallel(n_expand, n_expand):
                     h_res[i, k] = (
                         alpha_res * inv_r * h_shared[res_off + i * n_expand + k]
@@ -143,15 +155,29 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
             x: T.Tensor([batch, x_dim], x_dtype),
             b: T.Tensor([phi_dim], dtype),
             alpha_pre: T.float,
+            alpha_post: T.float,
             alpha_res: T.float,
             sinkhorn_repeat: T.int,
             sinkhorn_eps: T.float,
             partial: T.Tensor([batch, num_splits, phi_dim + 1], dtype),
             x_res: T.Tensor([batch, x_dim], x_dtype),
             x_layer: T.Tensor([batch, c_x], x_dtype),
+            h_post: T.Tensor([batch, n_expand], dtype),
         ):
             _project(phi, x, partial)
-            _mix(partial, x, b, alpha_pre, alpha_res, sinkhorn_repeat, sinkhorn_eps, x_res, x_layer)
+            _mix(
+                partial,
+                x,
+                b,
+                alpha_pre,
+                alpha_post,
+                alpha_res,
+                sinkhorn_repeat,
+                sinkhorn_eps,
+                x_res,
+                x_layer,
+                h_post,
+            )
 
         return mhc_pre
 
@@ -187,7 +213,7 @@ class MHCPreKernel(Kernel):
 
         default_supply = _get_tensor_supply(tilelang.TensorSupplyType.Auto)
 
-        # Scalar defaults: alpha_pre, alpha_res are T.float;
+        # Scalar defaults: alpha_pre, alpha_post, alpha_res are T.float;
         # sinkhorn_repeat is T.int; sinkhorn_eps is T.float
         scalar_defaults = {
             "int32": 20,  # sinkhorn_repeat
@@ -220,7 +246,9 @@ class MHCPreKernel(Kernel):
             for k, bb, c in itertools.product([64, 128, 256], [4, 8], [128, 256])
         ]
 
-    def forward(self, phi, x, b, alpha_pre, alpha_res, sinkhorn_repeat, sinkhorn_eps=0.02):
+    def forward(
+        self, phi, x, b, alpha_pre, alpha_post, alpha_res, sinkhorn_repeat, sinkhorn_eps=0.02
+    ):
         num_splits = -(-self.n_expand * self.c_x // self.config["block_K"])
         partial = torch.empty(
             [self.batch, num_splits, self.n_expand * self.n_expand + 2 * self.n_expand + 1],
@@ -229,7 +257,19 @@ class MHCPreKernel(Kernel):
         )
         x_res = torch.empty_like(x)
         x_layer = torch.empty([self.batch, self.c_x], device=x.device, dtype=x.dtype)
+        h_post = torch.empty([self.batch, self.n_expand], device=x.device, dtype=self.weights_dtype)
         self.kernel(self.config["block_K"], self.config["block_b"], self.config["block_C"])(
-            phi, x, b, alpha_pre, alpha_res, sinkhorn_repeat, sinkhorn_eps, partial, x_res, x_layer
+            phi,
+            x,
+            b,
+            alpha_pre,
+            alpha_post,
+            alpha_res,
+            sinkhorn_repeat,
+            sinkhorn_eps,
+            partial,
+            x_res,
+            x_layer,
+            h_post,
         )
-        return x_res, x_layer
+        return x_res, x_layer, h_post
