@@ -73,6 +73,7 @@ class AttentionCall(CallSpec):
     is_uniform: bool = True
     cache_dtype: Optional[torch.dtype] = None
     fuse_rope: bool = False
+    planned_schedule: bool = False
     max_position: Optional[int] = None
     rotary_dim: Optional[int] = None
     rope_layout: str = "neox"
