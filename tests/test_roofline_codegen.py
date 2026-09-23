@@ -544,6 +544,143 @@ class TestThroughClassCreation:
         assert getattr(cls.__dict__["eval_roofline"], SYNTHESIZED_ATTR, False)
 
 
+class TestNoDefectHidesAnother:
+    """Every defect that appears alone appears beside any other.
+
+    Suppression has arrived by three different routes -- a malformed signature,
+    a mixed mode, a judgment raised at the point of refusal -- so the property
+    is held by a cross product rather than by a case per route. Adding an
+    injector below extends the matrix against every existing one.
+    """
+
+    SIG = {
+        "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
+        "outputs": {"y": {"dtype": "same_as(x)"}},
+        "params": {"alpha": {"type": "float"}},
+    }
+    ROOFLINE = {"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N * elem_bytes"}
+
+    # name -> (slot, inject). Two injectors sharing a slot overwrite each other,
+    # which is a conflict in the case rather than a defect in the analysis.
+    # name -> (slot, inject, signal). Two injectors sharing a slot overwrite
+    # each other, which is a conflict in the case rather than a defect in the
+    # analysis. The signal is what this defect must draw on its own: without it
+    # the matrix would compare the analysis against itself and miss a judgment
+    # that stopped being made at all.
+    INJECT = {
+        "func-unresolvable": ("mode", lambda r, g: r.update(func="no.such.mod.fn"), "func.import"),
+        "flops-unknown-name": ("flops", lambda r, g: r.update(flops="NOPE"), "arith.unknown-name"),
+        "flops-syntax": ("flops", lambda r, g: r.update(flops="1 +"), "flops.syntax"),
+        "bytes-forbidden": (
+            "bytes",
+            lambda r, g: r.update(bytes="N[0]"),
+            "arith.forbidden-construct",
+        ),
+        "bytes-syntax": ("bytes", lambda r, g: r.update(bytes="1 +"), "bytes.syntax"),
+        "vars-bad-attribute": (
+            "vars-m",
+            lambda r, g: r["vars"].update(M="N.real"),
+            "vars.attribute",
+        ),
+        "vars-unknown-helper": (
+            "vars-p",
+            lambda r, g: r["vars"].update(P="open(1)"),
+            "vars.unknown-helper",
+        ),
+        "vars-key-keyword": (
+            "vars-k",
+            lambda r, g: r["vars"].update(**{"if": "1"}),
+            "vars.key-keyword",
+        ),
+        "vars-key-reserved": (
+            "vars-r",
+            lambda r, g: r["vars"].update(_flops="1"),
+            "vars.key-reserved",
+        ),
+        "inputs-not-mapping": (
+            "inputs",
+            lambda r, g: g.update(inputs=5),
+            "signature.inputs.not-a-mapping",
+        ),
+        "input-attributes-unreadable": (
+            "inputs",
+            lambda r, g: g.update(inputs={"x": 5}),
+            "unjudged:signature.inputs",
+        ),
+        "outputs-not-mapping": (
+            "outputs",
+            lambda r, g: g.update(outputs=5),
+            "signature.outputs.not-a-mapping",
+        ),
+        "params-not-mapping": (
+            "params",
+            lambda r, g: g.update(params=5),
+            "signature.params.not-a-mapping",
+        ),
+        "param-non-string": (
+            "params",
+            lambda r, g: g.update(params={7: {"type": "int"}}),
+            "signature.non-string-name",
+        ),
+        "param-reserved": (
+            "params",
+            lambda r, g: g.update(params={"self": {"type": "int"}}),
+            "signature.reserved-name",
+        ),
+    }
+
+    def _seen(self, names):
+        """What the entry drew: diagnostic codes, plus the facts left unjudged.
+
+        A judgment the analysis declines for want of a fact is not a lost
+        verdict, so the fact it names counts as covering it.
+        """
+        import copy
+
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        roofline = copy.deepcopy(self.ROOFLINE)
+        signature = copy.deepcopy(self.SIG)
+        for name in names:
+            self.INJECT[name][1](roofline, signature)
+        result = analyze_roofline("FakeOp", roofline=roofline, signature=signature)
+        return {d.code for d in result.diagnostics} | {
+            f"unjudged:{u.missing}" for u in result.unjudged
+        }
+
+    def test_the_sound_entry_draws_nothing(self):
+        assert self._seen([]) == set()
+
+    @pytest.mark.parametrize("name", sorted(INJECT))
+    def test_each_defect_draws_its_signal_alone(self, name):
+        """Pinned rather than merely non-empty: the matrix below compares the
+        analysis against itself, so a judgment that stopped being made would
+        look consistent to it."""
+        assert self.INJECT[name][2] in self._seen([name])
+
+    def test_no_pair_loses_what_either_draws_alone(self):
+        """A verdict either still stands beside the other defect, or the
+        analysis says the other defect left it unjudged. Silently dropping it is
+        what this forbids."""
+        import itertools
+
+        alone = {name: self._seen([name]) for name in self.INJECT}
+        lost = []
+        for a, b in itertools.combinations(sorted(self.INJECT), 2):
+            if self.INJECT[a][0] == self.INJECT[b][0]:
+                continue
+            both = self._seen([a, b])
+            # A fact the pair leaves unreadable that neither left unreadable
+            # alone: the judgment it carried moved rather than vanished.
+            excused = {c for c in both if c.startswith("unjudged:")} - (alone[a] | alone[b])
+            for name in (a, b):
+                if excused:
+                    continue
+                for code in sorted(alone[name] - both):
+                    lost.append(f"{a} + {b} lost {name}'s {code}")
+        assert not lost, lost
+
+
 class TestTotality:
     """The analysis answers whatever YAML produced, without raising."""
 

@@ -1146,28 +1146,40 @@ def _analyse_inline(
             "the declared output has no usable name, so out_elem_bytes cannot resolve it",
         )
 
+    # Every judgment is made here, whether or not an earlier one already refuses
+    # the plan. Raising one at the point of refusal would lose it behind the
+    # first refusal that happens to come first.
+    #
     # A block is unreadable when it is not a mapping, and equally when a key in
     # it could not be read: both leave the declared names incomplete.
-    for block, ok in (("inputs", inputs_ok), ("params", params_ok)):
-        if block in needed and not ok:
-            pass_.defer(
-                f"signature.{block}",
-                f"which names signature.{block} declares, which this formula reads",
-            )
-            return None
-
-    if any(d.blocking for d in pass_.diagnostics) or not exprs_usable or not vars_usable:
-        return None
-    if wants_out_elem_bytes and out_name is None:
-        return None
-
-    if unreadable_attrs & referenced:
-        # The formula binds an input whose optionality was not readable.
+    unreadable_needed = {
+        block
+        for block, ok in (("inputs", inputs_ok), ("params", params_ok))
+        if block in needed and not ok
+    }
+    for block in sorted(unreadable_needed):
+        pass_.defer(
+            f"signature.{block}",
+            f"which names signature.{block} declares, which this formula reads",
+        )
+    bound_unreadable_attrs = unreadable_attrs & referenced
+    if bound_unreadable_attrs:
         pass_.defer(
             "signature.inputs",
-            f"whether {sorted(unreadable_attrs & referenced)} are optional",
+            f"whether {sorted(bound_unreadable_attrs)} are optional",
         )
+
+    # The refusal reads what was judged; it judges nothing itself.
+    if (
+        unreadable_needed
+        or bound_unreadable_attrs
+        or any(d.blocking for d in pass_.diagnostics)
+        or not exprs_usable
+        or not vars_usable
+        or (wants_out_elem_bytes and out_name is None)
+    ):
         return None
+
     bindings = [
         Binding(name=n, kind="input", optional=n in optional_names)
         for n in input_names
