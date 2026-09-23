@@ -580,7 +580,8 @@ def get_warmup_chunks(
 
 
 @functools.lru_cache(maxsize=32)
-@tilelang.jit()
+# Warp specialization of the pipelined loop deadlocks intermittently.
+@tilelang.jit(pass_configs={tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True})
 def _build_correct_h0_kernel(
     H,
     DK,

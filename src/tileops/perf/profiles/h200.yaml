@@ -3,7 +3,7 @@
 # Calibration: benchmarks/hardware/ microbenchmarks
 #
 # Only store measured values here (theoretical, calibration,
-# calibration_burst, calibration_mixes).
+# calibration_sustained, calibration_burst, calibration_mixes).
 # effective = theoretical × calibration is computed by load_profile().
 
 gpu: NVIDIA H200
@@ -27,23 +27,27 @@ cuda_core:
 
 # From benchmarks/hardware/compute/gemm_throughput.py (cuBLAS peak); each
 # value is the median across repeated runs on one board (run band <= 1.5%).
-# calibration is sustained — the GEMMs hold the 700 W cap at ~1.2-1.4 GHz —
-# and feeds `effective`; calibration_burst is the pre-cap rate a short
-# kernel between memory-bound phases can reach.
+# calibration_sustained holds the 700 W cap at ~1.2-1.4 GHz; calibration_burst
+# is the pre-cap rate. A benchmark window is short enough to run at burst, so
+# calibration (what `effective` is computed from) is the envelope over both.
 tensor_core:
   fp16:
     theoretical: 989.5e12    # FLOPS, spec sheet (dense)
-    calibration: 0.6684
+    calibration: 0.7370      # = max(calibration_sustained, calibration_burst)
+    calibration_sustained: 0.6684
     calibration_burst: 0.7370
   bf16:
     theoretical: 989.5e12
-    calibration: 0.7077
+    calibration: 0.7680
+    calibration_sustained: 0.7077
     calibration_burst: 0.7680
   tf32:
     theoretical: 494.7e12
-    calibration: 0.7249
+    calibration: 0.7899
+    calibration_sustained: 0.7249
     calibration_burst: 0.7899
   fp8:
     theoretical: 1979.0e12
-    calibration: 0.6303
+    calibration: 0.6977
+    calibration_sustained: 0.6303
     calibration_burst: 0.6977

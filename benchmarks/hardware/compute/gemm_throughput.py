@@ -2,7 +2,8 @@
 
 Times torch.matmul (cuBLAS) for fp16/bf16/tf32 and torch._scaled_mm (cuBLASLt)
 for fp8, sweeping square sizes, and prints two factors per dtype for
-src/tileops/perf/profiles/: `calibration` (sustained) and `calibration_burst`.
+src/tileops/perf/profiles/: `calibration_sustained` and `calibration_burst`;
+`calibration` is the larger of the two.
 The tensor-core counterpart of fma_throughput.py.
 
 Unlike the FMA benchmark, clock locking cannot hold here: a saturating GEMM
@@ -306,7 +307,8 @@ def main():
 
     print(f"\nUpdate src/tileops/perf/profiles/{args.profile}.yaml:")
     for dtype_name, ((med, _, _), burst, theo, _) in results.items():
-        print(f"  tensor_core.{dtype_name}.calibration: {med / theo:.4f}")
+        print(f"  tensor_core.{dtype_name}.calibration: {max(med, burst) / theo:.4f}")
+        print(f"  tensor_core.{dtype_name}.calibration_sustained: {med / theo:.4f}")
         print(f"  tensor_core.{dtype_name}.calibration_burst: {burst / theo:.4f}")
     print("Sustained rates are power-cap limited; record the clocks above with the numbers.")
     print(f"{'=' * 60}")
