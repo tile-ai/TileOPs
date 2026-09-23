@@ -33,6 +33,7 @@ def varlen_entry(cls: type, call: AttentionCall) -> Entry:
         window_size_left=call.window_size_left,
         window_size_right=call.window_size_right,
         accum_dtype=call.accum_dtype,
+        sm_count=call.sm_count,
         device_index=_device_index(call),
         tune=call.tune,
     )
@@ -55,6 +56,7 @@ class VarlenKernel(Kernel):
         window_size_left: int = -1,
         window_size_right: int = -1,
         accum_dtype: torch.dtype = torch.float32,
+        sm_count: int = 0,
         config: Optional[dict] = None,
         tune: bool = False,
         *,
@@ -74,6 +76,7 @@ class VarlenKernel(Kernel):
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
         self.accum_dtype = accum_dtype
+        self.sm_count = sm_count
         self.kernel = self._make_kernel()
         self._supply_prog = self._make_supply_prog()
         self.init_config(config, tune)
