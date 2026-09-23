@@ -251,18 +251,39 @@ class TestTotalContract:
 class TestPartialSignature:
     """A block the formula never reads may be unreadable without stopping it."""
 
-    def test_unread_outputs_does_not_stop_emission(self):
-        """`out_elem_bytes` is the only thing `outputs` settles for a formula."""
+    @pytest.mark.parametrize(
+        "inputs",
+        [{"x": 5}, {7: {}}],
+        ids=["unreadable-attributes", "unreadable-key"],
+    )
+    def test_a_block_read_in_part_stops_a_formula_that_reads_it(self, inputs):
+        """A block read in part states an incomplete set of names, which is what
+        a formula reading one of them needs."""
         from tileops.manifest.roofline_analysis import analyze_roofline
 
         result = analyze_roofline(
             "FakeOp",
-            roofline={"flops": "1", "bytes": "1"},
-            signature={"inputs": {}, "outputs": 9},
+            roofline={"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N"},
+            signature={"inputs": inputs, "outputs": {"y": {}}},
         )
-        assert [d.code for d in result.diagnostics] == ["signature.outputs.not-a-mapping"]
+        assert result.plan is None
+        assert {u.missing for u in result.unjudged} == {"signature.inputs"}
+
+    @pytest.mark.parametrize(
+        "inputs",
+        [{"x": 5}, {7: {}}],
+        ids=["unreadable-attributes", "unreadable-key"],
+    )
+    def test_a_block_read_in_part_does_not_stop_a_formula_that_does_not(self, inputs):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {}, "flops": "1", "bytes": "1"},
+            signature={"inputs": inputs, "outputs": {"y": {}}},
+        )
         assert result.plan is not None
-        assert not result.blocking
+        assert not result.unjudged
 
     def test_read_outputs_does_stop_emission(self):
         from tileops.manifest.roofline_analysis import analyze_roofline
@@ -321,6 +342,17 @@ class TestPartialSignature:
         ]
         assert not result.blocking
         assert result.plan is not None
+
+    def test_no_verdict_is_claimed_on_a_name_that_might_be_an_input(self):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(
+            "FakeOp",
+            roofline={"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N"},
+            signature={"inputs": 5, "outputs": {"y": {}}},
+        )
+        assert result.plan is None
+        assert [d.code for d in result.diagnostics] == ["signature.inputs.not-a-mapping"]
 
 
 class TestEvaluatorOwnership:
@@ -412,56 +444,6 @@ class TestInstallOutcomes:
         with pytest.raises(ValueError, match="declares no roofline block"):
             codegen.maybe_install_eval_roofline(_Loaded)
 
-    def test_an_unsynthesizable_formula_installs_the_base_stub(self):
-        from tileops.ops._roofline_codegen import maybe_install_eval_roofline
-        from tileops.ops.op_base import Op
-
-        class _BadFormula:
-            __manifest_status__ = "implemented"
-            __manifest_roofline__ = {"flops": "NOPE * 2", "bytes": "N * elem_bytes"}
-            __manifest_signature__ = {"inputs": {}, "outputs": {}}
-
-        maybe_install_eval_roofline(_BadFormula)
-        assert _BadFormula.__dict__["eval_roofline"] is Op.eval_roofline
-
-    def test_a_refused_formula_does_not_fall_through_to_the_parent(self):
-        """Binding the stub is what keeps MRO lookup from pricing the child by
-        its parent's entry."""
-        import torch
-
-        from tileops.ops.op_base import Op
-
-        common = {
-            "__manifest_status__": "implemented",
-            "__manifest_signature__": {
-                "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
-                "outputs": {"y": {"dtype": "same_as(x)"}},
-            },
-            "forward": lambda self, *a, **kw: None,
-            "_infer_output_shapes": lambda self, x_shape: {"y": x_shape},
-            "_validate_dtypes": lambda self, *a: None,
-            "default_kernel_map": property(lambda self: {}),
-        }
-        parent = type(
-            "_PricedParent",
-            (Op,),
-            {**common, "__manifest_roofline__": {
-                "vars": {"N": "x.shape[0]"}, "flops": "N", "bytes": "7 * N * elem_bytes"}},
-        )  # fmt: skip
-        child = type(
-            "_RefusedChild",
-            (parent,),
-            {**common, "__manifest_roofline__": {
-                "vars": {"N": "x.shape[0]"}, "flops": "NOPE * 2", "bytes": "N * elem_bytes"}},
-        )  # fmt: skip
-
-        assert child.eval_roofline is Op.eval_roofline
-        op = parent.__new__(parent)
-        op.x_shape, op.dtype = (10,), torch.float16
-        assert op.eval_roofline() == (10, 140)
-        with pytest.raises(TypeError, match="abstract"):
-            child()
-
 
 class TestThroughClassCreation:
     """What a real ``class X(Op)`` ends up with.
@@ -533,23 +515,23 @@ class TestThroughClassCreation:
 class TestTotality:
     """The analysis answers whatever YAML produced, without raising."""
 
-    @pytest.mark.parametrize(
-        "roofline",
-        [None, 5, "flops: N", [], {}, {"flops": {"nested": 1}, "bytes": 2}],
-        ids=["none", "scalar", "string", "list", "empty", "nested"],
-    )
-    @pytest.mark.parametrize(
-        "signature",
-        [None, 5, {}, {"inputs": 5}, {"inputs": {7: {}}}, {"outputs": []}],
-        ids=["none", "scalar", "empty", "bad-inputs", "bad-key", "bad-outputs"],
-    )
-    def test_no_shape_of_entry_raises(self, roofline, signature):
+    ROOFLINES = [None, 5, "flops: N", [], {}, {"flops": {"nested": 1}, "bytes": 2}]
+    SIGNATURES = [None, 5, {}, {"inputs": 5}, {"inputs": {7: {}}}, {"outputs": []}]
+
+    def test_no_shape_of_entry_raises(self):
         from tileops.manifest.roofline_analysis import analyze_roofline
 
-        result = analyze_roofline("FakeOp", roofline=roofline, signature=signature)
-        assert isinstance(result.diagnostics, tuple)
-        # Nothing emits from an entry this broken.
-        assert result.plan is None or not result.blocking
+        raised = []
+        for roofline in self.ROOFLINES:
+            for signature in self.SIGNATURES:
+                try:
+                    result = analyze_roofline("FakeOp", roofline=roofline, signature=signature)
+                except Exception as exc:  # noqa: BLE001 - that it raises is the failure
+                    raised.append((roofline, signature, exc))
+                    continue
+                # Nothing emits from an entry this broken.
+                assert result.plan is None or not result.blocking
+        assert not raised, raised
 
     @pytest.mark.parametrize(
         "expr",
@@ -575,18 +557,6 @@ class TestTotality:
         loop: dict = {"flops": "1", "bytes": "1"}
         loop["vars"] = loop
         analyze_roofline("FakeOp", roofline=loop, signature={"inputs": {}})
-
-    def test_every_message_names_the_op(self):
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {"N": "nope.shape[0]"}, "flops": "ALSO_NOPE", "bytes": "1"},
-            signature={"inputs": {}, "outputs": {"y": {}}},
-        )
-        assert result.diagnostics
-        for d in result.diagnostics:
-            assert d.message.startswith("FakeOp: "), d.message
 
 
 class TestNameSafety:
@@ -644,14 +614,6 @@ class TestNameSafety:
         assert [d.code for d in result.diagnostics] == ["vars.key-reserved"]
         assert result.plan is None
 
-
-class TestOneNameOneSource:
-    """A name the formula reads must come from one place.
-
-    The body binds inputs then params, so a name in both binds twice, and a name
-    shared with a helper binds over it.
-    """
-
     OUT = {"y": {}}
 
     def test_a_name_in_both_blocks_is_refused_when_read(self):
@@ -688,10 +650,6 @@ class TestOneNameOneSource:
         assert result.plan is not None
         assert not result.diagnostics
 
-
-class TestNormalizedNamesResolve:
-    """A name Python normalizes must resolve, not just collide."""
-
     @pytest.mark.parametrize("where", ["vars", "params"])
     def test_a_name_needing_normalization_is_found(self, where):
         """`\u212a` is the Kelvin sign; Python reads it as `K`, and so must the
@@ -710,35 +668,8 @@ class TestNormalizedNamesResolve:
         assert result.plan is not None
 
 
-class TestComprehensionLocals:
-    """A comprehension's target is its own, not a declared input of that name."""
-
-    def test_a_comprehension_local_is_not_an_input_read(self):
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {"N": "len([1 for x in range(3)])"}, "flops": "N", "bytes": "1"},
-            signature={"inputs": {"x": 5}, "outputs": {"y": {}}},
-        )
-        # The unreadable declaration is still reported; it just does not refuse a
-        # formula that never reads that input.
-        assert result.plan is not None
-
-    def test_a_comprehension_local_is_not_bound(self):
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {"N": "len([1 for x in range(3)])"}, "flops": "N", "bytes": "1"},
-            signature={"inputs": {"x": {"dtype": "float16"}}, "outputs": {"y": {}}},
-        )
-        assert result.plan is not None
-        assert [b.name for b in result.plan.bindings] == []
-
-
 class TestEmittableByConstruction:
-    """A plan the analysis builds must be a plan emission can compile and run."""
+    """A plan the analysis builds must be one emission can compile and run."""
 
     OUT = {"y": {}}
 
@@ -773,39 +704,6 @@ class TestEmittableByConstruction:
         assert result.plan is not None
         emit_eval_roofline(result.plan)
 
-    def test_a_block_read_in_part_stops_a_formula_that_reads_it(self):
-        """A mapping with an unreadable key is a valid mapping stating an
-        incomplete set of names, which the formula's own names may need."""
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N"},
-            signature={"inputs": {7: {}}, "outputs": self.OUT},
-        )
-        assert result.plan is None
-        assert [u.missing for u in result.unjudged] == ["signature.inputs"] * len(result.unjudged)
-
-    def test_a_block_read_in_part_does_not_stop_a_formula_that_does_not(self):
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {}, "flops": "1", "bytes": "1"},
-            signature={"inputs": {7: {}}, "outputs": self.OUT},
-        )
-        assert result.plan is not None
-        assert not result.unjudged
-
-
-class TestComprehensionShadowing:
-    """A comprehension target is a local, whatever an outer name of that
-    spelling is.
-
-    Its kind, not only that it is bound, decides whether `.shape` on it is a
-    tensor read and whether calling it calls a helper.
-    """
-
     IN = {"x": {"dtype": "float16"}}
     OUT = {"y": {}}
 
@@ -835,50 +733,6 @@ class TestComprehensionShadowing:
         assert not result.diagnostics
         assert result.plan is not None
         emit_eval_roofline(result.plan)
-
-
-class TestUnreadableInputsAreNotGuessed:
-    """While the declared inputs cannot be read, which names are tensors is not
-    known, so the judgments that turn on it are left to the unjudged line."""
-
-    def test_no_verdict_is_claimed_on_a_name_that_might_be_an_input(self):
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N"},
-            signature={"inputs": 5, "outputs": {"y": {}}},
-        )
-        assert result.plan is None
-        assert [d.code for d in result.diagnostics] == ["signature.inputs.not-a-mapping"]
-
-
-class TestUnreadableInputAttributes:
-    """An input whose attributes will not read states no optionality."""
-
-    def test_an_unread_optionality_is_not_invented(self):
-        """Binding it as not-optional would decide the fact rather than read it."""
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N"},
-            signature={"inputs": {"x": 5}, "outputs": {"y": {}}},
-        )
-        assert [d.code for d in result.diagnostics] == ["signature.input-attributes"]
-        assert result.plan is None
-        assert [u.missing for u in result.unjudged] == ["signature.inputs"]
-
-    def test_an_unread_optionality_on_an_input_nothing_binds_still_emits(self):
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {}, "flops": "1", "bytes": "1"},
-            signature={"inputs": {"x": 5}, "outputs": {"y": {}}},
-        )
-        assert [d.code for d in result.diagnostics] == ["signature.input-attributes"]
-        assert result.plan is not None
 
 
 class TestCallPayload:

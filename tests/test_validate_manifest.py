@@ -4329,28 +4329,26 @@ class TestDiagnosticOwnership:
 
         assert set(self.OWNED) == set(SCHEMA_OWNED_CODES)
 
-    @pytest.mark.parametrize("code", sorted(OWNED))
-    def test_an_owned_code_is_ruled_on_by_the_schema_level(self, validator, code):
+    def test_every_owned_code_is_ruled_on_once(self, validator):
         from tileops.manifest.roofline_analysis import analyze_roofline
 
-        roofline, signature, phrase = self.OWNED[code]
-        entry = {**self.ENTRY, "roofline": roofline}
-        if signature is not None:
-            entry["signature"] = signature
-
-        found = analyze_roofline("op", roofline=roofline, signature=entry["signature"]).diagnostics
-        assert code in {d.code for d in found}, "the entry no longer triggers this code"
-        assert any(phrase in line for line in validator.check_l0("op", entry)), (
-            f"{code} is owned by the schema level, which does not rule on it"
-        )
-
-    @pytest.mark.parametrize("code", sorted(OWNED))
-    def test_an_owned_code_is_not_rendered_twice(self, validator, code):
-        roofline, signature, _ = self.OWNED[code]
-        entry = {**self.ENTRY, "roofline": roofline}
-        if signature is not None:
-            entry["signature"] = signature
-        assert validator.check_roofline_synthesis("op", entry) == []
+        untriggered, unowned, duplicated = [], [], []
+        for code, (roofline, signature, phrase) in sorted(self.OWNED.items()):
+            entry = {**self.ENTRY, "roofline": roofline}
+            if signature is not None:
+                entry["signature"] = signature
+            found = analyze_roofline(
+                "op", roofline=roofline, signature=entry["signature"]
+            ).diagnostics
+            if code not in {d.code for d in found}:
+                untriggered.append(code)
+            if not any(phrase in line for line in validator.check_l0("op", entry)):
+                unowned.append(code)
+            if validator.check_roofline_synthesis("op", entry):
+                duplicated.append(code)
+        assert not untriggered, f"the entry no longer triggers: {untriggered}"
+        assert not unowned, f"owned by the schema level, which does not rule on: {unowned}"
+        assert not duplicated, f"rendered by both: {duplicated}"
 
 
 class TestRooflineSynthesisReported:
