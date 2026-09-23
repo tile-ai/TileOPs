@@ -61,8 +61,11 @@ class _ConfigSpace:
     split_ks: tuple[int, ...] = (1, 2, 4, 8, 16)
     max_m_tiles: int = 64
     smem_bytes: int = 227 * 1024
-    producer_reg: int = 24
-    consumer_reg: int = 240
+    # Warp-specialized split: (producer_reg + consumer_reg) * threads must fit
+    # the 65536-register file, or `setmaxnreg` waits forever; 24/240 at 256
+    # threads does not fit.
+    producer_reg: int = 32
+    consumer_reg: int = 224
 
 
 _LAYOUT = _Layout()
@@ -73,7 +76,12 @@ __all__ = ["GROUP_SIZE", "GemmW4A16Kernel"]
 
 
 def _stage_meta_per_tile(threads: int, block_k: int, block_n: int, all_groups: int) -> bool:
-    """Return whether metadata is staged per K tile instead of once per CTA."""
+    """Whether a tile reloads scale and zero every K tile instead of staging all of K once.
+
+    Only 128-thread tiles do: the 256-thread tiles that would need it are too few
+    CTAs to saturate memory bandwidth. Narrow K tiles take it for the shared budget,
+    wide ones only when the whole-K prologue would exceed the measured crossover.
+    """
     return threads == 128 and (
         block_k <= 256 or block_n * all_groups * 3 > _H200_CALIBRATION.meta_staging_crossover_bytes
     )
@@ -243,9 +251,7 @@ def _gemm_w4a16_kernel(
         # A partial K tile is zero-filled, so only the scale and zero reads
         # need the clamp below.
         padded_groups = -(-k // block_k) * tile_groups
-        # Per-K-tile staging frees shared budget at the cost of re-reading. The
-        # thread guard is not a trade-off: two math warpgroups writing the tile
-        # inside the pipelined loop hang the GPU.
+        # Per-K-tile staging frees shared budget at the cost of re-reading.
         per_tile_meta = _stage_meta_per_tile(threads, block_k, block_n, all_groups)
         meta_groups = tile_groups if per_tile_meta else padded_groups
         tiles_m = -(-m // block_m)
