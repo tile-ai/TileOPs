@@ -556,7 +556,7 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
         )
 
 
-class GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(WorkloadBase):
+class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
     def __init__(
         self,
         batch: int,
@@ -569,6 +569,8 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(WorkloadBase):
         wl: int,
         wr: int,
         dtype: torch.dtype,
+        sm_scale: float | None = None,
+        softcap: float | None = None,
     ) -> None:
         self.batch = batch
         self.seqlens_q = seqlens_q
@@ -580,10 +582,16 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(WorkloadBase):
         self.wl = wl
         self.wr = wr
         self.dtype = dtype
+        self.sm_scale = sm_scale
+        self.softcap = softcap
 
     @property
     def max_seqlen_q(self) -> int:
         return max(self.seqlens_q)
+
+    @property
+    def max_seqlen_kv(self) -> int:
+        return max(self.seqlens_k)
 
     def gen_inputs(
         self,
@@ -605,3 +613,50 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(WorkloadBase):
             device="cuda",
         )
         return q, k, v, cu_seqlens_q, cu_seqlens_k
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+    ) -> torch.Tensor:
+        """Canonical materialized reference for regular and windowed Varlen GQA."""
+        groups = self.heads // self.heads_kv
+        scale = self.dim**-0.5 if self.sm_scale is None else self.sm_scale
+        outputs = []
+        for request in range(self.batch):
+            q_start = int(cu_seqlens_q[request].item())
+            q_end = int(cu_seqlens_q[request + 1].item())
+            kv_start = int(cu_seqlens_kv[request].item())
+            kv_end = int(cu_seqlens_kv[request + 1].item())
+            q_i = q[q_start:q_end].transpose(0, 1).float()
+            k_i = k[kv_start:kv_end].repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
+            v_i = v[kv_start:kv_end].repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
+            q_len = q_end - q_start
+            kv_len = kv_end - kv_start
+            scores = torch.matmul(q_i, k_i.transpose(-2, -1)) * scale
+            if self.softcap is not None and self.softcap > 0:
+                scores = self.softcap * torch.tanh(scores / self.softcap)
+            offset = kv_len - q_len
+            q_pos = torch.arange(q_len, device=q.device)[:, None] + offset
+            kv_pos = torch.arange(kv_len, device=q.device)[None, :]
+            visible = torch.ones((q_len, kv_len), dtype=torch.bool, device=q.device)
+            if self.is_causal:
+                visible &= kv_pos <= q_pos
+            if self.wl >= 0:
+                visible &= kv_pos >= q_pos - self.wl
+            if self.wr >= 0:
+                visible &= kv_pos <= q_pos + self.wr
+            scores = scores.masked_fill(~visible.view(1, q_len, kv_len), float("-inf"))
+            probs = torch.softmax(scores, dim=-1)
+            probs = torch.where(
+                visible.any(dim=-1).view(1, q_len, 1), probs, torch.zeros_like(probs)
+            )
+            outputs.append(torch.matmul(probs, v_i).transpose(0, 1).to(q.dtype).contiguous())
+        return torch.cat(outputs, dim=0)
+
+
+class GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(GroupedQueryAttentionVarlenFwdWorkload):
+    """Compatibility name for the superseded sliding-window public Op."""
