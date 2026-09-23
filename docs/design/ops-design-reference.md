@@ -46,7 +46,7 @@ Rationale and the role / entry vocabulary: [ops-design.md § Kernel caching and 
 | `entry_for(role, call)`          | The in-tree identity and builder. The default selects among the op's candidates and asks the chosen class; an op with one implementation overrides it          |
 | `built_kernels(name)`            | Read-only view of a name's entries; empty before its first build. Introspection only, never dispatch                                                           |
 | `kernel_delegates()`             | The ops whose kernels this op runs. Default `()`; a composite op overrides it                                                                                  |
-| `iter_kernels()`                 | Every `Kernel` the op holds, deduplicated: entries and delegates                                                                                               |
+| `iter_kernels()`                 | Every `Kernel` instance the op holds, deduplicated: role entries, `self.kernel`, and delegates. A target's plain callable is not yielded                       |
 | `autotune()`                     | Puts the op in tuned mode: tunes built kernels, and sets `tune` so later builds tune too                                                                       |
 
 ### `Kernel` base class attributes ([`src/tileops/kernels/kernel_base.py`](../../src/tileops/kernels/kernel_base.py))

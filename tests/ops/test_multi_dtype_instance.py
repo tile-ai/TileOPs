@@ -8,6 +8,7 @@ This covers the invariant every family owes its L1 kernel slots.
 import pytest
 import torch
 
+from tileops.backend import BUILTIN
 from tileops.manifest import load_manifest
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
@@ -24,7 +25,7 @@ def _assert_two_entries(op):
 
 @pytest.mark.smoke
 def test_reduction_serves_two_dtypes_from_one_instance():
-    op = SumFwdOp(dim=-1)
+    op = SumFwdOp(dim=-1, target=BUILTIN)
     for dtype in _DTYPES:
         x = torch.randn(8, 128, dtype=dtype, device="cuda")
         y = op(x)
@@ -36,7 +37,7 @@ def test_reduction_serves_two_dtypes_from_one_instance():
 @pytest.mark.smoke
 def test_rms_norm_serves_two_dtypes_from_one_instance():
     n = 256
-    op = RMSNormFwdOp(normalized_shape=(n,))
+    op = RMSNormFwdOp(normalized_shape=(n,), target=BUILTIN)
     for dtype in _DTYPES:
         x = torch.randn(16, n, dtype=dtype, device="cuda")
         w = torch.randn(n, dtype=dtype, device="cuda")
@@ -49,7 +50,7 @@ def test_rms_norm_serves_two_dtypes_from_one_instance():
 def test_layer_norm_keys_on_dtype():
     """A second dtype must not reuse the first entry."""
     n = 256
-    op = LayerNormFwdOp(normalized_shape=(n,))
+    op = LayerNormFwdOp(normalized_shape=(n,), target=BUILTIN)
     for dtype in _DTYPES:
         x = torch.randn(16, n, dtype=dtype, device="cuda")
         w = torch.randn(n, dtype=dtype, device="cuda")
@@ -75,7 +76,7 @@ def test_moe_post_permute_serves_two_dtypes_from_one_instance():
 
     total_tokens, top_k, hidden = 16, 2, 128
     numel = total_tokens * top_k
-    op = MoePostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum())
+    op = MoePostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum(), target=BUILTIN)
     fwd_idx = torch.arange(numel, device="cuda", dtype=torch.int32)
     for dtype in _DTYPES:
         mm2_pad = torch.randn(numel, hidden, dtype=dtype, device="cuda")
@@ -89,7 +90,7 @@ def test_cb_producer_serves_two_dtypes_from_one_instance():
     from tileops.ops.mamba.cb_producer import CBProducerFwdOp
 
     batch, chunks, groups, chunk_len, d_state = 1, 2, 1, 64, 64
-    op = CBProducerFwdOp(batch, chunks, groups, chunk_len, d_state)
+    op = CBProducerFwdOp(batch, chunks, groups, chunk_len, d_state, target=BUILTIN)
     s = chunks * chunk_len
     for dtype in _DTYPES:
         c = torch.randn(batch, s, groups, d_state, dtype=dtype, device="cuda")
@@ -119,7 +120,7 @@ def test_bitwise_alternates_between_bool_and_integer_storage():
     """bool -> int32 -> bool on one instance, each answered by its own kernel."""
     from tileops.ops.elementwise import BitwiseAndFwdOp
 
-    op = BitwiseAndFwdOp()
+    op = BitwiseAndFwdOp(target=BUILTIN)
     b = torch.tensor([True, False] * 32, device="cuda")
     i = torch.arange(64, device="cuda", dtype=torch.int32)
 
@@ -137,7 +138,7 @@ def test_logical_and_output_stays_bool_across_input_storage():
     """A float input produces a bool output without disturbing the bool entry."""
     from tileops.ops.elementwise import LogicalAndFwdOp
 
-    op = LogicalAndFwdOp()
+    op = LogicalAndFwdOp(target=BUILTIN)
     b = torch.tensor([True, False] * 32, device="cuda")
     f = torch.tensor([0.0, 1.0] * 32, device="cuda")
 

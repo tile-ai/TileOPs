@@ -166,6 +166,24 @@ def test_a_different_input_signature_asks_again(second, why):
     assert len(recorder.calls) == 2, why
 
 
+def test_a_targets_plain_callable_is_an_entry_but_not_a_kernel():
+    """``autotune`` walks ``iter_kernels``, and a plain callable has nothing to tune."""
+    built = []
+
+    def build_kernel(*inputs, **params):
+        built.append(_Recorder().build_kernel(*inputs, **params))
+        return built[-1]
+
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("RMSNormFwdOp", "acme", build_kernel)
+    op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
+
+    op(*_inputs())
+
+    assert list(op.built_kernels("rms_norm").values()) == built
+    assert list(op.iter_kernels()) == []
+
+
 def test_the_target_is_settled_once_and_kept():
     """The kernels this instance holds belong to that target."""
     recorder = _Recorder()

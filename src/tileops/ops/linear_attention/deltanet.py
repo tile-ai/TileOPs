@@ -2,6 +2,7 @@ from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.deltanet import (
     DeltaNetBwdKernel,
@@ -40,6 +41,8 @@ class DeltaNetFwdOp(Op):
         chunk_size: int = 64,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -47,6 +50,8 @@ class DeltaNetFwdOp(Op):
             chunk_size: Chunk size for chunked linear attention.
             kernel_map: Optional kernel overrides.
             tune: Whether to autotune kernels.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
         """
         self.batch = None
         self.heads = None
@@ -57,6 +62,7 @@ class DeltaNetFwdOp(Op):
         self.dtype = None
         self.tune = tune
 
+        self.target = target
         self.dispatch_kernel(kernel_map)
         self.kernel = None
 

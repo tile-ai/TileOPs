@@ -3,6 +3,7 @@ from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.gemm.call_spec import GemmCall
 from tileops.kernels.gemm.dense import (
     GemmCpAsyncKernel,
@@ -177,6 +178,8 @@ class GemmFp8FwdOp(Op):
         out_dtype: torch.dtype = torch.bfloat16,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -184,6 +187,8 @@ class GemmFp8FwdOp(Op):
             out_dtype: Output dtype.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
         """
         if out_dtype not in (torch.float16, torch.bfloat16):
             raise ValueError(
@@ -191,6 +196,7 @@ class GemmFp8FwdOp(Op):
             )
         self.out_dtype = out_dtype
         self.tune = tune
+        self.target = target
         self.dispatch_kernel(kernel_map)
         self._active_sig: Optional[tuple] = None
         self._active: Optional[Kernel] = None
@@ -405,6 +411,8 @@ class GemmW4A16FwdOp(Op):
         group_size: int = GROUP_SIZE,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -414,6 +422,8 @@ class GemmW4A16FwdOp(Op):
             tune: Accepted for the common op interface and ignored with a warning.
                 W4A16 uses its calibrated selector because generic autotuning cannot
                 time the composite path.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
         """
         if group_size != GROUP_SIZE:
             raise ValueError(
@@ -427,6 +437,7 @@ class GemmW4A16FwdOp(Op):
                 stacklevel=2,
             )
         self.tune = False
+        self.target = target
         self.dispatch_kernel(kernel_map)
         self._active_sig: Optional[tuple] = None
         self._active: Optional[Kernel] = None

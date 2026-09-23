@@ -1611,6 +1611,8 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         rope_base: float = 10000.0,
         max_position: Optional[int] = None,
         rotary_dim: Optional[int] = None,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -1629,6 +1631,8 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             rope_base: Manifest ``params.rope_base``, ``float``, default ``10000.0``.
             max_position: Manifest ``params.max_position``, ``int | None``, default ``None``.
             rotary_dim: Manifest ``params.rotary_dim``, ``int | None``, default ``None``.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
         """
         _validate_gqa_dims(heads, heads_kv, dim)
         _validate_positive(max_seqlen_q=max_seqlen_q)
@@ -1671,6 +1675,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         ] = {}
 
         self.tune = tune
+        self.target = target
         self.dispatch_kernel(kernel_map)
 
     @property

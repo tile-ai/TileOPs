@@ -65,7 +65,7 @@ The identity is opaque to L1 and must carry every input that can change what get
 
 The entry, not the kernel, is the unit built once. A specialization that must build several kernels together returns them as one immutable entry from one factory; kernels keyed independently of each other are separate roles.
 
-`iter_kernels()` enumerates entries and delegates explicitly, never by reflecting over attributes. An op that runs a kernel another op built declares that op in `kernel_delegates()`, so a composite reaches its delegates' kernels without overriding `autotune()`. Reflection could only guess: a kernel nested deeper than the traversal descended, or held in an attribute whose type it did not recognise, was silently invisible. Declaring turns that silent omission into a missing declaration.
+`iter_kernels()` enumerates entries and delegates explicitly, never by reflecting over attributes. An op that runs a kernel another op built declares that op in `kernel_delegates()`, so a composite reaches its delegates' kernels without overriding `autotune()`. Reflection could only guess: a kernel nested deeper than the traversal descended, or held in an attribute whose type it did not recognise, was silently invisible. Declaring turns that silent omission into a missing declaration. Enumeration, and so `autotune()`, reaches `Kernel` instances only: a target's builder may return a plain callable, which neither sees.
 
 ## Scaffolding an Op from a Manifest Entry
 

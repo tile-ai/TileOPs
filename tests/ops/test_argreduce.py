@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from workloads.reduction import ArgmaxWorkload
 
 
@@ -653,7 +654,7 @@ def test_argreduce_strided_axis_crossover(shape, dim, expect_strided) -> None:
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp
 
     x = torch.randn(*shape, device="cuda", dtype=torch.float16)
-    op = ArgmaxFwdOp(dim=dim)
+    op = ArgmaxFwdOp(dim=dim, target=BUILTIN)
     torch.testing.assert_close(_call(op, x), torch.argmax(x, dim=dim))
     strategies = {k.strategy for k in op.iter_kernels()}
     assert ("output" in strategies) is expect_strided, strategies

@@ -2,6 +2,7 @@ from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.gla import GLABwdKernel, GLAFwdKernel
 from tileops.perf.profile import tensor_core_roof
@@ -58,6 +59,8 @@ class GLAFwdOp(Op):
         scale: float = -1.0,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -66,6 +69,8 @@ class GLAFwdOp(Op):
             scale: Query scale factor (default: dim_k**-0.5).
             kernel_map: Optional kernel overrides.
             tune: Whether to autotune kernels.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
         """
         self.batch = None
         self.seq_len = None
@@ -77,6 +82,7 @@ class GLAFwdOp(Op):
         self.dtype = None
         self.tune = tune
 
+        self.target = target
         self.dispatch_kernel(kernel_map)
         self.kernel = None
 

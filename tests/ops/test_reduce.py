@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from workloads.reduction import (
     ProdWorkload,
     StdWorkload,
@@ -273,7 +274,7 @@ def test_reduce_untiled_autotune_unaligned_n() -> None:
 
     m, n, dtype = 8, 7936, torch.float16
     test = ReduceTest(m, n, dtype, "sum")
-    op = SumFwdOp(dim=-1, tune=True)
+    op = SumFwdOp(dim=-1, tune=True, target=BUILTIN)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
     (kernel,) = op.built_kernels("reduce").values()
@@ -300,10 +301,10 @@ def test_reduce_tiled_autotune(op_kind: str) -> None:
     m, n, dtype = 4, 40000, torch.float16
     if op_kind == "sum":
         test = ReduceTest(m, n, dtype, "sum")
-        op = SumFwdOp(dim=-1, tune=True)
+        op = SumFwdOp(dim=-1, tune=True, target=BUILTIN)
     else:
         test = WelfordTest(m, n, dtype, "var", correction=1)
-        op = VarFwdOp(dim=-1, tune=True)
+        op = VarFwdOp(dim=-1, tune=True, target=BUILTIN)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
     (kernel,) = op.built_kernels("reduce").values()

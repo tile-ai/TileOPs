@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tileops.backend import BUILTIN
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 
@@ -172,6 +173,7 @@ def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
             "fwd_infer_kernel": _FakeBatchNormFwdInferKernel,
             "fwd_train_kernel": _FakeBatchNormFwdTrainKernel,
         },
+        target=BUILTIN,
     )
 
     def run_case(N: int, C: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
@@ -218,6 +220,7 @@ def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None
             "fwd_infer_kernel": _FakeBatchNormFwdInferKernel,
             "fwd_train_kernel": _FakeBatchNormFwdTrainKernel,
         },
+        target=BUILTIN,
     )
 
     def run_case(N: int, C: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
@@ -260,7 +263,7 @@ def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
         pytest.skip("CUDA required for backward call")
 
     eps = 1e-5
-    op = BatchNormBwdOp(kernel_map={"bwd_kernel": _FakeBatchNormBwdKernel})
+    op = BatchNormBwdOp(kernel_map={"bwd_kernel": _FakeBatchNormBwdKernel}, target=BUILTIN)
 
     def run_case(N: int, C: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
         x = torch.randn((N, C, *spatial), device="cuda", dtype=dtype)

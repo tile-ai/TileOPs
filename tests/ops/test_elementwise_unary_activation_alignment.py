@@ -10,6 +10,8 @@ dispatch, and end-to-end correctness against the PyTorch reference.
 import pytest
 import torch
 
+from tileops.backend import BUILTIN
+
 _INPLACE_PARAM_FREE_OPS = (
     "ReluFwdOp",
     "SiluFwdOp",
@@ -77,7 +79,7 @@ def test_clamp_family_kernel_map_override_is_dispatched(op_name: str) -> None:
     class MarkerKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         """Subclass marker; identical behavior, distinct identity."""
 
-    inst = cls(**kw, kernel_map={key: MarkerKernel})
+    inst = cls(**kw, kernel_map={key: MarkerKernel}, target=BUILTIN)
     assert inst.kernel_map[key] is MarkerKernel, (
         f"{op_name}: kernel_map override entry was not stored on "
         f"self.kernel_map (got {inst.kernel_map[key]!r})"

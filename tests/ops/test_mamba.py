@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import TestBase, allclose_compare
+from tileops.backend import BUILTIN
 from tileops.ops.mamba.cb_producer import CBProducerFwdOp
 from tileops.ops.mamba.da_cumsum import DaCumsumFwdOp
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
@@ -298,7 +299,7 @@ def test_ssd_state_passing_fwd_vectorize(config, dtype):
     """Exercises the vectorize=True code path (lo/hi split per thread)."""
     batch, num_chunks, n_heads, d_state = 2, 4, 8, 128
     test = SSDStatePassingFwdTest(batch, num_chunks, n_heads, d_state, dtype)
-    op = SSDStatePassingFwdOp(tune=False)
+    op = SSDStatePassingFwdOp(tune=False, target=BUILTIN)
     inputs = test.gen_inputs()
     op(*inputs)
     op.kernel.config = config

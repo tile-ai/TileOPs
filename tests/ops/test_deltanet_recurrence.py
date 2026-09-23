@@ -3,6 +3,7 @@ import torch
 
 import tileops.ops.linear_attention.deltanet_recurrence as deltanet_ops
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
 from tileops.kernels.linear_attention.deltanet_recurrence import (
     DeltaNetDecodeFP32Kernel,
@@ -138,7 +139,7 @@ def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None
 
     torch.manual_seed(42)
     test = DeltaNetDecodeTest(2, 4, 128, 128, dtype)
-    op = DeltaNetDecodeFwdOp(tune=False)
+    op = DeltaNetDecodeFwdOp(tune=False, target=BUILTIN)
     inputs = test.gen_inputs()
     op(*inputs)
     assert isinstance(op.kernel, DeltaNetDecodeRawCudaFlaStyleKernel)
@@ -156,7 +157,7 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
     torch.manual_seed(42)
     num_steps = 8
     B, H, DK, DV = 2, 4, 128, 128
-    op = DeltaNetDecodeFwdOp(tune=False)
+    op = DeltaNetDecodeFwdOp(tune=False, target=BUILTIN)
     tols = _get_tolerances(dtype)
 
     state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)

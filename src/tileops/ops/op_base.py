@@ -711,7 +711,8 @@ class Op(ABC):
         """The configuration the op's kernels were built with, or ``None``.
 
         An op given a config of its own answers with it; otherwise the first
-        configured kernel it built does, which speaks for the whole call.
+        configured kernel ``iter_kernels`` yields does, which speaks for the whole call.
+        An entry that is not a ``Kernel`` is not asked.
         """
         own = getattr(self, "config", None)
         if own:
@@ -723,11 +724,15 @@ class Op(ABC):
         return None
 
     def iter_kernels(self) -> Iterator[Kernel]:
-        """Yield every kernel the op holds, each one once.
+        """Yield every ``Kernel`` instance the op holds, each one once.
 
         Reached: the entries of every role, ``self.kernel``, and the same walk over
         each ``kernel_delegates()`` entry. A kernel on any other attribute is not
         searched for — an op that holds one builds it through a role.
+
+        An entry that is not a ``Kernel`` is not yielded. A target's builder may
+        return a plain callable, and ``autotune`` has nothing to call on one;
+        ``built_kernels`` shows every entry, whoever built it.
         """
         seen: set[int] = set()
         for kernel in self._walk_kernels():
@@ -753,7 +758,8 @@ class Op(ABC):
 
         An entry is a kernel, a sequence of kernels built together, or a dataclass
         carrying them alongside what else the specialization implies. An entry that
-        hides its kernels from this walk is invisible to ``autotune``.
+        hides its kernels from this walk, or holds no ``Kernel`` instance, is
+        invisible to ``autotune``.
         """
         if isinstance(entry, Kernel):
             return [entry]

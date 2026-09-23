@@ -3,6 +3,7 @@ import torch
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from workloads.normalization import RMSNormWorkload
 
@@ -135,7 +136,7 @@ def test_the_op_holds_one_kernel_per_dtype_whatever_the_row_count() -> None:
     """
     from tileops.kernels.norm.rms_norm import _rms_norm_kernel
 
-    op = RMSNormFwdOp(normalized_shape=(4096,))
+    op = RMSNormFwdOp(normalized_shape=(4096,), target=BUILTIN)
     weight = torch.randn(4096, dtype=torch.float16, device="cuda")
     programs_before = _rms_norm_kernel.cache_info().currsize
 

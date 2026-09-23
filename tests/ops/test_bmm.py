@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.kernels.gemm.bmm import BmmFp8TransposeKernel, BmmPersistentKernel
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.ops import BmmFp8FwdOp, BmmFwdOp
@@ -522,8 +523,8 @@ def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
     a, b_kn, scale_a, scale_b = test.gen_inputs()
     b_nk = b_kn.transpose(-2, -1).contiguous()
 
-    op_kn = BmmFp8FwdOp(out_dtype=torch.bfloat16)
-    op_nk = BmmFp8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
+    op_kn = BmmFp8FwdOp(out_dtype=torch.bfloat16, target=BUILTIN)
+    op_nk = BmmFp8FwdOp(out_dtype=torch.bfloat16, trans_b=True, target=BUILTIN)
     out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
     out_nk = op_nk(a, b_nk, scale_a, scale_b)
     assert op_kn.built_kernels("bmm_fp8_transpose_kernel")
@@ -541,11 +542,11 @@ def test_bmm_fp8_no_transpose_when_b_already_k_innermost() -> None:
     b_kn_view = b_kn.transpose(-2, -1).contiguous().transpose(-2, -1)
     assert b_kn_view.stride(-2) == 1
 
-    op = BmmFp8FwdOp(out_dtype=torch.bfloat16)
+    op = BmmFp8FwdOp(out_dtype=torch.bfloat16, target=BUILTIN)
     out_view = op(a, b_kn_view, scale_a, scale_b).clone()
     assert not op.built_kernels("bmm_fp8_transpose_kernel")
 
-    out_kn = BmmFp8FwdOp(out_dtype=torch.bfloat16)(a, b_kn, scale_a, scale_b)
+    out_kn = BmmFp8FwdOp(out_dtype=torch.bfloat16, target=BUILTIN)(a, b_kn, scale_a, scale_b)
     torch.testing.assert_close(out_view, out_kn, atol=0.0, rtol=0.0)
 
 

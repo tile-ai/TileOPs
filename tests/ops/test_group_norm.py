@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.normalization import GroupNormWorkload
 
@@ -121,7 +122,7 @@ def test_group_norm_lazily_specializes_per_device() -> None:
         pytest.skip("multi-device test requires >= 2 CUDA devices")
 
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
-    op = GroupNormFwdOp(num_groups=g)
+    op = GroupNormFwdOp(num_groups=g, target=BUILTIN)
     x_other = torch.randn(
         (n, c, *spatial),
         dtype=dtype,
@@ -145,7 +146,7 @@ def test_group_norm_lazily_specializes_per_device() -> None:
 @pytest.mark.smoke
 def test_group_norm_lazy_cache_reuse_and_respecialization() -> None:
     """One op instance reuses identical specs and caches changed specs."""
-    op = GroupNormFwdOp(num_groups=4)
+    op = GroupNormFwdOp(num_groups=4, target=BUILTIN)
 
     def run_case(n: int, c: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
         x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
@@ -275,7 +276,7 @@ def test_group_norm_no_affine_lazily_specializes_per_device() -> None:
         pytest.skip("multi-device test requires >= 2 CUDA devices")
 
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
-    op = GroupNormFwdOp(num_groups=g)
+    op = GroupNormFwdOp(num_groups=g, target=BUILTIN)
     x_other = torch.randn(
         (n, c, *spatial),
         dtype=dtype,

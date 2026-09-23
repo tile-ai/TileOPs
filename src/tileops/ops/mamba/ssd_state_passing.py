@@ -2,6 +2,7 @@ from typing import ClassVar, Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba import SSDStatePassingFwdKernel
 
@@ -28,11 +29,15 @@ class SSDStatePassingFwdOp(Op):
         self,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             tune:               Whether to autotune tile config on construction.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
         """
         self.batch = None
         self.num_chunks = None
@@ -40,6 +45,7 @@ class SSDStatePassingFwdOp(Op):
         self.d_state = None
         self.dtype = None
         self.tune = tune
+        self.target = target
         self.dispatch_kernel(kernel_map)
         self.kernel = None
 

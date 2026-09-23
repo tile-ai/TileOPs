@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from workloads.reduction import CumulativeWorkload
 
 
@@ -171,7 +172,7 @@ def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
 def test_cumsum_dynamic_shape_kernel_cache() -> None:
     from tileops.ops.reduction.cumulative import CumsumFwdOp
 
-    op = CumsumFwdOp()
+    op = CumsumFwdOp(target=BUILTIN)
     x1 = torch.randn(4, 8, dtype=torch.float16, device="cuda")
     x2 = torch.randn(5, 8, dtype=torch.float16, device="cuda")
 
@@ -304,7 +305,7 @@ def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, backend: st
     from tileops.ops.reduction.cumulative import CumsumFwdOp
 
     x = torch.randn(M, N, dtype=dtype, device="cuda")
-    op = CumsumFwdOp(dim=-1)
+    op = CumsumFwdOp(dim=-1, target=BUILTIN)
     y = op(x)
 
     ref = x.float().cumsum(dim=-1).to(dtype)

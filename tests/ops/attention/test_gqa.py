@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.kernels.attention import (
     GQADecodeBs1Kernel,
     GQADecodeKernel,
@@ -82,7 +83,7 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
     v = torch.randn_like(k)
 
     if rope_layout is None:
-        op = GroupedQueryAttentionDenseFwdOp(is_causal=is_causal)
+        op = GroupedQueryAttentionDenseFwdOp(is_causal=is_causal, target=BUILTIN)
         output = op(q, k, v)
         q_ref, k_ref = q, k
     else:
@@ -94,6 +95,7 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
             pos_encoding_mode="rope",
             rotary_dim=rotary_dim,
             rope_layout=rope_layout,
+            target=BUILTIN,
         )
         output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
         q_positions = torch.arange(seq_len_kv - seq_len_q, seq_len_kv, device="cuda")
@@ -182,6 +184,7 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
         pos_encoding_mode="rope" if rope_layout is not None else "none",
         rotary_dim=rotary_dim,
         rope_layout="neox" if rope_layout is None else rope_layout,
+        target=BUILTIN,
     )
     output = op(
         q,
@@ -236,7 +239,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
     if not torch.cuda.is_available() or get_sm_version() != 90:
         pytest.skip("Dense warp-specialized prefill requires SM90")
     heads, heads_kv, dim = 8, 2, 128
-    op = GroupedQueryAttentionDenseFwdOp()
+    op = GroupedQueryAttentionDenseFwdOp(target=BUILTIN)
 
     for seq_len_q, seq_len_kv in (
         (2, 270),
@@ -362,6 +365,7 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
         pos_encoding_mode="rope" if rope_layout is not None else "none",
         rotary_dim=rotary_dim,
         rope_layout="neox" if rope_layout is None else rope_layout,
+        target=BUILTIN,
     )
 
     for seq_len_kv in seq_lens_kv:
@@ -428,7 +432,7 @@ def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
     """A reused op crosses the tile-size boundary in both directions, including KV tails."""
     if not torch.cuda.is_available() or get_sm_version() != 90:
         pytest.skip("Long-context decode defaults are measured on SM90")
-    op = GroupedQueryAttentionDenseFwdOp()
+    op = GroupedQueryAttentionDenseFwdOp(target=BUILTIN)
     q = torch.randn(1, 1, 32, 128, device="cuda", dtype=torch.float16)
     for seq_len in (131072, 131073, 262145, 131071):
         k = torch.randn(1, seq_len, 4, 128, device="cuda", dtype=q.dtype)
@@ -544,6 +548,7 @@ def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(
         softcap=softcap,
         pos_encoding_mode="rope" if use_rope else "none",
         rotary_dim=rotary_dim if use_rope else None,
+        target=BUILTIN,
     )
     output = op(
         q,

@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.ops import DeltaNetFwdOp
 from workloads.linear_attention import DeltaNetFwdWorkload
 
@@ -64,7 +65,7 @@ def test_deltanet_fwd(
 ) -> None:
     torch.manual_seed(42)
     test = DeltaNetFwdTest(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
-    op = DeltaNetFwdOp(chunk_size=chunk_size, tune=tune)
+    op = DeltaNetFwdOp(chunk_size=chunk_size, tune=tune, target=BUILTIN)
     tols = _get_tolerances(dtype)
     inputs = test.gen_inputs()
     ref_o = test.ref_program(*inputs)

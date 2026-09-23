@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.kernels.norm.layer_norm import LayerNormKernel
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from workloads.normalization import LayerNormWorkload
@@ -223,7 +224,7 @@ def test_layer_norm_serves_a_changed_leading_dims_product_from_one_kernel() -> N
     n = 4096
     dtype = torch.float16
 
-    op = LayerNormFwdOp(normalized_shape=(n,))
+    op = LayerNormFwdOp(normalized_shape=(n,), target=BUILTIN)
     weight = torch.randn(n, dtype=dtype, device="cuda")
     bias = torch.randn(n, dtype=dtype, device="cuda")
 

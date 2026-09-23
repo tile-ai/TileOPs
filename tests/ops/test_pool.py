@@ -7,6 +7,7 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool import (
     AdaptiveAvgPool2dKernel,
@@ -501,6 +502,7 @@ def _run_avg_pool_case(
         "ceil_mode": ceil_mode,
         "count_include_pad": count_include_pad,
         "tune": tune,
+        "target": BUILTIN,
     }
     if ndim > 1:
         op_kwargs["divisor_override"] = divisor_override
@@ -672,6 +674,7 @@ def test_avg_pool2d_dispatches_kernel() -> None:
         kernel_size=(3, 3),
         stride=(2, 2),
         padding=(1, 1),
+        target=BUILTIN,
     )
     x = torch.randn(1, 32, 28, 28, device="cuda", dtype=torch.float16).contiguous()
     op(x)
@@ -938,7 +941,7 @@ def test_avg_pool_rejects_wrong_rank_input(
 
 @pytest.mark.smoke
 def test_avg_pool2d_dynamic_shape_kernel_cache_and_roofline() -> None:
-    op = AvgPool2dFwdOp(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
+    op = AvgPool2dFwdOp(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), target=BUILTIN)
     x1 = torch.randn(1, 4, 16, 16, dtype=torch.float16, device="cuda")
     x2 = torch.randn(2, 4, 16, 16, dtype=torch.float16, device="cuda")
 
@@ -2094,7 +2097,7 @@ def test_max_pool_dynamic_shape_kernel_cache_and_roofline(
     ndim: int,
     return_indices: bool,
 ) -> None:
-    op = _max_pool_op_cls(ndim, return_indices)(**_MAX_POOL_CTOR_KWARGS[ndim])
+    op = _max_pool_op_cls(ndim, return_indices)(**_MAX_POOL_CTOR_KWARGS[ndim], target=BUILTIN)
     shape1, shape2 = _MAX_POOL_DYNAMIC_SHAPES[ndim]
     x1 = torch.randn(*shape1, dtype=torch.float16, device="cuda")
     x2 = torch.randn(*shape2, dtype=torch.float16, device="cuda")
@@ -2432,7 +2435,9 @@ def test_avg_pool_explicit_generic_kernel_map_disables_fast_path(ndim: int) -> N
     shape = (1, 2) + (8,) * ndim
     x = torch.randn(*shape, device="cuda", dtype=torch.float16)
 
-    op = _AVG_POOL_OPS[ndim](kernel_size=2, kernel_map={generic_slot: _PassthroughGenericKernel})
+    op = _AVG_POOL_OPS[ndim](
+        kernel_size=2, kernel_map={generic_slot: _PassthroughGenericKernel}, target=BUILTIN
+    )
     op(x)
     assert isinstance(op.kernel, _PassthroughGenericKernel)
 
@@ -2442,6 +2447,7 @@ def test_avg_pool_explicit_generic_kernel_map_disables_fast_path(ndim: int) -> N
             generic_slot: _PassthroughGenericKernel,
             spatial_slot: _PassthroughSpatialKernel,
         },
+        target=BUILTIN,
     )
     op_both(x)
     assert isinstance(op_both.kernel, _PassthroughSpatialKernel)
@@ -2451,7 +2457,9 @@ def test_avg_pool_explicit_generic_kernel_map_disables_fast_path(ndim: int) -> N
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_avg_pool2d_explicit_generic_kernel_map_keeps_fast_path() -> None:
     """2d policy asymmetry: an explicit generic override does NOT opt out."""
-    op = AvgPool2dFwdOp(kernel_size=2, kernel_map={"avg_pool2d_kernel": _PassthroughGenericKernel})
+    op = AvgPool2dFwdOp(
+        kernel_size=2, kernel_map={"avg_pool2d_kernel": _PassthroughGenericKernel}, target=BUILTIN
+    )
     x = torch.randn(1, 2, 8, 8, device="cuda", dtype=torch.float16)
     op(x)
     assert isinstance(op.kernel, AvgPool2dSpatialKernel)
@@ -2592,7 +2600,7 @@ def test_pool_eval_roofline_snapshot(
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_avg_pool2d_kernel_cache_separates_dtypes() -> None:
-    op = AvgPool2dFwdOp(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
+    op = AvgPool2dFwdOp(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), target=BUILTIN)
     shape = (1, 4, 16, 16)
     op(torch.randn(*shape, dtype=torch.float16, device="cuda"))
     op(torch.randn(*shape, dtype=torch.float32, device="cuda"))
@@ -2776,7 +2784,7 @@ def test_adaptive_avg_pool2d(
     tune: bool,
 ) -> None:
     test = AdaptiveAvgPool2dTest(n, c_in, h_in, w_in, output_size, dtype)
-    op = AdaptiveAvgPool2dFwdOp(output_size, tune=tune)
+    op = AdaptiveAvgPool2dFwdOp(output_size, tune=tune, target=BUILTIN)
     atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
     assert isinstance(op.kernel, AdaptiveAvgPool2dKernel)
@@ -2798,7 +2806,7 @@ def test_adaptive_max_pool2d(
             n, c_in, h_in, w_in, output_size, dtype, return_indices=return_indices
         )
         op_cls = AdaptiveMaxPool2dIndicesFwdOp if return_indices else AdaptiveMaxPool2dFwdOp
-        op = op_cls(output_size, tune=tune)
+        op = op_cls(output_size, tune=tune, target=BUILTIN)
         test.check(op, *test.gen_inputs(), atol=0, rtol=0)
         expected_kernel = (
             AdaptiveMaxPool2dWithIndicesKernel if return_indices else AdaptiveMaxPool2dKernel
