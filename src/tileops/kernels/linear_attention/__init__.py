@@ -6,7 +6,7 @@ kernels live in the per-variant subpackages; the single-token decode kernels are
 ``*_recurrence`` modules.
 """
 
-from .deltanet import DeltaNetBwdKernel, DeltaNetFwdKernel
+from .deltanet import DeltaNetBwdKernel, DeltaNetDensePrefillFwdKernel, DeltaNetFwdKernel
 from .deltanet_recurrence import (
     DeltaNetDecodeFP32Kernel,
     DeltaNetDecodeKernel,
@@ -31,6 +31,7 @@ __all__ = [
     "DeltaNetDecodeFP32Kernel",
     "DeltaNetDecodeKernel",
     "DeltaNetDecodeRawCudaFlaStyleKernel",
+    "DeltaNetDensePrefillFwdKernel",
     "DeltaNetFwdKernel",
     "GLABwdKernel",
     "GLADecodeFP32Kernel",

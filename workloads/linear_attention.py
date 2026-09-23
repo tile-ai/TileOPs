@@ -122,6 +122,43 @@ class GLADecodeWorkload(WorkloadBase):
         return o.to(self.dtype), new_state.to(self.dtype)
 
 
+class DeltaNetInferenceWorkload(WorkloadBase):
+    """Equal-length BTHD ungated DeltaNet prefill with recurrent state."""
+
+    def __init__(self, batch: int, seq_len: int, heads: int, dim: int, dtype: torch.dtype) -> None:
+        self.batch = batch
+        self.seq_len = seq_len
+        self.heads = heads
+        self.dim = dim
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        shape = (self.batch, self.seq_len, self.heads, self.dim)
+        q = torch.randn(shape, device="cuda", dtype=self.dtype) * 0.1
+        k = torch.randn(shape, device="cuda", dtype=self.dtype) * 0.1
+        v = torch.randn(shape, device="cuda", dtype=self.dtype) * 0.1
+        beta = torch.rand(shape[:3], device="cuda", dtype=self.dtype) * 0.5
+        initial_state = (
+            torch.randn(
+                self.batch, self.heads, self.dim, self.dim, device="cuda", dtype=torch.float32
+            )
+            * 0.01
+        )
+        return q, k, v, beta, initial_state
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+        initial_state: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        from fla.ops.delta_rule import chunk_delta_rule
+
+        return chunk_delta_rule(q, k, v, beta, initial_state=initial_state, output_final_state=True)
+
+
 class GatedDeltaNetFwdWorkload(WorkloadBase):
     """Equal-length BTHD Gated DeltaNet inference prefill."""
 
