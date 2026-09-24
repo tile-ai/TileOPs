@@ -117,6 +117,8 @@ GatedDeltaNetFwdOp:
   - {q_shape: [1, 4096, 16, 128], k_shape: [1, 4096, 16, 128], v_shape: [1, 4096, 16, 128], g_shape: [1, 4096, 16], beta_shape: [1, 4096, 16], dtypes: [float16, bfloat16], label: "serving-prefill-medium"}
   - {q_shape: [1, 12288, 16, 128], k_shape: [1, 12288, 16, 128], v_shape: [1, 12288, 16, 128], g_shape: [1, 12288, 16], beta_shape: [1, 12288, 16], dtypes: [float16, bfloat16], label: "serving-prefill-long-irregular"}
   - {q_shape: [1, 32768, 16, 128], k_shape: [1, 32768, 16, 128], v_shape: [1, 32768, 16, 128], g_shape: [1, 32768, 16], beta_shape: [1, 32768, 16], dtypes: [float16, bfloat16], label: "serving-prefill-long"}
+  - {q_shape: [1, 1, 16, 128], k_shape: [1, 1, 16, 128], v_shape: [1, 1, 16, 128], g_shape: [1, 1, 16], beta_shape: [1, 1, 16], initial_state_shape: [1, 16, 128, 128], dtypes: [float16, bfloat16], label: "serving-decode-b1"}
+  - {q_shape: [8, 1, 32, 128], k_shape: [8, 1, 32, 128], v_shape: [8, 1, 32, 128], g_shape: [8, 1, 32], beta_shape: [8, 1, 32], initial_state_shape: [8, 32, 128, 128], dtypes: [float16, bfloat16], label: "serving-decode-b8"}
 
   roofline:
     func: "tileops.perf.formulas.gated_deltanet_fwd_roofline"
@@ -124,6 +126,7 @@ GatedDeltaNetFwdOp:
   source:
     kernel: tileops/kernels/linear_attention/gated_deltanet/prefill/dense.py
     kernel_map:
+      gated_deltanet_dense_decode: GatedDeltaNetDenseDecodeFwdKernel
       gated_deltanet_dense_prefill: GatedDeltaNetDensePrefillFwdKernel
     op: tileops/ops/linear_attention/gated_deltanet.py
     test: tests/ops/test_gated_deltanet.py
