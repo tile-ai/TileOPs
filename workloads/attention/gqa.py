@@ -409,6 +409,65 @@ class GroupedQueryAttentionDecodePagedWorkload(WorkloadBase):
         return q, k, v, real_seqlen_kv, block_table
 
 
+class GroupedQueryAttentionPagedDecodeWorkload(GroupedQueryAttentionDecodePagedWorkload):
+    """The one-token decode subset currently served by the unified Paged Op."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
+        q, k, v, cache_seqlens, page_table = super().gen_inputs()
+        num_pages = k.shape[0] // self.page_size
+        cu_seqlens_q = torch.arange(self.batch + 1, dtype=torch.int32, device="cuda")
+        return (
+            q,
+            k.view(num_pages, self.page_size, self.heads_kv, self.dim),
+            v.view(num_pages, self.page_size, self.heads_kv, self.dim),
+            page_table,
+            cache_seqlens.contiguous(),
+            cu_seqlens_q,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k_pages: torch.Tensor,
+        v_pages: torch.Tensor,
+        page_table: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        q_scale: torch.Tensor | None = None,
+        k_scale: torch.Tensor | None = None,
+        v_scale: torch.Tensor | None = None,
+        rope_cos: torch.Tensor | None = None,
+        rope_sin: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Materialize logical pages and evaluate exactly the decode subset."""
+        del q_scale, k_scale, v_scale, rope_cos, rope_sin
+        expected_cu_q = torch.arange(self.batch + 1, dtype=torch.int32, device=q.device)
+        if not torch.equal(cu_seqlens_q, expected_cu_q):
+            raise ValueError("paged decode requires one query token per request")
+        groups = self.heads // self.heads_kv
+        outputs = []
+        for batch_idx in range(self.batch):
+            cache_len = int(cache_seqlens[batch_idx].item())
+            logical_pages = (cache_len + self.page_size - 1) // self.page_size
+            physical = page_table[batch_idx, :logical_pages].long()
+            k = k_pages.index_select(0, physical).flatten(0, 1)[:cache_len]
+            v = v_pages.index_select(0, physical).flatten(0, 1)[:cache_len]
+            k = k.repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
+            v = v.repeat_interleave(groups, dim=1).permute(1, 0, 2).float()
+            q_i = q[batch_idx].float().unsqueeze(1)
+            scores = torch.matmul(q_i, k.transpose(-2, -1)) * self.sm_scale
+            if self.softcap > 0:
+                scores = self.softcap * torch.tanh(scores / self.softcap)
+            output = torch.matmul(torch.softmax(scores, dim=-1), v)
+            outputs.append(output.squeeze(1).to(q.dtype))
+        return torch.stack(outputs).contiguous()
+
+
 class GQAPrefillVarlenFwdWorkload(WorkloadBase):
     def __init__(
         self,

@@ -614,11 +614,28 @@ def gqa_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int
             data["dim"],
         )
     elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-    flops = 4 * batch * heads * seqlen_kv * dim
+    cache_seqlens = data.get("cache_seqlens")
+    if cache_seqlens is not None:
+        if hasattr(cache_seqlens, "detach"):
+            cache_lens = [int(value) for value in cache_seqlens.detach().cpu().tolist()]
+        else:
+            cache_lens = [int(value) for value in cache_seqlens]
+        if len(cache_lens) != batch:
+            raise ValueError("cache_seqlens length must equal batch")
+        total_kv = sum(cache_lens)
+        flops = 4 * heads * total_kv * dim
+        kv_elems = total_kv * heads_kv * dim
+        page_size = int(data["page_size"])
+        pages_read = sum((length + page_size - 1) // page_size for length in cache_lens)
+    else:
+        # Legacy shape-only callers describe one physical cache pool and assume
+        # every request traverses its full logical length.
+        flops = 4 * batch * heads * seqlen_kv * dim
+        kv_elems = seqlen_kv * heads_kv * dim
+        page_size = int(data["page_size"])
+        pages_read = batch * max(1, (seqlen_kv + page_size - 1) // page_size)
     q_elems = batch * heads * dim
-    kv_elems = seqlen_kv * heads_kv * dim
-    page_size = int(data["page_size"])
-    metadata_bytes = batch * 4 + batch * max(1, (seqlen_kv + page_size - 1) // page_size) * 4
+    metadata_bytes = (batch + pages_read) * 4
     nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes + metadata_bytes
     return int(flops), int(nbytes)
 

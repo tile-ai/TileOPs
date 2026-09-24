@@ -818,6 +818,40 @@ class TestBytesOracle:
         )
         assert nsa_topk_varlen_roofline(bound)[1] == oracle
 
+    def test_gqa_decode_paged_reads_logical_lengths_not_physical_pool(self):
+        """Unused physical pages do not change executed work or reported traffic."""
+        from tileops.perf.formulas import gqa_decode_paged_roofline
+
+        batch, heads, heads_kv, dim = 2, 8, 2, 64
+        cache_lens = [65, 128]
+        page_size = 64
+        pages_read = sum((length + page_size - 1) // page_size for length in cache_lens)
+        bound = {
+            "q_shape": (batch, heads, dim),
+            "kv_shape": (256, heads_kv, dim),
+            "cache_seqlens": cache_lens,
+            "page_size": page_size,
+            "dtype": "float16",
+        }
+        oracle = _ledger(
+            "GroupedQueryAttentionPagedFwdOp",
+            q=((batch, heads, dim), torch.float16),
+            k_pages=((sum(cache_lens), heads_kv, dim), torch.float16),
+            v_pages=((sum(cache_lens), heads_kv, dim), torch.float16),
+            page_table=((pages_read,), torch.int32),
+            cache_seqlens=((batch,), torch.int32),
+            cu_seqlens_q_unread=True,
+            q_scale=None,
+            k_scale=None,
+            v_scale=None,
+            rope_cos=None,
+            rope_sin=None,
+            o=((batch, heads, dim), torch.float16),
+        )
+        expected = (4 * heads * sum(cache_lens) * dim, oracle)
+        assert gqa_decode_paged_roofline(bound) == expected
+        assert gqa_decode_paged_roofline(dict(bound, kv_shape=(1024, heads_kv, dim))) == expected
+
     def test_gqa_prefill_paged_reads_the_pages_the_block_table_selects(self):
         """The cache is one pool and the call touches the pages its block table
         names, so the recount prices that subset rather than the pool. The scales

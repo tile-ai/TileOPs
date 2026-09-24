@@ -408,16 +408,31 @@ GroupedQueryAttentionPagedFwdOp:
       - "H % H_kv == 0"
       - "page_size > 0"
 
-  workloads: []
+  # BUILTIN currently serves one-token 16-bit decode without RoPE or windowing.
+  workloads:
+    - {batch: 32, heads: 32, heads_kv: 8, seqlen_kv: 4096, dim: 128, page_size: 64, dtypes: [float16], label: "serving-8b-p64"}
+    - {batch: 8, heads: 32, heads_kv: 8, seqlen_kv: 32768, dim: 128, page_size: 64, dtypes: [float16], label: "serving-8b-long-p64"}
+    - {batch: 64, heads: 32, heads_kv: 8, seqlen_kv: 2048, dim: 128, page_size: 64, dtypes: [float16], label: "throughput-8b-p64"}
+    - {batch: 8, heads: 64, heads_kv: 8, seqlen_kv: 4096, dim: 128, page_size: 64, dtypes: [float16], label: "serving-70b-p64"}
+    - {batch: 32, heads: 32, heads_kv: 8, seqlen_kv: 4096, dim: 128, page_size: 256, dtypes: [float16], label: "serving-8b-p256"}
+    - {batch: 8, heads: 64, heads_kv: 8, seqlen_kv: 4096, dim: 128, page_size: 256, dtypes: [float16], label: "serving-70b-p256"}
+    - {batch: 4, heads: 128, heads_kv: 8, seqlen_kv: 4096, dim: 128, page_size: 256, dtypes: [float16], label: "serving-405b-p256"}
+    - {batch: 32, heads: 32, heads_kv: 8, seqlen_kv: 4096, dim: 128, page_size: 64, softcap: 50.0, dtypes: [float16], label: "serving-8b-p64-softcap50"}
 
   roofline:
-    func: "tileops.perf.formulas.gqa_prefill_paged_with_kv_cache_fwd_roofline"
+    func: "tileops.perf.formulas.gqa_decode_paged_roofline"
 
   source:
-    kernel: []
+    kernel:
+      - tileops/kernels/attention/gqa_decode_paged.py
+      - tileops/kernels/attention/gqa_decode_bs1_paged.py
+    kernel_map:
+      gqa_decode_paged_kernel: GQADecodePagedKernel
+      gqa_decode_paged_bs1_kernel: GQADecodePagedBs1Kernel
     op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa.py
-    bench: benchmarks/ops/attention/bench_gqa.py
+    test: tests/ops/attention/test_gqa_paged.py
+    bench: benchmarks/ops/attention/bench_gqa_decode_paged.py
+    bench_manifest_driven: true
 
 GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
   ref_api: "none"

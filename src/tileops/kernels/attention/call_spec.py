@@ -25,6 +25,8 @@ __all__ = [
     "decode_bs1_region",
     "dense_prefill_region",
     "fp8_dtype",
+    "paged_decode_region",
+    "paged_decode_refusal",
     "paged_decode_ws_region",
     "square_ws_prefill_region",
     "uses_sliding_window",
@@ -167,6 +169,28 @@ def paged_decode_ws_region(call: AttentionCall) -> bool:
 def dense_decode_region(call: AttentionCall) -> bool:
     """The contiguous decode region: one query position, no window, not FP8."""
     return not call.is_fp8 and call.max_seqlen_q == 1 and not uses_sliding_window(call)
+
+
+def paged_decode_refusal(call: AttentionCall) -> Optional[str]:
+    """Why the migrated 16-bit paged-decode implementation cannot serve *call*."""
+    if call.max_seqlen_q != 1 or not call.is_uniform:
+        return "requires one query token per request"
+    if call.dtype not in ATTENTION_DTYPES:
+        return "requires float16 or bfloat16 Q"
+    if call.cache_dtype != call.dtype:
+        return "requires Q and KV to share a dtype"
+    if call.is_fp8:
+        return "does not yet support FP8"
+    if uses_sliding_window(call):
+        return "does not yet support sliding windows"
+    if call.fuse_rope:
+        return "does not yet support RoPE"
+    return None
+
+
+def paged_decode_region(call: AttentionCall) -> bool:
+    """The capability region shared by the migrated paged-decode kernels."""
+    return paged_decode_refusal(call) is None
 
 
 def dense_long_context_decode_region(call: AttentionCall) -> bool:
