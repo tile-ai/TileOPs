@@ -15,7 +15,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.attention.call_spec import AttentionCall
+from tileops.kernels.attention.call_spec import AttentionCall, paged_decode_region
 from tileops.kernels.attention.gqa_decode_paged import (
     _gqa_decode_paged_no_split_run,
     gqa_decode_paged_block_n,
@@ -38,7 +38,16 @@ __all__ = ["GQADecodePagedBs1Kernel"]
 
 @functools.lru_cache(maxsize=32)
 def _gqa_decode_paged_bs1_ctx_kernel(
-    batch, heads, groups, seqlen_kv, dim, page_size, sm_scale, softcap, dtype
+    batch,
+    heads,
+    groups,
+    seqlen_kv,
+    dim,
+    page_size,
+    max_pages_per_req,
+    sm_scale,
+    softcap,
+    dtype,
 ):
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     scale = score_scale * LOG2E
@@ -107,7 +116,7 @@ def _gqa_decode_paged_bs1_ctx_kernel(
             K: T.Tensor(shape_k, dtype),
             V: T.Tensor(shape_k, dtype),
             real_seqlen_kv: T.Tensor([batch], T.int32),
-            block_table: T.Tensor([batch, seqlen_kv // page_size], T.int32),
+            block_table: T.Tensor([batch, max_pages_per_req], T.int32),
             glse: T.Tensor(lse_shape, accum_dtype),
             Output_partial: T.Tensor(part_shape, accum_dtype),
             Output: T.Tensor(shape_o, dtype),
@@ -127,6 +136,7 @@ def _gqa_decode_paged_bs1_ctx_run(
     seqlen_kv: int,
     dim: int,
     page_size: int,
+    max_pages_per_req: int,
     sm_scale: float,
     softcap: float,
     dtype: str,
@@ -143,7 +153,16 @@ def _gqa_decode_paged_bs1_ctx_run(
     Output_partial: torch.Tensor,
 ) -> torch.Tensor:
     return _gqa_decode_paged_bs1_ctx_kernel(
-        batch, heads, groups, seqlen_kv, dim, page_size, sm_scale, softcap, dtype
+        batch,
+        heads,
+        groups,
+        seqlen_kv,
+        dim,
+        page_size,
+        max_pages_per_req,
+        sm_scale,
+        softcap,
+        dtype,
     )(block_M, block_N, ctx_splits, threads)(
         Q, K, V, real_seqlen_kv, block_table, glse, Output_partial
     )
@@ -156,6 +175,7 @@ def _(
     seqlen_kv: int,
     dim: int,
     page_size: int,
+    max_pages_per_req: int,
     sm_scale: float,
     softcap: float,
     dtype: str,
@@ -187,7 +207,11 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
     def applies(cls, call) -> bool:
         # The page-tile question is asked of this class, so a kernel_map
         # override answers for its own tiling rather than for the shipped one.
-        return decode_bs1_region(call) and cls.block_n_for_page_size(call.page_size) is not None
+        return (
+            paged_decode_region(call)
+            and decode_bs1_region(call)
+            and cls.block_n_for_page_size(call.page_size) is not None
+        )
 
     @staticmethod
     def block_n_for_page_size(page_size: int) -> Optional[int]:
@@ -212,6 +236,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
         seqlen_kv,
         dim,
         page_size,
+        max_pages_per_req,
         dtype="float16",
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
@@ -226,6 +251,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
         self.seqlen_kv = seqlen_kv
         self.dim = dim
         self.page_size = page_size
+        self.max_pages_per_req = max_pages_per_req
         self.dtype = dtype
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
@@ -237,6 +263,8 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
             raise ValueError("seqlen_kv must be positive")
         if self.page_size <= 0 or self.seqlen_kv % self.page_size != 0:
             raise ValueError("page_size must be positive and divide seqlen_kv")
+        if self.max_pages_per_req <= 0:
+            raise ValueError("max_pages_per_req must be positive")
         self.init_config(config, tune)
 
     @property
@@ -264,6 +292,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
                 self.seqlen_kv,
                 self.dim,
                 self.page_size,
+                self.max_pages_per_req,
                 self.sm_scale,
                 self.softcap,
                 self.dtype_str,
@@ -287,6 +316,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
             self.seqlen_kv,
             self.dim,
             self.page_size,
+            self.max_pages_per_req,
             self.sm_scale,
             self.softcap,
             self.dtype_str,
