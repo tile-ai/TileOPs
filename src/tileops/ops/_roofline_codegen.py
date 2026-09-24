@@ -1,48 +1,20 @@
-"""Synthesize ``eval_roofline`` bodies from manifest ``roofline`` entries.
+"""Install a manifest-derived ``eval_roofline`` on each concrete op.
 
-The L1 ``Op`` base declares ``eval_roofline`` as a staged-rollout stub
-that raises ``NotImplementedError``. Per ``docs/design/roofline.md`` §4.4,
-every concrete op with ``status: implemented`` must override the stub
-with a body derived from its manifest ``roofline`` block.
-
-This module provides:
-
-- ``synthesize_eval_roofline`` — emit an ``eval_roofline`` function from
-  a manifest ``roofline`` block (inline or func mode).
-- ``maybe_install_eval_roofline`` — ``Op.__init_subclass__`` hook that
-  auto-applies the generated method when the subclass advertises the
-  manifest metadata and does not supply its own override.
-
-The two roofline modes follow ``docs/design/roofline.md`` §2.2 and §4.4.2:
-
-- **Func** — ``roofline.func`` points at ``module.path.callable``. The
-  emitted body is ``return <func>(self)``. Codegen resolves the dotted
-  path at synthesis time so a typo fails class construction rather than
-  the first benchmark call.
-- **Inline** — ``roofline.vars`` (optional) + ``flops`` + ``bytes`` are
-  Python expression strings. Codegen validates each expression's AST
-  against the §4.4.4 namespace at synthesis time and emits a plain
-  Python function body — generated ``eval_roofline`` does not parse,
-  AST-analyze, or ``eval`` formula strings at call time (§4.4.6).
-
-The L1 stub is preserved for ``status: spec-only`` entries — codegen
-re-evaluates them once the status flips.
+The judging happens in :mod:`tileops.manifest.roofline_analysis` and the writing
+in :mod:`tileops.ops._roofline_emit`; this module is the seam between them and
+the class being created, plus the two helpers the generated body calls back
+into, which need an op instance and so cannot live on the analysis side.
 """
 
 from __future__ import annotations
 
-import ast
-import importlib
-import math
-from math import prod
 from typing import Any, Callable
 
 from tileops.manifest import try_load_entry
+from tileops.manifest.roofline_analysis import analyze_roofline
+from tileops.ops._roofline_emit import emit_eval_roofline
 
 
-# Names bound into the vars-layer namespace per
-# ``docs/design/roofline.md`` §4.4.4. Helper names map to their Python
-# implementations; tensor/param/elem_bytes names are bound dynamically.
 class _ShapeProxy:
     """Synthetic tensor stand-in exposing only ``shape`` and ``ndim``.
 
@@ -127,618 +99,16 @@ def _resolve_tensor_binding(
     )
 
 
-_VARS_HELPERS: dict[str, Any] = {
-    "product": prod,
-    "isinstance": isinstance,
-    "len": len,
-    "set": set,
-    "tuple": tuple,
-    "list": list,
-    "range": range,
-    "int": int,
-    "float": float,
-    "bool": bool,
-    "min": min,
-    "max": max,
-    "sum": sum,
-    "abs": abs,
-    "log2": math.log2,
-    "ceil": math.ceil,
-    "floor": math.floor,
-}
+def _output_dtype_on_call(op: Any, name: str, fallback: Any) -> Any:
+    """Resolve an output's dtype, importing the resolver when the body runs.
 
-# Arithmetic-layer helpers (a strict subset per §4.4.4).
-_ARITHMETIC_HELPERS: dict[str, Any] = {
-    "ceil": math.ceil,
-    "floor": math.floor,
-    "log2": math.log2,
-}
-
-
-def _resolve_func_path(path: str) -> Callable[..., Any]:
-    """Resolve ``module.path.callable`` to a Python callable.
-
-    Raises ``ValueError`` if the module or attribute is absent — codegen
-    is the authoritative gate for ``func`` correctness
-    (``docs/design/roofline.md`` §4.4).
+    Synthesis binds this name into the generated globals. Checking a formula's
+    names and forms needs no torch, and the resolver pulls it in, so the import
+    belongs to the call and not to the check.
     """
-    if not isinstance(path, str) or "." not in path:
-        raise ValueError(f"roofline.func must be a dotted module.attr path, got {path!r}")
-    mod_path, _, attr = path.rpartition(".")
-    try:
-        mod = importlib.import_module(mod_path)
-    except Exception as exc:
-        raise ValueError(
-            f"cannot resolve roofline.func {path!r}: import {mod_path!r} failed ({exc})"
-        ) from exc
-    fn = getattr(mod, attr, None)
-    if not callable(fn):
-        raise ValueError(
-            f"cannot resolve roofline.func {path!r}: {attr!r} is not a callable on {mod_path!r}"
-        )
-    return fn
+    from tileops.ops._output_dtype import output_dtype
 
-
-def _synthesize_func_mode(
-    op_name: str,
-    func_path: str,
-) -> Callable[..., tuple[int, int]]:
-    """Build an ``eval_roofline`` that delegates to a human-authored func.
-
-    Codegen resolves the dotted path eagerly so the closure captures the
-    callable directly — subsequent ``op.eval_roofline()`` calls skip the
-    import machinery on the hot path. Per ``docs/design/roofline.md``
-    §4.4.2, the emitted body is ``return <func>(self)``; if the author
-    writes a non-``func(op)`` signature, the resulting TypeError surfaces
-    to the caller as designed.
-    """
-    fn = _resolve_func_path(func_path)
-
-    def eval_roofline(self):
-        return fn(self)
-
-    eval_roofline.__name__ = "eval_roofline"
-    eval_roofline.__qualname__ = f"{op_name}.eval_roofline"
-    eval_roofline.__doc__ = f"Synthesized from manifest roofline.func={func_path!r}."
-    return eval_roofline
-
-
-_VARS_FORBIDDEN_NODES = (
-    ast.Lambda,
-    ast.NamedExpr,
-    ast.Yield,
-    ast.YieldFrom,
-    ast.Await,
-    ast.AsyncFunctionDef,
-    ast.FunctionDef,
-    ast.ClassDef,
-)
-_VARS_ATTR_WHITELIST = frozenset({"shape", "ndim"})
-
-
-class _VarsExprValidator(ast.NodeVisitor):
-    """AST-check a vars-layer expression with scope-aware name resolution.
-
-    Maintains a stack of name scopes. The outermost scope holds tensor
-    bindings, params, ``elem_bytes``, earlier vars, and helper names;
-    comprehensions (``ListComp`` / ``SetComp`` / ``DictComp`` /
-    ``GeneratorExp``) push a child scope containing their generator
-    target names so loop variables (``d`` in ``sum(d for d in x.shape)``)
-    resolve cleanly without polluting the surrounding scope.
-    """
-
-    def __init__(
-        self,
-        op_name: str,
-        var_name: str,
-        allowed: set[str],
-        input_names: set[str],
-        optional_names: set[str] | None = None,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call."""
-        self.op_name = op_name
-        self.var_name = var_name
-        # Cleared by ``visit_Compare`` when they carry a presence test.
-        self._optional_names = set(optional_names or ())
-        # Names referring to tensor inputs. They are bound (the
-        # generated body receives them from the resolver) but may only
-        # appear as the operand of a whitelisted attribute access
-        # (``input.shape`` / ``input.ndim``). A bare reference would
-        # read tensor data at runtime, which violates the "vars layer
-        # is shape-derived" boundary in §4.4.3.
-        self._input_names = set(input_names)
-        self._scopes: list[set[str]] = [set(allowed)]
-
-    def _is_bound(self, name: str) -> bool:
-        return any(name in scope for scope in self._scopes)
-
-    def _collect_targets(self, target: ast.AST, scope: set[str]) -> None:
-        if isinstance(target, ast.Name):
-            scope.add(target.id)
-            return
-        if isinstance(target, (ast.Tuple, ast.List)):
-            for elt in target.elts:
-                self._collect_targets(elt, scope)
-            return
-        if isinstance(target, ast.Starred):
-            self._collect_targets(target.value, scope)
-            return
-        raise ValueError(
-            f"{self.op_name}: roofline.vars[{self.var_name!r}] uses "
-            f"unsupported comprehension target {type(target).__name__}"
-        )
-
-    def _visit_comp(self, node: ast.AST) -> None:
-        # Walk the comprehension matching Python's scoping rules: each
-        # generator's iterable is evaluated *before* its target is bound
-        # (so ``sum(d for d in d)`` raises NameError at runtime in
-        # Python — and must therefore fail validation here too). Bind
-        # the target only after visiting its iterable, then conditions
-        # and any subsequent generator iterables / body see the binding.
-        self._scopes.append(set())
-        try:
-            for gen in node.generators:  # type: ignore[attr-defined]
-                self.visit(gen.iter)
-                self._collect_targets(gen.target, self._scopes[-1])
-                for cond in gen.ifs:
-                    self.visit(cond)
-            if isinstance(node, ast.DictComp):
-                self.visit(node.key)
-                self.visit(node.value)
-            else:
-                self.visit(node.elt)  # type: ignore[attr-defined]
-        finally:
-            self._scopes.pop()
-
-    # ast.NodeVisitor dispatch hooks: names must match AST class names.
-    visit_ListComp = _visit_comp  # noqa: N815
-    visit_SetComp = _visit_comp  # noqa: N815
-    visit_DictComp = _visit_comp  # noqa: N815
-    visit_GeneratorExp = _visit_comp  # noqa: N815
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if not self._is_bound(node.id):
-            raise ValueError(
-                f"{self.op_name}: roofline.vars[{self.var_name!r}] "
-                f"references unknown name {node.id!r}"
-            )
-        if node.id in self._input_names:
-            raise ValueError(
-                f"{self.op_name}: roofline.vars[{self.var_name!r}] "
-                f"references tensor input {node.id!r} as a bare value; "
-                f"access shape metadata via {node.id}.shape / "
-                f"{node.id}.ndim instead"
-            )
-
-    def visit_Attribute(self, node: ast.Attribute) -> None:
-        base = node.value
-        if isinstance(base, ast.Name) and base.id in self._optional_names:
-            raise ValueError(
-                f"{self.op_name}: roofline.vars[{self.var_name!r}] reads "
-                f"{base.id}.{node.attr} from an optional input; the call may "
-                f"omit it, so only '{base.id} is None' / "
-                f"'{base.id} is not None' is allowed here. A formula that "
-                f"needs its shape uses roofline.func"
-            )
-        if node.attr not in _VARS_ATTR_WHITELIST:
-            raise ValueError(
-                f"{self.op_name}: roofline.vars[{self.var_name!r}] "
-                f"accesses non-whitelisted attribute {node.attr!r}; "
-                f"vars-layer allows only "
-                f"{sorted(_VARS_ATTR_WHITELIST)!r}"
-            )
-        # ``.shape`` / ``.ndim`` are valid *only* taken directly from a
-        # declared tensor-input Name. Chained accesses
-        # (``x.shape.ndim``), subscripted operands
-        # (``x.shape[0].shape``), and accesses on local / param names
-        # (``N.shape``) all reject at synthesis instead of producing a
-        # body that crashes at runtime.
-        if not isinstance(node.value, ast.Name) or node.value.id not in self._input_names:
-            raise ValueError(
-                f"{self.op_name}: roofline.vars[{self.var_name!r}] "
-                f"accesses .{node.attr} on a non-tensor-input operand; "
-                f".shape / .ndim are valid only directly on a declared "
-                f"signature.inputs name"
-            )
-        if not self._is_bound(node.value.id):
-            raise ValueError(
-                f"{self.op_name}: roofline.vars[{self.var_name!r}] "
-                f"references unknown name {node.value.id!r}"
-            )
-
-    def visit_Call(self, node: ast.Call) -> None:
-        if not isinstance(node.func, ast.Name):
-            raise ValueError(
-                f"{self.op_name}: roofline.vars[{self.var_name!r}] "
-                f"performs a non-helper call (only whitelisted helper "
-                f"names may be invoked)"
-            )
-        if node.func.id not in _VARS_HELPERS:
-            raise ValueError(
-                f"{self.op_name}: roofline.vars[{self.var_name!r}] "
-                f"calls non-whitelisted name {node.func.id!r}; "
-                f"vars-layer helpers are {sorted(_VARS_HELPERS)!r}"
-            )
-        for arg in node.args:
-            self.visit(arg)
-        for kw in node.keywords:
-            self.visit(kw.value)
-
-    def visit_Subscript(self, node: ast.Subscript) -> None:
-        base = node.value
-        if isinstance(base, ast.Name) and base.id in self._optional_names:
-            raise ValueError(
-                f"{self.op_name}: roofline.vars[{self.var_name!r}] subscripts "
-                f"optional input {base.id!r}; the call may omit it, so only "
-                f"'{base.id} is None' / '{base.id} is not None' is allowed here"
-            )
-        self.generic_visit(node)
-
-    def visit_Compare(self, node: ast.Compare) -> None:
-        # ``X is None`` / ``X is not None`` is the one place an optional
-        # input's bare name is legal; the rest is checked normally.
-        skip = self._presence_operand(node)
-        for child in ast.iter_child_nodes(node):
-            if child is skip:
-                continue
-            self.visit(child)
-
-    def _presence_operand(self, node: ast.Compare) -> ast.AST | None:
-        if len(node.ops) != 1 or not isinstance(node.ops[0], (ast.Is, ast.IsNot)):
-            return None
-        left, right = node.left, node.comparators[0]
-        if not isinstance(right, ast.Constant) or right.value is not None:
-            return None
-        if isinstance(left, ast.Name) and left.id in self._optional_names:
-            return left
-        return None
-
-    def generic_visit(self, node: ast.AST) -> None:
-        if isinstance(node, _VARS_FORBIDDEN_NODES):
-            raise ValueError(
-                f"{self.op_name}: roofline.vars[{self.var_name!r}] uses "
-                f"forbidden construct {type(node).__name__}"
-            )
-        super().generic_visit(node)
-
-
-def _referenced_names(*exprs: str | None) -> set[str]:
-    """Return ``Name`` ids referenced in any of the given expressions.
-
-    Used by inline synthesis to scope locals to names the manifest
-    actually reads — params declared on the op but unused by the
-    roofline are not pulled in. Comprehension target names appear here
-    too; that's harmless because the caller intersects with the known
-    {inputs ∪ params} set, which never contains target names.
-    """
-    names: set[str] = set()
-    for expr in exprs:
-        if expr is None:
-            continue
-        for node in ast.walk(ast.parse(expr, mode="eval")):
-            if isinstance(node, ast.Name):
-                names.add(node.id)
-    return names
-
-
-def _validate_vars_expr(
-    op_name: str,
-    var_name: str,
-    expr: str,
-    allowed_names: set[str],
-    input_names: set[str],
-    optional_names: set[str] | None = None,
-) -> ast.Expression:
-    """Parse and AST-check a vars-layer expression.
-
-    Vars-layer permits ``.shape`` / ``.ndim`` access on tensor inputs,
-    small comprehensions, calls to whitelisted helpers, and references
-    to bound names (params, ``elem_bytes``, earlier vars, helpers).
-    Tensor inputs may not appear as bare values, except an
-    ``optional: true`` input inside ``is None`` / ``is not None``;
-    comprehension target
-    names bind to a child scope reachable only inside the comprehension.
-    Forbidden constructs raise ``ValueError`` so class construction
-    fails before the manifest lands.
-    """
-    try:
-        tree = ast.parse(expr, mode="eval")
-    except SyntaxError as exc:
-        raise ValueError(
-            f"{op_name}: roofline.vars[{var_name!r}] is not a valid Python expression ({exc})"
-        ) from exc
-    _VarsExprValidator(
-        op_name,
-        var_name,
-        allowed_names,
-        input_names,
-        optional_names,
-    ).visit(tree)
-    return tree
-
-
-# Positive allowlist for arithmetic-layer AST nodes. Anything else
-# (tensor access, slicing, collection literals, comprehensions, lambdas,
-# starred / walrus / etc.) is rejected at synthesis time. Listing what
-# survives — rather than enumerating what to forbid — keeps the gate
-# from drifting as new AST node kinds appear in future Python versions.
-_ARITHMETIC_ALLOWED_NODES: tuple[type[ast.AST], ...] = (
-    ast.Expression,
-    ast.BinOp,
-    ast.UnaryOp,
-    ast.BoolOp,
-    ast.IfExp,
-    ast.Compare,
-    ast.Call,
-    ast.Constant,
-    ast.Name,
-    ast.Load,
-    ast.Add,
-    ast.Sub,
-    ast.Mult,
-    ast.Div,
-    ast.FloorDiv,
-    ast.Mod,
-    ast.Pow,
-    ast.LShift,
-    ast.RShift,
-    ast.BitAnd,
-    ast.BitOr,
-    ast.BitXor,
-    ast.USub,
-    ast.UAdd,
-    ast.Invert,
-    ast.Not,
-    ast.And,
-    ast.Or,
-    ast.Eq,
-    ast.NotEq,
-    ast.Lt,
-    ast.LtE,
-    ast.Gt,
-    ast.GtE,
-)
-
-
-def _validate_arithmetic_expr(
-    op_name: str,
-    label: str,
-    expr: str,
-    allowed_names: set[str],
-) -> ast.Expression:
-    """Parse and AST-check an arithmetic-layer expression.
-
-    Per ``docs/design/roofline.md`` §4.4.3, the arithmetic layer
-    permits only numeric operations on resolved vars + ``elem_bytes``
-    + ``ceil`` / ``floor`` / ``log2``. Any AST node outside
-    ``_ARITHMETIC_ALLOWED_NODES`` fails synthesis.
-    """
-    try:
-        tree = ast.parse(expr, mode="eval")
-    except SyntaxError as exc:
-        raise ValueError(
-            f"{op_name}: roofline.{label} is not a valid Python expression ({exc})"
-        ) from exc
-
-    for node in ast.walk(tree):
-        if not isinstance(node, _ARITHMETIC_ALLOWED_NODES):
-            raise ValueError(
-                f"{op_name}: roofline.{label} uses forbidden construct "
-                f"{type(node).__name__} (arithmetic layer permits only "
-                f"BinOp/UnaryOp/BoolOp/IfExp/Compare/constants/names "
-                f"and calls to ceil/floor/log2)"
-            )
-        if isinstance(node, ast.Name) and node.id not in allowed_names:
-            raise ValueError(
-                f"{op_name}: roofline.{label} references unknown name "
-                f"{node.id!r}; allowed names are "
-                f"{sorted(allowed_names)!r}"
-            )
-        if isinstance(node, ast.Call):
-            if not isinstance(node.func, ast.Name):
-                raise ValueError(
-                    f"{op_name}: roofline.{label} performs a non-helper "
-                    f"call (only ceil/floor/log2 may be invoked)"
-                )
-            if node.func.id not in _ARITHMETIC_HELPERS:
-                raise ValueError(
-                    f"{op_name}: roofline.{label} calls non-arithmetic "
-                    f"helper {node.func.id!r}; allowed callees are "
-                    f"{sorted(_ARITHMETIC_HELPERS)!r}"
-                )
-    return tree
-
-
-def _synthesize_inline_mode(
-    op_name: str,
-    roofline: dict[str, Any],
-    signature: dict[str, Any] | None,
-) -> Callable[..., tuple[int, int]]:
-    """Build an ``eval_roofline`` from inline ``flops`` / ``bytes`` exprs.
-
-    Synthesis-time steps (``docs/design/roofline.md`` §4.4.3/§4.4.4):
-
-    1. Compute the legal name set for each layer from
-       ``signature.inputs`` + ``signature.params`` + ``elem_bytes`` +
-       the layer's helper table.
-    2. AST-validate every ``vars`` expression against the vars-layer
-       name set; each entry expands the name set for later entries.
-    3. AST-validate ``flops`` and ``bytes`` against the arithmetic-layer
-       name set (resolved vars + ``elem_bytes`` + ceil/floor/log2).
-    4. Emit a plain Python function body whose locals are bound from
-       ``self.<input>`` / ``self.<param>`` / ``self.dtype.itemsize``
-       and whose vars/return statements are the original expression
-       strings copied verbatim — no ``eval`` at call time.
-    """
-    flops_expr = roofline.get("flops")
-    bytes_expr = roofline.get("bytes")
-    if not isinstance(flops_expr, str) or not isinstance(bytes_expr, str):
-        raise ValueError(
-            f"{op_name}: inline-mode roofline must declare both flops and bytes as strings"
-        )
-    vars_block = roofline.get("vars") or {}
-    if not isinstance(vars_block, dict):
-        raise ValueError(f"{op_name}: roofline.vars must be a mapping when present")
-
-    sig = signature or {}
-    inputs = sig.get("inputs") or {}
-    params = sig.get("params") or {}
-    input_names = list(inputs.keys()) if isinstance(inputs, dict) else []
-    param_names = list(params.keys()) if isinstance(params, dict) else []
-
-    # Vars-layer legal name set: tensors + params + elem_bytes +
-    # vars-layer helpers. Each successfully-parsed vars entry expands
-    # the set so later entries may reference earlier locals.
-    vars_allowed: set[str] = set(input_names) | set(param_names)
-    vars_allowed.add("elem_bytes")
-    # An op whose output dtype is not the input's -- a bool predicate, an
-    # integer input promoted to float -- cannot state its write with
-    # ``elem_bytes`` alone. ``out_elem_bytes`` resolves the single declared
-    # output through the manifest, so the expression stays the only source.
-    single_output = len(sig.get("outputs") or {}) == 1
-    if single_output:
-        vars_allowed.add("out_elem_bytes")
-    vars_allowed.update(_VARS_HELPERS.keys())
-
-    input_name_set = set(input_names)
-    optional_name_set = (
-        {
-            name
-            for name, attrs in inputs.items()
-            if isinstance(attrs, dict) and attrs.get("optional") is True
-        }
-        if isinstance(inputs, dict)
-        else set()
-    )
-    for name, expr in vars_block.items():
-        if not isinstance(name, str) or not name.isidentifier():
-            raise ValueError(
-                f"{op_name}: roofline.vars key {name!r} is not a valid Python identifier"
-            )
-        if not isinstance(expr, str):
-            raise ValueError(f"{op_name}: roofline.vars[{name!r}] must be a string expression")
-        # Reject keys that collide with names already in scope (inputs,
-        # params, helpers, ``elem_bytes``, or an earlier vars entry).
-        # The emitted body assigns ``<name> = <expr>`` and would shadow
-        # the colliding binding for later vars / arithmetic expressions
-        # — e.g. a ``vars.sum`` entry would shadow the ``sum`` helper.
-        if name in vars_allowed:
-            raise ValueError(
-                f"{op_name}: roofline.vars key {name!r} collides with an "
-                f"existing name (input / param / helper / elem_bytes / "
-                f"earlier var)"
-            )
-        _validate_vars_expr(
-            op_name,
-            name,
-            expr,
-            vars_allowed,
-            input_name_set,
-            optional_name_set,
-        )
-        vars_allowed.add(name)
-
-    # Arithmetic-layer legal name set per §4.4.3 Block 2: "references
-    # only Block 1 locals + ``elem_bytes`` + arithmetic-layer helpers".
-    # Block 1 binds both vars and ``signature.params``, so params are
-    # reachable here; tensor inputs are not — anything derived from a
-    # tensor must surface through a vars entry.
-    arith_allowed: set[str] = set(vars_block.keys())
-    arith_allowed.update(param_names)
-    arith_allowed.add("elem_bytes")
-    if single_output:
-        arith_allowed.add("out_elem_bytes")
-    arith_allowed.update(_ARITHMETIC_HELPERS.keys())
-    _validate_arithmetic_expr(op_name, "flops", flops_expr, arith_allowed)
-    _validate_arithmetic_expr(op_name, "bytes", bytes_expr, arith_allowed)
-
-    # Emit a plain function body. Locals are bound from the op instance;
-    # vars and the return statement are the manifest expression strings
-    # copied verbatim — no parsing, no eval at call time (§4.4.6).
-    src_lines: list[str] = [
-        "def eval_roofline(self):",
-        f'    """Synthesized from manifest inline roofline for {op_name}."""',
-    ]
-    # Only bind inputs / params that the roofline expressions actually
-    # reference. Authoring a manifest entry that declares a param but
-    # never reads it in the roofline (e.g. NanToNumFwdOp's
-    # ``nan``/``posinf``/``neginf`` configure the kernel but do not
-    # affect FLOPs / bytes) is legitimate; binding them anyway would
-    # widen the contract to "expose every signature.params name on
-    # every Op even when the roofline does not need it", which is more
-    # than the design requires.
-    referenced = _referenced_names(
-        *vars_block.values(),
-        flops_expr,
-        bytes_expr,
-    )
-    for n in input_names:
-        if n not in referenced:
-            continue
-        # Inputs bind from op-instance state via the resolver, which
-        # accepts either ``self.<n>`` exposing ``.shape`` or
-        # ``self.<n>_shape`` as a tuple. Anything else raises
-        # ``ValueError`` at call time naming the missing convention.
-        src_lines.append(
-            f"    {n} = _resolve_tensor_binding(self, {n!r}, {op_name!r}, "
-            f"optional={n in optional_name_set})"
-        )
-    for n in param_names:
-        if n not in referenced:
-            continue
-        # ``signature.params`` referenced by the roofline must be
-        # exposed as ``self.<n>``. A missing attribute surfaces an
-        # ``AttributeError`` naming the op rather than a downstream
-        # ``NameError`` deep in the body.
-        src_lines.append(f"    {n} = self.{n}")
-    if "elem_bytes" in referenced:
-        src_lines.append("    elem_bytes = self.dtype.itemsize")
-    if single_output and "out_elem_bytes" in referenced:
-        # Through ``output_dtype``, so a ``caller_stated`` output follows the
-        # dtype the call asked for. An op with no tensor input has no
-        # ``self.dtype``; the declaration answers without one.
-        out_name = next(iter(sig.get("outputs") or {}))
-        src_lines.append(
-            f"    out_elem_bytes = _output_dtype(self, {out_name!r}, self.dtype).itemsize"
-        )
-    for name, expr in vars_block.items():
-        src_lines.append(f"    {name} = {expr}")
-    src_lines.append(f"    _flops = {flops_expr}")
-    src_lines.append(f"    _bytes = {bytes_expr}")
-    src_lines.append("    return int(_flops), int(_bytes)")
-
-    # The vars-layer helper namespace is exposed as module-level globals
-    # of the generated function. The arithmetic-layer subset is included
-    # by virtue of being a subset of the vars table.
-    globs: dict[str, Any] = dict(_VARS_HELPERS)
-    globs["_resolve_tensor_binding"] = _resolve_tensor_binding
-    if single_output and "out_elem_bytes" in referenced:
-        from tileops.ops._output_dtype import output_dtype
-
-        globs["_output_dtype"] = output_dtype
-    globs["__builtins__"] = {
-        "int": int,
-        "float": float,
-        "bool": bool,
-        "ValueError": ValueError,
-    }
-
-    src = "\n".join(src_lines)
-    try:
-        code = compile(src, f"<{op_name}.eval_roofline>", "exec")
-    except SyntaxError as exc:  # pragma: no cover - validated above
-        raise ValueError(
-            f"{op_name}: synthesized eval_roofline body did not compile ({exc})"
-        ) from exc
-    local_ns: dict[str, Any] = {}
-    exec(code, globs, local_ns)
-    fn = local_ns["eval_roofline"]
-    fn.__name__ = "eval_roofline"
-    fn.__qualname__ = f"{op_name}.eval_roofline"
-    return fn
-
-
-SYNTHESIZED_ATTR = "__tileops_synthesized_roofline__"
+    return output_dtype(op, name, fallback)
 
 
 def synthesize_eval_roofline(
@@ -747,46 +117,56 @@ def synthesize_eval_roofline(
     roofline: dict[str, Any] | None,
     signature: dict[str, Any] | None,
 ) -> Callable[..., tuple[int, int]]:
-    """Build an ``eval_roofline`` function from a manifest roofline block.
+    """Analyse a roofline block and emit its method, raising on the first defect.
 
-    Args:
-        op_name: Manifest op name; used in error messages and __qualname__.
-        roofline: The ``roofline`` block from the manifest entry.
-        signature: The ``signature`` block; consumed for inline-mode
-            input/param bindings. May be ``None`` for func mode.
-
-    Returns:
-        A method-shaped callable ``eval_roofline(self) -> tuple[int, int]``.
+    One call and an exception, over :func:`analyze_roofline` plus
+    :func:`emit_eval_roofline`. A caller wanting every defect calls the analyzer;
+    this raises the first, in the order the analysis found it.
 
     Raises:
-        ValueError: When ``roofline`` is absent or malformed (missing
-            both modes, mixing both modes, unresolvable func path,
-            inline missing ``flops``/``bytes``, or an inline expression
-            that fails the §4.4.3/§4.4.4 name-and-form gate).
+        ValueError: The block carries a defect, or a fact the formula needs
+            could not be read.
     """
-    if not isinstance(roofline, dict) or not roofline:
+    result = analyze_roofline(op_name, roofline=roofline, signature=signature)
+    if result.plan is None:
+        blocking = result.blocking
+        if blocking:
+            raise ValueError(blocking[0].message)
+        missing = ", ".join(sorted({u.missing for u in result.unjudged}))
         raise ValueError(
-            f"{op_name}: manifest roofline is missing or empty; cannot synthesize eval_roofline"
+            f"{op_name}: roofline cannot be evaluated; {missing or 'a required fact'} "
+            f"could not be read"
         )
-    has_func = "func" in roofline
-    has_inline = "flops" in roofline or "bytes" in roofline or "vars" in roofline
-    if has_func and has_inline:
-        raise ValueError(f"{op_name}: roofline cannot mix func and inline modes")
-    if has_func:
-        fn = _synthesize_func_mode(op_name, roofline["func"])
-    else:
-        fn = _synthesize_inline_mode(op_name, roofline, signature)
-    setattr(fn, SYNTHESIZED_ATTR, True)
-    return fn
+    return emit_eval_roofline(result.plan)
 
 
 def maybe_install_eval_roofline(cls: type) -> None:
     """Install the manifest-derived ``eval_roofline`` for an implemented op.
 
+    Called for every subclass; the entry decides whether anything is installed.
     Class-attached manifest metadata takes precedence over the entry named by
-    ``cls.__name__``. Invalid formulas leave the inherited method in place and
-    are reported by manifest validation.
+    ``cls.__name__``.
+
+    Two outcomes leave the class alone: a subclass with no manifest entry is not
+    an op -- intermediate bases such as ``UnaryOp`` sit here -- and an entry that
+    is not ``implemented`` has nothing to evaluate yet.
+
+    An entry the analysis cannot build a plan for binds the abstract
+    ``Op.eval_roofline``, which makes the class uninstantiable and is what
+    ``check_c6`` names. Binding it is what keeps MRO lookup from answering with a
+    parent's evaluator, which would price this op by another's formula. Raising
+    instead would take down the import of whichever module defines the op. For an
+    entry read from the manifest, ``check_roofline_synthesis`` reports every
+    defect under the op's name; the validator reads the manifest, so a formula a
+    class attached to itself is not among them.
+
+    An implemented entry with no usable ``roofline`` is neither. The field is
+    required of every entry regardless of status, so an absent, empty or
+    non-mapping block means the manifest was never validated, and that raises
+    rather than passing for a configuration.
     """
+    from tileops.ops.op_base import Op
+
     roofline = getattr(cls, "__manifest_roofline__", None)
     sig = getattr(cls, "__manifest_signature__", None)
     status = getattr(cls, "__manifest_status__", None)
@@ -799,14 +179,20 @@ def maybe_install_eval_roofline(cls: type) -> None:
         status = entry.get("status")
     if status != "implemented":
         return
-    if roofline is None:
-        return
-    try:
-        fn = synthesize_eval_roofline(
-            cls.__name__,
-            roofline=roofline,
-            signature=sig,
+    # Absence, not content: an empty or non-mapping block is as missing as no
+    # key at all, and both are states the manifest is not allowed to be in.
+    if not isinstance(roofline, dict) or not roofline:
+        raise ValueError(
+            f"{cls.__name__}: entry is implemented but declares no roofline block. "
+            "roofline is required of every entry (validate_manifest.py, _REQUIRED_TOP), "
+            "so reaching here means the manifest has not been validated"
         )
-    except ValueError:
+    # No catch. The analysis is total over entry data, so an exception is a
+    # defect in it rather than in the entry, and it says so where it happened.
+    # Swallowing one would leave a valid op abstract with no diagnostic
+    # anywhere, which is what a refused entry already looks like.
+    result = analyze_roofline(cls.__name__, roofline=roofline, signature=sig)
+    if result.plan is None:
+        cls.eval_roofline = Op.eval_roofline  # type: ignore[assignment]
         return
-    cls.eval_roofline = fn  # type: ignore[assignment]
+    cls.eval_roofline = emit_eval_roofline(result.plan)  # type: ignore[assignment]

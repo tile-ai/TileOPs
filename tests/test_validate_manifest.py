@@ -79,7 +79,13 @@ def _make_entry(
             {"x_shape": [1, 4096], "dtypes": ["float16"]},
             {"x_shape": [8, 8192], "dtypes": ["float16"]},
         ],
-        "roofline": {"flops": "2 * M", "bytes": "M * 2"},
+        # Must synthesize: the schema level feeds every implemented entry
+        # through the roofline codegen.
+        "roofline": {
+            "vars": {"N": "product(x.shape)"},
+            "flops": "2 * N",
+            "bytes": "N * elem_bytes",
+        },
         "source": source,
     }
     if status is not None:
@@ -244,6 +250,13 @@ class TestSchema:
         """Non-dict entry must return schema error, not crash."""
         errors = validator.check_l0("bad_op", 123)
         assert any("must be a mapping" in e for e in errors)
+
+    @pytest.mark.parametrize("dtype", [{"junk": [1]}, 5, ["float16"]], ids=["dict", "int", "list"])
+    def test_non_string_dtype_rejected(self, validator, dtype):
+        """The dtype level splits this declaration; a non-string raised there."""
+        entry = _make_entry(outputs={"y": {"dtype": dtype}})
+        errors = validator.check_l0("my_op", entry, all_op_names=["my_op"])
+        assert any("outputs.y.dtype must be a string" in e for e in errors), errors
 
     def test_missing_or_mistyped_fields_rejected(self, validator):
         """Case table: each row mutates one field and pins its schema branch."""
@@ -809,16 +822,6 @@ class TestRooflineStructuralRules:
                 {"flops": "2*M*N", "bytes": "M*N", "vars": {4: "M"}},
                 ["key", "must be a string"],
             ),
-            (
-                "unresolvable func",
-                {"func": "tileops.perf.formulas.no_such_formula"},
-                ["does not resolve"],
-            ),
-            (
-                "non-callable func (callable() predicate, not hasattr)",
-                {"func": "tileops.perf.formulas.__doc__"},
-                ["does not resolve"],
-            ),
         ]
         for desc, roofline, substrings in cases:
             entry = _make_entry()
@@ -995,8 +998,8 @@ class TestOptionalInputs:
             "flops": "2 * C",
             "bytes": "C",
         }
-        errors = validator.check_l0("Op", entry)
-        assert any("other than a presence test" in e for e in errors), errors
+        errors = validator.check_roofline_synthesis("Op", entry)
+        assert any("from an optional input" in e for e in errors), errors
 
     def test_roofline_allows_presence_test_in_vars(self, validator):
         entry = self._entry()
@@ -1014,8 +1017,8 @@ class TestOptionalInputs:
             "flops": "(5 if w is not None else 3) * 2",
             "bytes": "2",
         }
-        errors = validator.check_l0("Op", entry)
-        assert any("names optional input 'w'" in e for e in errors), errors
+        errors = validator.check_roofline_synthesis("Op", entry)
+        assert any("unknown name 'w'" in e for e in errors), errors
 
     def test_read_bound_exception_states_a_condition_and_a_reason(self, validator):
         """It lifts a verdict the audit would otherwise reach, so it says when and why."""
@@ -4257,3 +4260,269 @@ class TestWorkspaceStaysOutOfDtypeCombos:
         )
         errors = validator.check_l3("op", entry)
         assert any("missing declared input 'z'" in e for e in errors)
+
+
+class TestDiagnosticOwnership:
+    """Each roofline defect class is ruled on by exactly one of the two.
+
+    The partition is by code: the analysis judges every predicate, because it
+    needs the answers to decide whether a plan can be built, and renders only
+    what the schema level does not already own. Getting the set wrong drops a
+    defect entirely, which is the failure this keeps reintroducing, so every
+    code in it is checked against a schema level that really reports it.
+    """
+
+    ENTRY = {
+        "family": "x",
+        "status": "implemented",
+        "workloads": [],
+        "source": {"kernel": "k", "op": "o", "test": "t", "bench": "b"},
+        "signature": {
+            "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
+            "outputs": {"y": {"dtype": "same_as(x)", "shape": "[N]"}},
+        },
+    }
+    OUT = {"y": {"dtype": "same_as(x)", "shape": "[N]"}}
+
+    # One entry per owned code, and the phrase the schema level answers with.
+    OWNED = {
+        "roofline.absent": ({}, None, "flops + bytes"),
+        "inline.missing-expressions": ({"vars": {}}, None, "flops + bytes"),
+        # A func that resolves, so the only defect is the mode itself: both
+        # halves are judged now, and a broken one would add its own line.
+        "roofline.mixed-modes": (
+            {"func": "tileops.perf.formulas.mha_bwd_roofline", "flops": "1"},
+            None,
+            "exclusive",
+        ),
+        "vars.not-a-mapping": ({"vars": 5, "flops": "1", "bytes": "1"}, None, "vars must be a mapping"),
+        "vars.key-not-a-string": ({"vars": {7: "1"}, "flops": "1", "bytes": "1"}, None, "vars key"),
+        "vars.not-a-string": ({"vars": {"N": 5}, "flops": "1", "bytes": "1"}, None, "non-empty string"),
+        "vars.empty": ({"vars": {"N": "  "}, "flops": "1", "bytes": "1"}, None, "non-empty string"),
+        "flops.empty": ({"vars": {}, "flops": "", "bytes": "1"}, None, "roofline.flops must be"),
+        "bytes.empty": ({"vars": {}, "flops": "1", "bytes": ""}, None, "roofline.bytes must be"),
+        "func.not-a-string": ({"func": 5}, None, "roofline.func must be"),
+        "signature.not-a-mapping": ({"vars": {}, "flops": "1", "bytes": "1"}, 5, "signature"),
+        "signature.inputs.not-a-mapping": (
+            {"vars": {}, "flops": "1", "bytes": "1"},
+            {"inputs": 5, "outputs": OUT},
+            "inputs must be",
+        ),
+        "signature.outputs.not-a-mapping": (
+            {"vars": {}, "flops": "1", "bytes": "1"},
+            {"inputs": {}, "outputs": 5},
+            "outputs must be",
+        ),
+        "signature.params.not-a-mapping": (
+            {"vars": {}, "flops": "1", "bytes": "1"},
+            {"inputs": {}, "outputs": OUT, "params": 5},
+            "params must be",
+        ),
+        "signature.input-attributes": (
+            {"vars": {}, "flops": "1", "bytes": "1"},
+            {"inputs": {"x": 5}, "outputs": OUT},
+            "must be a dict",
+        ),
+        "signature.non-string-name": (
+            {"vars": {}, "flops": "1", "bytes": "1"},
+            {"inputs": {7: {"dtype": "float16"}}, "outputs": OUT},
+            "has non-string names",
+        ),
+    }  # fmt: skip
+
+    def test_the_owned_set_names_every_code_listed_here(self):
+        from tileops.manifest.roofline_analysis import SCHEMA_OWNED_CODES
+
+        assert set(self.OWNED) == set(SCHEMA_OWNED_CODES)
+
+    def test_every_owned_code_is_ruled_on_once(self, validator):
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        untriggered, unowned, duplicated = [], [], []
+        for code, (roofline, signature, phrase) in sorted(self.OWNED.items()):
+            entry = {**self.ENTRY, "roofline": roofline}
+            if signature is not None:
+                entry["signature"] = signature
+            found = analyze_roofline(
+                "op", roofline=roofline, signature=entry["signature"]
+            ).diagnostics
+            if code not in {d.code for d in found}:
+                untriggered.append(code)
+            if not any(phrase in line for line in validator.check_l0("op", entry)):
+                unowned.append(code)
+            if validator.check_roofline_synthesis("op", entry):
+                duplicated.append(code)
+        assert not untriggered, f"the entry no longer triggers: {untriggered}"
+        assert not unowned, f"owned by the schema level, which does not rule on: {unowned}"
+        assert not duplicated, f"rendered by both: {duplicated}"
+
+
+class TestRooflineSynthesisReported:
+    """An unsynthesizable roofline block names the illegal construct.
+
+    Without it the entry surfaces only as C7's ``eval_roofline is the Op base
+    stub``, which names the symptom.
+    """
+
+    @staticmethod
+    def _tree(tmp_path):
+        """A repo root whose source paths exist, so only roofline can fail."""
+        (tmp_path / "src").mkdir()
+        for rel in ("src/k.py", "src/o.py", "t.py", "b.py"):
+            (tmp_path / rel).write_text("# placeholder\n")
+        return tmp_path
+
+    def _run(self, validator, tmp_path, entry):
+        manifest_file = _write_manifest(tmp_path, {"my_op": entry})
+        return validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            levels=frozenset({"schema"}),
+        )
+
+    def test_unknown_name_is_reported_with_op_and_field(self, validator, tmp_path):
+        entry = _make_entry(status="implemented", kernel_map={})
+        entry["roofline"]["flops"] = "NOPE * 2"
+        errors, _ = self._run(validator, self._tree(tmp_path), entry)
+        assert errors == [
+            "[schema] my_op: roofline.flops references unknown name 'NOPE'; "
+            "allowed names are ['N', 'ceil', 'elem_bytes', 'floor', 'log2', 'out_elem_bytes']"
+        ]
+
+    def test_reports_the_reason_not_the_stub(self, validator, tmp_path, monkeypatch):
+        """The synthesis verdict replaces C7's, it does not accompany it.
+
+        Runs the level C7 lives in, against an op class carrying no
+        ``eval_roofline``.
+        """
+        from tileops.ops.op_base import Op
+
+        class StubOp(Op):
+            def __init__(self, N, dtype):
+                self.N = N
+                self.dtype = dtype
+
+            def forward(self, x):
+                return x
+
+            @property
+            def default_kernel_map(self):
+                return {}
+
+        monkeypatch.setattr(
+            validator,
+            "_resolve_op_class",
+            lambda op_file, op_name: validator._ResolveResult(
+                cls=StubOp if op_name == "my_op" else None
+            ),
+        )
+        entry = _make_entry(status="implemented", kernel_map={})
+        entry["roofline"]["flops"] = "NOPE * 2"
+        manifest_file = _write_manifest(self._tree(tmp_path), {"my_op": entry})
+        errors, _ = validator.validate_manifest(
+            manifest_path=manifest_file,
+            repo_root=tmp_path,
+            levels=frozenset({"schema", "signature"}),
+            strict_parity=True,
+        )
+        assert any("unknown name 'NOPE'" in e for e in errors), errors
+        assert not any("is the Op base stub" in e for e in errors), errors
+
+    def test_forbidden_construct_is_reported(self, validator, tmp_path):
+        entry = _make_entry(status="implemented", kernel_map={})
+        entry["roofline"]["flops"] = "N[0]"
+        errors, _ = self._run(validator, self._tree(tmp_path), entry)
+        assert any("forbidden construct Subscript" in e for e in errors), errors
+
+    @pytest.mark.parametrize(
+        "break_field",
+        [
+            lambda e: e["signature"].update(shape_rules=["y.shape ==== x.shape"]),
+            lambda e: e.update(workloads="not a list"),
+            lambda e: e["source"].update(op="gone.py"),
+            lambda e: e["signature"]["inputs"].update(z="not a dict"),
+        ],
+        ids=["shape_rules", "workloads", "source", "input-decl"],
+    )
+    def test_no_other_broken_field_suppresses_the_formula(self, validator, tmp_path, break_field):
+        """The verdict must not depend on the rest of the entry being clean.
+
+        Any precondition wide enough to stop a malformed block being reported
+        twice also hides a formula defect sitting beside an unrelated one.
+        """
+        entry = _make_entry(status="implemented", kernel_map={})
+        entry["roofline"]["flops"] = "NOPE * 2"
+        break_field(entry)
+        errors, _ = self._run(validator, self._tree(tmp_path), entry)
+        assert any("unknown name 'NOPE'" in e for e in errors), errors
+
+    def test_a_raising_analysis_is_reported_not_propagated(self, validator, monkeypatch):
+        """The analysis is total, so a raise from it is its own defect.
+
+        One entry must not take the run down, and the line says which entry and
+        which exception rather than reporting nothing.
+        """
+        import tileops.manifest.roofline_analysis as analysis
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("module said no")
+
+        monkeypatch.setattr(analysis, "analyze_roofline", _boom)
+        errors = validator.check_roofline_synthesis("my_op", _make_entry(status="implemented"))
+        assert errors == ["[schema] my_op: roofline analysis raised RuntimeError: module said no"]
+
+    def test_a_message_already_naming_the_op_is_not_prefixed_twice(self, validator):
+        entry = _make_entry(status="implemented")
+        entry["roofline"]["flops"] = "NOPE * 2"
+        errors = validator.check_roofline_synthesis("my_op", entry)
+        assert len(errors) == 1
+        assert errors[0].count("my_op") == 1, errors
+
+    @staticmethod
+    def _unresolvable_func(roofline):
+        """A clean func-mode block: leaving an inline key would mix the modes."""
+        for inline_key in ("flops", "bytes", "vars"):
+            roofline.pop(inline_key, None)
+        roofline["func"] = "pkg.mod.fn"
+
+    @pytest.mark.parametrize(
+        "break_roofline",
+        [
+            lambda r: r.update(flops="NOPE * 2"),
+            _unresolvable_func,
+            lambda r: r.update(vars={"N": "output.shape[0]"}),
+        ],
+        ids=["unknown-name", "unresolvable-func", "bad-vars"],
+    )
+    def test_every_reported_message_names_the_op_once(self, validator, break_roofline):
+        """Naming the op is structural now: the analysis prefixes every message.
+
+        The old seam prefixed those that did not, which meant a reworded message
+        could arrive naming the op twice or not at all.
+        """
+        entry = _make_entry(status="implemented")
+        break_roofline(entry["roofline"])
+        errors = validator.check_roofline_synthesis("my_op", entry)
+        assert errors
+        for line in errors:
+            assert line.startswith("[schema] my_op: "), line
+            assert line.count("my_op") == 1, line
+
+    @pytest.mark.parametrize(
+        "func_path",
+        ["tileops.perf.formulas.no_such_formula", "tileops.perf.formulas.__doc__"],
+        ids=["missing", "not-callable"],
+    )
+    def test_an_unresolvable_func_is_reported(self, validator, tmp_path, func_path):
+        """Codegen owns func legality; check_l0 no longer makes a second ruling."""
+        entry = _make_entry(status="implemented", kernel_map={})
+        entry["roofline"] = {"func": func_path}
+        errors, _ = self._run(validator, self._tree(tmp_path), entry)
+        assert any("cannot resolve roofline.func" in e for e in errors), errors
+        assert sum("roofline.func" in e for e in errors) == 1, errors
+
+    def test_spec_only_entries_are_not_synthesized(self, validator, tmp_path):
+        entry = _make_entry(status="spec-only", kernel_map={})
+        entry["roofline"]["flops"] = "NOPE * 2"
+        errors, _ = self._run(validator, self._tree(tmp_path), entry)
+        assert errors == [], errors

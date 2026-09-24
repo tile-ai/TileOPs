@@ -346,6 +346,11 @@ def _l0_signature(op_name: str, entry: dict, sig: dict) -> list[str]:
                 continue
             if "dtype" not in attrs:
                 err(f"{direction}.{tname} missing 'dtype'")
+            elif not isinstance(attrs["dtype"], str):
+                err(
+                    f"{direction}.{tname}.dtype must be a string, got "
+                    f"{type(attrs['dtype']).__name__}"
+                )
             # ``nullable`` says the return position exists but may hold None.
             # On an input that role belongs to ``optional``, and accepting both
             # spellings there would leave two ways to say one thing.
@@ -716,6 +721,28 @@ def _l0_read_bound_exception(op_name: str, entry: dict, roofline: dict) -> list[
     return errors
 
 
+def _callable_resolution_failure(path: str) -> str | None:
+    """The cause of ``module.path.attr`` not naming a callable, None when it does.
+
+    Importing runs the module body and an attribute may be served by a
+    ``__getattr__``, so either step raises anything. The cause carries the
+    exception type: a raising module is a defect in what the manifest points
+    at, not in the manifest.
+    """
+    mod_path, _, attr = path.rpartition(".")
+    if not mod_path:
+        return "not a dotted module.attr path"
+    try:
+        target = importlib.import_module(mod_path)
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        return f"importing {mod_path!r} raised {type(exc).__name__}: {exc}"
+    try:
+        found = getattr(target, attr, None)
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        return f"reading {attr!r} raised {type(exc).__name__}: {exc}"
+    return None if callable(found) else f"{attr!r} is not a callable on {mod_path!r}"
+
+
 def _l0_roofline(op_name: str, entry: dict, roofline: dict) -> list[str]:
     """Roofline structural rules per docs/design/roofline.md §4.1."""
     errors: list[str] = []
@@ -793,13 +820,12 @@ def _l0_roofline(op_name: str, entry: dict, roofline: dict) -> list[str]:
                 # ``source`` names the function that stage's cost comes from, and
                 # resolves the same way ``roofline.func`` does.
                 if isinstance(item.get("source"), str) and item["source"].strip():
-                    smod, _, sattr = item["source"].rpartition(".")
-                    try:
-                        starget = importlib.import_module(smod) if smod else None
-                    except ImportError:
-                        starget = None
-                    if starget is None or not callable(getattr(starget, sattr, None)):
-                        err(f"{where}.source {item['source']!r} does not resolve to a callable")
+                    why = _callable_resolution_failure(item["source"])
+                    if why is not None:
+                        err(
+                            f"{where}.source {item['source']!r} does not resolve "
+                            f"to a callable: {why}"
+                        )
                 if "optional" in item and not isinstance(item["optional"], bool):
                     err(f"{where}.optional must be a bool")
             # A stage the entry does not mark optional has a cost, and a parent
@@ -815,14 +841,6 @@ def _l0_roofline(op_name: str, entry: dict, roofline: dict) -> list[str]:
             if uncited:
                 err(f"roofline.composition omits non-optional composition stage(s) {uncited}")
 
-    if has_func and isinstance(roofline.get("func"), str):
-        mod, _, attr = roofline["func"].rpartition(".")
-        try:
-            target = importlib.import_module(mod) if mod else None
-        except ImportError:
-            target = None
-        if target is None or not callable(getattr(target, attr, None)):
-            err(f"roofline.func {roofline['func']!r} does not resolve to a callable")
     return errors
 
 
@@ -1186,53 +1204,6 @@ def _check_optional_in_shape_rules(op_name: str, sig: dict, optional: Collection
     return errors
 
 
-def _check_optional_in_roofline(op_name: str, entry: dict, optional: Collection[str]) -> list[str]:
-    """A roofline presence test lives in ``vars`` and nowhere else."""
-    errors: list[str] = []
-    err = _emit_to(errors, "schema", op_name)
-    roofline = entry.get("roofline")
-    if not optional or not isinstance(roofline, dict):
-        return errors
-
-    # vars: a bare presence test is the one permitted position.
-    if isinstance(roofline.get("vars"), dict):
-        for vname, vexpr in roofline["vars"].items():
-            if not isinstance(vexpr, str):
-                continue
-            try:
-                tree = ast.parse(vexpr, mode="eval").body
-            except SyntaxError:
-                continue  # reported by the roofline codegen namespace check
-            for name in _unguarded_uses(tree, optional, ()):
-                err(
-                    f"roofline.vars.{vname} uses optional input '{name}' for "
-                    f"something other than a presence test: {vexpr!r}. Only "
-                    f"'{name} is None' / '{name} is not None' is allowed here; "
-                    f"a formula that needs the tensor's own shape uses "
-                    f"roofline.func instead"
-                )
-
-    # flops / bytes: the arithmetic layer reads vars, params and elem_bytes, so
-    # a tensor name never resolves there — not even in a presence test.
-    for field in ("flops", "bytes"):
-        expr = roofline.get(field)
-        if not isinstance(expr, str):
-            continue
-        try:
-            tree = ast.parse(expr, mode="eval").body
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and node.id in optional:
-                err(
-                    f"roofline.{field} names optional input '{node.id}': "
-                    f"{expr!r}. Put the presence test in a roofline.vars entry "
-                    f"and read that name here"
-                )
-                break
-    return errors
-
-
 def _check_optional_in_dtype_positions(
     op_name: str, sig: dict, optional: Collection[str]
 ) -> list[str]:
@@ -1361,7 +1332,6 @@ def _l0_optional(op_name: str, entry: dict, sig: dict) -> list[str]:
     if not optional:
         return errors
     errors.extend(_check_optional_in_shape_rules(op_name, sig, optional))
-    errors.extend(_check_optional_in_roofline(op_name, entry, optional))
     errors.extend(_check_optional_in_dtype_positions(op_name, sig, optional))
     errors.extend(_check_optional_shape_symbol_scope(op_name, sig, optional))
     errors.extend(_check_optional_workload_coverage(op_name, entry, optional))
@@ -1800,6 +1770,50 @@ def check_kernel_map_parity(
     return errors
 
 
+def check_roofline_synthesis(op_name: str, entry: dict) -> list[str]:
+    """Report every defect in an implemented entry's ``roofline`` block.
+
+    The analysis owns the formula language -- the legal names and the AST forms
+    (``docs/design/roofline.md`` §4.1) -- and is the only place naming the
+    illegal name or construct. This renders what it found and mirrors no rule.
+
+    It renders only the codes the schema level does not already own, so an entry
+    wrong in two ways draws one line from each owner rather than two from one.
+    A judgment the analysis could not reach, because the fact it needed could
+    not be read, is reported as such: silence there would let a formula defect
+    pass for a verdict.
+    """
+    if _is_spec_only(entry) or not isinstance(entry.get("roofline"), dict):
+        return []
+    try:
+        from tileops.manifest.roofline_analysis import (
+            SCHEMA_OWNED_CODES,
+            analyze_roofline,
+        )
+    except Exception as exc:  # noqa: BLE001 - importing the analysis runs its module body
+        return [
+            f"[schema] {op_name}: roofline analysis is unavailable ({type(exc).__name__}: {exc})"
+        ]
+    try:
+        result = analyze_roofline(
+            op_name,
+            roofline=entry["roofline"],
+            signature=entry.get("signature"),
+        )
+    except Exception as exc:  # noqa: BLE001 - totality is a claim, so it is checked
+        # The analysis is total over entry data; reaching here is a defect in it,
+        # and one entry must not take the run down with it.
+        return [f"[schema] {op_name}: roofline analysis raised {type(exc).__name__}: {exc}"]
+    errors = [
+        f"[schema] {d.message}" for d in result.diagnostics if d.code not in SCHEMA_OWNED_CODES
+    ]
+    errors += [
+        f"[schema] {op_name}: {u.judgment} was not judged; {u.missing} could not be read"
+        for u in result.unjudged
+    ]
+    return errors
+
+
 def check_source_paths(op_name: str, entry: dict, repo_root: Path) -> list[str]:
     """Check that string ``source`` values of non-spec-only ops are real files.
 
@@ -2148,6 +2162,10 @@ def _parse_dtype_expr(dtype_str: str) -> list[str]:
     trailing or doubled ``|`` must surface downstream as an unknown-dtype
     error rather than being silently dropped.
     """
+    if not isinstance(dtype_str, str):
+        # The level owes a verdict on whatever the YAML held, so a non-string
+        # becomes one unknown token rather than an exception out of ``split``.
+        return [repr(dtype_str)]
     return [t.strip() for t in dtype_str.split("|")]
 
 
@@ -4864,14 +4882,21 @@ def validate_manifest(
 
         # schema: YAML structure validation
         if "schema" in levels:
-            schema_errors = check_l0(
+            structural_errors = check_l0(
                 op_name,
                 entry,
                 warnings=all_warnings,
                 all_op_names=ops.keys(),
             )
-            schema_errors.extend(check_source_paths(op_name, entry, repo_root))
+            # Independent fields: one broken field does not hide the others.
+            schema_errors = [
+                *structural_errors,
+                *check_source_paths(op_name, entry, repo_root),
+                *check_roofline_synthesis(op_name, entry),
+            ]
             all_errors.extend(schema_errors)
+            # C7 would report the same entry as a bare stub; this continue
+            # keeps the synthesis verdict the only line for it.
             if schema_errors:
                 continue
 

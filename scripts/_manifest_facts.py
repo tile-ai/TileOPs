@@ -331,6 +331,9 @@ def unknown_keys_of(section: Section, raw: object) -> tuple[Any, ...]:
 
 def build(name: str, entry: Mapping[str, Any]) -> Facts:
     """Read one entry into its facts, accumulating what cannot be read."""
+    # An entry is whatever the YAML held. A scalar has no sections to read, and
+    # the level that reports it must still be reached.
+    entry = entry if isinstance(entry, Mapping) else {}
     sig = entry.get("signature")
     sig = sig if isinstance(sig, dict) else {}
     unknown = {

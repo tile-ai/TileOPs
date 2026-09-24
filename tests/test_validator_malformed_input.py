@@ -99,6 +99,33 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
         },
     ),
     (
+        "scalar_entry",
+        {"ScalarOp": 5},
+    ),
+    (
+        "non_string_dtype",
+        {
+            "BadDtypeOp": {
+                "family": "test",
+                "ref_api": "none",
+                # Implemented, so the dtype level runs: its parser splits the
+                # declaration, and a mapping there raised rather than reported.
+                "status": "implemented",
+                "signature": {
+                    "inputs": {"x": {"dtype": "float16"}},
+                    "outputs": {"y": {"dtype": {"junk": [1]}}},
+                    "shape_rules": ["y.shape == x.shape"],
+                },
+                "workloads": [
+                    {"x_shape": [4], "dtypes": ["float16"]},
+                    {"x_shape": [8], "dtypes": ["float16"]},
+                ],
+                "roofline": {"flops": "1", "bytes": "1"},
+                "source": {"kernel": "k.py", "op": "o.py", "test": "t.py", "bench": "b.py"},
+            }
+        },
+    ),
+    (
         "composite_without_roofline_composition",
         {
             "BadCompositeOp": {
@@ -121,7 +148,7 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
 
 #: Not every level: the three checks that assumed a mapping ran under these,
 #: and running the rest is a cartesian product of one property.
-LEVELS = (None, "schema", "signature", "shape", "bench")
+LEVELS = (None, "schema", "signature", "shape", "dtype", "bench")
 
 
 @pytest.fixture(scope="module")
