@@ -24,7 +24,6 @@ depend on which target served the op. Instances are recovered inside the operato
 key, via the registry in ``tileops.ops.compile_boundary``.
 """
 
-import functools
 import inspect
 import math
 from math import prod
@@ -167,7 +166,6 @@ def broadcast_or_raise(op_name: str, **shapes: Optional[tuple]) -> tuple:
 _PROMOTED_FLOAT_DTYPE = torch.float32
 
 
-@functools.lru_cache(maxsize=None)
 def _require_one_device(op_name: str, **tensors: Optional[torch.Tensor]) -> None:
     """Refuse a call whose tensors are not all on one device.
 
