@@ -5,7 +5,10 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention import GatedDeltaNetDensePrefillFwdKernel
+from tileops.kernels.linear_attention import (
+    GatedDeltaNetDenseDecodeFwdKernel,
+    GatedDeltaNetDensePrefillFwdKernel,
+)
 from tileops.perf.formulas import gated_deltanet_fwd_roofline
 from tileops.perf.profile import tensor_core_roof
 
@@ -92,7 +95,10 @@ class GatedDeltaNetFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gated_deltanet_dense_prefill": GatedDeltaNetDensePrefillFwdKernel}
+        return {
+            "gated_deltanet_dense_decode": GatedDeltaNetDenseDecodeFwdKernel,
+            "gated_deltanet_dense_prefill": GatedDeltaNetDensePrefillFwdKernel,
+        }
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """Build the one migrated in-tree specialization for this call."""
@@ -111,8 +117,6 @@ class GatedDeltaNetFwdOp(Op):
             has_cu_seqlens,
         ) = call
         unsupported = []
-        if has_initial_state:
-            unsupported.append("initial_state")
         if has_cu_seqlens:
             unsupported.append("packed varlen")
         if self.state_v_first:
@@ -127,17 +131,24 @@ class GatedDeltaNetFwdOp(Op):
             unsupported.append("HV != H")
         if dim_k != 128 or dim_v != 128:
             unsupported.append("K or V != 128")
-        if seq_len < 64 or seq_len % 64 != 0:
-            unsupported.append("T is not a positive multiple of 64")
+        is_decode = seq_len == 1
+        if is_decode:
+            if not has_initial_state:
+                unsupported.append("decode without initial_state")
+        else:
+            if has_initial_state:
+                unsupported.append("prefill with initial_state")
+            if seq_len < 64 or seq_len % 64 != 0:
+                unsupported.append("prefill T is not a positive multiple of 64")
         if unsupported:
             raise ValueError(
-                "the in-tree GatedDeltaNet dense-prefill kernel does not yet support "
-                + ", ".join(unsupported)
+                "the in-tree GatedDeltaNet kernel does not yet support " + ", ".join(unsupported)
             )
-        return call, lambda: self.kernel_map["gated_deltanet_dense_prefill"](
+        role = "gated_deltanet_dense_decode" if is_decode else "gated_deltanet_dense_prefill"
+        return (role, call), lambda: self.kernel_map[role](
             batch=batch,
             heads=heads,
-            seq_len=seq_len,
+            **({} if is_decode else {"seq_len": seq_len}),
             dim=dim_k,
             scale=scale,
             dtype=dtype,

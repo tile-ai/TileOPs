@@ -13,7 +13,6 @@ import pytest
 
 from tileops.kernels.linear_attention import autotune as la
 from tileops.kernels.linear_attention.deltanet import deltanet_fwd
-from tileops.kernels.linear_attention.gated_deltanet import gated_deltanet_fwd
 
 pytestmark = pytest.mark.smoke
 
@@ -361,17 +360,14 @@ def test_default_h_block_v_prefers_a_tiled_width_and_stays_declared() -> None:
         assert la.default_h_block_v(dim_v, chunk_size) in declared
 
 
-@pytest.mark.parametrize(
-    "kernel_cls",
-    [deltanet_fwd.DeltaNetFwdKernel, gated_deltanet_fwd.GatedDeltaNetFwdKernel],
-)
-def test_default_config_width_is_one_the_kernel_builds(kernel_cls) -> None:
-    """Both kernels draw their untuned width from the shared candidates.
+def test_default_config_width_is_one_the_kernel_builds() -> None:
+    """The kernel draws its untuned width from the shared candidates.
 
     dim_v=48 is the shape that regressed silently: a tiled width of 32 gives
     one tile covering 32 of 48 columns. The width rules themselves are checked
     on the helper; this checks the kernels are wired to them.
     """
+    kernel_cls = deltanet_fwd.DeltaNetFwdKernel
     kernel = kernel_cls(
         batch=1,
         head=1,
@@ -388,12 +384,9 @@ def test_default_config_width_is_one_the_kernel_builds(kernel_cls) -> None:
     assert sys.modules[kernel_cls.__module__].tune_delta_rule_fwd is la.tune_delta_rule_fwd
 
 
-@pytest.mark.parametrize(
-    "kernel_cls",
-    [deltanet_fwd.DeltaNetFwdKernel, gated_deltanet_fwd.GatedDeltaNetFwdKernel],
-)
-def test_tune_true_reaches_the_sweep(monkeypatch, kernel_cls) -> None:
+def test_tune_true_reaches_the_sweep(monkeypatch) -> None:
     """``init_config`` must not fall back for want of declared candidates."""
+    kernel_cls = deltanet_fwd.DeltaNetFwdKernel
     calls: list[str] = []
     monkeypatch.setattr(
         kernel_cls, "autotune", lambda self, **kwargs: calls.append(type(self).__name__)

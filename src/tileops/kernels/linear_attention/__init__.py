@@ -13,15 +13,8 @@ from .deltanet_recurrence import (
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from .gated_deltanet import (
-    GatedDeltaNetBwdKernel,
+    GatedDeltaNetDenseDecodeFwdKernel,
     GatedDeltaNetDensePrefillFwdKernel,
-    GatedDeltaNetFwdKernel,
-    GatedDeltaNetFwdProductionKernel,
-)
-from .gated_deltanet_recurrence import (
-    GatedDeltaNetDecodeFP32Kernel,
-    GatedDeltaNetDecodeKernel,
-    GatedDeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from .gla import GLABwdKernel, GLAFwdKernel
 from .gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
@@ -37,11 +30,6 @@ __all__ = [
     "GLADecodeFP32Kernel",
     "GLADecodeKernel",
     "GLAFwdKernel",
-    "GatedDeltaNetBwdKernel",
-    "GatedDeltaNetDecodeFP32Kernel",
-    "GatedDeltaNetDecodeKernel",
-    "GatedDeltaNetDecodeRawCudaFlaStyleKernel",
+    "GatedDeltaNetDenseDecodeFwdKernel",
     "GatedDeltaNetDensePrefillFwdKernel",
-    "GatedDeltaNetFwdKernel",
-    "GatedDeltaNetFwdProductionKernel",
 ]
