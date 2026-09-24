@@ -21,7 +21,11 @@ Lossless.
 Accumulating.
     A defect does not stop the pass. Two expressions each wrong in their own way
     yield two diagnostics, and a judgment that cannot be reached for want of a
-    fact yields an :class:`Unjudged` naming the fact rather than silence.
+    fact yields an :class:`Unjudged` naming the fact rather than silence. One
+    judgment stands outside this, because it is about the assembled plan rather
+    than about the entry text: whether the method the plan renders to compiles
+    is asked only once there is a plan, so an entry refused for any other reason
+    does not carry it.
 
 The module imports the standard library only: it is read by the validator, which
 runs without torch, and by code generation, which ships.
@@ -31,6 +35,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import inspect
 import math
 import unicodedata
 from dataclasses import dataclass, field
@@ -42,31 +47,45 @@ from typing import Any, Callable
 # legality; emission receives the helpers as the generated body's globals.
 # --------------------------------------------------------------------------
 
-VARS_HELPERS: dict[str, Any] = {
-    "product": prod,
-    "isinstance": isinstance,
-    "len": len,
-    "set": set,
-    "tuple": tuple,
-    "list": list,
-    "range": range,
-    "int": int,
-    "float": float,
-    "bool": bool,
-    "min": min,
-    "max": max,
-    "sum": sum,
-    "abs": abs,
-    "log2": math.log2,
-    "ceil": math.ceil,
-    "floor": math.floor,
+# One row per helper: what it is, the forms it may be called in, and whether the
+# arithmetic layer may call it too. A row lists forms rather than one triple
+# because several of these builtins take a keyword in only one of their forms --
+# `min(it, default=0)` but not `min(a, b, default=0)`. Each form is
+# (fewest positional, most positional or None for any, keywords that form takes),
+# and a call is legal when it matches one of them.
+#
+# Written down rather than introspected, because Python exposes no signature for
+# most of them, and the namespace is this module's to define. The three tables
+# below are derived from this one, so a helper cannot have a callable and no
+# stated call form.
+CallForm = tuple[int, "int | None", frozenset]
+
+_HELPERS: dict[str, tuple[Any, tuple[CallForm, ...], bool]] = {
+    "product": (prod, ((1, 1, frozenset({"start"})),), False),
+    "isinstance": (isinstance, ((2, 2, frozenset()),), False),
+    "len": (len, ((1, 1, frozenset()),), False),
+    "set": (set, ((0, 1, frozenset()),), False),
+    "tuple": (tuple, ((0, 1, frozenset()),), False),
+    "list": (list, ((0, 1, frozenset()),), False),
+    "range": (range, ((1, 3, frozenset()),), False),
+    # int(x), int(x, base) and int(x, base=b); a base without an x takes neither.
+    "int": (int, ((0, 1, frozenset()), (1, 1, frozenset({"base"})), (2, 2, frozenset())), False),
+    "float": (float, ((0, 1, frozenset()),), False),
+    "bool": (bool, ((0, 1, frozenset()),), False),
+    # default belongs to the one-iterable form only.
+    "min": (min, ((1, 1, frozenset({"default", "key"})), (2, None, frozenset({"key"}))), False),
+    "max": (max, ((1, 1, frozenset({"default", "key"})), (2, None, frozenset({"key"}))), False),
+    # start is positional or keyword, and not both.
+    "sum": (sum, ((1, 1, frozenset({"start"})), (2, 2, frozenset())), False),
+    "abs": (abs, ((1, 1, frozenset()),), False),
+    "log2": (math.log2, ((1, 1, frozenset()),), True),
+    "ceil": (math.ceil, ((1, 1, frozenset()),), True),
+    "floor": (math.floor, ((1, 1, frozenset()),), True),
 }
 
-ARITHMETIC_HELPERS: dict[str, Any] = {
-    "ceil": math.ceil,
-    "floor": math.floor,
-    "log2": math.log2,
-}
+VARS_HELPERS: dict[str, Any] = {name: row[0] for name, row in _HELPERS.items()}
+ARITHMETIC_HELPERS: dict[str, Any] = {n: r[0] for n, r in _HELPERS.items() if r[2]}
+CALL_FORMS: dict[str, tuple[CallForm, ...]] = {name: row[1] for name, row in _HELPERS.items()}
 
 VARS_ATTR_WHITELIST = frozenset({"shape", "ndim"})
 
@@ -94,6 +113,12 @@ _ARITHMETIC_ALLOWED_NODES: tuple[type[ast.AST], ...] = (
 
 # Reserved words only: a soft keyword (``match``, ``case``, ``type``, ``_``)
 # binds a local.
+#
+# Compared after NFKC, which is stricter than Python. Keywords are matched on
+# the token as written, so ``\uff49\uff46 = 1`` compiles and binds ``if``;
+# refusing it is this layer's choice, because the local it binds has no spelling
+# a formula can write and its identity with another such name is not visible in
+# the entry.
 _KEYWORDS = frozenset(__import__("keyword").kwlist)
 
 # Names the generated body binds for itself. A declared name landing on one
@@ -236,6 +261,45 @@ class RooflinePlan:
     # Kept alongside the resolved callable because the emitted docstring
     # states it.
     func_path: str | None = None
+
+
+def render_inline_source(plan: RooflinePlan) -> str:
+    """Write the plan out as the method's source. Decides nothing.
+
+    The one place the generated body's text is built, so what the analysis
+    compiles to accept the plan and what emission runs are the same string. A
+    source Python will not take is then observed rather than predicted, which is
+    what a rule per construct -- per call form, per keyword, per statement
+    context -- can only approximate.
+    """
+    assert plan.flops_expr is not None and plan.bytes_expr is not None
+    lines = [
+        "def eval_roofline(self):",
+        f'    """Synthesized from manifest inline roofline for {plan.op_name}."""',
+    ]
+    for binding in plan.bindings:
+        if binding.kind == "input":
+            lines.append(
+                f"    {binding.name} = _resolve_tensor_binding("
+                f"self, {binding.name!r}, {plan.op_name!r}, optional={binding.optional})"
+            )
+        else:
+            lines.append(f"    {binding.name} = self.{binding.name}")
+    if plan.bind_elem_bytes:
+        lines.append("    elem_bytes = self.dtype.itemsize")
+    if plan.out_elem_bytes_output is not None:
+        # Through ``output_dtype``, so a ``caller_stated`` output follows the
+        # dtype the call asked for.
+        lines.append(
+            f"    out_elem_bytes = _output_dtype("
+            f"self, {plan.out_elem_bytes_output!r}, self.dtype).itemsize"
+        )
+    for name, expr in plan.vars_program:
+        lines.append(f"    {name} = {expr}")
+    lines.append(f"    _flops = {plan.flops_expr}")
+    lines.append(f"    _bytes = {plan.bytes_expr}")
+    lines.append("    return int(_flops), int(_bytes)")
+    return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -468,6 +532,8 @@ class _VarsExprWalker(ast.NodeVisitor):
                 f"roofline.{self._path} calls non-whitelisted name {node.func.id!r}; "
                 f"vars-layer helpers are {sorted(VARS_HELPERS)!r}",
             )
+        elif (defect := _call_form_defect(node, node.func.id)) is not None:
+            self._report("vars.call-form", node.func.id, f"roofline.{self._path}: {defect}")
         for arg in node.args:
             self.visit(arg)
         for kw in node.keywords:
@@ -574,6 +640,7 @@ def _analyse_vars_expr(
             "RecursionError",
             f"roofline.{path} is nested too deeply to analyse",
         )
+        return
 
 
 def _analyse_arithmetic_expr(
@@ -654,6 +721,8 @@ def _analyse_arithmetic_expr(
                     f"roofline.{label} calls non-arithmetic helper {node.func.id!r}; "
                     f"allowed callees are {sorted(ARITHMETIC_HELPERS)!r}",
                 )
+            elif (defect := _call_form_defect(node, node.func.id)) is not None:
+                pass_.report("arith.call-form", path, node.func.id, f"roofline.{label}: {defect}")
 
 
 # --------------------------------------------------------------------------
@@ -711,6 +780,23 @@ def _resolve_func(pass_: _Pass, path: Any) -> Callable[..., Any] | None:
             f"cannot resolve roofline.func {path!r}: {attr!r} is not a callable on {mod_path!r}",
         )
         return None
+    # The emitted method calls it with the op and nothing else. A callable whose
+    # signature Python does not expose is taken at its word.
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return fn
+    try:
+        signature.bind(object())
+    except TypeError as exc:
+        pass_.report(
+            "func.arity",
+            where,
+            attr,
+            f"roofline.func {path!r} is called with the op and nothing else, "
+            f"and does not take that ({exc})",
+        )
+        return None
     return fn
 
 
@@ -765,6 +851,46 @@ class _FreeNames(ast.NodeVisitor):
     visit_GeneratorExp = _comp  # noqa: N815
 
 
+def _call_form_defect(node: ast.Call, name: str) -> str | None:
+    """Why this call cannot be made, or None when the form is one the helper takes.
+
+    A whitelisted name is not yet a call that works: ``range(stop=3)`` and
+    ``len(a, b)`` both name a helper and both raise. Settled from CALL_FORMS,
+    so the answer is the same whatever the arguments evaluate to.
+    """
+    if any(isinstance(arg, ast.Starred) for arg in node.args):
+        return f"{name}() is called with *args, which does not state how many arguments it gets"
+    given = len(node.args)
+    # A ``**kwargs`` keyword carries no name, so it belongs to no form's keyword
+    # set and the comparison below refuses it.
+    given_keywords = {kw.arg for kw in node.keywords}
+    for fewest, most, keywords in CALL_FORMS[name]:
+        if given < fewest or (most is not None and given > most):
+            continue
+        if given_keywords <= keywords:
+            return None
+    forms = ", ".join(_describe_call_form(name, form) for form in CALL_FORMS[name])
+    given_text = f"{given} positional argument(s)"
+    if given_keywords:
+        given_text += " and " + ", ".join(
+            sorted("**kwargs" if k is None else repr(k) for k in given_keywords)
+        )
+    return f"{name}() is given {given_text}, and takes {forms}"
+
+
+def _describe_call_form(name: str, form: CallForm) -> str:
+    fewest, most, keywords = form
+    if most is None:
+        count = f"{fewest} or more positional arguments"
+    elif most == fewest:
+        count = f"exactly {fewest} positional argument(s)"
+    else:
+        count = f"{fewest} to {most} positional arguments"
+    if keywords:
+        count += " with " + ", ".join(sorted(repr(k) for k in keywords))
+    return f"{name}({count})"
+
+
 def _referenced_names(*exprs: str | None) -> set[str]:
     """Names any of the given expressions reads from outside itself.
 
@@ -815,8 +941,9 @@ def _string_keys(pass_: _Pass, fact: Fact, where: str) -> tuple[list[str], bool]
                 "signature.unusable-name",
                 where,
                 key,
-                f"{where} declares {key!r}, which cannot bind a local in the generated "
-                f"body (not an identifier, or a Python keyword)",
+                f"{where} declares {key!r}, which the generated body may not bind: "
+                f"it is not an identifier, or Python reads it as the keyword "
+                f"{normalized(key)!r}",
                 blocking=False,
             )
             clean = False
@@ -1024,7 +1151,8 @@ def _analyse_inline(
                 "vars.key-keyword",
                 f"roofline.{path}",
                 name,
-                f"roofline.vars key {name!r} is a Python keyword and cannot bind a local",
+                f"roofline.vars key {name!r} is the Python keyword {normalized(name)!r}, "
+                f"which the generated body may not bind",
             )
             continue
         if not isinstance(expr, str):
@@ -1187,7 +1315,7 @@ def _analyse_inline(
     ]
     bindings += [Binding(name=n, kind="param") for n in param_names if n in referenced]
 
-    return RooflinePlan(
+    plan = RooflinePlan(
         op_name=op_name,
         mode="inline",
         bindings=tuple(bindings),
@@ -1197,6 +1325,17 @@ def _analyse_inline(
         flops_expr=flops_expr,
         bytes_expr=bytes_expr,
     )
+    try:
+        compile(render_inline_source(plan), f"<{op_name}.eval_roofline>", "exec")
+    except (SyntaxError, ValueError, RecursionError, MemoryError) as exc:
+        pass_.report(
+            "roofline.does-not-compile",
+            "roofline",
+            type(exc).__name__,
+            f"the method this entry describes does not compile ({type(exc).__name__}: {exc})",
+        )
+        return None
+    return plan
 
 
 def analyze_roofline(

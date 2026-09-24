@@ -161,35 +161,34 @@ class TestTotalContract:
         assert result.plan is not None
         assert not result.blocking
 
-    @pytest.mark.parametrize("block", ["inputs", "outputs", "params"])
-    def test_a_non_mapping_signature_block_is_a_verdict(self, block):
+    def test_a_non_mapping_signature_block_is_a_verdict(self):
         """A non-mapping reads as empty, which would make a name look declared.
 
         The verdict stands whether or not the formula reaches for that block;
-        whether it also stops emission is
-        `TestPartialSignature`'s subject.
+        whether it also stops emission is `TestPartialSignature`'s subject.
         """
         from tileops.manifest.roofline_analysis import analyze_roofline
 
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"flops": "1", "bytes": "1"},
-            signature={"inputs": {}, block: 5},
-        )
-        assert [d.code for d in result.diagnostics] == [f"signature.{block}.not-a-mapping"]
-        assert f"signature.{block} must be a mapping" in result.diagnostics[0].message
+        for block in ("inputs", "outputs", "params"):
+            result = analyze_roofline(
+                "FakeOp",
+                roofline={"flops": "1", "bytes": "1"},
+                signature={"inputs": {}, block: 5},
+            )
+            assert [d.code for d in result.diagnostics] == [f"signature.{block}.not-a-mapping"]
+            assert f"signature.{block} must be a mapping" in result.diagnostics[0].message
 
-    @pytest.mark.parametrize("bad", [[], "", False, 0, ["a"]], ids=repr)
-    def test_a_non_mapping_vars_is_a_verdict(self, bad):
+    def test_a_non_mapping_vars_is_a_verdict(self):
         """A falsey one must not read as an absent one."""
         from tileops.ops._roofline_codegen import synthesize_eval_roofline
 
-        with pytest.raises(ValueError, match="roofline.vars must be a mapping"):
-            synthesize_eval_roofline(
-                "FakeOp",
-                roofline={"vars": bad, "flops": "1", "bytes": "1"},
-                signature={"inputs": {"x": {"dtype": "float16"}}},
-            )
+        for bad in ([], "", False, 0, ["a"]):
+            with pytest.raises(ValueError, match="roofline.vars must be a mapping"):
+                synthesize_eval_roofline(
+                    "FakeOp",
+                    roofline={"vars": bad, "flops": "1", "bytes": "1"},
+                    signature={"inputs": {"x": {"dtype": "float16"}}},
+                )
 
     def test_mixing_both_modes_does_not_hide_either_half(self):
         """Both halves are present, so both are judged: stopping at the mode
@@ -207,21 +206,18 @@ class TestTotalContract:
             "func.import",
             "arith.unknown-name",
         }
-
-    def test_mixing_both_modes_emits_nothing_even_when_both_halves_are_sound(self):
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
+        # Sound on both sides is still two modes, and still emits nothing.
+        sound = analyze_roofline(
             "FakeOp",
             roofline={
-                "func": "tileops.perf.formulas._binary_broadcast_roofline",
+                "func": "tileops.perf.formulas.mha_bwd_roofline",
                 "flops": "1",
                 "bytes": "1",
             },
             signature={"inputs": {}, "outputs": {"y": {}}},
         )
-        assert result.plan is None
-        assert [d.code for d in result.diagnostics] == ["roofline.mixed-modes"]
+        assert sound.plan is None
+        assert [d.code for d in sound.diagnostics] == ["roofline.mixed-modes"]
 
     def test_mixing_both_modes_is_a_verdict(self):
         from tileops.ops._roofline_codegen import synthesize_eval_roofline
@@ -283,36 +279,13 @@ class TestTotalContract:
 class TestPartialSignature:
     """A block the formula never reads may be unreadable without stopping it."""
 
-    @pytest.mark.parametrize(
-        "inputs",
-        [{"x": 5}, {7: {}}],
-        ids=["unreadable-attributes", "unreadable-key"],
-    )
-    def test_a_block_read_in_part_stops_a_formula_that_reads_it(self, inputs):
-        """A block read in part states an incomplete set of names, which is what
-        a formula reading one of them needs."""
+    def test_a_block_read_in_part_does_not_stop_a_formula_that_does_not_read_it(self):
         from tileops.manifest.roofline_analysis import analyze_roofline
 
         result = analyze_roofline(
             "FakeOp",
-            roofline={"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N"},
-            signature={"inputs": inputs, "outputs": {"y": {}}},
-        )
-        assert result.plan is None
-        assert {u.missing for u in result.unjudged} == {"signature.inputs"}
-
-    @pytest.mark.parametrize(
-        "inputs",
-        [{"x": 5}, {7: {}}],
-        ids=["unreadable-attributes", "unreadable-key"],
-    )
-    def test_a_block_read_in_part_does_not_stop_a_formula_that_does_not(self, inputs):
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {}, "flops": "1", "bytes": "1"},
-            signature={"inputs": inputs, "outputs": {"y": {}}},
+            roofline={"flops": "1", "bytes": "1"},
+            signature={"inputs": {"x": 5}, "outputs": {"y": {}}},
         )
         assert result.plan is not None
         assert not result.unjudged
@@ -330,19 +303,6 @@ class TestPartialSignature:
             d.code == "signature.outputs.not-a-mapping" and d.blocking for d in result.diagnostics
         )
 
-    def test_a_malformed_signature_does_not_hide_the_formula_defect(self):
-        """The defect this restructure exists to stop hiding."""
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"flops": "NOPE", "bytes": "1"},
-            signature={"inputs": 5, "outputs": {"y": {}}},
-        )
-        codes = {d.code for d in result.diagnostics}
-        assert "arith.unknown-name" in codes
-        assert "signature.inputs.not-a-mapping" in codes
-
     def test_two_defects_in_one_expression_are_two_diagnostics(self):
         """`subject` is what keeps the second from collapsing into the first."""
         from tileops.manifest.roofline_analysis import analyze_roofline
@@ -355,25 +315,6 @@ class TestPartialSignature:
         unknown = [d for d in result.diagnostics if d.code == "arith.unknown-name"]
         assert sorted(d.subject for d in unknown) == ["AAA", "BBB"]
         assert len({d.identity for d in unknown}) == 2
-
-    @pytest.mark.parametrize("name", [7, "class"], ids=["non-string", "keyword"])
-    def test_a_name_that_cannot_bind_a_local_is_a_verdict(self, name):
-        """No expression can name either: one is not a string, the other does not
-        parse. The formula is not reaching for it, so the entry draws the line
-        and the evaluator still emits.
-        """
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"flops": "1", "bytes": "1"},
-            signature={"inputs": {}, "outputs": {"y": {}}, "params": {name: {"type": "int"}}},
-        )
-        assert [d.code for d in result.diagnostics] == [
-            "signature.non-string-name" if name == 7 else "signature.unusable-name"
-        ]
-        assert not result.blocking
-        assert result.plan is not None
 
     def test_no_verdict_is_claimed_on_a_name_that_might_be_an_input(self):
         from tileops.manifest.roofline_analysis import analyze_roofline
@@ -459,22 +400,22 @@ class TestInstallOutcomes:
         with pytest.raises(ValueError, match="declares no roofline block"):
             maybe_install_eval_roofline(_EmptyRoofline)
 
-    @pytest.mark.parametrize("block", [None, "flops: N", []])
-    def test_a_loaded_entry_without_a_usable_roofline_raises(self, block, monkeypatch):
+    def test_a_loaded_entry_without_a_usable_roofline_raises(self, monkeypatch):
         """The loader path. An absent key reaches here as ``None``, which the
         class-attached path cannot express."""
         import tileops.ops._roofline_codegen as codegen
 
-        entry = {"status": "implemented", "signature": {"inputs": {}, "outputs": {}}}
-        if block is not None:
-            entry["roofline"] = block
-        monkeypatch.setattr(codegen, "try_load_entry", lambda name: entry)
+        for block in (None, "flops: N", []):
+            entry = {"status": "implemented", "signature": {"inputs": {}, "outputs": {}}}
+            if block is not None:
+                entry["roofline"] = block
+            monkeypatch.setattr(codegen, "try_load_entry", lambda name, e=entry: e)
 
-        class _Loaded:
-            pass
+            class _Loaded:
+                pass
 
-        with pytest.raises(ValueError, match="declares no roofline block"):
-            codegen.maybe_install_eval_roofline(_Loaded)
+            with pytest.raises(ValueError, match="declares no roofline block"):
+                codegen.maybe_install_eval_roofline(_Loaded)
 
 
 class TestThroughClassCreation:
@@ -544,13 +485,37 @@ class TestThroughClassCreation:
         assert getattr(cls.__dict__["eval_roofline"], SYNTHESIZED_ATTR, False)
 
 
+def _slots(label):
+    """The manifest keys an injector writes. Two injectors sharing one overwrite
+    each other, which is a conflict in the case rather than a defect found."""
+    return frozenset(label.split(","))
+
+
+# Verdicts that rest on which names a block declares, so an unreadable block
+# leaves them unreachable: a name is looked for in inputs and in params, and
+# either block being unreadable is enough to stop the lookup. Every other
+# verdict is settled by the expression alone, and no unjudged block excuses
+# losing one.
+_NAME_RESOLUTION_CODES = frozenset(
+    {
+        "arith.unknown-name",
+        "vars.unknown-name",
+        "signature.name-in-two-blocks",
+    }
+)
+
+
 class TestNoDefectHidesAnother:
-    """Every defect that appears alone appears beside any other.
+    """Every defect in the entry text that appears alone appears beside any other.
 
     Suppression has arrived by three different routes -- a malformed signature,
     a mixed mode, a judgment raised at the point of refusal -- so the property
     is held by a cross product rather than by a case per route. Adding an
     injector below extends the matrix against every existing one.
+
+    Scoped to what the entry text settles. Whether the assembled formula runs is
+    settled only once there is a plan to run, so no entry that is refused
+    carries that judgment, and `TestEveryPlanRuns` holds it instead.
     """
 
     SIG = {
@@ -560,8 +525,6 @@ class TestNoDefectHidesAnother:
     }
     ROOFLINE = {"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N * elem_bytes"}
 
-    # name -> (slot, inject). Two injectors sharing a slot overwrite each other,
-    # which is a conflict in the case rather than a defect in the analysis.
     # name -> (slot, inject, signal). Two injectors sharing a slot overwrite
     # each other, which is a conflict in the case rather than a defect in the
     # analysis. The signal is what this defect must draw on its own: without it
@@ -627,6 +590,100 @@ class TestNoDefectHidesAnother:
             lambda r, g: g.update(params={"self": {"type": "int"}}),
             "signature.reserved-name",
         ),
+        "vars-call-form": (
+            "vars-cf",
+            lambda r, g: r["vars"].update(W="range(stop=3)"),
+            "vars.call-form",
+        ),
+        "vars-call-form-nested": (
+            "vars-cn",
+            lambda r, g: r["vars"].update(Wn="len(min(1, 2, default=0))"),
+            "vars.call-form",
+        ),
+        "vars-call-form-in-comprehension": (
+            "vars-cc",
+            lambda r, g: r["vars"].update(Wc="sum(len(d, d) for d in x.shape)"),
+            "vars.call-form",
+        ),
+        "vars-call-form-starred": (
+            "vars-cs",
+            lambda r, g: r["vars"].update(Ws="len(*[x.shape, x.shape])"),
+            "vars.call-form",
+        ),
+        "vars-call-form-kwargs": (
+            "vars-ck",
+            lambda r, g: r["vars"].update(Wk="len(**{})"),
+            "vars.call-form",
+        ),
+        "arith-call-form": (
+            "flops",
+            lambda r, g: r.update(flops="ceil(N, 2)"),
+            "arith.call-form",
+        ),
+        "vars-async-comprehension": (
+            "vars-a",
+            lambda r, g: r["vars"].update(A="len([q async for q in range(1)])"),
+            "vars.async-comprehension",
+        ),
+        "name-in-two-blocks": (
+            "params,flops",
+            lambda r, g: (
+                g.update(params={"x": {"type": "int"}}),
+                r.update(flops="N * x"),
+            ),
+            "signature.name-in-two-blocks",
+        ),
+        "param-shadows-helper": (
+            "params,vars-s,flops",
+            lambda r, g: (
+                g.update(params={"sum": {"type": "int"}}),
+                r["vars"].update(S="sum(d for d in x.shape)"),
+                r.update(flops="N * sum"),
+            ),
+            "signature.name-shadows-helper",
+        ),
+        "param-emitter-local": (
+            "params",
+            lambda r, g: g.update(params={"elem_bytes": {"type": "int"}}),
+            "signature.reserved-name",
+        ),
+        "param-keyword": (
+            "params",
+            lambda r, g: g.update(params={"class": {"type": "int"}}),
+            "signature.unusable-name",
+        ),
+        # Python reads an identifier NFKC-normalized, so each of these is the
+        # name beside it once the generated body is parsed.
+        "param-keyword-nfkc": (
+            "params",
+            lambda r, g: g.update(params={"\uff43lass": {"type": "int"}}),
+            "signature.unusable-name",
+        ),
+        "param-emitter-nfkc": (
+            "params",
+            lambda r, g: g.update(params={"\uff53elf": {"type": "int"}}),
+            "signature.reserved-name",
+        ),
+        "param-duplicate-nfkc": (
+            "params",
+            lambda r, g: g.update(params={"K": {"type": "int"}, "\u212a": {"type": "int"}}),
+            "signature.duplicate-name",
+        ),
+        "vars-key-keyword-nfkc": (
+            "vars-kw",
+            lambda r, g: r["vars"].update(**{"\uff49\uff46": "1"}),
+            "vars.key-keyword",
+        ),
+        "vars-key-reserved-nfkc": (
+            "vars-rn",
+            lambda r, g: r["vars"].update(**{"_\uff46lops": "1"}),
+            "vars.key-reserved",
+        ),
+        "input-key-unreadable": (
+            "inputs",
+            lambda r, g: g.update(inputs={7: {}}),
+            "unjudged:signature.inputs",
+        ),
     }
 
     def _seen(self, names):
@@ -644,40 +701,46 @@ class TestNoDefectHidesAnother:
         for name in names:
             self.INJECT[name][1](roofline, signature)
         result = analyze_roofline("FakeOp", roofline=roofline, signature=signature)
-        return {d.code for d in result.diagnostics} | {
-            f"unjudged:{u.missing}" for u in result.unjudged
+        # Full identity. Production calls two diagnostics one defect only when
+        # code, path and subject agree, so comparing codes alone would not see
+        # one of two same-code verdicts go missing.
+        return {d.identity for d in result.diagnostics} | {
+            ("unjudged", u.missing, u.judgment) for u in result.unjudged
         }
 
     def test_the_sound_entry_draws_nothing(self):
         assert self._seen([]) == set()
 
-    @pytest.mark.parametrize("name", sorted(INJECT))
-    def test_each_defect_draws_its_signal_alone(self, name):
-        """Pinned rather than merely non-empty: the matrix below compares the
-        analysis against itself, so a judgment that stopped being made would
-        look consistent to it."""
-        assert self.INJECT[name][2] in self._seen([name])
-
-    def test_no_pair_loses_what_either_draws_alone(self):
-        """A verdict either still stands beside the other defect, or the
-        analysis says the other defect left it unjudged. Silently dropping it is
-        what this forbids."""
+    def test_no_defect_is_lost_alone_or_beside_another(self):
+        """Each defect draws its signal alone, and still draws it beside any
+        other -- or the analysis says the other left it unjudged. The signal is
+        pinned because the pairs below compare the analysis against itself, so a
+        judgment that stopped being made would look consistent to them."""
         import itertools
 
         alone = {name: self._seen([name]) for name in self.INJECT}
-        lost = []
+        lost = [
+            f"{name} alone no longer draws {signal}"
+            for name, (_, _, signal) in sorted(self.INJECT.items())
+            if signal not in {i[0] for i in alone[name]}
+            and signal not in {f"unjudged:{i[1]}" for i in alone[name]}
+        ]
         for a, b in itertools.combinations(sorted(self.INJECT), 2):
-            if self.INJECT[a][0] == self.INJECT[b][0]:
+            if _slots(self.INJECT[a][0]) & _slots(self.INJECT[b][0]):
                 continue
             both = self._seen([a, b])
-            # A fact the pair leaves unreadable that neither left unreadable
-            # alone: the judgment it carried moved rather than vanished.
-            excused = {c for c in both if c.startswith("unjudged:")} - (alone[a] | alone[b])
+            # A verdict may move to an unjudged line, but only a verdict that
+            # reads the block left unreadable. Which names a block declares is
+            # what the name-resolution verdicts rest on, and nothing else here
+            # does: a form verdict is settled by the expression alone, so no
+            # unjudged block excuses losing one.
+            unreadable = {i[1] for i in both if i[0] == "unjudged"}
+            resolves_names = bool(unreadable & {"signature.inputs", "signature.params"})
             for name in (a, b):
-                if excused:
-                    continue
-                for code in sorted(alone[name] - both):
-                    lost.append(f"{a} + {b} lost {name}'s {code}")
+                for ident in sorted(alone[name] - both):
+                    if resolves_names and ident[0] in _NAME_RESOLUTION_CODES:
+                        continue
+                    lost.append(f"{a} + {b} lost {name}'s {ident}")
         assert not lost, lost
 
 
@@ -710,7 +773,7 @@ class TestEveryPlanRuns:
         "nfkc-name": ("vars-k", lambda r, g: r["vars"].update(**{"\u212a": "1"})),
         "keyword-fullwidth": ("vars-w", lambda r, g: r["vars"].update(**{"\uff49\uff46": "1"})),
         "param-self": (
-            "params",
+            "params,flops",
             lambda r, g: (
                 g.update(params={"self": {"type": "int"}}),
                 r.update(flops="N * self"),
@@ -723,7 +786,7 @@ class TestEveryPlanRuns:
                 r["vars"].update(S="sum(d for d in x.shape)"),
             ),
         ),
-        "name-in-two-blocks": ("params2", lambda r, g: g.update(params={"x": {"type": "int"}})),
+        "name-in-two-blocks": ("params", lambda r, g: g.update(params={"x": {"type": "int"}})),
         "out-elem-bytes": ("bytes", lambda r, g: r.update(bytes="N * out_elem_bytes")),
         "optional-input": (
             "inputs",
@@ -738,13 +801,24 @@ class TestEveryPlanRuns:
         "param-read": ("flops", lambda r, g: r.update(flops="N * alpha")),
         "deep-expression": ("vars-d", lambda r, g: r["vars"].update(D="1" + "+1" * 400)),
         "unused-param": (
-            "params3",
+            "params",
             lambda r, g: g.setdefault("params", {}).update(u={"type": "int"}),
         ),
+        "helper-called-wrong": (
+            "vars-cf",
+            lambda r, g: r["vars"].update(W="range(stop=3)"),
+        ),
+        "helper-wrong-arity": (
+            "vars-ar",
+            lambda r, g: r["vars"].update(Wa="len(x.shape, x.shape)"),
+        ),
         "vars-key-reserved": (
-            "vars-r",
+            "vars-r,flops",
             lambda r, g: (r["vars"].update(_flops="1"), r.update(flops="_flops")),
         ),
+        "helper-no-args": ("vars-na", lambda r, g: r["vars"].update(Na="min()")),
+        "helper-starred": ("vars-st", lambda r, g: r["vars"].update(St="len(*[x.shape])")),
+        "arith-call-form": ("flops", lambda r, g: r.update(flops="ceil(N, 2)")),
     }
 
     def _probe_op(self):
@@ -813,36 +887,147 @@ class TestEveryPlanRuns:
     def test_the_sound_entry_runs(self):
         assert self._run([]) == (8, 16)
 
-    @pytest.mark.parametrize("name", sorted(INJECT))
-    def test_each_injector_alone_either_refuses_or_runs(self, name):
-        value = self._run([name])
-        assert value is None or (
-            isinstance(value, tuple) and [type(v) for v in value] == [int, int]
-        )
+    def test_a_plan_whose_source_does_not_compile_is_a_verdict(self):
+        """The plan's source is compiled before the plan is accepted, so a text
+        Python will not take is one verdict however it fails to be Python: a
+        leading newline, a comment line, a keyword given twice."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
 
-    def test_no_pair_yields_a_plan_that_cannot_run(self):
+        for block in (
+            {"vars": {"N": "\n1"}, "flops": "N", "bytes": "N"},
+            {"vars": {"N": "\n# c\n1"}, "flops": "N", "bytes": "N"},
+            {"vars": {"N": "min([1], key=abs, key=len)"}, "flops": "N", "bytes": "N"},
+            {"vars": {"N": "1"}, "flops": "\nN", "bytes": "N"},
+        ):
+            result = analyze_roofline(self.OP, roofline=block, signature=self.SIG)
+            assert result.plan is None, block
+            assert [d.code for d in result.diagnostics] == ["roofline.does-not-compile"], block
+
+    def test_a_func_taking_more_than_the_op_says_so(self):
+        """The emitted method calls it with the op and nothing else, so a
+        callable that needs a second argument is refused rather than resolved."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+
+        result = analyze_roofline(self.OP, roofline={"func": "builtins.pow"}, signature=self.SIG)
+        assert result.plan is None
+        assert [d.code for d in result.diagnostics] == ["func.arity"]
+
+    def test_a_func_returning_the_wrong_shape_says_so(self):
+        """What a func-mode formula returns is settled only by calling it, so
+        the wrapper keeps that contract: the reading never travels as a number
+        that is not a (flops, bytes) pair."""
+        from tileops.manifest.roofline_analysis import analyze_roofline
+        from tileops.ops._roofline_emit import emit_eval_roofline
+
+        result = analyze_roofline(self.OP, roofline={"func": "builtins.id"}, signature=self.SIG)
+        assert result.plan is not None
+        with pytest.raises(TypeError, match=self.OP):
+            emit_eval_roofline(result.plan)(self._probe_op())
+
+    def test_no_plan_is_one_that_cannot_run(self):
+        """Alone and in every non-overwriting pair."""
         import itertools
 
         broken = []
-        for a, b in itertools.combinations(sorted(self.INJECT), 2):
-            if self.INJECT[a][0] == self.INJECT[b][0]:
-                continue
+        cases = [(n,) for n in sorted(self.INJECT)] + [
+            (a, b)
+            for a, b in itertools.combinations(sorted(self.INJECT), 2)
+            if not _slots(self.INJECT[a][0]) & _slots(self.INJECT[b][0])
+        ]
+        for names in cases:
+            a = " + ".join(names)
             try:
-                value = self._run([a, b])
+                value = self._run(list(names))
             except Exception as exc:  # noqa: BLE001 - that it raises is the failure
-                broken.append(f"{a} + {b}: {type(exc).__name__}: {exc}")
+                broken.append(f"{a}: {type(exc).__name__}: {exc}")
                 continue
             if value is not None and [type(v) for v in value] != [int, int]:
-                broken.append(f"{a} + {b}: returned {value!r}")
-            plan = self._plan([a, b])
+                broken.append(f"{a}: returned {value!r}")
+            plan = self._plan(list(names))
             if plan is not None:
-                broken += [f"{a} + {b}: {d}" for d in self._plan_defects(plan)]
+                broken += [f"{a}: {d}" for d in self._plan_defects(plan)]
         assert not broken, broken
 
-    @pytest.mark.parametrize("name", sorted(INJECT))
-    def test_no_plan_binds_a_name_it_does_not_own(self, name):
-        plan = self._plan([name])
-        assert plan is None or not self._plan_defects(plan)
+
+class TestCallFormTableMatchesPython:
+    """Every row of CALL_FORMS says what the helper itself accepts.
+
+    The table states forms Python exposes no signature for, so it is checked
+    against the callable rather than against itself: each generated call is put
+    to both, and a row too narrow or too wide shows up as a disagreement.
+    """
+
+    # A value legal at that position for that helper, so a TypeError from the
+    # call is about the form and not about the value.
+    POSITIONAL = {
+        "product": [(1, 2)] * 5,
+        "isinstance": [tuple] * 5,
+        "len": [()] * 5,
+        "set": [()] * 5,
+        "tuple": [()] * 5,
+        "list": [()] * 5,
+        "range": [1, 2, 3, 4, 5],
+        "int": ["10", 2, 3, 4, 5],
+        "float": ["1", 2, 3, 4, 5],
+        "bool": [1, 2, 3, 4, 5],
+        "min": [((1,), (2, 3))] * 5,
+        "max": [((1,), (2, 3))] * 5,
+        "sum": [(1, 2), 0, 1, 2, 3],
+        "abs": [1, 2, 3, 4, 5],
+        "log2": [1, 2, 3, 4, 5],
+        "ceil": [1, 2, 3, 4, 5],
+        "floor": [1, 2, 3, 4, 5],
+    }
+    # Every keyword a row names, every parameter name these callables document --
+    # so a row that forgot a keyword its helper does take is a disagreement
+    # rather than a cell nobody generates -- and one name none of them takes.
+    KEYWORD = {
+        "default": 0, "key": abs, "start": 0, "base": 2, "x": 1, "obj": 1,
+        "iterable": (1, 2), "a": 1, "b": 1, "stop": 1, "step": 1, "object": 1,
+        "class_or_tuple": tuple, "nope": 1,
+    }  # fmt: skip
+    # A key must suit the values above, or its TypeError would be about them.
+    KEYWORD_BY_HELPER = {"min": {"key": len}, "max": {"key": len}}
+    KEYWORD_SETS = [(), ("default", "key")] + [(name,) for name in KEYWORD]
+
+    def test_no_row_is_narrower_or_wider_than_the_helper(self):
+        import ast
+
+        from tileops.manifest.roofline_analysis import (
+            CALL_FORMS,
+            VARS_HELPERS,
+            _call_form_defect,
+        )
+
+        disagreed = []
+        for name, helper in VARS_HELPERS.items():
+            for count in range(5):
+                for keywords in self.KEYWORD_SETS:
+                    call = ast.parse(
+                        f"{name}({', '.join(['1'] * count + [f'{k}=1' for k in keywords])})",
+                        mode="eval",
+                    ).body
+                    table_accepts = _call_form_defect(call, name) is None
+                    try:
+                        helper(
+                            *self.POSITIONAL[name][:count],
+                            **{
+                                k: self.KEYWORD_BY_HELPER.get(name, {}).get(k, self.KEYWORD[k])
+                                for k in keywords
+                            },
+                        )
+                        python_accepts = True
+                    except TypeError:
+                        python_accepts = False
+                    except Exception:  # noqa: BLE001 - the form was taken; the value was not
+                        python_accepts = True
+                    if table_accepts != python_accepts:
+                        disagreed.append(
+                            f"{name}({count} positional, {keywords}): "
+                            f"table {table_accepts}, python {python_accepts}"
+                        )
+        assert not disagreed, disagreed
+        assert set(CALL_FORMS) == set(VARS_HELPERS)
 
 
 class TestNothingLegalIsRefused:
@@ -885,19 +1070,55 @@ class TestNothingLegalIsRefused:
         "earlier-var": ("v-e", lambda r, g: r["vars"].update(E="N * 2")),
         "shape-index": ("v-s", lambda r, g: r["vars"].update(S="x.shape[0]")),
         "ndim": ("v-d", lambda r, g: r["vars"].update(D="x.ndim")),
-        "soft-keyword-name": ("v-t", lambda r, g: r["vars"].update(type="1")),
+        "soft-keyword-name": (
+            "v-t",
+            lambda r, g: r["vars"].update(**{"type": "1", "match": "1", "case": "1"}),
+        ),
         "nfkc-name": ("v-k", lambda r, g: r["vars"].update(**{"\u212a": "1"})),
         "out-elem-bytes": ("bytes", lambda r, g: r.update(bytes="N * out_elem_bytes")),
         "param-in-arithmetic": ("flops", lambda r, g: r.update(flops="N * alpha")),
         "numeric-helpers": (
-            "flops2",
+            "flops",
             lambda r, g: r.update(flops="ceil(N / 2) + floor(N / 3) + log2(N + 1)"),
         ),
         "conditional-arithmetic": (
-            "bytes2",
+            "bytes",
             lambda r, g: r.update(bytes="(N if N > 0 else 1) * elem_bytes"),
         ),
         "unread-param": ("p-u", lambda r, g: g["params"].update(unused={"type": "int"})),
+        "helper-keyword-argument": (
+            "v-kw",
+            lambda r, g: r["vars"].update(Kw="min([1], default=0) + product(x.shape, start=2)"),
+        ),
+        "helper-optional-argument": (
+            "v-oa",
+            lambda r, g: r["vars"].update(Oa='int("10", 2) + sum([1], 0) + len(range(1, 9, 2))'),
+        ),
+        "helper-other-overload": (
+            "v-ov",
+            lambda r, g: r["vars"].update(
+                Ov='int("10", base=2) + sum([1], start=0) + min(-1, 2, key=abs)'
+            ),
+        ),
+        "helper-called-empty": (
+            "v-ce",
+            lambda r, g: r["vars"].update(Ce="len(set()) + len(tuple()) + int() + len(list())"),
+        ),
+        "value-dependent-arithmetic": (
+            "flops",
+            lambda r, g: r.update(flops="N // (alpha + 1)"),
+        ),
+        "helper-named-unread-param": (
+            "p-h",
+            lambda r, g: g["params"].update(bool={"type": "int"}),
+        ),
+        "nfkc-param-name": (
+            "p-k",
+            lambda r, g: (
+                g["params"].update(**{"\uff2a": {"type": "int"}}),
+                r["vars"].update(Jj="J"),
+            ),
+        ),
         "unread-input": ("in-u", lambda r, g: g["inputs"].update(w={"dtype": "float16"})),
     }
 
@@ -917,20 +1138,20 @@ class TestNothingLegalIsRefused:
             return [f"accepted but still drew {[d.code for d in result.diagnostics]}"]
         return None
 
-    @pytest.mark.parametrize("name", sorted(LEGAL))
-    def test_each_legal_form_is_accepted_alone(self, name):
-        assert self._refusal([name]) is None
-
-    def test_no_pair_of_legal_forms_is_refused(self):
+    def test_no_legal_form_is_refused(self):
+        """Alone and in every non-overwriting pair."""
         import itertools
 
-        refused = []
-        for a, b in itertools.combinations(sorted(self.LEGAL), 2):
-            if self.LEGAL[a][0] == self.LEGAL[b][0]:
-                continue
-            why = self._refusal([a, b])
-            if why is not None:
-                refused.append(f"{a} + {b}: {why}")
+        cases = [(n,) for n in sorted(self.LEGAL)] + [
+            (a, b)
+            for a, b in itertools.combinations(sorted(self.LEGAL), 2)
+            if not _slots(self.LEGAL[a][0]) & _slots(self.LEGAL[b][0])
+        ]
+        refused = [
+            f"{' + '.join(names)}: {why}"
+            for names in cases
+            if (why := self._refusal(list(names))) is not None
+        ]
         assert not refused, refused
 
 
@@ -955,23 +1176,29 @@ class TestTotality:
                 assert result.plan is None or not result.blocking
         assert not raised, raised
 
-    @pytest.mark.parametrize(
-        "expr",
-        ["1" + "+1" * 500, "-" * 10000 + "1"],
-        ids=["deep-binop", "deep-unary"],
-    )
-    def test_an_expression_too_deep_to_parse_is_a_verdict(self, expr):
+    def test_an_expression_too_deep_to_parse_is_a_verdict(self):
         """Exhausting the parser is a verdict, not an exception out of the
         analysis."""
+        import sys
+
         from tileops.manifest.roofline_analysis import analyze_roofline
 
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {"N": expr}, "flops": "N", "bytes": "1"},
-            signature={"inputs": {}, "outputs": {"y": {}}},
-        )
-        assert result.plan is None
-        assert result.diagnostics
+        for expr in ("1" + "+1" * 500, "-" * 10000 + "1"):
+            # How deep is too deep depends on the recursion limit, which another
+            # test in the same process may have raised. Pinned, so this
+            # expression is over it whatever ran first.
+            limit = sys.getrecursionlimit()
+            sys.setrecursionlimit(min(limit, 1000))
+            try:
+                result = analyze_roofline(
+                    "FakeOp",
+                    roofline={"vars": {"N": expr}, "flops": "N", "bytes": "1"},
+                    signature={"inputs": {}, "outputs": {"y": {}}},
+                )
+            finally:
+                sys.setrecursionlimit(limit)
+            assert result.plan is None
+            assert result.diagnostics
 
     def test_a_self_referential_entry_does_not_hang(self):
         from tileops.manifest.roofline_analysis import analyze_roofline
@@ -999,132 +1226,13 @@ class TestNameSafety:
         assert [d.code for d in result.diagnostics] == ["vars.collision"]
         assert result.plan is None
 
-    @pytest.mark.parametrize("name", sorted({"self", "elem_bytes", "_flops"}))
-    def test_a_name_the_body_binds_for_itself_is_refused(self, name):
-        """A param called `self` emits `self = self.self`, after which every line
-        reads the param rather than the op."""
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {}, "flops": name, "bytes": "1"},
-            signature={**self.SIG, "params": {name: {"type": "int"}}},
-        )
-        assert result.plan is None
-        assert any(d.code == "signature.reserved-name" for d in result.diagnostics)
-
-    def test_a_key_that_normalizes_to_a_keyword_is_refused(self):
-        """`\uff49\uff46` normalizes to `if`, which the body cannot assign to."""
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {"\uff49\uff46": "1"}, "flops": "1", "bytes": "1"},
-            signature={"inputs": {}, "outputs": {"y": {}}},
-        )
-        assert result.plan is None
-        assert [d.code for d in result.diagnostics] == ["vars.key-keyword"]
-
-    def test_a_vars_key_the_body_binds_for_itself_is_refused(self):
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {"_flops": "1"}, "flops": "1", "bytes": "1"},
-            signature=self.SIG,
-        )
-        assert [d.code for d in result.diagnostics] == ["vars.key-reserved"]
-        assert result.plan is None
-
     OUT = {"y": {}}
-
-    def test_a_name_in_both_blocks_is_refused_when_read(self):
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N"},
-            signature={"inputs": {"x": {}}, "params": {"x": {}}, "outputs": self.OUT},
-        )
-        assert result.plan is None
-        assert [d.code for d in result.diagnostics] == ["signature.name-in-two-blocks"]
-
-    def test_a_declared_name_shadowing_a_helper_is_refused_when_read(self):
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {"N": "sum(range(3))"}, "flops": "N", "bytes": "1"},
-            signature={"inputs": {}, "params": {"sum": {}}, "outputs": self.OUT},
-        )
-        assert result.plan is None
-        assert [d.code for d in result.diagnostics] == ["signature.name-shadows-helper"]
-
-    def test_declaring_a_helper_name_without_reading_it_is_allowed(self):
-        """Declaring a helper name is allowed; reading it is not."""
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {}, "flops": "1", "bytes": "1"},
-            signature={"inputs": {}, "params": {"min": {}}, "outputs": self.OUT},
-        )
-        assert result.plan is not None
-        assert not result.diagnostics
-
-    @pytest.mark.parametrize("where", ["vars", "params"])
-    def test_a_name_needing_normalization_is_found(self, where):
-        """`\u212a` is the Kelvin sign; Python reads it as `K`, and so must the
-        allowed-name set."""
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        kelvin = "\u212a"
-        roofline = {"vars": {}, "flops": "K", "bytes": "1"}
-        signature = {"inputs": {}, "outputs": {"y": {}}}
-        if where == "vars":
-            roofline["vars"] = {kelvin: "1"}
-        else:
-            signature["params"] = {kelvin: {"type": "int"}}
-        result = analyze_roofline("FakeOp", roofline=roofline, signature=signature)
-        assert not result.diagnostics
-        assert result.plan is not None
 
 
 class TestEmittableByConstruction:
     """A plan the analysis builds must be one emission can compile and run."""
 
     OUT = {"y": {}}
-
-    def test_an_async_comprehension_is_refused(self):
-        """The generated body is a plain function, so it cannot hold one."""
-        from tileops.manifest.roofline_analysis import analyze_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={
-                "vars": {"N": "len([x async for x in range(1)])"},
-                "flops": "N",
-                "bytes": "1",
-            },
-            signature={"inputs": {}, "outputs": self.OUT},
-        )
-        assert result.plan is None
-        assert [d.code for d in result.diagnostics] == ["vars.async-comprehension"]
-
-    @pytest.mark.parametrize("name", ["type", "match", "case"])
-    def test_a_soft_keyword_is_an_ordinary_name(self, name):
-        """`type` is a plausible param name, and `type = 1` is valid Python."""
-        from tileops.manifest.roofline_analysis import analyze_roofline
-        from tileops.ops._roofline_emit import emit_eval_roofline
-
-        result = analyze_roofline(
-            "FakeOp",
-            roofline={"vars": {name: "1"}, "flops": name, "bytes": "1"},
-            signature={"inputs": {}, "outputs": self.OUT},
-        )
-        assert not result.diagnostics
-        assert result.plan is not None
-        emit_eval_roofline(result.plan)
 
     IN = {"x": {"dtype": "float16"}}
     OUT = {"y": {}}

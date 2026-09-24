@@ -177,6 +177,51 @@ Analysis and emission are separate: analysis reads the entry and decides, emissi
 - **Lossless.** A fact is absent, malformed or valid, and the three are distinguished. Collapsing the first two makes a missing dependency indistinguishable from a satisfied one.
 - **Accumulating.** A defect does not stop the pass. A judgment that cannot be reached for want of a fact is recorded as unreached, naming the fact.
 
+A name that resolves and a call that can be made are different questions. Each helper's accepted
+call forms are declared in a table beside the helper namespace, and both expression layers check a
+call site against it: a form no helper takes is a verdict with the same message whatever the
+arguments evaluate to. Whether a formula raises for some legal input is not decided here, because
+no finite sample of values would settle it.
+
+Whether the method this entry describes is Python at all is observed, not predicted: the plan
+renders to the method's source, the analysis compiles that source, and a plan whose source does not
+compile is refused. The renderer is one function and emission runs its output, so the text the
+analysis judged is the text that runs. A rule per construct would instead approximate the
+compiler — a leading newline, a comment line and a keyword given twice each parse as an expression
+and none survives being assigned — and every such rule is one more way for the approximation to
+differ from Python.
+
+What running the method would do is a separate question, and one no finite sample of values
+settles. Only the call forms are ruled on, from the table above, and that table is held to the real
+callables by a test that puts every generated call to both.
+
+The expression layers are defined by subtraction: an expression is any Python the rules above do
+not remove. Two questions are asked of that surface, and they are not the same question.
+
+|           | asked of the surface                                        | how it is settled             |
+| --------- | ----------------------------------------------------------- | ----------------------------- |
+| Soundness | is the method this entry describes Python                   | compiling the rendered source |
+| Policy    | which constructs Python allows that the layer does not want | a rule per construct          |
+
+Only the first decides whether an accepted entry works, and it is settled by observation, so a rule
+missing from the second admits a construct nobody wanted rather than one that breaks. That is what
+bounds the cost of defining this surface by subtraction.
+
+The used language is much narrower than the accepted one: 546 expressions across 91 inline entries
+reach 35 node kinds, 8 helper names and 2 attributes. What keeps it as wide as it is is the
+signature rather than the formulas. `isinstance` is the most-called helper, and the names it tests
+are `stride`, `padding`, `dilation` and `kernel_size` — parameters the signature declares as
+unions, leaving each formula to dispatch on the type it was handed. Normalizing such a parameter
+where it is declared would take the dispatch out of 104 of those expressions, and with it much of
+the conditional and comparison the layers must accept.
+
+Replacing the subtraction with a closed grammar — parsing the text into terms and emitting by
+printing the term — is a further step and is not justified by what is written above: it would buy
+productions in place of rules on the policy question alone, and cost a grammar over all 35 node
+kinds, a printer for them, and a change to what the manifest accepts. Measure the node kinds again
+once parameters are normalized, and judge it then against whether what remains subtractive is a
+soundness question or a policy one.
+
 Whether a defect stops emission follows the formula rather than the defect: a malformed `outputs` blocks a formula that reads `out_elem_bytes` and not one that never does. A name the formula reads resolves from one place only — declared twice, or shared with a helper, it would bind twice in the emitted body.
 
 The two gates divide by question, not by field. §4.1 rules on whether the blocks are structurally

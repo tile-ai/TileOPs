@@ -998,8 +998,8 @@ class TestOptionalInputs:
             "flops": "2 * C",
             "bytes": "C",
         }
-        errors = validator.check_l0("Op", entry)
-        assert any("other than a presence test" in e for e in errors), errors
+        errors = validator.check_roofline_synthesis("Op", entry)
+        assert any("from an optional input" in e for e in errors), errors
 
     def test_roofline_allows_presence_test_in_vars(self, validator):
         entry = self._entry()
@@ -1017,8 +1017,8 @@ class TestOptionalInputs:
             "flops": "(5 if w is not None else 3) * 2",
             "bytes": "2",
         }
-        errors = validator.check_l0("Op", entry)
-        assert any("names optional input 'w'" in e for e in errors), errors
+        errors = validator.check_roofline_synthesis("Op", entry)
+        assert any("unknown name 'w'" in e for e in errors), errors
 
     def test_read_bound_exception_states_a_condition_and_a_reason(self, validator):
         """It lifts a verdict the audit would otherwise reach, so it says when and why."""
@@ -4291,7 +4291,7 @@ class TestDiagnosticOwnership:
         # A func that resolves, so the only defect is the mode itself: both
         # halves are judged now, and a broken one would add its own line.
         "roofline.mixed-modes": (
-            {"func": "tileops.perf.formulas._binary_broadcast_roofline", "flops": "1"},
+            {"func": "tileops.perf.formulas.mha_bwd_roofline", "flops": "1"},
             None,
             "exclusive",
         ),

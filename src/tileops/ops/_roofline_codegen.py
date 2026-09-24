@@ -187,12 +187,11 @@ def maybe_install_eval_roofline(cls: type) -> None:
             "roofline is required of every entry (validate_manifest.py, _REQUIRED_TOP), "
             "so reaching here means the manifest has not been validated"
         )
-    try:
-        result = analyze_roofline(cls.__name__, roofline=roofline, signature=sig)
-    except Exception:  # noqa: BLE001 - totality is a claim, so class creation checks it
-        # The analysis is total over entry data; reaching here is a defect in it.
-        cls.eval_roofline = Op.eval_roofline  # type: ignore[assignment]
-        return
+    # No catch. The analysis is total over entry data, so an exception is a
+    # defect in it rather than in the entry, and it says so where it happened.
+    # Swallowing one would leave a valid op abstract with no diagnostic
+    # anywhere, which is what a refused entry already looks like.
+    result = analyze_roofline(cls.__name__, roofline=roofline, signature=sig)
     if result.plan is None:
         cls.eval_roofline = Op.eval_roofline  # type: ignore[assignment]
         return

@@ -1204,53 +1204,6 @@ def _check_optional_in_shape_rules(op_name: str, sig: dict, optional: Collection
     return errors
 
 
-def _check_optional_in_roofline(op_name: str, entry: dict, optional: Collection[str]) -> list[str]:
-    """A roofline presence test lives in ``vars`` and nowhere else."""
-    errors: list[str] = []
-    err = _emit_to(errors, "schema", op_name)
-    roofline = entry.get("roofline")
-    if not optional or not isinstance(roofline, dict):
-        return errors
-
-    # vars: a bare presence test is the one permitted position.
-    if isinstance(roofline.get("vars"), dict):
-        for vname, vexpr in roofline["vars"].items():
-            if not isinstance(vexpr, str):
-                continue
-            try:
-                tree = ast.parse(vexpr, mode="eval").body
-            except SyntaxError:
-                continue  # reported by the roofline codegen namespace check
-            for name in _unguarded_uses(tree, optional, ()):
-                err(
-                    f"roofline.vars.{vname} uses optional input '{name}' for "
-                    f"something other than a presence test: {vexpr!r}. Only "
-                    f"'{name} is None' / '{name} is not None' is allowed here; "
-                    f"a formula that needs the tensor's own shape uses "
-                    f"roofline.func instead"
-                )
-
-    # flops / bytes: the arithmetic layer reads vars, params and elem_bytes, so
-    # a tensor name never resolves there — not even in a presence test.
-    for field in ("flops", "bytes"):
-        expr = roofline.get(field)
-        if not isinstance(expr, str):
-            continue
-        try:
-            tree = ast.parse(expr, mode="eval").body
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and node.id in optional:
-                err(
-                    f"roofline.{field} names optional input '{node.id}': "
-                    f"{expr!r}. Put the presence test in a roofline.vars entry "
-                    f"and read that name here"
-                )
-                break
-    return errors
-
-
 def _check_optional_in_dtype_positions(
     op_name: str, sig: dict, optional: Collection[str]
 ) -> list[str]:
@@ -1379,7 +1332,6 @@ def _l0_optional(op_name: str, entry: dict, sig: dict) -> list[str]:
     if not optional:
         return errors
     errors.extend(_check_optional_in_shape_rules(op_name, sig, optional))
-    errors.extend(_check_optional_in_roofline(op_name, entry, optional))
     errors.extend(_check_optional_in_dtype_positions(op_name, sig, optional))
     errors.extend(_check_optional_shape_symbol_scope(op_name, sig, optional))
     errors.extend(_check_optional_workload_coverage(op_name, entry, optional))
