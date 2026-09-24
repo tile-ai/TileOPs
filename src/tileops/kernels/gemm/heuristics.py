@@ -40,6 +40,7 @@ Resource model mirrors ``tileops/kernels/gemm.py``:
 """
 
 import functools
+import importlib
 import math
 from dataclasses import dataclass
 from typing import Optional
@@ -245,9 +246,18 @@ def _coop2_stage_plan(bn: int, bk: int):
 @functools.lru_cache(maxsize=1)
 def _wide_wgmma_n() -> bool:
     """Whether tilelang emits a non-power-of-two ``block_n`` as one WGMMA."""
-    from tilelang.cuda.intrinsics.macro import wgmma_macro_generator
+    module_name = "tilelang.cuda.intrinsics.macro"
+    try:
+        macro = importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        if exc.name is None or not module_name.startswith(exc.name):
+            raise
+        # TileLang 0.1.9 predates the ``tilelang.cuda`` package. It remains in
+        # our supported range, so absence of the new capability means fallback,
+        # not an import-time failure in every NT GEMM selector.
+        return False
 
-    return hasattr(wgmma_macro_generator, "select_wgmma_inst_n")
+    return hasattr(macro.wgmma_macro_generator, "select_wgmma_inst_n")
 
 
 def _pingpong_stage_plan(bn: int, bk: int):

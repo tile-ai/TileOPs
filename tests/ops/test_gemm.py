@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+import tileops.kernels.gemm.heuristics as gemm_heuristics
 from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.gemm import (
@@ -942,9 +943,14 @@ def test_gemm_refuses_non_matrix_operands_before_building_anything() -> None:
     assert not op.built_kernels("gemm")
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
-    "block_n, num_stages, stage_buf", [(256, 4, 1), (256, 4, 2), (256, 3, 4), (176, 4, 1)]
+    "block_n, num_stages, stage_buf",
+    [
+        pytest.param(256, 4, 2, marks=pytest.mark.smoke, id="shipped"),
+        pytest.param(256, 4, 1, marks=pytest.mark.full, id="one-buffer"),
+        pytest.param(256, 3, 4, marks=pytest.mark.full, id="four-buffers"),
+        pytest.param(176, 4, 1, marks=pytest.mark.full, id="wide-tile"),
+    ],
 )
 def test_coop2_epilogue_staging_matches_reference(
     block_n: int, num_stages: int, stage_buf: int
@@ -987,10 +993,14 @@ def test_b_tile_eviction_hint_follows_the_m_tile_count() -> None:
     assert _b_eviction(4096, 128) is None
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "block_n, num_stages, stage_n, stage_buf",
-    [(176, 5, 16, 2), (176, 5, 16, 1), (176, 4, 88, 1), (128, 6, 32, 2)],
+    [
+        pytest.param(176, 5, 16, 2, marks=pytest.mark.smoke, id="shipped"),
+        pytest.param(176, 5, 16, 1, marks=pytest.mark.full, id="one-buffer"),
+        pytest.param(176, 4, 88, 1, marks=pytest.mark.full, id="uneven-slices"),
+        pytest.param(128, 6, 32, 2, marks=pytest.mark.full, id="narrow-tile"),
+    ],
 )
 def test_pingpong_staging_matches_reference(
     block_n: int, num_stages: int, stage_n: int, stage_buf: int
@@ -1033,6 +1043,24 @@ def test_pingpong_refuses_a_grid_its_second_consumer_cannot_share() -> None:
     with pytest.raises(ValueError, match="more than 132 tiles"):
         build(176, 64, 5, 16, 16)
     assert not best_config(1024, 2112, 256, False, True, 132, "NVIDIA H200").get("pingpong")
+
+
+@pytest.mark.smoke
+def test_wide_wgmma_probe_tolerates_legacy_tilelang(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The supported pre-``tilelang.cuda`` releases fall back instead of breaking dispatch."""
+    real_import = gemm_heuristics.importlib.import_module
+
+    def without_cuda_intrinsics(name: str):
+        if name == "tilelang.cuda.intrinsics.macro":
+            raise ModuleNotFoundError(name=name)
+        return real_import(name)
+
+    _wide_wgmma_n.cache_clear()
+    monkeypatch.setattr(gemm_heuristics.importlib, "import_module", without_cuda_intrinsics)
+    try:
+        assert not _wide_wgmma_n()
+    finally:
+        _wide_wgmma_n.cache_clear()
 
 
 @pytest.mark.smoke
