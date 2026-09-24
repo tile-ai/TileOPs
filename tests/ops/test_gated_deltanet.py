@@ -57,6 +57,46 @@ def test_gated_deltanet_partitioned_dense_prefill_matches_reference(
     test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
 
 
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
+    reason="the dense-decode specialization requires SM90",
+)
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+@pytest.mark.parametrize("batch", [1, 8], ids=["b1", "b8"])
+def test_gated_deltanet_dense_decode_matches_reference(
+    dtype: torch.dtype,
+    batch: int,
+) -> None:
+    torch.manual_seed(42)
+    test = GatedDeltaNetFwdTest(batch, 1, 16, 128, dtype, has_initial_state=True)
+    atol, rtol = (2e-3, 2e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
+    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=atol, rtol=rtol)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
+    reason="the dense-decode specialization requires SM90",
+)
+def test_gated_deltanet_dense_decode_propagates_fp32_state() -> None:
+    torch.manual_seed(42)
+    workload = GatedDeltaNetFwdWorkload(
+        1,
+        1,
+        16,
+        128,
+        torch.bfloat16,
+        has_initial_state=True,
+    )
+    q, k, v, g, beta, state = workload.gen_inputs()
+    expected_state = state.clone()
+    op = GatedDeltaNetFwdOp()
+    for _ in range(4):
+        expected_o, expected_state = workload.ref_program(q, k, v, g, beta, expected_state)
+        got_o, state = op(q, k, v, g, beta, state)
+        torch.testing.assert_close(got_o, expected_o, atol=1.6e-2, rtol=1.6e-2)
+        torch.testing.assert_close(state, expected_state, atol=1.6e-2, rtol=1.6e-2)
+
+
 def test_gated_deltanet_contract_reaches_target_builder() -> None:
     calls = []
 

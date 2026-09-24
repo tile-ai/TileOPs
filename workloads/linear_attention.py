@@ -160,7 +160,7 @@ class DeltaNetInferenceWorkload(WorkloadBase):
 
 
 class GatedDeltaNetFwdWorkload(WorkloadBase):
-    """Equal-length BTHD Gated DeltaNet inference prefill."""
+    """Equal-length BTHD Gated DeltaNet inference prefill or decode."""
 
     def __init__(
         self,
@@ -170,6 +170,7 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         dim: int,
         dtype: torch.dtype,
         scale: float | None = None,
+        has_initial_state: bool = False,
     ) -> None:
         self.batch = batch
         self.seq_len = seq_len
@@ -177,6 +178,7 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         self.dim = dim
         self.dtype = dtype
         self.scale = scale
+        self.has_initial_state = has_initial_state
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         shape = (self.batch, self.seq_len, self.heads, self.dim)
@@ -185,7 +187,20 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         v = torch.randn(shape, device="cuda", dtype=self.dtype) * 0.1
         g = -torch.rand(shape[:3], device="cuda", dtype=self.dtype)
         beta = torch.rand(shape[:3], device="cuda", dtype=self.dtype) * 0.5
-        return q, k, v, g, beta
+        if not self.has_initial_state:
+            return q, k, v, g, beta
+        initial_state = (
+            torch.randn(
+                self.batch,
+                self.heads,
+                self.dim,
+                self.dim,
+                device="cuda",
+                dtype=torch.float32,
+            )
+            * 0.01
+        )
+        return q, k, v, g, beta, initial_state
 
     def ref_program(
         self,
@@ -194,15 +209,20 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
         v: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
+        initial_state: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         scale = self.dim**-0.5 if self.scale is None else self.scale
-        state = torch.zeros(
-            self.batch,
-            self.heads,
-            self.dim,
-            self.dim,
-            dtype=torch.float32,
-            device=q.device,
+        state = (
+            torch.zeros(
+                self.batch,
+                self.heads,
+                self.dim,
+                self.dim,
+                dtype=torch.float32,
+                device=q.device,
+            )
+            if initial_state is None
+            else initial_state.float()
         )
         outputs = []
         for token in range(self.seq_len):
