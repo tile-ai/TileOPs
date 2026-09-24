@@ -26,17 +26,17 @@ class RopeWorkload(WorkloadBase):
         self.dtype = dtype
         self.extra_kwargs = extra_kwargs or {}
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
         """Generate only x; cos/sin are computed by the op internally."""
         if self.layout == "1d":
-            x = torch.randn(self.seq_len, self.head_dim, device="cuda", dtype=self.dtype)
+            x = torch.randn(self.seq_len, self.head_dim, device=device, dtype=self.dtype)
         else:
             x = torch.randn(
                 self.batch,
                 self.seq_len,
                 self.num_heads,
                 self.head_dim,
-                device="cuda",
+                device=device,
                 dtype=self.dtype,
             )
         return (x,)

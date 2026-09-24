@@ -24,14 +24,14 @@ class FusedTopKWorkload(WorkloadBase):
         self.dtype = dtype
         self.with_correction_bias = with_correction_bias
 
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        g = self.rng(device="cuda")
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor, ...]:
+        g = self.rng(device=device)
         gating = torch.randn(
-            self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda", generator=g
+            self.num_tokens, self.num_experts, dtype=self.dtype, device=device, generator=g
         )
         if not self.with_correction_bias:
             return (gating,)
-        bias = torch.randn(self.num_experts, dtype=torch.float32, device="cuda", generator=g) * 0.1
+        bias = torch.randn(self.num_experts, dtype=torch.float32, device=device, generator=g) * 0.1
         return gating, bias
 
 
@@ -43,16 +43,18 @@ class MoePermuteWorkload(WorkloadBase):
         self.hidden_size = hidden_size
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         hidden_states = torch.randn(
-            self.total_tokens, self.hidden_size, dtype=self.dtype, device="cuda"
+            self.total_tokens, self.hidden_size, dtype=self.dtype, device=device
         )
         topk_ids = torch.randint(
             0,
             self.num_experts,
             (self.total_tokens, self.top_k),
             dtype=torch.int32,
-            device="cuda",
+            device=device,
         )
         return hidden_states, topk_ids
 
@@ -67,13 +69,13 @@ class MoePermuteAlignWorkload(WorkloadBase):
         self.num_experts = num_experts
         self.block_size = block_size
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
         topk_ids = torch.randint(
             0,
             self.num_experts,
             (self.total_tokens, self.top_k),
             dtype=torch.int32,
-            device="cuda",
+            device=device,
         )
         return (topk_ids,)
 
@@ -90,12 +92,14 @@ class MoeUnpermuteWorkload(WorkloadBase):
         self.hidden_size = hidden_size
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         numel = self.total_tokens * self.top_k
-        mm2_pad = torch.randn(numel, self.hidden_size, dtype=self.dtype, device="cuda")
+        mm2_pad = torch.randn(numel, self.hidden_size, dtype=self.dtype, device=device)
         # fwd_idx: simulate a valid mapping: random shuffle of [0, numel)
-        fwd_idx = torch.randperm(numel, dtype=torch.int32, device="cuda")
-        topk_weights = torch.rand(self.total_tokens, self.top_k, dtype=torch.float32, device="cuda")
+        fwd_idx = torch.randperm(numel, dtype=torch.int32, device=device)
+        topk_weights = torch.rand(self.total_tokens, self.top_k, dtype=torch.float32, device=device)
         return mm2_pad, fwd_idx, topk_weights
 
     def ref_program(self, mm2_pad, fwd_idx, topk_weights):
@@ -289,9 +293,11 @@ class MoeGroupedGemmStagedWorkload(WorkloadBase):
     def rows(self) -> int:
         return math.prod(self.a_shape[:-1])
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        g = self.rng(device="cuda")
-        dev = "cuda"
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        g = self.rng(device=device)
+        dev = device
         metadata, self.valid_rows = make_expert_layout_metadata(
             self.layout,
             self.rows,
@@ -345,13 +351,15 @@ class MoeExpertMLPStagedWorkload(MoeGroupedGemmStagedWorkload):
         )
         self.w_down_shape = tuple(w_down_shape)
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        x, w_gate_up, metadata = super().gen_inputs()
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        x, w_gate_up, metadata = super().gen_inputs(device=device)
         # Its own tag: the base class drew from the untagged stream, and this
         # draw must not restart it.
-        g = self.rng("w_down", device="cuda")
+        g = self.rng("w_down", device=device)
         w_down = (
-            torch.randn(*self.w_down_shape, dtype=self.dtype, device="cuda", generator=g) * 0.02
+            torch.randn(*self.w_down_shape, dtype=self.dtype, device=device, generator=g) * 0.02
         )
         return x, w_gate_up, w_down, metadata
 
@@ -397,9 +405,9 @@ class FusedMoeWorkload(WorkloadBase):
         self.routed_scaling_factor = routed_scaling_factor
         self.dtype = dtype
 
-    def gen_inputs(self):
-        g = self.rng(device="cuda")
-        dev = "cuda"
+    def gen_inputs(self, *, device: torch.device | str = "cuda"):
+        g = self.rng(device=device)
+        dev = device
         hidden = torch.randn(
             self.num_tokens,
             self.hidden_size,
@@ -471,9 +479,9 @@ class FusedMoeSharedExpertWorkload(WorkloadBase):
         self.routed_scaling_factor = routed_scaling_factor
         self.dtype = dtype
 
-    def gen_inputs(self):
-        g = self.rng(device="cuda")
-        dev = "cuda"
+    def gen_inputs(self, *, device: torch.device | str = "cuda"):
+        g = self.rng(device=device)
+        dev = device
         hidden = torch.randn(
             self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev, generator=g
         )
@@ -546,9 +554,9 @@ class MoeExpertsWorkload(WorkloadBase):
         self.ffn_size = ffn_size
         self.dtype = dtype
 
-    def gen_inputs(self):
-        g = self.rng(device="cuda")
-        dev = "cuda"
+    def gen_inputs(self, *, device: torch.device | str = "cuda"):
+        g = self.rng(device=device)
+        dev = device
         hidden = torch.randn(
             self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev, generator=g
         )

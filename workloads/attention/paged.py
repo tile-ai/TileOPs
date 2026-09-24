@@ -5,7 +5,9 @@ import torch
 from workloads.workload_base import WORKLOAD_SEED
 
 
-def make_interleaved_block_table(batch: int, max_pages_per_req: int) -> torch.Tensor:
+def make_interleaved_block_table(
+    batch: int, max_pages_per_req: int, *, device: torch.device | str = "cuda"
+) -> torch.Tensor:
     """Block table whose logical pages sit out of order in physical memory.
 
     Each request owns a contiguous run of physical pages and reads them
@@ -17,11 +19,16 @@ def make_interleaved_block_table(batch: int, max_pages_per_req: int) -> torch.Te
         start = b * max_pages_per_req
         pages = list(range(start, start + max_pages_per_req))
         rows.append(pages[::2] + pages[1::2])
-    return torch.tensor(rows, device="cuda", dtype=torch.int32).contiguous()
+    return torch.tensor(rows, device=device, dtype=torch.int32).contiguous()
 
 
 def make_fragmented_block_table(
-    batch: int, pages_per_req: int, pool_pages: int, seed: int = WORKLOAD_SEED
+    batch: int,
+    pages_per_req: int,
+    pool_pages: int,
+    seed: int = WORKLOAD_SEED,
+    *,
+    device: torch.device | str = "cuda",
 ) -> torch.Tensor:
     """Block table over a fragmented page pool, the layout a serving cache has.
 
@@ -39,7 +46,7 @@ def make_fragmented_block_table(
         table = torch.stack(
             [torch.randperm(pool_pages, generator=generator)[:pages_per_req] for _ in range(batch)]
         )
-    return table.to(device="cuda", dtype=torch.int32).contiguous()
+    return table.to(device=device, dtype=torch.int32).contiguous()
 
 
 def paged_cache_row(
@@ -52,9 +59,11 @@ def paged_cache_row(
     return physical_page * page_size + page_offset
 
 
-def make_unit_cache_scales() -> tuple[torch.Tensor, torch.Tensor]:
+def make_unit_cache_scales(
+    *, device: torch.device | str = "cuda"
+) -> tuple[torch.Tensor, torch.Tensor]:
     """The K and V dequantisation scales of an unquantised cache."""
-    scale = torch.ones((1,), device="cuda", dtype=torch.float32)
+    scale = torch.ones((1,), device=device, dtype=torch.float32)
     return scale, scale.clone()
 
 

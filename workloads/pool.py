@@ -37,8 +37,8 @@ class AvgPool1dBenchCase:
         self.count_include_pad = count_include_pad
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.n, self.c_in, self.l_in, device="cuda", dtype=self.dtype).contiguous()
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
+        x = torch.randn(self.n, self.c_in, self.l_in, device=device, dtype=self.dtype).contiguous()
         return (x,)
 
 
@@ -69,9 +69,9 @@ class AvgPool2dBenchCase:
         self.divisor_override = divisor_override
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
         x = torch.randn(
-            self.n, self.c_in, self.h_in, self.w_in, device="cuda", dtype=self.dtype
+            self.n, self.c_in, self.h_in, self.w_in, device=device, dtype=self.dtype
         ).contiguous()
         return (x,)
 
@@ -105,14 +105,14 @@ class AvgPool3dBenchCase:
         self.divisor_override = divisor_override
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
         x = torch.randn(
             self.n,
             self.c_in,
             self.d_in,
             self.h_in,
             self.w_in,
-            device="cuda",
+            device=device,
             dtype=self.dtype,
         ).contiguous()
         return (x,)
@@ -145,9 +145,9 @@ class MaxPool2dBenchCase:
         self.dtype = dtype
         self.return_indices = return_indices
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
         x = torch.randn(
-            self.n, self.c_in, self.h_in, self.w_in, device="cuda", dtype=self.dtype
+            self.n, self.c_in, self.h_in, self.w_in, device=device, dtype=self.dtype
         ).contiguous()
         return (x,)
 
@@ -177,8 +177,8 @@ class MaxPool1dBenchCase:
         self.dtype = dtype
         self.return_indices = return_indices
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.n, self.c_in, self.l_in, device="cuda", dtype=self.dtype).contiguous()
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
+        x = torch.randn(self.n, self.c_in, self.l_in, device=device, dtype=self.dtype).contiguous()
         return (x,)
 
 
@@ -211,14 +211,14 @@ class MaxPool3dBenchCase:
         self.dtype = dtype
         self.return_indices = return_indices
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
         x = torch.randn(
             self.n,
             self.c_in,
             self.d_in,
             self.h_in,
             self.w_in,
-            device="cuda",
+            device=device,
             dtype=self.dtype,
         ).contiguous()
         return (x,)
@@ -245,8 +245,8 @@ class AvgPoolWorkload(WorkloadBase):
         self.divisor_override = divisor_override
         self.dtype = dtype
 
-    def gen_inputs(self, *shape: int) -> tuple[torch.Tensor]:
-        x = torch.randn(*shape, device="cuda", dtype=self.dtype).contiguous()
+    def gen_inputs(self, *shape: int, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
+        x = torch.randn(*shape, device=device, dtype=self.dtype).contiguous()
         return (x,)
 
     def ref_program(self, input: torch.Tensor) -> torch.Tensor:
@@ -285,8 +285,8 @@ class MaxPoolWorkload(WorkloadBase):
         self.contiguous = contiguous
         self.return_indices = return_indices
 
-    def gen_inputs(self, *shape: int) -> tuple[torch.Tensor]:
-        x = torch.randn(*shape, device="cuda", dtype=self.dtype)
+    def gen_inputs(self, *shape: int, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
+        x = torch.randn(*shape, device=device, dtype=self.dtype)
         if self.contiguous:
             x = x.contiguous()
         else:
@@ -330,15 +330,15 @@ class AdaptivePool2dWorkload(WorkloadBase):
         self.output_size = output_size
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
         x = torch.randn(
-            self.n, self.c_in, self.h_in, self.w_in, device="cuda", dtype=self.dtype
+            self.n, self.c_in, self.h_in, self.w_in, device=device, dtype=self.dtype
         ).contiguous()
         return (x,)
 
 
 def mean_pooling_chunk_index(
-    seq_lens: Sequence[int], chunk_size: int
+    seq_lens: Sequence[int], chunk_size: int, *, device: torch.device | str = "cuda"
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """The ``offsets`` and ``indices`` a ragged mean-pooling call takes.
 
@@ -355,7 +355,7 @@ def mean_pooling_chunk_index(
     bounds = [0]
     for length in seq_lens:
         bounds.append(bounds[-1] + length)
-    offsets = torch.tensor(bounds, dtype=torch.int32, device="cuda")
+    offsets = torch.tensor(bounds, dtype=torch.int32, device=device)
     return offsets, prepare_chunk_indices(offsets, chunk_size)
 
 
@@ -386,13 +386,13 @@ class MeanPoolingWorkload(WorkloadBase):
         self.accum_dtype = accum_dtype
         self.seq_lens = None if seq_lens is None else list(seq_lens)
 
-    def gen_inputs(self) -> tuple:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple:
         x = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, device="cuda", dtype=self.dtype
+            self.batch, self.seq_len, self.heads, self.dim, device=device, dtype=self.dtype
         )
         if self.seq_lens is None:
             return (x,)
-        return (x, *mean_pooling_chunk_index(self.seq_lens, self.chunk_size))
+        return (x, *mean_pooling_chunk_index(self.seq_lens, self.chunk_size, device=device))
 
     def ref_program(
         self,

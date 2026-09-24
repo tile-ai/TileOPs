@@ -119,8 +119,8 @@ class UnaryActivationTest(RandnFlatWorkload, TestBase):
         return self._ref_fn(x)
 
 
-def _randn(n: int, dtype: torch.dtype) -> torch.Tensor:
-    return torch.randn(n, device="cuda", dtype=dtype)
+def _randn(n: int, dtype: torch.dtype, *, device: torch.device | str = "cuda") -> torch.Tensor:
+    return torch.randn(n, device=device, dtype=dtype)
 
 
 def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls, **op_kwargs):
@@ -219,8 +219,8 @@ def test_sigmoid_edge(n_total: int, dtype: torch.dtype) -> None:
     """Edge: sigmoid of large negative -> ~0, large positive -> ~1."""
     from tileops.ops.elementwise import SigmoidFwdOp
 
-    def _extreme(n, dtype):
-        x = torch.zeros(n, device="cuda", dtype=dtype)
+    def _extreme(n, dtype, *, device="cuda"):
+        x = torch.zeros(n, device=device, dtype=dtype)
         x[: n // 2] = -50.0
         x[n // 2 :] = 50.0
         return x
@@ -233,8 +233,8 @@ def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
     """Edge: tanh saturates to +/-1 for large inputs."""
     from tileops.ops.elementwise import TanhFwdOp
 
-    def _extreme(n, dtype):
-        x = torch.zeros(n, device="cuda", dtype=dtype)
+    def _extreme(n, dtype, *, device="cuda"):
+        x = torch.zeros(n, device=device, dtype=dtype)
         x[: n // 2] = -50.0
         x[n // 2 :] = 50.0
         return x

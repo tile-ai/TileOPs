@@ -88,8 +88,8 @@ def test_isfinite(n_total: int, dtype: torch.dtype) -> None:
 def test_isnan_edge(n_total: int, dtype: torch.dtype) -> None:
     """Edge: all NaN input."""
 
-    def _all_nan(n, dtype):
-        return torch.full((n,), float("nan"), device="cuda", dtype=dtype)
+    def _all_nan(n, dtype, *, device="cuda"):
+        return torch.full((n,), float("nan"), device=device, dtype=dtype)
 
     _make_special_test(n_total, dtype, IsnanFwdOp, torch.isnan, gen_fn=_all_nan)
 
@@ -98,8 +98,8 @@ def test_isnan_edge(n_total: int, dtype: torch.dtype) -> None:
 def test_isinf_edge(n_total: int, dtype: torch.dtype) -> None:
     """Edge: mix of +inf and -inf."""
 
-    def _all_inf(n, dtype):
-        x = torch.full((n,), float("inf"), device="cuda", dtype=dtype)
+    def _all_inf(n, dtype, *, device="cuda"):
+        x = torch.full((n,), float("inf"), device=device, dtype=dtype)
         x[: n // 2] = float("-inf")
         return x
 
@@ -110,8 +110,8 @@ def test_isinf_edge(n_total: int, dtype: torch.dtype) -> None:
 def test_isfinite_edge(n_total: int, dtype: torch.dtype) -> None:
     """Edge: all finite input."""
 
-    def _all_finite(n, dtype):
-        return torch.randn(n, device="cuda", dtype=dtype)
+    def _all_finite(n, dtype, *, device="cuda"):
+        return torch.randn(n, device=device, dtype=dtype)
 
     _make_special_test(n_total, dtype, IsfiniteFwdOp, torch.isfinite, gen_fn=_all_finite)
 

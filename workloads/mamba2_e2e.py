@@ -138,8 +138,8 @@ class Mamba2FwdWorkload(WorkloadBase):
         self.dt_softplus = dt_softplus
         self.num_chunks = seqlen // chunk_size
 
-    def gen_inputs(self):
-        """Return (x, dt, A, B, C, dt_bias) on CUDA.
+    def gen_inputs(self, *, device: torch.device | str = "cuda"):
+        """Return (x, dt, A, B, C, dt_bias) on *device*.
 
         Tensor shapes:
             x:       (batch, seqlen, n_heads, d_head)          dtype
@@ -155,7 +155,7 @@ class Mamba2FwdWorkload(WorkloadBase):
         p = self.d_head
         n = self.d_state
         g = self.n_groups
-        dev = "cuda"
+        dev = device
         dt = self.dtype
 
         x = torch.randn(b, S, h, p, dtype=dt, device=dev) * 0.1

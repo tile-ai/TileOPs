@@ -85,6 +85,10 @@ family shares.
 **Must contain**: input construction for every op, and — where the class is
 named for an op — that op's reference computation.
 
+**Places tensors where the caller asks**: `gen_inputs(device=...)` builds every
+tensor on that device, CUDA by default, and a reference computes on its inputs'
+device. The same inputs then check the in-tree kernels and any target's kernels.
+
 **Must not contain**: tolerances, `check`, `calculate_flops` /
 `calculate_memory`, or the choice of what to time against. Those are decisions,
 the first three the test's and the last the benchmark's, and a decision placed
@@ -104,7 +108,7 @@ consumers carry the reference instead. `TestBase` already declares
 cannot be instantiated.
 
 ```
-WorkloadBase (workloads/workload_base.py)  # gen_inputs(), and ref_program()
+WorkloadBase (workloads/workload_base.py)  # gen_inputs(device), and ref_program()
   |                                        # on the classes named for an op
   ├── TestBase (tests/test_base.py)        # adds check() and tolerances
   └── concrete subclasses per op

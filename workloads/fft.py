@@ -9,8 +9,8 @@ class FFTWorkload(WorkloadBase):
         self.dtype = dtype
         self.batch_shape = batch_shape
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.batch_shape, self.n, device="cuda", dtype=self.dtype)
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
+        x = torch.randn(*self.batch_shape, self.n, device=device, dtype=self.dtype)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:

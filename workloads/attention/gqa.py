@@ -10,9 +10,9 @@ from workloads.attention.paged import make_fragmented_block_table
 from workloads.workload_base import WorkloadBase
 
 
-def make_cu_seqlens(lengths: list[int]) -> torch.Tensor:
+def make_cu_seqlens(lengths: list[int], *, device: torch.device | str = "cuda") -> torch.Tensor:
     """Exclusive prefix sum of *lengths*, the packed-varlen offset vector."""
-    return torch.tensor([0, *accumulate(lengths)], device="cuda", dtype=torch.int32)
+    return torch.tensor([0, *accumulate(lengths)], device=device, dtype=torch.int32)
 
 
 def _compute_gqa_square_lse(
@@ -134,6 +134,8 @@ class GroupedQueryAttentionBwdWorkload(WorkloadBase):
 
     def gen_inputs(
         self,
+        *,
+        device: torch.device | str = "cuda",
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(
             self.batch,
@@ -141,7 +143,7 @@ class GroupedQueryAttentionBwdWorkload(WorkloadBase):
             self.heads,
             self.dim,
             dtype=self.dtype,
-            device="cuda",
+            device=device,
             requires_grad=True,
         )
         k = torch.randn(
@@ -150,7 +152,7 @@ class GroupedQueryAttentionBwdWorkload(WorkloadBase):
             self.heads_kv,
             self.dim,
             dtype=self.dtype,
-            device="cuda",
+            device=device,
             requires_grad=True,
         )
         v = torch.randn(
@@ -159,11 +161,11 @@ class GroupedQueryAttentionBwdWorkload(WorkloadBase):
             self.heads_kv,
             self.dim,
             dtype=self.dtype,
-            device="cuda",
+            device=device,
             requires_grad=True,
         )
         grad_output = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device="cuda"
+            self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device=device
         )
 
         with torch.no_grad():
@@ -213,14 +215,16 @@ class GroupedQueryAttentionDenseDecodeWorkload(WorkloadBase):
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = 0.0 if softcap is None else softcap
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        q = torch.randn(self.batch, 1, self.heads, self.dim, device="cuda", dtype=self.dtype)
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        q = torch.randn(self.batch, 1, self.heads, self.dim, device=device, dtype=self.dtype)
         k = torch.randn(
             self.batch,
             self.seq_len_kv,
             self.heads_kv,
             self.dim,
-            device="cuda",
+            device=device,
             dtype=self.dtype,
         )
         v = torch.randn_like(k)
@@ -277,7 +281,7 @@ class GroupedQueryAttentionDensePrefillWorkload(WorkloadBase):
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
 
-    def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor | None, ...]:
         shapes = (
             (self.batch, self.seq_len_q, self.heads, self.dim),
             (self.batch, self.seq_len_kv, self.heads_kv, self.dim),
@@ -285,20 +289,20 @@ class GroupedQueryAttentionDensePrefillWorkload(WorkloadBase):
         )
         if self.dtype == torch.float8_e4m3fn:
             # FP8 saturates near 448; 0.2 keeps the products in range.
-            q, k, v = ((torch.randn(s, device="cuda") * 0.2).to(self.dtype) for s in shapes)
+            q, k, v = ((torch.randn(s, device=device) * 0.2).to(self.dtype) for s in shapes)
             # Not one: a kernel that never reads a scale must not agree.
             scales = tuple(
-                torch.rand(self.batch, self.heads_kv, device="cuda", dtype=torch.float32) * 0.5
+                torch.rand(self.batch, self.heads_kv, device=device, dtype=torch.float32) * 0.5
                 + 0.75
                 for _ in range(3)
             )
         else:
-            q, k, v = (torch.randn(s, device="cuda", dtype=self.dtype) for s in shapes)
+            q, k, v = (torch.randn(s, device=device, dtype=self.dtype) for s in shapes)
             scales = (None, None, None)
 
         rope_cos = rope_sin = None
         if self.rotary_dim is not None:
-            angles = torch.randn(self.seq_len_kv, self.rotary_dim // 2, device="cuda") * 0.1
+            angles = torch.randn(self.seq_len_kv, self.rotary_dim // 2, device=device) * 0.1
             rope_cos = angles.cos().to(self.out_dtype)
             rope_sin = angles.sin().to(self.out_dtype)
         return (q, k, v, *scales, rope_cos, rope_sin)
@@ -388,18 +392,20 @@ class GroupedQueryAttentionDecodePagedWorkload(WorkloadBase):
 
     def gen_inputs(
         self,
+        *,
+        device: torch.device | str = "cuda",
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         num_pages = self.seqlen_kv // self.page_size
         real_seqlen_kv = torch.randint(
-            self.page_size, self.seqlen_kv + 1, (self.batch,), dtype=torch.int32, device="cuda"
+            self.page_size, self.seqlen_kv + 1, (self.batch,), dtype=torch.int32, device=device
         )
         real_seqlen_kv = (real_seqlen_kv // self.page_size) * self.page_size
         real_seqlen_kv[0] = min(real_seqlen_kv[0].item(), self.seqlen_kv)
 
-        q = torch.randn(self.batch, self.heads, self.dim, dtype=self.dtype, device="cuda")
-        k = torch.randn(self.seqlen_kv, self.heads_kv, self.dim, dtype=self.dtype, device="cuda")
-        v = torch.randn(self.seqlen_kv, self.heads_kv, self.dim, dtype=self.dtype, device="cuda")
-        block_table = make_fragmented_block_table(self.batch, num_pages, num_pages)
+        q = torch.randn(self.batch, self.heads, self.dim, dtype=self.dtype, device=device)
+        k = torch.randn(self.seqlen_kv, self.heads_kv, self.dim, dtype=self.dtype, device=device)
+        v = torch.randn(self.seqlen_kv, self.heads_kv, self.dim, dtype=self.dtype, device=device)
+        block_table = make_fragmented_block_table(self.batch, num_pages, num_pages, device=device)
 
         q = q.contiguous()
         k = k.contiguous()
@@ -448,21 +454,23 @@ class GQAPrefillVarlenFwdWorkload(WorkloadBase):
 
     def gen_inputs(
         self,
+        *,
+        device: torch.device | str = "cuda",
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(
-            self.total_q, self.heads, self.dim, device="cuda", dtype=self.dtype
+            self.total_q, self.heads, self.dim, device=device, dtype=self.dtype
         ).contiguous()
         k = torch.randn(
-            self.total_kv, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
+            self.total_kv, self.heads_kv, self.dim, device=device, dtype=self.dtype
         ).contiguous()
         v = torch.randn(
-            self.total_kv, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
+            self.total_kv, self.heads_kv, self.dim, device=device, dtype=self.dtype
         ).contiguous()
         cu_seqlens_q = torch.tensor(
-            [0] + torch.tensor(self.q_lens).cumsum(0).tolist(), dtype=torch.int32, device="cuda"
+            [0] + torch.tensor(self.q_lens).cumsum(0).tolist(), dtype=torch.int32, device=device
         )
         cu_seqlens_kv = torch.tensor(
-            [0] + torch.tensor(self.kv_lens).cumsum(0).tolist(), dtype=torch.int32, device="cuda"
+            [0] + torch.tensor(self.kv_lens).cumsum(0).tolist(), dtype=torch.int32, device=device
         )
         return q, k, v, cu_seqlens_q, cu_seqlens_kv
 
@@ -514,6 +522,8 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
 
     def gen_inputs(
         self,
+        *,
+        device: torch.device | str = "cuda",
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -526,23 +536,23 @@ class GQAPrefillPagedWithKVCacheFwdWorkload(WorkloadBase):
         int,
     ]:
         q = torch.randn(
-            self.total_q, self.heads, self.dim, device="cuda", dtype=self.dtype
+            self.total_q, self.heads, self.dim, device=device, dtype=self.dtype
         ).contiguous()
         k_new = torch.randn(
-            self.total_q, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
+            self.total_q, self.heads_kv, self.dim, device=device, dtype=self.dtype
         ).contiguous()
         v_new = torch.randn(
-            self.total_q, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
+            self.total_q, self.heads_kv, self.dim, device=device, dtype=self.dtype
         ).contiguous()
         physical_tokens = self.batch * self.max_pages_per_req * self.page_size
         k_pages = torch.randn(
-            physical_tokens, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
+            physical_tokens, self.heads_kv, self.dim, device=device, dtype=self.dtype
         ).contiguous()
         v_pages = torch.randn_like(k_pages)
-        cu_seqlens_q = make_cu_seqlens(self.q_lens)
-        cache_seqlens = torch.tensor(self.cache_lens, dtype=torch.int32, device="cuda")
+        cu_seqlens_q = make_cu_seqlens(self.q_lens, device=device)
+        cache_seqlens = torch.tensor(self.cache_lens, dtype=torch.int32, device=device)
         block_table = make_fragmented_block_table(
-            self.batch, self.max_pages_per_req, self.batch * self.max_pages_per_req
+            self.batch, self.max_pages_per_req, self.batch * self.max_pages_per_req, device=device
         )
         return (
             q,
@@ -595,22 +605,24 @@ class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
 
     def gen_inputs(
         self,
+        *,
+        device: torch.device | str = "cuda",
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         total_q = sum(self.seqlens_q)
         total_k = sum(self.seqlens_k)
-        q = torch.randn(total_q, self.heads, self.dim, dtype=self.dtype, device="cuda") * 0.1
-        k = torch.randn(total_k, self.heads_kv, self.dim, dtype=self.dtype, device="cuda") * 0.1
-        v = torch.randn(total_k, self.heads_kv, self.dim, dtype=self.dtype, device="cuda") * 0.1
+        q = torch.randn(total_q, self.heads, self.dim, dtype=self.dtype, device=device) * 0.1
+        k = torch.randn(total_k, self.heads_kv, self.dim, dtype=self.dtype, device=device) * 0.1
+        v = torch.randn(total_k, self.heads_kv, self.dim, dtype=self.dtype, device=device) * 0.1
 
         cu_seqlens_q = torch.tensor(
             [0] + list(torch.cumsum(torch.tensor(self.seqlens_q), 0).tolist()),
             dtype=torch.int32,
-            device="cuda",
+            device=device,
         )
         cu_seqlens_k = torch.tensor(
             [0] + list(torch.cumsum(torch.tensor(self.seqlens_k), 0).tolist()),
             dtype=torch.int32,
-            device="cuda",
+            device=device,
         )
         return q, k, v, cu_seqlens_q, cu_seqlens_k
 

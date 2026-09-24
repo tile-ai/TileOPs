@@ -13,8 +13,8 @@ class ReluWorkload(WorkloadBase):
         self.n_total = n_total
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
+        x = torch.randn(self.n_total, dtype=self.dtype, device=device)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -87,19 +87,25 @@ class BinaryManifestWorkload:
         self.integer = integer
         self.logical = logical
 
-    def _tensor(self, shape: tuple[int, ...]) -> torch.Tensor:
+    def _tensor(
+        self, shape: tuple[int, ...], *, device: torch.device | str = "cuda"
+    ) -> torch.Tensor:
         if self.dtype is torch.bool:
-            return torch.randint(0, 2, shape, device="cuda", dtype=torch.bool)
+            return torch.randint(0, 2, shape, device=device, dtype=torch.bool)
         if self.integer:
-            return torch.randint(-1000, 1000, shape, device="cuda", dtype=self.dtype)
+            return torch.randint(-1000, 1000, shape, device=device, dtype=self.dtype)
         if self.positive:
-            return torch.rand(shape, device="cuda", dtype=self.dtype) + 0.1
+            return torch.rand(shape, device=device, dtype=self.dtype) + 0.1
         if self.logical:
-            return (torch.randn(shape, device="cuda", dtype=self.dtype) > 0).to(self.dtype)
-        return torch.randn(shape, device="cuda", dtype=self.dtype)
+            return (torch.randn(shape, device=device, dtype=self.dtype) > 0).to(self.dtype)
+        return torch.randn(shape, device=device, dtype=self.dtype)
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._tensor(self.input_shape), self._tensor(self.other_shape)
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self._tensor(self.input_shape, device=device), self._tensor(
+            self.other_shape, device=device
+        )
 
 
 class PreluManifestWorkload:
@@ -119,9 +125,11 @@ class PreluManifestWorkload:
     def num_channels(self) -> int:
         return self.weight_shape[0] if self.weight_shape else 1
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        weight = torch.rand(self.weight_shape, device="cuda", dtype=self.dtype)
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        x = torch.randn(self.input_shape, device=device, dtype=self.dtype)
+        weight = torch.rand(self.weight_shape, device=device, dtype=self.dtype)
         return x, weight
 
 
@@ -140,10 +148,12 @@ class MaskedFillTensorManifestWorkload:
         self.n_total = prod(self.shape)
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        mask = torch.rand(self.mask_shape, device="cuda") > 0.5
-        value = torch.full(self.value_shape, -100.0, device="cuda", dtype=self.dtype)
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        x = torch.randn(self.input_shape, device=device, dtype=self.dtype)
+        mask = torch.rand(self.mask_shape, device=device) > 0.5
+        value = torch.full(self.value_shape, -100.0, device=device, dtype=self.dtype)
         return x, mask, value
 
 
@@ -155,9 +165,11 @@ class MaskedFillScalarManifestWorkload:
         self.n_total = prod(input_shape)
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        mask = torch.rand(self.mask_shape, device="cuda") > 0.5
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        x = torch.randn(self.input_shape, device=device, dtype=self.dtype)
+        mask = torch.rand(self.mask_shape, device=device) > 0.5
         return x, mask
 
 
@@ -170,10 +182,12 @@ class WhereManifestWorkload:
         self.n_total = prod(shape)
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        cond = torch.rand(self.condition_shape, device="cuda") > 0.5
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        y = torch.randn(self.other_shape, device="cuda", dtype=self.dtype)
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        cond = torch.rand(self.condition_shape, device=device) > 0.5
+        x = torch.randn(self.input_shape, device=device, dtype=self.dtype)
+        y = torch.randn(self.other_shape, device=device, dtype=self.dtype)
         return cond, x, y
 
 
@@ -186,10 +200,12 @@ class LerpTensorManifestWorkload:
         self.n_total = prod(shape)
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        end = torch.randn(self.end_shape, device="cuda", dtype=self.dtype)
-        weight = torch.rand(self.weight_shape, device="cuda", dtype=self.dtype)
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        x = torch.randn(self.input_shape, device=device, dtype=self.dtype)
+        end = torch.randn(self.end_shape, device=device, dtype=self.dtype)
+        weight = torch.rand(self.weight_shape, device=device, dtype=self.dtype)
         return x, end, weight
 
 
@@ -221,13 +237,13 @@ class TensorClampBenchCase:
         self.n_total = prod(self.shape)
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor, ...]:
+        x = torch.randn(self.input_shape, device=device, dtype=self.dtype)
         tensors: list[torch.Tensor] = [x]
         if self.min_shape is not None:
-            tensors.append(torch.randn(self.min_shape, device="cuda", dtype=self.dtype) - 0.5)
+            tensors.append(torch.randn(self.min_shape, device=device, dtype=self.dtype) - 0.5)
         if self.max_shape is not None:
-            tensors.append(torch.randn(self.max_shape, device="cuda", dtype=self.dtype) + 0.5)
+            tensors.append(torch.randn(self.max_shape, device=device, dtype=self.dtype) + 0.5)
         return tuple(tensors)
 
 
@@ -238,7 +254,7 @@ class _GenerativeWorkload:
         self.shape = shape
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple:
         return ()
 
 
@@ -248,8 +264,8 @@ class Fp8UnaryBenchCase:
         self.n_total = prod(shape)
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor, ...]:
+        x = torch.randn(self.shape, device=device, dtype=torch.float16) * 2.0
         return (x.to(self.dtype),)
 
 
@@ -259,9 +275,9 @@ class Fp8MaskedFillBenchCase:
         self.n_total = prod(shape)
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(self.dtype)
-        mask = torch.rand(self.shape, device="cuda") > 0.5
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor, ...]:
+        x = (torch.randn(self.shape, device=device, dtype=torch.float16) * 2.0).to(self.dtype)
+        mask = torch.rand(self.shape, device=device) > 0.5
         return x, mask
 
 
@@ -281,8 +297,10 @@ class BinaryBenchCase:
         self.output_dtype = output_dtype
         self.domain = domain
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return PAIR_DOMAINS[self.domain](self.shape, self.dtype)
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return PAIR_DOMAINS[self.domain](self.shape, self.dtype, device=device)
 
 
 class FusedGatedBenchCase:
@@ -295,8 +313,8 @@ class FusedGatedBenchCase:
         self.dtype = dtype
         self.output_dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (torch.randn(self.M, 2 * self.N, device="cuda", dtype=self.dtype),)
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
+        return (torch.randn(self.M, 2 * self.N, device=device, dtype=self.dtype),)
 
 
 class BroadcastBenchCase:
@@ -317,8 +335,10 @@ class BroadcastBenchCase:
         self.output_dtype = output_dtype
         self.domain = domain
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return BROADCAST_DOMAINS[self.domain](self.a_shape, self.b_shape, self.dtype)
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return BROADCAST_DOMAINS[self.domain](self.a_shape, self.b_shape, self.dtype, device=device)
 
 
 class AddBroadcastWorkload(WorkloadBase):
@@ -327,9 +347,11 @@ class AddBroadcastWorkload(WorkloadBase):
         self.b_shape = b_shape
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.a_shape, dtype=self.dtype, device="cuda")
-        b = torch.randn(self.b_shape, dtype=self.dtype, device="cuda")
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.randn(self.a_shape, dtype=self.dtype, device=device)
+        b = torch.randn(self.b_shape, dtype=self.dtype, device=device)
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -341,9 +363,11 @@ class PowPositiveWorkload(WorkloadBase):
         self.n_total = n_total
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.5
-        b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") * 2.0
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.rand(self.n_total, dtype=self.dtype, device=device) + 0.5
+        b = torch.rand(self.n_total, dtype=self.dtype, device=device) * 2.0
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -355,13 +379,13 @@ class BitwiseNotWorkload(WorkloadBase):
         self.n_total = n_total
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
         if self.dtype == torch.bool:
-            x = torch.rand(self.n_total, device="cuda") > 0.5
+            x = torch.rand(self.n_total, device=device) > 0.5
         elif self.dtype == torch.uint8:
-            x = torch.randint(0, 256, (self.n_total,), device="cuda", dtype=self.dtype)
+            x = torch.randint(0, 256, (self.n_total,), device=device, dtype=self.dtype)
         else:
-            x = torch.randint(-128, 128, (self.n_total,), device="cuda", dtype=self.dtype)
+            x = torch.randint(-128, 128, (self.n_total,), device=device, dtype=self.dtype)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -374,9 +398,9 @@ class AddCompileWorkload(WorkloadBase):
         self.b_shape = b_shape
         self.dtype = dtype
 
-    def gen_inputs(self):
-        a = torch.randn(self.a_shape, dtype=self.dtype, device="cuda")
-        b = torch.randn(self.b_shape, dtype=self.dtype, device="cuda")
+    def gen_inputs(self, *, device: torch.device | str = "cuda"):
+        a = torch.randn(self.a_shape, dtype=self.dtype, device=device)
+        b = torch.randn(self.b_shape, dtype=self.dtype, device=device)
         return a, b
 
     def ref_program(self, a, b):
@@ -389,8 +413,8 @@ class EqCompileWorkload(WorkloadBase):
         self.b_shape = b_shape
         self.dtype = dtype
 
-    def gen_inputs(self):
-        a = torch.randn(self.a_shape, dtype=self.dtype, device="cuda")
+    def gen_inputs(self, *, device: torch.device | str = "cuda"):
+        a = torch.randn(self.a_shape, dtype=self.dtype, device=device)
         b = a.clone()
         mask = torch.rand_like(a, dtype=torch.float32) > 0.5
         b[mask] = torch.randn_like(b[mask])
@@ -406,8 +430,8 @@ class SiluAndMulCompileWorkload(WorkloadBase):
         self.N = N
         self.dtype = dtype
 
-    def gen_inputs(self):
-        x = torch.randn(self.M, 2 * self.N, dtype=self.dtype, device="cuda")
+    def gen_inputs(self, *, device: torch.device | str = "cuda"):
+        x = torch.randn(self.M, 2 * self.N, dtype=self.dtype, device=device)
         return (x,)
 
     def ref_program(self, x):
@@ -421,19 +445,19 @@ class LogicalNotWorkload(WorkloadBase):
         self.n_total = n_total
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
         if self.dtype == torch.bool:
-            x = torch.rand(self.n_total, device="cuda") > 0.5
+            x = torch.rand(self.n_total, device=device) > 0.5
             return (x,)
 
         if self.dtype == torch.uint8:
-            x = torch.randint(0, 8, (self.n_total,), device="cuda", dtype=self.dtype)
+            x = torch.randint(0, 8, (self.n_total,), device=device, dtype=self.dtype)
         elif self.dtype in (torch.int8, torch.int16, torch.int32, torch.int64):
-            x = torch.randint(-4, 4, (self.n_total,), device="cuda", dtype=self.dtype)
+            x = torch.randint(-4, 4, (self.n_total,), device=device, dtype=self.dtype)
         else:
-            x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
+            x = torch.randn(self.n_total, device=device, dtype=self.dtype)
 
-        mask = torch.rand(self.n_total, device="cuda") > 0.5
+        mask = torch.rand(self.n_total, device=device) > 0.5
         x[mask] = 0
         return (x,)
 
@@ -446,9 +470,11 @@ class BitwiseWorkload(WorkloadBase):
         self.n_total = n_total
         self.dtype = torch.int32
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device="cuda")
-        b = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device="cuda")
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device=device)
+        b = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device=device)
         return a, b
 
 
@@ -457,9 +483,11 @@ class LogicalWorkload(WorkloadBase):
         self.n_total = n_total
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda") > 0
-        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda") > 0
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.randn(self.n_total, dtype=self.dtype, device=device) > 0
+        b = torch.randn(self.n_total, dtype=self.dtype, device=device) > 0
         a = a.to(self.dtype)
         b = b.to(self.dtype)
         return a, b
@@ -471,10 +499,10 @@ class SpecialWorkload(WorkloadBase):
         self.dtype = dtype
         self._gen_fn = gen_fn
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
         if self._gen_fn is not None:
-            return (self._gen_fn(self.n_total, self.dtype),)
-        x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
+            return (self._gen_fn(self.n_total, self.dtype, device=device),)
+        x = torch.randn(self.n_total, device=device, dtype=self.dtype)
         quarter = self.n_total // 4
         x[:quarter] = float("nan")
         x[quarter : 2 * quarter] = float("inf")
@@ -485,8 +513,8 @@ class SpecialWorkload(WorkloadBase):
 class RandnFlatWorkload(WorkloadBase):
     """One ``randn`` vector of ``n_total`` elements.
 
-    ``gen_fn`` lets a caller substitute a domain-restricted draw (positive-only,
-    NaN-seeded, ...) without another class.
+    ``gen_fn(n_total, dtype, *, device)`` lets a caller substitute a
+    domain-restricted draw (positive-only, NaN-seeded, ...) without another class.
     """
 
     def __init__(self, n_total: int, dtype: torch.dtype, gen_fn=None):
@@ -494,10 +522,10 @@ class RandnFlatWorkload(WorkloadBase):
         self.dtype = dtype
         self._gen_fn = gen_fn
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
         if self._gen_fn is not None:
-            return (self._gen_fn(self.n_total, self.dtype),)
-        return (torch.randn(self.n_total, device="cuda", dtype=self.dtype),)
+            return (self._gen_fn(self.n_total, self.dtype, device=device),)
+        return (torch.randn(self.n_total, device=device, dtype=self.dtype),)
 
 
 class ShapedRandnWorkload(WorkloadBase):
@@ -508,8 +536,8 @@ class ShapedRandnWorkload(WorkloadBase):
         self.n_total = prod(self.shape)
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (torch.randn(self.shape, device="cuda", dtype=self.dtype),)
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
+        return (torch.randn(self.shape, device=device, dtype=self.dtype),)
 
 
 class RandnPairWorkload(WorkloadBase):
@@ -519,9 +547,11 @@ class RandnPairWorkload(WorkloadBase):
         self.n_total = n_total
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
-        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.randn(self.n_total, dtype=self.dtype, device=device)
+        b = torch.randn(self.n_total, dtype=self.dtype, device=device)
         return a, b
 
 
@@ -532,9 +562,11 @@ class PositivePairWorkload(WorkloadBase):
         self.n_total = n_total
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
-        b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        a = torch.rand(self.n_total, dtype=self.dtype, device=device) + 0.1
+        b = torch.rand(self.n_total, dtype=self.dtype, device=device) + 0.1
         return a, b
 
 
@@ -546,79 +578,89 @@ class GatedRandnWorkload(WorkloadBase):
         self.n = n
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda"),)
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
+        return (torch.randn(self.m, 2 * self.n, dtype=self.dtype, device=device),)
 
 
 # Value domains. A benchmark or test names the domain its op requires;
 # the draw itself belongs to this layer so both stages get the same tensors.
 
 
-def draw_normal_pair(shape: tuple, dtype: torch.dtype):
-    a = torch.randn(*shape, device="cuda", dtype=dtype)
-    b = torch.randn(*shape, device="cuda", dtype=dtype)
+def draw_normal_pair(shape: tuple, dtype: torch.dtype, *, device: torch.device | str = "cuda"):
+    a = torch.randn(*shape, device=device, dtype=dtype)
+    b = torch.randn(*shape, device=device, dtype=dtype)
     return a, b
 
 
-def draw_positive_pair(shape: tuple, dtype: torch.dtype):
-    a = torch.rand(*shape, device="cuda", dtype=dtype) + 0.1
-    b = torch.rand(*shape, device="cuda", dtype=dtype) + 0.1
+def draw_positive_pair(shape: tuple, dtype: torch.dtype, *, device: torch.device | str = "cuda"):
+    a = torch.rand(*shape, device=device, dtype=dtype) + 0.1
+    b = torch.rand(*shape, device=device, dtype=dtype) + 0.1
     return a, b
 
 
-def draw_int_pair(shape: tuple, dtype: torch.dtype):
-    a = torch.randint(-1000, 1000, shape, device="cuda", dtype=torch.int32)
-    b = torch.randint(-1000, 1000, shape, device="cuda", dtype=torch.int32)
+def draw_int_pair(shape: tuple, dtype: torch.dtype, *, device: torch.device | str = "cuda"):
+    a = torch.randint(-1000, 1000, shape, device=device, dtype=torch.int32)
+    b = torch.randint(-1000, 1000, shape, device=device, dtype=torch.int32)
     return a, b
 
 
-def draw_bool_pair(shape: tuple, dtype: torch.dtype):
-    a = (torch.randn(*shape, device="cuda", dtype=dtype) > 0).to(dtype)
-    b = (torch.randn(*shape, device="cuda", dtype=dtype) > 0).to(dtype)
+def draw_bool_pair(shape: tuple, dtype: torch.dtype, *, device: torch.device | str = "cuda"):
+    a = (torch.randn(*shape, device=device, dtype=dtype) > 0).to(dtype)
+    b = (torch.randn(*shape, device=device, dtype=dtype) > 0).to(dtype)
     return a, b
 
 
-def draw_normal_broadcast_pair(a_shape, b_shape, dtype):
-    a = torch.randn(*a_shape, device="cuda", dtype=dtype)
-    b = torch.randn(*b_shape, device="cuda", dtype=dtype)
+def draw_normal_broadcast_pair(a_shape, b_shape, dtype, *, device: torch.device | str = "cuda"):
+    a = torch.randn(*a_shape, device=device, dtype=dtype)
+    b = torch.randn(*b_shape, device=device, dtype=dtype)
     return a, b
 
 
-def draw_positive_broadcast_pair(a_shape, b_shape, dtype):
-    a = torch.rand(*a_shape, device="cuda", dtype=dtype) + 0.1
-    b = torch.rand(*b_shape, device="cuda", dtype=dtype) + 0.1
+def draw_positive_broadcast_pair(a_shape, b_shape, dtype, *, device: torch.device | str = "cuda"):
+    a = torch.rand(*a_shape, device=device, dtype=dtype) + 0.1
+    b = torch.rand(*b_shape, device=device, dtype=dtype) + 0.1
     return a, b
 
 
-def draw_normal(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
-    return (torch.randn(shape, device="cuda", dtype=dtype),)
+def draw_normal(
+    shape: tuple, dtype: torch.dtype, *, device: torch.device | str = "cuda"
+) -> tuple[torch.Tensor]:
+    return (torch.randn(shape, device=device, dtype=dtype),)
 
 
-def draw_positive_away_from_zero(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
+def draw_positive_away_from_zero(
+    shape: tuple, dtype: torch.dtype, *, device: torch.device | str = "cuda"
+) -> tuple[torch.Tensor]:
     # Domain restriction for log / sqrt / rsqrt / log1p / reciprocal.
-    return (torch.rand(shape, device="cuda", dtype=dtype) + 0.5,)
+    return (torch.rand(shape, device=device, dtype=dtype) + 0.5,)
 
 
-def draw_bool(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
+def draw_bool(
+    shape: tuple, dtype: torch.dtype, *, device: torch.device | str = "cuda"
+) -> tuple[torch.Tensor]:
     if dtype == torch.bool:
-        x = torch.randint(0, 2, shape, device="cuda", dtype=torch.bool)
+        x = torch.randint(0, 2, shape, device=device, dtype=torch.bool)
     else:
-        x = torch.randn(shape, device="cuda", dtype=dtype)
-        mask = torch.rand(shape, device="cuda") > 0.5
+        x = torch.randn(shape, device=device, dtype=dtype)
+        mask = torch.rand(shape, device=device) > 0.5
         x[mask] = 0
     return (x,)
 
 
-def draw_int(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
+def draw_int(
+    shape: tuple, dtype: torch.dtype, *, device: torch.device | str = "cuda"
+) -> tuple[torch.Tensor]:
     info = torch.iinfo(dtype)
     lo = max(info.min, -1024)
     hi = min(info.max, 1024)
-    return (torch.randint(lo, hi, shape, device="cuda", dtype=dtype),)
+    return (torch.randint(lo, hi, shape, device=device, dtype=dtype),)
 
 
-def draw_special_floats(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
+def draw_special_floats(
+    shape: tuple, dtype: torch.dtype, *, device: torch.device | str = "cuda"
+) -> tuple[torch.Tensor]:
     # Mix of normal floats, +/-inf, and NaN — exercises isnan/isinf/isfinite.
-    x = torch.randn(shape, device="cuda", dtype=dtype)
+    x = torch.randn(shape, device=device, dtype=dtype)
     flat = x.view(-1)
     quarter = flat.numel() // 4
     flat[:quarter] = float("nan")

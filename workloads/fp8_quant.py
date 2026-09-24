@@ -13,14 +13,14 @@ class FP8QuantWorkload(WorkloadBase):
         self.index_dim = index_dim
         self.in_dtype = in_dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
         input_tensor = torch.randn(
             self.batch,
             self.seq_len_kv,
             self.kv_group,
             self.index_dim,
             dtype=self.in_dtype,
-            device="cuda",
+            device=device,
         )
         return (input_tensor,)
 

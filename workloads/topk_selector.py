@@ -22,18 +22,20 @@ class TopkSelectorWorkload(WorkloadBase):
         self.in_dtype = in_dtype
         self.out_dtype = out_dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         index_score = torch.randn(
             self.batch,
             self.seq_len,
             self.seq_len_kv,
             self.kv_group,
             dtype=self.in_dtype,
-            device="cuda",
+            device=device,
         )
-        starts = torch.zeros(self.batch, self.seq_len, dtype=self.out_dtype, device="cuda")
+        starts = torch.zeros(self.batch, self.seq_len, dtype=self.out_dtype, device=device)
         ends = (
-            torch.ones(self.batch, self.seq_len, dtype=self.out_dtype, device="cuda")
+            torch.ones(self.batch, self.seq_len, dtype=self.out_dtype, device=device)
             * self.seq_len_kv
         )
         return index_score, starts, ends

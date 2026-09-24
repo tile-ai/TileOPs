@@ -1,6 +1,6 @@
 """Base classes for workload definitions shared between tests and benchmarks.
 
-WorkloadBase defines the contract: gen_inputs() for input generation.
+WorkloadBase defines the contract: gen_inputs(device=...) for input generation.
 A class named for one op also carries that op's ref_program.
 FixtureMeta / FixtureBase provide reusable pytest parametrize decorators.
 
@@ -34,7 +34,8 @@ class WorkloadBase(ABC):
     """
 
     @abstractmethod
-    def gen_inputs(self) -> tuple[Any, ...]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[Any, ...]:
+        """Build the op's inputs, every tensor on *device*."""
         raise NotImplementedError
 
     def rng(self, tag: str = "", *, device: torch.device | str = "cpu") -> torch.Generator:
@@ -51,8 +52,8 @@ class WorkloadBase(ABC):
         seeded generator, so two calls to one ``gen_inputs`` return equal
         inputs.
 
-        A draw on a CUDA tensor needs ``device="cuda"``: a generator only
-        feeds draws on its own device.
+        Pass the device of the tensor being drawn: a generator only feeds draws
+        on its own device.
         """
         seed = (WORKLOAD_SEED ^ crc32(f"{type(self).__name__}:{tag}".encode())) & 0xFFFFFFFF
         return torch.Generator(device=device).manual_seed(seed)
@@ -65,8 +66,8 @@ class RandnWorkload(WorkloadBase):
         self.shape = shape
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor]:
+        x = torch.randn(*self.shape, dtype=self.dtype, device=device)
         return (x,)
 
 

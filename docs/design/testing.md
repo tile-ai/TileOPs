@@ -6,7 +6,7 @@ Tests and benchmarks are separated by concern: `pytest tests/` validates correct
 
 | Class              | Location                                                             | Role                                                                                                                                                                                |
 | ------------------ | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WorkloadBase`     | [`workloads/workload_base.py`](../../workloads/workload_base.py)     | ABC defining `gen_inputs()`. Shared base used by both tests and benchmarks; a subclass named for one op also defines that op's `ref_program()`.                                     |
+| `WorkloadBase`     | [`workloads/workload_base.py`](../../workloads/workload_base.py)     | ABC defining `gen_inputs(device=...)`. Shared base used by both tests and benchmarks; a subclass named for one op also defines that op's `ref_program()`.                           |
 | `FixtureBase`      | [`workloads/workload_base.py`](../../workloads/workload_base.py)     | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute or `get_params()` classmethod.                                                     |
 | `TestBase`         | [`tests/test_base.py`](../../tests/test_base.py)                     | Inherits `WorkloadBase`. Declares `ref_program()` abstract and adds `check()`. Each op subclasses this for correctness testing.                                                     |
 | `BenchmarkBase[W]` | [`benchmarks/benchmark_base.py`](../../benchmarks/benchmark_base.py) | Generic ABC parameterized by workload type `W` (a capability protocol, not `WorkloadBase`). Subclass implements `calculate_flops()` and `calculate_memory()`. Provides `profile()`. |
@@ -36,7 +36,7 @@ Rules:
 
 ### File checklist
 
-1. **Workload class** in `workloads/` — subclass `WorkloadBase`, implement `gen_inputs()` and, when the class is named for one op, `ref_program()`.
+1. **Workload class** in `workloads/` — subclass `WorkloadBase`, implement `gen_inputs(*, device)`, placing every tensor on `device`, and, when the class is named for one op, `ref_program()`.
 1. **Fixture class** — subclass `FixtureBase`, define `PARAMS` with `smoke`/`full` marks.
 1. **Test class** in `tests/ops/test_<op>.py` — inherit `(MyWorkload, TestBase)`. Implement `ref_program()` here only when the workload describes an input shape rather than an op.
 1. **Test function** — `@YourFixture` decorated, call `test.check(op, *test.gen_inputs())`.

@@ -101,25 +101,31 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         return cu_seqlen_ks_for_each_q.int()
 
     def generate_random_cu_seqlens(
-        self, cp_size: int = 4, cp_rank: int = 3, kv_stride: int = 1, average_q_len: int = 512
+        self,
+        cp_size: int = 4,
+        cp_rank: int = 3,
+        kv_stride: int = 1,
+        average_q_len: int = 512,
+        *,
+        device: torch.device | str = "cuda",
     ):
         total_seqlen = self.seq_len * cp_size
 
-        cu_seqlens = torch.randint(
-            0, average_q_len * 2, (total_seqlen // average_q_len * 2,)
-        ).cuda()
+        cu_seqlens = torch.randint(0, average_q_len * 2, (total_seqlen // average_q_len * 2,)).to(
+            device
+        )
         last_seq_id = torch.where(cu_seqlens.cumsum(0) >= total_seqlen)[0][0]
         cu_seqlens = cu_seqlens[:last_seq_id]
 
         if cu_seqlens.sum() < total_seqlen:
             cu_seqlens = torch.cat(
-                [cu_seqlens, torch.tensor([total_seqlen - cu_seqlens.sum()]).cuda()]
+                [cu_seqlens, torch.tensor([total_seqlen - cu_seqlens.sum()]).to(device)]
             )
 
         cu_seqlens_cumsum = torch.cumsum(cu_seqlens, dim=0)
         cu_seqlens_k_cumsum = torch.cumsum(cu_seqlens // kv_stride, dim=0)
-        cu_seqlens_qs = torch.cat([torch.tensor([0]).cuda(), cu_seqlens_cumsum[:-1]])
-        cu_seqlens_ks = torch.cat([torch.tensor([0]).cuda(), cu_seqlens_k_cumsum[:-1]])
+        cu_seqlens_qs = torch.cat([torch.tensor([0]).to(device), cu_seqlens_cumsum[:-1]])
+        cu_seqlens_ks = torch.cat([torch.tensor([0]).to(device), cu_seqlens_k_cumsum[:-1]])
         cu_seqlens_qe = cu_seqlens_cumsum.clone()
         cu_seqlens_ke = cu_seqlens_k_cumsum.clone()
 
@@ -170,14 +176,14 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         return ks, ke
 
     def gen_inputs(
-        self, params=None
+        self, params=None, *, device: torch.device | str = "cuda"
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         IndexQ = torch.randn(
             self.batch,
             self.seq_len,
             self.heads,
             self.index_dim,
-            device="cuda",
+            device=device,
             dtype=torch.bfloat16,
         )
         IndexK = torch.randn(
@@ -185,12 +191,12 @@ class FP8LightningIndexerWorkload(WorkloadBase):
             self.seq_len_kv,
             self.kv_group,
             self.index_dim,
-            device="cuda",
+            device=device,
             dtype=torch.bfloat16,
         )
-        Weights = torch.randn(self.seq_len, self.heads, device="cuda", dtype=self.accum_dtype)
+        Weights = torch.randn(self.seq_len, self.heads, device=device, dtype=self.accum_dtype)
         CuSeqLenKS, CuSeqLenKE = self.generate_random_cu_seqlens(
-            cp_size=4, cp_rank=3, kv_stride=1, average_q_len=2048
+            cp_size=4, cp_rank=3, kv_stride=1, average_q_len=2048, device=device
         )
         return IndexQ, IndexK, Weights, CuSeqLenKS, CuSeqLenKE
 
@@ -213,8 +219,8 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         k = k.view(batch, seq_len_kv, kv_group, index_dim)
         q = q.view(batch, seq_len, kv_group, heads_per_group, index_dim)
 
-        mask_lo = torch.arange(0, seq_len_kv, device="cuda")[None, :] >= cu_seqlen_ks[:, None]
-        mask_hi = torch.arange(0, seq_len_kv, device="cuda")[None, :] < cu_seqlen_ke[:, None]
+        mask_lo = torch.arange(0, seq_len_kv, device=q.device)[None, :] >= cu_seqlen_ks[:, None]
+        mask_hi = torch.arange(0, seq_len_kv, device=q.device)[None, :] < cu_seqlen_ke[:, None]
         mask = mask_lo & mask_hi
 
         score = torch.einsum("bsghd,bngd->bghsn", q, k)

@@ -35,16 +35,18 @@ class MHCPreWorkload(WorkloadBase):
         self.sinkhorn_repeat = sinkhorn_repeat
         self.sinkhorn_eps = sinkhorn_eps
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch = self.batch
         n_expand = self.n_expand
         c_x = self.c_x
 
         phi = torch.randn(
-            [n_expand * c_x, n_expand * n_expand + 2 * n_expand], device="cuda", dtype=torch.float32
+            [n_expand * c_x, n_expand * n_expand + 2 * n_expand], device=device, dtype=torch.float32
         )
-        x = torch.randn([batch, n_expand * c_x], device="cuda", dtype=torch.bfloat16)
-        b = torch.randn([n_expand * n_expand + 2 * n_expand], device="cuda", dtype=torch.float32)
+        x = torch.randn([batch, n_expand * c_x], device=device, dtype=torch.bfloat16)
+        b = torch.randn([n_expand * n_expand + 2 * n_expand], device=device, dtype=torch.float32)
         return phi, x, b
 
     def ref_program(
@@ -72,14 +74,16 @@ class MHCPostWorkload(WorkloadBase):
         self.c_x = c_x
         self.dtype = dtype
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def gen_inputs(
+        self, *, device: torch.device | str = "cuda"
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch = self.batch
         n_expand = self.n_expand
         c_x = self.c_x
 
-        x_layer_out = torch.randn([batch, c_x], device="cuda", dtype=self.dtype)
-        h_post = torch.randn([batch, n_expand], device="cuda", dtype=torch.float32)
-        x_res = torch.randn([batch, n_expand * c_x], device="cuda", dtype=self.dtype)
+        x_layer_out = torch.randn([batch, c_x], device=device, dtype=self.dtype)
+        h_post = torch.randn([batch, n_expand], device=device, dtype=torch.float32)
+        x_res = torch.randn([batch, n_expand * c_x], device=device, dtype=self.dtype)
         return x_layer_out, h_post, x_res
 
     def ref_program(

@@ -80,21 +80,23 @@ def _get_tolerances(dtype: torch.dtype) -> dict[str, float]:
     return {"atol": 1e-5, "rtol": 1e-5}
 
 
-def _randn(n: int, dtype: torch.dtype) -> torch.Tensor:
-    return torch.randn(n, device="cuda", dtype=dtype)
+def _randn(n: int, dtype: torch.dtype, *, device: torch.device | str = "cuda") -> torch.Tensor:
+    return torch.randn(n, device=device, dtype=dtype)
 
 
-def _positive(n: int, dtype: torch.dtype) -> torch.Tensor:
-    return torch.rand(n, device="cuda", dtype=dtype).clamp(min=0.01) + 0.01
+def _positive(n: int, dtype: torch.dtype, *, device: torch.device | str = "cuda") -> torch.Tensor:
+    return torch.rand(n, device=device, dtype=dtype).clamp(min=0.01) + 0.01
 
 
-def _nonzero(n: int, dtype: torch.dtype) -> torch.Tensor:
-    x = torch.randn(n, device="cuda", dtype=dtype)
+def _nonzero(n: int, dtype: torch.dtype, *, device: torch.device | str = "cuda") -> torch.Tensor:
+    x = torch.randn(n, device=device, dtype=dtype)
     return x + torch.sign(x) * 0.01
 
 
-def _repeat_values(values: list[float], n: int, dtype: torch.dtype) -> torch.Tensor:
-    base = torch.tensor(values, device="cuda", dtype=dtype)
+def _repeat_values(
+    values: list[float], n: int, dtype: torch.dtype, *, device: torch.device | str = "cuda"
+) -> torch.Tensor:
+    base = torch.tensor(values, device=device, dtype=dtype)
     repeats = (n + len(values) - 1) // len(values)
     return base.repeat(repeats)[:n]
 
@@ -210,8 +212,8 @@ def test_erf(n_total: int, dtype: torch.dtype) -> None:
 
 @MathFixture
 def test_log1p(n_total: int, dtype: torch.dtype) -> None:
-    def _gen(n, gen_dtype):
-        return torch.rand(n, device="cuda", dtype=gen_dtype).clamp(min=0.01)
+    def _gen(n, gen_dtype, *, device="cuda"):
+        return torch.rand(n, device=device, dtype=gen_dtype).clamp(min=0.01)
 
     _make_math_test(n_total, dtype, _gen, torch.log1p, Log1pFwdOp)
 
@@ -340,7 +342,7 @@ def test_sqrt_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(
         n_total,
         dtype,
-        lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
+        lambda n, d, *, device: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d, device=device),
         torch.sqrt,
         SqrtFwdOp,
     )
@@ -351,7 +353,7 @@ def test_rsqrt_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(
         n_total,
         dtype,
-        lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
+        lambda n, d, *, device: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d, device=device),
         torch.rsqrt,
         RsqrtFwdOp,
     )
@@ -362,7 +364,7 @@ def test_log_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(
         n_total,
         dtype,
-        lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
+        lambda n, d, *, device: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d, device=device),
         torch.log,
         LogFwdOp,
     )
@@ -373,7 +375,7 @@ def test_log1p_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(
         n_total,
         dtype,
-        lambda n, d: _repeat_values([-2.0, -1.0, 0.0, 1e-7], n, d),
+        lambda n, d, *, device: _repeat_values([-2.0, -1.0, 0.0, 1e-7], n, d, device=device),
         torch.log1p,
         Log1pFwdOp,
     )
@@ -384,7 +386,7 @@ def test_exp_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(
         n_total,
         dtype,
-        lambda n, d: _repeat_values([0.0, 88.8, -88.8, 200.0], n, d),
+        lambda n, d, *, device: _repeat_values([0.0, 88.8, -88.8, 200.0], n, d, device=device),
         torch.exp,
         ExpFwdOp,
     )
@@ -395,7 +397,7 @@ def test_expm1_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(
         n_total,
         dtype,
-        lambda n, d: _repeat_values([0.0, 88.8, -88.8, 1e-7], n, d),
+        lambda n, d, *, device: _repeat_values([0.0, 88.8, -88.8, 1e-7], n, d, device=device),
         torch.expm1,
         Expm1FwdOp,
     )
@@ -406,7 +408,7 @@ def test_erf_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(
         n_total,
         dtype,
-        lambda n, d: _repeat_values([0.0, 3.0, -3.0, 100.0], n, d),
+        lambda n, d, *, device: _repeat_values([0.0, 3.0, -3.0, 100.0], n, d, device=device),
         torch.erf,
         ErfFwdOp,
     )
@@ -462,7 +464,7 @@ def test_reciprocal_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(
         n_total,
         dtype,
-        lambda n, d: _repeat_values([0.0, 1.0, -1.0, 1e-38], n, d),
+        lambda n, d, *, device: _repeat_values([0.0, 1.0, -1.0, 1e-38], n, d, device=device),
         torch.reciprocal,
         ReciprocalFwdOp,
     )
@@ -473,7 +475,7 @@ def test_sign_edge(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(
         n_total,
         dtype,
-        lambda n, d: _repeat_values([-5.0, 0.0, 3.0, float("nan")], n, d),
+        lambda n, d, *, device: _repeat_values([-5.0, 0.0, 3.0, float("nan")], n, d, device=device),
         torch.sign,
         SignFwdOp,
     )

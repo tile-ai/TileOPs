@@ -14,13 +14,13 @@ class EngramGateConvFwdWorkload(WorkloadBase):
         self.dtype = dtype
         self.eps = eps
 
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        H = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device="cuda")
-        k = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device="cuda") * 0.1
-        v = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device="cuda") * 0.1
-        rms_w_h = torch.ones(self.d, dtype=self.dtype, device="cuda")
-        rms_w_v = torch.ones(self.d, dtype=self.dtype, device="cuda")
-        conv_w = torch.randn(CONV_KERNEL_SIZE, self.d, dtype=self.dtype, device="cuda") * 0.02
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor, ...]:
+        H = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=device)
+        k = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=device) * 0.1
+        v = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=device) * 0.1
+        rms_w_h = torch.ones(self.d, dtype=self.dtype, device=device)
+        rms_w_v = torch.ones(self.d, dtype=self.dtype, device=device)
+        conv_w = torch.randn(CONV_KERNEL_SIZE, self.d, dtype=self.dtype, device=device) * 0.02
         return H, k, v, rms_w_h, rms_w_v, conv_w
 
     def ref_program(self, H, k, v, rms_w_h, rms_w_v, conv_w):
@@ -35,15 +35,15 @@ class EngramGateConvBwdWorkload(WorkloadBase):
         self.dtype = dtype
         self.eps = eps
 
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor, ...]:
         """Generate inputs including saved intermediates from a reference forward."""
-        H = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device="cuda")
-        k = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device="cuda") * 0.1
-        v = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device="cuda") * 0.1
-        rms_w_h = torch.ones(self.d, dtype=self.dtype, device="cuda")
-        rms_w_v = torch.ones(self.d, dtype=self.dtype, device="cuda")
-        conv_w = torch.randn(CONV_KERNEL_SIZE, self.d, dtype=self.dtype, device="cuda") * 0.02
-        dY = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device="cuda") * 0.1
+        H = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=device)
+        k = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=device) * 0.1
+        v = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=device) * 0.1
+        rms_w_h = torch.ones(self.d, dtype=self.dtype, device=device)
+        rms_w_v = torch.ones(self.d, dtype=self.dtype, device=device)
+        conv_w = torch.randn(CONV_KERNEL_SIZE, self.d, dtype=self.dtype, device=device) * 0.02
+        dY = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=device) * 0.1
 
         # Compute saved intermediates via reference forward
         def _rmsnorm(x, w):
@@ -97,19 +97,19 @@ class EngramDecodeWorkload(WorkloadBase):
         self.dtype = dtype
         self.eps = eps
 
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        e_t = torch.randn(self.batch, self.d_mem, dtype=self.dtype, device="cuda") * 0.1
-        h_t = torch.randn(self.batch, self.d, dtype=self.dtype, device="cuda")
+    def gen_inputs(self, *, device: torch.device | str = "cuda") -> tuple[torch.Tensor, ...]:
+        e_t = torch.randn(self.batch, self.d_mem, dtype=self.dtype, device=device) * 0.1
+        h_t = torch.randn(self.batch, self.d, dtype=self.dtype, device=device)
         # Full conv_state (max_conv_len entries)
         conv_state = (
-            torch.randn(self.batch, self.max_conv_len, self.d, dtype=self.dtype, device="cuda")
+            torch.randn(self.batch, self.max_conv_len, self.d, dtype=self.dtype, device=device)
             * 0.1
         )
-        W_K = torch.randn(self.d_mem, self.d, dtype=self.dtype, device="cuda") * 0.02
-        W_V = torch.randn(self.d_mem, self.d, dtype=self.dtype, device="cuda") * 0.02
-        rms_w_h = torch.ones(self.d, dtype=self.dtype, device="cuda")
-        rms_w_v = torch.ones(self.d, dtype=self.dtype, device="cuda")
-        conv_w = torch.randn(self.conv_kernel_size, self.d, dtype=self.dtype, device="cuda") * 0.02
+        W_K = torch.randn(self.d_mem, self.d, dtype=self.dtype, device=device) * 0.02
+        W_V = torch.randn(self.d_mem, self.d, dtype=self.dtype, device=device) * 0.02
+        rms_w_h = torch.ones(self.d, dtype=self.dtype, device=device)
+        rms_w_v = torch.ones(self.d, dtype=self.dtype, device=device)
+        conv_w = torch.randn(self.conv_kernel_size, self.d, dtype=self.dtype, device=device) * 0.02
         return e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w
 
     def ref_program(self, e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w):
