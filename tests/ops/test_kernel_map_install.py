@@ -9,6 +9,7 @@ do not yet know which device they will run on.
 import pytest
 import torch
 
+from tileops.backend import BUILTIN
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import forget_device_properties, get_sm_version
 
@@ -116,7 +117,7 @@ def test_single_implementation_slot_is_refused_at_first_build() -> None:
     class IncompatibleKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         supported_archs = _make_incompatible_arch_list()
 
-    op = mod.ReluFwdOp(kernel_map={key: IncompatibleKernel})
+    op = mod.ReluFwdOp(kernel_map={key: IncompatibleKernel}, target=BUILTIN)
 
     with pytest.raises(ValueError, match="is built for architectures"):
         op(torch.randn(8, device="cuda", dtype=torch.float16))
@@ -137,13 +138,13 @@ def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     n_total = 128
     dtype = torch.float16
 
-    baseline = cls()
+    baseline = cls(target=BUILTIN)
     ((key, default_kernel_cls),) = baseline.default_kernel_map.items()
 
     class MarkerKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         """Subclass marker; identical behavior, distinct identity."""
 
-    overridden = cls(kernel_map={key: MarkerKernel})
+    overridden = cls(kernel_map={key: MarkerKernel}, target=BUILTIN)
 
     torch.manual_seed(0)
     x = torch.randn(n_total, dtype=dtype, device="cuda")
@@ -174,7 +175,7 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
     class UnrestrictedKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         supported_archs = None
 
-    op = cls(kernel_map={key: UnrestrictedKernel})
+    op = cls(kernel_map={key: UnrestrictedKernel}, target=BUILTIN)
     x = torch.randn(8, device="cuda", dtype=torch.float16)
 
     torch.testing.assert_close(op(x), torch.relu(x))
@@ -189,7 +190,7 @@ def test_autotune_reaches_elementwise_entries():
     """The elementwise slot is record-valued; every built kernel must be seen."""
     from tileops.ops.elementwise import AbsFwdOp
 
-    op = AbsFwdOp()
+    op = AbsFwdOp(target=BUILTIN)
     for dtype in (torch.float16, torch.float32):
         op(torch.randn(256, device="cuda", dtype=dtype))
 
@@ -219,7 +220,7 @@ def test_native_bool_backend_is_constructed_with_bool():
         def forward(self, a, b):
             return a & b
 
-    op = BitwiseAndFwdOp(kernel_map={"bitwise_and": NativeBoolAnd})
+    op = BitwiseAndFwdOp(kernel_map={"bitwise_and": NativeBoolAnd}, target=BUILTIN)
     x = torch.tensor([True, False] * 32, device="cuda")
 
     torch.testing.assert_close(op(x, ~x), x & ~x)
@@ -263,7 +264,7 @@ def test_integer_fallback_yields_to_a_backend_that_serves_integers():
 
     from tileops.ops.elementwise._base import _IntFallbackCall
 
-    shipped = FloorFwdOp()
+    shipped = FloorFwdOp(target=BUILTIN)
     torch.testing.assert_close(shipped(x), x)
     ((built,),) = [tuple(shipped.built_kernels(shipped._op_name).values())]
     assert isinstance(built, _IntFallbackCall), "float-only kernel was used"
@@ -277,7 +278,7 @@ def test_integer_fallback_yields_to_a_backend_that_serves_integers():
         def forward(self, x):
             return x.clone()
 
-    op = FloorFwdOp(kernel_map={"floor": NativeIntFloor})
+    op = FloorFwdOp(kernel_map={"floor": NativeIntFloor}, target=BUILTIN)
     torch.testing.assert_close(op(x), x)
     ((built,),) = [tuple(op.built_kernels(op._op_name).values())]
     assert isinstance(built, NativeIntFloor), "the override was bypassed"

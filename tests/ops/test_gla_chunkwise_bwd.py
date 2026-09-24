@@ -7,6 +7,7 @@ from tests.ops.gla_test_utils import (
     gla_fwd_chunked_torch,
 )
 from tests.test_base import FixtureBase
+from tileops.backend import BUILTIN
 from tileops.ops import GLABwdOp, GLAFwdOp
 
 
@@ -118,6 +119,7 @@ def test_gla_bwd(
     fwd_op = GLAFwdOp(
         chunk_size=BC,
         scale=scale,
+        target=BUILTIN,
     )
     o_fwd, _ = fwd_op.forward(q, k, v, g)
     h = fwd_op.kernel._h_out  # [B, NT+1, H, K, V] in fp32

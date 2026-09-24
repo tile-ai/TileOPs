@@ -6,6 +6,7 @@ import pytest
 import torch
 
 import tileops.ops.moe.staged as staged_module
+from tileops.backend import BUILTIN
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
 from tileops.ops import moe as public_moe
@@ -445,7 +446,9 @@ def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
     a = torch.ones(1, 4, dtype=torch.bfloat16, device=device)
     b = torch.ones(1, 2, 4, dtype=torch.bfloat16, device=device)
     _ExecutableGroupedCandidate.builds = 0
-    op = MoeGroupedGemmFwdOp(_TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate})
+    op = MoeGroupedGemmFwdOp(
+        _TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate}, target=BUILTIN
+    )
 
     first = op(a, b, ends)
     second = op(a, b, ends)

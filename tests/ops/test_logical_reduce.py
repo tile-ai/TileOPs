@@ -9,7 +9,8 @@ Uses exact match (torch.equal) for comparison.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, served_in_tree
+from tileops.backend import BUILTIN
 from tileops.kernels.reduction.logical_reduce import (
     LogicalReduceEdgeFusedKernel,
     LogicalReduceKernel,
@@ -637,6 +638,7 @@ def test_logical_reduce_long_sequence_tiled(op_kind: str, dtype: torch.dtype) ->
     op = op_map[op_kind](
         dim=-1,
         kernel_map={"logical_reduce": _TailBlockLogicalReduceKernel},
+        target=BUILTIN,
     )
     compare = _exact_compare_int64 if op_kind == "count_nonzero" else _exact_compare
     test.check(op, *test.gen_inputs(), compare=compare)
@@ -659,9 +661,10 @@ def test_logical_reduce_tiled_autotune() -> None:
     op = AnyFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
-    (kernel,) = op.built_kernels("reduce").values()
-    assert kernel._needs_tiling
-    assert kernel.config in kernel.autotune_configs
+    if served_in_tree(op):
+        (kernel,) = op.built_kernels("reduce").values()
+        assert kernel._needs_tiling
+        assert kernel.config in kernel.autotune_configs
 
 
 # Manifest dtype contract: bool input + int64 / bool output dtypes.
@@ -757,7 +760,7 @@ def test_logical_reduce_edge_axes_fused_dispatch(
         pytest.skip("fused edge logical reduce is selected only for the measured H200 region")
 
     op_map = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}
-    op = op_map[op_kind](dim=[0, 2], tune=tune)
+    op = op_map[op_kind](dim=[0, 2], tune=tune, target=BUILTIN)
     if dtype == torch.bool:
         x = torch.rand(4, 128, 4096, device="cuda") > 0.999
         if op_kind == "all":

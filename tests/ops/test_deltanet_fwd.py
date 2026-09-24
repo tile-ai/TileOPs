@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.ops import DeltaNetFwdOp
 from workloads.linear_attention import DeltaNetFwdWorkload
 
@@ -70,7 +70,7 @@ def test_deltanet_fwd(
     ref_o = test.ref_program(*inputs)
     op_o, _S, _Aw, _Au, _w, _u = op(*inputs)
     torch.testing.assert_close(op_o, ref_o, **tols)
-    if tune:
+    if served_in_tree(op) and tune:
         # The forward above already proves the selected config builds and runs;
         # this pins it to the declared candidate set the sweep draws from.
         assert op.kernel.config in op.kernel.autotune_configs

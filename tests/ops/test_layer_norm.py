@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.kernels.norm.layer_norm import LayerNormKernel
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from workloads.normalization import LayerNormWorkload
@@ -229,13 +229,15 @@ def test_layer_norm_serves_a_changed_leading_dims_product_from_one_kernel() -> N
 
     x1 = torch.randn(512, n, dtype=dtype, device="cuda")
     y1 = op(x1, weight, bias)
-    kernel = op.built_kernels("layer_norm")[dtype]
+    if served_in_tree(op):
+        kernel = op.built_kernels("layer_norm")[dtype]
     assert y1.shape == x1.shape
 
     x2 = torch.randn(1024, n, dtype=dtype, device="cuda")
     y2 = op(x2, weight, bias)
     assert y2.shape == x2.shape
-    assert op.built_kernels("layer_norm")[dtype] is kernel
+    if served_in_tree(op):
+        assert op.built_kernels("layer_norm")[dtype] is kernel
 
     y_ref = F.layer_norm(
         x2.float(),

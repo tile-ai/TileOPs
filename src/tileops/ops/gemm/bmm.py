@@ -9,6 +9,7 @@ from typing import ClassVar, Dict, Optional, Set, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.gemm.bmm import (
     BmmFp8Kernel,
     BmmFp8TransposeKernel,
@@ -204,6 +205,8 @@ class BmmFp8FwdOp(Op):
         self,
         out_dtype: torch.dtype = torch.bfloat16,
         trans_b: bool = False,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
@@ -214,6 +217,8 @@ class BmmFp8FwdOp(Op):
             trans_b: Whether ``b``'s axes are $[B \\times N \\times K]$ rather than
                 $[B \\times K \\times N]$. Which of the two is faster is decided by
                 ``b``'s strides, not by this flag.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune (applied when a kernel is first built).
         """
@@ -224,6 +229,7 @@ class BmmFp8FwdOp(Op):
         self.out_dtype = out_dtype
         self.trans_b = trans_b
         self.tune = tune
+        self.target = target
         self.dispatch_kernel(kernel_map)
         self._active_sig: Optional[tuple] = None
         self._active: Optional[Kernel] = None

@@ -8,6 +8,7 @@ This covers the invariant every family owes its L1 kernel slots.
 import pytest
 import torch
 
+from tests.test_base import served_in_tree
 from tileops.manifest import load_manifest
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
@@ -16,10 +17,10 @@ from tileops.ops.reduction.reduce import SumFwdOp
 _DTYPES = (torch.float16, torch.bfloat16)
 
 
-def _assert_two_entries(op):
-    """One kernel per dtype. ``iter_kernels`` dedups, so two means two."""
-    kernels = list(op.iter_kernels())
-    assert len(kernels) == 2, f"expected one kernel per dtype, got {len(kernels)}"
+def _assert_two_entries(op, role):
+    """One entry per dtype."""
+    entries = op.built_kernels(role)
+    assert len(entries) == 2, f"expected one entry per dtype, got {len(entries)}"
 
 
 @pytest.mark.smoke
@@ -30,7 +31,7 @@ def test_reduction_serves_two_dtypes_from_one_instance():
         y = op(x)
         assert y.dtype == dtype
         torch.testing.assert_close(y, x.sum(-1), atol=2e-2, rtol=2e-2)
-    _assert_two_entries(op)
+    _assert_two_entries(op, "reduce")
 
 
 @pytest.mark.smoke
@@ -42,7 +43,7 @@ def test_rms_norm_serves_two_dtypes_from_one_instance():
         w = torch.randn(n, dtype=dtype, device="cuda")
         y = op(x, w)
         assert y.dtype == dtype
-    _assert_two_entries(op)
+    _assert_two_entries(op, "rms_norm")
 
 
 @pytest.mark.smoke
@@ -55,7 +56,8 @@ def test_layer_norm_keys_on_dtype():
         w = torch.randn(n, dtype=dtype, device="cuda")
         b = torch.randn(n, dtype=dtype, device="cuda")
         assert op(x, w, b).dtype == dtype
-    assert set(op.built_kernels("layer_norm")) == set(_DTYPES)
+    if served_in_tree(op):
+        assert set(op.built_kernels("layer_norm")) == set(_DTYPES)
 
 
 @pytest.mark.smoke
@@ -81,7 +83,7 @@ def test_moe_post_permute_serves_two_dtypes_from_one_instance():
         mm2_pad = torch.randn(numel, hidden, dtype=dtype, device="cuda")
         weights = torch.rand(total_tokens, top_k, dtype=torch.float32, device="cuda")
         assert op(mm2_pad, weights, fwd_idx).dtype == dtype
-    _assert_two_entries(op)
+    _assert_two_entries(op, "post_permute")
 
 
 @pytest.mark.smoke
@@ -95,7 +97,7 @@ def test_cb_producer_serves_two_dtypes_from_one_instance():
         c = torch.randn(batch, s, groups, d_state, dtype=dtype, device="cuda")
         b = torch.randn(batch, s, groups, d_state, dtype=dtype, device="cuda")
         assert op(c, b).dtype == dtype
-    _assert_two_entries(op)
+    _assert_two_entries(op, "cb_producer")
 
 
 @pytest.mark.smoke
@@ -129,7 +131,8 @@ def test_bitwise_alternates_between_bool_and_integer_storage():
 
     built = tuple(op.built_kernels(op._op_name).values())
     assert len(built) == 2, "bool and int32 are two specializations"
-    assert len({type(k) for k in built}) == 2, "and two different kernel classes"
+    if served_in_tree(op):
+        assert len({type(k) for k in built}) == 2, "and two different kernel classes"
 
 
 @pytest.mark.smoke
@@ -147,7 +150,8 @@ def test_logical_and_output_stays_bool_across_input_storage():
 
     built = tuple(op.built_kernels(op._op_name).values())
     assert len(built) == 2, "bool and float32 are two specializations"
-    assert len({type(k) for k in built}) == 2, "and two different kernel classes"
+    if served_in_tree(op):
+        assert len({type(k) for k in built}) == 2, "and two different kernel classes"
 
 
 @pytest.mark.smoke

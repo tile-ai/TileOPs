@@ -116,7 +116,7 @@ def test_group_norm_no_affine_matches_torch() -> None:
 
 @pytest.mark.smoke
 def test_group_norm_lazily_specializes_per_device() -> None:
-    """A single op can lazily build specializations for different CUDA devices."""
+    """An op first called on a non-default CUDA device builds its entry there."""
     if torch.cuda.device_count() < 2:
         pytest.skip("multi-device test requires >= 2 CUDA devices")
 
@@ -139,7 +139,7 @@ def test_group_norm_lazily_specializes_per_device() -> None:
     )
     y = op(x_other, weight_other, bias_other)
     assert y.device == x_other.device
-    assert len(list(op.iter_kernels())) == 1
+    assert len(op.built_kernels("group_norm")) == 1
 
 
 @pytest.mark.smoke
@@ -164,17 +164,17 @@ def test_group_norm_lazy_cache_reuse_and_respecialization() -> None:
         assert torch.allclose(y, y_ref, atol=atol, rtol=rtol)
 
     run_case(2, 16, (4, 4), torch.float16)
-    assert len(list(op.iter_kernels())) == 1
+    assert len(op.built_kernels("group_norm")) == 1
     assert op.eval_roofline() == (
         5 * 2 * 16 * 16,
         (2 * 2 * 16 * 16 + 2 * 16) * torch.float16.itemsize,
     )
 
     run_case(2, 16, (4, 4), torch.float16)
-    assert len(list(op.iter_kernels())) == 1
+    assert len(op.built_kernels("group_norm")) == 1
 
     run_case(3, 24, (2, 8), torch.bfloat16)
-    assert len(list(op.iter_kernels())) == 2
+    assert len(op.built_kernels("group_norm")) == 2
     assert op.eval_roofline() == (
         5 * 3 * 24 * 16,
         (2 * 3 * 24 * 16 + 2 * 24) * torch.bfloat16.itemsize,
@@ -270,7 +270,7 @@ def test_group_norm_rejects_half_the_affine_switch(give: str) -> None:
 
 @pytest.mark.smoke
 def test_group_norm_no_affine_lazily_specializes_per_device() -> None:
-    """No-affine op can lazily build specializations for different CUDA devices."""
+    """A no-affine op first called on a non-default CUDA device builds its entry there."""
     if torch.cuda.device_count() < 2:
         pytest.skip("multi-device test requires >= 2 CUDA devices")
 
@@ -283,7 +283,7 @@ def test_group_norm_no_affine_lazily_specializes_per_device() -> None:
     )
     y = op(x_other)
     assert y.device == x_other.device
-    assert len(list(op.iter_kernels())) == 1
+    assert len(op.built_kernels("group_norm")) == 1
 
 
 @pytest.mark.smoke

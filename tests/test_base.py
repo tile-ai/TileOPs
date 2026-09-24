@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 
+from tileops.backend import BUILTIN
 from workloads.workload_base import FixtureBase, FixtureMeta, WorkloadBase
 
 _logger = logging.getLogger("tileops.ops")
@@ -22,6 +23,7 @@ __all__ = [
     "TestBase",
     "allclose_compare",
     "exact_compare",
+    "served_in_tree",
 ]
 
 
@@ -48,6 +50,15 @@ def allclose_compare(
         rtol=rtol,
         equal_nan=True,
     )
+
+
+def served_in_tree(op: Any) -> bool:
+    """Whether a call settled *op* on the in-tree implementation.
+
+    Gates an assertion about the in-tree kernels, so the rest of the test also runs
+    against a backend that serves the op.
+    """
+    return op.settled_target is BUILTIN
 
 
 def exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:

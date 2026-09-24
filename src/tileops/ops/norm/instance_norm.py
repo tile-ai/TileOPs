@@ -94,7 +94,7 @@ class InstanceNormFwdOp(Op):
         self.tune = tune
         self._running_stats_broadcast_shape: Optional[list[int]] = None
         self.dispatch_kernel(kernel_map)
-        self.kernel: Optional[Kernel] = None
+        self.kernel = None
         self._last_roofline_spec: Optional[tuple] = None
 
     @property

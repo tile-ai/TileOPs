@@ -6,6 +6,7 @@ from typing import ClassVar, Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba.cb_producer import CBProducerKernel
 from tileops.perf.profile import tensor_core_roof
@@ -34,8 +35,10 @@ class CBProducerFwdOp(Op):
         n_groups: int,
         chunk_len: int,
         d_state: int,
-        tune: bool = False,
+        *,
+        target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -45,8 +48,10 @@ class CBProducerFwdOp(Op):
             n_groups: Number of groups
             chunk_len: Chunk length (Q)
             d_state: State dimension (N)
-            tune: Whether to autotune
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional pre-initialized kernels
+            tune: Whether to autotune
         """
         self.batch = batch
         self.num_chunks = num_chunks
@@ -55,6 +60,7 @@ class CBProducerFwdOp(Op):
         self.d_state = d_state
         self.tune = tune
 
+        self.target = target
         self.dispatch_kernel(kernel_map)
 
     def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:

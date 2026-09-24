@@ -7,7 +7,7 @@ Each op reduces along dim=-1 and supports 1D-4D input.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, served_in_tree
 from workloads.reduction import (
     ProdWorkload,
     StdWorkload,
@@ -276,9 +276,10 @@ def test_reduce_untiled_autotune_unaligned_n() -> None:
     op = SumFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
-    (kernel,) = op.built_kernels("reduce").values()
-    assert not kernel._needs_tiling
-    assert {c["block_m"] for c in kernel.autotune_configs} == {1}
+    if served_in_tree(op):
+        (kernel,) = op.built_kernels("reduce").values()
+        assert not kernel._needs_tiling
+        assert {c["block_m"] for c in kernel.autotune_configs} == {1}
 
 
 @pytest.mark.parametrize(
@@ -306,9 +307,10 @@ def test_reduce_tiled_autotune(op_kind: str) -> None:
         op = VarFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs(), **_tol(dtype))
 
-    (kernel,) = op.built_kernels("reduce").values()
-    assert kernel._needs_tiling
-    assert kernel.config in kernel.autotune_configs
+    if served_in_tree(op):
+        (kernel,) = op.built_kernels("reduce").values()
+        assert kernel._needs_tiling
+        assert kernel.config in kernel.autotune_configs
 
 
 @ReduceNonContigFixture

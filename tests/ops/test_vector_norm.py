@@ -8,7 +8,8 @@ Uses torch.linalg.vector_norm as the reference implementation.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, allclose_compare
+from tests.test_base import FixtureBase, TestBase, allclose_compare, served_in_tree
+from tileops.backend import BUILTIN
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
 from workloads.reduction import L1NormWorkload
 
@@ -146,6 +147,7 @@ def _make_op(
     keepdim: bool = False,
     kernel_map=None,
     tune: bool = False,
+    target=None,
 ):
     """Create the appropriate Op for the given op_kind."""
     from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
@@ -156,7 +158,7 @@ def _make_op(
         "inf": InfNormFwdOp,
     }
     cls = op_map[op_kind]
-    return cls(dim=dim, keepdim=keepdim, kernel_map=kernel_map, tune=tune)
+    return cls(dim=dim, keepdim=keepdim, kernel_map=kernel_map, tune=tune, target=target)
 
 
 @VectorNormBasicFixture
@@ -566,6 +568,7 @@ def test_vector_norm_long_sequence_tiled(op_kind: str) -> None:
     op = _make_op(
         op_kind,
         kernel_map={"vector_norm": _TailBlockVectorNormKernel},
+        target=BUILTIN,
     )
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
@@ -587,9 +590,10 @@ def test_vector_norm_tiled_autotune() -> None:
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
-    (kernel,) = op.built_kernels("reduce").values()
-    assert kernel._needs_tiling
-    assert kernel.config in kernel.autotune_configs
+    if served_in_tree(op):
+        (kernel,) = op.built_kernels("reduce").values()
+        assert kernel._needs_tiling
+        assert kernel.config in kernel.autotune_configs
 
 
 @pytest.mark.smoke

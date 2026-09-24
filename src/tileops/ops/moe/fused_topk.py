@@ -4,6 +4,7 @@ from typing import Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe.fused_topk import FusedTopKKernel
 
@@ -32,8 +33,10 @@ class FusedTopKOp(Op):
         top_k: int,
         scoring_func: str = "softmax",
         renormalize: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
         config: Optional[dict] = None,
+        *,
+        target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -44,15 +47,18 @@ class FusedTopKOp(Op):
                 bias is added to sigmoid scores for selection only, and the output
                 weights stay the original scores.
             renormalize: If True, normalize top-k weights to sum to 1.
-            kernel_map: Optional kernel map override.
             config: Optional kernel config dict.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel map override.
         """
         self.top_k = top_k
         self.scoring_func = scoring_func
         self.renormalize = renormalize
 
-        self.dispatch_kernel(kernel_map)
         self.config = config
+        self.target = target
+        self.dispatch_kernel(kernel_map)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

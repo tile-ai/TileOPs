@@ -1,7 +1,8 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, served_in_tree
+from tileops.backend import BUILTIN
 from tileops.kernels.gemm import (
     GemmCpAsyncKernel,
     GemmTmaKernel,
@@ -610,7 +611,8 @@ def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
     test = GemmFp8Test(128, 256, 128, torch.float8_e4m3fn, "block128")
     op = GemmFp8FwdOp()
     test.check(op, *test.gen_inputs(), atol=2e-2, rtol=2e-2)
-    assert op.kernel.__class__.__name__ == "GemmFp8BlockScaleKernel"
+    if served_in_tree(op):
+        assert op.kernel.__class__.__name__ == "GemmFp8BlockScaleKernel"
 
 
 @pytest.mark.parametrize(
@@ -1175,7 +1177,7 @@ def test_gemm_w4a16_sliced_k_matches_the_reference(split_k: int) -> None:
 def test_gemm_w4a16_autotune_keeps_composite_runtime_state() -> None:
     test = GemmW4A16Test(1, 1024, 8192, torch.float16)
     inputs = test.gen_inputs()
-    op = GemmW4A16FwdOp()
+    op = GemmW4A16FwdOp(target=BUILTIN)
     expected = op(*inputs)
     kernel = op.kernel
     state = (dict(kernel.config), kernel.m_pad, kernel.kernel, kernel._reduce)

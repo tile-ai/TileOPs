@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.kernels.gemm.bmm import BmmFp8TransposeKernel, BmmPersistentKernel
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.ops import BmmFp8FwdOp, BmmFwdOp
@@ -526,8 +526,9 @@ def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
     op_nk = BmmFp8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
     out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
     out_nk = op_nk(a, b_nk, scale_a, scale_b)
-    assert op_kn.built_kernels("bmm_fp8_transpose_kernel")
-    assert not op_nk.built_kernels("bmm_fp8_transpose_kernel")
+    if served_in_tree(op_kn):
+        assert op_kn.built_kernels("bmm_fp8_transpose_kernel")
+        assert not op_nk.built_kernels("bmm_fp8_transpose_kernel")
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
 
 
@@ -543,7 +544,8 @@ def test_bmm_fp8_no_transpose_when_b_already_k_innermost() -> None:
 
     op = BmmFp8FwdOp(out_dtype=torch.bfloat16)
     out_view = op(a, b_kn_view, scale_a, scale_b).clone()
-    assert not op.built_kernels("bmm_fp8_transpose_kernel")
+    if served_in_tree(op):
+        assert not op.built_kernels("bmm_fp8_transpose_kernel")
 
     out_kn = BmmFp8FwdOp(out_dtype=torch.bfloat16)(a, b_kn, scale_a, scale_b)
     torch.testing.assert_close(out_view, out_kn, atol=0.0, rtol=0.0)

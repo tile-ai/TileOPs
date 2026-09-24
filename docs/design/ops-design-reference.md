@@ -24,15 +24,15 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
 ### `Op` base class attributes ([`src/tileops/ops/op_base.py`](../../src/tileops/ops/op_base.py))
 
-| Attribute      | Type                                 | Purpose                                                                                      |
-| -------------- | ------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `kernel`       | `Kernel`                             | Set only by an op that holds one kernel; an op that builds per specialization uses a role    |
-| `kernel_map`   | `Optional[Dict[str, Kernel]]`        | Dispatched kernels keyed by name                                                             |
-| `dtype`        | `Optional[torch.dtype]`              | Dtype of the most recent `forward()`; `None` before the first one                            |
-| `device`       | `Optional[Union[torch.device, str]]` | Device (default `'cuda'`)                                                                    |
-| `input_shapes` | `Optional[list[tuple]]`              | Expected input tensor shapes (for introspection and non-runtime consumers)                   |
-| `tune`         | `bool`                               | Whether kernels this op builds tune themselves; read by a factory when it runs               |
-| `_static_axes` | `frozenset[tuple[int, int]]`         | Static axes as `(input_index, axis)` pairs (default `frozenset()`); consumed by `_cache_key` |
+| Attribute      | Type                                 | Purpose                                                                                         |
+| -------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `kernel`       | `Optional[Callable]`                 | An entry the op keeps bound directly, if any: a `Kernel` in-tree, a target's callable otherwise |
+| `kernel_map`   | `Optional[Dict[str, Kernel]]`        | Dispatched kernels keyed by name                                                                |
+| `dtype`        | `Optional[torch.dtype]`              | Dtype of the most recent `forward()`; `None` before the first one                               |
+| `device`       | `Optional[Union[torch.device, str]]` | Device (default `'cuda'`)                                                                       |
+| `input_shapes` | `Optional[list[tuple]]`              | Expected input tensor shapes (for introspection and non-runtime consumers)                      |
+| `tune`         | `bool`                               | Whether kernels this op builds tune themselves; read by a factory when it runs                  |
+| `_static_axes` | `frozenset[tuple[int, int]]`         | Static axes as `(input_index, axis)` pairs (default `frozenset()`); consumed by `_cache_key`    |
 
 Abstract interface: `default_kernel_map` (property), `forward()`. Manifest-driven methods (codegen-emitted by concrete ops): `_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`.
 
@@ -44,10 +44,11 @@ Rationale and the role / entry vocabulary: [ops-design.md § Kernel caching and 
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `kernel_for(role, inputs, call)` | Return what serves this call, building it once on a miss. The only way an op reaches a kernel. `inputs` is what an external target's builder is described with |
 | `entry_for(role, call)`          | The in-tree identity and builder. The default selects among the op's candidates and asks the chosen class; an op with one implementation overrides it          |
-| `built_kernels(name)`            | Read-only view of a name's entries; empty before its first build. Introspection only, never dispatch                                                           |
+| `built_kernels(name)`            | Read-only view of a name's entries, whoever built them; empty before its first build. Introspection only, never dispatch                                       |
 | `kernel_delegates()`             | The ops whose kernels this op runs. Default `()`; a composite op overrides it                                                                                  |
-| `iter_kernels()`                 | Every `Kernel` the op holds, deduplicated: entries and delegates                                                                                               |
-| `autotune()`                     | Puts the op in tuned mode: tunes built kernels, and sets `tune` so later builds tune too                                                                       |
+| `iter_kernels()`                 | The TileOPs `Kernel` instances the entries hold, deduplicated: role entries, `self.kernel`, and delegates. What `autotune()` tunes                             |
+| `settled_target`                 | What a call settled the op on: `None` before, `BUILTIN` for the in-tree implementation, else the target's name                                                 |
+| `autotune()`                     | Puts the op in tuned mode: tunes built kernels, and sets `tune` so later in-tree builds tune too; a target is not passed `tune`                                |
 
 ### `Kernel` base class attributes ([`src/tileops/kernels/kernel_base.py`](../../src/tileops/kernels/kernel_base.py))
 
