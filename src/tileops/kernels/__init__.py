@@ -82,6 +82,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GLABwdKernel,
         GLADecodeFP32Kernel,
         GLADecodeKernel,
+        GLADensePrefillFwdKernel,
         GLAFwdKernel,
     )
     from .mhc import (
@@ -167,6 +168,7 @@ _LAZY = {
     "GLABwdKernel": ".linear_attention",
     "GLADecodeFP32Kernel": ".linear_attention",
     "GLADecodeKernel": ".linear_attention",
+    "GLADensePrefillFwdKernel": ".linear_attention",
     "GLAFwdKernel": ".linear_attention",
     "GQABwdWgmmaPipelinedKernel": ".attention",
     "GQADecodeKernel": ".attention",

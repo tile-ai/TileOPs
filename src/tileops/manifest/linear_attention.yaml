@@ -350,6 +350,66 @@ DeltaNetBwdOp:
     bench: benchmarks/ops/bench_deltanet.py
     bench_manifest_driven: true
 
+GLAInferenceFwdOp:
+  # One serving contract for equal-length prefill, packed varlen, and decode.
+  # The in-tree kernels currently cover Hopper dense prefill and decode.
+  ref_api: "fla.ops.gla.chunk_gla"
+  family: linear_attention
+  status: spec-only
+
+  signature:
+    inputs:
+      q: {dtype: "float16 | bfloat16", shape: "[B, T, H, K]"}
+      k: {dtype: "same_as(q)", shape: "[B, T, H, K]"}
+      v: {dtype: "same_as(q)", shape: "[B, T, H, V]"}
+      g: {dtype: "same_as(q)", shape: "[B, T, H, K]"}
+      initial_state: {dtype: "float32", optional: true}
+      cu_seqlens: {dtype: "int64", optional: true}
+      cu_seqlens_cpu: {dtype: "int64", optional: true}
+    outputs:
+      o: {dtype: "same_as(q)", shape: "[B, T, H, V]"}
+      final_state: {dtype: "float32"}
+    params:
+      scale: {type: "float | None", default: null}
+    shape_rules:
+    - "k.shape == q.shape"
+    - "g.shape == q.shape"
+    - "v.shape == (B, T, H, V)"
+    - "cu_seqlens is None or (B == 1 and cu_seqlens.ndim == 1 and cu_seqlens.shape[0] >= 2)"
+    - "cu_seqlens_cpu is None or cu_seqlens is not None"
+    - "cu_seqlens_cpu is None or cu_seqlens is None or cu_seqlens_cpu.shape == cu_seqlens.shape"
+    - "initial_state is None or initial_state.ndim == 4"
+    - "initial_state is None or cu_seqlens is not None or initial_state.shape == (B, H, K, V)"
+    - "initial_state is None or cu_seqlens is None or initial_state.shape[0] + 1 == cu_seqlens.shape[0]"
+    - "initial_state is None or initial_state.shape[1:] == (H, K, V)"
+    - "o.shape == (B, T, H, V)"
+    - "final_state.ndim == 4"
+    - "cu_seqlens is not None or final_state.shape == (B, H, K, V)"
+    - "cu_seqlens is None or final_state.shape[0] + 1 == cu_seqlens.shape[0]"
+    - "final_state.shape[1:] == (H, K, V)"
+
+  workloads:
+  - {q_shape: [2, 2048, 4, 64], k_shape: [2, 2048, 4, 64], v_shape: [2, 2048, 4, 64], g_shape: [2, 2048, 4, 64], dtypes: [bfloat16], label: "prefill-medium"}
+  - {q_shape: [2, 4096, 4, 64], k_shape: [2, 4096, 4, 64], v_shape: [2, 4096, 4, 64], g_shape: [2, 4096, 4, 64], initial_state_shape: [2, 4, 64, 64], dtypes: [bfloat16], label: "prefill-seeded"}
+  - {q_shape: [2, 8192, 4, 64], k_shape: [2, 8192, 4, 64], v_shape: [2, 8192, 4, 64], g_shape: [2, 8192, 4, 64], dtypes: [bfloat16], label: "prefill-long"}
+  - {q_shape: [2, 16384, 4, 64], k_shape: [2, 16384, 4, 64], v_shape: [2, 16384, 4, 64], g_shape: [2, 16384, 4, 64], initial_state_shape: [2, 4, 64, 64], dtypes: [bfloat16], label: "prefill-very-long"}
+  - {q_shape: [1, 1, 32, 64], k_shape: [1, 1, 32, 64], v_shape: [1, 1, 32, 64], g_shape: [1, 1, 32, 64], initial_state_shape: [1, 32, 64, 64], dtypes: [bfloat16], label: "decode-b1-d64"}
+  - {q_shape: [8, 1, 32, 128], k_shape: [8, 1, 32, 128], v_shape: [8, 1, 32, 128], g_shape: [8, 1, 32, 128], initial_state_shape: [8, 32, 128, 128], dtypes: [bfloat16], label: "decode-b8-d128"}
+  roofline: {func: tileops.perf.formulas.gla_fwd_roofline}
+  source:
+    kernel:
+    - tileops/kernels/linear_attention/gla/dense_decode.py
+    - tileops/kernels/linear_attention/gla/dense_prefill_partitioned.py
+    - tileops/kernels/linear_attention/gla/dense_prefill_subchunk.py
+    kernel_map:
+      gla_dense_decode: GLADenseDecodeKernel
+      gla_dense_prefill_partitioned: GLADensePrefillPartitionedKernel
+      gla_dense_prefill_subchunk: GLADensePrefillSubchunkKernel
+    op: tileops/ops/linear_attention/gla_inference.py
+    test: tests/ops/test_gla_inference.py
+    bench: benchmarks/ops/bench_gla_inference.py
+    bench_manifest_driven: true
+
 GLAFwdOp:
   ref_api: "none"
   family: linear_attention
