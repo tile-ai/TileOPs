@@ -191,7 +191,7 @@ class GLAInferenceFwdOp(Op):
             q_shape=self.q_shape,
             v_shape=self.v_shape,
             dtype=self.dtype,
-            initial_state_shape=self.state_shape,
+            initial_state_shape=self.initial_state_shape,
             cu_seqlens_shape=self.cu_seqlens_shape,
         )
 
@@ -219,7 +219,7 @@ class GLAInferenceFwdOp(Op):
         self.q_shape = tuple(q.shape)
         self.v_shape = tuple(v.shape)
         self.dtype = q.dtype
-        self.state_shape = tuple(initial_state.shape) if initial_state is not None else None
+        self.initial_state_shape = tuple(initial_state.shape) if initial_state is not None else None
         self.cu_seqlens_shape = tuple(cu_seqlens.shape) if cu_seqlens is not None else None
         batch, seq_len, heads, dim_k = q.shape
         call = (
