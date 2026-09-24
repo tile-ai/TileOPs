@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.attention import GQAPrefillVarlenWsKernel
 from tileops.manifest import load_workloads
 from tileops.ops import (
     GroupedQueryAttentionPrefillVarlenFwdOp,
@@ -290,6 +291,21 @@ def test_gqa_varlen_fwd_op(
         window_size_right=wr,
     )
     test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+def test_varlen_ws_dispatches_head_dim_64() -> None:
+    q_lens = [65, 127]
+    kv_lens = [129, 255]
+    test = GroupedQueryAttentionVarlenFwdTest(
+        2, q_lens, kv_lens, 8, 2, 64, True, -1, -1, torch.float16
+    )
+    inputs = test.gen_inputs()
+    op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
+    op.plan(q_lens, kv_lens, device=inputs[0].device)
+
+    test.check(op, *inputs, atol=1e-3, rtol=1e-3)
+    assert isinstance(next(iter(op.iter_kernels())), GQAPrefillVarlenWsKernel)
 
 
 @pytest.mark.smoke

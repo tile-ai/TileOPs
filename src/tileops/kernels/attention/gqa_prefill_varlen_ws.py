@@ -567,7 +567,7 @@ class GQAPrefillVarlenWsKernel(VarlenKernel):
     def applies(cls, call) -> bool:
         return (
             call.dtype in ATTENTION_DTYPES
-            and call.dim == 128
+            and call.dim in (64, 128)
             and not call.is_fp8
             and not call.fuse_rope
             and not uses_sliding_window(call)
