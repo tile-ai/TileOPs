@@ -1,17 +1,10 @@
-"""Kernel-level coverage for FFT's interleaved output layout.
-
-The public Op turns the internal ``(batch, n, 2)`` buffer into a complex view,
-which is metadata-only and would not catch a buffer that is the right numbers in
-the wrong layout. So the layout -- shape, real dtype, contiguity -- is asserted
-here, against the kernel, one case per real width.
-"""
-
-import math
+"""Kernel-level coverage for FFT's interleaved output layout and real dtype."""
 
 import pytest
 import torch
 
 from tileops.kernels.fft_c2c import FFTC2COneCTAKernel
+from tileops.ops import FFTC2CFwdOp
 
 
 @pytest.mark.smoke
@@ -27,25 +20,7 @@ def test_one_cta_kernel_writes_interleaved_output(dtype: torch.dtype) -> None:
     batch_size = 2
     x = torch.randn(batch_size, n, device="cuda", dtype=dtype)
     real_dtype = torch.float32 if dtype == torch.complex64 else torch.float64
-    k = torch.arange(n, dtype=torch.float64)
-    circle = (
-        torch.stack([torch.cos(-2.0 * math.pi * k / n), torch.sin(-2.0 * math.pi * k / n)], dim=1)
-        .to(real_dtype)
-        .to(x.device)
-    )
-    r3 = max(1, n // 256)
-    m = torch.arange(r3, dtype=torch.float64)
-    base2 = (
-        torch.stack(
-            [
-                torch.cos(-2.0 * math.pi * m / (n // 16)),
-                torch.sin(-2.0 * math.pi * m / (n // 16)),
-            ],
-            dim=1,
-        )
-        .to(real_dtype)
-        .to(x.device)
-    )
+    circle, base2 = FFTC2CFwdOp()._get_circle_lut(n, dtype, x.device)
 
     output_pair = FFTC2COneCTAKernel(n, dtype)(torch.view_as_real(x.contiguous()), circle, base2)
 

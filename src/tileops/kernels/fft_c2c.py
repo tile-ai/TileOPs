@@ -2173,11 +2173,22 @@ def _check_config(plan: FFTPlan, n: int, config: Dict[str, Any], itemsize: int) 
             )
         for index, tw in enumerate(tile):
             _nf, lanes, extent, _twrows, _r = _four_step_geometry(plan, index)
+            strides = pad[index]
+            floor = plan.pad[index]
+            if len(strides) != len(floor):
+                raise ValueError(
+                    f"kernel {index}: expected {len(floor)} shared strides, got {len(strides)}"
+                )
+            if any(value < minimum for value, minimum in zip(strides, floor, strict=True)):
+                raise ValueError(
+                    f"kernel {index}: strides must be at or above the record's floor "
+                    f"{floor}, got {strides}"
+                )
             if tw < 1 or extent % tw:
                 raise ValueError(f"kernel {index}: tile {tw} must divide its grid axis {extent}")
             if tw * lanes > _MAX_THREADS:
                 raise ValueError(f"kernel {index}: {tw * lanes} threads exceeds {_MAX_THREADS}")
-            reals = _four_step_smem_reals(plan, index, tw, pad[index])
+            reals = _four_step_smem_reals(plan, index, tw, strides)
             if reals * itemsize > _MAX_BLOCK_SMEM:
                 raise ValueError(
                     f"kernel {index}: {reals * itemsize} bytes of shared memory "

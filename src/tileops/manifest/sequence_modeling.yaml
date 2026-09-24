@@ -179,11 +179,12 @@ FFTC2CFwdOp:
       output: {dtype: "same_as(input)", shape: "same_as(input)"}
     shape_rules:
     - "input.shape[-1] > 0"
+    - "input.shape[-1] <= 268435456"
     - "input.shape[-1] & (input.shape[-1] - 1) == 0"
 
   workloads:
-  # 4096 is the longest length one thread block still holds at both dtypes, so
-  # these three are the single-launch region; the unbatched row is its latency tier.
+  # A representative three-pass single-CTA length; the unbatched row is its
+  # latency tier and the two batch-64 rows cover both dtypes.
   - {input_shape: [4096], dtypes: [complex64], label: "fft-4k-c64-unbatched"}
   - {input_shape: [64, 4096], dtypes: [complex64], label: "fft-4k-c64-b64"}
   - {input_shape: [64, 4096], dtypes: [complex128], label: "fft-4k-c128-b64"}

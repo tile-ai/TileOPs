@@ -2,6 +2,7 @@
 
 import math
 import warnings
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -32,49 +33,37 @@ from tileops.ops import FFTC2CFwdOp
 def test_every_power_of_two_through_2_28_selects_the_kernel_its_record_names(
     dtype: torch.dtype,
 ) -> None:
-    """Selection over the whole promised range, against the table that decides it.
-
-    One check per length from 2 to 2**28: a record must exist, and the class the
-    op selects must be the one that record's factor count implies -- one factor
-    is a single CTA, more than one is the decomposition. That holds three
-    contracts in one sweep. The table leaves no length in the range uncovered,
-    which is what lets the op promise every power of two. The two regions stay
-    disjoint, since a call both claimed would make ``select_kernel`` raise rather
-    than prefer one. And 16384, the one length whose two dtypes fall on different
-    sides, is split by dtype and not by length.
-
-    Selection only: the transforms themselves are checked by ``test_fft_c2c``.
-    """
+    """Check every supported power and the first one above the upper bound."""
     op = FFTC2CFwdOp()
     name = str(dtype).split(".")[-1]
-    wrong = []
-    for exponent in range(1, 29):
+    for exponent in range(1, 30):
         n = 1 << exponent
         plan = FFT_PLANS.get((n, name))
-        if plan is None:
-            wrong.append((n, "no record in FFT_PLANS"))
+        expected_launches = (
+            1
+            if exponent < 14 or (exponent == 14 and dtype == torch.complex64)
+            else 2
+            if exponent <= 24
+            else 3
+            if exponent <= 28
+            else 0
+        )
+        call = FFTC2CCall(n=n, dtype=dtype, arch=90, sm_count=1)
+        if expected_launches == 0:
+            assert plan is None, f"n={n} {name} unexpectedly has a plan"
+            with pytest.raises(ValueError, match="no implementation serves"):
+                op.select_kernel(call)
             continue
+
+        assert plan is not None, f"n={n} {name} has no plan"
+        assert len(plan.factors) == expected_launches, f"n={n} {name}"
         expected = FFTC2CDecomposedKernel if plan.decomposed else FFTC2COneCTAKernel
-        call = FFTC2CCall(n=n, dtype=dtype, device_index=0, device=torch.device("cuda:0"))
-        try:
-            selected = op.select_kernel(call)
-        except ValueError as exc:
-            wrong.append((n, str(exc)))
-            continue
-        if selected is not expected:
-            wrong.append((n, f"{selected.__name__}, expected {expected.__name__}"))
-    assert wrong == []
+        assert op.select_kernel(call) is expected, f"n={n} {name}"
 
 
 @pytest.mark.smoke
 def test_every_plan_record_describes_as_many_kernels_as_it_launches() -> None:
-    """The per-kernel fields of a record agree with its factor count.
-
-    Every builder and every consumer indexes these records by kernel, so a
-    record whose fields disagree would launch one kernel with another's strides.
-    ``tile`` is the exception by design: a single-CTA plan takes its packing from
-    its length and passes no width.
-    """
+    """All per-kernel fields agree with the record's factor count."""
     for (n, name), plan in FFT_PLANS.items():
         where = f"({n}, {name})"
         assert math.prod(plan.factors) == n, where
@@ -108,6 +97,7 @@ def test_single_tone_peak_is_bin_7() -> None:
     ),
 )
 def test_fft_n1_is_an_out_of_place_identity(dtype: torch.dtype) -> None:
+    assert (1, str(dtype).split(".")[-1]) not in FFT_PLANS
     x = torch.randn(3, 1, device="cuda", dtype=dtype)
 
     got = FFTC2CFwdOp()(x)
@@ -117,16 +107,30 @@ def test_fft_n1_is_an_out_of_place_identity(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_tune_sweeps_every_kernel_of_a_four_step_plan(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``tune=True`` on a decomposed length tunes each of its kernels.
+@pytest.mark.parametrize(
+    "shape, dtype, device, message",
+    (
+        pytest.param((), torch.complex64, "cuda", "at least 1D", id="rank-zero"),
+        pytest.param((0,), torch.complex64, "cuda", "positive power of 2", id="zero-length"),
+        pytest.param((3,), torch.complex64, "cuda", "positive power of 2", id="non-power-of-two"),
+        pytest.param(
+            (2,), torch.float32, "cuda", "complex64 or complex128", id="unsupported-dtype"
+        ),
+        pytest.param((2,), torch.complex64, "cpu", "CUDA tensor", id="cpu-input"),
+    ),
+)
+def test_fft_rejects_inputs_outside_its_lower_boundaries(
+    shape: tuple, dtype: torch.dtype, device: str, message: str
+) -> None:
+    x = torch.randn(shape, dtype=dtype, device=device)
 
-    Regression for a composite kernel that declared no ``autotune_configs``: the
-    base class warned once and silently kept ``default_config``, and
-    ``self.kernel`` being a tuple of builders meant the inherited single-kernel
-    sweep could not have run on it anyway. This holds the three parts of the fix
-    -- no such warning, one winner per kernel drawn from that kernel's own
-    candidate list, and those winners being what the launch path is handed.
-    """
+    with pytest.raises(ValueError, match=message):
+        FFTC2CFwdOp()(x)
+
+
+@pytest.mark.smoke
+def test_tune_configures_every_kernel_of_a_four_step_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: every factor receives and launches its own tuned config."""
     n, dtype = 1 << 14, torch.complex128  # the shortest decomposed length: two kernels
     launched: dict = {}
     run = fft_c2c._fft_decomposed_run
@@ -136,6 +140,13 @@ def test_tune_sweeps_every_kernel_of_a_four_step_plan(monkeypatch: pytest.Monkey
         return run(builders, plan, tile, pad, *args)
 
     monkeypatch.setattr(fft_c2c, "_fft_decomposed_run", spy)
+    tuned_candidates: list[list[dict]] = []
+
+    def fake_tune(self, _builder, candidates, **_kwargs):
+        tuned_candidates.append(candidates)
+        return SimpleNamespace(config=candidates[-1])
+
+    monkeypatch.setattr(FFTC2CDecomposedKernel, "tune_jit_kernel", fake_tune)
 
     x = torch.randn(2, n, device="cuda", dtype=dtype)
     op = FFTC2CFwdOp(tune=True)
@@ -147,6 +158,7 @@ def test_tune_sweeps_every_kernel_of_a_four_step_plan(monkeypatch: pytest.Monkey
     kernel = op.kernel
     assert isinstance(kernel, FFTC2CDecomposedKernel)
     plan = kernel.plan
+    assert len(tuned_candidates) == len(plan.factors)
     assert len(kernel.config["tile"]) == len(plan.factors)
     assert len(kernel.config["pad"]) == len(plan.factors)
     tuned = zip(kernel.config["tile"], kernel.config["pad"], strict=True)
@@ -161,30 +173,23 @@ def test_tune_sweeps_every_kernel_of_a_four_step_plan(monkeypatch: pytest.Monkey
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "n, sweeps",
+    "n, tunes",
     (
         pytest.param(512, False, id="one-config"),
         pytest.param(1024, True, id="several-configs"),
     ),
 )
-def test_a_one_cta_plan_sweeps_only_where_it_has_a_choice(
-    n: int, sweeps: bool, monkeypatch: pytest.MonkeyPatch
+def test_a_one_cta_plan_tunes_only_where_it_has_a_choice(
+    n: int, tunes: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``tune=True`` pays for a sweep only where the record leaves something to pick.
-
-    A plan below 1024, and a four-pass plan, takes its shared strides from its
-    length, so its candidate list holds one entry. Timing it would compile the
-    kernel a second time and fill a 1024-transform input buffer to confirm the
-    only option there was, so that entry is kept without a sweep.
-    """
+    """A fixed-layout plan skips tuning; a multi-candidate plan invokes it."""
     swept: list = []
-    original = FFTC2COneCTAKernel.tune_jit_kernel
 
-    def spy(self, *args, **kwargs):
+    def fake_tune(self, _builder, candidates, **_kwargs):
         swept.append(self.n)
-        return original(self, *args, **kwargs)
+        return SimpleNamespace(config=candidates[-1])
 
-    monkeypatch.setattr(FFTC2COneCTAKernel, "tune_jit_kernel", spy)
+    monkeypatch.setattr(FFTC2COneCTAKernel, "tune_jit_kernel", fake_tune)
 
     x = torch.randn(2, n, device="cuda", dtype=torch.complex64)
     op = FFTC2CFwdOp(tune=True)
@@ -193,22 +198,15 @@ def test_a_one_cta_plan_sweeps_only_where_it_has_a_choice(
     kernel = op.kernel
     assert isinstance(kernel, FFTC2COneCTAKernel)
     offered = kernel.autotune_configs
-    assert (len(offered) > 1) is sweeps, f"{n} offers {len(offered)} configs"
-    assert bool(swept) is sweeps, f"{n} swept {swept}"
+    assert (len(offered) > 1) is tunes, f"{n} offers {len(offered)} configs"
+    assert bool(swept) is tunes, f"{n} tuned {swept}"
     assert kernel.config in offered
     torch.testing.assert_close(got, torch.fft.fft(x), atol=1e-4, rtol=1e-4)
 
 
 @pytest.mark.smoke
 def test_every_record_stays_inside_the_bounds_its_config_space_assumes() -> None:
-    """The bounds the candidate lists are generated from, checked on the records.
-
-    ``_four_step_candidates`` and ``autotune_configs`` offer only configs inside
-    these, but the record's own default never passes through either, so nothing
-    else checks it. A record added with a tile that does not divide its grid
-    axis, or that asks a block for more shared memory than the narrowest
-    architecture it claims can give, would otherwise fail at launch.
-    """
+    """Every default config satisfies its thread, grid, and shared-memory bounds."""
     for (n, dtype_str), plan in FFT_PLANS.items():
         where = f"{n} {dtype_str}"
         itemsize = 4 if dtype_str == "complex64" else 8
@@ -233,41 +231,80 @@ def test_every_record_stays_inside_the_bounds_its_config_space_assumes() -> None
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "n, dtype, config",
+    "n, dtype, config, message",
     (
-        pytest.param(4096, torch.complex64, {"row": 0, "grp": 0}, id="strides-below-floor"),
-        pytest.param(4096, torch.complex64, {"row": 10000, "grp": 10000}, id="over-shared"),
-        pytest.param(4096, torch.complex64, {"row": -1, "grp": -1}, id="negative"),
-        pytest.param(4096, torch.complex64, {"row": 272}, id="missing-key"),
-        pytest.param(512, torch.complex64, {"row": 16, "grp": 2}, id="plan-takes-no-config"),
+        pytest.param(
+            4096,
+            torch.complex64,
+            {"row": 271, "grp": 17},
+            "strides must be at or above",
+            id="row-one-below-floor",
+        ),
+        pytest.param(
+            4096,
+            torch.complex64,
+            {"row": 272, "grp": 16},
+            "strides must be at or above",
+            id="group-one-below-floor",
+        ),
+        pytest.param(
+            4096,
+            torch.complex64,
+            {"row": 10000, "grp": 10000},
+            "shared memory exceeds",
+            id="over-shared",
+        ),
+        pytest.param(4096, torch.complex64, {"row": 272}, "config keys", id="missing-key"),
+        pytest.param(
+            512,
+            torch.complex64,
+            {"row": 16, "grp": 2},
+            "only config it runs",
+            id="plan-takes-no-config",
+        ),
         pytest.param(
             1 << 20,
             torch.complex128,
             {"tile": (999, 999), "pad": ((67, 5), (65, 5))},
+            "must divide its grid axis",
             id="tile-indivisible",
         ),
         pytest.param(
-            1 << 20, torch.complex128, {"tile": (0, 0), "pad": ((67, 5), (65, 5))}, id="tile-zero"
+            1 << 20,
+            torch.complex128,
+            {"tile": (32, 4), "pad": ((67, 5), (65, 5))},
+            "threads exceeds",
+            id="tile-over-thread-limit",
+        ),
+        pytest.param(
+            1 << 20,
+            torch.complex128,
+            {"tile": (4, 4), "pad": ((64, 5), (65, 5))},
+            "strides must be at or above",
+            id="decomposed-row-one-below-floor",
+        ),
+        pytest.param(
+            1 << 20,
+            torch.complex128,
+            {"tile": (4, 4), "pad": ((67,), (65, 5))},
+            "expected 2 shared strides",
+            id="decomposed-pad-arity",
         ),
         pytest.param(
             1 << 20,
             torch.complex128,
             {"tile": (4,), "pad": ((67, 5), (65, 5))},
+            "one tile and one pad per factor",
             id="one-tile-short",
         ),
     ),
 )
 def test_a_config_outside_the_bounds_is_refused_rather_than_launched(
-    n: int, dtype: torch.dtype, config: dict
+    n: int, dtype: torch.dtype, config: dict, message: str
 ) -> None:
-    """``config`` is public, so its whole domain is reachable, not just the sweep's.
-
-    Every case here reached the device before this check existed and came back
-    as ``CUDA error: an illegal memory access was encountered``, which says
-    nothing about what was wrong and leaves the context unusable.
-    """
+    """Reject public configs outside structural bounds before device launch."""
     cls = FFTC2CDecomposedKernel if FFT_PLANS[n, str(dtype)[6:]].decomposed else FFTC2COneCTAKernel
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         cls(n, dtype, config=config)
 
 

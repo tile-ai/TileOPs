@@ -56,7 +56,8 @@ class FFTC2CFwdOp(Op):
 
     Raises:
         ValueError: The input is not a CUDA tensor, is not complex64 or
-            complex128, is 0-dimensional, or its last axis is not a power of two.
+            complex128, is 0-dimensional, or its last axis is not a supported
+            power of two from 1 through 2**28.
     """
 
     def __init__(
@@ -243,6 +244,8 @@ class FFTC2CFwdOp(Op):
         n = x.shape[-1]
         if n <= 0 or n & (n - 1) != 0:
             raise ValueError(f"FFT size must be a positive power of 2, got {n}")
+        if n > 1 << 28:
+            raise ValueError(f"FFT size must be at most 2**28, got {n}")
         if n == 1:
             self.n = n
             self.dtype = x.dtype
