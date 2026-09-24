@@ -1219,13 +1219,13 @@ def test_gemm_w4a16_stream_k_compiles_exact_two_way_partition() -> None:
 
 @pytest.mark.smoke
 def test_gemm_w4a16_stream_k_matches_the_unstreamed_tile() -> None:
-    """Crossing and exact two-way Stream-K partitions agree with the whole tile.
+    """Crossing and exact two-way Stream-K partitions handle a partial K tile.
 
-    ``n=192`` is three N tiles, so tile 1 spans three CTAs (the slot limit), and
-    ``k=33280`` (65 K tiles) puts a CTA boundary inside a tile while keeping
-    per-tile metadata staging. Six CTAs split every N tile exactly in two.
+    The 34 N tiles over 67 CTAs exercise a non-integral partition whose second
+    tile starts at CTA 2, and ``k=32896`` has a 128-element tail. 68 CTAs split
+    every N tile exactly in two.
     """
-    m, n, k = 1, 192, 33280
+    m, n, k = 1, 2176, 32896
     test = GemmW4A16Test(m, n, k, torch.float16)
     inputs = test.gen_inputs()
     tile = {
@@ -1238,8 +1238,15 @@ def test_gemm_w4a16_stream_k_matches_the_unstreamed_tile() -> None:
         "consumer_reg": 0,
         "split_k": 1,
     }
-    streamed = GemmW4A16Kernel(m, n, k, torch.float16, config={**tile, "stream_ctas": 5})(*inputs)
-    two_way = GemmW4A16Kernel(m, n, k, torch.float16, config={**tile, "stream_ctas": 6})(*inputs)
+    for stream_ctas in (-1, 1, 34, 69):
+        invalid = GemmW4A16Kernel(
+            m, n, k, torch.float16, config={**tile, "stream_ctas": stream_ctas}
+        )
+        with pytest.raises(ValueError, match="stream_ctas"):
+            invalid.kernel(**invalid.config)
+
+    streamed = GemmW4A16Kernel(m, n, k, torch.float16, config={**tile, "stream_ctas": 67})(*inputs)
+    two_way = GemmW4A16Kernel(m, n, k, torch.float16, config={**tile, "stream_ctas": 68})(*inputs)
     whole = GemmW4A16Kernel(m, n, k, torch.float16, config={**tile, "stream_ctas": 0})(*inputs)
     # The FP32 partials of up to three CTAs are summed in a different order.
     torch.testing.assert_close(streamed, whole, atol=1e-5, rtol=2e-3)

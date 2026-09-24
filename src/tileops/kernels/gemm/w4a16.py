@@ -339,10 +339,13 @@ def _gemm_w4a16_kernel(
         tiles_m = -(-m // block_m)
         tiles_n = -(-n // block_n)
         k_iters = -(-k // block_k)
+        has_k_tail = k % block_k != 0
         if k_iters % split_k:
             raise ValueError(f"split_k={split_k} must divide the {k_iters} K tiles")
         k_slice = k_iters // split_k
         defer_scale = _narrow_tile(block_m)
+        if stream_ctas < 0:
+            raise ValueError(f"stream_ctas must be non-negative, got {stream_ctas}")
         stream_k = stream_ctas > 0
         stream_slots = _CONFIG_SPACE.stream_slots
         stream_units = tiles_n * k_iters
@@ -350,10 +353,17 @@ def _gemm_w4a16_kernel(
         # boundary, so the streamed kernel has no second accumulator to infer.
         stream_two_way = stream_k and stream_ctas == 2 * tiles_n
         if stream_k and (
-            tiles_m != 1 or split_k != 1 or block_k != 512 or not per_tile_meta or n % block_n
+            tiles_m != 1
+            or split_k != 1
+            or not _narrow_tile(block_m)
+            or block_k != 512
+            or not per_tile_meta
+            or n % block_n
+            or not (tiles_n < stream_ctas <= 2 * tiles_n)
         ):
             raise ValueError(
-                "stream-K requires one M tile, split_k=1, bk512, per-tile metadata, and full N tiles"
+                "stream-K requires one narrow M tile, split_k=1, bk512, per-tile metadata, "
+                "full N tiles, and tiles_n < stream_ctas <= 2 * tiles_n"
             )
 
         def centered_weight(word, zero, j, v):
@@ -470,10 +480,10 @@ def _gemm_w4a16_kernel(
             activation, packed_weight, weight_scale, weight_zero = tensors
             if per_tile_meta:
                 for i, g in T.Parallel(block_n, tile_groups):
-                    # Stream-K never reaches a partial tail tile, so it needs no clamp.
+                    # A partial K tile is zero-filled; clamp its metadata to a valid group.
                     g_src = (
                         T.min(k_start // group_size + g, all_groups - 1)
-                        if not stream_k
+                        if not stream_k or has_k_tail
                         else k_start // group_size + g
                     )
                     buf.scale_shared[i, g] = weight_scale[n_start + i, g_src]
@@ -674,7 +684,9 @@ def _gemm_w4a16_kernel(
             for i, j in T.Parallel(block_n, block_m):
                 if j < m:
                     partials[tile, slot, j, i] = output_local[i, j]
-            first_cta = (tile * k_iters * stream_ctas) // stream_units
+            # CTA ranges are half-open after floor division; the +1 finds the
+            # first range whose end lies beyond this tile's first unit.
+            first_cta = T.ceildiv((tile * k_iters + 1) * stream_ctas, stream_units) - 1
             last_cta = T.ceildiv((tile + 1) * k_iters * stream_ctas, stream_units) - 1
             if cta == first_cta:
                 for unused, i, j in T.Parallel(stream_slots, block_n, block_m):
@@ -761,7 +773,10 @@ def _gemm_w4a16_kernel(
                     end_unit = ((bx + 1) * stream_units) // stream_ctas
                     first_tile = start_unit // k_iters
                     boundary = (first_tile + 1) * k_iters
-                    first_slot = bx - (first_tile * k_iters * stream_ctas) // stream_units
+                    first_cta = (
+                        T.ceildiv((first_tile * k_iters + 1) * stream_ctas, stream_units) - 1
+                    )
+                    first_slot = bx - first_cta
                     tensors = (activation, packed_weight, weight_scale, weight_zero)
                     T.clear(buf.output_local)
                     if not stream_two_way:
@@ -791,7 +806,14 @@ def _gemm_w4a16_kernel(
                     store_stream_tile(partials, bx, first_tile, first_slot, buf.output_local)
                     if end_unit > boundary:
                         second_tile = first_tile + 1
-                        second_slot = bx - (second_tile * k_iters * stream_ctas) // stream_units
+                        second_first_cta = (
+                            T.ceildiv(
+                                (second_tile * k_iters + 1) * stream_ctas,
+                                stream_units,
+                            )
+                            - 1
+                        )
+                        second_slot = bx - second_first_cta
                         store_stream_tile(partials, bx, second_tile, second_slot, output_local_b)
 
             return streamed
@@ -882,7 +904,7 @@ class GemmW4A16Kernel(Kernel):
         if self.m_pad != m:
             self.kernel = _gemm_w4a16_kernel(self.m_pad, n, k, self.dtype_str, group_size)
         # The mainloop leaves FP32 partials when it splits or streams K.
-        if self.config["stream_ctas"]:
+        if self.config["stream_ctas"] > 0:
             self._reduce = _w4a16_streamk_reduce_kernel(
                 -(-n // block_n), _CONFIG_SPACE.stream_slots, self.m_pad, n, block_n, self.dtype_str
             )()
