@@ -64,9 +64,8 @@ class _ConfigSpace:
     split_ks: tuple[int, ...] = (1, 2, 4, 8, 16)
     max_m_tiles: int = 64
     smem_bytes: int = 227 * 1024
-    # Warp-specialized split: (producer_reg + consumer_reg) * threads must fit
-    # the 65536-register file, or `setmaxnreg` waits forever; 24/240 at 256
-    # threads does not fit.
+    # Warp-specialized allocations must satisfy
+    # (producer_reg + consumer_reg) * threads <= 65536 registers per SM90 SM.
     producer_reg: int = 32
     consumer_reg: int = 224
     # Most CTAs that write one N tile's stream-K partials.
@@ -117,9 +116,8 @@ def _w4a16_streamk_reduce_kernel(
 def _stage_meta_per_tile(threads: int, block_k: int, block_n: int, all_groups: int) -> bool:
     """Whether a tile reloads scale and zero every K tile instead of staging all of K once.
 
-    Only 128-thread tiles do: the 256-thread tiles that would need it are too few
-    CTAs to saturate memory bandwidth. Narrow K tiles take it for the shared budget,
-    wide ones only when the whole-K prologue would exceed the measured crossover.
+    Only 128-thread tiles are eligible. Narrow K tiles always reload; wide K tiles
+    reload when staging all metadata exceeds the calibrated crossover.
     """
     return threads == 128 and (
         block_k <= 256 or block_n * all_groups * 3 > _H200_CALIBRATION.meta_staging_crossover_bytes
@@ -129,9 +127,8 @@ def _stage_meta_per_tile(threads: int, block_k: int, block_n: int, all_groups: i
 def _narrow_tile(block_m: int) -> bool:
     """Whether this is the one-WGMMA-column tile that serves decode.
 
-    It applies group scales to FP32 partials after the K-tile drain, and is built
-    at the real M, leaving the rows past M to the TMA zero-fill. Wider tiles scale
-    the FP16 weight and pad M to a whole tile, which measured faster for them.
+    It applies group scales to FP32 partials after the K-tile drain and uses the
+    logical M extent. Wider tiles scale the FP16 weight and use a whole-tile M.
     """
     return block_m == 8
 
@@ -280,14 +277,7 @@ _TILE_KEYS = ("block_m", "block_n", "block_k", "num_stages", "threads")
 
 
 def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
-    """The cheapest legal tile under :func:`_config_cost`, then the cheapest slicing of it.
-
-    The fit ranks whole tiles against each other; it was not fitted to rank a
-    sliced tile of one shape against a whole tile of another, and at one token
-    it credits a second warpgroup with bandwidth an SM does not have. So the
-    tile is chosen unsliced, widest K tile on a tie, and only that tile's own
-    ``split_k`` variants compete afterwards.
-    """
+    """Choose a tile shape, then its lowest-cost whole-K, split-K, or stream-K variant."""
     legal = list(_legal_configs(m, n, k, group_size, sms))
     scored = [(_config_cost(m, n, k, cfg, sms), cfg) for cfg in legal if cfg["split_k"] == 1]
     if not scored:
@@ -356,6 +346,9 @@ def _gemm_w4a16_kernel(
         stream_k = stream_ctas > 0
         stream_slots = _CONFIG_SPACE.stream_slots
         stream_units = tiles_n * k_iters
+        # Exactly two CTAs per N tile partition K without crossing an N-tile
+        # boundary, so the streamed kernel has no second accumulator to infer.
+        stream_two_way = stream_k and stream_ctas == 2 * tiles_n
         if stream_k and (
             tiles_m != 1 or split_k != 1 or block_k != 512 or not per_tile_meta or n % block_n
         ):
@@ -603,12 +596,7 @@ def _gemm_w4a16_kernel(
 
         @T.macro
         def name_tile_buffers(buf):
-            """Bind each buffer of ``buf`` to its own name.
-
-            TileLang names a buffer after the traced assignment that first holds
-            it and plans shared memory by those names, so buffers that only pass
-            through `_tile_buffers` would all be ``v_*`` and land at other offsets.
-            """
+            """Give tuple-carried buffers stable names for TileLang shared-memory planning."""
             activation_shared = buf.activation_shared
             packed_shared = buf.packed_shared
             scale_shared = buf.scale_shared
@@ -761,7 +749,10 @@ def _gemm_w4a16_kernel(
                 with T.Kernel(stream_ctas, threads=threads) as bx:
                     buf = _tile_buffers("float")
                     name_tile_buffers(buf)
-                    output_local_b = T.alloc_fragment((block_n, block_m), "float")
+                    if stream_two_way:
+                        output_local_b = buf.output_local
+                    else:
+                        output_local_b = T.alloc_fragment((block_n, block_m), "float")
                     if producer_reg > 0:
                         T.annotate_producer_reg_dealloc(producer_reg)
                     if consumer_reg > 0:
@@ -773,7 +764,8 @@ def _gemm_w4a16_kernel(
                     first_slot = bx - (first_tile * k_iters * stream_ctas) // stream_units
                     tensors = (activation, packed_weight, weight_scale, weight_zero)
                     T.clear(buf.output_local)
-                    T.clear(output_local_b)
+                    if not stream_two_way:
+                        T.clear(output_local_b)
                     for stream_local in T.Pipelined(end_unit - start_unit, num_stages=num_stages):
                         unit = start_unit + stream_local
                         stream_tile = unit // k_iters
@@ -781,8 +773,8 @@ def _gemm_w4a16_kernel(
                         k_start = kk * block_k
                         n_start = stream_tile * block_n
                         k_tile_decode(k_start, n_start, 0, tensors, buf)
-                        # One loop choosing the accumulator per element; the four
-                        # loops of `accumulate_defer_scale` measured 11% slower here.
+                        # A CTA may cross one N-tile boundary; route both segments
+                        # through one accumulation loop.
                         tmp_0, tmp_1, tmp_2, tmp_3 = buf.tmps
                         scale_0, scale_1, scale_2, scale_3 = buf.scales
                         for i, j in T.Parallel(block_n, block_m):
@@ -885,9 +877,7 @@ class GemmW4A16Kernel(Kernel):
         self.kernel = _gemm_w4a16_kernel(m, n, k, self.dtype_str, group_size)
         self.init_config(config, tune)
         block_m, block_n = self.config["block_m"], self.config["block_n"]
-        # A TMA box overhanging the end of the tensor is far slower than a
-        # whole one, so wide tiles are built for M padded to a whole tile; the
-        # padded rows land in output rows the caller never sees.
+        # Only the narrow decode tile uses logical M; other tiles use a whole-tile extent.
         self.m_pad = m if _narrow_tile(block_m) else -(-m // block_m) * block_m
         if self.m_pad != m:
             self.kernel = _gemm_w4a16_kernel(self.m_pad, n, k, self.dtype_str, group_size)
@@ -956,8 +946,7 @@ class GemmW4A16Kernel(Kernel):
         if self._reduce is None:
             out = compiled(activation, words, weight_scale, weight_zero)
         else:
-            # Allocated before the mainloop launches, so the allocation does
-            # not sit between the two kernels.
+            # Allocate the final output before launching the composite path.
             out = activation.new_empty((self.m_pad, self.n))
             self._reduce(compiled(activation, words, weight_scale, weight_zero), out)
         return out[: self.m] if self.m_pad != self.m else out
