@@ -775,15 +775,23 @@ def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
 # BinaryKernel autotune_configs tests
 
 
+def _served_kernel(op, shape: tuple, dtype: torch.dtype):
+    """Run *op* once on CUDA and return the kernel that served the call."""
+    a = torch.randn(*shape, device="cuda", dtype=dtype)
+    b = torch.randn(*shape, device="cuda", dtype=dtype)
+    with torch.no_grad():
+        out = op(a, b)
+    assert out.shape == a.shape
+    assert out.dtype == dtype
+    (kernel,) = op.iter_kernels()
+    return kernel
+
+
 @pytest.mark.smoke
 def test_binary_kernel_has_autotune_configs() -> None:
-    """BinaryKernel subclasses must expose autotune_configs with >= 3 entries."""
-
-    shape = (4096,)
+    """BinaryKernel subclasses expose >= 3 distinct autotune_configs."""
     for op_cls in (MaximumFwdOp, MinimumFwdOp, AddFwdOp, SubFwdOp, MulFwdOp):
-        op = op_cls()
-        # The kernel is built per specialization; ask for one.
-        kernel = op._build(torch.float16, shape, shape)
+        kernel = _served_kernel(op_cls(), (4096,), torch.float16)
         configs = kernel.autotune_configs
         assert configs is not None, f"{kernel.__class__.__name__} must define autotune_configs"
         assert len(configs) >= 3, (
@@ -793,18 +801,10 @@ def test_binary_kernel_has_autotune_configs() -> None:
         for cfg in configs:
             assert "threads" in cfg, f"Config missing 'threads': {cfg}"
             assert "num_per_thread" in cfg, f"Config missing 'num_per_thread': {cfg}"
-
-
-@pytest.mark.smoke
-def test_binary_kernel_autotune_configs_distinct() -> None:
-    """autotune_configs entries must be distinct (no duplicates)."""
-    shape = (4096,)
-    op = AddFwdOp()
-    configs = op._build(torch.float16, shape, shape).autotune_configs
-    config_tuples = [(c["threads"], c["num_per_thread"]) for c in configs]
-    assert len(config_tuples) == len(set(config_tuples)), (
-        f"Duplicate configs found: {config_tuples}"
-    )
+        config_tuples = [(c["threads"], c["num_per_thread"]) for c in configs]
+        assert len(config_tuples) == len(set(config_tuples)), (
+            f"{kernel.__class__.__name__} has duplicate configs: {config_tuples}"
+        )
 
 
 # Optimized maximum/minimum correctness on larger shapes
@@ -892,27 +892,16 @@ def test_binary_tune_true_reaches_the_autotuner() -> None:
     """tune=True picks a config out of the search space, and does not fall back."""
     import warnings
 
-    shape = (4096,)
-    dtype = torch.float16
-
     for op_cls in (AddFwdOp, MaximumFwdOp, MinimumFwdOp):
-        op = op_cls(tune=True)
-        # The kernel — and so the autotuner — runs on first use, not at construction.
+        # The kernel — and so the autotuner — is built on the first call.
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            kernel = op._build(dtype, shape, shape)
+            kernel = _served_kernel(op_cls(tune=True), (4096,), torch.float16)
         assert not [w for w in caught if "falling back" in str(w.message)], (
             f"{op_cls.__name__} fell back instead of tuning: {[str(w.message) for w in caught]}"
         )
         swept = {c["threads"] for c in kernel.autotune_configs}
         assert kernel.config["threads"] in swept
-
-        a = torch.randn(*shape, device="cuda", dtype=dtype)
-        b = torch.randn(*shape, device="cuda", dtype=dtype)
-        with torch.no_grad():
-            out = op(a, b)
-        assert out.shape == a.shape
-        assert out.dtype == dtype
 
 
 # LerpTensorFwdOp — Tensor-weight torch.lerp overload (manifest:

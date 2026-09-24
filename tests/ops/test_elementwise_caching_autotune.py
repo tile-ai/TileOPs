@@ -13,8 +13,6 @@ import torch
 
 from tileops.kernels.elementwise import (
     AbsFwdKernel,
-    # Concrete binary
-    AddFwdKernel,
     AlibiFwdKernel,
     ClampFwdKernel,
     EluFwdKernel,
@@ -214,14 +212,6 @@ class TestAutotuneConfigs:
             f"fell back instead of tuning: {[str(w.message) for w in caught]}"
         )
         assert k.config["threads"] in {c["threads"] for c in k.autotune_configs}
-
-    @pytest.mark.full
-    def test_binary_autotune_configs_still_works(self):
-        """BinaryKernel autotune_configs must still work (no regression)."""
-        k = AddFwdKernel((N,), (N,), torch.float16)
-        configs = k.autotune_configs
-        assert configs is not None
-        assert len(configs) >= 3
 
 
 # 5. Correctness: caching does not change results

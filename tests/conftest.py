@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import _check_result
+from tileops.backend import BUILTIN, UnknownTargetError, registry, set_default_target
 
 
 def _under_repo_tests(item: pytest.Item) -> bool:
@@ -12,7 +13,7 @@ def _under_repo_tests(item: pytest.Item) -> bool:
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Register the opt-in in-kernel timeline-trace flag.
+    """Register the opt-in in-kernel timeline-trace flag, and the target the suite runs on.
 
     Off by default: when ``--trace-kernel`` is absent the process-local trace
     switch stays off, so trace-dump tests no-op and normal runs are zero cost.
@@ -25,19 +26,55 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Build instrumented kernels with in-kernel tracing and dump their "
         "timeline (HTML + Chrome JSON) for the trace-dump tests.",
     )
+    parser.addoption(
+        "--tileops-target",
+        default="builtin",
+        help="Which kernels serve the ops under test: 'builtin' (default) for the in-tree "
+        "kernels, 'detect' to let installed backends claim their devices, or a target name.",
+    )
+
+
+# The process default in force before configure, put back at unconfigure.
+_OUTER_DEFAULT_TARGET = pytest.StashKey[object]()
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Flip the in-process trace switch on when ``--trace-kernel`` is passed.
+    """Flip the in-process trace switch on when ``--trace-kernel`` is passed, and pin the target.
 
     Runs once at startup, before any kernel is built, so the traced build is the
     one that gets cached. No environment variable is involved — the switch lives
-    in this pytest process only.
+    in this pytest process only. The target is settled here, before collection, so
+    no fixture of any scope and no collected test module calls an op before it.
     """
     if config.getoption("--trace-kernel"):
         from tileops.trace import trace
 
         trace.enable()  # dumps to debug/ (gitignored)
+
+    config.stash[_OUTER_DEFAULT_TARGET] = registry.default_target
+    _pin_default_target(config.getoption("--tileops-target"))
+
+
+def _pin_default_target(choice: str) -> None:
+    """Make the in-tree kernels serve the suite, unless the run names another target.
+
+    The suite tests the in-tree implementation, so a backend installed in the environment
+    must not claim its devices. ``set_default_target`` loads the installed backends before
+    it sets the default, so one that sets its own while being imported cannot replace this
+    one later. A test of target dispatch isolates the registry or names its target, and
+    either overrides this.
+    """
+    target = {"builtin": BUILTIN, "detect": None}.get(choice, choice)
+    try:
+        set_default_target(target)
+    except UnknownTargetError as exc:
+        raise pytest.UsageError(f"--tileops-target: {exc}") from None
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Put back the process default this conftest replaced."""
+    if _OUTER_DEFAULT_TARGET in config.stash:
+        registry.default_target = config.stash[_OUTER_DEFAULT_TARGET]
 
 
 @pytest.fixture(autouse=True)
