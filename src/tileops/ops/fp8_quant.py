@@ -2,6 +2,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.fp8_quant import FP8QuantKernel
 from tileops.kernels.kernel_base import Entry, Kernel
 
@@ -22,13 +23,22 @@ class FP8QuantFwdOp(Op):
     quantized against the maximum of its finite values.
     """
 
-    def __init__(self, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False):
+    def __init__(
+        self,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        *,
+        target: Target = None,
+    ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = None
         self.seq_len_kv = None
         self.kv_group = None
@@ -55,14 +65,14 @@ class FP8QuantFwdOp(Op):
         return self.kernel_for(
             "fp8_quant_kernel",
             inputs,
-            (batch, seq_len_kv, kv_group, index_dim, in_dtype, device_index, self.tune),
+            (batch, seq_len_kv, kv_group, index_dim, in_dtype, device_index),
         )
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, dtype and device."""
-        batch, seq_len_kv, kv_group, index_dim, in_dtype, _device_index, tune = call
+        batch, seq_len_kv, kv_group, index_dim, in_dtype, _device_index = call
         return call, lambda: self.kernel_map["fp8_quant_kernel"](
-            batch, seq_len_kv, kv_group, index_dim, in_dtype, tune=tune
+            batch, seq_len_kv, kv_group, index_dim, in_dtype, tune=self.tune
         )
 
     def _infer_output_shapes(
@@ -101,7 +111,7 @@ class FP8QuantFwdOp(Op):
         self.index_dim = index_dim
         self.in_dtype = input_tensor.dtype
         self.kernel = self._get_kernel(
-            (input_tensor),
+            (input_tensor,),
             batch,
             seq_len_kv,
             kv_group,

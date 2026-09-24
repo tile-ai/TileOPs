@@ -29,6 +29,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
@@ -57,6 +58,8 @@ class Mamba2FwdOp(Op):
         dt_softplus: bool = True,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -64,7 +67,10 @@ class Mamba2FwdOp(Op):
             chunk_size:         Tokens per chunk (default 256).
             dt_softplus:        Apply softplus to (dt + dt_bias) before use.
             tune:               Whether to autotune tile configs on construction.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = None
         self.seqlen = None
         self.chunk_size = chunk_size
@@ -81,14 +87,16 @@ class Mamba2FwdOp(Op):
         self._kernel_map_override = kernel_map
 
         self._da_cumsum_ops: dict[torch.dtype, DaCumsumFwdOp] = {}
-        self._chunk_state_op = SSDChunkStateFwdOp(tune=tune, kernel_map=kernel_map)
+        self._chunk_state_op = SSDChunkStateFwdOp(tune=tune, kernel_map=kernel_map, target=target)
 
         # chunk_states output is float32 (B, C, H, P, N).
         # Flatten P*N into a single state dim so SSDStatePassingFwdOp is used
         # instead of a Python loop, keeping everything on the GPU.
-        self._state_passing_op = SSDStatePassingFwdOp(tune=tune, kernel_map=kernel_map)
+        self._state_passing_op = SSDStatePassingFwdOp(
+            tune=tune, kernel_map=kernel_map, target=target
+        )
 
-        self._chunk_scan_op = SSDChunkScanFwdOp(tune=tune, kernel_map=kernel_map)
+        self._chunk_scan_op = SSDChunkScanFwdOp(tune=tune, kernel_map=kernel_map, target=target)
         self._cb_producer_ops: dict[tuple, CBProducerFwdOp] = {}
 
     @property
@@ -131,6 +139,7 @@ class Mamba2FwdOp(Op):
                 dt_softplus=self.dt_softplus,
                 tune=self.tune,
                 kernel_map=self._kernel_map_override,
+                target=self.target,
             )
         return self._da_cumsum_ops[dtype]
 
@@ -151,7 +160,6 @@ class Mamba2FwdOp(Op):
             d_state,
             dtype,
             device_index,
-            self.tune,
         )
         if key not in self._cb_producer_ops:
             self._cb_producer_ops[key] = CBProducerFwdOp(
@@ -162,6 +170,7 @@ class Mamba2FwdOp(Op):
                 d_state=d_state,
                 tune=self.tune,
                 kernel_map=self._kernel_map_override,
+                target=self.target,
             )
         return self._cb_producer_ops[key]
 
@@ -206,8 +215,6 @@ class Mamba2FwdOp(Op):
             y:            (batch, seqlen, n_heads, d_head)   float32
             final_states: (batch, n_heads, d_head, d_state)  float32, or None
         """
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
         if x.ndim != 4:
             raise ValueError("x must have shape [batch, seqlen, n_heads, d_head]")
         batch, seqlen, n_heads, d_head = x.shape

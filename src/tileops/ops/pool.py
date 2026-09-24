@@ -577,7 +577,6 @@ class _AvgPoolFwdOpBase(Op):
             self.divisor_override,
             dtype,
             device_index,
-            self.tune,
         )
 
         def build() -> Kernel:
@@ -880,7 +879,6 @@ class _MaxPoolFwdOpBase(Op):
             self.ceil_mode,
             dtype,
             device_index,
-            self.tune,
         )
 
         def build() -> Kernel:
@@ -1478,7 +1476,7 @@ class _AdaptivePool2dFwdOpBase(Op):
         out_h, out_w = self._resolve_out_dims(h_in, w_in)
         x = x.contiguous()
         dtype = x.dtype
-        key = (n, c_in, h_in, w_in, out_h, out_w, dtype, _device_index(x), self.tune)
+        key = (n, c_in, h_in, w_in, out_h, out_w, dtype, _device_index(x))
         kernel = self.kernel_for("adaptive_pool", (x,), key)
         result = kernel(x)
         # Recorded after the launch: eval_roofline and profiling read these, and a call that
@@ -1505,7 +1503,7 @@ class _AdaptivePool2dFwdOpBase(Op):
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per input and output extents, dtype and device."""
-        n, c_in, h_in, w_in, out_h, out_w, dtype, _device, tune = call
+        n, c_in, h_in, w_in, out_h, out_w, dtype, _device = call
         return call, lambda: self.kernel_map[self._kernel_slot](
             n=n,
             c_in=c_in,
@@ -1514,7 +1512,7 @@ class _AdaptivePool2dFwdOpBase(Op):
             out_h=out_h,
             out_w=out_w,
             dtype=dtype,
-            tune=tune,
+            tune=self.tune,
         )
 
 

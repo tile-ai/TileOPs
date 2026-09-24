@@ -4,6 +4,7 @@ from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe import MoePermuteAlignKernel
 
@@ -37,6 +38,8 @@ class MoePermuteAlignFwdOp(Op):
         block_size: int = 64,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -47,7 +50,10 @@ class MoePermuteAlignFwdOp(Op):
             block_size: GEMM tile size (M dimension); default 64.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune the kernel.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.total_tokens = total_tokens
         self.top_k = top_k
         self.num_experts = num_experts

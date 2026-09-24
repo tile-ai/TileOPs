@@ -7,6 +7,7 @@ from typing import ClassVar
 import torch
 from torch import Tensor
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry
 from tileops.kernels.moe.indexed_expert_gemm import (
     IndexedExpertGemmTemplate,
@@ -55,6 +56,8 @@ class IndexedExpertMLPFwdOp(Op):
         ffn_size: int,
         routed_scaling_factor: float = 1.0,
         kernel_map: dict | None = None,
+        *,
+        target: Target = None,
     ) -> None:
         """Fix the route extents and the scalar applied to the reduced output.
 
@@ -67,7 +70,10 @@ class IndexedExpertMLPFwdOp(Op):
             routed_scaling_factor: Scalar applied to the final reduced output.
             kernel_map: Optional dispatch override mapping kernel keys to ``Kernel``
                 subclasses, forwarded to the staged ops this one falls back to.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.num_tokens = num_tokens
         self.num_experts = num_experts
         self.top_k = top_k
@@ -79,13 +85,16 @@ class IndexedExpertMLPFwdOp(Op):
         # pipeline it falls back to is built here.
         layout = ContiguousLayoutSpec.tight_physical_psum()
         self._pre_permute = MoePrePermuteFwdOp(
-            layout=layout, num_local_experts=num_experts, kernel_map=kernel_map
+            layout=layout, num_local_experts=num_experts, kernel_map=kernel_map, target=target
         )
-        self._expert_mlp = MoeExpertMLPFwdOp(layout, "silu_and_mul", kernel_map=kernel_map)
+        self._expert_mlp = MoeExpertMLPFwdOp(
+            layout, "silu_and_mul", kernel_map=kernel_map, target=target
+        )
         self._post_permute = MoePostPermuteFwdOp(
             layout=layout,
             epilogue=RoutingEpilogueSpec(routed_scaling_factor=routed_scaling_factor),
             kernel_map=kernel_map,
+            target=target,
         )
         self.dispatch_kernel(kernel_map)
 

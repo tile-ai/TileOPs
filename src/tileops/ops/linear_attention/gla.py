@@ -113,13 +113,12 @@ class GLAFwdOp(Op):
             self.scale,
             dtype,
             device_index,
-            self.tune,
         )
         return self.kernel_for("GLAFwdKernel", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, chunk length, scale, dtype and device."""
-        batch, seq_len, heads, dim_k, dim_v, chunk_size, scale, dtype, _device, tune = call
+        batch, seq_len, heads, dim_k, dim_v, chunk_size, scale, dtype, _device = call
         return call, lambda: self.kernel_map["GLAFwdKernel"](
             batch,
             seq_len,
@@ -130,7 +129,7 @@ class GLAFwdOp(Op):
             scale=scale,
             output_final_state=True,
             dtype=dtype,
-            tune=tune,
+            tune=self.tune,
         )
 
     def _infer_output_shapes(
@@ -221,6 +220,8 @@ class GLABwdOp(Op):
         has_initial_state: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -231,7 +232,10 @@ class GLABwdOp(Op):
                 forward this backward pairs with was given an initial state.
             kernel_map: Optional kernel overrides.
             tune: Whether to autotune kernels.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.has_initial_state = has_initial_state
         self.batch = None
         self.seq_len = None
@@ -273,13 +277,12 @@ class GLABwdOp(Op):
             self.scale,
             dtype,
             device_index,
-            self.tune,
         )
         return self.kernel_for("GLABwdKernel", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, chunk length, scale, dtype and device."""
-        batch, seq_len, heads, dim_k, dim_v, chunk_size, scale, dtype, _device, tune = call
+        batch, seq_len, heads, dim_k, dim_v, chunk_size, scale, dtype, _device = call
         return call, lambda: self.kernel_map["GLABwdKernel"](
             batch,
             seq_len,
@@ -289,7 +292,7 @@ class GLABwdOp(Op):
             chunk_size,
             scale=scale,
             dtype=dtype,
-            tune=tune,
+            tune=self.tune,
         )
 
     def _infer_output_shapes(

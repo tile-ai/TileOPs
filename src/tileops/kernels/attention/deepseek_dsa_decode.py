@@ -1,3 +1,4 @@
+import dataclasses
 import functools
 import itertools
 from typing import Callable, Optional
@@ -7,12 +8,55 @@ import tilelang.language as T
 import torch
 from tilelang.autotuner import autotune
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_version
 
 from .online_softmax import LOG2E
 
-__all__ = ["SparseMlaBasicKernel", "SparseMlaKernel"]
+__all__ = ["SparseMlaBasicKernel", "SparseMlaCall", "SparseMlaKernel"]
+
+
+@dataclasses.dataclass(frozen=True)
+class SparseMlaCall(CallSpec):
+    """One sparse MLA decode call: the construction arguments both implementations take."""
+
+    batch: int = 0
+    seq_len: int = 0
+    seq_len_kv: int = 0
+    heads: int = 0
+    dim: int = 0
+    tail_dim: int = 0
+    dtype: Optional[torch.dtype] = None
+    topk: int = 0
+    kv_stride: int = 0
+    q_start_index_s: int = 0
+    kv_group: int = 1
+    sm_scale: Optional[float] = None
+    is_causal: bool = True
+    cp0: bool = True
+
+
+def _sparse_mla_entry(cls: type, call: SparseMlaCall) -> Entry:
+    """The entry for either implementation: the record is the identity, built on its device."""
+    return call, lambda: cls(
+        call.batch,
+        call.seq_len,
+        call.seq_len_kv,
+        call.heads,
+        call.dim,
+        call.tail_dim,
+        call.dtype,
+        call.topk,
+        call.kv_stride,
+        call.q_start_index_s,
+        call.kv_group,
+        call.sm_scale,
+        call.is_causal,
+        call.cp0,
+        tune=call.tune,
+        device_index=call.device.index if call.device is not None else None,
+    )
 
 
 @functools.lru_cache(maxsize=32)
@@ -829,6 +873,11 @@ class SparseMlaBasicKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    general = True
+
+    @classmethod
+    def entry_for(cls, call: SparseMlaCall) -> Entry:
+        return _sparse_mla_entry(cls, call)
 
     def __init__(
         self,
@@ -848,8 +897,9 @@ class SparseMlaBasicKernel(Kernel):
         cp0: bool = True,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.seq_len = seq_len
         self.seq_len_kv = seq_len_kv
@@ -896,7 +946,7 @@ class SparseMlaBasicKernel(Kernel):
         # halves the pipelined KV tiles to 148KB, which fits sm80; sm89's
         # 99KB cap still needs the smaller h_per_block of a realistic MLA
         # shape (heads // kv_group) or an autotuned block_i.
-        if get_sm_version() < 90:
+        if get_sm_version(self.device_index) < 90:
             return {"block_i": 32, "threads": 128, "num_stages": 2}
         return {"block_i": 64, "threads": 128, "num_stages": 2}
 
@@ -1041,6 +1091,10 @@ class SparseMlaKernel(Kernel):
 
     supported_archs: list[int] = [90]
 
+    @classmethod
+    def entry_for(cls, call: SparseMlaCall) -> Entry:
+        return _sparse_mla_entry(cls, call)
+
     def __init__(
         self,
         batch: int,
@@ -1059,8 +1113,9 @@ class SparseMlaKernel(Kernel):
         cp0: bool = True,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.seq_len = seq_len
         self.seq_len_kv = seq_len_kv

@@ -33,6 +33,7 @@ class AlibiFwdOp(Op):
         seq_len: int,
         num_heads: int,
         out_dtype: torch.dtype = torch.float32,
+        device: "torch.device | str | None" = None,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
     ):
@@ -42,16 +43,18 @@ class AlibiFwdOp(Op):
             seq_len: Sequence length.
             num_heads: Number of attention heads.
             out_dtype: Dtype of the generated tensor.
+            device: Where the tensor is produced, and so the device a target is detected
+                from. ``None`` produces it on the current CUDA device, or wherever a named
+                target decides.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
-                the in-tree kernels, or ``None``. Nothing is probed: with no tensor input
-                there is no device to detect, so the in-tree kernels serve unless a target
-                is named.
+                the in-tree kernels, or ``None`` to decide from ``device``.
             kernel_map: Optional dispatch override mapping kernel keys to
                 ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
         """
         self.seq_len = seq_len
         self.num_heads = num_heads
         self.out_dtype = out_dtype
+        self.device = device
         self.target = target
         self.dispatch_kernel(kernel_map)
 
@@ -69,13 +72,13 @@ class AlibiFwdOp(Op):
     def total_memory(self) -> int:
         return self.num_heads * self.seq_len * self.seq_len * self.out_dtype.itemsize
 
-    def entry_for(self, role: str, call: torch.dtype) -> Entry:
-        """One implementation, built per dtype; the extents are the op's."""
-        return call, lambda: self._build(call)
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per dtype and device; the extents are the op's."""
+        return call, lambda: self._build(*call)
 
-    def _build(self, dtype: torch.dtype):
+    def _build(self, dtype: torch.dtype, device_index: "int | None" = None):
         impl, ctor_dtype = self.kernel_map[self._op_name].specialize(dtype)
-        return impl(self.seq_len, self.num_heads, ctor_dtype)
+        return impl(self.seq_len, self.num_heads, ctor_dtype, device_index=device_index)
 
     def forward(self) -> torch.Tensor:
         # The op promised ``self.out_dtype``; whichever storage the backend chose to
@@ -85,7 +88,10 @@ class AlibiFwdOp(Op):
         Returns:
             ``output``, as the manifest declares.
         """
-        # No tensor input, so no device to detect: in-tree only.
-        kernel = self.kernel_for(self._op_name, (), self.out_dtype)
+        device = self._declared_device()
+        if device is not None and device.type != "cuda":
+            raise ValueError(f"{type(self).__name__}'s in-tree kernel runs on CUDA, not {device}")
+        index = None if device is None else device.index
+        kernel = self.kernel_for(self._op_name, (), (self.out_dtype, index))
         out = kernel().reshape(self.num_heads, self.seq_len, self.seq_len)
         return out if out.dtype == self.out_dtype else out.to(self.out_dtype)

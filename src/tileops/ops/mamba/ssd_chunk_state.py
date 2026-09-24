@@ -2,6 +2,7 @@ from typing import ClassVar, Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba import SSDChunkStateFwdKernel
 from tileops.perf.profile import tensor_core_roof
@@ -33,12 +34,17 @@ class SSDChunkStateFwdOp(Op):
         self,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             tune:       Whether to autotune tile config on construction.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = None
         self.num_chunks = None
         self.chunk_len = None
@@ -84,7 +90,6 @@ class SSDChunkStateFwdOp(Op):
             dt_dtype,
             has_seq_idx,
             device_index,
-            self.tune,
         )
         return self.kernel_for("ssd_chunk_state_fwd", inputs, key)
 
@@ -102,7 +107,6 @@ class SSDChunkStateFwdOp(Op):
             dt_dtype,
             has_seq_idx,
             _device,
-            tune,
         ) = call
         return call, lambda: self.kernel_map["ssd_chunk_state_fwd"](
             batch,
@@ -115,7 +119,7 @@ class SSDChunkStateFwdOp(Op):
             dtype,
             has_seq_idx=has_seq_idx,
             dt_dtype=dt_dtype,
-            tune=tune,
+            tune=self.tune,
         )
 
     def _infer_output_shapes(

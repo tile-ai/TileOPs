@@ -60,6 +60,7 @@ FusedMoEExpertsFwdOp:
     inputs:
       output:
         dtype: same_as(hidden_states)
+        mutated: true
         note: pre-allocated output buffer
       hidden_states:
         dtype: float16 | bfloat16

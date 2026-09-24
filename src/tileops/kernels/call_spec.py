@@ -27,8 +27,10 @@ class CallSpec:
     # The device whose facts decide selection. ``None`` reads the current device.
     device: "torch.device | None" = None
     # Whether the kernel built for this call tunes itself. A construction argument
-    # wherever a kernel takes one, so it belongs to the call rather than beside it.
-    tune: bool = False
+    # wherever a kernel takes one, so it belongs to the call rather than beside it. It
+    # takes no part in comparison: tuning changes how fast a kernel runs, not what it
+    # computes, and ``Op.autotune`` tunes the kernels already built in place.
+    tune: bool = dataclasses.field(default=False, compare=False)
 
     def __post_init__(self) -> None:
         index = self.device.index if self.device is not None else None

@@ -2,6 +2,7 @@ from typing import ClassVar, Dict, List, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.engram import EngramDecodeKernel
 from tileops.kernels.kernel_base import Entry, Kernel
 
@@ -35,6 +36,8 @@ class EngramDecodeFwdOp(Op):
         eps: float = 1e-6,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -46,7 +49,10 @@ class EngramDecodeFwdOp(Op):
             conv_kernel_size: Number of conv taps w (model param, e.g. 4).
             dilation: Dilation factor δ (model param, e.g. max N-gram order).
             eps: RMSNorm epsilon (default 1e-6).
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = batch
         self.d_mem = d_mem
         self.d = d

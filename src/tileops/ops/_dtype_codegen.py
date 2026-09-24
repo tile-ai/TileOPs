@@ -57,10 +57,12 @@ def _parse_dtype_combos(
     op_name: str,
     combos: Any,
     input_names: list[str],
+    output_names: "frozenset[str]" = frozenset(),
 ) -> list[dict[str, torch.dtype]] | None:
     """Validate and normalize ``signature.dtype_combos`` rows.
 
-    Each row is a mapping ``{input_name: dtype_token}`` where each value
+    Each row is a mapping ``{input_name: dtype_token}``, optionally with output
+    columns that pin the output dtype of that row, where each value
     is either a concrete torch dtype token (``"float16"``) or a
     ``same_as(ref)`` expression naming another input in the same row.
     ``same_as`` tokens are resolved against their sibling within the row
@@ -88,7 +90,7 @@ def _parse_dtype_combos(
         # First pass: type-check entries and capture raw tokens.
         raw: dict[str, str] = {}
         for name, tok in row.items():
-            if name not in input_names:
+            if name not in input_names and name not in output_names:
                 raise ValueError(
                     f"{op_name}: signature.dtype_combos[{idx}] references unknown input {name!r}"
                 )
@@ -142,6 +144,21 @@ def _parse_dtype_combos(
     return normalized
 
 
+def _output_dtype_for(sig: dict[str, Any]) -> Callable[..., torch.dtype]:
+    """How a call's output dtype follows from the op and its tensors, as the compile fake has it."""
+    outputs = sig.get("outputs")
+    outputs = outputs if isinstance(outputs, dict) else {}
+
+    def resolve(op: Any, output: str, tensors: dict) -> torch.dtype:
+        from ._compile_boundary_codegen import _fallback_source
+        from ._output_dtype import output_dtype
+
+        source = _fallback_source(outputs[output]["dtype"], tensors)
+        return output_dtype(op, output, source.dtype)
+
+    return resolve
+
+
 def synthesize_validate_dtypes(
     op_name: str,
     sig: dict[str, Any],
@@ -183,12 +200,15 @@ def synthesize_validate_dtypes(
         per_input[name] = (concrete, refs, dtype_str)
 
     input_names = list(inputs.keys())
+    declared_outputs = sig.get("outputs")
+    output_names = set(declared_outputs) if isinstance(declared_outputs, dict) else set()
     # Validate every same_as(ref) names a sibling in the same signature.
     # Doing this at synthesis time turns typos into class-construction
-    # errors instead of deferring them to a runtime fallback path.
+    # errors instead of deferring them to a runtime fallback path. A ref to an
+    # output is resolved the way the compile fake resolves that output's dtype.
     for name, (_concrete, refs, _dtype_str) in per_input.items():
         for ref in refs:
-            if ref not in input_names:
+            if ref not in input_names and ref not in output_names:
                 raise ValueError(
                     f"{op_name}: signature.inputs[{name!r}].dtype "
                     f"references same_as({ref}) but {ref!r} is not "
@@ -198,6 +218,7 @@ def synthesize_validate_dtypes(
         op_name,
         sig.get("dtype_combos"),
         input_names,
+        frozenset(output_names),
     )
     # Every combo row enumerates every required declared input, so the
     # observed key spans them all, same_as-bound ones resolved. An optional
@@ -214,7 +235,8 @@ def synthesize_validate_dtypes(
     if combos is not None:
         input_names_set = set(required_names)
         for idx, row in enumerate(combos):
-            row_keys = set(row.keys())
+            # An output column pins the row's output dtype; the inputs cannot see it.
+            row_keys = set(row.keys()) - output_names
             if row_keys != input_names_set:
                 missing = input_names_set - row_keys
                 extra = row_keys - input_names_set
@@ -254,6 +276,8 @@ def synthesize_validate_dtypes(
         f"def _validate_dtypes(self, {params_src}):",
         f'    """Synthesized from manifest signature for {op_name}."""',
     ]
+    tensors_src = "{" + ", ".join(f"{n!r}: {n}" for n in input_names) + "}"
+    closure["_output_dtype"] = _output_dtype_for(sig)
     for name in input_names:
         concrete, refs, dtype_str = per_input[name]
         closure[f"_concrete_{name}"] = frozenset(concrete)
@@ -264,10 +288,15 @@ def synthesize_validate_dtypes(
             pad = "    "
         src_lines.append(f"    {pad}_actual = {name}.dtype")
         src_lines.append(f"    {pad}if _actual not in _concrete_{name}:")
-        # Every `same_as(ref)` was checked above to name a sibling input, so
-        # each ref is in scope as a parameter here.
+        # Every `same_as(ref)` was checked above to name a sibling input, in scope as
+        # a parameter here, or an output, whose dtype follows from this call.
         if refs:
-            cond = " or ".join(f"_actual == {r}.dtype" for r in refs)
+            cond = " or ".join(
+                f"_actual == {r}.dtype"
+                if r in input_names
+                else f"_actual == _output_dtype(self, {r!r}, {tensors_src})"
+                for r in refs
+            )
             src_lines.append(f"    {pad}    if not ({cond}):")
             indent = f"    {pad}        "
         else:
@@ -321,10 +350,11 @@ def maybe_install_validator(cls: type) -> None:
       the synthesized one, so bind it in the concrete class body.
     - The manifest signature has a non-empty ``inputs`` mapping the
       codegen recognizes.
-    """
-    if "_validate_dtypes" in cls.__dict__:
-        return
 
+    The synthesized function is also attached as ``_validate_manifest_dtypes``,
+    override or not: it is what a target serving the op is held to, and an override
+    may be narrower, stating what the in-tree kernels support.
+    """
     sig = getattr(cls, "__manifest_signature__", None)
     status = getattr(cls, "__manifest_status__", None)
     if sig is None or status is None:
@@ -343,4 +373,6 @@ def maybe_install_validator(cls: type) -> None:
         # Manifest signature too irregular to synthesize from; leave the
         # base stub in place rather than mask the gap.
         return
-    cls._validate_dtypes = fn  # type: ignore[assignment]
+    cls._validate_manifest_dtypes = fn
+    if "_validate_dtypes" not in cls.__dict__:
+        cls._validate_dtypes = fn  # type: ignore[assignment]

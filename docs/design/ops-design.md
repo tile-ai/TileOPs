@@ -49,13 +49,25 @@ The kernel is dtype-specialized, so this makes kernel construction uniformly def
 
 **Order decides nothing.** Selection takes the implementation that applies; the one declared general runs where no specialised one does. Nothing applicable is an error, and two specialised implementations claiming one call is an ambiguity error rather than a silent preference. A replacement the caller supplies answers the same question as the class it replaces.
 
-**An implementation states how it is built.** `entry_for(call)` returns the identity two builds must share to be one entry, and the thunk that produces it. The identity is the construction arguments, plus the device where the constructor could produce a different object on another one. An op names no candidate's constructor.
+**An implementation states how it is built.** `entry_for(call)` returns the identity two builds must share to be one entry, and the thunk that produces it. The identity is the construction arguments other than `tune`, plus the device where the constructor could produce a different object on another one. Tuning changes how fast a kernel runs, not what it computes, and `autotune()` tunes the kernels already built. An op names no candidate's constructor.
 
 Three records, each with one owner: the **call** (a `CallSpec` subclass) is what the caller asked for plus the device it runs on, and carries every fact the family's `applies` / `refusal` / `entry_for` read; the **build identity** is the selected class's projection of it; the **role** is the memoization bucket, one per op and never the dispatch key.
 
-`kernel_for` is the only way an op reaches a kernel. It asks `Op.entry_for(role, call)` for the identity and the builder, and supplies both to get-or-build as a thunk, so none of it runs when a target serves the op: which implementation and how to build it are that target's answers to give. The default `entry_for` selects among the op's candidates and asks the chosen class. An op with one implementation and no call record overrides `entry_for` and states its own identity and builder there, rather than opening a second path to the cache.
+`kernel_for` is the only way an op's in-tree implementation reaches a kernel. It asks `Op.entry_for(role, call)` for the identity and the builder, and supplies both to get-or-build. The default `entry_for` selects among the op's candidates and asks the chosen class. An op with one implementation and no call record overrides `entry_for` and states its own identity and builder there, rather than opening a second path to the cache.
 
 The rule is implementation choice within one slot. Choosing the slot sits above it, dtype specialization beside it; neither goes through it. See [S13](op-slot-rules.md#slot-s13).
+
+### Target boundary
+
+**A target replaces the whole op.** A target that registers a builder for an op serves every call of it. The builder is described with the op's `forward` inputs — `signature.inputs`, then `resources.workspaces` — and its manifest params; the kernel it returns is called with those inputs in that order, and with a caller-supplied output buffer by keyword. The op's own body is the in-tree implementation and does not run: its validation, its device checks and its kernel selection belong to the in-tree kernels.
+
+**The op layer guarantees a target the manifest, and nothing more.** Before a target's kernel runs, every tensor is on one device and every input the call does not write is contiguous. The input dtypes and the shape rules the manifest states are checked once per input signature; a caller-supplied output buffer is the op's output, held to that output's dtype and rules. An op whose every output is an input it writes returns nothing.
+
+**The branch sits where the call enters the op's implementation.** An op on the [compile boundary](#compile-dispatch-boundary) branches inside its operator, so the traced graph holds one node whichever target serves it. An op off the boundary branches in `__call__`.
+
+**A composite needs no builder of its own.** An op that builds no kernel of its own runs its composition when the selected target registers no builder for it, and each sub-op, built with the composite's `target`, settles on a target of its own. A target may still register a builder for the composite and serve it whole.
+
+**An op with no tensor input is placed by its `device` param.** That device is where a target is detected from and where the in-tree kernel produces its output.
 
 ### Kernel caching and enumeration
 
@@ -217,7 +229,7 @@ class ExampleCumsumFwdOp(Op):
 - Every `static_dims` commitment is checked against the tensor shape at the normalized axis, and `_static_axes` is bound from that (non-negative) axis. Both before the get-or-build call.
 - The kernel comes from `self.kernel_for`, never a cache dict the op owns:
   - `entry_for` is the in-tree recipe. The kernel is built from `x.dtype` and the identity carries it, so a call with another dtype builds a second kernel rather than reusing the first.
-  - `inputs` is the tensors the kernel is handed, which is what an external target's builder is described with.
+  - `inputs` is the tensors the kernel is handed.
 - The op never trims kernel output, and never reshapes its input for the kernel: a kernel that pads or permutes internally takes and returns the shapes the manifest declares.
 
 **Reference.** [Slot S14](op-slot-rules.md#slot-s14), [S15](op-slot-rules.md#slot-s15), [S16](op-slot-rules.md#slot-s16).
@@ -340,8 +352,9 @@ satisfy the cold-call contract.
 1. One `torch.library.custom_op` per spec — that is what makes the node in the
    graph this op's, and keeps it the same node when another target serves it.
    Its arguments are `signature.inputs` in order plus the instance key, its
-   eager body resolves the instance and calls `self._eager_forward` — cache
-   lookup, Kernel construction, and launch all run untraced — and its fake
+   eager body resolves the instance and runs the call on the kernels that serve it
+   — `self._eager_forward` for the in-tree ones, where cache lookup, Kernel
+   construction, and launch all run untraced, or a target's kernel — and its fake
    derives output shapes from `_infer_output_shapes` and each output's dtype
    from `out_dtype` where the entry marks that output caller-stated, otherwise
    from `signature.outputs`.
@@ -369,12 +382,10 @@ satisfy the cold-call contract.
   cache — does not need the boundary; the invariant still applies to its
   `forward`.
 - Validation and normalization belong in `_eager_forward`, not in `forward`:
-  they run for every target either way, and keeping them untraced leaves `forward`
-  a single call.
+  `forward` runs for every target and only chooses which operator to call.
 - `_infer_output_shapes` reads only its shape arguments. A shape recorded by an
   earlier call is a state write the fake reads before the write happens.
-- An op with no tensor input has no device to detect and no node to own, so it
-  registers no boundary.
+- An op with no tensor input has no node to own, so it registers no boundary.
 - The operator's name is `tileops::<family>_<snake(class)>`, with the family
   named once. An op does not choose it, so `compile_op_names` and the registered
   name cannot disagree.

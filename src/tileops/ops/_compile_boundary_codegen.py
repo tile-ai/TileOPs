@@ -38,7 +38,7 @@ class OperatorSpec:
     Attributes:
         kind: ``"default"`` returns the declared outputs; ``"inplace"`` copies the result
             into an argument; ``"out"`` hands a caller-supplied buffer to
-            ``_eager_forward`` under that keyword. Both writing kinds return nothing.
+            the operator body under that keyword. Both writing kinds return nothing.
         argument: Which argument the two writing kinds write. ``None`` for ``"default"``.
     """
 
@@ -58,7 +58,7 @@ class OperatorSpec:
     def writes_out(cls, argument: str) -> "OperatorSpec":
         """The operator that writes into a caller-supplied buffer.
 
-        *argument* is either a declared input, which ``_eager_forward`` already receives
+        *argument* is either a declared input, which the operator body already receives
         in its own position, or a tensor-typed manifest param, which it receives under
         that keyword. The entry says which, so the spec does not.
         """
@@ -165,6 +165,8 @@ def _register(cls: type, entry: dict, spec: OperatorSpec, specs: tuple) -> str:
     declared = tuple(entry["signature"]["inputs"])
     outputs = tuple(entry["signature"]["outputs"])
     mutates = written_arguments(entry, spec, specs)
+    # What the kernel writes: an inplace operator copies the result back itself.
+    kernel_writes = frozenset(m for m in mutates if spec.kind != "inplace" or m != spec.argument)
     # The suffix tells two operators of one op apart, so a lone one takes no suffix.
     companion = spec.writes and any(not other.writes for other in specs)
     suffix = "_inplace" if companion else ""
@@ -175,17 +177,17 @@ def _register(cls: type, entry: dict, spec: OperatorSpec, specs: tuple) -> str:
         op = get_instance(key)
         if spec.kind == "out":
             if spec.argument in declared:
-                op._eager_forward(*tensors)
+                op._serve(*tensors, _written=kernel_writes)
                 return None
             *passed, buffer = tensors
-            op._eager_forward(*passed, **{spec.argument: buffer})
+            op._serve(*passed, _written=kernel_writes, **{spec.argument: buffer})
             return None
         if spec.kind == "inplace":
             written = tensors[declared.index(spec.argument)]
-            written.copy_(op._eager_forward(*tensors).reshape(written.shape))
+            written.copy_(op._serve(*tensors, _written=kernel_writes).reshape(written.shape))
             return None
-        result = op._eager_forward(*tensors)
-        # An ``_eager_forward`` handing back a list satisfies the schema the same way.
+        result = op._serve(*tensors, _written=kernel_writes)
+        # A body handing back a list satisfies the schema the same way.
         return result if len(outputs) == 1 else tuple(result)
 
     def fake(*args):

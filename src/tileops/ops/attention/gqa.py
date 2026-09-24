@@ -999,12 +999,19 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(GroupedQueryAttentionVarlenFwdOp):
         validate_inputs: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Configure the legacy regular-Varlen implementation.
 
         This compatibility API remains available until its FP8 and RoPE
         capabilities have migrated to `GroupedQueryAttentionVarlenFwdOp`.
+
+        Args:
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         _validate_positive(max_seqlen_q=max_seqlen_q, max_seqlen_kv=max_seqlen_kv)
         self.max_seqlen_q = max_seqlen_q
         self.max_seqlen_kv = max_seqlen_kv
@@ -1138,8 +1145,16 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(GroupedQueryAttentionVarlenF
         accum_dtype: torch.dtype = torch.float32,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
-        """Configure the legacy sliding-window Varlen implementation."""
+        """Configure the legacy sliding-window Varlen implementation.
+
+        Args:
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+        """
+        self.target = target
         _validate_positive(
             batch=batch,
             heads=heads,
@@ -1710,6 +1725,7 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             max_position=self.max_position,
             rotary_dim=self.rotary_dim,
             tune=self.tune,
+            device=device,
         )
 
     def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", call: AttentionCall) -> Kernel:
@@ -2047,6 +2063,8 @@ class GroupedQueryAttentionBwdOp(Op):
         is_causal: bool = True,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -2054,7 +2072,10 @@ class GroupedQueryAttentionBwdOp(Op):
             is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -2191,6 +2212,8 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         softcap: Optional[float] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -2200,7 +2223,10 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
             softcap: Manifest ``params.softcap``, ``float | None``, default ``None``.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         _validate_gqa_dims(heads, heads_kv, dim)
         self.batch = batch
         self.heads = heads

@@ -14,6 +14,7 @@ from typing import Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops.moe.abc import (
     FusedMoEExpertsModular,
@@ -57,6 +58,7 @@ class FusedMoe(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -72,7 +74,12 @@ class FusedMoe(Op):
             prepare_finalize: Override the PrepareAndFinalize implementation.
             experts: Override the Experts implementation.
             kernel_map: Override the dispatched kernel map.
+            activation: Gated activation applied to gate_up.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+                The sub-ops it builds are given the same one.
         """
+        self.target = target
         self.num_tokens = num_tokens
         self.num_experts = num_experts
         self.top_k = top_k
@@ -89,6 +96,7 @@ class FusedMoe(Op):
             scoring_func=scoring_func,
             renormalize=renormalize,
             kernel_map=kernel_map,
+            target=target,
         )
 
         self._prepare: FusedMoEPrepareAndFinalize = (
@@ -141,6 +149,7 @@ class FusedMoe(Op):
                 routed_scaling_factor=routed_scaling_factor,
                 kernel_map=kernel_map,
                 activation=activation,
+                target=target,
             )
 
     @property
@@ -254,6 +263,7 @@ class FusedMoeFwdOp(FusedMoe):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -268,6 +278,8 @@ class FusedMoeFwdOp(FusedMoe):
             routed_scaling_factor: Manifest ``params.routed_scaling_factor``, ``float``, default ``1.0``.
             kernel_map: Optional kernel override dict.
             activation: Manifest ``params.activation``, ``str``, default ``'silu_and_mul'``.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
         super().__init__(
             num_tokens=num_tokens,
@@ -282,4 +294,5 @@ class FusedMoeFwdOp(FusedMoe):
             experts=experts,
             kernel_map=kernel_map,
             activation=activation,
+            target=target,
         )

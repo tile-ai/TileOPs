@@ -54,11 +54,11 @@ from tileops.manifest import (  # noqa: E402
     forward_signature,
 )
 from tileops.manifest.dtype_rules import PROMOTE_INT_TO_FLOAT_RE, SAME_AS_RE  # noqa: E402
-from tileops.manifest.shape_rules import (  # noqa: E402
-    dim_range_validity,
-    dim_uniqueness,
-    reduced_axes,
-    reduced_shape,
+from tileops.manifest.rule_eval import (  # noqa: E402
+    RULE_BUILTINS as _SHAPE_RULE_BUILTINS,
+)
+from tileops.manifest.rule_eval import (  # noqa: E402
+    eval_shape_rule as _eval_shape_rule,
 )
 
 PACKAGE_ROOT = "src"
@@ -2887,155 +2887,6 @@ def _class_overrides_method(cls: type, name: str) -> bool:
         if name in base.__dict__:
             return True
     return False
-
-
-def _broadcast_shapes(*shapes: object) -> tuple:
-    """Pure-Python equivalent of ``torch.broadcast_shapes``.
-
-    Shapes are right-aligned; each dimension must be equal, or one of
-    them must be 1 (or missing). Returns ``()`` when called with no
-    arguments.
-
-    Raises:
-        ValueError: If the shapes are not broadcast-compatible.
-    """
-    if not shapes:
-        return ()
-    normalized = [tuple(int(d) for d in s) for s in shapes]
-    ndim = max((len(s) for s in normalized), default=0)
-    out: list[int] = []
-    for axis in range(ndim):
-        # Right-align: walk from the trailing dim back.
-        dim = 1
-        for s in normalized:
-            i = len(s) - ndim + axis
-            if i < 0:
-                # This shape has no entry at this axis (treat as 1).
-                continue
-            d = s[i]
-            if d == 1 or d == dim:
-                continue
-            if dim == 1:
-                dim = d
-                continue
-            raise ValueError(
-                f"shapes {shapes!r} are not broadcast-compatible at axis {axis}",
-            )
-        out.append(dim)
-    return tuple(out)
-
-
-def _is_broadcastable_to(src: object, dst: object) -> bool:
-    """Return True if ``src`` is broadcastable *to* ``dst`` (unidirectional).
-
-    Unlike the symmetric ``broadcast_shapes``, this predicate fixes the
-    destination shape: each ``src`` dim (right-aligned) must equal the
-    matching ``dst`` dim or be 1, and ``src`` may not have more
-    dimensions than ``dst``.
-    """
-    src_t = tuple(int(d) for d in src)
-    dst_t = tuple(int(d) for d in dst)
-    if len(src_t) > len(dst_t):
-        return False
-    offset = len(dst_t) - len(src_t)
-    for i, s_dim in enumerate(src_t):
-        d_dim = dst_t[offset + i]
-        if s_dim == d_dim or s_dim == 1:
-            continue
-        return False
-    return True
-
-
-# Safe builtins for shape_rules eval — the R11 / R11a helper set. Widening
-# it widens the rule language, so keep it aligned with the manifest spec.
-# An explicit pair list (not a dict merge) makes a name collision raise at
-# import time instead of silently shadowing a primitive.
-_SHAPE_RULE_BUILTIN_PAIRS = [
-    ("len", len),
-    ("isinstance", isinstance),
-    ("int", int),
-    # ``float`` lets manifest rules spell sentinels like
-    # ``ord == float('inf')``. Add new callables only when an existing
-    # manifest rule needs them and the semantics are obviously bounded.
-    ("float", float),
-    ("tuple", tuple),
-    ("list", list),
-    ("type", type),
-    ("all", all),
-    ("any", any),
-    ("range", range),
-    ("set", set),
-    ("abs", abs),
-    ("min", min),
-    ("max", max),
-    ("broadcast_shapes", _broadcast_shapes),
-    ("is_broadcastable_to", _is_broadcastable_to),
-    ("dim_range_validity", dim_range_validity),
-    ("dim_uniqueness", dim_uniqueness),
-    ("reduced_axes", reduced_axes),
-    ("reduced_shape", reduced_shape),
-]
-_SHAPE_RULE_BUILTINS: dict = {}
-for _entry_name, _entry_fn in _SHAPE_RULE_BUILTIN_PAIRS:
-    if _entry_name in _SHAPE_RULE_BUILTINS:
-        raise RuntimeError(
-            f"shape_rule builtin name collision: {_entry_name!r} is "
-            f"registered twice. Two callables cannot share the same "
-            f"name in the rule eval scope; rename one or unify them."
-        )
-    _SHAPE_RULE_BUILTINS[_entry_name] = _entry_fn
-
-
-def _eval_shape_rule(
-    rule: str,
-    ctx: dict,
-) -> tuple[bool, str | None]:
-    """Evaluate a single shape_rule in *ctx*.
-
-    Returns (ok, failure_reason). ``ok=False`` with reason=None means the
-    rule evaluated to a falsy non-exception value; a non-None reason
-    indicates the rule could not be evaluated (treated as skipped, not a
-    parity error).
-
-    The eval globals expose the ``_SHAPE_RULE_BUILTINS`` helper set so
-    R11 / R11a-style rules can be evaluated against the mock context
-    instead of being silently skipped. Context names (inputs / outputs /
-    params) are injected into both eval globals and locals: comprehension
-    scopes only see globals, so rules like
-    ``all(d % x.ndim in ... for d in dim)`` still resolve ``x`` / ``dim``.
-    """
-    # Defense-in-depth: even though manifest content is trusted (PR review
-    # gates it), parse the rule first and reject any dunder attribute
-    # access. This closes the classic ``().__class__.__mro__[1].
-    # __subclasses__()`` sandbox-escape against the restricted builtins.
-    try:
-        tree = ast.parse(rule, mode="eval")
-    except SyntaxError as exc:
-        return False, f"eval error: SyntaxError: {exc}"
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and (
-            node.attr.startswith("__") or node.attr.endswith("__")
-        ):
-            return False, (f"eval error: dunder attribute access not permitted ({node.attr!r})")
-
-    eval_globals = {"__builtins__": _SHAPE_RULE_BUILTINS}
-    eval_globals.update(ctx)
-    # A ctx key literally named ``__builtins__`` would overwrite the
-    # sandboxed mapping installed above and re-expose the unrestricted
-    # builtins; reinstate the sandbox after the update.
-    eval_globals["__builtins__"] = _SHAPE_RULE_BUILTINS
-    try:
-        result = eval(
-            rule,
-            eval_globals,
-            ctx,
-        )
-    except Exception as exc:
-        return False, f"eval error: {exc.__class__.__name__}: {exc}"
-    try:
-        return bool(result), None
-    except Exception as exc:
-        return False, f"non-boolean result: {exc}"
 
 
 def _build_mock_self(

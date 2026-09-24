@@ -14,7 +14,7 @@ pre-commit install
 ## Design first
 
 [`docs/design/`](docs/design/) and [`src/tileops/manifest/`](src/tileops/manifest/) are the spec.
-Code conforms to them; a change that does not fit the spec changes the spec first, in its own PR.
+Code conforms to them; a change that does not fit the spec changes the spec with it.
 Read the document for the area before changing it, and review against the same one.
 
 | Changing         | Read                                                                                                                                                     |

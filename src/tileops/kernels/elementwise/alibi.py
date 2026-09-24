@@ -75,8 +75,8 @@ class AlibiFwdKernel(Kernel):
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
-    def __init__(self, seq_len, num_heads, dtype, config=None, tune=False):
-        super().__init__()
+    def __init__(self, seq_len, num_heads, dtype, config=None, tune=False, device_index=None):
+        super().__init__(device_index=device_index)
         if dtype not in self.SUPPORTED_DTYPES:
             supported = ", ".join(str(dt) for dt in self.SUPPORTED_DTYPES)
             raise ValueError(
@@ -107,4 +107,7 @@ class AlibiFwdKernel(Kernel):
         self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def forward(self):
-        return self._compiled_fn()
+        if self.device_index is None:
+            return self._compiled_fn()
+        with torch.cuda.device(self.device_index):
+            return self._compiled_fn()

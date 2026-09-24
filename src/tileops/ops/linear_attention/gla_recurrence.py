@@ -2,6 +2,7 @@ from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
 
@@ -32,6 +33,8 @@ class GLADecodeFwdOp(Op):
         scale: float = -1.0,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -39,7 +42,10 @@ class GLADecodeFwdOp(Op):
             scale: Manifest ``params.scale``, ``float``, default ``-1.0``.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = None
         self.heads = None
         self.dim_k = None
@@ -68,12 +74,12 @@ class GLADecodeFwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
-        key = (batch, heads, dim_k, dim_v, self.scale, dtype, device_index, self.tune)
+        key = (batch, heads, dim_k, dim_v, self.scale, dtype, device_index)
         return self.kernel_for("gla_decode", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """The dtype picks the implementation, so it is in the identity."""
-        batch, heads, dim_k, dim_v, scale, dtype, _device, tune = call
+        batch, heads, dim_k, dim_v, scale, dtype, _device = call
         name = "GLADecodeFP32Kernel" if dtype == torch.float32 else "GLADecodeKernel"
         return call, lambda: self.kernel_map[name](
             batch,
@@ -82,7 +88,7 @@ class GLADecodeFwdOp(Op):
             dim_v,
             scale=scale,
             dtype=Kernel.dtype_to_str(dtype),
-            tune=tune,
+            tune=self.tune,
         )
 
     def _infer_output_shapes(

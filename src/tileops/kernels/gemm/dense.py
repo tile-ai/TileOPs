@@ -90,7 +90,7 @@ def _dense_entry(cls: type, call: GemmCall) -> Entry:
     The device is in the identity: its SM count and name pick the config.
     """
     index = call.device.index if call.device is not None else None
-    identity = (call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b, call.tune, index)
+    identity = (call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b, index)
     return identity, lambda: cls(
         call.m,
         call.n,
@@ -2963,7 +2963,7 @@ class GemvKernel(Kernel):
         """
         index = call.device.index if call.device is not None else None
         band = cls.band_for(call)
-        identity = (band, call.m, call.n, call.k, call.dtype, call.tune, index)
+        identity = (band, call.m, call.n, call.k, call.dtype, index)
         return identity, lambda: cls(
             band,
             call.m,

@@ -2,6 +2,7 @@ from typing import ClassVar, Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba import SSDDecodeKernel
 
@@ -34,12 +35,17 @@ class SSDDecodeFwdOp(Op):
         self,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             tune:     Whether to autotune tile config on construction.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = None
         self.n_heads = None
         self.d_head = None
@@ -65,14 +71,14 @@ class SSDDecodeFwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
-        key = (batch, n_heads, d_head, d_state, n_groups, dtype, device_index, self.tune)
+        key = (batch, n_heads, d_head, d_state, n_groups, dtype, device_index)
         return self.kernel_for("ssd_decode", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, dtype and device."""
-        batch, n_heads, d_head, d_state, n_groups, dtype, _device, tune = call
+        batch, n_heads, d_head, d_state, n_groups, dtype, _device = call
         return call, lambda: self.kernel_map["ssd_decode"](
-            batch, n_heads, d_head, d_state, n_groups, dtype, tune=tune
+            batch, n_heads, d_head, d_state, n_groups, dtype, tune=self.tune
         )
 
     def _infer_output_shapes(

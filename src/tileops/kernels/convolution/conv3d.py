@@ -645,7 +645,7 @@ class Conv3dKernel(Kernel):
             dilation_w=call.dilation[2],
             dtype=call.dtype,
         )
-        identity = (*args.values(), call.has_bias, call.tune, index)
+        identity = (*args.values(), call.has_bias, index)
         return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
 
     def __init__(
@@ -786,7 +786,7 @@ class GroupConv3dKernel(Kernel):
             c_in_g=call.c_in_g,
             c_out_g=call.c_out // call.groups,
         )
-        identity = (*args.values(), call.has_bias, call.tune, index)
+        identity = (*args.values(), call.has_bias, index)
         return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
 
     def __init__(
@@ -967,7 +967,7 @@ class Conv3dNdhwcKernel(Kernel):
             dilation_w=call.dilation[2],
             dtype=call.dtype,
         )
-        identity = (*args.values(), call.has_bias, call.tune, index)
+        identity = (*args.values(), call.has_bias, index)
         return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
 
     def __init__(

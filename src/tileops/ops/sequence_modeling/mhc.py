@@ -3,6 +3,7 @@ from typing import ClassVar, Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mhc import MHCPostKernel, MHCPreKernel
 from tileops.perf.profile import tensor_core_roof
@@ -34,6 +35,8 @@ class MHCPreFwdOp(Op):
         sinkhorn_eps: float = 0.02,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -45,7 +48,10 @@ class MHCPreFwdOp(Op):
             sinkhorn_eps: Manifest ``params.sinkhorn_eps``, Sinkhorn entropy scale.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.alpha_pre = alpha_pre
         self.alpha_post = alpha_post
         self.alpha_res = alpha_res
@@ -83,14 +89,14 @@ class MHCPreFwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
-        key = (batch, n_expand, c_x, dtype, device_index, self.tune)
+        key = (batch, n_expand, c_x, dtype, device_index)
         return self.kernel_for("mhc_pre_kernel", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, dtype and device."""
-        batch, n_expand, c_x, dtype, _device, tune = call
+        batch, n_expand, c_x, dtype, _device = call
         return call, lambda: self.kernel_map["mhc_pre_kernel"](
-            batch, n_expand, c_x, dtype, tune=tune
+            batch, n_expand, c_x, dtype, tune=self.tune
         )
 
     def _infer_output_shapes(
@@ -176,13 +182,22 @@ class MHCPostFwdOp(Op):
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
-    def __init__(self, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False) -> None:
+    def __init__(
+        self,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        *,
+        target: Target = None,
+    ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = None
         self.n_expand = None
         self.c_x = None
@@ -206,14 +221,14 @@ class MHCPostFwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
-        key = (batch, n_expand, c_x, dtype, device_index, self.tune)
+        key = (batch, n_expand, c_x, dtype, device_index)
         return self.kernel_for("mhc_post_kernel", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, dtype and device."""
-        batch, n_expand, c_x, dtype, _device, tune = call
+        batch, n_expand, c_x, dtype, _device = call
         return call, lambda: self.kernel_map["mhc_post_kernel"](
-            batch, n_expand, c_x, dtype, tune=tune
+            batch, n_expand, c_x, dtype, tune=self.tune
         )
 
     def _infer_output_shapes(

@@ -474,7 +474,7 @@ class Conv1dPointwiseKernel(Kernel):
     def entry_for(cls, call: Conv1dCall) -> Entry:
         index = call.device.index if call.device is not None else None
         args = dict(n=call.n, c_in=call.c_in, l_in=call.l_in, c_out=call.c_out, dtype=call.dtype)
-        identity = (*args.values(), call.has_bias, call.tune, index)
+        identity = (*args.values(), call.has_bias, index)
         return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
 
     def __init__(
@@ -554,7 +554,7 @@ class Conv1dKernel(Kernel):
             pad_l=(call.pad_left, call.pad_right),
             dilation_l=call.dilation_l,
         )
-        identity = (*args.values(), call.has_bias, call.tune, index)
+        identity = (*args.values(), call.has_bias, index)
         return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
 
     def __init__(
@@ -679,7 +679,7 @@ class GroupConv1dKernel(Kernel):
             c_in_g=call.c_in_g,
             c_out_g=call.c_out // call.groups,
         )
-        identity = (*args.values(), call.has_bias, call.tune, index)
+        identity = (*args.values(), call.has_bias, index)
         return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
 
     def __init__(

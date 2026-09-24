@@ -36,6 +36,7 @@ from typing import Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe import SharedExpertMLPKernel
 from tileops.ops.moe.abc import FusedMoEExpertsModular, FusedMoEPrepareAndFinalize
@@ -81,6 +82,7 @@ class FusedMoeSharedExpertFwdOp(FusedMoe):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
+        target: Target = None,
     ):
         # SharedExpertMLPKernel hardcodes silu_and_mul internally. Allowing a
         # non-default activation alongside an enabled shared expert would
@@ -97,6 +99,8 @@ class FusedMoeSharedExpertFwdOp(FusedMoe):
             prepare_finalize: Override the PrepareAndFinalize implementation.
             experts: Override the Experts implementation.
             kernel_map: Override the dispatched kernel map.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
 
         Every other parameter is ``FusedMoe``'s, with the same meaning.
         """
@@ -121,6 +125,7 @@ class FusedMoeSharedExpertFwdOp(FusedMoe):
             experts=experts,
             kernel_map=kernel_map,
             activation=activation,
+            target=target,
         )
 
         if tp_size < 1:
