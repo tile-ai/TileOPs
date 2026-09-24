@@ -20,12 +20,12 @@ and, in its pyproject::
 
 A target serves the whole op. ``build_kernel``'s signature is the op's ``forward``
 signature: one argument per ``signature.inputs`` entry, then per ``resources.workspaces``
-entry, in that order, with an ``optional: true`` input the call did not pass arriving as
-``None``, then the construction params under ``signature.params`` names. The kernel it returns
-is called with those tensors in the same order, and with a caller-supplied output buffer such
-as ``out`` by keyword. Before it runs, every tensor is on one device, every input the call
-does not write is contiguous, and the call meets the input dtypes and shape rules the manifest
-states; an output buffer meets its output's.
+entry, with an ``optional: true`` input the call did not pass arriving as ``None``, then the
+construction params under ``signature.params`` names. The kernel it returns is called with
+those tensors in the same order, plus a caller-supplied output buffer such as ``out`` by
+keyword. Every tensor is on one device, every input the call does not write is contiguous,
+and the call meets the input dtypes and shape rules the manifest states.
+
 Choosing among its own kernels, constructing, caching and compiling all happen inside it, so
 nothing here names a kernel class, a specialization axis, a priority or a fallback: this layer
 picks a target, the target picks a kernel.

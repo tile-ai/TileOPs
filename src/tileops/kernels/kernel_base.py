@@ -123,8 +123,7 @@ class Kernel(ABC):
 
         The identity is the construction arguments other than ``tune``, so two calls
         that would compile the same kernel share an entry and none reuses one compiled
-        for different arguments. Tuning changes how fast a kernel runs, not what it
-        computes, and ``Op.autotune`` tunes the kernels already built. The thunk runs only on a cache miss.
+        for different arguments. The thunk runs only on a cache miss.
 
         The default is the identity mapping: this class is constructed from the call
         record itself. A class with a narrower constructor overrides it and states

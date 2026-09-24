@@ -746,7 +746,7 @@ class Op(ABC):
         for name, t in zip(names, inputs, strict=True):
             setattr(self, f"{name}_shape", None if t is None else tuple(t.shape))
         self.dtype = next((t.dtype for t in inputs if t is not None), self.dtype)
-        # An op whose every output is an input it writes returns nothing, as in tree.
+        # An op whose every output is an input it writes returns nothing, as its forward does.
         outputs = self._forward_outputs()
         if outputs and all(name in named for name in outputs):
             return None

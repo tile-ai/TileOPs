@@ -126,13 +126,10 @@ def eval_shape_rule(
     """Evaluate a single shape_rule in *ctx*.
 
     Returns (ok, failure_reason). ``ok=False`` with reason=None means the
-    rule evaluated to a falsy non-exception value; a non-None reason
-    indicates the rule could not be evaluated (treated as skipped, not a
-    parity error).
+    rule evaluated to a falsy value; a non-None reason says the rule could not
+    be evaluated in *ctx*, so it asserts nothing (R13b).
 
-    The eval globals expose the ``RULE_BUILTINS`` helper set so
-    R11 / R11a-style rules can be evaluated against the mock context
-    instead of being silently skipped. Context names (inputs / outputs /
+    The eval globals are the ``RULE_BUILTINS`` helper set. Context names (inputs / outputs /
     params) are injected into both eval globals and locals: comprehension
     scopes only see globals, so rules like
     ``all(d % x.ndim in ... for d in dim)`` still resolve ``x`` / ``dim``.
