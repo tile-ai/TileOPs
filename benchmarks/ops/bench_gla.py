@@ -72,7 +72,7 @@ def test_gla_bwd_bench(call) -> None:
 
 
 @pytest.mark.parametrize("call", manifest_calls(GLAInferenceFwdOp))
-def test_gla_inference_dense_prefill_bench(call) -> None:
+def test_gla_inference_bench(call) -> None:
     workload = GLAInferenceCall(call)
     inputs = workload.gen_inputs()
     op = GLAInferenceFwdOp(**workload.arguments())

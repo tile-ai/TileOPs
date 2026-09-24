@@ -301,9 +301,10 @@ class GLAInferenceWorkload(GLAChunkwiseWorkload):
         g: torch.Tensor,
         initial_state: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        from fla.ops.gla import chunk_gla
+        from fla.ops.gla import chunk_gla, fused_recurrent_gla
 
-        return chunk_gla(
+        reference = fused_recurrent_gla if q.shape[1] == 1 else chunk_gla
+        return reference(
             q,
             k,
             v,
@@ -555,10 +556,11 @@ class GLAInferenceCall(CallWorkload):
         )
 
     def ref_program(self, q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu):
-        from fla.ops.gla import chunk_gla
+        from fla.ops.gla import chunk_gla, fused_recurrent_gla
 
         scale = self.call.ix["scale"]
-        return chunk_gla(
+        reference = fused_recurrent_gla if q.shape[1] == 1 else chunk_gla
+        return reference(
             q,
             k,
             v,

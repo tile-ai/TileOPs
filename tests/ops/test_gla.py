@@ -7,6 +7,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase, allclose_compare, standard_tolerance
 from tileops.backend import BUILTIN, TensorSpec, registry
+from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeKernel
 from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
     GLADensePrefillPartitionedKernel,
 )
@@ -448,14 +449,27 @@ def test_gla_long_prefill_uses_partitioned_kernel(
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
-    reason="the in-tree dense prefill requires SM90",
+@pytest.mark.skipif(not is_h200(), reason="the in-tree dense decode requires H200")
+@pytest.mark.parametrize(
+    "dtype,dim,has_initial_state",
+    [
+        (torch.float16, 128, True),
+        (torch.bfloat16, 64, False),
+        (torch.bfloat16, 64, True),
+    ],
 )
-def test_gla_inference_rejects_unmigrated_decode() -> None:
-    test = GLAInferenceTest(1, 1, 2, 64, 64, torch.bfloat16)
-    with pytest.raises(ValueError, match="T not divisible by 64"):
-        GLAInferenceFwdOp()(*test.gen_inputs())
+def test_gla_dense_decode_matches_fla(
+    dtype: torch.dtype, dim: int, has_initial_state: bool
+) -> None:
+    torch.manual_seed(2174)
+    test = GLAInferenceTest(2, 1, 4, dim, dim, dtype, has_initial_state)
+    inputs = test.gen_inputs()
+    op = GLAInferenceFwdOp()
+    test.check(op, *inputs, **standard_tolerance(dtype))
+    assert any(
+        isinstance(kernel, GLADenseDecodeKernel)
+        for kernel in op.built_kernels("gla_dense_decode").values()
+    )
 
 
 class GLADecodeTest(GLADecodeWorkload, TestBase):
