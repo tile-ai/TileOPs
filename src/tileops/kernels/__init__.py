@@ -166,6 +166,7 @@ _LAZY = {
     "GLABwdKernel": ".linear_attention",
     "GLADecodeFP32Kernel": ".linear_attention",
     "GLADecodeKernel": ".linear_attention",
+    "GLADensePrefillFwdKernel": ".linear_attention",
     "GLAFwdKernel": ".linear_attention",
     "GQABwdWgmmaPipelinedKernel": ".attention",
     "GQADecodeKernel": ".attention",
