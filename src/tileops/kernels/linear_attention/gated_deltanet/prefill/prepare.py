@@ -580,7 +580,9 @@ def get_warmup_chunks(
 
 
 @functools.lru_cache(maxsize=32)
-# Warp specialization of the pipelined loop deadlocks intermittently.
+# TileLang's warp specialization has every producer thread wait on the empty
+# mbarrier while one thread issues the TMA; a producer warp that falls two
+# phases behind waits on an aliased parity forever.
 @tilelang.jit(pass_configs={tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True})
 def _build_correct_h0_kernel(
     H,

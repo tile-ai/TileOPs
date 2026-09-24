@@ -344,7 +344,7 @@ A recount builds the call's two kinds of tensor: bulk operands on the meta devic
 
 ### 5.1 GPU Profile
 
-Hardware parameters use theoretical values with calibration factors from one-time microbenchmark measurements. A bandwidth calibration is the **envelope** over the measured access mixes (copy, Triad, pure read, pure write): a ceiling some legitimate mix can exceed is not a ceiling, and readings above 100% must stay reserved for formula errors; each mix's own measured fraction is kept as data (`calibration_mixes`), so a future per-mix ceiling reads it instead of re-measuring. A tensor-core calibration is the envelope over the sustained (power-capped) and burst (pre-cap) cuBLAS rates for the same reason: a benchmark's timing window is short enough to finish before the power cap engages, and both rates are kept as data. YAML files store only measured values; `effective = theoretical × calibration` is computed by `load_profile()`:
+Hardware parameters use theoretical values with calibration factors from one-time microbenchmark measurements. A bandwidth calibration is the **envelope** over the measured access mixes (copy, Triad, pure read, pure write): a ceiling some legitimate mix can exceed is not a ceiling, and readings above 100% must stay reserved for formula errors; each mix's own measured fraction is kept as data (`calibration_mixes`), so a future per-mix ceiling reads it instead of re-measuring. YAML files store only measured values; `effective = theoretical × calibration` is computed by `load_profile()`:
 
 ```yaml
 # src/tileops/perf/profiles/<gpu>.yaml
@@ -354,7 +354,7 @@ hbm:
 tensor_core:
   fp16:
     theoretical: 989.5e12   # FLOPS, from spec sheet
-    calibration: 0.75       # microbench envelope over sustained and burst (cuBLAS peak)
+    calibration: 0.75       # from microbench (cuBLAS peak)
 ```
 
 Profiles are stored in `src/tileops/perf/profiles/`. Microbenchmarks for calibration live in `benchmarks/hardware/`.
