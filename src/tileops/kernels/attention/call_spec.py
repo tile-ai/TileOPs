@@ -6,7 +6,6 @@ one class reads each. See docs/design/ops-design.md § Kernel selection.
 """
 
 import dataclasses
-import math
 from typing import Optional
 
 import torch
@@ -23,16 +22,13 @@ __all__ = [
     "dense_sliding_window_region",
     "dense_ws_region",
     "decode_bs1_region",
-    "dense_prefill_region",
     "fp8_dtype",
     "paged_decode_ws_region",
-    "square_ws_prefill_region",
     "uses_sliding_window",
 ]
 
 ATTENTION_DTYPES = (torch.float16, torch.bfloat16)
 
-_WS_BLOCK_M = 128
 # Architecture the warp-specialized prefill kernels are written for. The
 # classes declare it as their ``supported_archs`` and the region below reads
 # the same name, so the two statements of one fact cannot drift apart.
@@ -73,6 +69,7 @@ class AttentionCall(CallSpec):
     is_uniform: bool = True
     cache_dtype: Optional[torch.dtype] = None
     fuse_rope: bool = False
+    planned_schedule: bool = False
     max_position: Optional[int] = None
     rotary_dim: Optional[int] = None
     rope_layout: str = "neox"
@@ -82,51 +79,6 @@ class AttentionCall(CallSpec):
 def uses_sliding_window(call: AttentionCall) -> bool:
     """Whether either window bound is set, which restricts what may serve the call."""
     return call.window_size_left != -1 or call.window_size_right != -1
-
-
-def dense_prefill_region(call: AttentionCall) -> bool:
-    """What every dense packed-prefill implementation requires of a call.
-
-    A dense implementation computes on a BSHD view of the packed tensors, so it
-    serves a uniform request only. FP8 and sliding-window calls are regions of
-    their own with their own implementations, and an explicit ``backend`` naming
-    one of those asks for it by name.
-    """
-    return (
-        not call.is_fp8
-        and not uses_sliding_window(call)
-        and call.is_uniform
-        and call.backend in ("auto", "dense")
-    )
-
-
-def square_ws_prefill_region(call: AttentionCall) -> bool:
-    """The H200 square causal packed-prefill region.
-
-    Owned by ``GQAFwdWsPersistentCausalKernel``; the warp-specialized causal
-    kernel behind it excludes exactly this region so the two never both apply.
-    """
-    if not dense_prefill_region(call):
-        return False
-    if call.dtype not in ATTENTION_DTYPES:
-        return False
-    if not call.h200 or call.dim != 128:
-        return False
-    if call.heads_kv <= 0 or call.heads % call.heads_kv != 0:
-        return False
-    if call.max_seqlen_q % _WS_BLOCK_M != 0:
-        return False
-    m_blocks = math.ceil(call.max_seqlen_q / _WS_BLOCK_M)
-    if m_blocks % 2 != 0:
-        return False
-    if not call.is_causal or call.max_seqlen_q != call.max_seqlen_kv:
-        return False
-    groups = call.heads // call.heads_kv
-    work_items = call.batch * call.heads_kv * (m_blocks // 2) * groups
-    # A persistent kernel earns its prologue once the work fills the grid, so the
-    # bar is the device's own SM count rather than the number the board this was
-    # fitted on happens to report.
-    return work_items >= call.sm_count
 
 
 # Tile heights the warp-specialized paged decode kernel can pick from. A tile

@@ -1,5 +1,5 @@
 import math
-from typing import Callable, ClassVar, Dict, Optional
+from typing import Callable, ClassVar, Dict, Optional, Sequence
 
 import torch
 
@@ -20,6 +20,7 @@ from tileops.kernels.attention import (
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
     GQAPrefillVarlenFwdKernel,
+    GQAPrefillVarlenWsKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -36,8 +37,6 @@ __all__ = [
     "GroupedQueryAttentionDenseFwdOp",
     "GroupedQueryAttentionPagedFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
-    "GroupedQueryAttentionPrefillVarlenFwdOp",
-    "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
     "GroupedQueryAttentionVarlenFwdOp",
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
 ]
@@ -605,6 +604,9 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
     """
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    _PLAN_BLOCK_M: ClassVar[int] = 128
+    # 4096 query tiles cover 512K packed tokens; larger batches grow by powers of two.
+    _INITIAL_TILE_CAPACITY: ClassVar[int] = 4096
 
     def __init__(
         self,
@@ -676,12 +678,86 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
         self._roofline_kwargs: Optional[dict] = None
         self._last_input_dtype: Optional[torch.dtype] = None
         self.tune = tune
+        self._plan_capacity = 0
+        self._plan_num_tiles = 0
+        self._plan_total_q = 0
+        self._plan_total_kv = 0
+        self._plan_key: Optional[tuple] = None
+        self._plan_tile_to_request: Optional[torch.Tensor] = None
+        self._plan_tile_row: Optional[torch.Tensor] = None
         self.dispatch_kernel(kernel_map)
+
+    def plan(
+        self,
+        q_lens: Sequence[int],
+        kv_lens: Sequence[int],
+        *,
+        device: torch.device,
+    ) -> None:
+        """Precompute the packed-Q tile schedule consumed by the SM90 WS kernel."""
+        q_lens = tuple(int(length) for length in q_lens)
+        kv_lens = tuple(int(length) for length in kv_lens)
+        if not q_lens or len(q_lens) != len(kv_lens):
+            raise ValueError("q_lens and kv_lens must be non-empty and have equal length")
+        if any(length <= 0 for length in (*q_lens, *kv_lens)):
+            raise ValueError("q_lens and kv_lens must contain positive lengths")
+
+        key = (q_lens, kv_lens, device)
+        if key == self._plan_key:
+            return
+
+        tiles: list[tuple[int, int, int]] = []
+        for request, (q_len, kv_len) in enumerate(
+            zip(q_lens, kv_lens, strict=True)
+        ):
+            for row in range(0, q_len, self._PLAN_BLOCK_M):
+                visible_kv = kv_len
+                if self.is_causal:
+                    visible_kv = min(
+                        kv_len,
+                        row + self._PLAN_BLOCK_M + kv_len - q_len,
+                    )
+                work = max(0, math.ceil(visible_kv / self._PLAN_BLOCK_M))
+                tiles.append((work, request, row))
+        # Keep the rows of each request adjacent so successive CTA groups can
+        # reuse that request's K/V working set from L2.  Within a request,
+        # schedule the longest-visible rows first.
+        tiles.sort(key=lambda tile: (tile[1], -tile[0]))
+        tile_to_request = [request for _, request, _ in tiles]
+        tile_row = [row for _, _, row in tiles]
+
+        required = len(tile_to_request)
+        buffers_missing = self._plan_tile_to_request is None or self._plan_tile_row is None
+        device_changed = (
+            not buffers_missing and self._plan_tile_to_request.device != torch.device(device)
+        )
+        if buffers_missing or device_changed or required > self._plan_capacity:
+            target = max(required, self._INITIAL_TILE_CAPACITY)
+            capacity = 1 << (target - 1).bit_length()
+            self._plan_tile_to_request = torch.empty(
+                capacity, dtype=torch.int32, device=device
+            )
+            self._plan_tile_row = torch.empty(capacity, dtype=torch.int32, device=device)
+            self._plan_capacity = capacity
+
+        assert self._plan_tile_to_request is not None
+        assert self._plan_tile_row is not None
+        self._plan_tile_to_request[:required].copy_(
+            torch.tensor(tile_to_request, dtype=torch.int32, device=device)
+        )
+        self._plan_tile_row[:required].copy_(
+            torch.tensor(tile_row, dtype=torch.int32, device=device)
+        )
+        self._plan_num_tiles = required
+        self._plan_total_q = sum(q_lens)
+        self._plan_total_kv = sum(kv_lens)
+        self._plan_key = key
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "gqa_varlen": GQAPrefillVarlenFwdKernel,
+            "gqa_varlen_ws": GQAPrefillVarlenWsKernel,
             "gqa_varlen_sliding_window": GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
         }
 
@@ -764,6 +840,7 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
             is_fp8=q.dtype == fp8_dtype(),
             is_uniform=False,
             fuse_rope=self.pos_encoding_mode == "rope",
+            planned_schedule=self._plan_num_tiles > 0,
             max_position=rope_cos.shape[0] if rope_cos is not None else 1,
             rotary_dim=_rope_rotary_dim(dim, self.rotary_dim)
             if self.pos_encoding_mode == "rope"
@@ -963,7 +1040,20 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
             rope_sin,
         )
         kernel = self._get_kernel(inputs)
-        output = kernel(*inputs)
+        if isinstance(kernel, GQAPrefillVarlenWsKernel):
+            if self._plan_num_tiles <= 0:
+                raise RuntimeError("the planned Varlen WS kernel requires op.plan()")
+            if q.shape[0] != self._plan_total_q or k.shape[0] != self._plan_total_kv:
+                raise ValueError("q/k totals do not match the current Varlen plan")
+            assert self._plan_tile_to_request is not None
+            assert self._plan_tile_row is not None
+            output = kernel(
+                *inputs,
+                tile_to_request=self._plan_tile_to_request[: self._plan_num_tiles],
+                tile_row=self._plan_tile_row[: self._plan_num_tiles],
+            )
+        else:
+            output = kernel(*inputs)
         self._last_input_dtype = q.dtype
         self._roofline_kwargs = {
             "q_shape": tuple(q.shape),
@@ -982,296 +1072,6 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
             "dtype": q.dtype,
         }
         return output
-
-
-class GroupedQueryAttentionPrefillVarlenFwdOp(GroupedQueryAttentionVarlenFwdOp):
-    """Compatibility API retained while the unified Varlen contract is spec-only."""
-
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
-
-    def __init__(
-        self,
-        max_seqlen_q: int,
-        max_seqlen_kv: int,
-        is_causal: bool = True,
-        sm_scale: Optional[float] = None,
-        softcap: Optional[float] = None,
-        validate_inputs: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Configure the legacy regular-Varlen implementation.
-
-        This compatibility API remains available until its FP8 and RoPE
-        capabilities have migrated to `GroupedQueryAttentionVarlenFwdOp`.
-        """
-        _validate_positive(max_seqlen_q=max_seqlen_q, max_seqlen_kv=max_seqlen_kv)
-        self.max_seqlen_q = max_seqlen_q
-        self.max_seqlen_kv = max_seqlen_kv
-        self.validate_inputs = validate_inputs
-        remapped = None
-        if kernel_map is not None:
-            remapped = {
-                "gqa_prefill_varlen_fwd_kernel": kernel_map.get(
-                    "gqa_prefill_varlen_fwd_kernel",
-                    kernel_map.get("gqa_varlen", GQAPrefillVarlenFwdKernel),
-                )
-            }
-        super().__init__(
-            is_causal=is_causal,
-            sm_scale=sm_scale,
-            softcap=softcap,
-            validate_inputs=validate_inputs,
-            kernel_map=remapped,
-        )
-        self.tune = tune
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"gqa_prefill_varlen_fwd_kernel": GQAPrefillVarlenFwdKernel}
-
-    def _get_kernel(
-        self, inputs: tuple[Optional[torch.Tensor], ...]
-    ) -> Callable[..., torch.Tensor]:
-        return self.kernel_for("gqa_prefill_varlen_fwd_kernel", inputs, self.varlen_call(inputs))
-
-    def _infer_output_shapes(
-        self,
-        q_shape: tuple[int, ...],
-        k_shape: tuple[int, ...],
-        v_shape: tuple[int, ...],
-        cu_seqlens_q_shape: tuple[int, ...],
-        cu_seqlens_kv_shape: tuple[int, ...],
-    ) -> Dict[str, tuple[int, ...]]:
-        return {"o": tuple(q_shape)}
-
-    def _validate_dtypes(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
-    ) -> None:
-        if q.dtype not in (torch.float16, torch.bfloat16):
-            raise ValueError("q must have float16 or bfloat16 dtype")
-        if k.dtype != q.dtype or v.dtype != q.dtype:
-            raise ValueError("q, k, and v must have the same dtype")
-        if cu_seqlens_q.dtype != torch.int32 or cu_seqlens_kv.dtype != torch.int32:
-            raise ValueError("cu_seqlens_q and cu_seqlens_kv must have int32 dtype")
-
-    def _validate_forward_inputs(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-    ) -> None:
-        super()._validate_forward_inputs(
-            q,
-            k,
-            v,
-            cu_seqlens_q,
-            cu_seqlens_kv,
-            q_scale,
-            k_scale,
-            v_scale,
-            rope_cos,
-            rope_sin,
-        )
-        if not self.validate_inputs:
-            return
-        cu_q = [int(value) for value in cu_seqlens_q.detach().cpu().tolist()]
-        cu_kv = [int(value) for value in cu_seqlens_kv.detach().cpu().tolist()]
-        if cu_q[0] != 0 or cu_q[-1] != q.shape[0]:
-            raise ValueError("cu_seqlens_q must span the packed q tensor")
-        if cu_kv[0] != 0 or cu_kv[-1] != k.shape[0]:
-            raise ValueError("cu_seqlens_kv must span the packed k/v tensors")
-        q_lens = [end - start for start, end in zip(cu_q[:-1], cu_q[1:], strict=True)]
-        kv_lens = [end - start for start, end in zip(cu_kv[:-1], cu_kv[1:], strict=True)]
-        if any(length <= 0 for length in q_lens):
-            raise ValueError("all q sequence lengths must be positive")
-        if any(length <= 0 for length in kv_lens):
-            raise ValueError("all kv sequence lengths must be positive")
-        if max(q_lens) > self.max_seqlen_q:
-            raise ValueError("max_seqlen_q is smaller than an actual q sequence")
-        if max(kv_lens) > self.max_seqlen_kv:
-            raise ValueError("max_seqlen_kv is smaller than an actual kv sequence")
-        if self.is_causal and any(
-            q_len > kv_len for q_len, kv_len in zip(q_lens, kv_lens, strict=True)
-        ):
-            raise ValueError("causal varlen prefill requires every q_len <= kv_len")
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
-    ) -> torch.Tensor:
-        """Run regular attention over packed variable-length Q, K, and V."""
-        return self._wrapped(q, k, v, cu_seqlens_q, cu_seqlens_kv, self._instance_key)
-
-
-class GroupedQueryAttentionSlidingWindowVarlenFwdOp(GroupedQueryAttentionVarlenFwdOp):
-    """Compatibility sliding-window API retained during the unified migration."""
-
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
-
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        dim: int,
-        max_seqlen_q: int,
-        is_causal: bool = True,
-        window_size_left: int = -1,
-        window_size_right: int = -1,
-        accum_dtype: torch.dtype = torch.float32,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Configure the legacy sliding-window Varlen implementation."""
-        _validate_positive(
-            batch=batch,
-            heads=heads,
-            heads_kv=heads_kv,
-            dim=dim,
-            max_seqlen_q=max_seqlen_q,
-        )
-        if heads % heads_kv != 0:
-            raise ValueError("heads must be divisible by heads_kv")
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.dim = dim
-        self.max_seqlen_q = max_seqlen_q
-        self.accum_dtype = accum_dtype
-        remapped = None
-        if kernel_map is not None:
-            remapped = {
-                "gqa_sliding_window_varlen_fwd_kernel": kernel_map.get(
-                    "gqa_sliding_window_varlen_fwd_kernel",
-                    kernel_map.get(
-                        "gqa_varlen_sliding_window",
-                        GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
-                    ),
-                )
-            }
-        super().__init__(
-            is_causal=is_causal,
-            window_size_left=window_size_left,
-            window_size_right=window_size_right,
-            kernel_map=remapped,
-        )
-        self.tune = tune
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "gqa_sliding_window_varlen_fwd_kernel": (GQASlidingWindowVarlenFwdWgmmaPipelinedKernel)
-        }
-
-    def _get_kernel(
-        self, inputs: tuple[Optional[torch.Tensor], ...]
-    ) -> Callable[..., torch.Tensor]:
-        return self.kernel_for(
-            "gqa_sliding_window_varlen_fwd_kernel", inputs, self.varlen_call(inputs)
-        )
-
-    def _infer_output_shapes(
-        self,
-        q_shape: tuple[int, ...],
-        k_shape: tuple[int, ...],
-        v_shape: tuple[int, ...],
-        cu_seqlens_q_shape: tuple[int, ...],
-        cu_seqlens_k_shape: tuple[int, ...],
-    ) -> Dict[str, tuple[int, ...]]:
-        return {"o": tuple(q_shape)}
-
-    def _validate_dtypes(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_k: torch.Tensor,
-    ) -> None:
-        if q.dtype not in (torch.float16, torch.bfloat16):
-            raise ValueError("q must have float16 or bfloat16 dtype")
-        if k.dtype != q.dtype or v.dtype != q.dtype:
-            raise ValueError("q, k, and v must have the same dtype")
-        if cu_seqlens_q.dtype != torch.int32 or cu_seqlens_k.dtype != torch.int32:
-            raise ValueError("cu_seqlens_q and cu_seqlens_k must have int32 dtype")
-
-    def _validate_forward_inputs(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-    ) -> None:
-        super()._validate_forward_inputs(
-            q,
-            k,
-            v,
-            cu_seqlens_q,
-            cu_seqlens_kv,
-            q_scale,
-            k_scale,
-            v_scale,
-            rope_cos,
-            rope_sin,
-        )
-        if tuple(q.shape[1:]) != (self.heads, self.dim):
-            raise ValueError("q shape does not match the legacy Op constructor")
-        if tuple(k.shape[1:]) != (self.heads_kv, self.dim):
-            raise ValueError("k/v shape does not match the legacy Op constructor")
-        if cu_seqlens_q.shape[0] != self.batch + 1:
-            raise ValueError("cu_seqlens_q length does not match batch")
-        bounds_by_name = {}
-        for name, offsets, total in (
-            ("cu_seqlens_q", cu_seqlens_q, q.shape[0]),
-            ("cu_seqlens_kv", cu_seqlens_kv, k.shape[0]),
-        ):
-            bounds = [int(value) for value in offsets.detach().cpu().tolist()]
-            if bounds[0] != 0:
-                raise ValueError(f"{name}[0] must equal 0")
-            if any(end < start for start, end in zip(bounds[:-1], bounds[1:], strict=True)):
-                raise ValueError(f"{name} must be non-decreasing")
-            if bounds[-1] > total:
-                raise ValueError(f"{name}[-1] must not exceed {total}")
-            bounds_by_name[name] = bounds
-        q_bounds = bounds_by_name["cu_seqlens_q"]
-        if max(end - start for start, end in zip(q_bounds[:-1], q_bounds[1:], strict=True)) > (
-            self.max_seqlen_q
-        ):
-            raise ValueError("max_seqlen_q is smaller than an actual q sequence")
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_k: torch.Tensor,
-    ) -> torch.Tensor:
-        """Run sliding-window attention over packed variable-length inputs."""
-        return self._wrapped(q, k, v, cu_seqlens_q, cu_seqlens_k, self._instance_key)
 
 
 class GroupedQueryAttentionPagedFwdOp(Op):

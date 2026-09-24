@@ -26,8 +26,6 @@ from tileops.ops.attention.gqa import (
     GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
-    GroupedQueryAttentionPrefillVarlenFwdOp,
-    GroupedQueryAttentionSlidingWindowVarlenFwdOp,
     GroupedQueryAttentionVarlenFwdOp,
 )
 from tileops.ops.attention.mha import (
@@ -98,22 +96,6 @@ def _attention_cases():
             2, lens, lens, _HEADS, _HEADS_KV, _DIM, True, 64, -1, _DTYPE
         )
         op = GroupedQueryAttentionVarlenFwdOp(is_causal=True, window_size_left=64)
-        return op, case.gen_inputs()
-
-    def gqa_prefill_varlen_compat():
-        lens = [128, 128]
-        case = GQAPrefillVarlenFwdWorkload(2, _HEADS, _HEADS_KV, lens, lens, _DIM, True, _DTYPE)
-        op = GroupedQueryAttentionPrefillVarlenFwdOp(128, 128)
-        return op, case.gen_inputs()
-
-    def gqa_sliding_window_varlen_compat():
-        lens = [128, 128]
-        case = GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(
-            2, lens, lens, _HEADS, _HEADS_KV, _DIM, True, 64, -1, _DTYPE
-        )
-        op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(
-            2, _HEADS, _HEADS_KV, _DIM, 128, window_size_left=64
-        )
         return op, case.gen_inputs()
 
     def gqa_prefill_paged():
@@ -204,8 +186,6 @@ def _attention_cases():
         ("gqa-bwd", gqa_bwd),
         ("gqa-varlen", gqa_varlen),
         ("gqa-sliding-window-varlen", gqa_sliding_window_varlen),
-        ("gqa-prefill-varlen-compat", gqa_prefill_varlen_compat),
-        ("gqa-sliding-window-varlen-compat", gqa_sliding_window_varlen_compat),
         ("gqa-prefill-paged", gqa_prefill_paged),
         ("gqa-decode-paged", gqa_decode_paged),
         ("mha-bwd", mha_bwd),
@@ -547,8 +527,6 @@ def _cases():
 for _op_cls in (
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionPrefillVarlenFwdOp,
-    GroupedQueryAttentionSlidingWindowVarlenFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
     MultiHeadAttentionBwdOp,
