@@ -1,14 +1,18 @@
 """Public GLA inference contract and its first in-tree dense-prefill path."""
 
+from functools import partial
+
 import pytest
 import torch
 
-from tests.test_base import TestBase
+from benchmarks.baselines import reference_tolerance
+from tests.test_base import TestBase, allclose_compare
 from tileops.backend import TensorSpec, registry
 from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
     GLADensePrefillPartitionedKernel,
 )
 from tileops.ops import GLAInferenceFwdOp
+from tileops.perf.formulas import gla_fwd_roofline
 from tileops.utils import is_h200
 from workloads.linear_attention import GLAInferenceWorkload
 
@@ -60,8 +64,8 @@ def test_gla_inference_reaches_external_target_with_optional_inputs() -> None:
     assert o.shape == v.shape
     assert final_state.shape == state.shape
 
-    decode_q = torch.randn(1, 1, 2, 8, dtype=torch.float32)
-    decode_v = torch.randn(1, 1, 2, 6, dtype=torch.float32)
+    decode_q = torch.randn(1, 1, 2, 8, dtype=torch.float16)
+    decode_v = torch.randn(1, 1, 2, 6, dtype=torch.float16)
     decode_state = torch.zeros(1, 2, 8, 6, dtype=torch.float32)
     decode_o, decode_final = op(decode_q, decode_q, decode_v, decode_q, decode_state)
     assert decode_o.shape == decode_v.shape
@@ -79,6 +83,50 @@ def test_gla_inference_reaches_external_target_with_optional_inputs() -> None:
             {"scale": 0.125},
         ),
     ]
+
+
+@pytest.mark.parametrize("seeded", [False, True])
+def test_gla_inference_roofline_counts_packed_states(seeded: bool) -> None:
+    def build_kernel(*specs, **params):
+        def kernel(q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu):
+            state_batch = q.shape[0] if cu_seqlens is None else cu_seqlens.shape[0] - 1
+            return torch.empty_like(v), torch.empty(
+                state_batch, q.shape[2], q.shape[3], v.shape[3], dtype=torch.float32
+            )
+
+        return kernel
+
+    registry.register_kernel_builder("GLAInferenceFwdOp", "gla_test", build_kernel)
+    op = GLAInferenceFwdOp(target="gla_test")
+    q, k, g = (torch.empty(1, 7, 2, 8, dtype=torch.float16) for _ in range(3))
+    v = torch.empty(1, 7, 2, 6, dtype=torch.float16)
+    packed_state = torch.empty(2, 2, 8, 6, dtype=torch.float32) if seeded else None
+    cu = torch.tensor([0, 3, 7], dtype=torch.int64)
+
+    # Reuse the Op for dense input too: packed sequence metadata must not leak.
+    for state, lengths, expected_bytes in (
+        (packed_state, cu, 2544 if seeded else 1776),
+        (packed_state[:1] if seeded else None, None, 1776 if seeded else 1392),
+    ):
+        op(q, k, v, g, state, lengths)
+        assert op.eval_roofline()[1] == expected_bytes
+        assert (
+            gla_fwd_roofline(
+                q_shape=q.shape,
+                v_shape=v.shape,
+                dtype=q.dtype,
+                initial_state_shape=state.shape if state is not None else None,
+                cu_seqlens_shape=lengths.shape if lengths is not None else None,
+            )
+            == op.eval_roofline()
+        )
+
+
+def test_gla_inference_rejects_float32_activations() -> None:
+    q = torch.empty(1, 64, 2, 8, dtype=torch.float32)
+    v = torch.empty(1, 64, 2, 6, dtype=torch.float32)
+    with pytest.raises(ValueError, match="q must have float16 or bfloat16 dtype"):
+        GLAInferenceFwdOp().forward(q, q, v, q)
 
 
 def test_gla_inference_rejects_invalid_state_and_gate() -> None:
@@ -106,10 +154,10 @@ def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: in
     test = GLAInferenceTest(2, seq_len, 4, dim, dim, dtype, has_initial_state=True)
     inputs = test.gen_inputs()
     op = GLAInferenceFwdOp()
-    test.check(op, *inputs, atol=0.03, rtol=0.03)
-    test.check(op, *inputs[:4], atol=0.03, rtol=0.03)
+    test.check(op, *inputs, **reference_tolerance(dtype))
+    test.check(op, *inputs[:4], **reference_tolerance(dtype))
     inputs[3].mul_(3.0)
-    test.check(op, *inputs, atol=0.03, rtol=0.03)
+    test.check(op, *inputs, **reference_tolerance(dtype))
 
 
 @pytest.mark.skipif(not is_h200(), reason="partitioned prefill is selected on H200")
@@ -125,7 +173,21 @@ def test_gla_long_prefill_uses_partitioned_kernel(
     inputs = test.gen_inputs()
     inputs[3].mul_(gate_scale)
     op = GLAInferenceFwdOp()
-    test.check(op, *inputs, atol=0.03, rtol=0.03)
+    tolerance = reference_tolerance(dtype)
+    state_tolerance = tolerance.copy()
+    if dtype == torch.float16:
+        # H200 / FLA 0.5.2, T=16384, K=V=64, gate_scale=3, seed=2160:
+        # max absolute error is 1.908e-4 for output and 2.300e-3 for FP32 state.
+        # Only final-state atol needs an exception; output and rtol stay standard.
+        state_tolerance["atol"] = 2.5e-3
+    test.check(
+        op,
+        *inputs,
+        compare=[
+            partial(allclose_compare, **tolerance),
+            partial(allclose_compare, **state_tolerance),
+        ],
+    )
     assert any(
         isinstance(kernel, GLADensePrefillPartitionedKernel)
         for kernel in op.built_kernels("gla_dense_prefill").values()

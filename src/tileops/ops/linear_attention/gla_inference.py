@@ -25,7 +25,7 @@ __all__ = ["GLAInferenceFwdOp"]
 class GLAInferenceFwdOp(Op):
     """Gated linear attention for inference, with caller-owned FP32 state.
 
-    Q, K, V and the log-space, per-key gate G use BTHD layout. One call may
+    Q, K, V and the log-space, per-key gate G use FP16/BF16 BTHD layout. One call may
     describe equal-length prefill, packed-varlen prefill, or single-token
     decode. The caller may omit ``initial_state`` to start from zero; every
     call returns ``(o, final_state)``. Only Hopper dense prefill is currently
@@ -126,8 +126,8 @@ class GLAInferenceFwdOp(Op):
         cu_seqlens: Optional[torch.Tensor] = None,
         cu_seqlens_cpu: Optional[torch.Tensor] = None,
     ) -> None:
-        if q.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-            raise ValueError("q must have float16, bfloat16, or float32 dtype")
+        if q.dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError("q must have float16 or bfloat16 dtype")
         for name, tensor in (("k", k), ("v", v), ("g", g)):
             if tensor.dtype != q.dtype:
                 raise ValueError(f"{name} must have the same dtype as q")
@@ -192,6 +192,7 @@ class GLAInferenceFwdOp(Op):
             v_shape=self.v_shape,
             dtype=self.dtype,
             initial_state_shape=self.state_shape,
+            cu_seqlens_shape=self.cu_seqlens_shape,
         )
 
     def compute_roof(self) -> str:
@@ -219,6 +220,7 @@ class GLAInferenceFwdOp(Op):
         self.v_shape = tuple(v.shape)
         self.dtype = q.dtype
         self.state_shape = tuple(initial_state.shape) if initial_state is not None else None
+        self.cu_seqlens_shape = tuple(cu_seqlens.shape) if cu_seqlens is not None else None
         batch, seq_len, heads, dim_k = q.shape
         call = (
             batch,
