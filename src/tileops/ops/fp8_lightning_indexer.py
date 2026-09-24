@@ -4,7 +4,7 @@ import torch
 
 from tileops.kernels.constants import FP8_E4M3_MAX
 from tileops.kernels.fp8_lightning_indexer import FP8LightningIndexerKernel
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, adapt_entry
 
 from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
@@ -98,17 +98,41 @@ class FP8LightningIndexerFwdOp(Op):
             _dev,
             tune,
         ) = call
-        return call, lambda: self.kernel_map["fp8_lightning_indexer_kernel"](
-            batch,
-            seq_len,
-            heads,
-            index_dim,
-            seq_len_kv,
-            kv_group,
-            clean_logits,
-            config=self.config,
-            tune=tune,
-        )
+
+        def build():
+            return self.kernel_map["fp8_lightning_indexer_kernel"](
+                batch,
+                seq_len,
+                heads,
+                index_dim,
+                seq_len_kv,
+                kv_group,
+                clean_logits,
+                config=self.config,
+                tune=tune,
+            )
+
+        return adapt_entry((call, build), self._quantized_in_kernel_order)
+
+    def _quantized_in_kernel_order(
+        self,
+        kernel: Kernel,
+        index_q: torch.Tensor,
+        index_k: torch.Tensor,
+        weights: torch.Tensor,
+        cu_seqlen_ks: torch.Tensor,
+        cu_seqlen_ke: torch.Tensor,
+        index_k_scale: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Run the in-tree kernel on fp8 operands, in the order it takes them.
+
+        Without ``index_k_scale`` the call arrived unquantized, and the in-tree path
+        quantizes it here; a target is handed the call as it arrived.
+        """
+        if index_k_scale is None:
+            index_q = index_q.to(torch.float8_e4m3fn)
+            index_k, index_k_scale = self.per_custom_dims_cast_to_fp8(index_k, (0,), False)
+        return kernel(index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
 
     def _resolve_and_bind(
         self,
@@ -171,30 +195,6 @@ class FP8LightningIndexerFwdOp(Op):
             index_q.device.index,
         )
 
-    def torch_quant_forward(
-        self,
-        index_q: torch.Tensor,
-        index_k: torch.Tensor,
-        weights: torch.Tensor,
-        cu_seqlen_ks: torch.Tensor,
-        cu_seqlen_ke: torch.Tensor,
-    ) -> torch.Tensor:
-        index_q = index_q.to(torch.float8_e4m3fn)
-        index_k, index_k_scale = self.per_custom_dims_cast_to_fp8(index_k, (0,), False)
-
-        return self.kernel(index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
-
-    def tl_quant_forward(
-        self,
-        index_q: torch.Tensor,
-        index_k: torch.Tensor,
-        index_k_scale: torch.Tensor,
-        weights: torch.Tensor,
-        cu_seqlen_ks: torch.Tensor,
-        cu_seqlen_ke: torch.Tensor,
-    ) -> torch.Tensor:
-        return self.kernel(index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
-
     def _infer_output_shapes(
         self,
         index_q_shape: tuple[int, ...],
@@ -248,11 +248,7 @@ class FP8LightningIndexerFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         self._resolve_and_bind(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale)
-        if index_k_scale is None:
-            return self.torch_quant_forward(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke)
-        return self.tl_quant_forward(
-            index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke
-        )
+        return self.kernel(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale)
 
     def per_custom_dims_cast_to_fp8(
         self, x: torch.Tensor, dims: Tuple[int], use_ue8m0: bool

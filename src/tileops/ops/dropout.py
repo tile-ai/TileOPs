@@ -15,7 +15,7 @@ from typing import ClassVar, Dict, Optional
 import torch
 
 from tileops.kernels.dropout import DropoutKernel
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, adapt_entry
 
 from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
@@ -88,18 +88,21 @@ class DropoutFwdOp(Op):
             )
         return self.N_total * self.dtype.itemsize * 2
 
-    def _get_kernel(self, x: torch.Tensor, rows: torch.Tensor) -> Kernel:
-        """Fetch the kernel for *x*, handing over *x* itself rather than *rows*.
-
-        *rows* is the flat view the kernel wants; *x* is what the signature declares.
-        """
-        return self.kernel_for(self._op_name, (x,), (rows.numel(), rows.dtype, rows.device.index))
+    def _get_kernel(self, x: torch.Tensor) -> Kernel:
+        """Fetch what serves *x*, which the signature declares; the flat view is in-tree."""
+        return self.kernel_for(self._op_name, (x,), (x.numel(), x.dtype, x.device.index))
 
     def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per element count, dtype and device."""
+        """One implementation, built per element count, dtype and device, run on a flat view."""
         count, dtype, _device_index = call
-        return call, lambda: self.kernel_map[self._op_name](
-            count, dtype, p=self.p, seed=self.seed, tune=self.tune
+        return adapt_entry(
+            (
+                call,
+                lambda: self.kernel_map[self._op_name](
+                    count, dtype, p=self.p, seed=self.seed, tune=self.tune
+                ),
+            ),
+            _on_flat_view,
         )
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -109,11 +112,8 @@ class DropoutFwdOp(Op):
             return x.clone()
         if self._all_zero:
             return torch.zeros_like(x)
-        orig_shape = x.shape
-        x_flat = x.contiguous().reshape(-1)
-        self.kernel = self._get_kernel(x, x_flat)
-        y_flat = self.kernel(x_flat)
-        return y_flat.reshape(orig_shape)
+        self.kernel = self._get_kernel(x)
+        return self.kernel(x)
 
     def _infer_output_shapes(
         self,
@@ -143,3 +143,8 @@ class DropoutFwdOp(Op):
         return self._eager_forward(input)
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
+
+def _on_flat_view(kernel: Kernel, x: torch.Tensor) -> torch.Tensor:
+    """Run the in-tree kernel on the flat view it takes, and give *x*'s shape back."""
+    return kernel(x.contiguous().reshape(-1)).reshape(x.shape)

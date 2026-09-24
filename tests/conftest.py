@@ -5,6 +5,7 @@ import torch
 
 from tests.test_base import _check_result
 from tileops.backend import BUILTIN, UnknownTargetError, registry, set_default_target
+from tileops.kernels.kernel_base import check_entry_calls
 
 
 def _under_repo_tests(item: pytest.Item) -> bool:
@@ -53,6 +54,9 @@ def pytest_configure(config: pytest.Config) -> None:
 
     config.stash[_OUTER_DEFAULT_TARGET] = registry.default_target
     _pin_default_target(config.getoption("--tileops-target"))
+    # A target's kernel is called with the tensors its builder was described with, so the
+    # suite holds every in-tree entry to the same rule.
+    check_entry_calls()
 
 
 def _pin_default_target(choice: str) -> None:

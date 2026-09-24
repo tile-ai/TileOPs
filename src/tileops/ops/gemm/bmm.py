@@ -17,7 +17,7 @@ from tileops.kernels.gemm.bmm import (
     BmmPersistentKernel,
 )
 from tileops.kernels.gemm.call_spec import BmmCall
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, adapt_entry, describe_entry
 from tileops.perf.profile import tensor_core_roof
 
 from .._compile_boundary_codegen import OperatorSpec
@@ -178,7 +178,7 @@ class BmmFwdOp(Op):
             self.kernel = kernel
             self._active_kernel = kernel
             self._active_sig = sig
-
+        describe_entry(self._active_kernel, (a, b))
         return self._active_kernel(a, b)
 
     def compute_roof(self) -> str:
@@ -357,9 +357,27 @@ class BmmFp8FwdOp(Op):
                 batch, rows, cols, dtype, device=device, tune=self.tune
             )
         batch, m, n, k, dtype, out_dtype, device = call
-        return call, lambda: self.kernel_map["bmm_fp8_kernel"](
-            batch, m, n, k, dtype, out_dtype, device=device, tune=self.tune
+        return adapt_entry(
+            (
+                call,
+                lambda: self.kernel_map["bmm_fp8_kernel"](
+                    batch, m, n, k, dtype, out_dtype, device=device, tune=self.tune
+                ),
+            ),
+            self._k_innermost_with_flat_scales,
         )
+
+    def _k_innermost_with_flat_scales(
+        self,
+        kernel: Kernel,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        scale_a: torch.Tensor,
+        scale_b: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run the in-tree WGMMA kernel on ``b`` K-innermost and the scales as 1-element tensors."""
+        b = self._as_k_innermost(b, a.dtype, a.device)
+        return kernel(a, b, scale_a.reshape(1), scale_b.reshape(1))
 
     def _infer_output_shapes(
         self,
@@ -436,14 +454,11 @@ class BmmFp8FwdOp(Op):
             self.b_shape = tuple(b.shape)
             self.scale_a_shape = tuple(scale_a.shape)
             self.scale_b_shape = tuple(scale_b.shape)
-            kernel = self._get_kernel(
+            self._active = self._get_kernel(
                 (a, b, scale_a, scale_b), batch, m, n, k, a.dtype, device=a.device
             )
-            self._active = kernel
             self._active_sig = sig
-        b = self._as_k_innermost(b, a.dtype, a.device)
-        scale_a = scale_a.reshape(1)
-        scale_b = scale_b.reshape(1)
+        describe_entry(self._active, (a, b, scale_a, scale_b))
         return self._active(a, b, scale_a, scale_b)
 
     def _as_k_innermost(
@@ -479,8 +494,9 @@ class BmmFp8FwdOp(Op):
                     f"b K-innermost skips the copy and is the faster call.",
                     stacklevel=2,
                 )
-            kernel = self._get_transpose_kernel((b,), batch, k, n, dtype, device)
-            return kernel(b_nk.transpose(-2, -1))
+            b_kn = b_nk.transpose(-2, -1)
+            kernel = self._get_transpose_kernel((b_kn,), batch, k, n, dtype, device)
+            return kernel(b_kn)
         return b_nk.contiguous()
 
     def compute_roof(self) -> str:

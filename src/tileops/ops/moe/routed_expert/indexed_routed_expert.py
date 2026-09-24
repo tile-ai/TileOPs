@@ -7,7 +7,7 @@ from typing import ClassVar
 import torch
 from torch import Tensor
 
-from tileops.kernels.kernel_base import Entry
+from tileops.kernels.kernel_base import Entry, adapt_entry
 from tileops.kernels.moe.indexed_expert_gemm import (
     IndexedExpertGemmTemplate,
     IndexedRouteStatsKernel,
@@ -164,7 +164,34 @@ class IndexedExpertMLPFwdOp(Op):
 
     def entry_for(self, role: str, call: torch.dtype) -> Entry:
         """One implementation, built per operand dtype; the route extents are the op's."""
-        return call, lambda: self._build(call)
+        return adapt_entry((call, lambda: self._build(call)), self._in_four_passes)
+
+    def _in_four_passes(
+        self,
+        kernels: tuple,
+        output: Tensor,
+        hidden_states: Tensor,
+        w_gate_up: Tensor,
+        w_down: Tensor,
+        topk_weights: Tensor,
+        topk_ids: Tensor,
+        workspace1: Tensor,
+        workspace2: Tensor,
+    ) -> None:
+        """Route statistics, the two GEMMs through the workspaces, then the weighted sum."""
+        stats, gate, down, reduce = kernels
+        routes = self.num_tokens * self.top_k
+        hidden_elements = routes * self.ffn_size
+        hidden = workspace1[:hidden_elements].view(self.num_tokens, self.top_k, self.ffn_size)
+        route_output = workspace2.view(self.num_tokens, self.top_k, self.hidden_size)
+        if stats is None:
+            metadata = topk_ids.reshape(-1)[:1]
+        else:
+            metadata = workspace1[hidden_elements:].view(torch.int32)
+            stats(topk_ids, metadata)
+        gate(hidden_states, w_gate_up, topk_ids, metadata, out=hidden)
+        down(hidden, w_down, topk_ids, metadata, out=route_output)
+        reduce(route_output, topk_weights, output)
 
     def _build(self, dtype: torch.dtype) -> tuple:
         """The route statistics pass, the two GEMMs and the weighted reduction."""
@@ -258,32 +285,17 @@ class IndexedExpertMLPFwdOp(Op):
             expert_output = self._expert_mlp(expert_input, w_gate_up, w_down, physical_ends)
             self._post_permute(expert_output, topk_weights, inverse_indices, out=output)
             return
-        stats, gate, down, reduce = self.kernel_for(
-            "indexed_mlp",
-            (
-                output,
-                hidden_states,
-                w_gate_up,
-                w_down,
-                topk_weights,
-                topk_ids,
-                workspace1,
-                workspace2,
-            ),
-            hidden_states.dtype,
+        inputs = (
+            output,
+            hidden_states,
+            w_gate_up,
+            w_down,
+            topk_weights,
+            topk_ids,
+            workspace1,
+            workspace2,
         )
-        routes = self.num_tokens * self.top_k
-        hidden_elements = routes * self.ffn_size
-        hidden = workspace1[:hidden_elements].view(self.num_tokens, self.top_k, self.ffn_size)
-        route_output = workspace2.view(self.num_tokens, self.top_k, self.hidden_size)
-        if stats is None:
-            metadata = topk_ids.reshape(-1)[:1]
-        else:
-            metadata = workspace1[hidden_elements:].view(torch.int32)
-            stats(topk_ids, metadata)
-        gate(hidden_states, w_gate_up, topk_ids, metadata, out=hidden)
-        down(hidden, w_down, topk_ids, metadata, out=route_output)
-        reduce(route_output, topk_weights, output)
+        self.kernel_for("indexed_mlp", inputs, hidden_states.dtype)(*inputs)
 
     def compute_roof(self) -> str:
         return tensor_core_roof(self.dtype)

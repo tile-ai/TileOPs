@@ -22,7 +22,7 @@ from tileops.kernels.attention import (
     GQAPrefillVarlenFwdKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, KernelAdapter, adapt_entry
 from tileops.perf.profile import tensor_core_roof
 
 from .._compile_boundary_codegen import OperatorSpec
@@ -1716,6 +1716,16 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         """What serves *call*, built once per specialization."""
         return self.kernel_for("gqa_prefill_paged", inputs, call)
 
+    def entry_for(self, role: str, call: object) -> Entry:
+        """The selected kernel, given the launch bound and rotary tables it takes per launch."""
+        return adapt_entry(super().entry_for(role, call), self._with_launch_bound_and_tables)
+
+    def _with_launch_bound_and_tables(self, kernel: Kernel, *tensors: torch.Tensor):
+        """Run an in-tree paged-prefill kernel; a target reads these off the op's params."""
+        q = tensors[0]
+        cos_table, sin_table = self._rope_tables(q.device, q.dtype)
+        return kernel(*tensors, self.max_seqlen_q, cos_table, sin_table)
+
     def _rope_tables(self, device: torch.device, dtype: torch.dtype):
         """Rotary tables for this op, or ``(None, None)`` when it fuses no RoPE."""
         if not self.fuse_rope:
@@ -1982,7 +1992,6 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         )
         self.dtype = q.dtype
         call = self.attention_call(q.dtype, q.device)
-        cos_table, sin_table = self._rope_tables(q.device, q.dtype)
         return self._get_kernel(
             (
                 q,
@@ -2008,9 +2017,6 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             cu_seqlens_q,
             cache_seqlens,
             block_table,
-            self.max_seqlen_q,
-            cos_table,
-            sin_table,
         )
 
     @property
@@ -2067,8 +2073,8 @@ class GroupedQueryAttentionBwdOp(Op):
 
     def _get_kernels(
         self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype
-    ) -> tuple[Kernel, Kernel]:
-        """Return (preprocess, backward) kernels for *dtype*, building once each."""
+    ) -> KernelAdapter:
+        """Return the entry serving *dtype*: both passes, called as one."""
         return self.kernel_for("gqa_bwd", inputs, dtype)
 
     def entry_for(self, role: str, call: torch.dtype) -> Entry:
@@ -2096,7 +2102,7 @@ class GroupedQueryAttentionBwdOp(Op):
                 ),
             )
 
-        return call, build
+        return adapt_entry((call, build), _gqa_bwd_in_two_passes)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -2157,19 +2163,22 @@ class GroupedQueryAttentionBwdOp(Op):
         do = do.contiguous()
         self._validate_dtypes(q, k, v, o, do, lse)
         self.dtype = q.dtype
-        prep_kernel, kernel = self._get_kernels((q, k, v, o, do, lse), q.dtype)
-        delta = prep_kernel(o, do)
-        dq = torch.zeros_like(q, dtype=torch.float32)
-        dk = torch.zeros_like(k, dtype=torch.float32)
-        dv = torch.zeros_like(v, dtype=torch.float32)
-        kernel(q, k, v, do, lse, delta, dq, dk, dv)
-        dq = dq.to(q.dtype)
-        dk, dv = dk.to(q.dtype), dv.to(q.dtype)
-        return dq, dk, dv
+        return self._get_kernels((q, k, v, o, do, lse), q.dtype)(q, k, v, o, do, lse)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.dtype)
+
+
+def _gqa_bwd_in_two_passes(kernels, q, k, v, o, do, lse):
+    """The in-tree backward: a preprocess pass for ``delta``, then fp32-accumulated gradients."""
+    prep_kernel, kernel = kernels
+    delta = prep_kernel(o, do)
+    dq = torch.zeros_like(q, dtype=torch.float32)
+    dk = torch.zeros_like(k, dtype=torch.float32)
+    dv = torch.zeros_like(v, dtype=torch.float32)
+    kernel(q, k, v, do, lse, delta, dq, dk, dv)
+    return dq.to(q.dtype), dk.to(q.dtype), dv.to(q.dtype)
 
 
 class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):

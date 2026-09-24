@@ -30,7 +30,7 @@ from tileops.backend import (
 )
 from tileops.backend.dispatch import registered_kernel_builder, select_target
 from tileops.backend.registry import ensure_loaded
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, describe_entry
 from tileops.manifest import forward_signature, load_manifest
 
 from .compile_boundary import register_instance
@@ -647,7 +647,9 @@ class Op(ABC):
             ValueError: What :meth:`entry_for` raises.
             OpNotAvailableError: What :meth:`_get_or_build_kernel` raises.
         """
-        return self._get_or_build_kernel(role, inputs, lambda: self.entry_for(role, call))
+        entry = self._get_or_build_kernel(role, inputs, lambda: self.entry_for(role, call))
+        describe_entry(entry, tuple(inputs))
+        return entry
 
     def _build_external(
         self,

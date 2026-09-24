@@ -3,7 +3,7 @@ from typing import ClassVar, Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, adapt_entry
 from tileops.kernels.mhc import MHCPostKernel, MHCPreKernel
 from tileops.perf.profile import tensor_core_roof
 
@@ -89,8 +89,25 @@ class MHCPreFwdOp(Op):
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, dtype and device."""
         batch, n_expand, c_x, dtype, _device, tune = call
-        return call, lambda: self.kernel_map["mhc_pre_kernel"](
-            batch, n_expand, c_x, dtype, tune=tune
+        return adapt_entry(
+            (
+                call,
+                lambda: self.kernel_map["mhc_pre_kernel"](batch, n_expand, c_x, dtype, tune=tune),
+            ),
+            self._with_params,
+        )
+
+    def _with_params(self, kernel: Kernel, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor):
+        """Run the in-tree kernel with the scalars it takes per launch; a target gets them as params."""
+        return kernel(
+            phi,
+            x,
+            b,
+            self.alpha_pre,
+            self.alpha_post,
+            self.alpha_res,
+            self.sinkhorn_repeat,
+            self.sinkhorn_eps,
         )
 
     def _infer_output_shapes(
@@ -149,16 +166,7 @@ class MHCPreFwdOp(Op):
         self.c_x = c_x
         self.dtype = x.dtype
         self.kernel = self._get_kernel((phi, x, b), batch, n_expand, c_x, x.dtype, x.device.index)
-        return self.kernel(
-            phi,
-            x,
-            b,
-            self.alpha_pre,
-            self.alpha_post,
-            self.alpha_res,
-            self.sinkhorn_repeat,
-            self.sinkhorn_eps,
-        )
+        return self.kernel(phi, x, b)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

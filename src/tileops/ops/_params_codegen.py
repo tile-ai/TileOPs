@@ -21,8 +21,9 @@ def maybe_install_param_names(cls: type) -> None:
     class-attached ``__manifest_signature__`` first, then the manifest entry keyed by class
     name. A name in the class body wins.
 
-    Every class gets its own answer, never an inherited one: params are exactly this op's
-    ``signature.params``, and a class with no entry hands a backend nothing.
+    Every class gets its own answer, never an inherited one: params are this op's
+    ``signature.params`` except ``out``, the caller's per-call output buffer, and a class
+    with no entry hands a backend nothing.
     """
     if ATTRIBUTE in cls.__dict__:
         return
@@ -32,4 +33,6 @@ def maybe_install_param_names(cls: type) -> None:
         entry = try_load_entry(cls.__name__)
         sig = entry.get("signature") if entry is not None else None
     params = sig.get("params") if isinstance(sig, dict) else None
-    setattr(cls, ATTRIBUTE, tuple(params) if isinstance(params, dict) else ())
+    # ``out`` is the caller's output buffer, handed over per call, not built into a kernel.
+    names = tuple(name for name in params if name != "out") if isinstance(params, dict) else ()
+    setattr(cls, ATTRIBUTE, names)

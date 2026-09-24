@@ -7,7 +7,7 @@ from typing import ClassVar, Mapping
 
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, adapt_entry
 from tileops.kernels.moe import (
     MoeGroupedGemmKernel,
     MoePrePermuteContiguousKernel,
@@ -699,9 +699,13 @@ class MoePostPermuteFwdOp(_StagedOpBase):
         kernel = self.kernel_for(
             "post_permute", (expert_output, topk_weights, inverse_indices), call
         )
-        return kernel(
-            expert_output,
-            inverse_indices,
-            topk_weights,
-            out=out,
-        )
+        return kernel(expert_output, topk_weights, inverse_indices, out=out)
+
+    def entry_for(self, role: str, call: object) -> Entry:
+        """The selected kernel, taking its tensors in the manifest's order."""
+        return adapt_entry(super().entry_for(role, call), _post_permute_in_kernel_order)
+
+
+def _post_permute_in_kernel_order(kernel, expert_output, topk_weights, inverse_indices, out=None):
+    """Hand the in-tree post-permute kernels their inputs in the order they take them."""
+    return kernel(expert_output, inverse_indices, topk_weights, out=out)

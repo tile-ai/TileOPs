@@ -1,13 +1,103 @@
+import contextlib
+import dataclasses
+import weakref
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Hashable, Optional, Union
 
 import torch
 
-__all__ = ["Entry", "Kernel"]
+__all__ = ["Entry", "Kernel", "KernelAdapter", "adapt_entry"]
 
 # What ``Op.kernel_for`` stores for one specialization: the identity two
 # builds share to be the same entry, and the thunk that produces it.
 Entry = tuple[Hashable, Callable[[], object]]
+
+# The tensors each entry was described with, while the test suite checks that an entry is
+# called with exactly them (see ``check_entry_calls``). ``None`` outside that check.
+_DESCRIBED: "Optional[weakref.WeakKeyDictionary]" = None
+
+
+def check_entry_calls() -> None:
+    """Have every entry check that it is called with the tensors it was described with.
+
+    A test-suite switch: ``Op.kernel_for`` records the tensors it hands over, and a
+    ``Kernel`` or ``KernelAdapter`` it returned raises when it is later called with
+    anything else. A target builds from that description, so a call site that passes
+    other tensors would hand a target's kernel arguments it was never described.
+    """
+    global _DESCRIBED
+    _DESCRIBED = weakref.WeakKeyDictionary()
+
+
+def describe_entry(entry: object, inputs: "tuple[Optional[torch.Tensor], ...]") -> None:
+    """Record the tensors *entry* was just handed out for, when the check is on."""
+    if _DESCRIBED is None:
+        return
+    # An entry that cannot be weakly referenced is not checked.
+    with contextlib.suppress(TypeError):
+        _DESCRIBED[entry] = tuple(None if t is None else weakref.ref(t) for t in inputs)
+
+
+def adapt_entry(entry: Entry, run: Callable[..., Any]) -> Entry:
+    """Wrap what *entry* builds in a ``KernelAdapter`` that calls it through *run*."""
+    identity, build = entry
+    if build is None:
+        return entry
+    return identity, lambda: KernelAdapter(build(), run)
+
+
+def _check_call(entry: object, args: tuple, kwargs: dict) -> None:
+    refs = _DESCRIBED.get(entry)
+    if refs is None:
+        return
+    described = tuple(None if r is None else r() for r in refs)
+    # ``out`` is the caller's output buffer, a call-time argument rather than an input.
+    same = set(kwargs) <= {"out"} and len(args) == len(described)
+    same = same and all(a is d for a, d in zip(args, described, strict=True))
+    if not same:
+        raise AssertionError(
+            f"{type(entry).__name__} was described with {len(described)} tensors but called "
+            f"with {len(args)} positional and {sorted(kwargs)} keyword arguments that are "
+            f"not those tensors; wrap the kernel in a KernelAdapter that takes them"
+        )
+
+
+@dataclasses.dataclass
+class KernelAdapter:
+    """An in-tree entry that takes the tensors described to ``kernel_for`` and runs a kernel.
+
+    What a call site does between those tensors and the kernel — flattening, lookup
+    tables, reordered or extra arguments, several kernels in sequence, a check after the
+    launch — goes in *run*, so every entry is called the same way whoever built it.
+    ``kernel`` is a field, so ``Op.iter_kernels`` still reaches it.
+
+    Attributes:
+        kernel: The in-tree kernel, or a tuple of them, *run* launches.
+        run: Called as ``run(kernel, *inputs)``; returns what the op's entry returns.
+    """
+
+    kernel: object
+    run: Callable[..., Any]
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if _DESCRIBED is not None:
+            _check_call(self, args, kwargs)
+        return self.run(self.kernel, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        # Reads and writes pass through to a single kernel, so ``op.kernel.<attr>``
+        # keeps meaning the kernel's attribute.
+        kernel = object.__getattribute__(self, "kernel")
+        if isinstance(kernel, tuple):
+            raise AttributeError(name)
+        return getattr(kernel, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in ("kernel", "run"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self.kernel, name, value)
+
 
 # Sentinel for ``tune_jit_kernel(supply_prog=...)``: inherit the whole-kernel
 # supplier. Distinct from ``None``, which means "no supplier".
@@ -250,6 +340,8 @@ class Kernel(ABC):
         raise NotImplementedError
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if _DESCRIBED is not None:
+            _check_call(self, args, kwargs)
         return self.forward(*args, **kwargs)
 
     @property

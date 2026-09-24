@@ -3,7 +3,7 @@ from typing import ClassVar, Dict, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, adapt_entry
 from tileops.kernels.mamba import SSDStatePassingFwdKernel
 
 from .._compile_boundary_codegen import OperatorSpec
@@ -79,15 +79,26 @@ class SSDStatePassingFwdOp(Op):
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, initial-state presence, dtype and device."""
         batch, num_chunks, n_heads, d_state, has_initial_states, dtype, _device, tune = call
-        return call, lambda: self.kernel_map["ssd_state_passing_fwd"](
-            batch,
-            num_chunks,
-            n_heads,
-            d_state,
-            has_initial_states=has_initial_states,
-            dtype=dtype,
-            tune=tune,
-        )
+
+        def build():
+            return self.kernel_map["ssd_state_passing_fwd"](
+                batch,
+                num_chunks,
+                n_heads,
+                d_state,
+                has_initial_states=has_initial_states,
+                dtype=dtype,
+                tune=tune,
+            )
+
+        def run(kernel, states, dA_chunk_cumsum, initial_states):
+            if initial_states is None:
+                # The kernel built for this call starts from zero, so this buffer
+                # only fills the argument slot and is never read.
+                initial_states = states.new_empty(batch, n_heads, d_state, dtype=torch.float32)
+            return kernel(states, dA_chunk_cumsum, initial_states)
+
+        return adapt_entry((call, build), run)
 
     def _infer_output_shapes(
         self,
@@ -144,6 +155,10 @@ class SSDStatePassingFwdOp(Op):
         self.d_state = d_state
         self.dtype = states.dtype
         self.initial_states_shape = None if initial_states is None else tuple(initial_states.shape)
+        states = states.contiguous()
+        dA_chunk_cumsum = dA_chunk_cumsum.contiguous()
+        if initial_states is not None:
+            initial_states = initial_states.contiguous()
         self.kernel = self._get_kernel(
             (states, dA_chunk_cumsum, initial_states),
             batch,
@@ -154,14 +169,5 @@ class SSDStatePassingFwdOp(Op):
             initial_states is not None,
             states.device.index,
         )
-
-        states = states.contiguous()
-        dA_chunk_cumsum = dA_chunk_cumsum.contiguous()
-        if initial_states is None:
-            # The kernel built for this call starts from zero, so this buffer
-            # only fills the argument slot and is never read.
-            initial_states = states.new_empty(batch, n_heads, d_state, dtype=torch.float32)
-        else:
-            initial_states = initial_states.contiguous()
 
         return self.kernel(states, dA_chunk_cumsum, initial_states)

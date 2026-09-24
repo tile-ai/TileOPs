@@ -3,7 +3,7 @@ from typing import ClassVar, Dict, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, adapt_entry
 from tileops.kernels.linear_attention.gla import GLABwdKernel, GLAFwdKernel
 from tileops.perf.profile import tensor_core_roof
 
@@ -280,16 +280,24 @@ class GLABwdOp(Op):
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, chunk length, scale, dtype and device."""
         batch, seq_len, heads, dim_k, dim_v, chunk_size, scale, dtype, _device, tune = call
-        return call, lambda: self.kernel_map["GLABwdKernel"](
-            batch,
-            seq_len,
-            heads,
-            dim_k,
-            dim_v,
-            chunk_size,
-            scale=scale,
-            dtype=dtype,
-            tune=tune,
+
+        def build():
+            return self.kernel_map["GLABwdKernel"](
+                batch,
+                seq_len,
+                heads,
+                dim_k,
+                dim_v,
+                chunk_size,
+                scale=scale,
+                dtype=dtype,
+                tune=tune,
+            )
+
+        # The in-tree kernel takes the op's ``has_initial_state`` per launch; a target
+        # gets it as a param.
+        return adapt_entry(
+            (call, build), lambda kernel, *tensors: kernel(*tensors, self.has_initial_state)
         )
 
     def _infer_output_shapes(
@@ -366,7 +374,7 @@ class GLABwdOp(Op):
         self.kernel = self._get_kernel(
             (q, k, v, g, h, do, dht), batch, seq_len, heads, dim_k, dim_v, dtype, q.device.index
         )
-        return self.kernel(q, k, v, g, h, do, dht, self.has_initial_state)
+        return self.kernel(q, k, v, g, h, do, dht)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

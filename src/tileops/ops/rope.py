@@ -22,12 +22,13 @@ torch.compile support:
   keyed by the instance's string key.
 """
 
+import functools
 import math
 from typing import ClassVar, Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, adapt_entry
 from tileops.kernels.rope import (
     RopeLlama31Kernel,
     RopeLongRopeKernel,
@@ -203,7 +204,8 @@ class _RopeOpBase(Op):
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, layout, dtype and device."""
         seq_len, head_dim, dtype, layout, batch, num_heads, _device, tune = call
-        return call, lambda: self.kernel_map[self._op_name](
+        build = functools.partial(
+            self.kernel_map[self._op_name],
             seq_len=seq_len,
             head_dim=head_dim,
             dtype=dtype,
@@ -212,6 +214,12 @@ class _RopeOpBase(Op):
             num_heads=num_heads,
             tune=tune,
         )
+        return adapt_entry((call, build), self._with_tables)
+
+    def _with_tables(self, kernel: Kernel, x: torch.Tensor) -> torch.Tensor:
+        """Run the in-tree kernel with the cos/sin tables it reads."""
+        cos, sin = self._get_cos_sin(x.device)
+        return kernel(x, cos, sin)
 
     def _validate_and_prepare(self, x: torch.Tensor) -> torch.Tensor:
         """Validate input shape/dtype/device and return a contiguous tensor.
@@ -238,14 +246,14 @@ class _RopeOpBase(Op):
         if self.head_dim <= 0 or self.head_dim % 2 != 0:
             raise ValueError("head_dim must be positive and even")
         self.dtype = x.dtype
+        x = x.contiguous()
         self.kernel = self._get_kernel((x,), x.device.index)
-        return x.contiguous()
+        return x
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         """Validate, resolve the kernel and launch, inside the operator."""
         x = self._validate_and_prepare(x)
-        cos, sin = self._get_cos_sin(x.device)
-        return self.kernel(x, cos, sin)
+        return self.kernel(x)
 
     def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
         """Manifest ``outputs.output.shape``: ``same_as(x)`` — a rotation moves no axis."""
@@ -399,7 +407,8 @@ class RopeNeoxPositionIdsFwdOp(Op):
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, rotary extent, dtype and device."""
         num_tokens, num_heads, head_dim, rotary_dim, max_position, dtype, _device, tune = call
-        return call, lambda: self.kernel_map[self._op_name](
+        build = functools.partial(
+            self.kernel_map[self._op_name],
             num_tokens=num_tokens,
             num_heads=num_heads,
             head_dim=head_dim,
@@ -408,6 +417,23 @@ class RopeNeoxPositionIdsFwdOp(Op):
             dtype=dtype,
             tune=tune,
         )
+        return adapt_entry((call, build), self._with_tables_and_range_check)
+
+    def _with_tables_and_range_check(
+        self, kernel: Kernel, x: torch.Tensor, position_ids: torch.Tensor
+    ) -> torch.Tensor:
+        """Run the in-tree kernel with its tables, then check the positions it read.
+
+        The kernel counts the positions it found outside the table rather than the op
+        proving they are inside it first: two reductions and two launches in front of
+        every call cost more device time than the rotation they guard. It clamps its own
+        table index, so this call read nothing out of bounds.
+        """
+        cos, sin = self._get_cos_sin(x.device)
+        output = kernel(x, cos, sin, position_ids)
+        if kernel.take_out_of_range():
+            raise ValueError("position_ids must be in [0, max_position)")
+        return output
 
     def _validate_and_prepare(
         self,
@@ -440,21 +466,14 @@ class RopeNeoxPositionIdsFwdOp(Op):
             raise ValueError(
                 f"Expected position_ids.dtype int32 or int64, got {position_ids.dtype}"
             )
+        x, position_ids = x.contiguous(), position_ids.to(torch.int32).contiguous()
         self.kernel = self._get_kernel((x, position_ids), x.device.index)
-        return x.contiguous(), position_ids.to(torch.int32).contiguous()
+        return x, position_ids
 
     def _eager_forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
-        """Validate, resolve the kernel, launch and check the positions, inside the operator."""
+        """Validate, resolve the kernel and launch, inside the operator."""
         x, position_ids = self._validate_and_prepare(x, position_ids)
-        cos, sin = self._get_cos_sin(x.device)
-        output = self.kernel(x, cos, sin, position_ids)
-        # The kernel counts the positions it found outside the table rather than the
-        # op proving they are inside it first: two reductions and two launches in
-        # front of every call cost more device time than the rotation they guard.
-        # It clamps its own table index, so this call read nothing out of bounds.
-        if self.kernel.take_out_of_range():
-            raise ValueError("position_ids must be in [0, max_position)")
-        return output
+        return self.kernel(x, position_ids)
 
     def _infer_output_shapes(
         self,

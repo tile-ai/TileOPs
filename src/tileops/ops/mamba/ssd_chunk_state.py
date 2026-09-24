@@ -2,7 +2,7 @@ from typing import ClassVar, Dict, Optional
 
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, adapt_entry
 from tileops.kernels.mamba import SSDChunkStateFwdKernel
 from tileops.perf.profile import tensor_core_roof
 
@@ -104,19 +104,30 @@ class SSDChunkStateFwdOp(Op):
             _device,
             tune,
         ) = call
-        return call, lambda: self.kernel_map["ssd_chunk_state_fwd"](
-            batch,
-            num_chunks,
-            chunk_len,
-            n_heads,
-            d_head,
-            d_state,
-            n_groups,
-            dtype,
-            has_seq_idx=has_seq_idx,
-            dt_dtype=dt_dtype,
-            tune=tune,
-        )
+
+        def build():
+            return self.kernel_map["ssd_chunk_state_fwd"](
+                batch,
+                num_chunks,
+                chunk_len,
+                n_heads,
+                d_head,
+                d_state,
+                n_groups,
+                dtype,
+                has_seq_idx=has_seq_idx,
+                dt_dtype=dt_dtype,
+                tune=tune,
+            )
+
+        def run(kernel, x, Bmat, dt, dA_cumsum, seq_idx):
+            if seq_idx is None:
+                # The kernel built for this call has no seq_idx branch, so this
+                # buffer only fills the argument slot and is never read.
+                seq_idx = x.new_empty(batch, num_chunks * chunk_len, dtype=torch.int32)
+            return kernel(x, Bmat, dt, dA_cumsum, seq_idx)
+
+        return adapt_entry((call, build), run)
 
     def _infer_output_shapes(
         self,
@@ -195,6 +206,12 @@ class SSDChunkStateFwdOp(Op):
         self.n_groups = n_groups
         self.dtype = x.dtype
         self.seq_idx_shape = None if seq_idx is None else tuple(seq_idx.shape)
+        x = x.contiguous()
+        Bmat = Bmat.contiguous()
+        dt = dt.contiguous()
+        dA_cumsum = dA_cumsum.contiguous()
+        if seq_idx is not None:
+            seq_idx = seq_idx.contiguous()
         self.kernel = self._get_kernel(
             (x, Bmat, dt, dA_cumsum, seq_idx),
             batch,
@@ -209,22 +226,6 @@ class SSDChunkStateFwdOp(Op):
             seq_idx is not None,
             x.device.index,
         )
-
-        x = x.contiguous()
-        Bmat = Bmat.contiguous()
-        dt = dt.contiguous()
-        dA_cumsum = dA_cumsum.contiguous()
-
-        if seq_idx is None:
-            # The kernel built for this call has no seq_idx branch, so this
-            # buffer only fills the argument slot and is never read.
-            seq_idx = x.new_empty(
-                self.batch,
-                self.num_chunks * self.chunk_len,
-                dtype=torch.int32,
-            )
-        else:
-            seq_idx = seq_idx.contiguous()
 
         return self.kernel(x, Bmat, dt, dA_cumsum, seq_idx)
 

@@ -5,7 +5,7 @@ from typing import Any, ClassVar, Dict, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, adapt_entry
 from tileops.kernels.pool import (
     AdaptiveAvgPool2dKernel,
     AdaptiveMaxPool2dKernel,
@@ -261,19 +261,31 @@ class MeanPoolingFwdOp(Op):
             use_offsets,
             dtype,
         ) = call
-        return call, lambda: self.kernel_map["mean_pooling_fwd_kernel"](
-            batch_size=batch_size,
-            seq_len=seq_len,
-            heads=heads,
-            dim=dim,
-            chunk_size=self.chunk_size,
-            chunks_per_batch=chunks_per_batch,
-            seq_num=seq_num,
-            use_offsets=use_offsets,
-            dtype=dtype,
-            accum_dtype=self.accum_dtype,
-            tune=self.tune,
-        )
+
+        def build():
+            return self.kernel_map["mean_pooling_fwd_kernel"](
+                batch_size=batch_size,
+                seq_len=seq_len,
+                heads=heads,
+                dim=dim,
+                chunk_size=self.chunk_size,
+                chunks_per_batch=chunks_per_batch,
+                seq_num=seq_num,
+                use_offsets=use_offsets,
+                dtype=dtype,
+                accum_dtype=self.accum_dtype,
+                tune=self.tune,
+            )
+
+        def run(kernel, x, offsets, indices):
+            # The kernel takes both tensors whether or not it reads them; an absent one
+            # becomes a placeholder here, so the entry takes the caller's ``None``.
+            if offsets is None:
+                offsets = self._placeholder((2,), x.device)
+                indices = self._placeholder((chunks_per_batch, 2), x.device)
+            return kernel(x, offsets, indices=indices)
+
+        return adapt_entry((call, build), run)
 
     def forward(
         self,
@@ -329,14 +341,10 @@ class MeanPoolingFwdOp(Op):
         if ragged:
             self._validate_ragged(offsets, indices, seq_len, chunks)
             seq_num = offsets.shape[0] - 1
-            offsets_arg, indices_arg = offsets, indices
         else:
-            # The kernel takes both tensors whether or not it reads them; `inputs` keeps
-            # the caller's `None`s, which is where presence is read from. `seq_num = 0`
-            # divides by zero in the autotune supply, so one whole-axis sequence it is.
+            # `seq_num = 0` divides by zero in the autotune supply, so one whole-axis
+            # sequence it is.
             seq_num = 1
-            offsets_arg = self._placeholder((2,), x.device)
-            indices_arg = self._placeholder((chunks, 2), x.device)
 
         self._validate_dtypes(x, offsets=offsets, indices=indices)
         kernel = self.kernel_for(
@@ -344,7 +352,7 @@ class MeanPoolingFwdOp(Op):
             (x, offsets, indices),
             (batch_size, seq_len, heads, dim, chunks, seq_num, int(ragged), x.dtype),
         )
-        out = kernel(x, offsets_arg, indices=indices_arg)
+        out = kernel(x, offsets, indices)
         # The roofline formula reads its variables off the instance.
         self.batch, self.seq_len, self.heads, self.dim = batch_size, seq_len, heads, dim
         self.chunks = chunks

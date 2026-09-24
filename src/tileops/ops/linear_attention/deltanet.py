@@ -3,7 +3,7 @@ from typing import ClassVar, Dict, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, adapt_entry
 from tileops.kernels.linear_attention.deltanet import (
     DeltaNetBwdKernel,
     DeltaNetFwdKernel,
@@ -508,7 +508,7 @@ class DeltaNetAutogradOp(Op):
                 self.kernel_map["DeltaNetBwdKernel"](*args, **kwargs),
             )
 
-        return call, build
+        return adapt_entry((call, build), _with_in_tree_backward)
 
     def forward(
         self,
@@ -529,9 +529,16 @@ class DeltaNetAutogradOp(Op):
             Output tensor o [B, H, S, DV] (supports .backward()).
         """
         self._validate_dtypes(q, k, v, beta)
-        fwd_kernel, bwd_kernel = self._bind_from_inputs(q, k, v, beta)
-        return _DeltaNetFunction.apply(q, k, v, beta, fwd_kernel, bwd_kernel)
+        # A target's kernel returns an output that carries its own backward; the in-tree
+        # entry attaches the in-tree one.
+        return self._bind_from_inputs(q, k, v, beta)(q, k, v, beta)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.dtype)
+
+
+def _with_in_tree_backward(kernels, q, k, v, beta):
+    """Run the in-tree forward kernel under an autograd function whose backward is the in-tree one."""
+    fwd_kernel, bwd_kernel = kernels
+    return _DeltaNetFunction.apply(q, k, v, beta, fwd_kernel, bwd_kernel)

@@ -14,7 +14,7 @@ from tileops.kernels.gemm.dense import (
 )
 from tileops.kernels.gemm.w4a16 import _LAYOUT, GROUP_SIZE, GemmW4A16Kernel
 from tileops.kernels.gemm.w4a16_repack import W4A16RepackKernel
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, describe_entry
 from tileops.perf.profile import tensor_core_roof
 
 from .._compile_boundary_codegen import OperatorSpec
@@ -156,7 +156,7 @@ class GemmFwdOp(Op):
             self.dtype = a.dtype
             self._active = self._get_kernel((a, b), self._call_spec(m, n, k, a.dtype, a.device))
             self._active_sig = sig
-
+        describe_entry(self._active, (a, b))
         return self._active(a, b)
 
     def compute_roof(self) -> str:
@@ -387,7 +387,7 @@ class GemmFp8FwdOp(Op):
             self.kernel = kernel
             self._active = kernel
             self._active_sig = sig
-
+        describe_entry(self._active, (a, b, scale_a, scale_b, bias))
         return self._active(a, b, scale_a, scale_b, bias)
 
     def compute_roof(self) -> str:
@@ -662,7 +662,7 @@ class GemmW4A16FwdOp(Op):
             self.kernel = kernel
             self._active = kernel
             self._active_sig = sig
-
+        describe_entry(self._active, (activation, packed_weight, weight_scale, weight_zero))
         return self._active(activation, packed_weight, weight_scale, weight_zero)
 
     def compute_roof(self) -> str:

@@ -380,7 +380,7 @@ def test_a_compiled_rope_call_is_served_by_the_target_its_operator_picks():
     fail = [True]
 
     def build_kernel(*inputs, **params):
-        def kernel(x, cos, sin):
+        def kernel(x):
             if fail[0]:
                 raise RuntimeError("device fault")
             return torch.full_like(x, 7)
@@ -963,3 +963,118 @@ def test_a_reduction_call_naming_an_absent_axis_never_reaches_the_backend():
         SumFwdOp(dim=5)(torch.randn(4, 8, dtype=DTYPE))
 
     assert recorder.calls == []
+
+
+# --------------------------------------------------------------------------------------
+# What a target's callable serves: the whole op, on the tensors it was described with
+# --------------------------------------------------------------------------------------
+
+requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="validates CUDA inputs")
+
+
+@requires_cuda
+def test_a_target_serves_the_whole_backward_the_in_tree_path_runs_in_two_passes():
+    """GQA backward is two kernels in-tree; a target returns the three gradients at once."""
+    from tileops.ops.attention.gqa import GroupedQueryAttentionBwdOp
+
+    seen = []
+
+    def build_kernel(*inputs, **params):
+        def kernel(*tensors):
+            seen.append(tensors)
+            q, k, v = tensors[:3]
+            return torch.ones_like(q), torch.ones_like(k), torch.ones_like(v)
+
+        return kernel
+
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("GroupedQueryAttentionBwdOp", "acme", build_kernel)
+    op = GroupedQueryAttentionBwdOp(batch=1, heads=4, heads_kv=2, seq_len=64, dim=64)
+    q = torch.randn(1, 64, 4, 64, device="cuda", dtype=DTYPE)
+    k, v = (torch.randn(1, 64, 2, 64, device="cuda", dtype=DTYPE) for _ in range(2))
+    o, do = torch.randn_like(q), torch.randn_like(q)
+    lse = torch.randn(1, 4, 64, device="cuda", dtype=torch.float32)
+
+    dq, dk, dv = op(q, k, v, o, do, lse)
+
+    (tensors,) = seen
+    assert all(a is b for a, b in zip(tensors, (q, k, v, o, do, lse), strict=True))
+    assert torch.equal(dq, torch.ones_like(q)) and torch.equal(dv, torch.ones_like(v))
+
+
+@requires_cuda
+def test_a_target_serving_an_autograd_op_carries_its_own_backward():
+    """DeltaNet's in-tree entry attaches the in-tree backward; a target's output brings its own."""
+    from tileops.ops.linear_attention.deltanet import DeltaNetAutogradOp
+
+    class _Doubled(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, v):
+            return v * 2
+
+        @staticmethod
+        def backward(ctx, grad):
+            return grad * 2
+
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder(
+        "DeltaNetAutogradOp", "acme", lambda *i, **p: lambda q, k, v, beta: _Doubled.apply(v)
+    )
+    op = DeltaNetAutogradOp(chunk_size=64)
+    q, k, v = (
+        torch.randn(1, 2, 64, 32, device="cuda", dtype=DTYPE, requires_grad=True) for _ in range(3)
+    )
+    beta = torch.rand(1, 2, 64, device="cuda", dtype=DTYPE)
+
+    op(q, k, v, beta).sum().backward()
+
+    assert torch.equal(v.grad, torch.full_like(v, 2))
+
+
+@requires_cuda
+def test_a_value_check_a_target_makes_reaches_the_caller():
+    """RoPE's in-tree entry checks positions after launching; a target's callable checks its own."""
+    from tileops.ops.rope import RopeNeoxPositionIdsFwdOp
+
+    def build_kernel(*inputs, **params):
+        def kernel(x, position_ids):
+            raise ValueError("position_ids must be in [0, max_position)")
+
+        return kernel
+
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("RopeNeoxPositionIdsFwdOp", "acme", build_kernel)
+    op = RopeNeoxPositionIdsFwdOp(max_position=16)
+    x = torch.randn(4, 2, 64, device="cuda", dtype=DTYPE)
+
+    with pytest.raises(ValueError, match="max_position"):
+        op(x, torch.tensor([0, 1, 2, 99], device="cuda", dtype=torch.int32))
+
+
+def test_a_callers_out_buffer_is_handed_over_per_call_not_built_in():
+    """``out`` reaches the callable as a keyword and never the builder's params."""
+    from tileops.ops.moe import ContiguousLayoutSpec, MoeGroupedGemmFwdOp
+
+    built, called = [], []
+
+    def build_kernel(*inputs, **params):
+        built.append(params)
+
+        def kernel(a, b, layout_metadata, out=None):
+            called.append(out)
+            return None if out is None else out.fill_(7)
+
+        return kernel
+
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("MoeGroupedGemmFwdOp", "acme", build_kernel)
+    op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
+    a = torch.randn(4, 8, dtype=torch.bfloat16)
+    b = torch.randn(2, 6, 8, dtype=torch.bfloat16)
+    ends = torch.tensor([2, 4], dtype=torch.int32)
+    out = torch.empty(4, 6, dtype=torch.bfloat16)
+
+    assert op(a, b, ends, out=out) is out
+
+    assert "out" not in built[0]
+    assert called == [out] and torch.equal(out, torch.full_like(out, 7))

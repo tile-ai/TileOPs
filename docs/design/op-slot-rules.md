@@ -153,7 +153,10 @@ design, calling conventions — live in
   (`x.shape[<resolved_axis>] == self.<kwarg>`); (d) bind `self._static_axes` for arbitrary-rank
   ops; (e) `.contiguous()` every input; (f)
   `self.kernel_for(<role>, <inputs>, <call>)`, handing over one slot
-  per `signature.inputs` entry — `None` for an absent optional one; (g) call the kernel.
+  per `signature.inputs` entry — `None` for an absent optional one; (g) call the entry with
+  exactly those tensors, plus `out=` when the caller passed a buffer. Whatever else an in-tree
+  kernel takes — lookup tables, reordered or extra arguments, placeholders, several kernels in
+  sequence, a check after the launch — `entry_for` wraps in a `KernelAdapter`.
   An op that declares `torch_compile_fullgraph` keeps this body under the name `_eager_forward`,
   and its `forward` becomes one call to the operator it registers — that operator is outside the
   scaffold's scope, see
@@ -196,7 +199,8 @@ design, calling conventions — live in
   dtype reuses the first dtype's kernel; a `.is_cuda` check in the op; reshaping before the fetch;
   binding `self._static_axes` before the axis is non-negative; passing an already-built kernel where
   a factory is expected, which rebuilds on every call; fetching a kernel under two roles in one op
-  where one entry holding both would do.
+  where one entry holding both would do; calling the entry with tensors other than the ones handed
+  to `kernel_for`, which the test suite's call check rejects.
 
 ### Slot S17: <a id="slot-s17"></a> `_infer_output_shapes` method body
 

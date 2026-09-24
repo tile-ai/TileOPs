@@ -40,15 +40,15 @@ Abstract interface: `default_kernel_map` (property), `forward()`. Manifest-drive
 
 Rationale and the role / entry vocabulary: [ops-design.md § Kernel caching and enumeration](ops-design.md#kernel-caching-and-enumeration).
 
-| Method                           | Purpose                                                                                                                                                        |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kernel_for(role, inputs, call)` | Return what serves this call, building it once on a miss. The only way an op reaches a kernel. `inputs` is what an external target's builder is described with |
-| `entry_for(role, call)`          | The in-tree identity and builder. The default selects among the op's candidates and asks the chosen class; an op with one implementation overrides it          |
-| `built_kernels(name)`            | Read-only view of a name's entries, whoever built them; empty before its first build. Introspection only, never dispatch                                       |
-| `kernel_delegates()`             | The ops whose kernels this op runs. Default `()`; a composite op overrides it                                                                                  |
-| `iter_kernels()`                 | The TileOPs `Kernel` instances the entries hold, deduplicated: role entries, `self.kernel`, and delegates. What `autotune()` tunes                             |
-| `settled_target`                 | What a call settled the op on: `None` before, `BUILTIN` for the in-tree implementation, else the target's name                                                 |
-| `autotune()`                     | Puts the op in tuned mode: tunes built kernels, and sets `tune` so later in-tree builds tune too; a target is not passed `tune`                                |
+| Method                           | Purpose                                                                                                                                                                                                   |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kernel_for(role, inputs, call)` | Return what serves this call, building it once on a miss. The only way an op reaches a kernel. `inputs` is what an external target's builder is described with and what the returned entry is called with |
+| `entry_for(role, call)`          | The in-tree identity and builder. The default selects among the op's candidates and asks the chosen class; an op with one implementation overrides it                                                     |
+| `built_kernels(name)`            | Read-only view of a name's entries, whoever built them; empty before its first build. Introspection only, never dispatch                                                                                  |
+| `kernel_delegates()`             | The ops whose kernels this op runs. Default `()`; a composite op overrides it                                                                                                                             |
+| `iter_kernels()`                 | The TileOPs `Kernel` instances the entries hold, deduplicated: role entries, `self.kernel`, and delegates. What `autotune()` tunes                                                                        |
+| `settled_target`                 | What a call settled the op on: `None` before, `BUILTIN` for the in-tree implementation, else the target's name                                                                                            |
+| `autotune()`                     | Puts the op in tuned mode: tunes built kernels, and sets `tune` so later in-tree builds tune too; a target is not passed `tune`                                                                           |
 
 ### `Kernel` base class attributes ([`src/tileops/kernels/kernel_base.py`](../../src/tileops/kernels/kernel_base.py))
 

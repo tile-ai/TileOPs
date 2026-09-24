@@ -3,7 +3,7 @@ from typing import ClassVar, Dict, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, describe_entry
 from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
 from tileops.kernels.linear_attention.deltanet_recurrence import (
     DeltaNetDecodeFP32Kernel,
@@ -154,9 +154,6 @@ class DeltaNetDecodeFwdOp(Op):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = q.dtype
-        self.kernel = self._get_kernel(
-            (q, k, v, beta, state), batch, heads, dim_k, dim_v, q.dtype, q.device.index
-        )
 
     def _validate_output_shapes(
         self,
@@ -227,7 +224,17 @@ class DeltaNetDecodeFwdOp(Op):
         if sig != getattr(self, "_active_sig", None):
             self._validate_dtypes(q, k, v, beta, state)
             self._validate_shapes(q, k, v, beta, state)
+            self.kernel = self._get_kernel(
+                (q, k, v, beta, state),
+                self.batch,
+                self.heads,
+                self.dim_k,
+                self.dim_v,
+                q.dtype,
+                q.device.index,
+            )
             self._active_sig = sig
+        describe_entry(self.kernel, (q, k, v, beta, state))
         o, new_state = self.kernel(q, k, v, beta, state)
         self._validate_output_shapes(o, new_state)
         return o, new_state

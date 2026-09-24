@@ -101,7 +101,7 @@ class FP8QuantFwdOp(Op):
         self.index_dim = index_dim
         self.in_dtype = input_tensor.dtype
         self.kernel = self._get_kernel(
-            (input_tensor),
+            (input_tensor,),
             batch,
             seq_len_kv,
             kv_group,

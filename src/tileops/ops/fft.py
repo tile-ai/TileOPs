@@ -4,7 +4,7 @@ from typing import Dict, Optional
 import torch
 
 from tileops.kernels.fft import FFTC2CKernel
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, adapt_entry
 
 from .op_base import Op
 
@@ -47,7 +47,22 @@ class FFTC2CFwdOp(Op):
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per transform length, batch, dtype and device."""
         n, batch_size, dtype, _device_index = call
-        return call, lambda: self.kernel_map["fft_c2c_kernel"](n, batch_size, dtype, tune=self.tune)
+        return adapt_entry(
+            (call, lambda: self.kernel_map["fft_c2c_kernel"](n, batch_size, dtype, tune=self.tune)),
+            self._on_split_components,
+        )
+
+    def _on_split_components(self, kernel: Kernel, x: torch.Tensor) -> torch.Tensor:
+        """Run the in-tree kernel on *x*'s real and imaginary planes and its twiddle table."""
+        n = x.shape[-1]
+        batch_size = x[..., 0].numel() if x.ndim > 1 else 1
+        x_real = x.real.contiguous().reshape(batch_size, n)
+        x_imag = x.imag.contiguous().reshape(batch_size, n)
+        twiddle_real, twiddle_imag = self._get_lut(n, x.dtype, x.device)
+        y_pair = kernel(x_real, x_imag, twiddle_real, twiddle_imag)
+        # The kernel writes the final butterfly directly in interleaved layout;
+        # view_as_complex is metadata-only and launches no packing kernel.
+        return torch.view_as_complex(y_pair.reshape(*x.shape, 2))
 
     @staticmethod
     def _build_lut(
@@ -119,27 +134,14 @@ class FFTC2CFwdOp(Op):
         if n <= 0 or n & (n - 1) != 0:
             raise ValueError(f"FFT size must be a positive power of 2, got {n}")
 
-        x_real = x.real.contiguous()
-        x_imag = x.imag.contiguous()
-        original_shape = x.shape
-
-        # Flatten all batch dimensions into a single batch dimension
-        batch_size = x_real[..., 0].numel() if x.ndim > 1 else 1
-        x_real = x_real.reshape(batch_size, n)
-        x_imag = x_imag.reshape(batch_size, n)
-
+        # All batch dimensions flatten into one.
+        batch_size = x[..., 0].numel() if x.ndim > 1 else 1
         self.n = n
         self.dtype = x.dtype
         # What the manifest roofline resolves ``input`` through: the batch extent
         # is the call's, not the kernel cache's.
-        self.input_shape = tuple(original_shape)
-        self.twiddle_real, self.twiddle_imag = self._get_lut(n, x.dtype, x.device)
-        kernel = self.kernel_for(
+        self.input_shape = tuple(x.shape)
+        self.kernel = self.kernel_for(
             "fft_c2c_kernel", (input,), (n, batch_size, x.dtype, x.device.index)
         )
-        self.kernel = kernel
-        y_pair = kernel(x_real, x_imag, self.twiddle_real, self.twiddle_imag)
-
-        # The kernel writes the final butterfly directly in interleaved layout;
-        # view_as_complex is metadata-only and launches no packing kernel.
-        return torch.view_as_complex(y_pair.reshape(*original_shape, 2))
+        return self.kernel(input)
