@@ -1,78 +1,24 @@
-"""Every power-of-two complex-to-complex transform TileOPs serves, as literal TileLang.
+"""Power-of-two complex-to-complex FFT kernels.
 
-``FFT_PLANS``, at the foot of this file, is both the service region and the
-source of fact for every constant in it: one record per (length, dtype), naming
-the factors that call is decomposed into, the in-CTA radix plan of each, the
-shared-memory strides, the four-step twiddle rows, the builders and the
-architectures the record fits. A record of one factor is one CTA and one launch,
-served by FFTC2COneCTAKernel; a record of two or three factors is the four-step
-decomposition, one launch per factor over a caller-owned intermediate buffer,
-served by FFTC2CDecomposedKernel.
+``FFT_PLANS`` is the service map for each (length, dtype). A one-factor plan uses
+one CTA and one launch. Longer transforms use a two- or three-factor four-step
+decomposition, with one launch per factor and a caller-owned intermediate.
 
-In-CTA structure, by length: n <= 32 is a warp-resident network, bit-reversal by
-shuffle and no shared memory; 64 and 128 are two register-DFT8 passes exchanged
-through a warp-local shared-memory transpose; 256 is packed 16x16 and 512 packed
-8x8x8; 1024-4096 hold 16 complex values per thread across three shared-memory
-exchanges; 8192 and 16384 add a fourth pass, combined by warp shuffle rather than
-a fourth round trip. A four-step factor runs the same structure over its own
-length, with a different global index map and one extra twiddle.
+The single-CTA implementations are grouped by data exchange: warp-local for
+``n <= 32``; warp transpose for 64 and 128; packed 16x16 and 8x8x8 transforms
+for 256 and 512; three shared-memory passes for 1024 through 4096; and a fourth,
+shuffle-combined pass for 8192 and 16384.
 
-Each of those structures is one builder, taking its length and the rest of its
-plan as Python values. What a builder may vary that way is bounded by what
-TileLang 0.1.12 settles while tracing: a ``for`` becomes a symbolic T.serial loop
-and an ``if`` on a Python value is folded away, so a pass count is an ``if``
-chain over the passes and a last radix an ``if`` chain over the radices, never a
-loop. Everything of fixed size -- the butterflies, the running twiddles, the 16
-register slots a thread holds -- is written out once as a macro and shared.
+The four-step column kernel transforms the stride-n2 columns, applies the
+cross-factor twiddle, and writes ``T[k_b][j_a]``. The row kernel transforms the
+contiguous rows and maps the factor digits back to natural output order. CTAs
+interleave ``tw`` transforms so the strided side of each corner turn remains a
+contiguous global-memory transaction.
 
-Four properties of this code that must not be "simplified" away:
-
-* Nothing here is written out one statement per slot, and nothing needs to be.
-  A traced ``for ... in range(n)`` becomes a runtime loop and a runtime index
-  into a T.alloc_local array falls to local memory, but ``T.unroll(n)`` reaches
-  CUDA as a ``#pragma unroll`` over a constant trip count that nvcc unrolls, at
-  the same register count and with no spill: measured against the same work
-  listed one per line, over every served point. So anything uniform across the
-  slots is a ``T.unroll`` loop. A body that instead needs a different
-  build-time constant in each slot -- a twiddle Python computes with cos and
-  emits as a literal -- cannot be one, because a loop variable cannot reach
-  Python; those recurse instead, through ``_each`` or a recursion of their own.
-  Python recursion is not a ``for``, so the tracer does not intercept it, and
-  an ``if`` on a Python value folds while tracing.
-* Every running twiddle lives in a T.alloc_local buffer rather than a traced
-  scalar, so that the recurrence survives the macro boundaries it is carried
-  across.
-* Global loads and stores go through T.vectorized pairs, which is what makes one
-  complex value one instruction rather than two.
-* The tile widths in FFT_PLANS are measured per (length, dtype), not derived.
-  They trade shared memory against occupancy, and the rounder number is usually
-  the slower one. The shared strides are derived, by the bank-conflict rule each
-  of ``_smem_pad`` / ``_four_step_pad`` states.
-
-A 16-point DFT is two radix-4 stages, which leaves output k at register slot
-4*(k % 4) + k // 4, and an 8-point one leaves it at 2*(k % 4) + k // 4. Nothing
-moves it back; the store index maps absorb the permutation.
-
-The four-step identity, for n = n1*n2 with j = j_b*n2 + j_a and k = k_a*n1 + k_b:
-
-    X[k_a*n1 + k_b] = sum_ja W_n^(j_a*k_b) W_n2^(j_a*k_a)
-                      [ sum_jb x[j_b*n2 + j_a] W_n1^(j_b*k_b) ]
-
-One kernel per sum. The column kernel evaluates the inner one for every j_a -- a
-length-n1 transform down a stride-n2 axis -- applies W_n^(j_a*k_b), the twiddle
-neither sum owns, and writes T[k_b][j_a]. The row kernel transforms T's
-contiguous rows over j_a and stores through the output map, which is what
-returns the digits to natural order. Three factors is the same identity twice.
-Neither kernel pays an extra shared-memory round trip for its stride: a CTA runs
-``tw`` of its factor's transforms interleaved as s[idx*tw + col] with col in the
-fast index position, so the column kernel's strided load and the row kernel's
-strided store each come out as runs of ``tw`` consecutive elements per
-instruction. That thread map is the corner turn, and ``tw`` is what the plan
-table calls the tile width.
-
-Which factors a length is split into, and which radices a CTA runs, are measured
-numbers rather than derived ones. The three tables at the foot of the file hold
-them and state the rule behind each.
+Uniform register-slot operations use ``T.unroll``. Operations that require a
+different Python constant per slot use macro recursion so register indices stay
+compile-time constants. Running twiddles use local buffers across macro calls,
+and complex global loads and stores remain vectorized pairs.
 """
 
 import dataclasses
@@ -92,35 +38,7 @@ __all__ = ["FFTC2CDecomposedKernel", "FFTC2COneCTAKernel"]
 
 @dataclasses.dataclass(frozen=True)
 class FFTPlan:
-    """How one (length, dtype) is transformed, and every constant that decides it.
-
-    One record per served call, collected in FFT_PLANS at the foot of this file.
-    The per-kernel fields run in launch order: a one-factor plan has one kernel,
-    and a decomposed plan one per factor -- its column kernels outermost first,
-    then its row kernel.
-
-    Attributes:
-        factors: The four-step factors, outermost first. A single factor means
-            the whole transform fits in one CTA and nothing is decomposed.
-        radix: Per kernel, the radices of its in-CTA passes. The length of an
-            entry is that kernel's pass count, which is also how many twiddle
-            tables it is handed.
-        tile: Per kernel, the transforms-per-CTA width its builder is called
-            with. Empty for a one-factor plan, which bakes its packing into the
-            builder's length and takes no such argument.
-        pad: Per kernel, the shared-memory strides its builder is called with --
-            ``(row,)`` at two passes and ``(row, grp)`` at three. ``(0, 0)``
-            marks a kernel that pads nothing.
-        twiddle_exp: Per column kernel, the j_a multipliers of its four-step
-            twiddle table, one per table row. The row kernel loads no such table
-            and has no entry.
-        builders: Per kernel, the builder of that kernel with its structural
-            constants -- length, factors, packing -- already bound, so that what
-            is left to pass is the real dtype.
-        archs: The architectures this record fits. Shared memory is what bounds
-            it: a tile needing more than the 163 KB an sm_80/86/89 block can be
-            given would leave those three off the list.
-    """
+    """The launch-order factors, layouts, builders, and architectures for one call."""
 
     factors: tuple
     radix: tuple
@@ -217,18 +135,8 @@ def _lane_split(nf: int) -> int:
 def _twiddle_exps(nf: int) -> tuple:
     """The j_a multipliers of one column kernel's four-step twiddle table, one per row.
 
-    Such a kernel's last pass emits k_b = lane + lanes*u, with lane a runtime
-    index over [0, lanes) and u a compile-time one over [0, 16), so the factor
-    W_m^(j_a*k_b) is a per-lane base -- the product of two rows -- times one row
-    for each half of u. The identity holds for both plans: the group and output
-    digits of a radix-r last pass carry weights lanes and 16*lanes/r, and
-    g + (16/r)*k runs over [0, 16).
-
-    The powers are tabulated rather than reached by a running rotor as the pass
-    twiddles are: a rotor costs one rounding per step and the chain here is six
-    long, which measures 9.55e-16 of error on the factor against 5.55e-16 for the
-    exactly-rounded lookups. The pass twiddles keep their rotors, whose bases are
-    near 1 and whose direct table would be per-thread rather than per-column.
+    For ``k_b = lane + lanes*u``, the factor is a per-lane base times the two
+    compile-time digits of ``u``. The returned rows contain those three terms.
     """
     lanes = _factor_lanes(nf)
     s = _lane_split(nf)
@@ -280,16 +188,8 @@ def _four_step_columns(factors: tuple) -> list:
 def _four_step_row(factors: tuple) -> tuple:
     """``(nf, tiled, mid, row_stride, out_stride)`` for the row kernel of a plan.
 
-    It transforms the contiguous length-``nf`` rows and scatters each output digit
-    ``out_stride`` = n/nf apart, which is what puts the digits back in natural
-    order. What a CTA tiles is the *first* factor's digit, because that is the one
-    the output map gives stride 1 and so the only one whose store comes out as
-    runs of ``tw_b`` consecutive elements; tiling any other digit scatters every
-    store instruction over ``tiled`` elements and costs most of the bandwidth
-    (measured: 0.55 TB/s against 2.5). A three-factor plan puts the middle digit
-    on a second grid axis of ``mid`` blocks, and ``row_stride`` is how far apart
-    two of the tiled digit's rows sit. ``mid`` is 1 for a two-factor plan, which
-    then needs no second axis.
+    The first factor is tiled because its output digit has stride 1. In a
+    three-factor plan, ``mid`` indexes the middle digit on a second grid axis.
     """
     return (
         factors[-1],
@@ -475,14 +375,7 @@ def _twiddle_step(reg, cw, off: int, r: int, w1r, w1i, k: int):
 
 @T.macro
 def _twiddle_rotor(reg, cw, off: int, r: int, w1r, w1i):
-    """Multiply the permuted radix-r result at *off* by w1**k for k = 1 .. r-1.
-
-    One base twiddle per thread per pass, the rest by repeated complex
-    multiplication. Measured against a sin/cos per twiddle: the same speed
-    within 3% and 15-20% less error. It is also the only option at complex128,
-    where fp64 sin/cos is barred from the kernel. The slots are visited in
-    permutation order, which is what makes the powers consecutive.
-    """
+    """Multiply the permuted radix-r result by successive powers of ``w1``."""
     cw[0] = w1r
     cw[1] = w1i
     _twiddle_step(reg, cw, off, r, w1r, w1i, 1)
@@ -490,14 +383,7 @@ def _twiddle_rotor(reg, cw, off: int, r: int, w1r, w1i):
 
 @T.macro
 def _each(op, args, k: int, n: int):
-    """Apply a per-slot macro to slots k .. n-1, in order.
-
-    Only for a listing that cannot be a ``T.unroll`` loop, which means one whose
-    body needs a different build-time constant in each slot. A traced ``for`` is
-    intercepted and a traced body cannot iterate a Python list, but recursion is
-    neither of those and an ``if`` on a Python value folds while tracing, so this
-    emits exactly what the calls written out one per line would.
-    """
+    """Apply a macro recursively where each slot needs a distinct Python constant."""
     if k < n:
         op(*args, k)
         _each(op, args, k + 1, n)
@@ -505,13 +391,7 @@ def _each(op, args, k: int, n: int):
 
 @T.macro
 def _read_pairs(x_pair, reg, bb, tx, stride, n: int):
-    """Read *n* inputs *stride* apart as pairs: slot k is x[bb, k*stride + tx].
-
-    ``T.unroll`` over a constant trip count reaches CUDA as a ``#pragma unroll``
-    loop, which nvcc unrolls, so the register slot index is a literal by the
-    time it matters. Measured against the same reads written out one per line:
-    the same register count, no stack frame and no spill either way.
-    """
+    """Read *n* inputs *stride* apart as vectorized complex pairs."""
     for k in T.unroll(n):
         for v in T.vectorized(2):
             reg[k, v] = x_pair[bb, k * stride + tx, v]
@@ -634,17 +514,7 @@ def _pass4_pick(st, vals, m3, r: int, j: int):
 
 @T.macro
 def _pass4_shuffle_one(y_pair, reg, vals, st, bb, tx, k2, m3, r: int, k: int):
-    """One output of a four-pass plan's final radix-r combine, gathered by shuffle.
-
-    A shared-memory version of this step measures non-zero ``bank ld`` even
-    though every lane of a k2-group requests the identical address, so it does
-    not touch shared memory at all. Every lane already holds pass 3's 16 twiddled
-    DFT16 outputs for its own (k2, m3) in ``reg``, and the r values a k2-group
-    needs sit in those same registers on the r threads sharing that k2 (m3 = tx %
-    r apart). ``m3`` is a runtime scalar, so picking this thread's own output out
-    of the r just-computed values is an if chain, not a dynamic register index --
-    TileLang would fall that back to local memory.
-    """
+    """Gather and combine one final-pass output without a dynamic register index."""
     _pass4_gathers(vals, reg, tx, m3, r, k, 0)
     _dft(vals, 0, r)
     st[0] = vals[0, 0]
@@ -904,14 +774,7 @@ def _tiny_write(y_pair, reg, bb, lane, lanes: int, ept: int):
 
 @T.macro
 def _tiny_twiddle(w, index, size: int, e: int):
-    """Exponent *e* onward of the W_size powers a stage's slot can name, 1 .. size/2 - 1.
-
-    *w* is a two-element buffer rather than a pair of ``T.alloc_var`` scalars
-    because a bare name assigned inside a macro rebinds that name instead of
-    writing the caller's variable -- measured, the recursion otherwise leaves
-    every lane at the default. A buffer store crosses the boundary, and ptxas
-    reports the same register count either way.
-    """
+    """Select a stage twiddle into a buffer that survives the macro boundary."""
     if e < size // 2:
         if index % (size // 2) == e:
             w[0] = _root(e, size)[0]
@@ -959,11 +822,7 @@ def _tiny_stage(reg, tmp, pair, diff, lane, size: int, lanes: int, ept: int):
 
 @T.macro
 def _tiny_network(reg, tmp, pair, diff, lane, n: int, lanes: int, ept: int):
-    """The log2(n) DIF stages, halving the transform size each time.
-
-    A recursion rather than a traced ``for``, which would become a symbolic
-    T.serial loop and put a symbolic index on ``reg``.
-    """
+    """Apply the DIF stages recursively with compile-time register indices."""
     if n >= 2:
         _tiny_stage(reg, tmp, pair, diff, lane, n, lanes, ept)
         _tiny_network(reg, tmp, pair, diff, lane, n // 2, lanes, ept)
@@ -1139,7 +998,7 @@ def _build_warp8(n: int, real_dtype: str) -> Any:
     lanes = n // 8
     transforms = 64 // lanes
     # The transpose row stride; the one added lane is what clears the bank
-    # conflict, measured by ncu sweep.
+    # conflict.
     stride = lanes + 1
 
     @tilelang.jit(
@@ -1403,9 +1262,8 @@ def _build_three_pass(n: int, real_dtype: str) -> Any:
     """
     r3 = n // 256
 
-    # No out_idx: with a symbolic batch the wrapper resolves the output shape by
-    # printing TIR vars on every call, which costs 79 us of host time against a
-    # few-microsecond kernel. The caller passes the output buffer instead.
+    # The caller supplies the output buffer so the wrapper does not resolve a
+    # symbolic output shape on every call.
     @tilelang.jit(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
         compile_flags=["-O3"],
@@ -1443,9 +1301,7 @@ def _build_three_pass(n: int, real_dtype: str) -> Any:
                 # pass 1: read x[n1*(n/16) + tx], DFT16 over n1, twiddle W_n^(tx*k1), to S1[k1][tx]
                 _read_pairs(x_pair, reg, bb, tx, n // 16, 16)
                 _dft(reg, 0, 16)
-                # A pair read, not two scalar reads: on an interleaved table each
-                # scalar read requests the warp's whole span, which doubles the
-                # sectors (measured).
+                # Read the interleaved table as a pair to keep it one transaction.
                 for v in T.vectorized(2):
                     st[v] = wlut[tx, v]
                 _twiddle_rotor(reg, cw, 0, 16, st[0], st[1])
@@ -1659,8 +1515,7 @@ def _four_step_a_body(
     pq = T.alloc_local((2,), real_dtype)
     s_re = T.alloc_shared((_four_step_smem(n1, tw, row, grp),), real_dtype)
     s_im = T.alloc_shared((_four_step_smem(n1, tw, row, grp),), real_dtype)
-    # Staged once per CTA: read straight from global these are re-read by every
-    # warp, which costs sectors the 1.1x gate has no room for.
+    # Stage once per CTA because every warp reuses these values.
     s_w1 = T.alloc_shared((_factor_lanes(n1), 2), real_dtype)
     if _factor_passes(n1) == 3:
         s_w2 = T.alloc_shared((_factor_radix(n1), 2), real_dtype)
@@ -1979,25 +1834,9 @@ _RADIX_PLAN = {
     16384: (16, 16, 16, 4),
 }
 
-# (n, dtype) -> the factors of the four-step decomposition, outermost first. The
-# two dtypes are keyed apart because the same length does not always want the same
-# split: a complex128 factor costs twice the shared memory of its complex64 twin,
-# so where one dtype reaches a length in two kernels the other can need three.
-# Two factors are two kernels: a column kernel A over the length-n1 stride-n2
-# axis and a row kernel B over the contiguous length-n2 rows. Three factors are
-# three kernels -- A applied twice, then B -- which is the same identity used
-# twice and is how the lengths past 4096*4096 are reached. Three rules pick the
-# factors, and they pull against each other:
-#
-# * each factor must be a length a CTA already serves, with a (16, 16, r3) or
-#   (16, r) plan -- 512 and its (8, 8, 8) plan is the one power of two left out;
-# * a column kernel's grid.x is the length it strides over divided by tw, and the
-#   row kernel's is its own outer factor divided by tw_b, so a factor much smaller
-#   than its neighbour starves one of the kernels at batch 1 (16*2048 leaves
-#   kernel B two CTAs);
-# * only the column kernels load a four-step twiddle table, and that load is
-#   R/factor of the data they move, so the larger factor goes first (a factor of
-#   128 costs 10% of the 1.1x load-sector budget; 256 costs 6% and 1024 costs 2%).
+# (n, dtype) -> four-step factors, outermost first. Two factors launch one
+# column and one row kernel; three factors launch two columns and one row.
+# Dtypes are keyed separately because factor capacity depends on element size.
 _FOUR_STEP_PLAN = {
     (1 << 14, "complex128"): (256, 64),
     (1 << 15, "complex64"): (256, 128),
@@ -2033,9 +1872,8 @@ _FOUR_STEP_PLAN = {
 # (n, dtype) -> one tile width per kernel of the plan: transforms per CTA for each
 # column kernel and then for the row kernel. It is also the service region -- a
 # (length, dtype) absent from here is not decomposed. 16384 appears at complex128
-# only: its complex64 half fits one CTA, and the two kernel classes must not both
-# claim a call. Every width is measured, not derived, and every one is chosen so
-# each kernel stays inside the 163 KB an sm_80 block can be given.
+# only because its complex64 half fits one CTA. Every tile stays inside the 163 KB
+# an sm_80 block can be given.
 _FOUR_STEP_TILE = {
     (1 << 14, "complex128"): (4, 4),
     (1 << 15, "complex64"): (16, 4),
@@ -2076,17 +1914,7 @@ _PLAN_ARCHS = (80, 86, 89, 90)
 
 
 def _single_cta_builder(n: int, dtype: str) -> Callable:
-    """The builder of the one-CTA kernel for (n, dtype), its structure already bound.
-
-    Which structure a length takes is what the module docstring lists; 512 is the
-    one that also depends on the dtype, since complex128 halves how many
-    transforms a block can pack and so how much of the table it reads directly.
-
-    Every builder returned here takes ``(row, grp)`` so that one call site serves
-    all of them. Only the three-pass structure exchanges through the two shared
-    stages those strides describe; the rest derive their layout from the length
-    and ignore the pair, which is why ``autotune_configs`` offers them one config.
-    """
+    """Return the one-CTA builder for ``(n, dtype)`` with its structure bound."""
     if n <= 32:
         return functools.partial(_build_tiny, n, 1 if n <= 4 else 2)
     if n <= 128:
@@ -2137,10 +1965,7 @@ def _plan_table() -> Dict[tuple, FFTPlan]:
     return dict(sorted(records.items(), key=lambda kv: (kv[0][0], kv[0][1] != "complex64")))
 
 
-# The service region, and the source of fact for every constant in it: a
-# (length, dtype) with a record here is served, and one without is refused. The
-# three tables above are the measured input; everything else in a record is
-# derived from them by the rules the helpers at the head of this file state.
+# A (length, dtype) with a record here is served; one without is refused.
 FFT_PLANS: Dict[tuple, FFTPlan] = _plan_table()
 
 
@@ -2238,13 +2063,7 @@ class FFTC2COneCTAKernel(Kernel):
 
     @property
     def autotune_supply_prog(self) -> Callable:
-        """Inputs for the padding sweep.
-
-        The batch extent is symbolic, so the autotuner cannot generate the
-        tensors itself. Padding changes a per-block shared-memory access
-        pattern, so any batch that keeps the device full measures it; 1024
-        blocks is about eight waves on an H200.
-        """
+        """Supply a full-device batch for the shared-memory padding sweep."""
 
         def supply(params: list) -> list:
             real = torch.float32 if self.dtype == torch.complex64 else torch.float64
@@ -2261,26 +2080,14 @@ class FFTC2COneCTAKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        """The padding pairs worth timing.
-
-        The defaults are the bank-conflict-free floors the record carries; the
-        sweep adds the next strides with the same residues, since above the
-        floors both only shift where a block starts. A plan below 1024, and a
-        four-pass plan, takes its strides from its length and has nothing to sweep.
-        """
+        """Return valid padding pairs, or the fixed layout for non-tunable plans."""
         if self.n < 1024 or len(self.plan.radix[0]) == 4:
             return [{"row": 0, "grp": 0}]
         row, grp = self.plan.pad[0]
         return [{"row": row + dr, "grp": grp + dg} for dr in (0, 32, 64) for dg in (0, 2)]
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        """Sweep the padding pairs, unless the record leaves only one.
-
-        A plan below 1024, and a four-pass plan, takes its shared strides from
-        its length, so ``autotune_configs`` offers one config and a sweep could
-        only confirm it -- after compiling the kernel again and filling a
-        1024-transform input buffer to time it. Those plans keep that config.
-        """
+        """Tune padding when the plan has more than one valid configuration."""
         configs = self.autotune_configs
         if len(configs) <= 1:
             self.config = dict(configs[0])
@@ -2350,15 +2157,7 @@ def _one_cta_smem_reals(plan: FFTPlan, n: int, row: int, grp: int) -> int:
 
 
 def _check_config(plan: FFTPlan, n: int, config: Dict[str, Any], itemsize: int) -> None:
-    """Raise on a config the kernel cannot run, before it can reach the device.
-
-    ``config`` is a public argument of both kernel classes, so its whole domain
-    is reachable, not only what ``autotune_configs`` or ``_four_step_candidates``
-    offer. A stride or tile outside the structural bounds is not a slower kernel;
-    measured, it is an illegal memory access. The bounds are the ones the sweep
-    is generated from: the strides at or above the record's floor, a tile width
-    dividing the grid axis it splits, at most 1024 threads, and shared memory
-    inside what the narrowest architecture in the record gives a block.
+    """Validate strides, tile divisibility, threads, and shared-memory capacity.
 
     Raises:
         ValueError: If a key is missing or unknown, or a value is out of bounds.
@@ -2410,16 +2209,7 @@ def _check_config(plan: FFTPlan, n: int, config: Dict[str, Any], itemsize: int) 
 
 
 def _four_step_candidates(plan: FFTPlan, index: int, real_itemsize: int) -> list:
-    """The configs worth timing for kernel *index* of *plan*, the record's own first.
-
-    Three structural bounds decide what is even buildable, so they are computed
-    rather than tabulated: a CTA runs ``lanes * tw`` threads and CUDA allows
-    1024; its shared memory must stay inside _MAX_BLOCK_SMEM; and tw must divide
-    the grid axis it tiles, which the builder integer-divides. Inside that,
-    tw is swept around the record's width and each shared stride one step up --
-    one coordinate at a time, because a cross product costs several times the
-    compilations to separate axes that do not interact.
-    """
+    """Return candidates within the thread, shared-memory, and grid bounds."""
     _nf, lanes, extent, _twrows, _r_last = _four_step_geometry(plan, index)
     pad = plan.pad[index]
     tile = plan.tile[index]
@@ -2491,36 +2281,10 @@ def _fft_decomposed_run(
 class FFTC2CDecomposedKernel(Kernel):
     """Four-step C2C FFT for the lengths one CTA cannot hold, one launch per factor.
 
-    For a split n = n1*n2, with j = j_b*n2 + j_a and k = k_a*n1 + k_b:
-
-        X[k_a*n1 + k_b] = sum_ja W_n^(j_a*k_b) W_n2^(j_a*k_a)
-                          [sum_jb x[j_b*n2 + j_a] W_n1^(j_b*k_b)]
-
-    The column kernel evaluates the inner sum for every j_a -- a length-n1
-    transform down a stride-n2 axis -- applies W_n^(j_a*k_b) and writes
-    T[k_b][j_a]. The row kernel transforms T's contiguous rows and stores through
-    the output map. Each reuses the shipped three-pass plan of its own factor; what
-    is new is that a CTA runs ``tw`` of those plans at once, interleaved in shared
-    memory as ``s[idx*tw + col]`` with ``col`` in the fast index position. That
-    thread map is the corner turn, and it costs no extra shared-memory round trip:
-    both the strided load of the column kernel and the strided store of the row
-    kernel come out as runs of ``tw`` consecutive elements per instruction.
-
-    A three-factor plan is that same split applied twice: the column kernel runs a
-    second time, once per row the first one wrote, and the row kernel's store map
-    carries one more digit. Three factors are what reaches past 4096*4096, since
-    every factor must be a length a CTA serves and the widest tile that fits in
-    shared memory bounds it.
-
     Serves the (length, dtype) pairs whose FFT_PLANS record names two or three
-    factors, which is every length past what one CTA holds, plus 16384 complex128,
-    whose four-pass plan does not fit in shared memory.
-
-    The decomposition costs one scratch buffer of n*batch*itemsize on top of the
-    output, whatever the number of factors: a three-kernel plan ping-pongs between
-    the caller's buffer and its own rather than adding a third. The caller passes
-    the scratch in per call rather than the kernel holding one, so nothing is
-    pinned between calls and two streams do not share a buffer.
+    factors. Column kernels perform the strided transforms and cross-factor
+    twiddles; the row kernel restores natural output order. Three-kernel plans
+    ping-pong through the same caller-owned scratch buffer.
 
     Args:
         n: Transform length; (n, dtype) must have a decomposed plan.
@@ -2577,24 +2341,11 @@ class FFTC2CDecomposedKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        """Declared so that ``tune=True`` sweeps instead of standing down.
-
-        One call here runs one kernel per factor and each has its own candidate
-        list, so the sweep is in ``autotune`` below and what this returns is the
-        record's own config, the point that sweep starts from.
-        """
+        """Return the plan default; sub-kernels are tuned independently."""
         return [self.default_config]
 
     def _sub_kernel_supply(self, index: int) -> Callable:
-        """Inputs for kernel *index*'s sweep.
-
-        The kernels of one plan do not take the same inputs -- only a column
-        kernel is handed a four-step table, and only a three-pass factor a second
-        pass table -- so each is supplied separately rather than from the
-        whole-kernel supplier. The batch extent is symbolic, so the autotuner
-        cannot size the buffers itself; the batch here is whatever keeps one
-        buffer near 256 MB, enough to fill the device at any of these lengths.
-        """
+        """Supply the tensors accepted by one factor kernel during tuning."""
         plan = self.plan
         nf, _lanes, extent, twrows, r_last = _four_step_geometry(plan, index)
         passes = len(plan.radix[index])
@@ -2614,16 +2365,7 @@ class FFTC2CDecomposedKernel(Kernel):
         return supply
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        """Sweep each kernel of the plan on its own candidates, then merge them.
-
-        ``Kernel.autotune`` tunes ``self.kernel``, which here is one builder per
-        factor rather than one JIT object, and those kernels take different
-        inputs and different parameters. So each is handed to ``tune_jit_kernel``
-        on its own, with its own candidate list and its own input supplier, and
-        the winners are reassembled into the ``{"tile", "pad"}`` shape ``forward``
-        reads. A kernel whose bounds leave it one candidate keeps the record's
-        config without paying for a sweep that can only confirm it.
-        """
+        """Tune each factor kernel and merge the winning tile and padding values."""
         print(f"Start autotuning {type(self).__name__}...")
         real_itemsize = 4 if self.dtype == torch.complex64 else 8
         tile: list = []
