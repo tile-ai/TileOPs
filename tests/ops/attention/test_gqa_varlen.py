@@ -6,8 +6,6 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.manifest import load_workloads
 from tileops.ops import (
-    GroupedQueryAttentionPrefillVarlenFwdOp,
-    GroupedQueryAttentionSlidingWindowVarlenFwdOp,
     GroupedQueryAttentionVarlenFwdOp,
 )
 from tileops.perf.formulas import (
@@ -293,29 +291,6 @@ def test_gqa_varlen_fwd_op(
 
 
 @pytest.mark.smoke
-def test_legacy_varlen_ops_remain_implemented_during_migration() -> None:
-    regular = GroupedQueryAttentionVarlenFwdTest(
-        2, [65, 127], [129, 255], 8, 2, 64, True, -1, -1, torch.float16
-    )
-    regular_op = GroupedQueryAttentionPrefillVarlenFwdOp(127, 255, is_causal=True)
-    regular.check(regular_op, *regular.gen_inputs(), atol=1e-3, rtol=1e-3)
-
-    windowed = GroupedQueryAttentionVarlenFwdTest(
-        2, [65, 127], [129, 255], 8, 2, 64, True, 64, -1, torch.float16
-    )
-    windowed_op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(
-        2,
-        8,
-        2,
-        64,
-        127,
-        is_causal=True,
-        window_size_left=64,
-    )
-    windowed.check(windowed_op, *windowed.gen_inputs(), atol=1e-3, rtol=1e-3)
-
-
-@pytest.mark.smoke
 def test_varlen_reuses_one_op_across_dynamic_packed_totals() -> None:
     op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
     for q_lens, kv_lens in (([31, 65], [63, 129]), ([127, 3], [255, 7])):
@@ -383,45 +358,6 @@ def test_varlen_rejects_invalid_cumulative_lengths_contract() -> None:
         checked(q, k[:-1], v[:-1], cu_q, cu_kv)
     with pytest.raises(ValueError, match="cu_seqlens_q must be non-decreasing"):
         checked(q, k, v, torch.tensor([0, 17, 16], device=q.device, dtype=torch.int32), cu_kv)
-
-
-@pytest.mark.smoke
-def test_varlen_compatibility_validates_lengths_and_dtype() -> None:
-    test = GroupedQueryAttentionVarlenFwdTest(
-        2, [8, 8], [16, 16], 8, 2, 64, True, -1, -1, torch.float16
-    )
-    q, k, v, cu_q, cu_kv = test.gen_inputs()
-    old = GroupedQueryAttentionPrefillVarlenFwdOp(7, 16, validate_inputs=True)
-    with pytest.raises(ValueError, match="max_seqlen_q"):
-        old(q, k, v, cu_q, cu_kv)
-
-    new = GroupedQueryAttentionVarlenFwdOp()
-    with pytest.raises(ValueError, match="float16, bfloat16, or float8_e4m3fn"):
-        new(q.float(), k.float(), v.float(), cu_q, cu_kv)
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("cu_q_values", "cu_kv_values", "message"),
-    [
-        ([1, 8, 16], [0, 16, 32], r"cu_seqlens_q\[0\] must equal 0"),
-        ([0, 8, 16], [0, 24, 16], "cu_seqlens_kv must be non-decreasing"),
-        ([0, 8, 20], [0, 16, 32], r"cu_seqlens_q\[-1\] must not exceed 16"),
-    ],
-)
-def test_sliding_varlen_compatibility_rejects_invalid_offsets(
-    cu_q_values: list[int], cu_kv_values: list[int], message: str
-) -> None:
-    test = GroupedQueryAttentionVarlenFwdTest(
-        2, [8, 8], [16, 16], 8, 2, 64, True, 32, -1, torch.float16
-    )
-    q, k, v, _, _ = test.gen_inputs()
-    cu_q = torch.tensor(cu_q_values, dtype=torch.int32, device=q.device)
-    cu_kv = torch.tensor(cu_kv_values, dtype=torch.int32, device=q.device)
-    op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(2, 8, 2, 64, 8, window_size_left=32)
-
-    with pytest.raises(ValueError, match=message):
-        op(q, k, v, cu_q, cu_kv)
 
 
 @pytest.mark.smoke

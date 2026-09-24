@@ -22,9 +22,7 @@ from benchmarks.ops.attention.workload_args import (
     gqa_dense_decode_args,
     gqa_dense_prefill_args,
     gqa_prefill_paged_args,
-    gqa_prefill_varlen_args,
     gqa_qkv_args,
-    gqa_sliding_window_varlen_args,
     gqa_varlen_args,
 )
 from tileops.manifest import load_workloads
@@ -32,8 +30,6 @@ from tileops.ops import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
-    GroupedQueryAttentionPrefillVarlenFwdOp,
-    GroupedQueryAttentionSlidingWindowVarlenFwdOp,
     GroupedQueryAttentionVarlenFwdOp,
 )
 from tileops.utils import get_sm_version
@@ -123,99 +119,6 @@ def test_gqa_bwd_bench(
 
     bm.compare(functors, *inputs)
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)
-
-
-_GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS = workload_params(
-    load_workloads(GroupedQueryAttentionPrefillVarlenFwdOp),
-    then_dtype(gqa_prefill_varlen_args, tune=False),
-)
-
-
-@pytest.mark.parametrize(
-    "batch, q_lens, kv_lens, heads, heads_kv, dim, causal, dtype, tune",
-    _GQA_PREFILL_VARLEN_FWD_BENCH_PARAMS,
-)
-def test_gqa_prefill_varlen_fwd_bench(
-    batch: int,
-    q_lens: list[int],
-    kv_lens: list[int],
-    heads: int,
-    heads_kv: int,
-    dim: int,
-    causal: bool,
-    dtype: torch.dtype,
-    tune: bool,
-) -> None:
-    test = GroupedQueryAttentionVarlenFwdWorkload(
-        batch, q_lens, kv_lens, heads, heads_kv, dim, causal, -1, -1, dtype
-    )
-    inputs = test.gen_inputs()
-    op = GroupedQueryAttentionPrefillVarlenFwdOp(max(q_lens), max(kv_lens), causal, tune=tune)
-    bm = ManifestBenchmark(op, test)
-    assert_matches_reference(op, test.ref_program, *inputs, **reference_tolerance(dtype))
-    functors = {"tileops": op, "torch-ref": test.ref_program}
-    fa3_fn = _fa3_gqa_varlen(test, -1, -1)
-    if fa3_fn is not None:
-        assert_matches_reference(fa3_fn, test.ref_program, *inputs, **reference_tolerance(dtype))
-        functors["fa3"] = fa3_fn
-    bm.compare(functors, *inputs)
-
-
-_GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS = workload_params(
-    load_workloads(GroupedQueryAttentionSlidingWindowVarlenFwdOp),
-    then_dtype(gqa_sliding_window_varlen_args, tune=False),
-)
-
-
-@pytest.mark.parametrize(
-    "batch, q_lens, kv_lens, heads, heads_kv, dim, causal, window_size_left, window_size_right, dtype, tune",
-    _GQA_SLIDING_WINDOW_VARLEN_FWD_BENCH_PARAMS,
-)
-def test_gqa_sliding_window_varlen_fwd_bench(
-    batch: int,
-    q_lens: list[int],
-    kv_lens: list[int],
-    heads: int,
-    heads_kv: int,
-    dim: int,
-    causal: bool,
-    window_size_left: int,
-    window_size_right: int,
-    dtype: torch.dtype,
-    tune: bool,
-) -> None:
-    test = GroupedQueryAttentionVarlenFwdWorkload(
-        batch,
-        q_lens,
-        kv_lens,
-        heads,
-        heads_kv,
-        dim,
-        causal,
-        window_size_left,
-        window_size_right,
-        dtype,
-    )
-    inputs = test.gen_inputs()
-    op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(
-        batch,
-        heads,
-        heads_kv,
-        dim,
-        max(q_lens),
-        causal,
-        window_size_left,
-        window_size_right,
-        tune=tune,
-    )
-    bm = ManifestBenchmark(op, test)
-    assert_matches_reference(op, test.ref_program, *inputs, **reference_tolerance(dtype))
-    functors = {"tileops": op, "torch-ref": test.ref_program}
-    fa3_fn = _fa3_gqa_varlen(test, window_size_left, window_size_right)
-    if fa3_fn is not None:
-        assert_matches_reference(fa3_fn, test.ref_program, *inputs, **reference_tolerance(dtype))
-        functors["fa3"] = fa3_fn
-    bm.compare(functors, *inputs)
 
 
 def _fa3_gqa_dense_decode(test: GroupedQueryAttentionDenseDecodeWorkload):
