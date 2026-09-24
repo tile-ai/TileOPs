@@ -46,7 +46,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         EngramGateConvBwdKernel,
         EngramGateConvFwdKernel,
     )
-    from .fft import FFTC2CKernel
+    from .fft_c2c import FFTC2CDecomposedKernel, FFTC2COneCTAKernel
     from .fp8_lightning_indexer import FP8LightningIndexerKernel
     from .fp8_quant import FP8QuantKernel
     from .gemm import (
@@ -161,7 +161,8 @@ _LAZY = {
     "EngramDecodeKernel": ".engram",
     "EngramGateConvBwdKernel": ".engram",
     "EngramGateConvFwdKernel": ".engram",
-    "FFTC2CKernel": ".fft",
+    "FFTC2CDecomposedKernel": ".fft_c2c",
+    "FFTC2COneCTAKernel": ".fft_c2c",
     "FP8LightningIndexerKernel": ".fp8_lightning_indexer",
     "FP8QuantKernel": ".fp8_quant",
     "FlashAttnBwdPreprocessKernel": ".attention",

@@ -1,10 +1,24 @@
 """Shared device facts for call records."""
 
 import dataclasses
+import functools
 
 import torch
 
-__all__ = ["CallSpec"]
+__all__ = ["CallSpec", "device_facts"]
+
+
+@functools.lru_cache(maxsize=16)
+def device_facts(index: "int | None") -> "tuple[int, bool, int]":
+    """``(arch, h200, sm_count)`` of a device, cached per index.
+
+    A record is built on the per-call path, so the three probes run once per
+    call unless they are cached here; they cost more host time than the kernel
+    a selection they feed can save.
+    """
+    from tileops.utils import get_sm_count, get_sm_version, is_h200
+
+    return get_sm_version(index), is_h200(index), get_sm_count(index)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -32,16 +46,15 @@ class CallSpec:
     tune: bool = dataclasses.field(default=False, compare=False)
 
     def __post_init__(self) -> None:
+        if self.arch >= 0 and self.sm_count > 0:
+            return
         index = self.device.index if self.device is not None else None
+        arch, h200, sm_count = device_facts(index)
         if self.arch < 0:
-            from tileops.utils import get_sm_version, is_h200
-
-            object.__setattr__(self, "arch", get_sm_version(index))
-            object.__setattr__(self, "h200", is_h200(index))
+            object.__setattr__(self, "arch", arch)
+            object.__setattr__(self, "h200", h200)
         if self.sm_count <= 0:
-            from tileops.utils import get_sm_count
-
-            object.__setattr__(self, "sm_count", get_sm_count(index))
+            object.__setattr__(self, "sm_count", sm_count)
 
     def __str__(self) -> str:
         """The facts of the call, without the fields nobody set.
