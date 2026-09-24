@@ -7,7 +7,6 @@ from .ops.linear_attention import (
     DeltaNetFwdOp,
     GatedDeltaNetFwdOp,
     GLABwdOp,
-    GLADecodeFwdOp,
     GLAFwdOp,
     GLAInferenceFwdOp,
 )
@@ -21,5 +20,4 @@ __all__ = [
     "GLAFwdOp",
     "GLAInferenceFwdOp",
     "GLABwdOp",
-    "GLADecodeFwdOp",
 ]

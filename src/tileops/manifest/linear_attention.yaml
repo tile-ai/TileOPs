@@ -128,58 +128,6 @@ DeltaNetDecodeFwdOp:
     bench: benchmarks/ops/bench_deltanet_recurrence.py
     bench_manifest_driven: true
 
-GLADecodeFwdOp:
-  # Single-token GLA decode. The scale parameter is semantic and fixed at op
-  # construction; state is returned functionally as new_state.
-  ref_api: "none"
-  family: linear_attention
-  status: implemented
-  torch_compile_fullgraph: true
-
-  signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, DK]"}
-      k: {dtype: "same_as(q)", shape: "[B, H, DK]"}
-      v: {dtype: "same_as(q)", shape: "[B, H, DV]"}
-      gk: {dtype: "same_as(q)", shape: "[B, H, DK]"}
-      state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
-    outputs:
-      o: {dtype: "same_as(q)", shape: "[B, H, DV]"}
-      new_state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
-    params:
-      scale: {type: float, default: -1.0}
-    shape_rules:
-    - "q.shape == (B, H, DK)"
-    - "k.shape == (B, H, DK)"
-    - "v.shape == (B, H, DV)"
-    - "gk.shape == (B, H, DK)"
-    - "state.shape == (B, H, DK, DV)"
-    - "o.shape == (B, H, DV)"
-    - "new_state.shape == (B, H, DK, DV)"
-
-  workloads:
-  - {q_shape: [1, 8, 128], k_shape: [1, 8, 128], v_shape: [1, 8, 128], gk_shape: [1, 8, 128], state_shape: [1, 8, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h8-d128"}
-  - {q_shape: [1, 16, 128], k_shape: [1, 16, 128], v_shape: [1, 16, 128], gk_shape: [1, 16, 128], state_shape: [1, 16, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h16-d128"}
-  - {q_shape: [1, 32, 128], k_shape: [1, 32, 128], v_shape: [1, 32, 128], gk_shape: [1, 32, 128], state_shape: [1, 32, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h32-d128"}
-  - {q_shape: [1, 48, 128], k_shape: [1, 48, 128], v_shape: [1, 48, 128], gk_shape: [1, 48, 128], state_shape: [1, 48, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h48-d128"}
-  - {q_shape: [1, 64, 128], k_shape: [1, 64, 128], v_shape: [1, 64, 128], gk_shape: [1, 64, 128], state_shape: [1, 64, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h64-d128"}
-  - {q_shape: [8, 32, 128], k_shape: [8, 32, 128], v_shape: [8, 32, 128], gk_shape: [8, 32, 128], state_shape: [8, 32, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b8-h32-d128"}
-  - {q_shape: [8, 48, 128], k_shape: [8, 48, 128], v_shape: [8, 48, 128], gk_shape: [8, 48, 128], state_shape: [8, 48, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b8-h48-d128"}
-  - {q_shape: [8, 64, 128], k_shape: [8, 64, 128], v_shape: [8, 64, 128], gk_shape: [8, 64, 128], state_shape: [8, 64, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b8-h64-d128"}
-
-  roofline:
-    func: "tileops.perf.formulas.gla_decode_roofline"
-
-  source:
-    kernel: tileops/kernels/linear_attention/gla_recurrence.py
-    kernel_map:
-      GLADecodeKernel: GLADecodeKernel
-      GLADecodeFP32Kernel: GLADecodeFP32Kernel
-    op: tileops/ops/linear_attention/gla_recurrence.py
-    test: tests/ops/test_gla_recurrence.py
-    bench: benchmarks/ops/bench_gla_recurrence.py
-    bench_manifest_driven: true
-
 DeltaNetAutogradOp:
   ref_api: "none"
   family: linear_attention

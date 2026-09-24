@@ -47,7 +47,6 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         DeltaNetFwdOp,
         GatedDeltaNetFwdOp,
         GLABwdOp,
-        GLADecodeFwdOp,
         GLAFwdOp,
         GLAInferenceFwdOp,
     )
@@ -243,7 +242,6 @@ _LAZY = {
     "GLAFwdOp": ".linear_attention",
     "GLAInferenceFwdOp": ".linear_attention",
     "GLABwdOp": ".linear_attention",
-    "GLADecodeFwdOp": ".linear_attention",
     # Mamba
     "Mamba2FwdOp": ".mamba",
     "DaCumsumFwdOp": ".mamba",

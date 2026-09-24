@@ -43,7 +43,6 @@ __all__ = [
     "ge_fwd_roofline",
     "gemm_fwd_roofline",
     "gemm_w4a16_fwd_roofline",
-    "gla_decode_roofline",
     "gqa_bwd_roofline",
     "gqa_decode_paged_roofline",
     "gqa_fwd_roofline",
@@ -263,17 +262,6 @@ def gated_deltanet_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[i
     nbytes = (qk + token_values + gates) * elem_bytes
     nbytes += state * 4 * (2 if seeded else 1)
     return int(flops), int(nbytes)
-
-
-def gla_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for single-step GLA recurrence decode."""
-    data = _shape_or_attrs(op, kwargs)
-    batch, heads, dim_k, dim_v = _linear_attention_decode_dims(data)
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    flops = 2 * batch * heads * (2 * dim_k * dim_v + dim_k)
-    nbytes = batch * heads * (3 * dim_k + 2 * dim_v + 2 * dim_k * dim_v)
-    return int(flops), int(nbytes * elem_bytes)
 
 
 def _chunkwise_dims_bhsd(data: dict) -> tuple[int, int, int, int, int]:

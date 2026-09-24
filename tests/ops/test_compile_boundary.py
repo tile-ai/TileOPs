@@ -40,7 +40,6 @@ from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
 from tileops.ops.linear_attention.deltanet import DeltaNetBwdOp, DeltaNetFwdOp
 from tileops.ops.linear_attention.deltanet_recurrence import DeltaNetDecodeFwdOp
 from tileops.ops.linear_attention.gla import GLABwdOp, GLAFwdOp
-from tileops.ops.linear_attention.gla_recurrence import GLADecodeFwdOp
 from tileops.ops.mamba.cb_producer import CBProducerFwdOp
 from tileops.ops.mamba.da_cumsum import DaCumsumFwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
@@ -378,16 +377,6 @@ def _linear_attention_cases():
             _x(_B, _H, _D, _D, dtype=torch.float32),
         )
 
-    def gla_decode():
-        op = GLADecodeFwdOp(scale=_SCALE)
-        return op, (
-            _x(_B, _H, _D),
-            _x(_B, _H, _D),
-            _x(_B, _H, _D),
-            -_x(_B, _H, _D).abs(),
-            _x(_B, _H, _D, _D),
-        )
-
     def deltanet_fwd():
         # The delta rule is a recurrence over S steps; unit-variance operands overflow it
         # into NaN, which compares unequal to itself. Scale as ``DeltaNetFwdWorkload`` does.
@@ -426,7 +415,6 @@ def _linear_attention_cases():
     return (
         ("gla-fwd", gla_fwd),
         ("gla-bwd", gla_bwd),
-        ("gla-decode", gla_decode),
         ("deltanet-fwd", deltanet_fwd),
         ("deltanet-bwd", deltanet_bwd),
         ("deltanet-decode", deltanet_decode),
@@ -563,7 +551,6 @@ for _op_cls in (
     SSDDecodeFwdOp,
     GLAFwdOp,
     GLABwdOp,
-    GLADecodeFwdOp,
     DeltaNetFwdOp,
     DeltaNetBwdOp,
     DeltaNetDecodeFwdOp,
