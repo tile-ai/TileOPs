@@ -1,10 +1,11 @@
 """W4A16 GEMM over the weight layout produced by ``W4A16RepackKernel``."""
 
 import functools
+import operator
 import os
 import warnings
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 import tilelang
 import tilelang.language as T
@@ -47,6 +48,8 @@ class _Calibration:
     reduce_bytes_per_ms: float = 1.5e9
     launch_ms: float = 0.0015
     meta_staging_crossover_bytes: int = 48 * 1024
+    # Stream-K is offered only when at least this fraction of the SMs would idle.
+    stream_min_idle_fraction: float = 0.02
 
 
 @dataclass(frozen=True)
@@ -61,8 +64,12 @@ class _ConfigSpace:
     split_ks: tuple[int, ...] = (1, 2, 4, 8, 16)
     max_m_tiles: int = 64
     smem_bytes: int = 227 * 1024
-    producer_reg: int = 24
-    consumer_reg: int = 240
+    # Warp-specialized allocations must satisfy
+    # (producer_reg + consumer_reg) * threads <= 65536 registers per SM90 SM.
+    producer_reg: int = 32
+    consumer_reg: int = 224
+    # Most CTAs that write one N tile's stream-K partials.
+    stream_slots: int = 3
 
 
 _LAYOUT = _Layout()
@@ -72,11 +79,58 @@ _CONFIG_SPACE = _ConfigSpace()
 __all__ = ["GROUP_SIZE", "GemmW4A16Kernel"]
 
 
+@functools.lru_cache(maxsize=32)
+def _w4a16_streamk_reduce_kernel(
+    tiles_n: int, slots: int, m: int, n: int, block_n: int, dtype: str
+) -> Callable:
+    """Sum the ``[tiles_n, slots, m, block_n]`` FP32 stream-K partials into ``[m, n]``."""
+
+    def slot_sum(partials, tile, row, offset):
+        return functools.reduce(
+            operator.add, [partials[tile, slot, row, offset] for slot in range(slots)]
+        )
+
+    @tilelang.jit(compile_flags=["-O3", "-DENABLE_BF16"])
+    def build(elems_per_cta: int = 1024) -> Callable:
+        @T.prim_func
+        def main(
+            partials: T.Tensor((tiles_n, slots, m, block_n), "float"),  # type: ignore
+            output: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            total = m * n
+            with T.Kernel(T.ceildiv(total, elems_per_cta), threads=256) as bx:
+                for t in T.Parallel(elems_per_cta):
+                    index = bx * elems_per_cta + t
+                    if index < total:
+                        row = index // n
+                        col = index % n
+                        tile = col // block_n
+                        offset = col % block_n
+                        output[row, col] = T.cast(slot_sum(partials, tile, row, offset), dtype)
+
+        return main
+
+    return build
+
+
 def _stage_meta_per_tile(threads: int, block_k: int, block_n: int, all_groups: int) -> bool:
-    """Return whether metadata is staged per K tile instead of once per CTA."""
+    """Whether a tile reloads scale and zero every K tile instead of staging all of K once.
+
+    Only 128-thread tiles are eligible. Narrow K tiles always reload; wide K tiles
+    reload when staging all metadata exceeds the calibrated crossover.
+    """
     return threads == 128 and (
         block_k <= 256 or block_n * all_groups * 3 > _H200_CALIBRATION.meta_staging_crossover_bytes
     )
+
+
+def _narrow_tile(block_m: int) -> bool:
+    """Whether this is the one-WGMMA-column tile that serves decode.
+
+    It applies group scales to FP32 partials after the K-tile drain and uses the
+    logical M extent. Wider tiles scale the FP16 weight and use a whole-tile M.
+    """
+    return block_m == 8
 
 
 def _smem_bytes(
@@ -132,11 +186,16 @@ def _config_cost(m: int, n: int, k: int, cfg: dict, sms: int) -> float:
     if split_k > 1:
         reduce_bytes = split_k * m * n * 4 + m * n * 2
         cost += reduce_bytes / c.reduce_bytes_per_ms + c.launch_ms
+    if cfg.get("stream_ctas", 0):
+        ctas = -(-m // block_m) * -(-n // block_n)
+        cost *= ctas / cfg["stream_ctas"]
+        reduce_bytes = _CONFIG_SPACE.stream_slots * m * n * 4 + m * n * 2
+        cost += reduce_bytes / c.reduce_bytes_per_ms + c.launch_ms
     return cost
 
 
-def _legal_configs(m: int, n: int, k: int, group_size: int):
-    """Every tile the builder accepts for this shape."""
+def _legal_configs(m: int, n: int, k: int, group_size: int, sms: Optional[int] = None):
+    """Every tile the builder accepts for this shape; stream-K variants only when ``sms`` is given."""
     for block_m in _CONFIG_SPACE.block_ms:
         if block_m > max(8, 2 * m) or -(-m // block_m) > _CONFIG_SPACE.max_m_tiles:
             continue
@@ -165,7 +224,7 @@ def _legal_configs(m: int, n: int, k: int, group_size: int):
                         for split_k in _CONFIG_SPACE.split_ks:
                             if split_k > 1 and (k_iters % split_k or k_iters // split_k < 2):
                                 continue
-                            yield {
+                            config = {
                                 "block_m": block_m,
                                 "block_n": block_n,
                                 "block_k": block_k,
@@ -174,7 +233,43 @@ def _legal_configs(m: int, n: int, k: int, group_size: int):
                                 "producer_reg": _CONFIG_SPACE.producer_reg if threads > 128 else 0,
                                 "consumer_reg": _CONFIG_SPACE.consumer_reg if threads > 128 else 0,
                                 "split_k": split_k,
+                                "stream_ctas": 0,
                             }
+                            yield config
+                            ctas = -(-m // block_m) * -(-n // block_n)
+                            stream_eligible = (
+                                sms is not None
+                                and split_k == 1
+                                and _narrow_tile(block_m)
+                                and block_k == 512
+                                and -(-m // block_m) == 1
+                                and n % block_n == 0
+                                and _stage_meta_per_tile(threads, block_k, block_n, k // group_size)
+                                and ctas < sms
+                                and sms <= (_CONFIG_SPACE.stream_slots - 1) * ctas
+                                and (sms - ctas) / sms >= _H200_CALIBRATION.stream_min_idle_fraction
+                            )
+                            if stream_eligible:
+                                yield {**config, "stream_ctas": sms}
+
+
+class _TileBuffers(NamedTuple):
+    """The shared and register tiles one CTA holds; ``tmps``/``scales`` have one per K sub-step."""
+
+    activation_shared: Any
+    packed_shared: Any
+    scale_shared: Any
+    zero_shared: Any
+    frag_a: Any
+    frag_b: Any
+    frag_c: Any
+    frag_d: Any
+    output_local: Any
+    run_local: Any
+    scale_scalar: Any
+    tmps: tuple
+    scales: tuple
+    out_shared: Any
 
 
 # What identifies a tile shape, as opposed to how its K loop is sliced.
@@ -182,15 +277,8 @@ _TILE_KEYS = ("block_m", "block_n", "block_k", "num_stages", "threads")
 
 
 def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
-    """The cheapest legal tile under :func:`_config_cost`, then the cheapest slicing of it.
-
-    The fit ranks whole tiles against each other; it was not fitted to rank a
-    sliced tile of one shape against a whole tile of another, and at one token
-    it credits a second warpgroup with bandwidth an SM does not have. So the
-    tile is chosen unsliced, widest K tile on a tie, and only that tile's own
-    ``split_k`` variants compete afterwards.
-    """
-    legal = list(_legal_configs(m, n, k, group_size))
+    """Choose a tile shape, then its lowest-cost whole-K, split-K, or stream-K variant."""
+    legal = list(_legal_configs(m, n, k, group_size, sms))
     scored = [(_config_cost(m, n, k, cfg, sms), cfg) for cfg in legal if cfg["split_k"] == 1]
     if not scored:
         raise ValueError(f"no legal W4A16 tile for m={m}, n={n}, k={k}")
@@ -226,7 +314,9 @@ def _gemm_w4a16_kernel(
         producer_reg: int = _CONFIG_SPACE.producer_reg,
         consumer_reg: int = _CONFIG_SPACE.consumer_reg,
         split_k: int = 1,
+        stream_ctas: int = 0,
     ) -> Callable:
+        """Build the tile; ``stream_ctas > 0`` spreads the K tiles over that many CTAs."""
         step_k = _LAYOUT.mma_step_k
         lanes = _LAYOUT.lanes
         fp16_nibble_bias = _LAYOUT.fp16_nibble_bias
@@ -243,17 +333,49 @@ def _gemm_w4a16_kernel(
         # A partial K tile is zero-filled, so only the scale and zero reads
         # need the clamp below.
         padded_groups = -(-k // block_k) * tile_groups
-        # Per-K-tile staging frees shared budget at the cost of re-reading. The
-        # thread guard is not a trade-off: two math warpgroups writing the tile
-        # inside the pipelined loop hang the GPU.
+        # Per-K-tile staging frees shared budget at the cost of re-reading.
         per_tile_meta = _stage_meta_per_tile(threads, block_k, block_n, all_groups)
         meta_groups = tile_groups if per_tile_meta else padded_groups
         tiles_m = -(-m // block_m)
         tiles_n = -(-n // block_n)
         k_iters = -(-k // block_k)
+        has_k_tail = k % block_k != 0
         if k_iters % split_k:
             raise ValueError(f"split_k={split_k} must divide the {k_iters} K tiles")
         k_slice = k_iters // split_k
+        defer_scale = _narrow_tile(block_m)
+        if stream_ctas < 0:
+            raise ValueError(f"stream_ctas must be non-negative, got {stream_ctas}")
+        stream_k = stream_ctas > 0
+        stream_slots = _CONFIG_SPACE.stream_slots
+        stream_units = tiles_n * k_iters
+        # Exactly two CTAs per N tile partition K without crossing an N-tile
+        # boundary, so the streamed kernel has no second accumulator to infer.
+        stream_two_way = stream_k and stream_ctas == 2 * tiles_n
+        if stream_k and (
+            tiles_m != 1
+            or split_k != 1
+            or not _narrow_tile(block_m)
+            or block_k != 512
+            or not per_tile_meta
+            or n % block_n
+            or not (tiles_n < stream_ctas <= 2 * tiles_n)
+        ):
+            raise ValueError(
+                "stream-K requires one narrow M tile, split_k=1, bk512, per-tile metadata, "
+                "full N tiles, and tiles_n < stream_ctas <= 2 * tiles_n"
+            )
+
+        def centered_weight(word, zero, j, v):
+            """Weight ``v`` of LOP3 pair ``j`` in ``word``, minus its zero point, in FP16."""
+            return T.call_extern(
+                dtype,
+                "tileops_w4a16_dequant_word",
+                word,
+                T.cast(fp16_nibble_bias + T.cast(zero, "int32"), dtype),
+                j,
+                v,
+            )
 
         @T.macro
         def decode_step(
@@ -263,29 +385,27 @@ def _gemm_w4a16_kernel(
             scale_shared,
             zero_shared,
             run_local,
-            scale_local,
+            scale_scalar,
             group,
         ):
-            """Dequantize one K sub-step into ``weight_frag``."""
+            """Decode one zero-centered K sub-step into ``weight_frag``."""
             for i, c in T.Parallel(block_n, lanes):
                 for v in T.vectorized(run // 4):
                     run_local[v] = packed_shared[i, ks * (step_k // 8) + c * (run // 4) + v]
-                scale_local[0] = scale_shared[i, group]
+                if not defer_scale:
+                    scale_scalar[0] = scale_shared[i, group]
                 for wd in T.serial(run // 4):
                     for j in T.serial(4):
                         for v in T.vectorized(2):
-                            weight_frag[i, 32 * wd + 8 * j + 2 * c + v] = T.call_extern(
-                                dtype,
-                                "tileops_w4a16_dequant_word",
-                                run_local[wd],
-                                T.cast(
-                                    fp16_nibble_bias + T.cast(zero_shared[i, group], "int32"),
-                                    dtype,
-                                ),
-                                scale_local[0],
-                                j,
-                                v,
-                            )
+                            if defer_scale:
+                                weight_frag[i, 32 * wd + 8 * j + 2 * c + v] = centered_weight(
+                                    run_local[wd], zero_shared[i, group], j, v
+                                )
+                            else:
+                                weight_frag[i, 32 * wd + 8 * j + 2 * c + v] = (
+                                    centered_weight(run_local[wd], zero_shared[i, group], j, v)
+                                    * scale_scalar[0]
+                                )
 
         @T.macro
         def sub_step(
@@ -297,9 +417,11 @@ def _gemm_w4a16_kernel(
             activation_shared,
             output_local,
             run_local,
-            scale_local,
+            scale_scalar,
             k_start,
             overlapped,
+            tmp_local,
+            scale_local,
         ):
             """Decode one K sub-step and issue its WGMMA."""
             group = (
@@ -314,10 +436,24 @@ def _gemm_w4a16_kernel(
                 scale_shared,
                 zero_shared,
                 run_local,
-                scale_local,
+                scale_scalar,
                 group,
             )
-            if overlapped:
+            if defer_scale:
+                # Read the scales before the pipeline barrier lets the producer
+                # overwrite this stage's metadata.
+                for i, j in T.Parallel(block_n, block_m):
+                    scale_local[i, j] = T.cast(scale_shared[i, group], "float32")
+                # Kept next to the WGMMA: TileLang drops a clear moved out of this scope.
+                T.clear(tmp_local)
+                T.wgmma_gemm(
+                    weight_frag,
+                    activation_shared[:, ks * step_k : (ks + 1) * step_k],
+                    tmp_local,
+                    transpose_B=True,
+                    policy=T.GemmWarpPolicy.FullRow,
+                )
+            elif overlapped:
                 T.wgmma_gemm(
                     weight_frag,
                     activation_shared[:, ks * step_k : (ks + 1) * step_k],
@@ -335,112 +471,168 @@ def _gemm_w4a16_kernel(
                 )
 
         @T.macro
-        def tile_body(
-            kk_first,
-            kk_count,
-            activation,
-            packed_weight,
-            weight_scale,
-            weight_zero,
-            activation_shared,
-            packed_shared,
-            scale_shared,
-            zero_shared,
-            frag_a,
-            frag_b,
-            frag_c,
-            frag_d,
-            output_local,
-            run_local,
-            scale_local,
-            m_start,
-            n_start,
-        ):
-            """Accumulate K tiles ``kk_first .. kk_first + kk_count`` into ``output_local``."""
+        def k_tile_decode(k_start, n_start, m_start, tensors, buf):
+            """Load one K tile and decode its sub-steps.
+
+            With ``defer_scale`` the drained partials are left in ``buf.tmps`` and
+            ``buf.scales``; otherwise they accumulate into ``buf.output_local``.
+            """
+            activation, packed_weight, weight_scale, weight_zero = tensors
+            if per_tile_meta:
+                for i, g in T.Parallel(block_n, tile_groups):
+                    # A partial K tile is zero-filled; clamp its metadata to a valid group.
+                    g_src = (
+                        T.min(k_start // group_size + g, all_groups - 1)
+                        if not stream_k or has_k_tail
+                        else k_start // group_size + g
+                    )
+                    buf.scale_shared[i, g] = weight_scale[n_start + i, g_src]
+                    buf.zero_shared[i, g] = weight_zero[n_start + i, g_src]
+            T.copy(
+                activation[m_start : m_start + block_m, k_start : k_start + block_k],
+                buf.activation_shared,
+            )
+            T.copy(
+                packed_weight[
+                    n_start : n_start + block_n,
+                    k_start // 8 : k_start // 8 + packed_k // 4,
+                ],
+                buf.packed_shared,
+            )
+            frag_a, frag_b, frag_c, frag_d = buf.frag_a, buf.frag_b, buf.frag_c, buf.frag_d
+            tmp_0, tmp_1, tmp_2, tmp_3 = buf.tmps
+            scale_0, scale_1, scale_2, scale_3 = buf.scales
+            sub_step(
+                0,
+                frag_a,
+                buf.packed_shared,
+                buf.scale_shared,
+                buf.zero_shared,
+                buf.activation_shared,
+                buf.output_local,
+                buf.run_local,
+                buf.scale_scalar,
+                k_start,
+                steps > 1,
+                tmp_0,
+                scale_0,
+            )
+            if steps > 1:
+                sub_step(
+                    1,
+                    frag_b,
+                    buf.packed_shared,
+                    buf.scale_shared,
+                    buf.zero_shared,
+                    buf.activation_shared,
+                    buf.output_local,
+                    buf.run_local,
+                    buf.scale_scalar,
+                    k_start,
+                    steps > 1,
+                    tmp_1,
+                    scale_1,
+                )
+            if steps > 2:
+                sub_step(
+                    2,
+                    frag_c,
+                    buf.packed_shared,
+                    buf.scale_shared,
+                    buf.zero_shared,
+                    buf.activation_shared,
+                    buf.output_local,
+                    buf.run_local,
+                    buf.scale_scalar,
+                    k_start,
+                    steps > 1,
+                    tmp_2,
+                    scale_2,
+                )
+            if steps > 3:
+                sub_step(
+                    3,
+                    frag_d,
+                    buf.packed_shared,
+                    buf.scale_shared,
+                    buf.zero_shared,
+                    buf.activation_shared,
+                    buf.output_local,
+                    buf.run_local,
+                    buf.scale_scalar,
+                    k_start,
+                    steps > 1,
+                    tmp_3,
+                    scale_3,
+                )
+            # One drain per K tile keeps every sub-step's WGMMA in flight until here.
+            if defer_scale or steps > 1:
+                T.wait_wgmma(0)
+
+        @T.macro
+        def accumulate_defer_scale(target_local, tmps, scales):
+            """Add each sub-step's drained, scaled partial into ``target_local``."""
+            tmp_0, tmp_1, tmp_2, tmp_3 = tmps
+            scale_0, scale_1, scale_2, scale_3 = scales
+            for i, j in T.Parallel(block_n, block_m):
+                target_local[i, j] += tmp_0[i, j] * scale_0[i, j]
+            if steps > 1:
+                for i, j in T.Parallel(block_n, block_m):
+                    target_local[i, j] += tmp_1[i, j] * scale_1[i, j]
+            if steps > 2:
+                for i, j in T.Parallel(block_n, block_m):
+                    target_local[i, j] += tmp_2[i, j] * scale_2[i, j]
+            if steps > 3:
+                for i, j in T.Parallel(block_n, block_m):
+                    target_local[i, j] += tmp_3[i, j] * scale_3[i, j]
+
+        @T.macro
+        def tile_body(kk_first, kk_count, tensors, buf, m_start, n_start):
+            """Accumulate K tiles ``kk_first .. kk_first + kk_count`` into ``buf.output_local``."""
+            _, _, weight_scale, weight_zero = tensors
             if not per_tile_meta:
                 for i, g in T.Parallel(block_n, padded_groups):
                     g_src = T.min(g, all_groups - 1)
-                    scale_shared[i, g] = weight_scale[n_start + i, g_src]
-                    zero_shared[i, g] = weight_zero[n_start + i, g_src]
-            T.clear(output_local)
+                    buf.scale_shared[i, g] = weight_scale[n_start + i, g_src]
+                    buf.zero_shared[i, g] = weight_zero[n_start + i, g_src]
+            T.clear(buf.output_local)
 
             for kk_local in T.Pipelined(kk_count, num_stages=num_stages):
                 kk = kk_local if kk_first == 0 else kk_first + kk_local
                 k_start = kk * block_k
-                if per_tile_meta:
-                    for i, g in T.Parallel(block_n, tile_groups):
-                        g_src = T.min(k_start // group_size + g, all_groups - 1)
-                        scale_shared[i, g] = weight_scale[n_start + i, g_src]
-                        zero_shared[i, g] = weight_zero[n_start + i, g_src]
-                T.copy(
-                    activation[m_start : m_start + block_m, k_start : k_start + block_k],
-                    activation_shared,
-                )
-                T.copy(
-                    packed_weight[
-                        n_start : n_start + block_n,
-                        k_start // 8 : k_start // 8 + packed_k // 4,
-                    ],
-                    packed_shared,
-                )
+                k_tile_decode(k_start, n_start, m_start, tensors, buf)
+                if defer_scale:
+                    accumulate_defer_scale(buf.output_local, buf.tmps, buf.scales)
 
-                sub_step(
-                    0,
-                    frag_a,
-                    packed_shared,
-                    scale_shared,
-                    zero_shared,
-                    activation_shared,
-                    output_local,
-                    run_local,
-                    scale_local,
-                    k_start,
-                    steps > 1,
-                )
-                if steps > 1:
-                    sub_step(
-                        1,
-                        frag_b,
-                        packed_shared,
-                        scale_shared,
-                        zero_shared,
-                        activation_shared,
-                        output_local,
-                        run_local,
-                        scale_local,
-                        k_start,
-                        steps > 1,
-                    )
-                if steps > 2:
-                    sub_step(
-                        2,
-                        frag_c,
-                        packed_shared,
-                        scale_shared,
-                        zero_shared,
-                        activation_shared,
-                        output_local,
-                        run_local,
-                        scale_local,
-                        k_start,
-                        steps > 1,
-                    )
-                if steps > 3:
-                    sub_step(
-                        3,
-                        frag_d,
-                        packed_shared,
-                        scale_shared,
-                        zero_shared,
-                        activation_shared,
-                        output_local,
-                        run_local,
-                        scale_local,
-                        k_start,
-                        steps > 1,
-                    )
-                if steps > 1:
-                    T.wait_wgmma(0)
+        @T.macro
+        def name_tile_buffers(buf):
+            """Give tuple-carried buffers stable names for TileLang shared-memory planning."""
+            activation_shared = buf.activation_shared
+            packed_shared = buf.packed_shared
+            scale_shared = buf.scale_shared
+            zero_shared = buf.zero_shared
+            frag_a = buf.frag_a
+            frag_b = buf.frag_b
+            frag_c = buf.frag_c
+            frag_d = buf.frag_d
+            output_local = buf.output_local
+            run_local = buf.run_local
+            scale_scalar = buf.scale_scalar
+            out_shared = buf.out_shared
+            _ = (
+                activation_shared,
+                packed_shared,
+                scale_shared,
+                zero_shared,
+                frag_a,
+                frag_b,
+                frag_c,
+                frag_d,
+                output_local,
+                run_local,
+                scale_scalar,
+                out_shared,
+            )
 
         def _tile_buffers(out_dtype):
             """The shared and register tiles one CTA of the pipelined path holds."""
@@ -456,28 +648,50 @@ def _gemm_w4a16_kernel(
             frag_c = T.alloc_fragment((block_n, step_k), dtype)
             frag_d = T.alloc_fragment((block_n, step_k), dtype)
             output_local = T.alloc_fragment((block_n, block_m), "float")
+            # Deferred scale: one FP32 partial and its scales per sub-step.
+            deferred = steps if defer_scale else 0
+            tmps = tuple(T.alloc_fragment((block_n, block_m), "float") for _ in range(deferred))
+            scales = tuple(T.alloc_fragment((block_n, block_m), "float") for _ in range(deferred))
+            missing = (None,) * (4 - deferred)
             out_shared = T.alloc_shared((block_m, block_n), out_dtype)
             run_local = T.alloc_local((run // 4,), "uint32")
-            scale_local = T.alloc_local((1,), dtype)
+            scale_scalar = T.alloc_local((1,), dtype)
 
             layouts = {activation_shared: tilelang.layout.make_swizzled_layout(activation_shared)}
             layouts[packed_shared] = tilelang.layout.make_half_bank_swizzled_layout(packed_shared)
             T.annotate_layout(layouts)
 
-            return (
-                activation_shared,
-                packed_shared,
-                scale_shared,
-                zero_shared,
-                frag_a,
-                frag_b,
-                frag_c,
-                frag_d,
-                output_local,
-                run_local,
-                scale_local,
-                out_shared,
+            return _TileBuffers(
+                activation_shared=activation_shared,
+                packed_shared=packed_shared,
+                scale_shared=scale_shared,
+                zero_shared=zero_shared,
+                frag_a=frag_a,
+                frag_b=frag_b,
+                frag_c=frag_c,
+                frag_d=frag_d,
+                output_local=output_local,
+                run_local=run_local,
+                scale_scalar=scale_scalar,
+                tmps=tmps + missing,
+                scales=scales + missing,
+                out_shared=out_shared,
             )
+
+        @T.macro
+        def store_stream_tile(partials, cta, tile, slot, output_local):
+            """Store one stream-K segment and initialize its tile's unused slots."""
+            for i, j in T.Parallel(block_n, block_m):
+                if j < m:
+                    partials[tile, slot, j, i] = output_local[i, j]
+            # CTA ranges are half-open after floor division; the +1 finds the
+            # first range whose end lies beyond this tile's first unit.
+            first_cta = T.ceildiv((tile * k_iters + 1) * stream_ctas, stream_units) - 1
+            last_cta = T.ceildiv((tile + 1) * k_iters * stream_ctas, stream_units) - 1
+            if cta == first_cta:
+                for unused, i, j in T.Parallel(stream_slots, block_n, block_m):
+                    if unused > last_cta - first_cta and j < m:
+                        partials[tile, unused, j, i] = T.float32(0)
 
         @T.prim_func
         def main(
@@ -488,20 +702,8 @@ def _gemm_w4a16_kernel(
             output: T.Tensor((m, n), dtype),  # type: ignore
         ) -> None:
             with T.Kernel(tiles_m, tiles_n, threads=threads) as (bx, by):
-                (
-                    activation_shared,
-                    packed_shared,
-                    scale_shared,
-                    zero_shared,
-                    frag_a,
-                    frag_b,
-                    frag_c,
-                    frag_d,
-                    output_local,
-                    run_local,
-                    scale_local,
-                    out_shared,
-                ) = _tile_buffers(dtype)
+                buf = _tile_buffers(dtype)
+                name_tile_buffers(buf)
                 # Minimum budget to the producer, the rest to the consumers.
                 if producer_reg > 0:
                     T.annotate_producer_reg_dealloc(producer_reg)
@@ -509,31 +711,12 @@ def _gemm_w4a16_kernel(
                     T.annotate_consumer_reg_alloc(consumer_reg)
                 m_start = bx * block_m
                 n_start = by * block_n
-                tile_body(
-                    0,
-                    k_iters,
-                    activation,
-                    packed_weight,
-                    weight_scale,
-                    weight_zero,
-                    activation_shared,
-                    packed_shared,
-                    scale_shared,
-                    zero_shared,
-                    frag_a,
-                    frag_b,
-                    frag_c,
-                    frag_d,
-                    output_local,
-                    run_local,
-                    scale_local,
-                    m_start,
-                    n_start,
-                )
+                tensors = (activation, packed_weight, weight_scale, weight_zero)
+                tile_body(0, k_iters, tensors, buf, m_start, n_start)
                 for i, j in T.Parallel(block_n, block_m):
-                    out_shared[j, i] = T.cast(output_local[i, j], dtype)
+                    buf.out_shared[j, i] = T.cast(buf.output_local[i, j], dtype)
                 T.copy(
-                    out_shared,
+                    buf.out_shared,
                     output[m_start : m_start + block_m, n_start : n_start + block_n],
                 )
 
@@ -547,20 +730,8 @@ def _gemm_w4a16_kernel(
         ) -> None:
             """`main` over one K slice per grid-z index, leaving fp32 partials to reduce."""
             with T.Kernel(tiles_m, tiles_n, split_k, threads=threads) as (bx, by, bz):
-                (
-                    activation_shared,
-                    packed_shared,
-                    scale_shared,
-                    zero_shared,
-                    frag_a,
-                    frag_b,
-                    frag_c,
-                    frag_d,
-                    output_local,
-                    run_local,
-                    scale_local,
-                    out_shared,
-                ) = _tile_buffers("float")
+                buf = _tile_buffers("float")
+                name_tile_buffers(buf)
                 # Minimum budget to the producer, the rest to the consumers.
                 if producer_reg > 0:
                     T.annotate_producer_reg_dealloc(producer_reg)
@@ -568,33 +739,84 @@ def _gemm_w4a16_kernel(
                     T.annotate_consumer_reg_alloc(consumer_reg)
                 m_start = bx * block_m
                 n_start = by * block_n
-                tile_body(
-                    bz * k_slice,
-                    k_slice,
-                    activation,
-                    packed_weight,
-                    weight_scale,
-                    weight_zero,
-                    activation_shared,
-                    packed_shared,
-                    scale_shared,
-                    zero_shared,
-                    frag_a,
-                    frag_b,
-                    frag_c,
-                    frag_d,
-                    output_local,
-                    run_local,
-                    scale_local,
-                    m_start,
-                    n_start,
-                )
+                tensors = (activation, packed_weight, weight_scale, weight_zero)
+                tile_body(bz * k_slice, k_slice, tensors, buf, m_start, n_start)
                 for i, j in T.Parallel(block_n, block_m):
-                    out_shared[j, i] = output_local[i, j]
+                    buf.out_shared[j, i] = buf.output_local[i, j]
                 T.copy(
-                    out_shared,
+                    buf.out_shared,
                     partials[bz, m_start : m_start + block_m, n_start : n_start + block_n],
                 )
+
+        if stream_k:
+
+            @T.prim_func
+            def streamed(
+                activation: T.Tensor((m, k), dtype),  # type: ignore
+                packed_weight: T.Tensor((n, k // 8), "uint32"),  # type: ignore
+                weight_scale: T.Tensor((n, all_groups), dtype),  # type: ignore
+                weight_zero: T.Tensor((n, all_groups), "uint8"),  # type: ignore
+                partials: T.Tensor((tiles_n, stream_slots, m, block_n), "float"),  # type: ignore
+            ) -> None:
+                with T.Kernel(stream_ctas, threads=threads) as bx:
+                    buf = _tile_buffers("float")
+                    name_tile_buffers(buf)
+                    if stream_two_way:
+                        output_local_b = buf.output_local
+                    else:
+                        output_local_b = T.alloc_fragment((block_n, block_m), "float")
+                    if producer_reg > 0:
+                        T.annotate_producer_reg_dealloc(producer_reg)
+                    if consumer_reg > 0:
+                        T.annotate_consumer_reg_alloc(consumer_reg)
+                    start_unit = (bx * stream_units) // stream_ctas
+                    end_unit = ((bx + 1) * stream_units) // stream_ctas
+                    first_tile = start_unit // k_iters
+                    boundary = (first_tile + 1) * k_iters
+                    first_cta = (
+                        T.ceildiv((first_tile * k_iters + 1) * stream_ctas, stream_units) - 1
+                    )
+                    first_slot = bx - first_cta
+                    tensors = (activation, packed_weight, weight_scale, weight_zero)
+                    T.clear(buf.output_local)
+                    if not stream_two_way:
+                        T.clear(output_local_b)
+                    for stream_local in T.Pipelined(end_unit - start_unit, num_stages=num_stages):
+                        unit = start_unit + stream_local
+                        stream_tile = unit // k_iters
+                        kk = unit % k_iters
+                        k_start = kk * block_k
+                        n_start = stream_tile * block_n
+                        k_tile_decode(k_start, n_start, 0, tensors, buf)
+                        # A CTA may cross one N-tile boundary; route both segments
+                        # through one accumulation loop.
+                        tmp_0, tmp_1, tmp_2, tmp_3 = buf.tmps
+                        scale_0, scale_1, scale_2, scale_3 = buf.scales
+                        for i, j in T.Parallel(block_n, block_m):
+                            if unit < boundary:
+                                buf.output_local[i, j] += tmp_0[i, j] * scale_0[i, j]
+                                buf.output_local[i, j] += tmp_1[i, j] * scale_1[i, j]
+                                buf.output_local[i, j] += tmp_2[i, j] * scale_2[i, j]
+                                buf.output_local[i, j] += tmp_3[i, j] * scale_3[i, j]
+                            else:
+                                output_local_b[i, j] += tmp_0[i, j] * scale_0[i, j]
+                                output_local_b[i, j] += tmp_1[i, j] * scale_1[i, j]
+                                output_local_b[i, j] += tmp_2[i, j] * scale_2[i, j]
+                                output_local_b[i, j] += tmp_3[i, j] * scale_3[i, j]
+                    store_stream_tile(partials, bx, first_tile, first_slot, buf.output_local)
+                    if end_unit > boundary:
+                        second_tile = first_tile + 1
+                        second_first_cta = (
+                            T.ceildiv(
+                                (second_tile * k_iters + 1) * stream_ctas,
+                                stream_units,
+                            )
+                            - 1
+                        )
+                        second_slot = bx - second_first_cta
+                        store_stream_tile(partials, bx, second_tile, second_slot, output_local_b)
+
+            return streamed
 
         return sliced if split_k > 1 else main
 
@@ -626,8 +848,8 @@ class GemmW4A16Kernel(Kernel):
     # WGMMA, warp specialization and `setmaxnreg`; there is no pre-Hopper path.
     supported_archs: list[int] = [90]
 
-    # The generic tuner measures one JIT launch, while this kernel's config can
-    # also change M padding and add a split-K reduction launch.
+    # The generic tuner measures one JIT launch, while this kernel's config also
+    # decides the M padding and whether a reduction launch follows.
     autotune_configs = None
 
     @classmethod
@@ -676,17 +898,22 @@ class GemmW4A16Kernel(Kernel):
         self.group_size = group_size
         self.kernel = _gemm_w4a16_kernel(m, n, k, self.dtype_str, group_size)
         self.init_config(config, tune)
-        # A TMA box overhanging the end of the tensor is far slower than a
-        # whole one, so the token count is padded to a whole tile. The tile
-        # count is unchanged; the padded rows land in output rows the caller
-        # never sees.
-        self.m_pad = -(-m // self.config["block_m"]) * self.config["block_m"]
+        block_m, block_n = self.config["block_m"], self.config["block_n"]
+        # Only the narrow decode tile uses logical M; other tiles use a whole-tile extent.
+        self.m_pad = m if _narrow_tile(block_m) else -(-m // block_m) * block_m
         if self.m_pad != m:
             self.kernel = _gemm_w4a16_kernel(self.m_pad, n, k, self.dtype_str, group_size)
-        split_k = self.config.get("split_k", 1)
-        self._reduce = (
-            _splitk_reduce_kernel(split_k, self.m_pad, n, self.dtype_str)() if split_k > 1 else None
-        )
+        # The mainloop leaves FP32 partials when it splits or streams K.
+        if self.config["stream_ctas"] > 0:
+            self._reduce = _w4a16_streamk_reduce_kernel(
+                -(-n // block_n), _CONFIG_SPACE.stream_slots, self.m_pad, n, block_n, self.dtype_str
+            )()
+        elif self.config["split_k"] > 1:
+            self._reduce = _splitk_reduce_kernel(
+                self.config["split_k"], self.m_pad, n, self.dtype_str
+            )()
+        else:
+            self._reduce = None
 
     @property
     def default_config(self) -> dict:
@@ -705,8 +932,8 @@ class GemmW4A16Kernel(Kernel):
         """Keep the calibrated selector; generic tuning cannot measure this composite path."""
         del warmup, rep
         warnings.warn(
-            "GemmW4A16Kernel does not support generic autotuning because its config can "
-            "change M padding and add a split-K reduction; keeping the calibrated config",
+            "GemmW4A16Kernel does not support generic autotuning because its config also "
+            "decides the M padding and a reduction launch; keeping the calibrated config",
             UserWarning,
             stacklevel=2,
         )
@@ -741,8 +968,7 @@ class GemmW4A16Kernel(Kernel):
         if self._reduce is None:
             out = compiled(activation, words, weight_scale, weight_zero)
         else:
-            # Allocated before the mainloop launches, so the allocation does
-            # not sit between the two kernels.
+            # Allocate the final output before launching the composite path.
             out = activation.new_empty((self.m_pad, self.n))
             self._reduce(compiled(activation, words, weight_scale, weight_zero), out)
         return out[: self.m] if self.m_pad != self.m else out
