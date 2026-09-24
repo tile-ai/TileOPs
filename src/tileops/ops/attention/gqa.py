@@ -1,5 +1,5 @@
 import math
-from typing import Callable, ClassVar, Dict, Optional
+from typing import Callable, ClassVar, Dict, Optional, Sequence
 
 import torch
 
@@ -20,6 +20,7 @@ from tileops.kernels.attention import (
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
     GQAPrefillVarlenFwdKernel,
+    GQAPrefillVarlenWsKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -605,6 +606,9 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
     """
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    _PLAN_BLOCK_M: ClassVar[int] = 128
+    # 4096 query tiles cover 512K packed tokens; larger batches grow by powers of two.
+    _INITIAL_TILE_CAPACITY: ClassVar[int] = 4096
 
     def __init__(
         self,
@@ -676,12 +680,86 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
         self._roofline_kwargs: Optional[dict] = None
         self._last_input_dtype: Optional[torch.dtype] = None
         self.tune = tune
+        self._plan_capacity = 0
+        self._plan_num_tiles = 0
+        self._plan_total_q = 0
+        self._plan_total_kv = 0
+        self._plan_key: Optional[tuple] = None
+        self._plan_tile_to_request: Optional[torch.Tensor] = None
+        self._plan_tile_row: Optional[torch.Tensor] = None
         self.dispatch_kernel(kernel_map)
+
+    def plan(
+        self,
+        q_lens: Sequence[int],
+        kv_lens: Sequence[int],
+        *,
+        device: torch.device,
+    ) -> None:
+        """Precompute the packed-Q tile schedule consumed by the SM90 WS kernel."""
+        q_lens = tuple(int(length) for length in q_lens)
+        kv_lens = tuple(int(length) for length in kv_lens)
+        if not q_lens or len(q_lens) != len(kv_lens):
+            raise ValueError("q_lens and kv_lens must be non-empty and have equal length")
+        if any(length <= 0 for length in (*q_lens, *kv_lens)):
+            raise ValueError("q_lens and kv_lens must contain positive lengths")
+
+        key = (q_lens, kv_lens, device)
+        if key == self._plan_key:
+            return
+
+        tiles: list[tuple[int, int, int]] = []
+        for request, (q_len, kv_len) in enumerate(
+            zip(q_lens, kv_lens, strict=True)
+        ):
+            for row in range(0, q_len, self._PLAN_BLOCK_M):
+                visible_kv = kv_len
+                if self.is_causal:
+                    visible_kv = min(
+                        kv_len,
+                        row + self._PLAN_BLOCK_M + kv_len - q_len,
+                    )
+                work = max(0, math.ceil(visible_kv / self._PLAN_BLOCK_M))
+                tiles.append((work, request, row))
+        # Keep the rows of each request adjacent so successive CTA groups can
+        # reuse that request's K/V working set from L2.  Within a request,
+        # schedule the longest-visible rows first.
+        tiles.sort(key=lambda tile: (tile[1], -tile[0]))
+        tile_to_request = [request for _, request, _ in tiles]
+        tile_row = [row for _, _, row in tiles]
+
+        required = len(tile_to_request)
+        buffers_missing = self._plan_tile_to_request is None or self._plan_tile_row is None
+        device_changed = (
+            not buffers_missing and self._plan_tile_to_request.device != torch.device(device)
+        )
+        if buffers_missing or device_changed or required > self._plan_capacity:
+            target = max(required, self._INITIAL_TILE_CAPACITY)
+            capacity = 1 << (target - 1).bit_length()
+            self._plan_tile_to_request = torch.empty(
+                capacity, dtype=torch.int32, device=device
+            )
+            self._plan_tile_row = torch.empty(capacity, dtype=torch.int32, device=device)
+            self._plan_capacity = capacity
+
+        assert self._plan_tile_to_request is not None
+        assert self._plan_tile_row is not None
+        self._plan_tile_to_request[:required].copy_(
+            torch.tensor(tile_to_request, dtype=torch.int32, device=device)
+        )
+        self._plan_tile_row[:required].copy_(
+            torch.tensor(tile_row, dtype=torch.int32, device=device)
+        )
+        self._plan_num_tiles = required
+        self._plan_total_q = sum(q_lens)
+        self._plan_total_kv = sum(kv_lens)
+        self._plan_key = key
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "gqa_varlen": GQAPrefillVarlenFwdKernel,
+            "gqa_varlen_ws": GQAPrefillVarlenWsKernel,
             "gqa_varlen_sliding_window": GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
         }
 
@@ -764,6 +842,7 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
             is_fp8=q.dtype == fp8_dtype(),
             is_uniform=False,
             fuse_rope=self.pos_encoding_mode == "rope",
+            planned_schedule=self._plan_num_tiles > 0,
             max_position=rope_cos.shape[0] if rope_cos is not None else 1,
             rotary_dim=_rope_rotary_dim(dim, self.rotary_dim)
             if self.pos_encoding_mode == "rope"
@@ -963,7 +1042,20 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
             rope_sin,
         )
         kernel = self._get_kernel(inputs)
-        output = kernel(*inputs)
+        if isinstance(kernel, GQAPrefillVarlenWsKernel):
+            if self._plan_num_tiles <= 0:
+                raise RuntimeError("the planned Varlen WS kernel requires op.plan()")
+            if q.shape[0] != self._plan_total_q or k.shape[0] != self._plan_total_kv:
+                raise ValueError("q/k totals do not match the current Varlen plan")
+            assert self._plan_tile_to_request is not None
+            assert self._plan_tile_row is not None
+            output = kernel(
+                *inputs,
+                tile_to_request=self._plan_tile_to_request[: self._plan_num_tiles],
+                tile_row=self._plan_tile_row[: self._plan_num_tiles],
+            )
+        else:
+            output = kernel(*inputs)
         self._last_input_dtype = q.dtype
         self._roofline_kwargs = {
             "q_shape": tuple(q.shape),
