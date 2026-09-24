@@ -7,7 +7,7 @@ from tests.ops.gla_test_utils import (
     gla_fwd_chunked_torch,
 )
 from tests.test_base import FixtureBase
-from tileops.ops import GLABwdOp, GLAFwdOp
+from tileops.ops import GLAChunkwiseBwdOp, GLAChunkwiseFwdOp
 
 
 def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0):
@@ -59,7 +59,7 @@ def _fla_autograd_bwd(
     return dq, dk, dv, dg
 
 
-class GLABwdFixture(FixtureBase):
+class GLAChunkwiseBwdFixture(FixtureBase):
     PARAMS = [
         (
             "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
@@ -75,8 +75,8 @@ class GLABwdFixture(FixtureBase):
     ]
 
 
-@GLABwdFixture
-def test_gla_bwd(
+@GLAChunkwiseBwdFixture
+def test_gla_chunkwise_bwd(
     batch: int,
     seq_len: int,
     heads: int,
@@ -115,7 +115,7 @@ def test_gla_bwd(
             assert cos > 0.99, f"FLA vs ref {name} cosine too low: {cos:.6f}"
 
     # --- TileOPs kernel backward ---
-    fwd_op = GLAFwdOp(
+    fwd_op = GLAChunkwiseFwdOp(
         chunk_size=BC,
         scale=scale,
     )
@@ -123,7 +123,7 @@ def test_gla_bwd(
     h = fwd_op.kernel._h_out  # [B, NT+1, H, K, V] in fp32
 
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
-    bwd_op = GLABwdOp(chunk_size=BC, scale=scale, tune=tune)
+    bwd_op = GLAChunkwiseBwdOp(chunk_size=BC, scale=scale, tune=tune)
     op_dq, op_dk, op_dv, op_dg = bwd_op.forward(q, k, v, g, h, do, dht)
     op_grads = {"dq": op_dq, "dk": op_dk, "dv": op_dv, "dg": op_dg}
 

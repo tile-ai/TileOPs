@@ -244,7 +244,7 @@ DeltaNetBwdOp:
     bench: benchmarks/ops/bench_deltanet.py
     bench_manifest_driven: true
 
-GLAInferenceFwdOp:
+GLAFwdOp:
   # One serving contract for equal-length prefill, packed varlen, and decode.
   # The in-tree kernels currently cover Hopper dense prefill and decode.
   ref_api: "fla.ops.gla.chunk_gla"
@@ -299,12 +299,12 @@ GLAInferenceFwdOp:
       gla_dense_decode: GLADenseDecodeKernel
       gla_dense_prefill_partitioned: GLADensePrefillPartitionedKernel
       gla_dense_prefill_subchunk: GLADensePrefillSubchunkKernel
-    op: tileops/ops/linear_attention/gla_inference.py
-    test: tests/ops/test_gla_inference.py
-    bench: benchmarks/ops/bench_gla_inference.py
+    op: tileops/ops/linear_attention/gla_fwd.py
+    test: tests/ops/test_gla.py
+    bench: benchmarks/ops/bench_gla.py
     bench_manifest_driven: true
 
-GLAFwdOp:
+GLAChunkwiseFwdOp:
   ref_api: "none"
   family: linear_attention
   status: implemented
@@ -337,12 +337,12 @@ GLAFwdOp:
     kernel: tileops/kernels/linear_attention/gla/gla_fwd.py
     kernel_map:
       GLAFwdKernel: GLAFwdKernel
-    op: tileops/ops/linear_attention/gla.py
+    op: tileops/ops/linear_attention/gla_chunkwise.py
     test: tests/ops/test_gla_chunkwise_fwd.py
     bench: benchmarks/ops/bench_gla_chunkwise.py
     bench_manifest_driven: true
 
-GLABwdOp:
+GLAChunkwiseBwdOp:
   ref_api: "none"
   family: linear_attention
   status: implemented
@@ -379,7 +379,7 @@ GLABwdOp:
     kernel: tileops/kernels/linear_attention/gla/gla_bwd.py
     kernel_map:
       GLABwdKernel: GLABwdKernel
-    op: tileops/ops/linear_attention/gla.py
+    op: tileops/ops/linear_attention/gla_chunkwise.py
     test: tests/ops/test_gla_chunkwise_bwd.py
     bench: benchmarks/ops/bench_gla_chunkwise.py
     bench_manifest_driven: true

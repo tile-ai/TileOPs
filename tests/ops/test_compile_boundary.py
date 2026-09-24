@@ -39,7 +39,10 @@ from tileops.ops.gemm.gemm import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
 from tileops.ops.linear_attention.deltanet import DeltaNetBwdOp, DeltaNetFwdOp
 from tileops.ops.linear_attention.deltanet_recurrence import DeltaNetDecodeFwdOp
-from tileops.ops.linear_attention.gla import GLABwdOp, GLAFwdOp
+from tileops.ops.linear_attention.gla_chunkwise import (
+    GLAChunkwiseBwdOp,
+    GLAChunkwiseFwdOp,
+)
 from tileops.ops.mamba.cb_producer import CBProducerFwdOp
 from tileops.ops.mamba.da_cumsum import DaCumsumFwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
@@ -354,8 +357,8 @@ def _linear_attention_cases():
 
     chunks = _S // _CHUNK + 1
 
-    def gla_fwd():
-        op = GLAFwdOp(chunk_size=_CHUNK, scale=_SCALE)
+    def gla_chunkwise_fwd():
+        op = GLAChunkwiseFwdOp(chunk_size=_CHUNK, scale=_SCALE)
         # ``g`` is a log-space decay, so it must be non-positive.
         return op, (
             _x(_B, _S, _H, _D),
@@ -365,8 +368,8 @@ def _linear_attention_cases():
             None,
         )
 
-    def gla_bwd():
-        op = GLABwdOp(chunk_size=_CHUNK, scale=_SCALE)
+    def gla_chunkwise_bwd():
+        op = GLAChunkwiseBwdOp(chunk_size=_CHUNK, scale=_SCALE)
         return op, (
             _x(_B, _S, _H, _D),
             _x(_B, _S, _H, _D),
@@ -413,8 +416,8 @@ def _linear_attention_cases():
         )
 
     return (
-        ("gla-fwd", gla_fwd),
-        ("gla-bwd", gla_bwd),
+        ("gla-chunkwise-fwd", gla_chunkwise_fwd),
+        ("gla-chunkwise-bwd", gla_chunkwise_bwd),
         ("deltanet-fwd", deltanet_fwd),
         ("deltanet-bwd", deltanet_bwd),
         ("deltanet-decode", deltanet_decode),
@@ -549,8 +552,8 @@ for _op_cls in (
     SSDStatePassingFwdOp,
     SSDChunkScanFwdOp,
     SSDDecodeFwdOp,
-    GLAFwdOp,
-    GLABwdOp,
+    GLAChunkwiseFwdOp,
+    GLAChunkwiseBwdOp,
     DeltaNetFwdOp,
     DeltaNetBwdOp,
     DeltaNetDecodeFwdOp,

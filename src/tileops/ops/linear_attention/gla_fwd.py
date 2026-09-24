@@ -20,17 +20,18 @@ from tileops.utils import is_h200
 
 from ..op_base import Op
 
-__all__ = ["GLAInferenceFwdOp"]
+__all__ = ["GLAFwdOp"]
 
 
-class GLAInferenceFwdOp(Op):
+class GLAFwdOp(Op):
     """Gated linear attention for inference, with caller-owned FP32 state.
 
     Q, K, V and the log-space, per-key gate G use FP16/BF16 BTHD layout. One call may
     describe equal-length prefill, packed-varlen prefill, or single-token
     decode. The caller may omit ``initial_state`` to start from zero; every
     call returns ``(o, final_state)``. Hopper dense prefill and decode are
-    implemented in tree. The old training-forward and decode Ops are intact.
+    implemented in tree. The separate chunkwise training forward/backward pair
+    remains available.
     """
 
     def __init__(

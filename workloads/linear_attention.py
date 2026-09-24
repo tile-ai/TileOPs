@@ -180,7 +180,7 @@ class GLAChunkwiseWorkload(WorkloadBase):
         return q, k, v, g, initial_state
 
 
-class GLAInferenceWorkload(GLAChunkwiseWorkload):
+class GLAWorkload(GLAChunkwiseWorkload):
     """Inference GLA prefill with a caller-owned optional recurrent state."""
 
     def __init__(

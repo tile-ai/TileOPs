@@ -7,7 +7,7 @@ from tests.ops.gla_test_utils import (
     gla_fwd_chunked_torch,
 )
 from tests.test_base import FixtureBase
-from tileops.ops import GLAFwdOp
+from tileops.ops import GLAChunkwiseFwdOp
 
 try:
     from fla.ops.gla import chunk_gla
@@ -15,7 +15,7 @@ except ImportError:
     chunk_gla = None
 
 
-class GLAFwdFixture(FixtureBase):
+class GLAChunkwiseFwdFixture(FixtureBase):
     PARAMS = [
         (
             "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
@@ -32,8 +32,8 @@ class GLAFwdFixture(FixtureBase):
     ]
 
 
-@GLAFwdFixture
-def test_gla_fwd(
+@GLAChunkwiseFwdFixture
+def test_gla_chunkwise_fwd(
     batch: int,
     seq_len: int,
     heads: int,
@@ -62,7 +62,7 @@ def test_gla_fwd(
         print(f"  FLA vs ref o: cosine={cos:.6f}")
         assert cos > 0.99, f"FLA vs ref o cosine too low: {cos:.6f}"
 
-    fwd_op = GLAFwdOp(
+    fwd_op = GLAChunkwiseFwdOp(
         chunk_size=BC,
         scale=scale,
         tune=tune,

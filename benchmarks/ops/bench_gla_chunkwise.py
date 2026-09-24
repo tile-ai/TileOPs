@@ -20,7 +20,7 @@ from benchmarks.benchmark_base import (
     workload_params,
 )
 from tileops.manifest import load_workloads
-from tileops.ops import GLABwdOp, GLAFwdOp
+from tileops.ops import GLAChunkwiseBwdOp, GLAChunkwiseFwdOp
 from workloads.linear_attention import GLAChunkwiseWorkload
 
 
@@ -51,9 +51,9 @@ def _gla_bwd_args(workload: dict) -> tuple[int, int, int, int, int, int]:
 
 @pytest.mark.parametrize(
     "batch, seq_len, heads, dim_k, dim_v, chunk_size, has_initial_state, dtype, tune",
-    workload_params(load_workloads(GLAFwdOp), then_dtype(_gla_args, tune=False)),
+    workload_params(load_workloads(GLAChunkwiseFwdOp), then_dtype(_gla_args, tune=False)),
 )
-def test_gla_fwd_bench(
+def test_gla_chunkwise_fwd_bench(
     batch: int,
     seq_len: int,
     heads: int,
@@ -71,7 +71,7 @@ def test_gla_fwd_bench(
 
     # --- TileOPs ---
     scale = dim_k**-0.5
-    op = GLAFwdOp(chunk_size=chunk_size, scale=scale, tune=tune)
+    op = GLAChunkwiseFwdOp(chunk_size=chunk_size, scale=scale, tune=tune)
     bm = ManifestBenchmark(op, test)
     functors = {"tileops": op.forward}
 
@@ -93,9 +93,9 @@ def test_gla_fwd_bench(
 )
 @pytest.mark.parametrize(
     "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
-    workload_params(load_workloads(GLABwdOp), then_dtype(_gla_bwd_args, tune=False)),
+    workload_params(load_workloads(GLAChunkwiseBwdOp), then_dtype(_gla_bwd_args, tune=False)),
 )
-def test_gla_bwd_bench(
+def test_gla_chunkwise_bwd_bench(
     batch: int,
     seq_len: int,
     heads: int,
@@ -117,12 +117,12 @@ def test_gla_bwd_bench(
     do = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
 
     # --- TileOPs: fwd to get h, then profile bwd only ---
-    fwd_op = GLAFwdOp(chunk_size=BC, scale=scale)
+    fwd_op = GLAChunkwiseFwdOp(chunk_size=BC, scale=scale)
     fwd_op.forward(q, k, v, g)
     h = fwd_op.kernel._h_out
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
 
-    bwd_op = GLABwdOp(chunk_size=BC, scale=scale, tune=tune)
+    bwd_op = GLAChunkwiseBwdOp(chunk_size=BC, scale=scale, tune=tune)
     bm = ManifestBenchmark(bwd_op, test)
     functors = {"tileops": (bwd_op.forward, (q, k, v, g, h, do, dht))}
 

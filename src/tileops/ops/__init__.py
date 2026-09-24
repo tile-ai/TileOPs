@@ -46,9 +46,9 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         DeltaNetDecodeFwdOp,
         DeltaNetFwdOp,
         GatedDeltaNetFwdOp,
-        GLABwdOp,
+        GLAChunkwiseBwdOp,
+        GLAChunkwiseFwdOp,
         GLAFwdOp,
-        GLAInferenceFwdOp,
     )
     from .mamba import (
         DaCumsumFwdOp,
@@ -239,9 +239,9 @@ _LAZY = {
     "DeltaNetBwdOp": ".linear_attention",
     "DeltaNetDecodeFwdOp": ".linear_attention",
     "GatedDeltaNetFwdOp": ".linear_attention",
+    "GLAChunkwiseFwdOp": ".linear_attention",
+    "GLAChunkwiseBwdOp": ".linear_attention",
     "GLAFwdOp": ".linear_attention",
-    "GLAInferenceFwdOp": ".linear_attention",
-    "GLABwdOp": ".linear_attention",
     # Mamba
     "Mamba2FwdOp": ".mamba",
     "DaCumsumFwdOp": ".mamba",

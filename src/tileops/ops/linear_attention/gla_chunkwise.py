@@ -10,7 +10,7 @@ from .._compile_boundary_codegen import OperatorSpec
 from .._validation import check_tensor_shape
 from ..op_base import Op
 
-__all__ = ["GLABwdOp", "GLAFwdOp"]
+__all__ = ["GLAChunkwiseBwdOp", "GLAChunkwiseFwdOp"]
 
 
 def _resolve_gla_bthd(
@@ -41,7 +41,7 @@ def _resolve_gla_bthd(
     return batch, seq_len, heads, dim_k, dim_v, dtype
 
 
-class GLAFwdOp(Op):
+class GLAChunkwiseFwdOp(Op):
     """GLA (Gated Linear Attention) forward operator.
 
     Chunked GLA forward: (q, k, v, g) -> (o, final_state).
@@ -195,7 +195,7 @@ class GLAFwdOp(Op):
         return tensor_core_roof(self.dtype)
 
 
-class GLABwdOp(Op):
+class GLAChunkwiseBwdOp(Op):
     """GLA (Gated Linear Attention) backward operator.
 
     Computes gradients (dq, dk, dv, dg) given output gradient do.

@@ -1,4 +1,4 @@
-"""Public GLA inference contract and its first in-tree dense-prefill path."""
+"""Public GLA forward contract and its in-tree prefill/decode paths."""
 
 from functools import partial
 
@@ -12,15 +12,15 @@ from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeKern
 from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
     GLADensePrefillPartitionedKernel,
 )
-from tileops.ops import GLAInferenceFwdOp
+from tileops.ops import GLAFwdOp
 from tileops.perf.formulas import gla_fwd_roofline
 from tileops.utils import is_h200
-from workloads.linear_attention import GLAInferenceWorkload
+from workloads.linear_attention import GLAWorkload
 
 pytestmark = pytest.mark.smoke
 
 
-class GLAInferenceTest(GLAInferenceWorkload, TestBase):
+class GLATest(GLAWorkload, TestBase):
     pass
 
 
@@ -36,7 +36,7 @@ def isolated_registry():
     registry.restore(state)
 
 
-def test_gla_inference_reaches_external_target_with_optional_inputs() -> None:
+def test_gla_reaches_external_target_with_optional_inputs() -> None:
     calls = []
 
     def build_kernel(*specs, **params):
@@ -52,14 +52,14 @@ def test_gla_inference_reaches_external_target_with_optional_inputs() -> None:
 
         return kernel
 
-    registry.register_kernel_builder("GLAInferenceFwdOp", "gla_test", build_kernel)
+    registry.register_kernel_builder("GLAFwdOp", "gla_test", build_kernel)
     q = torch.randn(1, 7, 2, 8, dtype=torch.float16)
     k = torch.randn_like(q)
     v = torch.randn(1, 7, 2, 6, dtype=torch.float16)
     g = -torch.rand_like(q)
     state = torch.zeros(2, 2, 8, 6, dtype=torch.float32)
     cu = torch.tensor([0, 3, 7], dtype=torch.int64)
-    op = GLAInferenceFwdOp(scale=0.125, target="gla_test")
+    op = GLAFwdOp(scale=0.125, target="gla_test")
 
     o, final_state = op(q, k, v, g, state, cu, cu.clone())
     assert o.shape == v.shape
@@ -87,7 +87,7 @@ def test_gla_inference_reaches_external_target_with_optional_inputs() -> None:
 
 
 @pytest.mark.parametrize("seeded", [False, True])
-def test_gla_inference_roofline_counts_packed_states(seeded: bool) -> None:
+def test_gla_roofline_counts_packed_states(seeded: bool) -> None:
     def build_kernel(*specs, **params):
         def kernel(q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu):
             state_batch = q.shape[0] if cu_seqlens is None else cu_seqlens.shape[0] - 1
@@ -97,8 +97,8 @@ def test_gla_inference_roofline_counts_packed_states(seeded: bool) -> None:
 
         return kernel
 
-    registry.register_kernel_builder("GLAInferenceFwdOp", "gla_test", build_kernel)
-    op = GLAInferenceFwdOp(target="gla_test")
+    registry.register_kernel_builder("GLAFwdOp", "gla_test", build_kernel)
+    op = GLAFwdOp(target="gla_test")
     q, k, g = (torch.empty(1, 7, 2, 8, dtype=torch.float16) for _ in range(3))
     v = torch.empty(1, 7, 2, 6, dtype=torch.float16)
     packed_state = torch.empty(2, 2, 8, 6, dtype=torch.float32) if seeded else None
@@ -123,19 +123,19 @@ def test_gla_inference_roofline_counts_packed_states(seeded: bool) -> None:
         )
 
 
-def test_gla_inference_rejects_float32_activations() -> None:
+def test_gla_rejects_float32_activations() -> None:
     q = torch.empty(1, 64, 2, 8, dtype=torch.float32)
     v = torch.empty(1, 64, 2, 6, dtype=torch.float32)
     with pytest.raises(ValueError, match="q must have float16 or bfloat16 dtype"):
-        GLAInferenceFwdOp().forward(q, q, v, q)
+        GLAFwdOp().forward(q, q, v, q)
 
 
-def test_gla_inference_rejects_invalid_state_and_gate() -> None:
+def test_gla_rejects_invalid_state_and_gate() -> None:
     q = torch.empty(1, 64, 2, 8, dtype=torch.float16)
     k = torch.empty_like(q)
     v = torch.empty(1, 64, 2, 6, dtype=torch.float16)
     g = torch.empty_like(q)
-    op = GLAInferenceFwdOp()
+    op = GLAFwdOp()
     with pytest.raises(ValueError, match="same.*shape"):
         op.forward(q, k, v, g[:, :-1])
     with pytest.raises(ValueError, match=r"\[N, H, K, V\]"):
@@ -152,9 +152,9 @@ def test_gla_inference_rejects_invalid_state_and_gate() -> None:
 @pytest.mark.parametrize("seq_len, dim", [(128, 64), (128, 128), (1024, 64)])
 def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: int) -> None:
     torch.manual_seed(2160)
-    test = GLAInferenceTest(2, seq_len, 4, dim, dim, dtype, has_initial_state=True)
+    test = GLATest(2, seq_len, 4, dim, dim, dtype, has_initial_state=True)
     inputs = test.gen_inputs()
-    op = GLAInferenceFwdOp()
+    op = GLAFwdOp()
     test.check(op, *inputs, **reference_tolerance(dtype))
     test.check(op, *inputs[:4], **reference_tolerance(dtype))
     inputs[3].mul_(3.0)
@@ -170,10 +170,10 @@ def test_gla_long_prefill_uses_partitioned_kernel(
     dtype: torch.dtype, has_initial_state: bool, gate_scale: float
 ) -> None:
     torch.manual_seed(2160)
-    test = GLAInferenceTest(2, 16384, 4, 64, 64, dtype, has_initial_state)
+    test = GLATest(2, 16384, 4, 64, 64, dtype, has_initial_state)
     inputs = test.gen_inputs()
     inputs[3].mul_(gate_scale)
-    op = GLAInferenceFwdOp()
+    op = GLAFwdOp()
     tolerance = reference_tolerance(dtype)
     state_tolerance = tolerance.copy()
     if dtype == torch.float16:
@@ -211,9 +211,9 @@ def test_gla_dense_decode_matches_fla(
     dtype: torch.dtype, dim: int, has_initial_state: bool
 ) -> None:
     torch.manual_seed(2174)
-    test = GLAInferenceTest(2, 1, 4, dim, dim, dtype, has_initial_state)
+    test = GLATest(2, 1, 4, dim, dim, dtype, has_initial_state)
     inputs = test.gen_inputs()
-    op = GLAInferenceFwdOp()
+    op = GLAFwdOp()
     test.check(op, *inputs, **reference_tolerance(dtype))
     assert any(
         isinstance(kernel, GLADenseDecodeKernel)
