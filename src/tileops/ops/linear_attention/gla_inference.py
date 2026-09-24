@@ -7,6 +7,7 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeKernel
 from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
     GLADensePrefillPartitionedKernel,
 )
@@ -28,7 +29,7 @@ class GLAInferenceFwdOp(Op):
     Q, K, V and the log-space, per-key gate G use FP16/BF16 BTHD layout. One call may
     describe equal-length prefill, packed-varlen prefill, or single-token
     decode. The caller may omit ``initial_state`` to start from zero; every
-    call returns ``(o, final_state)``. Only Hopper dense prefill is currently
+    call returns ``(o, final_state)``. Hopper dense prefill and decode are
     implemented in tree. The old training-forward and decode Ops are intact.
     """
 
@@ -49,17 +50,17 @@ class GLAInferenceFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
+            "gla_dense_decode": GLADenseDecodeKernel,
             "gla_dense_prefill_partitioned": GLADensePrefillPartitionedKernel,
             "gla_dense_prefill_subchunk": GLADensePrefillSubchunkKernel,
         }
 
     def entry_for(self, role: str, call: tuple) -> Entry:
-        del role
         batch, seq_len, heads, dim_k, dim_v, dtype, device, scale, varlen = call
         unsupported = []
         if varlen:
             unsupported.append("packed varlen")
-        if seq_len < 64 or seq_len % 64:
+        if seq_len != 1 and (seq_len < 64 or seq_len % 64):
             unsupported.append("T not divisible by 64")
         if dim_k != dim_v or dim_k not in (64, 128):
             unsupported.append("K/V dimensions other than matching 64 or 128")
@@ -69,9 +70,24 @@ class GLAInferenceFwdOp(Op):
             unsupported.append("non-CUDA device")
         if unsupported:
             raise ValueError(
-                "the in-tree GLA dense-prefill kernel does not yet support "
-                + ", ".join(unsupported)
+                "the in-tree GLA dense kernel does not yet support " + ", ".join(unsupported)
             )
+        if role == "gla_dense_decode":
+            if seq_len != 1:
+                raise ValueError("GLA dense decode requires T == 1")
+            if not is_h200(device.index):
+                raise ValueError("the in-tree GLA dense-decode kernel requires H200")
+            return call, lambda: self.kernel_map["gla_dense_decode"](
+                batch=batch,
+                heads=heads,
+                dim_k=dim_k,
+                dim_v=dim_v,
+                scale=scale,
+                dtype=dtype,
+                device_index=device.index,
+            )
+        if role != "gla_dense_prefill":
+            raise ValueError(f"unknown GLA inference kernel role: {role}")
         # A 16-chunk partition creates enough independent CTAs only for long
         # calls. Shorter calls keep the existing serial-state specialization.
         partition_ctas = batch * heads * (seq_len // 1024)
@@ -233,5 +249,6 @@ class GLAInferenceFwdOp(Op):
             self.scale if self.scale is not None else dim_k**-0.5,
             cu_seqlens is not None,
         )
-        kernel = self.kernel_for("gla_dense_prefill", inputs, call)
+        role = "gla_dense_decode" if seq_len == 1 else "gla_dense_prefill"
+        kernel = self.kernel_for(role, inputs, call)
         return kernel(*inputs)

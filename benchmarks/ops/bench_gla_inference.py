@@ -26,7 +26,7 @@ def _gla_inference_args(workload: dict) -> tuple[int, int, int, int, int, bool]:
     "batch, seq_len, heads, dim_k, dim_v, has_initial_state, dtype, tune",
     workload_params(load_workloads(GLAInferenceFwdOp), then_dtype(_gla_inference_args, tune=False)),
 )
-def test_gla_inference_dense_prefill_bench(
+def test_gla_inference_bench(
     batch: int,
     seq_len: int,
     heads: int,

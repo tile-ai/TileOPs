@@ -298,7 +298,7 @@ DeltaNetBwdOp:
 
 GLAInferenceFwdOp:
   # One serving contract for equal-length prefill, packed varlen, and decode.
-  # The in-tree kernel currently covers Hopper dense prefill only.
+  # The in-tree kernels currently cover Hopper dense prefill and decode.
   ref_api: "fla.ops.gla.chunk_gla"
   family: linear_attention
   status: spec-only
@@ -339,10 +339,16 @@ GLAInferenceFwdOp:
   - {q_shape: [2, 4096, 4, 64], k_shape: [2, 4096, 4, 64], v_shape: [2, 4096, 4, 64], g_shape: [2, 4096, 4, 64], initial_state_shape: [2, 4, 64, 64], dtypes: [bfloat16], label: "prefill-seeded"}
   - {q_shape: [2, 8192, 4, 64], k_shape: [2, 8192, 4, 64], v_shape: [2, 8192, 4, 64], g_shape: [2, 8192, 4, 64], dtypes: [bfloat16], label: "prefill-long"}
   - {q_shape: [2, 16384, 4, 64], k_shape: [2, 16384, 4, 64], v_shape: [2, 16384, 4, 64], g_shape: [2, 16384, 4, 64], initial_state_shape: [2, 4, 64, 64], dtypes: [bfloat16], label: "prefill-very-long"}
+  - {q_shape: [1, 1, 32, 64], k_shape: [1, 1, 32, 64], v_shape: [1, 1, 32, 64], g_shape: [1, 1, 32, 64], initial_state_shape: [1, 32, 64, 64], dtypes: [bfloat16], label: "decode-b1-d64"}
+  - {q_shape: [8, 1, 32, 128], k_shape: [8, 1, 32, 128], v_shape: [8, 1, 32, 128], g_shape: [8, 1, 32, 128], initial_state_shape: [8, 32, 128, 128], dtypes: [bfloat16], label: "decode-b8-d128"}
   roofline: {func: tileops.perf.formulas.gla_fwd_roofline}
   source:
-    kernel: tileops/kernels/linear_attention/gla/dense_prefill_subchunk.py
+    kernel:
+    - tileops/kernels/linear_attention/gla/dense_decode.py
+    - tileops/kernels/linear_attention/gla/dense_prefill_partitioned.py
+    - tileops/kernels/linear_attention/gla/dense_prefill_subchunk.py
     kernel_map:
+      gla_dense_decode: GLADenseDecodeKernel
       gla_dense_prefill_partitioned: GLADensePrefillPartitionedKernel
       gla_dense_prefill_subchunk: GLADensePrefillSubchunkKernel
     op: tileops/ops/linear_attention/gla_inference.py
