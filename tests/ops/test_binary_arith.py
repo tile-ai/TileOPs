@@ -9,7 +9,6 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN
 from tileops.kernels.elementwise import (
     AddFwdKernel,
     DivTruncFwdKernel,
@@ -776,8 +775,8 @@ def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
 # BinaryKernel autotune_configs tests
 
 
-def _builtin_kernel(op, shape: tuple, dtype: torch.dtype):
-    """Run *op* once on CUDA and return the in-tree kernel that served the call."""
+def _served_kernel(op, shape: tuple, dtype: torch.dtype):
+    """Run *op* once on CUDA and return the kernel that served the call."""
     a = torch.randn(*shape, device="cuda", dtype=dtype)
     b = torch.randn(*shape, device="cuda", dtype=dtype)
     with torch.no_grad():
@@ -789,11 +788,10 @@ def _builtin_kernel(op, shape: tuple, dtype: torch.dtype):
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_binary_kernel_has_autotune_configs() -> None:
     """BinaryKernel subclasses expose >= 3 distinct autotune_configs."""
     for op_cls in (MaximumFwdOp, MinimumFwdOp, AddFwdOp, SubFwdOp, MulFwdOp):
-        kernel = _builtin_kernel(op_cls(target=BUILTIN), (4096,), torch.float16)
+        kernel = _served_kernel(op_cls(), (4096,), torch.float16)
         configs = kernel.autotune_configs
         assert configs is not None, f"{kernel.__class__.__name__} must define autotune_configs"
         assert len(configs) >= 3, (
@@ -890,7 +888,6 @@ def test_register_copy_downgrades_on_broadcast() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_binary_tune_true_reaches_the_autotuner() -> None:
     """tune=True picks a config out of the search space, and does not fall back."""
     import warnings
@@ -899,7 +896,7 @@ def test_binary_tune_true_reaches_the_autotuner() -> None:
         # The kernel — and so the autotuner — is built on the first call.
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            kernel = _builtin_kernel(op_cls(target=BUILTIN, tune=True), (4096,), torch.float16)
+            kernel = _served_kernel(op_cls(tune=True), (4096,), torch.float16)
         assert not [w for w in caught if "falling back" in str(w.message)], (
             f"{op_cls.__name__} fell back instead of tuning: {[str(w.message) for w in caught]}"
         )

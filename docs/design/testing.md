@@ -32,6 +32,8 @@ Rules:
 
 **Framework:** pytest. **Location:** [`tests/ops/`](../../tests/ops/).
 
+**Target:** the suite tests the in-tree kernels. A pytest run defaults to `BUILTIN`, so a backend installed in the environment does not serve it; `--tileops-target=detect` restores device detection and `--tileops-target=<name>` selects that target. A test of target dispatch names its target or isolates the registry.
+
 ### File checklist
 
 1. **Workload class** in `workloads/` — subclass `WorkloadBase`, implement `gen_inputs()` and, when the class is named for one op, `ref_program()`.
