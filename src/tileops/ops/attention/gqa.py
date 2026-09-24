@@ -709,9 +709,7 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
             return
 
         tiles: list[tuple[int, int, int]] = []
-        for request, (q_len, kv_len) in enumerate(
-            zip(q_lens, kv_lens, strict=True)
-        ):
+        for request, (q_len, kv_len) in enumerate(zip(q_lens, kv_lens, strict=True)):
             for row in range(0, q_len, self._PLAN_BLOCK_M):
                 visible_kv = kv_len
                 if self.is_causal:
@@ -727,15 +725,13 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
 
         required = len(tile_to_request)
         buffers_missing = self._plan_tile_to_request is None or self._plan_tile_row is None
-        device_changed = (
-            not buffers_missing and self._plan_tile_to_request.device != torch.device(device)
+        device_changed = not buffers_missing and self._plan_tile_to_request.device != torch.device(
+            device
         )
         if buffers_missing or device_changed or required > self._plan_capacity:
             target = max(required, self._INITIAL_TILE_CAPACITY)
             capacity = 1 << (target - 1).bit_length()
-            self._plan_tile_to_request = torch.empty(
-                capacity, dtype=torch.int32, device=device
-            )
+            self._plan_tile_to_request = torch.empty(capacity, dtype=torch.int32, device=device)
             self._plan_tile_row = torch.empty(capacity, dtype=torch.int32, device=device)
             self._plan_capacity = capacity
 

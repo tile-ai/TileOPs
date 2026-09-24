@@ -498,6 +498,7 @@ def _flashinfer_gqa_varlen(
 
     return _run
 
+
 _GQA_VARLEN_FWD_BENCH_PARAMS = workload_params(
     load_workloads(GroupedQueryAttentionVarlenFwdOp),
     then_dtype(gqa_varlen_args, tune=False),

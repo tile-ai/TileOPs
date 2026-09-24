@@ -118,7 +118,6 @@ def _gqa_prefill_varlen_ws_kernel(
             request[0] = TileRequest[bx]
             q_row[0] = TileRow[bx]
             if bx < num_q_tiles:
-
                 cv = by // groups
                 q_start = CuQ[request[0]]
                 kv_start = CuKV[request[0]]
@@ -328,9 +327,7 @@ def _gqa_prefill_varlen_ws_kernel(
                     T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
                     T.wait_wgmma(0)
                     T.mbarrier_arrive(vfree[svp])
-                    if q0 + r0 + half <= q_len and (
-                        not is_causal or kv_len >= q_len
-                    ):
+                    if q0 + r0 + half <= q_len and (not is_causal or kv_len >= q_len):
                         for i in T.Parallel(half):
                             alpha[i] = 1.0 / logsum[i]
                         for i, j in T.Parallel(half, D):
@@ -508,9 +505,7 @@ def _gqa_prefill_varlen_ws_kernel(
                     )
                     T.wait_wgmma(0)
                     T.mbarrier_arrive(vfree[svp_wg1_final])
-                    if q0 + r0 + half <= q_len and (
-                        not is_causal or kv_len >= q_len
-                    ):
+                    if q0 + r0 + half <= q_len and (not is_causal or kv_len >= q_len):
                         for i in T.Parallel(half):
                             alpha[i] = 1.0 / logsum[i]
                         for i, j in T.Parallel(half, D):
