@@ -772,6 +772,22 @@ def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
         op(a, b)
 
 
+@pytest.mark.smoke
+def test_binary_op_does_not_keep_its_inputs() -> None:
+    """A call leaves nothing holding its tensors once the caller drops them."""
+    import gc
+    import weakref
+
+    op = AddFwdOp()
+    a = torch.randn(16, device="cuda", dtype=torch.float16)
+    b = torch.randn(16, device="cuda", dtype=torch.float16)
+    op(a, b)
+    alive = [weakref.ref(a), weakref.ref(b)]
+    del a, b
+    gc.collect()
+    assert all(ref() is None for ref in alive)
+
+
 # BinaryKernel autotune_configs tests
 
 
