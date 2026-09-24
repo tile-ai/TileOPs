@@ -59,9 +59,9 @@ The rule is implementation choice within one slot. Choosing the slot sits above 
 
 ### Target boundary
 
-**A target replaces the whole op.** A target that registers a builder for an op serves every call of it. The builder is described with the op's `forward` inputs and its manifest params, and the kernel it returns is called with those inputs, in order, plus a caller-supplied output buffer by keyword. The op's own body is the in-tree implementation and does not run for a target.
+**A target replaces the whole op.** A target that registers a builder for an op serves every call of it, and its kernel is called with the tensors its builder was described with. The op's own body is the in-tree implementation and does not run for a target.
 
-**The op layer guarantees a target the manifest, and nothing more.** Every tensor is on one device, every input the call does not write is contiguous, and the call meets the input dtypes and shape rules the manifest states. A caller-supplied output buffer is the op's output and meets that output's dtype and rules.
+**The op layer guarantees a target the manifest, and nothing more.** Every tensor is on one device, every input the call does not write is contiguous, and the call, a caller-supplied output buffer included, meets the dtypes and shape rules the manifest states.
 
 **A traced op is one graph node whichever target serves it.** An op on the [compile boundary](#compile-dispatch-boundary) chooses between the in-tree kernels and a target inside its operator.
 
@@ -229,7 +229,6 @@ class ExampleCumsumFwdOp(Op):
 - Every `static_dims` commitment is checked against the tensor shape at the normalized axis, and `_static_axes` is bound from that (non-negative) axis. Both before the get-or-build call.
 - The kernel comes from `self.kernel_for`, never a cache dict the op owns:
   - `entry_for` is the in-tree recipe. The kernel is built from `x.dtype` and the identity carries it, so a call with another dtype builds a second kernel rather than reusing the first.
-  - `inputs` is the tensors the kernel is handed.
 - The op never trims kernel output, and never reshapes its input for the kernel: a kernel that pads or permutes internally takes and returns the shapes the manifest declares.
 
 **Reference.** [Slot S14](op-slot-rules.md#slot-s14), [S15](op-slot-rules.md#slot-s15), [S16](op-slot-rules.md#slot-s16).
