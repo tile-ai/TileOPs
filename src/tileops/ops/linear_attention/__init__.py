@@ -3,6 +3,7 @@ from .deltanet_inference import DeltaNetInferenceFwdOp
 from .deltanet_recurrence import DeltaNetDecodeFwdOp
 from .gated_deltanet import GatedDeltaNetFwdOp
 from .gla import GLABwdOp, GLAFwdOp
+from .gla_inference import GLAInferenceFwdOp
 from .gla_recurrence import GLADecodeFwdOp
 
 __all__: list[str] = [
@@ -15,4 +16,5 @@ __all__: list[str] = [
     "GLABwdOp",
     "GLADecodeFwdOp",
     "GLAFwdOp",
+    "GLAInferenceFwdOp",
 ]

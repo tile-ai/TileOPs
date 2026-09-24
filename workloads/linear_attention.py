@@ -255,6 +255,44 @@ class GLAChunkwiseWorkload(WorkloadBase):
         return q, k, v, g, initial_state
 
 
+class GLAInferenceWorkload(GLAChunkwiseWorkload):
+    """Inference GLA prefill with a caller-owned optional recurrent state."""
+
+    def __init__(
+        self,
+        batch: int,
+        seq_len: int,
+        heads: int,
+        dim_k: int,
+        dim_v: int,
+        dtype: torch.dtype,
+        has_initial_state: bool = False,
+        scale: float | None = None,
+    ) -> None:
+        super().__init__(batch, seq_len, heads, dim_k, dim_v, 64, dtype, has_initial_state)
+        self.scale = scale
+
+    def ref_program(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        initial_state: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        from fla.ops.gla import chunk_gla
+
+        return chunk_gla(
+            q,
+            k,
+            v,
+            g,
+            scale=self.scale if self.scale is not None else self.dim_k**-0.5,
+            initial_state=initial_state,
+            output_final_state=True,
+        )
+
+
 def compute_w_u_torch(Aw, Au, k, v, beta, chunk_size):
     B, H, S, DK = k.shape
     _, _, _, DV = v.shape

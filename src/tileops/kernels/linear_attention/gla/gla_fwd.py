@@ -22,6 +22,7 @@ def _gla_precompute_g_kernel(
     dim_k: int,
     chunk_size: int,
     dtype: str,
+    output_dtype: str = "float32",
 ) -> Callable:
     """Pre-compute intra-chunk cumulative sum of g.
 
@@ -46,7 +47,7 @@ def _gla_precompute_g_kernel(
         @T.prim_func
         def _main(
             g: T.Tensor(g_shape, dtype),
-            g_cumsum: T.Tensor(g_cumsum_shape, accum_dtype),
+            g_cumsum: T.Tensor(g_cumsum_shape, output_dtype),
         ):
             with T.Kernel(batch * heads * num_chunks, threads=threads) as bx:
                 i_b = bx // (heads * num_chunks)
