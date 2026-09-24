@@ -6,6 +6,7 @@ from typing import Dict, Optional
 
 from torch import Tensor
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
@@ -52,6 +53,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -67,20 +69,27 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
             kernel_map: Optional kernel overrides forwarded to the inner Ops.
             activation: Gated activation applied to gate_up: 'silu_and_mul' or
                 'gelu_and_mul'.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.dispatch_kernel(kernel_map)
         self.num_tokens = num_tokens
         self.num_experts = num_experts
         self.top_k = top_k
         self.hidden_size = hidden_size
         self.ffn_size = ffn_size
+        self.routed_scaling_factor = routed_scaling_factor
         self.activation = activation
         layout = ContiguousLayoutSpec.tight_physical_psum()
-        self._expert_mlp = MoeExpertMLPFwdOp(layout, activation, kernel_map=kernel_map)
+        self._expert_mlp = MoeExpertMLPFwdOp(
+            layout, activation, kernel_map=kernel_map, target=target
+        )
         self._pre_permute = MoePrePermuteFwdOp(
             layout=layout,
             num_local_experts=num_experts,
             kernel_map=kernel_map,
+            target=target,
         )
         self._post_permute = MoePostPermuteFwdOp(
             layout=layout,
@@ -88,6 +97,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
                 routed_scaling_factor=routed_scaling_factor,
             ),
             kernel_map=kernel_map,
+            target=target,
         )
         indexed = (
             activation == "silu_and_mul"
@@ -104,6 +114,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
                 ffn_size,
                 routed_scaling_factor,
                 kernel_map,
+                target=target,
             )
             if indexed
             else None

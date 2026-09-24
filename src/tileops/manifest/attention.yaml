@@ -746,6 +746,7 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
     kernel: tileops/kernels/attention/deepseek_dsa_decode.py
     kernel_map:
       sparse_mla_kernel: SparseMlaKernel
+      sparse_mla_basic_kernel: SparseMlaBasicKernel
     op: tileops/ops/attention/deepseek_dsa.py
     test: tests/ops/attention/test_deepseek_dsa_decode.py
     bench: benchmarks/ops/attention/bench_deepseek_dsa_decode.py

@@ -8,11 +8,10 @@ expressions into every manifest entry duplicates the contract and lets
 the wording drift between ops.
 
 This module exposes those patterns as named, individually testable
-predicates and value extractors. Each is registered by name into the
-validator's shape_rule builtin set (``scripts/validate_manifest.py``)
-alongside the broadcasting helpers (``broadcast_shapes`` etc.) and the
-Python primitives (``len``, ``range``, …), so a manifest entry can call
-them by bare name::
+predicates and value extractors. Each is registered by name in
+``tileops.manifest.rule_eval.RULE_BUILTINS`` alongside the broadcasting
+helpers (``broadcast_shapes`` etc.) and the Python primitives (``len``,
+``range``, …), so a manifest entry can call them by bare name::
 
     shape_rules:
       - "dim_range_validity(x, dim)"
@@ -23,9 +22,8 @@ Inline-string rules continue to work unchanged so ops can migrate one
 at a time.
 
 A malformed ``dim`` — say a list whose elements are not ints — propagates
-its own ``TypeError``. The validator classifies such eval errors as
-warnings: the rule counts as un-evaluatable under mock inputs and the
-parity check is skipped.
+its own ``TypeError``, which the rule evaluator reports as a rule it could
+not evaluate rather than one that failed.
 """
 
 from __future__ import annotations

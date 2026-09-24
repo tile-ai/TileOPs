@@ -59,7 +59,7 @@ def _register(recorder, target="acme", op="RMSNormFwdOp", claims=True):
 
 
 def _stub_op(**kwargs):
-    """An op of the kind that still takes a kernel without handing over its tensors."""
+    """An op whose in-tree kernel is a no-op, so the in-tree path runs on any device."""
 
     class StubOp(RMSNormFwdOp):
         def forward(self, x, weight):
@@ -100,20 +100,27 @@ def test_a_target_takes_over_the_op_and_is_asked_with_the_manifest_signature():
     assert recorder.calls[1][1]["eps"] == 1e-5
 
 
-def test_the_op_layer_still_does_its_half():
-    """A backend writes kernels, not ops: validation and normalization are not its job."""
+def test_a_dtype_the_manifest_does_not_admit_never_reaches_the_backend():
     recorder = _Recorder()
     _register(recorder)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
-    with pytest.raises(ValueError, match="Expected x trailing shape"):
-        op(torch.randn(4, 999, dtype=DTYPE), torch.randn(*NORMALIZED_SHAPE, dtype=DTYPE))
     with pytest.raises(ValueError, match="same_as"):
         op(
             torch.randn(4, *NORMALIZED_SHAPE, dtype=DTYPE),
             torch.randn(*NORMALIZED_SHAPE, dtype=torch.bfloat16),
         )
-    assert recorder.calls == [], "a rejected call never reaches the backend"
+    assert recorder.calls == []
+
+
+def test_tensors_on_two_devices_never_reach_the_backend():
+    recorder = _Recorder()
+    _register(recorder)
+    x, weight = _inputs()
+
+    with pytest.raises(ValueError, match="one device"):
+        RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)(x, weight.cuda())
+    assert recorder.calls == []
 
 
 def test_a_non_contiguous_input_reaches_the_kernel_contiguous():
@@ -299,15 +306,6 @@ def test_a_target_without_this_op_raises_and_names_the_ones_that_have_it():
         RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)(*_inputs())
 
 
-def test_an_op_that_has_not_handed_over_its_tensors_says_so():
-    """The op layer's own gap, reported as such rather than as a backend's."""
-    recorder = _Recorder()
-    _register(recorder, op="StubOp")
-
-    with pytest.raises(OpNotAvailableError, match="not wired to external targets yet"):
-        _stub_op()(*_inputs())
-
-
 def test_builtin_keeps_the_in_tree_kernels_even_when_a_target_claims_the_device():
     recorder = _Recorder()
     _register(recorder)
@@ -432,14 +430,6 @@ def test_a_compiled_call_whose_build_fails_pins_nothing():
     assert torch.equal(op(x, weight), torch.full_like(x, 7)), "asking again tries again"
 
 
-def test_a_call_without_tensors_still_honours_an_explicit_target():
-    """A named target needs no device, so handing over no tensors is no reason to fall back."""
-    _register(_Recorder(), op="StubOp")
-
-    with pytest.raises(OpNotAvailableError, match="not wired to external targets yet"):
-        _stub_op(target="acme").forward(*_inputs())
-
-
 def test_a_settled_instance_is_bound_to_that_target_s_devices():
     """One instance, one target. A kernel handed a foreign tensor is what says so."""
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, target=BUILTIN)
@@ -517,9 +507,9 @@ def test_a_clamp_with_neither_bound_never_reaches_the_backend():
     from tileops.ops.elementwise import ClampFwdOp
 
     input, _, _ = _clamp_inputs()
-    with pytest.raises(ValueError, match="at least one of"):
+    with pytest.raises(ValueError, match="shape rule"):
         ClampFwdOp()(input)
-    assert recorder.calls == [], "the op layer's checks run for every target"
+    assert recorder.calls == []
 
 
 # --------------------------------------------------------------------------------------
@@ -635,9 +625,9 @@ def test_a_rejected_conv_call_never_reaches_the_backend():
     _register(recorder, op="Conv2dFwdOp")
     x, weight, _ = _conv_inputs()
 
-    with pytest.raises(ValueError, match="bias shape"):
+    with pytest.raises(ValueError, match="C_out"):
         Conv2dFwdOp(padding=1)(x, weight, torch.randn(999, dtype=DTYPE))
-    assert recorder.calls == [], "the op layer's checks run for every target"
+    assert recorder.calls == []
 
 
 # --------------------------------------------------------------------------------------
@@ -772,7 +762,109 @@ def test_a_reduction_call_naming_an_absent_axis_never_reaches_the_backend():
     _register(recorder, op="SumFwdOp")
     from tileops.ops.reduction import SumFwdOp
 
-    with pytest.raises(IndexError):
+    with pytest.raises(ValueError, match="shape rule"):
         SumFwdOp(dim=5)(torch.randn(4, 8, dtype=DTYPE))
 
     assert recorder.calls == []
+
+
+# --------------------------------------------------------------------------------------
+# An op with no tensor input, and an op built from other ops
+# --------------------------------------------------------------------------------------
+
+
+def test_an_op_with_no_tensor_input_is_placed_by_its_device_param():
+    from tileops.ops.elementwise import AlibiFwdOp
+
+    calls = []
+
+    def build_kernel(**params):
+        calls.append(params)
+        return lambda: torch.zeros(4, 8, 8)
+
+    registry.register_detector("acme", lambda device: device.type == "cpu")
+    registry.register_kernel_builder("AlibiFwdOp", "acme", build_kernel)
+
+    AlibiFwdOp(seq_len=8, num_heads=4, device="cpu")()
+
+    assert calls == [{"seq_len": 8, "num_heads": 4, "out_dtype": torch.float32, "device": "cpu"}]
+
+
+def _mamba2():
+    from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
+
+    x = torch.randn(1, 64, 2, 16, dtype=DTYPE)
+    dt = torch.rand(1, 64, 2)
+    a = -torch.rand(2)
+    b = torch.randn(1, 64, 1, 8, dtype=DTYPE)
+    return Mamba2FwdOp(chunk_size=32, target="acme"), (x, dt, a, b, b.clone())
+
+
+def test_a_target_that_builds_a_composite_serves_it_whole():
+    op, inputs = _mamba2()
+    registry.register_detector("acme", lambda device: False)
+    registry.register_kernel_builder(
+        "Mamba2FwdOp", "acme", lambda *specs, **params: lambda *tensors: tensors[0]
+    )
+
+    assert op(*inputs) is inputs[0]
+
+
+def test_a_composite_without_a_builder_hands_each_sub_op_to_the_target():
+    op, inputs = _mamba2()
+    registry.register_detector("acme", lambda device: False)
+
+    with pytest.raises(OpNotAvailableError, match="no kernel builder for DaCumsumFwdOp"):
+        op(*inputs)
+
+
+def test_an_output_buffer_is_held_to_the_output_s_dtype_and_shape():
+    from tileops.ops.moe.contracts import ContiguousLayoutSpec
+    from tileops.ops.moe.staged import MoeGroupedGemmFwdOp
+
+    registry.register_detector("acme", lambda device: device.type == "cpu")
+    registry.register_kernel_builder(
+        "MoeGroupedGemmFwdOp", "acme", lambda *specs, **params: lambda a, b, meta, out=None: None
+    )
+    op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
+    a, b = torch.randn(32, 64, dtype=DTYPE), torch.randn(4, 16, 64, dtype=DTYPE)
+    meta = torch.zeros(4, dtype=torch.int32)
+
+    op(a, b, meta, out=torch.empty(32, 16, dtype=DTYPE))
+    with pytest.raises(ValueError, match="shape rule"):
+        op(a, b, meta, out=torch.empty(32, 8, dtype=DTYPE))
+    with pytest.raises(ValueError, match="output buffer"):
+        op(a, b, meta, out=torch.empty(32, 16, dtype=torch.float32))
+
+
+def test_an_input_this_call_does_not_write_reaches_the_kernel_contiguous():
+    """An activation's input is written only when ``inplace`` is set."""
+    from tileops.ops.elementwise import ReluFwdOp
+
+    seen = []
+    registry.register_detector("acme", lambda device: device.type == "cpu")
+    registry.register_kernel_builder(
+        "ReluFwdOp", "acme", lambda *specs, **params: lambda x: seen.append(x) or x.clone()
+    )
+
+    ReluFwdOp()(torch.randn(8, 8, dtype=DTYPE)[:, ::2])
+
+    assert seen[0].is_contiguous()
+
+
+def test_an_input_typed_after_an_output_follows_that_output_s_dtype():
+    """``bias: same_as(d)``: the output's dtype is the op's to state, and it binds the input."""
+    from tileops.ops.gemm.gemm import GemmFp8FwdOp
+
+    registry.register_detector("acme", lambda device: device.type == "cpu")
+    registry.register_kernel_builder(
+        "GemmFp8FwdOp", "acme", lambda *specs, **params: lambda *tensors: torch.empty(16, 16)
+    )
+    fp8 = torch.float8_e4m3fn
+    a, b = torch.empty(16, 32, dtype=fp8), torch.empty(16, 32, dtype=fp8)
+    scale = torch.ones(1, 1)
+    op = GemmFp8FwdOp(out_dtype=torch.bfloat16)
+
+    op(a, b, scale, scale, torch.empty(16, dtype=torch.bfloat16))
+    with pytest.raises(ValueError, match="bias"):
+        op(a, b, scale, scale, torch.empty(16, dtype=torch.float16))

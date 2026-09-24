@@ -10,9 +10,13 @@
 
 - Update `docs/design/ops-design.md` whenever you add/modify an intermediate base class, change a kernel-dispatch pattern, or introduce a new class-variable protocol.
 
-- Every kernel an op builds after construction goes through `Op.kernel_for(role, inputs, call)`, with `inputs` the tensors the kernel will be handed so an external target can be asked to build one. The in-tree identity and builder come from `Op.entry_for(role, call)`, whose default selects among the op's candidates and asks the chosen class; an op with one implementation overrides it. An op MUST NOT declare a kernel cache dict, guard a kernel build on an attribute being unset, or carry any other get-or-build of its own — including for an auxiliary kernel. Assigning what `kernel_for` returned to `self.kernel` is not one. See [ops-design.md § Kernel caching and enumeration](../../docs/design/ops-design.md#kernel-caching-and-enumeration).
+- Every kernel an op builds after construction goes through `Op.kernel_for(role, inputs, call)`, with `inputs` the tensors the kernel will be handed. The in-tree identity and builder come from `Op.entry_for(role, call)`, whose default selects among the op's candidates and asks the chosen class; an op with one implementation overrides it. An op MUST NOT declare a kernel cache dict, guard a kernel build on an attribute being unset, or carry any other get-or-build of its own — including for an auxiliary kernel. Assigning what `kernel_for` returned to `self.kernel` is not one. See [ops-design.md § Kernel caching and enumeration](../../docs/design/ops-design.md#kernel-caching-and-enumeration).
 
 - An op that runs kernels built by another op returns that op from `kernel_delegates()`, whether the delegate is fixed at construction or built per specialization. Overriding `autotune()` to reach a delegate, or exposing a delegate's cache so reflection finds it, is prohibited.
+
+- A compile-boundary op's `forward` only chooses which operator to call; validation, device checks and kernel resolution go in `_eager_forward`. **Why:** `forward` runs for every target, and a target serving the op is called inside the operator. See [ops-design.md § Target boundary](../../docs/design/ops-design.md#target-boundary).
+
+- A composite passes its `target` to every sub-op it builds, including one built lazily.
 
 - `__init__` MUST NOT read any device property, directly or through `dispatch_kernel`. An op constructs wherever it is imported; a target that cannot run it is refused when a kernel is first selected, built or called.
 

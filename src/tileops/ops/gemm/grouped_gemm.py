@@ -2,6 +2,7 @@ from typing import ClassVar, Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.grouped_gemm import (
     GroupedGemmCall,
     GroupedGemmKernel,
@@ -38,6 +39,8 @@ class GroupedGemmFwdOp(Op):
         transpose_b: bool = True,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -46,7 +49,10 @@ class GroupedGemmFwdOp(Op):
             transpose_b: Manifest ``params.transpose_b``, ``bool``, default ``True``.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch_sum = None
         self.batch_count = None
         self.N = None

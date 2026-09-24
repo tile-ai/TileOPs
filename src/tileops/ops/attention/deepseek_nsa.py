@@ -2,6 +2,7 @@ from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.attention import (
     NSACmpFwdVarlenKernel,
     NSAFwdVarlenKernel,
@@ -86,6 +87,8 @@ class NSATopkVarlenOp(Op):
         accum_dtype: torch.dtype,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -97,7 +100,10 @@ class NSATopkVarlenOp(Op):
             accum_dtype: Accumulator dtype.
             tune: Whether to autotune, applied when a kernel is first built.
             kernel_map: Optional kernel override dict.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         _validate_tiling(selected_block_num=selected_block_num, bc=bc, bs=bs)
         self.scale = scale
         self.selected_block_num = selected_block_num
@@ -150,7 +156,6 @@ class NSATopkVarlenOp(Op):
             dtype,
             self.accum_dtype,
             device_index,
-            self.tune,
         )
         return self.kernel_for("nsa_topk_varlen_kernel", inputs, key)
 
@@ -170,7 +175,6 @@ class NSATopkVarlenOp(Op):
             dtype,
             accum_dtype,
             _device,
-            tune,
         ) = call
         return call, lambda: self.kernel_map["nsa_topk_varlen_kernel"](
             seq_num=seq_num,
@@ -185,7 +189,7 @@ class NSATopkVarlenOp(Op):
             bs=bs,
             dtype=dtype,
             accum_dtype=accum_dtype,
-            tune=tune,
+            tune=self.tune,
         )
 
     def forward(
@@ -280,6 +284,8 @@ class NSAFwdVarlenOp(Op):
         accum_dtype: torch.dtype,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -290,7 +296,10 @@ class NSAFwdVarlenOp(Op):
             accum_dtype: Accumulator dtype.
             tune: Whether to autotune, applied when a kernel is first built.
             kernel_map: Optional kernel override dict.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         _validate_tiling(block_size=block_size)
         self.is_causal = is_causal
         self.scale = scale
@@ -342,7 +351,6 @@ class NSAFwdVarlenOp(Op):
             dtype,
             self.accum_dtype,
             device_index,
-            self.tune,
         )
         return self.kernel_for("nsa_fwd_varlen_kernel", inputs, key)
 
@@ -361,7 +369,6 @@ class NSAFwdVarlenOp(Op):
             dtype,
             accum_dtype,
             _device,
-            tune,
         ) = call
         return call, lambda: self.kernel_map["nsa_fwd_varlen_kernel"](
             batch=batch,
@@ -375,7 +382,7 @@ class NSAFwdVarlenOp(Op):
             selected_blocks=selected_blocks,
             dtype=dtype,
             accum_dtype=accum_dtype,
-            tune=tune,
+            tune=self.tune,
         )
 
     def forward(
@@ -484,6 +491,8 @@ class NSACmpFwdVarlenOp(Op):
         accum_dtype: torch.dtype,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -494,7 +503,10 @@ class NSACmpFwdVarlenOp(Op):
             accum_dtype: Accumulator dtype.
             tune: Whether to autotune, applied when a kernel is first built.
             kernel_map: Optional kernel override dict.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         _validate_tiling(bc=bc, bs=bs)
         self.scale = scale
         self.bc = bc
@@ -548,7 +560,6 @@ class NSACmpFwdVarlenOp(Op):
             dtype,
             self.accum_dtype,
             device_index,
-            self.tune,
         )
         return self.kernel_for("nsa_cmp_fwd_varlen_kernel", inputs, key)
 
@@ -568,7 +579,6 @@ class NSACmpFwdVarlenOp(Op):
             dtype,
             accum_dtype,
             _device,
-            tune,
         ) = call
         return call, lambda: self.kernel_map["nsa_cmp_fwd_varlen_kernel"](
             seq_num=seq_num,
@@ -583,7 +593,7 @@ class NSACmpFwdVarlenOp(Op):
             bs=bs,
             dtype=dtype,
             accum_dtype=accum_dtype,
-            tune=tune,
+            tune=self.tune,
         )
 
     def forward(

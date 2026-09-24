@@ -72,13 +72,12 @@ class SSDStatePassingFwdOp(Op):
             has_initial_states,
             dtype,
             device_index,
-            self.tune,
         )
         return self.kernel_for("ssd_state_passing_fwd", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, initial-state presence, dtype and device."""
-        batch, num_chunks, n_heads, d_state, has_initial_states, dtype, _device, tune = call
+        batch, num_chunks, n_heads, d_state, has_initial_states, dtype, _device = call
         return call, lambda: self.kernel_map["ssd_state_passing_fwd"](
             batch,
             num_chunks,
@@ -86,7 +85,7 @@ class SSDStatePassingFwdOp(Op):
             d_state,
             has_initial_states=has_initial_states,
             dtype=dtype,
-            tune=tune,
+            tune=self.tune,
         )
 
     def _infer_output_shapes(

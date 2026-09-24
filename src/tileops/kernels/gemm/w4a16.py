@@ -644,7 +644,7 @@ class GemmW4A16Kernel(Kernel):
     @classmethod
     def entry_for(cls, call: GemmCall) -> tuple:
         index = call.device.index if call.device is not None else None
-        identity = (call.m, call.n, call.k, call.dtype, call.group_size, call.tune, index)
+        identity = (call.m, call.n, call.k, call.dtype, call.group_size, index)
         return identity, lambda: cls(
             call.m,
             call.n,

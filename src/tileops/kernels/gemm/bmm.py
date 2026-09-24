@@ -668,7 +668,7 @@ class BmmKernel(Kernel):
     def entry_for(cls, call: BmmCall) -> Entry:
         """Build the shape-specialized classic BMM fallback."""
         index = call.device.index if call.device is not None else None
-        identity = (call.batch, call.m, call.n, call.k, call.dtype, call.tune, index)
+        identity = (call.batch, call.m, call.n, call.k, call.dtype, index)
         return identity, lambda: cls(
             call.batch,
             call.m,

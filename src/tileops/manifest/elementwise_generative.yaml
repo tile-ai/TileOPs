@@ -15,6 +15,7 @@ AlibiFwdOp:
       seq_len: {type: int, kw_only: true}
       num_heads: {type: int, kw_only: true}
       out_dtype: {type: "float16 | bfloat16 | float32", default: float32, kw_only: true}
+      device: {type: "torch.device | str | None", default: null, kw_only: true}
     shape_rules:
       - "seq_len > 0"
       - "num_heads > 0"
@@ -65,6 +66,7 @@ SinusoidalFwdOp:
       seq_len: {type: int, kw_only: true}
       d_model: {type: int, kw_only: true}
       out_dtype: {type: "float16 | bfloat16 | float32", default: float32, kw_only: true}
+      device: {type: "torch.device | str | None", default: null, kw_only: true}
     shape_rules:
       - "seq_len > 0"
       - "d_model > 0"

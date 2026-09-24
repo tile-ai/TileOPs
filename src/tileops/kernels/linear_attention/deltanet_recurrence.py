@@ -281,7 +281,7 @@ def _decode_entry(cls: type, call: DeltaNetDecodeCall) -> Entry:
     """
     index = call.device.index if call.device is not None else None
     dtype = Kernel.dtype_to_str(call.dtype)
-    identity = (call.batch, call.heads, call.dim_k, call.dim_v, dtype, call.tune, index)
+    identity = (call.batch, call.heads, call.dim_k, call.dim_v, dtype, index)
     return identity, lambda: cls(
         call.batch, call.heads, call.dim_k, call.dim_v, dtype=dtype, tune=call.tune
     )

@@ -2,6 +2,7 @@ from typing import ClassVar, Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.attention import (
     FlashAttnBwdPreprocessKernel,
     GQABwdWgmmaPipelinedKernel,
@@ -48,6 +49,8 @@ class MultiHeadAttentionBwdOp(Op):
         is_causal: bool = True,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -55,7 +58,10 @@ class MultiHeadAttentionBwdOp(Op):
             is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = batch
         self.heads = heads
         self.seq_len = seq_len  # TODO: support s_q != s_kv
@@ -72,6 +78,7 @@ class MultiHeadAttentionBwdOp(Op):
             is_causal=is_causal,
             kernel_map=self.forwarded_overrides(),
             tune=tune,
+            target=target,
         )
         self.kernel_map = self._gqa_op.kernel_map
 
@@ -175,6 +182,8 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         is_causal: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -183,7 +192,10 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
             is_causal: Manifest ``params.is_causal``, ``bool``, default ``False``.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = batch
         self.heads = heads
         self.seqlen_q = seqlen_q

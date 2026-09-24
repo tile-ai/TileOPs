@@ -83,12 +83,12 @@ class DeltaNetFwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
-        key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
+        key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index)
         return self.kernel_for("DeltaNetFwdKernel", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, chunk length, dtype and device."""
-        batch, heads, seq_len, chunk_size, dim_k, dim_v, dtype, _device, tune = call
+        batch, heads, seq_len, chunk_size, dim_k, dim_v, dtype, _device = call
         return call, lambda: self.kernel_map["DeltaNetFwdKernel"](
             batch,
             heads,
@@ -97,7 +97,7 @@ class DeltaNetFwdOp(Op):
             dim_k,
             dim_v,
             dtype=Kernel.dtype_to_str(dtype),
-            tune=tune,
+            tune=self.tune,
         )
 
     def _bind_from_inputs(
@@ -209,6 +209,8 @@ class DeltaNetBwdOp(Op):
         chunk_size: int = 64,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -216,7 +218,10 @@ class DeltaNetBwdOp(Op):
             chunk_size: Chunk size for chunked linear attention.
             kernel_map: Optional kernel overrides.
             tune: Whether to autotune kernels.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = None
         self.heads = None
         self.seq_len = None
@@ -246,12 +251,12 @@ class DeltaNetBwdOp(Op):
         dtype: torch.dtype,
         device_index: int | None,
     ) -> Kernel:
-        key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index, self.tune)
+        key = (batch, heads, seq_len, self.chunk_size, dim_k, dim_v, dtype, device_index)
         return self.kernel_for("DeltaNetBwdKernel", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, chunk length, dtype and device."""
-        batch, heads, seq_len, chunk_size, dim_k, dim_v, dtype, _device, tune = call
+        batch, heads, seq_len, chunk_size, dim_k, dim_v, dtype, _device = call
         return call, lambda: self.kernel_map["DeltaNetBwdKernel"](
             batch,
             heads,
@@ -260,7 +265,7 @@ class DeltaNetBwdOp(Op):
             dim_k,
             dim_v,
             dtype=Kernel.dtype_to_str(dtype),
-            tune=tune,
+            tune=self.tune,
         )
 
     def _bind_from_inputs(self, inputs: "tuple[torch.Tensor, ...]") -> None:
@@ -416,6 +421,8 @@ class DeltaNetAutogradOp(Op):
         chunk_size: int = 64,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -423,7 +430,10 @@ class DeltaNetAutogradOp(Op):
             chunk_size: Chunk size for chunked linear attention.
             kernel_map: Optional kernel overrides.
             tune: Whether to autotune kernels.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = None
         self.heads = None
         self.seq_len = None
@@ -492,17 +502,16 @@ class DeltaNetAutogradOp(Op):
             self.dim_v,
             dtype,
             q.device.index,
-            self.tune,
         )
         return self.kernel_for("deltanet", (q, k, v, beta), key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """Forward and backward are built together, so they are one entry."""
-        batch, heads, seq_len, chunk_size, dim_k, dim_v, dtype, _device, tune = call
+        batch, heads, seq_len, chunk_size, dim_k, dim_v, dtype, _device = call
 
         def build() -> tuple:
             args = (batch, heads, seq_len, chunk_size, dim_k, dim_v)
-            kwargs = {"dtype": Kernel.dtype_to_str(dtype), "tune": tune}
+            kwargs = {"dtype": Kernel.dtype_to_str(dtype), "tune": self.tune}
             return (
                 self.kernel_map["DeltaNetFwdKernel"](*args, **kwargs),
                 self.kernel_map["DeltaNetBwdKernel"](*args, **kwargs),

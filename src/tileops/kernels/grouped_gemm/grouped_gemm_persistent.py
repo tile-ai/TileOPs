@@ -27,7 +27,6 @@ def grouped_gemm_entry(cls: type, call: GroupedGemmCall) -> Entry:
         call.dtype,
         call.transpose_a,
         call.transpose_b,
-        call.tune,
         index,
     )
     return identity, lambda: cls(

@@ -20,6 +20,7 @@ FP8LightningIndexerFwdOp:
       clean_logits: {type: bool, default: true}
       config: {type: "dict | None", default: null}
     dtype_combos:
+    - {index_q: bfloat16, index_k: bfloat16, weights: float32, cu_seqlen_ks: int32, cu_seqlen_ke: int32}
     - {index_q: float8_e4m3fn, index_k: float8_e4m3fn, weights: float32, cu_seqlen_ks: int32, cu_seqlen_ke: int32}
     shape_rules:
     - "index_q.ndim == 4 and index_k.ndim == 4"

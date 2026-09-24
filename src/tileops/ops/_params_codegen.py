@@ -7,6 +7,8 @@ off the instance.
 
 from __future__ import annotations
 
+import inspect
+
 from tileops.manifest import try_load_entry
 
 # Attached to a class when its manifest entry declares ``signature.params``. The empty
@@ -22,7 +24,9 @@ def maybe_install_param_names(cls: type) -> None:
     name. A name in the class body wins.
 
     Every class gets its own answer, never an inherited one: params are exactly this op's
-    ``signature.params``, and a class with no entry hands a backend nothing.
+    ``signature.params``, and a class with no entry hands a backend nothing. A param
+    ``forward`` takes, such as a caller-supplied ``out`` buffer, belongs to one call and
+    reaches the kernel with it, so it is not among them.
     """
     if ATTRIBUTE in cls.__dict__:
         return
@@ -32,4 +36,6 @@ def maybe_install_param_names(cls: type) -> None:
         entry = try_load_entry(cls.__name__)
         sig = entry.get("signature") if entry is not None else None
     params = sig.get("params") if isinstance(sig, dict) else None
-    setattr(cls, ATTRIBUTE, tuple(params) if isinstance(params, dict) else ())
+    per_call = set(inspect.signature(cls.forward).parameters)
+    names = tuple(p for p in params if p not in per_call) if isinstance(params, dict) else ()
+    setattr(cls, ATTRIBUTE, names)

@@ -42,7 +42,7 @@ Rationale and the role / entry vocabulary: [ops-design.md § Kernel caching and 
 
 | Method                           | Purpose                                                                                                                                                        |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kernel_for(role, inputs, call)` | Return what serves this call, building it once on a miss. The only way an op reaches a kernel. `inputs` is what an external target's builder is described with |
+| `kernel_for(role, inputs, call)` | The in-tree kernel serving this call, built once on a miss. The only way an op's in-tree implementation reaches a kernel. A target serves the whole op instead |
 | `entry_for(role, call)`          | The in-tree identity and builder. The default selects among the op's candidates and asks the chosen class; an op with one implementation overrides it          |
 | `built_kernels(name)`            | Read-only view of a name's entries, whoever built them; empty before its first build. Introspection only, never dispatch                                       |
 | `kernel_delegates()`             | The ops whose kernels this op runs. Default `()`; a composite op overrides it                                                                                  |

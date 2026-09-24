@@ -3,6 +3,7 @@ from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba import DaCumsumFwdKernel
 from tileops.manifest import load_manifest
@@ -47,6 +48,8 @@ class DaCumsumFwdOp(Op):
         dt_max: float = float("inf"),
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -56,7 +59,10 @@ class DaCumsumFwdOp(Op):
             dt_min:       Lower clamp bound applied after bias and softplus.
             dt_max:       Upper clamp bound applied after bias and softplus.
             tune:         Whether to autotune tile config on construction.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         declared = _dt_out_dtypes()
         if out_dtype not in declared:
             supported = ", ".join(str(dt) for dt in declared)
@@ -102,7 +108,6 @@ class DaCumsumFwdOp(Op):
             self.dt_min,
             self.dt_max,
             device_index,
-            self.tune,
         )
         return self.kernel_for("da_cumsum_fwd", inputs, key)
 
@@ -120,7 +125,6 @@ class DaCumsumFwdOp(Op):
             dt_min,
             dt_max,
             _device,
-            tune,
         ) = call
         return call, lambda: self.kernel_map["da_cumsum_fwd"](
             batch,
@@ -133,7 +137,7 @@ class DaCumsumFwdOp(Op):
             has_dt_bias=has_dt_bias,
             dt_min=dt_min,
             dt_max=dt_max,
-            tune=tune,
+            tune=self.tune,
         )
 
     def _infer_output_shapes(

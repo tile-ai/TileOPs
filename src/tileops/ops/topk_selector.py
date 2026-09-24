@@ -2,6 +2,7 @@ from typing import ClassVar, Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.topk_selector import TopkSelectorKernel
 
@@ -27,7 +28,12 @@ class TopkSelectorFwdOp(Op):
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
     def __init__(
-        self, topk: int, kernel_map: Optional[Dict[str, Kernel]] = None, tune: bool = False
+        self,
+        topk: int,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -35,7 +41,10 @@ class TopkSelectorFwdOp(Op):
             topk: Manifest ``params.topk``, ``int``.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = None
         self.seq_len = None
         self.seq_len_kv = None
@@ -65,14 +74,14 @@ class TopkSelectorFwdOp(Op):
         return self.kernel_for(
             "topk_selector_kernel",
             inputs,
-            (batch, seq_len, seq_len_kv, kv_group, self.topk, in_dtype, device_index, self.tune),
+            (batch, seq_len, seq_len_kv, kv_group, self.topk, in_dtype, device_index),
         )
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, dtype and device; ``out_dtype`` is the op's."""
-        batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, _device_index, tune = call
+        batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, _device_index = call
         return call, lambda: self.kernel_map["topk_selector_kernel"](
-            batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, self.out_dtype, tune=tune
+            batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, self.out_dtype, tune=self.tune
         )
 
     def _infer_output_shapes(

@@ -2,6 +2,7 @@ from typing import ClassVar, Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.attention import MLADecodeWsKernel
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.perf.profile import tensor_core_roof
@@ -27,6 +28,8 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
         pe_dim: int,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -34,7 +37,10 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
             pe_dim: Manifest ``params.pe_dim``, ``int``.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv

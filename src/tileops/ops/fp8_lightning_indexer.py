@@ -2,6 +2,7 @@ from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.constants import FP8_E4M3_MAX
 from tileops.kernels.fp8_lightning_indexer import FP8LightningIndexerKernel
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -21,6 +22,8 @@ class FP8LightningIndexerFwdOp(Op):
         config: Optional[dict] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune=False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -29,7 +32,10 @@ class FP8LightningIndexerFwdOp(Op):
             config: Manifest ``params.config``, ``dict | None``, default ``None``.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.batch = None
         self.seq_len = None
         self.heads = None
@@ -80,7 +86,6 @@ class FP8LightningIndexerFwdOp(Op):
                 self.clean_logits,
                 self._config_cache_key,
                 device_index,
-                self.tune,
             ),
         )
 
@@ -96,7 +101,6 @@ class FP8LightningIndexerFwdOp(Op):
             clean_logits,
             _config,
             _dev,
-            tune,
         ) = call
         return call, lambda: self.kernel_map["fp8_lightning_indexer_kernel"](
             batch,
@@ -107,7 +111,7 @@ class FP8LightningIndexerFwdOp(Op):
             kv_group,
             clean_logits,
             config=self.config,
-            tune=tune,
+            tune=self.tune,
         )
 
     def _resolve_and_bind(

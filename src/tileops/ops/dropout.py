@@ -14,6 +14,7 @@ from typing import ClassVar, Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.dropout import DropoutKernel
 from tileops.kernels.kernel_base import Entry, Kernel
 
@@ -48,6 +49,8 @@ class DropoutFwdOp(Op):
         training: bool = True,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -57,7 +60,10 @@ class DropoutFwdOp(Op):
             training: If False, dropout is disabled (identity pass-through).
             kernel_map: Optional kernel dispatch override.
             tune: Whether to autotune.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         if not (0.0 <= p <= 1.0):
             raise ValueError(f"Dropout probability must be in [0, 1], got {p}")
         self.N_total = None
@@ -103,6 +109,10 @@ class DropoutFwdOp(Op):
         )
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not x.is_cuda:
+            raise ValueError("input must be a CUDA tensor")
+        if x.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+            raise ValueError(f"input.dtype must be float16, bfloat16, or float32, got {x.dtype}")
         self.N_total = x.numel()
         self.dtype = x.dtype
         if self._skip:
@@ -131,15 +141,9 @@ class DropoutFwdOp(Op):
         Returns:
             ``output``, as the manifest declares.
         """
-        if not input.is_cuda:
-            raise ValueError("input must be a CUDA tensor")
-        if input.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-            raise ValueError(
-                f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}"
-            )
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(input, self._instance_key)
-        return self._eager_forward(input)
+        return self._serve(input)
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)

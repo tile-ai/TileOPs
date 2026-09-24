@@ -728,7 +728,7 @@ class Conv2dSymmetricKernel(Kernel):
             call.dilation[0],
             call.dtype,
         )
-        return (*args, call.has_bias, call.tune, index), lambda: cls(
+        return (*args, call.has_bias, index), lambda: cls(
             *args, has_bias=call.has_bias, tune=call.tune
         )
 
@@ -871,7 +871,7 @@ class Conv2dKernel(Kernel):
             call.dilation[1],
             call.dtype,
         )
-        return (*args, call.has_bias, call.tune, index), lambda: cls(
+        return (*args, call.has_bias, index), lambda: cls(
             *args, has_bias=call.has_bias, tune=call.tune
         )
 
@@ -1009,7 +1009,7 @@ class GroupConv2dKernel(Kernel):
             call.dtype,
         )
         group = (call.groups, call.c_in_g, call.c_out // call.groups)
-        return (*args, call.has_bias, *group, call.tune, index), lambda: cls(
+        return (*args, call.has_bias, *group, index), lambda: cls(
             *args,
             has_bias=call.has_bias,
             groups=group[0],
@@ -1190,7 +1190,7 @@ class Conv2d1x1Kernel(Kernel):
             call.padding[1],
             call.dtype,
         )
-        return (*args, call.has_bias, call.tune, index), lambda: cls(
+        return (*args, call.has_bias, index), lambda: cls(
             *args, has_bias=call.has_bias, tune=call.tune
         )
 

@@ -42,13 +42,18 @@ class BmmFwdOp(Op):
         self,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ) -> None:
         """Build the op. No shape or dtype is bound until the first call.
 
         Args:
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         # (batch, m, n, k, dtype) -> Kernel instance; built lazily on first use.

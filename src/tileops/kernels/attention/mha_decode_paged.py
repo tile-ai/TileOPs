@@ -559,7 +559,7 @@ def paged_decode_entry(cls: type, call: AttentionCall) -> Entry:
         call.is_causal,
         call.dtype,
     )
-    return (*args, call.tune, index), lambda: cls(*args, tune=call.tune, device_index=index)
+    return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
 
 
 class MHADecodePagedKernel(Kernel):

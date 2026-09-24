@@ -3,6 +3,7 @@ from typing import Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.fft import FFTC2CKernel
 from tileops.kernels.kernel_base import Entry, Kernel
 
@@ -26,13 +27,22 @@ class FFTC2CFwdOp(Op):
 
     """
 
-    def __init__(self, tune: bool = False, kernel_map: Optional[Dict[str, Kernel]] = None) -> None:
+    def __init__(
+        self,
+        tune: bool = False,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        *,
+        target: Target = None,
+    ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
             tune: Whether to enable autotuning (default: False)
             kernel_map: Optional custom kernel mapping for testing
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.n = None
         self.input_shape = None
         self.dtype = None

@@ -27,6 +27,7 @@ from typing import ClassVar, Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.rope import (
     RopeLlama31Kernel,
@@ -196,13 +197,12 @@ class _RopeOpBase(Op):
             self.batch,
             self.num_heads,
             device_index,
-            self.tune,
         )
         return self.kernel_for(self._op_name, inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, layout, dtype and device."""
-        seq_len, head_dim, dtype, layout, batch, num_heads, _device, tune = call
+        seq_len, head_dim, dtype, layout, batch, num_heads, _device = call
         return call, lambda: self.kernel_map[self._op_name](
             seq_len=seq_len,
             head_dim=head_dim,
@@ -210,7 +210,7 @@ class _RopeOpBase(Op):
             layout=layout,
             batch=batch,
             num_heads=num_heads,
-            tune=tune,
+            tune=self.tune,
         )
 
     def _validate_and_prepare(self, x: torch.Tensor) -> torch.Tensor:
@@ -242,11 +242,8 @@ class _RopeOpBase(Op):
         return x.contiguous()
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Direct kernel call for use inside custom_op implementation.
-
-        Called from the custom_op wrapper after validation has already
-        been performed in ``forward()``.
-        """
+        """Validate, resolve the kernel and launch, inside the operator."""
+        x = self._validate_and_prepare(x)
         cos, sin = self._get_cos_sin(x.device)
         return self.kernel(x, cos, sin)
 
@@ -265,11 +262,10 @@ class _RopeOpBase(Op):
         Returns:
             Rotated output tensor with same shape as x.
         """
-        x = self._validate_and_prepare(x)
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(x, self._instance_key)
-        return self._eager_forward(x)
+        return self._serve(x)
 
 
 # Concrete Op classes (5 variants)
@@ -293,6 +289,8 @@ class RopeNeoxFwdOp(_RopeOpBase):
         base: float = 10000.0,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -301,7 +299,10 @@ class RopeNeoxFwdOp(_RopeOpBase):
             base: Frequency base (default 10000).
             kernel_map: Optional kernel dispatch override.
             tune: Whether to autotune.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.base = base
         super().__init__(layout, kernel_map, tune)
 
@@ -325,6 +326,8 @@ class RopeNeoxPositionIdsFwdOp(Op):
         rotary_dim: Optional[int] = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -334,7 +337,10 @@ class RopeNeoxPositionIdsFwdOp(Op):
             rotary_dim: Manifest ``params.rotary_dim``, ``int | None``, default ``None``.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         if rotary_dim is not None and rotary_dim <= 0:
             raise ValueError("rotary_dim must be positive")
         if rotary_dim is not None and rotary_dim % 2 != 0:
@@ -396,13 +402,12 @@ class RopeNeoxPositionIdsFwdOp(Op):
             self.max_position,
             self.dtype,
             device_index,
-            self.tune,
         )
         return self.kernel_for(self._op_name, inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, rotary extent, dtype and device."""
-        num_tokens, num_heads, head_dim, rotary_dim, max_position, dtype, _device, tune = call
+        num_tokens, num_heads, head_dim, rotary_dim, max_position, dtype, _device = call
         return call, lambda: self.kernel_map[self._op_name](
             num_tokens=num_tokens,
             num_heads=num_heads,
@@ -410,7 +415,7 @@ class RopeNeoxPositionIdsFwdOp(Op):
             rotary_dim=rotary_dim,
             max_position=max_position,
             dtype=dtype,
-            tune=tune,
+            tune=self.tune,
         )
 
     def _validate_and_prepare(
@@ -448,8 +453,17 @@ class RopeNeoxPositionIdsFwdOp(Op):
         return x.contiguous(), position_ids.to(torch.int32).contiguous()
 
     def _eager_forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        """Validate, resolve the kernel and launch, inside the operator."""
+        x, position_ids = self._validate_and_prepare(x, position_ids)
         cos, sin = self._get_cos_sin(x.device)
-        return self.kernel(x, cos, sin, position_ids)
+        output = self.kernel(x, cos, sin, position_ids)
+        # The kernel counts the positions it found outside the table rather than the
+        # op proving they are inside it first: two reductions and two launches in
+        # front of every call cost more device time than the rotation they guard.
+        # It clamps its own table index, so this call read nothing out of bounds.
+        if self.kernel.take_out_of_range():
+            raise ValueError("position_ids must be in [0, max_position)")
+        return output
 
     def _infer_output_shapes(
         self,
@@ -469,19 +483,10 @@ class RopeNeoxPositionIdsFwdOp(Op):
         Returns:
             ``output``, as the manifest declares. Shape rules: ``output.shape == x.shape``.
         """
-        x, position_ids = self._validate_and_prepare(x, position_ids)
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            output = wrapped(x, position_ids, self._instance_key)
-        else:
-            output = self._eager_forward(x, position_ids)
-        # The kernel counts the positions it found outside the table rather than the
-        # op proving they are inside it first: two reductions and two launches in
-        # front of every call cost more device time than the rotation they guard.
-        # It clamps its own table index, so this call read nothing out of bounds.
-        if self.kernel.take_out_of_range():
-            raise ValueError("position_ids must be in [0, max_position)")
-        return output
+            return wrapped(x, position_ids, self._instance_key)
+        return self._serve(x, position_ids)
 
 
 class RopeNonNeoxFwdOp(_RopeOpBase):
@@ -502,6 +507,8 @@ class RopeNonNeoxFwdOp(_RopeOpBase):
         base: float = 10000.0,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -510,7 +517,10 @@ class RopeNonNeoxFwdOp(_RopeOpBase):
             base: Frequency base (default 10000).
             kernel_map: Optional kernel dispatch override.
             tune: Whether to autotune.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.base = base
         super().__init__(layout, kernel_map, tune)
 
@@ -595,6 +605,8 @@ class RopeLlama31FwdOp(_RopeOpBase):
         original_max_position: int = 8192,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -607,7 +619,10 @@ class RopeLlama31FwdOp(_RopeOpBase):
             original_max_position: Original max position (default 8192).
             kernel_map: Optional kernel dispatch override.
             tune: Whether to autotune.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.base = base
         self.scale_factor = scale_factor
         self.low_freq_factor = low_freq_factor
@@ -731,6 +746,8 @@ class RopeYarnFwdOp(_RopeOpBase):
         attn_factor: float = 1.0,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -744,7 +761,10 @@ class RopeYarnFwdOp(_RopeOpBase):
             attn_factor: Attention scaling factor (default 1.0).
             kernel_map: Optional kernel dispatch override.
             tune: Whether to autotune.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.base = base
         self.scale = scale
         self.original_max_position = original_max_position
@@ -857,6 +877,8 @@ class RopeLongRopeFwdOp(_RopeOpBase):
         original_max_position_embeddings: int = 4096,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
+        *,
+        target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -870,7 +892,10 @@ class RopeLongRopeFwdOp(_RopeOpBase):
                 (default 4096).
             kernel_map: Optional kernel dispatch override.
             tune: Whether to autotune.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
         """
+        self.target = target
         self.base = base
         self.rescale_factors = rescale_factors
         self.max_position_embeddings = max_position_embeddings
