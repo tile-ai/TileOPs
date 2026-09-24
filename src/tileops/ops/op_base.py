@@ -137,6 +137,9 @@ class Op(ABC):
             If specified, will be used to calculate TFlops in profile().
         total_memory (optional): Total memory for the op.
             If specified, will be used to calculate Bandwidth in profile().
+
+    An instance is not safe for concurrent calls that may settle it or build a new
+    specialization: neither step is synchronized.
     """
 
     # Which set of kernels serves this instance: a target name, ``BUILTIN`` for the in-tree
@@ -149,6 +152,8 @@ class Op(ABC):
     _settled_target: Target = None
     # Whether this instance has warned that a tuning request cannot reach its target.
     _tune_warned: bool = False
+    # Whether an owner of this instance's current call is running (see ``_own_call``).
+    _owning_call: bool = False
 
     # An entry the op keeps bound directly, if it keeps one: a ``Kernel`` in-tree, whatever a
     # target's builder returned otherwise. Specializations are held per role.
@@ -555,10 +560,9 @@ class Op(ABC):
 
         settled_here = self._builder is _UNRESOLVED
         if settled_here:
-            # ``__call__`` settled this already — unless it was traced. Dynamo defers a
-            # traced frame's attribute writes until after the graph has run, so a
-            # ``forward`` behind the compile boundary arrives here still ``_UNRESOLVED``
-            # and would take the in-tree path on the very call that chose a target.
+            # The call's owner has settled this already. A caller outside one — a
+            # direct ``kernel_for`` or ``forward`` — would otherwise take the in-tree
+            # path on the very call that chose a target.
             self._resolve_builder(tuple(inputs), {})
 
         try:
@@ -596,8 +600,7 @@ class Op(ABC):
                 entries[signature] = self._build_external(builder, name, specs)
             return entries[signature]
         except Exception:
-            # Whoever settled it unsettles it. ``__call__``'s handler does not run when
-            # the failure comes out of a compiled graph, so this one has to.
+            # Whoever settled it unsettles it.
             if settled_here:
                 self._unsettle()
             raise
@@ -845,27 +848,49 @@ class Op(ABC):
     def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
         """Make the op callable.
 
-        Settles which set of kernels serves this instance, once, then delegates to
-        ``forward``, which is the same for every target.
-
-        A call that fails settles nothing, so one invalid call cannot aim the instance
-        for good.
+        Delegates to ``forward``, which is the same for every target. An eager call is
+        owned here. A traced call is not: dynamo would defer the settling until after
+        the graph ran, so the op's compile-boundary operator owns it when the graph runs.
         """
-        if self._builder is not _UNRESOLVED:
-            result = self.forward(*args, **kwargs)
+        if torch.compiler.is_compiling():
+            return self.forward(*args, **kwargs)
+        return self._own_call(lambda: self.forward(*args, **kwargs), args, kwargs)
+
+    def _own_call(
+        self, run: Callable[[], object], args: tuple, kwargs: dict
+    ) -> Union[torch.Tensor, tuple]:
+        """Run one call as the owner of its lifecycle.
+
+        Settles which set of kernels serves this instance if nothing has, runs *run*,
+        and records the call for roofline. A call that fails undoes a settling it made,
+        so one failed first call cannot aim the instance for good; a settling from an
+        earlier successful call is kept. Each op owns its own settling, so a composite
+        and its delegates settle and undo independently. Entered again for the same op
+        while an owner runs — an eager call reaching the op's operator — it only runs.
+
+        Args:
+            run: The call's work, with every step that can still fail.
+            args: The call's manifest inputs, positionally.
+            kwargs: The call's manifest inputs, by name.
+        """
+        if self._owning_call:
+            return run()
+        self._owning_call = True
+        try:
+            settled_here = self._builder is _UNRESOLVED
+            if settled_here:
+                self._resolve_builder(args, kwargs)
+            try:
+                result = run()
+            except Exception:
+                if settled_here:
+                    self._unsettle()
+                raise
             if _RECORDING_CALLS or self._roofline_call_tensors is not None:
                 self._track_roofline_call(args, kwargs)
             return result
-
-        self._resolve_builder(args, kwargs)
-        try:
-            result = self.forward(*args, **kwargs)
-        except Exception:
-            self._unsettle()
-            raise
-        if _RECORDING_CALLS or self._roofline_call_tensors is not None:
-            self._track_roofline_call(args, kwargs)
-        return result
+        finally:
+            self._owning_call = False
 
     def _track_roofline_call(self, args: tuple, kwargs: dict) -> None:
         """Keep the record of this call's input tensors current.

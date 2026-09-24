@@ -186,13 +186,29 @@ class _InstanceNormTarget:
         return self.built[-1]
 
 
-def _run_instance_norm(op, n=2, c=8):
+def _run_instance_norm(op, n=2, c=8, call=None):
     x = torch.randn(n, c, 4, 4)
     weight, bias = torch.randn(c), torch.randn(c)
-    out = op(x, weight=weight, bias=bias)
+    out = (call or op)(x, weight=weight, bias=bias)
     torch.testing.assert_close(
         out, torch.nn.functional.instance_norm(x, weight=weight, bias=bias, eps=op.eps)
     )
+
+
+class _FlakyTarget(_InstanceNormTarget):
+    """Its kernels raise while ``fail`` is set, after building normally."""
+
+    fail = False
+
+    def build_kernel(self, *inputs, **params):
+        target, kernel = self, super().build_kernel(*inputs, **params)
+
+        def run(*args):
+            if target.fail:
+                raise RuntimeError("device fault")
+            return kernel(*args)
+
+        return run
 
 
 def test_a_targets_kernels_are_the_ops_entries():
@@ -211,22 +227,193 @@ def test_a_targets_kernels_are_the_ops_entries():
     assert op.settled_target == "acme" and not served_in_tree(op)
 
 
-def test_a_first_call_that_fails_in_the_targets_kernel_leaves_no_entry():
-    """The unsettled instance must not keep showing what the failed call built."""
-
-    class Failing(_InstanceNormTarget.Kernel):
-        def __call__(self, *args):
-            raise RuntimeError("device fault")
-
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("InstanceNormFwdOp", "acme", lambda *i, **p: Failing(1e-5))
+@pytest.mark.parametrize("compiled", [False, True], ids=["eager", "compiled"])
+def test_a_first_call_that_fails_in_the_targets_kernel_leaves_no_entry(compiled, request):
+    """The kernel runs after it is built, so the call's owner, not the build, must undo."""
+    if compiled:
+        request.getfixturevalue("isolated_dynamo")
+    target = _FlakyTarget()
+    _register(target, op="InstanceNormFwdOp")
     op = InstanceNormFwdOp()
+    call = torch.compile(op, fullgraph=True) if compiled else op
 
+    target.fail = True
     with pytest.raises(RuntimeError, match="device fault"):
-        _run_instance_norm(op)
+        _run_instance_norm(op, call=call)
 
     assert op.settled_target is None
     assert not op.built_kernels("instance_norm") and op.kernel is None
+    target.fail = False
+    _run_instance_norm(op, call=call)
+    assert op.settled_target == "acme", "asking again settles again"
+
+
+def test_a_later_call_that_fails_keeps_the_settling():
+    """Only the call that settled the instance may undo it."""
+    target = _FlakyTarget()
+    _register(target, op="InstanceNormFwdOp")
+    op = InstanceNormFwdOp()
+    _run_instance_norm(op)
+
+    target.fail = True
+    with pytest.raises(RuntimeError, match="device fault"):
+        _run_instance_norm(op)
+
+    assert op.settled_target == "acme" and len(op.built_kernels("instance_norm")) == 1
+
+
+@pytest.mark.usefixtures("isolated_dynamo")
+def test_a_failure_after_the_kernel_returns_undoes_the_settling():
+    """The operator's own steps after ``_eager_forward`` are part of the call it owns."""
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("ReluFwdOp", "acme", lambda *i, **p: lambda x: torch.zeros(3))
+    from tileops.ops.elementwise import ReluFwdOp
+
+    op = ReluFwdOp(inplace=True)
+    with pytest.raises(RuntimeError, match="shape"):
+        # Compiled, so the operator owns the call; the inplace copy cannot reshape the result.
+        torch.compile(op, fullgraph=True)(torch.randn(4, 8, dtype=DTYPE))
+
+    assert op.settled_target is None and not op.built_kernels(op._op_name)
+
+
+@pytest.mark.usefixtures("isolated_dynamo")
+def test_a_call_is_recorded_once_for_roofline(monkeypatch):
+    """Eager, cold compiled and warm compiled calls each record once, and only in a block."""
+    from tileops.ops.op_base import Op, _recording_roofline_calls
+
+    recorded = []
+    track = Op._track_roofline_call
+    monkeypatch.setattr(
+        Op, "_track_roofline_call", lambda self, a, k: (recorded.append(k), track(self, a, k))
+    )
+    _register(_InstanceNormTarget(), op="InstanceNormFwdOp")
+    op = InstanceNormFwdOp()
+    compiled = torch.compile(op, fullgraph=True)
+
+    with _recording_roofline_calls():
+        for call in (op, compiled, compiled):
+            recorded.clear()
+            _run_instance_norm(op, call=call)
+            assert len(recorded) == 1
+    assert op._roofline_call_tensors["x"] == ((2, 8, 4, 4), torch.float32)
+
+    _run_instance_norm(op)
+    assert op._roofline_call_tensors is None, "a call outside the block drops the record"
+
+
+def _composite(delegate, reach):
+    """An in-tree parent op whose forward reaches *delegate* as ``reach`` says."""
+
+    class Parent(RMSNormFwdOp):
+        def forward(self, x, weight):
+            if self.reach == "call":
+                _run_instance_norm(delegate)
+            elif self.reach == "forward":
+                _run_instance_norm(delegate, call=delegate.forward)
+            return x
+
+    Parent.__name__ = "Parent"
+    parent = Parent(normalized_shape=NORMALIZED_SHAPE, target=BUILTIN)
+    parent.reach = reach
+    return parent
+
+
+@pytest.mark.parametrize("parent_warm", [False, True], ids=["cold_parent", "warm_parent"])
+@pytest.mark.parametrize("delegate_warm", [False, True], ids=["cold_delegate", "warm_delegate"])
+def test_a_delegate_failure_undoes_only_what_the_failing_call_settled(parent_warm, delegate_warm):
+    """A composite and its delegate each own their own settling."""
+    target = _FlakyTarget()
+    _register(target, op="InstanceNormFwdOp")
+    delegate = InstanceNormFwdOp()
+    if delegate_warm:
+        _run_instance_norm(delegate)
+    parent = _composite(delegate, reach="none")
+    if parent_warm:
+        parent(*_inputs())
+    parent.reach = "call"
+
+    target.fail = True
+    with pytest.raises(RuntimeError, match="device fault"):
+        parent(*_inputs())
+
+    assert (parent.settled_target is BUILTIN) is parent_warm
+    assert (delegate.settled_target == "acme") is delegate_warm
+
+
+def test_a_delegate_reached_through_forward_is_owned_by_its_operator():
+    """A composite may call a delegate's ``forward``; the delegate's operator owns that call."""
+    target = _FlakyTarget()
+    _register(target, op="InstanceNormFwdOp")
+    delegate = InstanceNormFwdOp()
+    parent = _composite(delegate, reach="forward")
+
+    target.fail = True
+    with pytest.raises(RuntimeError, match="device fault"):
+        parent(*_inputs())
+
+    assert delegate.settled_target is None and not delegate.built_kernels("instance_norm")
+
+
+@pytest.mark.usefixtures("isolated_dynamo")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="RoPE runs a CUDA kernel")
+def test_a_compiled_rope_call_checks_its_positions_inside_the_operator():
+    """The range check is the call's last step, so a first call failing it settles nothing."""
+    from tileops.ops.rope import RopeNeoxPositionIdsFwdOp
+
+    op = RopeNeoxPositionIdsFwdOp(max_position=16)
+    x = torch.randn(4, 2, 64, device="cuda", dtype=DTYPE)
+    position_ids = torch.tensor([0, 1, 2, 99], device="cuda")
+
+    with pytest.raises(ValueError, match="max_position"):
+        torch.compile(op, fullgraph=True)(x, position_ids)
+
+    assert op.settled_target is None
+
+
+@pytest.mark.usefixtures("isolated_dynamo")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="RoPE validates a CUDA input")
+def test_a_compiled_rope_call_is_served_by_the_target_its_operator_picks():
+    """RoPE resolves its kernel inside the operator, so the target's builder serves it."""
+    from tileops.ops.rope import RopeNeoxFwdOp
+
+    fail = [True]
+
+    def build_kernel(*inputs, **params):
+        def kernel(x, cos, sin):
+            if fail[0]:
+                raise RuntimeError("device fault")
+            return torch.full_like(x, 7)
+
+        return kernel
+
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("RopeNeoxFwdOp", "acme", build_kernel)
+    op = RopeNeoxFwdOp()
+    call = torch.compile(op, fullgraph=True)
+    x = torch.randn(16, 64, device="cuda", dtype=DTYPE)
+
+    with pytest.raises(RuntimeError, match="device fault"):
+        call(x)
+    assert op.settled_target is None and not op.built_kernels("rope_neox") and op.kernel is None
+
+    fail[0] = False
+    assert torch.equal(call(x), torch.full_like(x, 7))
+    assert op.settled_target == "acme"
+
+
+def test_a_keyword_only_call_settles_and_records_by_name():
+    """``__call__`` hands the call's keywords to settling and recording."""
+    from tileops.ops.op_base import _recording_roofline_calls
+
+    _register(_Recorder())
+    op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
+    x, weight = _inputs()
+    with _recording_roofline_calls():
+        op(x=x, weight=weight)
+
+    assert op.settled_target == "acme"
+    assert set(op._roofline_call_tensors) == {"x", "weight"}
 
 
 def test_one_callable_a_target_returns_for_two_signatures_is_two_entries():
@@ -400,7 +587,7 @@ def test_a_call_that_fails_validation_pins_nothing():
 
 @pytest.mark.usefixtures("isolated_dynamo")
 def test_the_first_compiled_call_obeys_the_target_it_picked():
-    """Settling only in a traced ``__call__`` gives the in-tree kernel's numbers, once."""
+    """The operator settles the target at run time, so the target's kernel runs, once."""
     recorder = _Recorder()
     _register(recorder)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
@@ -414,7 +601,7 @@ def test_the_first_compiled_call_obeys_the_target_it_picked():
 
 @pytest.mark.usefixtures("isolated_dynamo")
 def test_a_compiled_call_whose_build_fails_pins_nothing():
-    """``__call__``'s handler does not run when the failure comes out of a compiled graph."""
+    """A compiled graph reaches the op through its operator, which owns the call."""
     attempts = []
 
     def build_kernel(*inputs, **params):

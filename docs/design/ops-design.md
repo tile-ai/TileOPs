@@ -371,6 +371,15 @@ satisfy the cold-call contract.
 - Validation and normalization belong in `_eager_forward`, not in `forward`:
   they run for every target either way, and keeping them untraced leaves `forward`
   a single call.
+- One entry owns each call's lifecycle — settling the target, undoing a settling
+  the call made if it fails, recording it for roofline: `__call__` for an eager
+  call; the generated operator when a compiled graph runs, or when a boundary op's
+  `forward` is called directly. A traced `__call__` owns nothing, since dynamo
+  would defer its writes past the graph. A direct `forward` on an op without a
+  boundary is not owned. The operator's
+  whole body is inside that ownership, so a call commits only when its work is
+  done. `_eager_forward` is an internal hook with no lifecycle of its own, and no
+  op calls another op's `_eager_forward`.
 - `_infer_output_shapes` reads only its shape arguments. A shape recorded by an
   earlier call is a state write the fake reads before the write happens.
 - An op with no tensor input has no device to detect and no node to own, so it

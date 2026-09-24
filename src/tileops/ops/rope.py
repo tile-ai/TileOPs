@@ -242,11 +242,8 @@ class _RopeOpBase(Op):
         return x.contiguous()
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Direct kernel call for use inside custom_op implementation.
-
-        Called from the custom_op wrapper after validation has already
-        been performed in ``forward()``.
-        """
+        """Validate, resolve the kernel and launch, inside the operator."""
+        x = self._validate_and_prepare(x)
         cos, sin = self._get_cos_sin(x.device)
         return self.kernel(x, cos, sin)
 
@@ -265,7 +262,6 @@ class _RopeOpBase(Op):
         Returns:
             Rotated output tensor with same shape as x.
         """
-        x = self._validate_and_prepare(x)
         wrapped = type(self)._wrapped
         if wrapped is not None:
             return wrapped(x, self._instance_key)
@@ -448,8 +444,17 @@ class RopeNeoxPositionIdsFwdOp(Op):
         return x.contiguous(), position_ids.to(torch.int32).contiguous()
 
     def _eager_forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        """Validate, resolve the kernel, launch and check the positions, inside the operator."""
+        x, position_ids = self._validate_and_prepare(x, position_ids)
         cos, sin = self._get_cos_sin(x.device)
-        return self.kernel(x, cos, sin, position_ids)
+        output = self.kernel(x, cos, sin, position_ids)
+        # The kernel counts the positions it found outside the table rather than the
+        # op proving they are inside it first: two reductions and two launches in
+        # front of every call cost more device time than the rotation they guard.
+        # It clamps its own table index, so this call read nothing out of bounds.
+        if self.kernel.take_out_of_range():
+            raise ValueError("position_ids must be in [0, max_position)")
+        return output
 
     def _infer_output_shapes(
         self,
@@ -469,19 +474,10 @@ class RopeNeoxPositionIdsFwdOp(Op):
         Returns:
             ``output``, as the manifest declares. Shape rules: ``output.shape == x.shape``.
         """
-        x, position_ids = self._validate_and_prepare(x, position_ids)
         wrapped = type(self)._wrapped
         if wrapped is not None:
-            output = wrapped(x, position_ids, self._instance_key)
-        else:
-            output = self._eager_forward(x, position_ids)
-        # The kernel counts the positions it found outside the table rather than the
-        # op proving they are inside it first: two reductions and two launches in
-        # front of every call cost more device time than the rotation they guard.
-        # It clamps its own table index, so this call read nothing out of bounds.
-        if self.kernel.take_out_of_range():
-            raise ValueError("position_ids must be in [0, max_position)")
-        return output
+            return wrapped(x, position_ids, self._instance_key)
+        return self._eager_forward(x, position_ids)
 
 
 class RopeNonNeoxFwdOp(_RopeOpBase):

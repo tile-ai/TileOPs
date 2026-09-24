@@ -173,20 +173,27 @@ def _register(cls: type, entry: dict, spec: OperatorSpec, specs: tuple) -> str:
     def operator(*args):
         *tensors, key = args
         op = get_instance(key)
-        if spec.kind == "out":
-            if spec.argument in declared:
-                op._eager_forward(*tensors)
+
+        def run():
+            if spec.kind == "out":
+                if spec.argument in declared:
+                    op._eager_forward(*tensors)
+                    return None
+                *passed, buffer = tensors
+                op._eager_forward(*passed, **{spec.argument: buffer})
                 return None
-            *passed, buffer = tensors
-            op._eager_forward(*passed, **{spec.argument: buffer})
-            return None
-        if spec.kind == "inplace":
-            written = tensors[declared.index(spec.argument)]
-            written.copy_(op._eager_forward(*tensors).reshape(written.shape))
-            return None
-        result = op._eager_forward(*tensors)
-        # An ``_eager_forward`` handing back a list satisfies the schema the same way.
-        return result if len(outputs) == 1 else tuple(result)
+            if spec.kind == "inplace":
+                written = tensors[declared.index(spec.argument)]
+                written.copy_(op._eager_forward(*tensors).reshape(written.shape))
+                return None
+            result = op._eager_forward(*tensors)
+            # An ``_eager_forward`` handing back a list satisfies the schema the same way.
+            return result if len(outputs) == 1 else tuple(result)
+
+        # A compiled graph, or a direct ``forward``, reaches the op only here, so this owns
+        # the call's lifecycle, the whole body included; reached through an eager
+        # ``__call__``, that call already owns it.
+        return op._own_call(run, tuple(tensors[: len(declared)]), {})
 
     def fake(*args):
         *tensors, key = args
