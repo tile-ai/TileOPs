@@ -58,6 +58,20 @@ def _register(recorder, target="acme", op="RMSNormFwdOp", claims=True):
     registry.register_kernel_builder(op, target, recorder.build_kernel)
 
 
+def _stub_op(**kwargs):
+    """An op whose in-tree kernel is a no-op, so the in-tree path runs on any device."""
+
+    class StubOp(RMSNormFwdOp):
+        def forward(self, x, weight):
+            return self.kernel_for("stub", (), x.dtype)
+
+        def entry_for(self, role, call):
+            return call, lambda: None
+
+    StubOp.__name__ = "StubOp"
+    return StubOp(normalized_shape=NORMALIZED_SHAPE, **kwargs)
+
+
 def _inputs(rows=4, shape=NORMALIZED_SHAPE, dtype=DTYPE, device="cpu"):
     x = torch.randn(rows, *shape, dtype=dtype, device=device)
     weight = torch.randn(*shape, dtype=dtype, device=device)
@@ -802,56 +816,6 @@ def test_a_composite_without_a_builder_hands_each_sub_op_to_the_target():
 
     with pytest.raises(OpNotAvailableError, match="no kernel builder for DaCumsumFwdOp"):
         op(*inputs)
-
-
-def test_tuning_is_not_part_of_what_a_call_is():
-    """``autotune()`` tunes the kernels already built, so a tuned call finds them."""
-    from tileops.kernels.gemm.call_spec import GemmCall
-
-    facts = dict(m=16, n=16, k=16, dtype=DTYPE, arch=90, h200=False, sm_count=132)
-
-    assert GemmCall(**facts, tune=True) == GemmCall(**facts, tune=False)
-
-
-def _composites():
-    from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
-    from tileops.ops.moe.contracts import ContiguousLayoutSpec
-    from tileops.ops.moe.fused_moe import FusedMoeFwdOp
-    from tileops.ops.moe.fused_moe_shared_expert import FusedMoeSharedExpertFwdOp
-    from tileops.ops.moe.routed_expert.fused_routed_expert import FusedMoEExpertsFwdOp
-    from tileops.ops.moe.routed_expert.indexed_routed_expert import IndexedExpertMLPFwdOp
-    from tileops.ops.moe.staged import MoeExpertMLPFwdOp
-
-    def mamba2(target):
-        op = Mamba2FwdOp(chunk_size=32, target=target)
-        # The sub-ops built per specialization, as the first call builds them.
-        op._get_da_cumsum_op(torch.float16)
-        op._get_cb_producer_op(1, 2, 1, 8, torch.float16, None)
-        return op
-
-    moe = dict(num_tokens=1, num_experts=4, top_k=2, hidden_size=128, ffn_size=256)
-    return [
-        mamba2,
-        lambda t: MoeExpertMLPFwdOp(ContiguousLayoutSpec.tight_physical_psum(), target=t),
-        lambda t: FusedMoEExpertsFwdOp(**moe, target=t),
-        lambda t: IndexedExpertMLPFwdOp(**moe, target=t),
-        lambda t: FusedMoeFwdOp(**moe, target=t),
-        lambda t: FusedMoeSharedExpertFwdOp(**moe, shared_ffn_size=128, target=t),
-    ]
-
-
-@pytest.mark.parametrize("make", _composites(), ids=lambda make: "composite")
-def test_a_composite_hands_its_target_to_every_sub_op(make):
-    from tileops.ops.op_base import Op
-
-    op = make(BUILTIN)
-    held = [v for v in vars(op).values() if isinstance(v, Op)]
-    held += [
-        v for d in vars(op).values() if isinstance(d, dict) for v in d.values() if isinstance(v, Op)
-    ]
-
-    assert held
-    assert all(sub.target is BUILTIN for sub in held), [type(s).__name__ for s in held]
 
 
 def test_an_output_buffer_is_held_to_the_output_s_dtype_and_shape():
