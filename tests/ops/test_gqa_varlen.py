@@ -4,11 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, served_in_tree
-from tileops.ops import (
-    GroupedQueryAttentionPrefillVarlenFwdOp,
-    GroupedQueryAttentionSlidingWindowVarlenFwdOp,
-    GroupedQueryAttentionVarlenFwdOp,
-)
+from tileops.ops import GroupedQueryAttentionVarlenFwdOp
 from tileops.perf.formulas import visible_scores
 from workloads.gqa import (
     GroupedQueryAttentionVarlenFwdWorkload,
@@ -288,23 +284,6 @@ def test_gqa_varlen_fwd_op(
 
 
 @pytest.mark.smoke
-def test_legacy_varlen_ops_remain_implemented_during_migration() -> None:
-    regular = GroupedQueryAttentionVarlenFwdTest(
-        2, [65, 127], [129, 255], 8, 2, 64, True, -1, -1, torch.float16
-    )
-    regular_op = GroupedQueryAttentionPrefillVarlenFwdOp(127, 255, is_causal=True)
-    regular.check(regular_op, *regular.gen_inputs(), atol=1e-3, rtol=1e-3)
-
-    windowed = GroupedQueryAttentionVarlenFwdTest(
-        2, [65, 127], [129, 255], 8, 2, 64, True, 64, -1, torch.float16
-    )
-    windowed_op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(
-        127, is_causal=True, window_size_left=64
-    )
-    windowed.check(windowed_op, *windowed.gen_inputs(), atol=1e-3, rtol=1e-3)
-
-
-@pytest.mark.smoke
 def test_varlen_reuses_one_op_across_dynamic_packed_totals() -> None:
     op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
     for q_lens, kv_lens in (([31, 65], [63, 129]), ([127, 3], [255, 7])):
@@ -421,17 +400,6 @@ def test_varlen_rejects_invalid_cumulative_lengths_contract() -> None:
         checked(q, k[:-1], v[:-1], cu_q, cu_kv)
     with pytest.raises(ValueError, match="cu_seqlens_q must be non-decreasing"):
         checked(q, k, v, torch.tensor([0, 17, 16], device=q.device, dtype=torch.int32), cu_kv)
-
-
-@pytest.mark.smoke
-def test_varlen_compatibility_validates_lengths() -> None:
-    test = GroupedQueryAttentionVarlenFwdTest(
-        2, [8, 8], [16, 16], 8, 2, 64, True, -1, -1, torch.float16
-    )
-    q, k, v, cu_q, cu_kv = test.gen_inputs()
-    old = GroupedQueryAttentionPrefillVarlenFwdOp(7, 16, validate_inputs=True)
-    with pytest.raises(ValueError, match="max_seqlen_q"):
-        old(q, k, v, cu_q, cu_kv)
 
 
 # ----------------------------------------------------------------------

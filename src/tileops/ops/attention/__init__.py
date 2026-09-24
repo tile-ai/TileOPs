@@ -11,8 +11,6 @@ from .gqa import (
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPagedFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
-    GroupedQueryAttentionPrefillVarlenFwdOp,
-    GroupedQueryAttentionSlidingWindowVarlenFwdOp,
     GroupedQueryAttentionVarlenFwdOp,
 )
 from .mha import (
@@ -27,8 +25,6 @@ __all__ = [
     "GroupedQueryAttentionDenseFwdOp",
     "GroupedQueryAttentionPagedFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
-    "GroupedQueryAttentionPrefillVarlenFwdOp",
-    "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
     "GroupedQueryAttentionVarlenFwdOp",
     "MultiHeadAttentionBwdOp",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
