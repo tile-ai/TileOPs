@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from tileops.backend import BUILTIN
+from tests.test_base import served_in_tree
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp
 from tileops.perf.formulas import gqa_prefill_paged_with_kv_cache_fwd_roofline
@@ -714,7 +714,6 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
         page_size=page_size,
         dim=dim,
         max_seqlen_q=max(q_lens),
-        target=BUILTIN,
     )
 
     for dtype in (torch.float16, torch.bfloat16):
@@ -762,8 +761,9 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
         atol, rtol = _PREFILL_PAGED_TOLERANCE[dtype]
         torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
 
-    built = op.built_kernels("gqa_prefill_paged")
-    assert {kernel.dtype for kernel in built.values()} == {torch.float16, torch.bfloat16}
+    if served_in_tree(op):
+        built = op.built_kernels("gqa_prefill_paged")
+        assert {kernel.dtype for kernel in built.values()} == {torch.float16, torch.bfloat16}
 
 
 # ----------------------------------------------------------------------

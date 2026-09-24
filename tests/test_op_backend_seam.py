@@ -9,8 +9,10 @@ happens. Uses a fake target, so no vendor hardware is involved.
 import pytest
 import torch
 
+from tests.test_base import served_in_tree
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
 from tileops.ops.convolution import Conv2dFwdOp
+from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from tileops.ops.pool import MaxPool2dFwdOp
 
@@ -166,22 +168,106 @@ def test_a_different_input_signature_asks_again(second, why):
     assert len(recorder.calls) == 2, why
 
 
-def test_a_targets_plain_callable_is_an_entry_but_not_a_kernel():
-    """``autotune`` walks ``iter_kernels``, and a plain callable has nothing to tune."""
-    built = []
+class _InstanceNormTarget:
+    """A backend that owns its kernel class and does not derive from TileOPs' ``Kernel``."""
 
-    def build_kernel(*inputs, **params):
-        built.append(_Recorder().build_kernel(*inputs, **params))
-        return built[-1]
+    class Kernel:
+        def __init__(self, eps):
+            self.eps = eps
+
+        def __call__(self, x, running_mean, running_var, weight, bias):
+            return torch.nn.functional.instance_norm(x, weight=weight, bias=bias, eps=self.eps)
+
+    def __init__(self):
+        self.built = []
+
+    def build_kernel(self, *inputs, **params):
+        self.built.append(self.Kernel(params["eps"]))
+        return self.built[-1]
+
+
+def _run_instance_norm(op, n=2, c=8):
+    x = torch.randn(n, c, 4, 4)
+    weight, bias = torch.randn(c), torch.randn(c)
+    out = op(x, weight=weight, bias=bias)
+    torch.testing.assert_close(
+        out, torch.nn.functional.instance_norm(x, weight=weight, bias=bias, eps=op.eps)
+    )
+
+
+def test_a_targets_kernels_are_the_ops_entries():
+    """Caching and enumeration hold for a kernel that is not a TileOPs ``Kernel``."""
+    target = _InstanceNormTarget()
+    _register(target, op="InstanceNormFwdOp")
+    op = InstanceNormFwdOp()
+
+    for n in (2, 2, 3):
+        _run_instance_norm(op, n=n)
+
+    assert len(target.built) == 2, "the same signature is built once"
+    assert list(op.built_kernels("instance_norm").values()) == target.built
+    assert list(op.iter_kernels()) == [], "nothing here for autotune"
+    assert op.run_config() is None
+    assert op.settled_target == "acme" and not served_in_tree(op)
+
+
+def test_a_first_call_that_fails_in_the_targets_kernel_leaves_no_entry():
+    """The unsettled instance must not keep showing what the failed call built."""
+
+    class Failing(_InstanceNormTarget.Kernel):
+        def __call__(self, *args):
+            raise RuntimeError("device fault")
 
     registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("RMSNormFwdOp", "acme", build_kernel)
-    op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
+    registry.register_kernel_builder("InstanceNormFwdOp", "acme", lambda *i, **p: Failing(1e-5))
+    op = InstanceNormFwdOp()
 
-    op(*_inputs())
+    with pytest.raises(RuntimeError, match="device fault"):
+        _run_instance_norm(op)
 
-    assert list(op.built_kernels("rms_norm").values()) == built
-    assert list(op.iter_kernels()) == []
+    assert op.settled_target is None
+    assert not op.built_kernels("instance_norm") and op.kernel is None
+
+
+def test_one_callable_a_target_returns_for_two_signatures_is_two_entries():
+    """A target may cache on its own; the op still holds one entry per signature."""
+    shared = _InstanceNormTarget.Kernel(1e-5)
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("InstanceNormFwdOp", "acme", lambda *i, **p: shared)
+    op = InstanceNormFwdOp()
+
+    _run_instance_norm(op, n=2)
+    _run_instance_norm(op, n=3)
+
+    assert list(op.built_kernels("instance_norm").values()) == [shared, shared]
+
+
+@pytest.mark.parametrize("ask", ["constructor", "autotune_first", "autotune_after"])
+def test_a_tuning_request_a_target_cannot_receive_warns_once(ask):
+    """``tune`` does not cross ``build_kernel``, so each way of asking says so."""
+    _register(_InstanceNormTarget(), op="InstanceNormFwdOp")
+    op = InstanceNormFwdOp(tune=ask == "constructor")
+    if ask == "autotune_first":
+        op.autotune()  # nothing is settled yet; the first build is where it is dropped
+
+    with pytest.warns(UserWarning, match="not passed tune") as caught:
+        _run_instance_norm(op)
+        _run_instance_norm(op, n=3)
+        if ask == "autotune_after":
+            op.autotune()
+            op.autotune()
+
+    assert len(caught) == 1
+
+
+def test_an_in_tree_settling_reads_builtin_however_it_was_chosen():
+    """``served_in_tree`` gates in-tree assertions, so detection must count too."""
+    detected, pinned = _stub_op(), _stub_op(target=BUILTIN)
+    assert detected.settled_target is None and pinned.settled_target is None
+
+    for op in (detected, pinned):
+        op(*_inputs())
+        assert op.settled_target is BUILTIN and served_in_tree(op)
 
 
 def test_the_target_is_settled_once_and_kept():

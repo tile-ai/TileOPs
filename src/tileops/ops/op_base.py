@@ -147,8 +147,12 @@ class Op(ABC):
     _builder: object = _UNRESOLVED
     # Which target that was, for introspection and error messages.
     _settled_target: Target = None
+    # Whether this instance has warned that a tuning request cannot reach its target.
+    _tune_warned: bool = False
 
-    kernel: Kernel
+    # An entry the op keeps bound directly, if it keeps one: a ``Kernel`` in-tree, whatever a
+    # target's builder returned otherwise. Specializations are held per role.
+    kernel: Optional[Callable[..., object]]
     kernel_map: Optional[dict[str, Kernel]] = None
     # Built entries, ``{role: {key: entry}}``. Annotation only: the instance
     # attribute appears on the first ``kernel_for`` call, so an op that
@@ -653,6 +657,8 @@ class Op(ABC):
         *specs* carries one slot per ``signature.inputs`` entry; an absent optional input's
         slot is ``None``.
         """
+        if self.tune:
+            self._warn_tune_not_passed()
         kernel = builder(*specs, **self._manifest_params())
         if not callable(kernel):
             raise OpNotAvailableError(
@@ -707,12 +713,25 @@ class Op(ABC):
         """
         return ()
 
+    @property
+    def settled_target(self) -> Target:
+        """Which implementation a call settled this instance on.
+
+        ``None`` until a call settles it, and again if that settling call fails. ``BUILTIN``
+        for the in-tree implementation however it was chosen — ``target=BUILTIN``, the
+        process default, or no target claiming the device. Otherwise the target's name.
+        """
+        if self._builder is _UNRESOLVED:
+            return None
+        if self._builder is None:
+            return BUILTIN
+        return self._settled_target
+
     def run_config(self) -> Optional[dict]:
         """The configuration the op's kernels were built with, or ``None``.
 
         An op given a config of its own answers with it; otherwise the first
         configured kernel ``iter_kernels`` yields does, which speaks for the whole call.
-        An entry that is not a ``Kernel`` is not asked.
         """
         own = getattr(self, "config", None)
         if own:
@@ -724,21 +743,26 @@ class Op(ABC):
         return None
 
     def iter_kernels(self) -> Iterator[Kernel]:
-        """Yield every ``Kernel`` instance the op holds, each one once.
+        """Yield every ``Kernel`` instance the op's entries hold, each one once.
 
         Reached: the entries of every role, ``self.kernel``, and the same walk over
         each ``kernel_delegates()`` entry. A kernel on any other attribute is not
         searched for — an op that holds one builds it through a role.
 
-        An entry that is not a ``Kernel`` is not yielded. A target's builder may
-        return a plain callable, and ``autotune`` has nothing to call on one;
+        What ``autotune`` tunes and ``run_config`` reads. An entry holding no ``Kernel``
+        — a target builder's plain callable — contributes nothing here;
         ``built_kernels`` shows every entry, whoever built it.
         """
         seen: set[int] = set()
-        for kernel in self._walk_kernels():
-            if id(kernel) not in seen:
-                seen.add(id(kernel))
-                yield kernel
+        for op in self._walk_ops():
+            roles = getattr(op, "_kernel_roles", None) or {}
+            held = [entry for entries in roles.values() for entry in entries.values()]
+            held.append(getattr(op, "kernel", None))
+            for entry in held:
+                for kernel in self._entry_kernels(entry):
+                    if id(kernel) not in seen:
+                        seen.add(id(kernel))
+                        yield kernel
 
     @staticmethod
     def _first_tensor_device(args: tuple, kwargs: dict) -> "torch.device | None":
@@ -758,8 +782,7 @@ class Op(ABC):
 
         An entry is a kernel, a sequence of kernels built together, or a dataclass
         carrying them alongside what else the specialization implies. An entry that
-        hides its kernels from this walk, or holds no ``Kernel`` instance, is
-        invisible to ``autotune``.
+        hides its kernels from this walk is invisible to ``autotune``.
         """
         if isinstance(entry, Kernel):
             return [entry]
@@ -785,25 +808,34 @@ class Op(ABC):
             yield op
             stack.extend(op.kernel_delegates())
 
-    def _walk_kernels(self) -> Iterator[Kernel]:
-        """Yield the kernels this op and its delegates hold, duplicates included."""
-        for op in self._walk_ops():
-            for entries in (getattr(op, "_kernel_roles", None) or {}).values():
-                for entry in entries.values():
-                    yield from self._entry_kernels(entry)
-            yield from self._entry_kernels(getattr(op, "kernel", None))
-
     def autotune(self) -> None:
         """Put the op in tuned mode: what it holds now, and what it builds next.
 
         It applies to specializations that do not exist yet — an op tuned before its
         first fp16 call is tuned when bf16 arrives later — because ``tune`` is what
         carries it, and a kernel factory reads that flag when it runs.
+
+        A target's builder is not passed ``tune``, so the flag cannot reach what a target
+        builds; an op a target serves warns once instead of ignoring the request.
         """
         for op in self._walk_ops():
             op.tune = True
+            if op.settled_target not in (None, BUILTIN):
+                op._warn_tune_not_passed()
         for kernel in self.iter_kernels():
             kernel.autotune()
+
+    def _warn_tune_not_passed(self) -> None:
+        """Warn, once per instance, that tuning does not reach this op's target."""
+        if self._tune_warned:
+            return
+        self._tune_warned = True
+        warnings.warn(
+            f"{type(self).__name__} is served by target {self._settled_target!r}, whose "
+            f"build_kernel is not passed tune",
+            UserWarning,
+            stacklevel=3,
+        )
 
     @abstractmethod
     def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
@@ -903,6 +935,13 @@ class Op(ABC):
 
     def _unsettle(self) -> None:
         """Undo a settling whose call did not finish, dropping what it built."""
+        dropped = {
+            id(entry)
+            for entries in (getattr(self, "_kernel_roles", None) or {}).values()
+            for entry in entries.values()
+        }
+        if id(getattr(self, "kernel", None)) in dropped:
+            self.kernel = None
         self._builder = _UNRESOLVED
         self._settled_target = None
         self._kernel_roles = {}

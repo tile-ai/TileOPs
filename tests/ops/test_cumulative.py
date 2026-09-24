@@ -8,8 +8,7 @@ Output has the same shape as input.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN
+from tests.test_base import FixtureBase, TestBase, served_in_tree
 from workloads.reduction import CumulativeWorkload
 
 
@@ -172,16 +171,16 @@ def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
 def test_cumsum_dynamic_shape_kernel_cache() -> None:
     from tileops.ops.reduction.cumulative import CumsumFwdOp
 
-    op = CumsumFwdOp(target=BUILTIN)
+    op = CumsumFwdOp()
     x1 = torch.randn(4, 8, dtype=torch.float16, device="cuda")
     x2 = torch.randn(5, 8, dtype=torch.float16, device="cuda")
 
     op(x1)
-    assert len(list(op.iter_kernels())) == 1
+    assert len(op.built_kernels("cumulative_fwd")) == 1
     op(x1)
-    assert len(list(op.iter_kernels())) == 1
+    assert len(op.built_kernels("cumulative_fwd")) == 1
     op(x2)
-    assert len(list(op.iter_kernels())) == 2
+    assert len(op.built_kernels("cumulative_fwd")) == 2
 
 
 @CumulativeBasicFixture
@@ -305,7 +304,7 @@ def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, backend: st
     from tileops.ops.reduction.cumulative import CumsumFwdOp
 
     x = torch.randn(M, N, dtype=dtype, device="cuda")
-    op = CumsumFwdOp(dim=-1, target=BUILTIN)
+    op = CumsumFwdOp(dim=-1)
     y = op(x)
 
     ref = x.float().cumsum(dim=-1).to(dtype)
@@ -315,10 +314,11 @@ def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, backend: st
 
     # The kernel the call built, not one refetched by a key: the key is a read-back of
     # the arguments and says nothing about which backend was chosen.
-    (kernel,) = op.built_kernels("cumulative_fwd").values()
-    assert kernel.strategy == backend, f"({M}, {N}): took {kernel.strategy}"
-    if kernel.strategy == "parallel_scan":
-        assert kernel.config["block_n"] == (256 if N > 16384 else 128)
+    if served_in_tree(op):
+        (kernel,) = op.built_kernels("cumulative_fwd").values()
+        assert kernel.strategy == backend, f"({M}, {N}): took {kernel.strategy}"
+        if kernel.strategy == "parallel_scan":
+            assert kernel.config["block_n"] == (256 if N > 16384 else 128)
 
 
 @pytest.mark.smoke

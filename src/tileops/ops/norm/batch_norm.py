@@ -96,7 +96,7 @@ class BatchNormFwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self.kernel: Optional[Kernel] = None
+        self.kernel = None
         # The manifest roofline reads x through this binding.
         self.x_shape: Optional[tuple[int, ...]] = None
 
@@ -280,7 +280,7 @@ class BatchNormBwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self.kernel: Optional[Kernel] = None
+        self.kernel = None
         self._last_roofline_spec: Optional[tuple[int, int, torch.dtype]] = None
 
     @property

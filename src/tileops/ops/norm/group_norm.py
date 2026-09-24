@@ -83,7 +83,7 @@ class GroupNormFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel: Optional[Kernel] = None
+        self.kernel = None
         self._last_roofline_spec: Optional[tuple[int, int, int, torch.dtype, bool]] = None
 
     @property

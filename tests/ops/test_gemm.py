@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.gemm import (
     GemmCpAsyncKernel,
@@ -609,9 +609,10 @@ def test_quantize_weight_int4_keeps_one_sided_groups_in_range() -> None:
 @pytest.mark.smoke
 def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
     test = GemmFp8Test(128, 256, 128, torch.float8_e4m3fn, "block128")
-    op = GemmFp8FwdOp(target=BUILTIN)
+    op = GemmFp8FwdOp()
     test.check(op, *test.gen_inputs(), atol=2e-2, rtol=2e-2)
-    assert op.kernel.__class__.__name__ == "GemmFp8BlockScaleKernel"
+    if served_in_tree(op):
+        assert op.kernel.__class__.__name__ == "GemmFp8BlockScaleKernel"
 
 
 @pytest.mark.parametrize(

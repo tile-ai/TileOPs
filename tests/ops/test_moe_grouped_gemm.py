@@ -9,7 +9,7 @@ workload's per-expert reference.
 import pytest
 import torch
 
-from tileops.backend import BUILTIN
+from tests.test_base import served_in_tree
 from tileops.kernels.grouped_gemm import GemmTemplate
 from tileops.kernels.moe import MoeGroupedGemmKernel
 from tileops.ops.moe import (
@@ -80,15 +80,16 @@ def test_grouped_gemm_runs_each_layout_through_the_op(layout_name, layout_args, 
         a_shape, (_E, 256, a_shape[-1]), layout_name, dtype, **layout_args
     )
     a, b, metadata = workload.gen_inputs()
-    op = MoeGroupedGemmFwdOp(_layout(layout_name, layout_args), target=BUILTIN)
+    op = MoeGroupedGemmFwdOp(_layout(layout_name, layout_args))
     torch._assert_async(op.layout_guard(a, b, metadata))
 
     out = op(a, b, metadata)
     assert out.dtype is dtype and out.shape == (*a_shape[:-1], 256)
     _assert_valid_rows(out, workload.ref_program(a, b, metadata), workload.valid_rows)
-    (kernel,) = op.built_kernels("grouped_gemm").values()
-    assert isinstance(kernel, MoeGroupedGemmKernel)
-    assert isinstance(kernel.inner, GemmTemplate)
+    if served_in_tree(op):
+        (kernel,) = op.built_kernels("grouped_gemm").values()
+        assert isinstance(kernel, MoeGroupedGemmKernel)
+        assert isinstance(kernel.inner, GemmTemplate)
     # A second call with a new row count reuses the instance: M is not in the key.
     if layout_name == "masked":
         a2_shape = a_shape
@@ -105,7 +106,8 @@ def test_grouped_gemm_runs_each_layout_through_the_op(layout_name, layout_args, 
         **layout_args,
     ).gen_inputs()
     op(a2, b2, metadata2)
-    assert len(op.built_kernels("grouped_gemm")) == 1
+    if served_in_tree(op):
+        assert len(op.built_kernels("grouped_gemm")) == 1
 
 
 @pytest.mark.smoke
@@ -116,14 +118,13 @@ def test_grouped_gemm_fuses_the_gated_activation(activation):
         (600, 512), (_E, 2 * 192, 512), "tight_physical_psum", torch.bfloat16, activation=activation
     )
     a, b, metadata = workload.gen_inputs()
-    op = MoeGroupedGemmFwdOp(
-        ContiguousLayoutSpec.tight_physical_psum(), activation=activation, target=BUILTIN
-    )
+    op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum(), activation=activation)
     out = op(a, b, metadata)
     assert out.shape == (600, 192)
     _assert_valid_rows(out, workload.ref_program(a, b, metadata), workload.valid_rows)
-    (kernel,) = op.built_kernels("grouped_gemm").values()
-    assert kernel.inner.activation == activation
+    if served_in_tree(op):
+        (kernel,) = op.built_kernels("grouped_gemm").values()
+        assert kernel.inner.activation == activation
 
 
 @pytest.mark.smoke
@@ -194,12 +195,13 @@ def test_expert_mlp_composes_two_template_gemms(dtype, activation):
         activation=activation,
     )
     x, w_gate_up, w_down, metadata = workload.gen_inputs()
-    op = MoeExpertMLPFwdOp(ContiguousLayoutSpec.tight_physical_psum(), activation, target=BUILTIN)
+    op = MoeExpertMLPFwdOp(ContiguousLayoutSpec.tight_physical_psum(), activation)
     out = op(x, w_gate_up, w_down, metadata)
     assert out.dtype is dtype and out.shape == (600, 256)
     _assert_valid_rows(
         out, workload.ref_program(x, w_gate_up, w_down, metadata), workload.valid_rows
     )
-    (gate_up,) = op.gate_up.built_kernels("grouped_gemm").values()
-    (down,) = op.down.built_kernels("grouped_gemm").values()
-    assert (gate_up.inner.activation, down.inner.activation) == (activation, "none")
+    if served_in_tree(op):
+        (gate_up,) = op.gate_up.built_kernels("grouped_gemm").values()
+        (down,) = op.down.built_kernels("grouped_gemm").values()
+        assert (gate_up.inner.activation, down.inner.activation) == (activation, "none")

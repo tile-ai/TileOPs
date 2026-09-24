@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.convolution import (
     Conv1dKernel,
@@ -258,13 +258,12 @@ def test_conv1d(
         dilation=dilation,
         groups=groups,
         tune=tune,
-        target=BUILTIN,
     )
     atol, rtol = (1e-3, 1e-3)
     if dtype == torch.bfloat16:
         atol, rtol = (1.6e-2, 1.6e-2)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-    if groups > 1:
+    if served_in_tree(op) and groups > 1:
         assert isinstance(op.kernel, GroupConv1dKernel)
         assert op.kernel.use_direct is (c_in // groups == 1 and c_out // groups == 1)
 
@@ -356,12 +355,12 @@ def test_conv1d_dispatches_kernel(
         stride=stride,
         padding=padding,
         dilation=dilation,
-        target=BUILTIN,
     )
     x = torch.randn(1, 32, 256, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, kernel_size, device="cuda", dtype=torch.float16).contiguous()
     out = op(x, weight)
-    assert isinstance(op.kernel, expected_kernel)
+    if served_in_tree(op):
+        assert isinstance(op.kernel, expected_kernel)
     ref = F.conv1d(x, weight, bias=None, stride=stride, padding=padding, dilation=dilation)
     torch.testing.assert_close(out, ref.contiguous(), atol=1e-3, rtol=1e-3)
 
@@ -628,11 +627,10 @@ def test_conv2d(
         dilation=dilation,
         groups=groups,
         tune=tune,
-        target=BUILTIN,
     )
     atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-    if groups > 1:
+    if served_in_tree(op) and groups > 1:
         assert isinstance(op.kernel, GroupConv2dKernel)
 
 
@@ -677,7 +675,7 @@ def test_conv2d_no_bias_grouped_matches_torch() -> None:
 def test_conv2d_depthwise_dispatches_the_direct_kernel(use_bias: bool) -> None:
     """One channel per group is a GEMM with M=1, so it gets a direct kernel instead."""
     channels = 32
-    op = Conv2dFwdOp(padding=1, groups=channels, target=BUILTIN)
+    op = Conv2dFwdOp(padding=1, groups=channels)
     x = torch.randn(1, channels, 28, 28, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(channels, 1, 3, 3, device="cuda", dtype=torch.float16).contiguous()
     bias = (
@@ -686,18 +684,20 @@ def test_conv2d_depthwise_dispatches_the_direct_kernel(use_bias: bool) -> None:
 
     out = op(x, weight, bias)
 
-    assert isinstance(op.kernel, GroupConv2dKernel) and op.kernel.use_direct
+    if served_in_tree(op):
+        assert isinstance(op.kernel, GroupConv2dKernel) and op.kernel.use_direct
     ref = F.conv2d(x, weight, bias=bias, padding=1, groups=channels).contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.smoke
 def test_conv2d_dispatches_1x1_kernel() -> None:
-    op = Conv2dFwdOp(target=BUILTIN)
+    op = Conv2dFwdOp()
     x = torch.randn(1, 32, 32, 32, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 1, 1, device="cuda", dtype=torch.float16).contiguous()
     out = op(x, weight)
-    assert isinstance(op.kernel, Conv2d1x1Kernel)
+    if served_in_tree(op):
+        assert isinstance(op.kernel, Conv2d1x1Kernel)
     ref = F.conv2d(x, weight, bias=None, padding=0)
     torch.testing.assert_close(out, ref.contiguous(), atol=1e-3, rtol=1e-3)
 
@@ -716,22 +716,24 @@ def test_conv2d_does_not_dispatch_1x1_kernel_with_padding() -> None:
 
 @pytest.mark.smoke
 def test_conv2d_dispatches_3x3_kernel() -> None:
-    op = Conv2dFwdOp(padding=1, target=BUILTIN)
+    op = Conv2dFwdOp(padding=1)
     x = torch.randn(1, 32, 32, 32, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 3, 3, device="cuda", dtype=torch.float16).contiguous()
     out = op(x, weight)
-    assert isinstance(op.kernel, Conv2dSymmetricKernel)
+    if served_in_tree(op):
+        assert isinstance(op.kernel, Conv2dSymmetricKernel)
     ref = F.conv2d(x, weight, bias=None, padding=1)
     torch.testing.assert_close(out, ref.contiguous(), atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.smoke
 def test_conv2d_dispatches_5x5_kernel() -> None:
-    op = Conv2dFwdOp(padding=2, target=BUILTIN)
+    op = Conv2dFwdOp(padding=2)
     x = torch.randn(1, 32, 32, 32, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 5, 5, device="cuda", dtype=torch.float16).contiguous()
     out = op(x, weight)
-    assert isinstance(op.kernel, Conv2dSymmetricKernel)
+    if served_in_tree(op):
+        assert isinstance(op.kernel, Conv2dSymmetricKernel)
     ref = F.conv2d(x, weight, bias=None, padding=2)
     torch.testing.assert_close(out, ref.contiguous(), atol=1e-3, rtol=1e-3)
 
@@ -741,11 +743,12 @@ def test_conv2d_batch_with_partial_tile_leaves_the_symmetric_kernel() -> None:
     # out_h * out_w is 49 here, a multiple of no m tile the symmetric kernel builds,
     # so an m tile would span two images and its implicit GEMM would take the wrong
     # image for the tail. More than one image therefore goes elsewhere.
-    op = Conv2dFwdOp(target=BUILTIN)
+    op = Conv2dFwdOp()
     x = torch.randn(5, 96, 9, 9, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 96, 3, 3, device="cuda", dtype=torch.float16).contiguous()
     out = op(x, weight)
-    assert not isinstance(op.kernel, Conv2dSymmetricKernel)
+    if served_in_tree(op):
+        assert not isinstance(op.kernel, Conv2dSymmetricKernel)
     ref = F.conv2d(x, weight, bias=None)
     torch.testing.assert_close(out, ref.contiguous(), atol=1e-2, rtol=1e-2)
 
@@ -954,26 +957,26 @@ def test_conv3d(
         dilation=dilation,
         groups=groups,
         tune=tune,
-        target=BUILTIN,
     )
     atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-    if _can_use_conv3d_ndhwc(
-        groups=groups,
-        c_in=c_in,
-        c_out=c_out,
-        kernel_d=kernel_size[0],
-        kernel_h=kernel_size[1],
-        kernel_w=kernel_size[2],
-        out_d=op.out_d,
-        out_h=op.out_h,
-        out_w=op.out_w,
-        n=n,
-        dtype=dtype,
-    ):
-        assert isinstance(op.kernel, Conv3dNdhwcKernel)
-    if groups > 1:
-        assert isinstance(op.kernel, GroupConv3dKernel)
+    if served_in_tree(op):
+        if _can_use_conv3d_ndhwc(
+            groups=groups,
+            c_in=c_in,
+            c_out=c_out,
+            kernel_d=kernel_size[0],
+            kernel_h=kernel_size[1],
+            kernel_w=kernel_size[2],
+            out_d=op.out_d,
+            out_h=op.out_h,
+            out_w=op.out_w,
+            n=n,
+            dtype=dtype,
+        ):
+            assert isinstance(op.kernel, Conv3dNdhwcKernel)
+        if groups > 1:
+            assert isinstance(op.kernel, GroupConv3dKernel)
 
 
 @pytest.mark.smoke
@@ -1044,13 +1047,14 @@ def test_conv3d_dispatches_kernel() -> None:
 
 @pytest.mark.smoke
 def test_conv3d_dispatches_ndhwc_kernel_no_bias() -> None:
-    op = Conv3dFwdOp(stride=1, padding=1, target=BUILTIN)
+    op = Conv3dFwdOp(stride=1, padding=1)
     x = torch.randn(1, 32, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
 
     out = op(x, weight)
 
-    assert isinstance(op.kernel, Conv3dNdhwcKernel)
+    if served_in_tree(op):
+        assert isinstance(op.kernel, Conv3dNdhwcKernel)
     ref = F.conv3d(x, weight, bias=None, stride=1, padding=1).contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
@@ -1060,13 +1064,14 @@ def test_conv3d_roofline_ignores_the_serving_kernel_layout_traffic() -> None:
     """The channels-last kernel stages input, weight and output. Those buffers are
     intermediates of one implementation, and the roofline is the algorithm's minimum
     traffic, so the number does not move with them."""
-    op = Conv3dFwdOp(stride=1, padding=1, target=BUILTIN)
+    op = Conv3dFwdOp(stride=1, padding=1)
     x = torch.randn(1, 32, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
 
     op(x, weight)
 
-    assert isinstance(op.kernel, Conv3dNdhwcKernel)
+    if served_in_tree(op):
+        assert isinstance(op.kernel, Conv3dNdhwcKernel)
     _, nbytes = op.eval_roofline()
     out_elems = 1 * 64 * 8 * 16 * 16
     input_elems = 1 * 32 * 8 * 16 * 16
@@ -1076,26 +1081,28 @@ def test_conv3d_roofline_ignores_the_serving_kernel_layout_traffic() -> None:
 
 @pytest.mark.smoke
 def test_conv3d_does_not_dispatch_ndhwc_for_pointwise() -> None:
-    op = Conv3dFwdOp(stride=1, padding=0, target=BUILTIN)
+    op = Conv3dFwdOp(stride=1, padding=0)
     x = torch.randn(1, 32, 8, 16, 16, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 1, 1, 1, device="cuda", dtype=torch.float16).contiguous()
 
     out = op(x, weight)
 
-    assert isinstance(op.kernel, Conv3dKernel)
+    if served_in_tree(op):
+        assert isinstance(op.kernel, Conv3dKernel)
     ref = F.conv3d(x, weight, bias=None, stride=1, padding=0).contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.smoke
 def test_conv3d_does_not_dispatch_ndhwc_for_small_output() -> None:
-    op = Conv3dFwdOp(stride=1, padding=1, target=BUILTIN)
+    op = Conv3dFwdOp(stride=1, padding=1)
     x = torch.randn(1, 32, 2, 4, 4, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
 
     out = op(x, weight)
 
-    assert isinstance(op.kernel, Conv3dKernel)
+    if served_in_tree(op):
+        assert isinstance(op.kernel, Conv3dKernel)
     ref = F.conv3d(x, weight, bias=None, stride=1, padding=1).contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
@@ -1119,7 +1126,7 @@ def test_conv3d_ndhwc_guard_rejects_float32() -> None:
 
 @pytest.mark.smoke
 def test_conv2d_dynamic_shape_kernel_cache_and_roofline() -> None:
-    op = Conv2dFwdOp(stride=1, padding=1, target=BUILTIN)
+    op = Conv2dFwdOp(stride=1, padding=1)
     x1 = torch.randn(1, 16, 32, 32, dtype=torch.float16, device="cuda")
     w1 = torch.randn(24, 16, 3, 3, dtype=torch.float16, device="cuda")
     x2 = torch.randn(2, 16, 32, 32, dtype=torch.float16, device="cuda")
@@ -1129,29 +1136,30 @@ def test_conv2d_dynamic_shape_kernel_cache_and_roofline() -> None:
         op.eval_roofline()
 
     op(x1, w1)
-    assert len(list(op.iter_kernels())) == 1
+    assert len(op.built_kernels("conv2d")) == 1
     flops, nbytes = op.eval_roofline()
     assert flops > 0
     assert nbytes > 0
 
     op(x1, w1)
-    assert len(list(op.iter_kernels())) == 1
+    assert len(op.built_kernels("conv2d")) == 1
 
     op(x2, w2)
-    assert len(list(op.iter_kernels())) == 2
+    assert len(op.built_kernels("conv2d")) == 2
 
 
 @pytest.mark.smoke
 def test_conv1d_depthwise_no_bias_matches_torch() -> None:
     """The depthwise-direct path is the one Conv1d variant no other no-bias case reaches."""
     groups = 32
-    op = Conv1dFwdOp(padding=1, groups=groups, target=BUILTIN)
+    op = Conv1dFwdOp(padding=1, groups=groups)
     x = torch.randn(1, groups, 128, device="cuda", dtype=torch.float16).contiguous()
     weight = torch.randn(groups, 1, 3, device="cuda", dtype=torch.float16).contiguous()
 
     out = op(x, weight)
 
-    assert isinstance(op.kernel, GroupConv1dKernel) and op.kernel.use_direct
+    if served_in_tree(op):
+        assert isinstance(op.kernel, GroupConv1dKernel) and op.kernel.use_direct
     ref = F.conv1d(x, weight, bias=None, padding=1, groups=groups).contiguous()
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 

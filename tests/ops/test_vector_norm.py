@@ -8,7 +8,7 @@ Uses torch.linalg.vector_norm as the reference implementation.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, allclose_compare
+from tests.test_base import FixtureBase, TestBase, allclose_compare, served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
 from workloads.reduction import L1NormWorkload
@@ -586,13 +586,14 @@ def test_vector_norm_tiled_autotune() -> None:
     """
     m, n, dtype = 4, 40000, torch.float16
     test = VectorNormTest(m, n, dtype, "l2")
-    op = _make_op("l2", tune=True, target=BUILTIN)
+    op = _make_op("l2", tune=True)
     atol, rtol = _get_tolerances(dtype)
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
-    (kernel,) = op.built_kernels("reduce").values()
-    assert kernel._needs_tiling
-    assert kernel.config in kernel.autotune_configs
+    if served_in_tree(op):
+        (kernel,) = op.built_kernels("reduce").values()
+        assert kernel._needs_tiling
+        assert kernel.config in kernel.autotune_configs
 
 
 @pytest.mark.smoke

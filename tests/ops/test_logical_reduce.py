@@ -9,7 +9,7 @@ Uses exact match (torch.equal) for comparison.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.reduction.logical_reduce import (
     LogicalReduceEdgeFusedKernel,
@@ -658,12 +658,13 @@ def test_logical_reduce_tiled_autotune() -> None:
 
     m, n, dtype = 4, 40000, torch.bool
     test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyFwdOp(dim=-1, tune=True, target=BUILTIN)
+    op = AnyFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs(), compare=_exact_compare)
 
-    (kernel,) = op.built_kernels("reduce").values()
-    assert kernel._needs_tiling
-    assert kernel.config in kernel.autotune_configs
+    if served_in_tree(op):
+        (kernel,) = op.built_kernels("reduce").values()
+        assert kernel._needs_tiling
+        assert kernel.config in kernel.autotune_configs
 
 
 # Manifest dtype contract: bool input + int64 / bool output dtypes.

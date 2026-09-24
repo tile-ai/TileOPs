@@ -15,7 +15,6 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase
-from tileops.backend import BUILTIN
 from tileops.ops.moe import FusedTopKOp
 from workloads.moe import FusedTopKWorkload
 
@@ -277,17 +276,17 @@ def test_fused_topk_correction_bias_device_check() -> None:
 
 @pytest.mark.smoke
 def test_fused_topk_kernel_cache_specializations() -> None:
-    op = FusedTopKOp(top_k=2, target=BUILTIN)
+    op = FusedTopKOp(top_k=2)
     gating1 = torch.randn(4, 8, dtype=torch.float16, device="cuda")
     gating2 = torch.randn(5, 8, dtype=torch.float16, device="cuda")
     gating3 = gating1.to(torch.bfloat16)
 
     op(gating1)
     assert op.dtype == torch.float16
-    assert len(list(op.iter_kernels())) == 1
+    assert len(op.built_kernels("fused_topk_kernel")) == 1
     op(gating1)
-    assert len(list(op.iter_kernels())) == 1
+    assert len(op.built_kernels("fused_topk_kernel")) == 1
     op(gating2)
-    assert len(list(op.iter_kernels())) == 2
+    assert len(op.built_kernels("fused_topk_kernel")) == 2
     op(gating3)
-    assert len(list(op.iter_kernels())) == 3
+    assert len(op.built_kernels("fused_topk_kernel")) == 3
