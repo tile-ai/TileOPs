@@ -5,9 +5,11 @@ import torch
 from torch.nn import functional as F
 
 from benchmarks.baselines import (
+    FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
     assert_matches_reference,
     compiled_reference,
+    flashinfer_op,
     reference_tolerance,
 )
 from benchmarks.benchmark_base import (
@@ -471,17 +473,14 @@ def _flashinfer_gqa_varlen(
     window_size_right: int,
     *inputs: torch.Tensor,
 ):
-    """FlashInfer ragged-prefill baseline over the same packed-varlen layout."""
+    """FlashInfer ragged prefill over the same packed layout; it has no right window."""
     if window_size_right >= 0:
         return None
-    try:
-        from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper
-    except ImportError:
-        return None
-
     q, _k, _v, cu_seqlens_q, cu_seqlens_kv = inputs
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
-    wrapper = BatchPrefillWithRaggedKVCacheWrapper(workspace, kv_layout="NHD")
+    wrapper = flashinfer_op("prefill.BatchPrefillWithRaggedKVCacheWrapper")(
+        workspace, kv_layout="NHD"
+    )
     wrapper.plan(
         qo_indptr=cu_seqlens_q,
         kv_indptr=cu_seqlens_kv,
@@ -541,8 +540,6 @@ def test_gqa_varlen_fwd_bench(
         window_size_left=window_size_left,
         window_size_right=window_size_right,
     )
-    if window_size_left == -1 and window_size_right == -1:
-        op.plan(q_lens, kv_lens, device=inputs[0].device)
     bm = ManifestBenchmark(op, test)
 
     functors = {
@@ -561,7 +558,7 @@ def test_gqa_varlen_fwd_bench(
         assert_matches_reference(
             flashinfer_fn, functors["torch-ref"], *inputs, **reference_tolerance(dtype)
         )
-        functors["flashinfer"] = flashinfer_fn
+        functors[FLASHINFER_TAG] = flashinfer_fn
     bm.compare(functors, *inputs)
 
 

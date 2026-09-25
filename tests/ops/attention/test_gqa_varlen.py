@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.manifest import load_workloads
 from tileops.ops import (
     GroupedQueryAttentionPrefillVarlenFwdOp,
@@ -362,6 +362,45 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
     )
     op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
     test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "q_lens, kv_lens, is_causal, scores, kernel",
+    [
+        pytest.param(
+            [129, 65, 6, 0, 300],
+            [33, 131, 2, 0, 400],
+            True,
+            {},
+            "GQAPrefillVarlenWSFwdKernel",
+            id="causal-ragged",
+        ),
+        pytest.param(
+            [65, 129, 128],
+            [129, 65, 0],
+            False,
+            {"sm_scale": 0.125, "softcap": 5.0},
+            "GQAPrefillVarlenWSFwdKernel",
+            id="bidirectional-softcap-empty-kv",
+        ),
+        # No K/V token at all: a TMA descriptor needs an extent, so the general kernel serves.
+        pytest.param([4, 128], [0, 0], True, {}, "GQAPrefillVarlenFwdKernel", id="all-kv-empty"),
+    ],
+)
+def test_varlen_dim128_serves_ragged_requests_on_sm90(
+    q_lens: list[int], kv_lens: list[int], is_causal: bool, scores: dict, kernel: str
+) -> None:
+    """Partial tiles, q_len > kv_len, and empty requests on the warp-specialized kernel."""
+    test = GroupedQueryAttentionVarlenFwdTest(
+        len(q_lens), q_lens, kv_lens, 8, 2, 128, is_causal, -1, -1, torch.float16, **scores
+    )
+    op = GroupedQueryAttentionVarlenFwdOp(is_causal=is_causal, **scores)
+    inputs = test.gen_inputs()
+    test.check(op, *inputs, atol=1e-3, rtol=1e-3)
+    if served_in_tree(op):
+        assert type(op._get_kernel((*inputs, None, None, None, None, None))).__name__ == kernel
 
 
 @pytest.mark.smoke

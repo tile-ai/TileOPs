@@ -71,9 +71,10 @@ class AttentionCall(CallSpec):
     backend: str = "auto"
     is_fp8: bool = False
     is_uniform: bool = True
+    # Every packed KV range is empty, so a TMA descriptor over K/V has no extent.
+    empty_kv: bool = False
     cache_dtype: Optional[torch.dtype] = None
     fuse_rope: bool = False
-    planned_schedule: bool = False
     max_position: Optional[int] = None
     rotary_dim: Optional[int] = None
     rope_layout: str = "neox"
