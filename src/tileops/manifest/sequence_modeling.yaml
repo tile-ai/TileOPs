@@ -179,12 +179,29 @@ FFTC2CFwdOp:
       output: {dtype: "same_as(input)", shape: "same_as(input)"}
     shape_rules:
     - "input.shape[-1] > 0"
+    - "input.shape[-1] <= 268435456"
     - "input.shape[-1] & (input.shape[-1] - 1) == 0"
 
   workloads:
+  # A representative three-pass single-CTA length; the unbatched row is its
+  # latency tier and the two batch-64 rows cover both dtypes.
   - {input_shape: [4096], dtypes: [complex64], label: "fft-4k-c64-unbatched"}
   - {input_shape: [64, 4096], dtypes: [complex64], label: "fft-4k-c64-b64"}
   - {input_shape: [64, 4096], dtypes: [complex128], label: "fft-4k-c128-b64"}
+  # FlashFFTConv / Hyena long convolution, where the transform length is 2*L:
+  # 16384 is a sequence of 8192, run in one CTA; 65536 is a sequence of 32768, decomposed.
+  - {input_shape: [64, 16384], dtypes: [complex64], label: "fft-longconv-16k-b64"}
+  - {input_shape: [8, 65536], dtypes: [complex64], label: "fft-longconv-64k-b8"}
+  # Audio spectrogram: 256 frames of an n_fft = 1024 window.
+  - {input_shape: [256, 1024], dtypes: [complex64], label: "fft-spectrogram-1k-b256"}
+  # FNet token mixing along a 512-token sequence, batch x hidden flattened into
+  # the 4096 rows.
+  - {input_shape: [4096, 512], dtypes: [complex64], label: "fft-fnet-seq512"}
+  # Per-channel short convolution. Also the row whose batch axis is past CUDA's
+  # 65535 grid.y limit, which the kernels avoid by putting the batch on grid.x.
+  - {input_shape: [65536, 64], dtypes: [complex64], label: "fft-shortconv-64-b65536"}
+  # Double-precision scientific transform: 2**20 at complex128, decomposed 1024*1024.
+  - {input_shape: [4, 1048576], dtypes: [complex128], label: "fft-1m-c128"}
 
   roofline:
     func: "tileops.perf.formulas.fft_c2c_roofline"
@@ -192,7 +209,8 @@ FFTC2CFwdOp:
   source:
     kernel: tileops/kernels/fft.py
     kernel_map:
-      fft_c2c_kernel: FFTC2CKernel
+      fft_c2c_one_cta_kernel: FFTC2COneCTAKernel
+      fft_c2c_decomposed_kernel: FFTC2CDecomposedKernel
     op: tileops/ops/fft.py
     test: tests/ops/test_fft.py
     bench: benchmarks/ops/bench_fft.py

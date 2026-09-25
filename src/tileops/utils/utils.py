@@ -77,6 +77,22 @@ def get_sm_count(index: "int | None" = None) -> int:
     return torch.cuda.get_device_properties(device).multi_processor_count
 
 
+@functools.lru_cache(maxsize=16)
+def _device_facts(index: int) -> "tuple[int, bool, int]":
+    props = torch.cuda.get_device_properties(index)
+    return _sm_version(index), is_h200_name(_device_name(index)), props.multi_processor_count
+
+
+def device_facts(index: "int | None" = None) -> "tuple[int, bool, int]":
+    """``(arch, h200, sm_count)`` of the device; defaults to the current device.
+
+    One cached lookup for a call record, which is built on the per-call path. The
+    index is resolved before the cache is read, so ``None`` never names whichever
+    device happened to be current on the first call.
+    """
+    return _device_facts(torch.cuda.current_device() if index is None else index)
+
+
 def forget_device_properties() -> None:
     """Drop the cached architecture and name of every device.
 
@@ -87,6 +103,7 @@ def forget_device_properties() -> None:
     """
     _device_name.cache_clear()
     _sm_version.cache_clear()
+    _device_facts.cache_clear()
 
 
 # Spin cycles queued before a device_busy_of measurement: tens of milliseconds

@@ -9,6 +9,17 @@ SHARED_BANK_SPAN_BYTES: int = 128
 # Shared memory one block may take without opting in to the dynamic allocation.
 STATIC_SHARED_BYTES: int = 48 * 1024
 
+# Shared memory one block may be given after opting in, by architecture.
+BLOCK_SHARED_BYTES_OPT_IN: dict[int, int] = {
+    80: 163 * 1024,
+    86: 99 * 1024,
+    89: 99 * 1024,
+    90: 227 * 1024,
+}
+
+# Threads one block may hold.
+MAX_BLOCK_THREADS: int = 1024
+
 # log2(e), to fold exp(x) into the single-instruction exp2(x * LOG2E).
 LOG2E: float = 1.4426950408889634
 

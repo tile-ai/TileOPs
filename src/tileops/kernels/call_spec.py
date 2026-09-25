@@ -32,16 +32,17 @@ class CallSpec:
     tune: bool = dataclasses.field(default=False, compare=False)
 
     def __post_init__(self) -> None:
+        if self.arch >= 0 and self.sm_count > 0:
+            return
+        from tileops.utils import device_facts
+
         index = self.device.index if self.device is not None else None
+        arch, h200, sm_count = device_facts(index)
         if self.arch < 0:
-            from tileops.utils import get_sm_version, is_h200
-
-            object.__setattr__(self, "arch", get_sm_version(index))
-            object.__setattr__(self, "h200", is_h200(index))
+            object.__setattr__(self, "arch", arch)
+            object.__setattr__(self, "h200", h200)
         if self.sm_count <= 0:
-            from tileops.utils import get_sm_count
-
-            object.__setattr__(self, "sm_count", get_sm_count(index))
+            object.__setattr__(self, "sm_count", sm_count)
 
     def __str__(self) -> str:
         """The facts of the call, without the fields nobody set.

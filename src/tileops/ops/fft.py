@@ -1,11 +1,10 @@
-import math
 from typing import Dict, Optional
 
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.fft import FFTC2CKernel
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.fft import FFTC2CCall, FFTC2CDecomposedKernel, FFTC2COneCTAKernel
+from tileops.kernels.kernel_base import Kernel
 
 from .op_base import Op
 
@@ -13,18 +12,26 @@ __all__ = ["FFTC2CFwdOp"]
 
 
 class FFTC2CFwdOp(Op):
-    """
-    1D Complex-to-Complex Fast Fourier Transform operation.
+    """1D Complex-to-Complex Fast Fourier Transform (FFT), equivalent to ``torch.fft.fft``.
 
-    Computes the one-dimensional discrete Fourier transform of complex input.
-    This is equivalent to torch.fft.fft.
+    Transforms the last axis; leading dimensions are batched. Every power-of-two
+    length from 1 to 2**28 is served in complex64 and complex128 on sm_80 and
+    sm_90. sm_86 and sm_89 (99 KB of shared memory per block) refuse 8192
+    (complex128), 16384 (complex64), 2**22 through 2**24, and 2**27 (complex128).
 
-    Supports batched input: any leading dimensions are flattened into a single
-    batch dimension, processed in parallel by the kernel, and reshaped back.
+    * ``n = 1`` returns a copy of the input.
+    * Up to 16384 (8192 at complex128), one launch holds a whole transform.
+    * Longer lengths are a four-step decomposition: two launches up to 2**24,
+      three above. Each call allocates one intermediate buffer the size of the
+      input.
 
-    Uses pre-computed twiddle factor LUT and shared-memory butterfly fusion
-    for optimal GPU performance.
+    Relative error ``max|got - ref| / max|ref|`` against a float64 reference is
+    at most 9.8e-07 (complex64) and 1.6e-15 (complex128), within 2.2x of cuFFT's.
 
+    Raises:
+        ValueError: The input is not a CUDA tensor, is not complex64 or
+            complex128, is 0-dimensional, or its last axis is not a power of two
+            from 1 through 2**28.
     """
 
     def __init__(
@@ -49,57 +56,14 @@ class FFTC2CFwdOp(Op):
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
-        self._twiddle_cache: Dict[
-            tuple[int, torch.dtype, int | None], tuple[torch.Tensor, torch.Tensor]
-        ] = {}
         self.kernel = None
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per transform length, batch, dtype and device."""
-        n, batch_size, dtype, _device_index = call
-        return call, lambda: self.kernel_map["fft_c2c_kernel"](n, batch_size, dtype, tune=self.tune)
-
-    @staticmethod
-    def _build_lut(
-        n: int,
-        dtype: torch.dtype,
-        device: torch.device,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Pre-compute the full twiddle factor LUT for all butterfly stages.
-
-        For stage s, half_m = 2^s twiddle factors are stored at offset (half_m - 1):
-            LUT[half_m - 1 + k] = exp(-2πi * k / m),  k = 0..half_m-1,  m = 2*half_m
-
-        All angles are computed in float64 for precision, then cast to the
-        real component dtype (float32 for complex64, float64 for complex128).
-        """
-        real_dtype = torch.float32 if dtype == torch.complex64 else torch.float64
-        log2n = int(math.log2(n))
-        lut_size = n - 1
-
-        angles = torch.zeros(lut_size, dtype=torch.float64)
-        for s in range(log2n):
-            half_m = 1 << s
-            m = half_m * 2
-            k_vals = torch.arange(half_m, dtype=torch.float64)
-            angles[half_m - 1 : 2 * half_m - 1] = -2.0 * math.pi * k_vals / m
-
-        lut_real = torch.cos(angles).to(real_dtype).to(device)
-        lut_imag = torch.sin(angles).to(real_dtype).to(device)
-        return lut_real, lut_imag
-
-    def _get_lut(
-        self, n: int, dtype: torch.dtype, device: torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        key = (n, dtype, device.index)
-        if key not in self._twiddle_cache:
-            self._twiddle_cache[key] = self._build_lut(n, dtype, device)
-        return self._twiddle_cache[key]
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"fft_c2c_kernel": FFTC2CKernel}
+        return {
+            "fft_c2c_one_cta_kernel": FFTC2COneCTAKernel,
+            "fft_c2c_decomposed_kernel": FFTC2CDecomposedKernel,
+        }
 
     def _infer_output_shapes(
         self,
@@ -128,28 +92,20 @@ class FFTC2CFwdOp(Op):
         n = x.shape[-1]
         if n <= 0 or n & (n - 1) != 0:
             raise ValueError(f"FFT size must be a positive power of 2, got {n}")
-
-        x_real = x.real.contiguous()
-        x_imag = x.imag.contiguous()
-        original_shape = x.shape
-
-        # Flatten all batch dimensions into a single batch dimension
-        batch_size = x_real[..., 0].numel() if x.ndim > 1 else 1
-        x_real = x_real.reshape(batch_size, n)
-        x_imag = x_imag.reshape(batch_size, n)
-
+        if n > 1 << 28:
+            raise ValueError(f"FFT size must be at most 2**28, got {n}")
         self.n = n
         self.dtype = x.dtype
         # What the manifest roofline resolves ``input`` through: the batch extent
         # is the call's, not the kernel cache's.
-        self.input_shape = tuple(original_shape)
-        self.twiddle_real, self.twiddle_imag = self._get_lut(n, x.dtype, x.device)
-        kernel = self.kernel_for(
-            "fft_c2c_kernel", (input,), (n, batch_size, x.dtype, x.device.index)
-        )
-        self.kernel = kernel
-        y_pair = kernel(x_real, x_imag, self.twiddle_real, self.twiddle_imag)
+        self.input_shape = tuple(x.shape)
+        if n == 1:
+            self.kernel = None
+            return x.clone()
 
-        # The kernel writes the final butterfly directly in interleaved layout;
-        # view_as_complex is metadata-only and launches no packing kernel.
-        return torch.view_as_complex(y_pair.reshape(*original_shape, 2))
+        # The kernels read the interleaved (real, imag) pair directly.
+        x_pair = torch.view_as_real(x.resolve_conj().contiguous()).reshape(x.numel() // n, n, 2)
+        call = FFTC2CCall(n=n, dtype=x.dtype, device=x.device, tune=self.tune)
+        self.kernel = self.kernel_for("fft_c2c", (input,), call)
+        y_pair = self.kernel(x_pair)
+        return torch.view_as_complex(y_pair.reshape(*x.shape, 2))
