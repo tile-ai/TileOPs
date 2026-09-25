@@ -20,6 +20,7 @@ from tileops.kernels.attention import (
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRopeFwdKernel,
     GQAPrefillVarlenFwdKernel,
+    GQAPrefillVarlenWSFwdKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -682,6 +683,7 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
             "gqa_varlen": GQAPrefillVarlenFwdKernel,
+            "gqa_varlen_ws": GQAPrefillVarlenWSFwdKernel,
             "gqa_varlen_sliding_window": GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
         }
 
@@ -763,6 +765,7 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
             window_size_right=self.window_size_right,
             is_fp8=q.dtype == fp8_dtype(),
             is_uniform=False,
+            empty_kv=k.shape[0] == 0,
             fuse_rope=self.pos_encoding_mode == "rope",
             max_position=rope_cos.shape[0] if rope_cos is not None else 1,
             rotary_dim=_rope_rotary_dim(dim, self.rotary_dim)
