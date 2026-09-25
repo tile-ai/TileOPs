@@ -23,6 +23,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import importlib
+import importlib.util
 import inspect
 import itertools
 import re
@@ -51,14 +52,25 @@ import _manifest_facts as facts_mod  # noqa: E402
 
 import tileops.manifest as manifest_pkg  # noqa: E402
 from tileops.manifest import (  # noqa: E402
+    LEGACY_FAMILIES,
     forward_signature,
+    types_document,
 )
-from tileops.manifest.dtype_rules import PROMOTE_INT_TO_FLOAT_RE, SAME_AS_RE  # noqa: E402
+from tileops.manifest.dtype_rules import (  # noqa: E402
+    DTYPE_BITS,
+    PROMOTE_INT_TO_FLOAT_RE,
+    SAME_AS_RE,
+)
 from tileops.manifest.rule_eval import (  # noqa: E402
     RULE_BUILTINS as _SHAPE_RULE_BUILTINS,
 )
 from tileops.manifest.rule_eval import (  # noqa: E402
     eval_shape_rule as _eval_shape_rule,
+)
+from tileops.manifest.signature import check_adts as _check_adts  # noqa: E402
+from tileops.manifest.signature import check_entry as _check_signature  # noqa: E402
+from tileops.manifest.signature import (  # noqa: E402
+    signature_schema_errors as _signature_schema_errors,
 )
 
 PACKAGE_ROOT = "src"
@@ -67,25 +79,7 @@ DISTRIBUTION_RELATIVE_KEYS = frozenset({"kernel", "op"})
 MANIFEST_DIR = REPO_ROOT / PACKAGE_ROOT / "tileops" / "manifest"
 
 # Valid torch dtype base names (without same_as references)
-_TORCH_DTYPES = {
-    "float16",
-    "float32",
-    "float64",
-    "bfloat16",
-    "int8",
-    "int16",
-    "int32",
-    "int64",
-    "uint8",
-    "bool",
-    "complex64",
-    "complex128",
-    "float8_e4m3fn",
-    "float8_e5m2",
-    "float8_e4m3",
-    "float8_e5m2fnuz",
-    "float8_e4m3fnuz",
-}
+_TORCH_DTYPES = set(DTYPE_BITS)
 
 # ``promote_int_to_float(ref)``: ``float32`` for integral ``ref``, else
 # ``same_as(ref)``. Models PyTorch int-input promotion (``torch.reciprocal``).
@@ -4675,6 +4669,96 @@ def check_bench_declaration(op_name: str, entry: dict) -> list[str]:
 ALL_LEVELS = frozenset({"schema", "signature", "shape", "dtype", "bench"})
 
 
+_PARAMETRIC_KEYS = {
+    "family": str,
+    "status": str,
+    "signature": dict,
+    "workloads": list,
+    "roofline": dict,
+    "ref_api": str,
+    "composition": dict,
+}
+_PARAMETRIC_REQUIRED = ("family", "status", "signature", "workloads", "roofline")
+
+
+def _check_parametric_schema(op_name: str, entry: dict, all_op_names) -> list[str]:
+    """Top-level fields of a parametric entry (docs/design/manifest.md § Top-Level Fields).
+
+    The key format, `ref_api` and `composition` checks are the ones legacy entries run.
+    """
+    if not isinstance(op_name, str):
+        return [f"[schema] {op_name!r}: the key is not an op class name `<Name>FwdOp`"]
+    errors = _l0_key_format(op_name, all_op_names)
+    if not _OP_KEY.fullmatch(op_name):
+        errors.append(f"[schema] {op_name}: the key is not an op class name `<Name>FwdOp`")
+    errors += _family_errors(op_name, entry)
+    if isinstance(entry.get("signature"), dict):
+        errors += [f"[schema] {op_name}: {e}" for e in _signature_schema_errors(entry["signature"])]
+    if isinstance(entry.get("composition"), dict):
+        errors += _l0_composition(op_name, entry, entry["composition"], all_op_names=all_op_names)
+    ref = entry.get("ref_api")
+    if isinstance(ref, str):
+        errors += _ref_api_errors(op_name, ref)
+    errors += [
+        f"[schema] {op_name}: missing required field '{k}'"
+        for k in _PARAMETRIC_REQUIRED
+        if k not in entry
+    ]
+    for key, value in entry.items():
+        expected = _PARAMETRIC_KEYS.get(key)
+        if expected is None:
+            errors.append(f"[schema] {op_name}: unknown field '{key}'")
+        elif not isinstance(value, expected):
+            errors.append(f"[schema] {op_name}: '{key}' must be a {expected.__name__}")
+    if entry.get("status") not in (None, "implemented", "spec-only"):
+        errors.append(f"[schema] {op_name}: status must be 'implemented' or 'spec-only'")
+    return errors
+
+
+_OP_KEY = re.compile(r"[A-Z][A-Za-z0-9]*(Fwd|Bwd)Op")
+
+
+def _family_errors(op_name: str, entry: dict) -> list[str]:
+    """`family` names a public module; an implemented op is exported from it by its key."""
+    family = entry.get("family")
+    where = f"[schema] {op_name}: family {family!r}"
+    if not isinstance(family, str):
+        return []  # reported as a missing or mistyped field
+    if not family.isidentifier():
+        return [f"{where} is not a module name"]
+    try:
+        found = importlib.util.find_spec(f"tileops.{family}") is not None
+    except (ImportError, ValueError):
+        found = False
+    if not found:
+        return [f"{where} is not a tileops module"]
+    if entry.get("status") != "implemented":
+        return []
+    module = importlib.import_module(f"tileops.{family}")
+    exported = getattr(module, op_name, None) if op_name in getattr(module, "__all__", ()) else None
+    if not inspect.isclass(exported) or exported.__name__ != op_name:
+        return [f"{where} does not export the class {op_name} in its __all__"]
+    return []
+
+
+def _ref_api_errors(op_name: str, ref: str) -> list[str]:
+    """`ref_api` is a qualified name that resolves once its module imports."""
+    parts = ref.split(".")
+    if len(parts) < 2 or not all(p.isidentifier() for p in parts):
+        return [f"[schema] {op_name}: ref_api {ref!r} is not a qualified name"]
+    for i in range(len(parts) - 1, 0, -1):
+        try:
+            target = importlib.import_module(".".join(parts[:i]))
+        except ImportError:
+            continue
+        for attr in parts[i:]:
+            if not hasattr(target, attr):
+                return [f"[schema] {op_name}: ref_api {ref!r} does not resolve"]
+            target = getattr(target, attr)
+        return []
+    return [f"[schema] {op_name}: ref_api {ref!r}: no prefix of it is an importable module"]
+
+
 def validate_manifest(
     manifest_path: Path | None = None,
     repo_root: Path | None = None,
@@ -4722,6 +4806,14 @@ def validate_manifest(
     # orchestrator can route them to either errors (strict mode) or
     # warnings (advisory mode) once all per-op checks have run.
     strict_errors: list[str] = []
+    # Entries see only the ADTs `check_adts` accepts; the others are reported once, here.
+    document = types_document()
+    adts, adt_errors = {}, []
+    if document is not None:
+        well_formed = isinstance(document, dict) and set(document) == {"adts"}
+        adts, adt_errors = _check_adts(document["adts"] if well_formed else None)
+    if "schema" in levels:
+        all_errors.extend(f"[schema] types.yaml: {e}" for e in adt_errors)
 
     for op_name, entry in ops.items():
         # --check-op scopes validation to that op; skip all others.
@@ -4730,6 +4822,16 @@ def validate_manifest(
 
         if verbose:
             print(f"  Checking {op_name}...")
+
+        family = entry.get("family") if isinstance(entry, dict) else None
+        if isinstance(entry, dict) and not (isinstance(family, str) and family in LEGACY_FAMILIES):
+            if "schema" in levels:
+                all_errors.extend(_check_parametric_schema(op_name, entry, ops))
+            if levels & {"signature", "shape", "dtype"}:
+                signature_errors, signature_warnings = _check_signature(op_name, entry, adts)
+                all_errors.extend(f"[signature] {e}" for e in signature_errors)
+                all_warnings.extend(f"[signature] {w}" for w in signature_warnings)
+            continue
 
         # schema: YAML structure validation
         if "schema" in levels:
