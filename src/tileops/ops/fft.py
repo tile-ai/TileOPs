@@ -12,48 +12,26 @@ __all__ = ["FFTC2CFwdOp"]
 
 
 class FFTC2CFwdOp(Op):
-    """1D Complex-to-Complex Fast Fourier Transform (FFT) operation.
+    """1D Complex-to-Complex Fast Fourier Transform (FFT), equivalent to ``torch.fft.fft``.
 
-    Computes the one-dimensional discrete Fourier transform of complex input
-    along the last axis, equivalently to ``torch.fft.fft``. Any leading
-    dimensions are flattened into one batch dimension, transformed in parallel,
-    and reshaped back.
+    Transforms the last axis; leading dimensions are batched. Every power-of-two
+    length from 1 to 2**28 is served in complex64 and complex128 on sm_80 and
+    sm_90. sm_86 and sm_89 (99 KB of shared memory per block) refuse 8192
+    (complex128), 16384 (complex64), 2**22 through 2**24, and 2**27 (complex128).
 
-    Every power-of-two length from 1 to 2**28 is served, in complex64 and
-    complex128, on sm_80 and sm_90. sm_86 and sm_89 give a block 99 KB of shared
-    memory and serve every length except 8192 (complex128), 16384 (complex64),
-    2**22 through 2**24, and 2**27 (complex128). Which of three shapes a call
-    takes is decided by what one thread block can hold:
+    * ``n = 1`` returns a copy of the input.
+    * Up to 16384 (8192 at complex128), one launch holds a whole transform.
+    * Longer lengths are a four-step decomposition: two launches up to 2**24,
+      three above. Each call allocates one intermediate buffer the size of the
+      input.
 
-    * ``n = 1`` is the identity and launches nothing; the input is returned as
-      a copy, since a transform is out of place.
-    * ``2`` to ``16384`` is one launch, the whole transform register-resident
-      that keeps the whole length in one block. The exception is 16384 at
-      complex128, whose four-pass plan needs more shared memory than a block
-      can be given.
-    * ``32768`` to ``2**24``, plus 16384 at complex128, is two launches: the
-      four-step decomposition into two factors, a column pass and a row pass.
-    * ``2**25`` to ``2**28`` is three launches, the same decomposition applied
-      twice.
-
-    A decomposed length costs one intermediate buffer whatever its factor count.
-    Such a call allocates and frees ``input.numel() * input.element_size()``
-    bytes of device memory on top of its result; a one-launch length allocates
-    only the result.
-
-    Accuracy, measured across the whole range against a CPU float64 reference:
-    the relative error ``max|got - ref| / max|ref|`` stays at or below 9.8e-07
-    for complex64 and 1.6e-15 for complex128, and at most 2.2x the error cuFFT
-    shows at the same length. Against ``torch.fft.fft`` on unit-variance input,
-    results agree to ``atol=rtol=1e-4`` for complex64 and ``1e-8`` for
-    complex128 through n = 16384. Past that a transform's outputs carry sqrt(n)
-    times the input's scale, so the absolute half of a fixed tolerance has to
-    grow with sqrt(n) to mean the same thing; the relative half does not.
+    Relative error ``max|got - ref| / max|ref|`` against a float64 reference is
+    at most 9.8e-07 (complex64) and 1.6e-15 (complex128), within 2.2x of cuFFT's.
 
     Raises:
         ValueError: The input is not a CUDA tensor, is not complex64 or
-            complex128, is 0-dimensional, or its last axis is not a supported
-            power of two from 1 through 2**28.
+            complex128, is 0-dimensional, or its last axis is not a power of two
+            from 1 through 2**28.
     """
 
     def __init__(

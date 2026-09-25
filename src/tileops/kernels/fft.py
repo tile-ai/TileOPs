@@ -1,10 +1,7 @@
-"""Power-of-two complex-to-complex FFT kernels.
+"""Power-of-two complex-to-complex FFT kernels, one plan per (length, dtype) in ``FFT_PLANS``.
 
-``FFT_PLANS`` maps each served (length, dtype) to a one-CTA plan or a two- or
-three-factor four-step plan. Per-slot register code that needs a distinct Python
-constant in each slot is written as macro recursion (``_each``), because a traced
-``for`` becomes a runtime loop and a runtime index into a register array falls to
-local memory.
+Code that needs a distinct Python constant per register slot is macro recursion
+(``_each``): a traced ``for`` is a runtime loop, and a runtime register index spills.
 """
 
 import dataclasses
@@ -25,11 +22,7 @@ __all__ = ["FFTC2CCall", "FFTC2CDecomposedKernel", "FFTC2COneCTAKernel"]
 
 @dataclasses.dataclass(frozen=True)
 class FFTC2CCall(CallSpec):
-    """What decides which C2C implementation serves a call.
-
-    The batch extent is not here: every kernel takes it as a symbolic dimension,
-    so one compilation serves every batch.
-    """
+    """What selects the C2C kernel; the batch is symbolic in every kernel, so it is absent."""
 
     n: int = 0
     dtype: torch.dtype = torch.complex64
@@ -45,10 +38,8 @@ class FFTPlan:
     pad: tuple
     twiddle_exp: tuple
     builders: tuple
-    # Bytes per real: 4 at complex64, 8 at complex128.
-    itemsize: int
-    # The architectures whose block shared-memory limit the default config fits.
-    archs: tuple = ()
+    itemsize: int  # bytes per real
+    archs: tuple = ()  # architectures whose block shared-memory limit the default fits
 
     @property
     def decomposed(self) -> bool:
@@ -61,13 +52,7 @@ class FFTPlan:
         return self.pad[0] == (0, 0)
 
     def geometry(self, index: int) -> tuple:
-        """``(nf, lanes, extent, twrows, r_last)`` of four-step kernel *index*.
-
-        nf is the factor it transforms and ``lanes = nf // 16`` the threads one such
-        transform takes; extent is the grid axis a tile divides; twrows is the
-        height of its four-step table, zero for the row kernel; r_last is the radix
-        of its final pass.
-        """
+        """``(factor, threads per transform, grid extent, table rows, last radix)`` of a kernel."""
         nf = self.factors[index]
         column = index < len(self.factors) - 1
         extent = math.prod(self.factors[index + 1 :]) if column else self.factors[0]
@@ -75,21 +60,13 @@ class FFTPlan:
         return nf, nf // 16, extent, twrows, self.radix[index][-1]
 
     def four_step_smem_bytes(self, index: int, tw: int, pad: tuple) -> int:
-        """Shared memory four-step kernel *index* takes at width *tw* and strides *pad*.
-
-        Its two interleaved value arrays, plus the staged pass tables and the tw
-        columns of the four-step table it reads.
-        """
+        """Shared memory four-step kernel *index* takes at width *tw* and strides *pad*."""
         nf, _lanes, _extent, twrows, r_last = self.geometry(index)
         staged = 2 * (nf // 16) + (2 * r_last if _factor_passes(nf) == 3 else 0) + 2 * twrows * tw
         return (2 * _four_step_smem(nf, tw, pad[0], pad[-1]) + staged) * self.itemsize
 
     def one_cta_smem_bytes(self, row: int, grp: int) -> int:
-        """Shared memory the one-CTA kernel takes at strides (row, grp).
-
-        Only the three-pass kernels read (row, grp); the others size their arrays
-        from the length, and these figures mirror their builders.
-        """
+        """Shared memory the one-CTA kernel takes; only three-pass kernels read (row, grp)."""
         n = self.factors[0]
         if n <= 32:
             reals = 0
@@ -124,23 +101,12 @@ class FFTPlan:
 
 
 def _perm(k, r: int):
-    """Where output *k* of a radix-*r* pass sits among the register slots.
-
-    A radix-r DFT written as two stages leaves output k at
-    ``(r//4)*(k % 4) + k//4`` for r in (4, 8, 16); a radix-2 pass is direct and
-    leaves natural order. *k* may be a Python int or a traced loop variable and
-    the expression is the same either way, which is what lets the passes that
-    write their outputs back run as one loop rather than one statement per slot.
-    """
+    """The register slot of output *k* of a radix-*r* pass; *k* may be a traced loop variable."""
     return k if r == 2 else (r // 4) * (k % 4) + k // 4
 
 
 def _root(e: int, size: int) -> tuple:
-    """``W_size^e`` as a (cos, sin) pair of Python floats, axis roots exact.
-
-    Spelling the axis roots exactly avoids needless FMAs and keeps n = 4 bitwise
-    aligned with a float64 reference at the same point.
-    """
+    """``W_size^e`` as a (cos, sin) pair of Python floats, with the axis roots exact."""
     angle = -2.0 * math.pi * e / size
     out = []
     for value in (math.cos(angle), math.sin(angle)):
@@ -166,22 +132,12 @@ def _factor_passes(nf: int) -> int:
 
 
 def _factor_radix(nf: int) -> int:
-    """The radix of one four-step factor's last pass.
-
-    It comes from the length rather than from the single-CTA plan of that length:
-    a factor is not obliged to use it. 512 ships as (8, 8, 8) and runs here as
-    (16, 16, 2), which is what ``nf // 256`` says.
-    """
+    """The last-pass radix of a four-step factor, which need not match its one-CTA plan."""
     return nf // 16 if nf <= 256 else nf // 256
 
 
 def _lane_split(nf: int) -> int:
-    """s for ``lane = lane % s + s * (lane // s)``, the split of the twiddle base.
-
-    The largest power of two with ``s*s <= lanes``, so the table spends
-    ``s + lanes // s`` rows -- its minimum -- on the one index of k_b that is not
-    a compile-time constant. lanes = 64 gives 8.
-    """
+    """s in ``lane = lane % s + s * (lane // s)``, minimizing the ``s + lanes // s`` table rows."""
     lanes = nf // 16
     s = 1
     while s * s * 4 <= lanes:
@@ -191,11 +147,7 @@ def _lane_split(nf: int) -> int:
 
 @functools.lru_cache(maxsize=32)
 def _twiddle_exps(nf: int) -> tuple:
-    """The j_a multipliers of one column kernel's four-step twiddle table, one per row.
-
-    For ``k_b = lane + lanes*u``, the factor is a per-lane base times the two
-    compile-time digits of ``u``. The returned rows contain those three terms.
-    """
+    """The j_a multiplier of each twiddle-table row: lane base, then the p and q powers."""
     lanes = nf // 16
     s = _lane_split(nf)
     rows = list(range(s)) + [s * h for h in range(lanes // s)]
@@ -211,25 +163,14 @@ def _four_step_smem(nf: int, tw: int, row: int, grp: int) -> int:
 
 
 def _four_pass_rows(n: int) -> tuple:
-    """The (row1, row2) strides of a four-pass kernel: the _smem_pad row rule per exchange.
-
-    The final combine is a shuffle, so there is no third.
-    """
+    """The (row1, row2) strides of a four-pass kernel, by the ``_smem_pad`` row rule."""
     return n // 16 + (n // 256 - n // 16) % 32, n // 256 + (n // 4096 - n // 256) % 32
 
 
 def _smem_pad(n: int, radix: tuple) -> tuple:
-    """The (row, grp) shared-memory strides that make both exchanges conflict-free.
+    """The conflict-free (row, grp) strides of a three-pass plan; (0, 0) for the others.
 
-    row is the S1 row stride. Pass 2 reads S1[k1][m1*r3 + m2] with k1 = tx // r3,
-    so inside a warp the k1 groups sit row apart and the r3 lanes of one group are
-    adjacent; the banks spread exactly when row % 32 == r3.
-
-    grp is the S2 group stride. Pass 3 reads S2[k1'][k1][m2] with k1 = tx % 16, so
-    16 lanes sit grp apart; an odd grp is coprime with 32 and covers 16 banks, and
-    the next k1' block then starts 16*grp % 32 == 16 banks along.
-
-    (0, 0) for the plans that size their shared memory from the length.
+    Pass 2 spreads over the banks when row % 32 == r3; pass 3 when grp is odd.
     """
     if n < 1024 or len(radix) == 4:
         return 0, 0
@@ -240,11 +181,7 @@ def _smem_pad(n: int, radix: tuple) -> tuple:
 
 @T.macro
 def _radix4(reg, off: int, step: int):
-    """Radix-4 butterfly in place over the four slots off, off+step, ..., off+3*step.
-
-    Decimation in frequency, so the W_4^1 = -i on the second output folds into the
-    add and no multiply is needed; outputs stay in natural order.
-    """
+    """Radix-4 DIF butterfly in place over slots off + k*step; -i folds into the adds."""
     t0r = reg[off, 0] + reg[off + 2 * step, 0]
     t0i = reg[off, 1] + reg[off + 2 * step, 1]
     t1r = reg[off + step, 0] + reg[off + 3 * step, 0]
@@ -286,11 +223,7 @@ def _dft_pass1(reg, off: int, span: int, j: int):
 
 @T.macro
 def _twiddle_slot(reg, slot: int, e: int, size: int):
-    """Scale one slot by the constant W_size**e in place.
-
-    A macro of its own so each recursion step binds its temporaries once. The -i
-    axis root is a swap and a negate: one fewer rounding step.
-    """
+    """Scale one slot by the constant W_size**e; a macro so each step binds its temporaries once."""
     wr, wi = _root(e, size)
     if wr == 0.0 and wi == -1.0:
         sw = reg[slot, 0]
@@ -325,14 +258,7 @@ def _dft_pass2(reg, off: int, span: int, g: int):
 
 @T.macro
 def _dft(reg, off: int, r: int):
-    """*r*-point DFT in place on the *r* slots from *off*.
-
-    2 and 4 are one butterfly and leave natural order. 8 and 16 are two stages --
-    radix-4 over the stride-(r//4) groups, the inter-stage twiddles, then
-    radix-(r//4) within each group of four -- which leaves output k at slot
-    ``(r//4)*(k % 4) + k//4``. Nothing moves it back; the store index maps absorb
-    the permutation, and ``_perm`` is where it is written down.
-    """
+    """*r*-point DFT in place on the slots from *off*, outputs left in ``_perm`` order."""
     if r == 2:
         _radix2(reg, off, 1)
     elif r == 4:
@@ -345,10 +271,7 @@ def _dft(reg, off: int, r: int):
 
 @T.macro
 def _twiddle_apply(reg, cw, slot: int, w1r, w1i, advance: bool):
-    """Scale one slot by the running power of w1 in cw, advancing it first if asked.
-
-    A macro of its own so each recursion step binds its temporaries once.
-    """
+    """Scale one slot by the running power of w1 in cw, advancing it first if asked."""
     if advance:
         nr = cw[0] * w1r - cw[1] * w1i
         ni = cw[0] * w1i + cw[1] * w1r
@@ -410,11 +333,7 @@ def _read_lane(s_re, s_im, reg, base, lane, step: int, n: int):
 
 @T.macro
 def _write_perm16(s_re, s_im, reg, base, step):
-    """Write the 16 outputs of a pass to base + k*step, undoing the permutation.
-
-    Serves both scratch stages: S1[k1][tx] with base = tx and step = row, and
-    S2[k1'][k1][m2] with base = k1*grp + m2 and step = 16*grp.
-    """
+    """Write the 16 outputs of a pass to base + k*step in natural order."""
     for k in T.unroll(16):
         s_re[k * step + base] = reg[_perm(k, 16), 0]
         s_im[k * step + base] = reg[_perm(k, 16), 1]
@@ -440,12 +359,7 @@ def _write_out(y_pair, reg, st, bb, lane, span: int, r: int, n: int):
 
 @T.macro
 def _gather16(s_re, s_im, reg, base, gstep, tw: int, r: int):
-    """Read the 16 values of a last pass out of shared memory.
-
-    Slot ``g*r + m`` is group g's m'th value. Every shared index is scaled by
-    ``tw`` because a four-step CTA interleaves ``tw`` transforms as
-    ``s[idx*tw + col]``; a single-CTA plan stores one per column and passes 1.
-    """
+    """Read a last pass's 16 values, slot ``g*r + m`` from group g; *tw* interleaves transforms."""
     for k in T.unroll(16):
         reg[k, 0] = s_re[base + (k // r) * gstep + (k % r) * tw]
         reg[k, 1] = s_im[base + (k // r) * gstep + (k % r) * tw]
@@ -512,10 +426,7 @@ def _fs_slot(pw: int, qw: int, r: int) -> int:
 
 @T.macro
 def _fs_power(dst, src, tmp, s_tw, col, base: int, e: int):
-    """dst = src times the e'th tabulated power of one half of u, read whole.
-
-    Exponent 0 is a copy: row base - 1 does not exist, the table starts at 1.
-    """
+    """dst = src times the e'th tabulated power of one half of u; e = 0 is a copy."""
     if e == 0:
         dst[0] = src[0]
         dst[1] = src[1]
@@ -554,10 +465,7 @@ def _four_step_a_out(
     pbase: int,
     i: int,
 ):
-    """Output u = p + 4q of kernel A's last pass, p = i // 4 and q = i % 4.
-
-    Its twiddle is ``twb * P_p * Q_q``; ``twg = twb * P_p`` is formed once per p.
-    """
+    """Output u = p + 4q of kernel A's last pass, twiddled by ``twb * P_p * Q_q``; p = i // 4."""
     pw = i // 4
     qw = i % 4
     if qw == 0:
@@ -588,13 +496,9 @@ def _tiny_twiddle(w, index, size: int, e: int):
 
 @T.macro
 def _tiny_butterfly(reg, tmp, pair, diff, lane, size: int, lanes: int, q: int):
-    """One DIF butterfly of one register slot, against its partner *size* / 2 away.
+    """One DIF butterfly of slot q against its partner *size* / 2 away, by shuffle or register.
 
-    The partner is a shuffle while the pair sits in one lane's neighbours and a
-    plain register read once it does not. The twiddle is spelled as literals
-    selected by a runtime exponent rather than read from a table: these lengths
-    stage none. ``pair`` is dead once ``diff`` is formed, so it carries the
-    selected twiddle rather than a buffer of its own.
+    ``pair`` is dead once ``diff`` is formed, so it then carries the twiddle.
     """
     if size // 2 < lanes:
         pair[0] = T.shfl_xor(tmp[q, 0], size // 2, width=lanes)
@@ -617,10 +521,7 @@ def _tiny_butterfly(reg, tmp, pair, diff, lane, size: int, lanes: int, q: int):
 
 @T.macro
 def _tiny_network(reg, tmp, pair, diff, lane, n: int, lanes: int, ept: int):
-    """Apply the DIF stages recursively with compile-time register indices.
-
-    Each stage copies the register file aside, then combines it in place.
-    """
+    """Apply the DIF stages recursively, each over a copy of the register file."""
     if n >= 2:
         for k in T.unroll(ept):
             tmp[k, 0] = reg[k, 0]
@@ -631,12 +532,7 @@ def _tiny_network(reg, tmp, pair, diff, lane, n: int, lanes: int, ept: int):
 
 @T.macro
 def _tiny_reverse_one(reg, tmp, io, pair, lane, lanes: int, ept: int, bits: int, q: int):
-    """Gather slot q's output from the lane and slot the bit reversal names.
-
-    Both halves are shuffled unconditionally and the right one picked by an
-    ``if``, because which slot holds it is a runtime value and a runtime index
-    into ``tmp`` would fall to local memory.
-    """
+    """Gather slot q's bit-reversed output; both halves are shuffled and picked by an ``if``."""
     for j in T.unroll(2 * ept):
         io[j] = T.tvm_warp_shuffle(
             T.uint32(0xFFFFFFFF),
@@ -647,10 +543,7 @@ def _tiny_reverse_one(reg, tmp, io, pair, lane, lanes: int, ept: int, bits: int,
         )
     pair[0] = io[0]
     pair[1] = io[1]
-    # Nested, and not a macro: joining the two tests with `and` would build a
-    # runtime T.And instead of folding the ept test away, and handing the slot
-    # expression to a macro would let-bind it, which is one IR node more than the
-    # comparison needs.
+    # Nested: `and` would build a runtime T.And instead of folding the ept test.
     if ept == 2:  # noqa: SIM102
         if _bit_reverse(q * lanes + lane, bits) // lanes == 1:
             pair[0] = io[2]
@@ -660,11 +553,7 @@ def _tiny_reverse_one(reg, tmp, io, pair, lane, lanes: int, ept: int, bits: int,
 
 
 def _build_tiny(n: int, ept: int, real_dtype: str) -> Any:
-    """The warp-resident kernel for n <= 32, *ept* values per thread.
-
-    A whole transform sits in one lane group, so every exchange is a shuffle and
-    nothing touches shared memory.
-    """
+    """The shuffle-only kernel for n <= 32, *ept* values per thread."""
     lanes = n // ept
 
     @tilelang.jit(
@@ -699,7 +588,6 @@ def _build_tiny(n: int, ept: int, real_dtype: str) -> Any:
                         for v in T.vectorized(2):
                             reg[1, v] = x_pair[bb, 1 * lanes + lane, v]
                     _tiny_network(reg, tmp, pair, diff, lane, n, lanes, ept)
-                    # The final bit reversal is what puts the outputs in order.
                     for k in T.unroll(ept):
                         tmp[k, 0] = reg[k, 0]
                         tmp[k, 1] = reg[k, 1]
@@ -722,12 +610,7 @@ def _build_tiny(n: int, ept: int, real_dtype: str) -> Any:
 
 @T.macro
 def _warp8_last_128(y_pair, reg, pair, bb, k1, half, real_dtype: str, q: int):
-    """One output pair of n = 128's final radix-2 combine.
-
-    The two register-DFT8 halves sit in the same warp, so this is shuffle only
-    and touches no shared memory. ``half`` is a runtime value, so which of the
-    two a lane owns is an ``if`` rather than an index.
-    """
+    """One output pair of n = 128's final radix-2 combine, by warp shuffle."""
     pair[0] = T.shfl_xor(reg[_perm(q, 8), 0], 1)
     pair[1] = T.shfl_xor(reg[_perm(q, 8), 1], 1)
     er = T.alloc_var(real_dtype)
@@ -757,18 +640,10 @@ def _warp8_last_128(y_pair, reg, pair, bb, k1, half, real_dtype: str, q: int):
 
 
 def _build_warp8(n: int, real_dtype: str) -> Any:
-    """The register-DFT8 warp-exchange kernel for n = 64 or 128.
-
-    block = 64 threads for both dtypes, so a transform's 8 (n=64) or 16 (n=128)
-    lanes always sit inside one warp; the mid-kernel transpose barrier is
-    T.sync_warp (the one T.sync_threads is only for loading the primitive table).
-    The table holds n/8 primitives, not the full W_n table: W_n^k for lane k is
-    exactly wlut[k], so the rest of a lane's twiddles come from _twiddle_rotor.
-    """
+    """The register-DFT8 kernel for n = 64 or 128; a transform's lanes stay in one warp."""
     lanes = n // 8
     transforms = 64 // lanes
-    # The transpose row stride; the one added lane is what clears the bank
-    # conflict.
+    # The added lane clears the transpose's bank conflict.
     stride = lanes + 1
 
     @tilelang.jit(
@@ -814,8 +689,7 @@ def _build_warp8(n: int, real_dtype: str) -> Any:
                     _twiddle_rotor(reg, cw, 0, 8, w1r, w1i)
                     _write_lane(s_re, s_im, reg, group_base, stride, lane, 8, 8)
                 T.sync_warp()
-                # pass 2: read the transpose back and DFT8; n = 128 then combines the
-                # two interleaved halves by radix 2.
+                # pass 2: DFT8; n = 128 then combines its two halves by radix 2
                 if bb < batch:
                     if n == 64:
                         _read_lane(s_re, s_im, reg, group_base, lane, stride, 8)
@@ -834,10 +708,7 @@ def _build_warp8(n: int, real_dtype: str) -> Any:
 
 
 def _build_packed_256(real_dtype: str) -> Any:
-    """The packed n=256 kernel: two 16x16 transforms per 32-thread CTA.
-
-    The shared row stride of 17 is what the 16-wide transpose needs.
-    """
+    """The packed n=256 kernel: two 16x16 transforms per 32-thread CTA."""
 
     @tilelang.jit(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
@@ -886,12 +757,7 @@ def _build_packed_256(real_dtype: str) -> Any:
 
 
 def _build_packed_512(table_limit: int, real_dtype: str) -> Any:
-    """The packed n=512 kernel: three radix-8 passes over a 9-wide shared row.
-
-    *table_limit* is how many primitives the block reads straight from the table:
-    64 at complex64, whose 128 threads pack two transforms per CTA, and 48 at
-    complex128, whose 64 threads pack one.
-    """
+    """The packed n=512 kernel: three radix-8 passes; *table_limit* primitives are read directly."""
     pack = 2 if table_limit == 64 else 1
 
     @tilelang.jit(
@@ -918,10 +784,8 @@ def _build_packed_512(table_limit: int, real_dtype: str) -> Any:
                 tw_r = T.alloc_shared((72,), real_dtype)
                 tw_i = T.alloc_shared((72,), real_dtype)
 
-                # Rows 0..63 of the staged table are W_512^k for the pass-1 lane and
-                # 64..71 the stride-8 subsample pass 2 reads. At complex128 the block
-                # is 64 threads, so the last 16 rows are turned out of the first 48
-                # by one multiplication rather than read again.
+                # Rows 0..63: W_512^k for pass 1; 64..71: the stride-8 subsample for
+                # pass 2. A 64-thread block derives rows 48..63 by one multiplication.
                 if tx < table_limit:
                     for v in T.vectorized(2):
                         st[v] = wlut[tx, v]
@@ -958,8 +822,7 @@ def _build_packed_512(table_limit: int, real_dtype: str) -> Any:
                 T.sync_threads()
                 k1 = lane // 8
                 q = lane % 8
-                # pass 2: a stride-8 read down one pass-1 row, stored as the 9-wide
-                # runs pass 3 reads whole
+                # pass 2, stored as the 9-wide runs pass 3 reads
                 if bb < batch:
                     for k in T.unroll(8):
                         reg[k, 0] = s_re[xbase + k1 * 72 + q + k * 8]
@@ -983,14 +846,10 @@ def _build_packed_512(table_limit: int, real_dtype: str) -> Any:
 
 
 def _build_three_pass(n: int, real_dtype: str) -> Any:
-    """The n = 1024, 2048 or 4096 kernel: three radix-16 passes over two exchanges.
-
-    Its last pass runs 16 // r3 independent radix-r3 transforms, r3 = n // 256.
-    """
+    """The n = 1024-4096 kernel: two radix-16 passes, then 16 // r3 radix-r3 ones."""
     r3 = n // 256
 
-    # No out_idx on any builder: with a symbolic batch the wrapper would resolve
-    # the output shape on every call, so the caller supplies the output buffer.
+    # No out_idx on any builder: a symbolic output shape would resolve on every call.
     @tilelang.jit(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
         compile_flags=["-O3"],
@@ -1014,9 +873,7 @@ def _build_three_pass(n: int, real_dtype: str) -> Any:
                 cw = T.alloc_local((2,), real_dtype)
                 s_re = T.alloc_shared((smem_floats,), real_dtype)
                 s_im = T.alloc_shared((smem_floats,), real_dtype)
-                # The pass-2 base twiddles are staged once per block: read straight
-                # from the table they are r3 apart, which costs a scattered access
-                # in every warp instead of one.
+                # Staged once per block; read from global they are r3 apart.
                 s_w2 = T.alloc_shared((r3, 2), real_dtype)
                 if tx < r3:
                     for v in T.vectorized(2):
@@ -1026,7 +883,6 @@ def _build_three_pass(n: int, real_dtype: str) -> Any:
                 # pass 1: read x[n1*(n/16) + tx], DFT16 over n1, twiddle W_n^(tx*k1), to S1[k1][tx]
                 _read_pairs(x_pair, reg, bb, tx, n // 16, 16)
                 _dft(reg, 0, 16)
-                # Read the interleaved table as a pair to keep it one transaction.
                 for v in T.vectorized(2):
                     st[v] = wlut[tx, v]
                 _twiddle_rotor(reg, cw, 0, 16, st[0], st[1])
@@ -1061,11 +917,7 @@ def _build_three_pass(n: int, real_dtype: str) -> Any:
 
 
 def _build_four_pass(n: int, real_dtype: str) -> Any:
-    """The four-pass n = 8192 or 16384 kernel: three radix-16 exchanges, then a combine.
-
-    The final radix-(n // 4096) pass reads its cross-thread values by warp
-    shuffle, so there is no fourth shared-memory round trip.
-    """
+    """The n = 8192 or 16384 kernel: three radix-16 passes, then a combine by warp shuffle."""
     a2 = n // 256
     a3 = n // 4096
     row1, row2 = _four_pass_rows(n)
@@ -1089,22 +941,12 @@ def _build_four_pass(n: int, real_dtype: str) -> Any:
                 reg = T.alloc_local((16, 2), real_dtype)
                 st = T.alloc_local((2,), real_dtype)
                 cw = T.alloc_local((2,), real_dtype)
-                # The final pass's per-k shuffle gather needs up to 4 scratch
-                # slots (its radix is 2 or 4), unrelated to reg's 16 pass-1..3
-                # slots.
+                # Scratch for the final radix-2 or radix-4 shuffle gather.
                 vals = T.alloc_local((4, 2), real_dtype)
                 s_re = T.alloc_shared((max(16 * row1, 256 * row2),), real_dtype)
                 s_im = T.alloc_shared((max(16 * row1, 256 * row2),), real_dtype)
-                # s_w2 holds the pass-2 base twiddles (a2 = n // 256 of them); s_w3
-                # (pass-3's, a3 = n // 4096 = the final radix) is a stride-16
-                # subsample of the same table: W_(n/256)^(16 j) == W_(n/4096)^j,
-                # so no third input tensor is needed. Unpacked into separate
-                # _re/_im arrays, not one (a2, 2) interleaved array: a2 is 32 for
-                # every plan in this service region -- exactly one warp -- so an
-                # interleaved read (index m2*2) puts 32 *distinct* addresses into
-                # only 16 banks (m2 and m2+16 collide, a real conflict, not a
-                # broadcast); a stride-1 array puts the 32 distinct m2 in the 32
-                # distinct banks they naturally span.
+                # s_w3 is the stride-16 subsample of the pass-2 table. Split re/im:
+                # an interleaved (32, 2) read puts a warp's 32 addresses in 16 banks.
                 s_w2_re = T.alloc_shared((a2,), real_dtype)
                 s_w2_im = T.alloc_shared((a2,), real_dtype)
                 s_w3_re = T.alloc_shared((a3,), real_dtype)
@@ -1154,13 +996,7 @@ def _build_four_pass(n: int, real_dtype: str) -> Any:
 
 @T.macro
 def _four_step_middle(s_re, s_im, reg, cw, s_w2, lane, col, tw: int, row: int, grp: int, nf: int):
-    """Pass 2 of a three-pass four-step factor.
-
-    Relabelled as ``k1 = lane % 16, m2 = lane // 16`` against the single-CTA
-    plan -- free, since the S2 address is a function of (k1', k1, m2) only -- so
-    every pass touches 16 consecutive k1 per warp and the odd ``row``/``grp`` of
-    the interleaved layout suffice.
-    """
+    """Pass 2 of a three-pass four-step factor; k1 = lane % 16, so a warp reads consecutive k1."""
     k1 = lane % 16
     m2 = lane // 16
     _read_scratch(s_re, s_im, reg, (k1 * row + m2) * tw + col, _factor_radix(nf) * tw, 16)
@@ -1191,11 +1027,7 @@ def _four_step_a_body(
 ):
     """Kernel A: the column pass, the four-step twiddle, and the store to T.
 
-    The CTA owns ``tw`` consecutive j_a and all n1 values of j_b, so it runs
-    ``tw`` copies of the shipped length-n1 plan. Thread t takes ``col = t % tw``
-    (which j_a) and ``lane = t // tw`` (which of the plan's threads); with col in
-    the fast position both the pass-1 load and the last store are fully
-    coalesced, and the strided axis has moved into the per-thread register index.
+    A CTA runs ``tw`` columns; with ``col = t % tw`` fastest, both global accesses coalesce.
     """
     t = T.get_thread_binding()
     col = t % tw
@@ -1204,8 +1036,7 @@ def _four_step_a_body(
     reg = T.alloc_local((16, 2), real_dtype)
     st = T.alloc_local((2,), real_dtype)
     tmp = T.alloc_local((2,), real_dtype)
-    # twb is the per-lane four-step base, twg it times the p power and twk that
-    # times the q power.
+    # twb: per-lane four-step base; twg = twb * P_p; twk = twg * Q_q.
     cw = T.alloc_local((2,), real_dtype)
     twb = T.alloc_local((2,), real_dtype)
     twg = T.alloc_local((2,), real_dtype)
@@ -1213,7 +1044,6 @@ def _four_step_a_body(
     pq = T.alloc_local((2,), real_dtype)
     s_re = T.alloc_shared((_four_step_smem(n1, tw, row, grp),), real_dtype)
     s_im = T.alloc_shared((_four_step_smem(n1, tw, row, grp),), real_dtype)
-    # Stage once per CTA because every warp reuses these values.
     s_w1 = T.alloc_shared((n1 // 16, 2), real_dtype)
     if _factor_passes(n1) == 3:
         s_w2 = T.alloc_shared((_factor_radix(n1), 2), real_dtype)
@@ -1225,9 +1055,7 @@ def _four_step_a_body(
         if t < _factor_radix(n1):
             for v in T.vectorized(2):
                 s_w2[t, v] = w2lut[t, v]
-    # The CTA has tw * lanes threads and the four-step table is twrows * tw
-    # values, so one pass over the threads covers it only while twrows <= lanes.
-    # A factor below 256 has fewer lanes than rows and needs a second pass.
+    # A factor below 256 has fewer lanes than table rows and needs a second pass.
     if t < len(_twiddle_exps(n1)) * tw:
         for v in T.vectorized(2):
             s_tw[lane, col, v] = twlut[lane, bx * tw + col, v]
@@ -1249,8 +1077,7 @@ def _four_step_a_body(
     if _factor_passes(n1) == 3:
         _four_step_middle(s_re, s_im, reg, cw, s_w2, lane, col, tw, row, grp, n1)
 
-    # The four-step base W_rowlen^(j_a*lane) = W^(j_a*l) * W^(s*j_a*h), lane = l + s*h;
-    # the two halves of u are read per output below.
+    # twb = W_rowlen^(j_a*lane) = W^(j_a*l) * W^(s*j_a*h), lane = l + s*h.
     for v in T.vectorized(2):
         pq[v] = s_tw[lane % _lane_split(n1), col, v]
     for v in T.vectorized(2):
@@ -1258,10 +1085,7 @@ def _four_step_a_body(
     twb[0] = pq[0] * st[0] - pq[1] * st[1]
     twb[1] = pq[0] * st[1] + pq[1] * st[0]
 
-    # Last pass, W_rowlen^(j_a*k_b), and the store to T[k_b][j_a] at
-    # out0 + g*ogstep + k*okstep. A two-pass factor reads S1, a three-pass one the
-    # S2 _four_step_middle wrote. The outputs are walked in the order of u, whose
-    # twiddle is two table lookups deep for every output.
+    # Last pass, twiddle, and the store to T[k_b][j_a]; a three-pass factor reads S2.
     if _factor_passes(n1) == 2:
         base = lane * row * tw + col
         gstep = (n1 // 16) * row * tw
@@ -1312,14 +1136,7 @@ def _four_step_b_body(
     out_stride: int,
     real_dtype: str,
 ):
-    """Kernel B: the row pass and the output-side corner turn.
-
-    The mirror of ``_four_step_a_body``: the CTA owns ``tw`` consecutive k_b,
-    reads the contiguous rows T[k_b][:], and stores each output digit
-    ``out_stride`` apart. Shared memory is index-for-index kernel A's, so the same
-    odd strides apply; only the two global index maps differ, and there is no W_n
-    here -- the column kernels applied it.
-    """
+    """Kernel B: the row pass over T[k_b][:] and the store to natural order; no twiddle."""
     t = T.get_thread_binding()
     col = t % tw
     lane = t // tw
@@ -1353,8 +1170,7 @@ def _four_step_b_body(
     if _factor_passes(nf) == 3:
         _four_step_middle(s_re, s_im, reg, cw, s_w2, lane, col, tw, row, grp, nf)
 
-    # Last pass and the store to X[k_a*out_stride + k_b]; the reads differ as in
-    # _four_step_a_body.
+    # Last pass and the store to X[k_a*out_stride + k_b].
     if _factor_passes(nf) == 2:
         base = lane * row * tw + col
         gstep = (nf // 16) * row * tw
@@ -1381,18 +1197,9 @@ def _four_step_b_body(
 
 
 def _build_four_step_a(factors: tuple, level: int, real_dtype: str) -> Any:
-    """Column kernel *level* of a four-step plan, counted from the outermost.
-
-    For every j_a in [0, n2) it transforms the length-n1 stride-n2 sequence over
-    j_b, multiplies by the four-step factor W_(n1*n2)^(j_a*k_b), and writes the
-    intermediate T[k_b][j_a] -- contiguous in j_a, which is what makes the next
-    kernel's read contiguous. Level 2 exists only in a three-factor plan, where
-    it is level 1 run again on each row that wrote: grid.y then runs over those
-    rows, which are independent transforms, so only the global index maps see it.
-    """
+    """Column kernel *level* of a four-step plan: length-n1 transforms, twiddle, T[k_b][j_a]."""
     total = math.prod(factors)
-    # n2 is the length the kernel strides over (its grid.x extent before tiling),
-    # outer how many rows of n1 * n2 one batch element holds.
+    # n2: the stride (grid.x before tiling); outer: rows of n1 * n2 per batch element.
     n1 = factors[level - 1]
     n2 = math.prod(factors[level:])
     outer = math.prod(factors[: level - 1])
@@ -1411,12 +1218,8 @@ def _build_four_step_a(factors: tuple, level: int, real_dtype: str) -> Any:
         compile_flags=["-O3"],
     )
     def _func(tw: int, row: int, grp: int = 0):
-        """Build for *tw* columns per CTA and S1/S2 strides *row*, *grp*.
-
-        A two-pass factor has no S2 and ignores grp.
-        """
+        """Build for *tw* columns per CTA and strides *row*, *grp*; two passes ignore grp."""
         batch = T.dynamic("batch")
-        # Everything the body needs that is not a tensor or a grid index.
         geom = (tw, row, grp, rowlen, n1, n2, real_dtype)
 
         if passes == 2:
@@ -1458,17 +1261,9 @@ def _build_four_step_a(factors: tuple, level: int, real_dtype: str) -> Any:
 
 
 def _build_four_step_b(factors: tuple, real_dtype: str) -> Any:
-    """The row kernel of a four-step plan: the row pass and the output corner turn.
-
-    For every k_b in [0, factors[0]) it transforms the contiguous row T[k_b][:]
-    over j_a and stores to X[k_a*out_stride + k_b]. No W_n here: the column
-    kernels applied it. With three factors the rows a CTA reads are one of ``mid``
-    groups per tiled digit, so grid.y runs over those groups and the store map
-    carries one more digit.
-    """
+    """The row kernel of a four-step plan: row transforms stored to X[k_a*out_stride + k_b]."""
     total = math.prod(factors)
-    # The first factor is tiled because its output digit has stride 1; in a
-    # three-factor plan mid indexes the middle digit on a second grid axis.
+    # The first factor is tiled: its output digit has stride 1.
     nf = factors[-1]
     tiled = factors[0]
     mid = math.prod(factors[1:-1])
@@ -1482,10 +1277,7 @@ def _build_four_step_b(factors: tuple, real_dtype: str) -> Any:
         compile_flags=["-O3"],
     )
     def _func(tw: int, row: int, grp: int = 0):
-        """Build for *tw* transforms per CTA and S1/S2 strides *row*, *grp*.
-
-        A two-pass factor has no S2 and ignores grp.
-        """
+        """Build for *tw* transforms per CTA and strides *row*, *grp*; two passes ignore grp."""
         batch = T.dynamic("batch")
         geom = (tw, row, grp, nf, tiled, row_stride, out_stride, real_dtype)
 
@@ -1525,9 +1317,7 @@ def _build_four_step_b(factors: tuple, real_dtype: str) -> Any:
     return _func
 
 
-# n -> the radices of the in-CTA passes of the one-CTA plan for that length. The
-# first two passes of a three- or four-pass plan are radix 16 over the 16
-# registers a thread holds; the last does 16 // r3 independent r3-point DFTs.
+# n -> the radices of the one-CTA plan's passes.
 _RADIX_PLAN = {
     2: (2,),
     4: (4,),
@@ -1545,9 +1335,7 @@ _RADIX_PLAN = {
     16384: (16, 16, 16, 4),
 }
 
-# (n, dtype) -> four-step factors, outermost first. Two factors launch one
-# column and one row kernel; three factors launch two columns and one row.
-# Dtypes are keyed separately because factor capacity depends on element size.
+# (n, dtype) -> four-step factors, outermost first, one kernel each.
 _FOUR_STEP_PLAN = {
     (1 << 14, "complex128"): (256, 64),
     (1 << 15, "complex64"): (256, 128),
@@ -1580,8 +1368,7 @@ _FOUR_STEP_PLAN = {
     (1 << 28, "complex128"): (512, 512, 1024),
 }
 
-# (n, dtype) -> one tile width per kernel of the plan: transforms per CTA for each
-# column kernel and then for the row kernel.
+# (n, dtype) -> transforms per CTA for each kernel of the plan.
 _FOUR_STEP_TILE = {
     (1 << 14, "complex128"): (4, 4),
     (1 << 15, "complex64"): (16, 4),
@@ -1616,12 +1403,7 @@ _FOUR_STEP_TILE = {
 
 
 def _plan_table() -> Dict[tuple, FFTPlan]:
-    """One record per served (length, dtype), in length order, complex64 first.
-
-    The one-CTA lengths of ``_RADIX_PLAN``, less the pairs ``_FOUR_STEP_PLAN``
-    decomposes instead, plus every pair that table names. Every one-CTA builder
-    takes ``(row, grp)``; only the three-pass one reads them.
-    """
+    """One record per served (length, dtype); every one-CTA builder takes (row, grp)."""
     records = {}
     for n, radix in _RADIX_PLAN.items():
         for dtype in ("complex64", "complex128"):
@@ -1660,9 +1442,7 @@ def _plan_table() -> Dict[tuple, FFTPlan]:
                 for f in factors
             ),
             tile=_FOUR_STEP_TILE[n, dtype],
-            # Odd strides at least as wide as what they index: a warp covers 32/tw
-            # consecutive values of the strided index of s[idx*tw + col], and an odd
-            # stride times tw walks them through all 32 banks.
+            # Odd strides keep s[idx*tw + col] conflict-free.
             pad=tuple(
                 (f // 16 + 1,) if _factor_passes(f) == 2 else (f // 16 + 1, f // 256 + 1)
                 for f in factors
@@ -1685,7 +1465,6 @@ def _plan_table() -> Dict[tuple, FFTPlan]:
     return dict(sorted(records.items(), key=lambda kv: (kv[0][0], kv[0][1] != "complex64")))
 
 
-# A (length, dtype) with a record here is served; one without is refused.
 FFT_PLANS: Dict[tuple, FFTPlan] = _plan_table()
 
 
@@ -1698,11 +1477,7 @@ def _fft_builders(n: int, dtype: str) -> tuple:
 
 
 def _pass_tables(n: int, dtype: torch.dtype, device: torch.device) -> tuple:
-    """Length n's pass tables, interleaved: the full circle and its pass-2 bases.
-
-    Built in float64 and cast once. Only the three- and four-pass plans read the
-    pass-2 bases; the others take a one-row placeholder.
-    """
+    """Length n's full-circle table and pass-2 bases, built in float64 and cast once."""
     real = torch.float32 if dtype == torch.complex64 else torch.float64
     ang = -2.0 * math.pi * torch.arange(n, dtype=torch.float64) / n
     ang2 = -2.0 * math.pi * torch.arange(max(1, n // 256), dtype=torch.float64) / max(1, n // 16)
@@ -1712,11 +1487,7 @@ def _pass_tables(n: int, dtype: torch.dtype, device: torch.device) -> tuple:
 
 
 class FFTC2COneCTAKernel(Kernel):
-    """The (length, dtype) pairs whose FFT_PLANS record names a single factor.
-
-    All but n <= 32 are Stockham-form: the radix permutation is folded into the
-    store index maps. n <= 32 is a decimation-in-frequency network that ends
-    with a shuffle bit reversal.
+    """One-launch C2C FFT for the plans of a single factor.
 
     Args:
         n: Transform length; (n, dtype) must have a one-factor plan.
@@ -1847,9 +1618,6 @@ class FFTC2COneCTAKernel(Kernel):
 
 class FFTC2CDecomposedKernel(Kernel):
     """Four-step C2C FFT for the plans of two or three factors, one launch per factor.
-
-    Column kernels perform the strided transforms and cross-factor twiddles; the
-    row kernel restores natural output order.
 
     Args:
         n: Transform length; (n, dtype) must have a decomposed plan.
@@ -1999,13 +1767,7 @@ class FFTC2CDecomposedKernel(Kernel):
         print(f"Best config: {self.config}")
 
     def _four_step_tables(self, device: torch.device) -> tuple:
-        """``(w1, w2, twlut)``: per kernel its pass tables, per column kernel its twiddle rows.
-
-        Row r of column kernel *level*'s table is ``W_m^(e_r * j_a)`` over the length
-        m that kernel splits, for the exponents ``plan.twiddle_exp[level]`` it was
-        built against. The trigonometry runs over one quadrant and is turned by
-        ``(-i)**q``, so the rounded angle never exceeds pi/2.
-        """
+        """``(w1, w2, twlut)``; twiddle-table row r is ``W_m^(twiddle_exp[r] * j_a)``."""
         real = torch.float32 if self.dtype == torch.complex64 else torch.float64
         factors = self.plan.factors
         passes = [_pass_tables(f, self.dtype, device) for f in factors]
@@ -2047,9 +1809,8 @@ class FFTC2CDecomposedKernel(Kernel):
         if index not in self._tables:
             self._tables[index] = self._four_step_tables(x_pair.device)
         w1, w2, twlut = self._tables[index]
-        # The chain never writes the input nor reads a buffer it is writing:
-        # x -> t -> y with two kernels, x -> t -> y -> t with three. Both buffers
-        # are per call, so one kernel object is safe to share across streams.
+        # x -> t -> y, or x -> t -> y -> t with three kernels; per-call buffers
+        # keep one kernel object safe across streams.
         t_pair = torch.empty_like(x_pair)
         y_pair = torch.empty_like(x_pair)
         chain = [x_pair, t_pair, y_pair, t_pair][: len(self.kernel) + 1]
