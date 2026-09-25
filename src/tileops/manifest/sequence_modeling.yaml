@@ -207,7 +207,7 @@ FFTC2CFwdOp:
     func: "tileops.perf.formulas.fft_c2c_roofline"
 
   source:
-    kernel: tileops/kernels/fft_c2c.py
+    kernel: tileops/kernels/fft.py
     kernel_map:
       fft_c2c_one_cta_kernel: FFTC2COneCTAKernel
       fft_c2c_decomposed_kernel: FFTC2CDecomposedKernel
