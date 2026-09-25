@@ -387,6 +387,8 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
         ),
         # No KV at all: TMA needs an extent, so the general kernel serves.
         pytest.param([4, 128], [0, 0], True, {}, "GQAPrefillVarlenFwdKernel", id="all-kv-empty"),
+        # More requests than the warp-specialized kernel's shared prefix holds.
+        pytest.param([1] * 449, [1] * 449, True, {}, "GQAPrefillVarlenFwdKernel", id="batch-449"),
     ],
 )
 def test_varlen_dim128_serves_ragged_requests_on_sm90(
@@ -401,6 +403,20 @@ def test_varlen_dim128_serves_ragged_requests_on_sm90(
     test.check(op, *inputs, atol=1e-3, rtol=1e-3)
     if served_in_tree(op):
         assert type(op._get_kernel((*inputs, None, None, None, None, None))).__name__ == kernel
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+def test_varlen_ws_kernel_claims_work_across_calls() -> None:
+    """More work items than SMs; a later call must see the counter the first one reset."""
+    test = GroupedQueryAttentionVarlenFwdTest(
+        1, [1152], [1152], 16, 8, 128, True, -1, -1, torch.bfloat16
+    )
+    op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
+    inputs = test.gen_inputs()
+    test.check(op, *inputs, atol=1e-2, rtol=1e-2)
+    first = op(*inputs)
+    assert torch.equal(op(*inputs), first)
 
 
 @pytest.mark.smoke
