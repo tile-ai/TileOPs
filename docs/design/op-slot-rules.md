@@ -1,6 +1,6 @@
 # Op Slot Rules
 
-The authoritative rule for each slot of a T2 (L1-direct) op file: S1-S7 and S12-S21. Slots S8-S11
+The authoritative rule for each slot of a T2 (L1-direct) op file: S1-S7 and S12-S20. Slots S8-S11
 belong to T1 thin-wrapper subclasses and are not covered here. Each entry gives the rule, an
 example, and the mistakes that rule prevents. [`ops-design.md § Scaffolding an Op from a Manifest Entry`](./ops-design.md#scaffolding-an-op-from-a-manifest-entry) walks the same slots in the order
 you write them.
@@ -33,8 +33,8 @@ design, calling conventions — live in
 
 ### Slot S3: <a id="slot-s3"></a> Import — concrete `Kernel` class
 
-- **Rule.** One absolute `from tileops.kernels.* import <KernelClass>` per manifest `kernel_map`
-  value. Import nothing that `kernel_map` does not list.
+- **Rule.** One absolute `from tileops.kernels.* import <KernelClass>` per `default_kernel_map`
+  value. Import nothing that `default_kernel_map` does not list.
 - **Example.** `from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel`
 - **Common mistakes.** Relative cross-package import.
 
@@ -59,8 +59,8 @@ design, calling conventions — live in
 ### Slot S7: <a id="slot-s7"></a> Class docstring
 
 - **Rule.** One-sentence summary, then an `Args:` block covering every S12 kwarg with type and
-  short description. Optional `Example:` block. Derive `Args` from manifest `signature.params` +
-  `static_dims`.
+  short description. Optional `Example:` block. Derive `Args` from manifest `signature.params` and
+  the execution-policy parameters of S12.
 - **Example.**
   ```python
   class ExampleCumsumFwdOp(Op):
@@ -69,9 +69,8 @@ design, calling conventions — live in
       Output has the same shape and dtype as input.
 
       Args:
-          M: Number of rows (product of all dims except the reduction axis).
-          N: Hidden dimension (size along the reduction axis).
           dim: Reduction dimension (default -1).
+          target: Backend target to serve this op, or None to decide from the input device.
           kernel_map: Optional override for kernel dispatch.
           tune: Whether to autotune (default False).
       """
@@ -81,16 +80,14 @@ design, calling conventions — live in
 
 ### Slot S12: <a id="slot-s12"></a> `__init__` signature
 
-- **Rule.** Block order: (1) `static_dims` entries in manifest key order, no defaults;
-  (2) `signature.params` entries in manifest key order; then `*` and (3) any param declaring
-  `kw_only: true`, followed by `target`, `kernel_map`, `tune`. An output dtype the inputs do not determine
-  arrives as a parameter named `out_dtype`, and under no other name
-  ([manifest.md R23](./manifest.md)).
+- **Rule.** `signature.params` entries in manifest key order; then `*` and any param declaring
+  `kw_only: true`, followed by the execution-policy parameters of
+  [manifest.md table 7](./manifest.md#t-policy): `target`, `kernel_map` and `tune` on every op,
+  then the op's injected implementation objects or `config` where it takes them.
 - **Example.**
   ```python
   def __init__(
       self,
-      N: int,
       dim: int = -1,
       *,
       target: Target = None,
@@ -99,35 +96,34 @@ design, calling conventions — live in
   ):
   ```
 - **Common mistakes.** Parameters with no manifest source; taking an input dtype as `dtype` or
-  `in_dtype` when the tensors carry it; naming a caller-stated output dtype anything but
-  `out_dtype`; making a param keyword-only that the manifest does not declare `kw_only`.
+  `in_dtype` when the tensors carry it; making a param keyword-only that the manifest does not
+  declare `kw_only`.
 
 ### Slot S13: <a id="slot-s13"></a> `__init__` body
 
 - **Rule.** Sequence: (a) `self.<name> = <name>` per parameter, `target` among them; (b)
   `self.dispatch_kernel(kernel_map)`, which resolves the kernel *class* and needs no tensor.
-  **Construct no kernel and declare no cache here**: the kernel is dtype-specialized and no dtype
-  exists until a call arrives, and L1 owns get-or-build
+  **Construct no kernel and declare no cache here**: the kernel is specialized by what the call
+  carries, and L1 owns get-or-build
   ([Kernel caching](./ops-design.md#kernel-caching-and-enumeration)).
-  A fully-static op — every `signature.inputs` axis is a manifest `shape` dim or a ctor-resolvable
-  `static_dims` key — may precompute `self._infer_output_shapes(<input>_shape=(...))` for callers
-  that need the output shape before the first call; anything else defers it.
+
 - **Example (arbitrary-rank).**
+
   ```python
-  self.N = N
   self.dim = dim
   self.target = target
   self.tune = tune
   self.dispatch_kernel(kernel_map)
   ```
-- **Common mistakes.** `_infer_output_shapes` before `dispatch_kernel`; hard-coding the kernel class
+
+- **Common mistakes.** Hard-coding the kernel class
   instead of routing through `self.kernel_map`; storing `self.dtype` at ctor time; a private cache
   dict in place of `Op.kernel_for`.
 
 ### Slot S14: <a id="slot-s14"></a> `default_kernel_map` property
 
-- **Rule.** A `@property` returning the manifest `kernel_map` verbatim: `snake_case` dispatch keys,
-  Kernel-class values.
+- **Rule.** A `@property` returning the op's kernel map: `snake_case` dispatch keys, Kernel-class
+  values. The code owns it; the manifest does not list kernels.
 - **Example.**
   ```python
   @property
@@ -139,28 +135,27 @@ design, calling conventions — live in
 
 ### Slot S15: <a id="slot-s15"></a> `forward` signature
 
-- **Rule.** Positional tensor parameters in manifest `signature.inputs` order; return annotation
-  `torch.Tensor` or `Tuple[torch.Tensor, ...]` matching `signature.outputs` —
-  `def forward(self, x: torch.Tensor) -> torch.Tensor:`. An `optional: true` input defaults to
-  `None`.
-- **Common mistakes.** Keyword-only tensor parameters; non-tensor kwargs, which belong to
-  `__init__`.
+- **Rule.** The parameter list starts with the signature's call-time inputs in `signature.inputs`
+  order, optional inputs defaulting to `None`, followed by one `out` per output declaring
+  `buffer: out` ([manifest.md table 9](./manifest.md#t-effects)). Code-defined execution parameters
+  may follow. The return matches `signature.outputs`: one tensor, a tuple in declared order, `None`
+  in a nullable position whose expression is false, and `None` when `outputs` is empty.
+- **Common mistakes.** Keyword-only tensor parameters; non-tensor contract parameters, which belong
+  to `__init__`.
 
 ### Slot S16: <a id="slot-s16"></a> `forward` body
 
-- **Rule.** Sequence: (a) `self._validate_dtypes(...)`; (b) validate `shape_rules` and normalise parameter-dependent
-  axes via modulo (`dim = self.dim % x.ndim`); (c) validate each `static_dims` commitment
-  (`x.shape[<resolved_axis>] == self.<kwarg>`); (d) bind `self._static_axes` for arbitrary-rank
-  ops; (e) `.contiguous()` every input; (f)
-  `self.kernel_for(<role>, <inputs>, <call>)`, handing over one slot
-  per `signature.inputs` entry — `None` for an absent optional one; (g) call the kernel.
-  An op that declares `torch_compile_fullgraph` keeps this body under the name `_eager_forward`,
+- **Rule.** The checks generated from the signature have run before the body. Sequence: (a)
+  normalize parameter-dependent axes with the manifest's axis rule
+  (`dim = normalize_axis(self.dim, x.ndim)`, which maps `0` and `-1` to the scalar axis at rank 0); (b) make contiguous
+  each input the kernel needs contiguous, never a `mutated` input, which is written in place; (c)
+  `self.kernel_for(<role>, <tensors>, <call>)`, handing over every tensor the kernel reads or
+  writes, output buffers included, and `None` for an absent optional one; (d) call the kernel.
+  An op registered for `fullgraph=True` compilation keeps this body under the name `_eager_forward`,
   and its `forward` becomes one call to the operator it registers — that operator is outside the
   scaffold's scope, see
   [Compile Dispatch Boundary](./ops-design.md#compile-dispatch-boundary).
-- **Derivation.** Validation expressions come from each `static_dims` entry's
-  `<tensor>.shape[<axis>]` RHS; the role is the `kernel_map` dispatch key whose kernel the factory
-  builds. A specialization that implies more than a dtype — a compute dtype differing from the
+- **Derivation.** The role is the `kernel_map` dispatch key whose kernel the factory builds. A specialization that implies more than a dtype — a compute dtype differing from the
   semantic one, an output dtype no input supplies — makes the entry one frozen record rather than a
   bare kernel, and those fields never live in `self.*`
   ([Forward keying](./ops-design-reference.md#base-class-protocol)).
@@ -170,84 +165,45 @@ design, calling conventions — live in
 - **Example (arbitrary-rank).**
   ```python
   def forward(self, x: torch.Tensor) -> torch.Tensor:
-      self._validate_dtypes(x)
-      if not -x.ndim <= self.dim < x.ndim:
-          raise ValueError(f"dim {self.dim} out of range for x.ndim={x.ndim}")
-      dim = self.dim % x.ndim
-      if x.shape[dim] != self.N:
-          raise ValueError(f"expected x.shape[{dim}] == {self.N}, got {x.shape[dim]}")
-      self._static_axes = frozenset({(0, dim)})
-      self.dtype = x.dtype
+      dim = normalize_axis(self.dim, x.ndim)
       x = x.contiguous()
-      kernel = self.kernel_for(
-          "example_cumsum_fwd", (x,), (self._cache_key(x.shape), x.dtype)
-      )
+      kernel = self.kernel_for("example_cumsum_fwd", (x,), (tuple(x.shape), dim, x.dtype))
       return kernel(x)
 
 
   def entry_for(self, role: str, call: tuple) -> Entry:
-      """One implementation, built per shape and dtype; the row width is the op's."""
-      _shape, dtype = call
+      """One implementation, built per shape, axis and dtype."""
+      shape, dim, dtype = call
       return call, lambda: self.kernel_map["example_cumsum_fwd"](
-          self.N, "sum", dtype, tune=self.tune
+          shape[dim], "sum", dtype, tune=self.tune
       )
   ```
 - **Common mistakes.** Building a kernel in a traced `forward`; keying on shape alone, so a second
-  dtype reuses the first dtype's kernel; a `.is_cuda` check in the op; reshaping before the fetch;
-  binding `self._static_axes` before the axis is non-negative; passing an already-built kernel where
+  dtype reuses the first dtype's kernel; a `.is_cuda` check in the op; repeating a check the
+  signature states; reshaping before the fetch; passing an already-built kernel where
   a factory is expected, which rebuilds on every call; fetching a kernel under two roles in one op
   where one entry holding both would do.
 
-### Slot S17: <a id="slot-s17"></a> `_infer_output_shapes` method body
+### Slot S17: <a id="slot-s17"></a> `_infer_output_shapes`
 
-- **Rule.** Take one `<input>_shape: tuple` per manifest `signature.inputs`; return `Dict[str, tuple]` keyed by output name. Derive from manifest `shape_rules` (see
-  [manifest.md § Rules](./manifest.md#rules)). The L1 base raises
-  `NotImplementedError`; every op the manifest calls `implemented` supplies a body, which the
-  validator's C9 check requires. CI exercises the method with mock inputs and reports disagreement with `shape_rules` as a hard L2
-  error.
-- **Example.**
-  ```python
-  def _infer_output_shapes(self, x_shape: tuple) -> Dict[str, tuple]:
-      return {"y": x_shape}
-  ```
-- **Common mistakes.** Accepting or returning `torch.Tensor` instead of shape tuples; demoting an
-  op to `status: spec-only` to silence a genuine disagreement — legitimate only when the
-  implementation truly does not conform.
+- **Rule.** Generated from the signature; the op file does not define it.
+- **Common mistakes.** A hand-written override, which can disagree with the signature.
 
-### Slot S18: <a id="slot-s18"></a> `_validate_dtypes` method body
+### Slot S18: <a id="slot-s18"></a> `_validate_dtypes`
 
-- **Rule.** Positional parameters match `signature.inputs`; raise `ValueError` on an invalid dtype
-  combination. Derive from manifest `dtype` (union) and `dtype_combos`. L1 stub raises
-  `NotImplementedError`; check C6 requires the override. The validator probes `dtype_combos`, declared
-  unions and out-of-union negatives exhaustively; divergence is a hard L3 error.
-- **Example.**
-  ```python
-  def _validate_dtypes(self, x: torch.Tensor) -> None:
-      if x.dtype not in {torch.float32, torch.float16, torch.bfloat16}:
-          raise ValueError(f"x.dtype must be float32/float16/bfloat16, got {x.dtype}")
-  ```
-- **Common mistakes.** Accepting a dtype outside the declared union; rejecting one listed in
-  `dtype_combos`; ignoring `same_as(ref)` linkage between inputs.
+- **Rule.** Generated from the signature's dtype expressions and `dtype_combos`; the op file does
+  not define it.
+- **Common mistakes.** A hand-written override, or an inline dtype check in `forward`.
 
-### Slot S19: <a id="slot-s19"></a> `eval_roofline` method body
+### Slot S19: <a id="slot-s19"></a> `eval_roofline`
 
-- **Rule.** Codegen emits a complete plain-Python body over `self.*` attributes that `forward()`
-  binds, `self.dtype` among them — so `eval_roofline` is defined only after at least one
-  `forward()`. Derive from manifest `roofline.vars` / `.flops` / `.bytes`; see
-  [`roofline.md` §4.4](./roofline.md#44-op-codegen). L1 stub raises
-  `NotImplementedError`; check C6 requires the override.
-- **Example.**
-  ```python
-  def eval_roofline(self) -> tuple[int, int]:
-      flops = 4 * self.M * self.N
-      bytes_ = (2 * self.M * self.N + self.N) * self.dtype.itemsize
-      return flops, bytes_
-  ```
-- **Common mistakes.** Class-level roofline expression strings parsed at runtime (`_flops_str`,
-  `_bytes_str`, `_roofline_vars`), any `ast.parse` or shared `_safe_eval` path — all prohibited by
-  [`roofline.md` §4.4.6](./roofline.md#446-evaluator-surface-boundary), which
-  rules out a shared evaluator on L1; returning `float` or `numpy` types when the contract is
-  `tuple[int, int]`; assuming `self.dtype` is set on a freshly-constructed op.
+- **Rule.** Generated from the `roofline` field over the `ix` of the op's last call; see
+  [`roofline.md` §4.4](./roofline.md#44-op-codegen). It is defined only after at least one
+  `forward()`.
+- **Common mistakes.** Class-level roofline expression strings parsed at runtime, any `ast.parse`
+  or shared `_safe_eval` path — prohibited by
+  [`roofline.md` §4.4.5](./roofline.md#445-evaluator-surface-boundary); returning `float` or
+  `numpy` types when the contract is `tuple[int, int]`.
 
 ### Slot S20: <a id="slot-s20"></a> Package `__init__.py` registration
 
@@ -267,30 +223,3 @@ design, calling conventions — live in
 - **Common mistakes.** Import placed outside its grouping comment; missing `__all__` entry, which
   silently breaks `import *`; registering only the implementation package, which leaves the op
   unreachable from `tileops.{family}`.
-
-### Slot S21: <a id="slot-s21"></a> `_static_axes` class attribute
-
-- **Rule.** `frozenset[tuple[int, int]]` of `(input_index, axis)` pairs, `input_index` indexing
-  `signature.inputs` and `axis` non-negative — `Op` indexes `*input_shapes` non-negatively. Per
-  manifest `static_dims` entry `<kwarg>: <tensor>.shape[<axis>]`:
-
-  - `<axis>` is a non-negative literal → class-level
-    `_static_axes = frozenset({(input_index_of_<tensor>, <axis>)})`.
-  - `<axis>` is a ctor param or a negative literal → class-level `frozenset()`, then assign in
-    `forward()` after the `static_dims` check and after `dim % x.ndim`, or override `_cache_key`
-    and project inline instead.
-  - No `static_dims` (a reduction taking `dim=None`) → `frozenset()`, and override `_cache_key`
-    unless a once-per-type `UserWarning` is acceptable. See
-    [manifest.md § Empty static_dims](./manifest.md#empty-static_dims).
-
-- **Example.**
-
-  ```python
-  class ExampleCumsumFwdOp(Op):
-      # static_dims: N: "x.shape[dim]" — dim is a ctor param and may be
-      # negative, so the pair is resolved in forward().
-      _static_axes: frozenset[tuple[int, int]] = frozenset()
-  ```
-
-- **Common mistakes.** A literal pair when the axis is a ctor param, which is the wrong axis under
-  arbitrary rank; binding it in `__init__`, where `x.ndim` is unknown; storing a negative axis.

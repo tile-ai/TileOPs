@@ -4,25 +4,25 @@ Tests and benchmarks are separated by concern: `pytest tests/` validates correct
 
 ## Core Abstractions
 
-| Class              | Location                                                             | Role                                                                                                                                                                                |
-| ------------------ | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WorkloadBase`     | [`workloads/workload_base.py`](../../workloads/workload_base.py)     | ABC defining `gen_inputs()`. Shared base used by both tests and benchmarks; a subclass named for one op also defines that op's `ref_program()`.                                     |
-| `FixtureBase`      | [`workloads/workload_base.py`](../../workloads/workload_base.py)     | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute or `get_params()` classmethod.                                                     |
-| `TestBase`         | [`tests/test_base.py`](../../tests/test_base.py)                     | Inherits `WorkloadBase`. Declares `ref_program()` abstract and adds `check()`. Each op subclasses this for correctness testing.                                                     |
-| `BenchmarkBase[W]` | [`benchmarks/benchmark_base.py`](../../benchmarks/benchmark_base.py) | Generic ABC parameterized by workload type `W` (a capability protocol, not `WorkloadBase`). Subclass implements `calculate_flops()` and `calculate_memory()`. Provides `profile()`. |
-| `BenchmarkReport`  | [`benchmarks/benchmark_base.py`](../../benchmarks/benchmark_base.py) | Static collector -- `record()` stores results, `dump()` writes markdown, `clear()` resets.                                                                                          |
+| Class              | Location                                                             | Role                                                                                                                                                                |
+| ------------------ | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WorkloadBase`     | [`workloads/workload_base.py`](../../workloads/workload_base.py)     | ABC defining `gen_inputs()`. Shared base used by both tests and benchmarks; a subclass named for one op also defines that op's `ref_program()`.                     |
+| `FixtureBase`      | [`workloads/workload_base.py`](../../workloads/workload_base.py)     | Metaclass-based decorator that applies `pytest.mark.parametrize` from a `PARAMS` class attribute or `get_params()` classmethod.                                     |
+| `TestBase`         | [`tests/test_base.py`](../../tests/test_base.py)                     | Inherits `WorkloadBase`. Declares `ref_program()` abstract and adds `check()`. Each op subclasses this for correctness testing.                                     |
+| `BenchmarkBase[W]` | [`benchmarks/benchmark_base.py`](../../benchmarks/benchmark_base.py) | Generic ABC parameterized by workload type `W` (a capability protocol, not `WorkloadBase`). Takes `(flops, bytes)` from `op.eval_roofline()`. Provides `profile()`. |
+| `BenchmarkReport`  | [`benchmarks/benchmark_base.py`](../../benchmarks/benchmark_base.py) | Static collector -- `record()` stores results, `dump()` writes markdown, `clear()` resets.                                                                          |
 
 ## Wiring
 
 Workload is defined once; test and benchmark each reference it but do not depend on each other:
 
-- **Workload** (`workloads/`) — `WorkloadBase` subclass, defines `gen_inputs()` and, when named for one op, `ref_program()`
+- **Workload** (`workloads/`) — `WorkloadBase` subclass: `ref_program()` when named for one op, and input construction the rows do not determine
 - **Test** (`tests/ops/`) — inherits `(Workload, TestBase)`, adds tolerances; defines `ref_program()` only on a shape-only workload
-- **Benchmark** (`benchmarks/ops/`) — composes workload and op via `OpBenchmark(op, workload)`
+- **Benchmark** (`benchmarks/ops/`) — composes workload and op via `ManifestBenchmark(op, workload)`
 
 Rules:
 
-- **Fixture usage**: both tests and benchmarks can use `FixtureBase`, but params are usually defined per layer unless intentionally factored into a shared module
+- **Fixture usage**: every semantic call a benchmark publishes comes from a manifest workload row and its `dtype_cases`; fixture parameters are reserved for controls that change no call
 - **Dependency direction**: benchmark imports workload, never test
 - **ref_program locality**: the reference lives on the narrowest shared class that names one operator — the workload, unless the workload describes only an input shape
 
@@ -54,7 +54,7 @@ Rules:
 
 ### Coverage rules
 
-- Tests must cover FP16 and BF16 data types.
+- Tests cover the dtype domain the signature declares.
 - Tests must parameterize over common shapes (batch size, heads, sequence length).
 - Tests must encode the dtype contract: supported dtypes are covered, unsupported dtypes are rejected, output dtypes are asserted when they differ from input.
 - GPU-dependent tests must run on a real machine with host-visible CUDA devices. Sandbox-only results are not final correctness evidence.
@@ -80,7 +80,7 @@ No performance exploration, autotune sweeps, or duplicate code-path coverage.
 - **Degenerate dimension** — size=1 (broadcast, squeeze paths)
 - **Dispatch branch** — different shape ranges triggering different kernel variants
 
-The implementer selects the smallest shape that triggers each branch. Do not generate test fixtures from [`src/tileops/manifest/`](../../src/tileops/manifest/) workloads.
+The implementer selects the smallest shape that triggers each branch. These cases are separate from the manifest contract cases, which are instantiated from the entry's workload rows.
 
 **Growth rules:**
 
@@ -135,7 +135,7 @@ class — so a workload needs nothing beyond the fields its own benchmark reads.
 
 1. **Workload** — import the op's class from `workloads/`. If the op has none, add it there first: a benchmark must not author `gen_inputs`.
 1. **Fixture class** — use `FixtureBase` with benchmark-specific `PARAMS`, or `pytest.mark.parametrize` directly.
-1. **Benchmark class** in `benchmarks/ops/bench_<op>.py` — subclass `ManifestBenchmark`, which takes its roofline off the op. Where an op has no roofline to take, subclass `OpBenchmark` and implement `calculate_flops()` and `calculate_memory()` (return `None` if not applicable).
+1. **Benchmark class** in `benchmarks/ops/bench_<op>.py` — subclass `ManifestBenchmark`, which takes its roofline off the op.
 1. **Benchmark function** — `@YourFixture` decorated, construct the op, then the benchmark over it (`bm = YourBenchmark(op, workload)`), call `inputs = workload.gen_inputs()`, then `bm.compare({...}, *inputs)`. Every row it publishes carries the op the benchmark was built for, and what distinguishes the case is read off that op and its workload rather than passed in.
 1. **Independent baseline** — record at least one non-`"tileops"` baseline (e.g., `"torch"`, `"fa3"`). Profile the workload's `ref_program` for the torch baseline. Another idiom for the same computation overrides `ref_program` and says why; a different implementation takes its own tag next to it, is asserted against the reference before the case is timed, and raises when unavailable. Never import a baseline from `tests/`.
 1. **Library baselines** — resolve them through [`benchmarks/baselines.py`](../../benchmarks/baselines.py): `flaggems_op`, `flashinfer_op` and `vllm_op` for the kernels the runner image must have, `compiled_reference` for the reference through inductor. Every row that has a library kernel for its op times it, so the nightly's ratio is against the strongest implementation available rather than against eager torch alone.
@@ -153,5 +153,4 @@ class — so a workload needs nothing beyond the fields its own benchmark reads.
 - Do not cherry-pick favorable shapes; report regressions as-is.
 - Run the targeted correctness suite on the same GPU before reporting benchmark numbers.
 - Every row of the report is one op's measurement: `BenchmarkReport.record()` takes the Op, and the benchmark names it once, at construction. A comparison that measures something else — a kernel strategy, a field of library implementations — asserts, or lives in `benchmarks/studies/`, which the nightly sweep does not reach.
-- `calculate_flops()` and `calculate_memory()` should return numeric values when the metric is available; return `None` only if the metric is not applicable, in which case it will be omitted from the report.
 - Use existing baseline tags (`"baseline"`, `"torch"`, `"fa3"`, `"fla"`, `"triton"`); introducing an ad-hoc tag means updating the downstream consumers with it.

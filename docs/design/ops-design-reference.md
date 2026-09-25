@@ -22,19 +22,9 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
 **The scaffolding playbook does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); Adding a new protocol variable requires updating the L2 base, all concrete ops, and the manifest schema if applicable.
 
-### `Op` base class attributes ([`src/tileops/ops/op_base.py`](../../src/tileops/ops/op_base.py))
+### `Op` base class interface ([`src/tileops/ops/op_base.py`](../../src/tileops/ops/op_base.py))
 
-| Attribute      | Type                                 | Purpose                                                                                         |
-| -------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| `kernel`       | `Optional[Callable]`                 | An entry the op keeps bound directly, if any: a `Kernel` in-tree, a target's callable otherwise |
-| `kernel_map`   | `Optional[Dict[str, Kernel]]`        | Dispatched kernels keyed by name                                                                |
-| `dtype`        | `Optional[torch.dtype]`              | Dtype of the most recent `forward()`; `None` before the first one                               |
-| `device`       | `Optional[Union[torch.device, str]]` | Device (default `'cuda'`)                                                                       |
-| `input_shapes` | `Optional[list[tuple]]`              | Expected input tensor shapes (for introspection and non-runtime consumers)                      |
-| `tune`         | `bool`                               | Whether kernels this op builds tune themselves; read by a factory when it runs                  |
-| `_static_axes` | `frozenset[tuple[int, int]]`         | Static axes as `(input_index, axis)` pairs (default `frozenset()`); consumed by `_cache_key`    |
-
-Abstract interface: `default_kernel_map` (property), `forward()`. Manifest-driven methods (codegen-emitted by concrete ops): `_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`.
+Abstract interface: `default_kernel_map` (property), `forward()`. Methods generated from the manifest entry: the call checks, `_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`.
 
 #### Kernel caching and enumeration methods
 
@@ -69,24 +59,18 @@ Abstract interface: `forward()`. Key methods: `init_config(config, tune)`, `auto
 
 Hooks family bases expose for op-specific semantics. The scaffolding playbook does NOT emit these.
 
-| Hook              | Family    | Default                     | Override example                                      |
-| ----------------- | --------- | --------------------------- | ----------------------------------------------------- |
-| `_validate_dim()` | reduction | accept `int` or `list[int]` | `ArgmaxFwdOp._validate_dim` restricts to scalar `int` |
-
-A hook that compensates for what a kernel cannot do belongs to that kernel, not here: the op hands over the tensor its manifest declares.
+A restriction on the accepted domain is a refinement of the signature, never a hook. A hook that compensates for what a kernel cannot do belongs to that kernel, not here: the op hands over the tensor its manifest declares.
 
 ### `_cache_key` override (L1-level, not family-specific)
 
-`Op._cache_key(self, *input_shapes) -> Hashable` defaults to projecting non-static axes via `self._static_axes`. Override when the kernel's math permits coarser keying — e.g., RMSNorm only depends on the non-static axis product `M`:
+`Op._cache_key(self, *input_shapes) -> Hashable` defaults to the full input shapes. Override when the kernel's math permits coarser keying — e.g., RMSNorm only depends on the product `M` of the leading axes:
 
 ```python
 class RMSNormFwdOp(Op):
     def _cache_key(self, x_shape):
-        dim = self.dim % len(x_shape)
+        dim = normalize_axis(self.dim, len(x_shape))
         return (math.prod(s for i, s in enumerate(x_shape) if i != dim),)
 ```
-
-**When `_static_axes` is empty, override is mandatory** — the default keys by the full input shape (one kernel compile per distinct shape). The base emits a once-per-type `UserWarning` when invoked with empty `_static_axes` and no subclass override.
 
 ## Naming Conventions (Appendix) <a id="naming-conventions"></a>
 
@@ -98,55 +82,27 @@ class RMSNormFwdOp(Op):
 
 ## Codegen Details (Appendix) <a id="codegen"></a>
 
-The manifest ([`src/tileops/manifest/`](../../src/tileops/manifest/)) is the sole source of truth. Dtype validation and shape inference derive from manifest; roofline codegen is defined in [roofline.md](roofline.md).
+The manifest ([`src/tileops/manifest/`](../../src/tileops/manifest/)) is the sole source of truth. The call checks, dtype validation, shape inference and the fake derive from the signature; roofline codegen is defined in [roofline.md](roofline.md).
 
 ### Parameter design <a id="parameter-design"></a>
 
-Three time points: (1) manifest — constraint structure; (2) `__init__` — user commits `static_dims` values; (3) `forward` — shapes concrete, commitments validated, dtype read from the tensors. See [manifest.md § `static_dims`](manifest.md#static_dims).
-
-**An input dtype belongs to time point 3, never to 2.** The tensors carry it, so requiring the caller to restate it at construction only creates a second source that can disagree with the first. Constructing an op commits to shape structure, and to element type only where the inputs settle none: an output dtype they do not determine is the caller's to state, at time point 2, under the name `out_dtype` ([manifest.md R23](manifest.md)).
-
-|                          | Fixed-rank op           | Arbitrary-rank op                                            |
-| ------------------------ | ----------------------- | ------------------------------------------------------------ |
-| Manifest has `shape`     | yes                     | no                                                           |
-| `__init__` shape source  | `shape` dimension names | `static_dims`                                                |
-| Undeclared dimensions    | none                    | derived from tensor at forward time                          |
-| Kernel construction time | forward (first call)    | forward (first encounter)                                    |
-| Forward keying           | dtype                   | opaque to L1; carries every input that changes what is built |
+Two time points: `__init__` takes `signature.params`, construction-time tensors among them. At each call, parameters and presence seed inference, construction-time tensors and call-time inputs are unified together, and `let` derives the rest; generators determine indices only when a workload row is instantiated. An input dtype belongs to the call, never to construction: the tensors carry it, so restating it at construction only creates a second source that can disagree with the first. An output dtype the inputs do not determine is a dtype parameter ([manifest.md § Dtypes](manifest.md#dtypes)). Kernels are built at the first `forward` for a specialization, keyed opaquely by every input that changes what is built.
 
 ### Calling conventions
 
-- **Fully static op:** `_infer_output_shapes` called once in `__init__`, result stored as an instance attribute.
-- **Op with dynamic dims:** `_infer_output_shapes` called once dynamic dims resolve, and by the fake while tracing.
 - **Kernel construction:** in `_eager_forward`, through `kernel_for` — never in the traced `forward`, which is one call to the op's operator ([Compile Dispatch Boundary](ops-design.md#compile-dispatch-boundary)). See [Slot S16](op-slot-rules.md#slot-s16).
 - **`_validate_dtypes`:** runs on every call, and is the only place an op rejects a dtype.
-- **Empty outputs:** a call whose every declared output would hold no elements raises `ValueError` from `kernel_for` — after `_eager_forward`'s own validation, before the kernel build. The output decides, not the input.
 - **Non-runtime consumers** (validator, graph compiler): call `_infer_output_shapes` with concrete shape tuples without constructing tensors. Roofline consumers use interfaces in [`roofline.md`](roofline.md).
-
-### Inheritance in family-base hierarchies
-
-| Scenario                                             | Codegen method defined at | Concrete op action    |
-| ---------------------------------------------------- | ------------------------- | --------------------- |
-| Family shares logic                                  | L2 family base            | Inherits, no override |
-| Family member has variant logic (e.g., multi-output) | L3 concrete op            | Overrides             |
-| Op inherits L1 directly (T2)                         | L3 concrete op            | Scaffold emits body   |
 
 ### Consistency enforcement
 
-| Check                                                    | Mechanism                            |
-| -------------------------------------------------------- | ------------------------------------ |
-| Manifest schema and declared fields are well-formed      | Validator (CI), L0 checks            |
-| `__init__` params match manifest `params`                | Validator signature check (L1)       |
-| `static_dims` keys are `__init__` parameters             | Validator signature check (L1)       |
-| `shape_rules` syntax is valid                            | Validator `shape_rules` parsing (L2) |
-| `_infer_output_shapes` output satisfies `shape_rules`    | Validator infer-shape parity (L2)    |
-| `dtype`/`dtype_combos` strings are valid                 | Validator dtype conformance (L3)     |
-| `_validate_dtypes` matches `dtype_combos` / dtype unions | Validator dtype parity (L3)          |
-| Empty `static_dims` without `_cache_key` override        | `Op` base class runtime warning      |
+| Check                                                           | Mechanism                                                          |
+| --------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Manifest entries are well-formed signatures                     | Validator (CI), [manifest.md § Validation](manifest.md#validation) |
+| `__init__` matches `signature.params`                           | Validator signature check                                          |
+| `forward` starts with the signature's inputs and output buffers | Validator signature check                                          |
 
 Checks beyond this table are tracked as separate issues, not as spec status.
-
-**Parity check coverage.** The L2 / L3 parity checks compare the manifest spec against the concrete method the op class defines. When the class has not migrated to the codegen protocol, the validator emits a **warning** naming the missing method — the gap is surfaced, never silently passed. When the method exists, the parity check runs and any disagreement is a hard L2 / L3 error. Ops whose method genuinely cannot be invoked in a CPU-only validator context must declare `status: spec-only`; there is no parity opt-out, and demotion is only legitimate when the implementation truly does not conform.
 
 ## Development Path (Appendix) <a id="development-path"></a>
 

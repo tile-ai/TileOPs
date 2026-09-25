@@ -28,7 +28,7 @@ Bound type is whichever term dominates `sol_time`; a tie is memory-bound. It dep
 
 The metric is **algorithmic** SOL efficiency. Four statements delimit what a reading means:
 
-1. `bytes_moved` is the algorithm's minimum traffic, not measured DRAM traffic: each distinct input storage the algorithm reads counts one read, each public output one write, and a `mutated` input counts both. An intermediate never counts, whatever stage produces it, and a declared input the algorithm does not read produces no traffic.
+1. `bytes_moved` is the algorithm's minimum traffic, not measured DRAM traffic: each distinct input storage the algorithm reads counts one read, each public output one write, a `mutated` input on a branch where it is written both, a `write_only` input one write, and a declared alias one storage. An intermediate never counts, whatever stage produces it, and any other input the algorithm does not read produces no traffic.
 1. The metric is defined on a call that binds one storage per declared input, which is what every `workloads` row binds. An aliasing call — `add(x, x)` — is priced at two operands, above what it moves: the metric does not describe that call, and the formula is not wrong. Pricing it would require every multi-operand op to expose storage identity to its formula, which the oracle's meta tensors cannot carry.
 1. `total_flops` follows the §1.3 counting convention, not per-instruction hardware cost; the metric does not certify an SFU-bound kernel as at its limit.
 1. The compute roof is the unit an optimal implementation would use (§1.4), not the unit the current kernel runs on.
@@ -69,40 +69,28 @@ Per workload, the `roofline` field yields `(flops: int, bytes: int)`. Consumers 
 
 An entry uses one of two modes:
 
-| Mode   | Form                      | When                              |
-| ------ | ------------------------- | --------------------------------- |
-| Inline | `vars?` + `flops`/`bytes` | Formula fits a Python expression. |
-| Func   | `func: "module.path"`     | Formula needs real Python logic.  |
+| Mode   | Form                      | When                            |
+| ------ | ------------------------- | ------------------------------- |
+| Inline | `flops`, optional `bytes` | The formula is an expression.   |
+| Func   | `func: "module.path"`     | The formula needs Python logic. |
 
-**Inline.** Roofline variables come from `shape` dim names where possible. Anything `shape` cannot supply — arbitrary-rank dims, slice products, shape-derived quantities — is declared in `vars`. `flops` and `bytes` are Python expressions over all resolved variables + `elem_bytes` + approved helpers (§4.4.4). `elem_bytes` is the byte size of the dtype the call bound; `out_elem_bytes` is the declared output's, so an entry whose write is not its read's dtype — a bool predicate, an integral input promoted to float — states that much inline. **An op whose `bytes` depends on more than those two dtypes (mixed-precision GEMM, Attention, a per-operand quantization) cannot be expressed in inline mode** and must use `func`.
+**Inline.** `flops` and `bytes` are expressions in the manifest expression language ([manifest.md](manifest.md#t-lang)) over `ix` — the signature's indices, construction parameters and `let`, with `present(t)` for presence; `forall` value lists are not in `ix` — plus `bytes(t)`, the byte size of tensor `t`, and the built-in primitives. A cost that varies with presence reads `present(...)`.
 
-**Func.** Point at `tileops.perf.formulas.<name>`. The callable is human-authored and returns `(flops, bytes)`. **Recommended signature: `func(op)`** — matching the agent-generated `eval_roofline(self)` path, which is what codegen's emitted call assumes. A human author who prefers a different signature owns the resulting integration (e.g., a wrapper). Use `func` when inline arithmetic is insufficient (mixed-precision byte accounting, shape traversal, data-dependent logic).
+**Derived `bytes`.** An entry omitting `bytes` is charged each tensor read or written once: every tensor argument is its own storage, and a declared alias (`buffer`, `alias`) is one; an input not written counts a read, an output a write, a `mutated` input both, a `write_only` input a write; a tensor's size is `prod(shape) * bits(dtype) / 8`, packed dtypes by carrier. An entry whose traffic differs writes `bytes` and a test for it.
 
-A composite op additionally declares `composition`, naming the stages its cost is made of. It
-coexists with either mode and is specified in [manifest.md § Roofline](manifest.md#roofline).
+**Func.** `tileops.perf.formulas.<name>`, a module-level function `f(ix, op) -> tuple[int, int]`. It reads `ix`. A formula whose cost depends on tensor contents reads what the op cached at `forward`, and raises when `forward` has not run (§4.7).
 
 ```yaml
-# Inline — shape dim names cover all variables
 roofline:
-  flops: "2 * M * N * K"
-  bytes: "(M * K + K * N + M * N) * elem_bytes"
-
-# Inline — shape cannot supply the variables; vars fills in
+  flops: "2 * M * N * K"     # bytes derived from the signature
+# or
 roofline:
-  vars:
-    M: "product(x.shape[:dim])"
-    N: "x.shape[dim]"
-  flops: "4 * M * N"
-  bytes: "(2 * M * N + N) * elem_bytes"
-
-# Func — complex formulas
-roofline:
-  func: "tileops.perf.formulas.my_op_roofline"
+  func: "tileops.perf.formulas.gqa_fwd_roofline"
 ```
 
 ## 3. Consumers
 
-`src/tileops/manifest/` is the source of truth for the `roofline` field. Five modules read it:
+`src/tileops/manifest/` is the source of truth for the `roofline` field. These modules read it:
 
 - **Roofline analysis** — reads an entry once and answers two questions: every defect it carries, and whether it can be emitted. Owns the name and form rules. Spec: §4.4.
 - **Schema validator / CI** — structural checks (schema, mode exclusivity, `func` importability), and it renders the analysis's defects. Does **not** execute formulas or hold a helper whitelist. Spec: §4.1.
@@ -122,26 +110,25 @@ Runs on every PR touching `src/tileops/manifest/`. Scope is structural.
 
 Every roofline entry MUST satisfy:
 
-- Required fields per mode: inline has `flops` and `bytes`; func has `func`.
-- Mode exclusivity: `flops`/`bytes`/`vars` and `func` do not coexist.
-- Field types: `flops`/`bytes`/`func` are non-empty strings; `vars` is a mapping of str → non-empty str.
-- `read_bound_exception`, where present, is a mapping of `when` and `reason`, both non-empty strings. `when` joins names, negated names and comparisons of names against literals with `and` or `or`, over params, the workload keys stating what the call does, and `dtype`. Every clause, at every depth, must read the call, so none can settle the condition on its own — that would waive every call of the op (§4.5).
-- An implemented entry's formula analyses cleanly. The validator does not judge the formula: it renders what the analysis found, which for a `func` entry covers whether the dotted path resolves.
+- Required fields per mode: inline has `flops`; func has `func`.
+- Mode exclusivity: `flops`/`bytes` and `func` do not coexist.
+- Field types: `flops`/`bytes`/`func` are non-empty strings.
+- Every entry's formula analyses cleanly. The validator does not judge the formula: it renders what the analysis found. Whether a `func` path resolves is checked for implemented entries.
 
 Rules the validator does not own:
 
-- Name whitelist — a formula's names are checked by the analysis (§4.4), which owns the binding table. Validator does not mirror it; it renders what the analysis says.
+- Name whitelist — a formula's names are checked by the analysis (§4.4), which reads the primitive tables of [manifest.md](manifest.md#t-prims). Validator does not mirror it; it renders what the analysis says.
 - Form checks — the analysis refuses invalid forms. Validator does not mirror them either; it renders what the analysis found.
 - Numeric checks (finite / non-negative / numeric) — outside the validator entirely; tests exercise generated `eval_roofline()` on each workload.
 
-Validator holds no helper callables, no sample bindings, no `__builtins__` sandbox. Adding a helper does not touch the validator.
+Validator holds no sample bindings and no `__builtins__` sandbox. It keeps no copy of the primitives: it calls their one shared implementation, so adding a primitive changes no validator code.
 
 ### 4.2 Benchmark Layer
 
 Contract:
 
-- Instantiate the Op for each workload and call `op.eval_roofline()` to obtain `(flops, bytes)`; there is nowhere else to get them (§4.4.6).
-- Non-reserved workload keys forward as op-call params to the Op's constructor.
+- Instantiate the Op for each workload and call `op.eval_roofline()` to obtain `(flops, bytes)`; there is nowhere else to get them (§4.4.5).
+- Each workload row is instantiated as [manifest.md § Workloads](manifest.md#workloads) defines: its `signature.params` values construct the Op, its indices, `some` and `dtype_cases` build the call's tensors, and `label` names the case.
 - A benchmark file that computes FLOPs or bytes locally is a CI failure.
 - Benchmark output must record the `(flops, bytes)` from `op.eval_roofline()` and the roof key from `op.compute_roof()` (§1.4), so M5 reads the numbers without re-instantiating ops.
 
@@ -154,7 +141,7 @@ Inputs:
 
 Per-workload outputs: SOL efficiency, bound type, latency-bound labels, anomaly reports.
 
-M5 reads pre-computed numbers and never instantiates an Op (§4.4.6).
+M5 reads pre-computed numbers and never instantiates an Op (§4.4.5).
 
 Verdict lines are rendering thresholds, not CI gates:
 
@@ -167,7 +154,9 @@ Physics check: every row's implied rates (`bytes / time`, `flops / time`) are co
 
 ### 4.4 Op Codegen
 
-Analysis and emission both run for `status: implemented` entries only. `spec-only` entries — where either the implementation does not exist or the Op interface does not yet match the manifest — are skipped, and are re-read once the status flips.
+Analysis runs for every entry. Emission runs for `status: implemented` entries only.
+
+An inline entry is decided from the entry alone — no op instance, no tensor library, no device — which is what lets the validator (§4.1) ask the question wherever the manifest can be read. A `func` path is imported only for an implemented entry.
 
 The analysis is the authoritative gate for name and form correctness. A formula referencing an unknown name or violating a layer's form constraints fails it, and a manifest that fails it cannot land. Numeric correctness is exercised by tests.
 
@@ -177,110 +166,30 @@ Analysis and emission are separate: analysis reads the entry and decides, emissi
 - **Lossless.** A fact is absent, malformed or valid, and the three are distinguished. Collapsing the first two makes a missing dependency indistinguishable from a satisfied one.
 - **Accumulating.** A defect does not stop the pass. A judgment that cannot be reached for want of a fact is recorded as unreached, naming the fact.
 
-A name that resolves and a call that can be made are different questions. Each helper's accepted
-call forms are declared in a table beside the helper namespace, and both expression layers check a
-call site against it: a form no helper takes is a verdict with the same message whatever the
-arguments evaluate to. Whether a formula raises for some legal input is not decided here, because
-no finite sample of values would settle it.
-
-Whether the method this entry describes is Python at all is observed, not predicted: the plan
-renders to the method's source, the analysis compiles that source, and a plan whose source does not
-compile is refused. The renderer is one function and emission runs its output, so the text the
-analysis judged is the text that runs. A rule per construct would instead approximate the
-compiler — a leading newline, a comment line and a keyword given twice each parse as an expression
-and none survives being assigned — and every such rule is one more way for the approximation to
-differ from Python.
-
-What running the method would do is a separate question, and one no finite sample of values
-settles. Only the call forms are ruled on, from the table above, and that table is held to the real
-callables by a test that puts every generated call to both.
-
-The expression layers are defined by subtraction: an expression is any Python the rules above do
-not remove. Two questions are asked of that surface, and they are not the same question.
-
-|           | asked of the surface                                        | how it is settled             |
-| --------- | ----------------------------------------------------------- | ----------------------------- |
-| Soundness | is the method this entry describes Python                   | compiling the rendered source |
-| Policy    | which constructs Python allows that the layer does not want | a rule per construct          |
-
-Only the first decides whether an accepted entry works, and it is settled by observation, so a rule
-missing from the second admits a construct nobody wanted rather than one that breaks. That is what
-bounds the cost of defining this surface by subtraction.
-
-The used language is much narrower than the accepted one: 546 expressions across 91 inline entries
-reach 35 node kinds, 8 helper names and 2 attributes. What keeps it as wide as it is is the
-signature rather than the formulas. `isinstance` is the most-called helper, and the names it tests
-are `stride`, `padding`, `dilation` and `kernel_size` — parameters the signature declares as
-unions, leaving each formula to dispatch on the type it was handed. Normalizing such a parameter
-where it is declared would take the dispatch out of 104 of those expressions, and with it much of
-the conditional and comparison the layers must accept.
-
-Replacing the subtraction with a closed grammar — parsing the text into terms and emitting by
-printing the term — is a further step and is not justified by what is written above: it would buy
-productions in place of rules on the policy question alone, and cost a grammar over all 35 node
-kinds, a printer for them, and a change to what the manifest accepts. Measure the node kinds again
-once parameters are normalized, and judge it then against whether what remains subtractive is a
-soundness question or a policy one.
-
-Whether a defect stops emission follows the formula rather than the defect: a malformed `outputs` blocks a formula that reads `out_elem_bytes` and not one that never does. A name the formula reads resolves from one place only — declared twice, or shared with a helper, it would bind twice in the emitted body.
-
-The two gates divide by question, not by field. §4.1 rules on whether the blocks are structurally
-what the spec says; the analysis rules on whether the formula is legal. Neither withholds its answer because the
-other has one, so a formula defect is reported however the rest of the entry reads: a precondition
-wide enough to suppress the overlap also suppresses a defect that merely sits beside an unrelated
-one. The exception is a signature too malformed to say what names the formula may use, where the
-structural verdict is the only one there is.
-
-A rejection is a verdict rather than an exception for a caller to classify.
-
-An inline entry is decided from the entry alone — no op instance, no tensor library, no device — which is what lets the validator (§4.1) ask the question wherever the manifest can be read. A `func` entry additionally imports the module its path names, so what that module needs at import, deciding the entry needs too. A formula callable that pulls a runtime into an import therefore costs the manifest a check it could otherwise run anywhere.
+An inline formula is written in the manifest's closed expression language, so the analysis checks each name against `ix` and each call against the primitive table; a formula outside the language does not land.
 
 #### 4.4.1 Generated Method
 
-Every implemented manifest entry is served by a generated `eval_roofline()` returning `(flops: int, bytes: int)`. The method belongs to that entry: a subclass with its own entry receives its own evaluator rather than inheriting another entry's formula. The signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md).
-
-A tensor the formula reads resolves through `self.<name>` or `self.<name>_shape`, so an op exposes what its entry reads and nothing more. Exposing neither is an authoring defect; exposing one and leaving it unset is a caller who has not run `forward()`. The two are distinct failures and are reported as such.
+Every implemented manifest entry is served by a generated `eval_roofline()` returning `(flops: int, bytes: int)`. The method belongs to that entry: a subclass with its own entry receives its own evaluator rather than inheriting another entry's formula. It evaluates over the `ix` inferred for the op's last call. The signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md).
 
 #### 4.4.2 Manifest Inputs
 
 For each entry, codegen reads one of:
 
-- **Inline** — `vars` (optional), `flops`, `bytes`, all Python expression source strings, emitted as the method body per §4.4.3.
-- **Func** — `func`, a dotted path to `func(op) -> tuple[int, int]`, emitted as a call to it. The callable reads construction-bound and call-bound state off the op; call-bound state wins where both supply the same input.
+- **Inline** — `flops` and optional `bytes`, emitted as the method body; an omitted `bytes` is emitted from the signature (§2.2).
+- **Func** — `func`, a dotted path to `f(ix, op) -> tuple[int, int]`, emitted as a call to it.
 
-#### 4.4.3 Expression Layers
+#### 4.4.3 Namespace
 
-Inline mode has two layers, emitted as two sequential blocks.
+The namespace of an inline formula is `ix` plus `bytes(t)` and the built-in primitives. The primitive tables of [manifest.md](manifest.md#t-prims) are the only list of names a formula may call; a primitive is added there and in its one implementation, and nowhere else. A refusal states the allowed names. A name resolves from one place only.
 
-- **vars layer** — shape-derived resolution. Tensor shape access, slicing, `product()`, `range()`, small comprehensions. Entries resolve in declaration order and each may read the ones above it, so a formula names an intermediate once and builds on it.
-- **arithmetic layer** — `flops` and `bytes` over the resolved variables, the element-size constants and approved helpers only. No tensor access, shape slicing, comprehensions, attributes or arbitrary calls.
-
-The layers are what keeps a formula readable and recountable, so a vars expression must not be inlined into an arithmetic expression: that collapses the two and puts shape traversal where the arithmetic layer forbids it. A formula the arithmetic layer cannot carry switches to `func` mode (§2.2) rather than extending inline formulas into a mini-language.
-
-Both expression strings are copied verbatim into plain Python. The analysis resolves every name against the namespace (§4.4.4) and checks the arithmetic layer's form; a formula failing either does not land (§4.1).
-
-Reduction dim handling in the vars layer follows the manifest `shape_rules` contract: validate range, normalize against `ndim`, reject duplicate axes for sequence dims. A roofline expression must not silently normalize an invalid axis.
-
-#### 4.4.4 Namespace
-
-One binding table is the single source of truth for what an inline formula may reference, and a refusal states the allowed names. The buckets:
-
-| Layer      | May reference                                                                                                          |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------- |
-| vars       | `signature.inputs` names by `.shape`, `signature.params` names, the element-size constants, shape and sequence helpers |
-| arithmetic | variables resolved by the vars layer, the element-size constants, numeric helpers                                      |
-
-Two element-size constants exist. `elem_bytes` prices the input dtype; `out_elem_bytes` resolves the declared output dtype through the manifest, so an op whose output dtype is not its input's — a bool predicate, an integral input promoted to float — states its write without a second source. It is available where the entry declares exactly one output.
-
-A helper is added or removed in the binding table and nowhere else.
-
-#### 4.4.5 Evaluation Timing
+#### 4.4.4 Evaluation Timing
 
 `eval_roofline()` is valid once the call has bound what the formula reads. The dtype is always call-bound, so no op can be priced before its first `forward()`; an arbitrary-rank op's dynamic dims are bound there too. The method recomputes on each call and holds no cache: a cached `(flops, bytes)` would outlive the shapes it was computed for.
 
 A consumer that is not the op itself instantiates the Op or reads pre-computed `(flops, bytes)` from benchmark output.
 
-#### 4.4.6 Evaluator Surface Boundary
+#### 4.4.5 Evaluator Surface Boundary
 
 Roofline expressions live in exactly one place at runtime: the plain Python body of each op's `eval_roofline()`. Two surfaces are rejected and must not be built — an op-local AST evaluator, and a manifest-level roofline evaluator that any consumer could call for `(flops, bytes)`.
 
@@ -294,20 +203,20 @@ The read-side bound is conditional, not a theorem. It holds while each kernel is
 
 It carries a second premise: that every conforming implementation must fetch what the formula charges. Some calls break it. Where an input's value decides nothing at some positions, a kernel may predicate those loads away and read less than the call binds, while the formula still charges the whole input — the positions are chosen at run time, and charging a fraction of them would be an expected value, not this call's traffic (§4.7).
 
-An entry states such calls in `roofline.read_bound_exception`: a `when` over the call, and the `reason` the premise fails there. The audit evaluates `when` against the row it measured, and a shortfall inside the condition is EXEMPT — measured, reported, not a verdict on the formula. Rows outside it are judged as before, which is why the exception carries a condition rather than covering the op.
+Such calls are configured in the audit script, not the manifest: a `when` over the call, and the `reason` the premise fails there. The audit evaluates `when` against the row it measured, and a shortfall inside the condition is EXEMPT — measured, reported, not a verdict on the formula. Rows outside it are judged as before, which is why the exception carries a condition rather than covering the op.
 
 The condition's form is checked, its aptness is not: no check tells a property of the call from a value that matches today's rows. Review reads the `reason`, and an entry earns the exception from a measurement of the behaviour it names.
 
 `(flops, bytes)` does not carry the read/write split, so an op sent here states its read half in `Op.eval_roofline_read_bytes()`. There is no fallback. Summing the call's input tensors is not the read half: an op that reads a subset of an input — a routed MoE reading the experts its routing selects — would be charged the whole of it, and a correct formula would fail. An op that declares nothing gets NO-VERDICT, which is not a pass.
 
-| Verdict    | Meaning                                                                |
-| ---------- | ---------------------------------------------------------------------- |
-| FAIL       | Measured reads fall short of the declared read half.                   |
-| WARN       | Measured reads far exceed it: multi-pass or replay cost.               |
-| EXEMPT     | They fall short inside a `read_bound_exception`: reported, not judged. |
-| SKIPPED    | Never run, or the formula declares no read at all.                     |
-| ERROR      | The audit did not produce a usable measurement.                        |
-| NO-VERDICT | No read half was declared.                                             |
+| Verdict    | Meaning                                                              |
+| ---------- | -------------------------------------------------------------------- |
+| FAIL       | Measured reads fall short of the declared read half.                 |
+| WARN       | Measured reads far exceed it: multi-pass or replay cost.             |
+| EXEMPT     | They fall short inside a configured exception: reported, not judged. |
+| SKIPPED    | Never run, or the formula declares no read at all.                   |
+| ERROR      | The audit did not produce a usable measurement.                      |
+| NO-VERDICT | No read half was declared.                                           |
 
 The read half comes off `bytes` by subtracting the write half the contract settles, and pricing the outputs needs the shapes the call carried. An op keeps only what its own `eval_roofline` needs, so the audit records each input's shape and dtype around the call it reads the declaration off. The recording is off everywhere else: it costs per call, which a benchmark row must not carry.
 
@@ -317,7 +226,7 @@ Runs on demand: it needs GPU performance counters, which the driver restricts to
 
 ### 4.6 Structural Oracle (tests)
 
-A CI test recomputes each audited `bytes` value from an independent path — the sizes of the tensors the workload actually binds (each distinct input storage once, each output once) — and requires equality with `eval_roofline()`. The formula and the oracle share only the minimum-traffic definition, so a coefficient slip, a missed output, a wrong `elem_bytes`, or a broadcast counted at the wrong shape breaks the equality.
+A CI test recomputes each audited `bytes` value from an independent path — the sizes of the tensors the workload actually binds, counted by the effect rules of §2.2 without reading the `roofline` block — and requires equality with `eval_roofline()`. The formula and the oracle share only the minimum-traffic definition, so a coefficient slip, a missed output, a wrong `elem_bytes`, or a broadcast counted at the wrong shape breaks the equality.
 
 Traffic that depends on tensor *content* is recounted the same way: the case constructs the selecting tensor itself, exactly as it constructs shapes, so content dependence is no reason to exempt an op. Coverage is golden workloads per op, not randomized sweeps.
 
