@@ -1,0 +1,556 @@
+# Signatures the validator accepts (docs/design/manifest.md § Signature).
+adts:
+  MGroupedLayout:
+    sum:
+      contiguous:
+        python: types.SimpleNamespace
+        fields:
+          packing: '''tight'' | ''aligned'''
+          metadata_kind: '''physical_psum'' | ''per_row'''
+          alignment: Dim
+        invariant: (packing == 'tight') == (alignment == 1) and alignment >= 1
+      masked:
+        python: types.SimpleNamespace
+        fields:
+          max_m: Dim
+entries:
+  GemmFwdOp:
+    signature:
+      types:
+        Mat:
+          params:
+            t: Bool
+            R: Dim
+            C: Dim
+          match: t
+          cases:
+          - when: false
+            is: '[R, C]'
+          - when: true
+            is: '[C, R]'
+      forall:
+        M: Dim
+        N: Dim
+        K: Dim
+        T: DType[float16 | bfloat16]
+      params:
+        trans_a:
+          type: bool
+        trans_b:
+          type: bool
+      inputs:
+        a:
+          dtype: T
+          shape: Mat[trans_a, M, K]
+        b:
+          dtype: T
+          shape: Mat[trans_b, K, N]
+      outputs:
+        d:
+          dtype: T
+          shape: '[M, N]'
+  ClampFwdOp:
+    signature:
+      types:
+        ClampOut:
+          params:
+            A: Shape
+            L: Shape
+            U: Shape
+            pl: Bool
+            pu: Bool
+          match:
+          - pl
+          - pu
+          cases:
+          - when:
+            - true
+            - true
+            is: '[*broadcast(A, L, U)]'
+          - when:
+            - true
+            - false
+            is: '[*broadcast(A, L)]'
+          - when:
+            - false
+            - true
+            is: '[*broadcast(A, U)]'
+      forall:
+        A: Shape
+        L: Shape
+        U: Shape
+        T: DType[float16 | bfloat16 | float32]
+      inputs:
+        input:
+          dtype: T
+          shape: '[*A]'
+        min:
+          dtype: T
+          optional: true
+          shape: '[*L]'
+        max:
+          dtype: T
+          optional: true
+          shape: '[*U]'
+      outputs:
+        output:
+          dtype: T
+          shape: ClampOut[A, L, U, present(min), present(max)]
+      shape_rules:
+      - present(min) or present(max)
+  MeanPoolingFwdOp:
+    signature:
+      types:
+        PoolOut:
+          params:
+            p: Bool
+            B: Dim
+            NC: Dim
+            S: Dim
+            c: Dim
+            H: Dim
+            D: Dim
+          match: p
+          cases:
+          - when: true
+            is: '[B, NC, H, D]'
+          - when: false
+            is: '[B, ceil_div(S, c), H, D]'
+      forall:
+        B: Dim
+        S: Dim
+        H: Dim
+        D: Dim
+        NS: Dim
+        NC: Dim
+        T: DType[float16 | bfloat16 | float32]
+        seq_lens: Seq[Int]
+      params:
+        chunk_size:
+          type: int
+        accum_dtype:
+          type: torch.dtype
+      inputs:
+        x:
+          dtype: T
+          shape: '[B, S, H, D]'
+        offsets:
+          dtype: int32
+          optional: true
+          shape: '[NS + 1]'
+          values: prefix_sum(seq_lens)
+          requires:
+          - prefix_offsets(S)
+        indices:
+          dtype: int32
+          optional: present(offsets)
+          shape: '[NC, 2]'
+          values: chunk_indices(seq_lens, chunk_size)
+      outputs:
+        output:
+          dtype: T
+          shape: PoolOut[present(offsets), B, NC, S, chunk_size, H, D]
+      shape_rules:
+      - chunk_size > 0 and chunk_size % 32 == 0
+  RMSNormFwdOp:
+    signature:
+      forall:
+        B: Shape
+        T: DType[float16 | bfloat16]
+      params:
+        normalized_shape:
+          type: list[int] | tuple[int, ...]
+      inputs:
+        x:
+          dtype: T
+          shape: '[*B, *normalized_shape]'
+        weight:
+          dtype: T
+          shape: '[*normalized_shape]'
+      outputs:
+        output:
+          dtype: T
+          shape: '[*B, *normalized_shape]'
+      shape_rules:
+      - len(normalized_shape) > 0
+  SumFwdOp:
+    signature:
+      forall:
+        S: Shape
+        T: DType[float16 | bfloat16 | float32]
+      params:
+        dim:
+          type: int | list[int] | None
+          default: null
+        keepdim:
+          type: bool
+          default: false
+      inputs:
+        x:
+          dtype: T
+          shape: '[*S]'
+      outputs:
+        output:
+          dtype: T
+          shape: '[*reduced(S, dim, keepdim, ''full'')]'
+      shape_rules:
+      - valid_axes(dim, len(S)) and unique_axes(dim, len(S))
+  InfNormFwdOp:
+    signature:
+      forall:
+        S: Shape
+        T: DType[float16 | bfloat16 | float32]
+      params:
+        ord:
+          type: float
+          default: .inf
+        dim:
+          type: int | list[int] | None
+          default: null
+        keepdim:
+          type: bool
+          default: false
+      inputs:
+        x:
+          dtype: T
+          shape: '[*S]'
+      outputs:
+        output:
+          dtype: T
+          shape: '[*reduced(S, dim, keepdim, ''full'')]'
+      shape_rules:
+      - ord == inf
+      - valid_axes(dim, len(S)) and unique_axes(dim, len(S))
+  MaxPool2dFwdOp:
+    signature:
+      forall:
+        N: Dim
+        C: Dim
+        H_in: Dim
+        W_in: Dim
+        T: DType[float16 | bfloat16 | float32]
+      params:
+        kernel_size:
+          type: int | tuple[int, int]
+        stride:
+          type: int | tuple[int, int] | None
+          default: null
+        padding:
+          type: int | tuple[int, int]
+          default: 0
+        dilation:
+          type: int | tuple[int, int]
+          default: 1
+        ceil_mode:
+          type: bool
+          default: false
+      inputs:
+        input:
+          dtype: T
+          shape: '[N, C, H_in, W_in]'
+      outputs:
+        output:
+          dtype: T
+          shape: '[N, C, H_out, W_out]'
+      let:
+        kH: per_axis(kernel_size, 0, 2)
+        kW: per_axis(kernel_size, 1, 2)
+        sH: per_axis(stride, 0, 2, fallback=kH)
+        sW: per_axis(stride, 1, 2, fallback=kW)
+        pH: per_axis(padding, 0, 2)
+        pW: per_axis(padding, 1, 2)
+        H_out: pool.out(H_in, kH, sH, pH, per_axis(dilation, 0, 2), ceil_mode)
+        W_out: pool.out(W_in, kW, sW, pW, per_axis(dilation, 1, 2), ceil_mode)
+      shape_rules:
+      - kH > 0 and kW > 0 and sH > 0 and sW > 0
+      - per_axis(dilation, 0, 2) > 0 and per_axis(dilation, 1, 2) > 0
+      - 0 <= pH <= kH // 2 and 0 <= pW <= kW // 2
+  RopeNeoxFwdOp:
+    signature:
+      types:
+        RopeX:
+          params:
+            layout: '''1d'' | ''2d'''
+            B: Dim
+            S: Dim
+            H: Dim
+            D: Dim
+          match: layout
+          cases:
+          - when: 1d
+            is: '[S, D]'
+          - when: 2d
+            is: '[B, S, H, D]'
+      forall:
+        B: Dim
+        S: Dim
+        H: Dim
+        D: Dim
+        T: DType[float16 | bfloat16 | float32]
+      params:
+        layout:
+          type: '''1d'' | ''2d'''
+      inputs:
+        x:
+          dtype: T
+          shape: RopeX[layout, B, S, H, D]
+      outputs:
+        output:
+          dtype: T
+          shape: RopeX[layout, B, S, H, D]
+      shape_rules:
+      - D % 2 == 0
+  GemmFp8FwdOp:
+    signature:
+      forall:
+        M: Dim
+        N: Dim
+        K: Dim
+        SA: Shape
+        SB: Shape
+      params:
+        out_dtype:
+          type: bfloat16 | float16
+          default: bfloat16
+      inputs:
+        a:
+          dtype: float8_e4m3fn
+          shape: '[M, K]'
+        b:
+          dtype: float8_e4m3fn
+          shape: '[N, K]'
+        scale_a:
+          dtype: float32
+          shape: '[*SA]'
+        scale_b:
+          dtype: float32
+          shape: '[*SB]'
+        bias:
+          dtype: out_dtype
+          optional: true
+          shape: '[N]'
+      outputs:
+        d:
+          dtype: out_dtype
+          shape: '[M, N]'
+      shape_rules:
+      - (SA == (1, 1) and SB == (1, 1)) or (SA == (M, ceil_div(K, 128)) and SB == (N, ceil_div(K, 128)))
+  SiluAndMulFwdOp:
+    signature:
+      forall:
+        M: Dim
+        N: Dim
+        T: DType[float16 | bfloat16]
+      inputs:
+        x:
+          dtype: T
+          shape: '[M, 2 * N]'
+      outputs:
+        output:
+          dtype: T
+          shape: '[M, N]'
+  DSADecodeFwdOp:
+    signature:
+      forall:
+        B: Dim
+        S: Dim
+        H: Dim
+        D: Dim
+        T: DType[float16 | bfloat16]
+      params:
+        dim_tail:
+          type: int
+      inputs:
+        q:
+          dtype: T
+          shape: '[B, S, H, D + dim_tail]'
+      outputs:
+        o:
+          dtype: T
+          shape: '[B, S, H, D]'
+  FusedMoeSharedExpertFwdOp:
+    signature:
+      forall:
+        E: Dim
+        T: DType[float16 | bfloat16]
+      params:
+        num_tokens:
+          type: int
+        hidden_size:
+          type: int
+        shared_ffn_size:
+          type: int | None
+          default: null
+      inputs:
+        hidden_states:
+          dtype: T
+          shape: '[num_tokens, hidden_size]'
+        gating_output:
+          dtype: float32
+          shape: '[num_tokens, E]'
+        shared_w_gate_up:
+          dtype: T
+          optional: present(shared_ffn_size)
+          shape: '[2 * shared_ffn_size.value, hidden_size]'
+        shared_w_down:
+          dtype: T
+          optional: present(shared_ffn_size)
+          shape: '[hidden_size, shared_ffn_size.value]'
+      outputs:
+        shared_output:
+          dtype: T
+          nullable: present(shared_ffn_size)
+          shape: '[num_tokens, hidden_size]'
+        routed_output:
+          dtype: T
+          shape: '[num_tokens, hidden_size]'
+  MoePrePermuteFwdOp:
+    signature:
+      types:
+        ExpertRows:
+          params:
+            layout: MGroupedLayout
+            E: Dim
+            P: Dim
+            H: Dim
+          match: layout
+          cases:
+          - when:
+              masked: _
+            is: '[E, layout.max_m, H]'
+          - when:
+              contiguous: _
+            is: '[P, H]'
+        LayoutMetadata:
+          params:
+            layout: MGroupedLayout
+            E: Dim
+            P: Dim
+          match: layout
+          cases:
+          - when:
+              masked: _
+            is: '[E]'
+          - when:
+              contiguous:
+                metadata_kind: physical_psum
+            is: '[E]'
+          - when:
+              contiguous:
+                metadata_kind: per_row
+            is: '[P]'
+      forall:
+        N_tok: Dim
+        H: Dim
+        K: Dim
+        T: DType[float16 | bfloat16]
+      params:
+        layout:
+          type: MGroupedLayout
+        num_local_experts:
+          type: int
+      inputs:
+        hidden_states:
+          dtype: T
+          shape: '[N_tok, H]'
+        local_expert_ids:
+          dtype: int32
+          shape: '[N_tok, K]'
+          values: topk_ids(N_tok, K, num_local_experts)
+          requires:
+          - in_range(0, num_local_experts)
+      let:
+        P: moe.capacity(layout, N_tok * K, num_local_experts)
+      outputs:
+        expert_input:
+          dtype: T
+          shape: ExpertRows[layout, num_local_experts, P, H]
+        layout_metadata:
+          dtype: int32
+          shape: LayoutMetadata[layout, num_local_experts, P]
+        inverse_indices:
+          dtype: int32
+          shape: '[N_tok * K]'
+      shape_rules:
+      - num_local_experts > 0
+      - K > 0
+  GQAPrefillVarlenFwdOp:
+    signature:
+      forall:
+        B: Dim
+        total_q: Dim
+        total_kv: Dim
+        H: Dim
+        H_kv: Dim
+        D: Dim
+        T: DType[float16 | bfloat16]
+        q_lens: Seq[Int]
+        kv_lens: Seq[Int]
+      inputs:
+        q:
+          dtype: T
+          shape: '[total_q, H, D]'
+        k:
+          dtype: T
+          shape: '[total_kv, H_kv, D]'
+        v:
+          dtype: T
+          shape: '[total_kv, H_kv, D]'
+        cu_seqlens_q:
+          dtype: int32
+          shape: '[B + 1]'
+          values: prefix_sum(q_lens)
+          requires:
+          - prefix_offsets(total_q)
+        cu_seqlens_kv:
+          dtype: int32
+          shape: '[B + 1]'
+          values: prefix_sum(kv_lens)
+          requires:
+          - prefix_offsets(total_kv)
+      outputs:
+        o:
+          dtype: T
+          shape: '[total_q, H, D]'
+      shape_rules:
+      - H % H_kv == 0
+  RopeLongRopeFwdOp:
+    signature:
+      types:
+        RopeX:
+          params:
+            layout: '''1d'' | ''2d'''
+            B: Dim
+            S: Dim
+            H: Dim
+            D: Dim
+          match: layout
+          cases:
+          - when: 1d
+            is: '[S, D]'
+          - when: 2d
+            is: '[B, S, H, D]'
+      forall:
+        B: Dim
+        S: Dim
+        H: Dim
+        D: Dim
+        T: DType[float16 | bfloat16 | float32]
+        R: DType[float32 | float16 | bfloat16]
+      params:
+        layout:
+          type: '''1d'' | ''2d'''
+        rescale_factors:
+          dtype: R
+          shape: '[D // 2]'
+          optional: true
+      inputs:
+        x:
+          dtype: T
+          shape: RopeX[layout, B, S, H, D]
+      outputs:
+        output:
+          dtype: T
+          shape: RopeX[layout, B, S, H, D]
+      shape_rules:
+      - D % 2 == 0

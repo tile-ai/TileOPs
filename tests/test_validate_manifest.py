@@ -72,7 +72,7 @@ def _make_entry(
     if kernel_map is not None:
         source["kernel_map"] = kernel_map
     entry = {
-        "family": "test",
+        "family": "elementwise",
         "ref_api": "none",
         "signature": sig,
         "workloads": [
@@ -3618,7 +3618,7 @@ class TestStrictAdvisoryMode:
         # fields present so the test would still parse if schema checks
         # were enabled.
         entry = {
-            "family": "synth",
+            "family": "elementwise",
             "status": "implemented",
             "ref_api": "https://example.invalid/stub",
             "signature": _sig(

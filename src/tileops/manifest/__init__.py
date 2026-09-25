@@ -11,6 +11,7 @@ Public entry points:
 - `load_workloads` — return the workloads list for an op.
 - `load_manifest` — return the full merged ``ops`` dict.
 - `manifest_files` — list the YAML files contributing to the manifest.
+- `load_adts` — return the algebraic data types shared through ``types.yaml``.
 """
 
 from __future__ import annotations
@@ -23,18 +24,47 @@ import yaml
 
 __all__ = [
     "WORKLOAD_RESERVED_KEYS",
+    "LEGACY_FAMILIES",
     "WORKSPACE_ATTR",
     "combo_input_names",
     "forward_signature",
+    "load_adts",
     "load_manifest",
     "load_workloads",
     "manifest_files",
     "manifest_key",
     "single_input_workload_contract",
     "try_load_entry",
+    "types_document",
 ]
 
 _PACKAGE = "tileops.manifest"
+_TYPES_FILE = "types.yaml"
+
+# FIXME(staged-rollout): families still written in the legacy manifest form.
+#
+# Broken invariant: every entry is a parametric signature (docs/design/manifest.md).
+# Why: the migration converts one family per PR, and the validator reads both forms meanwhile.
+# Cleanup: delete this set, and the legacy checks it routes to, once it is empty.
+LEGACY_FAMILIES: frozenset[str] = frozenset(
+    {
+        "attention",
+        "convolution",
+        "elementwise",
+        "gemm",
+        "linear_attention",
+        "mamba",
+        "moe",
+        "normalization",
+        "pool",
+        "position_encoding",
+        "quantization",
+        "reduction",
+        "scan",
+        "sequence_modeling",
+        "spectral",
+    }
+)
 
 
 def manifest_files() -> list:
@@ -46,7 +76,11 @@ def manifest_files() -> list:
     """
     root = resources.files(_PACKAGE)
     return sorted(
-        (p for p in root.iterdir() if p.is_file() and p.name.endswith(".yaml")),
+        (
+            p
+            for p in root.iterdir()
+            if p.is_file() and p.name.endswith(".yaml") and p.name != _TYPES_FILE
+        ),
         key=lambda p: p.name,
     )
 
@@ -72,6 +106,21 @@ def load_manifest() -> dict[str, Any]:
             merged[name] = entry
             origin[name] = path.name
     return merged
+
+
+def types_document() -> object:
+    """The parsed ``types.yaml``, whatever its shape, or None when the file is absent."""
+    path = resources.files(_PACKAGE) / _TYPES_FILE
+    return yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+@functools.lru_cache(maxsize=1)
+def load_adts() -> dict[str, Any]:
+    """Return the ADTs of ``types.yaml`` that ``check_adts`` accepts; empty when the file is absent."""
+    from .signature import check_adts
+
+    data = types_document()
+    return check_adts(data.get("adts", {}) if isinstance(data, dict) else {})[0]
 
 
 def try_load_entry(op_name: str) -> dict[str, Any] | None:
