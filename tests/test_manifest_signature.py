@@ -14,7 +14,7 @@ from tileops.manifest.signature import check_adts, check_entry, signature_schema
 
 pytestmark = pytest.mark.smoke
 
-_CASES = yaml.safe_load((Path(__file__).parent / "signature_cases.yaml").read_text())
+_CASES = yaml.safe_load((Path(__file__).parent / "manifest_cases.yaml").read_text())
 _ADTS = _CASES["adts"]
 _ENTRIES = _CASES["entries"]
 

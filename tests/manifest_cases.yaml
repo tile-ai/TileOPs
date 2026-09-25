@@ -1,4 +1,5 @@
-# Signatures the validator accepts (docs/design/manifest.md § Signature).
+# Signatures the validator accepts, with workload rows; `expect_fail` rows must be rejected
+# (docs/design/manifest.md § Signature, § Workloads).
 adts:
   MGroupedLayout:
     sum:
@@ -49,6 +50,23 @@ entries:
         d:
           dtype: T
           shape: '[M, N]'
+    workloads:
+    - label: gemm-0
+      M: 1024
+      N: 512
+      K: 256
+      trans_a: false
+      trans_b: true
+      dtype_cases:
+      - T: float16
+    - label: gemm-1
+      M: 8
+      N: 4
+      K: 2
+      trans_a: true
+      trans_b: false
+      dtype_cases:
+      - T: bfloat16
   ClampFwdOp:
     signature:
       types:
@@ -98,6 +116,41 @@ entries:
           shape: ClampOut[A, L, U, present(min), present(max)]
       shape_rules:
       - present(min) or present(max)
+    workloads:
+    - label: clamp-0
+      A:
+      - 4096
+      - 4096
+      L:
+      - 4096
+      - 4096
+      U:
+      - 4096
+      - 4096
+      some:
+      - min
+      - max
+      dtype_cases:
+      - T: float16
+    - label: clamp-1
+      A:
+      - 8
+      - 1
+      - 16
+      L:
+      - 4
+      - 16
+      some:
+      - min
+      dtype_cases:
+      - T: float32
+    - label: clamp-2
+      A:
+      - 8
+      - 16
+      expect_fail: true
+      dtype_cases:
+      - T: float16
   MeanPoolingFwdOp:
     signature:
       types:
@@ -152,6 +205,74 @@ entries:
           shape: PoolOut[present(offsets), B, NC, S, chunk_size, H, D]
       shape_rules:
       - chunk_size > 0 and chunk_size % 32 == 0
+    workloads:
+    - label: meanpooling-0
+      B: 1
+      S: 8192
+      H: 64
+      D: 128
+      chunk_size: 64
+      accum_dtype: float32
+      dtype_cases:
+      - T: float16
+    - label: meanpooling-1
+      B: 1
+      S: 8192
+      H: 64
+      D: 128
+      seq_lens:
+      - 4096
+      - 4096
+      chunk_size: 64
+      accum_dtype: float32
+      some:
+      - offsets
+      dtype_cases:
+      - T: float16
+    - label: meanpooling-2
+      B: 1
+      S: 8192
+      H: 64
+      D: 128
+      NC: 128
+      seq_lens:
+      - 4096
+      - 4096
+      chunk_size: 64
+      accum_dtype: float32
+      some:
+      - offsets
+      expect_fail: true
+      dtype_cases:
+      - T: float16
+    - label: meanpooling-3
+      B: 1
+      S: 8000
+      H: 64
+      D: 128
+      seq_lens:
+      - 4096
+      - 4096
+      chunk_size: 64
+      accum_dtype: float32
+      some:
+      - offsets
+      expect_fail: true
+      dtype_cases:
+      - T: float16
+    - label: meanpooling-4
+      B: 1
+      S: 8192
+      H: 64
+      D: 128
+      seq_lens:
+      - 4096
+      - 4096
+      chunk_size: 64
+      accum_dtype: float32
+      expect_fail: true
+      dtype_cases:
+      - T: float16
   RMSNormFwdOp:
     signature:
       forall:
@@ -173,6 +294,24 @@ entries:
           shape: '[*B, *normalized_shape]'
       shape_rules:
       - len(normalized_shape) > 0
+    workloads:
+    - label: rmsnorm-0
+      B:
+      - 2048
+      normalized_shape:
+      - 4096
+      dtype_cases:
+      - T: float16
+      - T: bfloat16
+    - label: rmsnorm-1
+      B:
+      - 4
+      - 128
+      normalized_shape:
+      - 16
+      - 64
+      dtype_cases:
+      - T: bfloat16
   SumFwdOp:
     signature:
       forall:
@@ -195,6 +334,72 @@ entries:
           shape: '[*reduced(S, dim, keepdim, ''full'')]'
       shape_rules:
       - valid_axes(dim, len(S)) and unique_axes(dim, len(S))
+    workloads:
+    - label: sum-0
+      S:
+      - 2048
+      - 4096
+      dim: -1
+      dtype_cases:
+      - T: float16
+    - label: sum-1
+      S:
+      - 4
+      - 8
+      - 16
+      dim:
+      - 0
+      - 2
+      keepdim: true
+      dtype_cases:
+      - T: float32
+    - label: sum-2
+      S:
+      - 4
+      - 8
+      dtype_cases:
+      - T: float32
+    - label: sum-3
+      S:
+      - 4
+      - 8
+      dim:
+      - 0
+      - 0
+      expect_fail: true
+      dtype_cases:
+      - T: float32
+    - label: sum-4
+      S: []
+      dim: -1
+      dtype_cases:
+      - T: float32
+    - label: sum-5
+      S: []
+      dim: 1
+      expect_fail: true
+      dtype_cases:
+      - T: float32
+    - label: sum-6
+      S: []
+      dim:
+      - 0
+      dtype_cases:
+      - T: float32
+    - label: sum-7
+      S: []
+      dim:
+      - -1
+      dtype_cases:
+      - T: float32
+    - label: sum-8
+      S: []
+      dim:
+      - 0
+      - -1
+      expect_fail: true
+      dtype_cases:
+      - T: float32
   InfNormFwdOp:
     signature:
       forall:
@@ -221,6 +426,23 @@ entries:
       shape_rules:
       - ord == inf
       - valid_axes(dim, len(S)) and unique_axes(dim, len(S))
+    workloads:
+    - label: infnorm-0
+      S:
+      - 1024
+      - 4096
+      dim: -1
+      dtype_cases:
+      - T: bfloat16
+    - label: infnorm-1
+      S:
+      - 1024
+      - 4096
+      dim: -1
+      ord: 2.0
+      expect_fail: true
+      dtype_cases:
+      - T: bfloat16
   MaxPool2dFwdOp:
     signature:
       forall:
@@ -265,6 +487,41 @@ entries:
       - kH > 0 and kW > 0 and sH > 0 and sW > 0
       - per_axis(dilation, 0, 2) > 0 and per_axis(dilation, 1, 2) > 0
       - 0 <= pH <= kH // 2 and 0 <= pW <= kW // 2
+    workloads:
+    - label: maxpool2d-0
+      N: 32
+      C: 64
+      H_in: 112
+      W_in: 112
+      kernel_size:
+      - 3
+      - 3
+      stride:
+      - 2
+      - 2
+      padding:
+      - 1
+      - 1
+      dtype_cases:
+      - T: float16
+    - label: maxpool2d-1
+      N: 1
+      C: 8
+      H_in: 7
+      W_in: 9
+      kernel_size: 2
+      dtype_cases:
+      - T: float32
+    - label: maxpool2d-2
+      N: 1
+      C: 8
+      H_in: 7
+      W_in: 7
+      kernel_size: 3
+      stride: 2
+      ceil_mode: true
+      dtype_cases:
+      - T: float32
   RopeNeoxFwdOp:
     signature:
       types:
@@ -300,6 +557,29 @@ entries:
           shape: RopeX[layout, B, S, H, D]
       shape_rules:
       - D % 2 == 0
+    workloads:
+    - label: ropeneox-0
+      layout: 1d
+      S: 8192
+      D: 128
+      dtype_cases:
+      - T: bfloat16
+    - label: ropeneox-1
+      layout: 2d
+      B: 1
+      S: 8192
+      H: 32
+      D: 128
+      dtype_cases:
+      - T: float16
+    - label: ropeneox-2
+      layout: 1d
+      B: 1
+      S: 8192
+      D: 128
+      expect_fail: true
+      dtype_cases:
+      - T: bfloat16
   GemmFp8FwdOp:
     signature:
       forall:
@@ -335,6 +615,66 @@ entries:
           shape: '[M, N]'
       shape_rules:
       - (SA == (1, 1) and SB == (1, 1)) or (SA == (M, ceil_div(K, 128)) and SB == (N, ceil_div(K, 128)))
+    workloads:
+    - label: gemmfp8-0
+      M: 128
+      N: 2112
+      K: 7168
+      SA:
+      - 1
+      - 1
+      SB:
+      - 1
+      - 1
+    - label: gemmfp8-1
+      M: 128
+      N: 2112
+      K: 7168
+      SA:
+      - 128
+      - 56
+      SB:
+      - 2112
+      - 56
+      some:
+      - bias
+      out_dtype: float16
+    - label: gemmfp8-2
+      M: 128
+      N: 2112
+      K: 7168
+      SA:
+      - 128
+      - 55
+      SB:
+      - 2112
+      - 56
+      expect_fail: true
+    - label: gemmfp8-3
+      M: 128
+      N: 2112
+      K: 7168
+      SA:
+      - 1
+      - 1
+      SB:
+      - 1
+      - 1
+      dtypes:
+      - float8_e4m3fn
+      expect_fail: true
+    - label: gemmfp8-4
+      M: 128
+      N: 2112
+      K: 7168
+      SA:
+      - 1
+      - 1
+      SB:
+      - 1
+      - 1
+      out_dtype: float32
+      expect_fail: true
   SiluAndMulFwdOp:
     signature:
       forall:
@@ -349,6 +689,12 @@ entries:
         output:
           dtype: T
           shape: '[M, N]'
+    workloads:
+    - label: siluandmul-0
+      M: 4096
+      N: 11008
+      dtype_cases:
+      - T: bfloat16
   DSADecodeFwdOp:
     signature:
       forall:
@@ -368,6 +714,15 @@ entries:
         o:
           dtype: T
           shape: '[B, S, H, D]'
+    workloads:
+    - label: dsadecode-0
+      B: 1
+      S: 1024
+      H: 128
+      D: 512
+      dim_tail: 64
+      dtype_cases:
+      - T: float16
   FusedMoeSharedExpertFwdOp:
     signature:
       forall:
@@ -404,6 +759,20 @@ entries:
         routed_output:
           dtype: T
           shape: '[num_tokens, hidden_size]'
+    workloads:
+    - label: fusedmoesharedexpert-0
+      E: 384
+      num_tokens: 1
+      hidden_size: 7168
+      shared_ffn_size: 18432
+      dtype_cases:
+      - T: bfloat16
+    - label: fusedmoesharedexpert-1
+      E: 128
+      num_tokens: 32
+      hidden_size: 4096
+      dtype_cases:
+      - T: bfloat16
   MoePrePermuteFwdOp:
     signature:
       types:
@@ -474,6 +843,67 @@ entries:
       shape_rules:
       - num_local_experts > 0
       - K > 0
+    workloads:
+    - label: moeprepermute-0
+      N_tok: 32
+      H: 128
+      K: 2
+      num_local_experts: 4
+      layout:
+        contiguous:
+          packing: tight
+          metadata_kind: physical_psum
+          alignment: 1
+      dtype_cases:
+      - T: float16
+    - label: moeprepermute-1
+      N_tok: 32
+      H: 128
+      K: 2
+      num_local_experts: 4
+      layout:
+        contiguous:
+          packing: aligned
+          metadata_kind: per_row
+          alignment: 64
+      dtype_cases:
+      - T: bfloat16
+    - label: moeprepermute-2
+      N_tok: 32
+      H: 128
+      K: 2
+      num_local_experts: 4
+      layout:
+        masked:
+          max_m: 256
+      dtype_cases:
+      - T: bfloat16
+    - label: moeprepermute-3
+      N_tok: 32
+      H: 128
+      K: 2
+      num_local_experts: 4
+      layout:
+        contiguous:
+          packing: tight
+          metadata_kind: per_row
+          alignment: 4
+      expect_fail: true
+      dtype_cases:
+      - T: bfloat16
+    - label: moeprepermute-4
+      N_tok: 32
+      H: 128
+      K: 5
+      num_local_experts: 4
+      layout:
+        contiguous:
+          packing: tight
+          metadata_kind: physical_psum
+          alignment: 1
+      expect_fail: true
+      dtype_cases:
+      - T: float16
   GQAPrefillVarlenFwdOp:
     signature:
       forall:
@@ -514,6 +944,41 @@ entries:
           shape: '[total_q, H, D]'
       shape_rules:
       - H % H_kv == 0
+    workloads:
+    - label: gqaprefillvarlen-0
+      total_q: 2048
+      total_kv: 2048
+      H: 32
+      H_kv: 8
+      D: 128
+      q_lens:
+      - 512
+      - 512
+      - 512
+      - 512
+      kv_lens:
+      - 512
+      - 512
+      - 512
+      - 512
+      dtype_cases:
+      - T: float16
+      - T: bfloat16
+    - label: gqaprefillvarlen-1
+      total_q: 100
+      total_kv: 64
+      H: 32
+      H_kv: 8
+      D: 128
+      q_lens:
+      - 60
+      - 30
+      kv_lens:
+      - 32
+      - 32
+      expect_fail: true
+      dtype_cases:
+      - T: float16
   RopeLongRopeFwdOp:
     signature:
       types:
@@ -554,3 +1019,57 @@ entries:
           shape: RopeX[layout, B, S, H, D]
       shape_rules:
       - D % 2 == 0
+    workloads:
+    - label: ropelongrope-0
+      layout: 1d
+      S: 8192
+      D: 128
+      dtype_cases:
+      - T: bfloat16
+    - label: ropelongrope-1
+      layout: 1d
+      S: 8192
+      D: 128
+      some:
+      - rescale_factors
+      dtype_cases:
+      - T: bfloat16
+        R: float32
+    - label: ropelongrope-2
+      layout: 2d
+      B: 1
+      S: 4096
+      H: 32
+      D: 128
+      some:
+      - rescale_factors
+      dtype_cases:
+      - T: float16
+        R: float16
+    - label: ropelongrope-3
+      layout: 1d
+      S: 8192
+      D: 128
+      some:
+      - rescale_factors
+      dtype_cases:
+      - T: bfloat16
+        R: float8_e4m3fn
+      expect_fail: true
+    - label: ropelongrope-4
+      layout: 1d
+      S: 8192
+      D: 128
+      dtype_cases:
+      - T: bfloat16
+        R: float32
+      expect_fail: true
+    - label: ropelongrope-5
+      layout: 1d
+      S: 8192
+      D: 128
+      some:
+      - rescale_factors
+      dtype_cases:
+      - T: bfloat16
+      expect_fail: true
