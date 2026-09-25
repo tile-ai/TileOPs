@@ -385,7 +385,7 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
             "GQAPrefillVarlenWSFwdKernel",
             id="bidirectional-softcap-empty-kv",
         ),
-        # No K/V token at all: a TMA descriptor needs an extent, so the general kernel serves.
+        # No KV at all: TMA needs an extent, so the general kernel serves.
         pytest.param([4, 128], [0, 0], True, {}, "GQAPrefillVarlenFwdKernel", id="all-kv-empty"),
     ],
 )

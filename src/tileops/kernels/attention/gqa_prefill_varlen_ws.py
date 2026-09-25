@@ -39,11 +39,7 @@ __all__ = ["GQAPrefillVarlenWSFwdKernel"]
 def _gqa_prefill_varlen_ws_kernel(
     batch, heads, heads_kv, dim, is_causal, sm_scale, softcap, dtype, block_n, stages
 ):
-    """One TMA producer warp and two consumer warpgroups of 64 query rows each.
-
-    The consumers alternate on named barriers so one's softmax overlaps the other's
-    WGMMA, and each carries the previous KV tile's rescale factor into the next.
-    """
+    """One TMA producer warp and two consumer warpgroups that alternate on named barriers."""
     score_scale = (1.0 / dim) ** 0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
     scale = LOG2E if use_softcap else score_scale * LOG2E
@@ -239,7 +235,7 @@ def _gqa_prefill_varlen_ws_kernel(
             T.copy(acc_o, Os[wg, :, :])
             T.copy(Os[wg, :, :], O[q_start + row : q_start + row + half, by, :])
         else:
-            # A partial tile, or rows with no visible key, which are written as zero.
+            # A partial tile, or rows with no visible key (written as zero).
             for i, j in T.Parallel(half, dim):
                 if row + i < q_len:
                     O[q_start + row + i, by, j] = T.if_then_else(
@@ -302,7 +298,7 @@ def _gqa_prefill_varlen_ws_kernel(
                         ),
                     )
                 else:
-                    # At least one tile, fully masked when kv_len is 0: the consumers wait on it.
+                    # At least one tile: the consumers always wait on tile 0.
                     eff = T.alloc_var("int32", init=T.max(1, T.ceildiv(kv_len, block_n)))
                 tx = T.get_thread_binding()
 
@@ -348,8 +344,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
     """SM90 warp-specialized packed prefill for 128-wide heads."""
 
     supported_archs: list[int] = [90]
-    # Fitted on H200 at dim 128: a 128-wide KV tile, double-buffered. A different
-    # value needs a re-measurement against the general kernel.
+    # Fitted on H200 at dim 128; re-measure against the general kernel to change.
     _BLOCK_N: int = 128
     _STAGES: int = 2
 
