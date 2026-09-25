@@ -19,8 +19,8 @@ __all__ = ["GQAPrefillVarlenWSFwdKernel"]
 
 
 @functools.lru_cache(maxsize=32)
+# No out_idx: resolving a symbolic output shape costs about 170 us of host time per call.
 @tilelang.jit(
-    out_idx=[5],
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
@@ -65,17 +65,27 @@ def _gqa_prefill_varlen_ws_kernel(
             )
 
     @T.macro
-    def softmax_step(acc_s, sm, smp, alpha, ss):
+    def row_max(acc_s, red, sm):
+        """sm = max(sm, row max): per-thread partials over the 16 column groups, then one
+        cross-thread reduce."""
+        T.reduce_max(T.reshape(acc_s, [half, block_n // 8, 8]), red, dim=1, clear=True)
+        T.reduce_max(red, sm, dim=1, clear=False, batch=2)
+
+    @T.macro
+    def softmax_step(acc_s, sm, smp, alpha, ss, red):
         """Fold one score tile into the running max, rescale factor, and row sums."""
         if use_softcap:
             apply_softcap(acc_s)
         T.copy(sm, smp)
-        T.reduce_max(acc_s, sm, dim=1, clear=False)
+        row_max(acc_s, red, sm)
         for i in T.Parallel(half):
-            alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
+            sm[i] = T.if_then_else((sm[i] - smp[i]) * scale > 8.0, sm[i], smp[i])
+            alpha[i] = 1.0
+            if sm[i] != smp[i]:
+                alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
         for i, j in T.Parallel(half, block_n):
             acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-        T.reduce_sum(acc_s, ss, dim=1)
+        T.reduce_sum(acc_s, ss, dim=1, batch=2)
 
     @T.macro
     def kv_step(
@@ -93,6 +103,7 @@ def _gqa_prefill_varlen_ws_kernel(
         smp,
         alpha,
         ss,
+        red,
         logsum,
         my_bar,
         nxt_bar,
@@ -109,8 +120,13 @@ def _gqa_prefill_varlen_ws_kernel(
         T.sync_threads(my_bar, consumers)
         T.mbarrier_wait_parity(kready[sk], (n // stages) % 2)
         T.wgmma_gemm(q_tile, Ks[sk, :, :], acc_s, transpose_B=True, policy=policy, clear_accum=True)
-        for i, j in T.Parallel(half, dim):
-            acc_o[i, j] *= alpha[i]
+        rescale = T.alloc_var("int32", init=0)
+        for i in T.Parallel(half):
+            if alpha[i] != 1.0:
+                rescale = 1
+        if rescale == 1:
+            for i, j in T.Parallel(half, dim):
+                acc_o[i, j] *= alpha[i]
         T.mbarrier_wait_parity(vready[svp], ((n - 1) // stages) % 2)
         T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=policy, clear_accum=False)
         T.named_barrier_arrive(nxt_bar, consumers)
@@ -126,7 +142,7 @@ def _gqa_prefill_varlen_ws_kernel(
                     acc_s[i, j] = T.if_then_else(
                         k * block_n + j < kv_len, acc_s[i, j], -T.infinity(accum)
                     )
-        softmax_step(acc_s, sm, smp, alpha, ss)
+        softmax_step(acc_s, sm, smp, alpha, ss, red)
         T.wait_wgmma(0)
         T.mbarrier_arrive(vfree[svp])
         for i in T.Parallel(half):
@@ -178,11 +194,19 @@ def _gqa_prefill_varlen_ws_kernel(
             q_start = meta[1] + meta[5]
             kv_start = meta[2]
             cv = head // groups
-            T.mbarrier_wait_parity(qfree, (loaded % 2) ^ 1)
-            item_slot[0] = work[0]
-            T.tma_copy(Q[q_start : q_start + half, head, :], Qs[0, :, :], barrier=q_bar)
-            T.tma_copy(Q[q_start + half : q_start + block_m, head, :], Qs[1, :, :], barrier=q_bar)
-            T.mbarrier_arrive(q_bar)
+            slot = loaded % 2
+            T.mbarrier_wait_parity(qfree[slot], ((loaded // 2) % 2) ^ 1)
+            # The consumers read the item's geometry here rather than decode it again.
+            for i in T.unroll(7):
+                item_slot[slot, i] = meta[i]
+            item_slot[slot, 7] = work[0]
+            T.tma_copy(Q[q_start : q_start + half, head, :], Qs[slot, 0, :, :], barrier=q_bar[slot])
+            T.tma_copy(
+                Q[q_start + half : q_start + block_m, head, :],
+                Qs[slot, 1, :, :],
+                barrier=q_bar[slot],
+            )
+            T.mbarrier_arrive(q_bar[slot])
             for k in T.serial(meta[6]):
                 n = issued + k
                 s = n % stages
@@ -204,9 +228,9 @@ def _gqa_prefill_varlen_ws_kernel(
             loaded += 1
             fetch(Sched, lane, work)
         # Stop the consumers, then leave the counters zeroed for the next launch.
-        T.mbarrier_wait_parity(qfree, (loaded % 2) ^ 1)
-        item_slot[0] = -1
-        T.mbarrier_arrive(q_bar)
+        T.mbarrier_wait_parity(qfree[loaded % 2], ((loaded // 2) % 2) ^ 1)
+        item_slot[loaded % 2, 7] = -1
+        T.mbarrier_arrive(q_bar[loaded % 2])
         if lane == 0:
             finished = T.atomic_add(Sched[1], 1, return_prev=True)
             if finished == num_ctas - 1:
@@ -215,8 +239,7 @@ def _gqa_prefill_varlen_ws_kernel(
 
     @T.macro
     def consumer(
-        wg: int, CuQ, CuKV, Qs, Ks, Vs, Os, O, item_slot, q_bar, qfree, kready, kfree, vready,
-        vfree, tile_cum, lo, hi, request, q_row, meta,
+        wg: int, Qs, Ks, Vs, Os, O, item_slot, q_bar, qfree, kready, kfree, vready, vfree, meta,
     ):  # fmt: skip
         """Consumer warpgroup *wg*: rows ``q0 + wg*64`` onward of each claimed query tile."""
         T.set_max_nreg(240, 1)
@@ -229,16 +252,18 @@ def _gqa_prefill_varlen_ws_kernel(
         smp = T.alloc_fragment([half], accum)
         alpha = T.alloc_fragment([half], accum)
         ss = T.alloc_fragment([half], accum)
+        red = T.alloc_fragment([half, 8], accum)
         logsum = T.alloc_fragment([half], accum)
         full = T.alloc_var("int32", init=0)
         # Finished KV tiles and items: they carry the barrier phases.
         done = T.alloc_var("int32", init=0)
         served = T.alloc_var("int32", init=0)
         work = T.alloc_var("int32", init=0)
-        T.mbarrier_wait_parity(q_bar, 0)
-        work = item_slot[0]
+        T.mbarrier_wait_parity(q_bar[0], 0)
+        work = item_slot[0, 7]
         while work >= 0:
-            locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta)
+            for i in T.unroll(7):
+                meta[i] = item_slot[served % 2, i]
             head = meta[0]
             q_start = meta[1]
             q_len = meta[3]
@@ -258,7 +283,12 @@ def _gqa_prefill_varlen_ws_kernel(
             T.sync_threads(my_bar, consumers)
             T.mbarrier_wait_parity(kready[s0], (done // stages) % 2)
             T.wgmma_gemm(
-                Qs[wg, :, :], Ks[s0, :, :], acc_s, transpose_B=True, policy=policy, clear_accum=True
+                Qs[served % 2, wg, :, :],
+                Ks[s0, :, :],
+                acc_s,
+                transpose_B=True,
+                policy=policy,
+                clear_accum=True,
             )
             T.named_barrier_arrive(nxt_bar, consumers)
             T.wait_wgmma(0)
@@ -275,7 +305,7 @@ def _gqa_prefill_varlen_ws_kernel(
             T.reduce_max(acc_s, sm, dim=1, clear=False)
             for i, j in T.Parallel(half, block_n):
                 acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-            T.reduce_sum(acc_s, ss, dim=1)
+            T.reduce_sum(acc_s, ss, dim=1, batch=2)
             for i in T.Parallel(half):
                 logsum[i] = ss[i]
             T.copy(acc_s, pcast)
@@ -288,16 +318,16 @@ def _gqa_prefill_varlen_ws_kernel(
             step = (Ks, Vs, kready, kfree, vready, vfree, acc_s, pcast, acc_o, sm, smp)
             for k in T.serial(1, full):
                 kv_step(
-                    Qs[wg, :, :], *step, alpha, ss, logsum, my_bar, nxt_bar, k, done + k, row,
-                    causal_offset, kv_len, False,
+                    Qs[served % 2, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar, k,
+                    done + k, row, causal_offset, kv_len, False,
                 )  # fmt: skip
             for k in T.serial(full, eff):
                 kv_step(
-                    Qs[wg, :, :], *step, alpha, ss, logsum, my_bar, nxt_bar, k, done + k, row,
-                    causal_offset, kv_len, True,
+                    Qs[served % 2, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar, k,
+                    done + k, row, causal_offset, kv_len, True,
                 )  # fmt: skip
             # Every QK is done, so the producer may reload Q.
-            T.mbarrier_arrive(qfree)
+            T.mbarrier_arrive(qfree[served % 2])
 
             # PV of the last tile, then normalize and store.
             svp = (done + eff - 1) % stages
@@ -329,8 +359,8 @@ def _gqa_prefill_varlen_ws_kernel(
                         )
             done += eff
             served += 1
-            T.mbarrier_wait_parity(q_bar, served % 2)
-            work = item_slot[0]
+            T.mbarrier_wait_parity(q_bar[served % 2], (served // 2) % 2)
+            work = item_slot[served % 2, 7]
 
     @T.prim_func
     def main(
@@ -343,12 +373,12 @@ def _gqa_prefill_varlen_ws_kernel(
         Sched: T.Tensor([2], "int32"),
     ):
         with T.Kernel(num_ctas, threads=384):
-            Qs = T.alloc_shared([2, half, dim], dtype)
+            Qs = T.alloc_shared([2, 2, half, dim], dtype)
             Ks = T.alloc_shared([stages, block_n, dim], dtype)
             Vs = T.alloc_shared([stages, block_n, dim], dtype)
             Os = T.alloc_shared([2, half, dim], dtype)
             tile_cum = T.alloc_shared([batch + 1], "int32")
-            item_slot = T.alloc_shared([1], "int32")
+            item_slot = T.alloc_shared([2, 8], "int32")
             T.annotate_layout(
                 {
                     Qs: make_swizzled_layout(Qs),
@@ -357,8 +387,8 @@ def _gqa_prefill_varlen_ws_kernel(
                     Os: make_swizzled_layout(Os),
                 }
             )
-            q_bar = T.alloc_barrier([32])
-            qfree = T.alloc_barrier([consumers])
+            q_bar = T.alloc_barrier([32, 32])
+            qfree = T.alloc_barrier([consumers, consumers])
             kready = T.alloc_barrier([32] * stages)
             kfree = T.alloc_barrier([consumers] * stages)
             vready = T.alloc_barrier([32] * stages)
@@ -380,11 +410,11 @@ def _gqa_prefill_varlen_ws_kernel(
                     vready, vfree, tile_cum[batch] * heads, tile_cum, lo, hi, request, q_row, meta,
                     tx - consumers,
                 )  # fmt: skip
-            args = (CuQ, CuKV, Qs, Ks, Vs, Os, O, item_slot, q_bar, qfree, kready, kfree, vready)
+            args = (Qs, Ks, Vs, Os, O, item_slot, q_bar, qfree, kready, kfree, vready, vfree, meta)
             with T.ws(0):
-                consumer(0, *args, vfree, tile_cum, lo, hi, request, q_row, meta)
+                consumer(0, *args)
             with T.ws(1):
-                consumer(1, *args, vfree, tile_cum, lo, hi, request, q_row, meta)
+                consumer(1, *args)
 
     return main
 
@@ -396,6 +426,10 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
     # Fitted on H200 at dim 128; re-measure against the general kernel to change.
     _BLOCK_N: int = 128
     _STAGES: int = 2
+    # The double Q buffer leaves about 3 KB of H200's 227 KB of shared memory for the
+    # per-request prefix: batch 495 launched and 512 did not. Re-measure if any shared
+    # buffer changes size.
+    _MAX_BATCH: int = 448
 
     @classmethod
     def applies(cls, call) -> bool:
@@ -406,6 +440,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             and not call.fuse_rope
             and not uses_sliding_window(call)
             and not call.empty_kv
+            and call.batch <= cls._MAX_BATCH
             and (call.backend == "varlen" or (call.backend == "auto" and not call.is_uniform))
         )
 
@@ -460,4 +495,6 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             if counter is None:
                 counter = torch.zeros(2, dtype=torch.int32, device=q.device)
                 self._counters[stream] = counter
-        return self.kernel(q, k, v, cu_seqlens_q, cu_seqlens_kv, counter)
+        out = torch.empty_like(q)
+        self.kernel(q, k, v, cu_seqlens_q, cu_seqlens_kv, out, counter)
+        return out

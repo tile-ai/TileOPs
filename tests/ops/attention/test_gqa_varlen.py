@@ -387,6 +387,8 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
         ),
         # No KV at all: TMA needs an extent, so the general kernel serves.
         pytest.param([4, 128], [0, 0], True, {}, "GQAPrefillVarlenFwdKernel", id="all-kv-empty"),
+        # More requests than the warp-specialized kernel's shared prefix holds.
+        pytest.param([1] * 449, [1] * 449, True, {}, "GQAPrefillVarlenFwdKernel", id="batch-449"),
     ],
 )
 def test_varlen_dim128_serves_ragged_requests_on_sm90(
