@@ -72,6 +72,7 @@ from tileops.manifest.signature import check_entry as _check_signature  # noqa: 
 from tileops.manifest.signature import (  # noqa: E402
     signature_schema_errors as _signature_schema_errors,
 )
+from tileops.manifest.workload import check_workloads as _check_workloads  # noqa: E402
 
 PACKAGE_ROOT = "src"
 DISTRIBUTION_RELATIVE_KEYS = frozenset({"kernel", "op"})
@@ -4831,6 +4832,10 @@ def validate_manifest(
                 signature_errors, signature_warnings = _check_signature(op_name, entry, adts)
                 all_errors.extend(f"[signature] {e}" for e in signature_errors)
                 all_warnings.extend(f"[signature] {w}" for w in signature_warnings)
+                if not signature_errors:
+                    all_errors.extend(
+                        f"[signature] {e}" for e in _check_workloads(op_name, entry, adts)
+                    )
             continue
 
         # schema: YAML structure validation

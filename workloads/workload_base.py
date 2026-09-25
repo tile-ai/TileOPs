@@ -15,10 +15,9 @@ from zlib import crc32
 
 import torch
 
-_F = TypeVar("_F", bound=Callable[..., Any])
+from tileops.manifest.primitives import WORKLOAD_SEED
 
-WORKLOAD_SEED = 1235
-"""The seed both conftests give the global RNG, and the base of every ``rng()``."""
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 
 class WorkloadBase(ABC):

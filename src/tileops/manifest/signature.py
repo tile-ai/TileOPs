@@ -135,6 +135,9 @@ class Tensor:
     nullable: str | None = None
     buffer: bool = False
     mutated: "bool | str" = False
+    values: str | None = None
+    requires: tuple[str, ...] = ()
+    cpu: bool = False
 
 
 @dataclass
@@ -208,6 +211,9 @@ def _tensor(name: str, decl: object) -> Tensor:
         decl.get("nullable"),
         decl.get("buffer") == "out",
         decl.get("mutated", False),
+        decl.get("values"),
+        tuple(decl.get("requires", ()) or ()),
+        decl.get("device") == "cpu",
     )
 
 
