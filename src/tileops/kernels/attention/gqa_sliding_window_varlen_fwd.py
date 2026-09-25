@@ -60,7 +60,7 @@ def _make_apply_mask(
     """
 
     @T.macro
-    def apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset):
+    def mask_elements(acc_s, k_idx, bx, q_len, kv_len, offset):
         if is_causal and has_window:
             for i, j in T.Parallel(block_m, block_n):
                 causal_mask = k_idx * block_n + j > bx * block_m + i + offset
@@ -98,6 +98,28 @@ def _make_apply_mask(
                 q_oob = bx * block_m + i >= q_len
                 k_oob = k_idx * block_n + j >= kv_len
                 acc_s[i, j] = T.if_then_else(q_oob or k_oob, -T.infinity(accum_dtype), 0)
+
+    def inside(k_idx, bx, q_len, kv_len, offset):
+        # Whether no mask condition reaches the tile, so it needs zeros only.
+        q_first = bx * block_m
+        q_last = q_first + block_m - 1
+        k_first = k_idx * block_n
+        k_last = k_first + block_n - 1
+        cond = (q_last < q_len) & (k_last < kv_len)
+        if is_causal:
+            cond = cond & (k_last <= q_first + offset)
+        elif window_size_right >= 0:
+            cond = cond & (k_last <= q_first + offset + window_size_right)
+        if window_size_left >= 0:
+            cond = cond & (k_first >= q_last + offset - window_size_left)
+        return cond
+
+    @T.macro
+    def apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset):
+        if inside(k_idx, bx, q_len, kv_len, offset):
+            T.clear(acc_s)
+        else:
+            mask_elements(acc_s, k_idx, bx, q_len, kv_len, offset)
 
     return apply_mask
 
@@ -196,7 +218,6 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
             T.copy(
                 k[kv_start + k_idx * block_n : kv_start + (k_idx + 1) * block_n, by // groups, :],
                 k_shared,
-                disable_tma=True,
             )
             apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset)
             T.gemm(q_shared, k_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
@@ -214,7 +235,6 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
             T.copy(
                 v[kv_start + k_idx * block_n : kv_start + (k_idx + 1) * block_n, by // groups, :],
                 v_shared,
-                disable_tma=True,
             )
             T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
@@ -243,43 +263,43 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
                 logsum = T.alloc_fragment([block_m], accum_dtype)
                 lo = T.alloc_local([1], "int32")
                 hi = T.alloc_local([1], "int32")
-                q_row = T.alloc_local([1], "int32")
+                row = T.alloc_local([1], "int32")
                 request = T.alloc_local([1], "int32")
 
                 T.annotate_layout({o_shared: tilelang.layout.make_swizzled_layout(o_shared)})
 
                 q_tiling.cumsum_offsets(cu_seqlens_q, tile_cum)
                 if q_tile < tile_cum[batch]:
-                    q_tiling.decode(q_tile, tile_cum, lo, hi, request, q_row)
+                    q_tiling.decode(q_tile, tile_cum, lo, hi, request, row)
+                    # Bind the search results: warp specialization hands the TMA
+                    # producer uninitialized copies of the local buffers, and it hangs.
+                    req = request[0]
+                    q_row = row[0]
 
-                    q_start = cu_seqlens_q[request[0]]
-                    kv_start = cu_seqlens_k[request[0]]
-                    q_len = cu_seqlens_q[request[0] + 1] - q_start
-                    kv_len = cu_seqlens_k[request[0] + 1] - kv_start
+                    q_start = cu_seqlens_q[req]
+                    kv_start = cu_seqlens_k[req]
+                    q_len = cu_seqlens_q[req + 1] - q_start
+                    kv_len = cu_seqlens_k[req + 1] - kv_start
                     offset = kv_len - q_len
-                    q_block = q_row[0] // block_m
+                    q_block = q_row // block_m
 
-                    T.copy(
-                        q[q_start + q_row[0] : q_start + q_row[0] + block_m, by, :],
-                        q_shared,
-                        disable_tma=True,
-                    )
+                    T.copy(q[q_start + q_row : q_start + q_row + block_m, by, :], q_shared)
                     T.clear(acc_o)
                     T.clear(logsum)
                     T.fill(scores_max, -T.infinity(accum_dtype))
 
                     if is_causal:
-                        k_end = T.ceildiv(T.min(kv_len, offset + q_row[0] + block_m), block_n)
+                        k_end = T.ceildiv(T.min(kv_len, offset + q_row + block_m), block_n)
                     elif has_window and window_size_right >= 0:
                         k_end = T.ceildiv(
-                            T.min(kv_len, offset + q_row[0] + block_m + window_size_right),
+                            T.min(kv_len, offset + q_row + block_m + window_size_right),
                             block_n,
                         )
                     else:
                         k_end = T.ceildiv(kv_len, block_n)
 
                     if has_window and window_size_left >= 0:
-                        k_start = T.max(0, offset + q_row[0] - window_size_left) // block_n
+                        k_start = T.max(0, offset + q_row - window_size_left) // block_n
                     else:
                         k_start = 0
 
@@ -318,8 +338,8 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
                     T.copy(acc_o, o_shared)
                     T.sync_threads(3, threads)
                     for i, j in T.Parallel(block_m, dim):
-                        if q_row[0] + i < q_len:
-                            output[q_start + q_row[0] + i, by, j] = o_shared[i, j]
+                        if q_row + i < q_len:
+                            output[q_start + q_row + i, by, j] = o_shared[i, j]
 
         return _gqa_sw_fwd_varlen_wgmma_pipelined_main
 
