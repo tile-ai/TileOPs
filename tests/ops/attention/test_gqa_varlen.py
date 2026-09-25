@@ -404,6 +404,20 @@ def test_varlen_dim128_serves_ragged_requests_on_sm90(
 
 
 @pytest.mark.smoke
+@pytest.mark.sm90
+def test_varlen_ws_kernel_claims_work_across_calls() -> None:
+    """More work items than SMs; a later call must see the counter the first one reset."""
+    test = GroupedQueryAttentionVarlenFwdTest(
+        1, [1152], [1152], 16, 8, 128, True, -1, -1, torch.bfloat16
+    )
+    op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
+    inputs = test.gen_inputs()
+    test.check(op, *inputs, atol=1e-2, rtol=1e-2)
+    first = op(*inputs)
+    assert torch.equal(op(*inputs), first)
+
+
+@pytest.mark.smoke
 def test_varlen_rejects_invalid_cumulative_lengths_contract() -> None:
     test = GroupedQueryAttentionVarlenFwdTest(
         2, [8, 8], [16, 16], 8, 2, 64, True, -1, -1, torch.float16
