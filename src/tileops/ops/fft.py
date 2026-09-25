@@ -253,10 +253,10 @@ class FFTC2CFwdOp(Op):
             self.kernel = None
             return x.clone()
 
-        # A view, not a copy, when x is already contiguous: the kernel reads the
-        # interleaved (real, imag) pair directly, so no separate real/imag
-        # planes are built on the host.
-        x_pair = torch.view_as_real(x.contiguous())
+        # A view, not a copy, when x is already contiguous and not a lazy conjugate:
+        # the kernel reads the interleaved (real, imag) pair directly, so no
+        # separate real/imag planes are built on the host.
+        x_pair = torch.view_as_real(x.resolve_conj().contiguous())
         original_shape = x.shape
 
         # Flatten all batch dimensions into a single batch dimension. Counted

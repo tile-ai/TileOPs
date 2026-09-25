@@ -2038,7 +2038,9 @@ class FFTC2COneCTAKernel(Kernel):
         """Identity without the batch extent: it is a symbolic dimension, so one
         compilation serves every batch size."""
         identity = (call.n, call.dtype, call.device_index, call.tune)
-        return identity, lambda: cls(call.n, call.dtype, tune=call.tune)
+        return identity, lambda: cls(
+            call.n, call.dtype, tune=call.tune, device_index=call.device_index
+        )
 
     def __init__(
         self,
@@ -2046,8 +2048,9 @@ class FFTC2COneCTAKernel(Kernel):
         dtype: torch.dtype = torch.complex64,
         config: Optional[Dict[str, Any]] = None,
         tune: bool = False,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.dtype = dtype
         self.plan = FFT_PLANS[n, self.dtype_str]
@@ -2067,7 +2070,9 @@ class FFTC2COneCTAKernel(Kernel):
 
         def supply(params: list) -> list:
             real = torch.float32 if self.dtype == torch.complex64 else torch.float64
-            device = torch.cuda.current_device()
+            device = (
+                self.device_index if self.device_index is not None else torch.cuda.current_device()
+            )
             x_pair = torch.randn(1024, self.n, 2, dtype=real, device=device)
             return [
                 x_pair,
@@ -2326,7 +2331,9 @@ class FFTC2CDecomposedKernel(Kernel):
         """Identity without the batch extent: it is a symbolic dimension in every
         kernel of the plan, so one compilation serves every batch size."""
         identity = (call.n, call.dtype, call.device_index, call.tune)
-        return identity, lambda: cls(call.n, call.dtype, tune=call.tune)
+        return identity, lambda: cls(
+            call.n, call.dtype, tune=call.tune, device_index=call.device_index
+        )
 
     def __init__(
         self,
@@ -2334,8 +2341,9 @@ class FFTC2CDecomposedKernel(Kernel):
         dtype: torch.dtype = torch.complex64,
         config: Optional[Dict[str, Any]] = None,
         tune: bool = False,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.dtype = dtype
         self.plan = FFT_PLANS[n, self.dtype_str]
@@ -2364,7 +2372,9 @@ class FFTC2CDecomposedKernel(Kernel):
         batch = max(1, (256 << 20) // (self.n * (8 if real is torch.float32 else 16)))
 
         def supply(params: list) -> list:
-            device = torch.cuda.current_device()
+            device = (
+                self.device_index if self.device_index is not None else torch.cuda.current_device()
+            )
             buf = torch.randn(batch, self.n, 2, dtype=real, device=device)
             tables = [torch.randn(nf, 2, dtype=real, device=device)]
             if passes == 3:

@@ -75,3 +75,13 @@ def test_fft_batch_above_grid_y_limit() -> None:
     got = FFTC2CFwdOp()(x)
 
     torch.testing.assert_close(got, torch.fft.fft(x), atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.smoke
+def test_fft_lazy_conjugate_input() -> None:
+    """A conjugate view keeps its conj bit through contiguous(); view_as_real rejects it."""
+    x = torch.randn(4, 64, device="cuda", dtype=torch.complex64).conj()
+
+    got = FFTC2CFwdOp()(x)
+
+    torch.testing.assert_close(got, torch.fft.fft(x), atol=1e-4, rtol=1e-4)

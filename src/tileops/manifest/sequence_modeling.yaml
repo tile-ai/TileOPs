@@ -189,7 +189,7 @@ FFTC2CFwdOp:
   - {input_shape: [64, 4096], dtypes: [complex64], label: "fft-4k-c64-b64"}
   - {input_shape: [64, 4096], dtypes: [complex128], label: "fft-4k-c128-b64"}
   # FlashFFTConv / Hyena long convolution, where the transform length is 2*L:
-  # 16384 is a sequence of 8192 and 65536 a sequence of 32768. Both are decomposed.
+  # 16384 is a sequence of 8192, run in one CTA; 65536 is a sequence of 32768, decomposed.
   - {input_shape: [64, 16384], dtypes: [complex64], label: "fft-longconv-16k-b64"}
   - {input_shape: [8, 65536], dtypes: [complex64], label: "fft-longconv-64k-b8"}
   # Audio spectrogram: 256 frames of an n_fft = 1024 window.
