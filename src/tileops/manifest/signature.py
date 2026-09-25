@@ -11,6 +11,7 @@ import ast
 import contextlib
 import copy
 import functools
+import importlib
 import itertools
 import math
 from dataclasses import dataclass, field
@@ -47,6 +48,8 @@ __all__ = [
     "check_adts",
     "check_entry",
     "parse_signature",
+    "effect_errors",
+    "roofline_plan",
     "signature_schema_errors",
 ]
 
@@ -138,6 +141,9 @@ class Tensor:
     values: str | None = None
     requires: tuple[str, ...] = ()
     cpu: bool = False
+    write_only: bool = False
+    alias: str | None = None
+    contiguous: bool = False
 
 
 @dataclass
@@ -214,6 +220,9 @@ def _tensor(name: str, decl: object) -> Tensor:
         decl.get("values"),
         tuple(decl.get("requires", ()) or ()),
         decl.get("device") == "cpu",
+        decl.get("write_only") is True,
+        decl.get("alias"),
+        decl.get("contiguous") is True,
     )
 
 
@@ -1715,6 +1724,104 @@ def kind_env(sig: Signature, lets: dict[str, ast.expr]) -> tuple[dict, list[str]
                 errors.append(f"let {n}: holds an ADT value; read its fields where they are used")
             pending.remove(n)
     return env, errors
+
+
+_ROOFLINE_KEYS = frozenset({"flops", "bytes", "func"})
+
+
+def roofline_plan(
+    sig: Signature | None, roofline: object, resolve: bool = True
+) -> tuple[list[str], dict | None]:
+    """The `roofline` field (docs/design/roofline.md) checked, and what emission reads.
+
+    The plan is `{"func": callable}` or `{"flops": tree, "bytes": tree or None}`; it is None
+    when there are diagnostics. `ix` is the signature's indices other than value lists, its
+    parameters and its `let`s; an inline expression may also call `bytes(t)` and `present(t)`.
+    A `func` is imported only when *resolve* is set: an entry not yet implemented may name a
+    formula that does not exist yet. Without a readable signature (*sig* None) the names a
+    formula reads cannot be judged, and only its form is checked.
+    """
+    if not isinstance(roofline, dict):
+        return [f"roofline must be a mapping of {sorted(_ROOFLINE_KEYS)}"], None
+    errors = [f"roofline: unknown key {k!r}" for k in sorted(set(roofline) - _ROOFLINE_KEYS)]
+    if ("func" in roofline) == ("flops" in roofline) or (
+        "func" in roofline and "bytes" in roofline
+    ):
+        errors.append("roofline gives either `flops` (and optional `bytes`) or `func`")
+    if "func" in roofline:
+        path, fn = roofline["func"], None
+        if not (_qualified(path) and path.startswith("tileops.perf.formulas.")):
+            errors.append(f"roofline.func {path!r} is not tileops.perf.formulas.<name>")
+        elif resolve:
+            module, _, name = path.rpartition(".")
+            try:
+                fn = getattr(importlib.import_module(module), name)
+            except (ImportError, AttributeError):
+                errors.append(f"roofline.func {path!r} does not resolve")
+            else:
+                if not callable(fn):
+                    errors.append(f"roofline.func {path!r} is not callable")
+        return errors, (None if errors else {"func": fn})
+    plan = {}
+    for key in ("flops", "bytes"):
+        if key not in roofline:
+            continue
+        try:
+            node = _parse(roofline[key])
+        except SignatureError as exc:
+            errors.append(f"roofline.{key}: {exc}")
+            continue
+        unbytes = _Unbytes().visit(copy.deepcopy(node))
+        errors += [f"roofline.{key}: {e}" for e in _language_errors(unbytes, False)]
+        plan[key] = node
+        if sig is None:
+            continue
+        ix = {n for n, k in sig.forall.items() if k != "Seq[Int]"} | set(sig.params) | set(sig.let)
+        tensors = {*sig.call_tensors, *sig.outputs}
+        maybes = {p for p in sig.params if sig.kind(p).tag == "Maybe"}
+        calls = [c for c in ast.walk(node) if isinstance(c, ast.Call)]
+        for call in calls:
+            callee = _callee(call.func)
+            buffered = {"out"} if any(o.buffer for o in sig.outputs.values()) else set()
+            allowed = tensors | (maybes | buffered if callee == "present" else set())
+            if callee in ("bytes", "present") and not (
+                len(call.args) == 1
+                and isinstance(call.args[0], ast.Name)
+                and call.args[0].id in allowed
+            ):
+                errors.append(f"roofline.{key}: {ast.unparse(call)} names no tensor")
+        read = names(_Unpresent().visit(_Unbytes().visit(copy.deepcopy(node))))
+        errors += [f"roofline.{key}: name {n!r} is not in ix" for n in sorted(read - ix)]
+    return errors, (None if errors else {"bytes": None, **plan})
+
+
+def effect_errors(sig: Signature) -> list[str]:
+    """Effect declarations: `write_only` is written, an alias names a written input,
+    one output at most is buffered."""
+    errors = [
+        f"tensor {t.name!r}: `write_only` needs `mutated: true`"
+        for t in sig.call_tensors.values()
+        if t.write_only and t.mutated is not True
+    ]
+    for t in sig.outputs.values():
+        target = sig.inputs.get(t.alias) if t.alias else None
+        if t.alias and (target is None or target.mutated is False):
+            errors.append(f"output {t.name!r}: alias {t.alias!r} is not an input that is written")
+        if t.alias and t.buffer:
+            errors.append(f"output {t.name!r}: an aliased output takes no `out` buffer")
+    buffered = [t.name for t in sig.outputs.values() if t.buffer]
+    if len(buffered) > 1:
+        errors.append(f"outputs {buffered}: one output takes the `out` buffer, not several")
+    return errors
+
+
+class _Unbytes(ast.NodeTransformer):
+    """Replace `bytes(t)` by a constant: it reads `t`'s size, not its value."""
+
+    def visit_Call(self, node):
+        if _callee(node.func) == "bytes":
+            return ast.Constant(0)
+        return self.generic_visit(node)
 
 
 def check_entry(name: str, entry: dict, adts: dict) -> tuple[list[str], list[str]]:  # noqa: C901

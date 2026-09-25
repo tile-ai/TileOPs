@@ -70,6 +70,11 @@ from tileops.manifest.rule_eval import (  # noqa: E402
 from tileops.manifest.signature import check_adts as _check_adts  # noqa: E402
 from tileops.manifest.signature import check_entry as _check_signature  # noqa: E402
 from tileops.manifest.signature import (  # noqa: E402
+    effect_errors,
+    parse_signature,
+    roofline_plan,
+)
+from tileops.manifest.signature import (  # noqa: E402
     signature_schema_errors as _signature_schema_errors,
 )
 from tileops.manifest.workload import check_workloads as _check_workloads  # noqa: E402
@@ -4760,6 +4765,82 @@ def _ref_api_errors(op_name: str, ref: str) -> list[str]:
     return [f"[schema] {op_name}: ref_api {ref!r}: no prefix of it is an importable module"]
 
 
+# Execution-policy parameters every op takes, in order with their defaults, and the reserved one
+# it may take (docs/design/manifest.md § Signature).
+_POLICY_PARAMETERS = {"target": None, "kernel_map": None, "tune": False}
+_RESERVED_POLICY = "config"
+
+
+def _normal_default(value):
+    """A default as the manifest writes it: a dtype by name, a tuple as a list."""
+    if isinstance(value, tuple):
+        return list(value)
+    return str(value).removeprefix("torch.") if type(value).__module__ == "torch" else value
+
+
+def _check_parametric_parity(op_name: str, entry: dict) -> list[str]:
+    """`__init__` and `forward` against the signature (docs/design/manifest.md § Signature).
+
+    `__init__` takes `signature.params` in order with their defaults, a `kw_only` one after
+    `*`, then keyword-only `target`, `kernel_map` and `tune`, and only the injected objects the
+    class lists in `execution_parameters` or the reserved `config`. `forward` begins with the
+    call-time inputs in order, positional, the optional ones defaulting to `None` and the
+    others to nothing, then `out` when an output is a buffer.
+    """
+    where = f"[signature] {op_name}"
+    try:
+        cls = getattr(importlib.import_module(f"tileops.{entry['family']}"), op_name)
+    except (ImportError, AttributeError) as exc:
+        return [f"{where}: cannot import tileops.{entry['family']}.{op_name}: {exc}"]
+    sig = entry["signature"]
+    errors = []
+    empty = inspect.Parameter.empty
+    keyword = inspect.Parameter.KEYWORD_ONLY
+    init = list(inspect.signature(cls.__init__).parameters.values())[1:]
+    params = list(sig.get("params") or {})
+    for i, name in enumerate(params):
+        decl = sig["params"][name]
+        got = init[i] if i < len(init) else None
+        kind = keyword if decl.get("kw_only") else inspect.Parameter.POSITIONAL_OR_KEYWORD
+        if got is None or got.name != name or got.kind is not kind:
+            errors.append(f"{where}: __init__ parameter {i + 1} must be {name!r} ({kind.name})")
+        elif ("default" in decl) != (got.default is not empty) or (
+            "default" in decl and _normal_default(got.default) != decl["default"]
+        ):
+            errors.append(
+                f"{where}: __init__ {name!r} defaults to {got.default!r}, "
+                f"not {decl.get('default', 'nothing')!r}"
+            )
+    rest = {p.name: p for p in init[len(params) :]}
+    policy = [n for n in rest if n in _POLICY_PARAMETERS]
+    if policy != list(_POLICY_PARAMETERS) or any(
+        rest[n].kind is not keyword or rest[n].default is not d
+        for n, d in _POLICY_PARAMETERS.items()
+    ):
+        suffix = ", ".join(f"{n}={d}" for n, d in _POLICY_PARAMETERS.items())
+        errors.append(f"{where}: __init__ must end its policy parameters with *, {suffix}")
+    allowed = {*_POLICY_PARAMETERS, _RESERVED_POLICY, *getattr(cls, "execution_parameters", ())}
+    errors += [
+        f"{where}: __init__ parameter {p.name!r} is not a signature or execution-policy parameter"
+        for p in rest.values()
+        if p.kind is not keyword or p.name not in allowed
+    ]
+    forward = list(inspect.signature(cls.forward).parameters.values())[1:]
+    inputs = sig.get("inputs") or {}
+    buffered = any(o.get("buffer") == "out" for o in (sig.get("outputs") or {}).values())
+    prefix = list(inputs) + (["out"] if buffered else [])
+    for i, name in enumerate(prefix):
+        got = forward[i] if i < len(forward) else None
+        optional = name == "out" or inputs[name].get("optional", False) is not False
+        positional = inspect.Parameter.POSITIONAL_OR_KEYWORD
+        if got is None or got.name != name or got.kind is not positional:
+            errors.append(f"{where}: forward parameter {i + 1} must be {name!r}, positional")
+        elif got.default is not (None if optional else empty):
+            want = "default to None" if optional else "have no default"
+            errors.append(f"{where}: forward {name!r} must {want}")
+    return errors
+
+
 def validate_manifest(
     manifest_path: Path | None = None,
     repo_root: Path | None = None,
@@ -4828,14 +4909,24 @@ def validate_manifest(
         if isinstance(entry, dict) and not (isinstance(family, str) and family in LEGACY_FAMILIES):
             if "schema" in levels:
                 all_errors.extend(_check_parametric_schema(op_name, entry, ops))
+            signature_errors, signature_warnings = _check_signature(op_name, entry, adts)
+            sig = None if signature_errors else parse_signature(op_name, entry, adts)
+            if "schema" in levels:
+                implemented = entry.get("status") == "implemented"
+                all_errors.extend(
+                    f"[schema] {op_name}: {e}"
+                    for e in roofline_plan(sig, entry.get("roofline"), resolve=implemented)[0]
+                )
             if levels & {"signature", "shape", "dtype"}:
-                signature_errors, signature_warnings = _check_signature(op_name, entry, adts)
                 all_errors.extend(f"[signature] {e}" for e in signature_errors)
                 all_warnings.extend(f"[signature] {w}" for w in signature_warnings)
-                if not signature_errors:
+                if sig is not None:
                     all_errors.extend(
                         f"[signature] {e}" for e in _check_workloads(op_name, entry, adts)
                     )
+                    all_errors.extend(f"[signature] {op_name}: {e}" for e in effect_errors(sig))
+                if sig is not None and entry.get("status") == "implemented":
+                    all_errors.extend(_check_parametric_parity(op_name, entry))
             continue
 
         # schema: YAML structure validation

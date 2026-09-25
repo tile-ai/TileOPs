@@ -24,7 +24,7 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
 ### `Op` base class interface ([`src/tileops/ops/op_base.py`](../../src/tileops/ops/op_base.py))
 
-Abstract interface: `default_kernel_map` (property), `forward()`. Methods generated from the manifest entry: the call checks, `_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`.
+Abstract interface: `default_kernel_map` (property), `forward()`. Methods generated from the manifest entry: the call checks, `_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`. An op whose `__init__` takes injected implementation objects names them in the class attribute `execution_parameters`; the validator admits no other parameter beyond the signature's and the execution policy's.
 
 #### Kernel caching and enumeration methods
 

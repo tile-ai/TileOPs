@@ -4526,3 +4526,29 @@ class TestRooflineSynthesisReported:
         entry["roofline"]["flops"] = "NOPE * 2"
         errors, _ = self._run(validator, self._tree(tmp_path), entry)
         assert errors == [], errors
+
+
+def test_converted_entry_is_held_to_its_constructor_and_forward(validator, monkeypatch):
+    """`__init__` takes `signature.params` then the policy suffix; `forward` the inputs."""
+    import types
+
+    class ProbeFwdOp:
+        def __init__(self, dim, *, kernel_map=None, target=None, tune=False, surprise=None):
+            pass
+
+        def forward(self, x=123, y=None):
+            pass
+
+    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=ProbeFwdOp))
+    entry = {
+        "family": "probe",
+        "signature": {
+            "params": {"dim": {"type": "int"}},
+            "inputs": {"x": {"dtype": "T", "shape": "[M]"}, "y": {"optional": True}},
+        },
+    }
+    assert validator._check_parametric_parity("ProbeFwdOp", entry) == [
+        "[signature] ProbeFwdOp: __init__ must end its policy parameters with *, target=None, kernel_map=None, tune=False",
+        "[signature] ProbeFwdOp: __init__ parameter 'surprise' is not a signature or execution-policy parameter",
+        "[signature] ProbeFwdOp: forward 'x' must have no default",
+    ]
