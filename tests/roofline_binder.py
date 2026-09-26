@@ -220,25 +220,6 @@ _ROW_SUPPLEMENT = {
         "grad_out_shape": tuple(row["x_shape"]),
         **{f"{name}_shape": (row["x_shape"][1],) for name in ("weight", "mean", "rstd")},
     },
-    # RoPE rows give the extents; the layout says how they lay out.
-    **{
-        name: (
-            lambda row: {
-                "x_shape": (
-                    (row["batch"], row["num_heads"], row["seq_len"], row["head_dim"])
-                    if row.get("layout") == "2d"
-                    else (row["seq_len"], row["head_dim"])
-                )
-            }
-        )
-        for name in (
-            "RopeNeoxFwdOp",
-            "RopeNonNeoxFwdOp",
-            "RopeLlama31FwdOp",
-            "RopeYarnFwdOp",
-            "RopeLongRopeFwdOp",
-        )
-    },
     # Dims a func-mode formula reads off the instance, named as the row names them.
     "BmmFwdOp": lambda row: {
         "batch": row["b"],
@@ -331,9 +312,6 @@ _ROW_SUPPLEMENT = {
             max(1, -(-row["kv_shape"][0] // row["page_size"])),
         ),
     },
-    "MeanPoolingFwdOp": lambda row: {
-        "x_shape": (row["batch"], row["seq_len"], row["heads"], row["dim"])
-    },
     # Packed-batch attention: the row gives the totals and the request count, and
     # the cumulative-length tensors hold one bound per request plus the zero.
     "GroupedQueryAttentionPrefillVarlenFwdOp": lambda row: {
@@ -350,7 +328,6 @@ _ROW_SUPPLEMENT = {
         "cu_seqlens_q_shape": (row["batch"] + 1,),
         "cu_seqlens_k_shape": (row["batch"] + 1,),
     },
-    "FFTC2CFwdOp": lambda row: {"n": row["input_shape"][-1]},
     "DaCumsumFwdOp": lambda row: {
         "batch": row["dt_shape"][0],
         "seq_len": row["dt_shape"][1],

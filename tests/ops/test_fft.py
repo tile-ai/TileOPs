@@ -120,28 +120,6 @@ def test_fft_n1_is_an_out_of_place_identity() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    "shape, dtype, device, message",
-    (
-        pytest.param((), torch.complex64, "cuda", "at least 1D", id="rank-zero"),
-        pytest.param((0,), torch.complex64, "cuda", "positive power of 2", id="zero-length"),
-        pytest.param((3,), torch.complex64, "cuda", "positive power of 2", id="non-power-of-two"),
-        pytest.param(
-            (2,), torch.float32, "cuda", "complex64 or complex128", id="unsupported-dtype"
-        ),
-        pytest.param((2,), torch.complex64, "cpu", "CUDA tensor", id="cpu-input"),
-    ),
-)
-def test_fft_rejects_inputs_outside_its_lower_boundaries(
-    shape: tuple, dtype: torch.dtype, device: str, message: str
-) -> None:
-    x = torch.randn(shape, dtype=dtype, device=device)
-
-    with pytest.raises(ValueError, match=message):
-        FFTC2CFwdOp()(x)
-
-
-@pytest.mark.smoke
 def test_tune_configures_every_kernel_of_a_four_step_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression: a decomposed plan tuned nothing and silently kept its defaults."""
     tuned: list = []

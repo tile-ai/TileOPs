@@ -1,15 +1,15 @@
 """Cumulative scan operators (cumsum, cumprod)."""
 
 from math import prod
-from typing import ClassVar, Dict, Optional, Tuple
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.reduction.cumulative import CumulativeKernel
+from tileops.manifest.primitives import normalize_axis
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["CumprodFwdOp", "CumsumFwdOp", "CumulativeOp"]
@@ -25,10 +25,8 @@ class CumulativeOp(Op):
 
     _op_kind: str
 
-    # One operator, the op's declared inputs in, its declared outputs out. The
-    # registration is generated from the manifest entry by
-    # ``tileops.ops._compile_boundary_codegen``, which a base class with no entry skips.
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"cumulative_fwd": CumulativeKernel}
 
     def __init__(
         self,
@@ -48,59 +46,28 @@ class CumulativeOp(Op):
             kernel_map: Optional kernel override dict.
             tune: If True, autotune tile configs.
         """
-        self.N = None
         self.dim = dim
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._last_roofline_mn: Optional[Tuple[int, int]] = None
-        # What the manifest roofline resolves ``x`` through.
-        self.x_shape: Optional[Tuple[int, ...]] = None
-
-    def _infer_output_shapes(self, x_shape: Tuple[int, ...]) -> Dict[str, Tuple[int, ...]]:
-        """Manifest ``shape_rules``: a scan writes one element per input element."""
-        return {"y": tuple(x_shape)}
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"cumulative_fwd": CumulativeKernel}
-
-    def _validate_and_normalize_dim(self, x: torch.Tensor) -> int:
-        """Validate the input and return the non-negative axis to scan.
-
-        Which devices a set of kernels runs on is the kernel's own statement, so no
-        device kind is checked here.
-
-        Raises:
-            ValueError: ``dim`` names an axis this rank does not have.
-        """
-        self._validate_dtypes(x)
-        ndim = x.ndim
-        if not (-ndim <= self.dim < ndim):
-            raise ValueError(f"dim={self.dim} out of range for {ndim}-D input")
-        self.dtype = x.dtype
-        return self.dim % ndim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the scan.
 
         One call to the operator this op registers: this is as far as dynamo traces.
         """
-        return type(self)._wrapped(x, self._instance_key)
+        return self._call_boundary(x)
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        axis = self._validate_and_normalize_dim(x)
+        axis = normalize_axis(self.dim, x.ndim)
         x = x.contiguous()  # handed over as the manifest declares it
         n = x.shape[axis]
-        self.N = n
         # From the shape, not from ``numel``: an empty scanned axis makes ``n`` zero.
         m = prod(d for i, d in enumerate(x.shape) if i != axis)
-        self._last_roofline_mn = (m, n)
-        self.x_shape = tuple(x.shape)
         kernel = self.kernel_for(
             "cumulative_fwd", (x,), (tuple(x.shape), axis, x.dtype, x.device.index, m, n)
         )

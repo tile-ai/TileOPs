@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -27,50 +27,32 @@ class FFTC2CFwdOp(Op):
 
     Relative error ``max|got - ref| / max|ref|`` against a float64 reference is
     at most 9.8e-07 (complex64) and 1.6e-15 (complex128), within 2.2x of cuFFT's.
-
-    Raises:
-        ValueError: The input is not a CUDA tensor, is not complex64 or
-            complex128, is 0-dimensional, or its last axis is not a power of two
-            from 1 through 2**28.
     """
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "fft_c2c_one_cta_kernel": FFTC2COneCTAKernel,
+        "fft_c2c_decomposed_kernel": FFTC2CDecomposedKernel,
+    }
 
     def __init__(
         self,
-        tune: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
-            tune: Whether to enable autotuning (default: False)
-            kernel_map: Optional custom kernel mapping for testing
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional custom kernel mapping for testing
+            tune: Whether to enable autotuning (default: False)
         """
         self.target = target
-        self.n = None
-        self.input_shape = None
-        self.dtype = None
         self.tune = tune
-
         self.dispatch_kernel(kernel_map)
         self.kernel = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "fft_c2c_one_cta_kernel": FFTC2COneCTAKernel,
-            "fft_c2c_decomposed_kernel": FFTC2CDecomposedKernel,
-        }
-
-    def _infer_output_shapes(
-        self,
-        input_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: ``same_as(input)`` — a transform moves no axis."""
-        return {"output": tuple(input_shape)}
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Compute 1D FFT of complex input.
@@ -82,30 +64,10 @@ class FFTC2CFwdOp(Op):
             Output tensor of same shape as input with FFT applied along the
             last dimension.
         """
-        x = input
-        if not x.is_cuda:
-            raise ValueError("input must be a CUDA tensor")
-        if x.dtype not in (torch.complex64, torch.complex128):
-            raise ValueError(f"input.dtype must be complex64 or complex128, got {x.dtype}")
-        if x.ndim == 0:
-            raise ValueError("input must be at least 1D")
-        n = x.shape[-1]
-        if n <= 0 or n & (n - 1) != 0:
-            raise ValueError(f"FFT size must be a positive power of 2, got {n}")
-        if n > 1 << 28:
-            raise ValueError(f"FFT size must be at most 2**28, got {n}")
-        self.n = n
-        self.dtype = x.dtype
-        # What the manifest roofline resolves ``input`` through: the batch extent
-        # is the call's, not the kernel cache's.
-        self.input_shape = tuple(x.shape)
+        n = input.shape[-1]
         if n == 1:
             self.kernel = None
-            return x.clone()
-
-        # The kernels read the interleaved (real, imag) pair directly.
-        x_pair = torch.view_as_real(x.resolve_conj().contiguous()).reshape(x.numel() // n, n, 2)
-        call = FFTC2CCall(n=n, dtype=x.dtype, device=x.device, tune=self.tune)
+            return input.clone()
+        call = FFTC2CCall(n=n, dtype=input.dtype, device=input.device, tune=self.tune)
         self.kernel = self.kernel_for("fft_c2c", (input,), call)
-        y_pair = self.kernel(x_pair)
-        return torch.view_as_complex(y_pair.reshape(*x.shape, 2))
+        return self.kernel(input)

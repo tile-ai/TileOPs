@@ -8,7 +8,7 @@ import torch
 import yaml
 
 from tileops.manifest.plan import entry_plan
-from tileops.manifest.primitives import PREDICATES
+from tileops.manifest.primitives import GENERATORS, PREDICATES
 from tileops.manifest.workload import RowError, check_workloads, instantiate
 
 pytestmark = pytest.mark.smoke
@@ -98,6 +98,13 @@ def test_materialize_draws_every_dtype_category():
 
 def test_paged_fits_is_false_on_mismatched_lengths():
     assert PREDICATES["attn.paged_fits"]([1, 2], [0, 1], 8) is False
+
+
+def test_packed_positions_restart_at_each_sequence():
+    assert GENERATORS["packed_positions"]([2, 3]) == [0, 1, 0, 1, 2]
+    for lengths in ([], [2, 0]):
+        with pytest.raises(ValueError, match="non-empty positive list"):
+            GENERATORS["packed_positions"](lengths)
 
 
 def test_generated_metadata_is_deterministic_and_materializes():

@@ -1,8 +1,9 @@
 """Roofline cost-model functions for Tier 2 ops (attention, conv, MoE, etc.).
 
-Each function takes the bound Op instance and returns a ``(flops, bytes)``
-tuple of ints, matching the ``Op.eval_roofline(self) -> tuple[int, int]``
-shape that codegen emits for ``func`` mode (see ``docs/design/roofline.md`` §4.4.2).
+Each function returns a ``(flops, bytes)`` tuple of ints, matching the
+``Op.eval_roofline(self) -> tuple[int, int]`` shape that codegen emits for ``func`` mode
+(see ``docs/design/roofline.md`` §4.4.2). A parametric entry's function takes the checked
+call; a legacy entry's takes the bound Op instance.
 
 These are referenced from ``src/tileops/manifest/`` via the ``roofline.func``
 field.
@@ -14,18 +15,17 @@ from math import prod
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from tileops.manifest.workload import CallView
     from tileops.ops.op_base import Op
 
 __all__ = [
+    "adaptive_pool2d_roofline",
     "cb_producer_roofline",
     "da_cumsum_fwd_roofline",
     "deepseek_dsa_decode_roofline",
     "deepseek_mla_decode_roofline",
     "deltanet_decode_roofline",
     "deltanet_inference_roofline",
-    "engram_decode_roofline",
-    "engram_gate_conv_bwd_roofline",
-    "engram_gate_conv_fwd_roofline",
     "fft_c2c_roofline",
     "fp8_lightning_indexer_roofline",
     "fp8_quant_roofline",
@@ -46,12 +46,7 @@ __all__ = [
     "mamba2_fwd_roofline",
     "mha_bwd_roofline",
     "mha_decode_paged_roofline",
-    "mean_pooling_fwd_roofline",
-    "mhc_post_roofline",
-    "mhc_pre_roofline",
     "moe_post_permute_roofline",
-    "rope_position_ids_roofline",
-    "rope_roofline",
     "ssd_chunk_scan_fwd_roofline",
     "ssd_chunk_state_fwd_roofline",
     "ssd_decode_roofline",
@@ -909,36 +904,6 @@ def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
     return int(flops), int((memory_a + memory_b + memory_c) * elem + metadata_bytes)
 
 
-def rope_roofline(op: "Op") -> tuple[int, int]:
-    seq_len = int(op.seq_len)
-    head_dim = int(op.head_dim)
-    layout = getattr(op, "layout", "1d")
-    elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
-    # A 1d call carries neither, and a call that has not run a 2d one leaves them unset.
-    outer = (
-        int(getattr(op, "batch", 1) or 1) * int(getattr(op, "num_heads", 1) or 1)
-        if layout == "2d"
-        else 1
-    )
-    x_elems = outer * seq_len * head_dim
-    # The cos/sin table is the op's own: the signature declares it as no input, and an
-    # implementation that computes the angles in the kernel reads none of it.
-    flops = 4 * x_elems
-    nbytes = 2 * x_elems * elem
-    return int(flops), int(nbytes)
-
-
-def rope_position_ids_roofline(op: "Op") -> tuple[int, int]:
-    num_tokens = int(op.num_tokens)
-    num_heads = int(op.num_heads)
-    head_dim = int(op.head_dim)
-    elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
-    x_elems = num_tokens * num_heads * head_dim
-    # x read and written, plus the position ids. The cos/sin table is the op's own.
-    pos_elems = num_tokens
-    return int(4 * x_elems), int(2 * x_elems * elem + pos_elems * 4)
-
-
 def fp8_quant_roofline(op: "Op") -> tuple[int, int]:
     batch = int(op.batch)
     seq_len_kv = int(op.seq_len_kv)
@@ -994,136 +959,27 @@ def topk_selector_roofline(op: "Op") -> tuple[int, int]:
     return int(comparisons), int(nbytes)
 
 
-def _engram_elem_bytes(op: "Op") -> int:
-    return _dtype_itemsize(getattr(op, "dtype", "float16"))
+def fft_c2c_roofline(call: "CallView") -> tuple[int, int]:
+    """1D complex FFT: ``5 * n * log2(n)`` FLOPs per transform, each tensor moved once."""
+    n = call.ix["n"]
+    flops = prod(call.ix["B"]) * 5 * n * (n.bit_length() - 1)
+    return flops, sum(call.bytes(t) for t in call.tensors)
 
 
-def engram_gate_conv_fwd_roofline(op: "Op") -> tuple[int, int]:
-    m = int(op.M)
-    seq_len = int(op.seq_len)
-    d = int(op.d)
-    elem = _engram_elem_bytes(op)
-    flops = m * seq_len * (24 * d) + 20 * m * seq_len
-    nbytes = (5 * m * seq_len * d) * elem + 4 * m * seq_len * 4 + 6 * d * elem
-    return int(flops), int(nbytes)
+def _adaptive_scan(extent: int, out: int) -> int:
+    """Rows an adaptive pool reads along one axis of *extent* pooled to *out* bins.
 
-
-def engram_gate_conv_bwd_roofline(op: "Op") -> tuple[int, int]:
-    m = int(op.M)
-    seq_len = int(op.seq_len)
-    d = int(op.d)
-    elem = _engram_elem_bytes(op)
-    fwd_flops = m * seq_len * (24 * d) + 20 * m * seq_len
-    read_bytes = 5 * m * seq_len * d * elem + 6 * d * elem + 4 * m * seq_len * 4
-    # dH, dk and dv, then drms_w_h, drms_w_v and dconv_w over 6 * d fp32 rows.
-    write_bytes = 3 * m * seq_len * d * elem + 6 * d * 4
-    return int(fwd_flops * 2.5), int(read_bytes + write_bytes)
-
-
-def engram_decode_roofline(op: "Op") -> tuple[int, int]:
-    batch = int(op.batch)
-    d_mem = int(op.d_mem)
-    d = int(getattr(op, "d_padded", op.d))
-    max_conv_len = int(op.max_conv_len)
-    conv_kernel_size = int(op.conv_kernel_size)
-    elem = _engram_elem_bytes(op)
-    flops = 4 * batch * d_mem * d + batch * (16 * d + conv_kernel_size * 2 * d) + 20 * batch
-    nbytes = (
-        batch * d_mem
-        + batch * d
-        + 2 * batch * max_conv_len * d
-        + 2 * d_mem * d
-        + 2 * d
-        + conv_kernel_size * d
-        + batch * d
-    ) * elem
-    return int(flops), int(nbytes)
-
-
-def fft_c2c_roofline(op: "Op") -> tuple[int, int]:
-    import math
-
-    n = int(op.n)
-    elem = _dtype_itemsize(getattr(op, "dtype", "complex64"))
-    # From the call's own shape. Reading the kernel's batch size made the number
-    # depend on which kernel served the call, and answered 1 before any did.
-    shape = getattr(op, "input_shape", None)
-    batch = 1
-    for extent in (shape or ())[:-1]:
-        batch *= int(extent)
-    return int(batch * 5 * n * math.log2(n)), int(batch * 2 * n * elem)
-
-
-def mean_pooling_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for the chunked sequence mean.
-
-    One add per input row and one divide per output element. Counting the adds off the
-    input rather than off ``chunks * chunk_size`` keeps a ragged split's short last chunk
-    from being priced as a full one; ``offsets`` partitions the whole sequence axis, so the
-    row count is the same either way.
+    Bin ``o`` covers ``[floor(o * extent / out), ceil((o + 1) * extent / out))``, so two
+    adjacent bins share one row unless ``out`` divides ``j * extent``.
     """
-    data = _shape_or_attrs(op, kwargs)
-    if "x_shape" in data:
-        batch, seq_len, heads, dim = data["x_shape"]
-    else:
-        batch, seq_len, heads, dim = (
-            data["batch"],
-            data["seq_len"],
-            data["heads"],
-            data["dim"],
-        )
-    indices_shape = data.get("indices_shape")
-    if data.get("chunks") is not None:
-        chunks = int(data["chunks"])
-    elif indices_shape is not None:
-        chunks = int(indices_shape[0])
-    else:
-        chunks = -(-int(seq_len) // int(data["chunk_size"]))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    out_elems = int(batch) * chunks * int(heads) * int(dim)
-    in_elems = int(batch) * int(seq_len) * int(heads) * int(dim)
-    nbytes = (in_elems + out_elems) * elem_bytes
-    # A ragged call also reads the int32 pair that describes the split.
-    offsets_shape = data.get("offsets_shape")
-    if offsets_shape is not None:
-        nbytes += (int(offsets_shape[0]) + chunks * 2) * 4
-    return in_elems + out_elems, nbytes
+    return extent + sum(1 for j in range(1, out) if (j * extent) % out)
 
 
-def mhc_pre_roofline(op: "Op") -> tuple[int, int]:
-    batch = int(op.batch)
-    n_expand = int(op.n_expand)
-    c_x = int(op.c_x)
-    x_dim = n_expand * c_x
-    phi_dim = n_expand * n_expand + 2 * n_expand
-    x_elem = _dtype_itemsize(getattr(op, "dtype", "bfloat16"))
-
-    x_phi_flops = 2 * batch * x_dim * phi_dim
-    x_layer_flops = 2 * batch * c_x * n_expand
-    x_res_flops = 2 * batch * n_expand * c_x * n_expand
-    flops = x_phi_flops + x_layer_flops + x_res_flops
-
-    phi_bytes = x_dim * phi_dim * 4
-    b_bytes = phi_dim * 4
-    x_bytes = batch * x_dim * x_elem
-    output_bytes = batch * (x_dim + c_x) * x_elem + batch * n_expand * 4
-    nbytes = phi_bytes + b_bytes + x_bytes + output_bytes
-    return int(flops), int(nbytes)
-
-
-def mhc_post_roofline(op: "Op") -> tuple[int, int]:
-    batch = int(op.batch)
-    n_expand = int(op.n_expand)
-    c_x = int(op.c_x)
-    x_elem = _dtype_itemsize(getattr(op, "dtype", "bfloat16"))
-    flops = 2 * batch * n_expand * c_x
-    x_layer_out_bytes = batch * c_x * x_elem
-    h_post_bytes = batch * n_expand * 4
-    x_res_bytes = batch * n_expand * c_x * x_elem
-    x_out_bytes = batch * n_expand * c_x * x_elem
-    nbytes = x_layer_out_bytes + h_post_bytes + x_res_bytes + x_out_bytes
-    return int(flops), int(nbytes)
+def adaptive_pool2d_roofline(call: "CallView") -> tuple[int, int]:
+    """Adaptive 2D pooling: one add or comparison per element each bin reads."""
+    ix = call.ix
+    scan = _adaptive_scan(ix["H_in"], ix["H_out"]) * _adaptive_scan(ix["W_in"], ix["W_out"])
+    return prod(ix["B"]) * ix["C"] * scan, sum(call.bytes(t) for t in call.tensors)
 
 
 def bmm_fwd_roofline(op: "Op") -> tuple[int, int]:

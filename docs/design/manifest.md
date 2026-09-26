@@ -473,6 +473,7 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 | 11  | `topk_ids(N, K, E)`                                | `0 < K <= E`                                | `[N, K]`, each row `K` distinct random values in `[0, E)`                                                                                                                         |
 | 12  | `sample_indices(n, hi)`                            | `0 <= n <= hi`                              | `[n]`, `n` distinct random values in `[0, hi)`                                                                                                                                    |
 | 13  | `moe.layout_metadata(layout, R, E)`                | `E > 0`, `R >= 0`, `R` admitted by `layout` | metadata of `layout` for `R` rows split as evenly as the layout allows                                                                                                            |
+| 14  | `packed_positions(L)`                              | non-empty positive list                     | `[sum(L)]`, positions restarting at 0 for each sequence                                                                                                                           |
 
 Value primitive: `balanced_sizes(total, count)` requires `count > 0` and `total >= 0`; each item is `total // count`, the first `total % count` items plus one.
 

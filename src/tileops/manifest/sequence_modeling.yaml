@@ -1,138 +1,95 @@
-# Miscellaneous mature sequence-modeling operators with existing runtime,
-# tests, and benchmarks.
+# Sequence-modeling operators with existing runtime, tests and benchmarks, and
+# the complex-to-complex FFT (family `fft`).
 
 EngramGateConvFwdOp:
-  ref_api: "none"
   family: sequence_modeling
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      H: {dtype: "float16 | bfloat16", shape: "[M, seq_len, d]"}
-      k: {dtype: "same_as(H)", shape: "[M, seq_len, d]"}
-      v: {dtype: "same_as(H)", shape: "[M, seq_len, d]"}
-      rms_w_h: {dtype: "same_as(H)", shape: "[d]"}
-      rms_w_v: {dtype: "same_as(H)", shape: "[d]"}
-      conv_w: {dtype: "same_as(H)", shape: "[4, d]"}
-    outputs:
-      Y: {dtype: "same_as(H)", shape: "[M, seq_len, d]"}
-      vhat: {dtype: "same_as(H)", shape: "[M, seq_len, d]"}
-      alpha: {dtype: "float32", shape: "[M, seq_len]"}
-      rrms_h: {dtype: "float32", shape: "[M, seq_len]"}
-      rrms_k: {dtype: "float32", shape: "[M, seq_len]"}
-      rrms_v: {dtype: "float32", shape: "[M, seq_len]"}
+    forall: {T: "DType[float16 | bfloat16]"}
     params:
       M: {type: int}
       seq_len: {type: int}
       d: {type: int}
       eps: {type: float, default: 1.0e-6}
+    inputs:
+      H: {dtype: T, shape: "[M, seq_len, d]"}
+      k: {dtype: T, shape: "[M, seq_len, d]"}
+      v: {dtype: T, shape: "[M, seq_len, d]"}
+      rms_w_h: {dtype: T, shape: "[d]"}
+      rms_w_v: {dtype: T, shape: "[d]"}
+      conv_w: {dtype: T, shape: "[4, d]"}
+    outputs:
+      Y: {dtype: T, shape: "[M, seq_len, d]"}
+      vhat: {dtype: T, shape: "[M, seq_len, d]"}
+      alpha: {dtype: float32, shape: "[M, seq_len]"}
+      rrms_h: {dtype: float32, shape: "[M, seq_len]"}
+      rrms_k: {dtype: float32, shape: "[M, seq_len]"}
+      rrms_v: {dtype: float32, shape: "[M, seq_len]"}
     shape_rules:
-    - "H.shape == (M, seq_len, d)"
-    - "k.shape == H.shape"
-    - "v.shape == H.shape"
-    - "rms_w_h.shape == (d,)"
-    - "rms_w_v.shape == (d,)"
-    - "conv_w.shape == (4, d)"
+    - "d > 0"
 
   workloads:
   # d is kept 256-aligned so runtime padding does not distort roofline.
-  - {M: 1, seq_len: 32, d: 256, dtype: float16, dtypes: [float16], label: "fwd-b1-s32-d256"}
-  - {M: 2, seq_len: 64, d: 512, dtype: float16, dtypes: [float16], label: "fwd-b2-s64-d512"}
-  - {M: 1, seq_len: 128, d: 256, dtype: bfloat16, dtypes: [bfloat16], label: "fwd-b1-s128-d256"}
+  - {M: 1, seq_len: 32, d: 256, dtype_cases: [{T: float16}], label: fwd-b1-s32-d256}
+  - {M: 2, seq_len: 64, d: 512, dtype_cases: [{T: float16}], label: fwd-b2-s64-d512}
+  - {M: 1, seq_len: 128, d: 256, dtype_cases: [{T: bfloat16}], label: fwd-b1-s128-d256}
+  - {M: 3, seq_len: 96, d: 768, dtype_cases: [{T: bfloat16}], label: fwd-b3-s96-d768}
 
   roofline:
-    func: "tileops.perf.formulas.engram_gate_conv_fwd_roofline"
-
-  source:
-    kernel: tileops/kernels/engram/engram_fwd.py
-    kernel_map:
-      engram_gate_conv_fwd: EngramGateConvFwdKernel
-    op: tileops/ops/sequence_modeling/engram.py
-    test: tests/ops/test_engram.py
-    bench: benchmarks/ops/bench_engram.py
-    bench_manifest_driven: true
+    flops: "M * seq_len * (24 * d + 20)"
 
 EngramGateConvBwdOp:
-  ref_api: "none"
   family: sequence_modeling
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      dY: {dtype: "float16 | bfloat16", shape: "[M, seq_len, d]"}
-      H: {dtype: "same_as(dY)", shape: "[M, seq_len, d]"}
-      k: {dtype: "same_as(dY)", shape: "[M, seq_len, d]"}
-      v: {dtype: "same_as(dY)", shape: "[M, seq_len, d]"}
-      rms_w_h: {dtype: "same_as(dY)", shape: "[d]"}
-      rms_w_v: {dtype: "same_as(dY)", shape: "[d]"}
-      conv_w: {dtype: "same_as(dY)", shape: "[4, d]"}
-      vhat: {dtype: "same_as(dY)", shape: "[M, seq_len, d]"}
-      alpha: {dtype: "float32", shape: "[M, seq_len]"}
-      rrms_h: {dtype: "float32", shape: "[M, seq_len]"}
-      rrms_k: {dtype: "float32", shape: "[M, seq_len]"}
-      rrms_v: {dtype: "float32", shape: "[M, seq_len]"}
-    outputs:
-      dH: {dtype: "same_as(dY)", shape: "[M, seq_len, d]"}
-      dk: {dtype: "same_as(dY)", shape: "[M, seq_len, d]"}
-      dv: {dtype: "same_as(dY)", shape: "[M, seq_len, d]"}
-      drms_w_h: {dtype: "float32", shape: "[d]"}
-      drms_w_v: {dtype: "float32", shape: "[d]"}
-      dconv_w: {dtype: "float32", shape: "[4, d]"}
+    forall: {T: "DType[float16 | bfloat16]"}
     params:
       M: {type: int}
       seq_len: {type: int}
       d: {type: int}
       eps: {type: float, default: 1.0e-6}
+    inputs:
+      dY: {dtype: T, shape: "[M, seq_len, d]"}
+      H: {dtype: T, shape: "[M, seq_len, d]"}
+      k: {dtype: T, shape: "[M, seq_len, d]"}
+      v: {dtype: T, shape: "[M, seq_len, d]"}
+      rms_w_h: {dtype: T, shape: "[d]"}
+      rms_w_v: {dtype: T, shape: "[d]"}
+      conv_w: {dtype: T, shape: "[4, d]"}
+      vhat: {dtype: T, shape: "[M, seq_len, d]"}
+      alpha: {dtype: float32, shape: "[M, seq_len]"}
+      rrms_h: {dtype: float32, shape: "[M, seq_len]"}
+      rrms_k: {dtype: float32, shape: "[M, seq_len]"}
+      rrms_v: {dtype: float32, shape: "[M, seq_len]"}
+    outputs:
+      dH: {dtype: T, shape: "[M, seq_len, d]"}
+      dk: {dtype: T, shape: "[M, seq_len, d]"}
+      dv: {dtype: T, shape: "[M, seq_len, d]"}
+      drms_w_h: {dtype: float32, shape: "[d]"}
+      drms_w_v: {dtype: float32, shape: "[d]"}
+      dconv_w: {dtype: float32, shape: "[4, d]"}
     shape_rules:
-    - "dY.shape == (M, seq_len, d)"
-    - "H.shape == dY.shape"
-    - "k.shape == dY.shape"
-    - "v.shape == dY.shape"
-    - "vhat.shape == dY.shape"
-    - "alpha.shape == (M, seq_len)"
-    - "rrms_h.shape == (M, seq_len)"
-    - "rrms_k.shape == (M, seq_len)"
-    - "rrms_v.shape == (M, seq_len)"
-    - "conv_w.shape == (4, d)"
+    - "d > 0"
 
   workloads:
-  - {M: 1, seq_len: 32, d: 256, dtype: float16, dtypes: [float16], label: "bwd-b1-s32-d256"}
-  - {M: 2, seq_len: 64, d: 512, dtype: float16, dtypes: [float16], label: "bwd-b2-s64-d512"}
-  - {M: 1, seq_len: 128, d: 256, dtype: bfloat16, dtypes: [bfloat16], label: "bwd-b1-s128-d256"}
+  - {M: 1, seq_len: 32, d: 256, dtype_cases: [{T: float16}], label: bwd-b1-s32-d256}
+  - {M: 2, seq_len: 64, d: 512, dtype_cases: [{T: float16}], label: bwd-b2-s64-d512}
+  - {M: 1, seq_len: 128, d: 256, dtype_cases: [{T: bfloat16}], label: bwd-b1-s128-d256}
+  - {M: 3, seq_len: 96, d: 768, dtype_cases: [{T: bfloat16}], label: bwd-b3-s96-d768}
 
   roofline:
-    func: "tileops.perf.formulas.engram_gate_conv_bwd_roofline"
-
-  source:
-    kernel: tileops/kernels/engram/engram_bwd.py
-    kernel_map:
-      engram_gate_conv_bwd: EngramGateConvBwdKernel
-    op: tileops/ops/sequence_modeling/engram.py
-    test: tests/ops/test_engram.py
-    bench: benchmarks/ops/bench_engram.py
-    bench_manifest_driven: true
+    flops: "M * seq_len * (24 * d + 20) * 5 // 2"
 
 EngramDecodeFwdOp:
-  ref_api: "none"
+  # `conv_state` holds the last L steps, L <= max_conv_len, left-padded to
+  # max_conv_len; `new_conv_state` is always max_conv_len long.
   family: sequence_modeling
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      e_t: {dtype: "float16 | bfloat16", shape: "[batch, d_mem]"}
-      h_t: {dtype: "same_as(e_t)", shape: "[batch, d]"}
-      conv_state: {dtype: "same_as(e_t)", shape: "[batch, max_conv_len, d]"}
-      W_K: {dtype: "same_as(e_t)", shape: "[d_mem, d]"}
-      W_V: {dtype: "same_as(e_t)", shape: "[d_mem, d]"}
-      rms_w_h: {dtype: "same_as(e_t)", shape: "[d]"}
-      rms_w_v: {dtype: "same_as(e_t)", shape: "[d]"}
-      conv_w: {dtype: "same_as(e_t)", shape: "[conv_kernel_size, d]"}
-    outputs:
-      y_t: {dtype: "same_as(e_t)", shape: "[batch, d]"}
-      new_conv_state: {dtype: "same_as(e_t)", shape: "[batch, max_conv_len, d]"}
+    forall: {L: Dim, T: "DType[float16 | bfloat16]"}
     params:
       batch: {type: int}
       d_mem: {type: int}
@@ -141,158 +98,125 @@ EngramDecodeFwdOp:
       conv_kernel_size: {type: int}
       dilation: {type: int}
       eps: {type: float, default: 1.0e-6}
+    inputs:
+      e_t: {dtype: T, shape: "[batch, d_mem]"}
+      h_t: {dtype: T, shape: "[batch, d]"}
+      conv_state: {dtype: T, shape: "[batch, L, d]"}
+      W_K: {dtype: T, shape: "[d_mem, d]"}
+      W_V: {dtype: T, shape: "[d_mem, d]"}
+      rms_w_h: {dtype: T, shape: "[d]"}
+      rms_w_v: {dtype: T, shape: "[d]"}
+      conv_w: {dtype: T, shape: "[conv_kernel_size, d]"}
+    outputs:
+      y_t: {dtype: T, shape: "[batch, d]"}
+      new_conv_state: {dtype: T, shape: "[batch, max_conv_len, d]"}
     shape_rules:
-    - "e_t.shape == (batch, d_mem)"
-    - "h_t.shape == (batch, d)"
-    - "conv_state.shape == (batch, max_conv_len, d)"
-    - "W_K.shape == (d_mem, d)"
-    - "W_V.shape == (d_mem, d)"
-    - "conv_w.shape == (conv_kernel_size, d)"
-    - "d % 256 == 0"
+    - "conv_kernel_size > 0 and dilation > 0 and max_conv_len > 0 and max_conv_len >= dilation * (conv_kernel_size - 1)"
+    - "d > 0 and d % 256 == 0"
+    - "L <= max_conv_len"
 
   workloads:
-  - {batch: 1, d_mem: 512, d: 256, max_conv_len: 12, conv_kernel_size: 4, dilation: 3, dtype: float16, dtypes: [float16], label: "decode-b1-dmem512-d256"}
-  - {batch: 4, d_mem: 1024, d: 512, max_conv_len: 20, conv_kernel_size: 4, dilation: 5, dtype: float16, dtypes: [float16], label: "decode-b4-dmem1024-d512"}
-  - {batch: 8, d_mem: 512, d: 256, max_conv_len: 18, conv_kernel_size: 4, dilation: 3, dtype: bfloat16, dtypes: [bfloat16], label: "decode-b8-dmem512-d256"}
+  - {batch: 1, d_mem: 512, d: 256, max_conv_len: 12, conv_kernel_size: 4, dilation: 3, L: 12, dtype_cases: [{T: float16}], label: decode-b1-dmem512-d256}
+  - {batch: 4, d_mem: 1024, d: 512, max_conv_len: 20, conv_kernel_size: 4, dilation: 5, L: 20, dtype_cases: [{T: float16}], label: decode-b4-dmem1024-d512}
+  - {batch: 8, d_mem: 512, d: 256, max_conv_len: 18, conv_kernel_size: 4, dilation: 3, L: 18, dtype_cases: [{T: bfloat16}], label: decode-b8-dmem512-d256}
 
   roofline:
-    func: "tileops.perf.formulas.engram_decode_roofline"
-
-  source:
-    kernel: tileops/kernels/engram/engram_decode.py
-    kernel_map:
-      engram_decode: EngramDecodeKernel
-    op: tileops/ops/sequence_modeling/engram_decode.py
-    test: tests/ops/test_engram.py
-    bench: benchmarks/ops/bench_engram.py
-    bench_manifest_driven: true
+    flops: "4 * batch * d_mem * d + batch * (16 * d + conv_kernel_size * 2 * d) + 20 * batch"
 
 FFTC2CFwdOp:
-  ref_api: "torch.fft.fft"
-  family: spectral
+  # A power of two from 1 through 2**28 is exactly a positive divisor of 2**28.
+  ref_api: torch.fft.fft
+  family: fft
   status: implemented
 
   signature:
+    forall: {B: Shape, n: Dim, T: "DType[complex64 | complex128]"}
     inputs:
-      input: {dtype: "complex64 | complex128", shape: "[..., n]"}
+      input: {dtype: T, shape: "[*B, n]"}
     outputs:
-      output: {dtype: "same_as(input)", shape: "same_as(input)"}
+      output: {dtype: T, shape: "[*B, n]"}
     shape_rules:
-    - "input.shape[-1] > 0"
-    - "input.shape[-1] <= 268435456"
-    - "input.shape[-1] & (input.shape[-1] - 1) == 0"
+    - "n > 0 and 268435456 % n == 0"
 
   workloads:
   # A representative three-pass single-CTA length; the unbatched row is its
   # latency tier and the two batch-64 rows cover both dtypes.
-  - {input_shape: [4096], dtypes: [complex64], label: "fft-4k-c64-unbatched"}
-  - {input_shape: [64, 4096], dtypes: [complex64], label: "fft-4k-c64-b64"}
-  - {input_shape: [64, 4096], dtypes: [complex128], label: "fft-4k-c128-b64"}
+  - {B: [], n: 4096, dtype_cases: [{T: complex64}], label: fft-4k-c64-unbatched}
+  - {B: [64], n: 4096, dtype_cases: [{T: complex64}], label: fft-4k-c64-b64}
+  - {B: [64], n: 4096, dtype_cases: [{T: complex128}], label: fft-4k-c128-b64}
   # FlashFFTConv / Hyena long convolution, where the transform length is 2*L:
   # 16384 is a sequence of 8192, run in one CTA; 65536 is a sequence of 32768, decomposed.
-  - {input_shape: [64, 16384], dtypes: [complex64], label: "fft-longconv-16k-b64"}
-  - {input_shape: [8, 65536], dtypes: [complex64], label: "fft-longconv-64k-b8"}
+  - {B: [64], n: 16384, dtype_cases: [{T: complex64}], label: fft-longconv-16k-b64}
+  - {B: [8], n: 65536, dtype_cases: [{T: complex64}], label: fft-longconv-64k-b8}
   # Audio spectrogram: 256 frames of an n_fft = 1024 window.
-  - {input_shape: [256, 1024], dtypes: [complex64], label: "fft-spectrogram-1k-b256"}
+  - {B: [256], n: 1024, dtype_cases: [{T: complex64}], label: fft-spectrogram-1k-b256}
   # FNet token mixing along a 512-token sequence, batch x hidden flattened into
   # the 4096 rows.
-  - {input_shape: [4096, 512], dtypes: [complex64], label: "fft-fnet-seq512"}
+  - {B: [4096], n: 512, dtype_cases: [{T: complex64}], label: fft-fnet-seq512}
   # Per-channel short convolution. Also the row whose batch axis is past CUDA's
   # 65535 grid.y limit, which the kernels avoid by putting the batch on grid.x.
-  - {input_shape: [65536, 64], dtypes: [complex64], label: "fft-shortconv-64-b65536"}
+  - {B: [65536], n: 64, dtype_cases: [{T: complex64}], label: fft-shortconv-64-b65536}
   # Double-precision scientific transform: 2**20 at complex128, decomposed 1024*1024.
-  - {input_shape: [4, 1048576], dtypes: [complex128], label: "fft-1m-c128"}
+  - {B: [4], n: 1048576, dtype_cases: [{T: complex128}], label: fft-1m-c128}
+  # The same window over 300 frames: a batch that is not a power of two.
+  - {B: [300], n: 1024, dtype_cases: [{T: complex64}], label: fft-spectrogram-1k-b300}
 
   roofline:
-    func: "tileops.perf.formulas.fft_c2c_roofline"
-
-  source:
-    kernel: tileops/kernels/fft.py
-    kernel_map:
-      fft_c2c_one_cta_kernel: FFTC2COneCTAKernel
-      fft_c2c_decomposed_kernel: FFTC2CDecomposedKernel
-    op: tileops/ops/fft.py
-    test: tests/ops/test_fft.py
-    bench: benchmarks/ops/bench_fft.py
-    bench_manifest_driven: true
+    func: tileops.perf.formulas.fft_c2c_roofline
 
 MHCPreFwdOp:
-  ref_api: "none"
+  # The expansion width n is read off phi's second axis, n * n + 2 * n; the stream
+  # is C = n * c_x wide.
   family: sequence_modeling
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      phi: {dtype: "float32", shape: "[n_expand * c_x, n_expand * n_expand + 2 * n_expand]"}
-      x: {dtype: "bfloat16", shape: "[batch, n_expand * c_x]"}
-      b: {dtype: "float32", shape: "[n_expand * n_expand + 2 * n_expand]"}
-    outputs:
-      x_res: {dtype: "bfloat16", shape: "[batch, n_expand * c_x]"}
-      x_layer: {dtype: "bfloat16", shape: "[batch, c_x]"}
-      h_post: {dtype: "float32", shape: "[batch, n_expand]"}
+    forall: {B: Dim, C: Dim, Q: Dim}
     params:
       alpha_pre: {type: float}
       alpha_post: {type: float}
       alpha_res: {type: float}
       sinkhorn_repeat: {type: int}
       sinkhorn_eps: {type: float, default: 0.02}
+    inputs:
+      phi: {dtype: float32, shape: "[C, Q]"}
+      x: {dtype: bfloat16, shape: "[B, C]"}
+      b: {dtype: float32, shape: "[Q]"}
+    outputs:
+      x_res: {dtype: bfloat16, shape: "[B, C]"}
+      x_layer: {dtype: bfloat16, shape: "[B, c_x]"}
+      h_post: {dtype: float32, shape: "[B, n]"}
+    let:
+      n: "mhc.expansion(Q)"
+      c_x: "C // n"
     shape_rules:
-    - "phi.ndim == 2 and x.ndim == 2 and b.ndim == 1"
-    - "phi.shape[0] == x.shape[1]"
-    - "b.shape[0] == phi.shape[1]"
-    - "phi.shape[1] > 0"
-    - "x.shape[1] > 0"
+    - "C > 0 and C % n == 0"
 
   workloads:
-  - {batch: 1, n_expand: 4, c_x: 1280, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, dtype: bfloat16, dtypes: [bfloat16], label: "pre-small"}
-  - {batch: 2, n_expand: 4, c_x: 1920, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, dtype: bfloat16, dtypes: [bfloat16], label: "pre-medium"}
-  - {batch: 4, n_expand: 4, c_x: 2560, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, dtype: bfloat16, dtypes: [bfloat16], label: "pre-large"}
+  - {B: 1, C: 5120, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: pre-small}
+  - {B: 2, C: 7680, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: pre-medium}
+  - {B: 4, C: 10240, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: pre-large}
 
   roofline:
-    func: "tileops.perf.formulas.mhc_pre_roofline"
-
-  source:
-    kernel: tileops/kernels/mhc/mhc_pre.py
-    kernel_map:
-      mhc_pre_kernel: MHCPreKernel
-    op: tileops/ops/sequence_modeling/mhc.py
-    test: tests/ops/test_mhc.py
-    bench: benchmarks/ops/bench_mhc.py
-    bench_manifest_driven: true
+    flops: "2 * B * C * Q + 2 * B * c_x * n + 2 * B * n * C"
 
 MHCPostFwdOp:
-  ref_api: "none"
   family: sequence_modeling
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
+    forall: {B: Dim, n: Dim, c_x: Dim}
     inputs:
-      x_layer_out: {dtype: "bfloat16", shape: "[batch, c_x]"}
-      h_post: {dtype: "float32", shape: "[batch, n_expand]"}
-      x_res: {dtype: "bfloat16", shape: "[batch, n_expand * c_x]"}
+      x_layer_out: {dtype: bfloat16, shape: "[B, c_x]"}
+      h_post: {dtype: float32, shape: "[B, n]"}
+      x_res: {dtype: bfloat16, shape: "[B, n * c_x]"}
     outputs:
-      x_out: {dtype: "bfloat16", shape: "[batch, n_expand * c_x]"}
-    shape_rules:
-    - "x_layer_out.ndim == 2 and h_post.ndim == 2 and x_res.ndim == 2"
-    - "h_post.shape[0] == x_layer_out.shape[0]"
-    - "x_res.shape[0] == x_layer_out.shape[0]"
-    - "x_res.shape[1] == h_post.shape[1] * x_layer_out.shape[1]"
+      x_out: {dtype: bfloat16, shape: "[B, n * c_x]"}
 
   workloads:
-  - {batch: 1, n_expand: 4, c_x: 1280, dtype: bfloat16, dtypes: [bfloat16], label: "post-small"}
-  - {batch: 2, n_expand: 4, c_x: 1920, dtype: bfloat16, dtypes: [bfloat16], label: "post-medium"}
-  - {batch: 4, n_expand: 4, c_x: 2560, dtype: bfloat16, dtypes: [bfloat16], label: "post-large"}
+  - {B: 1, n: 4, c_x: 1280, label: post-small}
+  - {B: 2, n: 4, c_x: 1920, label: post-medium}
+  - {B: 4, n: 4, c_x: 2560, label: post-large}
 
   roofline:
-    func: "tileops.perf.formulas.mhc_post_roofline"
-
-  source:
-    kernel: tileops/kernels/mhc/mhc_post.py
-    kernel_map:
-      mhc_post_kernel: MHCPostKernel
-    op: tileops/ops/sequence_modeling/mhc.py
-    test: tests/ops/test_mhc.py
-    bench: benchmarks/ops/bench_mhc.py
-    bench_manifest_driven: true
+    flops: "2 * B * n * c_x"

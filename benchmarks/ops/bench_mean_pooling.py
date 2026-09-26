@@ -1,42 +1,18 @@
 """Benchmarks for MeanPoolingFwdOp, the chunked sequence mean."""
 
-from typing import List, Optional
-
 import pytest
-import torch
 
 from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
     assert_matches_reference,
     compiled_reference,
 )
-from benchmarks.benchmark_base import (
-    ManifestBenchmark,
-    fields,
-    workload_params,
-)
-from tileops.manifest import load_workloads
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.pool import MeanPoolingFwdOp
-from workloads.pool import MeanPoolingWorkload
+from workloads.pool import MeanPoolingCallWorkload, MeanPoolingWorkload
 
 # Autotuning is a bench-run policy; manifest workloads do not carry it.
 _TUNE = True
-
-
-_MEAN_POOLING_PARAMS = workload_params(
-    load_workloads(MeanPoolingFwdOp),
-    fields(
-        "batch",
-        "seq_len",
-        "heads",
-        "dim",
-        "chunk_size",
-        "accum_dtype",
-        "seq_lens",
-        dtype_last=True,
-    ),
-    smoke_first=True,
-)
 
 
 def _torch_view_mean(test: MeanPoolingWorkload):
@@ -57,31 +33,10 @@ def _torch_view_mean(test: MeanPoolingWorkload):
     return fn
 
 
-@pytest.mark.parametrize(
-    "batch, seq_len, heads, dim, chunk_size, accum_dtype, seq_lens, dtype",
-    _MEAN_POOLING_PARAMS,
-)
-def test_mean_pooling_bench(
-    batch: int,
-    seq_len: int,
-    heads: int,
-    dim: int,
-    chunk_size: int,
-    accum_dtype: torch.dtype,
-    seq_lens: Optional[List[int]],
-    dtype: torch.dtype,
-) -> None:
-    test = MeanPoolingWorkload(
-        batch=batch,
-        seq_len=seq_len,
-        heads=heads,
-        dim=dim,
-        chunk_size=chunk_size,
-        dtype=dtype,
-        accum_dtype=accum_dtype,
-        seq_lens=seq_lens,
-    )
-    op = MeanPoolingFwdOp(chunk_size=chunk_size, accum_dtype=accum_dtype, tune=_TUNE)
+@pytest.mark.parametrize("call", manifest_calls(MeanPoolingFwdOp))
+def test_mean_pooling_bench(call) -> None:
+    test = MeanPoolingCallWorkload(call)
+    op = MeanPoolingFwdOp(**call.arguments({}), tune=_TUNE)
 
     inputs = test.gen_inputs()
     bm = ManifestBenchmark(op, test)

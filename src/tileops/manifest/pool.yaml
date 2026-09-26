@@ -1,75 +1,51 @@
 # pool.yaml -- manifest entries for the 'pool' family.
 #
-# Source of truth for pooling op interfaces. Most entries are generated from a
-# PyTorch functional reference API. Each entry's `status` field is the
+# Source of truth for pooling op interfaces. Each entry's `status` field is the
 # authority on whether it is implemented.
 
 AvgPool1dFwdOp:
-  ref_api: "torch.nn.functional.avg_pool1d"
+  ref_api: torch.nn.functional.avg_pool1d
   family: pool
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, L_in]"}
-    outputs:
-      output: {dtype: "same_as(input)", shape: "[N, C, L_out]"}
+    forall: {N: Dim, C: Dim, L_in: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       kernel_size: {type: "int | tuple[int]"}
       stride: {type: "int | tuple[int] | None", default: null}
       padding: {type: "int | tuple[int]", default: 0}
       ceil_mode: {type: bool, default: false}
       count_include_pad: {type: bool, default: true}
+    inputs:
+      input: {dtype: T, shape: "[N, C, L_in]"}
+    outputs:
+      output: {dtype: T, shape: "[N, C, L_out]"}
+    let:
+      kW: "per_axis(kernel_size, 0, 1)"
+      sW: "per_axis(stride, 0, 1, fallback=kW)"
+      pW: "per_axis(padding, 0, 1)"
+      L_out: "pool.out(L_in, kW, sW, pW, 1, ceil_mode)"
     shape_rules:
-      - "_kW == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      - "_sW == (_kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      - "_pW == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      - "_kW > 0"
-      - "_sW > 0"
-      - "0 <= _pW <= _kW // 2"
-      - "L_out == max(((L_in + 2 * _pW - _kW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((L_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) > 0 and (((L_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) - 1) * _sW >= L_in + _pW else 0), 0)"
+    - "kW > 0 and sW > 0"
+    - "0 <= pW <= kW // 2"
+    - "L_in > 0 and L_out > 0"
 
   workloads:
-    # Temporal/audio downsampling cases, expressed in PyTorch NCL layout.
-    - {input_shape: [4, 128, 4096], kernel_size: 3, stride: 2, padding: 1, dtypes: [float16], label: "audio-downsample"}
-    - {input_shape: [2, 256, 32000], kernel_size: 5, stride: 4, padding: 2, dtypes: [float16], label: "long-temporal"}
-    - {input_shape: [2, 128, 2048], kernel_size: 4, stride: 2, padding: 1, ceil_mode: true, count_include_pad: false, dtypes: [bfloat16], label: "ceil"}
+  # Temporal/audio downsampling cases, expressed in PyTorch NCL layout.
+  - {N: 4, C: 128, L_in: 4096, kernel_size: 3, stride: 2, padding: 1, dtype_cases: [{T: float16}, {T: float32}], label: audio-downsample}
+  - {N: 2, C: 256, L_in: 32000, kernel_size: 5, stride: 4, padding: 2, dtype_cases: [{T: float16}], label: long-temporal}
+  - {N: 2, C: 128, L_in: 2048, kernel_size: 4, stride: 2, padding: 1, ceil_mode: true, count_include_pad: false, dtype_cases: [{T: bfloat16}], label: ceil}
 
   roofline:
-    vars:
-      # The dims the signature's shape string names, bound from the tensor.
-      N: "input.shape[0]"
-      C: "input.shape[1]"
-      L_in: "input.shape[2]"
-      kW: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
-      sW: "kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
-      pW: "padding[0] if isinstance(padding, (tuple, list)) else padding"
-      out_W: "max(((L_in + 2 * pW - kW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((L_in + 2 * pW - kW + sW - 1) // sW + 1) > 0 and (((L_in + 2 * pW - kW + sW - 1) // sW + 1) - 1) * sW >= L_in + pW else 0), 0)"
-    flops: "N * C * out_W * kW"
-    bytes: "(N * C * L_in + N * C * out_W) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/pool/avg_pool1d.py
-    kernel_map:
-      avg_pool1d_kernel: AvgPool1dKernel
-      avg_pool1d_spatial_kernel: AvgPool1dSpatialKernel
-    op: tileops/ops/pool.py
-    test: tests/ops/test_pool.py
-    bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: true
+    flops: "N * C * L_out * kW"
 
 AvgPool2dFwdOp:
-  ref_api: "torch.nn.functional.avg_pool2d"
+  ref_api: torch.nn.functional.avg_pool2d
   family: pool
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, H_in, W_in]"}
-    outputs:
-      output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
+    forall: {N: Dim, C: Dim, H_in: Dim, W_in: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       kernel_size: {type: "int | tuple[int, int]"}
       stride: {type: "int | tuple[int, int] | None", default: null}
@@ -77,68 +53,44 @@ AvgPool2dFwdOp:
       ceil_mode: {type: bool, default: false}
       count_include_pad: {type: bool, default: true}
       divisor_override: {type: "int | None", default: null}
+    inputs:
+      input: {dtype: T, shape: "[N, C, H_in, W_in]"}
+    outputs:
+      output: {dtype: T, shape: "[N, C, H_out, W_out]"}
+    let:
+      kH: "per_axis(kernel_size, 0, 2)"
+      sH: "per_axis(stride, 0, 2, fallback=kH)"
+      pH: "per_axis(padding, 0, 2)"
+      kW: "per_axis(kernel_size, 1, 2)"
+      sW: "per_axis(stride, 1, 2, fallback=kW)"
+      pW: "per_axis(padding, 1, 2)"
+      H_out: "pool.out(H_in, kH, sH, pH, 1, ceil_mode)"
+      W_out: "pool.out(W_in, kW, sW, pW, 1, ceil_mode)"
     shape_rules:
-      - "_kH == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      - "_kW == (kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size))"
-      - "_sH == (_kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      - "_sW == (_kW if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride)))"
-      - "_pH == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      - "_pW == (padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
-      - "_kH > 0 and _kW > 0"
-      - "_sH > 0 and _sW > 0"
-      - "0 <= _pH <= _kH // 2 and 0 <= _pW <= _kW // 2"
-      - "divisor_override is None or divisor_override != 0"
-      - "H_out == max(((H_in + 2 * _pH - _kH + (_sH - 1 if ceil_mode else 0)) // _sH + 1) - (1 if ceil_mode and ((H_in + 2 * _pH - _kH + _sH - 1) // _sH + 1) > 0 and (((H_in + 2 * _pH - _kH + _sH - 1) // _sH + 1) - 1) * _sH >= H_in + _pH else 0), 0)"
-      - "W_out == max(((W_in + 2 * _pW - _kW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
+    - "kH > 0 and sH > 0 and kW > 0 and sW > 0"
+    - "0 <= pH <= kH // 2 and 0 <= pW <= kW // 2"
+    - "not present(divisor_override) or divisor_override.value != 0"
+    - "H_in > 0 and W_in > 0 and H_out > 0 and W_out > 0"
 
   workloads:
-    # Real-model sources: ResNet-style and ConvNeXt-style vision backbones use
-    # 2D average-pooling/downsampling over NCHW feature maps at early and middle
-    # feature stages. The asymmetric ceil/divisor case is a stress workload for
-    # PyTorch avg_pool2d semantics, not a separate model family.
-    - {input_shape: [2, 64, 112, 112], kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtypes: [float16], label: "vision-3x3-s2"}
-    - {input_shape: [2, 128, 56, 56], kernel_size: [5, 5], stride: [2, 2], padding: [2, 2], dtypes: [float16], label: "vision-5x5-s2"}
-    - {input_shape: [3, 96, 55, 57], kernel_size: [3, 5], stride: [2, 2], padding: [1, 2], ceil_mode: true, count_include_pad: false, divisor_override: 7, dtypes: [bfloat16], label: "ceil-divisor"}
+  # Real-model sources: ResNet-style and ConvNeXt-style vision backbones use
+  # 2D average-pooling/downsampling over NCHW feature maps at early and middle
+  # feature stages. The asymmetric ceil/divisor case is a stress workload for
+  # PyTorch avg_pool2d semantics, not a separate model family.
+  - {N: 2, C: 64, H_in: 112, W_in: 112, kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtype_cases: [{T: float16}, {T: float32}], label: vision-3x3-s2}
+  - {N: 2, C: 128, H_in: 56, W_in: 56, kernel_size: [5, 5], stride: [2, 2], padding: [2, 2], dtype_cases: [{T: float16}], label: vision-5x5-s2}
+  - {N: 3, C: 96, H_in: 55, W_in: 57, kernel_size: [3, 5], stride: [2, 2], padding: [1, 2], ceil_mode: true, count_include_pad: false, divisor_override: 7, dtype_cases: [{T: bfloat16}], label: ceil-divisor}
 
   roofline:
-    vars:
-      # The dims the signature's shape string names, bound from the tensor.
-      N: "input.shape[0]"
-      C: "input.shape[1]"
-      H_in: "input.shape[2]"
-      W_in: "input.shape[3]"
-      kH: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
-      kW: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      sH: "kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
-      sW: "kW if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      pH: "padding[0] if isinstance(padding, (tuple, list)) else padding"
-      pW: "padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      out_H: "max(((H_in + 2 * pH - kH + (sH - 1 if ceil_mode else 0)) // sH + 1) - (1 if ceil_mode and ((H_in + 2 * pH - kH + sH - 1) // sH + 1) > 0 and (((H_in + 2 * pH - kH + sH - 1) // sH + 1) - 1) * sH >= H_in + pH else 0), 0)"
-      out_W: "max(((W_in + 2 * pW - kW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((W_in + 2 * pW - kW + sW - 1) // sW + 1) > 0 and (((W_in + 2 * pW - kW + sW - 1) // sW + 1) - 1) * sW >= W_in + pW else 0), 0)"
-    flops: "N * C * out_H * out_W * kH * kW"
-    bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/pool/avg_pool2d.py
-    kernel_map:
-      avg_pool2d_kernel: AvgPool2dKernel
-      avg_pool2d_spatial_kernel: AvgPool2dSpatialKernel
-    op: tileops/ops/pool.py
-    test: tests/ops/test_pool.py
-    bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: true
+    flops: "N * C * H_out * W_out * kH * kW"
 
 AvgPool3dFwdOp:
-  ref_api: "torch.nn.functional.avg_pool3d"
+  ref_api: torch.nn.functional.avg_pool3d
   family: pool
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, D_in, H_in, W_in]"}
-    outputs:
-      output: {dtype: "same_as(input)", shape: "[N, C, D_out, H_out, W_out]"}
+    forall: {N: Dim, C: Dim, D_in: Dim, H_in: Dim, W_in: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       kernel_size: {type: "int | tuple[int, int, int]"}
       stride: {type: "int | tuple[int, int, int] | None", default: null}
@@ -146,741 +98,452 @@ AvgPool3dFwdOp:
       ceil_mode: {type: bool, default: false}
       count_include_pad: {type: bool, default: true}
       divisor_override: {type: "int | None", default: null}
+    inputs:
+      input: {dtype: T, shape: "[N, C, D_in, H_in, W_in]"}
+    outputs:
+      output: {dtype: T, shape: "[N, C, D_out, H_out, W_out]"}
+    let:
+      kD: "per_axis(kernel_size, 0, 3)"
+      sD: "per_axis(stride, 0, 3, fallback=kD)"
+      pD: "per_axis(padding, 0, 3)"
+      kH: "per_axis(kernel_size, 1, 3)"
+      sH: "per_axis(stride, 1, 3, fallback=kH)"
+      pH: "per_axis(padding, 1, 3)"
+      kW: "per_axis(kernel_size, 2, 3)"
+      sW: "per_axis(stride, 2, 3, fallback=kW)"
+      pW: "per_axis(padding, 2, 3)"
+      D_out: "pool.out(D_in, kD, sD, pD, 1, ceil_mode)"
+      H_out: "pool.out(H_in, kH, sH, pH, 1, ceil_mode)"
+      W_out: "pool.out(W_in, kW, sW, pW, 1, ceil_mode)"
     shape_rules:
-      - "_kD == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      - "_kH == (kernel_size[1] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      - "_kW == (kernel_size[2] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      - "_sD == (_kD if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      - "_sH == (_kH if stride is None else (stride[1] if isinstance(stride, (tuple, list)) else stride))"
-      - "_sW == (_kW if stride is None else (stride[2] if isinstance(stride, (tuple, list)) else stride))"
-      - "_pD == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      - "_pH == (padding[1] if isinstance(padding, (tuple, list)) else padding)"
-      - "_pW == (padding[2] if isinstance(padding, (tuple, list)) else padding)"
-      - "_kD > 0 and _kH > 0 and _kW > 0"
-      - "_sD > 0 and _sH > 0 and _sW > 0"
-      - "0 <= _pD <= _kD // 2 and 0 <= _pH <= _kH // 2 and 0 <= _pW <= _kW // 2"
-      - "divisor_override is None or divisor_override != 0"
-      - "D_out == max(((D_in + 2 * _pD - _kD + (_sD - 1 if ceil_mode else 0)) // _sD + 1) - (1 if ceil_mode and ((D_in + 2 * _pD - _kD + _sD - 1) // _sD + 1) > 0 and (((D_in + 2 * _pD - _kD + _sD - 1) // _sD + 1) - 1) * _sD >= D_in + _pD else 0), 0)"
-      - "H_out == max(((H_in + 2 * _pH - _kH + (_sH - 1 if ceil_mode else 0)) // _sH + 1) - (1 if ceil_mode and ((H_in + 2 * _pH - _kH + _sH - 1) // _sH + 1) > 0 and (((H_in + 2 * _pH - _kH + _sH - 1) // _sH + 1) - 1) * _sH >= H_in + _pH else 0), 0)"
-      - "W_out == max(((W_in + 2 * _pW - _kW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _kW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
+    - "kD > 0 and sD > 0 and kH > 0 and sH > 0 and kW > 0 and sW > 0"
+    - "0 <= pD <= kD // 2 and 0 <= pH <= kH // 2 and 0 <= pW <= kW // 2"
+    - "not present(divisor_override) or divisor_override.value != 0"
+    - "D_in > 0 and H_in > 0 and W_in > 0 and D_out > 0 and H_out > 0 and W_out > 0"
 
   workloads:
-    # Real-model sources: I3D/SlowFast-style video CNNs use 3D spatiotemporal
-    # pooling over NCDHW activations. The ceil and divisor workloads stress
-    # PyTorch avg_pool3d semantics on video-like feature volumes.
-    - {input_shape: [1, 32, 16, 56, 56], kernel_size: [2, 2, 2], stride: [2, 2, 2], padding: [0, 0, 0], dtypes: [float16], label: "video-2x2x2"}
-    - {input_shape: [2, 64, 8, 28, 28], kernel_size: [2, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, count_include_pad: false, dtypes: [float16], label: "ceil-video"}
-    - {input_shape: [2, 24, 10, 20, 22], kernel_size: [2, 2, 3], stride: [2, 2, 2], padding: [0, 1, 1], divisor_override: 7, dtypes: [bfloat16], label: "divisor"}
+  # Real-model sources: I3D/SlowFast-style video CNNs use 3D spatiotemporal
+  # pooling over NCDHW activations. The ceil and divisor workloads stress
+  # PyTorch avg_pool3d semantics on video-like feature volumes.
+  - {N: 1, C: 32, D_in: 16, H_in: 56, W_in: 56, kernel_size: [2, 2, 2], stride: [2, 2, 2], padding: [0, 0, 0], dtype_cases: [{T: float16}, {T: float32}], label: video-2x2x2}
+  - {N: 2, C: 64, D_in: 8, H_in: 28, W_in: 28, kernel_size: [2, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, count_include_pad: false, dtype_cases: [{T: float16}], label: ceil-video}
+  - {N: 2, C: 24, D_in: 10, H_in: 20, W_in: 22, kernel_size: [2, 2, 3], stride: [2, 2, 2], padding: [0, 1, 1], divisor_override: 7, dtype_cases: [{T: bfloat16}], label: divisor}
 
   roofline:
-    vars:
-      # The dims the signature's shape string names, bound from the tensor.
-      N: "input.shape[0]"
-      C: "input.shape[1]"
-      D_in: "input.shape[2]"
-      H_in: "input.shape[3]"
-      W_in: "input.shape[4]"
-      kD: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
-      kH: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) else kernel_size"
-      kW: "kernel_size[2] if isinstance(kernel_size, (tuple, list)) else kernel_size"
-      sD: "kD if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
-      sH: "kH if stride is None else (stride[1] if isinstance(stride, (tuple, list)) else stride)"
-      sW: "kW if stride is None else (stride[2] if isinstance(stride, (tuple, list)) else stride)"
-      pD: "padding[0] if isinstance(padding, (tuple, list)) else padding"
-      pH: "padding[1] if isinstance(padding, (tuple, list)) else padding"
-      pW: "padding[2] if isinstance(padding, (tuple, list)) else padding"
-      out_D: "max(((D_in + 2 * pD - kD + (sD - 1 if ceil_mode else 0)) // sD + 1) - (1 if ceil_mode and ((D_in + 2 * pD - kD + sD - 1) // sD + 1) > 0 and (((D_in + 2 * pD - kD + sD - 1) // sD + 1) - 1) * sD >= D_in + pD else 0), 0)"
-      out_H: "max(((H_in + 2 * pH - kH + (sH - 1 if ceil_mode else 0)) // sH + 1) - (1 if ceil_mode and ((H_in + 2 * pH - kH + sH - 1) // sH + 1) > 0 and (((H_in + 2 * pH - kH + sH - 1) // sH + 1) - 1) * sH >= H_in + pH else 0), 0)"
-      out_W: "max(((W_in + 2 * pW - kW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((W_in + 2 * pW - kW + sW - 1) // sW + 1) > 0 and (((W_in + 2 * pW - kW + sW - 1) // sW + 1) - 1) * sW >= W_in + pW else 0), 0)"
-    flops: "N * C * out_D * out_H * out_W * kD * kH * kW"
-    bytes: "(N * C * D_in * H_in * W_in + N * C * out_D * out_H * out_W) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/pool/avg_pool3d.py
-    kernel_map:
-      avg_pool3d_kernel: AvgPool3dKernel
-      avg_pool3d_spatial_kernel: AvgPool3dSpatialKernel
-    op: tileops/ops/pool.py
-    test: tests/ops/test_pool.py
-    bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: true
+    flops: "N * C * D_out * H_out * W_out * kD * kH * kW"
 
 MaxPool1dFwdOp:
-  ref_api: "torch.nn.functional.max_pool1d"
   # Equivalent to torch.nn.functional.max_pool1d (return_indices=False)
+  ref_api: torch.nn.functional.max_pool1d
   family: pool
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, L_in]"}
-    outputs:
-      output: {dtype: "same_as(input)", shape: "[N, C, L_out]"}
+    forall: {N: Dim, C: Dim, L_in: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       kernel_size: {type: "int | tuple[int]"}
       stride: {type: "int | tuple[int] | None", default: null}
       padding: {type: "int | tuple[int]", default: 0}
       dilation: {type: "int | tuple[int]", default: 1}
       ceil_mode: {type: bool, default: false}
+    inputs:
+      input: {dtype: T, shape: "[N, C, L_in]"}
+    outputs:
+      output: {dtype: T, shape: "[N, C, L_out]"}
+    let:
+      kW: "per_axis(kernel_size, 0, 1)"
+      sW: "per_axis(stride, 0, 1, fallback=kW)"
+      pW: "per_axis(padding, 0, 1)"
+      dW: "per_axis(dilation, 0, 1)"
+      L_out: "pool.out(L_in, kW, sW, pW, dW, ceil_mode)"
     shape_rules:
-      - "_kW == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      - "_sW == (_kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      - "_pW == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      - "_dW == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
-      - "_kW > 0"
-      - "_sW > 0"
-      - "_dW > 0"
-      - "0 <= _pW <= _kW // 2"
-      - "_effW == _dW * (_kW - 1) + 1"
-      - "L_out == max(((L_in + 2 * _pW - _effW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((L_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) > 0 and (((L_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) - 1) * _sW >= L_in + _pW else 0), 0)"
+    - "kW > 0 and sW > 0"
+    - "dW > 0"
+    - "0 <= pW <= kW // 2"
+    - "L_in > 0 and L_out > 0"
 
   workloads:
-    # Real-model sources: SincNet-style speaker CNNs use local MaxPool1d
-    # over waveform features; TextCNN-style classifiers use global temporal
-    # max pooling over token-convolution channels; ECG CNN classifiers use
-    # repeated 1D max-pooling downsampling on long signals.
-    - {input_shape: [32, 80, 4096], kernel_size: 3, stride: 3, padding: 0, dtypes: [float16], label: "sincnet-speaker-local"}
-    - {input_shape: [64, 256, 128], kernel_size: 128, stride: 1, padding: 0, dtypes: [float16], label: "textcnn-global"}
-    - {input_shape: [16, 128, 2048], kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtypes: [bfloat16], label: "ecg-cnn-dilated"}
+  # Real-model sources: SincNet-style speaker CNNs use local MaxPool1d
+  # over waveform features; TextCNN-style classifiers use global temporal
+  # max pooling over token-convolution channels; ECG CNN classifiers use
+  # repeated 1D max-pooling downsampling on long signals.
+  - {N: 32, C: 80, L_in: 4096, kernel_size: 3, stride: 3, padding: 0, dtype_cases: [{T: float16}, {T: float32}], label: sincnet-speaker-local}
+  - {N: 64, C: 256, L_in: 128, kernel_size: 128, stride: 1, padding: 0, dtype_cases: [{T: float16}], label: textcnn-global}
+  - {N: 16, C: 128, L_in: 2048, kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtype_cases: [{T: bfloat16}], label: ecg-cnn-dilated}
 
   roofline:
-    vars:
-      # The dims the signature's shape string names, bound from the tensor.
-      N: "input.shape[0]"
-      C: "input.shape[1]"
-      L_in: "input.shape[2]"
-      kW: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
-      sW: "kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
-      pW: "padding[0] if isinstance(padding, (tuple, list)) else padding"
-      dW: "dilation[0] if isinstance(dilation, (tuple, list)) else dilation"
-      effW: "dW * (kW - 1) + 1"
-      out_W: "max(((L_in + 2 * pW - effW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((L_in + 2 * pW - effW + sW - 1) // sW + 1) > 0 and (((L_in + 2 * pW - effW + sW - 1) // sW + 1) - 1) * sW >= L_in + pW else 0), 0)"
-    flops: "N * C * out_W * kW"
-    bytes: "(N * C * L_in + N * C * out_W) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/pool/max_pool1d.py
-    kernel_map:
-      max_pool1d_kernel: MaxPool1dKernel
-    op: tileops/ops/pool.py
-    test: tests/ops/test_pool.py
-    bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: true
+    flops: "N * C * L_out * kW"
 
 MaxPool1dIndicesFwdOp:
-  ref_api: "torch.nn.functional.max_pool1d"
   # Equivalent to torch.nn.functional.max_pool1d (return_indices=True)
+  ref_api: torch.nn.functional.max_pool1d
   family: pool
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, L_in]"}
-    outputs:
-      output: {dtype: "same_as(input)", shape: "[N, C, L_out]"}
-      indices: {dtype: "int64", shape: "[N, C, L_out]"}
+    forall: {N: Dim, C: Dim, L_in: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       kernel_size: {type: "int | tuple[int]"}
       stride: {type: "int | tuple[int] | None", default: null}
       padding: {type: "int | tuple[int]", default: 0}
       dilation: {type: "int | tuple[int]", default: 1}
       ceil_mode: {type: bool, default: false}
+    inputs:
+      input: {dtype: T, shape: "[N, C, L_in]"}
+    outputs:
+      output: {dtype: T, shape: "[N, C, L_out]"}
+      indices: {dtype: int64, shape: "[N, C, L_out]"}
+    let:
+      kW: "per_axis(kernel_size, 0, 1)"
+      sW: "per_axis(stride, 0, 1, fallback=kW)"
+      pW: "per_axis(padding, 0, 1)"
+      dW: "per_axis(dilation, 0, 1)"
+      L_out: "pool.out(L_in, kW, sW, pW, dW, ceil_mode)"
     shape_rules:
-      - "_kW == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      - "_sW == (_kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      - "_pW == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      - "_dW == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
-      - "_kW > 0"
-      - "_sW > 0"
-      - "_dW > 0"
-      - "0 <= _pW <= _kW // 2"
-      - "_effW == _dW * (_kW - 1) + 1"
-      - "L_out == max(((L_in + 2 * _pW - _effW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((L_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) > 0 and (((L_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) - 1) * _sW >= L_in + _pW else 0), 0)"
+    - "kW > 0 and sW > 0"
+    - "dW > 0"
+    - "0 <= pW <= kW // 2"
+    - "L_in > 0 and L_out > 0"
 
   workloads:
-    # Same model sources as MaxPool1dFwdOp; indices output is consumed by
-    # unpooling or argmax-tracking paths rather than changing input shapes.
-    - {input_shape: [32, 80, 4096], kernel_size: 3, stride: 3, padding: 0, dtypes: [float16], label: "sincnet-speaker-local"}
-    - {input_shape: [64, 256, 128], kernel_size: 128, stride: 1, padding: 0, dtypes: [float16], label: "textcnn-global"}
-    - {input_shape: [16, 128, 2048], kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtypes: [bfloat16], label: "ecg-cnn-dilated"}
+  # Same model sources as MaxPool1dFwdOp; indices output is consumed by
+  # unpooling or argmax-tracking paths rather than changing input shapes.
+  - {N: 32, C: 80, L_in: 4096, kernel_size: 3, stride: 3, padding: 0, dtype_cases: [{T: float16}, {T: float32}], label: sincnet-speaker-local}
+  - {N: 64, C: 256, L_in: 128, kernel_size: 128, stride: 1, padding: 0, dtype_cases: [{T: float16}], label: textcnn-global}
+  - {N: 16, C: 128, L_in: 2048, kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtype_cases: [{T: bfloat16}], label: ecg-cnn-dilated}
 
   roofline:
-    vars:
-      # The dims the signature's shape string names, bound from the tensor.
-      N: "input.shape[0]"
-      C: "input.shape[1]"
-      L_in: "input.shape[2]"
-      kW: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
-      sW: "kW if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
-      pW: "padding[0] if isinstance(padding, (tuple, list)) else padding"
-      dW: "dilation[0] if isinstance(dilation, (tuple, list)) else dilation"
-      effW: "dW * (kW - 1) + 1"
-      out_W: "max(((L_in + 2 * pW - effW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((L_in + 2 * pW - effW + sW - 1) // sW + 1) > 0 and (((L_in + 2 * pW - effW + sW - 1) // sW + 1) - 1) * sW >= L_in + pW else 0), 0)"
-    flops: "N * C * out_W * kW"
-    bytes: "(N * C * L_in + N * C * out_W) * elem_bytes + N * C * out_W * 8"
-
-  source:
-    kernel: tileops/kernels/pool/max_pool1d.py
-    kernel_map:
-      max_pool1d_with_indices_kernel: MaxPool1dWithIndicesKernel
-    op: tileops/ops/pool.py
-    test: tests/ops/test_pool.py
-    bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: true
+    flops: "N * C * L_out * kW"
 
 MaxPool2dFwdOp:
-  ref_api: "torch.nn.functional.max_pool2d"
   # Equivalent to torch.nn.functional.max_pool2d (return_indices=False)
+  ref_api: torch.nn.functional.max_pool2d
   family: pool
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, H_in, W_in]"}
-    outputs:
-      output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
+    forall: {N: Dim, C: Dim, H_in: Dim, W_in: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       kernel_size: {type: "int | tuple[int, int]"}
       stride: {type: "int | tuple[int, int] | None", default: null}
       padding: {type: "int | tuple[int, int]", default: 0}
       dilation: {type: "int | tuple[int, int]", default: 1}
       ceil_mode: {type: bool, default: false}
+    inputs:
+      input: {dtype: T, shape: "[N, C, H_in, W_in]"}
+    outputs:
+      output: {dtype: T, shape: "[N, C, H_out, W_out]"}
+    let:
+      kH: "per_axis(kernel_size, 0, 2)"
+      sH: "per_axis(stride, 0, 2, fallback=kH)"
+      pH: "per_axis(padding, 0, 2)"
+      dH: "per_axis(dilation, 0, 2)"
+      kW: "per_axis(kernel_size, 1, 2)"
+      sW: "per_axis(stride, 1, 2, fallback=kW)"
+      pW: "per_axis(padding, 1, 2)"
+      dW: "per_axis(dilation, 1, 2)"
+      H_out: "pool.out(H_in, kH, sH, pH, dH, ceil_mode)"
+      W_out: "pool.out(W_in, kW, sW, pW, dW, ceil_mode)"
     shape_rules:
-      - "_kH == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      - "_kW == (kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size))"
-      - "_sH == (_kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      - "_sW == (_kW if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride)))"
-      - "_pH == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      - "_pW == (padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
-      - "_dH == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
-      - "_dW == (dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation))"
-      - "_kH > 0 and _kW > 0"
-      - "_sH > 0 and _sW > 0"
-      - "_dH > 0 and _dW > 0"
-      - "0 <= _pH <= _kH // 2 and 0 <= _pW <= _kW // 2"
-      - "_effH == _dH * (_kH - 1) + 1"
-      - "_effW == _dW * (_kW - 1) + 1"
-      - "H_out == max(((H_in + 2 * _pH - _effH + (_sH - 1 if ceil_mode else 0)) // _sH + 1) - (1 if ceil_mode and ((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) > 0 and (((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) - 1) * _sH >= H_in + _pH else 0), 0)"
-      - "W_out == max(((W_in + 2 * _pW - _effW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
+    - "kH > 0 and sH > 0 and kW > 0 and sW > 0"
+    - "dH > 0 and dW > 0"
+    - "0 <= pH <= kH // 2 and 0 <= pW <= kW // 2"
+    - "H_in > 0 and W_in > 0 and H_out > 0 and W_out > 0"
 
   workloads:
-    # Real-model sources: ResNet stem uses 3x3 stride-2 max pooling on
-    # 64-channel 112x112 features; VGG blocks use 2x2 stride-2 max pooling;
-    # AlexNet-style CNNs use 3x3 stride-2 pooling on early 55x55 features.
-    - {input_shape: [32, 64, 112, 112], kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtypes: [float16, bfloat16, float32], label: "resnet-stem"}
-    - {input_shape: [16, 128, 56, 56], kernel_size: [2, 2], stride: [2, 2], padding: [0, 0], dtypes: [float16, bfloat16, float32], label: "vgg-block"}
-    - {input_shape: [32, 64, 55, 55], kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtypes: [float16, bfloat16, float32], label: "alexnet-ceil"}
+  # Real-model sources: ResNet stem uses 3x3 stride-2 max pooling on
+  # 64-channel 112x112 features; VGG blocks use 2x2 stride-2 max pooling;
+  # AlexNet-style CNNs use 3x3 stride-2 pooling on early 55x55 features.
+  - {N: 32, C: 64, H_in: 112, W_in: 112, kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: resnet-stem}
+  - {N: 16, C: 128, H_in: 56, W_in: 56, kernel_size: [2, 2], stride: [2, 2], padding: [0, 0], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: vgg-block}
+  - {N: 32, C: 64, H_in: 55, W_in: 55, kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: alexnet-ceil}
 
   roofline:
-    vars:
-      # The dims the signature's shape string names, bound from the tensor.
-      N: "input.shape[0]"
-      C: "input.shape[1]"
-      H_in: "input.shape[2]"
-      W_in: "input.shape[3]"
-      kH: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
-      kW: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      sH: "kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
-      sW: "kW if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      pH: "padding[0] if isinstance(padding, (tuple, list)) else padding"
-      pW: "padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      dH: "dilation[0] if isinstance(dilation, (tuple, list)) else dilation"
-      dW: "dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
-      effH: "dH * (kH - 1) + 1"
-      effW: "dW * (kW - 1) + 1"
-      out_H: "max(((H_in + 2 * pH - effH + (sH - 1 if ceil_mode else 0)) // sH + 1) - (1 if ceil_mode and ((H_in + 2 * pH - effH + sH - 1) // sH + 1) > 0 and (((H_in + 2 * pH - effH + sH - 1) // sH + 1) - 1) * sH >= H_in + pH else 0), 0)"
-      out_W: "max(((W_in + 2 * pW - effW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((W_in + 2 * pW - effW + sW - 1) // sW + 1) > 0 and (((W_in + 2 * pW - effW + sW - 1) // sW + 1) - 1) * sW >= W_in + pW else 0), 0)"
-    flops: "N * C * out_H * out_W * kH * kW"
-    bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/pool/max_pool2d.py
-    kernel_map:
-      max_pool2d_kernel: MaxPool2dKernel
-    op: tileops/ops/pool.py
-    test: tests/ops/test_pool.py
-    bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: true
+    flops: "N * C * H_out * W_out * kH * kW"
 
 MaxPool2dIndicesFwdOp:
-  ref_api: "torch.nn.functional.max_pool2d"
   # Equivalent to torch.nn.functional.max_pool2d (return_indices=True)
+  ref_api: torch.nn.functional.max_pool2d
   family: pool
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, H_in, W_in]"}
-    outputs:
-      output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
-      indices: {dtype: "int64", shape: "[N, C, H_out, W_out]"}
+    forall: {N: Dim, C: Dim, H_in: Dim, W_in: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       kernel_size: {type: "int | tuple[int, int]"}
       stride: {type: "int | tuple[int, int] | None", default: null}
       padding: {type: "int | tuple[int, int]", default: 0}
       dilation: {type: "int | tuple[int, int]", default: 1}
       ceil_mode: {type: bool, default: false}
+    inputs:
+      input: {dtype: T, shape: "[N, C, H_in, W_in]"}
+    outputs:
+      output: {dtype: T, shape: "[N, C, H_out, W_out]"}
+      indices: {dtype: int64, shape: "[N, C, H_out, W_out]"}
+    let:
+      kH: "per_axis(kernel_size, 0, 2)"
+      sH: "per_axis(stride, 0, 2, fallback=kH)"
+      pH: "per_axis(padding, 0, 2)"
+      dH: "per_axis(dilation, 0, 2)"
+      kW: "per_axis(kernel_size, 1, 2)"
+      sW: "per_axis(stride, 1, 2, fallback=kW)"
+      pW: "per_axis(padding, 1, 2)"
+      dW: "per_axis(dilation, 1, 2)"
+      H_out: "pool.out(H_in, kH, sH, pH, dH, ceil_mode)"
+      W_out: "pool.out(W_in, kW, sW, pW, dW, ceil_mode)"
     shape_rules:
-      - "_kH == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      - "_kW == (kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size))"
-      - "_sH == (_kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      - "_sW == (_kW if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride)))"
-      - "_pH == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      - "_pW == (padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
-      - "_dH == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
-      - "_dW == (dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation))"
-      - "_kH > 0 and _kW > 0"
-      - "_sH > 0 and _sW > 0"
-      - "_dH > 0 and _dW > 0"
-      - "0 <= _pH <= _kH // 2 and 0 <= _pW <= _kW // 2"
-      - "_effH == _dH * (_kH - 1) + 1"
-      - "_effW == _dW * (_kW - 1) + 1"
-      - "H_out == max(((H_in + 2 * _pH - _effH + (_sH - 1 if ceil_mode else 0)) // _sH + 1) - (1 if ceil_mode and ((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) > 0 and (((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) - 1) * _sH >= H_in + _pH else 0), 0)"
-      - "W_out == max(((W_in + 2 * _pW - _effW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
+    - "kH > 0 and sH > 0 and kW > 0 and sW > 0"
+    - "dH > 0 and dW > 0"
+    - "0 <= pH <= kH // 2 and 0 <= pW <= kW // 2"
+    - "H_in > 0 and W_in > 0 and H_out > 0 and W_out > 0"
 
   workloads:
-    # Same model sources as MaxPool2dFwdOp; indices output is consumed by
-    # unpooling or argmax-tracking paths rather than changing input shapes.
-    - {input_shape: [32, 64, 112, 112], kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtypes: [float16, bfloat16, float32], label: "resnet-stem"}
-    - {input_shape: [16, 128, 56, 56], kernel_size: [2, 2], stride: [2, 2], padding: [0, 0], dtypes: [float16, bfloat16, float32], label: "vgg-block"}
-    - {input_shape: [32, 64, 55, 55], kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtypes: [float16, bfloat16, float32], label: "alexnet-ceil"}
+  # Same model sources as MaxPool2dFwdOp; indices output is consumed by
+  # unpooling or argmax-tracking paths rather than changing input shapes.
+  - {N: 32, C: 64, H_in: 112, W_in: 112, kernel_size: [3, 3], stride: [2, 2], padding: [1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: resnet-stem}
+  - {N: 16, C: 128, H_in: 56, W_in: 56, kernel_size: [2, 2], stride: [2, 2], padding: [0, 0], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: vgg-block}
+  - {N: 32, C: 64, H_in: 55, W_in: 55, kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: alexnet-ceil}
 
   roofline:
-    vars:
-      # The dims the signature's shape string names, bound from the tensor.
-      N: "input.shape[0]"
-      C: "input.shape[1]"
-      H_in: "input.shape[2]"
-      W_in: "input.shape[3]"
-      kH: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
-      kW: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      sH: "kH if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
-      sW: "kW if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      pH: "padding[0] if isinstance(padding, (tuple, list)) else padding"
-      pW: "padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      dH: "dilation[0] if isinstance(dilation, (tuple, list)) else dilation"
-      dW: "dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
-      effH: "dH * (kH - 1) + 1"
-      effW: "dW * (kW - 1) + 1"
-      out_H: "max(((H_in + 2 * pH - effH + (sH - 1 if ceil_mode else 0)) // sH + 1) - (1 if ceil_mode and ((H_in + 2 * pH - effH + sH - 1) // sH + 1) > 0 and (((H_in + 2 * pH - effH + sH - 1) // sH + 1) - 1) * sH >= H_in + pH else 0), 0)"
-      out_W: "max(((W_in + 2 * pW - effW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((W_in + 2 * pW - effW + sW - 1) // sW + 1) > 0 and (((W_in + 2 * pW - effW + sW - 1) // sW + 1) - 1) * sW >= W_in + pW else 0), 0)"
-    flops: "N * C * out_H * out_W * kH * kW"
-    bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes + N * C * out_H * out_W * 8"
-
-  source:
-    kernel: tileops/kernels/pool/max_pool2d.py
-    kernel_map:
-      max_pool2d_with_indices_kernel: MaxPool2dWithIndicesKernel
-    op: tileops/ops/pool.py
-    test: tests/ops/test_pool.py
-    bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: true
+    flops: "N * C * H_out * W_out * kH * kW"
 
 MaxPool3dFwdOp:
-  ref_api: "torch.nn.functional.max_pool3d"
   # Equivalent to torch.nn.functional.max_pool3d (return_indices=False)
+  ref_api: torch.nn.functional.max_pool3d
   family: pool
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, D_in, H_in, W_in]"}
-    outputs:
-      output: {dtype: "same_as(input)", shape: "[N, C, D_out, H_out, W_out]"}
+    forall: {N: Dim, C: Dim, D_in: Dim, H_in: Dim, W_in: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       kernel_size: {type: "int | tuple[int, int, int]"}
       stride: {type: "int | tuple[int, int, int] | None", default: null}
       padding: {type: "int | tuple[int, int, int]", default: 0}
       dilation: {type: "int | tuple[int, int, int]", default: 1}
       ceil_mode: {type: bool, default: false}
+    inputs:
+      input: {dtype: T, shape: "[N, C, D_in, H_in, W_in]"}
+    outputs:
+      output: {dtype: T, shape: "[N, C, D_out, H_out, W_out]"}
+    let:
+      kD: "per_axis(kernel_size, 0, 3)"
+      sD: "per_axis(stride, 0, 3, fallback=kD)"
+      pD: "per_axis(padding, 0, 3)"
+      dD: "per_axis(dilation, 0, 3)"
+      kH: "per_axis(kernel_size, 1, 3)"
+      sH: "per_axis(stride, 1, 3, fallback=kH)"
+      pH: "per_axis(padding, 1, 3)"
+      dH: "per_axis(dilation, 1, 3)"
+      kW: "per_axis(kernel_size, 2, 3)"
+      sW: "per_axis(stride, 2, 3, fallback=kW)"
+      pW: "per_axis(padding, 2, 3)"
+      dW: "per_axis(dilation, 2, 3)"
+      D_out: "pool.out(D_in, kD, sD, pD, dD, ceil_mode)"
+      H_out: "pool.out(H_in, kH, sH, pH, dH, ceil_mode)"
+      W_out: "pool.out(W_in, kW, sW, pW, dW, ceil_mode)"
     shape_rules:
-      - "_kD == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      - "_kH == (kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size))"
-      - "_kW == (kernel_size[2] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 2 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size))"
-      - "_sD == (_kD if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      - "_sH == (_kH if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride)))"
-      - "_sW == (_kW if stride is None else (stride[2] if isinstance(stride, (tuple, list)) and len(stride) > 2 else (stride[0] if isinstance(stride, (tuple, list)) else stride)))"
-      - "_pD == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      - "_pH == (padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
-      - "_pW == (padding[2] if isinstance(padding, (tuple, list)) and len(padding) > 2 else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
-      - "_dD == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
-      - "_dH == (dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation))"
-      - "_dW == (dilation[2] if isinstance(dilation, (tuple, list)) and len(dilation) > 2 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation))"
-      - "_kD > 0 and _kH > 0 and _kW > 0"
-      - "_sD > 0 and _sH > 0 and _sW > 0"
-      - "_dD > 0 and _dH > 0 and _dW > 0"
-      - "0 <= _pD <= _kD // 2 and 0 <= _pH <= _kH // 2 and 0 <= _pW <= _kW // 2"
-      - "_effD == _dD * (_kD - 1) + 1"
-      - "_effH == _dH * (_kH - 1) + 1"
-      - "_effW == _dW * (_kW - 1) + 1"
-      - "D_out == max(((D_in + 2 * _pD - _effD + (_sD - 1 if ceil_mode else 0)) // _sD + 1) - (1 if ceil_mode and ((D_in + 2 * _pD - _effD + _sD - 1) // _sD + 1) > 0 and (((D_in + 2 * _pD - _effD + _sD - 1) // _sD + 1) - 1) * _sD >= D_in + _pD else 0), 0)"
-      - "H_out == max(((H_in + 2 * _pH - _effH + (_sH - 1 if ceil_mode else 0)) // _sH + 1) - (1 if ceil_mode and ((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) > 0 and (((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) - 1) * _sH >= H_in + _pH else 0), 0)"
-      - "W_out == max(((W_in + 2 * _pW - _effW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
+    - "kD > 0 and sD > 0 and kH > 0 and sH > 0 and kW > 0 and sW > 0"
+    - "dD > 0 and dH > 0 and dW > 0"
+    - "0 <= pD <= kD // 2 and 0 <= pH <= kH // 2 and 0 <= pW <= kW // 2"
+    - "D_in > 0 and H_in > 0 and W_in > 0 and D_out > 0 and H_out > 0 and W_out > 0"
 
   workloads:
-    # Real-model sources: C3D uses an initial 1x2x2 max pool over video
-    # features followed by 2x2x2 stages; 3D ResNet/MedicalNet-style
-    # volumetric backbones use 3x3x3 stride-2 max pooling after the stem.
-    - {input_shape: [8, 64, 16, 112, 112], kernel_size: [1, 2, 2], stride: [1, 2, 2], padding: [0, 0, 0], dtypes: [float16], label: "c3d-pool1"}
-    - {input_shape: [4, 128, 16, 56, 56], kernel_size: [2, 2, 2], stride: [2, 2, 2], padding: [0, 0, 0], dtypes: [float16], label: "c3d-pool2"}
-    - {input_shape: [2, 64, 32, 112, 112], kernel_size: [3, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, dtypes: [bfloat16], label: "medicalnet-stem"}
+  # Real-model sources: C3D uses an initial 1x2x2 max pool over video
+  # features followed by 2x2x2 stages; 3D ResNet/MedicalNet-style
+  # volumetric backbones use 3x3x3 stride-2 max pooling after the stem.
+  - {N: 8, C: 64, D_in: 16, H_in: 112, W_in: 112, kernel_size: [1, 2, 2], stride: [1, 2, 2], padding: [0, 0, 0], dtype_cases: [{T: float16}, {T: float32}], label: c3d-pool1}
+  - {N: 4, C: 128, D_in: 16, H_in: 56, W_in: 56, kernel_size: [2, 2, 2], stride: [2, 2, 2], padding: [0, 0, 0], dtype_cases: [{T: float16}], label: c3d-pool2}
+  - {N: 2, C: 64, D_in: 32, H_in: 112, W_in: 112, kernel_size: [3, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, dtype_cases: [{T: bfloat16}], label: medicalnet-stem}
 
   roofline:
-    vars:
-      # The dims the signature's shape string names, bound from the tensor.
-      N: "input.shape[0]"
-      C: "input.shape[1]"
-      D_in: "input.shape[2]"
-      H_in: "input.shape[3]"
-      W_in: "input.shape[4]"
-      kD: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
-      kH: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      kW: "kernel_size[2] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 2 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      sD: "kD if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
-      sH: "kH if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      sW: "kW if stride is None else (stride[2] if isinstance(stride, (tuple, list)) and len(stride) > 2 else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      pD: "padding[0] if isinstance(padding, (tuple, list)) else padding"
-      pH: "padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      pW: "padding[2] if isinstance(padding, (tuple, list)) and len(padding) > 2 else (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      dD: "dilation[0] if isinstance(dilation, (tuple, list)) else dilation"
-      dH: "dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
-      dW: "dilation[2] if isinstance(dilation, (tuple, list)) and len(dilation) > 2 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
-      effD: "dD * (kD - 1) + 1"
-      effH: "dH * (kH - 1) + 1"
-      effW: "dW * (kW - 1) + 1"
-      out_D: "max(((D_in + 2 * pD - effD + (sD - 1 if ceil_mode else 0)) // sD + 1) - (1 if ceil_mode and ((D_in + 2 * pD - effD + sD - 1) // sD + 1) > 0 and (((D_in + 2 * pD - effD + sD - 1) // sD + 1) - 1) * sD >= D_in + pD else 0), 0)"
-      out_H: "max(((H_in + 2 * pH - effH + (sH - 1 if ceil_mode else 0)) // sH + 1) - (1 if ceil_mode and ((H_in + 2 * pH - effH + sH - 1) // sH + 1) > 0 and (((H_in + 2 * pH - effH + sH - 1) // sH + 1) - 1) * sH >= H_in + pH else 0), 0)"
-      out_W: "max(((W_in + 2 * pW - effW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((W_in + 2 * pW - effW + sW - 1) // sW + 1) > 0 and (((W_in + 2 * pW - effW + sW - 1) // sW + 1) - 1) * sW >= W_in + pW else 0), 0)"
-    flops: "N * C * out_D * out_H * out_W * kD * kH * kW"
-    bytes: "(N * C * D_in * H_in * W_in + N * C * out_D * out_H * out_W) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/pool/max_pool3d.py
-    kernel_map:
-      max_pool3d_kernel: MaxPool3dKernel
-    op: tileops/ops/pool.py
-    test: tests/ops/test_pool.py
-    bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: true
+    flops: "N * C * D_out * H_out * W_out * kD * kH * kW"
 
 MaxPool3dIndicesFwdOp:
-  ref_api: "torch.nn.functional.max_pool3d"
   # Equivalent to torch.nn.functional.max_pool3d (return_indices=True)
+  ref_api: torch.nn.functional.max_pool3d
   family: pool
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16 | float32", shape: "[N, C, D_in, H_in, W_in]"}
-    outputs:
-      output: {dtype: "same_as(input)", shape: "[N, C, D_out, H_out, W_out]"}
-      indices: {dtype: "int64", shape: "[N, C, D_out, H_out, W_out]"}
+    forall: {N: Dim, C: Dim, D_in: Dim, H_in: Dim, W_in: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       kernel_size: {type: "int | tuple[int, int, int]"}
       stride: {type: "int | tuple[int, int, int] | None", default: null}
       padding: {type: "int | tuple[int, int, int]", default: 0}
       dilation: {type: "int | tuple[int, int, int]", default: 1}
       ceil_mode: {type: bool, default: false}
+    inputs:
+      input: {dtype: T, shape: "[N, C, D_in, H_in, W_in]"}
+    outputs:
+      output: {dtype: T, shape: "[N, C, D_out, H_out, W_out]"}
+      indices: {dtype: int64, shape: "[N, C, D_out, H_out, W_out]"}
+    let:
+      kD: "per_axis(kernel_size, 0, 3)"
+      sD: "per_axis(stride, 0, 3, fallback=kD)"
+      pD: "per_axis(padding, 0, 3)"
+      dD: "per_axis(dilation, 0, 3)"
+      kH: "per_axis(kernel_size, 1, 3)"
+      sH: "per_axis(stride, 1, 3, fallback=kH)"
+      pH: "per_axis(padding, 1, 3)"
+      dH: "per_axis(dilation, 1, 3)"
+      kW: "per_axis(kernel_size, 2, 3)"
+      sW: "per_axis(stride, 2, 3, fallback=kW)"
+      pW: "per_axis(padding, 2, 3)"
+      dW: "per_axis(dilation, 2, 3)"
+      D_out: "pool.out(D_in, kD, sD, pD, dD, ceil_mode)"
+      H_out: "pool.out(H_in, kH, sH, pH, dH, ceil_mode)"
+      W_out: "pool.out(W_in, kW, sW, pW, dW, ceil_mode)"
     shape_rules:
-      - "_kD == (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      - "_kH == (kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size))"
-      - "_kW == (kernel_size[2] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 2 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size))"
-      - "_sD == (_kD if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      - "_sH == (_kH if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride)))"
-      - "_sW == (_kW if stride is None else (stride[2] if isinstance(stride, (tuple, list)) and len(stride) > 2 else (stride[0] if isinstance(stride, (tuple, list)) else stride)))"
-      - "_pD == (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      - "_pH == (padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
-      - "_pW == (padding[2] if isinstance(padding, (tuple, list)) and len(padding) > 2 else (padding[0] if isinstance(padding, (tuple, list)) else padding))"
-      - "_dD == (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
-      - "_dH == (dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation))"
-      - "_dW == (dilation[2] if isinstance(dilation, (tuple, list)) and len(dilation) > 2 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation))"
-      - "_kD > 0 and _kH > 0 and _kW > 0"
-      - "_sD > 0 and _sH > 0 and _sW > 0"
-      - "_dD > 0 and _dH > 0 and _dW > 0"
-      - "0 <= _pD <= _kD // 2 and 0 <= _pH <= _kH // 2 and 0 <= _pW <= _kW // 2"
-      - "_effD == _dD * (_kD - 1) + 1"
-      - "_effH == _dH * (_kH - 1) + 1"
-      - "_effW == _dW * (_kW - 1) + 1"
-      - "D_out == max(((D_in + 2 * _pD - _effD + (_sD - 1 if ceil_mode else 0)) // _sD + 1) - (1 if ceil_mode and ((D_in + 2 * _pD - _effD + _sD - 1) // _sD + 1) > 0 and (((D_in + 2 * _pD - _effD + _sD - 1) // _sD + 1) - 1) * _sD >= D_in + _pD else 0), 0)"
-      - "H_out == max(((H_in + 2 * _pH - _effH + (_sH - 1 if ceil_mode else 0)) // _sH + 1) - (1 if ceil_mode and ((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) > 0 and (((H_in + 2 * _pH - _effH + _sH - 1) // _sH + 1) - 1) * _sH >= H_in + _pH else 0), 0)"
-      - "W_out == max(((W_in + 2 * _pW - _effW + (_sW - 1 if ceil_mode else 0)) // _sW + 1) - (1 if ceil_mode and ((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) > 0 and (((W_in + 2 * _pW - _effW + _sW - 1) // _sW + 1) - 1) * _sW >= W_in + _pW else 0), 0)"
+    - "kD > 0 and sD > 0 and kH > 0 and sH > 0 and kW > 0 and sW > 0"
+    - "dD > 0 and dH > 0 and dW > 0"
+    - "0 <= pD <= kD // 2 and 0 <= pH <= kH // 2 and 0 <= pW <= kW // 2"
+    - "D_in > 0 and H_in > 0 and W_in > 0 and D_out > 0 and H_out > 0 and W_out > 0"
 
   workloads:
-    # Same model sources as MaxPool3dFwdOp; indices output is consumed by
-    # unpooling or argmax-tracking paths rather than changing input shapes.
-    - {input_shape: [8, 64, 16, 112, 112], kernel_size: [1, 2, 2], stride: [1, 2, 2], padding: [0, 0, 0], dtypes: [float16], label: "c3d-pool1"}
-    - {input_shape: [4, 128, 16, 56, 56], kernel_size: [2, 2, 2], stride: [2, 2, 2], padding: [0, 0, 0], dtypes: [float16], label: "c3d-pool2"}
-    - {input_shape: [2, 64, 32, 112, 112], kernel_size: [3, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, dtypes: [bfloat16], label: "medicalnet-stem"}
+  # Same model sources as MaxPool3dFwdOp; indices output is consumed by
+  # unpooling or argmax-tracking paths rather than changing input shapes.
+  - {N: 8, C: 64, D_in: 16, H_in: 112, W_in: 112, kernel_size: [1, 2, 2], stride: [1, 2, 2], padding: [0, 0, 0], dtype_cases: [{T: float16}, {T: float32}], label: c3d-pool1}
+  - {N: 4, C: 128, D_in: 16, H_in: 56, W_in: 56, kernel_size: [2, 2, 2], stride: [2, 2, 2], padding: [0, 0, 0], dtype_cases: [{T: float16}], label: c3d-pool2}
+  - {N: 2, C: 64, D_in: 32, H_in: 112, W_in: 112, kernel_size: [3, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, dtype_cases: [{T: bfloat16}], label: medicalnet-stem}
 
   roofline:
-    vars:
-      # The dims the signature's shape string names, bound from the tensor.
-      N: "input.shape[0]"
-      C: "input.shape[1]"
-      D_in: "input.shape[2]"
-      H_in: "input.shape[3]"
-      W_in: "input.shape[4]"
-      kD: "kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size"
-      kH: "kernel_size[1] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 1 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      kW: "kernel_size[2] if isinstance(kernel_size, (tuple, list)) and len(kernel_size) > 2 else (kernel_size[0] if isinstance(kernel_size, (tuple, list)) else kernel_size)"
-      sD: "kD if stride is None else (stride[0] if isinstance(stride, (tuple, list)) else stride)"
-      sH: "kH if stride is None else (stride[1] if isinstance(stride, (tuple, list)) and len(stride) > 1 else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      sW: "kW if stride is None else (stride[2] if isinstance(stride, (tuple, list)) and len(stride) > 2 else (stride[0] if isinstance(stride, (tuple, list)) else stride))"
-      pD: "padding[0] if isinstance(padding, (tuple, list)) else padding"
-      pH: "padding[1] if isinstance(padding, (tuple, list)) and len(padding) > 1 else (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      pW: "padding[2] if isinstance(padding, (tuple, list)) and len(padding) > 2 else (padding[0] if isinstance(padding, (tuple, list)) else padding)"
-      dD: "dilation[0] if isinstance(dilation, (tuple, list)) else dilation"
-      dH: "dilation[1] if isinstance(dilation, (tuple, list)) and len(dilation) > 1 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
-      dW: "dilation[2] if isinstance(dilation, (tuple, list)) and len(dilation) > 2 else (dilation[0] if isinstance(dilation, (tuple, list)) else dilation)"
-      effD: "dD * (kD - 1) + 1"
-      effH: "dH * (kH - 1) + 1"
-      effW: "dW * (kW - 1) + 1"
-      out_D: "max(((D_in + 2 * pD - effD + (sD - 1 if ceil_mode else 0)) // sD + 1) - (1 if ceil_mode and ((D_in + 2 * pD - effD + sD - 1) // sD + 1) > 0 and (((D_in + 2 * pD - effD + sD - 1) // sD + 1) - 1) * sD >= D_in + pD else 0), 0)"
-      out_H: "max(((H_in + 2 * pH - effH + (sH - 1 if ceil_mode else 0)) // sH + 1) - (1 if ceil_mode and ((H_in + 2 * pH - effH + sH - 1) // sH + 1) > 0 and (((H_in + 2 * pH - effH + sH - 1) // sH + 1) - 1) * sH >= H_in + pH else 0), 0)"
-      out_W: "max(((W_in + 2 * pW - effW + (sW - 1 if ceil_mode else 0)) // sW + 1) - (1 if ceil_mode and ((W_in + 2 * pW - effW + sW - 1) // sW + 1) > 0 and (((W_in + 2 * pW - effW + sW - 1) // sW + 1) - 1) * sW >= W_in + pW else 0), 0)"
-    flops: "N * C * out_D * out_H * out_W * kD * kH * kW"
-    bytes: "(N * C * D_in * H_in * W_in + N * C * out_D * out_H * out_W) * elem_bytes + N * C * out_D * out_H * out_W * 8"
-
-  source:
-    kernel: tileops/kernels/pool/max_pool3d.py
-    kernel_map:
-      max_pool3d_with_indices_kernel: MaxPool3dWithIndicesKernel
-    op: tileops/ops/pool.py
-    test: tests/ops/test_pool.py
-    bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: true
+    flops: "N * C * D_out * H_out * W_out * kD * kH * kW"
 
 AdaptiveAvgPool2dFwdOp:
-  ref_api: "torch.nn.functional.adaptive_avg_pool2d"
-  # Declared on the batched NCHW form (pool-family convention). The Op layer
-  # also accepts unbatched CHW input, unsqueezed to NCHW internally.
+  ref_api: torch.nn.functional.adaptive_avg_pool2d
   family: pool
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16", shape: "[N, C, H_in, W_in]"}
-    outputs:
-      output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
+    forall: {B: Shape, C: Dim, H_in: Dim, W_in: Dim, T: "DType[float16 | bfloat16]"}
     params:
       output_size: {type: "int | None | tuple[int | None, int | None] | list[int | None]"}
+    inputs:
+      input: {dtype: T, shape: "[*B, C, H_in, W_in]"}
+    outputs:
+      output: {dtype: T, shape: "[*B, C, H_out, W_out]"}
+    let:
+      H_out: "per_axis(output_size, 0, 2, fallback=H_in)"
+      W_out: "per_axis(output_size, 1, 2, fallback=W_in)"
     shape_rules:
-      - "output_size is None or isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
-      - "_oH == (None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
-      - "_oW == (None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size))"
-      - "H_out == (H_in if _oH is None else _oH)"
-      - "W_out == (W_in if _oW is None else _oW)"
-      - "H_out > 0 and W_out > 0"
+    - "len(B) <= 1 and H_in > 0 and W_in > 0"
+    - "H_out > 0 and W_out > 0"
 
   workloads:
-    # Real-model sources: ResNet-50 applies a global adaptive average pool to
-    # its final 7x7 feature map before the FC layer; SPP-style heads pool
-    # arbitrary feature maps to a fixed grid; the non-divisible case stresses
-    # PyTorch adaptive bin-boundary semantics.
-    - {input_shape: [8, 2048, 7, 7], output_size: [1, 1], dtypes: [float16], label: "resnet-global"}
-    - {input_shape: [2, 128, 56, 56], output_size: [6, 6], dtypes: [float16], label: "spp-6x6"}
-    - {input_shape: [2, 64, 55, 57], output_size: [7, 7], dtypes: [bfloat16], label: "nondiv-7x7"}
+  # Real-model sources: ResNet-50 applies a global adaptive average pool to
+  # its final 7x7 feature map before the FC layer; SPP-style heads pool
+  # arbitrary feature maps to a fixed grid; the non-divisible case stresses
+  # PyTorch adaptive bin-boundary semantics.
+  - {B: [8], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: resnet-global}
+  - {B: [2], C: 128, H_in: 56, W_in: 56, output_size: [6, 6], dtype_cases: [{T: float16}], label: spp-6x6}
+  - {B: [2], C: 64, H_in: 55, W_in: 57, output_size: [7, 7], dtype_cases: [{T: bfloat16}], label: nondiv-7x7}
+  - {B: [], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: resnet-global-unbatched}
 
   roofline:
-    vars:
-      N: "input.shape[0]"
-      C: "input.shape[1]"
-      H_in: "input.shape[2]"
-      W_in: "input.shape[3]"
-      oH: "None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
-      oW: "None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
-      out_H: "H_in if oH is None else oH"
-      out_W: "W_in if oW is None else oW"
-      # Exact adaptive-bin scan: bins are [floor(o*in/out), ceil((o+1)*in/out))
-      # and adjacent bins overlap by one row/col unless out | j*in.
-      scan_H: "H_in + sum(1 for j in range(1, out_H) if (j * H_in) % out_H != 0)"
-      scan_W: "W_in + sum(1 for o in range(1, out_W) if (o * W_in) % out_W != 0)"
-    flops: "N * C * scan_H * scan_W"
-    bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/pool/adaptive_avg_pool2d.py
-    kernel_map:
-      adaptive_avg_pool2d_kernel: AdaptiveAvgPool2dKernel
-    op: tileops/ops/pool.py
-    test: tests/ops/test_pool.py
-    bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: true
+    func: tileops.perf.formulas.adaptive_pool2d_roofline
 
 AdaptiveMaxPool2dFwdOp:
-  ref_api: "torch.nn.functional.adaptive_max_pool2d"
   # Equivalent to torch.nn.functional.adaptive_max_pool2d (return_indices=False)
-  # Declared on the batched NCHW form (pool-family convention). The Op layer
-  # also accepts unbatched CHW input, unsqueezed to NCHW internally.
+  ref_api: torch.nn.functional.adaptive_max_pool2d
   family: pool
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16", shape: "[N, C, H_in, W_in]"}
-    outputs:
-      output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
+    forall: {B: Shape, C: Dim, H_in: Dim, W_in: Dim, T: "DType[float16 | bfloat16]"}
     params:
       output_size: {type: "int | None | tuple[int | None, int | None] | list[int | None]"}
+    inputs:
+      input: {dtype: T, shape: "[*B, C, H_in, W_in]"}
+    outputs:
+      output: {dtype: T, shape: "[*B, C, H_out, W_out]"}
+    let:
+      H_out: "per_axis(output_size, 0, 2, fallback=H_in)"
+      W_out: "per_axis(output_size, 1, 2, fallback=W_in)"
     shape_rules:
-      - "output_size is None or isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
-      - "_oH == (None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
-      - "_oW == (None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size))"
-      - "H_out == (H_in if _oH is None else _oH)"
-      - "W_out == (W_in if _oW is None else _oW)"
-      - "H_out > 0 and W_out > 0"
+    - "len(B) <= 1 and H_in > 0 and W_in > 0"
+    - "H_out > 0 and W_out > 0"
 
   workloads:
-    # Same model sources as AdaptiveAvgPool2dFwdOp; adaptive max pooling shows
-    # up in SPP-style detection/segmentation heads with the same grid shapes.
-    - {input_shape: [8, 2048, 7, 7], output_size: [1, 1], dtypes: [float16], label: "global-1x1"}
-    - {input_shape: [2, 128, 56, 56], output_size: [6, 6], dtypes: [float16], label: "spp-6x6"}
-    - {input_shape: [2, 64, 55, 57], output_size: [7, 7], dtypes: [bfloat16], label: "nondiv-7x7"}
+  # Same model sources as AdaptiveAvgPool2dFwdOp; adaptive max pooling shows
+  # up in SPP-style detection/segmentation heads with the same grid shapes.
+  - {B: [8], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: global-1x1}
+  - {B: [2], C: 128, H_in: 56, W_in: 56, output_size: [6, 6], dtype_cases: [{T: float16}], label: spp-6x6}
+  - {B: [2], C: 64, H_in: 55, W_in: 57, output_size: [7, 7], dtype_cases: [{T: bfloat16}], label: nondiv-7x7}
+  - {B: [], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: global-1x1-unbatched}
 
   roofline:
-    vars:
-      N: "input.shape[0]"
-      C: "input.shape[1]"
-      H_in: "input.shape[2]"
-      W_in: "input.shape[3]"
-      oH: "None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
-      oW: "None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
-      out_H: "H_in if oH is None else oH"
-      out_W: "W_in if oW is None else oW"
-      # Exact adaptive-bin scan: bins are [floor(o*in/out), ceil((o+1)*in/out))
-      # and adjacent bins overlap by one row/col unless out | j*in.
-      scan_H: "H_in + sum(1 for j in range(1, out_H) if (j * H_in) % out_H != 0)"
-      scan_W: "W_in + sum(1 for o in range(1, out_W) if (o * W_in) % out_W != 0)"
-    flops: "N * C * scan_H * scan_W"
-    bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/pool/adaptive_max_pool2d.py
-    kernel_map:
-      adaptive_max_pool2d_kernel: AdaptiveMaxPool2dKernel
-    op: tileops/ops/pool.py
-    test: tests/ops/test_pool.py
-    bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: true
+    func: tileops.perf.formulas.adaptive_pool2d_roofline
 
 AdaptiveMaxPool2dIndicesFwdOp:
-  ref_api: "torch.nn.functional.adaptive_max_pool2d"
   # Equivalent to torch.nn.functional.adaptive_max_pool2d (return_indices=True)
-  # Declared on the batched NCHW form (pool-family convention). The Op layer
-  # also accepts unbatched CHW input, unsqueezed to NCHW internally.
+  ref_api: torch.nn.functional.adaptive_max_pool2d
   family: pool
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16", shape: "[N, C, H_in, W_in]"}
-    outputs:
-      output: {dtype: "same_as(input)", shape: "[N, C, H_out, W_out]"}
-      indices: {dtype: "int64", shape: "[N, C, H_out, W_out]"}
+    forall: {B: Shape, C: Dim, H_in: Dim, W_in: Dim, T: "DType[float16 | bfloat16]"}
     params:
       output_size: {type: "int | None | tuple[int | None, int | None] | list[int | None]"}
+    inputs:
+      input: {dtype: T, shape: "[*B, C, H_in, W_in]"}
+    outputs:
+      output: {dtype: T, shape: "[*B, C, H_out, W_out]"}
+      indices: {dtype: int64, shape: "[*B, C, H_out, W_out]"}
+    let:
+      H_out: "per_axis(output_size, 0, 2, fallback=H_in)"
+      W_out: "per_axis(output_size, 1, 2, fallback=W_in)"
     shape_rules:
-      - "output_size is None or isinstance(output_size, int) or (isinstance(output_size, (tuple, list)) and len(output_size) == 2)"
-      - "_oH == (None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size))"
-      - "_oW == (None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size))"
-      - "H_out == (H_in if _oH is None else _oH)"
-      - "W_out == (W_in if _oW is None else _oW)"
-      - "H_out > 0 and W_out > 0"
+    - "len(B) <= 1 and H_in > 0 and W_in > 0"
+    - "H_out > 0 and W_out > 0"
 
   workloads:
-    # Same model sources as AdaptiveMaxPool2dFwdOp; indices output is consumed
-    # by unpooling or argmax-tracking paths rather than changing input shapes.
-    - {input_shape: [8, 2048, 7, 7], output_size: [1, 1], dtypes: [float16], label: "global-1x1"}
-    - {input_shape: [2, 128, 56, 56], output_size: [6, 6], dtypes: [float16], label: "spp-6x6"}
-    - {input_shape: [2, 64, 55, 57], output_size: [7, 7], dtypes: [bfloat16], label: "nondiv-7x7"}
+  # Same model sources as AdaptiveMaxPool2dFwdOp; indices output is consumed
+  # by unpooling or argmax-tracking paths rather than changing input shapes.
+  - {B: [8], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: global-1x1}
+  - {B: [2], C: 128, H_in: 56, W_in: 56, output_size: [6, 6], dtype_cases: [{T: float16}], label: spp-6x6}
+  - {B: [2], C: 64, H_in: 55, W_in: 57, output_size: [7, 7], dtype_cases: [{T: bfloat16}], label: nondiv-7x7}
+  - {B: [], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: global-1x1-unbatched}
 
   roofline:
-    vars:
-      N: "input.shape[0]"
-      C: "input.shape[1]"
-      H_in: "input.shape[2]"
-      W_in: "input.shape[3]"
-      oH: "None if output_size is None else (output_size[0] if isinstance(output_size, (tuple, list)) else output_size)"
-      oW: "None if output_size is None else (output_size[1] if isinstance(output_size, (tuple, list)) else output_size)"
-      out_H: "H_in if oH is None else oH"
-      out_W: "W_in if oW is None else oW"
-      # Exact adaptive-bin scan: bins are [floor(o*in/out), ceil((o+1)*in/out))
-      # and adjacent bins overlap by one row/col unless out | j*in.
-      scan_H: "H_in + sum(1 for j in range(1, out_H) if (j * H_in) % out_H != 0)"
-      scan_W: "W_in + sum(1 for o in range(1, out_W) if (o * W_in) % out_W != 0)"
-    flops: "N * C * scan_H * scan_W"
-    bytes: "(N * C * H_in * W_in + N * C * out_H * out_W) * elem_bytes + N * C * out_H * out_W * 8"
+    func: tileops.perf.formulas.adaptive_pool2d_roofline
 
-  source:
-    kernel: tileops/kernels/pool/adaptive_max_pool2d.py
-    kernel_map:
-      adaptive_max_pool2d_with_indices_kernel: AdaptiveMaxPool2dWithIndicesKernel
-    op: tileops/ops/pool.py
-    test: tests/ops/test_pool.py
-    bench: benchmarks/ops/bench_pool.py
-    bench_manifest_driven: true
-
-# A chunked mean over the sequence axis, along ragged boundaries when `offsets` and
-# `indices` are passed. torch has no such API, hence `ref_api: "none"`.
 MeanPoolingFwdOp:
-  ref_api: "none"
+  # A chunked mean over the sequence axis, along ragged boundaries when `offsets` and
+  # `indices` are passed; torch has no such API. Declared limits, not kernel limits:
+  # a block takes a power-of-two share of `H * D` and bounds-tests a share that does
+  # not divide it.
   family: pool
   status: implemented
 
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-      offsets: {dtype: "int32", optional: true}
-      indices: {dtype: "int32", optional: true}
-    outputs:
-      output: {dtype: "same_as(x)"}
+    types:
+      PoolOut:
+        params: {p: Bool, B: Dim, NC: Dim, S: Dim, c: Dim, H: Dim, D: Dim}
+        match: p
+        cases:
+        - {when: true, is: "[B, NC, H, D]"}
+        - {when: false, is: "[B, ceil_div(S, c), H, D]"}
+    forall: {B: Dim, S: Dim, H: Dim, D: Dim, NS: Dim, NC: Dim, T: "DType[float16 | bfloat16 | float32]", seq_lens: "Seq[Int]"}
     params:
       chunk_size: {type: int}
       accum_dtype: {type: torch.dtype}
+    inputs:
+      x: {dtype: T, shape: "[B, S, H, D]"}
+      offsets: {dtype: int32, optional: true, shape: "[NS + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      indices: {dtype: int32, optional: "present(offsets)", shape: "[NC, 2]", values: "chunk_indices(seq_lens, chunk_size)"}
+    outputs:
+      output: {dtype: T, shape: "PoolOut[present(offsets), B, NC, S, chunk_size, H, D]"}
     shape_rules:
-    - "x.shape == (batch, seq_len, heads, dim)"
-    # One ragged split, so the two tensors that describe it arrive together.
-    - "offsets is None or indices is not None"
-    - "indices is None or offsets is not None"
-    - "offsets is None or offsets.shape == (seq_num + 1,)"
-    # `indices` holds one (sequence, chunk-within-sequence) pair per output chunk, which is
-    # what gives the output's chunk axis a shape to come from.
-    - "indices is None or (indices.ndim == 2 and indices.shape[1] == 2)"
-    - "indices is None or output.shape == (batch, indices.shape[0], heads, dim)"
-    - "indices is not None or output.shape == (batch, -(-seq_len // chunk_size), heads, dim)"
-    # Declared limits, not kernel limits. A block reduces a chunk without a warp
-    # reduction, so it reads any `chunk_size`; it takes a power-of-two share of
-    # `heads * dim` and bounds-tests a share that does not divide it, so it reads any `dim`.
     - "chunk_size > 0 and chunk_size % 32 == 0"
-    - "dim <= 128 or dim % 128 == 0"
+    - "D <= 128 or D % 128 == 0"
 
   workloads:
-    # Chunk 64 over an 8k sequence is the linear-attention chunking these come from.
-  - {batch: 1, seq_len: 8192, heads: 64, dim: 128, chunk_size: 64, accum_dtype: float32, seq_lens: null, dtypes: [float16], label: "uniform-8k"}
-  - {batch: 2, seq_len: 2048, heads: 64, dim: 128, chunk_size: 64, accum_dtype: float32, seq_lens: null, dtypes: [float16], label: "uniform-batched"}
-    # `seq_lens` is what the workload builds `offsets` and `indices` from; the shapes are
-    # what the validator reads for an optional input that this row passes.
-  - {batch: 1, seq_len: 8192, heads: 64, dim: 128, chunk_size: 64, accum_dtype: float32, seq_lens: [2048, 2048, 2048, 2048], offsets_shape: [5], indices_shape: [128, 2], dtypes: [float16], label: "ragged-even"}
-  - {batch: 1, seq_len: 1000, heads: 64, dim: 128, chunk_size: 32, accum_dtype: float32, seq_lens: [100, 200, 300, 400], offsets_shape: [5], indices_shape: [34, 2], dtypes: [float16], label: "ragged-tail"}
-  - {batch: 2, seq_len: 2048, heads: 64, dim: 128, chunk_size: 64, accum_dtype: float32, seq_lens: [1024, 1024], offsets_shape: [3], indices_shape: [32, 2], dtypes: [float16], label: "ragged-batched"}
+  # Chunk 64 over an 8k sequence is the linear-attention chunking these come from.
+  - {B: 1, S: 8192, H: 64, D: 128, chunk_size: 64, accum_dtype: float32, dtype_cases: [{T: float16}, {T: bfloat16}], label: uniform-8k}
+  - {B: 2, S: 2048, H: 64, D: 128, chunk_size: 64, accum_dtype: float32, dtype_cases: [{T: float16}], label: uniform-batched}
+  - {B: 1, S: 8192, H: 64, D: 128, seq_lens: [2048, 2048, 2048, 2048], chunk_size: 64, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}, {T: float32}], label: ragged-even}
+  - {B: 1, S: 1000, H: 64, D: 128, seq_lens: [100, 200, 300, 400], chunk_size: 32, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}], label: ragged-tail}
+  - {B: 2, S: 2048, H: 64, D: 128, seq_lens: [1024, 1024], chunk_size: 64, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}], label: ragged-batched}
 
   roofline:
-    func: "tileops.perf.formulas.mean_pooling_fwd_roofline"
-
-  source:
-    kernel: tileops/kernels/pool/mean_pooling.py
-    kernel_map:
-      mean_pooling_fwd_kernel: MeanPoolingFwdKernel
-    op: tileops/ops/pool.py
-    test: tests/ops/test_mean_pooling.py
-    bench: benchmarks/ops/bench_mean_pooling.py
-    bench_manifest_driven: true
+    flops: "B * S * H * D + B * (NC if present(offsets) else ceil_div(S, chunk_size)) * H * D"

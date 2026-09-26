@@ -1,5 +1,5 @@
 import math
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -8,7 +8,6 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mhc import MHCPostKernel, MHCPreKernel
 from tileops.perf.profile import tensor_core_roof
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["MHCPostFwdOp", "MHCPreFwdOp"]
@@ -24,7 +23,8 @@ class MHCPreFwdOp(Op):
     Layout: BSHD
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"mhc_pre_kernel": MHCPreKernel}
 
     def __init__(
         self,
@@ -33,10 +33,10 @@ class MHCPreFwdOp(Op):
         alpha_res: float,
         sinkhorn_repeat: int,
         sinkhorn_eps: float = 0.02,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -46,51 +46,20 @@ class MHCPreFwdOp(Op):
             alpha_res: Manifest ``params.alpha_res``, the residual mixing weight.
             sinkhorn_repeat: Manifest ``params.sinkhorn_repeat``, Sinkhorn iterations.
             sinkhorn_eps: Manifest ``params.sinkhorn_eps``, Sinkhorn entropy scale.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.alpha_pre = alpha_pre
         self.alpha_post = alpha_post
         self.alpha_res = alpha_res
         self.sinkhorn_repeat = sinkhorn_repeat
         self.sinkhorn_eps = sinkhorn_eps
-        self.batch = None
-        self.n_expand = None
-        self.c_x = None
-        self.dtype = None
-        self.weights_dtype = torch.float32
+        self.target = target
         self.tune = tune
-
         self.dispatch_kernel(kernel_map)
         self.kernel = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mhc_pre_kernel": MHCPreKernel}
-
-    @staticmethod
-    def _n_expand_from_phi_dim(phi_dim: int) -> int:
-        """Solve ``n`` from ``phi_dim == n * n + 2 * n``, without checking it holds.
-
-        ``forward`` checks; ``_infer_output_shapes`` only needs the number, and it is
-        handed shapes rather than tensors, so it cannot report which input was wrong.
-        """
-        return int(math.isqrt(phi_dim + 1) - 1)
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        n_expand: int,
-        c_x: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        key = (batch, n_expand, c_x, dtype, device_index)
-        return self.kernel_for("mhc_pre_kernel", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, dtype and device."""
@@ -99,33 +68,18 @@ class MHCPreFwdOp(Op):
             batch, n_expand, c_x, dtype, tune=self.tune
         )
 
-    def _infer_output_shapes(
-        self,
-        phi_shape: tuple[int, ...],
-        x_shape: tuple[int, ...],
-        b_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: ``x_res`` follows *x*; the others are per expansion."""
-        batch, expanded = x_shape
-        n_expand = self._n_expand_from_phi_dim(phi_shape[1])
-        return {
-            "x_res": (batch, expanded),
-            "x_layer": (batch, expanded // n_expand),
-            "h_post": (batch, n_expand),
-        }
-
     def forward(self, phi: torch.Tensor, x: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Run the op on the inputs the manifest declares.
 
         Args:
-            phi: Input tensor, dtype ``float32``.
-            x: Input tensor, dtype ``bfloat16``.
-            b: Input tensor, dtype ``float32``.
+            phi: ``[n * c_x, n * n + 2 * n]``, dtype ``float32``.
+            x: ``[batch, n * c_x]``, dtype ``bfloat16``.
+            b: ``[n * n + 2 * n]``, dtype ``float32``.
 
         Returns:
             ``x_res``, ``x_layer``, ``h_post``, as the manifest declares.
         """
-        return self._wrapped(phi, x, b, self._instance_key)
+        return self._call_boundary(phi, x, b)
 
     def _eager_forward(
         self,
@@ -133,28 +87,16 @@ class MHCPreFwdOp(Op):
         x: torch.Tensor,
         b: torch.Tensor,
     ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if phi.ndim != 2 or x.ndim != 2 or b.ndim != 1:
-            raise ValueError("MHCPreFwdOp expects phi/x/b shapes [D, P], [B, D], [P]")
-        batch, x_dim = x.shape
-        if phi.shape[0] != x_dim:
-            raise ValueError(f"phi.shape[0] must match x.shape[1]={x_dim}, got {phi.shape[0]}")
-        n_expand = self._n_expand_from_phi_dim(phi.shape[1])
-        if n_expand <= 0 or n_expand * n_expand + 2 * n_expand != phi.shape[1]:
-            raise ValueError("phi.shape[1] must equal n_expand * n_expand + 2 * n_expand")
-        if b.shape[0] != phi.shape[1]:
-            raise ValueError(f"b.shape[0] must match phi.shape[1]={phi.shape[1]}, got {b.shape[0]}")
-        if x_dim % n_expand != 0:
-            raise ValueError(f"x.shape[1]={x_dim} must be divisible by n_expand={n_expand}")
-        c_x = x_dim // n_expand
-        self.batch = batch
-        self.n_expand = n_expand
-        self.c_x = c_x
-        self.dtype = x.dtype
-        self.kernel = self._get_kernel((phi, x, b), batch, n_expand, c_x, x.dtype, x.device.index)
+        # The call check has solved n * n + 2 * n == phi.shape[1] and n | x.shape[1].
+        n_expand = math.isqrt(phi.shape[1] + 1) - 1
+        batch, c_x = x.shape[0], x.shape[1] // n_expand
+        phi, x, b = phi.contiguous(), x.contiguous(), b.contiguous()
+        key = (batch, n_expand, c_x, x.dtype, x.device.index)
+        self.kernel = self.kernel_for("mhc_pre_kernel", (phi, x, b), key)
         return self.kernel(
             phi,
             x,
@@ -167,8 +109,8 @@ class MHCPreFwdOp(Op):
         )
 
     def compute_roof(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
+        """FLOPs are matmul contractions over the bfloat16 stream; priced on tensor cores."""
+        return tensor_core_roof(torch.bfloat16)
 
 
 class MHCPostFwdOp(Op):
@@ -180,49 +122,28 @@ class MHCPostFwdOp(Op):
     Layout: BSHD
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"mhc_post_kernel": MHCPostKernel}
 
     def __init__(
         self,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.target = target
-        self.batch = None
-        self.n_expand = None
-        self.c_x = None
-        self.dtype = None
-        self.weights_dtype = torch.float32
         self.tune = tune
-
         self.dispatch_kernel(kernel_map)
         self.kernel = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mhc_post_kernel": MHCPostKernel}
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        n_expand: int,
-        c_x: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        key = (batch, n_expand, c_x, dtype, device_index)
-        return self.kernel_for("mhc_post_kernel", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, dtype and device."""
@@ -231,61 +152,30 @@ class MHCPostFwdOp(Op):
             batch, n_expand, c_x, dtype, tune=self.tune
         )
 
-    def _infer_output_shapes(
-        self,
-        x_layer_out_shape: tuple[int, ...],
-        h_post_shape: tuple[int, ...],
-        x_res_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: ``x_out`` has the shape of the residual it is added to."""
-        return {"x_out": tuple(x_res_shape)}
-
     def forward(
         self, x_layer_out: torch.Tensor, h_post: torch.Tensor, x_res: torch.Tensor
     ) -> torch.Tensor:
         """Run the op on the inputs the manifest declares.
 
         Args:
-            x_layer_out: Input tensor, dtype ``bfloat16``.
-            h_post: Input tensor, dtype ``float32``.
-            x_res: Input tensor, dtype ``bfloat16``.
+            x_layer_out: ``[batch, c_x]``, dtype ``bfloat16``.
+            h_post: ``[batch, n]``, dtype ``float32``.
+            x_res: ``[batch, n * c_x]``, dtype ``bfloat16``.
 
         Returns:
             ``x_out``, as the manifest declares.
         """
-        return self._wrapped(x_layer_out, h_post, x_res, self._instance_key)
+        return self._call_boundary(x_layer_out, h_post, x_res)
 
     def _eager_forward(
         self, x_layer_out: torch.Tensor, h_post: torch.Tensor, x_res: torch.Tensor
     ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if x_layer_out.ndim != 2 or h_post.ndim != 2 or x_res.ndim != 2:
-            raise ValueError("MHCPostFwdOp expects x_layer_out/h_post/x_res to be 2D tensors")
-        batch, c_x = x_layer_out.shape
-        if h_post.shape[0] != batch or x_res.shape[0] != batch:
-            raise ValueError("MHCPostFwdOp inputs must have matching batch dimensions")
-        n_expand = h_post.shape[1]
-        if x_res.shape[1] != n_expand * c_x:
-            raise ValueError(
-                f"x_res.shape[1] must equal n_expand * c_x={n_expand * c_x}, got {x_res.shape[1]}"
-            )
-        if x_res.dtype != x_layer_out.dtype:
-            raise ValueError(
-                f"x_res.dtype must match x_layer_out.dtype ({x_layer_out.dtype}), got {x_res.dtype}"
-            )
-        self.batch = batch
-        self.n_expand = n_expand
-        self.c_x = c_x
-        self.dtype = x_layer_out.dtype
-        self.kernel = self._get_kernel(
-            (x_layer_out, h_post, x_res),
-            batch,
-            n_expand,
-            c_x,
-            x_layer_out.dtype,
-            x_layer_out.device.index,
-        )
-        return self.kernel(x_layer_out, h_post, x_res)
+        (batch, c_x), n_expand = x_layer_out.shape, h_post.shape[1]
+        key = (batch, n_expand, c_x, x_layer_out.dtype, x_layer_out.device.index)
+        inputs = tuple(t.contiguous() for t in (x_layer_out, h_post, x_res))
+        self.kernel = self.kernel_for("mhc_post_kernel", inputs, key)
+        return self.kernel(*inputs)

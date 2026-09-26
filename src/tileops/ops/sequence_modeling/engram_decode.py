@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, List, Optional
+from typing import ClassVar, Dict, List, Mapping, Optional
 
 import torch
 
@@ -6,7 +6,6 @@ from tileops.backend import Target
 from tileops.kernels.engram import EngramDecodeKernel
 from tileops.kernels.kernel_base import Entry, Kernel
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["EngramDecodeFwdOp"]
@@ -23,7 +22,8 @@ class EngramDecodeFwdOp(Op):
 
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"engram_decode": EngramDecodeKernel}
 
     def __init__(
         self,
@@ -34,10 +34,10 @@ class EngramDecodeFwdOp(Op):
         conv_kernel_size: int,
         dilation: int,
         eps: float = 1e-6,
-        tune: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -51,6 +51,8 @@ class EngramDecodeFwdOp(Op):
             eps: RMSNorm epsilon (default 1e-6).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.target = target
         self.batch = batch
@@ -62,9 +64,6 @@ class EngramDecodeFwdOp(Op):
         self.eps = eps
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        return self.kernel_for("engram_decode", inputs, dtype)
 
     def entry_for(self, role: str, call: torch.dtype) -> Entry:
         """One implementation, built per dtype; every extent is the op's."""
@@ -79,24 +78,6 @@ class EngramDecodeFwdOp(Op):
             call,
             tune=self.tune,
         )
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"engram_decode": EngramDecodeKernel}
-
-    def _infer_output_shapes(
-        self,
-        e_t_shape: tuple[int, ...],
-        h_t_shape: tuple[int, ...],
-        conv_state_shape: tuple[int, ...],
-        W_K_shape: tuple[int, ...],
-        W_V_shape: tuple[int, ...],
-        rms_w_h_shape: tuple[int, ...],
-        rms_w_v_shape: tuple[int, ...],
-        conv_w_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: one step of output, and the convolution state after it."""
-        return {"y_t": tuple(h_t_shape), "new_conv_state": tuple(conv_state_shape)}
 
     def forward(
         self,
@@ -126,9 +107,7 @@ class EngramDecodeFwdOp(Op):
                 y_t:            (B, d) — output to add as residual.
                 new_conv_state: (B, max_conv_len, d) — updated state for next step.
         """
-        return self._wrapped(
-            e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w, self._instance_key
-        )
+        return self._call_boundary(e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
 
     def _eager_forward(
         self,
@@ -141,37 +120,11 @@ class EngramDecodeFwdOp(Op):
         rms_w_v: torch.Tensor,
         conv_w: torch.Tensor,
     ) -> List[torch.Tensor]:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if not e_t.is_cuda:
-            raise ValueError("e_t must be a CUDA tensor")
-        self._validate_dtypes(
-            e_t,
-            h_t,
-            conv_state,
-            W_K,
-            W_V,
-            rms_w_h,
-            rms_w_v,
-            conv_w,
+        inputs = tuple(
+            t.contiguous() for t in (e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
         )
-        self.dtype = e_t.dtype
-
-        e_t = e_t.contiguous()
-        h_t = h_t.contiguous()
-        conv_state = conv_state.contiguous()
-
-        return self._get_kernel(
-            (e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w), e_t.dtype
-        )(
-            e_t,
-            h_t,
-            conv_state,
-            W_K,
-            W_V,
-            rms_w_h,
-            rms_w_v,
-            conv_w,
-        )
+        return self.kernel_for("engram_decode", inputs, inputs[0].dtype)(*inputs)

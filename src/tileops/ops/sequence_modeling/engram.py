@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, List, Optional
+from typing import ClassVar, Dict, List, Mapping, Optional
 
 import torch
 
@@ -6,12 +6,9 @@ from tileops.backend import Target
 from tileops.kernels.engram import EngramGateConvBwdKernel, EngramGateConvFwdKernel
 from tileops.kernels.kernel_base import Entry, Kernel
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["EngramGateConvBwdOp", "EngramGateConvFwdOp"]
-
-CONV_KERNEL_SIZE = 4
 
 
 class EngramGateConvFwdOp(Op):
@@ -19,7 +16,6 @@ class EngramGateConvFwdOp(Op):
 
     Assumes k = E @ W_K and v = E @ W_V have been computed externally
     via standard GEMM. This op fuses the remaining memory-bound stages:
-
         RMSNorm gating -> causal DWConv1D -> SiLU + residual
 
     Returns Y plus saved intermediates for backward (strategy B):
@@ -27,7 +23,10 @@ class EngramGateConvFwdOp(Op):
 
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "engram_gate_conv_fwd": EngramGateConvFwdKernel
+    }
 
     def __init__(
         self,
@@ -35,10 +34,10 @@ class EngramGateConvFwdOp(Op):
         seq_len: int,
         d: int,
         eps: float = 1e-6,
-        tune: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -49,47 +48,22 @@ class EngramGateConvFwdOp(Op):
             eps: RMSNorm epsilon (default 1e-6).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.M = M
         self.seq_len = seq_len
         self.d = d
         self.eps = eps
+        self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        return self.kernel_for("engram_gate_conv_fwd", inputs, dtype)
 
     def entry_for(self, role: str, call: torch.dtype) -> Entry:
         """One implementation, built per dtype; every extent is the op's."""
         return call, lambda: self.kernel_map["engram_gate_conv_fwd"](
             self.M, self.seq_len, self.d, self.eps, call, tune=self.tune
         )
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"engram_gate_conv_fwd": EngramGateConvFwdKernel}
-
-    def _infer_output_shapes(
-        self,
-        H_shape: tuple[int, ...],
-        k_shape: tuple[int, ...],
-        v_shape: tuple[int, ...],
-        rms_w_h_shape: tuple[int, ...],
-        rms_w_v_shape: tuple[int, ...],
-        conv_w_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: the two $[M \\times seq\\_len \\times d]$ tensors, plus four per-row statistics."""
-        rows = H_shape[:2]
-        return {
-            "Y": tuple(H_shape),
-            "vhat": tuple(H_shape),
-            "alpha": tuple(rows),
-            "rrms_h": tuple(rows),
-            "rrms_k": tuple(rows),
-            "rrms_v": tuple(rows),
-        }
 
     def forward(
         self,
@@ -118,7 +92,7 @@ class EngramGateConvFwdOp(Op):
                 rrms_k: (M, seq_len) — RMSNorm reciprocal rms of k.
                 rrms_v: (M, seq_len) — RMSNorm reciprocal rms of v_hat.
         """
-        return self._wrapped(H, k, v, rms_w_h, rms_w_v, conv_w, self._instance_key)
+        return self._call_boundary(H, k, v, rms_w_h, rms_w_v, conv_w)
 
     def _eager_forward(
         self,
@@ -129,26 +103,12 @@ class EngramGateConvFwdOp(Op):
         rms_w_v: torch.Tensor,
         conv_w: torch.Tensor,
     ) -> List[torch.Tensor]:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if not H.is_cuda:
-            raise ValueError("H must be a CUDA tensor")
-        self._validate_dtypes(H, k, v, rms_w_h, rms_w_v, conv_w)
-        self.dtype = H.dtype
-        if H.shape[-1] != self.d:
-            raise ValueError(f"Expected hidden dim {self.d}, got {H.shape[-1]}")
-        if conv_w.shape[0] != CONV_KERNEL_SIZE:
-            raise ValueError(f"Expected conv kernel size {CONV_KERNEL_SIZE}, got {conv_w.shape[0]}")
-
-        H = H.contiguous()
-        k = k.contiguous()
-        v = v.contiguous()
-
-        return self._get_kernel((H, k, v, rms_w_h, rms_w_v, conv_w), H.dtype)(
-            H, k, v, rms_w_h, rms_w_v, conv_w
-        )
+        inputs = tuple(t.contiguous() for t in (H, k, v, rms_w_h, rms_w_v, conv_w))
+        return self.kernel_for("engram_gate_conv_fwd", inputs, inputs[0].dtype)(*inputs)
 
 
 class EngramGateConvBwdOp(Op):
@@ -164,7 +124,10 @@ class EngramGateConvBwdOp(Op):
 
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "engram_gate_conv_bwd": EngramGateConvBwdKernel
+    }
 
     def __init__(
         self,
@@ -172,10 +135,10 @@ class EngramGateConvBwdOp(Op):
         seq_len: int,
         d: int,
         eps: float = 1e-6,
-        tune: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -186,52 +149,22 @@ class EngramGateConvBwdOp(Op):
             eps: RMSNorm epsilon (default 1e-6).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
         self.M = M
         self.seq_len = seq_len
         self.d = d
         self.eps = eps
+        self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        return self.kernel_for("engram_gate_conv_bwd", inputs, dtype)
 
     def entry_for(self, role: str, call: torch.dtype) -> Entry:
         """One implementation, built per dtype; every extent is the op's."""
         return call, lambda: self.kernel_map["engram_gate_conv_bwd"](
             self.M, self.seq_len, self.d, self.eps, call, tune=self.tune
         )
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"engram_gate_conv_bwd": EngramGateConvBwdKernel}
-
-    def _infer_output_shapes(
-        self,
-        dY_shape: tuple[int, ...],
-        H_shape: tuple[int, ...],
-        k_shape: tuple[int, ...],
-        v_shape: tuple[int, ...],
-        rms_w_h_shape: tuple[int, ...],
-        rms_w_v_shape: tuple[int, ...],
-        conv_w_shape: tuple[int, ...],
-        vhat_shape: tuple[int, ...],
-        alpha_shape: tuple[int, ...],
-        rrms_h_shape: tuple[int, ...],
-        rrms_k_shape: tuple[int, ...],
-        rrms_v_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: each gradient has the shape of what it is for."""
-        return {
-            "dH": tuple(dY_shape),
-            "dk": tuple(dY_shape),
-            "dv": tuple(dY_shape),
-            "drms_w_h": tuple(rms_w_h_shape),
-            "drms_w_v": tuple(rms_w_v_shape),
-            "dconv_w": tuple(conv_w_shape),
-        }
 
     def forward(
         self,
@@ -272,20 +205,8 @@ class EngramGateConvBwdOp(Op):
                 drms_w_v: (d,) — fp32
                 dconv_w:  (4, d) — fp32
         """
-        return self._wrapped(
-            dY,
-            H,
-            k,
-            v,
-            rms_w_h,
-            rms_w_v,
-            conv_w,
-            vhat,
-            alpha,
-            rrms_h,
-            rrms_k,
-            rrms_v,
-            self._instance_key,
+        return self._call_boundary(
+            dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v
         )
 
     def _eager_forward(
@@ -303,47 +224,12 @@ class EngramGateConvBwdOp(Op):
         rrms_k: torch.Tensor,
         rrms_v: torch.Tensor,
     ) -> List[torch.Tensor]:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if not dY.is_cuda:
-            raise ValueError("dY must be a CUDA tensor")
-        self._validate_dtypes(
-            dY,
-            H,
-            k,
-            v,
-            rms_w_h,
-            rms_w_v,
-            conv_w,
-            vhat,
-            alpha,
-            rrms_h,
-            rrms_k,
-            rrms_v,
+        inputs = tuple(
+            t.contiguous()
+            for t in (dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v)
         )
-        self.dtype = dY.dtype
-
-        dY = dY.contiguous()
-        H = H.contiguous()
-        k = k.contiguous()
-        v = v.contiguous()
-        vhat = vhat.contiguous()
-
-        return self._get_kernel(
-            (dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v), dY.dtype
-        )(
-            dY,
-            H,
-            k,
-            v,
-            rms_w_h,
-            rms_w_v,
-            conv_w,
-            vhat,
-            alpha,
-            rrms_h,
-            rrms_k,
-            rrms_v,
-        )
+        return self.kernel_for("engram_gate_conv_bwd", inputs, inputs[0].dtype)(*inputs)
