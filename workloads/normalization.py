@@ -3,7 +3,7 @@
 import torch
 import torch.nn.functional as F
 
-from workloads.workload_base import WorkloadBase
+from workloads.workload_base import CallWorkload, WorkloadBase
 
 
 class RMSNormWorkload(WorkloadBase):
@@ -308,3 +308,47 @@ class BatchNormFwdWorkload(WorkloadBase):
             x, weight, bias, running_mean, running_var, training=self.training
         )
         return (y,)
+
+
+class NormCall(CallWorkload):
+    """One manifest call of a norm op, with its first input's shape and dtype for the report."""
+
+    def __init__(self, call, device: "torch.device | str" = "cuda"):
+        super().__init__(call, device)
+        spec = call.specs[next(iter(call.signature.inputs))]
+        self.shape, self.dtype = spec.shape, spec.dtype
+
+
+class RunningStatsCall(NormCall):
+    """A variance is positive: a passed ``running_var`` holds values in [0.5, 1.5)."""
+
+    def gen_inputs(self) -> tuple:
+        inputs = dict(zip(self.call.signature.inputs, super().gen_inputs(), strict=True))
+        if inputs.get("running_var") is not None:
+            inputs["running_var"] = torch.rand_like(inputs["running_var"]) + 0.5
+        return tuple(inputs.values())
+
+
+class BatchNormBwdCall(NormCall):
+    """``mean`` and ``rstd`` are the batch statistics of ``x``, as the forward saved them."""
+
+    def gen_inputs(self) -> tuple:
+        grad_out, x, weight, _mean, _rstd = super().gen_inputs()
+        axes = [0, *range(2, x.ndim)]
+        var, mean = torch.var_mean(x.float(), dim=axes, correction=0)
+        return grad_out, x, weight, mean, torch.rsqrt(var + 1e-5)
+
+    def ref_program(self, grad_out, x, weight, mean, rstd):
+        """The gradients of the training forward, from the saved statistics."""
+        shape = (1, -1, *[1] * (x.ndim - 2))
+        axes = [0, *range(2, x.ndim)]
+        x_hat = (x.float() - mean.view(shape)) * rstd.view(shape)
+        grad_bias = grad_out.float().sum(axes)
+        grad_weight = (grad_out.float() * x_hat).sum(axes)
+        length = x.numel() // x.shape[1]
+        grad_x = (
+            (weight * rstd).view(shape)
+            / length
+            * (length * grad_out.float() - grad_bias.view(shape) - x_hat * grad_weight.view(shape))
+        )
+        return grad_x.to(x.dtype), grad_weight, grad_bias

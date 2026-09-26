@@ -41,7 +41,7 @@ class TestManifestAPI:
         workloads = load_workloads("RMSNormFwdOp")
         assert isinstance(workloads, list)
         assert len(workloads) >= 1
-        assert "x_shape" in workloads[0]
+        assert "label" in workloads[0]
 
     def test_load_workloads_unknown_op_raises(self):
         with pytest.raises(KeyError, match="NonexistentOp"):

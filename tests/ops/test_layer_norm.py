@@ -248,3 +248,13 @@ def test_layer_norm_serves_a_changed_leading_dims_product_from_one_kernel() -> N
     ).to(dtype)
     atol, rtol = _get_tolerances(dtype)
     assert torch.allclose(y2, y_ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("give", ["weight", "bias", "neither"])
+def test_either_affine_tensor_alone_matches_torch(give: str) -> None:
+    n, dtype = 256, torch.float16
+    x = torch.randn(8, n, dtype=dtype, device="cuda")
+    kwargs = {} if give == "neither" else {give: torch.randn(n, dtype=dtype, device="cuda")}
+    got = LayerNormFwdOp(normalized_shape=(n,))(x, **kwargs)
+    torch.testing.assert_close(got, F.layer_norm(x, (n,), **kwargs), atol=2e-3, rtol=2e-3)

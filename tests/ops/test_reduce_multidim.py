@@ -139,13 +139,12 @@ def test_amax_multidim(
 def test_prod_multidim_rejected() -> None:
     """ProdFwdOp narrows ``dim`` to ``int`` per its manifest signature, so
     the multi-dim (``list[int]`` / ``tuple[int, ...]``) overload is rejected
-    at construction time."""
+    at construction time; so is an empty sequence."""
     from tileops.ops.reduction.reduce import ProdFwdOp
 
-    with pytest.raises(TypeError, match="ProdFwdOp.dim must be int"):
-        ProdFwdOp(dim=[0, 1])
-    with pytest.raises(TypeError, match="ProdFwdOp.dim must be int"):
-        ProdFwdOp(dim=(0, 1))
+    for dim in ([0, 1], (0, 1), [], None):
+        with pytest.raises(ValueError, match="ProdFwdOp: dim = "):
+            ProdFwdOp(dim=dim)
 
 
 @MultiDimFixture
@@ -484,25 +483,6 @@ def test_inf_norm_multidim(
 
 
 @pytest.mark.smoke
-def test_normalize_dim_empty_default_rejects() -> None:
-    from tileops.ops.reduction._multidim import normalize_dim
-
-    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
-        normalize_dim([], ndim=3)
-    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
-        normalize_dim((), ndim=3)
-
-
-@pytest.mark.smoke
-def test_normalize_dim_empty_full_opt_in() -> None:
-    from tileops.ops.reduction._multidim import normalize_dim
-
-    assert normalize_dim([], ndim=3, empty_dim_policy="full") == [0, 1, 2]
-    assert normalize_dim((), ndim=3, empty_dim_policy="full") == [0, 1, 2]
-    assert normalize_dim([], ndim=1, empty_dim_policy="full") == [0]
-
-
-@pytest.mark.smoke
 def test_sum_empty_dim_full_reduction() -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
@@ -563,23 +543,12 @@ def test_var_mean_empty_dim_full_reduction() -> None:
 
 
 @pytest.mark.smoke
-def test_prod_empty_dim_rejects() -> None:
-    """ProdFwdOp narrows ``dim`` to ``int`` per its manifest signature, so
-    ``dim=[]`` is rejected by ``_validate_dim`` at construction (before
-    reaching the base class's ``empty_dim_policy`` branch)."""
-    from tileops.ops.reduction.reduce import ProdFwdOp
-
-    with pytest.raises(TypeError, match="ProdFwdOp.dim must be int"):
-        ProdFwdOp(dim=[], keepdim=False)
-
-
-@pytest.mark.smoke
 def test_logsumexp_empty_dim_rejects() -> None:
     from tileops.ops.reduction.softmax import LogSumExpFwdOp
 
     x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
     op = LogSumExpFwdOp(dim=[], keepdim=False)
-    with pytest.raises(ValueError, match="dim=\\[\\] is not supported"):
+    with pytest.raises(ValueError, match="an empty dim is rejected"):
         op(x)
 
 
@@ -617,7 +586,7 @@ def test_duplicate_dims_raises() -> None:
 
     x = torch.randn(4, 8, 256, dtype=torch.float16, device="cuda")
     op = SumFwdOp(dim=[1, 1], keepdim=False)
-    with pytest.raises(ValueError, match="Duplicate dims"):
+    with pytest.raises(ValueError, match="unique_axes"):
         op(x)
 
 

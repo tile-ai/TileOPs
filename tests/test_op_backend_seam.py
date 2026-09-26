@@ -62,8 +62,9 @@ def _stub_op(**kwargs):
     """An op whose in-tree kernel is a no-op, so the in-tree path runs on any device."""
 
     class StubOp(RMSNormFwdOp):
-        def forward(self, x, weight):
-            return self.kernel_for("stub", (), x.dtype)
+        def _eager_forward(self, x, weight=None):
+            self.kernel_for("stub", (), x.dtype)
+            return torch.zeros_like(x)
 
         def entry_for(self, role, call):
             return call, lambda: None
@@ -92,8 +93,8 @@ def test_a_target_takes_over_the_op_and_is_asked_with_the_manifest_signature():
 
     ((inputs, params),) = recorder.calls
     assert inputs == (TensorSpec.of(x), TensorSpec.of(weight)), "signature.inputs order"
-    # eps is optional; whether it was passed or defaulted, a backend gets the number.
-    assert params == {"normalized_shape": NORMALIZED_SHAPE, "eps": 1e-6}
+    # A backend gets the manifest parameters as the caller set them, ``eps=None`` included.
+    assert params == {"normalized_shape": NORMALIZED_SHAPE, "eps": None}
     assert torch.equal(out, torch.full_like(x, 7)), "the target's kernel produced the result"
 
     RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, eps=1e-5)(x, weight)
@@ -105,7 +106,7 @@ def test_a_dtype_the_manifest_does_not_admit_never_reaches_the_backend():
     _register(recorder)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
-    with pytest.raises(ValueError, match="same_as"):
+    with pytest.raises(ValueError, match="weight dtype differs"):
         op(
             torch.randn(4, *NORMALIZED_SHAPE, dtype=DTYPE),
             torch.randn(*NORMALIZED_SHAPE, dtype=torch.bfloat16),
@@ -770,7 +771,7 @@ def test_a_reduction_op_hands_over_the_declared_rank():
 
     ((inputs, params),) = recorder.calls
     assert inputs == (TensorSpec.of(x),), "the rank the manifest declares, not (4, 128)"
-    assert params == {"dim": [1, 2], "keepdim": False}
+    assert params == {"dim": [1, 2], "keepdim": False, "dtype": None}
     assert torch.equal(out, torch.full((4,), 7, dtype=DTYPE))
 
 
@@ -789,7 +790,7 @@ def test_a_reduction_call_naming_an_absent_axis_never_reaches_the_backend():
     _register(recorder, op="SumFwdOp")
     from tileops.ops.reduction import SumFwdOp
 
-    with pytest.raises(ValueError, match="shape rule"):
+    with pytest.raises(ValueError, match="shape_rules"):
         SumFwdOp(dim=5)(torch.randn(4, 8, dtype=DTYPE))
 
     assert recorder.calls == []

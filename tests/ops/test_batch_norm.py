@@ -16,6 +16,7 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.norm import BatchNormFwdTrainKernel
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.normalization import (
+    BatchNormBwdCall,
     BatchNormBwdWorkload,
     BatchNormFwdWorkload,
     batch_norm_fwd_ref,
@@ -215,7 +216,7 @@ def test_training_rejects_one_value_per_channel() -> None:
         torch_message = str(exc)
     assert torch_message, "torch accepted L=1 in training; the guard's premise is gone"
 
-    with pytest.raises(ValueError, match=re.escape(torch_message)):
+    with pytest.raises(ValueError, match=re.escape("B * prod(L) != 1")):
         BatchNormFwdOp(training=True)(x, rm, rv, weight, bias)
 
     # The kernel refuses on its own: it is exported, so a caller can reach it directly.
@@ -229,3 +230,23 @@ def test_training_rejects_one_value_per_channel() -> None:
         x, rm, rv, weight, bias, training=False, eps=infer.eps
     )
     torch.testing.assert_close(y, expected, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("shape", [(2, 8, 5, 6), (3, 4, 97, 101)], ids=["short", "long"])
+def test_a_channel_length_no_tile_divides_matches_torch(shape) -> None:
+    """The training forward (no statistics, no affine) and the backward cover a channel
+    length no tile divides."""
+    x = torch.randn(shape, dtype=torch.float16, device="cuda")
+    c = shape[1]
+    y = BatchNormFwdOp(training=True)(x)
+    torch.testing.assert_close(
+        y, torch.nn.functional.batch_norm(x, None, None, training=True), atol=4e-3, rtol=4e-3
+    )
+    grad_out, weight = torch.randn_like(x), torch.randn(c, device="cuda")
+    workload = BatchNormBwdCall.__new__(BatchNormBwdCall)
+    var, mean = torch.var_mean(x.float(), dim=[0, 2, 3], correction=0)
+    rstd = torch.rsqrt(var + 1e-5)
+    got = BatchNormBwdOp()(grad_out, x, weight, mean, rstd)
+    for a, b in zip(got, workload.ref_program(grad_out, x, weight, mean, rstd), strict=True):
+        torch.testing.assert_close(a, b, atol=5e-3, rtol=5e-3)

@@ -1,5 +1,6 @@
 import pytest
 import torch
+import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.test_base import FixtureBase, TestBase
@@ -206,3 +207,10 @@ def test_a_non_contiguous_input_compiles_to_the_shape_the_fake_promised() -> Non
 
     assert output.is_contiguous()
     torch.testing.assert_close(output, op(x, weight))
+
+
+@pytest.mark.smoke
+def test_no_weight_and_no_eps_match_torch() -> None:
+    """An absent weight scales by one; ``eps=None`` is torch's float32 machine epsilon."""
+    x = torch.full((2, 4), 1e-3, dtype=torch.float16, device="cuda")
+    torch.testing.assert_close(RMSNormFwdOp(normalized_shape=(4,))(x), F.rms_norm(x, [4]))

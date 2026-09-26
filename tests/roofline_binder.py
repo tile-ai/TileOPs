@@ -160,22 +160,6 @@ def _attention_bwd(row: dict) -> dict:
     return {**_kv_pair(row), "o_shape": q, "do_shape": q, "lse_shape": (batch, heads, seq_len)}
 
 
-def _normalized_pair(*names: str):
-    def supplement(row: dict) -> dict:
-        shape = tuple(row.get("normalized_shape") or (row["x_shape"][-1],))
-        return {f"{name}_shape": shape for name in names}
-
-    return supplement
-
-
-def _elementwise_peers_of(source: str, *names: str):
-    def supplement(row: dict) -> dict:
-        shape = tuple(row[f"{source}_shape"])
-        return {f"{name}_shape": shape for name in names}
-
-    return supplement
-
-
 def _channel_vectors(*names: str):
     def supplement(row: dict) -> dict:
         channels = (tuple(row["x_shape"])[-1],)
@@ -197,28 +181,6 @@ _ROW_SUPPLEMENT = {
     "GemmFwdOp": lambda row: {
         "a_shape": (row["k"], row["m"]) if row.get("trans_a") else (row["m"], row["k"]),
         "b_shape": (row["n"], row["k"]) if row.get("trans_b") else (row["k"], row["n"]),
-    },
-    # Normalization: the affine pair spans the normalized axes.
-    "LayerNormFwdOp": _normalized_pair("weight", "bias"),
-    "RMSNormFwdOp": _normalized_pair("weight"),
-    "FusedAddLayerNormFwdOp": lambda row: {
-        "residual_shape": tuple(row["x_shape"]),
-        "weight_shape": (row["x_shape"][-1],),
-        "bias_shape": (row["x_shape"][-1],),
-    },
-    "FusedAddRMSNormFwdOp": lambda row: {
-        "residual_shape": tuple(row["x_shape"]),
-        "weight_shape": (row["x_shape"][-1],),
-    },
-    "AdaLayerNormFwdOp": _elementwise_peers_of("x", "scale", "shift"),
-    "AdaLayerNormZeroFwdOp": _elementwise_peers_of("x", "scale", "shift", "gate"),
-    "BatchNormFwdOp": lambda row: {
-        f"{name}_shape": (row["x_shape"][1],)
-        for name in ("running_mean", "running_var", "weight", "bias")
-    },
-    "BatchNormBwdOp": lambda row: {
-        "grad_out_shape": tuple(row["x_shape"]),
-        **{f"{name}_shape": (row["x_shape"][1],) for name in ("weight", "mean", "rstd")},
     },
     # Dims a func-mode formula reads off the instance, named as the row names them.
     "BmmFwdOp": lambda row: {

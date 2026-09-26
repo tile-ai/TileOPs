@@ -1,7 +1,9 @@
 """Arg-reduction operators (argmax, argmin)."""
 
 from math import prod
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
+
+import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
@@ -23,6 +25,38 @@ class _ArgreduceOpBase(_ReduceOpBase):
     This op's part is the stride, which the shape and the reduced axis decide.
     """
 
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"argreduce": ArgreduceKernel}
+    _kernel_key = "argreduce"
+
+    def __init__(
+        self,
+        dim: Optional[int] = None,
+        keepdim: bool = False,
+        *,
+        target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            dim: Reduction axis. ``None`` (the default) returns the index into the
+                flattened input, as ``torch.argmax(x)`` does.
+            keepdim: Whether to retain the reduced dimension as size 1.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional custom kernel map.
+            tune: Whether to autotune the kernel.
+        """
+        super().__init__(dim, keepdim, target=target, kernel_map=kernel_map, tune=tune)
+
+    def _output_dtype(self, x: torch.Tensor) -> torch.dtype:
+        return torch.int64
+
+    def _scalar_forward(self, x: torch.Tensor) -> torch.Tensor:
+        """The one element of a 0-d input is at index 0."""
+        return torch.zeros((), dtype=torch.int64, device=x.device)
+
     def _build_kernel_kwargs(self, shape, axes, device_index) -> dict:
         """Elements between two neighbours along the reduced axis, on top of the shared set.
 
@@ -35,112 +69,12 @@ class _ArgreduceOpBase(_ReduceOpBase):
 
 
 class ArgmaxFwdOp(_ArgreduceOpBase):
-    """Argmax reduction along an arbitrary dim, returning int64 indices.
-
-    Construction: ``ArgmaxFwdOp(dim=None, keepdim=False)``.
-
-    """
+    """Index of the maximum along ``dim``, following ``torch.argmax``; returns int64."""
 
     _op_kind = "argmax"
-    _kernel_key = "argreduce"
-    _kernel_cls = ArgreduceKernel
-
-    def __init__(
-        self,
-        dim: Optional[int] = None,
-        keepdim: bool = False,
-        *,
-        target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ):
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            dim: Reduction dimension. ``None`` (the default) matches
-                ``torch.argmax(x)`` semantics: the input is treated as a
-                contiguous flattened 1D buffer and the returned index is into
-                that flattened tensor.
-            keepdim: Whether to retain the reduced dimension as size 1.
-            target: Which set of kernels serves this op — a target name, ``BUILTIN``
-                for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional custom kernel map.
-            tune: Whether to autotune the kernel.
-        """
-        super().__init__(
-            dim=dim,
-            keepdim=keepdim,
-            target=target,
-            kernel_map=kernel_map,
-            tune=tune,
-        )
-
-    def _validate_dim(self) -> None:
-        """Argmax accepts a scalar ``int`` dim or ``None`` (full-tensor reduction).
-
-        ``dim=None`` matches ``torch.argmax(x)`` semantics: the input is
-        treated as a contiguous flattened 1D buffer and the returned index
-        is into that flattened tensor.
-        """
-        if self.dim is None or isinstance(self.dim, int):
-            return
-        raise ValueError(
-            f"ArgmaxFwdOp only supports scalar dim (int) or None, "
-            f"got {type(self.dim).__name__}: {self.dim!r}"
-        )
 
 
 class ArgminFwdOp(_ArgreduceOpBase):
-    """Argmin reduction along an arbitrary dim, returning int64 indices.
-
-    Construction: ``ArgminFwdOp(dim=None, keepdim=False)``.
-
-    """
+    """Index of the minimum along ``dim``, following ``torch.argmin``; returns int64."""
 
     _op_kind = "argmin"
-    _kernel_key = "argreduce"
-    _kernel_cls = ArgreduceKernel
-
-    def __init__(
-        self,
-        dim: Optional[int] = None,
-        keepdim: bool = False,
-        *,
-        target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ):
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            dim: Reduction dimension. ``None`` (the default) matches
-                ``torch.argmin(x)`` semantics: the input is treated as a
-                contiguous flattened 1D buffer and the returned index is into
-                that flattened tensor.
-            keepdim: Whether to retain the reduced dimension as size 1.
-            target: Which set of kernels serves this op — a target name, ``BUILTIN``
-                for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional custom kernel map.
-            tune: Whether to autotune the kernel.
-        """
-        super().__init__(
-            dim=dim,
-            keepdim=keepdim,
-            target=target,
-            kernel_map=kernel_map,
-            tune=tune,
-        )
-
-    def _validate_dim(self) -> None:
-        """Argmin accepts a scalar ``int`` dim or ``None`` (full-tensor reduction).
-
-        ``dim=None`` matches ``torch.argmin(x)`` semantics: the input is
-        treated as a contiguous flattened 1D buffer and the returned index
-        is into that flattened tensor.
-        """
-        if self.dim is None or isinstance(self.dim, int):
-            return
-        raise ValueError(
-            f"ArgminFwdOp only supports scalar dim (int) or None, "
-            f"got {type(self.dim).__name__}: {self.dim!r}"
-        )

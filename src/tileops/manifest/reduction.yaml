@@ -1,972 +1,473 @@
-# reduction.yaml -- manifest entries for the 'reduction' family.
-#
-# Source of truth for op interfaces in this family. Loaded and merged with
-# other family files by tileops.manifest at runtime. See docs/design/manifest.md
-# for the full schema.
+# reduction.yaml -- manifest entries for the reduction family (docs/design/manifest.md).
 
 SoftmaxFwdOp:
-  ref_api: "torch.nn.functional.softmax"
+  ref_api: torch.nn.functional.softmax
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
-      # NOTE: PyTorch also accepts dtype=<torch.dtype> (returns the requested
-      # dtype, equivalent to x.to(dtype) before softmax). The current manifest
-      # DSL cannot express "y.dtype = dtype if dtype is not None else x.dtype",
-      # so dtype is omitted here; tracked as BLOCKED on missing-manifest-capability.
       dim: {type: "int | None", default: null}
+      dtype: {type: "float16 | bfloat16 | float32 | None", default: null, kw_only: true}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: "coalesce_dtype(dtype, T)", shape: "[*S]"}
     shape_rules:
-    - "dim is None or -x.ndim <= dim < x.ndim"
-    - "output.shape == x.shape"
-
+    - "valid_axes(dim, len(S))"
   workloads:
-    # Attention weight matrices (batch * heads, seq, seq)
-  - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
-  - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k"}
-  - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
-    # LM head logits (batch, vocab_size)
-  - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
-  - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits"}
-
+  - {S: [32, 32, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: attn-weights-4k}
+  - {S: [32, 32, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: attn-weights-32k}
+  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: lm-head-logits}
+  - {S: [4, 128256], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: llama3-lm-head-logits}
   roofline:
-    vars:
-      # When dim is None, resolve via PyTorch's _get_softmax_dim:
-      # 0 for ndim in {0, 1, 3}, else 1 — matches the runtime path.
-      M: "product(x.shape[:(dim if dim is not None else (0 if x.ndim in (0, 1, 3) else 1)) % x.ndim]) * product(x.shape[(dim if dim is not None else (0 if x.ndim in (0, 1, 3) else 1)) % x.ndim + 1:])"
-      N: "x.shape[(dim if dim is not None else (0 if x.ndim in (0, 1, 3) else 1)) % x.ndim]"
-    flops: "5 * M * N"
-    # Read x + write output
-    bytes: "2 * M * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/softmax.py
-    kernel_map:
-      softmax_fwd: SoftmaxKernel
-    op: tileops/ops/reduction/softmax.py
-    test: tests/ops/test_softmax.py
-    bench: benchmarks/ops/bench_softmax.py
-    bench_manifest_driven: true
+    flops: "5 * prod(S)"
 
 LogSoftmaxFwdOp:
-  ref_api: "torch.nn.functional.log_softmax"
+  ref_api: torch.nn.functional.log_softmax
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
-      # NOTE: PyTorch also accepts dtype=<torch.dtype> (returns the requested
-      # dtype, equivalent to x.to(dtype) before log_softmax). The current
-      # manifest DSL cannot express "y.dtype = dtype if dtype is not None
-      # else x.dtype", so dtype is omitted here; tracked as BLOCKED on
-      # missing-manifest-capability.
       dim: {type: "int | None", default: null}
+      dtype: {type: "float16 | bfloat16 | float32 | None", default: null, kw_only: true}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: "coalesce_dtype(dtype, T)", shape: "[*S]"}
     shape_rules:
-    - "dim is None or -x.ndim <= dim < x.ndim"
-    - "output.shape == x.shape"
-
+    - "valid_axes(dim, len(S))"
   workloads:
-    # Attention weight matrices
-  - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
-  - {x_shape: [32, 32, 4096], dtypes: [float32], label: "attn-weights-4k"}
-  - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
-    # LM head logits
-  - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
-  - {x_shape: [4, 102400], dtypes: [float32], label: "lm-head-logits"}
-
+  - {S: [32, 32, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: attn-weights-4k}
+  - {S: [32, 32, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: attn-weights-32k}
+  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: lm-head-logits}
+  - {S: [4, 128256], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: llama3-lm-head-logits}
   roofline:
-    vars:
-      # See SoftmaxFwdOp.roofline.vars for the dim=None fallback rationale.
-      M: "product(x.shape[:(dim if dim is not None else (0 if x.ndim in (0, 1, 3) else 1)) % x.ndim]) * product(x.shape[(dim if dim is not None else (0 if x.ndim in (0, 1, 3) else 1)) % x.ndim + 1:])"
-      N: "x.shape[(dim if dim is not None else (0 if x.ndim in (0, 1, 3) else 1)) % x.ndim]"
-    # log_softmax(x) = (x - max) - log(sum(exp(x - max))). Per row: max (N)
-    # + sub (N) + exp (N) + sum (N) + log+sub (N) = 5N, matching SoftmaxFwdOp's
-    # convention where max and the broadcast sub each cost N. FLOP convention:
-    # 1 cmp+sel = 1 fp op.
-    flops: "5 * M * N"
-    # Read x + write output
-    bytes: "2 * M * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/softmax.py
-    kernel_map:
-      softmax_fwd: SoftmaxKernel
-    op: tileops/ops/reduction/softmax.py
-    test: tests/ops/test_softmax.py
-    bench: benchmarks/ops/bench_softmax.py
-    bench_manifest_driven: true
+    flops: "5 * prod(S)"
 
 LogSumExpFwdOp:
-  ref_api: "torch.logsumexp"
+  ref_api: torch.logsumexp
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
-      dim: {type: "int | list[int] | tuple[int, ...]", default: -1}
+      dim: {type: "int | list[int] | tuple[int, ...]"}
       keepdim: {type: bool, default: false}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: T, shape: "[*reduced(S, dim, keepdim, 'reject')]"}
     shape_rules:
-    - "all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "isinstance(dim, int) or len(dim) > 0"
-    - "isinstance(dim, int) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
-
+    - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
   workloads:
-    # Attention weight matrices
-  - {x_shape: [32, 32, 4096], dtypes: [float16, bfloat16], label: "attn-weights-4k"}
-  - {x_shape: [32, 32, 32768], dtypes: [bfloat16], label: "attn-weights-32k"}
-    # LM head logits
-  - {x_shape: [4, 102400], dtypes: [float16, bfloat16], label: "lm-head-logits"}
-  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
-
+  - {S: [32, 32, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: attn-weights-4k}
+  - {S: [32, 32, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: attn-weights-32k}
+  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: lm-head-logits}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
+  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama3-lm-head-logits}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) else set(range(nd))))"
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
-      N: "product(x.shape[i] for i in axes)"
-    # Per row: max (N) + sub (N) + exp (N) + sum (N) + log+add (≈1) ≈ 4N,
-    # matching SoftmaxFwdOp's convention where max and the broadcast sub each
-    # cost N. FLOP convention: 1 cmp+sel = 1 fp op.
-    flops: "4 * M * N"
-    # Read x (M*N) + write output (M)
-    bytes: "(M * N + M) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/logsumexp.py
-    kernel_map:
-      logsumexp_fwd: LogSumExpKernel
-    op: tileops/ops/reduction/softmax.py
-    test: tests/ops/test_softmax.py
-    bench: benchmarks/ops/bench_softmax.py
-    bench_manifest_driven: true
-
-# ---------------------------------------------------------------------------
-# reduction -- simple reductions (dim + keepdim)
-# ---------------------------------------------------------------------------
+    flops: "4 * prod(S)"
 
 SumFwdOp:
-  ref_api: "torch.sum"
+  ref_api: torch.sum
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
-      # NOTE: PyTorch also accepts dtype=<torch.dtype> (returns the requested
-      # dtype). The current manifest dtype DSL cannot express
-      # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
-      # omitted here; tracked as BLOCKED on missing-manifest-capability.
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
+      dtype: {type: "float16 | bfloat16 | float32 | None", default: null, kw_only: true}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: "coalesce_dtype(dtype, T)", shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
-    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
-
+    - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
   workloads:
-    # Hidden state reduction (Llama-3.1-8B)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
-    # Long sequence reduction
-  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
-    # Non-last-axis reduction (exercises dim=0 path)
-  - {x_shape: [2048, 4096], dtypes: [bfloat16], dim: 0, label: "hidden-state-reduce-dim0"}
-    # Keepdim variant (exercises keepdim forwarding through the baseline)
-  - {x_shape: [2048, 4096], dtypes: [bfloat16], dim: -1, keepdim: true, label: "hidden-state-reduce-keepdim"}
-  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
-
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-reduce}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-reduce}
+  - {S: [2048, 4096], dim: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-reduce-dim0}
+  - {S: [2048, 4096], dim: -1, keepdim: true, dtype_cases: [{T: bfloat16}], label: hidden-state-reduce-keepdim}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-reduce}
+  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state-reduce}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
-      N: "product(x.shape[i] for i in axes)"
-    # N-1 additions per output element
-    flops: "M * N"
-    # Read x + write output
-    bytes: "(M * N + M) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
-    op: tileops/ops/reduction/reduce.py
-    test: tests/ops/test_reduce.py
-    bench: benchmarks/ops/bench_reduce.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 MeanFwdOp:
-  ref_api: "torch.mean"
+  ref_api: torch.mean
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
-      # NOTE: PyTorch also accepts dtype=<torch.dtype> (returns the requested
-      # dtype). The current manifest dtype DSL cannot express
-      # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
-      # omitted here; tracked as BLOCKED on missing-manifest-capability.
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
+      dtype: {type: "float16 | bfloat16 | float32 | None", default: null, kw_only: true}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: "coalesce_dtype(dtype, T)", shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
-    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
-
+    - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
   workloads:
-    # Hidden state reduction (Llama-3.1-8B)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
-    # Long sequence reduction
-  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
-  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
-
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-reduce}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-reduce}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-reduce}
+  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state-reduce}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
-      N: "product(x.shape[i] for i in axes)"
-    # N additions + 1 division per output element
-    flops: "M * (N + 1)"
-    # Read x + write output
-    bytes: "(M * N + M) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
-    op: tileops/ops/reduction/reduce.py
-    test: tests/ops/test_reduce.py
-    bench: benchmarks/ops/bench_reduce.py
-    bench_manifest_driven: true
+    flops: "prod(S) + prod(reduced(S, dim, keepdim, 'full'))"
 
 AmaxFwdOp:
-  ref_api: "torch.amax"
+  ref_api: torch.amax
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: "T", shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
-    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
-
+    - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
+    - "sum(1 if n == 0 else 0 for n in S) == sum(1 if n == 0 else 0 for n in reduced(S, dim, True, 'full'))"
   workloads:
-    # Hidden state reduction (Llama-3.1-8B)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
-    # Long sequence reduction
-  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
-  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
-
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-reduce}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-reduce}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-reduce}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
-      N: "product(x.shape[i] for i in axes)"
-    # N-1 comparisons per output element
-    flops: "M * N"
-    # Read x + write output
-    bytes: "(M * N + M) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
-    op: tileops/ops/reduction/reduce.py
-    test: tests/ops/test_reduce.py
-    bench: benchmarks/ops/bench_reduce.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 AminFwdOp:
-  ref_api: "torch.amin"
+  ref_api: torch.amin
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: "T", shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
-    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
-
+    - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
+    - "sum(1 if n == 0 else 0 for n in S) == sum(1 if n == 0 else 0 for n in reduced(S, dim, True, 'full'))"
   workloads:
-    # Hidden state reduction (Llama-3.1-8B)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
-    # Long sequence reduction
-  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
-  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
-
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-reduce}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-reduce}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-reduce}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
-      N: "product(x.shape[i] for i in axes)"
-    # N-1 comparisons per output element
-    flops: "M * N"
-    # Read x + write output
-    bytes: "(M * N + M) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
-    op: tileops/ops/reduction/reduce.py
-    test: tests/ops/test_reduce.py
-    bench: benchmarks/ops/bench_reduce.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 ProdFwdOp:
-  ref_api: "torch.prod"
+  ref_api: torch.prod
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-  # NOTE: torch.prod has two overloads -- prod(input) for full reduction (no
-  # dim arg) and prod(input, dim, keepdim=False) where dim is a required int.
-  # Unlike torch.sum, torch.prod's dim overload rejects dim=None at runtime
-  # ("Please look up dimensions by name, got: name = None"), so the manifest
-  # types dim as int only. Full-reduction support (the no-dim overload) is
-  # not expressed in the manifest signature; the op layer must handle it
-  # separately if/when implemented.
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
-      # NOTE: PyTorch also accepts dtype=<torch.dtype> (returns the requested
-      # dtype). The current manifest dtype DSL cannot express
-      # "y.dtype = dtype if dtype is not None else x.dtype", so dtype is
-      # omitted here; tracked as BLOCKED on missing-manifest-capability.
-      dim: {type: int, default: -1}
+      dim: {type: int}
       keepdim: {type: bool, default: false}
+      dtype: {type: "float16 | bfloat16 | float32 | None", default: null, kw_only: true}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: "coalesce_dtype(dtype, T)", shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
-    - "-x.ndim <= dim < x.ndim"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
-
+    - "valid_axes(dim, len(S))"
   workloads:
-    # Hidden state reduction (Llama-3.1-8B)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-reduce"}
-    # Long sequence reduction
-  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-reduce"}
-
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-reduce}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-reduce}
+  - {S: [4, 128, 4096], dim: 0, dtype_cases: [{T: float16}], label: 3d-non-last-axis-reduce}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-reduce}
+  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state-reduce}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      ax: "None if x.ndim == 0 else dim % nd"
-      M: "product(x.shape[i] for i in range(x.ndim) if i != ax)"
-      N: "1 if ax is None else x.shape[ax]"
-    # N-1 multiplications per output element
-    flops: "M * N"
-    # Read x + write output
-    bytes: "(M * N + M) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
-    op: tileops/ops/reduction/reduce.py
-    test: tests/ops/test_reduce.py
-    bench: benchmarks/ops/bench_reduce.py
-    bench_manifest_driven: true
-
-# ---------------------------------------------------------------------------
-# reduction -- Welford reductions (correction + dim + keepdim)
-# ---------------------------------------------------------------------------
+    flops: "prod(S)"
 
 VarFwdOp:
-  ref_api: "torch.var"
+  ref_api: torch.var
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      correction: {type: int, default: 1}
-      keepdim: {type: bool, default: false}
+      correction: {type: "Number | None", default: 1, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: T, shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
-    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
-
+    - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
   workloads:
-    # Hidden state variance (Llama-3.1-8B)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-var"}
-    # Long sequence variance
-  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-var"}
-  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
-
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-var}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-var}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-var}
+  - {S: [2048, 4096], dim: -1, correction: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-var-biased}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
-      N: "product(x.shape[i] for i in axes)"
-    # Welford: mean update (2 ops) + variance update (3 ops) per element = 5N
-    flops: "5 * M * N"
-    # Read x + write output
-    bytes: "(M * N + M) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
-    op: tileops/ops/reduction/reduce.py
-    test: tests/ops/test_reduce.py
-    bench: benchmarks/ops/bench_reduce.py
-    bench_manifest_driven: true
+    flops: "5 * prod(S)"
 
 StdFwdOp:
-  ref_api: "torch.std"
+  ref_api: torch.std
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      correction: {type: int, default: 1}
-      keepdim: {type: bool, default: false}
+      correction: {type: "Number | None", default: 1, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: T, shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
-    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
-
+    - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
   workloads:
-    # Hidden state std (Llama-3.1-8B)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-std"}
-    # Long sequence std
-  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-std"}
-  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
-
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-std}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-std}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-std}
+  - {S: [2048, 4096], dim: -1, correction: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-std-biased}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
-      N: "product(x.shape[i] for i in axes)"
-    # Welford (5N) + sqrt per output element
-    flops: "5 * M * N + M"
-    # Read x + write output
-    bytes: "(M * N + M) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
-    op: tileops/ops/reduction/reduce.py
-    test: tests/ops/test_reduce.py
-    bench: benchmarks/ops/bench_reduce.py
-    bench_manifest_driven: true
+    flops: "5 * prod(S) + prod(reduced(S, dim, keepdim, 'full'))"
 
 VarMeanFwdOp:
-  ref_api: "torch.var_mean"
+  ref_api: torch.var_mean
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      var: {dtype: "same_as(x)"}
-      mean: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      correction: {type: int, default: 1}
-      keepdim: {type: bool, default: false}
+      correction: {type: "Number | None", default: 1, kw_only: true}
+      keepdim: {type: bool, default: false, kw_only: true}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      var: {dtype: T, shape: "[*reduced(S, dim, keepdim, 'full')]"}
+      mean: {dtype: T, shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
-    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "var.shape == reduced_shape(x.shape, dim, keepdim)"
-    - "mean.shape == reduced_shape(x.shape, dim, keepdim)"
-
+    - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
   workloads:
-    # Hidden state var+mean (Llama-3.1-8B)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-var-mean"}
-    # Long sequence var+mean
-  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-var-mean"}
-  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
-
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-var-mean}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-var-mean}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-var-mean}
+  - {S: [2048, 4096], dim: -1, correction: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-var-mean-biased}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
-      N: "product(x.shape[i] for i in axes)"
-    # Welford: single pass computes both mean and variance
-    flops: "5 * M * N"
-    # Read x + write var + write mean
-    bytes: "(M * N + 2 * M) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/reduce.py
-    kernel_map:
-      reduce: ReduceKernel
-    op: tileops/ops/reduction/reduce.py
-    test: tests/ops/test_reduce.py
-    bench: benchmarks/ops/bench_reduce.py
-    bench_manifest_driven: true
-
-# ---------------------------------------------------------------------------
-# reduction -- argmax/argmin (output dtype: int64)
-# ---------------------------------------------------------------------------
+    flops: "5 * prod(S)"
 
 ArgmaxFwdOp:
-  ref_api: "torch.argmax"
+  ref_api: torch.argmax
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "int64"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
       dim: {type: "int | None", default: null}
       keepdim: {type: bool, default: false}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: int64, shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
-    - "dim is None or -x.ndim <= dim < x.ndim"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
-
+    - "valid_axes(dim, len(S))"
+    - "sum(1 if n == 0 else 0 for n in S) == sum(1 if n == 0 else 0 for n in reduced(S, dim, True, 'full'))"
   workloads:
-    # LM head argmax (batch, vocab_size) -- greedy decoding
-  - {x_shape: [4, 102400], dtypes: [float16, bfloat16], dim: -1, label: "lm-head-argmax"}
-    # Hidden state argmax
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], dim: -1, label: "hidden-state-argmax"}
-    # Non-last-axis sentinel; ArgmaxFwdOp and ArgminFwdOp share ArgreduceKernel,
-    # so one op carries it.
-  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: 0, label: "3d-non-last-axis-argmax"}
-
+  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: lm-head-argmax}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-argmax}
+  - {S: [4, 128, 4096], dim: 0, dtype_cases: [{T: float16}], label: 3d-non-last-axis-argmax}
+  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama3-lm-head-argmax}
   roofline:
-    vars:
-      M: "1 if dim is None else product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-      N: "product(x.shape) if dim is None else x.shape[dim % x.ndim]"
-    # N-1 comparisons per output element
-    flops: "M * N"
-    # Read x (elem_bytes) + write output (8 bytes for int64)
-    bytes: "M * N * elem_bytes + M * 8"
-
-  source:
-    kernel: tileops/kernels/reduction/argreduce.py
-    kernel_map:
-      argreduce: ArgreduceKernel
-    op: tileops/ops/reduction/argreduce.py
-    test: tests/ops/test_argreduce.py
-    bench: benchmarks/ops/bench_argreduce.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 ArgminFwdOp:
-  ref_api: "torch.argmin"
+  ref_api: torch.argmin
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "int64"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
       dim: {type: "int | None", default: null}
       keepdim: {type: bool, default: false}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: int64, shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
-    - "dim is None or -x.ndim <= dim < x.ndim"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
-
+    - "valid_axes(dim, len(S))"
+    - "sum(1 if n == 0 else 0 for n in S) == sum(1 if n == 0 else 0 for n in reduced(S, dim, True, 'full'))"
   workloads:
-    # LM head argmin
-  - {x_shape: [4, 102400], dtypes: [float16, bfloat16], dim: -1, label: "lm-head-argmin"}
-    # Hidden state argmin
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], dim: -1, label: "hidden-state-argmin"}
-
+  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: lm-head-argmin}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-argmin}
+  - {S: [4, 128, 4096], dim: 0, dtype_cases: [{T: float16}], label: 3d-non-last-axis-argmin}
+  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama3-lm-head-argmin}
   roofline:
-    vars:
-      M: "1 if dim is None else product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-      N: "product(x.shape) if dim is None else x.shape[dim % x.ndim]"
-    # N-1 comparisons per output element
-    flops: "M * N"
-    # Read x (elem_bytes) + write output (8 bytes for int64)
-    bytes: "M * N * elem_bytes + M * 8"
-
-  source:
-    kernel: tileops/kernels/reduction/argreduce.py
-    kernel_map:
-      argreduce: ArgreduceKernel
-    op: tileops/ops/reduction/argreduce.py
-    test: tests/ops/test_argreduce.py
-    bench: benchmarks/ops/bench_argreduce.py
-    bench_manifest_driven: true
-
-# ---------------------------------------------------------------------------
-# reduction -- logical reductions (output dtype: bool)
-# ---------------------------------------------------------------------------
+    flops: "prod(S)"
 
 AllFwdOp:
-  ref_api: "torch.all"
+  ref_api: torch.all
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | bool | int32 | int64 | complex64 | complex128"}
-    outputs:
-      output: {dtype: "bool"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32 | bool | int32 | int64 | complex64 | complex128]"}
     params:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
-    # PyTorch: torch.all(x, dim=()) / dim=[] is a no-op (returns x.shape),
-    # unlike sum/mean/amax. Only dim=None triggers full reduction; empty
-    # list/tuple yields an empty reduction set.
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: bool, shape: "[*reduced(S, dim, keepdim, 'noop')]"}
     shape_rules:
-    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim, 'noop')"
-
+    - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
   workloads:
-    # Mask validation (batch, seq_len)
-  - {x_shape: [32, 4096], dtypes: [bool], label: "mask-validation-4k"}
-  - {x_shape: [32, 32768], dtypes: [bool], label: "mask-validation-32k"}
-  - {x_shape: [4, 128, 4096], dtypes: [bool], dim: [0, 2], label: "3d-multidim-reduce"}
-
+  - {S: [32, 4096], dim: -1, dtype_cases: [{T: bool}, {T: float16}, {T: bfloat16}, {T: float32}], label: mask-validation-4k}
+  - {S: [32, 32768], dim: -1, dtype_cases: [{T: bool}, {T: int32}, {T: int64}], label: mask-validation-32k}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: bool}, {T: complex64}, {T: complex128}], label: 3d-multidim-reduce}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: bool}], label: mlp-intermediate-mask}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) else set(range(nd))))"
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
-      N: "product(x.shape[i] for i in axes)"
-    # N-1 logical AND per output element
-    flops: "M * N"
-    # Read x (elem_bytes) + write output (1 byte for bool)
-    bytes: "M * N * elem_bytes + M"
-
-  source:
-    kernel: tileops/kernels/reduction/logical_reduce.py
-    kernel_map:
-      logical_reduce_edge_fused: LogicalReduceEdgeFusedKernel
-      logical_reduce: LogicalReduceKernel
-    op: tileops/ops/reduction/logical_reduce.py
-    test: tests/ops/test_logical_reduce.py
-    bench: benchmarks/ops/bench_logical_reduce.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 AnyFwdOp:
-  ref_api: "torch.any"
+  ref_api: torch.any
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | bool | int32 | int64 | complex64 | complex128"}
-    outputs:
-      output: {dtype: "bool"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32 | bool | int32 | int64 | complex64 | complex128]"}
     params:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
-    # PyTorch: torch.any(x, dim=()) / dim=[] is a no-op (returns x.shape),
-    # unlike sum/mean/amax. Only dim=None triggers full reduction; empty
-    # list/tuple yields an empty reduction set.
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: bool, shape: "[*reduced(S, dim, keepdim, 'noop')]"}
     shape_rules:
-    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim, 'noop')"
-
+    - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
   workloads:
-    # Mask validation (batch, seq_len)
-  - {x_shape: [32, 4096], dtypes: [bool], label: "mask-validation-4k"}
-  - {x_shape: [32, 32768], dtypes: [bool], label: "mask-validation-32k"}
-  - {x_shape: [4, 128, 4096], dtypes: [bool], dim: [0, 2], label: "3d-multidim-reduce"}
-
+  - {S: [32, 4096], dim: -1, dtype_cases: [{T: bool}, {T: float16}, {T: bfloat16}, {T: float32}], label: mask-validation-4k}
+  - {S: [32, 32768], dim: -1, dtype_cases: [{T: bool}, {T: int32}, {T: int64}], label: mask-validation-32k}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: bool}, {T: complex64}, {T: complex128}], label: 3d-multidim-reduce}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: bool}], label: mlp-intermediate-mask}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) else set(range(nd))))"
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
-      N: "product(x.shape[i] for i in axes)"
-    # N-1 logical OR per output element
-    flops: "M * N"
-    # Read x (elem_bytes) + write output (1 byte for bool)
-    bytes: "M * N * elem_bytes + M"
-
-  source:
-    kernel: tileops/kernels/reduction/logical_reduce.py
-    kernel_map:
-      logical_reduce_edge_fused: LogicalReduceEdgeFusedKernel
-      logical_reduce: LogicalReduceKernel
-    op: tileops/ops/reduction/logical_reduce.py
-    test: tests/ops/test_logical_reduce.py
-    bench: benchmarks/ops/bench_logical_reduce.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 CountNonzeroFwdOp:
-  ref_api: "torch.count_nonzero"
+  ref_api: torch.count_nonzero
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32 | bool | int32 | int64 | complex64 | complex128"}
-    outputs:
-      output: {dtype: "int64"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32 | bool | int32 | int64 | complex64 | complex128]"}
     params:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: int64, shape: "[*reduced(S, dim, False, 'full')]"}
     shape_rules:
-    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, False)"
-
+    - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
   workloads:
-    # Sparsity analysis (batch, hidden_dim)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "sparsity-hidden"}
-    # Sparse attention mask
-  - {x_shape: [32, 32768], dtypes: [float16], label: "sparsity-seq"}
-  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
-
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: sparsity-hidden}
+  - {S: [32, 32768], dim: -1, dtype_cases: [{T: float16}, {T: bool}, {T: int32}, {T: int64}], label: sparsity-seq}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}, {T: complex64}, {T: complex128}], label: 3d-multidim-reduce}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float16}], label: sparsity-mlp-intermediate}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
-      N: "product(x.shape[i] for i in axes)"
-    # Compare + conditional add per element
-    flops: "2 * M * N"
-    # Read x (elem_bytes) + write output (8 bytes for int64)
-    bytes: "M * N * elem_bytes + M * 8"
-
-  source:
-    kernel: tileops/kernels/reduction/logical_reduce.py
-    kernel_map:
-      logical_reduce_edge_fused: LogicalReduceEdgeFusedKernel
-      logical_reduce: LogicalReduceKernel
-    op: tileops/ops/reduction/logical_reduce.py
-    test: tests/ops/test_logical_reduce.py
-    bench: benchmarks/ops/bench_logical_reduce.py
-    bench_manifest_driven: true
-
-# ---------------------------------------------------------------------------
-# reduction -- vector norms (output dtype: same_as(x))
-# ---------------------------------------------------------------------------
+    flops: "2 * prod(S)"
 
 L1NormFwdOp:
-  ref_api: "torch.linalg.vector_norm"
+  ref_api: torch.linalg.vector_norm
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
-      # NOTE: PyTorch also accepts dtype=<torch.dtype> (equivalent to
-      # x.to(dtype) before reduction; returns the requested dtype). The
-      # current manifest dtype DSL cannot express that conditional, so dtype
-      # is omitted here; tracked as BLOCKED on missing-manifest-capability.
       ord: {type: "int | float", default: 1}
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
+      dtype: {type: "float16 | bfloat16 | float32 | None", default: null, kw_only: true}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: "coalesce_dtype(dtype, T)", shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
     - "ord == 1"
-    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
-
+    - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
+    - "not present(dtype) or dtype.value == T or dtype.value == 'float32'"
   workloads:
-    # Hidden state L1 norm (Llama-3.1-8B)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-l1"}
-    # Long sequence L1 norm
-  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-l1"}
-  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
-
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-l1}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-l1}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-l1}
+  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state-l1}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
-      N: "product(x.shape[i] for i in axes)"
-    # abs + add per element
-    flops: "2 * M * N"
-    # Read x + write output
-    bytes: "(M * N + M) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/vector_norm.py
-    kernel_map:
-      vector_norm: VectorNormKernel
-    op: tileops/ops/reduction/vector_norm.py
-    test: tests/ops/test_vector_norm.py
-    bench: benchmarks/ops/bench_vector_norm.py
-    bench_manifest_driven: true
+    flops: "2 * prod(S)"
 
 L2NormFwdOp:
-  ref_api: "torch.linalg.vector_norm"
+  ref_api: torch.linalg.vector_norm
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
-      # NOTE: PyTorch also accepts dtype=<torch.dtype> (equivalent to
-      # x.to(dtype) before reduction; returns the requested dtype). The
-      # current manifest dtype DSL cannot express that conditional, so dtype
-      # is omitted here; tracked as BLOCKED on missing-manifest-capability.
       ord: {type: "int | float", default: 2}
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
+      dtype: {type: "float16 | bfloat16 | float32 | None", default: null, kw_only: true}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: "coalesce_dtype(dtype, T)", shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
     - "ord == 2"
-    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
-
+    - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
+    - "not present(dtype) or dtype.value == T or dtype.value == 'float32'"
   workloads:
-    # Hidden state L2 norm (Llama-3.1-8B)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-l2"}
-    # Long sequence L2 norm
-  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-l2"}
-  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
-
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-l2}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-l2}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-l2}
+  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state-l2}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
-      N: "product(x.shape[i] for i in axes)"
-    # square + add per element, then sqrt
-    flops: "2 * M * N + M"
-    # Read x + write output
-    bytes: "(M * N + M) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/vector_norm.py
-    kernel_map:
-      vector_norm: VectorNormKernel
-    op: tileops/ops/reduction/vector_norm.py
-    test: tests/ops/test_vector_norm.py
-    bench: benchmarks/ops/bench_vector_norm.py
-    bench_manifest_driven: true
+    flops: "2 * prod(S) + prod(reduced(S, dim, keepdim, 'full'))"
 
 InfNormFwdOp:
-  ref_api: "torch.linalg.vector_norm"
+  ref_api: torch.linalg.vector_norm
   family: reduction
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
-      # NOTE: PyTorch also accepts dtype=<torch.dtype> (equivalent to
-      # x.to(dtype) before reduction; returns the requested dtype). The
-      # current manifest dtype DSL cannot express that conditional, so dtype
-      # is omitted here; tracked as BLOCKED on missing-manifest-capability.
       ord: {type: "int | float", default: .inf}
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
+      dtype: {type: "float16 | bfloat16 | float32 | None", default: null, kw_only: true}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: "coalesce_dtype(dtype, T)", shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
-    - "ord == float('inf')"
-    - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-    - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-    - "output.shape == reduced_shape(x.shape, dim, keepdim)"
-
+    - "ord == inf"
+    - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
+    - "not present(dtype) or dtype.value == T or dtype.value == 'float32'"
+    - "sum(1 if n == 0 else 0 for n in S) == sum(1 if n == 0 else 0 for n in reduced(S, dim, True, 'full'))"
   workloads:
-    # Hidden state inf norm (Llama-3.1-8B)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-inf"}
-    # Long sequence inf norm
-  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-inf"}
-  - {x_shape: [4, 128, 4096], dtypes: [float16], dim: [0, 2], label: "3d-multidim-reduce"}
-
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-inf}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-inf}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-inf}
+  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state-inf}
   roofline:
-    vars:
-      # A 0-d input reduces to itself: no axis, so M and N are both 1.
-      nd: "max(x.ndim, 1)"
-      axes: "set() if x.ndim == 0 else ({dim % nd} if isinstance(dim, int) else ({d % nd for d in dim} if isinstance(dim, (list, tuple)) and len(dim) > 0 else set(range(nd))))"
-      M: "product(x.shape[i] for i in range(x.ndim) if i not in axes)"
-      N: "product(x.shape[i] for i in axes)"
-    # abs + max per element
-    flops: "2 * M * N"
-    # Read x + write output
-    bytes: "(M * N + M) * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/vector_norm.py
-    kernel_map:
-      vector_norm: VectorNormKernel
-    op: tileops/ops/reduction/vector_norm.py
-    test: tests/ops/test_vector_norm.py
-    bench: benchmarks/ops/bench_vector_norm.py
-    bench_manifest_driven: true
+    flops: "2 * prod(S)"

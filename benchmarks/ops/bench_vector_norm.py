@@ -19,123 +19,54 @@ from benchmarks.baselines import (
     flaggems_op,
     reference_tolerance,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
-from workloads.reduction import InfNormWorkload, L1NormWorkload, L2NormWorkload
+from workloads.reduction import ReductionCall
 
 
-def _flaggems_vector_norm(ord_value, dim, keepdim: bool):
-    """flag_gems' ``vector_norm``, which accumulates in fp32 as the reference does."""
-    fn = flaggems_op("vector_norm")
-    dims = flaggems_dims(dim)
+def _bench(op_cls: type, call) -> None:
+    """Check flag_gems' ``vector_norm`` against torch, then time it and the op.
 
-    def baseline_fn(x):
-        return fn(x, ord_value, dims, keepdim)
-
-    return baseline_fn
-
-
-def _functors(op, baseline_fn, flaggems_fn, inputs, dtype: torch.dtype) -> dict:
-    assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **reference_tolerance(dtype))
-    return {
-        "tileops": op,
-        FLAGGEMS_TAG: flaggems_fn,
-        "torch": baseline_fn,
-        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-    }
-
-
-@pytest.mark.parametrize(
-    "shape, dtype, op_params",
-    workloads_to_params(L1NormFwdOp, include_extra=True),
-)
-def test_l1_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
-    test = L1NormWorkload(shape, dtype)
-    inputs = test.gen_inputs()
-
-    op_params.setdefault("dim", -1)
-    op = L1NormFwdOp(**op_params)
-    bm = ManifestBenchmark(op, test)
-    dim = op_params["dim"]
-    keepdim = op_params.get("keepdim", False)
+    flag_gems accumulates in fp32 as the reference does; it takes no output dtype, so a row
+    passing ``dtype`` has no flag_gems tag.
+    """
+    p = call.params
+    dtype = getattr(torch, p["dtype"]) if p.get("dtype") else None
 
     def baseline_fn(x):
         return torch.linalg.vector_norm(
-            x.float(),
-            ord=1,
-            dim=dim,
-            keepdim=keepdim,
-        ).to(x.dtype)
+            x.float(), ord=p["ord"], dim=p["dim"], keepdim=p["keepdim"]
+        ).to(dtype or x.dtype)
 
-    flaggems_fn = _flaggems_vector_norm(1, dim, keepdim)
+    workload = ReductionCall(call)
+    inputs = workload.gen_inputs()
+    op = op_cls(**workload.arguments())
+    tolerance = reference_tolerance(inputs[0].dtype)
+    functors = {"tileops": op}
+    if dtype is None:
+        fn = flaggems_op("vector_norm")
+        dims = flaggems_dims(p["dim"])
 
-    try:
-        bm.compare(_functors(op, baseline_fn, flaggems_fn, inputs, dtype), *inputs)
-    except ValueError as exc:
-        if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
-        raise
+        def flaggems_fn(x):
+            return fn(x, p["ord"], dims, p["keepdim"])
 
-
-@pytest.mark.parametrize(
-    "shape, dtype, op_params",
-    workloads_to_params(L2NormFwdOp, include_extra=True),
-)
-def test_l2_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
-    test = L2NormWorkload(shape, dtype)
-    inputs = test.gen_inputs()
-
-    op_params.setdefault("dim", -1)
-    op = L2NormFwdOp(**op_params)
-    bm = ManifestBenchmark(op, test)
-    dim = op_params["dim"]
-    keepdim = op_params.get("keepdim", False)
-
-    def baseline_fn(x):
-        return torch.linalg.vector_norm(
-            x.float(),
-            ord=2,
-            dim=dim,
-            keepdim=keepdim,
-        ).to(x.dtype)
-
-    flaggems_fn = _flaggems_vector_norm(2, dim, keepdim)
-
-    try:
-        bm.compare(_functors(op, baseline_fn, flaggems_fn, inputs, dtype), *inputs)
-    except ValueError as exc:
-        if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
-        raise
+        assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **tolerance)
+        functors[FLAGGEMS_TAG] = flaggems_fn
+    functors["torch"] = baseline_fn
+    functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
+    ManifestBenchmark(op, workload).compare(functors, *inputs)
 
 
-@pytest.mark.parametrize(
-    "shape, dtype, op_params",
-    workloads_to_params(InfNormFwdOp, include_extra=True),
-)
-def test_inf_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
-    test = InfNormWorkload(shape, dtype)
-    inputs = test.gen_inputs()
+@pytest.mark.parametrize("call", manifest_calls(L1NormFwdOp))
+def test_l1_norm_bench(call) -> None:
+    _bench(L1NormFwdOp, call)
 
-    op_params.setdefault("dim", -1)
-    op = InfNormFwdOp(**op_params)
-    bm = ManifestBenchmark(op, test)
-    dim = op_params["dim"]
-    keepdim = op_params.get("keepdim", False)
 
-    def baseline_fn(x):
-        return torch.linalg.vector_norm(
-            x.float(),
-            ord=float("inf"),
-            dim=dim,
-            keepdim=keepdim,
-        ).to(x.dtype)
+@pytest.mark.parametrize("call", manifest_calls(L2NormFwdOp))
+def test_l2_norm_bench(call) -> None:
+    _bench(L2NormFwdOp, call)
 
-    flaggems_fn = _flaggems_vector_norm(float("inf"), dim, keepdim)
 
-    try:
-        bm.compare(_functors(op, baseline_fn, flaggems_fn, inputs, dtype), *inputs)
-    except ValueError as exc:
-        if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
-        raise
+@pytest.mark.parametrize("call", manifest_calls(InfNormFwdOp))
+def test_inf_norm_bench(call) -> None:
+    _bench(InfNormFwdOp, call)

@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Optional, Tuple
+from typing import ClassVar, Dict, Mapping, Optional, Tuple
 
 import torch
 
@@ -6,7 +6,6 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm import FusedAddLayerNormKernel
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["FusedAddLayerNormFwdOp"]
@@ -39,7 +38,10 @@ class FusedAddLayerNormFwdOp(Op):
 
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary: ClassVar[bool] = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "fused_add_layer_norm": FusedAddLayerNormKernel
+    }
 
     def __init__(
         self,
@@ -62,21 +64,6 @@ class FusedAddLayerNormFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._last_roofline_mn: Optional[tuple[int, int]] = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"fused_add_layer_norm": FusedAddLayerNormKernel}
-
-    def _infer_output_shapes(
-        self,
-        x_shape: Tuple[int, ...],
-        residual_shape: Tuple[int, ...],
-        weight_shape: Tuple[int, ...],
-        bias_shape: Tuple[int, ...],
-    ) -> Dict[str, Tuple[int, ...]]:
-        """Manifest ``shape_rules``: both outputs have ``x``'s shape."""
-        return {"output": tuple(x_shape), "residual_out": tuple(x_shape)}
 
     def forward(
         self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
@@ -94,37 +81,20 @@ class FusedAddLayerNormFwdOp(Op):
             same shape as *x*.
 
         Raises:
-            ValueError: Dtypes or shapes disagree. Raised from inside the operator, by
-                `_eager_forward`.
+            ValueError: Dtypes or shapes disagree. Raised by the generated signature checks.
         """
-        return self._wrapped(x, residual, weight, bias, self._instance_key)
+        return self._call_boundary(x, residual, weight, bias)
 
     def _eager_forward(
         self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
         """
-        self._validate_dtypes(x, residual, weight, bias)
-        self.dtype = x.dtype
-        for name, tensor in (
-            ("residual", residual),
-            ("weight", weight),
-            ("bias", bias),
-        ):
-            if tensor.dtype != x.dtype:
-                raise ValueError(f"Expected {name}.dtype {x.dtype}, got {tensor.dtype}")
+        if x.numel() == 0:
+            return torch.empty_like(x), x + residual
         n = x.shape[-1]
-        if residual.shape != x.shape:
-            raise ValueError(
-                f"Expected residual shape {tuple(x.shape)}, got {tuple(residual.shape)}"
-            )
-        if weight.ndim != 1 or weight.shape[0] != n:
-            raise ValueError(f"Expected weight shape ({n},), got {tuple(weight.shape)}")
-        if bias.ndim != 1 or bias.shape[0] != n:
-            raise ValueError(f"Expected bias shape ({n},), got {tuple(bias.shape)}")
-
         # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
         residual = residual.contiguous()
@@ -135,9 +105,6 @@ class FusedAddLayerNormFwdOp(Op):
             (x, residual, weight, bias),
             (n, x.dtype),
         )
-        self._last_roofline_mn = (x.numel() // n, n)
-        # What the manifest roofline resolves ``x`` through.
-        self.x_shape = tuple(x.shape)
         y, residual_out = kernel(x, residual, weight, bias)
         return y, residual_out
 

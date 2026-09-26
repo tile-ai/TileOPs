@@ -1,54 +1,24 @@
 """Reduce ops: SumFwdOp, MeanFwdOp, AminFwdOp, AmaxFwdOp, ProdFwdOp, StdFwdOp, VarFwdOp, VarMeanFwdOp.
 
-Each op reduces along the configured ``dim`` and supports arbitrary-rank input.
-The ``dim`` parameter accepts ``int``, ``list[int]``, or ``tuple[int, ...]``
-for multi-dim reduction. Constructor ``dim`` defaults to ``None`` (full
-reduction) for the ten ops whose manifest declares ``default: null``;
-``ProdFwdOp`` preserves ``dim=-1``.
-
-The Op layer validates the input, normalizes its contiguity, and hands it over as the
-manifest declares it. Moving the reduced axes to the end, flattening to ``(M, N)``, the
-alignment padding and shaping the result back all belong to the kernel, so both sides of
-the op/backend boundary speak the declared shape. Kernels are cached by shape, axes,
-dtype and device, so one op instance handles varying shapes.
+Each op reduces the axes ``dim`` names of an arbitrary-rank input. The generated signature
+checks have run before ``_eager_forward``: dtype, ``dim`` range and uniqueness, and every
+refinement. The op normalizes contiguity and hands the input over as the manifest declares
+it; moving the reduced axes to the end, flattening to ``(M, N)`` and shaping the result back
+belong to the kernel. Kernels are cached by shape, axes, dtype and device.
 """
 
+import math
 import warnings
-from math import prod
-from typing import ClassVar, Dict, List, Optional, Tuple, Union
+from typing import ClassVar, Dict, List, Mapping, Optional, Tuple, Union
 
 import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.reduction.reduce import ReduceKernel
-from tileops.manifest.shape_rules import reduced_shape
+from tileops.manifest.primitives import normalize_axis, reduced
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
-from ._multidim import EmptyDimPolicy, normalize_dim
-
-# Op kinds that accept 0-D (scalar) input. The kernel path assumes
-# ``ndim >= 1`` (and the Welford kernel's Bessel correction is undefined for
-# ``N == 1``), so the Op layer computes the scalar result directly without
-# invoking PyTorch's reduction ops. Mapping a degenerate single-element
-# reduction to its closed-form result is pure arithmetic, not a fallback.
-_SCALAR_REDUCE_KINDS = frozenset(
-    {
-        "sum",
-        "mean",
-        "amin",
-        "amax",
-        "prod",
-        "std",
-        "var",
-        "var_mean",
-        "all",
-        "any",
-        "count_nonzero",
-    }
-)
-
 
 __all__ = [
     "AmaxFwdOp",
@@ -61,37 +31,48 @@ __all__ = [
     "VarMeanFwdOp",
 ]
 
+Dim = Union[int, List[int], Tuple[int, ...], None]
+
+
+def reduce_axes(dim: Dim, rank: int, empty: str) -> "tuple[int, ...]":
+    """The axes *dim* names at *rank*, ascending and non-negative.
+
+    ``None`` names every axis; an empty sequence names every axis when *empty* is
+    ``'full'`` and none when it is ``'noop'``.
+    """
+    if dim is None:
+        return tuple(range(rank))
+    dims = [dim] if isinstance(dim, int) else list(dim)
+    if not dims:
+        return tuple(range(rank)) if empty == "full" else ()
+    return tuple(sorted({normalize_axis(d, rank) for d in dims}))
+
 
 class _ReduceOpBase(Op):
-    """Common base for all reduce ops (simple, Welford, argreduce, logical, vector_norm).
+    """Shared call flow of the reductions (simple, Welford, argreduce, logical, vector norm).
 
-    Holds the shared init params, the reading of ``dim``, and the one place a kernel is
-    resolved. Subclasses declare ``_op_kind``, ``_kernel_key``, ``_kernel_cls``, and
-    override hooks as needed. ``forward`` is one call to the operator the op registers;
-    an op whose returns are not a single tensor (``VarMeanFwdOp``) overrides
-    ``_eager_forward``, which runs behind that operator.
+    A subclass declares ``_op_kind``, ``_kernel_key``, ``kernel_types`` and the empty-``dim``
+    mode of its manifest output shape, and overrides the hooks below where it differs.
 
-    Hooks for subclass customization:
-
-    - ``_kernel_key``: kernel map key (default ``"reduce"``).
-    - ``_kernel_cls``: kernel class (default ``ReduceKernel``).
-    - ``_validate_dim()``: validate ``dim`` at init (default: accept int/list/None).
+    - ``_output_dtype(x)``: the output dtype; the input's by default.
+    - ``_identity``: the result over an empty reduced extent.
+    - ``_scalar_forward(x)``: the result on a 0-d input.
     - ``_build_kernel_kwargs(shape, axes, device_index)``: extra kernel constructor kwargs.
+    - ``_call_kwargs(n)``: kernel constructor kwargs that depend on the call's extent.
     """
 
-    # One operator, the op's declared inputs in, its declared outputs out. The
-    # registration is generated from the manifest entry by
-    # ``tileops.ops._compile_boundary_codegen``, which a base class with no entry skips.
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary: ClassVar[bool] = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"reduce": ReduceKernel}
 
-    _op_kind: str = ""  # overridden by subclasses
-    _kernel_key: str = "reduce"  # overridden by subclasses for different kernel families
-    _kernel_cls: type = ReduceKernel  # overridden by subclasses for different kernel classes
-    _empty_dim_policy: EmptyDimPolicy = "reject"
+    _op_kind: str = ""
+    _kernel_key: str = "reduce"
+    # The manifest's empty-``dim`` mode of ``reduced``: ``'full'`` or ``'noop'``.
+    _empty: str = "full"
+    _identity: "float | bool | int" = 0
 
     def __init__(
         self,
-        dim: Union[int, List[int], Tuple[int, ...], None] = None,
+        dim: Dim = None,
         keepdim: bool = False,
         *,
         target: Target = None,
@@ -101,10 +82,8 @@ class _ReduceOpBase(Op):
         """Construct a reduce op.
 
         Args:
-            dim: Reduction dimension (default ``None``, i.e. full reduction).
-                Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
-                ``None``.
-            keepdim: Whether to retain reduced dims as size 1.
+            dim: Axes to reduce: an ``int``, a sequence of them, or ``None`` for all.
+            keepdim: Whether a reduced axis stays as a length-1 axis.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional override for kernel dispatch.
@@ -114,222 +93,61 @@ class _ReduceOpBase(Op):
         self.keepdim = keepdim
         self.target = target
         self.tune = tune
-        self._validate_dim()
         self.dispatch_kernel(kernel_map)
-        self._last_roofline_mn: tuple[int, int] | None = None
-        # What the manifest roofline resolves ``x`` through.
-        self.x_shape: tuple[int, ...] | None = None
-
-    def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: the reduced axes leave, or stay as size 1."""
-        return {"output": self._reduced_shape(x_shape)}
-
-    def _reduced_shape(self, x_shape: tuple[int, ...]) -> tuple[int, ...]:
-        """The output shape, read with this op's empty-``dim`` policy."""
-        return reduced_shape(
-            x_shape,
-            self.dim,
-            self.keepdim,
-            "noop" if self._empty_dim_policy == "noop" else "full",
-        )
-
-    # Dim validation (subclasses may override)
-
-    def _validate_dim(self) -> None:
-        """Validate the ``dim`` parameter.
-
-        Default: accept ``int``, ``list[int]``/``tuple[int]``, or ``None``.
-        Subclasses that only support single-dim reduction (e.g. argreduce)
-        should override to reject non-scalar values.
-
-        ``bool`` values are rejected explicitly. Python's ``bool`` subclasses
-        ``int`` (so ``isinstance(True, int)`` is true), but a boolean dim has
-        no meaningful interpretation as a tensor axis and almost always
-        signals a caller bug.
-        """
-        dim = self.dim
-        if isinstance(dim, bool):
-            raise TypeError(
-                f"dim must not be bool (subclasses int but is not a valid axis), got {dim!r}"
-            )
-        if dim is None or isinstance(dim, int):
-            return
-        if isinstance(dim, (list, tuple)):
-            for d in dim:
-                if isinstance(d, bool) or not isinstance(d, int):
-                    raise TypeError(f"All elements of dim must be int (not bool), got {dim!r}")
-            return
-        raise TypeError(
-            f"dim must be int, list[int], tuple[int, ...], or None, got {type(dim).__name__}"
-        )
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {self._kernel_key: self._kernel_cls}
-
-    # Forward (subclasses with non-standard returns, e.g. VarMeanFwdOp,
-    # must override ``_eager_forward``)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the reduce op on *x* along the configured dim.
+        """Reduce *x* over the configured axes.
 
-        One call to the operator this op registers: this is as far as dynamo traces.
+        Args:
+            x: Input tensor of any rank.
+
+        Returns:
+            The reduction, shaped by ``dim`` and ``keepdim``.
         """
-        return type(self)._wrapped(x, self._instance_key)
+        return self._call_boundary(x)
 
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
+    def _cast(self, x: torch.Tensor) -> torch.Tensor:
+        """*x* in the dtype the reduction runs in: the ``dtype`` parameter's when passed."""
+        dtype = getattr(self, "dtype", None)
+        return x if dtype is None or x.dtype == dtype else x.to(dtype)
 
-        Never traced: kernel construction enters a TileLang builder.
-        """
-        scalar_out = self._maybe_scalar(x)
-        if scalar_out is not None:
-            return scalar_out
-        noop_out = self._maybe_noop(x)
-        if noop_out is not None:
-            return noop_out
-        x, kernel = self._prepare_input(x)
-        return kernel(x)
+    def _output_dtype(self, x: torch.Tensor) -> torch.dtype:
+        return x.dtype
 
-    # Empty-dim no-op short-circuit
+    def _output_shape(self, x: torch.Tensor) -> "tuple[int, ...]":
+        return reduced(tuple(x.shape), self.dim, self.keepdim, self._empty)
 
-    def _noop_output_dtype(self) -> Optional[torch.dtype]:
-        """Manifest-declared output dtype for the dtype-altering short-circuits.
+    def _scalar_forward(self, x: torch.Tensor):
+        """A 0-d input reduces one element: the element itself."""
+        return x.clone()
 
-        Consulted by both the empty-dim no-op path (``_maybe_noop``) and
-        the scalar 0-D path (``_scalar_forward``) so the manifest output
-        dtype contract is honored without dispatching to the kernel.
-        Subclasses with a fixed output dtype (e.g. All/Any -> bool,
-        CountNonzero -> int64) MUST override. The default ``None`` means
-        "preserve input dtype".
-        """
-        return None
-
-    def _validate_input_tensor(self, x: torch.Tensor) -> None:
-        """Validate device, dtype, and rank of the forward input.
-
-        Shared by ``_prepare_input`` and the ``dim=[]`` noop short-circuit
-        so both paths enforce the same forward contract. Which devices a set of kernels
-        runs on is the kernel's own statement, so no device kind is checked here.
-        """
-        self._validate_dtypes(x)
-        self.dtype = x.dtype
+    def _eager_forward(self, x: torch.Tensor):
+        """Resolve the kernel and launch, inside the operator; closed forms need no kernel."""
+        x = self._cast(x)
         if x.ndim == 0:
-            raise ValueError("Input tensor must be at least 1D")
+            return self._scalar_forward(x)
+        axes = reduce_axes(self.dim, x.ndim, self._empty)
+        if not axes:
+            return self._noop_forward(x)
+        if x.numel() == 0:
+            return self._empty_forward(x)
+        x = x.contiguous()
+        n = math.prod(x.shape[a] for a in axes)
+        m = x.numel() // n
+        return self._launch(x, axes, m, n)
 
-    # Scalar (0-D) input fast path
+    def _noop_forward(self, x: torch.Tensor):
+        """An empty ``dim`` under the ``'noop'`` mode keeps every element."""
+        return x.to(self._output_dtype(x), copy=True)
 
-    def _validate_scalar_dim(self) -> None:
-        """Validate that ``self.dim`` is an accepted form for a 0-D input.
+    def _empty_forward(self, x: torch.Tensor):
+        """An empty input: the identity over each empty reduced extent, or an empty output."""
+        return torch.full(
+            self._output_shape(x), self._identity, dtype=self._output_dtype(x), device=x.device
+        )
 
-        PyTorch accepts ``None``, ``0``, ``-1``, ``()``, and ``[]`` on a
-        0-D tensor, plus singleton list/tuple forms (``[0]``, ``(0,)``,
-        ``[-1]``, ``(-1,)``). Integers outside ``{0, -1}`` raise
-        ``IndexError``. Multi-entry sequences whose canonical dims
-        collide (``0`` and ``-1`` both alias axis ``0`` on a 0-D tensor)
-        raise ``RuntimeError`` to match PyTorch's
-        ``"dim 0 appears multiple times in the list of dims"``.
-        """
-        dim = self.dim
-        if dim is None:
-            return
-        if isinstance(dim, int):
-            if dim not in (0, -1):
-                raise IndexError(
-                    f"Dimension out of range (expected to be in range of [-1, 0], but got {dim})"
-                )
-            return
-        if isinstance(dim, (list, tuple)):
-            seen: set = set()
-            for d in dim:
-                if d not in (0, -1):
-                    raise IndexError(
-                        f"Dimension out of range (expected to be in range of [-1, 0], but got {d})"
-                    )
-                canon = 0  # 0 and -1 alias the same axis on a 0-D tensor.
-                if canon in seen:
-                    raise RuntimeError(f"dim {canon} appears multiple times in the list of dims")
-                seen.add(canon)
-            return
-
-    def _scalar_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute the forward result for a 0-D input natively.
-
-        Single-element reductions are degenerate: every arithmetic family
-        collapses to the input value, the logical families collapse to
-        ``x != 0`` cast to the manifest output dtype, and the Welford
-        family follows a closed form in ``correction``. This method
-        computes the closed-form result directly so the kernel path
-        (undefined for ``N == 1``) is bypassed without delegating to
-        PyTorch's reduction ops.
-
-        Arithmetic reductions (``sum``, ``mean``, ``amin``, ``amax``,
-        ``prod``) over one element return the element itself. Logical /
-        count ops override ``_noop_output_dtype`` so this default applies
-        the ``x != 0`` predicate and casts to the declared output dtype.
-        Welford ops (``std``, ``var``, ``var_mean``) override this hook
-        because their result depends on ``correction``.
-        """
-        out_dtype = self._noop_output_dtype()
-        if out_dtype is None:
-            return x.clone()
-        return (x != 0).to(out_dtype)
-
-    def _maybe_scalar(self, x: torch.Tensor):
-        """Short-circuit a 0-D input to the native scalar forward.
-
-        Returns the scalar-path output when ``x.ndim == 0``; returns
-        ``None`` otherwise so the caller proceeds with the kernel path.
-        The roofline state is bound to ``(1, 1)`` so ``eval_roofline()``
-        after a scalar forward stays well-defined.
-        """
-        if x.ndim != 0:
-            return None
-        if self._op_kind not in _SCALAR_REDUCE_KINDS:
-            # Subclasses without a defined 0-D contract (e.g. argmax/argmin/
-            # l1/l2/inf) fall through to the kernel path, which raises the
-            # pre-existing ``ValueError("Input tensor must be at least 1D")``.
-            return None
-        self._validate_dtypes(x)
-        self.dtype = x.dtype
-        self._validate_scalar_dim()
-        self._last_roofline_mn = (1, 1)
-        self.x_shape = tuple(x.shape)
-        return self._scalar_forward(x)
-
-    def _maybe_noop(self, x: torch.Tensor) -> Optional[torch.Tensor]:
-        """Return *x* (cast to the manifest output dtype) when ``dim`` is
-        an empty list/tuple and the op's ``_empty_dim_policy`` is
-        ``"noop"``; return ``None`` otherwise so the caller proceeds with
-        the normal kernel path.
-
-        Runs the same input validation as ``_prepare_input`` (CUDA / dtype
-        / ndim) and binds ``_last_roofline_mn`` before short-circuiting, so
-        the noop path still honors the public forward contract -- bad
-        inputs raise, and ``eval_roofline()`` works after a noop forward.
-        """
-        if self._empty_dim_policy != "noop":
-            return None
-        if not isinstance(self.dim, (list, tuple)) or len(self.dim) != 0:
-            return None
-        self._validate_input_tensor(x)
-        # Bind roofline state. The noop performs no reduction but still
-        # reads every input element and writes an equal-shape result
-        # (cast to bool for All/Any, the only ops whose ``_empty_dim_policy``
-        # is ``"noop"``; other reduce ops, including ``CountNonzero``, keep
-        # ``"full"`` and never enter this branch). Model this as a
-        # degenerate reduction over an axis of length 1: M = numel, N = 1.
-        # Under the existing per-op-kind
-        # formulas this yields mem_bytes proportional to numel * elem_bytes
-        # for the read plus the output term, instead of collapsing to
-        # zero, which would under-count the actual data-movement cost.
-        self._last_roofline_mn = (x.numel(), 1)
-        self.x_shape = tuple(x.shape)
-        # ``copy=True`` because the operator this runs inside may not return an alias of
-        # its input, and ``to`` hands back the same object when the dtype already matches
-        # — which a bool input to All or Any does.
-        out_dtype = self._noop_output_dtype()
-        return x.clone() if out_dtype is None else x.to(out_dtype, copy=True)
+    def _launch(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int):
+        return self.kernel_for("reduce", (x,), self._call(x, axes, m, n))(x)
 
     def _build_kernel_kwargs(
         self, shape: "tuple[int, ...]", axes: "tuple[int, ...]", device_index: "int | None"
@@ -341,22 +159,30 @@ class _ReduceOpBase(Op):
         """
         return {"device_index": device_index}
 
-    def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int) -> object:
-        """What this call is, for :meth:`entry_for`.
+    def _call_kwargs(self, n: int) -> tuple:
+        """Kernel constructor arguments this call decides, as ``(name, value)`` pairs."""
+        return ()
 
-        The default is the facts the kernel is built from. A family that chooses between
-        implementations returns a call record instead, and selection reads it.
-        """
-        return (tuple(x.shape), axes, self.keepdim, x.dtype, x.device.index, m, n)
+    def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int) -> object:
+        """What this call is, for :meth:`entry_for`: the facts the kernel is built from."""
+        return (
+            tuple(x.shape),
+            axes,
+            self.keepdim,
+            x.dtype,
+            x.device.index,
+            m,
+            n,
+            self._call_kwargs(n),
+        )
 
     def entry_for(self, role: str, call: object) -> Entry:
         """One implementation, built from the whole shape and the axes it reduces.
 
-        The kernel owns the permute, so the whole shape decides what it is, not just the
-        row count and width. The device is in the identity because the kernel plans
-        against that device's shared memory.
+        The kernel owns the permute, so the whole shape decides what it is. The device is
+        in the identity because the kernel plans against that device's shared memory.
         """
-        shape, axes, keepdim, dtype, device_index, m, n = call
+        shape, axes, keepdim, dtype, device_index, m, n, extra = call
         cls = self.kernel_map[self._kernel_key]
         return call, lambda: cls(
             m,
@@ -367,105 +193,76 @@ class _ReduceOpBase(Op):
             keepdim=keepdim,
             tune=self.tune,
             **self._build_kernel_kwargs(shape, axes, device_index),
+            **dict(extra),
         )
 
-    def _reduce_axes(self, x: torch.Tensor) -> "tuple[int, ...]":
-        """The axes this call reduces, ascending and non-negative.
 
-        Raises:
-            IndexError: ``dim`` names an axis this rank does not have. Raised before any
-                kernel is built, so an out-of-range call reaches no backend.
-        """
-        return tuple(normalize_dim(self.dim, x.ndim, empty_dim_policy=self._empty_dim_policy))
-
-    # Input preparation (validate → normalize contiguity → resolve the kernel)
-
-    def _prepare_input(self, x: torch.Tensor) -> Tuple[torch.Tensor, object]:
-        """Validate, normalize contiguity, and resolve the kernel for this call.
-
-        The row layout the kernel wants is the kernel's business, so what comes back is
-        the declared tensor and a kernel that takes it.
-
-        Returns:
-            ``(x, kernel)``, where *x* is the contiguous declared input.
-        """
-        self._validate_input_tensor(x)
-        # Normalized here and handed over as the manifest declares it; how a kernel wants
-        # that laid out is its own business.
-        x = x.contiguous()
-        axes = self._reduce_axes(x)
-        # From the shape, not from ``numel``: an empty reduced axis makes ``n`` zero.
-        n = prod(x.shape[a] for a in axes)
-        m = prod(d for i, d in enumerate(x.shape) if i not in axes)
-        self._last_roofline_mn = (m, n)
-        self.x_shape = tuple(x.shape)
-        return x, self.kernel_for("reduce", (x,), self._call(x, axes, m, n))
-
-
-# Simple reduce ops (sum, mean, amin, amax, prod)
-
-
-class _SimpleReduceOp(_ReduceOpBase):
-    """Base for single-output reduce ops (sum, mean, amin, amax, prod).
-
-    The ``dim`` default follows each op's manifest entry: ``sum``, ``mean``,
-    ``amin``, and ``amax`` default to ``None`` (full reduction); ``prod``
-    overrides to ``dim=-1`` and restricts the type to ``int``.
-
-    Args:
-        dim: Reduction dimension. Accepts ``int``, ``list[int]``,
-            ``tuple[int, ...]``, or ``None`` on the base class; subclasses
-            may narrow this (see ``ProdFwdOp``).
-        keepdim: Whether to retain the reduced dimension as size 1.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-        kernel_map: Optional override for kernel dispatch.
-        tune: Whether to autotune (default False).
-    """
-
-
-class SumFwdOp(_SimpleReduceOp):
-    """Sum reduction along dim=-1."""
-
-    _op_kind = "sum"
-    _empty_dim_policy: EmptyDimPolicy = "full"
-
-
-class MeanFwdOp(_SimpleReduceOp):
-    """Mean reduction along dim=-1."""
-
-    _op_kind = "mean"
-    _empty_dim_policy: EmptyDimPolicy = "full"
-
-
-class AminFwdOp(_SimpleReduceOp):
-    """Amin (element-wise minimum) reduction along dim=-1."""
-
-    _op_kind = "amin"
-    _empty_dim_policy: EmptyDimPolicy = "full"
-
-
-class AmaxFwdOp(_SimpleReduceOp):
-    """Amax (element-wise maximum) reduction along dim=-1."""
-
-    _op_kind = "amax"
-    _empty_dim_policy: EmptyDimPolicy = "full"
-
-
-class ProdFwdOp(_SimpleReduceOp):
-    """Product reduction.
-
-    Unlike the other simple reduce ops, ``ProdFwdOp`` defaults to
-    ``dim=-1`` (manifest declares ``default: -1`` for ``prod``).
-    """
-
-    _op_kind = "prod"
+class _CastReduceOp(_ReduceOpBase):
+    """A reduction taking torch's keyword-only ``dtype``: the input is cast to it first."""
 
     def __init__(
         self,
-        dim: int = -1,
+        dim: Dim = None,
         keepdim: bool = False,
         *,
+        dtype: Optional[torch.dtype] = None,
+        target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        """Construct the op.
+
+        Args:
+            dim: Axes to reduce: an ``int``, a sequence of them, or ``None`` for all.
+            keepdim: Whether a reduced axis stays as a length-1 axis.
+            dtype: The dtype the input is cast to before the reduction, and the output's;
+                ``None`` keeps the input's.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune (default ``False``).
+        """
+        self.dtype = dtype
+        super().__init__(dim, keepdim, target=target, kernel_map=kernel_map, tune=tune)
+
+
+class SumFwdOp(_CastReduceOp):
+    """Sum over ``dim``, following ``torch.sum``."""
+
+    _op_kind = "sum"
+
+
+class MeanFwdOp(_CastReduceOp):
+    """Mean over ``dim``, following ``torch.mean``; an empty reduction is NaN."""
+
+    _op_kind = "mean"
+    _identity = math.nan
+
+
+class AminFwdOp(_ReduceOpBase):
+    """Minimum over ``dim``, following ``torch.amin``."""
+
+    _op_kind = "amin"
+
+
+class AmaxFwdOp(_ReduceOpBase):
+    """Maximum over ``dim``, following ``torch.amax``."""
+
+    _op_kind = "amax"
+
+
+class ProdFwdOp(_CastReduceOp):
+    """Product over one axis, following ``torch.prod(input, dim, keepdim, *, dtype)``."""
+
+    _op_kind = "prod"
+    _identity = 1
+
+    def __init__(
+        self,
+        dim: int,
+        keepdim: bool = False,
+        *,
+        dtype: Optional[torch.dtype] = None,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
@@ -473,190 +270,113 @@ class ProdFwdOp(_SimpleReduceOp):
         """Construct ProdFwdOp.
 
         Args:
-            dim: Reduction dimension (default ``-1``).
-            keepdim: Whether to retain reduced dims as size 1.
+            dim: The axis to reduce.
+            keepdim: Whether the reduced axis stays as a length-1 axis.
+            dtype: The dtype the input is cast to before the reduction, and the output's;
+                ``None`` keeps the input's.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
         """
-        super().__init__(
-            dim=dim,
-            keepdim=keepdim,
-            target=target,
-            kernel_map=kernel_map,
-            tune=tune,
-        )
-
-    def _validate_dim(self) -> None:
-        # Manifest declares prod.signature.params.dim as int; reject the
-        # multi-dim and full-reduction overloads inherited from the base.
-        if not isinstance(self.dim, int) or isinstance(self.dim, bool):
-            raise TypeError(f"ProdFwdOp.dim must be int, got {type(self.dim).__name__}")
-
-
-# Welford-based ops (std, var, var_mean)
+        super().__init__(dim, keepdim, dtype=dtype, target=target, kernel_map=kernel_map, tune=tune)
 
 
 class _WelfordReduceOp(_ReduceOpBase):
-    """Base for Welford-based reduce ops (std, var, var_mean).
+    """Base for the variance family: ``op(dim=None, *, correction=1, keepdim=False)``."""
 
-    Construction: ``op(dim=None, correction=1, keepdim=False)``.
-
-    """
-
-    _empty_dim_policy: EmptyDimPolicy = "full"
+    _identity = math.nan
 
     def __init__(
         self,
-        dim: Union[int, List[int], Tuple[int, ...], None] = None,
-        correction: int = 1,
-        keepdim: bool = False,
+        dim: Dim = None,
         *,
+        correction: "float | None" = 1,
+        keepdim: bool = False,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        """Construct a Welford-based reduce op.
+        """Construct a variance-family op.
 
         Args:
-            dim: Reduction dimension (default ``None``, i.e. full reduction).
-                Accepts ``int``, ``list[int]``, ``tuple[int, ...]``, or
-                ``None``.
-            correction: Bessel's correction (default 1).
-            keepdim: Whether to retain reduced dims as size 1.
+            dim: Axes to reduce: an ``int``, a sequence of them, or ``None`` for all.
+            correction: Difference between the sample size and the degrees of freedom;
+                ``None`` means 1, as in torch.
+            keepdim: Whether a reduced axis stays as a length-1 axis.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional override for kernel dispatch.
             tune: Whether to autotune (default ``False``).
-
-        Args:
-            dim: Reduction dimension (default ``None``, i.e. full reduction).
-                Accepts ``int``, ``list[int]``, or ``tuple[int, ...]`` for
-                multi-dim reduction.
-            correction: Bessel's correction (default 1).
-            keepdim: Whether to retain the reduced dimension as size 1.
-            target: Which set of kernels serves this op — a target name, ``BUILTIN``
-                for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional override for kernel dispatch.
-            tune: Whether to autotune (default False).
         """
         self.correction = correction
-        super().__init__(
-            dim=dim,
-            keepdim=keepdim,
-            target=target,
-            kernel_map=kernel_map,
-            tune=tune,
+        super().__init__(dim, keepdim, target=target, kernel_map=kernel_map, tune=tune)
+
+    @property
+    def _dof_correction(self) -> float:
+        return 1 if self.correction is None else self.correction
+
+    def _call_kwargs(self, n: int) -> tuple:
+        # With no degrees of freedom the kernel runs uncorrected and the op divides by zero.
+        return (("correction", self._dof_correction if self._dof_correction < n else 0),)
+
+    def _warn_dof(self) -> None:
+        warnings.warn(
+            f"{self._op_kind}(): degrees of freedom is <= 0. Correction should be strictly "
+            "less than the reduction factor (input numel divided by output numel).",
+            UserWarning,
+            stacklevel=2,
         )
 
-    def _build_kernel_kwargs(self, shape, axes, device_index) -> dict:
-        """Pass correction to the kernel constructor."""
-        return {
-            **super()._build_kernel_kwargs(shape, axes, device_index),
-            "correction": self.correction,
-        }
-
     def _scalar_forward(self, x: torch.Tensor):
-        """Compute Welford ops on a 0-D input from closed-form.
-
-        For a single-element reduction with reduction factor ``N = 1`` and
-        Bessel ``correction``:
-
-        - ``N - correction <= 0`` (i.e. ``correction >= 1``): variance
-          and standard deviation are mathematically undefined; the
-          contract returns ``nan`` (computed as ``x * nan`` so the
-          output stays connected to ``x``).
-        - ``correction == 0``: the unbiased denominator is ``N``, so the
-          deviation from the mean (which equals the element itself) is
-          zero for finite inputs. The result is computed as ``x - x``
-          so non-finite inputs propagate (``nan`` / ``inf`` → ``nan``).
-
-        ``VarMeanFwdOp`` overrides this hook to additionally return the
-        mean (the input element).
-        """
-        if self.correction >= 1:
-            warnings.warn(
-                f"{self._op_kind}(): degrees of freedom is <= 0. Correction "
-                "should be strictly less than the reduction factor (input "
-                "numel divided by output numel).",
-                UserWarning,
-                stacklevel=2,
-            )
-            return x * float("nan")
+        """One element: no spread, over ``max(0, 1 - correction)`` degrees of freedom."""
+        if self._dof_correction >= 1:
+            self._warn_dof()
+            return (x - x) / 0.0
         return x - x
 
-    def _invalid_dof_output(self, x: torch.Tensor) -> Optional[torch.Tensor]:
-        """Return PyTorch-compatible NaNs when ``N - correction <= 0``.
+    def _no_dof(self, variance: torch.Tensor, n: int, dtype: torch.dtype) -> torch.Tensor:
+        """torch divides the squared deviations by ``max(0, n - correction)``: zero here, so
+        a spread is ``inf`` and no spread is NaN. *variance* is the uncorrected float32 one,
+        in which a small spread does not round to zero."""
+        self._warn_dof()
+        return ((variance * n) / 0.0).to(dtype)
 
-        The TileLang Welford kernel bakes ``N`` and ``correction`` into the
-        generated code, so a zero denominator fails at compile time. PyTorch
-        defines this degree-of-freedom case as NaN; handle it before kernel
-        dispatch. The shape comes from the manifest's rule, the same source the
-        kernel path's result is shaped by.
-        """
-        if self._last_roofline_mn is None:
-            return None
-        _M, N = self._last_roofline_mn
-        if self.correction < N:
-            return None
-        shape = self._reduced_shape(tuple(x.shape))
-        return torch.full(shape, float("nan"), dtype=x.dtype, device=x.device)
-
-    def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        scalar_out = self._maybe_scalar(x)
-        if scalar_out is not None:
-            return scalar_out
-        noop_out = self._maybe_noop(x)
-        if noop_out is not None:
-            return noop_out
-        x, kernel = self._prepare_input(x)
-        invalid_dof = self._invalid_dof_output(x)
-        if invalid_dof is not None:
-            return invalid_dof
-        return kernel(x)
+    def _launch(self, x, axes, m, n):
+        if self._dof_correction < n:
+            return super()._launch(x, axes, m, n)
+        out = super()._launch(x.float(), axes, m, n)
+        if self._op_kind == "std":
+            return self._no_dof(out * out, n, torch.float32).sqrt().to(x.dtype)
+        return self._no_dof(out, n, x.dtype)
 
 
 class StdFwdOp(_WelfordReduceOp):
-    """Standard deviation reduction with Bessel's correction."""
+    """Standard deviation over ``dim``, following ``torch.std``."""
 
     _op_kind = "std"
 
 
 class VarFwdOp(_WelfordReduceOp):
-    """Variance reduction with Bessel's correction."""
+    """Variance over ``dim``, following ``torch.var``."""
 
     _op_kind = "var"
 
 
 class VarMeanFwdOp(_WelfordReduceOp):
-    """Variance and mean reduction."""
-
-    def _infer_output_shapes(self, x_shape: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: both outputs are the reduced shape."""
-        shape = self._reduced_shape(x_shape)
-        return {"var": shape, "mean": shape}
+    """Variance and mean over ``dim``, following ``torch.var_mean``."""
 
     _op_kind = "var_mean"
 
-    def _scalar_forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return ``(var, mean)`` on a 0-D input.
+    def _scalar_forward(self, x: torch.Tensor):
+        return super()._scalar_forward(x), x.clone()
 
-        Variance follows the Welford closed form (``nan`` when
-        ``correction >= 1``, ``0`` otherwise); the mean of a single element
-        is the element itself.
-        """
-        var_out = super()._scalar_forward(x)
-        return var_out, x.clone()
+    def _empty_forward(self, x: torch.Tensor):
+        nan = super()._empty_forward(x)
+        return nan, nan.clone()
 
-    def _eager_forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        scalar_out = self._maybe_scalar(x)
-        if scalar_out is not None:
-            return scalar_out
-        x, kernel = self._prepare_input(x)
-        invalid_dof = self._invalid_dof_output(x)
-        if invalid_dof is not None:
-            axes = self._reduce_axes(x)
-            mean_out = x.float().mean(dim=axes, keepdim=self.keepdim).to(x.dtype)
-            return invalid_dof, mean_out.reshape(invalid_dof.shape)
-        return kernel(x)
+    def _launch(self, x, axes, m, n):
+        if self._dof_correction < n:
+            return _ReduceOpBase._launch(self, x, axes, m, n)
+        var, mean = _ReduceOpBase._launch(self, x.float(), axes, m, n)
+        return self._no_dof(var, n, x.dtype), mean.to(x.dtype)

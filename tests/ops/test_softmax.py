@@ -509,29 +509,12 @@ def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
     )
 
 
-# Multi-dim guard tests: SoftmaxFwdOp and LogSoftmaxFwdOp must reject
-# list/tuple dims eagerly (before kernel build/execute).
-
-
 @pytest.mark.smoke
-def test_softmax_rejects_multidim_before_kernel() -> None:
-    """SoftmaxFwdOp must raise ValueError for list dim before touching the kernel."""
-    x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
-    op = SoftmaxFwdOp(dim=[-1, 0])
-    with pytest.raises(ValueError, match="does not support multi-dim"):
-        op(x)
-    # Verify no kernel was built (cache must remain empty).
-    assert len(list(op.iter_kernels())) == 0
-
-
-@pytest.mark.smoke
-def test_log_softmax_rejects_multidim_before_kernel() -> None:
-    """LogSoftmaxFwdOp must raise ValueError for list dim before touching the kernel."""
-    x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
-    op = LogSoftmaxFwdOp(dim=[-1, 0])
-    with pytest.raises(ValueError, match="does not support multi-dim"):
-        op(x)
-    assert len(list(op.iter_kernels())) == 0
+@pytest.mark.parametrize("op_cls", [SoftmaxFwdOp, LogSoftmaxFwdOp])
+def test_softmax_rejects_a_sequence_dim_at_construction(op_cls) -> None:
+    """``dim`` is one axis, as in torch."""
+    with pytest.raises(ValueError, match="dim = "):
+        op_cls(dim=[-1, 0])
 
 
 @pytest.mark.smoke

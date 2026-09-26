@@ -63,19 +63,6 @@ def _all_dims(shape: tuple) -> list[int]:
     return list(range(len(shape)))
 
 
-# Unit test: normalize_dim(None, ndim) -> list(range(ndim))
-
-
-@pytest.mark.smoke
-def test_normalize_dim_none() -> None:
-    """normalize_dim(None, ndim) must return list(range(ndim))."""
-    from tileops.ops.reduction._multidim import normalize_dim
-
-    assert normalize_dim(None, 3) == [0, 1, 2]
-    assert normalize_dim(None, 1) == [0]
-    assert normalize_dim(None, 5) == [0, 1, 2, 3, 4]
-
-
 # Simple reduce ops: sum, mean, amax, amin, prod
 
 
@@ -149,17 +136,6 @@ def test_amin_dim_none(
     tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
-
-
-@pytest.mark.smoke
-def test_prod_dim_none_rejected() -> None:
-    """ProdFwdOp narrows ``dim`` to ``int`` per its manifest signature, so
-    ``dim=None`` (the full-reduction overload offered by the base) is
-    rejected at construction time."""
-    from tileops.ops.reduction.reduce import ProdFwdOp
-
-    with pytest.raises(TypeError, match="ProdFwdOp.dim must be int"):
-        ProdFwdOp(dim=None)
 
 
 # Welford ops: var, std, var_mean
