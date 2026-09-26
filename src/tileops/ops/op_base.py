@@ -205,8 +205,9 @@ class Op(ABC):
         from the subclass's manifest entry, attaches the manifest param names a
         backend's ``build_kernel`` is called with, and registers the compile-boundary
         operators the subclass declares. Each codegen pass is a no-op
-        when the subclass does not advertise manifest metadata, supplies
-        its own override, or is marked ``status: spec-only``.
+        when the subclass does not advertise manifest metadata or supplies
+        its own override; a ``status: spec-only`` subclass gets only the compile
+        boundary it declares.
         """
         super().__init_subclass__(**kwargs)
         _DISPATCH_KEYS.update(cls.__dict__.get("kernel_types", {}))

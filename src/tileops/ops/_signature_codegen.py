@@ -1253,12 +1253,22 @@ def _input_binder(sig: Signature, name: str, body, dtypes: bool = False):
 
 
 def install(cls: type, entry: dict, adts: dict | None = None) -> bool:
-    """Give `cls` the methods its entry's signature generates; False when the signature is malformed."""
+    """Give `cls` the methods its entry's signature generates; False when the signature is malformed.
+
+    A `spec-only` entry keeps its hand-written methods and gets only the compile boundary its
+    class declares, whose operators, schema and fake the signature decides as for any other.
+    """
     try:
         entry_plan_ = entry_plan(cls.__name__, entry, load_adts() if adts is None else adts)
     except SignatureError:
         return False
     plan = _Plan(entry_plan_)
+    if entry.get("status") == "spec-only":
+        if getattr(cls, "compile_boundary", ()) is True:
+            # The boundary's fake evaluates the signature, which reads what construction resolves.
+            cls._check_construction = _construction_check(plan)
+            _install_boundary(cls, plan, entry)
+        return True
     sig = plan.sig
     cls._signature = plan
     cls._check_construction = _construction_check(plan)
@@ -1273,19 +1283,26 @@ def install(cls: type, entry: dict, adts: dict | None = None) -> bool:
     )
     if entry_plan_.roofline is not None:
         cls.eval_roofline = lambda self: plan.roofline(_last_call(self))
-    # Declaring a compile boundary is the class's claim that it supports `fullgraph=True`.
-    if getattr(cls, "compile_boundary", ()) is True:
-        if not sig.inputs:
-            raise TypeError(f"{cls.__name__}: compile_boundary needs a call-time tensor input")
-        boundary = _Boundary(cls, plan, entry["family"])
-        cls._call_boundary = boundary.binder(cls)
+    _install_boundary(cls, plan, entry)
     abc.update_abstractmethods(cls)
     return True
 
 
+def _install_boundary(cls: type, plan: _Plan, entry: dict) -> None:
+    """Register the compile-boundary operators of a class declaring `compile_boundary = True`,
+    which is its claim that it supports `fullgraph=True`."""
+    if getattr(cls, "compile_boundary", ()) is not True:
+        return
+    if not plan.sig.inputs:
+        raise TypeError(f"{cls.__name__}: compile_boundary needs a call-time tensor input")
+    boundary = _Boundary(cls, plan, entry["family"])
+    cls._call_boundary = boundary.binder(cls)
+
+
 def maybe_install_signature(cls: type) -> bool:
-    """Install for an implemented parametric entry; the manifest is read leniently."""
+    """Install for a parametric entry, True when one was installed; the manifest is read
+    leniently."""
     entry = try_load_entry(cls.__name__)
-    if not isinstance(entry, dict) or entry.get("status") != "implemented" or is_legacy(entry):
+    if not isinstance(entry, dict) or is_legacy(entry):
         return False
     return install(cls, entry)
