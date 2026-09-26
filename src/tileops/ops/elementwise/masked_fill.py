@@ -1,6 +1,5 @@
 """MaskedFill ops (Tensor-value and scalar-value variants)."""
 
-from math import prod
 from typing import ClassVar, Dict, Optional
 
 import torch
@@ -12,34 +11,26 @@ from tileops.kernels.elementwise import (
 )
 from tileops.kernels.kernel_base import Kernel
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
-from ._base import (
-    _PerDtypeKernels,
-    _require_one_device,
-    _validate_scalar_param_repr,
-    broadcast_or_raise,
-)
+from ._base import _PerDtypeKernels, _validate_scalar_param_repr
 
 
 class MaskedFillFwdOp(_PerDtypeKernels, Op):
     """MaskedFill with 0-dim Tensor value (``torch.Tensor.masked_fill(mask, value: Tensor)``).
 
     Output shape is the bidirectional broadcast of ``input`` and ``mask``;
-    ``value`` must be a 0-dim Tensor. The kernel reads ``value`` at forward time,
-    which is consistent with the 0-dim semantics.
-
+    ``value`` is a 0-dim Tensor, which the kernel reads at forward time.
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
-
-    _op_name = "masked_fill"
+    compile_boundary: ClassVar[bool] = True
+    kernel_types = {"masked_fill_tensor_value": MaskedFillTensorValueFwdKernel}
 
     def __init__(
         self,
         *,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -48,53 +39,17 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
                 the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional dispatch override mapping kernel keys to
                 ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
+            tune: Whether to autotune.
         """
         self.target = target
-        self.input_shape: Optional[tuple] = None
-        self.mask_shape: Optional[tuple] = None
-        self.value_shape: Optional[tuple] = None
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
 
     def _build(self, dtype: torch.dtype, n_total: int):
         """The kernel names the implementation and storage for this dtype."""
         impl, compute = self._selected_kernel_cls().specialize(dtype)
-        supported = impl.SUPPORTED_DTYPES
-        if supported is not None and compute not in supported:
-            names = ", ".join(str(dt) for dt in (torch.bool, *supported))
-            raise ValueError(
-                f"{self._op_name} does not support dtype {dtype}. Supported: [{names}]"
-            )
-        return impl(n_total, compute)
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"masked_fill_tensor_value": MaskedFillTensorValueFwdKernel}
-
-    def _infer_output_shapes(
-        self,
-        input_shape: tuple,
-        mask_shape: tuple,
-        value_shape: tuple,
-    ) -> Dict[str, tuple]:
-        """Manifest ``shape_rules``: the broadcast of ``input`` and ``mask``."""
-        return {"output": broadcast_or_raise("MaskedFillFwdOp", input=input_shape, mask=mask_shape)}
-
-    @property
-    def out_shape(self) -> tuple:
-        """Broadcast output shape of the most recent forward."""
-        if self.input_shape is None:
-            raise RuntimeError(
-                "MaskedFillFwdOp needs a prior forward() call: the operand shapes "
-                "arrive with the tensors"
-            )
-        return self._infer_output_shapes(self.input_shape, self.mask_shape, self.value_shape)[
-            "output"
-        ]
-
-    @property
-    def N_total(self) -> int:
-        """Output element count of the most recent forward."""
-        return prod(self.out_shape)
+        self._check_kernel_dtype(impl, dtype, compute)
+        return impl(n_total, compute, tune=self.tune)
 
     def _eager_forward(
         self,
@@ -102,24 +57,11 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
         mask: torch.Tensor,
         value: torch.Tensor,
     ) -> torch.Tensor:
-        _require_one_device("MaskedFillFwdOp", input=input, mask=mask, value=value)
-        self._validate_dtypes(input, mask, value)
-        if value.ndim != 0:
-            raise ValueError(f"Expected a 0-dim value Tensor, got shape {tuple(value.shape)}")
-        if value.dtype != input.dtype:
-            raise ValueError(f"Expected value.dtype {input.dtype}, got {value.dtype}")
-        shapes = dict(
-            input_shape=tuple(input.shape),
-            mask_shape=tuple(mask.shape),
-            value_shape=tuple(value.shape),
-        )
-        n_total = prod(self._infer_output_shapes(*shapes.values())["output"])
+        n_total = torch.broadcast_shapes(input.shape, mask.shape).numel()
         input = input.contiguous()
         mask = mask.contiguous()
         value = value.contiguous()
-        result = self._kernel((input, mask, value), input.dtype, n_total)(input, mask, value)
-        self._note_call(input.dtype, **shapes)
-        return result
+        return self._kernel((input, mask, value), input.dtype, n_total)(input, mask, value)
 
     def forward(
         self,
@@ -127,17 +69,8 @@ class MaskedFillFwdOp(_PerDtypeKernels, Op):
         mask: torch.Tensor,
         value: torch.Tensor,
     ) -> torch.Tensor:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            input: Input tensor, dtype ``bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``.
-            mask: Input tensor, dtype ``bool``.
-            value: Input tensor, dtype ``same_as(input)``.
-
-        Returns:
-            ``output``, as the manifest declares. Shape rules: ``output.shape == broadcast_shapes(input.shape, mask.shape)``.
-        """
-        return type(self)._wrapped(input, mask, value, self._instance_key)
+        """Run the op on ``input``, ``mask`` and ``value``."""
+        return self._call_boundary(input, mask, value)
 
 
 class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
@@ -145,25 +78,21 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
 
     Conforms to ``torch.Tensor.masked_fill(mask, value: Number)``. Output
     shape follows the bidirectional broadcast of ``input`` and ``mask``.
-
-    The manifest declares the PyTorch dtype union (``bool | uint8 |
-    int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``); every
-    union member dispatches to a real kernel. A bool operand is served by
-    whatever storage the selected kernel requires; the op passes and receives
-    semantic bool either way.
-
+    Every dtype of the manifest union dispatches to a real kernel. A bool operand
+    is served by whatever storage the selected kernel requires; the op passes and
+    receives semantic bool either way.
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
-
-    _op_name = "masked_fill"
+    compile_boundary: ClassVar[bool] = True
+    kernel_types = {"masked_fill": MaskedFillFwdKernel}
 
     def __init__(
         self,
         *,
-        value: bool | int | float = 0,
+        value: bool | int | float = 0.0,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -179,87 +108,35 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
                 the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional dispatch override mapping kernel keys to
                 ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
+            tune: Whether to autotune.
         """
         self.value = value
         self.target = target
-        self.input_shape: Optional[tuple] = None
-        self.mask_shape: Optional[tuple] = None
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
 
     def _build(self, dtype: torch.dtype, n_total: int):
         """The fill value is baked in, so it is checked against each dtype."""
         impl, compute = self._selected_kernel_cls().specialize(dtype)
-        supported = impl.SUPPORTED_DTYPES
-        if supported is not None and compute not in supported:
-            names = ", ".join(str(dt) for dt in (torch.bool, *supported))
-            raise ValueError(
-                f"{self._op_name} does not support dtype {dtype}. Supported: [{names}]"
-            )
+        self._check_kernel_dtype(impl, dtype, compute)
         _validate_scalar_param_repr(
             "value",
             self.value,
             dtype,
-            self._op_name,
+            self._slot,
             allow_nonfinite_float=True,
         )
         # The scalar is baked in, so it is normalized to the semantic dtype's
         # value set — bool takes 0 or 1 whatever storage the kernel picked.
         value = (1 if bool(self.value) else 0) if dtype == torch.bool else self.value
-        return impl(n_total, compute, value)
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"masked_fill": MaskedFillFwdKernel}
-
-    def _infer_output_shapes(self, input_shape: tuple, mask_shape: tuple) -> Dict[str, tuple]:
-        """Manifest ``shape_rules``: the broadcast of ``input`` and ``mask``."""
-        return {
-            "output": broadcast_or_raise(
-                "MaskedFillScalarFwdOp", input=input_shape, mask=mask_shape
-            )
-        }
-
-    @property
-    def out_shape(self) -> tuple:
-        """Broadcast output shape of the most recent forward."""
-        if self.input_shape is None:
-            raise RuntimeError(
-                "MaskedFillScalarFwdOp needs a prior forward() call: the operand "
-                "shapes arrive with the tensors"
-            )
-        return self._infer_output_shapes(self.input_shape, self.mask_shape)["output"]
-
-    @property
-    def N_total(self) -> int:
-        """Output element count of the most recent forward."""
-        return prod(self.out_shape)
+        return impl(n_total, compute, value, tune=self.tune)
 
     def _eager_forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        _require_one_device("MaskedFillScalarFwdOp", input=input, mask=mask)
-        self._validate_dtypes(input, mask)
-        shapes = dict(input_shape=tuple(input.shape), mask_shape=tuple(mask.shape))
-        n_total = prod(self._infer_output_shapes(*shapes.values())["output"])
+        n_total = torch.broadcast_shapes(input.shape, mask.shape).numel()
         input = input.contiguous()
         mask = mask.contiguous()
-        result = self._kernel((input, mask), input.dtype, n_total)(input, mask)
-        self._note_call(input.dtype, **shapes)
-        return result
+        return self._kernel((input, mask), input.dtype, n_total)(input, mask)
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            input: Input tensor, dtype ``bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``.
-            mask: Input tensor, dtype ``bool``.
-
-        Returns:
-            ``output``, as the manifest declares. Shape rules: ``output.shape == broadcast_shapes(input.shape, mask.shape)``.
-        """
-        return type(self)._wrapped(input, mask, self._instance_key)
-
-
-# The compile boundary: one operator for this op, registered at import time. The op's
-# key crosses it, and the body trades the key back for the instance — see
-# src/tileops/ops/compile_boundary.py.
-
-# Two variants, two operators: their schemas differ by the value tensor.
+        """Run the op on ``input`` and ``mask``."""
+        return self._call_boundary(input, mask)

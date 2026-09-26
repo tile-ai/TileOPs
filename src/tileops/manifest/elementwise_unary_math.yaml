@@ -14,809 +14,467 @@ ExpFwdOp:
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      exp: ExpFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 LogFwdOp:
   ref_api: "torch.log"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      log: LogFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 SqrtFwdOp:
   ref_api: "torch.sqrt"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      sqrt: SqrtFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 RsqrtFwdOp:
   ref_api: "torch.rsqrt"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      rsqrt: RsqrtFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 AbsFwdOp:
   ref_api: "torch.abs"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      abs: AbsFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 NegFwdOp:
   ref_api: "torch.neg"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      neg: NegFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 ReciprocalFwdOp:
   ref_api: "torch.reciprocal"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    # Integral inputs promote to float32 (matches torch.reciprocal); float
+    # inputs preserve their dtype.
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      # Integral inputs promote to float32 (matches torch.reciprocal); float
-      # inputs preserve their dtype.
-      output: {dtype: "promote_int_to_float(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: "promote_int_to_float(T)", shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    # An integral input promotes to float32 on the way out, so the write is
-    # not priced at the read's element size.
-    bytes: "N * elem_bytes + N * out_elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      reciprocal: ReciprocalFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 SignFwdOp:
   ref_api: "torch.sign"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
     # 2 comparisons per element (sign uses two compares + selects)
-    flops: "2 * N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      sign: SignFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "2 * prod(S)"
 
 SinFwdOp:
   ref_api: "torch.sin"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      sin: SinFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 CosFwdOp:
   ref_api: "torch.cos"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      cos: CosFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 FloorFwdOp:
   ref_api: "torch.floor"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      floor: FloorFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 CeilFwdOp:
   ref_api: "torch.ceil"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      ceil: CeilFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 RoundFwdOp:
   ref_api: "torch.round"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
-    inputs:
-      input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(input)"}
+    forall: {S: Shape, T: "DType[uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32]"}
     params:
       decimals: {type: int, default: 0, kw_only: true}
-    shape_rules:
-    - "output.shape == input.shape"
+    inputs:
+      input: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      round: RoundFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 TruncFwdOp:
   ref_api: "torch.trunc"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      trunc: TruncFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 ErfFwdOp:
   ref_api: "torch.erf"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      erf: ErfFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 Log1pFwdOp:
   ref_api: "torch.log1p"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
     # log(1 + x): 1 add + 1 log
-    flops: "2 * N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      log1p: Log1pFwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "2 * prod(S)"
 
 Expm1FwdOp:
   ref_api: "torch.expm1"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
     # exp(x) - 1: 1 exp + 1 sub
-    flops: "2 * N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/math_unary.py
-    kernel_map:
-      expm1: Expm1FwdKernel
-    op: tileops/ops/elementwise/math_unary.py
-    test: tests/ops/test_unary_math.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "2 * prod(S)"
 
 SigmoidFwdOp:
   ref_api: "torch.sigmoid"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
     # FLOPs: sigmoid(x) = 1 / (1 + exp(-x)).
     # neg(1) + exp(1) + add(1) + recip(1) = 4 per elem.
-    flops: "4 * N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/activations.py
-    kernel_map:
-      sigmoid: SigmoidFwdKernel
-    op: tileops/ops/elementwise/activations.py
-    test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_elementwise_manifest.py
-    bench_manifest_driven: true
+    flops: "4 * prod(S)"
 
 TanhFwdOp:
   ref_api: "torch.tanh"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
     # FLOPs: tanh is one transcendental call; per roofline.md §1.3
     # convention, transcendentals count as 1 FLOP per element.
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/activations.py
-    kernel_map:
-      tanh: TanhFwdKernel
-    op: tileops/ops/elementwise/activations.py
-    test: tests/ops/test_activation.py
-    bench: benchmarks/ops/bench_elementwise_manifest.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 LogicalNotFwdOp:
   ref_api: "torch.logical_not"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "bool"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: bool, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [bool, float16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [bool], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: bool}, {T: float16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: bool}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    # Read input (elem_bytes) + write output (1 byte for bool)
-    bytes: "N * elem_bytes + N"
-
-  source:
-    kernel: tileops/kernels/elementwise/logical.py
-    kernel_map:
-      logical_not: LogicalNotFwdKernel
-    op: tileops/ops/elementwise/logical.py
-    test: tests/ops/test_logical.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 BitwiseNotFwdOp:
   ref_api: "torch.bitwise_not"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[bool | uint8 | int8 | int16 | int32 | int64]"}
     inputs:
-      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [int32, int64], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [int32], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: int32}, {T: int64}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: int32}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    bytes: "2 * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/elementwise/bitwise.py
-    kernel_map:
-      bitwise_not: BitwiseNotFwdKernel
-    op: tileops/ops/elementwise/bitwise.py
-    test: tests/ops/test_bitwise.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 IsnanFwdOp:
   ref_api: "torch.isnan"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "bool"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: bool, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    # Read input (elem_bytes) + write output (1 byte for bool)
-    bytes: "N * elem_bytes + N"
-
-  source:
-    kernel: tileops/kernels/elementwise/comparison.py
-    kernel_map:
-      isnan: IsnanFwdKernel
-    op: tileops/ops/elementwise/comparison.py
-    test: tests/ops/test_special_elementwise.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 IsinfFwdOp:
   ref_api: "torch.isinf"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "bool"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: bool, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    # Read input (elem_bytes) + write output (1 byte for bool)
-    bytes: "N * elem_bytes + N"
-
-  source:
-    kernel: tileops/kernels/elementwise/comparison.py
-    kernel_map:
-      isinf: IsinfFwdKernel
-    op: tileops/ops/elementwise/comparison.py
-    test: tests/ops/test_special_elementwise.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 IsfiniteFwdOp:
   ref_api: "torch.isfinite"
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    forall: {S: Shape, T: "DType[bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      output: {dtype: "bool"}
-    shape_rules:
-    - "output.shape == input.shape"
+      output: {dtype: bool, shape: "[*S]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    vars:
-      N: "product(input.shape)"
-    flops: "N"
-    # Read input (elem_bytes) + write output (1 byte for bool)
-    bytes: "N * elem_bytes + N"
-
-  source:
-    kernel: tileops/kernels/elementwise/comparison.py
-    kernel_map:
-      isfinite: IsfiniteFwdKernel
-    op: tileops/ops/elementwise/comparison.py
-    test: tests/ops/test_special_elementwise.py
-    bench: benchmarks/ops/bench_unary_elementwise.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 DropoutFwdOp:
   ref_api: "torch.nn.functional.dropout"
@@ -824,40 +482,24 @@ DropoutFwdOp:
   status: implemented
 
   signature:
-    inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      output: {dtype: "same_as(input)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
       p: {type: float, default: 0.5}
       seed: {type: int, default: 0}
       training: {type: bool, default: true}
+    inputs:
+      input: {dtype: T, shape: "[*S]"}
+    outputs:
+      output: {dtype: T, shape: "[*S]"}
     shape_rules:
-    - "input.numel() > 0"
     - "0.0 <= p <= 1.0"
 
   workloads:
   # Normal kernel path. p=0, p=1, and training=false are short-circuit paths
   # and should be tested separately from release-facing roofline workloads.
-  - {input_shape: [1024, 4096], p: 0.5, training: true, dtypes: [float16, float32], label: "tokens-1k-hidden-4k"}
-  - {input_shape: [1024, 10240], p: 0.5, training: true, dtypes: [bfloat16], label: "tokens-1k-hidden-10k"}
+  - {S: [1024, 4096], p: 0.5, training: true, dtype_cases: [{T: float16}, {T: float32}], label: "tokens-1k-hidden-4k"}
+  - {S: [1024, 10240], p: 0.5, training: true, dtype_cases: [{T: bfloat16}], label: "tokens-1k-hidden-10k"}
 
   roofline:
-    func: "tileops.perf.formulas.dropout_roofline"
-    # Which positions a call drops is drawn at run time, so no smaller subset of
-    # the input is the one this call reads, and the read half stays the whole of
-    # it. A kernel may still skip a dropped position's load, which is what the
-    # exception below states. Outside its condition the declared read half
-    # stands: eval mode and p == 0 copy the input, p == 1 declares no read.
-    read_bound_exception:
-      when: "training and 0.0 < p < 1.0"
-      reason: "the mask can predicate away a dropped position's load"
-
-  source:
-    kernel: tileops/kernels/dropout.py
-    kernel_map:
-      dropout: DropoutKernel
-    op: tileops/ops/dropout.py
-    test: tests/ops/test_dropout.py
-    bench: benchmarks/ops/bench_dropout.py
-    bench_manifest_driven: true
+    flops: "prod(S) if training and 0.0 < p < 1.0 else 0"
+    bytes: "bytes(output) if training and p == 1.0 else bytes(input) + bytes(output)"

@@ -145,7 +145,16 @@ INPUT_BUILDERS = {
 
 # A parametric entry's calls whose read half is not a lower bound: op name -> (condition over
 # the call's ``ix``, reason). A legacy entry declares it as ``roofline.read_bound_exception``.
-READ_BOUND_EXCEPTIONS: dict = {}
+READ_BOUND_EXCEPTIONS: dict = {
+    # Which positions a call drops is drawn at run time, so no smaller subset of the input
+    # is the one this call reads, and the read half stays the whole of it. Outside the
+    # condition the declared read half stands: eval mode and p == 0 copy the input, p == 1
+    # declares no read.
+    "DropoutFwdOp": (
+        lambda ix: ix["training"] and 0.0 < ix["p"] < 1.0,
+        "the mask can predicate away a dropped position's load",
+    ),
+}
 
 
 def _is_parametric(entry: dict) -> bool:

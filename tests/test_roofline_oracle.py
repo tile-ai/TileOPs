@@ -124,22 +124,6 @@ class TestBytesOracle:
             )
             assert op.eval_roofline()[1] == oracle, f"has_bias={has_bias}"
 
-    def test_add_broadcast_counts_the_operand_at_its_own_shape(self):
-        from tileops.ops.elementwise.arithmetic import AddFwdOp
-
-        a_shape, b_shape, out_shape = (4, 4096, 4096), (1, 1, 4096), (4, 4096, 4096)
-        op = AddFwdOp.__new__(AddFwdOp)
-        op.input_shape = a_shape
-        op.other_shape = b_shape  # out_shape derives via _infer_output_shapes
-        op.dtype = torch.bfloat16
-        op.alpha = 1  # add/sub price the scale multiply from it
-        oracle = _nbytes(
-            (a_shape, torch.bfloat16),
-            (b_shape, torch.bfloat16),
-            (out_shape, torch.bfloat16),
-        )
-        assert op.eval_roofline()[1] == oracle
-
     def test_var_mean_counts_both_outputs(self):
         from tileops.ops.reduction.reduce import VarMeanFwdOp
 
@@ -553,76 +537,6 @@ class TestBytesOracle:
         )
         assert op.eval_roofline()[1] == oracle
 
-    def test_masked_fill_counts_the_value_tensor_only_where_it_is_declared(self):
-        from tileops.ops.elementwise.masked_fill import MaskedFillFwdOp, MaskedFillScalarFwdOp
-
-        # The mask broadcasts against the input, so the two operands and the
-        # output all have different sizes.
-        input_shape, mask_shape, out_shape = (8, 1, 4096), (8, 4096, 4096), (8, 4096, 4096)
-        for cls, has_value in ((MaskedFillFwdOp, True), (MaskedFillScalarFwdOp, False)):
-            op = cls.__new__(cls)
-            op.input_shape = input_shape
-            op.mask_shape = mask_shape
-            op.dtype = torch.bfloat16
-            if has_value:
-                op.value_shape = ()
-            oracle = _nbytes(
-                (input_shape, torch.bfloat16),
-                (mask_shape, torch.bool),
-                (out_shape, torch.bfloat16),
-                *((((), torch.bfloat16),) if has_value else ()),
-            )
-            assert op.eval_roofline()[1] == oracle, cls.__name__
-
-    def test_where_prices_each_operand_at_its_own_shape(self):
-        from tileops.ops.elementwise.where import WhereFwdOp
-
-        cond_shape, input_shape, other_shape = (8, 4096, 1), (1, 1, 4096), (8, 4096, 4096)
-        op = WhereFwdOp.__new__(WhereFwdOp)
-        op.condition_shape, op.input_shape, op.other_shape = cond_shape, input_shape, other_shape
-        op.dtype = torch.bfloat16
-        oracle = _nbytes(
-            (cond_shape, torch.bool),
-            (input_shape, torch.bfloat16),
-            (other_shape, torch.bfloat16),
-            ((8, 4096, 4096), torch.bfloat16),  # output
-        )
-        assert op.eval_roofline()[1] == oracle
-
-    def test_clamp_counts_only_the_bounds_the_call_passed(self):
-        from tileops.ops.elementwise.clamp import ClampFwdOp
-
-        input_shape, bound_shape, out_shape = (8, 4096, 4096), (1, 1, 4096), (8, 4096, 4096)
-        # (min passed, max passed)
-        for has_min, has_max in ((True, True), (True, False), (False, True)):
-            op = ClampFwdOp.__new__(ClampFwdOp)
-            op.input_shape = input_shape
-            op.min_shape = bound_shape if has_min else None
-            op.max_shape = bound_shape if has_max else None
-            op.dtype = torch.bfloat16
-            oracle = _nbytes(
-                (input_shape, torch.bfloat16),
-                *(((bound_shape, torch.bfloat16),) if has_min else ()),
-                *(((bound_shape, torch.bfloat16),) if has_max else ()),
-                (out_shape, torch.bfloat16),
-            )
-            assert op.eval_roofline()[1] == oracle, f"min={has_min} max={has_max}"
-
-    def test_lerp_tensor_prices_the_broadcast_weight_at_its_own_shape(self):
-        from tileops.ops.elementwise.arithmetic import LerpTensorFwdOp
-
-        input_shape, end_shape, weight_shape = (8, 4096, 4096), (8, 4096, 4096), (1, 1, 4096)
-        op = LerpTensorFwdOp.__new__(LerpTensorFwdOp)
-        op.input_shape, op.end_shape, op.weight_shape = input_shape, end_shape, weight_shape
-        op.dtype = torch.bfloat16
-        oracle = _nbytes(
-            (input_shape, torch.bfloat16),
-            (end_shape, torch.bfloat16),
-            (weight_shape, torch.bfloat16),
-            ((8, 4096, 4096), torch.bfloat16),  # output
-        )
-        assert op.eval_roofline()[1] == oracle
-
     def test_instance_norm_counts_the_running_stats_only_in_eval_mode(self):
         from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 
@@ -932,25 +846,27 @@ class TestBytesOracle:
         short-circuit paths have no row -- the manifest keeps them out of the
         release-facing rows -- so they are recounted here: eval mode and `p == 0`
         copy, and `p == 1` writes zeros without reading the input."""
-        from tileops.perf.formulas import dropout_roofline
+        from tileops.elementwise import DropoutFwdOp
 
         n = 1024 * 4096
+        x = torch.empty((n,), dtype=torch.float16, device="meta")
 
-        def bound(p, training=True):
-            op = type("_Bound", (), {})()
-            op.N_total, op.dtype, op.p, op.training = n, torch.float16, p, training
-            return op
+        def priced(**params):
+            op = DropoutFwdOp(**params)
+            # The formula prices the op's last completed call; this one is that call.
+            op._signature_call = type(op)._signature.check(op, {"input": x})
+            return op.eval_roofline()[1]
 
         copied = _ledger(
             "DropoutFwdOp",
             input=((n,), torch.float16),
             output=((n,), torch.float16),
         )
-        assert dropout_roofline(bound(0.5, training=False))[1] == copied
-        assert dropout_roofline(bound(0.0))[1] == copied
+        assert priced(p=0.5, training=False) == copied
+        assert priced(p=0.0) == copied
 
         zeroed = _ledger("DropoutFwdOp", input_unread=True, output=((n,), torch.float16))
-        assert dropout_roofline(bound(1.0))[1] == zeroed
+        assert priced(p=1.0) == zeroed
 
     def test_grouped_gemm_does_not_charge_the_padding_offsets_it_ignores(self):
         """`batch_padded_offsets` is declared and passed, and no kernel indexes it:

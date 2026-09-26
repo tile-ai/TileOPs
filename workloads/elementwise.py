@@ -1,11 +1,11 @@
 """Workload definitions for elementwise op workloads with custom generators."""
 
 from math import prod
-from typing import Optional
 
 import torch
+import torch.nn.functional as F
 
-from workloads.workload_base import WorkloadBase
+from workloads.workload_base import CallWorkload, WorkloadBase
 
 
 class ReluWorkload(WorkloadBase):
@@ -19,250 +19,6 @@ class ReluWorkload(WorkloadBase):
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return torch.relu(x.float()).to(x.dtype)
-
-
-def _numel(shape: tuple[int, ...]) -> int:
-    return prod(shape) if shape else 1
-
-
-def broadcast_kind(
-    input_shape: tuple[int, ...],
-    other_shape: tuple[int, ...],
-    output_shape: tuple[int, ...],
-) -> str:
-    if input_shape == output_shape and other_shape == output_shape:
-        return "same_shape"
-    if _numel(input_shape) == 1 or _numel(other_shape) == 1:
-        return "scalar_broadcast"
-
-    def _one_side_kind(dense_shape: tuple[int, ...], rhs_shape: tuple[int, ...]) -> str | None:
-        if dense_shape != output_shape:
-            return None
-        if (
-            len(output_shape) >= 4
-            and len(rhs_shape) >= 3
-            and rhs_shape[-2:] == (1, 1)
-            and rhs_shape[-3] == output_shape[-3]
-            and all(dim == 1 for dim in rhs_shape[:-3])
-        ):
-            return "channel_broadcast"
-        if (
-            len(output_shape) >= 2
-            and len(rhs_shape) >= 1
-            and rhs_shape[-1] == output_shape[-1]
-            and all(dim == 1 for dim in rhs_shape[:-1])
-        ):
-            return "last_dim_broadcast"
-        return None
-
-    rhs_kind = _one_side_kind(input_shape, other_shape)
-    if rhs_kind is not None:
-        return rhs_kind
-    lhs_kind = _one_side_kind(other_shape, input_shape)
-    if lhs_kind is not None:
-        return "lhs_" + lhs_kind
-    return "broadcast"
-
-
-class BinaryManifestWorkload:
-    def __init__(
-        self,
-        input_shape: tuple[int, ...],
-        other_shape: tuple[int, ...],
-        dtype: torch.dtype,
-        *,
-        positive: bool = False,
-        integer: bool = False,
-        logical: bool = False,
-    ):
-        self.input_shape = input_shape
-        self.other_shape = other_shape
-        self.shape = tuple(torch.broadcast_shapes(input_shape, other_shape))
-        self.n_total = prod(self.shape)
-        # What kind of broadcast the case exercises, which is the axis its rows
-        # are read along.
-        self.broadcast_kind = broadcast_kind(tuple(input_shape), tuple(other_shape), self.shape)
-        self.dtype = dtype
-        self.positive = positive
-        self.integer = integer
-        self.logical = logical
-
-    def _tensor(self, shape: tuple[int, ...]) -> torch.Tensor:
-        if self.dtype is torch.bool:
-            return torch.randint(0, 2, shape, device="cuda", dtype=torch.bool)
-        if self.integer:
-            return torch.randint(-1000, 1000, shape, device="cuda", dtype=self.dtype)
-        if self.positive:
-            return torch.rand(shape, device="cuda", dtype=self.dtype) + 0.1
-        if self.logical:
-            return (torch.randn(shape, device="cuda", dtype=self.dtype) > 0).to(self.dtype)
-        return torch.randn(shape, device="cuda", dtype=self.dtype)
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._tensor(self.input_shape), self._tensor(self.other_shape)
-
-
-class PreluManifestWorkload:
-    def __init__(
-        self,
-        input_shape: tuple[int, ...],
-        weight_shape: tuple[int, ...],
-        dtype: torch.dtype,
-    ):
-        self.input_shape = input_shape
-        self.weight_shape = weight_shape
-        self.shape = input_shape
-        self.n_total = prod(input_shape)
-        self.dtype = dtype
-
-    @property
-    def num_channels(self) -> int:
-        return self.weight_shape[0] if self.weight_shape else 1
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        weight = torch.rand(self.weight_shape, device="cuda", dtype=self.dtype)
-        return x, weight
-
-
-class MaskedFillTensorManifestWorkload:
-    def __init__(
-        self,
-        input_shape: tuple[int, ...],
-        mask_shape: tuple[int, ...],
-        value_shape: tuple[int, ...],
-        dtype: torch.dtype,
-    ):
-        self.input_shape = input_shape
-        self.mask_shape = mask_shape
-        self.value_shape = value_shape
-        self.shape = tuple(torch.broadcast_shapes(input_shape, mask_shape))
-        self.n_total = prod(self.shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        mask = torch.rand(self.mask_shape, device="cuda") > 0.5
-        value = torch.full(self.value_shape, -100.0, device="cuda", dtype=self.dtype)
-        return x, mask, value
-
-
-class MaskedFillScalarManifestWorkload:
-    def __init__(self, input_shape: tuple[int, ...], dtype: torch.dtype):
-        self.input_shape = input_shape
-        self.mask_shape = input_shape
-        self.shape = input_shape
-        self.n_total = prod(input_shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        mask = torch.rand(self.mask_shape, device="cuda") > 0.5
-        return x, mask
-
-
-class WhereManifestWorkload:
-    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
-        self.condition_shape = shape
-        self.input_shape = shape
-        self.other_shape = shape
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        cond = torch.rand(self.condition_shape, device="cuda") > 0.5
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        y = torch.randn(self.other_shape, device="cuda", dtype=self.dtype)
-        return cond, x, y
-
-
-class LerpTensorManifestWorkload:
-    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype):
-        self.input_shape = shape
-        self.end_shape = shape
-        self.weight_shape = shape
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        end = torch.randn(self.end_shape, device="cuda", dtype=self.dtype)
-        weight = torch.rand(self.weight_shape, device="cuda", dtype=self.dtype)
-        return x, end, weight
-
-
-class TensorClampBenchCase:
-    """Workload adapter for Tensor-bound clamp ops.
-
-    Holds the post-broadcast output shape so :class:`ManifestBenchmark`
-    can read a single ``n_total`` while the bench builds per-operand
-    tensors from the manifest-declared ``input_shape`` / ``min_shape`` /
-    ``max_shape`` keys.
-    """
-
-    def __init__(
-        self,
-        input_shape: tuple,
-        dtype: torch.dtype,
-        min_shape: Optional[tuple] = None,
-        max_shape: Optional[tuple] = None,
-    ):
-        self.input_shape = input_shape
-        self.min_shape = min_shape
-        self.max_shape = max_shape
-        broadcast_args = [input_shape]
-        if min_shape is not None:
-            broadcast_args.append(min_shape)
-        if max_shape is not None:
-            broadcast_args.append(max_shape)
-        self.shape = tuple(torch.broadcast_shapes(*broadcast_args))
-        self.n_total = prod(self.shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
-        tensors: list[torch.Tensor] = [x]
-        if self.min_shape is not None:
-            tensors.append(torch.randn(self.min_shape, device="cuda", dtype=self.dtype) - 0.5)
-        if self.max_shape is not None:
-            tensors.append(torch.randn(self.max_shape, device="cuda", dtype=self.dtype) + 0.5)
-        return tuple(tensors)
-
-
-class _GenerativeWorkload:
-    """Shape/dtype descriptor for the generative ops (no input tensors)."""
-
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple:
-        return ()
-
-
-class Fp8UnaryBenchCase:
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0
-        return (x.to(self.dtype),)
-
-
-class Fp8MaskedFillBenchCase:
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(self.dtype)
-        mask = torch.rand(self.shape, device="cuda") > 0.5
-        return x, mask
 
 
 class BinaryBenchCase:
@@ -500,18 +256,6 @@ class RandnFlatWorkload(WorkloadBase):
         return (torch.randn(self.n_total, device="cuda", dtype=self.dtype),)
 
 
-class ShapedRandnWorkload(WorkloadBase):
-    """One ``randn`` tensor of arbitrary rank, with its element count."""
-
-    def __init__(self, shape: tuple, dtype: torch.dtype):
-        self.shape = tuple(shape)
-        self.n_total = prod(self.shape)
-        self.dtype = dtype
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (torch.randn(self.shape, device="cuda", dtype=self.dtype),)
-
-
 class RandnPairWorkload(WorkloadBase):
     """Two same-shape ``randn`` vectors — the default binary-op input."""
 
@@ -550,8 +294,8 @@ class GatedRandnWorkload(WorkloadBase):
         return (torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda"),)
 
 
-# Value domains. A benchmark or test names the domain its op requires;
-# the draw itself belongs to this layer so both stages get the same tensors.
+# Value domains of the benchmark studies. A study names the domain its op requires;
+# the draw itself belongs to this layer.
 
 
 def draw_normal_pair(shape: tuple, dtype: torch.dtype):
@@ -590,43 +334,6 @@ def draw_positive_broadcast_pair(a_shape, b_shape, dtype):
     return a, b
 
 
-def draw_normal(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
-    return (torch.randn(shape, device="cuda", dtype=dtype),)
-
-
-def draw_positive_away_from_zero(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
-    # Domain restriction for log / sqrt / rsqrt / log1p / reciprocal.
-    return (torch.rand(shape, device="cuda", dtype=dtype) + 0.5,)
-
-
-def draw_bool(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
-    if dtype == torch.bool:
-        x = torch.randint(0, 2, shape, device="cuda", dtype=torch.bool)
-    else:
-        x = torch.randn(shape, device="cuda", dtype=dtype)
-        mask = torch.rand(shape, device="cuda") > 0.5
-        x[mask] = 0
-    return (x,)
-
-
-def draw_int(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
-    info = torch.iinfo(dtype)
-    lo = max(info.min, -1024)
-    hi = min(info.max, 1024)
-    return (torch.randint(lo, hi, shape, device="cuda", dtype=dtype),)
-
-
-def draw_special_floats(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
-    # Mix of normal floats, +/-inf, and NaN — exercises isnan/isinf/isfinite.
-    x = torch.randn(shape, device="cuda", dtype=dtype)
-    flat = x.view(-1)
-    quarter = flat.numel() // 4
-    flat[:quarter] = float("nan")
-    flat[quarter : 2 * quarter] = float("inf")
-    flat[2 * quarter : 3 * quarter] = float("-inf")
-    return (x,)
-
-
 # Domain name -> draw function. The mapping lives here, so a caller names a
 # domain rather than passing a draw, and the set is statically visible.
 PAIR_DOMAINS = {
@@ -640,3 +347,204 @@ BROADCAST_DOMAINS = {
     "normal": draw_normal_broadcast_pair,
     "positive": draw_positive_broadcast_pair,
 }
+
+
+# One manifest call of an elementwise op (docs/design/manifest.md § Workloads).
+
+
+def _draw_normal(shape: tuple, dtype: torch.dtype, device) -> torch.Tensor:
+    if dtype == torch.bool:
+        return torch.randint(0, 2, shape, device=device).bool()
+    if not dtype.is_floating_point:
+        info = torch.iinfo(dtype)
+        return torch.randint(
+            max(info.min, -1000), min(info.max, 1000) + 1, shape, device=device, dtype=dtype
+        )
+    return torch.randn(shape, device=device, dtype=dtype)
+
+
+def _draw_positive(shape: tuple, dtype: torch.dtype, device) -> torch.Tensor:
+    # For ops undefined at or below 0: log, sqrt, reciprocal, division.
+    if not dtype.is_floating_point:
+        return torch.randint(1, 100, shape, device=device, dtype=dtype)
+    return torch.rand(shape, device=device, dtype=dtype) + 0.5
+
+
+def _draw_sparse(shape: tuple, dtype: torch.dtype, device) -> torch.Tensor:
+    # Half zeros, so a logical op sees both truth values.
+    x = _draw_normal(shape, dtype, device)
+    return x.masked_fill(torch.rand(shape, device=device) < 0.5, 0)
+
+
+def _draw_special(shape: tuple, dtype: torch.dtype, device) -> torch.Tensor:
+    # A quarter each of NaN, +Inf, -Inf and finite values, for the isnan family.
+    x = _draw_normal(shape, dtype, device)
+    if dtype.is_floating_point:
+        flat = x.view(-1)
+        quarter = flat.numel() // 4
+        flat[:quarter] = float("nan")
+        flat[quarter : 2 * quarter] = float("inf")
+        flat[2 * quarter : 3 * quarter] = float("-inf")
+    return x
+
+
+_DOMAINS = {
+    **dict.fromkeys(
+        (
+            "LogFwdOp",
+            "SqrtFwdOp",
+            "RsqrtFwdOp",
+            "Log1pFwdOp",
+            "ReciprocalFwdOp",
+            "DivFwdOp",
+            "RemainderFwdOp",
+            "PowFwdOp",
+            "FloorDivideFwdOp",
+        ),
+        _draw_positive,
+    ),
+    **dict.fromkeys(("LogicalNotFwdOp", "LogicalAndFwdOp", "LogicalOrFwdOp"), _draw_sparse),
+    **dict.fromkeys(("IsnanFwdOp", "IsinfFwdOp", "IsfiniteFwdOp"), _draw_special),
+}
+
+
+def alibi_reference(
+    seq_len: int, num_heads: int, dtype: torch.dtype, device="cuda"
+) -> torch.Tensor:
+    """Full ALiBi bias: (num_heads, seq_len, seq_len), bias[h,i,j] = -slope_h * |i-j|."""
+    positions = torch.arange(seq_len, device=device, dtype=torch.float32)
+    dist = (positions.unsqueeze(1) - positions.unsqueeze(0)).abs()
+    slopes = torch.pow(
+        2.0,
+        -8.0 * torch.arange(1, num_heads + 1, device=device, dtype=torch.float32) / num_heads,
+    )
+    return (-slopes[:, None, None] * dist[None, :, :]).to(dtype)
+
+
+def sinusoidal_reference(
+    seq_len: int, d_model: int, dtype: torch.dtype, device="cuda"
+) -> torch.Tensor:
+    """Sinusoidal encoding: (seq_len, d_model), sin on even columns, cos on odd ones."""
+    pos = torch.arange(seq_len, device=device, dtype=torch.float32).unsqueeze(1)
+    dim = torch.arange(0, d_model, 2, device=device, dtype=torch.float32)
+    angles = pos / torch.pow(10000.0, dim / d_model)
+    pe = torch.zeros(seq_len, d_model, device=device, dtype=torch.float32)
+    pe[:, 0::2] = torch.sin(angles)
+    pe[:, 1::2] = torch.cos(angles)
+    return pe.to(dtype)
+
+
+def _gated(activation):
+    def reference(a: dict, x: torch.Tensor) -> torch.Tensor:
+        half = x.shape[-1] // 2
+        return activation(x[..., :half]) * x[..., half:]
+
+    return reference
+
+
+# Each op's reference: its constructor arguments, then its inputs in signature order.
+_REFERENCES = {
+    "ExpFwdOp": lambda a, x: torch.exp(x),
+    "LogFwdOp": lambda a, x: torch.log(x),
+    "SqrtFwdOp": lambda a, x: torch.sqrt(x),
+    "RsqrtFwdOp": lambda a, x: torch.rsqrt(x),
+    "AbsFwdOp": lambda a, x: torch.abs(x),
+    "NegFwdOp": lambda a, x: torch.neg(x),
+    "ReciprocalFwdOp": lambda a, x: torch.reciprocal(x),
+    "SignFwdOp": lambda a, x: torch.sign(x),
+    "SinFwdOp": lambda a, x: torch.sin(x),
+    "CosFwdOp": lambda a, x: torch.cos(x),
+    "FloorFwdOp": lambda a, x: torch.floor(x),
+    "CeilFwdOp": lambda a, x: torch.ceil(x),
+    "RoundFwdOp": lambda a, x: torch.round(x, decimals=a["decimals"]),
+    "TruncFwdOp": lambda a, x: torch.trunc(x),
+    "ErfFwdOp": lambda a, x: torch.erf(x),
+    "Log1pFwdOp": lambda a, x: torch.log1p(x),
+    "Expm1FwdOp": lambda a, x: torch.expm1(x),
+    "SigmoidFwdOp": lambda a, x: torch.sigmoid(x),
+    "TanhFwdOp": lambda a, x: torch.tanh(x),
+    "LogicalNotFwdOp": lambda a, x: torch.logical_not(x),
+    "BitwiseNotFwdOp": lambda a, x: torch.bitwise_not(x),
+    "IsnanFwdOp": lambda a, x: torch.isnan(x),
+    "IsinfFwdOp": lambda a, x: torch.isinf(x),
+    "IsfiniteFwdOp": lambda a, x: torch.isfinite(x),
+    "DropoutFwdOp": lambda a, x: F.dropout(x, p=a["p"], training=a["training"]),
+    "ReluFwdOp": lambda a, x: F.relu(x, a["inplace"]),
+    "GeluFwdOp": lambda a, x: F.gelu(x, approximate=a["approximate"]),
+    "SiluFwdOp": lambda a, x: F.silu(x, a["inplace"]),
+    "HardswishFwdOp": lambda a, x: F.hardswish(x, a["inplace"]),
+    "HardsigmoidFwdOp": lambda a, x: F.hardsigmoid(x, a["inplace"]),
+    "MishFwdOp": lambda a, x: F.mish(x, a["inplace"]),
+    "SeluFwdOp": lambda a, x: F.selu(x, a["inplace"]),
+    "LeakyReluFwdOp": lambda a, x: F.leaky_relu(x, a["negative_slope"], a["inplace"]),
+    "EluFwdOp": lambda a, x: F.elu(x, a["alpha"], a["inplace"]),
+    "HardtanhFwdOp": lambda a, x: F.hardtanh(x, a["min_val"], a["max_val"], a["inplace"]),
+    "SoftplusFwdOp": lambda a, x: F.softplus(x, a["beta"], a["threshold"]),
+    "ClampFwdOp": lambda a, x, lo, hi: torch.clamp(x, lo, hi),
+    "ClampScalarFwdOp": lambda a, x: torch.clamp(x, a["min"], a["max"]),
+    "NanToNumFwdOp": lambda a, x: torch.nan_to_num(x, a["nan"], a["posinf"], a["neginf"]),
+    "PreluFwdOp": lambda a, x, w: F.prelu(x, w),
+    "MaskedFillFwdOp": lambda a, x, m, v: x.masked_fill(m, v),
+    "MaskedFillScalarFwdOp": lambda a, x, m: x.masked_fill(m, a["value"]),
+    "AddFwdOp": lambda a, x, y: torch.add(x, y, alpha=a["alpha"]),
+    "SubFwdOp": lambda a, x, y: torch.sub(x, y, alpha=a["alpha"]),
+    "MulFwdOp": lambda a, x, y: torch.mul(x, y),
+    "DivFwdOp": lambda a, x, y: torch.div(x, y, rounding_mode=a["rounding_mode"]),
+    "RemainderFwdOp": lambda a, x, y: torch.remainder(x, y),
+    "PowFwdOp": lambda a, x, y: torch.pow(x, y),
+    "FloorDivideFwdOp": lambda a, x, y: torch.floor_divide(x, y),
+    "LerpFwdOp": lambda a, x, y: torch.lerp(x, y, a["weight"]),
+    "MaximumFwdOp": lambda a, x, y: torch.maximum(x, y),
+    "MinimumFwdOp": lambda a, x, y: torch.minimum(x, y),
+    "EqFwdOp": lambda a, x, y: torch.eq(x, y),
+    "NeFwdOp": lambda a, x, y: torch.ne(x, y),
+    "GtFwdOp": lambda a, x, y: torch.gt(x, y),
+    "LtFwdOp": lambda a, x, y: torch.lt(x, y),
+    "GeFwdOp": lambda a, x, y: torch.ge(x, y),
+    "LeFwdOp": lambda a, x, y: torch.le(x, y),
+    "LogicalAndFwdOp": lambda a, x, y: torch.logical_and(x, y),
+    "LogicalOrFwdOp": lambda a, x, y: torch.logical_or(x, y),
+    "BitwiseAndFwdOp": lambda a, x, y: torch.bitwise_and(x, y),
+    "BitwiseOrFwdOp": lambda a, x, y: torch.bitwise_or(x, y),
+    "BitwiseXorFwdOp": lambda a, x, y: torch.bitwise_xor(x, y),
+    "WhereFwdOp": lambda a, c, x, y: torch.where(c, x, y),
+    "LerpTensorFwdOp": lambda a, x, e, w: torch.lerp(x, e, w),
+    "SiluAndMulFwdOp": _gated(F.silu),
+    "GeluAndMulFwdOp": _gated(F.gelu),
+    "GeluTanhAndMulFwdOp": _gated(lambda g: F.gelu(g, approximate="tanh")),
+    "AlibiFwdOp": lambda a: alibi_reference(
+        a["seq_len"], a["num_heads"], a["out_dtype"], a["device"] or "cuda"
+    ),
+    "SinusoidalFwdOp": lambda a: sinusoidal_reference(
+        a["seq_len"], a["d_model"], a["out_dtype"], a["device"] or "cuda"
+    ),
+}
+
+
+class ElementwiseCall(CallWorkload):
+    """One manifest call of an elementwise op: the row's tensors, drawn from the op's value
+    domain, and the op's reference.
+
+    ``shape`` (the output's) and ``dtype`` (the call's element type) name the case in the
+    benchmark report.
+    """
+
+    def __init__(self, call, device="cuda"):
+        super().__init__(call, device)
+        self.shape = call.tensors["output"][0]
+        self.dtype = getattr(torch, call.ix.get("T") or call.tensors["output"][1])
+
+    def gen_inputs(self) -> tuple:
+        draw = _DOMAINS.get(self.call.signature.name, _draw_normal)
+        specs = (self.call.specs[t] for t in self.call.signature.inputs)
+        return tuple(
+            None if s is None else draw(s.shape, getattr(torch, s.dtype), self.device)
+            for s in specs
+        )
+
+    def arguments(self) -> dict:
+        # No elementwise op takes a construction-time tensor.
+        return self.call.arguments({})
+
+    def ref_program(self, *inputs):
+        return _REFERENCES[self.call.signature.name](self.arguments(), *inputs)

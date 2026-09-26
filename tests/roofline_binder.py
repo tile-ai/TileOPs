@@ -160,14 +160,6 @@ def _attention_bwd(row: dict) -> dict:
     return {**_kv_pair(row), "o_shape": q, "do_shape": q, "lse_shape": (batch, heads, seq_len)}
 
 
-def _elementwise_peers(*names: str):
-    def supplement(row: dict) -> dict:
-        shape = tuple(row["input_shape"])
-        return {f"{name}_shape": shape for name in names}
-
-    return supplement
-
-
 def _normalized_pair(*names: str):
     def supplement(row: dict) -> dict:
         shape = tuple(row.get("normalized_shape") or (row["x_shape"][-1],))
@@ -228,15 +220,6 @@ _ROW_SUPPLEMENT = {
         "grad_out_shape": tuple(row["x_shape"]),
         **{f"{name}_shape": (row["x_shape"][1],) for name in ("weight", "mean", "rstd")},
     },
-    # Broadcast-free elementwise rows: every operand has the output's shape.
-    "WhereFwdOp": _elementwise_peers("condition", "other"),
-    "MaskedFillScalarFwdOp": _elementwise_peers("mask"),
-    "MaskedFillFwdOp": _elementwise_peers("mask"),
-    "LerpTensorFwdOp": _elementwise_peers("end", "weight"),
-    # The broadcast-binary base names its second operand ``other`` whatever the
-    # signature calls it, and that is the name its formula reads.
-    "LerpFwdOp": lambda row: {"other_shape": tuple(row["end_shape"])},
-    "PowFwdOp": lambda row: {"other_shape": tuple(row["exponent_shape"])},
     # RoPE rows give the extents; the layout says how they lay out.
     **{
         name: (
@@ -387,7 +370,6 @@ _ROW_SUPPLEMENT = {
         "cu_seqlens_q_shape": (row["batch"] + 1,),
         "cu_seqlens_k_shape": (row["batch"] + 1,),
     },
-    "DropoutFwdOp": lambda row: {"N_total": prod(row["input_shape"])},
     "FFTC2CFwdOp": lambda row: {"n": row["input_shape"][-1]},
     "FusedTopKOp": lambda row: {"gating_output_shape": (row["num_tokens"], row["num_experts"])},
     "DaCumsumFwdOp": lambda row: {

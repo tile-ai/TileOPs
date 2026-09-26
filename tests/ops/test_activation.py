@@ -362,7 +362,7 @@ def test_prelu_rejects_a_weight_that_does_not_match_the_channel_axis() -> None:
     op = PreluFwdOp()
     weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device="cuda", dtype=dtype)
     bad = torch.randn((2, 8, 4), device="cuda", dtype=dtype)
-    with pytest.raises(ValueError, match=r"weight of length"):
+    with pytest.raises(ValueError, match=r"shape_rules"):
         op(bad, weight)
 
 

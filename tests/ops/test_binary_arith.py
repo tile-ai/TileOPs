@@ -29,7 +29,6 @@ from tileops.ops.elementwise import (
     RemainderFwdOp,
     SubFwdOp,
 )
-from tileops.ops.elementwise.arithmetic import _DIV_KERNEL_BY_ROUNDING_MODE
 from workloads.elementwise import (
     AddBroadcastWorkload,
     PositivePairWorkload,
@@ -743,7 +742,7 @@ def test_float_only_binary_ops_reject_integer_dtype(op_cls, dtype: torch.dtype) 
     shape = (16,)
     op = op_cls()
     a = torch.ones(shape, device="cuda", dtype=dtype)
-    with pytest.raises(ValueError, match="has dtype|does not support dtype"):
+    with pytest.raises(ValueError, match="dtype is outside"):
         op(a, a)
 
 
@@ -755,7 +754,7 @@ def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
     b = torch.randn(16, device="cuda", dtype=torch.float16)
     # The manifest declares ``other`` as ``same_as(input)``; the synthesized
     # gate names the operand that disagrees.
-    with pytest.raises(ValueError, match="same_as"):
+    with pytest.raises(ValueError, match="differs from T"):
         op(a, b)
 
 
@@ -1015,8 +1014,8 @@ def test_div_rounding_mode_eager(rounding_mode: str, dtype: torch.dtype) -> None
 @pytest.mark.smoke
 def test_div_rounding_mode_dispatch() -> None:
     """DivFwdOp wires rounding_mode to the right kernel class and rejects unknown modes."""
-    assert _DIV_KERNEL_BY_ROUNDING_MODE["trunc"] is DivTruncFwdKernel
-    assert _DIV_KERNEL_BY_ROUNDING_MODE["floor"] is FloorDivideFwdKernel
+    assert list(DivFwdOp(rounding_mode="trunc").kernel_map.values()) == [DivTruncFwdKernel]
+    assert list(DivFwdOp(rounding_mode="floor").kernel_map.values()) == [FloorDivideFwdKernel]
     with pytest.raises(ValueError, match="rounding_mode"):
         DivFwdOp(rounding_mode="invalid")
 
@@ -1174,12 +1173,20 @@ def test_add_bool_is_or_not_xor() -> None:
 
 
 @pytest.mark.smoke
+def test_add_rejects_a_float_alpha_for_integer_input() -> None:
+    """``torch.add`` refuses a floating-point ``alpha`` for integral inputs."""
+    x = torch.ones(8, device="cuda", dtype=torch.int32)
+    with pytest.raises(ValueError, match="alpha"):
+        AddFwdOp(alpha=0.5)(x, x)
+
+
+@pytest.mark.smoke
 def test_sub_rejects_bool_dtype() -> None:
     """torch.sub raises on bool; SubFwdOp must reject it at construction time."""
     shape = (16,)
     op = SubFwdOp()
     x = torch.zeros(shape, device="cuda", dtype=torch.bool)
-    with pytest.raises(ValueError, match="has dtype|does not support dtype"):
+    with pytest.raises(ValueError, match="dtype is outside"):
         op(x, x)
 
 
@@ -1212,7 +1219,7 @@ def test_full_union_binary_ops_reject_fp8_dtype(
     shape = (16,)
     op = op_cls()
     x = torch.zeros(shape, device="cuda").to(dtype)
-    with pytest.raises(ValueError, match="has dtype|does not support dtype"):
+    with pytest.raises(ValueError, match="dtype is outside"):
         op(x, x)
 
 

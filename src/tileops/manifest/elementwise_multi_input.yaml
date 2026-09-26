@@ -10,72 +10,46 @@ WhereFwdOp:
   family: elementwise
   status: implemented
 
-  torch_compile_fullgraph: true
   signature:
+    # PyTorch's torch.where broadcasts condition/input/other together;
+    # the output shape is the broadcast of all three.
+    forall: {C: Shape, A: Shape, B: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      condition: {dtype: "bool"}
-      input: {dtype: "float16 | bfloat16 | float32"}
-      other: {dtype: "same_as(input)"}
+      condition: {dtype: bool, shape: "[*C]"}
+      input: {dtype: T, shape: "[*A]"}
+      other: {dtype: T, shape: "[*B]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-      # PyTorch's torch.where broadcasts condition/input/other together;
-      # the output shape is the broadcast of all three.
-    - "output.shape == broadcast_shapes(condition.shape, input.shape, other.shape)"
+      output: {dtype: T, shape: "[*broadcast(C, A, B)]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {C: [4096, 4096], A: [4096, 4096], B: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {C: [16384, 16384], A: [16384, 16384], B: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    # Mixed-dtype op (bool condition + float input/other) — inline mode cannot
-    # express byte accounting because elem_bytes binds to the first input's
-    # dtype (condition = bool = 1 byte). Per docs/design/roofline.md §2.2, ops whose
-    # bytes depend on multiple input dtypes must use func mode.
-    func: "tileops.perf.formulas.where_fwd_roofline"
-
-  source:
-    kernel: tileops/kernels/elementwise/where.py
-    kernel_map:
-      where: WhereFwdKernel
-    op: tileops/ops/elementwise/where.py
-    test: tests/ops/test_special_elementwise.py
-    bench: benchmarks/ops/bench_elementwise_manifest.py
-    bench_manifest_driven: true
+    flops: "prod(broadcast(C, A, B))"
 
 LerpTensorFwdOp:
-  ref_api: "torch.lerp"
   # Tensor-weight variant: weight is a tensor that broadcasts together
   # with input and end (PyTorch's torch.lerp(input, end, weight: Tensor)
   # overload). Implements the 3-way tensor broadcast variant; the Op
   # layer pre-broadcasts/expands to contiguous 1-D tensors before kernel
   # dispatch.
+  ref_api: "torch.lerp"
   family: elementwise
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
+    forall: {A: Shape, E: Shape, W: Shape, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
-      end: {dtype: "same_as(input)"}
-      weight: {dtype: "same_as(input)"}
+      input: {dtype: T, shape: "[*A]"}
+      end: {dtype: T, shape: "[*E]"}
+      weight: {dtype: T, shape: "[*W]"}
     outputs:
-      output: {dtype: "same_as(input)"}
-    shape_rules:
-    - "output.shape == broadcast_shapes(input.shape, end.shape, weight.shape)"
+      output: {dtype: T, shape: "[*broadcast(A, E, W)]"}
 
   workloads:
-  - {input_shape: [4096, 4096], dtypes: [float16, bfloat16, float32], label: "elementwise-16M"}
-  - {input_shape: [16384, 16384], dtypes: [float16, bfloat16], label: "elementwise-256M"}
+  - {A: [4096, 4096], E: [4096, 4096], W: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
+  - {A: [16384, 16384], E: [16384, 16384], W: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    func: "tileops.perf.formulas.lerp_tensor_fwd_roofline"
-
-  source:
-    kernel: tileops/kernels/elementwise/arithmetic.py
-    kernel_map:
-      lerp_tensor: LerpTensorFwdKernel
-    op: tileops/ops/elementwise/arithmetic.py
-    test: tests/ops/test_binary_arith.py
-    bench: benchmarks/ops/bench_elementwise_manifest.py
-    bench_manifest_driven: true
+    flops: "3 * prod(broadcast(A, E, W))"

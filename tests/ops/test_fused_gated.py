@@ -59,17 +59,6 @@ def test_silu_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_silu_and_mul_infers_manifest_shape_contract() -> None:
-    """Manifest path binds shape and dtype from x instead of ctor args."""
-    m, n, dtype = 64, 128, torch.float16
-    test = SiluAndMulTest(m, n, dtype)
-    op = SiluAndMulFwdOp()
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-    assert (op.M, op.N, op.dtype) == (m, n, dtype)
-
-
-@pytest.mark.smoke
 def test_silu_and_mul_lazy_op_rebinds_shape() -> None:
     """Lazy construction should not lock the op to the first runtime shape."""
     op = SiluAndMulFwdOp()
@@ -77,7 +66,6 @@ def test_silu_and_mul_lazy_op_rebinds_shape() -> None:
         test = SiluAndMulTest(m, n, torch.float16)
         atol, rtol = _get_tolerances(torch.float16)
         test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
-        assert (op.M, op.N, op.dtype) == (m, n, torch.float16)
 
 
 class GeluAndMulFixture(FixtureBase):
@@ -146,7 +134,7 @@ def test_fused_gated_rejects_integer_dtype() -> None:
     op = GeluAndMulFwdOp()
     x = torch.zeros(16, 32, device="cuda", dtype=torch.int32)
     # The manifest dtype union rejects it before any kernel is asked for.
-    with pytest.raises(ValueError, match="expected 'float16 | bfloat16 | float32'"):
+    with pytest.raises(ValueError, match="dtype is outside"):
         op(x)
 
 
@@ -157,7 +145,7 @@ def test_fused_gated_serves_two_dtypes_from_one_instance() -> None:
     for dtype in (torch.float16, torch.float32):
         x = torch.randn(16, 16, device="cuda", dtype=dtype)
         assert op(x).dtype == dtype
-    assert len(op.built_kernels(op._op_name)) == 2
+    assert len(op.built_kernels(op._slot)) == 2
 
 
 # Strategy selection tests

@@ -73,7 +73,7 @@ def test_compiled_call_is_refused_the_same_way(empty):
 
 def test_the_op_s_own_validation_precedes_the_refusal():
     """``_eager_forward``'s prelude runs before kernel selection, so it reports first."""
-    with pytest.raises(ValueError, match="needs every input on one device"):
+    with pytest.raises(ValueError, match="needs every tensor on one device"):
         AddFwdOp()(torch.empty(0, 2), torch.empty(0, 2, device="cuda"))
 
 

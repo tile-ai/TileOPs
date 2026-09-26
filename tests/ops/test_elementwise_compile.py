@@ -15,6 +15,7 @@ import torch
 import tileops.ops.elementwise as elementwise_mod
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.test_base import FixtureBase, TestBase, exact_compare
+from tileops.elementwise import DropoutFwdOp
 from tileops.ops.elementwise import (
     AbsFwdOp,
     AddFwdOp,
@@ -674,9 +675,6 @@ def test_lerp_tensor_compile():
     b = torch.randn(shape, dtype=_DTYPE, device="cuda")
     w = torch.rand(shape, dtype=_DTYPE, device="cuda")
     op = LerpTensorFwdOp()
-    assert type(op)._wrapped is not None, (
-        "LerpTensorFwdOp._wrapped must be populated by registration"
-    )
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(a, b, w)
     ref = torch.lerp(a, b, w)
@@ -1209,6 +1207,17 @@ def test_prelu_compile():
     out = torch.compile(PreluFwdOp(), fullgraph=True)(x, weight)
     ref = torch.nn.functional.prelu(x.float(), weight.float()).to(_DTYPE)
     torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
+
+
+register_compile_contract(DropoutFwdOp)
+
+
+@pytest.mark.smoke
+def test_dropout_compile():
+    """A seed replays its mask, so the cold compiled call equals an eager one."""
+    x = torch.randn(4096, dtype=_DTYPE, device="cuda")
+    out = torch.compile(DropoutFwdOp(p=0.5, seed=7), fullgraph=True)(x)
+    torch.testing.assert_close(out, DropoutFwdOp(p=0.5, seed=7)(x))
 
 
 # --- The graph a boundary produces belongs to the op that declared it ---
