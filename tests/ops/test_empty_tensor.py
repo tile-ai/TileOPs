@@ -78,7 +78,7 @@ def test_the_op_s_own_validation_precedes_the_refusal():
 
 
 def test_the_refusal_precedes_what_the_kernel_states():
-    """The kernel's device statement is made at launch, which this call never reaches."""
+    """The empty-input refusal comes before the refusal of a device no kernel runs on."""
     with pytest.raises(ValueError, match=re.escape(_message("ReluFwdOp", "input", (0, 8)))):
         ReluFwdOp()(torch.empty(0, 8))
 

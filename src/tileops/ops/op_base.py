@@ -575,7 +575,6 @@ class Op(ABC):
         Raises:
             OpNotAvailableError: The op has no in-tree implementation for *name*.
         """
-        self._refuse_empty_input(inputs)
 
         # Plain attribute reads and dict lookups, no ``self.__dict__``: this
         # runs inside a dynamo-traced forward on every cache hit, and dynamo
@@ -640,9 +639,31 @@ class Op(ABC):
 
         Raises:
             ValueError: What :meth:`entry_for` raises.
-            OpNotAvailableError: What :meth:`_get_or_build_kernel` raises.
+            OpNotAvailableError: No implementation this op holds runs on the call's device,
+                or what :meth:`_get_or_build_kernel` raises.
         """
+        self._refuse_empty_input(inputs)
+        self._refuse_device(inputs, call)
         return self._get_or_build_kernel(role, inputs, lambda: self.entry_for(role, call))
+
+    def _refuse_device(self, inputs: "Sequence[torch.Tensor | None]", call: object) -> None:
+        """Raise when no implementation in the kernel map declares the call's device type.
+
+        Each implementation states the devices it runs on (``Kernel.devices``), so a replacement
+        that runs elsewhere is asked about its own. The call's device is the call record's, else
+        its inputs' (a CPU-resident input yields to any other), else the op's ``device`` parameter.
+        """
+        tensors = sorted((t for t in inputs if t is not None), key=lambda t: t.device.type == "cpu")
+        device = getattr(call, "device", None) or (tensors[0].device if tensors else None)
+        device = torch.device(device) if device is not None else self._declared_device()
+        classes = (self.kernel_map or {}).values()
+        if device is None or not classes:
+            return
+        if not any(device.type in getattr(c, "devices", Kernel.devices) for c in classes):
+            raise OpNotAvailableError(
+                f"{type(self).__name__}'s in-tree kernels do not run on {device}; known targets "
+                f"for this op: {registered_targets(type(self).__name__)}"
+            )
 
     @classmethod
     @functools.cache

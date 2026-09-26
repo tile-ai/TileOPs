@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Hashable, Optional, Union
+from typing import Any, Callable, ClassVar, Dict, Hashable, Optional, Union
 
 import torch
 
@@ -69,6 +69,10 @@ class Kernel(ABC):
     # integer values decide how much work runs overrides
     # ``autotune_supply_prog`` instead; left False, autotuning refuses.
     autotune_accepts_random_int_inputs: bool = False
+
+    # The device types this implementation runs on. A call on any other device, meta included,
+    # is refused before anything is built; a replacement kernel may declare others.
+    devices: ClassVar[frozenset[str]] = frozenset({"cuda"})
 
     # Whether this implementation is the one behind the specialised ones.
     # A dispatch key may have at most one general implementation applying to a

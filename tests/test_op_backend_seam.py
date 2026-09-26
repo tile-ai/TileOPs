@@ -312,9 +312,35 @@ def test_builtin_keeps_the_in_tree_kernels_even_when_a_target_claims_the_device(
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, target=BUILTIN)
 
     assert op._builder is None or op._builder is not recorder.build_kernel
-    with pytest.raises(ValueError, match="is a CUDA kernel"):
+    with pytest.raises(OpNotAvailableError, match="in-tree kernels do not run on cpu"):
         op(*_inputs())
     assert recorder.calls == [], "BUILTIN went to the in-tree implementation"
+
+
+def test_a_replacement_kernel_runs_on_the_devices_it_declares():
+    """Device support is the kernel class's statement, so a CPU replacement is not refused."""
+    from tileops.kernels.kernel_base import Kernel
+
+    class CpuRMSNorm(Kernel):
+        devices = frozenset({"cpu"})
+
+        def __init__(self, n, eps, dtype, tune=False):
+            super().__init__()
+
+        def forward(self, x, weight):
+            return torch.full_like(x, 7)
+
+    x, weight = _inputs()
+    op = RMSNormFwdOp(NORMALIZED_SHAPE, kernel_map={"rms_norm": CpuRMSNorm}, target=BUILTIN)
+    assert torch.equal(op(x, weight), torch.full_like(x, 7))
+
+
+def test_a_call_without_tensors_is_refused_on_its_declared_device():
+    """The ``device`` parameter decides the call device, and the in-tree kernels run on CUDA."""
+    from tileops.ops.elementwise import AlibiFwdOp
+
+    with pytest.raises(OpNotAvailableError, match="do not run on cpu"):
+        AlibiFwdOp(seq_len=8, num_heads=4, device="cpu", target=BUILTIN)()
 
 
 def test_a_call_with_no_tensor_leaves_the_question_open():
@@ -431,13 +457,13 @@ def test_a_compiled_call_whose_build_fails_pins_nothing():
 
 
 def test_a_settled_instance_is_bound_to_that_target_s_devices():
-    """One instance, one target. A kernel handed a foreign tensor is what says so."""
+    """One instance, one target. A kernel asked for on a foreign device is refused."""
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, target=BUILTIN)
     x = torch.randn(4, *NORMALIZED_SHAPE, dtype=DTYPE, device="cuda")
     weight = torch.randn(*NORMALIZED_SHAPE, dtype=DTYPE, device="cuda")
     op(x, weight)
 
-    with pytest.raises(ValueError, match="is a CUDA kernel"):
+    with pytest.raises(OpNotAvailableError, match="in-tree kernels do not run on cpu"):
         op(*_inputs())  # same signature, CPU tensors
 
 
