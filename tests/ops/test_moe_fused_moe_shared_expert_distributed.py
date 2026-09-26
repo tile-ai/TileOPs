@@ -159,7 +159,6 @@ def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
         # ── vLLM: DeepseekV2MLP (TP-aware, reduce_results=True) ──────────────────
         with set_current_vllm_config(VllmConfig()):
             vllm_mlp = DeepseekV2MLP(
-                hidden_size=H,
                 intermediate_size=F_s,
                 hidden_act="silu",
                 reduce_results=True,
@@ -191,19 +190,14 @@ def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
         # ── TileOPs: FusedMoeSharedExpertFwdOp TP (partial → manual all-reduce) ─────────────
         # Minimal routed expert placeholders (not under test)
         E, K, F = 8, 2, 32
-        gating = torch.randn(T, E, dtype=dtype, device=dev)
+        gating = torch.randn(T, E, device=dev)
         w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
         w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
 
         op = FusedMoeSharedExpertFwdOp(
-            num_tokens=T,
-            num_experts=E,
             top_k=K,
-            hidden_size=H,
-            ffn_size=F,
             scoring_func="softmax",
             renormalize=False,
-            shared_ffn_size=F_s,
             tp_size=tp_size,
             tp_rank=tp_rank,
         )

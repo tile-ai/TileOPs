@@ -3849,7 +3849,7 @@ class TestComposition:
         assert validator.check_l0("op", ok, all_op_names=["op"]) == []
 
         not_a_class = self._entry(
-            [{"name": "s", "op": "tileops.perf.formulas.fused_moe_fwd_bytes"}]
+            [{"name": "s", "op": "tileops.perf.formulas.fused_moe_fwd_roofline"}]
         )
         errors = validator.check_l0("op", not_a_class, all_op_names=["op"])
         assert any("neither a manifest entry nor an importable" in e for e in errors)
@@ -4031,7 +4031,7 @@ class TestRooflineComposition:
 
     def test_valid_composition_accepted(self, validator):
         entry = self._entry(
-            [{"stage": "stage_a", "source": "tileops.perf.formulas.fused_moe_fwd_bytes"}],
+            [{"stage": "stage_a", "source": "tileops.perf.formulas.fused_moe_fwd_roofline"}],
         )
         assert validator.check_l0("op", entry, all_op_names=["op"]) == []
 
@@ -4079,7 +4079,7 @@ class TestRooflineComposition:
     def test_coexists_with_func_mode(self, validator):
         entry = self._entry([{"stage": "stage_a", "formula": "2 * M"}])
         entry["roofline"] = {
-            "func": "tileops.perf.formulas.fused_moe_fwd_bytes",
+            "func": "tileops.perf.formulas.fused_moe_fwd_roofline",
             "composition": entry["roofline"]["composition"],
         }
         assert validator.check_l0("op", entry, all_op_names=["op"]) == []
@@ -4094,7 +4094,7 @@ class TestRooflineComposition:
             [
                 {
                     "stage": "stage_a",
-                    "source": "tileops.perf.formulas.fused_moe_fwd_bytes",
+                    "source": "tileops.perf.formulas.fused_moe_fwd_roofline",
                     "formula": "2 * M",
                 }
             ]

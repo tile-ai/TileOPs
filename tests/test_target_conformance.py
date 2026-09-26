@@ -29,10 +29,6 @@ def _t(*shape: int, dtype: torch.dtype = F16) -> torch.Tensor:
     return torch.empty(shape, dtype=dtype)
 
 
-def _fused_moe(**extra):
-    return dict(num_tokens=8, num_experts=4, top_k=2, hidden_size=64, ffn_size=128, **extra)
-
-
 # Ops whose construction arguments or input shapes no workload row states. Each builds the
 # op and the positional ``forward`` arguments; only dtypes and presence matter here.
 _CASES = {
@@ -103,45 +99,6 @@ _CASES = {
     "GemmW4A16FwdOp": lambda c: (
         c(),
         (_t(16, 128), _t(16, 64, dtype=U8), _t(16, 1), _t(16, 1, dtype=U8)),
-    ),
-    "FusedMoEExpertsFwdOp": lambda c: (
-        c(**_fused_moe()),
-        (
-            *[_t(8, 64)] * 2,
-            _t(4, 256, 64),
-            _t(4, 64, 128),
-            _t(8, 2, dtype=F32),
-            _t(8, 2, dtype=I32),
-            *[_t(4096)] * 2,
-        ),
-    ),
-    "IndexedExpertMLPFwdOp": lambda c: (
-        c(1, 4, 2, 128, 256),
-        (
-            *[_t(1, 128)] * 2,
-            _t(4, 512, 128),
-            _t(4, 128, 256),
-            _t(1, 2, dtype=F32),
-            _t(1, 2, dtype=I32),
-            _t(1 * 2 * 256),
-            _t(1 * 2 * 128),
-        ),
-    ),
-    "FusedMoeFwdOp": lambda c: (
-        c(**_fused_moe()),
-        (_t(8, 64), _t(8, 4, dtype=F32), _t(4, 256, 64), _t(4, 64, 128)),
-    ),
-    "FusedMoeSharedExpertFwdOp": lambda c: (
-        c(**_fused_moe(shared_ffn_size=128)),
-        (
-            _t(8, 64),
-            _t(8, 4, dtype=F32),
-            _t(4, 256, 64),
-            _t(4, 64, 128),
-            None,
-            _t(256, 64),
-            _t(64, 128),
-        ),
     ),
 }
 

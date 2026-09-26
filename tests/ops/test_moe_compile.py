@@ -34,7 +34,7 @@ from tileops.ops.moe import (
     MoePostPermuteFwdOp,
     MoePrePermuteFwdOp,
 )
-from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp
+from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 
 _NUM_EXPERTS = 4
 _TOP_K = 2
@@ -195,44 +195,35 @@ def test_post_permute_owns_its_graph_nodes(dtype: torch.dtype) -> None:
     torch.testing.assert_close(out, eager[0])
 
 
+def _experts_args(tokens, experts_count, top_k, hidden, ffn):
+    return (
+        torch.empty(tokens, hidden, dtype=torch.bfloat16, device="cuda"),
+        torch.randn(tokens, hidden, dtype=torch.bfloat16, device="cuda") * 0.1,
+        torch.randn(experts_count, 2 * ffn, hidden, dtype=torch.bfloat16, device="cuda") * 0.02,
+        torch.randn(experts_count, hidden, ffn, dtype=torch.bfloat16, device="cuda") * 0.02,
+        torch.rand(tokens, top_k, dtype=torch.float32, device="cuda"),
+        torch.randint(0, experts_count, (tokens, top_k), dtype=torch.int32, device="cuda"),
+    )
+
+
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
 def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
     """A composite is not the unit of replacement, so it registers nothing.
 
-    Its graph is the leaves' operators, which is what makes the leaf the thing a
-    target replaces.
+    Its graph is the leaves' operators, which is what makes the leaf the thing a target
+    replaces. The composite builds its pre-permute stage for the call's expert count, so an
+    eager call first holds it; the composite claims no cold traced contract.
     """
-    num_experts, top_k, tokens, hidden, ffn = 4, 2, 4, 128, 128
-    experts = FusedMoEExpertsFwdOp(
-        num_tokens=tokens,
-        num_experts=num_experts,
-        top_k=top_k,
-        hidden_size=hidden,
-        ffn_size=ffn,
-    )
+    experts = FusedMoEExpertsFwdOp()
     assert experts.compile_op_names == ()
-
-    hidden_states = torch.randn(tokens, hidden, dtype=torch.bfloat16, device="cuda")
-    args = (
-        torch.empty(tokens, hidden, dtype=torch.bfloat16, device="cuda"),
-        hidden_states,
-        torch.randn(num_experts, 2 * ffn, hidden, dtype=torch.bfloat16, device="cuda"),
-        torch.randn(num_experts, hidden, ffn, dtype=torch.bfloat16, device="cuda"),
-        torch.rand(tokens, top_k, dtype=torch.float32, device="cuda"),
-        torch.randint(0, num_experts, (tokens, top_k), dtype=torch.int32, device="cuda"),
-        hidden_states.new_empty(0),
-        hidden_states.new_empty(0),
-    )
-    local_pipeline_leaves = (
-        experts._pre_permute,
-        *experts._expert_mlp.kernel_delegates(),
-        experts._post_permute,
-    )
+    args = _experts_args(tokens=64, experts_count=4, top_k=2, hidden=128, ffn=128)
+    experts(*args)
     owned_by_leaves = {
         operator_overload(name)
-        for leaf in local_pipeline_leaves
-        for name in type(leaf).compile_op_names
+        for leaf in experts.kernel_delegates()
+        for op in (leaf, *leaf.kernel_delegates())
+        for name in type(op).compile_op_names
     }
 
     calls = traced_call_targets(experts, *args)
@@ -246,27 +237,26 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
 def test_small_route_experts_compile_to_the_indexed_leaf() -> None:
-    tokens, experts_count, top_k, hidden, ffn = 4, 8, 2, 128, 256
-    experts = FusedMoEExpertsFwdOp(tokens, experts_count, top_k, hidden, ffn)
-    ws1_shape, ws2_shape = experts.workspace_shapes(tokens, ffn, hidden, top_k, experts_count)
-    args = (
-        torch.empty(tokens, hidden, dtype=torch.bfloat16, device="cuda"),
-        torch.randn(tokens, hidden, dtype=torch.bfloat16, device="cuda"),
-        torch.randn(experts_count, 2 * ffn, hidden, dtype=torch.bfloat16, device="cuda"),
-        torch.randn(experts_count, hidden, ffn, dtype=torch.bfloat16, device="cuda"),
-        torch.rand(tokens, top_k, dtype=torch.float32, device="cuda"),
-        torch.randint(0, experts_count, (tokens, top_k), dtype=torch.int32, device="cuda"),
-        torch.empty(ws1_shape, dtype=torch.bfloat16, device="cuda"),
-        torch.empty(ws2_shape, dtype=torch.bfloat16, device="cuda"),
-    )
-
-    assert traced_call_targets(experts, *args) == {
-        operator_overload("tileops::moe_indexed_expert_mlp_fwd")
+    args = _experts_args(tokens=4, experts_count=8, top_k=2, hidden=128, ffn=256)
+    assert traced_call_targets(FusedMoEExpertsFwdOp(), *args) == {
+        operator_overload("tileops::moe_indexed_expert_mlp_fwd_writes_output")
     }
+
+
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_dynamo")
+def test_the_indexed_op_compiles_cold_to_its_operator() -> None:
+    args = _experts_args(tokens=4, experts_count=8, top_k=2, hidden=128, ffn=256)
+    assert_op_owns_graph_nodes(IndexedExpertMLPFwdOp(), *args)
+    compiled_out = torch.empty_like(args[0])
+    torch.compile(IndexedExpertMLPFwdOp(), fullgraph=True)(compiled_out, *args[1:])
+    IndexedExpertMLPFwdOp()(*args)
+    torch.testing.assert_close(compiled_out, args[0])
 
 
 for _op_cls in (
     FusedTopKFwdOp,
+    IndexedExpertMLPFwdOp,
     MoePermuteAlignFwdOp,
     MoePrePermuteFwdOp,
     MoePostPermuteFwdOp,

@@ -4,7 +4,7 @@ Verifies:
   - FusedMoeSharedExpertFwdOp returns (shared_output, routed_output) tuple
   - shared_output matches SharedExpertMLPKernel reference
   - routed_output matches FusedMoe output
-  - When shared_ffn_size=None, shared_output is None
+  - Without the shared weights, shared_output is None
   - TP sharding: partial outputs sum to float32 math reference
 """
 
@@ -29,21 +29,16 @@ def test_fused_moe_shared_expert_basic(num_tokens):
     dev = "cuda"
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
-    gating = torch.randn(T, E, dtype=dtype, device=dev)
+    gating = torch.randn(T, E, device=dev)
     w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
     shared_w_gate_up = torch.randn(F_s * 2, H, dtype=dtype, device=dev) * 0.02
     shared_w_down = torch.randn(H, F_s, dtype=dtype, device=dev) * 0.02
 
     op = FusedMoeSharedExpertFwdOp(
-        num_tokens=T,
-        num_experts=E,
         top_k=K,
-        hidden_size=H,
-        ffn_size=F,
         scoring_func="softmax",
         renormalize=False,
-        shared_ffn_size=F_s,
     )
 
     shared_out, routed_out = op(
@@ -78,11 +73,7 @@ def test_fused_moe_shared_expert_basic(num_tokens):
 
     # routed_out matches FusedMoe
     op_routed = FusedMoeFwdOp(
-        num_tokens=T,
-        num_experts=E,
         top_k=K,
-        hidden_size=H,
-        ffn_size=F,
         scoring_func="softmax",
         renormalize=False,
     )
@@ -92,23 +83,19 @@ def test_fused_moe_shared_expert_basic(num_tokens):
 
 @pytest.mark.smoke
 def test_fused_moe_shared_expert_none():
-    """FusedMoeSharedExpertFwdOp with shared_ffn_size=None returns shared_out=None."""
+    """Without the shared weights, shared_out is None."""
     torch.manual_seed(42)
     T, E, K, H, F = 16, 4, 2, 32, 16
     dtype = torch.bfloat16
     dev = "cuda"
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
-    gating = torch.randn(T, E, dtype=dtype, device=dev)
+    gating = torch.randn(T, E, device=dev)
     w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
 
     op = FusedMoeSharedExpertFwdOp(
-        num_tokens=T,
-        num_experts=E,
         top_k=K,
-        hidden_size=H,
-        ffn_size=F,
     )
 
     shared_out, routed_out = op(hidden, gating, w_gate_up, w_down)
@@ -131,7 +118,7 @@ def test_fused_moe_shared_expert_tp():
     dev = "cuda"
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
-    gating = torch.randn(T, E, dtype=dtype, device=dev)
+    gating = torch.randn(T, E, device=dev)
     w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
     shared_w_gate_up = torch.randn(F_s * 2, H, dtype=dtype, device=dev) * 0.02
@@ -161,11 +148,7 @@ def test_fused_moe_shared_expert_tp():
 
     # routed reference (not affected by TP)
     op_routed = FusedMoeFwdOp(
-        num_tokens=T,
-        num_experts=E,
         top_k=K,
-        hidden_size=H,
-        ffn_size=F,
         scoring_func="softmax",
         renormalize=False,
     )
@@ -175,14 +158,9 @@ def test_fused_moe_shared_expert_tp():
     partial_sum = torch.zeros(T, H, dtype=torch.float32, device=dev)
     for tp_rank in range(tp_size):
         op_tp = FusedMoeSharedExpertFwdOp(
-            num_tokens=T,
-            num_experts=E,
             top_k=K,
-            hidden_size=H,
-            ffn_size=F,
             scoring_func="softmax",
             renormalize=False,
-            shared_ffn_size=F_s,
             tp_size=tp_size,
             tp_rank=tp_rank,
         )
@@ -206,31 +184,22 @@ def test_fused_moe_shared_expert_tp():
 
 @pytest.mark.smoke
 def test_fused_moe_shared_expert_tp_rejects_local_shards():
-    """TP contract: forward() must reject pre-sharded weights with a clear ValueError.
-
-    When tp_size > 1 the op shards weights internally. Callers must always pass
-    full weights. Passing TP-local shards would silently produce wrong results
-    without this guard.
-    """
+    """TP contract: the op shards complete weights itself, so a TP-local shard paired with a
+    complete weight disagrees on the shared width and is refused."""
     T, E, K, H, F, F_s, tp_size = 32, 8, 2, 64, 32, 16, 2
     dtype = torch.bfloat16
     dev = "cuda"
 
     op = FusedMoeSharedExpertFwdOp(
-        num_tokens=T,
-        num_experts=E,
         top_k=K,
-        hidden_size=H,
-        ffn_size=F,
         scoring_func="softmax",
         renormalize=False,
-        shared_ffn_size=F_s,
         tp_size=tp_size,
         tp_rank=0,
     )
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
-    gating = torch.randn(T, E, dtype=dtype, device=dev)
+    gating = torch.randn(T, E, device=dev)
     w_gate_up = torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02
 
@@ -239,7 +208,7 @@ def test_fused_moe_shared_expert_tp_rejects_local_shards():
     # Pass TP-local gate_up shard instead of full weights → must raise
     bad_gate_up = torch.randn(2 * shard_size, H, dtype=dtype, device=dev)
     good_w_down = torch.randn(H, F_s, dtype=dtype, device=dev)
-    with pytest.raises(ValueError, match="full weights"):
+    with pytest.raises(ValueError, match="shared_w"):
         op(
             hidden,
             gating,
@@ -252,7 +221,7 @@ def test_fused_moe_shared_expert_tp_rejects_local_shards():
     # Pass TP-local down shard instead of full weights → must raise
     good_gate_up = torch.randn(2 * F_s, H, dtype=dtype, device=dev)
     bad_w_down = torch.randn(H, shard_size, dtype=dtype, device=dev)
-    with pytest.raises(ValueError, match="full weights"):
+    with pytest.raises(ValueError, match="shared_w"):
         op(
             hidden,
             gating,
@@ -275,12 +244,7 @@ def test_a_replaced_shared_expert_kernel_is_the_one_built():
 
     T, E, K, H, F, F_s = 32, 8, 2, 64, 32, 16
     op = FusedMoeSharedExpertFwdOp(
-        num_tokens=T,
-        num_experts=E,
         top_k=K,
-        hidden_size=H,
-        ffn_size=F,
-        shared_ffn_size=F_s,
         kernel_map={"shared_expert_mlp": Replacement},
     )
     assert op.kernel_map["shared_expert_mlp"] is Replacement
@@ -289,7 +253,7 @@ def test_a_replaced_shared_expert_kernel_is_the_one_built():
     torch.manual_seed(7)
     op(
         torch.randn(T, H, dtype=dtype, device=dev),
-        torch.randn(T, E, dtype=dtype, device=dev),
+        torch.randn(T, E, device=dev),
         torch.randn(E, F * 2, H, dtype=dtype, device=dev) * 0.02,
         torch.randn(E, H, F, dtype=dtype, device=dev) * 0.02,
         shared_w_gate_up=torch.randn(F_s * 2, H, dtype=dtype, device=dev) * 0.02,

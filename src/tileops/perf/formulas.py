@@ -26,8 +26,8 @@ __all__ = [
     "fft_c2c_roofline",
     "fp8_lightning_indexer_roofline",
     "fp8_quant_roofline",
-    "fused_moe_fwd_bytes",
-    "fused_moe_shared_expert_fwd_bytes",
+    "fused_moe_fwd_roofline",
+    "fused_moe_shared_expert_fwd_roofline",
     "gated_deltanet_fwd_roofline",
     "gemm_fwd_roofline",
     "gemm_w4a16_fwd_roofline",
@@ -604,88 +604,69 @@ def moe_post_permute_roofline(call) -> tuple[int, int]:
     return flops, sum(call.bytes(name) for name in call.tensors)
 
 
-def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
-    """Roofline for FusedMoeFwdOp using the last call's active experts.
+def routed_active_experts(call) -> int:
+    """The distinct experts a routed-experts call's ``topk_ids`` selects."""
+    return len({e for row in call.values("topk_ids") for e in row})
 
-    Gating and correction bias are float32; hidden states and weights use
-    ``op.dtype``. Experts with no routed rows contribute no weight traffic.
+
+def _expert_weight_bytes(call) -> int:
+    """One expert's gate/up and down weights."""
+    experts = call.ix["E"]
+    return (call.bytes("w_gate_up") + call.bytes("w_down")) // experts
+
+
+def routed_expert_mlp_roofline(call) -> tuple[int, int]:
+    """The expert MLP of a call handed its routing: the experts ``topk_ids`` selects are read.
+
+    FLOPs are the two GEMMs and the gated activation over every route, independent of which
+    experts the routes land on.
     """
-    num_tokens = int(op.num_tokens)
-    num_experts = int(op.num_experts)
-    flops, nbytes = _routed_expert_core(op)
-    gating_bytes = num_tokens * num_experts * 4  # float32 logits
-    bias_bytes = num_experts * 4 if _supplied(op, "correction_bias") else 0
-    return flops, nbytes + gating_bytes + bias_bytes
+    t, k, f, h = call.ix["T"], call.ix["K"], call.ix["F"], call.ix["H"]
+    flops = 6 * t * k * f * h
+    nbytes = routed_active_experts(call) * _expert_weight_bytes(call)
+    nbytes += 2 * call.bytes("hidden_states")  # the tokens read, the output written
+    nbytes += call.bytes("topk_ids") + call.bytes("topk_weights")
+    return flops, nbytes
 
 
-def routed_expert_active_experts(op: "Op") -> int:
-    """Experts the call's routing selected, which is what its weight reads follow.
+def fused_moe_active_experts(call) -> int:
+    """The experts a router's call reads: those its routed-experts stage was handed, from that
+    stage's checked call, or the data-independent lower bound ``top_k`` where none exists."""
+    stage_calls = (call.stages or {}).get("routed_experts") or ()
+    if not stage_calls:
+        return call.ix["top_k"]
+    return len({e for c in stage_calls for row in c.values("topk_ids") for e in row})
 
-    One implementation, two readers: the cost below, and the op's
-    ``roofline_inputs()``, which reports the count beside the reading.
+
+def fused_moe_fwd_roofline(call) -> tuple[int, int]:
+    """A router with its experts: the experts the routed-experts stage was handed are read.
+
+    The routing is that stage's metadata input, read from its checked call in ``stages``
+    (docs/design/roofline.md §4.7). Where no such call exists, the price takes the
+    data-independent lower bound: each token selects ``top_k`` distinct experts.
     """
-    topk_ids = getattr(op, "_roofline_topk_ids", None)
-    if topk_ids is None:
-        raise RuntimeError(
-            f"{type(op).__name__} needs a prior forward() to determine the active experts"
-        )
-    return int(topk_ids.unique().numel())
+    t, f, h, top_k = call.ix["T"], call.ix["F"], call.ix["H"], call.ix["top_k"]
+    flops = 6 * t * top_k * f * h
+    nbytes = fused_moe_active_experts(call) * _expert_weight_bytes(call)
+    nbytes += 2 * call.bytes("hidden_states")
+    nbytes += call.bytes("gating_output")
+    if call.present("correction_bias"):
+        nbytes += call.bytes("correction_bias")
+    return flops, nbytes
 
 
-def _routed_expert_core(op: "Op") -> tuple[int, int]:
-    """FLOPs and the weight-plus-token bytes shared by every routed expert MLP.
-
-    An expert no route selects contributes no weight traffic, so the weight term
-    follows the call's ``topk_ids`` rather than ``num_experts``. What each op adds
-    on top is the routing it reads: gating logits where it selects the experts
-    itself, the ids and weights where they arrive ready-made.
-    """
-    topk_ids = getattr(op, "_roofline_topk_ids", None)
-    if topk_ids is None:
-        raise RuntimeError(
-            f"{type(op).__name__}.eval_roofline() requires a prior forward() "
-            "to determine the active experts"
-        )
-    num_tokens = int(op.num_tokens)
-    top_k = int(op.top_k)
-    hidden_size = int(op.hidden_size)
-    ffn_size = int(op.ffn_size)
-    elem_bytes = _dtype_itemsize(op.dtype)
-    active_experts = routed_expert_active_experts(op)
-
-    flops = num_tokens * top_k * 6 * ffn_size * hidden_size
-    weight_bytes = active_experts * 3 * ffn_size * hidden_size * elem_bytes
-    token_bytes = 2 * num_tokens * hidden_size * elem_bytes
-    return flops, weight_bytes + token_bytes
-
-
-def routed_expert_mlp_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for the expert MLP ops, which are handed their routing.
-
-    ``topk_ids`` is int32 and ``topk_weights`` float32, four bytes each per route.
-    """
-    flops, nbytes = _routed_expert_core(op)
-    return flops, nbytes + int(op.num_tokens) * int(op.top_k) * (4 + 4)
-
-
-def fused_moe_shared_expert_fwd_bytes(op: "Op") -> tuple[int, int]:
-    """Roofline for FusedMoeSharedExpertFwdOp: the routed cost plus the shared expert's two GEMMs.
-
-    The shared expert runs on this rank's shard only, so TP shrinks that half
-    and leaves the routed half untouched. With no shared expert configured the
-    result is the routed cost alone.
-    """
-    flops, nbytes = fused_moe_fwd_bytes(op)
-    shard_ffn = getattr(op, "_shared_mlp_shard_ffn", None)
-    if shard_ffn is None:
+def fused_moe_shared_expert_fwd_roofline(call) -> tuple[int, int]:
+    """The routed cost of :func:`fused_moe_fwd_roofline`, plus the shared expert's two GEMMs on
+    this rank's shard, its own read of the hidden states and its write of ``shared_output``."""
+    flops, nbytes = fused_moe_fwd_roofline(call)
+    if not call.present("shared_w_gate_up"):
         return flops, nbytes
-    elem_bytes = _dtype_itemsize(op.dtype)
-    weights = 3 * int(shard_ffn) * int(op.hidden_size)
-    tokens = int(op.num_tokens)
-    flops += 2 * tokens * weights
-    # Its own read of the hidden states, and the write of ``shared_output``: the op
-    # returns that half separately, so it is an output of its own.
-    nbytes += (weights + 2 * tokens * int(op.hidden_size)) * elem_bytes
+    t, h = call.ix["T"], call.ix["H"]
+    shard = call.ix["S"] // call.ix["tp_size"]
+    elem = call.bytes("hidden_states") // (t * h)
+    weights = 3 * shard * h
+    flops += 2 * t * weights
+    nbytes += (weights + 2 * t * h) * elem
     return flops, nbytes
 
 

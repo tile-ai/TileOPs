@@ -5,7 +5,7 @@ import torch
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.workload import Call, instantiate
-from workloads.workload_base import CallWorkload, WorkloadBase
+from workloads.workload_base import CallWorkload
 
 
 def moe_call(op: str, dtype_case: dict | None = None, **row) -> Call:
@@ -26,17 +26,9 @@ class FusedTopKWorkload(CallWorkload):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Score, select ``top_k`` (on the biased scores when a bias is passed), renormalize."""
         p = self.call.params
-        logits = gating_output.float()
-        if p["scoring_func"] == "softmax":
-            scores = torch.softmax(logits, dim=-1)
-        else:
-            scores = logits.sigmoid()
-        select = scores if correction_bias is None else scores + correction_bias
-        topk_ids = torch.topk(select, p["top_k"], dim=-1, sorted=False).indices
-        topk_weights = scores.gather(1, topk_ids)
-        if p["renormalize"]:
-            topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
-        return topk_weights, topk_ids.int()
+        return ref_fused_topk(
+            gating_output, correction_bias, p["top_k"], p["scoring_func"], p["renormalize"]
+        )
 
 
 class MoePermuteAlignWorkload(CallWorkload):
@@ -198,223 +190,145 @@ def gated_activation(gate_up: torch.Tensor, activation: str) -> torch.Tensor:
     raise ValueError(f"unknown gated activation: {activation}")
 
 
-class FusedMoeWorkload(WorkloadBase):
-    """Inputs for a single FusedMoe benchmark configuration."""
+def ref_routed_experts(
+    hidden: torch.Tensor,
+    w_gate_up: torch.Tensor,
+    w_down: torch.Tensor,
+    topk_weights: torch.Tensor,
+    topk_ids: torch.Tensor,
+    activation: str = "silu_and_mul",
+    scale: float = 1.0,
+) -> torch.Tensor:
+    """``scale * sum_k w[t, k] * down(act(gate_up(h[t])))`` over each token's routed experts,
+    in fp32 per expert, cast to the hidden dtype."""
+    output = torch.zeros(hidden.shape, dtype=torch.float32, device=hidden.device)
+    ids = topk_ids.to(torch.int64)
+    for e in range(w_gate_up.shape[0]):
+        t_idx, k_idx = (ids == e).nonzero(as_tuple=True)
+        if t_idx.numel() == 0:
+            continue
+        gate_up = hidden[t_idx].float() @ w_gate_up[e].float().T
+        down = gated_activation(gate_up, activation) @ w_down[e].float().T
+        output.index_add_(0, t_idx, down * topk_weights[t_idx, k_idx].float().unsqueeze(-1))
+    return (output * scale).to(hidden.dtype)
 
-    def __init__(
+
+class MoeExpertsWorkload(CallWorkload):
+    """Tokens, expert weights and their routing for one ``FusedMoEExpertsFwdOp`` call."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        output, hidden, w_gate_up, w_down, topk_weights, topk_ids = super().gen_inputs()
+        # Small scales keep fp16 accumulation over H = 7168 finite; routing weights sum to one.
+        return (
+            output,
+            hidden.mul_(0.1),
+            w_gate_up.mul_(0.02),
+            w_down.mul_(0.02),
+            topk_weights.softmax(dim=-1),
+            topk_ids,
+        )
+
+    def ref_program(
         self,
-        num_tokens: int,
-        num_experts: int,
-        top_k: int,
-        hidden_size: int,
-        ffn_size: int,
-        scoring_func: str,
-        renormalize: bool,
-        with_correction_bias: bool,
-        routed_scaling_factor: float,
-        dtype: torch.dtype,
-    ):
-        self.num_tokens = num_tokens
-        self.num_experts = num_experts
-        self.top_k = top_k
-        self.hidden_size = hidden_size
-        self.ffn_size = ffn_size
-        self.scoring_func = scoring_func
-        self.renormalize = renormalize
-        self.with_correction_bias = with_correction_bias
-        self.routed_scaling_factor = routed_scaling_factor
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        g = self.rng(device="cuda")
-        dev = "cuda"
-        hidden = torch.randn(
-            self.num_tokens,
-            self.hidden_size,
-            dtype=self.dtype,
-            device=dev,
-            generator=g,
+        output: torch.Tensor,
+        hidden_states: torch.Tensor,
+        w_gate_up: torch.Tensor,
+        w_down: torch.Tensor,
+        topk_weights: torch.Tensor,
+        topk_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        p = self.call.params
+        return ref_routed_experts(
+            hidden_states,
+            w_gate_up,
+            w_down,
+            topk_weights,
+            topk_ids,
+            p.get("activation", "silu_and_mul"),
+            p["routed_scaling_factor"],
         )
-        gating = torch.randn(
-            self.num_tokens,
-            self.num_experts,
-            dtype=torch.float32,
-            device=dev,
-            generator=g,
-        )
-        correction_bias = (
-            torch.randn(self.num_experts, dtype=torch.float32, device=dev, generator=g) * 0.1
-            if self.with_correction_bias
-            else None
-        )
-        w_gate_up = (
-            torch.randn(
-                self.num_experts,
-                self.ffn_size * 2,
-                self.hidden_size,
-                dtype=self.dtype,
-                device=dev,
-                generator=g,
-            )
-            * 0.02
-        )
-        w_down = (
-            torch.randn(
-                self.num_experts,
-                self.hidden_size,
-                self.ffn_size,
-                dtype=self.dtype,
-                device=dev,
-                generator=g,
-            )
-            * 0.02
-        )
-        return hidden, gating, correction_bias, w_gate_up, w_down
 
 
-class FusedMoeSharedExpertWorkload(WorkloadBase):
-    def __init__(
+class IndexedExpertMLPWorkload(MoeExpertsWorkload):
+    """One ``IndexedExpertMLPFwdOp`` call: the same inputs and reference as the expert MLP."""
+
+
+def ref_fused_topk(
+    gating_output: torch.Tensor,
+    correction_bias: torch.Tensor | None,
+    top_k: int,
+    scoring_func: str,
+    renormalize: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Score, select ``top_k`` (on the biased scores when a bias is passed), renormalize."""
+    logits = gating_output.float()
+    scores = torch.softmax(logits, dim=-1) if scoring_func == "softmax" else logits.sigmoid()
+    select = scores if correction_bias is None else scores + correction_bias
+    topk_ids = torch.topk(select, top_k, dim=-1, sorted=False).indices
+    topk_weights = scores.gather(1, topk_ids)
+    if renormalize:
+        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+    return topk_weights, topk_ids.int()
+
+
+class FusedMoeWorkload(CallWorkload):
+    """Tokens, gating logits and expert weights for one ``FusedMoeFwdOp`` call.
+
+    The logits come from the workload's own generator: they decide the experts the call
+    reads, which the roofline prices (docs/design/roofline.md §4.7).
+    """
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        hidden, gating, w_gate_up, w_down, bias, *rest = super().gen_inputs()
+        g = self.rng(device=gating.device)
+        gating = torch.randn(gating.shape, generator=g, device=gating.device)
+        if bias is not None:
+            bias = torch.randn(bias.shape, generator=g, device=bias.device) * 0.1
+        return (hidden.mul_(0.1), gating, w_gate_up.mul_(0.02), w_down.mul_(0.02), bias, *rest)
+
+    def ref_routed(self, hidden, gating, w_gate_up, w_down, bias) -> torch.Tensor:
+        p = self.call.params
+        weights, ids = ref_fused_topk(gating, bias, p["top_k"], p["scoring_func"], p["renormalize"])
+        return ref_routed_experts(
+            hidden, w_gate_up, w_down, weights, ids, p["activation"], p["routed_scaling_factor"]
+        )
+
+    def ref_program(self, hidden_states, gating_output, w_gate_up, w_down, correction_bias=None):
+        return self.ref_routed(hidden_states, gating_output, w_gate_up, w_down, correction_bias)
+
+
+class FusedMoeSharedExpertWorkload(FusedMoeWorkload):
+    """One ``FusedMoeSharedExpertFwdOp`` call: FusedMoe's inputs plus the shared weights."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        *routed, shared_w_gate_up, shared_w_down = super().gen_inputs()
+        if shared_w_gate_up is not None:
+            shared_w_gate_up.mul_(0.02)
+            shared_w_down.mul_(0.02)
+        return (*routed, shared_w_gate_up, shared_w_down)
+
+    def ref_program(
         self,
-        num_tokens,
-        num_experts,
-        top_k,
-        hidden_size,
-        ffn_size,
-        shared_ffn_size,
-        scoring_func,
-        renormalize,
-        with_correction_bias,
-        routed_scaling_factor,
-        dtype,
+        hidden_states,
+        gating_output,
+        w_gate_up,
+        w_down,
+        correction_bias=None,
+        shared_w_gate_up=None,
+        shared_w_down=None,
     ):
-        self.num_tokens = num_tokens
-        self.num_experts = num_experts
-        self.top_k = top_k
-        self.hidden_size = hidden_size
-        self.ffn_size = ffn_size
-        self.shared_ffn_size = shared_ffn_size
-        self.scoring_func = scoring_func
-        self.renormalize = renormalize
-        self.with_correction_bias = with_correction_bias
-        self.routed_scaling_factor = routed_scaling_factor
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        g = self.rng(device="cuda")
-        dev = "cuda"
-        hidden = torch.randn(
-            self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev, generator=g
-        )
-        gating = torch.randn(
-            self.num_tokens, self.num_experts, dtype=self.dtype, device=dev, generator=g
-        )
-        correction_bias = (
-            torch.randn(self.num_experts, dtype=torch.float32, device=dev, generator=g) * 0.1
-            if self.with_correction_bias
-            else None
-        )
-        w_gate_up = (
-            torch.randn(
-                self.num_experts,
-                self.ffn_size * 2,
-                self.hidden_size,
-                dtype=self.dtype,
-                device=dev,
-                generator=g,
-            )
-            * 0.02
-        )
-        w_down = (
-            torch.randn(
-                self.num_experts,
-                self.hidden_size,
-                self.ffn_size,
-                dtype=self.dtype,
-                device=dev,
-                generator=g,
-            )
-            * 0.02
-        )
-        # Shared expert weights: gate+up concatenated [2*Fs, H], down [H, Fs].
-        # ``shared_ffn_size is None`` is the routed-only configuration, where the
-        # op takes no shared weights and returns None in their output position.
-        if self.shared_ffn_size is None:
-            shared_w_gate_up = None
-            shared_w_down = None
-        else:
-            shared_w_gate_up = (
-                torch.randn(
-                    self.shared_ffn_size * 2,
-                    self.hidden_size,
-                    dtype=self.dtype,
-                    device=dev,
-                    generator=g,
-                )
-                * 0.02
-            )
-            shared_w_down = (
-                torch.randn(
-                    self.hidden_size,
-                    self.shared_ffn_size,
-                    dtype=self.dtype,
-                    device=dev,
-                    generator=g,
-                )
-                * 0.02
-            )
-        return hidden, gating, correction_bias, w_gate_up, w_down, shared_w_gate_up, shared_w_down
-
-
-class MoeExpertsWorkload(WorkloadBase):
-    def __init__(self, num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype):
-        self.num_tokens = num_tokens
-        self.num_experts = num_experts
-        self.top_k = top_k
-        self.hidden_size = hidden_size
-        self.ffn_size = ffn_size
-        self.dtype = dtype
-
-    def gen_inputs(self):
-        g = self.rng(device="cuda")
-        dev = "cuda"
-        hidden = torch.randn(
-            self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev, generator=g
-        )
-        w1 = (
-            torch.randn(
-                self.num_experts,
-                self.ffn_size * 2,
-                self.hidden_size,
-                dtype=self.dtype,
-                device=dev,
-                generator=g,
-            )
-            * 0.02
-        )
-        w2 = (
-            torch.randn(
-                self.num_experts,
-                self.hidden_size,
-                self.ffn_size,
-                dtype=self.dtype,
-                device=dev,
-                generator=g,
-            )
-            * 0.02
-        )
-        topk_weights = torch.softmax(
-            torch.randn(self.num_tokens, self.top_k, dtype=torch.float32, device=dev, generator=g),
-            dim=-1,
-        )
-        topk_ids = torch.randint(
-            0,
-            self.num_experts,
-            (self.num_tokens, self.top_k),
-            dtype=torch.int32,
-            device=dev,
-            generator=g,
-        )
-        return hidden, w1, w2, topk_weights, topk_ids
+        """``(shared_output, routed_output)``; the shared half is this rank's partial sum."""
+        routed = self.ref_routed(hidden_states, gating_output, w_gate_up, w_down, correction_bias)
+        if shared_w_gate_up is None:
+            return None, routed
+        p = self.call.params
+        ffn = shared_w_down.shape[1]
+        shard = ffn // p["tp_size"]
+        lo, hi = p["tp_rank"] * shard, (p["tp_rank"] + 1) * shard
+        gate_up = torch.cat([shared_w_gate_up[lo:hi], shared_w_gate_up[ffn + lo : ffn + hi]])
+        act = gated_activation(hidden_states.float() @ gate_up.float().T, "silu_and_mul")
+        shared = act @ shared_w_down[:, lo:hi].float().T
+        return shared.to(hidden_states.dtype), routed
 
 
 def ref_permute_align(

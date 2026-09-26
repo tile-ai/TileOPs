@@ -144,116 +144,115 @@ class TestBytesOracle:
         )
         assert op.eval_roofline()[1] == oracle
 
-    def test_fused_moe_counts_active_experts_and_bias(self):
-        from tileops.ops.moe.fused_moe import FusedMoeFwdOp
+    @staticmethod
+    def _priced(op, tensors, **stages):
+        """``(flops, bytes)`` of *op*'s formula on the checked call of *tensors* (CPU)."""
+        import dataclasses
 
-        tokens, experts, top_k, hidden, ffn = 2, 8, 2, 64, 32
-        for has_bias in (True, False):
-            op = FusedMoeFwdOp.__new__(FusedMoeFwdOp)
-            op.num_tokens, op.num_experts, op.top_k = tokens, experts, top_k
-            op.hidden_size, op.ffn_size = hidden, ffn
-            op.dtype = torch.bfloat16
-            op.correction_bias_shape = (experts,) if has_bias else None
-            # Only experts 0, 3 and 7 receive rows.
-            op._roofline_topk_ids = torch.tensor([[0, 3], [3, 7]], dtype=torch.int32)
-            oracle = _ledger(
-                "FusedMoeFwdOp",
-                hidden_states=((tokens, hidden), torch.bfloat16),
-                gating_output=((tokens, experts), torch.float32),
-                w_gate_up=((3, 2 * ffn, hidden), torch.bfloat16),  # active experts only
-                w_down=((3, hidden, ffn), torch.bfloat16),  # active experts only
-                correction_bias=(((experts,), torch.float32) if has_bias else None),
-                output=((tokens, hidden), torch.bfloat16),
-            )
-            assert op.eval_roofline()[1] == oracle, f"has_bias={has_bias}"
+        plan = type(op)._signature
+        call = plan.check(op, tensors)
+        return plan.roofline(dataclasses.replace(call, stages=stages))
 
-        del op._roofline_topk_ids
-        with pytest.raises(RuntimeError, match="requires a prior forward"):
-            op.eval_roofline()
+    @staticmethod
+    def _routed_tensors(tokens, experts, top_k, hidden, ffn, ids):
+        bf16 = torch.bfloat16
+        return {
+            "output": torch.empty(tokens, hidden, dtype=bf16),
+            "hidden_states": torch.empty(tokens, hidden, dtype=bf16),
+            "w_gate_up": torch.empty(experts, 2 * ffn, hidden, dtype=bf16),
+            "w_down": torch.empty(experts, hidden, ffn, dtype=bf16),
+            "topk_weights": torch.empty(tokens, top_k),
+            "topk_ids": torch.tensor(ids, dtype=torch.int32),
+        }
 
     def test_routed_expert_mlp_counts_active_experts_and_the_routing(self):
-        from tileops.moe import IndexedExpertMLPFwdOp
+        from tileops.moe import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 
         tokens, experts, top_k, hidden, ffn = 2, 8, 2, 64, 32
-        op = IndexedExpertMLPFwdOp.__new__(IndexedExpertMLPFwdOp)
-        op.num_tokens, op.num_experts, op.top_k = tokens, experts, top_k
-        op.hidden_size, op.ffn_size = hidden, ffn
-        op.dtype = torch.bfloat16
         # Only experts 0, 3 and 7 receive rows.
-        op._roofline_topk_ids = torch.tensor([[0, 3], [3, 7]], dtype=torch.int32)
-        oracle = _ledger(
-            "IndexedExpertMLPFwdOp",
-            hidden_states=((tokens, hidden), torch.bfloat16),
-            w_gate_up=((3, 2 * ffn, hidden), torch.bfloat16),  # active experts only
-            w_down=((3, hidden, ffn), torch.bfloat16),  # active experts only
-            topk_ids=((tokens, top_k), torch.int32),
-            topk_weights=((tokens, top_k), torch.float32),
-            # the pre-allocated buffer is the output, written once; the workspaces
-            # carry WORKSPACE_ATTR, which the metric excludes
-            output=((tokens, hidden), torch.bfloat16),
-            workspace1=None,
-            workspace2=None,
-        )
-        assert op.eval_roofline()[1] == oracle
+        tensors = self._routed_tensors(tokens, experts, top_k, hidden, ffn, [[0, 3], [3, 7]])
+        for cls in (FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp):
+            oracle = _ledger(
+                cls.__name__,
+                hidden_states=((tokens, hidden), torch.bfloat16),
+                w_gate_up=((3, 2 * ffn, hidden), torch.bfloat16),  # active experts only
+                w_down=((3, hidden, ffn), torch.bfloat16),  # active experts only
+                topk_ids=((tokens, top_k), torch.int32),
+                topk_weights=((tokens, top_k), torch.float32),
+                # the caller's buffer is the output, written once
+                output=((tokens, hidden), torch.bfloat16),
+            )
+            assert self._priced(cls(), tensors)[1] == oracle, cls.__name__
 
-        del op._roofline_topk_ids
-        with pytest.raises(RuntimeError, match="requires a prior forward"):
-            op.eval_roofline()
-
-    def test_fused_moe_experts_counts_active_experts_and_the_routing(self):
-        from tileops.moe import FusedMoEExpertsFwdOp
+    def test_fused_moe_counts_the_experts_its_stage_read_and_the_bias(self):
+        from tileops.moe import FusedMoEExpertsFwdOp, FusedMoeFwdOp
 
         tokens, experts, top_k, hidden, ffn = 2, 8, 2, 64, 32
-        op = FusedMoEExpertsFwdOp.__new__(FusedMoEExpertsFwdOp)
-        op.num_tokens, op.num_experts, op.top_k = tokens, experts, top_k
-        op.hidden_size, op.ffn_size = hidden, ffn
-        op.dtype = torch.bfloat16
-        # Only experts 0, 3 and 7 receive rows.
-        op._roofline_topk_ids = torch.tensor([[0, 3], [3, 7]], dtype=torch.int32)
-        oracle = _ledger(
-            "FusedMoEExpertsFwdOp",
-            hidden_states=((tokens, hidden), torch.bfloat16),
-            w_gate_up=((3, 2 * ffn, hidden), torch.bfloat16),  # active experts only
-            w_down=((3, hidden, ffn), torch.bfloat16),  # active experts only
-            topk_ids=((tokens, top_k), torch.int32),
-            topk_weights=((tokens, top_k), torch.float32),
-            output=((tokens, hidden), torch.bfloat16),
-        )
-        assert op.eval_roofline()[1] == oracle
+        routed = self._routed_tensors(tokens, experts, top_k, hidden, ffn, [[0, 3], [3, 7]])
+        stage = FusedMoEExpertsFwdOp()._signature.check(FusedMoEExpertsFwdOp(), routed)
+        for has_bias in (True, False):
+            op = FusedMoeFwdOp(top_k, scoring_func="sigmoid")
+            tensors = {
+                "hidden_states": routed["hidden_states"],
+                "gating_output": torch.empty(tokens, experts),
+                "w_gate_up": routed["w_gate_up"],
+                "w_down": routed["w_down"],
+                "correction_bias": torch.empty(experts) if has_bias else None,
+            }
+
+            def ledger(active, has_bias=has_bias):
+                return _ledger(
+                    "FusedMoeFwdOp",
+                    hidden_states=((tokens, hidden), torch.bfloat16),
+                    gating_output=((tokens, experts), torch.float32),
+                    w_gate_up=((active, 2 * ffn, hidden), torch.bfloat16),  # read experts
+                    w_down=((active, hidden, ffn), torch.bfloat16),  # read experts
+                    correction_bias=(((experts,), torch.float32) if has_bias else None),
+                    output=((tokens, hidden), torch.bfloat16),
+                )
+
+            # Experts 0, 3 and 7, from the routed-experts stage's checked call.
+            assert self._priced(op, tensors, routed_experts=(stage,))[1] == ledger(3)
+            # No stage call: each token's top_k experts, the bound for every routing.
+            assert self._priced(op, tensors)[1] == ledger(top_k), f"has_bias={has_bias}"
 
     def test_shared_expert_adds_its_shard_to_the_routed_cost(self):
         from tileops.moe import FusedMoeSharedExpertFwdOp
 
-        tokens, experts, top_k, hidden, ffn = 2, 8, 2, 64, 32
-        shard_ffn = 16
-        op = FusedMoeSharedExpertFwdOp.__new__(FusedMoeSharedExpertFwdOp)
-        op.num_tokens, op.num_experts, op.top_k = tokens, experts, top_k
-        op.hidden_size, op.ffn_size = hidden, ffn
-        op.dtype = torch.bfloat16
-        op.correction_bias_shape = None
-        op._roofline_topk_ids = torch.tensor([[0, 3], [3, 7]], dtype=torch.int32)
+        tokens, experts, top_k, hidden, ffn, shared_ffn, tp = 2, 8, 2, 64, 32, 32, 2
+        bf16 = torch.bfloat16
+        op = FusedMoeSharedExpertFwdOp(top_k, tp_size=tp, tp_rank=1)
+        tensors = {
+            "hidden_states": torch.empty(tokens, hidden, dtype=bf16),
+            "gating_output": torch.empty(tokens, experts),
+            "w_gate_up": torch.empty(experts, 2 * ffn, hidden, dtype=bf16),
+            "w_down": torch.empty(experts, hidden, ffn, dtype=bf16),
+            "correction_bias": None,
+            "shared_w_gate_up": None,
+            "shared_w_down": None,
+        }
         routed = _ledger(
             "FusedMoeSharedExpertFwdOp",
-            hidden_states=((tokens, hidden), torch.bfloat16),
+            hidden_states=((tokens, hidden), bf16),
             gating_output=((tokens, experts), torch.float32),
-            w_gate_up=((3, 2 * ffn, hidden), torch.bfloat16),  # active experts only
-            w_down=((3, hidden, ffn), torch.bfloat16),  # active experts only
+            w_gate_up=((top_k, 2 * ffn, hidden), bf16),  # the bound: top_k experts
+            w_down=((top_k, hidden, ffn), bf16),
             correction_bias=None,
             shared_w_gate_up=None,
             shared_w_down=None,
-            routed_output=((tokens, hidden), torch.bfloat16),
+            routed_output=((tokens, hidden), bf16),
             shared_output=None,
         )
-        op._shared_mlp_shard_ffn = None
-        assert op.eval_roofline()[1] == routed
+        assert self._priced(op, tensors)[1] == routed
 
-        op._shared_mlp_shard_ffn = shard_ffn
+        tensors["shared_w_gate_up"] = torch.empty(2 * shared_ffn, hidden, dtype=bf16)
+        tensors["shared_w_down"] = torch.empty(hidden, shared_ffn, dtype=bf16)
         shared = _nbytes(
-            ((3 * shard_ffn, hidden), torch.bfloat16),  # this rank's shared weights
-            ((tokens, hidden), torch.bfloat16),  # its own read of the hidden states
-            ((tokens, hidden), torch.bfloat16),  # shared_output, returned separately
+            ((3 * shared_ffn // tp, hidden), bf16),  # this rank's shared weights
+            ((tokens, hidden), bf16),  # its own read of the hidden states
+            ((tokens, hidden), bf16),  # shared_output, returned separately
         )
-        assert op.eval_roofline()[1] == routed + shared
+        assert self._priced(op, tensors)[1] == routed + shared
 
     def test_gqa_dense_counts_qkv_output_and_the_optional_inputs(self):
         from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
@@ -722,8 +721,8 @@ class TestBytesOracle:
 # and `_ledger` is what checks the cases.
 HAND_WRITTEN = {
     "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
-    "FusedMoeFwdOp": "the routed weight reads follow the values in `topk_ids`",
-    "FusedMoeSharedExpertFwdOp": "the routed weight reads follow the values in `topk_ids`",
+    "FusedMoeFwdOp": "the routed weight reads follow the routing its experts stage receives",
+    "FusedMoeSharedExpertFwdOp": "the routed weight reads follow the routing its experts stage receives",
     "GemmFp8FwdOp": "the scale tensors' extents follow the scaling mode, not the dims",
     "GemmW4A16FwdOp": "the packed weight and its group metadata have a quantized layout",
     "GroupedQueryAttentionDenseFwdOp": "which optional tensors the call passed decides the traffic",
