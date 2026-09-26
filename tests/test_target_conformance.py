@@ -13,7 +13,7 @@ import torch
 
 from tests import roofline_binder as rb
 from tileops.backend import TensorSpec, registry
-from tileops.manifest import forward_signature, load_adts, load_manifest, load_workloads
+from tileops.manifest import load_adts, load_manifest, load_workloads
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.signature import is_legacy
 from tileops.manifest.workload import instantiate
@@ -105,7 +105,7 @@ _CASES = {
 
 def _from_workload(cls: type, name: str, entry: dict) -> tuple:
     """The op and its ``forward`` arguments, from the smallest workload row that states them."""
-    signature = forward_signature(entry)
+    signature = entry["signature"]
     inputs, params = signature.get("inputs") or {}, signature.get("params") or {}
     best = None
     for row in load_workloads(name) or [{}]:
@@ -213,7 +213,7 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
     else:
         make = _CASES.get(name)
         op, args = make(cls) if make else _from_workload(cls, name, entry)
-    declared = tuple(forward_signature(entry).get("inputs") or {})
+    declared = tuple(entry["signature"].get("inputs") or {})
     passed = args + (None,) * (len(declared) - len(args))
     described = tuple(None if t is None else TensorSpec.of(t) for t in passed)
     seen, returned = [], []
@@ -269,7 +269,7 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
         assert not declared or hasattr(cls, "_validate_manifest_dtypes"), (
             "a target is held to its dtypes"
         )
-    inputs = forward_signature(entry).get("inputs") or {}
+    inputs = entry["signature"].get("inputs") or {}
     assert all((inputs[o] or {}).get("mutated") for o in outputs if o in inputs), (
         "an output passed in as an input is one the call writes"
     )

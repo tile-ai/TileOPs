@@ -32,7 +32,7 @@ from tileops.backend import (
 from tileops.backend.dispatch import registered_kernel_builder, select_target
 from tileops.backend.registry import ensure_loaded
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.manifest import WORKSPACE_ATTR, forward_signature, load_manifest
+from tileops.manifest import load_manifest
 from tileops.manifest.rule_eval import bind_declared_shapes, eval_shape_rule
 
 from ._output_dtype import output_dtype
@@ -136,7 +136,7 @@ def _forward_input_names(op_name: str) -> tuple[str, ...]:
     if entry is None:
         return ()
     try:
-        return tuple(forward_signature(entry)["inputs"])
+        return tuple(entry["signature"]["inputs"])
     except Exception:
         return ()
 
@@ -677,9 +677,8 @@ class Op(ABC):
     def _forward_io(cls) -> "tuple[tuple[str, ...], frozenset[str]]":
         """The ``forward`` inputs a target is called with, and which of them it writes.
 
-        The names are ``signature.inputs`` followed by ``resources.workspaces``; an op the
-        manifest does not describe has none. The written ones are the inputs marked
-        ``mutated`` and every workspace, which is scratch the kernel writes.
+        The names are ``signature.inputs``; an op the manifest does not describe has none.
+        The written ones are the inputs marked ``mutated``.
         """
         plan = getattr(cls, "_signature", None)
         if plan is not None:
@@ -687,11 +686,11 @@ class Op(ABC):
             written = frozenset(n for n, t in plan.sig.inputs.items() if t.mutated or t.write_only)
             return tuple(plan.sig.inputs), written
         entry = load_manifest().get(cls.__name__)
-        inputs = forward_signature(entry)["inputs"] if entry is not None else {}
+        inputs = (entry["signature"].get("inputs") or {}) if entry is not None else {}
         mutated = frozenset(
             name
             for name, attrs in inputs.items()
-            if isinstance(attrs, dict) and (attrs.get("mutated") or attrs.get(WORKSPACE_ATTR))
+            if isinstance(attrs, dict) and attrs.get("mutated")
         )
         return tuple(inputs), mutated
 
@@ -1284,9 +1283,7 @@ class Op(ABC):
         entry = load_manifest().get(type(self).__name__)
         if entry is None:
             return
-        # A workspace is declared under ``resources`` but passed to forward() like
-        # any other tensor, so it counts toward the argument list this compares.
-        names = tuple(forward_signature(entry)["inputs"])
+        names = tuple(entry["signature"]["inputs"])
         if len(names) != len(inputs):
             return
         try:

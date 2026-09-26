@@ -27,7 +27,7 @@ def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None
     """Sum the named tensors a call binds, and require the names to be the signature's.
 
     A hand-written case states a tensor per name, ``None`` for an optional input the
-    call does not pass or for a workspace, which the metric excludes, a ``<name>_write``
+    call does not pass, a ``<name>_write``
     entry for a write that is not an output's -- a ``mutated`` input's -- and
     ``<name>_unread=True`` for an input the call passes and the algorithm does not
     read. Every declared input and output has to appear,
@@ -64,8 +64,9 @@ def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None
             continue
         if tensors[name] is not None:
             continue
-        excusable = (spec or {}).get("optional") or name.startswith("workspace")
-        assert excusable, f"{op_name}: {name} is not optional and the case passes None"
+        assert (spec or {}).get("optional"), (
+            f"{op_name}: {name} is not optional and the case passes None"
+        )
     return _nbytes(
         *(
             entry

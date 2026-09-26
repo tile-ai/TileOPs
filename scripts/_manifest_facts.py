@@ -3,9 +3,8 @@
 A check needs to know things the manifest does not state outright: which
 tensors ``forward()`` receives, which columns a ``dtype_combos`` row spans,
 which names an optional input binds. Each of those was re-derived at every
-consumer, so a field that changed one of them — ``resources.workspaces`` was
-the first — had to be chased through every consumer by hand, and a missed one
-failed silently.
+consumer, so a field that changed one of them had to be chased through every
+consumer by hand, and a missed one failed silently.
 
 Every such fact is computed here and nowhere else. A consumer asks for the
 fact; it does not decide what the fact is.
@@ -25,11 +24,6 @@ from typing import Any
 
 SAME_AS_RE = re.compile(r"^\s*same_as\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*$")
 
-#: Marks an entry of a signature's ``inputs`` that came from a workspace. A
-#: caller may hand over a signature the workspaces were already merged into,
-#: and the facts must still tell the two apart.
-WORKSPACE_ATTR = "__workspace__"
-
 
 class Section(Enum):
     """A mapping in the manifest whose keys are a closed set."""
@@ -39,8 +33,6 @@ class Section(Enum):
     COMPOSITION = "composition"
     STAGE = "stage"
     VARIANT = "variant"
-    RESOURCES = "resources"
-    WORKSPACE = "workspace"
     ROOFLINE_COMPOSITION = "roofline.composition"
 
 
@@ -51,7 +43,6 @@ class TensorArg:
     name: str
     dtype: str
     optional: bool = False
-    workspace: bool = False
     #: The op writes this input in place and the manifest says so.
     mutated: bool = False
     shape: str | None = None
@@ -93,11 +84,9 @@ class Facts:
     name: str
     #: The declared status, or None where the entry did not state one as a string.
     status: str | None
-    # inputs followed by workspaces, in declaration order: what forward() takes.
+    # The inputs in declaration order: what forward() takes, and what a
+    # dtype_combos row and the reference API are written against.
     call_tensor_args: tuple[TensorArg, ...] = ()
-    # caller-visible inputs only: what a dtype_combos row and the reference
-    # API are written against.
-    value_inputs: tuple[TensorArg, ...] = ()
     outputs: tuple[TensorArg, ...] = ()
     combos: tuple[Mapping[str, str], ...] = ()
     #: Declaration order — the diagnostics print them that way.
@@ -131,12 +120,8 @@ class Facts:
 
     @property
     def mutated_input_names(self) -> frozenset[str]:
-        """Caller inputs the manifest says the op writes in place.
-
-        Workspaces are out by construction: every call writes one, so marking
-        it would state nothing the reader did not already know.
-        """
-        return frozenset(a.name for a in self.value_inputs if a.mutated)
+        """Caller inputs the manifest says the op writes in place."""
+        return frozenset(a.name for a in self.call_tensor_args if a.mutated)
 
     # -- source -----------------------------------------------------------
 
@@ -182,18 +167,13 @@ class Facts:
 
     @property
     def combo_columns(self) -> tuple[str, ...]:
-        """Columns a ``dtype_combos`` row spans: caller inputs, workspaces out.
-
-        A row states the dtype combinations a caller may pass. A workspace's
-        dtype is execution strategy, so requiring a column for it would put
-        strategy into the contract callers write against.
-        """
-        return tuple(a.name for a in self.value_inputs)
+        """Columns a ``dtype_combos`` row spans: the caller's inputs."""
+        return tuple(a.name for a in self.call_tensor_args)
 
     @property
     def required_combo_columns(self) -> tuple[str, ...]:
         """Combo columns that every row must carry: optional inputs have none."""
-        return tuple(a.name for a in self.value_inputs if not a.optional)
+        return tuple(a.name for a in self.call_tensor_args if not a.optional)
 
     # -- dtype -------------------------------------------------------------
 
@@ -243,7 +223,7 @@ class Facts:
         return None
 
 
-def _tensor_args(tensors: object, *, workspace: bool = False) -> tuple[TensorArg, ...]:
+def _tensor_args(tensors: object) -> tuple[TensorArg, ...]:
     if not isinstance(tensors, dict):
         return ()
     args = []
@@ -256,30 +236,8 @@ def _tensor_args(tensors: object, *, workspace: bool = False) -> tuple[TensorArg
                 name=name,
                 dtype=dtype if isinstance(dtype, str) else "",
                 optional=attrs.get("optional") is True,
-                workspace=workspace or attrs.get(WORKSPACE_ATTR) is True,
                 mutated=attrs.get("mutated") is True,
                 shape=attrs.get("shape") if isinstance(attrs.get("shape"), str) else None,
-            )
-        )
-    return tuple(args)
-
-
-def _workspace_args(entry: Mapping[str, Any]) -> tuple[TensorArg, ...]:
-    resources = entry.get("resources")
-    workspaces = (resources or {}).get("workspaces") if isinstance(resources, dict) else None
-    if not isinstance(workspaces, list):
-        return ()
-    args = []
-    for ws in workspaces:
-        if not isinstance(ws, dict) or not isinstance(ws.get("name"), str):
-            continue
-        dtype = ws.get("dtype")
-        args.append(
-            TensorArg(
-                name=ws["name"],
-                dtype=dtype if isinstance(dtype, str) else "",
-                optional=ws.get("optional") is True,
-                workspace=True,
             )
         )
     return tuple(args)
@@ -297,14 +255,11 @@ _ENTRY_KEYS = (
     "ref_api",
     "torch_compile_fullgraph",
     "composition",
-    "resources",
 )
 _SIGNATURE_KEYS = ("inputs", "outputs", "params", "shape_rules", "dtype_combos", "static_dims")
 _COMPOSITION_KEYS = ("kind", "stages")
 _STAGE_KEYS = ("name", "op", "kernel", "variants", "optional")
 _VARIANT_KEYS = ("name", "condition", "stages")
-_RESOURCE_KEYS = ("workspaces",)
-_WORKSPACE_KEYS = ("name", "dtype", "owner", "kind", "optional", "note")
 _ROOFLINE_COMPOSITION_KEYS = ("stage", "source", "formula", "optional")
 
 #: The accepted key set of each closed section, for the diagnostic that prints
@@ -315,8 +270,6 @@ SECTION_KEYS: Mapping[Section, tuple[str, ...]] = {
     Section.COMPOSITION: _COMPOSITION_KEYS,
     Section.STAGE: _STAGE_KEYS,
     Section.VARIANT: _VARIANT_KEYS,
-    Section.RESOURCES: _RESOURCE_KEYS,
-    Section.WORKSPACE: _WORKSPACE_KEYS,
     Section.ROOFLINE_COMPOSITION: _ROOFLINE_COMPOSITION_KEYS,
 }
 
@@ -341,25 +294,8 @@ def build(name: str, entry: Mapping[str, Any]) -> Facts:
         Section.SIGNATURE: unknown_keys_of(Section.SIGNATURE, sig),
     }
 
-    merged_inputs = _tensor_args(sig.get("inputs"))
-    # A signature handed in already merged carries its workspaces inside
-    # ``inputs``; the value contract is the rest.
-    value_inputs = tuple(a for a in merged_inputs if not a.workspace)
-    premerged = tuple(a for a in merged_inputs if a.workspace)
+    call = _tensor_args(sig.get("inputs"))
     outputs = _tensor_args(sig.get("outputs"))
-
-    # A workspace is declared apart from the inputs but passed like one, so the
-    # call carries both; only the inputs are the caller's value contract.
-    workspaces = (*premerged, *_workspace_args(entry))
-    declared = {a.name for a in value_inputs}
-    seen: set[str] = set()
-    ordered_ws = []
-    for w in workspaces:
-        if w.name in declared or w.name in seen:
-            continue
-        seen.add(w.name)
-        ordered_ws.append(w)
-    call = (*value_inputs, *ordered_ws)
 
     raw_combos = sig.get("dtype_combos")
     combos: tuple[Mapping[str, str], ...] = ()
@@ -385,7 +321,6 @@ def build(name: str, entry: Mapping[str, Any]) -> Facts:
         name=name,
         status=status if isinstance(status, str) else None,
         call_tensor_args=call,
-        value_inputs=value_inputs,
         outputs=outputs,
         combos=combos,
         stage_names=stage_names,
