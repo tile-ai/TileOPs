@@ -143,26 +143,3 @@ def test_gla_decode_vs_fla(
     tols = _get_tolerances(dtype)
     torch.testing.assert_close(o_tile, o_fla, **tols)
     torch.testing.assert_close(s_tile, s_fla.to(dtype), **tols)
-
-
-@pytest.mark.smoke
-def test_gla_decode_rejects_manifest_shape_mismatch() -> None:
-    op = object.__new__(GLADecodeFwdOp)
-    op.batch = 2
-    op.heads = 3
-    op.dim_k = 4
-    op.dim_v = 5
-    op.scale = -1.0
-    op.dtype = torch.float32
-
-    q = torch.empty(2, 3, 4)
-    k = torch.empty(2, 3, 4)
-    v = torch.empty(2, 3, 5)
-    gk = torch.empty(2, 3, 5)
-    state = torch.empty(2, 3, 4, 5)
-
-    # ``forward`` is one call to the registered operator, which resolves the instance by
-    # the key ``__init__`` stores; this op never ran one. The validation under test is in
-    # ``_eager_forward``, which is what the operator calls.
-    with pytest.raises(ValueError, match="gk must have shape"):
-        op._eager_forward(q, k, v, gk, state)

@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from tileops.linear_attention import (
-    DeltaNetAutogradOp,
+    DeltaNetAutogradFwdOp,
     DeltaNetBwdOp,
     DeltaNetFwdOp,
 )
@@ -38,7 +38,7 @@ def test_deltanet_autograd_matches_the_ops_it_wraps() -> None:
     grads_ref = DeltaNetBwdOp(chunk_size=BC).forward(do, q, k, v, beta, s, aw, au, w, u)
 
     leaves = [t.detach().clone().requires_grad_(True) for t in (q, k, v, beta)]
-    o = DeltaNetAutogradOp(chunk_size=BC)(*leaves)
+    o = DeltaNetAutogradFwdOp(chunk_size=BC)(*leaves)
     o.backward(do)
 
     torch.testing.assert_close(o, o_ref)

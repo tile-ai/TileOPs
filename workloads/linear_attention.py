@@ -2,7 +2,7 @@
 
 import torch
 
-from workloads.workload_base import WorkloadBase
+from workloads.workload_base import CallWorkload, WorkloadBase
 
 
 class DeltaNetFwdWorkload(WorkloadBase):
@@ -427,3 +427,143 @@ def gla_decode_torch(
     o = scale * torch.einsum("bhk,bhkv->bhv", q, new_state)
 
     return o, new_state
+
+
+# Manifest calls: shapes, dtypes and presence come from a workload row; these
+# classes condition the values the row does not determine and carry the reference.
+
+
+def _step_sizes(like: torch.Tensor) -> torch.Tensor:
+    """Delta-rule step sizes in ``[0, 0.5)``, with *like*'s shape and dtype."""
+    return torch.rand(like.shape, device=like.device).to(like.dtype) * 0.5
+
+
+def _log_gates(like: torch.Tensor) -> torch.Tensor:
+    """Log-space forget gates in ``(-1, 0]``, with *like*'s shape and dtype."""
+    return -torch.rand(like.shape, device=like.device).to(like.dtype)
+
+
+def _small(t: torch.Tensor | None, scale: float = 0.1) -> torch.Tensor | None:
+    return None if t is None else t * scale
+
+
+class DeltaNetDecodeCall(CallWorkload):
+    """A manifest call of DeltaNetDecodeFwdOp."""
+
+    def gen_inputs(self):
+        q, k, v, beta, state = super().gen_inputs()
+        return _small(q), _small(k), _small(v), _step_sizes(beta), _small(state)
+
+    def ref_program(self, q, k, v, beta, state):
+        o, new_state = deltanet_decode_torch(q, k, v, beta, state)
+        return o.to(q.dtype), new_state.to(q.dtype)
+
+
+class GLADecodeCall(CallWorkload):
+    """A manifest call of GLADecodeFwdOp."""
+
+    def gen_inputs(self):
+        q, k, v, gk, state = super().gen_inputs()
+        return _small(q), _small(k), _small(v), _log_gates(gk), _small(state)
+
+    def ref_program(self, q, k, v, gk, state):
+        o, new_state = gla_decode_torch(q, k, v, gk, state, self.call.ix["scale"])
+        return o.to(q.dtype), new_state.to(q.dtype)
+
+
+class DeltaNetChunkwiseCall(CallWorkload):
+    """A manifest call of DeltaNetFwdOp, DeltaNetAutogradFwdOp or DeltaNetBwdOp.
+
+    The backward's saved buffers come back random; a caller that needs the forward's
+    values runs the forward on ``q, k, v, beta``.
+    """
+
+    def gen_inputs(self):
+        tensors = dict(zip(self.call.signature.inputs, super().gen_inputs(), strict=True))
+        return tuple(_step_sizes(t) if name == "beta" else _small(t) for name, t in tensors.items())
+
+
+class GLAChunkwiseCall(CallWorkload):
+    """A manifest call of GLAFwdOp or GLABwdOp."""
+
+    def gen_inputs(self):
+        tensors = dict(zip(self.call.signature.inputs, super().gen_inputs(), strict=True))
+        return tuple(_log_gates(t) if name == "g" else _small(t) for name, t in tensors.items())
+
+
+class DeltaNetInferenceCall(CallWorkload):
+    """A manifest call of DeltaNetInferenceFwdOp; FLA's chunk_delta_rule is the reference."""
+
+    def gen_inputs(self):
+        q, k, v, beta, initial_state, cu_seqlens, cu_seqlens_cpu = super().gen_inputs()
+        return (
+            _small(q),
+            _small(k),
+            _small(v),
+            _step_sizes(beta),
+            _small(initial_state, 0.01),
+            cu_seqlens,
+            cu_seqlens_cpu,
+        )
+
+    def ref_program(self, q, k, v, beta, initial_state, cu_seqlens, cu_seqlens_cpu):
+        from fla.ops.delta_rule import chunk_delta_rule
+
+        return chunk_delta_rule(
+            q,
+            k,
+            v,
+            beta,
+            scale=self.call.ix["scale"],
+            initial_state=initial_state,
+            output_final_state=True,
+            cu_seqlens=cu_seqlens,
+            use_qk_l2norm_in_kernel=self.call.ix["use_qk_l2norm_in_kernel"],
+        )
+
+
+class GatedDeltaNetFwdCall(CallWorkload):
+    """A manifest call of GatedDeltaNetFwdOp."""
+
+    def gen_inputs(self):
+        q, k, v, g, beta, initial_state, *rest = super().gen_inputs()
+        return (
+            _small(q),
+            _small(k),
+            _small(v),
+            _log_gates(g),
+            _step_sizes(beta),
+            _small(initial_state, 0.01),
+            *rest,
+        )
+
+
+class GLAInferenceCall(CallWorkload):
+    """A manifest call of GLAInferenceFwdOp; FLA's chunk_gla is the reference."""
+
+    def gen_inputs(self):
+        q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu = super().gen_inputs()
+        return (
+            _small(q),
+            _small(k),
+            _small(v),
+            _log_gates(g),
+            _small(initial_state),
+            cu_seqlens,
+            cu_seqlens_cpu,
+        )
+
+    def ref_program(self, q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu):
+        from fla.ops.gla import chunk_gla
+
+        scale = self.call.ix["scale"]
+        return chunk_gla(
+            q,
+            k,
+            v,
+            g,
+            scale=q.shape[-1] ** -0.5 if scale is None else scale,
+            initial_state=initial_state,
+            output_final_state=True,
+            cu_seqlens=cu_seqlens,
+        )

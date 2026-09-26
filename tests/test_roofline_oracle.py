@@ -431,26 +431,6 @@ class TestBytesOracle:
             )
             assert op.eval_roofline()[1] == oracle, label
 
-    def test_deltanet_autograd_counts_only_the_output_it_returns(self):
-        from tileops.ops.linear_attention.deltanet import DeltaNetAutogradOp
-
-        batch, heads, seq_len, dim_k, dim_v = 2, 8, 2048, 128, 128
-        op = DeltaNetAutogradOp.__new__(DeltaNetAutogradOp)
-        op.batch, op.heads, op.seq_len = batch, heads, seq_len
-        op.dim_k, op.dim_v = dim_k, dim_v
-        op.chunk_size = 64
-        op.dtype = torch.float16
-        # The chunk buffers and the per-chunk state stay in the autograd context,
-        # so o is the only output; DeltaNetFwdOp returns them and is priced for it.
-        oracle = _nbytes(
-            ((batch, heads, seq_len, dim_k), torch.float16),  # q
-            ((batch, heads, seq_len, dim_k), torch.float16),  # k
-            ((batch, heads, seq_len, dim_v), torch.float16),  # v
-            ((batch, heads, seq_len), torch.float16),  # beta
-            ((batch, heads, seq_len, dim_v), torch.float16),  # o
-        )
-        assert op.eval_roofline()[1] == oracle
-
     def test_instance_norm_counts_the_running_stats_only_in_eval_mode(self):
         from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 

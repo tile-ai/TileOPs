@@ -73,4 +73,5 @@ def test_deltanet_fwd(
     if served_in_tree(op) and tune:
         # The forward above already proves the selected config builds and runs;
         # this pins it to the declared candidate set the sweep draws from.
-        assert op.kernel.config in op.kernel.autotune_configs
+        (kernel,) = op.built_kernels("DeltaNetFwdKernel").values()
+        assert kernel.config in kernel.autotune_configs

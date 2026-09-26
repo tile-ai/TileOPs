@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Optional, Tuple
+from typing import ClassVar, Dict, Mapping, Optional, Tuple
 
 import torch
 
@@ -6,7 +6,6 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["GLADecodeFwdOp"]
@@ -26,151 +25,47 @@ class GLADecodeFwdOp(Op):
     element-wise matvec instead of T.gemm to avoid TF32 mantissa truncation.
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "GLADecodeKernel": GLADecodeKernel,
+        "GLADecodeFP32Kernel": GLADecodeFP32Kernel,
+    }
 
     def __init__(
         self,
         scale: float = -1.0,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            scale: Manifest ``params.scale``, ``float``, default ``-1.0``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
+            scale: Query scale; a non-positive value means ``DK ** -0.5``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
         """
-        self.target = target
-        self.batch = None
-        self.heads = None
-        self.dim_k = None
-        self.dim_v = None
         self.scale = scale
-        self.dtype = None
         self.tune = tune
-
+        self.target = target
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "GLADecodeKernel": GLADecodeKernel,
-            "GLADecodeFP32Kernel": GLADecodeFP32Kernel,
-        }
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        heads: int,
-        dim_k: int,
-        dim_v: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        key = (batch, heads, dim_k, dim_v, self.scale, dtype, device_index)
-        return self.kernel_for("gla_decode", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """The dtype picks the implementation, so it is in the identity."""
-        batch, heads, dim_k, dim_v, scale, dtype, _device = call
+        batch, heads, dim_k, dim_v, dtype, _device = call
         name = "GLADecodeFP32Kernel" if dtype == torch.float32 else "GLADecodeKernel"
         return call, lambda: self.kernel_map[name](
             batch,
             heads,
             dim_k,
             dim_v,
-            scale=scale,
+            scale=self.scale,
             dtype=Kernel.dtype_to_str(dtype),
             tune=self.tune,
         )
-
-    def _infer_output_shapes(
-        self,
-        q_shape: tuple[int, ...],
-        k_shape: tuple[int, ...],
-        v_shape: tuple[int, ...],
-        gk_shape: tuple[int, ...],
-        state_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        del k_shape, gk_shape
-        return {
-            "o": (q_shape[0], q_shape[1], v_shape[-1]),
-            "new_state": state_shape,
-        }
-
-    def _validate_dtypes(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        gk: torch.Tensor,
-        state: torch.Tensor,
-    ) -> None:
-        dtype = q.dtype
-        if dtype not in (torch.float32, torch.float16, torch.bfloat16):
-            raise ValueError(f"Unsupported dtype: {dtype}")
-        for name, tensor in (("q", q), ("k", k), ("v", v), ("gk", gk), ("state", state)):
-            if tensor.dtype != dtype:
-                raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
-
-    def _validate_shapes(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        gk: torch.Tensor,
-        state: torch.Tensor,
-    ) -> None:
-        if q.ndim != 3:
-            raise ValueError("q must have shape [batch, heads, dim_k]")
-        batch, heads, dim_k = q.shape
-        if v.ndim != 3 or v.shape[:2] != (batch, heads):
-            raise ValueError("v must have shape [batch, heads, dim_v]")
-        dim_v = v.shape[2]
-        q_shape = (batch, heads, dim_k)
-        v_shape = (batch, heads, dim_v)
-        state_shape = (batch, heads, dim_k, dim_v)
-        expected_shapes = (
-            ("q", q, q_shape),
-            ("k", k, q_shape),
-            ("v", v, v_shape),
-            ("gk", gk, q_shape),
-            ("state", state, state_shape),
-        )
-        for name, tensor, expected in expected_shapes:
-            if tuple(tensor.shape) != expected:
-                raise ValueError(f"{name} must have shape {expected}, got {tuple(tensor.shape)}")
-        if not all(tensor.is_cuda for tensor in (q, k, v, gk, state)):
-            raise ValueError("q, k, v, gk, and state must be CUDA tensors")
-        self.batch = batch
-        self.heads = heads
-        self.dim_k = dim_k
-        self.dim_v = dim_v
-        self.dtype = q.dtype
-        self.kernel = self._get_kernel(
-            (q, k, v, gk, state), batch, heads, dim_k, dim_v, q.dtype, q.device.index
-        )
-
-    def _validate_output_shapes(
-        self,
-        o: torch.Tensor,
-        new_state: torch.Tensor,
-    ) -> None:
-        o_shape = (self.batch, self.heads, self.dim_v)
-        state_shape = (self.batch, self.heads, self.dim_k, self.dim_v)
-        if tuple(o.shape) != o_shape:
-            raise ValueError(f"o must have shape {o_shape}, got {tuple(o.shape)}")
-        if tuple(new_state.shape) != state_shape:
-            raise ValueError(
-                f"new_state must have shape {state_shape}, got {tuple(new_state.shape)}"
-            )
 
     def forward(
         self,
@@ -180,19 +75,19 @@ class GLADecodeFwdOp(Op):
         gk: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Run the op on the inputs the manifest declares.
+        """Run one decode step.
 
         Args:
-            q: Input tensor, dtype ``float16 | bfloat16 | float32``.
-            k: Input tensor, dtype ``same_as(q)``.
-            v: Input tensor, dtype ``same_as(q)``.
-            gk: Input tensor, dtype ``same_as(q)``.
-            state: Input tensor, dtype ``same_as(q)``.
+            q: Query [B, H, DK].
+            k: Key [B, H, DK].
+            v: Value [B, H, DV].
+            gk: Log-space key gate [B, H, DK].
+            state: Recurrent state [B, H, DK, DV].
 
         Returns:
-            ``o``, ``new_state``, as the manifest declares. Shape rules: ``o.shape == (B, H, DV)``; ``new_state.shape == (B, H, DK, DV)``.
+            ``o`` [B, H, DV] and ``new_state`` [B, H, DK, DV].
         """
-        return self._wrapped(q, k, v, gk, state, self._instance_key)
+        return self._call_boundary(q, k, v, gk, state)
 
     def _eager_forward(
         self,
@@ -202,12 +97,14 @@ class GLADecodeFwdOp(Op):
         gk: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        self._validate_dtypes(q, k, v, gk, state)
-        self._validate_shapes(q, k, v, gk, state)
-        o, new_state = self.kernel(q, k, v, gk, state)
-        self._validate_output_shapes(o, new_state)
-        return o, new_state
+        batch, heads, dim_k = q.shape
+        kernel = self.kernel_for(
+            "gla_decode",
+            (q, k, v, gk, state),
+            (batch, heads, dim_k, v.shape[2], q.dtype, q.device.index),
+        )
+        return kernel(q, k, v, gk, state)
