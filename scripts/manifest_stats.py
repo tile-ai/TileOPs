@@ -21,33 +21,27 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+# CI also runs this script against the base ref's package; import only `load_manifest`.
 from tileops.manifest import load_manifest
-from tileops.manifest.signature import is_legacy
-
-# ---------------------------------------------------------------------------
-# Aggregation
-# ---------------------------------------------------------------------------
 
 STATUSES = ("implemented", "spec-only", "deprecated")
 
 
 def _has_roofline(op: dict[str, Any]) -> bool:
     rf = op.get("roofline") or {}
-    # Either a func-based roofline OR explicit flops/bytes formulae.
     return bool(rf.get("func")) or ("flops" in rf and "bytes" in rf)
 
 
 def _has_kernel_map(op: dict[str, Any]) -> bool:
-    # A parametric entry's kernels are the code's (`kernel_types`); only a legacy one lists them.
-    if not is_legacy(op):
+    # Only a legacy entry (one with `source`) records kernels and benchmarks in the manifest.
+    if "source" not in op:
         return True
     km = (op.get("source") or {}).get("kernel_map")
     return isinstance(km, dict) and len(km) > 0
 
 
 def _has_bench_manifest_driven(op: dict[str, Any]) -> bool:
-    # A parametric entry's benchmark is held to the contract by its file, not a manifest flag.
-    if not is_legacy(op):
+    if "source" not in op:
         return True
     return bool((op.get("source") or {}).get("bench_manifest_driven"))
 
@@ -65,7 +59,6 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
     bench_manifest_ok = 0
     ref_api_ok = 0
 
-    # Conformance flags: things expected for implemented ops but missing.
     missing_kernel_map: list[str] = []
     missing_roofline: list[str] = []
     missing_bench: list[str] = []
@@ -150,11 +143,6 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
             "spec_only_ops": sorted(spec_only),
         },
     }
-
-
-# ---------------------------------------------------------------------------
-# Renderers
-# ---------------------------------------------------------------------------
 
 
 def _bar(pct: float, width: int = 20) -> str:
@@ -305,11 +293,6 @@ def render_markdown(stats: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-# ---------------------------------------------------------------------------
-# Diff (vs. baseline JSON snapshot)
-# ---------------------------------------------------------------------------
-
-
 def render_badges(stats: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Build shields.io endpoint payloads for the README badges.
 
@@ -368,11 +351,6 @@ def render_diff(current: dict[str, Any], baseline: dict[str, Any]) -> str:
         f"{current['by_status'].get('spec-only', 0)} ({d_spec:+d})"
     )
     return "\n".join(lines) + "\n"
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 
 def main(argv: list[str] | None = None) -> int:
