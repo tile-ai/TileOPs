@@ -7,7 +7,10 @@ implementation on Python values.
 from __future__ import annotations
 
 import math
+import numbers
 from types import SimpleNamespace
+
+from .dtype_rules import DTYPE_BITS
 
 # The seed both conftests give the global RNG; every private workload RNG derives from it.
 WORKLOAD_SEED = 1235
@@ -53,6 +56,7 @@ def broadcast(*shapes):
 
 
 def reduced(shape, dim, keepdim, mode):
+    """The shape after reducing `dim`; `None` reduces every axis, an empty sequence follows `mode` (all, none, raise)."""
     rank = len(shape)
     if dim is None:
         axes = set(range(rank))
@@ -83,6 +87,7 @@ def unique_axes(dim, rank):
 
 
 def per_axis(value, i, n, fallback=None):
+    """Item `i` of a length-`n` sequence, a scalar itself, or `fallback` for `None`."""
     if isinstance(value, (list, tuple)):
         if len(value) != n:
             raise ValueError(f"expected {n} values, got {value}")
@@ -125,6 +130,7 @@ def pool_out(length, kernel, stride, padding, dilation, ceil_mode):
 
 
 def moe_capacity(layout, rows, experts):
+    """Rows the layout materializes: `E * max_m` masked, `R + E * (alignment - 1)` rounded up to `alignment` aligned, else `R`."""
     if layout.kind == "masked":
         return experts * layout.max_m
     if layout.packing == "aligned":
@@ -149,9 +155,71 @@ def mhc_expansion(q):
 
 
 def balanced_sizes(total, count):
+    """`count` sizes summing to `total`, each `total // count`, the first `total % count` one larger."""
     if count <= 0 or total < 0:
         raise ValueError(f"balanced_sizes needs count > 0 and total >= 0, got {total}, {count}")
     return [total // count + (i < total % count) for i in range(count)]
+
+
+# The largest finite value of each floating dtype; the lowest is its negation.
+_FLOAT_MAX = {
+    "float16": 65504.0,
+    "bfloat16": 3.3895313892515355e38,
+    "float32": 3.4028234663852886e38,
+    "float64": 1.7976931348623157e308,
+    "float8_e4m3fn": 448.0,
+    "float8_e4m3": 240.0,
+    "float8_e5m2": 57344.0,
+    "float8_e4m3fnuz": 240.0,
+    "float8_e5m2fnuz": 57344.0,
+}
+_COMPLEX_PART = {"complex64": "float32", "complex128": "float64"}
+
+
+def category(x):
+    """`'bool'`, `'int'`, `'float'` or `'complex'`: the category of a number or a dtype name."""
+    if isinstance(x, str):
+        if x == "bool":
+            return "bool"
+        if x in _COMPLEX_PART:
+            return "complex"
+        return "float" if x in _FLOAT_MAX else "int"
+    if isinstance(x, bool):
+        return "bool"
+    if isinstance(x, numbers.Integral):
+        return "int"
+    return "float" if isinstance(x, numbers.Real) else "complex"
+
+
+# Floating formats without an infinity.
+_NO_INF = frozenset({"float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2fnuz"})
+
+
+def _fits_float(v, dtype):
+    if math.isinf(v):
+        return dtype not in _NO_INF
+    return math.isnan(v) or -_FLOAT_MAX[dtype] <= v <= _FLOAT_MAX[dtype]
+
+
+def representable(v, dtype):
+    """Whether `v` converts to `dtype` without overflow, by PyTorch's scalar conversion rule."""
+    if dtype == "bool":
+        return True
+    if dtype in _COMPLEX_PART:
+        part = _COMPLEX_PART[dtype]
+        return _fits_float(complex(v).real, part) and _fits_float(complex(v).imag, part)
+    if isinstance(v, numbers.Complex) and not isinstance(v, numbers.Real):
+        return False
+    if dtype in _FLOAT_MAX:
+        return _fits_float(v, dtype)
+    bits = DTYPE_BITS[dtype]
+    lo, hi = (
+        (0, 2**bits - 1) if dtype.startswith("uint") else (-(2 ** (bits - 1)), 2 ** (bits - 1) - 1)
+    )
+    if isinstance(v, numbers.Integral):
+        # An unsigned dtype also takes a negative int it can wrap.
+        return (-hi if lo == 0 else lo) <= v <= hi
+    return math.isfinite(v) and lo <= v <= hi
 
 
 PRIMITIVES = {
@@ -174,6 +242,8 @@ PRIMITIVES = {
     "promote_int_to_float": promote_int_to_float,
     "coalesce_dtype": coalesce_dtype,
     "balanced_sizes": balanced_sizes,
+    "category": category,
+    "representable": representable,
 }
 
 
@@ -212,6 +282,8 @@ PRIMITIVE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "promote_int_to_float": (("DType",), "DType"),
     "coalesce_dtype": (("Maybe[DType]", "DType"), "DType"),
     "balanced_sizes": (("Int", "Int"), "Seq[Int]"),
+    "category": (("Value",), "'bool' | 'int' | 'float' | 'complex'"),
+    "representable": (("Value", "DType"), "Bool"),
 }
 
 
@@ -238,18 +310,21 @@ def exclusive_prefix_sum(lengths):
 
 
 def padded_exclusive_prefix_sum(lengths, pad):
+    """Item `i` is `sum(ceil_div(n + 1, pad) * pad for n in lengths[:i])`."""
     if pad <= 0:
         raise ValueError(f"pad must be positive, got {pad}")
     return exclusive_prefix_sum([ceil_div(n + 1, pad) * pad for n in as_tensor(lengths)])
 
 
 def chunk_indices(lengths, chunk):
+    """One `(request, chunk)` row per `chunk`-sized piece of each length."""
     if chunk <= 0:
         raise ValueError(f"chunk must be positive, got {chunk}")
     return [[i, j] for i, n in enumerate(as_tensor(lengths)) for j in range(ceil_div(n, chunk))]
 
 
 def token_indices(lengths):
+    """One `(sequence, position)` row per token."""
     if not lengths or any(n <= 0 for n in lengths):
         raise ValueError(f"token_indices needs a non-empty positive list, got {lengths}")
     return [[i, j] for i, n in enumerate(lengths) for j in range(n)]
@@ -268,6 +343,7 @@ def chunk_offsets(lengths, chunk):
 
 
 def paged_block_table(rng, batch, width, pool):
+    """Disjoint random pages per request when the pool holds them all, else the first `width` of a permutation per request."""
     if not 0 < width <= pool:
         raise ValueError(f"paged_block_table needs 0 < width <= pool, got {width}, {pool}")
     if pool >= batch * width:
@@ -277,6 +353,7 @@ def paged_block_table(rng, batch, width, pool):
 
 
 def nsa_block_indices(rng, lengths, block_size, selected, heads_kv):
+    """Position `j` sees `max(ceil_div(j, block_size), 1)` blocks and draws up to `selected` distinct ones per head, ascending, padded with the sentinel `sum(lengths)`."""
     if not lengths or any(n <= 0 for n in lengths) or min(block_size, selected, heads_kv) <= 0:
         raise ValueError("nsa_block_indices needs positive arguments and a non-empty positive list")
     sentinel = sum(lengths)
@@ -293,6 +370,7 @@ def nsa_block_indices(rng, lengths, block_size, selected, heads_kv):
 
 
 def nsa_block_counts(rng, tokens, heads_kv, selected):
+    """Each count uniform in `[1, selected]`."""
     if min(tokens, heads_kv, selected) <= 0:
         raise ValueError("nsa_block_counts needs positive arguments")
     return [[rng.randint(1, selected) for _ in range(heads_kv)] for _ in range(tokens)]
@@ -315,6 +393,7 @@ def _segment_ids(sizes, scale=1):
 
 
 def moe_layout_metadata(layout, rows, experts):
+    """Metadata of `layout` for `rows` rows split across `experts` as evenly as the layout allows."""
     if experts <= 0 or rows < 0:
         raise ValueError(f"moe.layout_metadata needs E > 0 and R >= 0, got R={rows}, E={experts}")
     if layout.kind == "masked":
@@ -418,6 +497,7 @@ def _flat(values):
 
 
 def prefix_offsets(x, total):
+    """`x` starts at 0, is non-decreasing and ends at `total`."""
     return (
         bool(x)
         and x[0] == 0
@@ -427,14 +507,38 @@ def prefix_offsets(x, total):
 
 
 def max_segment(x, bound):
+    """Adjacent differences of `x` are at most `bound`."""
     return all(b - a <= bound for a, b in zip(x, x[1:], strict=False))
 
 
 def in_range(x, lo, hi):
+    """Every element of `x` lies in `[lo, hi)`."""
     return all(lo <= v < hi for v in _flat(x))
 
 
+def sums_to(x, total):
+    """The elements of `x` sum to `total`."""
+    return sum(x) == total
+
+
+def exclusive_prefix_of(x, lengths):
+    """`x` has one element per length; element `i` is the sum of the lengths before it."""
+    return len(x) == len(lengths) and all(v == sum(lengths[:i]) for i, v in enumerate(x))
+
+
+def indices_within(x, offsets):
+    """Each row `(i, j)` of `x` names segment `i` of `offsets` and position `j` inside it."""
+    segments = len(offsets) - 1
+    return all(
+        len(row) == 2
+        and 0 <= row[0] < segments
+        and 0 <= row[1] < offsets[row[0] + 1] - offsets[row[0]]
+        for row in x
+    )
+
+
 def paged_fits(x, cu, cap):
+    """Element `i` of `x` plus segment `i` of `cu` is at most `cap`."""
     flat = all(isinstance(v, int) for v in (*x, *cu))
     return (
         flat
@@ -444,6 +548,7 @@ def paged_fits(x, cu, cap):
 
 
 def moe_layout_valid(x, layout, rows, experts):
+    """`x` is valid metadata of `layout` for `rows` rows and `experts` experts."""
     ordered = all(a <= b for a, b in zip(x, x[1:], strict=False))
     if layout.kind == "masked":
         return len(x) == experts and all(0 <= v <= layout.max_m for v in x)
@@ -467,6 +572,9 @@ PREDICATE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "prefix_offsets": (("Int",), "Bool"),
     "max_segment": (("Int",), "Bool"),
     "in_range": (("Int", "Int"), "Bool"),
+    "sums_to": (("Int",), "Bool"),
+    "exclusive_prefix_of": (("Seq[Int]",), "Bool"),
+    "indices_within": (("Seq[Int]",), "Bool"),
     "attn.paged_fits": (("Seq[Int]", "Int"), "Bool"),
     "moe.layout_valid": (("ADT", "Int", "Int"), "Bool"),
 }
@@ -474,6 +582,9 @@ PREDICATE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
 PREDICATE_RANKS = {
     "prefix_offsets": 1,
     "max_segment": 1,
+    "sums_to": 1,
+    "exclusive_prefix_of": 1,
+    "indices_within": 2,
     "attn.paged_fits": 1,
     "moe.layout_valid": 1,
 }
@@ -482,6 +593,9 @@ PREDICATES = {
     "prefix_offsets": prefix_offsets,
     "max_segment": max_segment,
     "in_range": in_range,
+    "sums_to": sums_to,
+    "exclusive_prefix_of": exclusive_prefix_of,
+    "indices_within": indices_within,
     "attn.paged_fits": paged_fits,
     "moe.layout_valid": moe_layout_valid,
 }

@@ -606,25 +606,28 @@ class TestBytesOracle:
         """`batch_padded_offsets` is declared and passed, and no kernel indexes it:
         the templates pad nothing. A declared input the algorithm does not read
         produces no traffic, and the contract does not say which inputs those are."""
-        from tileops.perf.formulas import grouped_gemm_roofline
+        from tileops.ops import GroupedGemmFwdOp
 
-        batch_sum, batch_count, n, k = 4096, 16, 4096, 4096
-        op = type("_Bound", (), {})()
-        op.batch_sum, op.batch_count = batch_sum, batch_count
-        op.n, op.k, op.N, op.K = n, k, None, None
-        op.transpose_a, op.transpose_b = False, True
-        op.dtype = torch.float16
-        groups = ((batch_count,), torch.int32)
+        batch_sum, batch_count, n, k = 64, 4, 32, 16
+        f16, groups = torch.float16, ((batch_count,), torch.int32)
+        tensors = {
+            "a": torch.empty(batch_sum, k, dtype=f16),
+            "b": torch.empty(batch_count, n, k, dtype=f16),
+            **{
+                name: torch.zeros(batch_count, dtype=torch.int32)
+                for name in ("batch_sizes", "batch_offsets", "batch_padded_offsets")
+            },
+        }
         oracle = _ledger(
             "GroupedGemmFwdOp",
-            a=((batch_sum, k), torch.float16),
-            b=((batch_count, n, k), torch.float16),
+            a=((batch_sum, k), f16),
+            b=((batch_count, n, k), f16),
             batch_sizes=groups,
             batch_offsets=groups,
             batch_padded_offsets_unread=True,
-            output=((batch_sum, n), torch.float16),
+            output=((batch_sum, n), f16),
         )
-        assert grouped_gemm_roofline(op)[1] == oracle
+        assert self._priced(GroupedGemmFwdOp(), tensors)[1] == oracle
 
 
 # Coverage levels. Every implemented op sits at

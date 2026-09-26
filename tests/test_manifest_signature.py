@@ -2,6 +2,7 @@
 
 import copy
 import importlib.util
+import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -300,6 +301,38 @@ def test_primitive_result(name, args, result):
 def test_primitive_domain(name, args):
     with pytest.raises(ValueError):
         PRIMITIVES[name](*args)
+
+
+_SCALARS = (True, 0, 1, -1, 127, 128, -129, 255, 256, -255, -256, 2**31, -(2**31) - 1, 2**40)
+_SCALARS += (1.5, -1.0, 255.9, 65504.0, 65520.0, 1e6, 3.4e38, 1e39, math.inf, -math.inf, math.nan)
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    ["bool", "uint8", "int8", "int16", "int32", "int64", "float16", "bfloat16", "float32"],
+)
+def test_category_and_representable_follow_torch(dtype):
+    import torch
+
+    t = torch.zeros(1, dtype=getattr(torch, dtype))
+    torch_category = (
+        "bool" if t.dtype == torch.bool else "float" if t.dtype.is_floating_point else "int"
+    )
+    assert PRIMITIVES["category"](dtype) == torch_category
+    mask = torch.ones(1, dtype=torch.bool)
+    for v in _SCALARS:
+        try:
+            t.masked_fill(mask, v)
+            accepted = True
+        except RuntimeError:
+            accepted = False
+        assert PRIMITIVES["representable"](v, dtype) == accepted, v
+    assert [PRIMITIVES["category"](v) for v in (True, 1, 1.0, 1j)] == [
+        "bool",
+        "int",
+        "float",
+        "complex",
+    ]
 
 
 def test_adt_invariant_narrows_the_domain():

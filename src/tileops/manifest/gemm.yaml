@@ -147,55 +147,59 @@ GemmW4A16FwdOp:
 
 
 GroupedGemmFwdOp:
-  ref_api: "none"
   family: gemm
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      a: {dtype: "float16 | bfloat16"}
-      b: {dtype: "same_as(a)"}
-      batch_sizes: {dtype: "int32", shape: "[batch_count]"}
-      batch_offsets: {dtype: "int32", shape: "[batch_count]"}
-      batch_padded_offsets: {dtype: "int32", shape: "[batch_count]"}
-    outputs:
-      output: {dtype: "same_as(a)"}
+    # G groups packed along M rows. Without transpose_a each group multiplies its rows of a by
+    # its own b; with transpose_a the groups split the contraction and the output keeps a group
+    # axis. transpose_b stores the per-group operand transposed.
+    types:
+      A:
+        params: {ta: Bool, M: Dim, N: Dim, K: Dim}
+        match: ta
+        cases:
+        - {when: false, is: "[M, K]"}
+        - {when: true, is: "[M, N]"}
+      B:
+        params: {ta: Bool, tb: Bool, M: Dim, G: Dim, N: Dim, K: Dim}
+        match: [ta, tb]
+        cases:
+        - {when: [false, false], is: "[G, K, N]"}
+        - {when: [false, true], is: "[G, N, K]"}
+        - {when: [true, false], is: "[M, K]"}
+        - {when: [true, true], is: "[K, M]"}
+      Out:
+        params: {ta: Bool, M: Dim, G: Dim, N: Dim, K: Dim}
+        match: ta
+        cases:
+        - {when: false, is: "[M, N]"}
+        - {when: true, is: "[G, N, K]"}
+    forall: {M: Dim, G: Dim, N: Dim, K: Dim, T: "DType[float16 | bfloat16]"}
     params:
       transpose_a: {type: bool, default: false}
       transpose_b: {type: bool, default: true}
+    inputs:
+      a: {dtype: T, shape: "A[transpose_a, M, N, K]"}
+      b: {dtype: T, shape: "B[transpose_a, transpose_b, M, G, N, K]"}
+      batch_sizes: {dtype: int32, shape: "[G]", values: "as_tensor(balanced_sizes(M, G))", requires: ["in_range(0, M + 1)", "sums_to(M)"]}
+      batch_offsets: {dtype: int32, shape: "[G]", values: "exclusive_prefix_sum(balanced_sizes(M, G))", requires: ["exclusive_prefix_of(batch_sizes)"]}
+      # The start of each group padded to 128 rows. No kernel reads it.
+      batch_padded_offsets: {dtype: int32, shape: "[G]", values: "padded_exclusive_prefix_sum(balanced_sizes(M, G), 128)"}
+    outputs:
+      output: {dtype: T, shape: "Out[transpose_a, M, G, N, K]"}
     shape_rules:
-    - "batch_sizes.ndim == 1"
-    - "batch_offsets.shape == batch_sizes.shape"
-    - "batch_padded_offsets.shape == batch_sizes.shape"
-    - "a.ndim == 2"
-    - "b.ndim == (2 if transpose_a else 3)"
-    - "a.shape[0] > 0 and a.shape[1] > 0"
-    - "b.shape[0] == batch_sizes.shape[0] if (not transpose_a) else True"
-    - "b.shape[2 if transpose_b else 1] == a.shape[1] if (not transpose_a) else True"
-    - "b.shape[1 if transpose_b else 0] == a.shape[0] if transpose_a else True"
-    # The output rank and extents follow transpose_a, which also decides b's rank.
-    - "output.ndim == (3 if transpose_a else 2)"
-    - "transpose_a or output.shape == (a.shape[0], b.shape[1 if transpose_b else 2])"
-    - "not transpose_a or output.shape == (batch_sizes.shape[0], a.shape[1], b.shape[0 if transpose_b else 1])"
+    - "M > 0"
+    - "G > 0"
+    - "N > 0"
+    - "K > 0"
 
   workloads:
-  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: true, dtypes: [float16], label: "nt-batch16-m4096-n4096-k4096"}
-  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: bfloat16, transpose_a: false, transpose_b: true, dtypes: [bfloat16], label: "nt-batch16-m4096-n4096-k4096"}
-  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: false, transpose_b: false, dtypes: [float16], label: "nn-batch16-m4096-n4096-k4096"}
-  - {batch_sum: 4096, batch_count: 16, n: 4096, k: 4096, dtype: float16, transpose_a: true, transpose_b: false, dtypes: [float16], label: "tn-batch16-m4096-n4096-k4096"}
+  - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: false, transpose_b: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: nt-batch16-m4096-n4096-k4096}
+  - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: false, transpose_b: false, dtype_cases: [{T: float16}], label: nn-batch16-m4096-n4096-k4096}
+  - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: true, transpose_b: false, dtype_cases: [{T: float16}], label: tn-batch16-m4096-n4096-k4096}
 
   roofline:
-    func: "tileops.perf.formulas.grouped_gemm_roofline"
-
-  source:
-    kernel:
-    - tileops/kernels/grouped_gemm/grouped_gemm_persistent.py
-    - tileops/kernels/grouped_gemm/grouped_gemm.py
-    kernel_map:
-      grouped_gemm_persistent: GroupedGemmPersistentKernel
-      grouped_gemm_kernel: GroupedGemmKernel
-    op: tileops/ops/gemm/grouped_gemm.py
-    test: tests/ops/test_grouped_gemm.py
-    bench: benchmarks/ops/bench_grouped_gemm.py
-    bench_manifest_driven: true
+    flops: "2 * M * N * K"
+    # batch_padded_offsets is passed and never read.
+    bytes: "bytes(a) + bytes(b) + bytes(batch_sizes) + bytes(batch_offsets) + bytes(output)"

@@ -36,8 +36,8 @@ b = torch.randn(1024, 512, device="cuda", dtype=torch.float16)
 d = gemm(a, b)  # equals a @ b.T
 ```
 
-Operators are auto-tuned on first use, CUDA-Graph compatible, and declare their
-`torch.compile(fullgraph=True)` support per op.
+Operators autotune when built with `tune=True`, are CUDA-Graph compatible, and each declares
+whether it supports `torch.compile(fullgraph=True)`.
 
 ## Built for agents
 
@@ -74,10 +74,21 @@ GemmFwdOp:
 
 | Field       | Role                                                                          |
 | ----------- | ----------------------------------------------------------------------------- |
-| `ref_api`   | Reference implementation the tests compare outputs against.                   |
+| `ref_api`   | The API the operator follows semantically, when it has one.                   |
 | `signature` | Tensor types over named indices; the call checks are generated from it.       |
 | `workloads` | The calls the manifest contract cases and the benchmarks take.                |
 | `roofline`  | Performance model. Efficiency is achieved throughput over the modelled bound. |
+
+Three things are derived from the entry rather than written per operator:
+
+- **Call checks.** Every call is checked against the signature before it dispatches: shapes
+  unify to the named indices, dtypes and refinements hold, and the output shapes follow from the
+  same types.
+- **Roofline.** `eval_roofline()` evaluates the formula on the checked call; the byte count
+  follows from the signature unless the entry writes one.
+- **Workloads.** Each row instantiates to a concrete call, with metadata tensors drawn from
+  declared generators. The contract tests and the benchmarks run exactly these calls, and each
+  call's case id keys its nightly history.
 
 A validator checks every entry against its implementation in CI, so the declaration and the
 code stay in step.

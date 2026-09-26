@@ -558,12 +558,9 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
         )
 
     def __init__(self, a_shape, b_shape, dtype, config=None, tune=False, *, alpha=1):
-        # PyTorch rejects a floating alpha on an integral input; mirror that so
-        # the kernel cannot silently truncate alpha through an fp32 cast.
-        # Out-of-range integer alphas are NOT rejected — PyTorch wraps them via
-        # the input dtype (uint8 alpha=-1 → 255), which T.cast reproduces.
-        if dtype in _BITWISE_DTYPES and float(alpha) != float(int(alpha)):
-            raise ValueError("alpha must be an integer when input dtype is integral")
+        # The op's signature admits an integral input only an integral alpha the dtype
+        # represents; for uint8 that includes the negative values PyTorch wraps
+        # (alpha=-1 -> 255), which the integer path below reproduces.
         self._alpha = alpha
         super().__init__(a_shape, b_shape, dtype, config=config, tune=tune)
 
@@ -573,8 +570,8 @@ class _AlphaScaledBinaryKernel(BinaryKernel):
         Floating inputs route the scalar multiply through fp32 to dodge
         narrow-type literal issues for fp16 / bf16; integer/bool inputs
         keep native integer arithmetic. Following PyTorch, the integral
-        alpha is coerced via the input dtype, so out-of-range values
-        wrap silently (uint8 alpha=-1 -> 255; bool alpha=2 -> low-bit).
+        alpha is coerced via the input dtype (uint8 alpha=-1 -> 255; bool
+        alpha=2 -> True).
         """
         alpha = self._alpha
         combine = type(self)._combine

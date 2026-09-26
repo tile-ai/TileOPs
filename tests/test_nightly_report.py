@@ -137,6 +137,12 @@ def test_renamed_row_keeps_its_history(report):
     assert found["base_ms"] == 0.1
 
 
+def test_prior_name_of_another_dtype_is_not_a_rename(report):
+    """fp16 and bf16 rows of one shape have equal counts; only the case id tells them apart."""
+    runs = [_history_run(0.1, name="old-float16", flops=5e9, bytes=1e6)]
+    assert report.detect_regressions(_bench_ops(0.4, flops=5e9, bytes=1e6), runs) == []
+
+
 def test_name_that_ever_shared_a_run_with_the_current_name_is_not_a_rename(report):
     """Co-occurrence disqualifies a prior name even when its counts differ there."""
     shared_run = {
