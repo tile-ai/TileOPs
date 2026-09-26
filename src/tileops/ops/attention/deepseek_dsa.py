@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -7,7 +7,6 @@ from tileops.kernels.attention import SparseMlaBasicKernel, SparseMlaCall, Spars
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["DeepSeekSparseAttentionDecodeWithKVCacheFwdOp"]
@@ -22,9 +21,17 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
 
     The layout of the operation is BSHD.
 
+    The in-tree kernels serve causal calls only, with a power-of-two head dimension
+    walked in 128-column steps and a 64-column tail; they refuse other calls.
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary = True
+    # The WGMMA warp-specialized kernel serves SM90; the architecture-agnostic basic kernel
+    # serves everywhere else. Selection reads the device when a call arrives.
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "sparse_mla_kernel": SparseMlaKernel,
+        "sparse_mla_basic_kernel": SparseMlaBasicKernel,
+    }
 
     def __init__(
         self,
@@ -33,10 +40,10 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         q_start_index_s: int,
         sm_scale: Optional[float] = None,
         is_causal: bool = True,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -47,26 +54,17 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
             sm_scale (Optional[float], default=None): Scaling factor for the softmax function.
             is_causal (bool, default=True): Whether the attention is causal
                         (True for causal, False for non-causal).
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map (Optional[Dict[str, Kernel]], default=None):
                         Optional mapping for custom kernels.
             tune (bool, default=False): Whether to enable kernel tuning.
-            target: Which set of kernels serves this op — a target name, ``BUILTIN``
-                for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.target = target
         self.dim_tail = dim_tail
         self.stride_kv = stride_kv
         self.sm_scale = sm_scale
         self.is_causal = is_causal
-
-        if q_start_index_s != 0 and q_start_index_s <= stride_kv:
-            raise ValueError(
-                f"Invalid q_start_index_s={q_start_index_s}:"
-                f"must be > stride_kv={stride_kv}. "
-                "This indicates incorrect cp0 masking."
-                "Ensure queries with pos < stride_kv are masked "
-                "to avoid NaNs in early outputs."
-            )
 
         cp0 = q_start_index_s == 0
         self.q_start_index_s = q_start_index_s
@@ -100,31 +98,6 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
             tune=self.tune,
         )
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        """
-        Provides the default kernel map for the operation.
-
-        Returns:
-            Dict[str, Kernel]: A dictionary mapping kernel names to kernel functions.
-            The WGMMA warp-specialized SparseMlaKernel serves SM90; the
-            architecture-agnostic SparseMlaBasicKernel (plain T.gemm) serves
-            everywhere else. Selection reads the device when a call arrives.
-        """
-        return {
-            "sparse_mla_kernel": SparseMlaKernel,
-            "sparse_mla_basic_kernel": SparseMlaBasicKernel,
-        }
-
-    def _infer_output_shapes(
-        self,
-        q_shape: tuple[int, ...],
-        kv_shape: tuple[int, ...],
-        indices_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: ``o`` drops the tail dims ``q`` carries."""
-        return {"o": tuple(q_shape[:-1]) + (q_shape[-1] - self.dim_tail,)}
-
     def forward(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         """
         Performs the forward pass of the sparse attention operation.
@@ -140,7 +113,7 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
             torch.Tensor: The result of applying the sparse attention
                             operation on the input tensors.
         """
-        return self._wrapped(q, kv, indices, self._instance_key)
+        return self._call_boundary(q, kv, indices)
 
     def _eager_forward(
         self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor
@@ -149,17 +122,10 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        self._validate_dtypes(q, kv, indices)
-        self.dtype = q.dtype
-        # The legacy roofline formula reads these off the op.
-        self.batch, self.seq_len, self.heads, q_dim = q.shape
-        _, self.seq_len_kv, self.heads_kv, _ = kv.shape
-        self.dim = q_dim - self.dim_tail
-        self.topk = indices.shape[3]
         inputs = (q, kv, indices)
         kernel = self.kernel_for("sparse_mla", inputs, self._sparse_mla_call(q, kv, indices))
         return kernel(*inputs)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
+        return tensor_core_roof(self.last_call.tensors["q"][1])

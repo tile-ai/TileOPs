@@ -122,6 +122,32 @@ def test_packed_positions_restart_at_each_sequence():
             GENERATORS["packed_positions"](lengths)
 
 
+def test_causal_topk_indices_draw_distinct_visible_keys_and_pad():
+    import random
+
+    rows = GENERATORS["causal_topk_indices"](random.Random(0), 1, 4, 1, 3, 5, 2, 1)
+    for t, (keys,) in enumerate(rows[0]):
+        visible = min(max(1, t + 2), 5)
+        drawn = keys[: min(3, visible)]
+        assert len(set(drawn)) == len(drawn) and all(0 <= k < visible for k in drawn)
+        assert keys[len(drawn) :] == [5] * (3 - len(drawn))
+    with pytest.raises(ValueError, match="positive"):
+        GENERATORS["causal_topk_indices"](random.Random(0), 1, 4, 1, 3, 5, -1, 1)
+
+
+def test_key_windows_start_at_the_segment_and_end_after_the_position():
+    assert GENERATORS["key_windows"]([3, 2], 1, 4, "start") == [0, 0, 3, 3]
+    assert GENERATORS["key_windows"]([3, 2], 1, 4, "end") == [2, 3, 4, 5]
+    with pytest.raises(ValueError, match="first"):
+        GENERATORS["key_windows"]([3, 2], 2, 4, "end")
+
+
+def test_full_fills_its_shape():
+    assert GENERATORS["full"]((2, 3), 7) == [[7, 7, 7], [7, 7, 7]]
+    with pytest.raises(ValueError, match="non-negative"):
+        GENERATORS["full"]((2, -1), 0)
+
+
 def test_generated_metadata_is_deterministic_and_materializes():
     sig = entry_plan("MoePrePermuteFwdOp", _ENTRIES["MoePrePermuteFwdOp"], _ADTS)
     row = _ENTRIES["MoePrePermuteFwdOp"]["workloads"][0]

@@ -76,6 +76,24 @@ def _ledger(op_name: str, **tensors: "tuple[tuple[int, ...], torch.dtype] | None
     )
 
 
+def _manifest_rows(op_name: str) -> list:
+    from tileops.manifest import load_manifest
+
+    return load_manifest()[op_name]["workloads"]
+
+
+def _manifest_call(op_name: str, row: "dict | None" = None):
+    """The call a workload row of *op_name* states, its metadata generated; the first row
+    and dtype case unless *row* is given."""
+    from tileops.manifest import load_adts, load_manifest
+    from tileops.manifest.plan import entry_plan
+    from tileops.manifest.workload import instantiate
+
+    plan = entry_plan(op_name, load_manifest()[op_name], load_adts())
+    row = row if row is not None else _manifest_rows(op_name)[0]
+    return instantiate(plan, row, (row.get("dtype_cases") or [{}])[0])
+
+
 class TestBytesOracle:
     # __new__ + attribute binding keeps the oracle CUDA-free; each case binds
     # exactly the state the op's eval_roofline reads after a forward().
@@ -190,246 +208,39 @@ class TestBytesOracle:
         )
         assert self._priced(op, tensors)[1] == routed + shared
 
-    def test_gqa_dense_counts_qkv_output_and_the_optional_inputs(self):
-        from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
-
-        batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 256, 1792, 8, 2, 128
-        q_shape = (batch, seq_len_q, heads, dim)
-        kv_shape = (batch, seq_len_kv, heads_kv, dim)
-        scales = (((batch, heads_kv), torch.float32),) * 3
-        tables = (((seq_len_kv, dim // 4), torch.float16),) * 2
-        # (q/k/v dtype, output dtype, the optional tensors the call passed)
-        calls = {
-            "16-bit": (torch.float16, torch.float16, ()),
-            "fused RoPE": (torch.float16, torch.float16, tables),
-            "FP8": (torch.float8_e4m3fn, torch.float16, scales),
-        }
-        for label, (dtype, out_dtype, optional) in calls.items():
-            op = GroupedQueryAttentionDenseFwdOp.__new__(GroupedQueryAttentionDenseFwdOp)
-            op._roofline_kwargs = {
-                "q_shape": q_shape,
-                "k_shape": kv_shape,
-                "is_causal": True,
-                "dtype": dtype,
-                "out_dtype": out_dtype,
-                "optional_shapes": optional,
-            }
-            scales, tables = (optional, ()) if len(optional) == 3 else ((), optional)
-            oracle = _ledger(
-                "GroupedQueryAttentionDenseFwdOp",
-                q=(q_shape, dtype),
-                k=(kv_shape, dtype),
-                v=(kv_shape, dtype),
-                q_scale=(scales[0] if scales else None),
-                k_scale=(scales[1] if scales else None),
-                v_scale=(scales[2] if scales else None),
-                rope_cos=(tables[0] if tables else None),
-                rope_sin=(tables[1] if tables else None),
-                o=(q_shape, out_dtype),
-            )
-            assert op.eval_roofline()[1] == oracle, label
-
-    def test_mha_backward_counts_o_and_lse(self):
-        from tileops.ops.attention.mha import MultiHeadAttentionBwdOp
-
-        batch, seq_len, heads, dim = 2, 2048, 16, 128
-        shape = (batch, seq_len, heads, dim)
-        op = MultiHeadAttentionBwdOp.__new__(MultiHeadAttentionBwdOp)
-        op.batch, op.seq_len, op.heads, op.dim = batch, seq_len, heads, dim
-        op.is_causal = True
-        op.dtype = torch.float16
-        oracle = _nbytes(
-            *((shape, torch.float16),) * 5,  # q, k, v, o, do
-            ((batch, heads, seq_len), torch.float32),  # lse
-            *((shape, torch.float16),) * 3,  # dq, dk, dv
-        )
-        assert op.eval_roofline()[1] == oracle
-
-    def test_gqa_backward_prices_the_kv_tensors_at_the_kv_head_count(self):
-        from tileops.ops.attention.gqa import GroupedQueryAttentionBwdOp
-
-        batch, seq_len, heads, heads_kv, dim = 2, 2048, 16, 4, 128
-        q_shape = (batch, seq_len, heads, dim)
-        kv_shape = (batch, seq_len, heads_kv, dim)
-        op = GroupedQueryAttentionBwdOp.__new__(GroupedQueryAttentionBwdOp)
-        op.batch, op.seq_len, op.heads, op.heads_kv, op.dim = batch, seq_len, heads, heads_kv, dim
-        op.is_causal = True
-        op.dtype = torch.float16
-        oracle = _nbytes(
-            *((q_shape, torch.float16),) * 3,  # q, o, do
-            *((kv_shape, torch.float16),) * 2,  # k, v
-            ((batch, heads, seq_len), torch.float32),  # lse
-            (q_shape, torch.float16),  # dq
-            *((kv_shape, torch.float16),) * 2,  # dk, dv
-        )
-        assert op.eval_roofline()[1] == oracle
-
-    def test_fp8_indexer_prices_each_input_at_its_own_dtype_and_the_scale_by_presence(self):
-        from tileops.ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-
-        batch, seq_len, heads, index_dim = 1, 4096, 32, 128
-        seq_len_kv, kv_group = 4096, 1
-        scale_shape = (batch, seq_len_kv, kv_group)
-        fp8, bf16 = torch.float8_e4m3fn, torch.bfloat16
-        # Handed bf16, the op quantizes and produces the scale itself: both are
-        # intermediates. Only the pre-quantized call reads a caller's scale, and
-        # only it requires index_q and index_k to share a dtype.
-        calls = {
-            "bf16 inputs": (bf16, bf16, None),
-            "pre-quantized": (fp8, fp8, scale_shape),
-            "fp8 inputs, quantized k": (fp8, fp8, None),
-            "mixed dtypes": (fp8, bf16, None),
-        }
-        for label, (q_dtype, k_dtype, supplied_scale) in calls.items():
-            op = FP8LightningIndexerFwdOp.__new__(FP8LightningIndexerFwdOp)
-            op.batch, op.seq_len, op.heads, op.index_dim = batch, seq_len, heads, index_dim
-            op.seq_len_kv, op.kv_group = seq_len_kv, kv_group
-            op.dtype, op.index_k_dtype = q_dtype, k_dtype
-            op.index_k_scale_shape = supplied_scale
-            oracle = _nbytes(
-                ((batch, seq_len, heads, index_dim), q_dtype),  # index_q
-                ((batch, seq_len_kv, kv_group, index_dim), k_dtype),  # index_k
-                ((seq_len, heads), torch.float32),  # weights
-                ((seq_len,), torch.int32),  # cu_seqlen_ks
-                ((seq_len,), torch.int32),  # cu_seqlen_ke
-                *(((supplied_scale, torch.float32),) if supplied_scale else ()),
-                ((batch, seq_len, seq_len_kv, kv_group), torch.float32),  # logits
-            )
-            assert op.eval_roofline()[1] == oracle, label
-
-    def test_gqa_prefill_varlen_counts_its_packed_tensors_and_bounds(self):
-        from tileops.ops.attention.gqa import GroupedQueryAttentionPrefillVarlenFwdOp
-
-        batch, heads, heads_kv, dim = 4, 32, 8, 128
-        q_lens = [512] * batch
-        total_q = total_kv = sum(q_lens)
-        bounds = [0]
-        for length in q_lens:
-            bounds.append(bounds[-1] + length)
-        cu = torch.tensor(bounds, dtype=torch.int32)
-        op = GroupedQueryAttentionPrefillVarlenFwdOp.__new__(
-            GroupedQueryAttentionPrefillVarlenFwdOp
-        )
-        # The formula derives per-request lengths from these cumulative bounds.
-        op._roofline_kwargs = {
-            "q_shape": (total_q, heads, dim),
-            "k_shape": (total_kv, heads_kv, dim),
-            "batch": batch,
-            "max_seqlen_q": max(q_lens),
-            "max_seqlen_kv": max(q_lens),
-            "is_causal": True,
-            "dtype": "float16",
-            "cu_seqlens_q": cu,
-            "cu_seqlens_kv": cu,
-        }
-        oracle = _ledger(
-            "GroupedQueryAttentionPrefillVarlenFwdOp",
-            q=((total_q, heads, dim), torch.float16),
-            k=((total_kv, heads_kv, dim), torch.float16),
-            v=((total_kv, heads_kv, dim), torch.float16),
-            cu_seqlens_q=((batch + 1,), torch.int32),
-            cu_seqlens_kv=((batch + 1,), torch.int32),
-            o=((total_q, heads, dim), torch.float16),
-        )
-        assert op.eval_roofline()[1] == oracle
-
-    def test_gqa_sliding_window_varlen_counts_its_packed_tensors_and_bounds(self):
-        from tileops.ops.attention.gqa import GroupedQueryAttentionSlidingWindowVarlenFwdOp
-
-        batch, heads, heads_kv, dim = 4, 32, 8, 128
-        q_lens = [512] * batch
-        total_q = total_k = sum(q_lens)
-        bounds = [0]
-        for length in q_lens:
-            bounds.append(bounds[-1] + length)
-        cu = torch.tensor(bounds, dtype=torch.int32)
-        op = GroupedQueryAttentionSlidingWindowVarlenFwdOp.__new__(
-            GroupedQueryAttentionSlidingWindowVarlenFwdOp
-        )
-        # The window narrows which keys each query attends, which moves the flops and
-        # leaves the traffic alone: the call still reads every packed tensor once.
-        op._roofline_kwargs = {
-            "q_shape": (total_q, heads, dim),
-            "k_shape": (total_k, heads_kv, dim),
-            "batch": batch,
-            "heads": heads,
-            "heads_kv": heads_kv,
-            "dim": dim,
-            "total_q": total_q,
-            "total_k": total_k,
-            "is_causal": True,
-            "window_size_left": 256,
-            "window_size_right": -1,
-            "dtype": torch.float16,
-            "cu_seqlens_q": cu,
-            "cu_seqlens_kv": cu,
-        }
-        oracle = _ledger(
-            "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
-            q=((total_q, heads, dim), torch.float16),
-            k=((total_k, heads_kv, dim), torch.float16),
-            v=((total_k, heads_kv, dim), torch.float16),
-            cu_seqlens_q=((batch + 1,), torch.int32),
-            cu_seqlens_k=((batch + 1,), torch.int32),
-            o=((total_q, heads, dim), torch.float16),
-        )
-        assert op.eval_roofline()[1] == oracle
-
     def test_nsa_forward_counts_the_blocks_its_selection_kept(self):
-        """How much this call reads follows `block_counts`, so the case runs the
-        workload that builds it rather than inventing a selection of its own."""
-        if not torch.cuda.is_available():
-            pytest.skip("CUDA required to build the workload")
+        """How much this call reads follows `block_counts`, so the case reads the
+        selection the manifest row generates rather than inventing one of its own."""
         from tileops.perf.formulas import nsa_fwd_varlen_roofline
-        from workloads.attention.deepseek import NsaFwdWorkload
 
-        batch, heads, head_kv, dim = 4, 16, 1, 64
-        c_seq_len, block_size, selected = 8192, 32, 4
-        workload = NsaFwdWorkload(
-            batch=batch, heads=heads, c_seq_len=c_seq_len, dim=dim, is_causal=True,
-            scale=0.1, block_size=block_size, groups=heads, selected_blocks=selected,
-            dtype=torch.float16, seq_lens=[c_seq_len // batch] * batch,
-        )  # fmt: skip
-        q, k, v, block_indices, block_counts, offsets, token_indices = workload.gen_inputs()[:7]
-
+        call = _manifest_call("NSAVarlenFwdOp")
+        ix = call.ix
+        c_seq_len, heads, head_kv, dim = ix["T_q"], ix["H"], ix["H_kv"], ix["D"]
+        block_size, selected = ix["block_size"], ix["SEL"]
         # The blocks the kernel reads: for each token and KV head, the kept picks
         # whose block starts at or before that token. Counted here from the
         # tensors, not from the formula's own walk of them.
-        kept = block_counts.reshape(-1).tolist()
-        picks = block_indices.reshape(-1, selected).tolist()
-        positions = token_indices[:, 1].tolist()
+        kept = [n for row in call.values("block_counts") for n in row]
+        picks = [p for row in call.values("block_indices") for p in row]
+        positions = [position for _request, position in call.values("token_indices")]
         tiles = sum(
             sum(1 for start in row[:n] if 0 <= start * block_size <= positions[i // head_kv])
             for i, (n, row) in enumerate(zip(kept, picks, strict=True))
         )
         gathered = tiles * block_size * dim
-
-        bound = {
-            f"{name}_shape": tuple(tensor.shape)
-            for name, tensor in (
-                ("q", q), ("k", k), ("v", v), ("block_indices", block_indices),
-                ("block_counts", block_counts), ("offsets", offsets),
-                ("token_indices", token_indices),
-            )
-        }  # fmt: skip
-        bound.update(
-            block_indices=block_indices, block_counts=block_counts, offsets=offsets,
-            token_indices=token_indices, block_size=block_size, is_causal=True,
-            dtype="float16",
-        )  # fmt: skip
         oracle = _ledger(
             "NSAVarlenFwdOp",
             q=((c_seq_len, heads, dim), torch.float16),
             # k and v are read through the selection, not end to end
             k=((gathered,), torch.float16),
             v=((gathered,), torch.float16),
-            block_indices=(tuple(block_indices.shape), torch.int32),
-            block_counts=(tuple(block_counts.shape), torch.int32),
-            offsets=(tuple(offsets.shape), torch.int32),
-            token_indices=(tuple(token_indices.shape), torch.int32),
+            block_indices=((c_seq_len, head_kv, selected), torch.int32),
+            block_counts=((c_seq_len, head_kv), torch.int32),
+            offsets=((len(call.values("offsets")),), torch.int32),
+            token_indices=((c_seq_len, 2), torch.int32),
             o_slc=((c_seq_len, heads, dim), torch.float16),
         )
-        assert nsa_fwd_varlen_roofline(bound)[1] == oracle
+        assert nsa_fwd_varlen_roofline(call)[1] == oracle
 
     def test_nsa_topk_does_not_charge_the_lse_it_recomputes(self):
         """`lse_in` is declared and passed, and the top-k kernel recomputes the lse
@@ -438,22 +249,10 @@ class TestBytesOracle:
         say which inputs those are."""
         from tileops.perf.formulas import nsa_topk_varlen_roofline
 
-        seq_num, c_seq_len, heads, head_kv, dim = 8, 8192, 32, 2, 128
-        chunk_num, selected, block = 256, 16, 32
-        lengths = [c_seq_len // seq_num] * seq_num
-        bounds = [0]
-        for length in lengths:
-            bounds.append(bounds[-1] + length)
-        offsets = torch.tensor(bounds, dtype=torch.int32)
-        bound = {
-            "q_shape": (c_seq_len, heads, dim),
-            "k_cmp_shape": (chunk_num, head_kv, dim),
-            "offsets_shape": (seq_num + 1,),
-            "offsets": offsets,
-            "bs": block,
-            "selected_block_num": selected,
-            "dtype": "float16",
-        }
+        call = _manifest_call("NSATopkVarlenFwdOp")
+        ix = call.ix
+        c_seq_len, heads, head_kv, dim = ix["T_q"], ix["H"], ix["H_kv"], ix["D"]
+        seq_num, chunk_num, selected = ix["N"], ix["C"], ix["selected_block_num"]
         oracle = _ledger(
             "NSATopkVarlenFwdOp",
             q=((c_seq_len, heads, dim), torch.float16),
@@ -464,7 +263,7 @@ class TestBytesOracle:
             token_indices=((c_seq_len, 2), torch.int32),
             block_indices=((c_seq_len, head_kv, selected), torch.int32),
         )
-        assert nsa_topk_varlen_roofline(bound)[1] == oracle
+        assert nsa_topk_varlen_roofline(call)[1] == oracle
 
     def test_gqa_prefill_paged_reads_the_pages_the_block_table_selects(self):
         """The cache is one pool and the call touches the pages its block table
@@ -472,108 +271,52 @@ class TestBytesOracle:
         travel with every call and the kernel reads them only for fp8 pages."""
         from tileops.perf.formulas import gqa_prefill_paged_with_kv_cache_fwd_roofline
 
-        batch, heads, heads_kv, dim = 8, 32, 8, 256
-        q_lens = [1024] * batch
-        cache_lens = [32768] * batch
-        total_q, cached = sum(q_lens), sum(cache_lens)
-        page_size, max_pages_per_req = 64, 528
-        # The call indexes the block table as far as each request's pages reach;
-        # the rest of the row is capacity it never reads.
-        pages_named = sum(-(-(q + c) // page_size) for q, c in zip(q_lens, cache_lens, strict=True))
-        bound = {
-            "total_q": total_q,
-            "batch": batch,
-            "q_lens": q_lens,
-            "cache_lens": cache_lens,
-            "heads": heads,
-            "heads_kv": heads_kv,
-            "dim": dim,
-            "page_size": page_size,
-            "max_pages_per_req": max_pages_per_req,
-            "max_seqlen_q": max(q_lens),
-            "is_causal": True,
-            "dtype": "float16",
+        name = "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"
+        base = next(r for r in _manifest_rows(name) if "cache_dtype" not in r)
+        # One token against an empty or single-page cache names one or two entries of
+        # its block-table row; a length that does not divide by the page size is
+        # rounded up to a page.
+        short = dict(base, T_q=len(base["q_lens"]))
+        short["q_lens"] = [1] * len(base["q_lens"])
+        short["cache_lens"] = [0, 64] * (len(base["q_lens"]) // 2)
+        rows = {
+            "cached": base,
+            "fp8 cache": dict(base, cache_dtype="float8_e4m3fn"),
+            "short": short,
         }
-        new_kv = ((total_q, heads_kv, dim), torch.float16)
-        oracle = _ledger(
-            "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
-            q=((total_q, heads, dim), torch.float16),
-            k_new=new_kv,
-            v_new=new_kv,
-            # the cached tokens the block table points at, not the whole pool
-            k_pages=((cached, heads_kv, dim), torch.float16),
-            v_pages=((cached, heads_kv, dim), torch.float16),
-            # the new tokens are appended into those same pages
-            k_pages_write=new_kv,
-            v_pages_write=new_kv,
-            k_scale_unread=True,
-            v_scale_unread=True,
-            cu_seqlens_q=((batch + 1,), torch.int32),
-            cache_seqlens=((batch,), torch.int32),
-            block_table=((pages_named,), torch.int32),
-            o=((total_q, heads, dim), torch.float16),
-        )
-        assert gqa_prefill_paged_with_kv_cache_fwd_roofline(bound)[1] == oracle
-
-        # An fp8 pool stores one byte per element, and the kernel reads both
-        # scales to dequantize what it loads and to quantize what it appends.
-        fp8 = torch.float8_e4m3fn
-        quantized = _ledger(
-            "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
-            q=((total_q, heads, dim), torch.float16),
-            k_new=new_kv,
-            v_new=new_kv,
-            k_pages=((cached, heads_kv, dim), fp8),
-            v_pages=((cached, heads_kv, dim), fp8),
-            k_pages_write=((total_q, heads_kv, dim), fp8),
-            v_pages_write=((total_q, heads_kv, dim), fp8),
-            k_scale=((1,), torch.float32),
-            v_scale=((1,), torch.float32),
-            cu_seqlens_q=((batch + 1,), torch.int32),
-            cache_seqlens=((batch,), torch.int32),
-            block_table=((pages_named,), torch.int32),
-            o=((total_q, heads, dim), torch.float16),
-        )
-        assert (
-            gqa_prefill_paged_with_kv_cache_fwd_roofline(dict(bound, cache_dtype="float8_e4m3fn"))[
-                1
-            ]
-            == quantized
-        )
-
-        # One token against an empty or single-page cache: each request names one
-        # or two entries, most of the table names nothing, and the page count is
-        # a ceiling of a length that does not divide by the page size.
-        short_q = [1] * batch
-        short_cache = [0, 64] * (batch // 2)
-        short_named = sum(
-            -(-(q + c) // page_size) for q, c in zip(short_q, short_cache, strict=True)
-        )
-        short = dict(
-            bound,
-            total_q=sum(short_q),
-            q_lens=short_q,
-            cache_lens=short_cache,
-            max_seqlen_q=max(short_q),
-        )
-        short_new_kv = ((sum(short_q), heads_kv, dim), torch.float16)
-        oracle_short = _ledger(
-            "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
-            q=((sum(short_q), heads, dim), torch.float16),
-            k_new=short_new_kv,
-            v_new=short_new_kv,
-            k_pages=((sum(short_cache), heads_kv, dim), torch.float16),
-            v_pages=((sum(short_cache), heads_kv, dim), torch.float16),
-            k_pages_write=short_new_kv,
-            v_pages_write=short_new_kv,
-            k_scale_unread=True,
-            v_scale_unread=True,
-            cu_seqlens_q=((batch + 1,), torch.int32),
-            cache_seqlens=((batch,), torch.int32),
-            block_table=((short_named,), torch.int32),
-            o=((sum(short_q), heads, dim), torch.float16),
-        )
-        assert gqa_prefill_paged_with_kv_cache_fwd_roofline(short)[1] == oracle_short
+        for label, row in rows.items():
+            call = _manifest_call(name, row)
+            ix = call.ix
+            heads, heads_kv, dim, page_size = ix["H"], ix["H_kv"], ix["D"], ix["page_size"]
+            q_lens, cache_lens = row["q_lens"], row["cache_lens"]
+            total_q, cached, batch = sum(q_lens), sum(cache_lens), len(q_lens)
+            cache = torch.float8_e4m3fn if "cache_dtype" in row else torch.float16
+            pages_named = sum(
+                -(-(q + c) // page_size) for q, c in zip(q_lens, cache_lens, strict=True)
+            )
+            new_kv = ((total_q, heads_kv, dim), torch.float16)
+            fp8 = cache is torch.float8_e4m3fn
+            oracle = _ledger(
+                name,
+                q=((total_q, heads, dim), torch.float16),
+                k_new=new_kv,
+                v_new=new_kv,
+                # the cached tokens the block table points at, not the whole pool
+                k_pages=((cached, heads_kv, dim), cache),
+                v_pages=((cached, heads_kv, dim), cache),
+                # the new tokens are appended into those same pages
+                k_pages_write=((total_q, heads_kv, dim), cache),
+                v_pages_write=((total_q, heads_kv, dim), cache),
+                k_scale=((1,), torch.float32) if fp8 else None,
+                v_scale=((1,), torch.float32) if fp8 else None,
+                k_scale_unread=not fp8,
+                v_scale_unread=not fp8,
+                cu_seqlens_q=((batch + 1,), torch.int32),
+                cache_seqlens=((batch,), torch.int32),
+                block_table=((pages_named,), torch.int32),
+                o=((total_q, heads, dim), torch.float16),
+            )
+            assert gqa_prefill_paged_with_kv_cache_fwd_roofline(call)[1] == oracle, label
 
     def test_dropout_short_circuits_read_and_write_what_they_touch(self):
         """The generated case covers the masking path its workloads state. The three
@@ -648,20 +391,10 @@ class TestBytesOracle:
 
 # Level two: a case above recounts these by hand. The value says why the
 # generated case cannot, which is what the hand-written one supplies.
-#
-# Two kinds sit here. For most, the binder cannot build the call at all. For
-# the two GQA entries it builds one and counts something that is not this call's
-# traffic, because the op translates the call before the formula sees it. Those
-# two are the ones where a formula
-# defect would look like the stated reason, so their cases are what check them
-# and `_ledger` is what checks the cases.
 HAND_WRITTEN = {
     "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "FusedMoeFwdOp": "the routed weight reads follow the routing its experts stage receives",
     "FusedMoeSharedExpertFwdOp": "the routed weight reads follow the routing its experts stage receives",
-    "GroupedQueryAttentionDenseFwdOp": "which optional tensors the call passed decides the traffic",
-    "GroupedQueryAttentionPrefillVarlenFwdOp": "the per-request lengths the call packed decide the traffic",
-    "GroupedQueryAttentionSlidingWindowVarlenFwdOp": "the per-request lengths the call packed decide the traffic",
     "GroupedGemmFwdOp": "`batch_padded_offsets` is passed and no kernel indexes it",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": "it reads the pages its block table names, not the pool",
     "NSAVarlenFwdOp": "how much it reads follows the values in `block_counts`",
@@ -679,6 +412,21 @@ def _implemented_ops() -> list[str]:
 
     return sorted(
         name for name, entry in load_manifest().items() if entry.get("status") == "implemented"
+    )
+
+
+def _draws_metadata(op_name: str) -> bool:
+    """Whether a parametric entry generates some metadata tensor at random."""
+    from tileops.manifest import load_manifest
+    from tileops.manifest.primitives import RANDOM_GENERATORS
+    from tileops.manifest.signature import is_legacy
+
+    entry = load_manifest()[op_name]
+    if is_legacy(entry):
+        return False
+    inputs = entry["signature"].get("inputs") or {}
+    return any(
+        str(spec.get("values", "")).split("(")[0] in RANDOM_GENERATORS for spec in inputs.values()
     )
 
 
@@ -759,11 +507,16 @@ class TestCoverageLevels:
         assert not unknown, f"declared but not implemented: {unknown}"
 
     def test_a_declared_op_is_one_the_manifest_does_not_already_check(self):
-        """Level two and three are for ops the manifest cannot recount, not a queue."""
+        """Level two and three are for ops the manifest cannot recount, not a queue.
+
+        An op whose rows draw metadata at random stays at level two however its rows fall:
+        one row's draw agreeing with the recount says nothing of another's
+        (docs/design/roofline.md §4.7).
+        """
         promotable = sorted(
             name
             for name in {**HAND_WRITTEN, **NOT_RECOUNTABLE}
-            if _binder_builds(name) and _binder_agrees(name)
+            if not _draws_metadata(name) and _binder_builds(name) and _binder_agrees(name)
         )
         assert not promotable, (
             f"the binder now recounts {promotable} and the formula agrees; move them out "
@@ -805,52 +558,3 @@ class TestCoverageLevels:
             for name, reason in level.items():
                 assert reason and not reason.endswith("."), name
                 assert len(reason.split()) >= 5, f"{name}: {reason!r} says too little"
-
-
-class TestValueDeterminedTraffic:
-    """Ops whose `bytes` follows an input's values must build that input the same
-    way every time. The global stream does not give
-    that: a draw added anywhere earlier moves every draw after it."""
-
-    def test_the_nsa_forward_workload_prices_the_same_call_twice(self):
-        pytest.importorskip("torch")
-        if not torch.cuda.is_available():
-            pytest.skip("CUDA required to build the workload")
-        from tileops.perf.formulas import nsa_fwd_varlen_roofline
-        from workloads.attention.deepseek import NsaFwdWorkload
-
-        def priced(extra_draw: bool, *, builds: int = 1) -> int:
-            torch.manual_seed(1235)
-            if extra_draw:
-                torch.randn(7, device="cuda")
-            workload = NsaFwdWorkload(
-                batch=4, heads=16, c_seq_len=8192, dim=64, is_causal=True, scale=0.1,
-                block_size=32, groups=16, selected_blocks=16, dtype=torch.float16,
-                seq_lens=[2048] * 4,
-            )  # fmt: skip
-            for _ in range(builds - 1):
-                workload.gen_inputs()
-            q, k, v, block_indices, block_counts, offsets, token_indices = workload.gen_inputs()[:7]
-            bound = {
-                f"{name}_shape": tuple(tensor.shape)
-                for name, tensor in (
-                    ("q", q), ("k", k), ("v", v), ("block_indices", block_indices),
-                    ("block_counts", block_counts), ("offsets", offsets),
-                    ("token_indices", token_indices),
-                )
-            }  # fmt: skip
-            bound.update(
-                block_indices=block_indices,
-                block_counts=block_counts,
-                offsets=offsets,
-                token_indices=token_indices,
-                block_size=32,
-                is_causal=True,
-                dtype="float16",
-            )
-            return nsa_fwd_varlen_roofline(bound)[1]
-
-        # A draw added upstream must not move it, and neither must building the
-        # same workload a second time.
-        assert priced(False) == priced(True)
-        assert priced(False) == priced(False, builds=3)

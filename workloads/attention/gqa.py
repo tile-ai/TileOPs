@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from workloads.attention.paged import make_fragmented_block_table
-from workloads.workload_base import WorkloadBase
+from workloads.workload_base import CallWorkload, WorkloadBase
 
 
 def make_cu_seqlens(lengths: list[int]) -> torch.Tensor:
@@ -660,3 +660,182 @@ class GroupedQueryAttentionVarlenFwdWorkload(WorkloadBase):
 
 class GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(GroupedQueryAttentionVarlenFwdWorkload):
     """Compatibility name for the superseded sliding-window public Op."""
+
+
+def _dtype(call, tensor: str) -> torch.dtype:
+    return getattr(torch, call.tensors[tensor][1])
+
+
+def _segments(bounds: list[int]) -> list[int]:
+    return [end - start for start, end in zip(bounds, bounds[1:], strict=False)]
+
+
+class GroupedQueryAttentionBwdCall(CallWorkload, GroupedQueryAttentionBwdWorkload):
+    """A manifest call of GroupedQueryAttentionBwdOp; ``o`` and ``lse`` are the forward's."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix = call.ix
+        GroupedQueryAttentionBwdWorkload.__init__(
+            self, ix["B"], ix["H"], ix["H_kv"], ix["S"], ix["D"], ix["is_causal"], _dtype(call, "q")
+        )
+
+    gen_inputs = GroupedQueryAttentionBwdWorkload.gen_inputs
+
+
+class GroupedQueryAttentionDenseDecodeCall(CallWorkload, GroupedQueryAttentionDenseDecodeWorkload):
+    """A manifest call of GroupedQueryAttentionDenseFwdOp with one query token."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix = call.ix
+        GroupedQueryAttentionDenseDecodeWorkload.__init__(
+            self,
+            ix["B"],
+            ix["H"],
+            ix["H_kv"],
+            ix["S_kv"],
+            ix["D"],
+            _dtype(call, "q"),
+            sm_scale=call.params["sm_scale"],
+            softcap=call.params["softcap"],
+        )
+
+    gen_inputs = GroupedQueryAttentionDenseDecodeWorkload.gen_inputs
+
+
+class GroupedQueryAttentionDensePrefillCall(
+    CallWorkload, GroupedQueryAttentionDensePrefillWorkload
+):
+    """A manifest call of GroupedQueryAttentionDenseFwdOp passing FP8 scales or RoPE tables.
+
+    FP8 values stay inside the format's range and the scales near one; the tables are
+    rotations.
+    """
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix, params = call.ix, call.params
+        out_dtype = params["out_dtype"]
+        rope = params["pos_encoding_mode"] == "rope"
+        GroupedQueryAttentionDensePrefillWorkload.__init__(
+            self,
+            ix["B"],
+            ix["S_q"],
+            ix["S_kv"],
+            ix["H"],
+            ix["H_kv"],
+            ix["D"],
+            _dtype(call, "q"),
+            out_dtype=None if out_dtype is None else getattr(torch, out_dtype),
+            is_causal=params["is_causal"],
+            sm_scale=params["sm_scale"],
+            softcap=params["softcap"],
+            rotary_dim=ix["R"] if rope else None,
+            rope_layout=params["rope_layout"],
+        )
+
+    gen_inputs = GroupedQueryAttentionDensePrefillWorkload.gen_inputs
+
+
+class GroupedQueryAttentionVarlenCall(CallWorkload, GroupedQueryAttentionVarlenFwdWorkload):
+    """A manifest call of a packed GQA op, over the request lengths its offsets carry."""
+
+    def __init__(self, call, cu_kv: str = "cu_seqlens_kv") -> None:
+        CallWorkload.__init__(self, call)
+        ix, params = call.ix, call.params
+        q_lens = _segments(call.values("cu_seqlens_q"))
+        GroupedQueryAttentionVarlenFwdWorkload.__init__(
+            self,
+            len(q_lens),
+            q_lens,
+            _segments(call.values(cu_kv)),
+            ix["H"],
+            ix["H_kv"],
+            ix["D"],
+            params["is_causal"],
+            params.get("window_size_left", -1),
+            params.get("window_size_right", -1),
+            _dtype(call, "q"),
+            sm_scale=params.get("sm_scale"),
+            softcap=params.get("softcap"),
+        )
+
+    gen_inputs = GroupedQueryAttentionVarlenFwdWorkload.gen_inputs
+
+
+class GQAPrefillPagedWithKVCacheFwdCall(CallWorkload, GQAPrefillPagedWithKVCacheFwdWorkload):
+    """A manifest call of GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp.
+
+    An FP8 cache holds the random pages quantized by scales of 0.01; an unquantized one
+    passes unit scales.
+    """
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix, params = call.ix, call.params
+        q_lens = _segments(call.values("cu_seqlens_q"))
+        GQAPrefillPagedWithKVCacheFwdWorkload.__init__(
+            self,
+            len(q_lens),
+            ix["H"],
+            ix["H_kv"],
+            q_lens,
+            call.values("cache_seqlens"),
+            params["page_size"],
+            ix["D"],
+            params["is_causal"],
+            _dtype(call, "q"),
+            fuse_rope=params["fuse_rope"],
+            rotary_dim=params["rotary_dim"],
+            softcap=params["softcap"],
+        )
+        self.cache_dtype = _dtype(call, "k_pages")
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table = (
+            GQAPrefillPagedWithKVCacheFwdWorkload.gen_inputs(self)
+        )
+        scale = 1.0
+        if self.cache_dtype == torch.float8_e4m3fn:
+            scale = 0.01
+            fp8_max = torch.finfo(torch.float8_e4m3fn).max
+            k_pages, v_pages = (
+                (t / scale).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn).contiguous()
+                for t in (k_pages, v_pages)
+            )
+        k_scale = torch.full((1,), scale, dtype=torch.float32, device=q.device)
+        return (
+            q,
+            k_new,
+            v_new,
+            k_pages,
+            v_pages,
+            k_scale,
+            k_scale.clone(),
+            cu_seqlens_q,
+            cache_seqlens,
+            block_table,
+        )
+
+
+class GroupedQueryAttentionDecodePagedCall(CallWorkload, GroupedQueryAttentionDecodePagedWorkload):
+    """A manifest call of GroupedQueryAttentionDecodePagedWithKVCacheFwdOp."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix, params = call.ix, call.params
+        GroupedQueryAttentionDecodePagedWorkload.__init__(
+            self,
+            ix["B"],
+            ix["H"],
+            ix["H_kv"],
+            ix["N_kv"],
+            ix["D"],
+            params["page_size"],
+            _dtype(call, "q"),
+            sm_scale=params["sm_scale"],
+            softcap=params["softcap"],
+        )
+
+    gen_inputs = CallWorkload.gen_inputs

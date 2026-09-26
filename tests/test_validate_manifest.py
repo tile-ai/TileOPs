@@ -4076,7 +4076,7 @@ class TestDiagnosticOwnership:
         # A func that resolves, so the only defect is the mode itself: both
         # halves are judged now, and a broken one would add its own line.
         "roofline.mixed-modes": (
-            {"func": "tileops.perf.formulas.mha_bwd_roofline", "flops": "1"},
+            {"func": "tileops.perf.formulas.gqa_dense_fwd_roofline", "flops": "1"},
             None,
             "exclusive",
         ),
