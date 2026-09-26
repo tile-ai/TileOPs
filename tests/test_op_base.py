@@ -7,6 +7,7 @@ the explicit kernel enumeration ``Op.autotune`` runs over.
 """
 
 import dataclasses
+import types
 import warnings
 
 import pytest
@@ -396,7 +397,7 @@ class _TunableOp(Op):
         def factory():
             kernel = _RecordingKernel(str(call), self._tuned)
             if self.tune:
-                kernel.autotune()
+                kernel.request_tune()
             return kernel
 
         return call, factory
@@ -430,6 +431,35 @@ class TestTunedMode:
         op = _TunableOp(tuned)
         op.build(torch.float16)
         assert tuned == []
+
+    def test_a_kernel_built_after_autotune_is_tuned_once_without_its_factory_reading_tune(self):
+        """The build path tunes what a factory returns, and a second request changes nothing."""
+        tuned: list[str] = []
+        op = _SlottedOp(tuned)
+        op.autotune()
+        op.build("fwd", torch.float16, "fp16")
+        op.autotune()
+        assert tuned == ["fp16"]
+
+    def test_a_kernel_whose_program_is_built_at_launch_tunes_at_that_launch_once(self):
+        tuned: list[str] = []
+
+        class LaunchBuiltKernel(Kernel):
+            autotune_configs = [{"threads": 128}]
+
+            def forward(self):
+                self.kernel = "program"
+
+            def tune_jit_kernel(self, kernel, configs, warmup, rep):
+                tuned.append(kernel)
+                return types.SimpleNamespace(config={"threads": 128})
+
+        kernel = LaunchBuiltKernel()
+        kernel.request_tune()
+        assert tuned == []
+        kernel()
+        kernel()
+        assert tuned == ["program"]
 
     def test_a_delegate_built_after_autotune_inherits_tuned_mode(self):
         """``delegate_for`` hands the composite's flag on, so the decision carries."""

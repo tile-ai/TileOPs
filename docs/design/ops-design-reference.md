@@ -43,7 +43,7 @@ Rationale and the role / entry vocabulary: [ops-design.md § Kernel caching and 
 | `kernel_delegates()`             | The sub-ops `delegate_for` holds, in stage order. Derived; never overridden                                                                                    |
 | `iter_kernels()`                 | The TileOPs `Kernel` instances the entries hold, deduplicated: role entries, `self.kernel`, and delegates. What `autotune()` tunes                             |
 | `settled_target`                 | What a call settled the op on: `None` before, `BUILTIN` for the in-tree implementation, else the target's name                                                 |
-| `autotune()`                     | Puts the op in tuned mode: tunes built kernels, and sets `tune` so later in-tree builds tune too; a target is not passed `tune`                                |
+| `autotune()`                     | Puts the op in tuned mode: tunes built kernels, and sets `tune`, under which every later in-tree build is tuned as it is built; a target is not passed `tune`  |
 
 ### `Kernel` base class attributes ([`src/tileops/kernels/kernel_base.py`](../../src/tileops/kernels/kernel_base.py))
 

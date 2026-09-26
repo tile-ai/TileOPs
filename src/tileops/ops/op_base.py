@@ -603,7 +603,11 @@ class Op(ABC):
                 f"op: {registered_targets(type(self).__name__)}"
             )
         if key not in entries:
-            entries[key] = build()
+            entry = build()
+            if self.tune:
+                for kernel in self._entry_kernels(entry):
+                    kernel.request_tune()
+            entries[key] = entry
         return entries[key]
 
     def entry_for(self, role: str, call: object) -> Entry:
@@ -1171,7 +1175,9 @@ class Op(ABC):
 
         It applies to specializations that do not exist yet — an op tuned before its
         first fp16 call is tuned when bf16 arrives later — because ``tune`` is what
-        carries it, and a kernel factory reads that flag when it runs.
+        carries it: every entry built while it is set has its kernels put in tuned mode, so
+        no kernel factory needs to read it. A sub-op receives it from ``delegate_for``.
+        Tuning a kernel is idempotent; one without ``autotune_configs`` stays untuned.
 
         A target's builder is not passed ``tune``, so the flag cannot reach what a target
         builds; an op a target serves warns once instead of ignoring the request.
@@ -1181,7 +1187,7 @@ class Op(ABC):
             if op.settled_target not in (None, BUILTIN):
                 op._warn_tune_not_passed()
         for kernel in self.iter_kernels():
-            kernel.autotune()
+            kernel.request_tune()
 
     def _warn_tune_not_passed(self) -> None:
         """Warn, once per instance, that tuning does not reach this op's target."""
