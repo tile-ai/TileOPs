@@ -5,7 +5,6 @@ import functools
 import tilelang
 import tilelang.language as T
 import torch
-import tvm.tirx as tirx
 
 from ._base import (
     _FLOAT_DTYPES,
@@ -14,6 +13,7 @@ from ._base import (
     _AlphaScaledBinaryKernel,
 )
 from ._dtype import _BINARY_FULL_DTYPES, _BINARY_NO_BOOL_DTYPES
+from ._nan import nan_max, nan_min
 
 __all__ = [
     "AddFwdKernel",
@@ -230,56 +230,6 @@ class LerpFwdKernel(BinaryKernel):
         return f"{self._op_func_name()}|weight={weight!r}", lerp_func
 
 
-def _is_float_dtype_str(dtype_str: str) -> bool:
-    """Return True for floating-point TileLang dtype strings.
-
-    TileLang IR exposes operand dtypes only as strings (``"float16"``,
-    ``"bfloat16"``, ``"float32"``), so prefix matching is the established
-    convention for float detection inside ``op_func`` kernel bodies. All
-    TileLang float dtype names start with ``"float"`` or ``"bfloat"``;
-    integer / bool dtype names (``"int*"``, ``"uint*"``, ``"bool"``) do not.
-    """
-    return dtype_str.startswith(("float", "bfloat"))
-
-
-def _propagate_nan(a, b, result):
-    """Return NaN where either operand is NaN, and *result* everywhere else.
-
-    ``fminf``/``fmaxf`` return the non-NaN operand, so the NaN torch propagates
-    has to be put back. One select, not two: each ``T.if_then_else`` scalarises
-    the element loop. ``isnan`` takes float32 because bfloat16 has no native
-    form; a self-compare is not a guard, since TileLang lowers ``!=`` as an
-    ordered compare.
-
-    The NaN is canonical where torch returns the offending operand, visible only
-    to a caller reading raw bits. Naming which operand would cost a second select.
-    """
-    either_is_nan = tirx.any(T.isnan(T.Cast("float32", a)), T.isnan(T.Cast("float32", b)))
-    return T.if_then_else(either_is_nan, T.Cast(a.dtype, T.cast(float("nan"), "float32")), result)
-
-
-def _nan_intrin(name, a, b):
-    """A TileLang NaN-propagating builtin, named the way TileLang names its own.
-
-    ``tl.max_nan`` and ``tl.min_nan`` lower to CUDA's ``__hmax_nan`` /
-    ``__hmin_nan``: one instruction where the guarded form is a compare, an or
-    and a select. TileLang registers both builtins and wraps neither in Python,
-    so there is nothing to import; naming the op through ``tirx.op.Op.get`` is
-    the line its own ``math_intrinsics`` uses for ``tl.max2`` and the ieee_*
-    family. A ``T.max_nan`` upstream would replace this whole helper, and the
-    two call sites would not change.
-    """
-    return tirx.call_intrin(a.dtype, tirx.op.Op.get(name), a, b)
-
-
-def _nan_max(a, b):
-    return _nan_intrin("tl.max_nan", a, b)
-
-
-def _nan_min(a, b):
-    return _nan_intrin("tl.min_nan", a, b)
-
-
 class MaximumFwdKernel(BinaryKernel):
     """Element-wise maximum: y = max(a, b).
 
@@ -312,12 +262,7 @@ class MaximumFwdKernel(BinaryKernel):
 
     @staticmethod
     def op_func(a, b):
-        if not _is_float_dtype_str(str(a.dtype)):
-            # Integer / bool: no NaN representation, T.max is sufficient.
-            return T.max(a, b)
-        if str(a.dtype) in ("float16", "bfloat16"):
-            return _nan_max(a, b)
-        return _propagate_nan(a, b, T.max(a, b))
+        return nan_max(a, b)
 
 
 class MinimumFwdKernel(BinaryKernel):
@@ -353,11 +298,7 @@ class MinimumFwdKernel(BinaryKernel):
 
     @staticmethod
     def op_func(a, b):
-        if not _is_float_dtype_str(str(a.dtype)):
-            return T.min(a, b)
-        if str(a.dtype) in ("float16", "bfloat16"):
-            return _nan_min(a, b)
-        return _propagate_nan(a, b, T.min(a, b))
+        return nan_min(a, b)
 
 
 @functools.lru_cache(maxsize=32)

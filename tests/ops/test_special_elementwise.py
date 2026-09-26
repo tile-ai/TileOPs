@@ -434,6 +434,47 @@ def test_nan_to_num_edge(n_total: int, dtype: torch.dtype) -> None:
     torch.testing.assert_close(out, ref, atol=1e-5, rtol=1e-5, equal_nan=True)
 
 
+def _nan_row(dtype: torch.dtype) -> torch.Tensor:
+    return torch.tensor(
+        [float("nan"), -3.0, -0.5, 0.25, 2.0, 7.0] * 128, device="cuda", dtype=dtype
+    )
+
+
+_NAN = float("nan")
+_NAN_CASES = [
+    pytest.param("ClampScalarFwdOp", {"min": -1.0, "max": 1.0}, id="clamp-scalar-nan-input"),
+    pytest.param("ClampScalarFwdOp", {"min": _NAN}, id="clamp-scalar-nan-min"),
+    pytest.param("ClampScalarFwdOp", {"min": -1.0, "max": _NAN}, id="clamp-scalar-nan-max"),
+    pytest.param("ClampFwdOp", {"min": -1.0, "max": _NAN}, id="clamp-tensor-nan-input-and-bound"),
+    pytest.param("HardtanhFwdOp", {}, id="hardtanh-nan-input"),
+    pytest.param("HardsigmoidFwdOp", {}, id="hardsigmoid-nan-input"),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_name, kwargs", _NAN_CASES)
+def test_clamp_family_propagates_nan_like_torch(op_name: str, kwargs: dict) -> None:
+    """A NaN input or bound gives NaN, as torch's clamp, hardtanh and hardsigmoid do."""
+    import torch.nn.functional as F
+
+    import tileops.ops.elementwise as ew
+
+    dtype = torch.float16
+    x = _nan_row(dtype)
+    if op_name == "ClampFwdOp":
+        lo = torch.full_like(x, kwargs["min"])
+        hi = torch.full_like(x, kwargs["max"])
+        out, ref = ew.ClampFwdOp()(x, lo, hi), torch.clamp(x, lo, hi)
+    elif op_name == "ClampScalarFwdOp":
+        out, ref = ew.ClampScalarFwdOp(**kwargs)(x), torch.clamp(x, **kwargs)
+    elif op_name == "HardtanhFwdOp":
+        out, ref = ew.HardtanhFwdOp()(x), F.hardtanh(x)
+    else:
+        out, ref = ew.HardsigmoidFwdOp()(x), F.hardsigmoid(x)
+    assert torch.isnan(ref).any()
+    torch.testing.assert_close(out, ref, equal_nan=True, **standard_tolerance(dtype))
+
+
 @pytest.mark.smoke
 def test_nan_to_num_stores_an_out_of_range_replacement_as_inf() -> None:
     """``torch.nan_to_num`` casts a replacement to the element type, overflowing to Inf."""
