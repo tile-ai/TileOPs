@@ -20,6 +20,8 @@ REPORT_SCRIPT = REPO_ROOT / "scripts" / "nightly_report.py"
 
 _OP = "FooFwdOp"
 _CONFIG = "test_foo_bench[row-bfloat16]"
+# History keys a row by its case id, the bracketed part of the testcase name.
+_KEY = "row-bfloat16"
 _RUN = {"date": "2026-09-16", "commit": "abc1234", "gpu": "NVIDIA H200", "run_id": "42"}
 
 
@@ -32,7 +34,7 @@ def report():
     return mod
 
 
-def _history_run(busy_ms, name=_CONFIG, p10=None, p90=None, **counts):
+def _history_run(busy_ms, name=_KEY, p10=None, p90=None, **counts):
     tileops = {"device_busy_ms": busy_ms, **counts}
     if p10 is not None:
         tileops["device_busy_p10_ms"] = p10
@@ -140,7 +142,7 @@ def test_name_that_ever_shared_a_run_with_the_current_name_is_not_a_rename(repor
     shared_run = {
         "ops": {
             _OP: {
-                _CONFIG: {"tileops": {"device_busy_ms": 0.39, "flops": 5e9, "bytes": 1e6}},
+                _KEY: {"tileops": {"device_busy_ms": 0.39, "flops": 5e9, "bytes": 1e6}},
                 "test_foo_bench[other]": {
                     "tileops": {"device_busy_ms": 0.20, "flops": 9e9, "bytes": 9e6}
                 },
@@ -151,10 +153,22 @@ def test_name_that_ever_shared_a_run_with_the_current_name_is_not_a_rename(repor
     assert report.detect_regressions(_bench_ops(0.40, flops=5e9, bytes=1e6), runs) == []
 
 
+def test_history_is_keyed_by_case_id(report):
+    """A renamed test function keeps its history key."""
+    row = {
+        "name": "test_foo_bench[row-bfloat16]",
+        "op": _OP,
+        "outcome": "passed",
+        "tileops_device_busy_ms": 0.1,
+    }
+    ops = report.aggregate_bench_results([row])
+    assert set(report.build_history_entry(ops, _RUN)["ops"][_OP]) == {"row-bfloat16"}
+
+
 def test_history_entry_records_the_percentiles(report):
     """The noise gate needs each run's spread persisted with its reading."""
     entry = report.build_history_entry(_bench_ops(0.010, p10=0.0099, p90=0.0101), _RUN)
-    tileops = entry["ops"][_OP][_CONFIG]["tileops"]
+    tileops = entry["ops"][_OP][_KEY]["tileops"]
     assert tileops["device_busy_p10_ms"] == 0.0099
     assert tileops["device_busy_p90_ms"] == 0.0101
 
@@ -251,7 +265,7 @@ def test_history_entry_records_the_sol_reading(report):
     bench_ops = {_OP: {"module": "m", "configs": [_sol_row()]}}
     report.annotate_sol(bench_ops, _PROFILE)
     entry = report.build_history_entry(bench_ops, _RUN)
-    tileops = entry["ops"][_OP][_CONFIG]["tileops"]
+    tileops = entry["ops"][_OP][_KEY]["tileops"]
     assert tileops["compute_roof"] == "cuda_core.fp32"
     assert tileops["sol"] == {"efficiency": 1.0, "bound": "memory", "latency_bound": False}
 

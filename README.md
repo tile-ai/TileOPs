@@ -62,19 +62,22 @@ The entry drives code generation, testing, and benchmarking:
 ```yaml
 GemmFwdOp:
   ref_api: "torch.matmul"
-  signature: {inputs: {a: {dtype: "float16 | bfloat16"}, b: {dtype: "same_as(a)"}}, ...}
-  workloads: [{m: 1024, n: 1024, k: 1024, dtypes: [float16, bfloat16]}]
-  roofline: {func: tileops.perf.formulas.gemm_fwd_roofline}
-  source: {kernel: ..., op: ..., test: ..., bench: ..., kernel_map: ...}
+  signature:
+    types: {Mat: ...}            # a matrix stored as written, or transposed
+    forall: {M: Dim, N: Dim, K: Dim, T: "DType[float16 | bfloat16]"}
+    params: {trans_a: {type: bool, default: false}, trans_b: {type: bool, default: true}}
+    inputs: {a: {dtype: T, shape: "Mat[trans_a, M, K]"}, b: {dtype: T, shape: "Mat[trans_b, K, N]"}}
+    outputs: {d: {dtype: T, shape: "[M, N]"}}
+  workloads: [{M: 1024, N: 1024, K: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-1k}]
+  roofline: {flops: "2 * M * N * K"}
 ```
 
-| Field       | Role                                                                            |
-| ----------- | ------------------------------------------------------------------------------- |
-| `ref_api`   | Reference implementation the tests compare outputs against.                     |
-| `signature` | Tensor contract, shape rules, and dtype combinations; enforced at the op layer. |
-| `workloads` | Shapes and dtypes the tests and benchmarks cover.                               |
-| `roofline`  | Performance model. Efficiency is achieved throughput over the modelled bound.   |
-| `source`    | Paths to the kernel, op, test, and benchmark, and the slot-to-kernel map.       |
+| Field       | Role                                                                          |
+| ----------- | ----------------------------------------------------------------------------- |
+| `ref_api`   | Reference implementation the tests compare outputs against.                   |
+| `signature` | Tensor types over named indices; the call checks are generated from it.       |
+| `workloads` | The calls the manifest contract cases and the benchmarks take.                |
+| `roofline`  | Performance model. Efficiency is achieved throughput over the modelled bound. |
 
 A validator checks every entry against its implementation in CI, so the declaration and the
 code stay in step.

@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -21,6 +23,12 @@ class GemmWorkload(WorkloadBase):
         self.dtype = dtype
         self.trans_a = trans_a
         self.trans_b = trans_b
+
+    @classmethod
+    def from_call(cls, call: Any) -> "GemmWorkload":
+        """The workload of one manifest call of ``GemmFwdOp``."""
+        ix = call.ix
+        return cls(ix["M"], ix["N"], ix["K"], getattr(torch, ix["T"]), ix["trans_a"], ix["trans_b"])
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         shape_a = (self.k, self.m) if self.trans_a else (self.m, self.k)
@@ -55,6 +63,20 @@ class GemmFp8Workload(WorkloadBase):
         self.scale_mode = scale_mode
         self.out_dtype = out_dtype
         self.bias = bias
+
+    @classmethod
+    def from_call(cls, call: Any) -> "GemmFp8Workload":
+        """The workload of one manifest call of ``GemmFp8FwdOp``."""
+        ix = call.ix
+        return cls(
+            ix["M"],
+            ix["N"],
+            ix["K"],
+            getattr(torch, ix["T"]),
+            "per_tensor" if tuple(ix["SA"]) == (1, 1) else "block128",
+            out_dtype=getattr(torch, ix["out_dtype"]),
+            bias=call.present("bias"),
+        )
 
     def _scale_shapes(self) -> tuple[tuple[int, int], tuple[int, int]]:
         if self.scale_mode in ("per_tensor", "tensor"):
@@ -171,6 +193,52 @@ def repack_w4a16_weight(packed: torch.Tensor) -> torch.Tensor:
     return out.reshape(n, kp // 4).view(torch.uint8).reshape(n, kp).contiguous()
 
 
+def unrepack_w4a16_weight(prepacked: torch.Tensor) -> torch.Tensor:
+    """Invert :func:`repack_w4a16_weight`: the row-major ``[N, K/2]`` packing of a prepacked weight.
+
+    Args:
+        prepacked: Prepacked weights, ``[N, K/2]``, ``torch.uint8``.
+
+    Returns:
+        The row-major packed weights, two INT4 per byte, even K in the low nibble.
+    """
+    n, kp = prepacked.shape
+    step = 64
+    lanes = 4
+    n_steps = kp // step
+    words_per_lane = step // (4 * lanes)
+    words = prepacked.contiguous().view(torch.int32).reshape(n, n_steps, step // 4)
+    low = torch.zeros(n, n_steps, step, dtype=torch.int32, device=prepacked.device)
+    high = torch.zeros_like(low)
+    for lane in range(lanes):
+        for word in range(words_per_lane):
+            acc = words[:, :, lane * words_per_lane + word]
+            for pair in range(4):
+                src = 16 * word + 4 * pair + lane
+                low[:, :, src] = (acc >> (4 * pair)) & 0xF
+                high[:, :, src] = (acc >> (4 * pair + 16)) & 0xF
+    return (low | (high << 4)).to(torch.uint8).reshape(n, kp)
+
+
+def dequantize_w4a16_weight(
+    prepacked: torch.Tensor, scale: torch.Tensor, zero: torch.Tensor
+) -> torch.Tensor:
+    """The logical ``[N, K]`` weight a prepacked INT4 weight and its group metadata encode.
+
+    Weight ``(n, k)`` is ``(q - zero[n, g]) * scale[n, g]`` in float32, ``g`` the group of
+    ``k`` and ``q`` its INT4 value.
+    """
+    packed = unrepack_w4a16_weight(prepacked)
+    n, kp = packed.shape
+    q = torch.empty(n, 2 * kp, dtype=torch.float32, device=packed.device)
+    q[:, 0::2] = (packed & 0xF).float()
+    q[:, 1::2] = (packed >> 4).float()
+    group_size = 2 * kp // scale.shape[1]
+    zero_f = zero.float().repeat_interleave(group_size, dim=1)
+    scale_f = scale.float().repeat_interleave(group_size, dim=1)
+    return (q - zero_f) * scale_f
+
+
 class GemmW4A16Workload(WorkloadBase):
     def __init__(
         self,
@@ -185,25 +253,23 @@ class GemmW4A16Workload(WorkloadBase):
         self.k = k
         self.dtype = dtype
         self.group_size = group_size
-        self._dequantized_weight: torch.Tensor | None = None
         self._row_major_weight: torch.Tensor | None = None
+
+    @classmethod
+    def from_call(cls, call: Any) -> "GemmW4A16Workload":
+        """The workload of one manifest call of ``GemmW4A16FwdOp``."""
+        ix = call.ix
+        return cls(ix["M"], ix["N"], ix["K"], getattr(torch, ix["T"]), ix["group_size"])
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return activation, prepacked weight, scale, and zero point."""
         activation = torch.randn(self.m, self.k, device="cuda", dtype=self.dtype)
         source_weight = torch.randn(self.n, self.k, device="cuda", dtype=torch.float32) * 0.25
-        packed, scale, zero, dequantized = quantize_weight_int4(
+        packed, scale, zero, _ = quantize_weight_int4(
             source_weight, group_size=self.group_size, scale_dtype=self.dtype
         )
-        self._dequantized_weight = dequantized.to(self.dtype).contiguous()
         self._row_major_weight = packed
         return activation, repack_w4a16_weight(packed), scale, zero
-
-    @property
-    def dequantized_weight(self) -> torch.Tensor:
-        if self._dequantized_weight is None:
-            raise RuntimeError("dequantized_weight is available after gen_inputs()")
-        return self._dequantized_weight
 
     @property
     def row_major_weight(self) -> torch.Tensor:
@@ -219,5 +285,5 @@ class GemmW4A16Workload(WorkloadBase):
         weight_scale: torch.Tensor,
         weight_zero: torch.Tensor,
     ) -> torch.Tensor:
-        del packed_weight, weight_scale, weight_zero
-        return torch.matmul(activation, self.dequantized_weight.T)
+        weight = dequantize_w4a16_weight(packed_weight, weight_scale, weight_zero)
+        return torch.matmul(activation, weight.to(activation.dtype).T)

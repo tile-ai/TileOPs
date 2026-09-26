@@ -76,7 +76,7 @@ def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
     op = GemmFwdOp(kernel_map={"gemm_tma_kernel": IncompatibleGemm})
 
     with pytest.raises(ValueError, match="the kernel supplied for"):
-        op._get_kernel((), op._call_spec(128, 128, 128, torch.float16))
+        op.kernel_for("gemm", (), op._call_spec(128, 128, 128, torch.float16))
 
 
 @pytest.mark.smoke
@@ -99,7 +99,7 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     op = AutoDiscoveredIncompatibleOp()
 
     with pytest.raises(ValueError, match="no implementation serves this call"):
-        op._get_kernel((), op._call_spec(128, 128, 128, torch.float16))
+        op.kernel_for("gemm", (), op._call_spec(128, 128, 128, torch.float16))
 
 
 @pytest.mark.smoke

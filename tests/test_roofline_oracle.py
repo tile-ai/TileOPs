@@ -80,71 +80,6 @@ class TestBytesOracle:
     # __new__ + attribute binding keeps the oracle CUDA-free; each case binds
     # exactly the state the op's eval_roofline reads after a forward().
 
-    def test_conv2d_counts_input_weight_output_and_bias(self):
-        from tileops.ops.convolution import Conv2dFwdOp
-
-        n, c_in, h, w = 8, 64, 56, 56
-        c_out, c_in_g, kh, kw = 128, 64, 3, 3
-        out_h = out_w = 54  # stride 1, no padding
-        for has_bias in (True, False):
-            op = Conv2dFwdOp.__new__(Conv2dFwdOp)
-            op.input_shape = (n, c_in, h, w)
-            op.weight_shape = (c_out, c_in_g, kh, kw)
-            op.bias_shape = (c_out,) if has_bias else None
-            op.bias = None
-            op.dtype = torch.float16
-            op.stride, op.padding, op.dilation, op.groups = 1, 0, 1, 1
-            oracle = _nbytes(
-                ((n, c_in, h, w), torch.float16),
-                ((c_out, c_in_g, kh, kw), torch.float16),
-                ((n, c_out, out_h, out_w), torch.float16),
-                *((((c_out,), torch.float16),) if has_bias else ()),
-            )
-            assert op.eval_roofline()[1] == oracle, f"has_bias={has_bias}"
-
-    def test_gemm_fp8_counts_fp8_inputs_fp32_scales_and_out_dtype(self):
-        from tileops.ops.gemm.gemm import GemmFp8FwdOp
-
-        m, n, k = 4096, 4096, 8192
-        for has_bias in (True, False):
-            op = GemmFp8FwdOp.__new__(GemmFp8FwdOp)
-            op.m, op.n, op.k = m, n, k
-            op.dtype = torch.float8_e4m3fn
-            op.out_dtype = torch.bfloat16
-            op.scale_a_shape = (m, 1)
-            op.scale_b_shape = (1, n)
-            op.has_bias = has_bias
-            oracle = _ledger(
-                "GemmFp8FwdOp",
-                a=((m, k), torch.float8_e4m3fn),
-                b=((k, n), torch.float8_e4m3fn),
-                scale_a=((m, 1), torch.float32),
-                scale_b=((1, n), torch.float32),
-                bias=(((n,), torch.bfloat16) if has_bias else None),
-                d=((m, n), torch.bfloat16),
-            )
-            assert op.eval_roofline()[1] == oracle, f"has_bias={has_bias}"
-
-    def test_w4a16_counts_packed_weights_and_group_metadata(self):
-        from tileops.ops.gemm.gemm import GemmW4A16FwdOp
-
-        m, n, k, group_size = 4096, 8192, 8192, 128
-        op = GemmW4A16FwdOp.__new__(GemmW4A16FwdOp)
-        op.m, op.n, op.k = m, n, k
-        op.dtype = torch.float16
-        op.group_size = group_size
-        groups = k // group_size
-        oracle = _ledger(
-            "GemmW4A16FwdOp",
-            activation=((m, k), torch.float16),
-            # int4 weights, two per byte, stated as the bytes they occupy
-            packed_weight=((n, k // 2), torch.int8),
-            weight_scale=((n, groups), torch.float16),
-            weight_zero=((n, groups), torch.int8),
-            output=((m, n), torch.float16),
-        )
-        assert op.eval_roofline()[1] == oracle
-
     @staticmethod
     def _priced(op, tensors, **stages):
         """``(flops, bytes)`` of *op*'s formula on the checked call of *tensors* (CPU)."""
@@ -724,8 +659,6 @@ HAND_WRITTEN = {
     "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "FusedMoeFwdOp": "the routed weight reads follow the routing its experts stage receives",
     "FusedMoeSharedExpertFwdOp": "the routed weight reads follow the routing its experts stage receives",
-    "GemmFp8FwdOp": "the scale tensors' extents follow the scaling mode, not the dims",
-    "GemmW4A16FwdOp": "the packed weight and its group metadata have a quantized layout",
     "GroupedQueryAttentionDenseFwdOp": "which optional tensors the call passed decides the traffic",
     "GroupedQueryAttentionPrefillVarlenFwdOp": "the per-request lengths the call packed decide the traffic",
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp": "the per-request lengths the call packed decide the traffic",

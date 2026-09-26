@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Mapping, Optional, Tuple
 
 import torch
 
@@ -23,50 +23,27 @@ class FP8QuantFwdOp(Op):
     quantized against the maximum of its finite values.
     """
 
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fp8_quant_kernel": FP8QuantKernel}
+
     def __init__(
         self,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtypes are taken from the first call.
 
         Args:
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.target = target
-        self.batch = None
-        self.seq_len_kv = None
-        self.kv_group = None
-        self.index_dim = None
-        self.in_dtype = None
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         self.kernel = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"fp8_quant_kernel": FP8QuantKernel}
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        seq_len_kv: int,
-        kv_group: int,
-        index_dim: int,
-        in_dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        return self.kernel_for(
-            "fp8_quant_kernel",
-            inputs,
-            (batch, seq_len_kv, kv_group, index_dim, in_dtype, device_index),
-        )
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, dtype and device."""
@@ -75,48 +52,18 @@ class FP8QuantFwdOp(Op):
             batch, seq_len_kv, kv_group, index_dim, in_dtype, tune=self.tune
         )
 
-    def _infer_output_shapes(
-        self,
-        input_tensor_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: one scale per row, and the quantized tensor itself."""
-        return {
-            "scale_tensor": tuple(input_tensor_shape[:-1]),
-            "output_tensor": tuple(input_tensor_shape),
-        }
-
-    def forward(self, input_tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Run the op on the inputs the manifest declares.
+    def forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Quantize ``input_tensor`` row by row.
 
         Args:
-            input_tensor: Input tensor, dtype ``float16 | bfloat16 | float32``.
+            input_tensor: $[B \\times S \\times G \\times D]$, ``float16``, ``bfloat16`` or
+                ``float32``.
 
         Returns:
-            ``scale_tensor``, ``output_tensor``, as the manifest declares.
+            ``scale_tensor`` $[B \\times S \\times G]$ in ``float32`` and ``output_tensor``
+            $[B \\times S \\times G \\times D]$ in ``float8_e4m3fn``.
         """
-        if not input_tensor.is_cuda:
-            raise ValueError("FP8QuantFwdOp expects a CUDA input tensor")
-        if input_tensor.ndim != 4:
-            raise ValueError("FP8QuantFwdOp expects input_tensor shape [B, S, G, D]")
-        if input_tensor.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-            raise ValueError(f"FP8QuantFwdOp does not support dtype {input_tensor.dtype}")
-
-        batch, seq_len_kv, kv_group, index_dim = input_tensor.shape
-        if min(batch, seq_len_kv, kv_group, index_dim) <= 0:
-            raise ValueError("FP8QuantFwdOp input dimensions must be positive")
-
-        self.batch = batch
-        self.seq_len_kv = seq_len_kv
-        self.kv_group = kv_group
-        self.index_dim = index_dim
-        self.in_dtype = input_tensor.dtype
-        self.kernel = self._get_kernel(
-            (input_tensor,),
-            batch,
-            seq_len_kv,
-            kv_group,
-            index_dim,
-            input_tensor.dtype,
-            input_tensor.device.index,
-        )
+        input_tensor = input_tensor.contiguous()
+        call = (*input_tensor.shape, input_tensor.dtype, input_tensor.device.index)
+        self.kernel = self.kernel_for("fp8_quant_kernel", (input_tensor,), call)
         return self.kernel(input_tensor)

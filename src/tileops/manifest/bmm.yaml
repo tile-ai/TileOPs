@@ -1,102 +1,74 @@
-# Batched GEMM. A shard of the gemm family, kept in its own file because the
-# batched entries share a shape contract the dense ones do not.
-#
-# BmmFwdOp: strict 3D-3D batched matrix multiplication
+# Batched GEMM. A shard of the gemm family, kept in its own file because the batched entries share
+# a shape contract the dense ones do not.
+
+# Strict 3D-3D batched matrix multiplication.
 BmmFwdOp:
   ref_api: "torch.bmm"
   family: gemm
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
+    forall: {B: Dim, M: Dim, N: Dim, K: Dim, T: "DType[float16 | bfloat16]"}
     inputs:
-      a: {dtype: "float16 | bfloat16", shape: "[B, M, K]"}
-      b: {dtype: "same_as(a)", shape: "[B, K, N]"}
+      a: {dtype: T, shape: "[B, M, K]"}
+      b: {dtype: T, shape: "[B, K, N]"}
     outputs:
-      d: {dtype: "same_as(a)", shape: "[B, M, N]"}
-    shape_rules:
-    - "a.shape[0] == b.shape[0]"
-    - "a.shape[2] == b.shape[1]"
-    - "a.shape[2] % 16 == 0"
-    - "d.shape == (a.shape[0], a.shape[1], b.shape[2])"
+      d: {dtype: T, shape: "[B, M, N]"}
 
   workloads:
   # A representative sweep across small/large batch counts and decode/prefill
-  - {b: 8, m: 128, n: 128, k: 128, dtypes: [float16, bfloat16], label: "small-b8-128"}
-  - {b: 8, m: 1024, n: 1024, k: 1024, dtypes: [float16, bfloat16], label: "square-b8-1k"}
-  - {b: 16, m: 512, n: 512, k: 512, dtypes: [float16, bfloat16], label: "square-b16-512"}
-  - {b: 32, m: 256, n: 256, k: 256, dtypes: [float16, bfloat16], label: "square-b32-256"}
-  - {b: 4, m: 4096, n: 4096, k: 4096, dtypes: [bfloat16], label: "square-b4-4k"}
-  - {b: 8, m: 2048, n: 2048, k: 2048, dtypes: [float16, bfloat16], label: "square-b8-2k"}
-  - {b: 64, m: 128, n: 2048, k: 128, dtypes: [float16, bfloat16], label: "mha-decode-b64-qk"}
-  - {b: 64, m: 128, n: 128, k: 2048, dtypes: [float16, bfloat16], label: "mha-decode-b64-pv"}
-  - {b: 128, m: 512, n: 512, k: 2048, dtypes: [bfloat16], label: "moe-prefill-b128"}
+  - {B: 8, M: 128, N: 128, K: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: small-b8-128}
+  - {B: 8, M: 1024, N: 1024, K: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-b8-1k}
+  - {B: 16, M: 512, N: 512, K: 512, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-b16-512}
+  - {B: 32, M: 256, N: 256, K: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-b32-256}
+  - {B: 4, M: 4096, N: 4096, K: 4096, dtype_cases: [{T: bfloat16}], label: square-b4-4k}
+  - {B: 8, M: 2048, N: 2048, K: 2048, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-b8-2k}
+  - {B: 64, M: 128, N: 2048, K: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: mha-decode-b64-qk}
+  - {B: 64, M: 128, N: 128, K: 2048, dtype_cases: [{T: float16}, {T: bfloat16}], label: mha-decode-b64-pv}
+  - {B: 128, M: 512, N: 512, K: 2048, dtype_cases: [{T: bfloat16}], label: moe-prefill-b128}
 
   roofline:
-    func: "tileops.perf.formulas.bmm_fwd_roofline"
+    flops: "2 * B * M * N * K"
 
-  source:
-    kernel: tileops/kernels/gemm/bmm.py
-    op: tileops/ops/gemm/bmm.py
-    test: tests/ops/test_bmm.py
-    bench: benchmarks/ops/bench_bmm.py
-    bench_manifest_driven: true
-    kernel_map:
-      bmm_persistent_kernel: BmmPersistentKernel
-      bmm_kernel: BmmKernel
-
-# Strict 3D-3D batched FP8 GEMM with per-tensor scaling. A single fp32 scalar
-# per operand is shared across the whole batch, mirroring flashinfer.bmm_fp8's
-# A_scale / B_scale signature 1:1.
+# Strict 3D-3D batched FP8 GEMM with per-tensor scaling. A single fp32 scalar per operand is shared
+# across the whole batch, mirroring flashinfer.bmm_fp8's A_scale / B_scale signature 1:1.
 BmmFp8FwdOp:
-  ref_api: "none"
   family: gemm
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      a: {dtype: "float8_e4m3fn", shape: "[B, M, K]"}
-      # trans_b swaps b's last two axes; the shape below is the trans_b=false
-      # order, and the shape_rules carry both.
-      b: {dtype: "same_as(a)", shape: "[B, K, N]"}
-      scale_a: {dtype: "float32"}
-      scale_b: {dtype: "float32"}
-    outputs:
-      d: {dtype: "bfloat16", caller_stated: true, shape: "[B, M, N]"}
+    types:
+      # trans_b swaps b's last two axes.
+      BLayout:
+        params: {t: Bool, B: Dim, K: Dim, N: Dim}
+        match: t
+        cases:
+        - {when: false, is: "[B, K, N]"}
+        - {when: true, is: "[B, N, K]"}
+    forall: {B: Dim, M: Dim, N: Dim, K: Dim, T: "DType[float8_e4m3fn]"}
     params:
       out_dtype: {type: "bfloat16 | float16", default: bfloat16}
       trans_b: {type: bool, default: false}
-    # Only fp8_e4m3fn inputs are supported; fp8_e5m2 is rejected at forward
-    # time. dtype_combos pins the product so a validator does not read
-    # (e5m2, *) as legal.
-    dtype_combos:
-      - {a: float8_e4m3fn, b: float8_e4m3fn, scale_a: float32, scale_b: float32, d: bfloat16}
-      - {a: float8_e4m3fn, b: float8_e4m3fn, scale_a: float32, scale_b: float32, d: float16}
-    shape_rules:
-    - "a.shape[0] == b.shape[0]"
-    - "(b.shape[2] if trans_b else b.shape[1]) == a.shape[2]"
-    - "a.shape[2] % 32 == 0"
-    # per_tensor: single global fp32 scalar (0-D) shared across the whole batch
-    - "scale_a.shape == () and scale_b.shape == ()"
-    - "d.shape == (a.shape[0], a.shape[1], b.shape[1] if trans_b else b.shape[2])"
+    inputs:
+      a: {dtype: T, shape: "[B, M, K]"}
+      b: {dtype: T, shape: "BLayout[trans_b, B, K, N]"}
+      scale_a: {dtype: float32, shape: "[]"}
+      scale_b: {dtype: float32, shape: "[]"}
+    outputs:
+      d: {dtype: out_dtype, shape: "[B, M, N]"}
 
   workloads:
-  - {b: 4, m: 1024, n: 1024, k: 1024, dtypes: [float8_e4m3fn], label: "square-b4-1k-per-tensor"}
-  - {b: 8, m: 2048, n: 2048, k: 2048, dtypes: [float8_e4m3fn], label: "square-b8-2k-per-tensor"}
-  - {b: 32, m: 128, n: 128, k: 2048, dtypes: [float8_e4m3fn], label: "mha-decode-b32-pv-per-tensor"}
-  - {b: 64, m: 128, n: 2048, k: 128, dtypes: [float8_e4m3fn], label: "mha-decode-b64-qk-per-tensor"}
-  - {b: 128, m: 512, n: 512, k: 2048, dtypes: [float8_e4m3fn], label: "moe-prefill-b128-per-tensor"}
+  - {B: 4, M: 1024, N: 1024, K: 1024, dtype_cases: [{T: float8_e4m3fn}], label: square-b4-1k-per-tensor}
+  - {B: 8, M: 2048, N: 2048, K: 2048, dtype_cases: [{T: float8_e4m3fn}], label: square-b8-2k-per-tensor}
+  - {B: 32, M: 128, N: 128, K: 2048, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-b32-pv-per-tensor}
+  - {B: 64, M: 128, N: 2048, K: 128, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-b64-qk-per-tensor}
+  - {B: 128, M: 512, N: 512, K: 2048, dtype_cases: [{T: float8_e4m3fn}], label: moe-prefill-b128-per-tensor}
+  - {B: 4, M: 1024, N: 1024, K: 1024, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: square-b4-1k-per-tensor-nk}
+  - {B: 8, M: 2048, N: 2048, K: 2048, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: square-b8-2k-per-tensor-nk}
+  - {B: 32, M: 128, N: 128, K: 2048, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-b32-pv-per-tensor-nk}
+  - {B: 64, M: 128, N: 2048, K: 128, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-b64-qk-per-tensor-nk}
+  - {B: 128, M: 512, N: 512, K: 2048, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: moe-prefill-b128-per-tensor-nk}
+  - {B: 4, M: 1024, N: 1024, K: 1024, out_dtype: float16, dtype_cases: [{T: float8_e4m3fn}], label: square-b4-1k-per-tensor}
 
   roofline:
-    func: "tileops.perf.formulas.bmm_fp8_fwd_roofline"
-
-  source:
-    kernel: tileops/kernels/gemm/bmm.py
-    op: tileops/ops/gemm/bmm.py
-    test: tests/ops/test_bmm.py
-    bench: benchmarks/ops/bench_bmm.py
-    bench_manifest_driven: true
-    kernel_map:
-      bmm_fp8_kernel: BmmFp8Kernel
-      bmm_fp8_transpose_kernel: BmmFp8TransposeKernel
+    flops: "2 * B * M * N * K"
