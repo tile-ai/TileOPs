@@ -43,7 +43,9 @@ Rules:
 
 ### Tolerance
 
-- Use `torch.testing.assert_close` for floating-point verification:
+- Use `torch.testing.assert_close` for floating-point verification. The standard per-dtype
+  tolerances are below; `standard_tolerance(dtype)` in `tests/test_base.py` returns them.
+  - **FP32**: `rtol=1e-5`, `atol=1e-5`
   - **FP16**: `rtol=1e-3`, `atol=1e-3`
   - **BF16**: `rtol=1.6e-2`, `atol=1.6e-2`
 - Use exact comparison (`torch.equal`) for non-floating outputs (bool, masks, index tensors).

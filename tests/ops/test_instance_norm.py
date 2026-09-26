@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 import yaml
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.normalization import InstanceNormWorkload
 
@@ -37,21 +37,11 @@ class InstanceNormFixture(FixtureBase):
     ]
 
 
-def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
-    if dtype == torch.float32:
-        return 1e-5, 1e-5
-    elif dtype == torch.float16:
-        return 1e-3, 1e-3
-    else:  # bfloat16
-        return 1.6e-2, 1.6e-2
-
-
 @InstanceNormFixture
 def test_instance_norm_op(n: int, c: int, spatial: tuple, dtype: torch.dtype, tune: bool) -> None:
     test = InstanceNormTest(n, c, spatial, dtype)
     op = InstanceNormFwdOp()
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 class InstanceNormNonContigFixture(FixtureBase):
@@ -85,8 +75,7 @@ def test_instance_norm_non_contiguous(n: int, c: int, spatial: tuple, dtype: tor
     ).to(dtype)
 
     y = op(x, weight=weight, bias=bias)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
         f"Non-contiguous test failed, max err: {(y - y_ref).abs().max()}"
     )
 
@@ -128,8 +117,7 @@ def test_instance_norm_affine_free_op(
         bias=None,
         eps=1e-5,
     ).to(dtype)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
         f"NoAffine forward mismatch, max err: {(y - y_ref).abs().max()}"
     )
 
@@ -157,8 +145,7 @@ def test_instance_norm_affine_free_running_stats(
         use_input_stats=False,
         eps=1e-5,
     )
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
         f"Running-stats mismatch, max err: {(y - y_ref).abs().max()}"
     )
 
@@ -260,8 +247,7 @@ def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
             bias=bias.float(),
             eps=1e-5,
         ).to(dtype)
-        atol, rtol = _get_tolerances(dtype)
-        assert torch.allclose(y, y_ref, atol=atol, rtol=rtol)
+        assert torch.allclose(y, y_ref, **standard_tolerance(dtype))
 
     run_case(2, 8, (4, 4), torch.float16)
     assert len(op.built_kernels("instance_norm")) == 1
@@ -394,5 +380,4 @@ def test_instance_norm_default_momentum_does_not_change_output() -> None:
     bias = torch.randn((c,), dtype=dtype, device="cuda")
     y1 = op_default(x, weight=weight, bias=bias)
     y2 = op_other(x, weight=weight, bias=bias)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y1, y2, atol=atol, rtol=rtol)
+    assert torch.allclose(y1, y2, **standard_tolerance(dtype))

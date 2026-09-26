@@ -26,6 +26,10 @@ op that has a workload named for it: both belong in
 from a benchmark — see [§Benchmark](#benchmark) — so it gets copied, and the
 two copies drift.
 
+Ruff's `TID253` rejects a module-level `benchmarks` import under `tests/ops/` and
+`tests/kernels/`. The suites at the top of `tests/` check the benchmark tooling
+itself and are exempt.
+
 → Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md) | Guide: [testing.md §Tests](testing.md#tests)
 
 ## Implementation

@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from tileops.ops.norm.group_norm import GroupNormFwdOp
 from workloads.normalization import GroupNormWorkload
 
@@ -43,23 +43,13 @@ class GroupNormFixture(FixtureBase):
     ]
 
 
-def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
-    if dtype == torch.float32:
-        return 1e-5, 1e-5
-    elif dtype == torch.float16:
-        return 1e-3, 1e-3
-    else:  # bfloat16
-        return 1.6e-2, 1.6e-2
-
-
 @GroupNormFixture
 def test_group_norm_op(
     n: int, c: int, spatial: tuple, g: int, dtype: torch.dtype, tune: bool
 ) -> None:
     test = GroupNormTest(n, c, spatial, g, dtype)
     op = GroupNormFwdOp(num_groups=g)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 class GroupNormNonContigFixture(FixtureBase):
@@ -96,8 +86,7 @@ def test_group_norm_non_contiguous(
     ).to(dtype)
 
     y = op(x, weight, bias)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
         f"Non-contiguous test failed, max err: {(y - y_ref).abs().max()}"
     )
 
@@ -110,8 +99,9 @@ def test_group_norm_no_affine_matches_torch() -> None:
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), f"max err: {(y - y_ref).abs().max()}"
+    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
+        f"max err: {(y - y_ref).abs().max()}"
+    )
 
 
 @pytest.mark.smoke
@@ -160,8 +150,7 @@ def test_group_norm_lazy_cache_reuse_and_respecialization() -> None:
             bias=bias.float(),
             eps=1e-5,
         ).to(dtype)
-        atol, rtol = _get_tolerances(dtype)
-        assert torch.allclose(y, y_ref, atol=atol, rtol=rtol)
+        assert torch.allclose(y, y_ref, **standard_tolerance(dtype))
 
     run_case(2, 16, (4, 4), torch.float16)
     assert len(op.built_kernels("group_norm")) == 1
@@ -239,8 +228,9 @@ def test_group_norm_no_affine_op(
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), f"max err: {(y - y_ref).abs().max()}"
+    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
+        f"max err: {(y - y_ref).abs().max()}"
+    )
 
 
 @pytest.mark.smoke
@@ -303,5 +293,6 @@ def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple, g: int)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), f"max err: {(y - y_ref).abs().max()}"
+    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
+        f"max err: {(y - y_ref).abs().max()}"
+    )
