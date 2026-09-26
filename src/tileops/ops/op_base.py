@@ -166,6 +166,10 @@ class Op(ABC):
     _kernel_roles: dict[str, dict[Hashable, object]]
     # Dispatch keys the caller replaced through ``kernel_map=``.
     _overridden_keys: frozenset = frozenset()
+    # The ``kernel_map=`` the caller passed, as given; what every sub-op this op builds is handed.
+    _given_kernel_map: Optional[dict[str, Kernel]] = None
+    # Held sub-ops, ``{stage: {key: op}}``. Annotation only, like ``_kernel_roles``.
+    _delegates: dict[str, dict[Hashable, "Op"]]
     dtype: Optional[torch.dtype] = None
     # This call's input shapes and dtypes, while a recording block is open.
     _roofline_call_tensors: Optional[dict] = None
@@ -211,6 +215,10 @@ class Op(ABC):
     # The op's dispatch keys and the kernel class each names. An op with no kernel of its own
     # (a composite) declares none.
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = MappingProxyType({})
+
+    # The ops this op holds as sub-ops, by stage name in stage order: the sub-op counterpart of
+    # ``kernel_types``. Every sub-op is held through ``delegate_for``.
+    delegate_types: ClassVar[Mapping[str, type["Op"]]] = MappingProxyType({})
 
     @property
     def default_kernel_map(self) -> dict[str, Kernel]:
@@ -443,6 +451,7 @@ class Op(ABC):
         """
         default_map = self.default_kernel_map
         override = dict(candidate_map) if candidate_map else {}
+        self._given_kernel_map = override or None
         if default_map is None or len(default_map) == 0:
             # Composite op: store override verbatim. Its keys belong to the sub-ops it
             # builds, which is where a name nothing declares is refused.
@@ -457,20 +466,6 @@ class Op(ABC):
         self.kernel_map = resolved
         # Read by select_kernel_key: a replacement is never skipped silently.
         self._overridden_keys = frozenset(override) & frozenset(resolved)
-
-    def forwarded_overrides(self) -> Optional[dict[str, Kernel]]:
-        """The caller's replacements, to hand to a sub-op this op builds.
-
-        Only what the caller supplied. A composite op that passed its whole
-        resolved ``kernel_map`` down would mark every key as replaced, and a
-        replacement that cannot serve a call is an error rather than something to
-        select around.
-        """
-        if not self._overridden_keys or not self.kernel_map:
-            return None
-        return {
-            key: cls for key, cls in self.kernel_map.items() if key in self._overridden_keys
-        } or None
 
     def select_kernel_key(self, keys: "tuple[str, ...]", call: object) -> str:
         """Return the one key among *keys* whose implementation serves *call*.
@@ -980,14 +975,48 @@ class Op(ABC):
         roles = getattr(self, "_kernel_roles", None) or {}
         return MappingProxyType(roles.get(role, {}))
 
-    def kernel_delegates(self) -> Sequence["Op"]:
-        """Return the ops whose kernels this op runs.
+    def delegate_for(
+        self, stage: str, key: Hashable, given: "Op | None" = None, /, **params: object
+    ) -> "Op":
+        """Return the sub-op held for *stage* under *key*, building it on a miss.
 
-        A composite op — one that resolves its call through another op rather
-        than building the kernel itself — overrides this so enumeration reaches
-        the delegate. Default: this op builds everything it runs.
+        The one way an op holds a sub-op. A miss builds ``delegate_types[stage](**params)``
+        with this op's ``target``, the caller's ``kernel_map`` as given and this op's current
+        ``tune``; *given*, an implementation the caller injected for the stage, is held as is
+        instead. Eager only, like :meth:`kernel_for`: a traced ``forward`` reaches no miss.
+
+        Args:
+            stage: A key of ``delegate_types``.
+            key: The sub-op's identity: everything that can change what gets built.
+            given: The caller's implementation for this stage, or ``None`` to build one.
+            params: The sub-op's constructor arguments other than the execution policy.
+
+        Raises:
+            KeyError: *stage* is not declared in ``delegate_types``.
         """
-        return ()
+        cls = self.delegate_types[stage]
+        held = getattr(self, "_delegates", None)
+        if held is None:
+            held = {}
+            self._delegates = held
+        entries = held.setdefault(stage, {})
+        if key not in entries:
+            entries[key] = (
+                given
+                if given is not None
+                else cls(
+                    **params, target=self.target, kernel_map=self._given_kernel_map, tune=self.tune
+                )
+            )
+        return entries[key]
+
+    def kernel_delegates(self) -> Sequence["Op"]:
+        """Return the sub-ops this op holds, in stage order, then in the order they were built.
+
+        Derived from what :meth:`delegate_for` holds; an op does not override it.
+        """
+        held = getattr(self, "_delegates", None) or {}
+        return tuple(op for stage in self.delegate_types for op in held.get(stage, {}).values())
 
     @property
     def settled_target(self) -> Target:
@@ -1093,7 +1122,7 @@ class Op(ABC):
                 continue
             seen.add(id(op))
             yield op
-            stack.extend(op.kernel_delegates())
+            stack.extend(reversed(op.kernel_delegates()))
 
     def autotune(self) -> None:
         """Put the op in tuned mode: what it holds now, and what it builds next.
@@ -1237,7 +1266,12 @@ class Op(ABC):
         )
 
     def _unsettle(self) -> None:
-        """Undo a settling whose call did not finish, dropping what it built."""
+        """Undo a settling whose call did not finish, dropping what it built.
+
+        The sub-ops are unsettled with it, so none keeps what the failed call settled.
+        """
+        for delegate in self.kernel_delegates():
+            delegate._unsettle()
         dropped = {
             id(entry)
             for entries in (getattr(self, "_kernel_roles", None) or {}).values()

@@ -4571,3 +4571,54 @@ def test_converted_entry_is_held_to_its_constructor_and_forward(validator, monke
         "[signature] ProbeFwdOp: __init__ parameter 'surprise' is not a signature or execution-policy parameter",
         "[signature] ProbeFwdOp: forward 'x' must have no default",
     ]
+
+
+def test_converted_composition_is_held_to_the_class_declarations(validator, monkeypatch):
+    """`op` stages are `delegate_types` and `kernel` stages `kernel_types`, each in order."""
+    import types
+
+    class ProbeFwdOp:
+        delegate_types = {"first": type("AFwdOp", (), {}), "second": type("BFwdOp", (), {})}
+        kernel_types = {"own": object}
+
+        def __init__(self, *, target=None, kernel_map=None, tune=False):
+            pass
+
+        def forward(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=ProbeFwdOp))
+    entry = {"family": "probe", "signature": {}}
+    stages = [
+        {"name": "own", "kernel": "own"},
+        {"name": "first", "op": "AFwdOp"},
+        {"name": "second", "op": "BFwdOp", "optional": True},
+    ]
+    entry["composition"] = {"kind": "composite", "stages": stages}
+    assert validator._check_parametric_parity("ProbeFwdOp", entry) == []
+    entry["composition"]["stages"] = [stages[2], stages[1]]
+    assert validator._check_parametric_parity("ProbeFwdOp", entry) == [
+        "[signature] ProbeFwdOp: composition op stages [('second', 'BFwdOp'), ('first', 'AFwdOp')] "
+        "are not delegate_types [('first', 'AFwdOp'), ('second', 'BFwdOp')]",
+        "[signature] ProbeFwdOp: composition kernel stages [] are not kernel_types ['own']",
+    ]
+    del entry["composition"]
+    assert validator._check_parametric_parity("ProbeFwdOp", entry) == [
+        "[signature] ProbeFwdOp: composition op stages [] are not delegate_types "
+        "[('first', 'AFwdOp'), ('second', 'BFwdOp')]",
+    ]
+
+
+def test_a_converted_composition_takes_kernel_stages_and_no_variants(validator):
+    """A parametric stage names an op or a kernel role; `variants` is legacy-only."""
+    entry = {"signature": {}}
+    stages = [{"name": "own", "kernel": "own"}, {"name": "a", "op": "AFwdOp"}]
+    composition = {"kind": "composite", "stages": stages}
+    assert (
+        validator._l0_composition("ProbeFwdOp", entry, composition, all_op_names={"AFwdOp"}) == []
+    )
+    stages[1]["variants"] = [{"name": "v", "stages": [{"op": "AFwdOp"}]}]
+    assert validator._l0_composition("ProbeFwdOp", entry, composition, all_op_names={"AFwdOp"}) == [
+        "[schema] ProbeFwdOp: composition.stages[1].variants is a legacy field; a parametric "
+        "stage is name, op or kernel, optional",
+    ]

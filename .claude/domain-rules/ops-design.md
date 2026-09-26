@@ -12,11 +12,11 @@
 
 - Every kernel an op builds after construction goes through `Op.kernel_for(role, inputs, call)`, with `inputs` the tensors the kernel will be handed. The in-tree identity and builder come from `Op.entry_for(role, call)`, whose default selects among the op's candidates and asks the chosen class; an op with one implementation overrides it. An op MUST NOT declare a kernel cache dict, guard a kernel build on an attribute being unset, or carry any other get-or-build of its own — including for an auxiliary kernel. Assigning what `kernel_for` returned to `self.kernel` is not one. See [ops-design.md § Kernel caching and enumeration](../../docs/design/ops-design.md#kernel-caching-and-enumeration).
 
-- An op that runs kernels built by another op returns that op from `kernel_delegates()`, whether the delegate is fixed at construction or built per specialization. Overriding `autotune()` to reach a delegate, or exposing a delegate's cache so reflection finds it, is prohibited.
+- An op that runs kernels built by another op declares that op's class in `delegate_types` and holds it through `delegate_for(stage, key, ...)`, whether it is built at construction, built per call, or injected by the caller. `kernel_delegates()` is derived and not overridden. A sub-op cache of an op's own, or overriding `autotune()` to reach a delegate, is prohibited.
 
 - A compile-boundary op's `forward` only chooses which operator to call. The generated checks run in the operator's eager body before either implementation; kernel resolution goes in `_eager_forward`. **Why:** a target serving the op is called inside the operator. See [ops-design.md § Target boundary](../../docs/design/ops-design.md#target-boundary).
 
-- A composite passes its `target` to every sub-op it builds, including one built lazily.
+- A sub-op that depends on the call is built in `_eager_forward`, never in a traced `forward`.
 
 - `__init__` MUST NOT read any device property, directly or through `dispatch_kernel`. An op constructs wherever it is imported; a target that cannot run it is refused when a kernel is first selected, built or called.
 

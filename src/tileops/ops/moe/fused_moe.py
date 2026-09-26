@@ -10,7 +10,7 @@ The shared core (`FusedMoe`) wires `FusedTopKFwdOp` (routing),
 expert handling belongs to `FusedMoeSharedExpertFwdOp`.
 """
 
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -36,6 +36,11 @@ class FusedMoe(Op):
     routing-and-expert pipeline below is shared with `FusedMoeSharedExpertFwdOp`.
 
     """
+
+    delegate_types: ClassVar[Mapping[str, type[Op]]] = {
+        "route_select": FusedTopKFwdOp,
+        "routed_experts": FusedMoEExpertsFwdOp,
+    }
 
     def roofline_inputs(self) -> dict[str, int]:
         """The experts this call's routing selected, which its weight reads follow."""
@@ -91,12 +96,8 @@ class FusedMoe(Op):
 
         self.dispatch_kernel(kernel_map)
 
-        self._fused_topk = FusedTopKFwdOp(
-            top_k=top_k,
-            scoring_func=scoring_func,
-            renormalize=renormalize,
-            kernel_map=kernel_map,
-            target=target,
+        self._fused_topk = self.delegate_for(
+            "route_select", None, top_k=top_k, scoring_func=scoring_func, renormalize=renormalize
         )
 
         self._prepare: FusedMoEPrepareAndFinalize = (
@@ -137,20 +138,20 @@ class FusedMoe(Op):
                     "Either omit activation or pass the same value."
                 )
             self.activation = experts_activation
-            self._experts: FusedMoEExpertsModular = experts
         else:
             self.activation = activation
-            self._experts = FusedMoEExpertsFwdOp(
-                num_tokens=num_tokens,
-                num_experts=num_experts,
-                top_k=top_k,
-                hidden_size=hidden_size,
-                ffn_size=ffn_size,
-                routed_scaling_factor=routed_scaling_factor,
-                kernel_map=kernel_map,
-                activation=activation,
-                target=target,
-            )
+        self._experts: FusedMoEExpertsModular = self.delegate_for(
+            "routed_experts",
+            None,
+            experts,
+            num_tokens=num_tokens,
+            num_experts=num_experts,
+            top_k=top_k,
+            hidden_size=hidden_size,
+            ffn_size=ffn_size,
+            routed_scaling_factor=routed_scaling_factor,
+            activation=activation,
+        )
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:

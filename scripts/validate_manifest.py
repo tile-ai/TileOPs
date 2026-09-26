@@ -1408,7 +1408,7 @@ def _l0_stage(
     where: str,
     named: bool,
     all_op_names: Collection[str],
-    kernel_keys: Collection[str],
+    kernel_keys: Collection[str] | None,
     depth: int = 0,
 ) -> list[str]:
     """One ``composition.stages`` element, or one element of a variant's stages."""
@@ -1448,14 +1448,18 @@ def _l0_stage(
         ref = stage["kernel"]
         if not isinstance(ref, str) or not ref.strip():
             err(f"{where}.kernel must be a non-empty string")
-        elif ref not in kernel_keys:
+        elif kernel_keys is not None and ref not in kernel_keys:
             err(f"{where}.kernel {ref!r} is not a key of source.kernel_map {sorted(kernel_keys)}")
 
     if "optional" in stage and not isinstance(stage["optional"], bool):
         err(f"{where}.optional must be a bool")
 
     variants = stage.get("variants")
-    if variants is not None:
+    if variants is not None and kernel_keys is None:
+        err(
+            f"{where}.variants is a legacy field; a parametric stage is name, op or kernel, optional"
+        )
+    elif variants is not None:
         if depth:
             err(f"{where}.variants is only allowed on a top-level stage")
         elif not isinstance(variants, list) or not variants:
@@ -1532,8 +1536,9 @@ def _l0_composition(
     if kind not in _VALID_COMPOSITION_KINDS:
         err(f"composition.kind must be one of {sorted(_VALID_COMPOSITION_KINDS)}, got {kind!r}")
 
-    # The dispatch keys a stage may name, read off the facts.
-    kernel_keys = set(_facts(entry, op_name).kernel_map)
+    # The dispatch keys a stage may name, read off the facts. A parametric entry's are the
+    # class's `kernel_types`, which the code parity check compares instead.
+    kernel_keys = set(_facts(entry, op_name).kernel_map) if is_legacy(entry) else None
 
     stages = composition.get("stages")
     if not isinstance(stages, list) or not stages:
@@ -4790,13 +4795,16 @@ def _normal_default(value):
 
 
 def _check_parametric_parity(op_name: str, entry: dict) -> list[str]:
-    """`__init__` and `forward` against the signature (docs/design/manifest.md § Signature).
+    """`__init__`, `forward` and the class's sub-op and kernel declarations against the entry
+    (docs/design/manifest.md § Signature, § Composition).
 
     `__init__` takes `signature.params` in order with their defaults, a `kw_only` one after
     `*`, then keyword-only `target`, `kernel_map` and `tune`, and only the injected objects the
     class lists in `execution_parameters` or the reserved `config`. `forward` begins with the
     call-time inputs in order, positional, the optional ones defaulting to `None` and the
-    others to nothing, then `out` when an output is a buffer.
+    others to nothing, then `out` when an output is a buffer. The `op` stages of `composition`
+    are `delegate_types`, and an entry with a composition lists `kernel_types` as its `kernel`
+    stages, each in order.
     """
     where = f"[signature] {op_name}"
     try:
@@ -4851,6 +4859,19 @@ def _check_parametric_parity(op_name: str, entry: dict) -> list[str]:
         elif got.default is not (None if optional else empty):
             want = "default to None" if optional else "have no default"
             errors.append(f"{where}: forward {name!r} must {want}")
+    stages = [
+        st for st in (entry.get("composition") or {}).get("stages") or [] if isinstance(st, dict)
+    ]
+    ops = [(st.get("name"), st["op"]) for st in stages if "op" in st]
+    delegates = [(stage, c.__name__) for stage, c in getattr(cls, "delegate_types", {}).items()]
+    if ops != delegates:
+        errors.append(f"{where}: composition op stages {ops} are not delegate_types {delegates}")
+    kernels = [st["kernel"] for st in stages if "kernel" in st]
+    kernel_types = list(getattr(cls, "kernel_types", {}))
+    if stages and kernels != kernel_types:
+        errors.append(
+            f"{where}: composition kernel stages {kernels} are not kernel_types {kernel_types}"
+        )
     return errors
 
 

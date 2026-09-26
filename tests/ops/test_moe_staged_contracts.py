@@ -295,8 +295,8 @@ def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
 
 def test_expert_mlp_forwards_caller_replacements_to_both_gemms() -> None:
     mlp = MoeExpertMLPFwdOp(_TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate})
-    assert mlp.gate_up.forwarded_overrides() == {"grouped_gemm": _ExecutableGroupedCandidate}
-    assert mlp.down.forwarded_overrides() == {"grouped_gemm": _ExecutableGroupedCandidate}
+    assert mlp.gate_up.kernel_map["grouped_gemm"] is _ExecutableGroupedCandidate
+    assert mlp.down.kernel_map["grouped_gemm"] is _ExecutableGroupedCandidate
     assert MoeExpertMLPFwdOp(_TIGHT, "gelu_and_mul").gate_up.activation == "gelu_and_mul"
 
 

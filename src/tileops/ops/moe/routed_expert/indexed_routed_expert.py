@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Mapping
 
 import torch
 from torch import Tensor
@@ -41,6 +41,12 @@ class IndexedExpertMLPFwdOp(Op):
     # operator is the writing one.
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec.writes_out("output"),)
 
+    delegate_types: ClassVar[Mapping[str, type[Op]]] = {
+        "pre_permute": MoePrePermuteFwdOp,
+        "expert_mlp": MoeExpertMLPFwdOp,
+        "post_permute": MoePostPermuteFwdOp,
+    }
+
     def roofline_inputs(self) -> dict[str, int]:
         """The experts this call's routing selected, which its weight reads follow."""
         from tileops.perf.formulas import routed_expert_active_experts
@@ -58,6 +64,7 @@ class IndexedExpertMLPFwdOp(Op):
         kernel_map: dict | None = None,
         *,
         target: Target = None,
+        tune: bool = False,
     ) -> None:
         """Fix the route extents and the scalar applied to the reduced output.
 
@@ -72,35 +79,33 @@ class IndexedExpertMLPFwdOp(Op):
                 subclasses, forwarded to the staged ops this one falls back to.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            tune: Whether the kernels tune themselves when built.
         """
         self.target = target
+        self.tune = tune
         self.num_tokens = num_tokens
         self.num_experts = num_experts
         self.top_k = top_k
         self.hidden_size = hidden_size
         self.ffn_size = ffn_size
         self.routed_scaling_factor = routed_scaling_factor
+        self.dispatch_kernel(kernel_map)
         # The indexed kernels are SM90-only, and the card is a fact of the call. Choosing
         # inside the operator keeps the traced graph one node on any card, so the staged
         # pipeline it falls back to is built here.
         layout = ContiguousLayoutSpec.tight_physical_psum()
-        self._pre_permute = MoePrePermuteFwdOp(
-            layout=layout, num_local_experts=num_experts, kernel_map=kernel_map, target=target
+        self._pre_permute = self.delegate_for(
+            "pre_permute", None, layout=layout, num_local_experts=num_experts
         )
-        self._expert_mlp = MoeExpertMLPFwdOp(
-            layout, "silu_and_mul", kernel_map=kernel_map, target=target
+        self._expert_mlp = self.delegate_for(
+            "expert_mlp", None, layout=layout, activation="silu_and_mul"
         )
-        self._post_permute = MoePostPermuteFwdOp(
+        self._post_permute = self.delegate_for(
+            "post_permute",
+            None,
             layout=layout,
             epilogue=RoutingEpilogueSpec(routed_scaling_factor=routed_scaling_factor),
-            kernel_map=kernel_map,
-            target=target,
         )
-        self.dispatch_kernel(kernel_map)
-
-    def kernel_delegates(self) -> tuple[Op, ...]:
-        """The staged ops this one falls back to off SM90."""
-        return (self._pre_permute, self._expert_mlp, self._post_permute)
 
     @property
     def default_kernel_map(self) -> dict:

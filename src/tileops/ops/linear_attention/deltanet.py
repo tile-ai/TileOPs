@@ -247,6 +247,11 @@ class DeltaNetAutogradFwdOp(Op):
 
     """
 
+    delegate_types: ClassVar[Mapping[str, type[Op]]] = {
+        "forward": DeltaNetFwdOp,
+        "backward": DeltaNetBwdOp,
+    }
+
     def __init__(
         self,
         chunk_size: int = 64,
@@ -269,12 +274,8 @@ class DeltaNetAutogradFwdOp(Op):
         self.target = target
         # This composite owns no kernel; the override reaches the sub-ops that do.
         self.dispatch_kernel(kernel_map)
-        shared = {"target": target, "kernel_map": kernel_map, "tune": tune}
-        self._fwd_op = DeltaNetFwdOp(chunk_size, **shared)
-        self._bwd_op = DeltaNetBwdOp(chunk_size, **shared)
-
-    def kernel_delegates(self) -> tuple[Op, ...]:
-        return (self._fwd_op, self._bwd_op)
+        self._fwd_op = self.delegate_for("forward", None, chunk_size=chunk_size)
+        self._bwd_op = self.delegate_for("backward", None, chunk_size=chunk_size)
 
     def forward(
         self,

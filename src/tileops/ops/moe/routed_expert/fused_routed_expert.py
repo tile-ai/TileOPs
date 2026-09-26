@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 from torch import Tensor
 
@@ -32,6 +32,13 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
     WeightedReduceNoOp.
     """
 
+    delegate_types: ClassVar[Mapping[str, type[Op]]] = {
+        "pre_permute": MoePrePermuteFwdOp,
+        "expert_mlp": MoeExpertMLPFwdOp,
+        "post_permute": MoePostPermuteFwdOp,
+        "indexed_small_route": IndexedExpertMLPFwdOp,
+    }
+
     # The tight path is what an instance runs until __init__ selects otherwise,
     # so contract checks that read the op without constructing it see it too.
     _indexed_mlp: IndexedExpertMLPFwdOp | None = None
@@ -54,6 +61,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         *,
         activation: str = "silu_and_mul",
         target: Target = None,
+        tune: bool = False,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
@@ -71,8 +79,10 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
                 'gelu_and_mul'.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            tune: Whether the sub-ops' kernels tune themselves when built.
         """
         self.target = target
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
         self.num_tokens = num_tokens
         self.num_experts = num_experts
@@ -82,22 +92,17 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         self.routed_scaling_factor = routed_scaling_factor
         self.activation = activation
         layout = ContiguousLayoutSpec.tight_physical_psum()
-        self._expert_mlp = MoeExpertMLPFwdOp(
-            layout, activation, kernel_map=kernel_map, target=target
+        self._expert_mlp = self.delegate_for(
+            "expert_mlp", None, layout=layout, activation=activation
         )
-        self._pre_permute = MoePrePermuteFwdOp(
-            layout=layout,
-            num_local_experts=num_experts,
-            kernel_map=kernel_map,
-            target=target,
+        self._pre_permute = self.delegate_for(
+            "pre_permute", None, layout=layout, num_local_experts=num_experts
         )
-        self._post_permute = MoePostPermuteFwdOp(
+        self._post_permute = self.delegate_for(
+            "post_permute",
+            None,
             layout=layout,
-            epilogue=RoutingEpilogueSpec(
-                routed_scaling_factor=routed_scaling_factor,
-            ),
-            kernel_map=kernel_map,
-            target=target,
+            epilogue=RoutingEpilogueSpec(routed_scaling_factor=routed_scaling_factor),
         )
         indexed = (
             activation == "silu_and_mul"
@@ -105,24 +110,17 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
             and ffn_size % 256 == 0
             and num_tokens * top_k <= 2 * num_experts
         )
-        self._indexed_mlp = (
-            IndexedExpertMLPFwdOp(
-                num_tokens,
-                num_experts,
-                top_k,
-                hidden_size,
-                ffn_size,
-                routed_scaling_factor,
-                kernel_map,
-                target=target,
+        if indexed:
+            self._indexed_mlp = self.delegate_for(
+                "indexed_small_route",
+                None,
+                num_tokens=num_tokens,
+                num_experts=num_experts,
+                top_k=top_k,
+                hidden_size=hidden_size,
+                ffn_size=ffn_size,
+                routed_scaling_factor=routed_scaling_factor,
             )
-            if indexed
-            else None
-        )
-
-    def kernel_delegates(self) -> tuple[Op, ...]:
-        tight = (self._pre_permute, self._expert_mlp, self._post_permute)
-        return tight if self._indexed_mlp is None else (*tight, self._indexed_mlp)
 
     def _validate_dtypes(
         self,
