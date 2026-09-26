@@ -669,3 +669,24 @@ def test_a_composite_call_carries_every_call_of_a_stage():
     parent = _staged_parent("ProbeTwice", forward)
     parent(torch.ones(3, 8, dtype=torch.float16))
     assert [c.ix["M"] for c in parent.last_call.stages["leaf"]] == [1, 3]
+
+
+def test_a_meta_call_of_an_op_returning_nothing_completes_and_is_priced():
+    signature = {
+        "forall": {"M": "Dim", "N": "Dim", "T": "DType[float16 | float32]"},
+        "inputs": {
+            "result": {"dtype": "T", "shape": "[M, N]", "mutated": True, "write_only": True},
+            "x": {"dtype": "T", "shape": "[M, N]"},
+        },
+        "outputs": {},
+    }
+    op = _probe(
+        "ProbeWriteOnlyFwdOp",
+        signature,
+        lambda self, result, x: (result.copy_(x), None)[1],
+        boundary=True,
+        roofline={"flops": "M * N"},
+    )()
+    x = torch.empty(3, 8, dtype=torch.float16, device="meta")
+    assert op(torch.empty_like(x), x) is None
+    assert op.eval_roofline() == (24, 2 * 3 * 8 * 2)

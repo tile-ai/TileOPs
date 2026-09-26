@@ -269,7 +269,9 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
             seen.append(tensors)
             if parametric:
                 result = declared_outputs
-                returned.append(result[0] if len(result) == 1 else tuple(result))
+                returned.append(
+                    None if not result else result[0] if len(result) == 1 else tuple(result)
+                )
                 return returned[-1]
             shapes = [None if t is None else tuple(t.shape) for t in tensors]
             try:

@@ -1148,14 +1148,15 @@ class _Boundary:
                 # sub-op, so it opens and closes its call at once.
                 op._open_call()
                 op._keep_call(call)
-            return built[0] if len(built) == 1 else built
+            return None if not built else built[0] if len(built) == 1 else built
 
         operator.__name__ = name.replace("::", "_")
         registered = torch.library.custom_op(
             name, mutates_args=tuple(sorted(written)) + (("out",) if out else ()), schema=schema
         )(operator)
-        if returned:
-            registered.register_fake(fake)
+        # Registered even for an operator that returns nothing, so its eager call on meta
+        # tensors runs the checks and completes like any other.
+        registered.register_fake(fake)
         return registered
 
     def call(self, op, inputs: tuple, writes: dict, execution: dict):
