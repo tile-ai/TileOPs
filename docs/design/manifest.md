@@ -233,7 +233,7 @@ cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)",
 
 - The generator result is unified with the declaration; shape indices other than the generator's arguments are solved by that unification (here `B`) and are not written in the row.
 - The generator set is fixed ([table 17](#t-generators)); adding one changes this specification, with its domain, seed and tests. A generated tensor declares an integer dtype, `int32` or `int64`, and its values take it; a domain violation or an overflow of the declared dtype raises. Arguments may be value-primitive calls. A row always yields the same values.
-- `requires` names predicates on a metadata tensor's contents, from a closed set ([table 18](#t-predicates) and the predicates of [table 14](#t-domain)); the tensor's contents are the implicit first argument. A row is checked against them at instantiation; at run time they are the caller's obligation, so the validator also holds them well-formed wherever their tensor is present.
+- `requires` names predicates on a metadata tensor's contents, from a closed set ([table 18](#t-predicates) and the predicates of [table 14](#t-domain)); the tensor's contents are the implicit first argument. A written argument may name another metadata tensor and stands for its contents, so one predicate relates two tensors; that tensor must be present wherever the constrained one is. A row is checked against them at instantiation; at run time they are the caller's obligation, so the validator also holds them well-formed wherever their tensor is present.
 - A tensor with `requires` has `values`.
 
 ## Composition
@@ -479,11 +479,14 @@ Value primitive: `balanced_sizes(total, count)` requires `count > 0` and `total 
 
 **<a id="t-predicates"></a>Table 18** `requires` predicates (the constrained tensor is `x`)
 
-| No. | Predicate               | Condition                                                      |
-| --- | ----------------------- | -------------------------------------------------------------- |
-| 1   | `prefix_offsets(total)` | `x` is 1-D, starts at 0, is non-decreasing and ends at `total` |
-| 2   | `max_segment(bound)`    | adjacent differences of `x` are at most `bound`                |
-| 3   | `in_range(lo, hi)`      | every element of `x` lies in `[lo, hi)`                        |
+| No. | Predicate                 | Condition                                                                                                     |
+| --- | ------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 1   | `prefix_offsets(total)`   | `x` is 1-D, starts at 0, is non-decreasing and ends at `total`                                                |
+| 2   | `max_segment(bound)`      | adjacent differences of `x` are at most `bound`                                                               |
+| 3   | `in_range(lo, hi)`        | every element of `x` lies in `[lo, hi)`                                                                       |
+| 4   | `sums_to(total)`          | the elements of `x` sum to `total`                                                                            |
+| 5   | `exclusive_prefix_of(L)`  | `x` has `len(L)` elements; element `i` is `sum(L[:i])`                                                        |
+| 6   | `indices_within(offsets)` | `x` is `[n, 2]`; each row `(i, j)` has `0 <= i < len(offsets) - 1` and `0 <= j < offsets[i + 1] - offsets[i]` |
 
 **<a id="t-unify"></a>Table 19** Unification of an input axis
 

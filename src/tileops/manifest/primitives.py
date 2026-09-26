@@ -434,6 +434,27 @@ def in_range(x, lo, hi):
     return all(lo <= v < hi for v in _flat(x))
 
 
+def sums_to(x, total):
+    """The elements of `x` sum to `total`."""
+    return sum(x) == total
+
+
+def exclusive_prefix_of(x, lengths):
+    """`x` has one element per length; element `i` is the sum of the lengths before it."""
+    return len(x) == len(lengths) and all(v == sum(lengths[:i]) for i, v in enumerate(x))
+
+
+def indices_within(x, offsets):
+    """Each row `(i, j)` of `x` names segment `i` of `offsets` and position `j` inside it."""
+    segments = len(offsets) - 1
+    return all(
+        len(row) == 2
+        and 0 <= row[0] < segments
+        and 0 <= row[1] < offsets[row[0] + 1] - offsets[row[0]]
+        for row in x
+    )
+
+
 def paged_fits(x, cu, cap):
     flat = all(isinstance(v, int) for v in (*x, *cu))
     return (
@@ -467,6 +488,9 @@ PREDICATE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "prefix_offsets": (("Int",), "Bool"),
     "max_segment": (("Int",), "Bool"),
     "in_range": (("Int", "Int"), "Bool"),
+    "sums_to": (("Int",), "Bool"),
+    "exclusive_prefix_of": (("Seq[Int]",), "Bool"),
+    "indices_within": (("Seq[Int]",), "Bool"),
     "attn.paged_fits": (("Seq[Int]", "Int"), "Bool"),
     "moe.layout_valid": (("ADT", "Int", "Int"), "Bool"),
 }
@@ -474,6 +498,9 @@ PREDICATE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
 PREDICATE_RANKS = {
     "prefix_offsets": 1,
     "max_segment": 1,
+    "sums_to": 1,
+    "exclusive_prefix_of": 1,
+    "indices_within": 2,
     "attn.paged_fits": 1,
     "moe.layout_valid": 1,
 }
@@ -482,6 +509,9 @@ PREDICATES = {
     "prefix_offsets": prefix_offsets,
     "max_segment": max_segment,
     "in_range": in_range,
+    "sums_to": sums_to,
+    "exclusive_prefix_of": exclusive_prefix_of,
+    "indices_within": indices_within,
     "attn.paged_fits": paged_fits,
     "moe.layout_valid": moe_layout_valid,
 }
