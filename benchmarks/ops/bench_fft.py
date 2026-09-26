@@ -2,22 +2,18 @@ import pytest
 import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
-from benchmarks.benchmark_base import (
-    ManifestBenchmark,
-    workloads_to_params,
-)
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import FFTC2CFwdOp
 from workloads.fft import FFTWorkload
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(FFTC2CFwdOp))
-def test_fft_bench(shape: tuple, dtype: torch.dtype) -> None:
-    n = shape[-1]
-    batch_shape = shape[:-1]
-    test = FFTWorkload(n, dtype, batch_shape=batch_shape)
+@pytest.mark.parametrize("call", manifest_calls(FFTC2CFwdOp))
+def test_fft_bench(call) -> None:
+    shape, dtype = call.tensors["input"]
+    test = FFTWorkload(shape[-1], getattr(torch, dtype), batch_shape=shape[:-1])
     inputs = test.gen_inputs()
 
-    op = FFTC2CFwdOp(tune=True)
+    op = FFTC2CFwdOp(**call.arguments({}), tune=True)
 
     op(*inputs)
     torch.cuda.synchronize()

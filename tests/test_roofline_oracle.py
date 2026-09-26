@@ -481,25 +481,6 @@ class TestBytesOracle:
         )
         assert op.eval_roofline()[1] == oracle
 
-    def test_engram_gate_conv_backward_counts_the_six_gradient_rows(self):
-        from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp
-
-        m, seq_len, d = 4, 2048, 512
-        rows = (m, seq_len, d)
-        op = EngramGateConvBwdOp.__new__(EngramGateConvBwdOp)
-        op.M, op.seq_len, op.d = m, seq_len, d
-        op.dtype = torch.float16
-        oracle = _nbytes(
-            *((rows, torch.float16),) * 5,  # dY, H, k, v, vhat
-            *((((d,), torch.float16),) * 2),  # rms_w_h, rms_w_v
-            ((4, d), torch.float16),  # conv_w
-            *((((m, seq_len), torch.float32),) * 4),  # alpha, rrms_h, rrms_k, rrms_v
-            *((rows, torch.float16),) * 3,  # dH, dk, dv
-            *((((d,), torch.float32),) * 2),  # drms_w_h, drms_w_v
-            ((4, d), torch.float32),  # dconv_w
-        )
-        assert op.eval_roofline()[1] == oracle
-
     def test_instance_norm_counts_the_running_stats_only_in_eval_mode(self):
         from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 

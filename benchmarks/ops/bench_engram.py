@@ -12,12 +12,7 @@ import pytest
 import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
-from benchmarks.benchmark_base import (
-    ManifestBenchmark,
-    fields,
-    workload_params,
-)
-from tileops.manifest import load_workloads
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from workloads.engram import (
@@ -31,19 +26,17 @@ from workloads.engram import (
 _TUNE = True
 
 
-_ENGRAM_GATE_CONV_FWD_PARAMS = workload_params(
-    load_workloads(EngramGateConvFwdOp),
-    fields("M", "seq_len", "d", "dtype"),
-    smoke_first=True,
-)
+def _dtype(call, tensor: str) -> torch.dtype:
+    return getattr(torch, call.tensors[tensor][1])
 
 
-@pytest.mark.parametrize("M, seq_len, d, dtype", _ENGRAM_GATE_CONV_FWD_PARAMS)
-def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype):
-    test = EngramGateConvFwdWorkload(M, seq_len, d, dtype)
+@pytest.mark.parametrize("call", manifest_calls(EngramGateConvFwdOp))
+def test_engram_gate_conv_fwd_bench(call):
+    params = call.arguments({})
+    test = EngramGateConvFwdWorkload(**params, dtype=_dtype(call, "H"))
     inputs = test.gen_inputs()
 
-    op = EngramGateConvFwdOp(M, seq_len, d, tune=_TUNE)
+    op = EngramGateConvFwdOp(**params, tune=_TUNE)
     bm = ManifestBenchmark(op, test)
 
     bm.compare(
@@ -56,19 +49,13 @@ def test_engram_gate_conv_fwd_bench(M, seq_len, d, dtype):
     )
 
 
-_ENGRAM_GATE_CONV_BWD_PARAMS = workload_params(
-    load_workloads(EngramGateConvBwdOp),
-    fields("M", "seq_len", "d", "dtype"),
-    smoke_first=True,
-)
-
-
-@pytest.mark.parametrize("M, seq_len, d, dtype", _ENGRAM_GATE_CONV_BWD_PARAMS)
-def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype):
-    test = EngramGateConvBwdWorkload(M, seq_len, d, dtype)
+@pytest.mark.parametrize("call", manifest_calls(EngramGateConvBwdOp))
+def test_engram_gate_conv_bwd_bench(call):
+    params = call.arguments({})
+    test = EngramGateConvBwdWorkload(**params, dtype=_dtype(call, "dY"))
     inputs = test.gen_inputs()
 
-    op = EngramGateConvBwdOp(M, seq_len, d, tune=_TUNE)
+    op = EngramGateConvBwdOp(**params, tune=_TUNE)
     bm = ManifestBenchmark(op, test)
 
     @torch.enable_grad()
@@ -85,30 +72,13 @@ def test_engram_gate_conv_bwd_bench(M, seq_len, d, dtype):
     )
 
 
-_ENGRAM_DECODE_PARAMS = workload_params(
-    load_workloads(EngramDecodeFwdOp),
-    fields("batch", "d_mem", "d", "max_conv_len", "conv_kernel_size", "dilation", "dtype"),
-    smoke_first=True,
-)
-
-
-@pytest.mark.parametrize(
-    "batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype",
-    _ENGRAM_DECODE_PARAMS,
-)
-def test_engram_decode_bench(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype):
-    test = EngramDecodeWorkload(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype)
+@pytest.mark.parametrize("call", manifest_calls(EngramDecodeFwdOp))
+def test_engram_decode_bench(call):
+    params = call.arguments({})
+    test = EngramDecodeWorkload(**params, dtype=_dtype(call, "e_t"), conv_len=call.ix["L"])
     inputs = test.gen_inputs()
 
-    op = EngramDecodeFwdOp(
-        batch,
-        d_mem,
-        d,
-        max_conv_len,
-        conv_kernel_size,
-        dilation,
-        tune=_TUNE,
-    )
+    op = EngramDecodeFwdOp(**params, tune=_TUNE)
     bm = ManifestBenchmark(op, test)
 
     bm.compare(

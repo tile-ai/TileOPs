@@ -687,11 +687,12 @@ def test_an_explicit_target_serves_a_pool_op_no_detector_claims_the_device():
 
     ((inputs, params),) = recorder.calls
     assert inputs == (TensorSpec.of(x),), "signature.inputs order"
+    # The manifest parameters as the caller set them, defaults included.
     assert params == {
-        "kernel_size": (2, 2),
-        "stride": (2, 2),
-        "padding": (0, 0),
-        "dilation": (1, 1),
+        "kernel_size": 2,
+        "stride": None,
+        "padding": 0,
+        "dilation": 1,
         "ceil_mode": False,
     }
     assert torch.equal(out, torch.full_like(out, 7)), "the target's kernel produced the result"

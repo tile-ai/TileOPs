@@ -87,7 +87,18 @@ class EngramGateConvBwdWorkload(WorkloadBase):
 
 
 class EngramDecodeWorkload(WorkloadBase):
-    def __init__(self, batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, eps=1e-6):
+    def __init__(
+        self,
+        batch,
+        d_mem,
+        d,
+        max_conv_len,
+        conv_kernel_size,
+        dilation,
+        dtype,
+        eps=1e-6,
+        conv_len=None,
+    ):
         self.batch = batch
         self.d_mem = d_mem
         self.d = d
@@ -96,14 +107,14 @@ class EngramDecodeWorkload(WorkloadBase):
         self.dilation = dilation
         self.dtype = dtype
         self.eps = eps
+        # The history steps conv_state holds; a full cache by default.
+        self.conv_len = max_conv_len if conv_len is None else conv_len
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         e_t = torch.randn(self.batch, self.d_mem, dtype=self.dtype, device="cuda") * 0.1
         h_t = torch.randn(self.batch, self.d, dtype=self.dtype, device="cuda")
-        # Full conv_state (max_conv_len entries)
         conv_state = (
-            torch.randn(self.batch, self.max_conv_len, self.d, dtype=self.dtype, device="cuda")
-            * 0.1
+            torch.randn(self.batch, self.conv_len, self.d, dtype=self.dtype, device="cuda") * 0.1
         )
         W_K = torch.randn(self.d_mem, self.d, dtype=self.dtype, device="cuda") * 0.02
         W_V = torch.randn(self.d_mem, self.d, dtype=self.dtype, device="cuda") * 0.02

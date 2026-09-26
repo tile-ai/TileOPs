@@ -1,87 +1,55 @@
-# scan.yaml -- manifest entries for the 'scan' family.
-#
-# Source of truth for op interfaces in this family. Loaded and merged with
-# other family files by tileops.manifest at runtime. See docs/design/manifest.md
-# for the full schema.
+# scan.yaml -- the cumulative scans, which the `reduction` module exports.
 
 CumsumFwdOp:
-  ref_api: "torch.cumsum"
-  family: scan
+  ref_api: torch.cumsum
+  family: reduction
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      y: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
       dim: {type: int, default: -1}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      y: {dtype: T, shape: "[*S]"}
     shape_rules:
-    - "-x.ndim <= dim < x.ndim"
-    - "y.shape == x.shape"
+    - "len(S) > 0 and valid_axes(dim, len(S))"
 
   workloads:
-    # Hidden state cumulative sum (Llama-3.1-8B)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-scan"}
-    # Long sequence cumulative sum
-  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-scan"}
+  # Hidden state cumulative sum (Llama-3.1-8B)
+  - {S: [2048, 4096], dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-scan}
+  # Long sequence cumulative sum
+  - {S: [64, 32768], dtype_cases: [{T: bfloat16}], label: long-seq-scan}
+  # Llama-2-13B hidden size, a scan length that is not a power of two
+  - {S: [4096, 5120], dtype_cases: [{T: float32}], label: llama-13b-hidden-scan}
 
   roofline:
-    vars:
-      M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-      N: "x.shape[dim % x.ndim]"
-    # N-1 additions per scan line
-    flops: "M * N"
-    # Read x + write y
-    bytes: "2 * M * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/cumulative.py
-    kernel_map:
-      cumulative_fwd: CumulativeKernel
-    op: tileops/ops/reduction/cumulative.py
-    test: tests/ops/test_cumulative.py
-    bench: benchmarks/ops/bench_cumulative.py
-    bench_manifest_driven: true
+    flops: "prod(S)"
 
 CumprodFwdOp:
-  ref_api: "torch.cumprod"
-  family: scan
+  ref_api: torch.cumprod
+  family: reduction
   status: implemented
-  torch_compile_fullgraph: true
 
   signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16 | float32"}
-    outputs:
-      y: {dtype: "same_as(x)"}
+    forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
       dim: {type: int, default: -1}
+    inputs:
+      x: {dtype: T, shape: "[*S]"}
+    outputs:
+      y: {dtype: T, shape: "[*S]"}
     shape_rules:
-    - "-x.ndim <= dim < x.ndim"
-    - "y.shape == x.shape"
+    - "len(S) > 0 and valid_axes(dim, len(S))"
 
   workloads:
-    # Hidden state cumulative product (Llama-3.1-8B)
-  - {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "hidden-state-scan"}
-    # Long sequence cumulative product
-  - {x_shape: [64, 32768], dtypes: [bfloat16], label: "long-seq-scan"}
+  # Hidden state cumulative product (Llama-3.1-8B)
+  - {S: [2048, 4096], dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-scan}
+  # Long sequence cumulative product
+  - {S: [64, 32768], dtype_cases: [{T: bfloat16}], label: long-seq-scan}
+  # Llama-2-13B hidden size, a scan length that is not a power of two
+  - {S: [4096, 5120], dtype_cases: [{T: float32}], label: llama-13b-hidden-scan}
 
   roofline:
-    vars:
-      M: "product(x.shape[:dim % x.ndim]) * product(x.shape[dim % x.ndim + 1:])"
-      N: "x.shape[dim % x.ndim]"
-    # N-1 multiplications per scan line
-    flops: "M * N"
-    # Read x + write y
-    bytes: "2 * M * N * elem_bytes"
-
-  source:
-    kernel: tileops/kernels/reduction/cumulative.py
-    kernel_map:
-      cumulative_fwd: CumulativeKernel
-    op: tileops/ops/reduction/cumulative.py
-    test: tests/ops/test_cumulative.py
-    bench: benchmarks/ops/bench_cumulative.py
-    bench_manifest_driven: true
+    flops: "prod(S)"

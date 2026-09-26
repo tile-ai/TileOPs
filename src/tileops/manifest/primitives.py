@@ -255,6 +255,12 @@ def token_indices(lengths):
     return [[i, j] for i, n in enumerate(lengths) for j in range(n)]
 
 
+def packed_positions(lengths):
+    if not lengths or any(n <= 0 for n in lengths):
+        raise ValueError(f"packed_positions needs a non-empty positive list, got {lengths}")
+    return [j for n in lengths for j in range(n)]
+
+
 def chunk_offsets(lengths, chunk):
     if chunk <= 0:
         raise ValueError(f"chunk must be positive, got {chunk}")
@@ -337,6 +343,7 @@ GENERATORS = {
     "padded_exclusive_prefix_sum": padded_exclusive_prefix_sum,
     "chunk_indices": chunk_indices,
     "token_indices": token_indices,
+    "packed_positions": packed_positions,
     "chunk_offsets": chunk_offsets,
     "paged_block_table": paged_block_table,
     "nsa_block_indices": nsa_block_indices,
@@ -354,6 +361,7 @@ GENERATOR_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "paged_block_table": (("Int", "Int", "Int"), "Value"),
     "chunk_indices": (("Seq[Int]", "Int"), "Value"),
     "token_indices": (("Seq[Int]",), "Value"),
+    "packed_positions": (("Seq[Int]",), "Value"),
     "chunk_offsets": (("Seq[Int]", "Int"), "Value"),
     "nsa_block_indices": (("Seq[Int]", "Int", "Int", "Int"), "Value"),
     "nsa_block_counts": (("Int", "Int", "Int"), "Value"),
@@ -370,6 +378,7 @@ GENERATOR_RANKS = {
     "paged_block_table": 2,
     "chunk_indices": 2,
     "token_indices": 2,
+    "packed_positions": 1,
     "chunk_offsets": 1,
     "nsa_block_indices": 3,
     "nsa_block_counts": 2,
@@ -386,6 +395,7 @@ GENERATOR_SHAPES = {
     "paged_block_table": lambda batch, width, pool: (batch, width),
     "chunk_indices": lambda L, c: (sum(ceil_div(n, c) for n in L), 2),
     "token_indices": lambda L: (sum(L), 2),
+    "packed_positions": lambda L: (sum(L),),
     "chunk_offsets": lambda L, c: (len(L) + 1,),
     "nsa_block_indices": lambda L, block, selected, heads: (sum(L), heads, selected),
     "nsa_block_counts": lambda tokens, heads, selected: (tokens, heads),

@@ -48,6 +48,14 @@ from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.mamba.ssd_decode import SSDDecodeFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
+from tileops.ops.rope import (
+    RopeLlama31FwdOp,
+    RopeLongRopeFwdOp,
+    RopeNeoxFwdOp,
+    RopeNeoxPositionIdsFwdOp,
+    RopeNonNeoxFwdOp,
+    RopeYarnFwdOp,
+)
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from tileops.ops.sequence_modeling.mhc import MHCPostFwdOp, MHCPreFwdOp
@@ -525,12 +533,46 @@ def _sequence_modeling_cases():
     )
 
 
+def _rope_cases():
+    """The RoPE ops, one layout each, with the inputs they are built for."""
+    _DTYPE = torch.float16
+    _SEQ_LEN, _HEADS, _D = 64, 4, 64
+
+    def _x(*shape):
+        return torch.randn(*shape, dtype=_DTYPE, device="cuda")
+
+    def one_d(op_cls):
+        return lambda: (op_cls(layout="1d"), (_x(_SEQ_LEN, _D),))
+
+    def two_d(op_cls):
+        return lambda: (op_cls(layout="2d"), (_x(2, _SEQ_LEN, _HEADS, _D),))
+
+    def longrope():
+        rescale = torch.linspace(1.0, 2.0, _D // 2, device="cuda")
+        return RopeLongRopeFwdOp(rescale_factors=rescale), (_x(_SEQ_LEN, _D),)
+
+    def position_ids():
+        op = RopeNeoxPositionIdsFwdOp(max_position=128)
+        positions = torch.arange(_SEQ_LEN, device="cuda", dtype=torch.int32)
+        return op, (_x(_SEQ_LEN, _HEADS, _D), positions)
+
+    return (
+        ("rope-neox", one_d(RopeNeoxFwdOp)),
+        ("rope-non-neox", two_d(RopeNonNeoxFwdOp)),
+        ("rope-llama31", one_d(RopeLlama31FwdOp)),
+        ("rope-yarn", two_d(RopeYarnFwdOp)),
+        ("rope-longrope", longrope),
+        ("rope-neox-position-ids", position_ids),
+    )
+
+
 _FAMILIES = (
     _attention_cases,
     _gemm_cases,
     _mamba_cases,
     _linear_attention_cases,
     _sequence_modeling_cases,
+    _rope_cases,
 )
 
 
@@ -583,6 +625,12 @@ for _op_cls in (
     EngramDecodeFwdOp,
     MHCPreFwdOp,
     MHCPostFwdOp,
+    RopeNeoxFwdOp,
+    RopeNonNeoxFwdOp,
+    RopeLlama31FwdOp,
+    RopeYarnFwdOp,
+    RopeLongRopeFwdOp,
+    RopeNeoxPositionIdsFwdOp,
 ):
     register_compile_contract(_op_cls)
 

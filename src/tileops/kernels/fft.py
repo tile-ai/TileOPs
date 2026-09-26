@@ -1486,6 +1486,15 @@ def _pass_tables(n: int, dtype: torch.dtype, device: torch.device) -> tuple:
     return circle.to(real).to(device), base2.to(real).to(device)
 
 
+def _on_interleaved(transform, x: torch.Tensor, n: int) -> torch.Tensor:
+    """Run *transform* on ``x`` viewed as rows of interleaved (real, imaginary) pairs.
+
+    The kernels read the pair directly, so the batch axes flatten into one row axis.
+    """
+    x_pair = torch.view_as_real(x.resolve_conj().contiguous()).reshape(x.numel() // n, n, 2)
+    return torch.view_as_complex(transform(x_pair).reshape(*x.shape, 2))
+
+
 class FFTC2COneCTAKernel(Kernel):
     """One-launch C2C FFT for the plans of a single factor.
 
@@ -1599,15 +1608,12 @@ class FFTC2COneCTAKernel(Kernel):
             return
         super().autotune(warmup=warmup, rep=rep)
 
-    def forward(self, x_pair: torch.Tensor) -> torch.Tensor:
-        """Transform interleaved input.
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Transform the last axis of complex ``x``, $[\\ldots \\times n]$; same shape out."""
+        return _on_interleaved(self._transform, x, self.n)
 
-        Args:
-            x_pair: Input as $[B \\times n \\times 2]$, real and imaginary interleaved.
-
-        Returns:
-            The transform, interleaved, same shape as ``x_pair``.
-        """
+    def _transform(self, x_pair: torch.Tensor) -> torch.Tensor:
+        """Transform interleaved input, $[B \\times n \\times 2]$, into its own shape."""
         index = x_pair.device.index
         if index not in self._tables:
             self._tables[index] = _pass_tables(self.n, self.dtype, x_pair.device)
@@ -1796,15 +1802,12 @@ class FFTC2CDecomposedKernel(Kernel):
             twlut.append(torch.stack(rows, dim=0).to(real).to(device).contiguous())
         return tuple(p[0] for p in passes), tuple(p[1] for p in passes), tuple(twlut)
 
-    def forward(self, x_pair: torch.Tensor) -> torch.Tensor:
-        """Transform interleaved input, one launch per factor.
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Transform the last axis of complex ``x``, $[\\ldots \\times n]$; same shape out."""
+        return _on_interleaved(self._transform, x, self.n)
 
-        Args:
-            x_pair: Input as $[B \\times n \\times 2]$, real and imaginary interleaved.
-
-        Returns:
-            The transform, interleaved, same shape as ``x_pair``.
-        """
+    def _transform(self, x_pair: torch.Tensor) -> torch.Tensor:
+        """Transform interleaved input, $[B \\times n \\times 2]$, one launch per factor."""
         index = x_pair.device.index
         if index not in self._tables:
             self._tables[index] = self._four_step_tables(x_pair.device)

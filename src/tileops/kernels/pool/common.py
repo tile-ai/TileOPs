@@ -258,8 +258,10 @@ class AdaptivePool2dKernelBase(Kernel):
         ]
 
     def forward(self, x: torch.Tensor):
+        """Pool ``x``, ``[N, C, H, W]`` or unbatched ``[C, H, W]``; outputs follow its rank."""
         self._require_cuda(x=x)
-        return type(self)._dispatch(
+        unbatched = x.dim() == 3
+        result = type(self)._dispatch(
             self.n,
             self.c_in,
             self.h_in,
@@ -268,5 +270,10 @@ class AdaptivePool2dKernelBase(Kernel):
             self.out_w,
             self.dtype_str,
             self.config,
-            x,
+            x.unsqueeze(0) if unbatched else x,
         )
+        if not unbatched:
+            return result
+        if isinstance(result, (tuple, list)):
+            return tuple(t.squeeze(0) for t in result)
+        return result.squeeze(0)

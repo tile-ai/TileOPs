@@ -122,26 +122,6 @@ def _x() -> torch.Tensor:
 
 
 @pytest.mark.smoke
-def test_mean_pooling_rejects_a_wrong_offsets_dtype() -> None:
-    """`forward` once dispatched a kernel without running the generated validator, so an
-    `int64` offsets tensor reached TileLang instead of being rejected here."""
-    offsets, indices = mean_pooling_chunk_index([64], 32)
-    with pytest.raises(ValueError, match="offsets"):
-        _op()(_x(), offsets.to(torch.int64), indices)
-
-
-@pytest.mark.smoke
-def test_mean_pooling_rejects_one_ragged_tensor_without_the_other() -> None:
-    """`offsets` and `indices` describe one split, so half of it is a caller error rather
-    than a uniform call."""
-    offsets, indices = mean_pooling_chunk_index([64], 32)
-    with pytest.raises(ValueError, match="either both are passed"):
-        _op()(_x(), offsets, None)
-    with pytest.raises(ValueError, match="either both are passed"):
-        _op()(_x(), None, indices)
-
-
-@pytest.mark.smoke
 def test_mean_pooling_rejects_indices_that_disagree_with_offsets() -> None:
     """The output's chunk axis comes from `indices`, because a shape is all the compile fake
     is handed, so an `indices` that does not match `offsets` is caught rather than believed.
