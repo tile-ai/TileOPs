@@ -2,13 +2,13 @@
 
 - Class names: PascalCase `{Name}{Direction}Op` (Op layer) or `{Name}{Direction}Kernel` (Kernel layer); direction suffix mandatory. Manifest author chooses `{Name}`. Builder functions stay snake_case.
 
-- `default_kernel_map` is the Op→Kernel dispatch registration table: snake_case dispatch keys (decoupled from class names) → Kernel class names. The code owns it; the manifest does not list kernels. See [op-slot-rules.md § Slot S14](../../docs/design/op-slot-rules.md#slot-s14).
+- `kernel_types` is the Op→Kernel dispatch registration table: snake_case dispatch keys (decoupled from class names) → Kernel classes. `default_kernel_map` is derived from it. The code owns it; the manifest does not list kernels. See [op-slot-rules.md § Slot S14](../../docs/design/op-slot-rules.md#slot-s14).
 
 - Op `__init__` takes `signature.params` in manifest order, a param declaring `kw_only: true` after `*`, then the execution-policy parameters of [manifest.md table 7](../../docs/design/manifest.md#t-policy), keyword-only. Every other index is solved per call.
 
 - The call checks, `_infer_output_shapes`, `_validate_dtypes` and `eval_roofline` are generated from the manifest entry; an op does not hand-write them or repeat their checks in `forward`.
 
-- Update `docs/design/ops-design.md` whenever you add/modify an intermediate base class, change a kernel-dispatch pattern, or introduce a new class-variable protocol.
+- Update `docs/design/` when a change alters a top-level decision (an intermediate base class, the kernel-dispatch pattern, a contract between modules); a class attribute or other mechanism that implements a documented decision is read from the code.
 
 - Every kernel an op builds after construction goes through `Op.kernel_for(role, inputs, call)`, with `inputs` the tensors the kernel will be handed. The in-tree identity and builder come from `Op.entry_for(role, call)`, whose default selects among the op's candidates and asks the chosen class; an op with one implementation overrides it. An op MUST NOT declare a kernel cache dict, guard a kernel build on an attribute being unset, or carry any other get-or-build of its own — including for an auxiliary kernel. Assigning what `kernel_for` returned to `self.kernel` is not one. See [ops-design.md § Kernel caching and enumeration](../../docs/design/ops-design.md#kernel-caching-and-enumeration).
 

@@ -24,28 +24,25 @@ did not settle, which is the entry condition for the other two coverage levels.
 
 from __future__ import annotations
 
-import importlib
 import inspect
 from math import prod
 from typing import Any
 
 import torch
 
-from tileops.manifest import load_manifest, load_workloads
+from tileops.manifest import load_adts, load_manifest, load_workloads
 from tileops.manifest.dtype_rules import parse_tokens, promote_int_to_float_ref, same_as_ref
+from tileops.manifest.plan import entry_plan
+from tileops.manifest.registry import op_class
+from tileops.manifest.signature import is_legacy
+from tileops.manifest.workload import instantiate
 from tileops.ops._output_dtype import output_dtype
 
-__all__ = ["NotBindableError", "bind_case", "manifest_cases", "op_class"]
+__all__ = ["NotBindableError", "bind_case", "manifest_cases"]
 
 
 class NotBindableError(Exception):
     """The manifest contract does not settle what this call reads and writes."""
-
-
-def op_class(op_name: str, entry: dict) -> type:
-    """The op class a manifest entry names."""
-    module = entry["source"]["op"].replace("/", ".").removesuffix(".py")
-    return getattr(importlib.import_module(module), op_name)
 
 
 def _torch_dtype(name: str) -> torch.dtype | None:
@@ -595,9 +592,30 @@ def bind_case(
     return op, reads + writes, reads
 
 
+def _parametric_cases(op_name: str, entry: dict):
+    """The cases of a parametric entry: each row instantiated, the op constructed from it and
+    its call checked on meta tensors; the oracle counts the instantiated tensors' bytes."""
+    plan = entry_plan(op_name, entry, load_adts())
+    cls = op_class(op_name, entry)
+    for row in entry["workloads"]:
+        for case in row.get("dtype_cases") or [{}]:
+            call = instantiate(plan, row, case)
+            tensors = call.materialize("meta")
+            op = cls(**call.arguments(tensors))
+            checked = type(op)._signature.check(op, {t: tensors[t] for t in plan.sig.inputs})
+            # The formula prices the op's last completed call; this one is that call.
+            op._signature_call = checked
+            reads = sum(call.bytes(t) * r for t, r, _ in checked.traffic)
+            writes = sum(call.bytes(t) * w for t, _, w in checked.traffic)
+            yield row["label"], "-".join(case.values()), op, reads + writes, reads
+
+
 def manifest_cases(op_name: str):
     """Yield ``(label, dtype, op, oracle bytes, oracle read bytes)`` per row and dtype."""
     entry = load_manifest()[op_name]
+    if not is_legacy(entry):
+        yield from _parametric_cases(op_name, entry)
+        return
     rows = load_workloads(op_name)
     if not rows:
         raise NotBindableError("the entry declares no workloads")

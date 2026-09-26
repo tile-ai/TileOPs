@@ -78,7 +78,7 @@ An entry uses one of two modes:
 
 **Derived `bytes`.** An entry omitting `bytes` is charged each tensor read or written once: every tensor argument is its own storage, and a declared alias (`buffer`, `alias`) is one; an input not written counts a read, an output a write, a `mutated` input both, a `write_only` input a write; a tensor's size is `prod(shape) * bits(dtype) / 8`, packed dtypes by carrier. An entry whose traffic differs writes `bytes` and a test for it.
 
-**Func.** `tileops.perf.formulas.<name>`, a module-level function `f(ix, op) -> tuple[int, int]`. It reads `ix`. A formula whose cost depends on tensor contents reads what the op cached at `forward`, and raises when `forward` has not run (§4.7).
+**Func.** `tileops.perf.formulas.<name>`, a module-level function `f(call) -> tuple[int, int]` over the checked call and nothing else: every signature parameter and `call.ix` — the same `ix` an inline formula reads, with the indices, dtype indices and `let`s the call's branch resolves — presence, each tensor's shape, dtype and `bytes(t)`, and the metadata tensors whose values decide traffic (§4.7). A formula introduces no signature dependency and never reads the op; a fact it needs that the call lacks means the call model is incomplete.
 
 ```yaml
 roofline:
@@ -106,7 +106,7 @@ Tests and workloads are not consumers: they may supply shapes and dtypes but mus
 
 ### 4.1 Schema Validator / CI
 
-Runs on every PR touching `src/tileops/manifest/`. Scope is structural.
+Scope is structural.
 
 Every roofline entry MUST satisfy:
 
@@ -121,7 +121,7 @@ Rules the validator does not own:
 - Form checks — the analysis refuses invalid forms. Validator does not mirror them either; it renders what the analysis found.
 - Numeric checks (finite / non-negative / numeric) — outside the validator entirely; tests exercise generated `eval_roofline()` on each workload.
 
-Validator holds no sample bindings and no `__builtins__` sandbox. It keeps no copy of the primitives: it calls their one shared implementation, so adding a primitive changes no validator code.
+The validator keeps no copy of the primitives: it calls their one shared implementation, so adding a primitive changes no validator code.
 
 ### 4.2 Benchmark Layer
 
@@ -166,26 +166,21 @@ Analysis and emission are separate: analysis reads the entry and decides, emissi
 - **Lossless.** A fact is absent, malformed or valid, and the three are distinguished. Collapsing the first two makes a missing dependency indistinguishable from a satisfied one.
 - **Accumulating.** A defect does not stop the pass. A judgment that cannot be reached for want of a fact is recorded as unreached, naming the fact.
 
-An inline formula is written in the manifest's closed expression language, so the analysis checks each name against `ix` and each call against the primitive table; a formula outside the language does not land.
-
 #### 4.4.1 Generated Method
 
-Every implemented manifest entry is served by a generated `eval_roofline()` returning `(flops: int, bytes: int)`. The method belongs to that entry: a subclass with its own entry receives its own evaluator rather than inheriting another entry's formula. It evaluates over the `ix` inferred for the op's last call. The signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md).
+Every implemented manifest entry is served by a generated `eval_roofline()` returning `(flops: int, bytes: int)`. The method belongs to that entry: a subclass with its own entry receives its own evaluator rather than inheriting another entry's formula. It is emitted per discriminant point, like the call checks, and evaluates over the op's last completed call. The signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md).
 
 #### 4.4.2 Manifest Inputs
 
-For each entry, codegen reads one of:
-
-- **Inline** — `flops` and optional `bytes`, emitted as the method body; an omitted `bytes` is emitted from the signature (§2.2).
-- **Func** — `func`, a dotted path to `f(ix, op) -> tuple[int, int]`, emitted as a call to it.
+Codegen reads the formula mode of §2.2: an inline body folded at each point, with `bytes` derived from the signature when omitted, or a call to `func` with the checked call.
 
 #### 4.4.3 Namespace
 
-The namespace of an inline formula is `ix` plus `bytes(t)` and the built-in primitives. The primitive tables of [manifest.md](manifest.md#t-prims) are the only list of names a formula may call; a primitive is added there and in its one implementation, and nowhere else. A refusal states the allowed names. A name resolves from one place only.
+The primitive tables of [manifest.md](manifest.md#t-prims) are the only list of names an inline formula may call (§2.2); a primitive is added there and in its one implementation, and nowhere else. A refusal states the allowed names. A name resolves from one place only.
 
 #### 4.4.4 Evaluation Timing
 
-`eval_roofline()` is valid once the call has bound what the formula reads. The dtype is always call-bound, so no op can be priced before its first `forward()`; an arbitrary-rank op's dynamic dims are bound there too. The method recomputes on each call and holds no cache: a cached `(flops, bytes)` would outlive the shapes it was computed for.
+`eval_roofline()` is valid once a call has completed; it prices `Op.last_call`, part of the `Op` base class interface in [ops-design-reference.md](ops-design-reference.md). The dtype is always call-bound, so no op can be priced before its first `forward()`; an arbitrary-rank op's dynamic dims are bound there too. The method recomputes on each call and holds no cache: a cached `(flops, bytes)` would outlive the shapes it was computed for.
 
 A consumer that is not the op itself instantiates the Op or reads pre-computed `(flops, bytes)` from benchmark output.
 
@@ -218,11 +213,7 @@ The condition's form is checked, its aptness is not: no check tells a property o
 | ERROR      | The audit did not produce a usable measurement.                      |
 | NO-VERDICT | No read half was declared.                                           |
 
-The read half comes off `bytes` by subtracting the write half the contract settles, and pricing the outputs needs the shapes the call carried. An op keeps only what its own `eval_roofline` needs, so the audit records each input's shape and dtype around the call it reads the declaration off. The recording is off everywhere else: it costs per call, which a benchmark row must not carry.
-
 Workloads come from the manifest's own rows and cover the formula's branch signatures. Scaled-up shapes are not used: they can cross kernel-selection thresholds and audit an implementation the benchmark never runs.
-
-Runs on demand: it needs GPU performance counters, which the driver restricts to admin.
 
 ### 4.6 Structural Oracle (tests)
 
@@ -244,11 +235,11 @@ A completeness test keeps the three total: an op added to the manifest is recoun
 
 A few ops move an amount their inputs' values decide: a routed MoE reads the experts `topk_ids` names, a sparse attention the blocks its selection kept. Such a formula prices this call, not an average over calls of that shape, which imposes three rules.
 
-- It reads the call's semantic inputs — the routing, the offsets, the block table — and never a quantity it computed for itself, which would make a recount an identity.
+- It reads the checked call's metadata tensors — the routing, the offsets, the block table — and never a quantity the op computed for itself, which would make a recount an identity.
 - Its workload row builds those inputs from a generator of its own, not the global stream: a draw added anywhere upstream would otherwise move the traffic and the efficiency the row reports.
 - It states what decided the number in `Op.roofline_inputs()`, which the benchmark records beside the reading. Nothing judges it; it is what makes a moved number readable.
 
-A recount builds the call's two kinds of tensor: bulk operands on the meta device, and the metadata whose values decide the traffic with those values. Where the row states them — a packed batch's lengths — the recount restates them and stays at level one. Where the values are drawn per call, the recount runs the workload that draws them, and the op sits at level two.
+Where the row states the deciding values — a packed batch's lengths — the recount restates them and stays at level one. Where the values are drawn per call, the recount runs the workload that draws them, and the op sits at level two.
 
 ## 5. Reference
 

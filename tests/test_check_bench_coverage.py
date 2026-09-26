@@ -129,6 +129,22 @@ class TestVerdicts:
         )
         assert _verdicts(path) == {"FooOp": coverage.OK, "BarOp": coverage.OK}
 
+    def test_a_parametric_case_that_records_nothing_is_not_run(self, tmp_path):
+        """Each manifest call of a parametric entry is judged, whichever file ran it."""
+        import yaml
+
+        cases = yaml.safe_load((REPO_ROOT / "tests" / "manifest_cases.yaml").read_text())
+        manifest = {
+            "SiluAndMulFwdOp": {**cases["entries"]["SiluAndMulFwdOp"], "status": "implemented"}
+        }
+        name = "test_silu[siluandmul-0-bfloat16]"
+        for testcases, verdict in (
+            ((_passed(name, op="SiluAndMulFwdOp"),), coverage.OK),
+            ((), coverage.NOT_RUN),
+        ):
+            rows = coverage.verdicts(coverage.parse_run(_report(tmp_path, *testcases)), manifest)
+            assert [r[2] for r in rows] == [verdict]
+
     def test_rows_that_miss_every_declared_workload_fail(self, tmp_path):
         """A run on shapes the manifest never declared is not this op's coverage.
 

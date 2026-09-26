@@ -36,7 +36,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from tileops.manifest import load_manifest  # noqa: E402
+from tileops.manifest import load_adts, load_manifest  # noqa: E402
+from tileops.manifest.plan import entry_plan  # noqa: E402
+from tileops.manifest.signature import is_legacy  # noqa: E402
+from tileops.manifest.workload import instantiate  # noqa: E402
 
 EXIT_OK = 0
 EXIT_GAP = 1
@@ -188,11 +191,42 @@ def _verdict(op_name: str, run: FileRun, declared: set[str]) -> tuple[str, str]:
     return NOT_RUN, "no testcases in the report"
 
 
+def _parametric_verdict(
+    op_name: str, entry: dict, runs: dict[str, FileRun]
+) -> tuple[str, str, str]:
+    """Judge a parametric entry case by case: each of its manifest calls is benchmarked once.
+
+    Whichever file benchmarks it, every case id the entry's rows produce must be recorded
+    for the op; one skipped or never recorded is NOT RUN.
+    """
+    plan = entry_plan(op_name, entry, load_adts(), resolve=False)
+    declared = {
+        instantiate(plan, row, case).case_id
+        for row in entry.get("workloads") or ()
+        for case in row.get("dtype_cases") or [{}]
+    }
+    files = sorted(name for name, run in runs.items() if op_name in run.recorded)
+    recorded = {_case_id(c) for run in runs.values() for c in run.recorded.get(op_name, ())}
+    missing = sorted(declared - recorded)
+    bench = ", ".join(files) or "-"
+    if missing:
+        return (
+            bench,
+            NOT_RUN,
+            f"{len(missing)} of {len(declared)} cases recorded nothing: {missing[0]!r}",
+        )
+    return bench, OK, f"{len(declared)} cases recorded"
+
+
 def verdicts(runs: dict[str, FileRun], manifest: dict) -> list[tuple[str, str, str, str]]:
-    """One ``(op, bench, verdict, detail)`` row per op declaring a benchmark."""
+    """One ``(op, bench, verdict, detail)`` row per op declaring a benchmark, and per
+    implemented parametric entry."""
     rows = []
     for op_name, entry in sorted(manifest.items()):
         if entry.get("status") != "implemented":
+            continue
+        if not is_legacy(entry):
+            rows.append((op_name, *_parametric_verdict(op_name, entry, runs)))
             continue
         bench = (entry.get("source") or {}).get("bench")
         if not bench:

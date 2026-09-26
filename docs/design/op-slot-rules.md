@@ -33,8 +33,8 @@ design, calling conventions — live in
 
 ### Slot S3: <a id="slot-s3"></a> Import — concrete `Kernel` class
 
-- **Rule.** One absolute `from tileops.kernels.* import <KernelClass>` per `default_kernel_map`
-  value. Import nothing that `default_kernel_map` does not list.
+- **Rule.** One absolute `from tileops.kernels.* import <KernelClass>` per `kernel_types`
+  value. Import nothing that `kernel_types` does not list.
 - **Example.** `from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel`
 - **Common mistakes.** Relative cross-package import.
 
@@ -120,24 +120,26 @@ design, calling conventions — live in
   instead of routing through `self.kernel_map`; storing `self.dtype` at ctor time; a private cache
   dict in place of `Op.kernel_for`.
 
-### Slot S14: <a id="slot-s14"></a> `default_kernel_map` property
+### Slot S14: <a id="slot-s14"></a> `kernel_types`
 
-- **Rule.** A `@property` returning the op's kernel map: `snake_case` dispatch keys, Kernel-class
-  values. The code owns it; the manifest does not list kernels.
+- **Rule.** A class attribute declaring the op's dispatch keys: `snake_case` keys, Kernel-class
+  values. It is the one declaration of the keys; `default_kernel_map`, the instance's view, is
+  derived from it — all of it, or the entries a construction parameter selects. The code owns it;
+  the manifest does not list kernels.
 - **Example.**
   ```python
-  @property
-  def default_kernel_map(self) -> Dict[str, Kernel]:
-      return {"example_cumsum_fwd": ExampleCumsumKernel}
+  kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+      "example_cumsum_fwd": ExampleCumsumKernel
+  }
   ```
-- **Common mistakes.** A class-level dict instead of a property; keys that echo the class name
-  instead of being dispatch strings.
+- **Common mistakes.** Keys that echo the class name instead of being dispatch strings; a
+  `default_kernel_map` naming a key `kernel_types` does not declare.
 
 ### Slot S15: <a id="slot-s15"></a> `forward` signature
 
 - **Rule.** The parameter list starts with the signature's call-time inputs in `signature.inputs`
-  order, optional inputs defaulting to `None`, followed by one `out` per output declaring
-  `buffer: out` ([manifest.md table 9](./manifest.md#t-effects)). Code-defined execution parameters
+  order, optional inputs defaulting to `None`, followed by `out` when an output declares
+  `buffer: out` ([manifest.md § Effects](./manifest.md#effects)). Code-defined execution parameters
   may follow. The return matches `signature.outputs`: one tensor, a tuple in declared order, `None`
   in a nullable position whose expression is false, and `None` when `outputs` is empty.
 - **Common mistakes.** Keyword-only tensor parameters; non-tensor contract parameters, which belong

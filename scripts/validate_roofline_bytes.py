@@ -30,7 +30,6 @@ Usage:
 
 import argparse
 import csv
-import importlib
 import io
 import json
 import subprocess
@@ -53,8 +52,9 @@ COLD_CACHE_PREMISE = "cold-cache replay (ncu --cache-control all)"
 
 
 def _op_class(op_name: str, entry: dict):
-    mod_path = entry["source"]["op"].removesuffix(".py").replace("/", ".")
-    return getattr(importlib.import_module(mod_path), op_name)
+    from tileops.manifest.registry import op_class
+
+    return op_class(op_name, entry)
 
 
 def _single_input_case(op_name: str, entry: dict, row: dict, dtype):
@@ -143,6 +143,42 @@ INPUT_BUILDERS = {
 }
 
 
+# A parametric entry's calls whose read half is not a lower bound: op name -> (condition over
+# the call's ``ix``, reason). A legacy entry declares it as ``roofline.read_bound_exception``.
+READ_BOUND_EXCEPTIONS: dict = {}
+
+
+def _is_parametric(entry: dict) -> bool:
+    from tileops.manifest.signature import is_legacy
+
+    return not is_legacy(entry)
+
+
+def _parametric_call(op_name: str, entry: dict, row: dict, case: dict):
+    """One row and dtype case of a parametric entry, instantiated."""
+    from tileops.manifest import load_adts
+    from tileops.manifest.plan import entry_plan
+    from tileops.manifest.workload import instantiate
+
+    return instantiate(entry_plan(op_name, entry, load_adts()), row, case)
+
+
+def _parametric_case(op_name: str, entry: dict, row: dict, case: dict):
+    """(op, inputs) built from the instantiated call alone."""
+    call = _parametric_call(op_name, entry, row, case)
+    tensors = call.materialize("cuda")
+    op = _op_class(op_name, entry)(**call.arguments(tensors))
+    return op, tuple(tensors[t] for t in call.signature.inputs)
+
+
+def _parametric_exception(op_name: str, entry: dict, row: dict, case: dict) -> str:
+    """The reason a parametric call's read half is not a lower bound, or ``""``."""
+    when, reason = READ_BOUND_EXCEPTIONS.get(op_name, (None, ""))
+    if when is None:
+        return ""
+    return reason if when(_parametric_call(op_name, entry, row, case).ix) else ""
+
+
 def _build_case(op_name: str, entry: dict, row: dict, dtype):
     builder = INPUT_BUILDERS.get(op_name)
     if builder is not None:
@@ -162,7 +198,17 @@ def _branch_signature(row: dict) -> tuple:
 
 
 def _pick_workloads(entry: dict, cap: int = 6) -> list[tuple[dict, str]]:
-    """One row per branch signature, largest first, at most *cap*."""
+    """One row per branch signature, largest first, at most *cap*.
+
+    A parametric entry's rows are taken in order, each with its dtype case as JSON.
+    """
+    if _is_parametric(entry):
+        cases = [
+            (row, json.dumps(case))
+            for row in entry.get("workloads") or []
+            for case in row.get("dtype_cases") or [{}]
+        ]
+        return cases[:cap]
     picked: dict[tuple, tuple[dict, str]] = {}
     for row in entry.get("workloads") or []:
         if row.get("bench_skip_reason"):
@@ -205,8 +251,10 @@ def run_child(op_name: str, row_json: str, dtype_str: str) -> None:
     from tileops.ops.op_base import _recording_roofline_calls
 
     entry = load_manifest()[op_name]
-    dtype = getattr(torch, dtype_str)
-    case = _build_case(op_name, entry, json.loads(row_json), dtype)
+    if _is_parametric(entry):
+        case = _parametric_case(op_name, entry, json.loads(row_json), json.loads(dtype_str))
+    else:
+        case = _build_case(op_name, entry, json.loads(row_json), getattr(torch, dtype_str))
     if case is None:
         print(json.dumps({"error": "no input builder"}))
         sys.exit(3)
@@ -351,7 +399,12 @@ def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
         return [{"op": op_name, "verdict": "SKIPPED", "reason": "no workloads"}]
     for row, dtype_str in cases:
         label = row.get("label", "workload")
-        csv_path = out_dir / f"{op_name}.{label}.{dtype_str}.csv"
+        tag = (
+            "-".join(json.loads(dtype_str).values()) or "case"
+            if _is_parametric(entry)
+            else dtype_str
+        )
+        csv_path = out_dir / f"{op_name}.{label}.{tag}.csv"
         cmd = [
             "ncu",
             "--nvtx",
@@ -389,7 +442,10 @@ def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
             )
             continue
         measured_read, measured_write = measured
-        waived = read_bound_exception(entry, row, dtype_str)
+        if _is_parametric(entry):
+            waived = _parametric_exception(op_name, entry, row, json.loads(dtype_str))
+        else:
+            waived = read_bound_exception(entry, row, dtype_str)
         verdict = read_side_verdict(measured_read, read_bytes, bound=not waived)
         row_out = {
             **base,

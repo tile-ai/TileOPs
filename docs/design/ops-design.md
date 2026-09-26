@@ -92,7 +92,7 @@ Provides:
 """
 
 import math
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -104,7 +104,7 @@ from tileops.manifest.primitives import normalize_axis
 from ..op_base import Op
 ```
 
-**Validation.** Every concrete-Kernel import matches one `default_kernel_map` value verbatim. The `Kernel` base import and `..op_base` relative import are fixed.
+**Validation.** Every concrete-Kernel import matches one `kernel_types` value verbatim. The `Kernel` base import and `..op_base` relative import are fixed.
 
 **Reference.** [Slot S1](op-slot-rules.md#slot-s1), [S2](op-slot-rules.md#slot-s2), [S3](op-slot-rules.md#slot-s3), [S4](op-slot-rules.md#slot-s4).
 
@@ -160,7 +160,7 @@ def __init__(
 
 **Reference.** [Slot S12](op-slot-rules.md#slot-s12), [S13](op-slot-rules.md#slot-s13).
 
-### Step 4: `default_kernel_map` + `forward`
+### Step 4: `kernel_types` + `forward`
 
 **Input.** `signature.inputs`; the kernels of Step 1.
 
@@ -169,9 +169,7 @@ def __init__(
 **Output.**
 
 ```python
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"example_cumsum_fwd": ExampleCumsumKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"example_cumsum_fwd": ExampleCumsumKernel}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # The generated signature checks have run: dtype, shape, dim range.
@@ -254,7 +252,7 @@ This playbook emits exactly the 16 slots above. The following are **not** produc
 - **Family-specific protocol variables.** `_op_kind` (reduction), `_kernel_key`, `_kernel_cls` (norm + reduction T1 wrappers), `_op_name`, `kernel_cls`. Kernel-dispatch-convention-dependent; cannot be mechanically derived from the manifest. See [Family-Base Protocol (Appendix)](ops-design-reference.md#base-class-protocol).
 - **Family-base (T1) subclassing.** See [Family-Base Refactoring](#family-base-refactoring).
 - **Kernel implementations themselves.** The playbook's scope is the Op (host) layer. See [Implementing a Kernel](#implementing-a-kernel) for the kernel-side interface surface.
-- **`fullgraph` compile registration.** An op compiled with `fullgraph=True` is registered in `tests/compile_contract.py`, with its cold compile test.
+- **`fullgraph` compile registration.** Declaring a compile boundary is the class's claim that it supports `fullgraph=True`; its cold compile test, registered in `tests/compile_contract.py`, is the evidence, and the registered set equals the implemented classes declaring a boundary.
 - **Compile dispatch boundary.** See [Compile Dispatch Boundary](#compile-dispatch-boundary).
 
 ## Implementing a Kernel
@@ -263,60 +261,19 @@ Kernel implementation is not covered by this playbook. The device-side interface
 
 ## Compile Dispatch Boundary
 
-Contract for every op registered for `fullgraph=True` compilation while
-resolving kernels at call time.
+Contract for every op registered for `fullgraph=True` compilation while resolving kernels at call time.
 
-**Invariant.** A dynamo-traced `forward` MUST NOT construct a `Kernel` or
-enter a TileLang builder. Kernel-cache misses run TileLang JIT machinery
-(`inspect`-based signature handling) that dynamo cannot trace; an eager
-warm-up before `torch.compile` only hides the miss path and does not
-satisfy the cold-call contract.
+**Invariant.** A dynamo-traced `forward` MUST NOT construct a `Kernel` or enter a TileLang builder. Kernel-cache misses run TileLang JIT machinery that dynamo cannot trace; an eager warm-up before `torch.compile` only hides the miss path and does not satisfy the cold-call contract.
 
-**Mechanism** (`src/tileops/ops/compile_boundary.py` and
-`src/tileops/ops/_compile_boundary_codegen.py`):
+**Decisions.**
 
-1. `Op.dispatch_kernel` registers every op in a weak instance registry at
-   `__init__` time and stores `self._instance_key`.
-1. The operators are generated from the manifest entry, one per effect branch
-   ([manifest.md table 9](manifest.md#t-effects)), so no op writes registration
-   code and an operator's schema cannot drift from its entry.
-1. One `torch.library.custom_op` per branch — that is what makes the node in the
-   graph this op's, and keeps it the same node when another target serves it.
-   Its arguments are `forward_signature(entry)` — the call-time inputs and output
-   buffers in order — then the op's code-defined execution parameters, then the
-   instance key. Its eager body resolves the instance and runs the call — untraced,
-   through `self._eager_forward` for the in-tree kernels or through the target's
-   kernel — and its fake, returns and written arguments come from the signature.
-1. `forward` becomes one call to the generated operator; the previous body is
-   renamed `_eager_forward` unchanged.
-
-**Constraints.**
-
-- The instance key is a **string**: dynamo bakes string custom-op
-  arguments as static constants, while an `int` key is generalized to an
-  unhashable `SymInt` once a second instance compiles through the same
-  frame. Stale-graph safety comes from dynamo's ID_MATCH guard holding a
-  weak reference to the compiled callable: a dead instance forces
-  recompilation, so a reused `id()` cannot resolve against a stale graph.
-- The boundary covers forward-only compilation. Registering for
-  `fullgraph=True` an op whose compiled graph must
-  backpropagate additionally requires registering an autograd formula for
-  the dispatch custom op.
-- An op that builds no kernel in `forward` — every kernel already in its
-  cache — does not need the boundary; the invariant still applies to its
-  `forward`.
-- The generated signature checks run once per call, in the operator's eager
-  body, before it dispatches to `_eager_forward` or to a target; `forward` only
-  chooses which operator to call, and `_eager_forward` holds in-tree work only.
-- `_infer_output_shapes` reads only its shape arguments. A shape recorded by an
-  earlier call is a state write the fake reads before the write happens.
-- An op with no tensor input has no node to own, so it registers no boundary.
-- The operator's name is `tileops::<family>_<snake(class)>`, with the family
-  named once. An op does not choose it, so `compile_op_names` and the registered
-  name cannot disagree.
-- An operator writes the inputs the manifest marks `mutated: true`, plus the
-  argument a writing spec names. What an op's operators write, taken together, is
-  exactly the set the manifest marks — the validator holds them equal.
+- A class declaring a compile boundary claims `fullgraph=True` support: a parametric class declares `compile_boundary = True`, a legacy one keeps its `OperatorSpec`s. The manifest records nothing; the registered compile tests are the evidence, and their set equals the implemented classes declaring a boundary.
+- The operators are generated from the manifest entry, one `torch.library.custom_op` per effect branch ([manifest.md § Effects](manifest.md#effects)), so no op writes registration code and a schema cannot drift from its entry. The operator is what makes the graph node this op's, and it stays the same node when a target serves the op.
+- `forward` only chooses which operator to call. The operator's eager body runs the generated checks once, then the in-tree kernels (`_eager_forward`) or the target; its fake comes from the signature.
+- An op's operators write exactly the inputs the manifest marks `mutated`; the validator holds them equal.
+- The operator's name is derived from the family and the class; an op does not choose it.
+- The boundary covers forward-only compilation. An op whose compiled graph must backpropagate also needs an autograd formula for its operator.
+- An op with no tensor input has no node to own and registers no boundary. An op that builds no kernel in `forward` does not need the boundary; the invariant still applies to it.
 
 ## Family-Base Refactoring
 

@@ -57,9 +57,14 @@ class _Unresolved:
 _UNRESOLVED = _Unresolved()
 
 
+# Every dispatch key a created op class declares in ``kernel_types``. Constructing an op imports
+# it and every sub-op it builds, so every key that can replace something in that op is here.
+_DISPATCH_KEYS: set[str] = set()
+
+
 @functools.lru_cache(maxsize=1)
 def _declared_dispatch_keys() -> frozenset[str]:
-    """Every dispatch key the manifest declares, across all ops.
+    """Every dispatch key a legacy manifest entry declares in ``source.kernel_map``.
 
     A key outside this set names no op's kernel anywhere: a typo, or a name that
     was renamed out of existence. A key inside it may still be unknown to the op
@@ -188,20 +193,42 @@ class Op(ABC):
         its own override, or is marked ``status: spec-only``.
         """
         super().__init_subclass__(**kwargs)
+        _DISPATCH_KEYS.update(cls.__dict__.get("kernel_types", {}))
         from tileops.ops._compile_boundary_codegen import maybe_install_compile_boundary
         from tileops.ops._dtype_codegen import maybe_install_validator
         from tileops.ops._params_codegen import maybe_install_param_names
         from tileops.ops._roofline_codegen import maybe_install_eval_roofline
+        from tileops.ops._signature_codegen import maybe_install_signature
 
-        maybe_install_validator(cls)
-        maybe_install_eval_roofline(cls)
+        converted = maybe_install_signature(cls)
+        if not converted:
+            maybe_install_validator(cls)
+            maybe_install_eval_roofline(cls)
         maybe_install_param_names(cls)
-        maybe_install_compile_boundary(cls)
+        if not converted:
+            maybe_install_compile_boundary(cls)
+
+    # The op's dispatch keys and the kernel class each names. An op with no kernel of its own
+    # (a composite) declares none.
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = MappingProxyType({})
 
     @property
-    @abstractmethod
     def default_kernel_map(self) -> dict[str, Kernel]:
-        raise NotImplementedError("Op must implement default_kernel_map")
+        """This instance's dispatch table: every entry of ``kernel_types``, unless a
+        construction parameter selects some of them."""
+        return dict(self.kernel_types)
+
+    @property
+    def last_call(self) -> object:
+        """The ``SignatureCall`` of this op's last completed call: its ``ix``, tensors and effects.
+
+        Raises:
+            RuntimeError: No call has completed yet.
+        """
+        call = getattr(self, "_signature_call", None)
+        if call is None:
+            raise RuntimeError(f"{type(self).__name__}: no call has completed yet")
+        return call
 
     # Operators this op registers on the torch.compile boundary. Naming them is what lets
     # a test assert the traced graph holds nothing else, which is what keeps the graph the
@@ -211,10 +238,15 @@ class Op(ABC):
     # ``register_compile_contract`` requires.
     compile_op_names: ClassVar[tuple[str, ...]] = ()
 
-    # One ``OperatorSpec`` per operator the op registers; ``_compile_boundary_codegen``
-    # turns them into the registrations and fills in ``compile_op_names``. Empty leaves
-    # the op off the boundary.
-    compile_boundary: ClassVar[tuple[object, ...]] = ()
+    # The compile boundary this op declares, which is its claim that it supports
+    # ``fullgraph=True``: ``True`` for a parametric entry, whose operators the signature
+    # generates; for a legacy entry, one ``OperatorSpec`` per operator it registers. Empty
+    # leaves the op off the boundary.
+    compile_boundary: ClassVar["bool | tuple[object, ...]"] = ()
+
+    # Injected implementation objects ``__init__`` takes beyond ``signature.params`` and the
+    # execution-policy parameters every op takes (docs/design/manifest.md § Signature).
+    execution_parameters: ClassVar[tuple[str, ...]] = ()
 
     @abstractmethod
     def _infer_output_shapes(self, **shape_kwargs: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
@@ -275,6 +307,10 @@ class Op(ABC):
             The read half in bytes, or ``None`` when the call has not bound what
             the write half needs.
         """
+        if getattr(type(self), "_signature", None) is not None:
+            call = self.last_call
+            write_bytes = sum(call.bytes(t) * w for t, _, w in call.traffic)
+            return int(self.eval_roofline()[1]) - write_bytes
         write_bytes = self._roofline_write_bytes()
         if write_bytes is None:
             return None
@@ -377,7 +413,7 @@ class Op(ABC):
         Raises:
             ValueError: *override* names a key nothing declares.
         """
-        declared = _declared_dispatch_keys()
+        declared = _DISPATCH_KEYS | _declared_dispatch_keys()
         if not declared:
             return
         stale = sorted(set(override) - declared - set(own))
@@ -508,6 +544,9 @@ class Op(ABC):
     def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
         """Resolve and install the kernel map (auto-discovery entry point)."""
         ensure_loaded()  # before any traced region, which the first call may be inside
+        check = getattr(type(self), "_check_construction", None)
+        if check is not None:
+            check(self)
         self._install_kernel_map(kernel_map)
         self._instance_key = register_instance(self)
 
@@ -611,6 +650,11 @@ class Op(ABC):
         manifest does not describe has none. The written ones are the inputs marked
         ``mutated`` and every workspace, which is scratch the kernel writes.
         """
+        plan = getattr(cls, "_signature", None)
+        if plan is not None:
+            # Every input some branch writes; a call's own set is `SignatureCall.written`.
+            written = frozenset(n for n, t in plan.sig.inputs.items() if t.mutated or t.write_only)
+            return tuple(plan.sig.inputs), written
         entry = load_manifest().get(cls.__name__)
         inputs = forward_signature(entry)["inputs"] if entry is not None else {}
         mutated = frozenset(
@@ -644,12 +688,56 @@ class Op(ABC):
         bound.apply_defaults()
         names, _ = self._forward_io()
         inputs = tuple(bound.arguments.get(name) for name in names)
+        # A converted op's generated check reports a non-tensor `out` by name.
+        converted = getattr(type(self), "_signature", None) is not None
         writes = {
             name: value
             for name, value in bound.arguments.items()
-            if name not in names and isinstance(value, torch.Tensor)
+            if name not in names
+            and (
+                isinstance(value, torch.Tensor)
+                or (converted and name == "out" and value is not None)
+            )
         }
         return inputs, writes
+
+    def _check_signature(
+        self, inputs: "tuple[torch.Tensor | None, ...]", writes: "dict[str, torch.Tensor]"
+    ) -> object:
+        """Run the checks generated from a converted entry's signature; None for other ops."""
+        plan = getattr(type(self), "_signature", None)
+        if plan is None:
+            return None
+        return plan.check(self, {**dict(zip(plan.sig.inputs, inputs, strict=True)), **writes})
+
+    def _complete_signature(
+        self, call: object, result: object, inputs: tuple, writes: "dict[str, torch.Tensor]"
+    ) -> None:
+        """Hold what the implementation returned to the checked call, then keep the call.
+
+        The kept call is what ``eval_roofline`` prices, so only a completed eager one is kept.
+        """
+        if call is None:
+            return
+        from tileops.ops._signature_codegen import check_result
+
+        sig = type(self)._signature.sig
+        check_result(
+            sig,
+            call,
+            result,
+            {**dict(zip(sig.inputs, inputs, strict=True)), **writes},
+            tuple(getattr(self, t, None) for t in sig.ctor_tensors),
+        )
+        if not torch.compiler.is_compiling():
+            self._signature_call = call
+
+    def _execution_arguments(self, args: tuple, kwargs: dict) -> "dict[str, object]":
+        """What ``forward`` takes after the signature's inputs and ``out``, bound by name."""
+        bound = self._forward_parameters().bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        prefix = {"self", "out", *self._forward_io()[0]}
+        return {n: v for n, v in bound.arguments.items() if n not in prefix}
 
     def _served_by_target(self) -> bool:
         """Whether a target's builder, rather than the in-tree kernels, serves this instance."""
@@ -659,6 +747,7 @@ class Op(ABC):
         self,
         *inputs: "torch.Tensor | None",
         _written: "frozenset[str] | None" = None,
+        _execution: "dict[str, object] | None" = None,
         **writes: torch.Tensor,
     ) -> object:
         """Run one call on whichever set of kernels serves this instance.
@@ -673,15 +762,22 @@ class Op(ABC):
             OpNotAvailableError: What :meth:`_resolve_builder` raises.
         """
         settled_here = self._builder is _UNRESOLVED
-        if settled_here:
+        converted = getattr(type(self), "_signature", None) is not None
+        if settled_here and not converted:
             # ``__call__`` settled this already — unless it was traced. Dynamo defers a
             # traced frame's attribute writes until after the graph has run, so the
             # operator body arrives here still ``_UNRESOLVED``.
             self._resolve_builder(inputs, writes)
         try:
+            call = self._check_signature(inputs, writes)
+            if settled_here and converted:
+                self._resolve_builder(inputs, writes, call.device)
             if self._served_by_target():
-                return self._call_target(inputs, writes, _written)
-            return self._eager_forward(*inputs, **writes)
+                result = self._call_target(inputs, writes, _written, _execution)
+            else:
+                result = self._eager_forward(*inputs, **writes, **(_execution or {}))
+            self._complete_signature(call, result, inputs, writes)
+            return result
         except Exception:
             # Whoever settled it unsettles it. ``__call__``'s handler does not run when
             # the failure comes out of a compiled graph, so this one has to.
@@ -694,21 +790,26 @@ class Op(ABC):
         inputs: "tuple[torch.Tensor | None, ...]",
         writes: "dict[str, torch.Tensor]",
         written: "frozenset[str] | None" = None,
+        execution: "dict[str, object] | None" = None,
     ) -> object:
         """Run the whole op on the target this instance settled on.
 
         What the op layer guarantees every target: every tensor on one device, every
         input the call does not write contiguous, and — checked once per signature — the
         input dtypes and shape rules the manifest states. The kernel is built once per
-        device and per input dtype and shape. A call that completes leaves
-        ``self.<input>_shape`` and ``self.dtype``, the state the op's roofline reads.
+        device and per input dtype and shape. A legacy op's completed call leaves
+        ``self.<input>_shape`` and ``self.dtype``, the state its roofline reads.
 
         Raises:
             ValueError: The call breaks that guarantee, or every output would be empty.
             OpNotAvailableError: The builder returned something that is not callable.
         """
         devices = {t.device for t in (*inputs, *writes.values()) if t is not None}
-        if len(devices) > 1:
+        # A converted entry's generated checks placed the call, `device: cpu` tensors aside.
+        converted = getattr(type(self), "_signature", None) is not None
+        if converted:
+            devices = {d for d in devices if d.type != "cpu"} or devices
+        if len(devices) > 1 and not converted:
             raise ValueError(
                 f"{type(self).__name__} needs every tensor on one device; got "
                 f"{sorted(map(str, devices))}"
@@ -734,7 +835,8 @@ class Op(ABC):
         if seen is None:
             seen = self._target_checked = set()
         if checked not in seen:
-            self._check_target_call(named, writes)
+            if not converted:
+                self._check_target_call(named, writes)
             seen.add(checked)
         kernels = getattr(self, "_target_kernels", None)
         if kernels is None:
@@ -742,10 +844,13 @@ class Op(ABC):
         kernel = kernels.get(signature)
         if kernel is None:
             kernel = kernels[signature] = self._build_target_kernel(named)
-        result = kernel(*inputs, **writes)
-        for name, t in zip(names, inputs, strict=True):
-            setattr(self, f"{name}_shape", None if t is None else tuple(t.shape))
-        self.dtype = next((t.dtype for t in inputs if t is not None), self.dtype)
+        result = kernel(*inputs, **writes, **(execution or {}))
+        # A legacy roofline reads the last call from attributes; a converted op reads
+        # `last_call`, and its attributes may be constructor parameters such as `dtype`.
+        if not converted:
+            for name, t in zip(names, inputs, strict=True):
+                setattr(self, f"{name}_shape", None if t is None else tuple(t.shape))
+            self.dtype = next((t.dtype for t in inputs if t is not None), self.dtype)
         # An op whose every output is an input it writes returns nothing, as its forward does.
         outputs = self._forward_outputs()
         if outputs and all(name in named for name in outputs):
@@ -1011,14 +1116,28 @@ class Op(ABC):
         A call that fails settles nothing, so one invalid call cannot aim the instance
         for good.
         """
-        settled_here = self._builder is _UNRESOLVED
-        if settled_here:
+        converted = getattr(type(self), "_signature", None) is not None
+        settled_here = self._builder is _UNRESOLVED and not (converted and self.compile_op_names)
+        if settled_here and not converted:
             self._resolve_builder(args, kwargs)
         try:
+            call, bound = None, None
+            # A converted op without a compile boundary claims no traced contract.
+            if converted and not self.compile_op_names and not torch.compiler.is_compiling():
+                bound = self._bind_forward(args, kwargs)
+                call = self._check_signature(*bound)
+                if settled_here:
+                    # The generated checks decide the call device, `device: cpu` tensors aside.
+                    self._resolve_builder(args, kwargs, call.device)
             if self._served_by_target() and not self.compile_op_names:
-                result = self._call_target(*self._bind_forward(args, kwargs))
+                bound = bound or self._bind_forward(args, kwargs)
+                written = call.written if call is not None else None
+                execution = self._execution_arguments(args, kwargs) if call is not None else None
+                result = self._call_target(*bound, written, execution)
             else:
                 result = self.forward(*args, **kwargs)
+            if call is not None:
+                self._complete_signature(call, result, *bound)
         except Exception:
             if settled_here:
                 self._unsettle()
@@ -1108,7 +1227,9 @@ class Op(ABC):
         self._target_kernels = {}
         self._target_checked = set()
 
-    def _resolve_builder(self, args: tuple, kwargs: dict) -> None:
+    def _resolve_builder(
+        self, args: tuple, kwargs: dict, device: "torch.device | None" = None
+    ) -> None:
         """Decide which target serves this instance and remember its builder.
 
         Once decided it does not change: the kernels this instance has built belong to that
@@ -1124,7 +1245,7 @@ class Op(ABC):
             OpNotAvailableError: The selected target registers no builder for this op,
                 and the op builds kernels of its own.
         """
-        device = self._first_tensor_device(args, kwargs) or self._declared_device()
+        device = device or self._first_tensor_device(args, kwargs) or self._declared_device()
         target = select_target(self.target, device)
         if target is None:
             self._settled_target = None

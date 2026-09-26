@@ -23,6 +23,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import importlib
+import importlib.util
 import inspect
 import itertools
 import re
@@ -52,14 +53,31 @@ import _manifest_facts as facts_mod  # noqa: E402
 import tileops.manifest as manifest_pkg  # noqa: E402
 from tileops.manifest import (  # noqa: E402
     forward_signature,
+    types_document,
 )
-from tileops.manifest.dtype_rules import PROMOTE_INT_TO_FLOAT_RE, SAME_AS_RE  # noqa: E402
+from tileops.manifest.dtype_rules import (  # noqa: E402
+    DTYPE_BITS,
+    PROMOTE_INT_TO_FLOAT_RE,
+    SAME_AS_RE,
+)
+from tileops.manifest.plan import check_adts as _check_adts  # noqa: E402
+from tileops.manifest.plan import check_entry as _check_signature  # noqa: E402
+from tileops.manifest.plan import (  # noqa: E402
+    effect_errors,
+    roofline_plan,
+)
+from tileops.manifest.plan import (  # noqa: E402
+    signature_schema_errors as _signature_schema_errors,
+)
+from tileops.manifest.registry import op_class  # noqa: E402
 from tileops.manifest.rule_eval import (  # noqa: E402
     RULE_BUILTINS as _SHAPE_RULE_BUILTINS,
 )
 from tileops.manifest.rule_eval import (  # noqa: E402
     eval_shape_rule as _eval_shape_rule,
 )
+from tileops.manifest.signature import is_legacy, parse_signature  # noqa: E402
+from tileops.manifest.workload import check_workloads as _check_workloads  # noqa: E402
 
 PACKAGE_ROOT = "src"
 DISTRIBUTION_RELATIVE_KEYS = frozenset({"kernel", "op"})
@@ -67,25 +85,7 @@ DISTRIBUTION_RELATIVE_KEYS = frozenset({"kernel", "op"})
 MANIFEST_DIR = REPO_ROOT / PACKAGE_ROOT / "tileops" / "manifest"
 
 # Valid torch dtype base names (without same_as references)
-_TORCH_DTYPES = {
-    "float16",
-    "float32",
-    "float64",
-    "bfloat16",
-    "int8",
-    "int16",
-    "int32",
-    "int64",
-    "uint8",
-    "bool",
-    "complex64",
-    "complex128",
-    "float8_e4m3fn",
-    "float8_e5m2",
-    "float8_e4m3",
-    "float8_e5m2fnuz",
-    "float8_e4m3fnuz",
-}
+_TORCH_DTYPES = set(DTYPE_BITS)
 
 # ``promote_int_to_float(ref)``: ``float32`` for integral ``ref``, else
 # ``same_as(ref)``. Models PyTorch int-input promotion (``torch.reciprocal``).
@@ -4079,26 +4079,26 @@ def _honours_same_as(sig: dict, candidate: dict[str, str]) -> bool:
 def _reads_manifest_workloads(tree: ast.Module) -> bool:
     """Whether the file loads its workloads from the manifest.
 
-    Either ``load_workloads`` from ``tileops.manifest`` or the
-    ``workloads_to_params`` wrapper in ``benchmarks.benchmark_base``, imported
-    and called. Which op it names is a run-time fact, checked against a
-    benchmark run by ``scripts/check_bench_coverage.py``, never against the
-    source: a bench file may reach its op through a loop, a factory or a
-    helper, and none of those shapes is worse than a literal.
+    ``load_workloads`` from ``tileops.manifest``, or ``workloads_to_params`` or
+    ``manifest_calls`` from ``benchmarks.benchmark_base``, imported and called.
+    Which op it names is a run-time fact, checked against a benchmark run by
+    ``scripts/check_bench_coverage.py``, never against the source: a bench file
+    may reach its op through a loop, a factory or a helper, and none of those
+    shapes is worse than a literal.
     """
     imported = False
     called = False
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.names:
             module_targets = {
-                "tileops.manifest": "load_workloads",
-                "benchmarks.benchmark_base": "workloads_to_params",
+                "tileops.manifest": {"load_workloads"},
+                "benchmarks.benchmark_base": {"workloads_to_params", "manifest_calls"},
             }
-            target = module_targets.get(node.module or "")
-            if target and any(alias.name == target for alias in node.names):
+            targets = module_targets.get(node.module or "", set())
+            if any(alias.name in targets for alias in node.names):
                 imported = True
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in ("load_workloads", "workloads_to_params"):
+            if node.func.id in ("load_workloads", "workloads_to_params", "manifest_calls"):
                 called = True
     return imported and called
 
@@ -4154,8 +4154,8 @@ def check_l4_benchmark(op_name: str, bench_path: str, repo_root: Path) -> list[s
     if not _reads_manifest_workloads(tree):
         errors.append(
             f"[bench] {op_name}: bench file {bench_path} must import and call "
-            "load_workloads from tileops.manifest, or workloads_to_params from "
-            "benchmarks.benchmark_base"
+            "load_workloads from tileops.manifest, or workloads_to_params or "
+            "manifest_calls from benchmarks.benchmark_base"
         )
     if not _reads_op_roofline(tree):
         errors.append(
@@ -4675,6 +4675,185 @@ def check_bench_declaration(op_name: str, entry: dict) -> list[str]:
 ALL_LEVELS = frozenset({"schema", "signature", "shape", "dtype", "bench"})
 
 
+def _check_bench_files(checked: set, repo_root: Path) -> list[str]:
+    """The benchmark contract on every ``benchmarks/ops/**/bench_*.py`` whose check did not
+    already run for a legacy entry (the resolved paths in *checked*)."""
+    errors = []
+    for path in sorted((repo_root / "benchmarks" / "ops").rglob("bench_*.py")):
+        if path.resolve() not in checked:
+            relative = path.relative_to(repo_root).as_posix()
+            errors += check_l4_benchmark(relative, relative, repo_root)
+    return errors
+
+
+_PARAMETRIC_KEYS = {
+    "family": str,
+    "status": str,
+    "signature": dict,
+    "workloads": list,
+    "roofline": dict,
+    "ref_api": str,
+    "composition": dict,
+}
+_PARAMETRIC_REQUIRED = ("family", "status", "signature", "workloads", "roofline")
+
+
+def _check_parametric_schema(op_name: str, entry: dict, all_op_names) -> list[str]:
+    """Top-level fields of a parametric entry (docs/design/manifest.md § Top-Level Fields).
+
+    The key format, `ref_api` and `composition` checks are the ones legacy entries run.
+    """
+    if not isinstance(op_name, str):
+        return [f"[schema] {op_name!r}: the key is not an op class name `<Name>FwdOp`"]
+    errors = _l0_key_format(op_name, all_op_names)
+    if not _OP_KEY.fullmatch(op_name):
+        errors.append(f"[schema] {op_name}: the key is not an op class name `<Name>FwdOp`")
+    errors += _family_errors(op_name, entry)
+    if isinstance(entry.get("signature"), dict):
+        errors += [f"[schema] {op_name}: {e}" for e in _signature_schema_errors(entry["signature"])]
+    if isinstance(entry.get("composition"), dict):
+        errors += _l0_composition(op_name, entry, entry["composition"], all_op_names=all_op_names)
+    ref = entry.get("ref_api")
+    if isinstance(ref, str):
+        errors += _ref_api_errors(op_name, ref)
+    errors += [
+        f"[schema] {op_name}: missing required field '{k}'"
+        for k in _PARAMETRIC_REQUIRED
+        if k not in entry
+    ]
+    for key, value in entry.items():
+        expected = _PARAMETRIC_KEYS.get(key)
+        if expected is None:
+            errors.append(f"[schema] {op_name}: unknown field '{key}'")
+        elif not isinstance(value, expected):
+            errors.append(f"[schema] {op_name}: '{key}' must be a {expected.__name__}")
+    if entry.get("status") not in (None, "implemented", "spec-only"):
+        errors.append(f"[schema] {op_name}: status must be 'implemented' or 'spec-only'")
+    return errors
+
+
+_OP_KEY = re.compile(r"[A-Z][A-Za-z0-9]*(Fwd|Bwd)Op")
+
+
+def _family_errors(op_name: str, entry: dict) -> list[str]:
+    """`family` names a public module; an implemented op is exported from it by its key."""
+    family = entry.get("family")
+    where = f"[schema] {op_name}: family {family!r}"
+    if not isinstance(family, str):
+        return []  # reported as a missing or mistyped field
+    if not family.isidentifier():
+        return [f"{where} is not a module name"]
+    try:
+        found = importlib.util.find_spec(f"tileops.{family}") is not None
+    except (ImportError, ValueError):
+        found = False
+    if not found:
+        return [f"{where} is not a tileops module"]
+    if entry.get("status") != "implemented":
+        return []
+    module = importlib.import_module(f"tileops.{family}")
+    exported = getattr(module, op_name, None) if op_name in getattr(module, "__all__", ()) else None
+    if not inspect.isclass(exported) or exported.__name__ != op_name:
+        return [f"{where} does not export the class {op_name} in its __all__"]
+    return []
+
+
+def _ref_api_errors(op_name: str, ref: str) -> list[str]:
+    """`ref_api` is a qualified name that resolves once its module imports."""
+    parts = ref.split(".")
+    if len(parts) < 2 or not all(p.isidentifier() for p in parts):
+        return [f"[schema] {op_name}: ref_api {ref!r} is not a qualified name"]
+    for i in range(len(parts) - 1, 0, -1):
+        try:
+            target = importlib.import_module(".".join(parts[:i]))
+        except ImportError:
+            continue
+        for attr in parts[i:]:
+            if not hasattr(target, attr):
+                return [f"[schema] {op_name}: ref_api {ref!r} does not resolve"]
+            target = getattr(target, attr)
+        return []
+    return [f"[schema] {op_name}: ref_api {ref!r}: no prefix of it is an importable module"]
+
+
+# Execution-policy parameters every op takes, in order with their defaults, and the reserved one
+# it may take (docs/design/manifest.md § Signature).
+_POLICY_PARAMETERS = {"target": None, "kernel_map": None, "tune": False}
+_RESERVED_POLICY = "config"
+
+
+def _normal_default(value):
+    """A default as the manifest writes it: a dtype by name, a tuple as a list."""
+    if isinstance(value, tuple):
+        return list(value)
+    return str(value).removeprefix("torch.") if type(value).__module__ == "torch" else value
+
+
+def _check_parametric_parity(op_name: str, entry: dict) -> list[str]:
+    """`__init__` and `forward` against the signature (docs/design/manifest.md § Signature).
+
+    `__init__` takes `signature.params` in order with their defaults, a `kw_only` one after
+    `*`, then keyword-only `target`, `kernel_map` and `tune`, and only the injected objects the
+    class lists in `execution_parameters` or the reserved `config`. `forward` begins with the
+    call-time inputs in order, positional, the optional ones defaulting to `None` and the
+    others to nothing, then `out` when an output is a buffer.
+    """
+    where = f"[signature] {op_name}"
+    try:
+        cls = op_class(op_name, entry)
+    except (ImportError, AttributeError) as exc:
+        return [f"{where}: cannot import tileops.{entry['family']}.{op_name}: {exc}"]
+    sig = entry["signature"]
+    errors = []
+    empty = inspect.Parameter.empty
+    keyword = inspect.Parameter.KEYWORD_ONLY
+    init = list(inspect.signature(cls.__init__).parameters.values())[1:]
+    params = list(sig.get("params") or {})
+    for i, name in enumerate(params):
+        decl = sig["params"][name]
+        if "shape" in decl and decl.get("optional", False) is not False:
+            decl = {**decl, "default": None}  # an optional construction-time tensor
+        got = init[i] if i < len(init) else None
+        kind = keyword if decl.get("kw_only") else inspect.Parameter.POSITIONAL_OR_KEYWORD
+        if got is None or got.name != name or got.kind is not kind:
+            errors.append(f"{where}: __init__ parameter {i + 1} must be {name!r} ({kind.name})")
+        elif ("default" in decl) != (got.default is not empty) or (
+            "default" in decl and _normal_default(got.default) != decl["default"]
+        ):
+            errors.append(
+                f"{where}: __init__ {name!r} defaults to {got.default!r}, "
+                f"not {decl.get('default', 'nothing')!r}"
+            )
+    rest = {p.name: p for p in init[len(params) :]}
+    policy = [n for n in rest if n in _POLICY_PARAMETERS]
+    if policy != list(_POLICY_PARAMETERS) or any(
+        rest[n].kind is not keyword or rest[n].default is not d
+        for n, d in _POLICY_PARAMETERS.items()
+    ):
+        suffix = ", ".join(f"{n}={d}" for n, d in _POLICY_PARAMETERS.items())
+        errors.append(f"{where}: __init__ must end its policy parameters with *, {suffix}")
+    allowed = {*_POLICY_PARAMETERS, _RESERVED_POLICY, *getattr(cls, "execution_parameters", ())}
+    errors += [
+        f"{where}: __init__ parameter {p.name!r} is not a signature or execution-policy parameter"
+        for p in rest.values()
+        if p.kind is not keyword or p.name not in allowed
+    ]
+    forward = list(inspect.signature(cls.forward).parameters.values())[1:]
+    inputs = sig.get("inputs") or {}
+    buffered = any(o.get("buffer") == "out" for o in (sig.get("outputs") or {}).values())
+    prefix = list(inputs) + (["out"] if buffered else [])
+    for i, name in enumerate(prefix):
+        got = forward[i] if i < len(forward) else None
+        optional = name == "out" or inputs[name].get("optional", False) is not False
+        positional = inspect.Parameter.POSITIONAL_OR_KEYWORD
+        if got is None or got.name != name or got.kind is not positional:
+            errors.append(f"{where}: forward parameter {i + 1} must be {name!r}, positional")
+        elif got.default is not (None if optional else empty):
+            want = "default to None" if optional else "have no default"
+            errors.append(f"{where}: forward {name!r} must {want}")
+    return errors
+
+
 def validate_manifest(
     manifest_path: Path | None = None,
     repo_root: Path | None = None,
@@ -4722,6 +4901,16 @@ def validate_manifest(
     # orchestrator can route them to either errors (strict mode) or
     # warnings (advisory mode) once all per-op checks have run.
     strict_errors: list[str] = []
+    # Bench files a legacy entry's own benchmark check read.
+    checked_benches: set = set()
+    # Entries see only the ADTs `check_adts` accepts; the others are reported once, here.
+    document = types_document()
+    adts, adt_errors = {}, []
+    if document is not None:
+        well_formed = isinstance(document, dict) and set(document) == {"adts"}
+        adts, adt_errors = _check_adts(document["adts"] if well_formed else None)
+    if "schema" in levels:
+        all_errors.extend(f"[schema] types.yaml: {e}" for e in adt_errors)
 
     for op_name, entry in ops.items():
         # --check-op scopes validation to that op; skip all others.
@@ -4730,6 +4919,29 @@ def validate_manifest(
 
         if verbose:
             print(f"  Checking {op_name}...")
+
+        if isinstance(entry, dict) and not is_legacy(entry):
+            if "schema" in levels:
+                all_errors.extend(_check_parametric_schema(op_name, entry, ops))
+            signature_errors, signature_warnings = _check_signature(op_name, entry, adts)
+            sig = None if signature_errors else parse_signature(op_name, entry, adts)
+            if "schema" in levels:
+                implemented = entry.get("status") == "implemented"
+                all_errors.extend(
+                    f"[schema] {op_name}: {e}"
+                    for e in roofline_plan(sig, entry.get("roofline"), resolve=implemented)[0]
+                )
+            if levels & {"signature", "shape", "dtype"}:
+                all_errors.extend(f"[signature] {e}" for e in signature_errors)
+                all_warnings.extend(f"[signature] {w}" for w in signature_warnings)
+                if sig is not None:
+                    all_errors.extend(
+                        f"[signature] {e}" for e in _check_workloads(op_name, entry, adts)
+                    )
+                    all_errors.extend(f"[signature] {op_name}: {e}" for e in effect_errors(sig))
+                if sig is not None and entry.get("status") == "implemented":
+                    all_errors.extend(_check_parametric_parity(op_name, entry))
+            continue
 
         # schema: YAML structure validation
         if "schema" in levels:
@@ -4838,10 +5050,14 @@ def validate_manifest(
             bench_path = _facts(entry, op_name).source_paths.get("bench", "")
             if bench_path:
                 bench_errors = check_l4_benchmark(op_name, bench_path, repo_root)
+                checked_benches.add((repo_root / bench_path).resolve())
                 if _is_bench_manifest_driven(entry):
                     all_errors.extend(bench_errors)
                 else:
                     all_warnings.extend(bench_errors)
+
+    if "bench" in levels and selected is None:
+        all_errors.extend(_check_bench_files(checked_benches, repo_root))
 
     # Deduplicate while preserving order: ``check_l3`` and
     # ``check_l3_validate_dtypes_parity`` both surface ``dtype_combos``

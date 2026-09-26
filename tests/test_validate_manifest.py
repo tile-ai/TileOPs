@@ -72,7 +72,7 @@ def _make_entry(
     if kernel_map is not None:
         source["kernel_map"] = kernel_map
     entry = {
-        "family": "test",
+        "family": "elementwise",
         "ref_api": "none",
         "signature": sig,
         "workloads": [
@@ -3026,6 +3026,17 @@ class TestCheckOp:
         non_schema = [e for e in errors if "[schema]" not in e]
         assert non_schema == [], non_schema
 
+    def test_a_spec_only_entrys_bench_file_meets_the_contract(self, validator, tmp_path):
+        """Every bench file is held to the benchmark contract, whichever entry names it."""
+        bench_file = tmp_path / "benchmarks" / "ops" / "bench_spec.py"
+        bench_file.parent.mkdir(parents=True)
+        bench_file.write_text("import pytest\n")
+        entry = _make_entry(status="spec-only")
+        entry["source"]["bench"] = "benchmarks/ops/bench_spec.py"
+        manifest_file = _write_manifest(tmp_path, {"my_op": entry})
+        errors, _ = validator.validate_manifest(manifest_path=manifest_file, repo_root=tmp_path)
+        assert any("[bench] benchmarks/ops/bench_spec.py" in e for e in errors), errors
+
     def test_check_op_nonexistent_op_reports_error(self, validator, tmp_path):
         """--check-op with a name not in manifest reports an error."""
         manifest_file = _write_manifest(tmp_path, {"my_op": _make_entry()})
@@ -3618,7 +3629,7 @@ class TestStrictAdvisoryMode:
         # fields present so the test would still parse if schema checks
         # were enabled.
         entry = {
-            "family": "synth",
+            "family": "elementwise",
             "status": "implemented",
             "ref_api": "https://example.invalid/stub",
             "signature": _sig(
@@ -3697,15 +3708,23 @@ class TestCompileContractRegistry:
     """
 
     def test_declarations_match_registered_evidence(self):
-        """Manifest declarations == registered compile-test evidence;
-        broken registration or typo'd op names surface as a set diff."""
+        """Fullgraph declarations == registered compile-test evidence; broken registration
+        or typo'd op names surface as a set diff. A parametric entry's declaration is its
+        implemented class declaring a compile boundary; a legacy entry's is the manifest's."""
         from tests.compile_contract import compile_contract_ops
         from tileops.manifest import load_manifest
+        from tileops.manifest.registry import op_class
+        from tileops.manifest.signature import is_legacy
 
         declared = {
             name
             for name, entry in load_manifest().items()
-            if entry.get("torch_compile_fullgraph") is True
+            if (
+                entry.get("torch_compile_fullgraph") is True
+                if is_legacy(entry)
+                else entry.get("status") == "implemented"
+                and getattr(op_class(name, entry), "compile_boundary", ()) is True
+            )
         }
         registered = compile_contract_ops()
         assert declared == registered, (
@@ -4526,3 +4545,29 @@ class TestRooflineSynthesisReported:
         entry["roofline"]["flops"] = "NOPE * 2"
         errors, _ = self._run(validator, self._tree(tmp_path), entry)
         assert errors == [], errors
+
+
+def test_converted_entry_is_held_to_its_constructor_and_forward(validator, monkeypatch):
+    """`__init__` takes `signature.params` then the policy suffix; `forward` the inputs."""
+    import types
+
+    class ProbeFwdOp:
+        def __init__(self, dim, *, kernel_map=None, target=None, tune=False, surprise=None):
+            pass
+
+        def forward(self, x=123, y=None):
+            pass
+
+    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=ProbeFwdOp))
+    entry = {
+        "family": "probe",
+        "signature": {
+            "params": {"dim": {"type": "int"}},
+            "inputs": {"x": {"dtype": "T", "shape": "[M]"}, "y": {"optional": True}},
+        },
+    }
+    assert validator._check_parametric_parity("ProbeFwdOp", entry) == [
+        "[signature] ProbeFwdOp: __init__ must end its policy parameters with *, target=None, kernel_map=None, tune=False",
+        "[signature] ProbeFwdOp: __init__ parameter 'surprise' is not a signature or execution-policy parameter",
+        "[signature] ProbeFwdOp: forward 'x' must have no default",
+    ]

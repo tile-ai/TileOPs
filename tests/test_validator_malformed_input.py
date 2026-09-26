@@ -29,13 +29,13 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
     ),
     (
         "missing_required_top",
-        {"BadTopOp": {"family": "test", "ref_api": "none"}},
+        {"BadTopOp": {"family": "elementwise", "ref_api": "none"}},
     ),
     (
         "missing_signature_halves",
         {
             "BadSigOp": {
-                "family": "test",
+                "family": "elementwise",
                 "ref_api": "none",
                 "status": "spec-only",
                 "signature": {},
@@ -63,7 +63,7 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
         "unknown_keys",
         {
             "UnknownKeyOp": {
-                "family": "test",
+                "family": "elementwise",
                 "ref_api": "none",
                 "status": "spec-only",
                 "made_up_field": True,
@@ -82,7 +82,7 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
         "non_string_keys",
         {
             "BadKeyOp": {
-                "family": "test",
+                "family": "elementwise",
                 "ref_api": "none",
                 "status": "spec-only",
                 "signature": {
@@ -106,7 +106,7 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
         "non_string_dtype",
         {
             "BadDtypeOp": {
-                "family": "test",
+                "family": "elementwise",
                 "ref_api": "none",
                 # Implemented, so the dtype level runs: its parser splits the
                 # declaration, and a mapping there raised rather than reported.
@@ -129,7 +129,7 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
         "composite_without_roofline_composition",
         {
             "BadCompositeOp": {
-                "family": "test",
+                "family": "elementwise",
                 "ref_api": "none",
                 "status": "spec-only",
                 "signature": {

@@ -18,7 +18,7 @@ those belong to the review process, not the artifact. Flags, per line:
 
 Usage: ``shipped_refs_lint.py [FILE ...]``. With no arguments, scans the
 default shipped-source trees (``src/tileops/``, ``tests/``, ``benchmarks/``,
-``scripts/``, ``workloads/``) excluding ``src/tileops/manifest/``. Exits 1 when any violation
+``scripts/``, ``workloads/``). Exits 1 when any violation
 is found.
 """
 
@@ -39,7 +39,6 @@ _PLAIN_PATTERNS = (
 )
 
 DEFAULT_ROOTS = ("src/tileops", "tests", "benchmarks", "scripts", "workloads")
-DEFAULT_EXCLUDE = "src/tileops/manifest"
 
 
 def _hash_number_violations(line: str) -> list[str]:
@@ -74,11 +73,8 @@ def _default_files() -> list[Path]:
         if not root_path.is_dir():
             continue
         for path in sorted(root_path.rglob("*")):
-            if not path.is_file():
-                continue
-            if path.as_posix().startswith(DEFAULT_EXCLUDE + "/"):
-                continue
-            files.append(path)
+            if path.is_file():
+                files.append(path)
     return files
 
 

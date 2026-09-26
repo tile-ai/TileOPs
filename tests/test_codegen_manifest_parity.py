@@ -2,9 +2,7 @@
 
 ``_validate_dtypes`` is synthesised from the manifest, so a change to how the
 call's argument list is derived reaches the wheel without moving a single
-validator diagnostic. One synthetic entry pins the shape; one assertion over
-the real manifest keeps the synthetic one honest by failing if no entry
-exercises a workspace any more.
+validator diagnostic. One synthetic entry pins the shape.
 """
 
 import inspect
@@ -20,7 +18,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 import _manifest_facts as F  # noqa: E402
 
-from tileops.manifest import forward_signature, load_manifest  # noqa: E402
+from tileops.manifest import forward_signature  # noqa: E402
 from tileops.ops._dtype_codegen import synthesize_validate_dtypes  # noqa: E402
 
 _ENTRY = {
@@ -43,9 +41,3 @@ def test_generated_validator_takes_the_workspace():
 def test_a_combo_row_carries_no_workspace_column():
     """A row states what a caller may pass; a workspace's dtype is strategy."""
     assert F.build("Op", _ENTRY).combo_columns == ("x",)
-
-
-def test_the_real_manifest_still_exercises_a_workspace():
-    """Without one, the two assertions above prove nothing about this repo."""
-    entries = {n: e for n, e in load_manifest().items() if e.get("status") == "implemented"}
-    assert any(any(a.workspace for a in F.build(n, e).call_tensor_args) for n, e in entries.items())

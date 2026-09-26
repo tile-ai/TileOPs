@@ -39,15 +39,15 @@ The manifest lives at `src/tileops/manifest/`, one or more YAML files per op fam
 
 Read the relevant context file **before** modifying files in that domain. Do not load them if your task does not touch that domain.
 
-| When you modify                                                   | Read first                                                                               |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `tests/`                                                          | [.claude/domain-rules/testing-budget.md](.claude/domain-rules/testing-budget.md)         |
-| `src/tileops/manifest/`                                           | [.claude/domain-rules/manifest-spec.md](.claude/domain-rules/manifest-spec.md)           |
-| `scripts/validate_manifest.py`, `tests/test_validate_manifest.py` | [.claude/domain-rules/manifest-validator.md](.claude/domain-rules/manifest-validator.md) |
-| `src/tileops/ops/`, `src/tileops/kernels/`                        | [.claude/domain-rules/ops-design.md](.claude/domain-rules/ops-design.md)                 |
-| `benchmarks/`                                                     | [.claude/domain-rules/benchmark.md](.claude/domain-rules/benchmark.md)                   |
-| `workloads/`                                                      | [docs/design/layer-boundaries.md](docs/design/layer-boundaries.md)                       |
-| `docs/design/`                                                    | [.claude/domain-rules/design-docs.md](.claude/domain-rules/design-docs.md)               |
+| When you modify                                                                                | Read first                                                                               |
+| ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `tests/`                                                                                       | [.claude/domain-rules/testing-budget.md](.claude/domain-rules/testing-budget.md)         |
+| `src/tileops/manifest/*.yaml`                                                                  | [.claude/domain-rules/manifest-spec.md](.claude/domain-rules/manifest-spec.md)           |
+| `src/tileops/manifest/*.py`, `scripts/validate_manifest.py`, `tests/test_validate_manifest.py` | [.claude/domain-rules/manifest-validator.md](.claude/domain-rules/manifest-validator.md) |
+| `src/tileops/ops/`, `src/tileops/kernels/`                                                     | [.claude/domain-rules/ops-design.md](.claude/domain-rules/ops-design.md)                 |
+| `benchmarks/`                                                                                  | [.claude/domain-rules/benchmark.md](.claude/domain-rules/benchmark.md)                   |
+| `workloads/`                                                                                   | [docs/design/layer-boundaries.md](docs/design/layer-boundaries.md)                       |
+| `docs/design/`                                                                                 | [.claude/domain-rules/design-docs.md](.claude/domain-rules/design-docs.md)               |
 
 ## Contributing
 
