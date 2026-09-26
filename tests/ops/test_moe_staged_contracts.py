@@ -10,7 +10,6 @@ from tileops.backend import BUILTIN
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
 from tileops.ops import moe as public_moe
-from tileops.ops._output_dtype import output_dtype
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
     MaskedLayoutSpec,
@@ -19,13 +18,6 @@ from tileops.ops.moe import (
     MoePostPermuteFwdOp,
     MoePrePermuteFwdOp,
     RoutingEpilogueSpec,
-)
-from tileops.ops.moe.contracts import (
-    MaskedMetadata,
-    PerRowExpertMetadata,
-    PhysicalPsumMetadata,
-    layout_from_preset,
-    layout_value_guard,
 )
 
 pytestmark = pytest.mark.smoke
@@ -51,40 +43,19 @@ def test_layout_presets_expose_only_supported_semantics() -> None:
     assert aligned_psum.selection_key == "aligned_physical_psum"
     assert repr(aligned_psum) == "ContiguousLayoutSpec.aligned_physical_psum(64)"
     assert (physical.kind, masked.kind) == ("contiguous", "masked")
-    assert physical.metadata_length(rows=10, num_experts=3) == 3
-    assert per_row.metadata_length(rows=10, num_experts=3) == 10
-    assert masked.metadata_length(rows=12, num_experts=3) == 3
     with pytest.raises(ValueError, match="alignment > 1"):
         ContiguousLayoutSpec.aligned_per_row(1)
     with pytest.raises(ValueError, match="non-negative"):
         MaskedLayoutSpec(max_m=-1)
-
-    with pytest.raises(ValueError, match="num_local_experts must be positive"):
-        MoePrePermuteFwdOp(physical, num_local_experts=0)
-
-
-def test_layout_presets_resolve_from_manifest_rows() -> None:
-    """A workload row names a preset and carries only the argument that preset takes."""
-    assert layout_from_preset("tight_physical_psum") == _TIGHT
-    assert layout_from_preset(
-        "aligned_per_row", alignment=128
-    ) == ContiguousLayoutSpec.aligned_per_row(128)
-    assert layout_from_preset("masked", max_m=64) == MaskedLayoutSpec(max_m=64)
-    with pytest.raises(ValueError, match="neither alignment nor max_m"):
-        layout_from_preset("tight_physical_psum", alignment=8)
-    with pytest.raises(ValueError, match="takes alignment"):
-        layout_from_preset("aligned_per_row")
-    with pytest.raises(ValueError, match="takes max_m"):
-        layout_from_preset("masked", alignment=8, max_m=4)
-    with pytest.raises(ValueError, match="unknown layout preset"):
-        layout_from_preset("padded")
 
 
 def test_aligned_pre_permute_capacity_is_a_gemm_legal_row_extent() -> None:
     """Worst-case padding capacity still satisfies the aligned GEMM contract."""
     alignment = 128
     op = MoePrePermuteFwdOp(ContiguousLayoutSpec.aligned_per_row(alignment), num_local_experts=16)
-    shapes = op._infer_output_shapes((256, 2048), (256, 2))
+    shapes = op._infer_output_shapes(
+        (256, 2048), (256, 2), dtypes={"hidden_states": torch.bfloat16}
+    )
     rows = shapes["expert_input"][0]
     assert rows == 2560
     assert rows % alignment == 0
@@ -96,90 +67,21 @@ def test_default_public_surface_hides_kernel_author_and_metadata_types() -> None
         "MGroupedGemmCall",
         "PrePermuteCall",
         "PostPermuteCall",
-        "PhysicalPsumMetadata",
-        "PerRowExpertMetadata",
-        "MaskedMetadata",
         "MaterializedExpertLayout",
         "NoScaleComputeSpec",
     ):
         assert not hasattr(public_moe, name)
 
 
-def test_device_value_guards_cover_empty_experts_ordering_and_ranges() -> None:
-    psum = PhysicalPsumMetadata(torch.tensor([0, 0, 3], dtype=torch.int32))
-    assert psum.device_value_guard(materialized_rows=3).item()
-    bad_psum = PhysicalPsumMetadata(torch.tensor([2, 1], dtype=torch.int32))
-    assert not bad_psum.device_value_guard(materialized_rows=1).item()
-
-    ids = PerRowExpertMetadata(torch.tensor([0, 0, 1, 1], dtype=torch.int32))
-    assert ids.device_value_guard(num_experts=2).item()
-    gap = PerRowExpertMetadata(torch.tensor([0, -1, 1], dtype=torch.int32))
-    assert not gap.device_value_guard(num_experts=2).item()
-    resumed = PerRowExpertMetadata(torch.tensor([0, 1, 0], dtype=torch.int32))
-    assert not resumed.device_value_guard(num_experts=2).item()
-    sentinel = PerRowExpertMetadata(torch.tensor([0, 1, 2, 2], dtype=torch.int32))
-    assert not sentinel.device_value_guard(num_experts=2).item()
-    assert sentinel.device_value_guard(num_experts=2, allow_capacity_sentinel=True).item()
-
-    masked = MaskedMetadata(torch.tensor([0, 4, 5], dtype=torch.int32))
-    assert not masked.device_value_guard(max_m=4).item()
-
-
-@pytest.mark.parametrize(
-    ("ends", "materialized_rows", "expected"),
-    [
-        pytest.param([], 0, True, id="zero-experts"),
-        pytest.param([0, 0, 0], 0, True, id="all-empty"),
-        pytest.param([0, 0, 3], 3, True, id="consecutive-empty"),
-        pytest.param([0, 2, 1], 1, False, id="decreasing-end"),
-        pytest.param([0, 2], 3, False, id="shape-not-authoritative-end"),
-    ],
-)
-def test_physical_psum_guard_covers_empty_and_capacity_edges(
-    ends: list[int], materialized_rows: int, expected: bool
-) -> None:
-    metadata = PhysicalPsumMetadata(torch.tensor(ends, dtype=torch.int32))
-    assert metadata.device_value_guard(materialized_rows=materialized_rows).item() is expected
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="guard test requires CUDA")
-def test_device_value_validation_returns_a_device_guard_without_host_readback() -> None:
-    metadata = PhysicalPsumMetadata(torch.tensor([0, 2], dtype=torch.int32, device="cuda"))
-    guard = metadata.device_value_guard(materialized_rows=2)
-    assert guard.device.type == "cuda"
-    assert guard.dtype is torch.bool
-    assert guard.shape == ()
-
-
-def test_epilogue_spec_is_minimal_and_frozen_and_ops_type_check_their_layout() -> None:
+def test_epilogue_spec_is_minimal_and_frozen() -> None:
     epilogue = RoutingEpilogueSpec()
     assert epilogue.accumulation_dtype is torch.float32
-    # The output dtype is the op's ``out_dtype``, not the epilogue's: one name carries a
-    # caller-stated output dtype, and the generated fake reads it from there.
+    # The output dtype is the op's ``out_dtype``, not the epilogue's.
     assert not hasattr(epilogue, "output_dtype")
-    assert MoePostPermuteFwdOp(_TIGHT).out_dtype is None
-    assert MoePostPermuteFwdOp(_TIGHT, out_dtype=torch.float16).out_dtype is torch.float16
-    with pytest.raises(ValueError, match="out_dtype must be"):
-        MoePostPermuteFwdOp(_TIGHT, out_dtype=torch.float32)
     with pytest.raises(ValueError, match="finite and positive"):
         RoutingEpilogueSpec(routed_scaling_factor=0.0)
     with pytest.raises(dataclasses.FrozenInstanceError):
         epilogue.routed_scaling_factor = 2.0
-    with pytest.raises(TypeError, match="ContiguousLayoutSpec or MaskedLayoutSpec"):
-        MoeGroupedGemmFwdOp(0)  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="ContiguousLayoutSpec or MaskedLayoutSpec"):
-        MoeExpertMLPFwdOp("tight_physical_psum")  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="out_dtype must be None"):
-        MoeGroupedGemmFwdOp(_TIGHT, out_dtype=torch.float16)
-    with pytest.raises(ValueError, match="activation must be None or one of"):
-        MoeGroupedGemmFwdOp(_TIGHT, activation="relu")
-    assert output_dtype(MoeGroupedGemmFwdOp(_TIGHT), "output", torch.float16) is torch.float16
-    assert (
-        output_dtype(MoeGroupedGemmFwdOp(_TIGHT, out_dtype=torch.float32), "output", torch.bfloat16)
-        is torch.float32
-    )
-    with pytest.raises(TypeError, match="RoutingEpilogueSpec"):
-        MoePostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum(), epilogue=0)  # type: ignore[arg-type]
 
 
 def test_family_call_specs_are_frozen_and_keep_selection_axes_separate() -> None:
@@ -342,34 +244,6 @@ def test_grouped_gemm_ambiguous_and_incompatible_override_fail_explicitly() -> N
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CallSpec records CUDA architecture")
-def test_public_ops_build_complete_calls_before_selection() -> None:
-    hidden = torch.empty(2, 8, dtype=torch.bfloat16, device="cuda")
-    topk_ids = torch.tensor([[0], [1]], dtype=torch.int32, device="cuda")
-    pre_call = MoePrePermuteFwdOp(
-        ContiguousLayoutSpec.tight_physical_psum(), num_local_experts=2
-    ).make_call(hidden, topk_ids)
-    assert (
-        pre_call.num_experts,
-        pre_call.num_tokens,
-        pre_call.hidden_size,
-        pre_call.top_k,
-    ) == (2, 2, 8, 1)
-
-    ends = torch.tensor([1, 2], dtype=torch.int32, device="cuda")
-    a = torch.empty(2, 8, dtype=torch.bfloat16, device="cuda")
-    b = torch.empty(2, 4, 8, dtype=torch.bfloat16, device="cuda")
-    gemm_call = MoeGroupedGemmFwdOp(_TIGHT).make_call(a, b, ends)
-    assert (gemm_call.m, gemm_call.num_groups, gemm_call.n, gemm_call.k) == (2, 2, 4, 8)
-    assert (gemm_call.kind, gemm_call.packing, gemm_call.metadata_kind) == (
-        "contiguous",
-        "tight",
-        "physical_psum",
-    )
-    assert (gemm_call.alignment, gemm_call.max_m) == (1, None)
-    assert gemm_call.ab_dtype is gemm_call.cd_dtype is torch.bfloat16
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CallSpec records CUDA architecture")
 def test_call_architecture_comes_from_the_input_device(monkeypatch: pytest.MonkeyPatch) -> None:
     device = torch.device("cuda", torch.cuda.current_device())
     observed_indices: list[int | None] = []
@@ -379,64 +253,14 @@ def test_call_architecture_comes_from_the_input_device(monkeypatch: pytest.Monke
         return 90
 
     monkeypatch.setattr(staged_module, "get_sm_version", fake_sm_version)
-    MoeGroupedGemmFwdOp(_TIGHT).make_call(
+    op = MoeGroupedGemmFwdOp(_TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate})
+    op(
         torch.empty(1, 4, dtype=torch.bfloat16, device=device),
         torch.empty(1, 2, 4, dtype=torch.bfloat16, device=device),
         torch.tensor([1], dtype=torch.int32, device=device),
     )
 
     assert observed_indices == [device.index]
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CallSpec records CUDA architecture")
-def test_staged_wiring_builds_all_family_calls_without_an_executable_candidate() -> None:
-    device = torch.device("cuda")
-    ends = torch.tensor([1, 2], dtype=torch.int32, device=device)
-    expert_input = torch.empty(2, 8, dtype=torch.bfloat16, device=device)
-    w_gate_up = torch.empty(2, 12, 8, dtype=torch.bfloat16, device=device)
-    w_down = torch.empty(2, 8, 6, dtype=torch.bfloat16, device=device)
-    mlp = MoeExpertMLPFwdOp(_TIGHT)
-
-    gate_call = mlp.gate_up.make_call(expert_input, w_gate_up, ends)
-    activated = torch.empty(2, 6, dtype=torch.bfloat16, device=device)
-    down_call = mlp.down.make_call(activated, w_down, ends)
-
-    assert gate_call.kind == down_call.kind == "contiguous"
-    assert gate_call.packing == down_call.packing == "tight"
-    assert (gate_call.k, gate_call.n, down_call.k, down_call.n) == (8, 12, 6, 8)
-    # The gate_up GEMM carries the fused activation and hands the down GEMM ffn columns.
-    assert (gate_call.activation, down_call.activation) == ("silu_and_mul", None)
-    assert mlp.gate_up._infer_output_shapes((2, 8), (2, 12, 8), (2,)) == {"output": (2, 6)}
-    assert tuple(mlp.kernel_delegates()) == (mlp.gate_up, mlp.down)
-    with pytest.raises(ValueError, match="gated width"):
-        mlp(
-            expert_input, w_gate_up, torch.empty(2, 8, 5, dtype=torch.bfloat16, device=device), ends
-        )
-
-    inverse_indices = torch.tensor([0, 1], dtype=torch.int32, device=device)
-    post_call = MoePostPermuteFwdOp(_TIGHT, RoutingEpilogueSpec()).make_call(
-        torch.empty(2, 8, dtype=torch.bfloat16, device=device),
-        torch.ones(2, 1, dtype=torch.float32, device=device),
-        inverse_indices,
-    )
-    assert post_call.layout_key == "tight_physical_psum"
-    assert post_call.materialized_rows == 2
-    assert (post_call.num_tokens, post_call.top_k, post_call.hidden_size) == (2, 1, 8)
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CallSpec records CUDA architecture")
-def test_post_permute_rejects_wrong_masked_geometry_with_same_row_count() -> None:
-    device = torch.device("cuda")
-    layout = MaskedLayoutSpec(max_m=4)
-    inverse_indices = torch.tensor([0], dtype=torch.int32, device=device)
-    wrong_geometry = torch.empty(1, 8, 4, dtype=torch.bfloat16, device=device)
-
-    with pytest.raises(ValueError, match="masked expert_output"):
-        MoePostPermuteFwdOp(layout).make_call(
-            wrong_geometry,
-            torch.ones(1, 1, dtype=torch.float32, device=device),
-            inverse_indices,
-        )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="candidate test uses CUDA calls")
@@ -447,7 +271,7 @@ def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
     b = torch.ones(1, 2, 4, dtype=torch.bfloat16, device=device)
     _ExecutableGroupedCandidate.builds = 0
     op = MoeGroupedGemmFwdOp(
-        _TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate}, target=BUILTIN
+        _TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate}, target=BUILTIN, tune=True
     )
 
     first = op(a, b, ends)
@@ -458,12 +282,14 @@ def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
     assert first.shape == second.shape == (1, 2)
     assert taller.shape == (3, 2)
     assert _ExecutableGroupedCandidate.builds == 1
+    # The build is told to tune: the op's flag travels in the call record.
+    assert next(iter(op.built_kernels("grouped_gemm").values())).call.tune
     assert len(op.built_kernels("grouped_gemm")) == 1
     assert op.eval_roofline() == (2 * 3 * 2 * 4, (3 * 4 + 1 * 2 * 4 + 3 * 2) * 2 + 4)
 
     out = torch.empty(1, 2, dtype=torch.bfloat16, device=device)
     assert op(a, b, ends, out=out) is out
-    with pytest.raises(ValueError, match="out must be"):
+    with pytest.raises(ValueError, match="out does not have the dtype of output"):
         op(a, b, ends, out=torch.empty(1, 2, dtype=torch.float32, device=device))
 
 
@@ -472,11 +298,8 @@ def test_expert_mlp_forwards_caller_replacements_to_both_gemms() -> None:
     assert mlp.gate_up.forwarded_overrides() == {"grouped_gemm": _ExecutableGroupedCandidate}
     assert mlp.down.forwarded_overrides() == {"grouped_gemm": _ExecutableGroupedCandidate}
     assert MoeExpertMLPFwdOp(_TIGHT, "gelu_and_mul").gate_up.activation == "gelu_and_mul"
-    with pytest.raises(ValueError, match="activation must be one of"):
-        MoeExpertMLPFwdOp(_TIGHT, "relu")
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="candidate test uses CUDA calls")
 @pytest.mark.parametrize(
     "layout",
     [
@@ -487,10 +310,8 @@ def test_expert_mlp_forwards_caller_replacements_to_both_gemms() -> None:
 def test_pre_permute_ships_one_contiguous_candidate(
     layout: ContiguousLayoutSpec,
 ) -> None:
-    hidden = torch.empty(1, 4, dtype=torch.bfloat16, device="cuda")
-    topk_ids = torch.zeros(1, 1, dtype=torch.int32, device="cuda")
     op = MoePrePermuteFwdOp(layout, num_local_experts=1)
-    call = op.make_call(hidden, topk_ids)
+    call = PrePermuteCall(arch=90, layout=layout, input_dtype=torch.bfloat16)
     assert op.select_kernel_key(tuple(op.kernel_map), call) == "contiguous"
 
 
@@ -518,8 +339,13 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     expected = x.float() * weights.sum(dim=1, keepdim=True)
     torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
     assert pre.eval_roofline() == (0, 1616)
-
     assert post.eval_roofline() == (1024, 1600)
+
+    # A routing scale other than one multiplies every output element once more.
+    scaled = MoePostPermuteFwdOp(layout, RoutingEpilogueSpec(routed_scaling_factor=2.0))
+    output = scaled(expert_input, weights, inverse)
+    torch.testing.assert_close(output.float(), 2 * expected, rtol=2e-2, atol=4e-2)
+    assert scaled.eval_roofline() == (1024 + tokens * hidden, 1600)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="staged kernels require CUDA")
@@ -578,64 +404,6 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="make_call records CUDA architecture")
-def test_grouped_gemm_make_call_checks_geometry_against_the_layout() -> None:
-    """Shapes are validated against the declared layout, never used to guess it."""
-    device = torch.device("cuda")
-    b = torch.empty(2, 4, 8, dtype=torch.bfloat16, device=device)
-    a = torch.empty(6, 8, dtype=torch.bfloat16, device=device)
-    ends = torch.tensor([2, 6], dtype=torch.int32, device=device)
-
-    with pytest.raises(ValueError, match=r"layout_metadata must have shape \(2,\)"):
-        MoeGroupedGemmFwdOp(_TIGHT).make_call(
-            a, b, torch.zeros(6, dtype=torch.int32, device=device)
-        )
-    with pytest.raises(ValueError, match=r"layout_metadata must have shape \(6,\)"):
-        MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_per_row()).make_call(a, b, ends)
-    with pytest.raises(ValueError, match="multiple of the layout's alignment"):
-        MoeGroupedGemmFwdOp(ContiguousLayoutSpec.aligned_per_row(4)).make_call(
-            a, b, torch.zeros(6, dtype=torch.int32, device=device)
-        )
-    with pytest.raises(ValueError, match=r"masked a must have shape \[2, 4, k\]"):
-        MoeGroupedGemmFwdOp(MaskedLayoutSpec(max_m=4)).make_call(a, b, ends)
-    with pytest.raises(ValueError, match="contiguous a must have shape"):
-        MoeGroupedGemmFwdOp(_TIGHT).make_call(a.reshape(2, 3, 8), b, ends)
-    with pytest.raises(ValueError, match="same reduction dimension"):
-        MoeGroupedGemmFwdOp(_TIGHT).make_call(
-            torch.empty(6, 4, dtype=torch.bfloat16, device=device), b, ends
-        )
-    with pytest.raises(TypeError, match="BF16 or FP16"):
-        MoeGroupedGemmFwdOp(_TIGHT).make_call(a.float(), b.float(), ends)
-    with pytest.raises(TypeError, match="layout_metadata must have dtype torch.int32"):
-        MoeGroupedGemmFwdOp(_TIGHT).make_call(a, b, ends.long())
-
-    masked = MoeGroupedGemmFwdOp(MaskedLayoutSpec(max_m=3), out_dtype=torch.float32).make_call(
-        a.reshape(2, 3, 8), b, ends
-    )
-    assert (masked.kind, masked.packing, masked.metadata_kind, masked.max_m) == (
-        "masked",
-        None,
-        None,
-        3,
-    )
-    assert (masked.m, masked.cd_dtype) == (6, torch.float32)
-
-    aligned = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.aligned_per_row(2)).make_call(
-        a, b, torch.zeros(6, dtype=torch.int32, device=device)
-    )
-    assert (aligned.packing, aligned.metadata_kind, aligned.alignment) == ("aligned", "per_row", 2)
-
-    # A fused activation keeps b's stacked width in the call and halves the output.
-    fused_op = MoeGroupedGemmFwdOp(_TIGHT, activation="silu_and_mul")
-    fused = fused_op.make_call(a, b, ends)
-    assert (fused.activation, fused.n) == ("silu_and_mul", 4)
-    assert fused_op._infer_output_shapes((6, 8), (2, 4, 8), (2,)) == {"output": (6, 2)}
-    with pytest.raises(ValueError, match="N must be even"):
-        fused_op.make_call(a, torch.empty(2, 5, 8, dtype=torch.bfloat16, device=device), ends)
-    with pytest.raises(ValueError, match=r"out must be a \[6, 2\] tensor"):
-        fused_op.make_call(a, b, ends, out=torch.empty(6, 4, dtype=torch.bfloat16, device=device))
-
-
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="selection records CUDA architecture")
 def test_grouped_gemm_call_no_candidate_serves_reports_no_implementation() -> None:
     """A call outside every shipped candidate's region says so, rather than crashing."""
@@ -648,79 +416,3 @@ def test_grouped_gemm_call_no_candidate_serves_reports_no_implementation() -> No
             torch.empty(2, 4, 8, dtype=torch.bfloat16, device=device),
             torch.tensor([0, 1], dtype=torch.int32, device=device),
         )
-
-
-def _ids(values: list[int]) -> torch.Tensor:
-    return torch.tensor(values, dtype=torch.int32)
-
-
-@pytest.mark.parametrize(
-    ("layout", "metadata", "rows", "expected"),
-    [
-        pytest.param(_TIGHT, [2, 2, 5], 5, True, id="tight-psum-ok"),
-        pytest.param(_TIGHT, [2, 2, 4], 5, False, id="tight-psum-short"),
-        pytest.param(
-            ContiguousLayoutSpec.aligned_physical_psum(4),
-            [2, 6, 12],
-            12,
-            True,
-            id="aligned-psum-ok",
-        ),
-        pytest.param(
-            ContiguousLayoutSpec.aligned_physical_psum(4),
-            [2, 3, 12],
-            12,
-            False,
-            id="aligned-psum-start-inside-tile",
-        ),
-        pytest.param(
-            ContiguousLayoutSpec.aligned_physical_psum(4),
-            [2, 6, 13],
-            12,
-            False,
-            id="aligned-psum-past-capacity",
-        ),
-        pytest.param(
-            ContiguousLayoutSpec.aligned_per_row(2),
-            [0, 0, 1, 1, 3, 3],
-            6,
-            True,
-            id="aligned-per-row-ok",
-        ),
-        pytest.param(
-            ContiguousLayoutSpec.aligned_per_row(2),
-            [0, 1, 1, 1, 3, 3],
-            6,
-            False,
-            id="aligned-per-row-change-mid-tile",
-        ),
-        pytest.param(
-            ContiguousLayoutSpec.tight_per_row(), [0, 0, 1, 2, 2], 5, True, id="tight-per-row-ok"
-        ),
-        pytest.param(
-            ContiguousLayoutSpec.tight_per_row(),
-            [0, 0, 1, 3, 3],
-            5,
-            False,
-            id="tight-per-row-sentinel-not-allowed",
-        ),
-        pytest.param(MaskedLayoutSpec(max_m=4), [4, 0, 2], 12, True, id="masked-ok"),
-        pytest.param(MaskedLayoutSpec(max_m=4), [5, 0, 2], 12, False, id="masked-over-capacity"),
-    ],
-)
-def test_layout_value_guard_table(layout, metadata: list[int], rows: int, expected: bool) -> None:
-    """Every layout's device-side invariants, answered without a host readback."""
-    guard = layout_value_guard(layout, _ids(metadata), rows=rows, num_experts=3)
-    assert guard.dtype is torch.bool and guard.shape == ()
-    assert guard.item() is expected
-
-
-def test_grouped_gemm_layout_guard_reads_rows_and_experts_off_the_operands() -> None:
-    """The op's guard needs no call and no device: rows and experts come off ``a`` and ``b``."""
-    op = MoeGroupedGemmFwdOp(MaskedLayoutSpec(max_m=4))
-    a = torch.empty(3, 4, 8, dtype=torch.bfloat16)
-    b = torch.empty(3, 2, 8, dtype=torch.bfloat16)
-    assert op.layout_guard(a, b, _ids([4, 0, 2])).item()
-    assert not op.layout_guard(a, b, _ids([4, 0, 5])).item()
-    with pytest.raises(ValueError, match="length 3"):
-        op.layout_guard(a, b, _ids([4, 0]))

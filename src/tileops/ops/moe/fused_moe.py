@@ -4,7 +4,7 @@
 per-expert bias during top-k selection (Kimi K2 style); withholding it selects
 straight from the gating scores (Qwen3 / DeepSeek-V3 style).
 
-The shared core (`FusedMoe`) wires `FusedTopKOp` (routing),
+The shared core (`FusedMoe`) wires `FusedTopKFwdOp` (routing),
 `FusedMoEPrepareAndFinalize` (quantization / EP dispatch), and an
 `FusedMoEExpertsModular` implementation (permute + GEMM + unpermute). Shared
 expert handling belongs to `FusedMoeSharedExpertFwdOp`.
@@ -20,7 +20,7 @@ from tileops.ops.moe.abc import (
     FusedMoEExpertsModular,
     FusedMoEPrepareAndFinalize,
 )
-from tileops.ops.moe.fused_topk import FusedTopKOp
+from tileops.ops.moe.fused_topk import FusedTopKFwdOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp
 from tileops.ops.op_base import Op
@@ -91,7 +91,7 @@ class FusedMoe(Op):
 
         self.dispatch_kernel(kernel_map)
 
-        self._fused_topk = FusedTopKOp(
+        self._fused_topk = FusedTopKFwdOp(
             top_k=top_k,
             scoring_func=scoring_func,
             renormalize=renormalize,

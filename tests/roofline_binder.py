@@ -313,25 +313,6 @@ _ROW_SUPPLEMENT = {
         "batch_offsets_shape": (row["batch_count"],),
         "batch_padded_offsets_shape": (row["batch_count"],),
     },
-    # A physical-psum layout's metadata holds one segment end per expert, and the
-    # expert count is the weight tensor's leading extent.
-    "MoeExpertMLPFwdOp": lambda row: {
-        "layout_metadata_shape": (row["w_gate_up_shape"][0],),
-        "input_shapes": [
-            tuple(row["expert_input_shape"]),
-            tuple(row["w_gate_up_shape"]),
-            tuple(row["w_down_shape"]),
-            (row["w_gate_up_shape"][0],),
-        ],
-    },
-    "MoeGroupedGemmFwdOp": lambda row: {
-        "layout_metadata_shape": (row["b_shape"][0],),
-        "input_shapes": [
-            tuple(row["a_shape"]),
-            tuple(row["b_shape"]),
-            (row["b_shape"][0],),
-        ],
-    },
     # Paged decode: the cache is one page pool, and the call carries a length per
     # request plus the pages that request's tokens sit in.
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp": lambda row: {
@@ -350,7 +331,6 @@ _ROW_SUPPLEMENT = {
             max(1, -(-row["kv_shape"][0] // row["page_size"])),
         ),
     },
-    "MoePermuteAlignFwdOp": lambda row: {"topk_ids_shape": (row["total_tokens"], row["top_k"])},
     "MeanPoolingFwdOp": lambda row: {
         "x_shape": (row["batch"], row["seq_len"], row["heads"], row["dim"])
     },
@@ -371,7 +351,6 @@ _ROW_SUPPLEMENT = {
         "cu_seqlens_k_shape": (row["batch"] + 1,),
     },
     "FFTC2CFwdOp": lambda row: {"n": row["input_shape"][-1]},
-    "FusedTopKOp": lambda row: {"gating_output_shape": (row["num_tokens"], row["num_experts"])},
     "DaCumsumFwdOp": lambda row: {
         "batch": row["dt_shape"][0],
         "seq_len": row["dt_shape"][1],

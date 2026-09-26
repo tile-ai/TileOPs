@@ -8,95 +8,62 @@ from vllm.model_executor.layers.fused_moe.moe_permute_unpermute import (
 )
 
 from benchmarks.baselines import flashinfer_op
-from benchmarks.benchmark_base import ManifestBenchmark, workload_params
-from tileops.manifest import load_workloads
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.moe import (
-    ContiguousLayoutSpec,
     MoeExpertMLPFwdOp,
     MoeGroupedGemmFwdOp,
     MoePostPermuteFwdOp,
     MoePrePermuteFwdOp,
 )
-from tileops.ops.moe.contracts import layout_from_preset
 from workloads.moe import (
-    MoeExpertMLPStagedWorkload,
-    MoeGroupedGemmStagedWorkload,
-    MoePermuteWorkload,
-    MoeUnpermuteWorkload,
+    MoeExpertMLPWorkload,
+    MoeGroupedGemmWorkload,
+    MoePostPermuteWorkload,
+    MoePrePermuteWorkload,
     gated_activation,
+    valid_rows,
 )
 
 
-def _pre_args(workload: dict, dtype: torch.dtype) -> tuple[int, int, int, int, torch.dtype]:
-    tokens, hidden = workload["hidden_states_shape"]
-    _, top_k = workload["local_expert_ids_shape"]
-    return tokens, top_k, workload["num_local_experts"], hidden, dtype
-
-
-@pytest.mark.parametrize(
-    "tokens,top_k,num_local_experts,hidden,dtype",
-    workload_params(load_workloads(MoePrePermuteFwdOp), _pre_args),
-)
-def test_moe_pre_permute_bench(
-    tokens: int, top_k: int, num_local_experts: int, hidden: int, dtype: torch.dtype
-) -> None:
-    layout = ContiguousLayoutSpec.tight_physical_psum()
-    op = MoePrePermuteFwdOp(layout, num_local_experts)
-    workload = MoePermuteWorkload(tokens, top_k, num_local_experts, hidden, dtype)
+@pytest.mark.parametrize("call", manifest_calls(MoePrePermuteFwdOp))
+def test_moe_pre_permute_bench(call) -> None:
+    workload = MoePrePermuteWorkload(call)
     hidden_states, local_ids = workload.gen_inputs()
+    op = MoePrePermuteFwdOp(**call.arguments({}))
     benchmark = ManifestBenchmark(op, workload)
-    token_rows = torch.arange(tokens, device=hidden_states.device).repeat_interleave(top_k)
-    tight_slots = torch.arange(tokens * top_k, dtype=torch.int32, device=hidden_states.device)
-
-    def _torch_reference(hidden: torch.Tensor, expert_ids: torch.Tensor):
-        flat_ids = expert_ids.flatten().to(torch.int64)
-        sorted_flat_indices = torch.argsort(flat_ids, stable=True)
-        expert_input = hidden[token_rows[sorted_flat_indices]]
-        counts = torch.bincount(flat_ids, minlength=num_local_experts)
-        physical_ends = torch.cumsum(counts, dim=0).to(torch.int32)
-        inverse = torch.empty_like(sorted_flat_indices, dtype=torch.int32)
-        inverse[sorted_flat_indices] = tight_slots
-        return expert_input, physical_ends, inverse
+    expert_input, ends, inverse = op(hidden_states, local_ids)
+    ref_input, ref_ends, ref_inverse = workload.ref_program(hidden_states, local_ids)
+    # Row order inside an expert's segment is not specified; each route's row and the ends are.
+    torch.testing.assert_close(ends, ref_ends, rtol=0, atol=0)
+    torch.testing.assert_close(
+        expert_input[inverse.long()], ref_input[ref_inverse.long()], rtol=0, atol=0
+    )
 
     def _vllm_reference(hidden: torch.Tensor, expert_ids: torch.Tensor):
-        return moe_permute(hidden, None, expert_ids, num_local_experts)
+        return moe_permute(hidden, None, expert_ids, op.num_local_experts)
 
     benchmark.compare(
-        {"tileops": op, "vllm": _vllm_reference, "torch-ref": _torch_reference},
+        {"tileops": op, "vllm": _vllm_reference, "torch-ref": workload.ref_program},
         hidden_states,
         local_ids,
     )
 
 
-def _post_args(workload: dict, dtype: torch.dtype) -> tuple[int, int, int, torch.dtype]:
-    rows, hidden = workload["expert_output_shape"]
-    tokens, top_k = workload["topk_weights_shape"]
-    assert rows == tokens * top_k
-    return tokens, top_k, hidden, dtype
-
-
-@pytest.mark.parametrize(
-    "tokens,top_k,hidden,dtype",
-    workload_params(load_workloads(MoePostPermuteFwdOp), _post_args),
-)
-def test_moe_post_permute_bench(tokens: int, top_k: int, hidden: int, dtype: torch.dtype) -> None:
-    layout = ContiguousLayoutSpec.tight_physical_psum()
-    op = MoePostPermuteFwdOp(layout)
-    workload = MoeUnpermuteWorkload(tokens, top_k, hidden, dtype)
-    expert_output, inverse, weights = workload.gen_inputs()
+@pytest.mark.parametrize("call", manifest_calls(MoePostPermuteFwdOp))
+def test_moe_post_permute_bench(call) -> None:
+    workload = MoePostPermuteWorkload(call)
+    expert_output, weights, inverse = workload.gen_inputs()
+    op = MoePostPermuteFwdOp(**call.arguments({}))
     benchmark = ManifestBenchmark(op, workload)
+    torch.testing.assert_close(
+        op(expert_output, weights, inverse),
+        workload.ref_program(expert_output, weights, inverse),
+        rtol=2e-2,
+        atol=2e-2,
+    )
 
-    def _torch_reference(
-        output: torch.Tensor,
-        routing_weights: torch.Tensor,
-        inverse_indices: torch.Tensor,
-    ) -> torch.Tensor:
-        inverse_long = inverse_indices.to(torch.int64)
-        gathered = output[inverse_long].float()
-        weighted = gathered.view(tokens, top_k, hidden) * routing_weights.unsqueeze(-1)
-        return weighted.sum(dim=1).to(output.dtype)
-
-    numel = tokens * top_k
+    tokens, hidden = weights.shape[0], expert_output.shape[-1]
+    numel = inverse.numel()
     inverse_permuted_idx = torch.empty(numel, dtype=torch.int32, device=inverse.device)
     inverse_permuted_idx[inverse.long()] = torch.arange(
         numel, dtype=torch.int32, device=inverse.device
@@ -112,21 +79,11 @@ def test_moe_post_permute_bench(tokens: int, top_k: int, hidden: int, dtype: tor
         return out_vllm
 
     benchmark.compare(
-        {"tileops": op, "vllm": _vllm_reference, "torch-ref": _torch_reference},
+        {"tileops": op, "vllm": _vllm_reference, "torch-ref": workload.ref_program},
         expert_output,
         weights,
         inverse,
     )
-
-
-def _layout_args(workload: dict) -> dict:
-    extra = {k: workload[k] for k in ("alignment", "max_m") if k in workload}
-    return {"layout": workload["layout"], **extra}
-
-
-def _layout_spec(layout_args: dict):
-    extra = {k: v for k, v in layout_args.items() if k != "layout"}
-    return layout_from_preset(layout_args["layout"], **extra)
 
 
 def _assert_valid_rows_match(out: torch.Tensor, ref: torch.Tensor, valid: torch.Tensor) -> None:
@@ -153,64 +110,45 @@ def _flashinfer_segment_gemm(ends: torch.Tensor):
     return run
 
 
-def _gemm_args(workload: dict, dtype: torch.dtype) -> tuple:
-    return (
-        tuple(workload["a_shape"]),
-        tuple(workload["b_shape"]),
-        _layout_args(workload),
-        workload.get("activation"),
-        dtype,
-    )
+def _tight_psum(op) -> bool:
+    """The layout the torch and flashinfer segment baselines express: tight rows, psum ends."""
+    layout = op.layout
+    return layout.kind == "contiguous" and layout.packing.value == "tight"
 
 
-@pytest.mark.parametrize(
-    "a_shape,b_shape,layout_args,activation,dtype",
-    workload_params(load_workloads(MoeGroupedGemmFwdOp), _gemm_args),
-)
-def test_moe_grouped_gemm_bench(a_shape, b_shape, layout_args, activation, dtype) -> None:
-    op = MoeGroupedGemmFwdOp(_layout_spec(layout_args), activation=activation)
-    workload = MoeGroupedGemmStagedWorkload(
-        a_shape, b_shape, dtype=dtype, activation=activation, **layout_args
-    )
+@pytest.mark.parametrize("call", manifest_calls(MoeGroupedGemmFwdOp))
+def test_moe_grouped_gemm_bench(call) -> None:
+    workload = MoeGroupedGemmWorkload(call)
     a, b, metadata = workload.gen_inputs()
+    op = MoeGroupedGemmFwdOp(**call.arguments({}))
     benchmark = ManifestBenchmark(op, workload)
-    torch._assert_async(op.layout_guard(a, b, metadata))
+    valid = valid_rows(op.layout, metadata, a.numel() // a.shape[-1], b.shape[0])
     ref = workload.ref_program(a, b, metadata)
-    _assert_valid_rows_match(op(a, b, metadata), ref, workload.valid_rows)
+    _assert_valid_rows_match(op(a, b, metadata), ref, valid)
+    functors = {"tileops": op}
 
-    b_kn = b.transpose(1, 2).contiguous()
+    # torch._grouped_mm takes tight segments and writes the operand dtype.
+    if _tight_psum(op) and op.out_dtype is None:
+        b_kn = b.transpose(1, 2).contiguous()
 
-    def _torch_grouped_mm(a_, _b, ends):
-        output = torch._grouped_mm(a_, b_kn, offs=ends)
-        return output if activation is None else gated_activation(output, activation)
+        def _torch_grouped_mm(a_, _b, ends):
+            output = torch._grouped_mm(a_, b_kn, offs=ends)
+            return output if op.activation is None else gated_activation(output, op.activation)
 
-    _assert_valid_rows_match(_torch_grouped_mm(a, b, metadata), ref, workload.valid_rows)
-    benchmark.compare({"tileops": op, "torch-grouped-mm": _torch_grouped_mm}, a, b, metadata)
-
-
-def _mlp_args(workload: dict, dtype: torch.dtype) -> tuple:
-    return (
-        tuple(workload["expert_input_shape"]),
-        tuple(workload["w_gate_up_shape"]),
-        tuple(workload["w_down_shape"]),
-        _layout_args(workload),
-        dtype,
-    )
+        _assert_valid_rows_match(_torch_grouped_mm(a, b, metadata), ref, valid)
+        functors["torch-grouped-mm"] = _torch_grouped_mm
+    benchmark.compare(functors, a, b, metadata)
 
 
-@pytest.mark.parametrize(
-    "x_shape,w_gate_up_shape,w_down_shape,layout_args,dtype",
-    workload_params(load_workloads(MoeExpertMLPFwdOp), _mlp_args),
-)
-def test_moe_expert_mlp_bench(x_shape, w_gate_up_shape, w_down_shape, layout_args, dtype) -> None:
-    op = MoeExpertMLPFwdOp(_layout_spec(layout_args))
-    workload = MoeExpertMLPStagedWorkload(
-        x_shape, w_gate_up_shape, w_down_shape, dtype=dtype, **layout_args
-    )
+@pytest.mark.parametrize("call", manifest_calls(MoeExpertMLPFwdOp))
+def test_moe_expert_mlp_bench(call) -> None:
+    workload = MoeExpertMLPWorkload(call)
     x, w_gate_up, w_down, metadata = workload.gen_inputs()
+    op = MoeExpertMLPFwdOp(**call.arguments({}))
     benchmark = ManifestBenchmark(op, workload)
+    valid = valid_rows(op.layout, metadata, x.numel() // x.shape[-1], w_down.shape[0])
     ref = workload.ref_program(x, w_gate_up, w_down, metadata)
-    _assert_valid_rows_match(op(x, w_gate_up, w_down, metadata), ref, workload.valid_rows)
+    _assert_valid_rows_match(op(x, w_gate_up, w_down, metadata), ref, valid)
 
     gate_up_kn = w_gate_up.transpose(1, 2).contiguous()
     down_kn = w_down.transpose(1, 2).contiguous()
@@ -220,18 +158,14 @@ def test_moe_expert_mlp_bench(x_shape, w_gate_up_shape, w_down_shape, layout_arg
         activated = gated_activation(gate_up, op.activation)
         return torch._grouped_mm(activated, down_kn, offs=ends)
 
-    _assert_valid_rows_match(
-        _torch_grouped_mlp(x, w_gate_up, w_down, metadata), ref, workload.valid_rows
-    )
+    _assert_valid_rows_match(_torch_grouped_mlp(x, w_gate_up, w_down, metadata), ref, valid)
     segment_gemm = _flashinfer_segment_gemm(metadata)
     silu_and_mul = flashinfer_op("activation.silu_and_mul")
 
     def _flashinfer_mlp(x_, w_gate_up_, w_down_, _ends):
         return segment_gemm(silu_and_mul(segment_gemm(x_, w_gate_up_)), w_down_)
 
-    _assert_valid_rows_match(
-        _flashinfer_mlp(x, w_gate_up, w_down, metadata), ref, workload.valid_rows
-    )
+    _assert_valid_rows_match(_flashinfer_mlp(x, w_gate_up, w_down, metadata), ref, valid)
     benchmark.compare(
         {
             "tileops": op,

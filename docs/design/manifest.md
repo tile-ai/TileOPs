@@ -233,7 +233,7 @@ cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)",
 
 - The generator result is unified with the declaration; shape indices other than the generator's arguments are solved by that unification (here `B`) and are not written in the row.
 - The generator set is fixed ([table 17](#t-generators)); adding one changes this specification, with its domain, seed and tests. A generated tensor declares an integer dtype, `int32` or `int64`, and its values take it; a domain violation or an overflow of the declared dtype raises. Arguments may be value-primitive calls. A row always yields the same values.
-- `requires` lists named predicates on a metadata tensor's contents. The set is closed: [table 18](#t-predicates) and `attn.paged_fits` of [table 14](#t-domain). The first argument is the constrained tensor's contents, implicit; written arguments are expressions over indices, parameters, `let` and the generated values of the call's metadata tensors. They are checked at instantiation, after all generators run; at run time they are the caller's obligation. As a contract they are also checked on every discriminant point where their tensor is present: every metadata tensor a predicate reads is present, and the predicate reads the rank the constrained tensor declares.
+- `requires` names predicates on a metadata tensor's contents, from a closed set ([table 18](#t-predicates) and the predicates of [table 14](#t-domain)); the tensor's contents are the implicit first argument. A row is checked against them at instantiation; at run time they are the caller's obligation, so the validator also holds them well-formed wherever their tensor is present.
 - A tensor with `requires` has `values`.
 
 ## Composition
@@ -421,13 +421,14 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 
 **<a id="t-domain"></a>Table 14** Domain primitives
 
-| No. | Primitive                            | Result                                                                                                         |
-| --- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| 1   | `conv.out(L, k, s, p, d)`            | convolution output length                                                                                      |
-| 2   | `pool.out(L, k, s, p, d, ceil_mode)` | pooling output length                                                                                          |
-| 3   | `moe.capacity(layout, R, E)`         | masked: `E * max_m`; contiguous aligned per-row: `R + E * (alignment - 1)` rounded up to `alignment`; else `R` |
-| 4   | `mhc.expansion(Q)`                   | the positive `n` with `n * n + 2 * n == Q`; raises when none exists                                            |
-| 5   | `attn.paged_fits(cu, cap)`           | `requires` predicate: element `i` plus segment `i` of `cu` is at most `cap`                                    |
+| No. | Primitive                            | Result                                                                                                 |
+| --- | ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| 1   | `conv.out(L, k, s, p, d)`            | convolution output length                                                                              |
+| 2   | `pool.out(L, k, s, p, d, ceil_mode)` | pooling output length                                                                                  |
+| 3   | `moe.capacity(layout, R, E)`         | masked: `E * max_m`; contiguous aligned: `R + E * (alignment - 1)` rounded up to `alignment`; else `R` |
+| 4   | `mhc.expansion(Q)`                   | the positive `n` with `n * n + 2 * n == Q`; raises when none exists                                    |
+| 5   | `attn.paged_fits(cu, cap)`           | `requires` predicate: element `i` plus segment `i` of `cu` is at most `cap`                            |
+| 6   | `moe.layout_valid(layout, R, E)`     | `requires` predicate: `x` is valid metadata of `layout` for `R` rows and `E` experts                   |
 
 **<a id="t-prims"></a>Table 15** General primitives (`Axes = Int | Seq[Int] | None`)
 
@@ -457,19 +458,21 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 
 **<a id="t-generators"></a>Table 17** Metadata generators
 
-| No. | Generator                                          | Domain                                   | Result                                                                                                                                                                            |
-| --- | -------------------------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `as_tensor(L)`                                     | non-negative list                        | `[len(L)]` holding `L`                                                                                                                                                            |
-| 2   | `prefix_sum(L)`                                    | non-negative list, may be empty          | `[len(L) + 1]`, item 0 is 0, item `i` is `sum(L[:i])`                                                                                                                             |
-| 3   | `exclusive_prefix_sum(L)`                          | non-empty non-negative list              | `[len(L)]`, item `i` is `sum(L[:i])`                                                                                                                                              |
-| 4   | `padded_exclusive_prefix_sum(L, pad)`              | as above; `pad > 0`                      | `[len(L)]`, item `i` is `sum(ceil_div(n + 1, pad) * pad for n in L[:i])`                                                                                                          |
-| 5   | `paged_block_table(B, width, pool)`                | `0 < width <= pool`                      | `[B, width]`; disjoint random pages per request when `pool >= B * width`, else each request takes the first `width` of a random permutation                                       |
-| 6   | `chunk_indices(L, c)`                              | non-negative list; `c > 0`               | `[sum(ceil_div(n, c) for n in L), 2]`, rows of (request, chunk)                                                                                                                   |
-| 7   | `token_indices(L)`                                 | non-empty positive list                  | `[sum(L), 2]`; token `j` of sequence `i` is `(i, j)`                                                                                                                              |
-| 8   | `chunk_offsets(L, c)`                              | non-negative list; `c > 0`               | `prefix_sum([ceil_div(n, c) for n in L])`                                                                                                                                         |
-| 9   | `nsa_block_indices(L, block_size, selected, H_kv)` | non-empty positive list; others positive | `[sum(L), H_kv, selected]`; position `j` sees `max(ceil_div(j, block_size), 1)` blocks, draws `min(selected, visible)` distinct ones, pads with sentinel `sum(L)`, rows ascending |
-| 10  | `nsa_block_counts(T, H_kv, selected)`              | positive arguments                       | `[T, H_kv]`, each uniform in `[1, selected]`                                                                                                                                      |
-| 11  | `topk_ids(N, K, E)`                                | `0 < K <= E`                             | `[N, K]`, each row `K` distinct random values in `[0, E)`                                                                                                                         |
+| No. | Generator                                          | Domain                                      | Result                                                                                                                                                                            |
+| --- | -------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `as_tensor(L)`                                     | non-negative list                           | `[len(L)]` holding `L`                                                                                                                                                            |
+| 2   | `prefix_sum(L)`                                    | non-negative list, may be empty             | `[len(L) + 1]`, item 0 is 0, item `i` is `sum(L[:i])`                                                                                                                             |
+| 3   | `exclusive_prefix_sum(L)`                          | non-empty non-negative list                 | `[len(L)]`, item `i` is `sum(L[:i])`                                                                                                                                              |
+| 4   | `padded_exclusive_prefix_sum(L, pad)`              | as above; `pad > 0`                         | `[len(L)]`, item `i` is `sum(ceil_div(n + 1, pad) * pad for n in L[:i])`                                                                                                          |
+| 5   | `paged_block_table(B, width, pool)`                | `0 < width <= pool`                         | `[B, width]`; disjoint random pages per request when `pool >= B * width`, else each request takes the first `width` of a random permutation                                       |
+| 6   | `chunk_indices(L, c)`                              | non-negative list; `c > 0`                  | `[sum(ceil_div(n, c) for n in L), 2]`, rows of (request, chunk)                                                                                                                   |
+| 7   | `token_indices(L)`                                 | non-empty positive list                     | `[sum(L), 2]`; token `j` of sequence `i` is `(i, j)`                                                                                                                              |
+| 8   | `chunk_offsets(L, c)`                              | non-negative list; `c > 0`                  | `prefix_sum([ceil_div(n, c) for n in L])`                                                                                                                                         |
+| 9   | `nsa_block_indices(L, block_size, selected, H_kv)` | non-empty positive list; others positive    | `[sum(L), H_kv, selected]`; position `j` sees `max(ceil_div(j, block_size), 1)` blocks, draws `min(selected, visible)` distinct ones, pads with sentinel `sum(L)`, rows ascending |
+| 10  | `nsa_block_counts(T, H_kv, selected)`              | positive arguments                          | `[T, H_kv]`, each uniform in `[1, selected]`                                                                                                                                      |
+| 11  | `topk_ids(N, K, E)`                                | `0 < K <= E`                                | `[N, K]`, each row `K` distinct random values in `[0, E)`                                                                                                                         |
+| 12  | `sample_indices(n, hi)`                            | `0 <= n <= hi`                              | `[n]`, `n` distinct random values in `[0, hi)`                                                                                                                                    |
+| 13  | `moe.layout_metadata(layout, R, E)`                | `E > 0`, `R >= 0`, `R` admitted by `layout` | metadata of `layout` for `R` rows split as evenly as the layout allows                                                                                                            |
 
 Value primitive: `balanced_sizes(total, count)` requires `count > 0` and `total >= 0`; each item is `total // count`, the first `total % count` items plus one.
 

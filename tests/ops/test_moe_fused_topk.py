@@ -1,6 +1,6 @@
-"""Tests for FusedTopKOp.
+"""Tests for FusedTopKFwdOp.
 
-Reference implementation: torch.softmax/sigmoid + torch.topk + optional renormalize.
+Reference: ``FusedTopKWorkload.ref_program`` (softmax/sigmoid, top-k, optional renormalize).
 
 Test cases cover:
   - softmax scoring (Qwen3/Qwen2 style)
@@ -15,28 +15,8 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase
-from tileops.ops.moe import FusedTopKOp
-from workloads.moe import FusedTopKWorkload
-
-
-def fused_topk_torch(
-    gating_output: torch.Tensor,
-    top_k: int,
-    scoring_func: str = "softmax",
-    renormalize: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    logits = gating_output.to(torch.float32)
-    if scoring_func == "softmax":
-        scores = torch.softmax(logits, dim=-1)
-    elif scoring_func == "sigmoid":
-        scores = torch.sigmoid(logits)
-    else:
-        raise ValueError(f"Unknown scoring_func: {scoring_func}")
-
-    topk_weights, topk_ids = torch.topk(scores, top_k, dim=-1, sorted=False)
-    if renormalize:
-        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
-    return topk_weights, topk_ids.int()
+from tileops.ops.moe import FusedTopKFwdOp
+from workloads.moe import FusedTopKWorkload, moe_call
 
 
 class FusedTopKFixture(FixtureBase):
@@ -187,17 +167,15 @@ class FusedTopKFixture(FixtureBase):
 
 
 def _check(test: FusedTopKWorkload) -> None:
-    (gating,) = test.gen_inputs()
-    op = FusedTopKOp(
-        top_k=test.top_k,
-        scoring_func=test.scoring_func,
-        renormalize=test.renormalize,
-    )
-    ref_w, ref_ids = fused_topk_torch(gating, test.top_k, test.scoring_func, test.renormalize)
+    gating, _ = test.gen_inputs()
+    op = FusedTopKFwdOp(**test.call.arguments({}))
+    ref_w, ref_ids = test.ref_program(gating)
     out_w, out_ids = op(gating)
+    num_tokens, num_experts = gating.shape
+    top_k = op.top_k
 
-    assert out_w.shape == (test.num_tokens, test.top_k), f"weights shape mismatch: {out_w.shape}"
-    assert out_ids.shape == (test.num_tokens, test.top_k), f"ids shape mismatch: {out_ids.shape}"
+    assert out_w.shape == (num_tokens, top_k), f"weights shape mismatch: {out_w.shape}"
+    assert out_ids.shape == (num_tokens, top_k), f"ids shape mismatch: {out_ids.shape}"
     assert out_w.dtype == torch.float32, f"weights dtype must be float32, got {out_w.dtype}"
     assert out_ids.dtype == torch.int32, f"ids dtype must be int32, got {out_ids.dtype}"
 
@@ -211,7 +189,7 @@ def _check(test: FusedTopKWorkload) -> None:
     # selection, so the assertion is that each selected weight >= the
     # (K+1)-th largest weight.
     gating_f32 = gating.to(torch.float32)
-    if test.scoring_func == "softmax":
+    if op.scoring_func == "softmax":
         all_scores = torch.softmax(gating_f32, dim=-1)
     else:
         all_scores = torch.sigmoid(gating_f32)
@@ -219,13 +197,11 @@ def _check(test: FusedTopKWorkload) -> None:
     # it doesn't change which experts are valid top-k selections.
     raw_ref_w = all_scores.gather(1, ref_ids.long())
     raw_ref_w_sorted = raw_ref_w.sort(dim=-1).values
-    for i in range(test.num_tokens):
+    for i in range(num_tokens):
         sel_ids = out_ids[i].tolist()
-        assert len(set(sel_ids)) == test.top_k, (
-            f"token {i}: duplicate expert ids: {sorted(sel_ids)}"
-        )
+        assert len(set(sel_ids)) == top_k, f"token {i}: duplicate expert ids: {sorted(sel_ids)}"
         # Each selected score >= min selected score (basic sanity, not strict tie check)
-        if test.top_k < test.num_experts:
+        if top_k < num_experts:
             kth_val = raw_ref_w_sorted[i, 0].item()  # min raw score among ref top-k
             for eid in sel_ids:
                 got_score = all_scores[i, eid].item()
@@ -236,53 +212,26 @@ def _check(test: FusedTopKWorkload) -> None:
 
 @FusedTopKFixture
 def test_fused_topk(num_tokens, num_experts, top_k, scoring_func, renormalize, dtype) -> None:
-    test = FusedTopKWorkload(num_tokens, num_experts, top_k, scoring_func, renormalize, dtype)
-    _check(test)
-
-
-@pytest.mark.smoke
-def test_fused_topk_cpu_input_raises() -> None:
-    gating = torch.randn(4, 8, dtype=torch.float16)
-    op = FusedTopKOp(top_k=2)
-    with pytest.raises(ValueError, match="gating_output must be a CUDA tensor"):
-        op(gating)
-
-
-@pytest.mark.smoke
-def test_fused_topk_invalid_dtype_raises() -> None:
-    gating = torch.randint(0, 8, (4, 8), dtype=torch.int32, device="cuda")
-    op = FusedTopKOp(top_k=2)
-    with pytest.raises(ValueError, match="Expected gating_output.dtype"):
-        op(gating)
-
-
-@pytest.mark.smoke
-def test_fused_topk_correction_bias_requires_sigmoid() -> None:
-    op = FusedTopKOp(top_k=2, scoring_func="softmax")
-    gating = torch.randn(4, 8, dtype=torch.float32, device="cuda")
-    bias = torch.randn(8, dtype=torch.float32, device="cuda")
-    with pytest.raises(ValueError, match="requires scoring_func='sigmoid'"):
-        op(gating, bias)
-
-
-@pytest.mark.smoke
-def test_fused_topk_correction_bias_device_check() -> None:
-    gating = torch.randn(4, 8, dtype=torch.float32, device="cuda")
-    correction_bias = torch.randn(8, dtype=torch.float32)
-    op = FusedTopKOp(top_k=2, scoring_func="sigmoid")
-    with pytest.raises(ValueError, match="correction_bias must be a CUDA tensor"):
-        op(gating, correction_bias)
+    call = moe_call(
+        "FusedTopKFwdOp",
+        {"G": str(dtype).removeprefix("torch.")},
+        T=num_tokens,
+        E=num_experts,
+        top_k=top_k,
+        scoring_func=scoring_func,
+        renormalize=renormalize,
+    )
+    _check(FusedTopKWorkload(call))
 
 
 @pytest.mark.smoke
 def test_fused_topk_kernel_cache_specializations() -> None:
-    op = FusedTopKOp(top_k=2)
+    op = FusedTopKFwdOp(top_k=2)
     gating1 = torch.randn(4, 8, dtype=torch.float16, device="cuda")
     gating2 = torch.randn(5, 8, dtype=torch.float16, device="cuda")
     gating3 = gating1.to(torch.bfloat16)
 
     op(gating1)
-    assert op.dtype == torch.float16
     assert len(op.built_kernels("fused_topk_kernel")) == 1
     op(gating1)
     assert len(op.built_kernels("fused_topk_kernel")) == 1

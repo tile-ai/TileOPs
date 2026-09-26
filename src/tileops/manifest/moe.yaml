@@ -1,55 +1,43 @@
 MoePermuteAlignFwdOp:
-  ref_api: "none"
   family: moe
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      topk_ids: {dtype: "int32"}
-    outputs:
-      sorted_token_ids: {dtype: "int32"}
-      expert_ids: {dtype: "int32"}
-      num_tokens_post_pad: {dtype: "int32"}
+    forall: {T: Dim, K: Dim}
     params:
-      total_tokens: {type: int}
-      top_k: {type: int}
       num_experts: {type: int}
+      # GEMM tile height (M) each expert's token count is padded to.
       block_size: {type: int, default: 64}
+    inputs:
+      topk_ids: {dtype: int32, shape: "[T, K]", values: "topk_ids(T, K, num_experts)", requires: ["in_range(0, num_experts)"]}
+    let:
+      # Worst-case padded length: every expert, plus the invalid-id bucket, pads one partial block.
+      P: "T * K + (num_experts + 1) * (block_size - 1)"
+    outputs:
+      sorted_token_ids: {dtype: int32, shape: "[P]"}
+      expert_ids: {dtype: int32, shape: "[ceil_div(P, block_size)]"}
+      num_tokens_post_pad: {dtype: int32, shape: "[1]"}
     shape_rules:
-    - "topk_ids.shape == (total_tokens, top_k)"
-
+    - "num_experts > 0"
+    - "block_size > 0"
   workloads:
     # Kimi K2: E=384, K=8, block_size=64
-  - {total_tokens: 1, top_k: 8, num_experts: 384, block_size: 64, dtypes: [int32], label: "kimi-k2-decode"}
-  - {total_tokens: 32, top_k: 8, num_experts: 384, block_size: 64, dtypes: [int32], label: "kimi-k2-small"}
-  - {total_tokens: 512, top_k: 8, num_experts: 384, block_size: 64, dtypes: [int32], label: "kimi-k2-medium"}
-  - {total_tokens: 4096, top_k: 8, num_experts: 384, block_size: 64, dtypes: [int32], label: "kimi-k2-prefill"}
+  - {T: 1, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-decode"}
+  - {T: 32, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-small"}
+  - {T: 512, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-medium"}
+  - {T: 4096, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-prefill"}
     # DeepSeek-V3: E=256, K=8, block_size=64
-  - {total_tokens: 1, top_k: 8, num_experts: 256, block_size: 64, dtypes: [int32], label: "deepseek-v3-decode"}
-  - {total_tokens: 32, top_k: 8, num_experts: 256, block_size: 64, dtypes: [int32], label: "deepseek-v3-small"}
-  - {total_tokens: 512, top_k: 8, num_experts: 256, block_size: 64, dtypes: [int32], label: "deepseek-v3-medium"}
-  - {total_tokens: 4096, top_k: 8, num_experts: 256, block_size: 64, dtypes: [int32], label: "deepseek-v3-prefill"}
+  - {T: 1, K: 8, num_experts: 256, block_size: 64, label: "deepseek-v3-decode"}
+  - {T: 32, K: 8, num_experts: 256, block_size: 64, label: "deepseek-v3-small"}
+  - {T: 512, K: 8, num_experts: 256, block_size: 64, label: "deepseek-v3-medium"}
+  - {T: 4096, K: 8, num_experts: 256, block_size: 64, label: "deepseek-v3-prefill"}
     # Qwen3: E=128, K=8, block_size=64
-  - {total_tokens: 1, top_k: 8, num_experts: 128, block_size: 64, dtypes: [int32], label: "qwen3-decode"}
-  - {total_tokens: 32, top_k: 8, num_experts: 128, block_size: 64, dtypes: [int32], label: "qwen3-small"}
-  - {total_tokens: 512, top_k: 8, num_experts: 128, block_size: 64, dtypes: [int32], label: "qwen3-medium"}
-  - {total_tokens: 4096, top_k: 8, num_experts: 128, block_size: 64, dtypes: [int32], label: "qwen3-prefill"}
-
+  - {T: 1, K: 8, num_experts: 128, block_size: 64, label: "qwen3-decode"}
+  - {T: 32, K: 8, num_experts: 128, block_size: 64, label: "qwen3-small"}
+  - {T: 512, K: 8, num_experts: 128, block_size: 64, label: "qwen3-medium"}
+  - {T: 4096, K: 8, num_experts: 128, block_size: 64, label: "qwen3-prefill"}
   roofline:
-    # Permute-align is integer index computation; no FLOPs
+    # Integer index computation only.
     flops: "0"
-    # topk_ids read + sorted_token_ids write + expert_ids write + num_post_pad write (all int32)
-    bytes: "total_tokens * top_k * 4 + (total_tokens * top_k + (num_experts + 1) * (block_size - 1)) * 4 + ceil((total_tokens * top_k + (num_experts + 1) * (block_size - 1)) / block_size) * 4 + 4"
-
-  source:
-    kernel: tileops/kernels/moe/permute_align.py
-    op: tileops/ops/moe/permute_align.py
-    test: tests/ops/test_moe_permute_align.py
-    bench: benchmarks/ops/bench_moe_permute_align.py
-    bench_manifest_driven: true
-    kernel_map:
-      permute_align_kernel: MoePermuteAlignKernel
 
 FusedMoEExpertsFwdOp:
   ref_api: "none"
@@ -106,7 +94,7 @@ FusedMoEExpertsFwdOp:
     - stage: pre_permute
       formula: "gather only: no flops, one read and one write of the routed rows"
     - stage: expert_mlp
-      source: "tileops.perf.formulas.moe_expert_mlp_roofline"
+      formula: "rows * (6 * ffn_size * hidden_size + 6 * ffn_size) over the routed rows"
     - stage: post_permute
       formula: "weighted reduce: 2 * num_tokens * top_k * hidden_size"
 
@@ -232,56 +220,40 @@ IndexedExpertMLPFwdOp:
       expert_gemm: IndexedExpertGemmTemplate
       weighted_reduce: IndexedWeightedReduceKernel
 
-FusedTopKOp:
-  ref_api: "none"
-  # correction_bias, when passed, is added to sigmoid scores for the selection only;
-  # the returned weights stay the unbiased scores (Kimi K2 routing).
+FusedTopKFwdOp:
   family: moe
   status: implemented
-
   signature:
-    inputs:
-      gating_output: {dtype: "float16 | bfloat16 | float32"}
-      correction_bias: {dtype: "float32", optional: true}
-    outputs:
-      topk_weights: {dtype: "float32"}
-      topk_ids: {dtype: "int32"}
+    forall: {T: Dim, E: Dim, G: "DType[float16 | bfloat16 | float32]"}
     params:
       top_k: {type: int}
-      scoring_func: {type: str, default: softmax}
+      scoring_func: {type: "'softmax' | 'sigmoid'", default: softmax}
       renormalize: {type: bool, default: false}
+    inputs:
+      gating_output: {dtype: G, shape: "[T, E]", contiguous: true}
+      # Added to the sigmoid scores for the selection only; the returned weights stay the
+      # unbiased scores (Kimi K2 routing).
+      correction_bias: {dtype: float32, shape: "[E]", optional: true, contiguous: true}
+    outputs:
+      topk_weights: {dtype: float32, shape: "[T, top_k]", contiguous: true}
+      topk_ids: {dtype: int32, shape: "[T, top_k]", contiguous: true}
     shape_rules:
-    - "gating_output.shape == (num_tokens, num_experts)"
-    - "correction_bias is None or correction_bias.shape == (num_experts,)"
-    - "topk_weights.shape == (num_tokens, top_k)"
-    - "topk_ids.shape == (num_tokens, top_k)"
-    - "0 < top_k <= num_experts"
-    - "scoring_func in ('softmax', 'sigmoid')"
-    # The bias is added to sigmoid scores; softmax has no such path.
-    - "correction_bias is None or scoring_func == 'sigmoid'"
-
+    - "0 < top_k"
+    - "top_k <= E"
+    - "not present(correction_bias) or scoring_func == 'sigmoid'"
   workloads:
     # Kimi K2 routing, then Qwen3-235B-A22B, over the decode-to-prefill token range.
-  - {num_tokens: 32, num_experts: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, with_correction_bias: false, dtypes: [bfloat16], label: "kimi-k2-t32"}
-  - {num_tokens: 512, num_experts: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, with_correction_bias: false, dtypes: [bfloat16], label: "kimi-k2-t512"}
-  - {num_tokens: 4096, num_experts: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, with_correction_bias: false, dtypes: [bfloat16], label: "kimi-k2-t4096"}
+  - {T: 32, E: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, dtype_cases: [{G: bfloat16}], label: "kimi-k2-t32"}
+  - {T: 512, E: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, dtype_cases: [{G: bfloat16}], label: "kimi-k2-t512"}
+  - {T: 4096, E: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, dtype_cases: [{G: bfloat16}], label: "kimi-k2-t4096"}
     # Kimi K2 also routes with a per-expert bias, which is a second kernel build.
-  - {num_tokens: 512, num_experts: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, with_correction_bias: true, correction_bias_shape: [384], dtypes: [bfloat16], label: "kimi-k2-t512-bias"}
-  - {num_tokens: 32, num_experts: 128, top_k: 8, scoring_func: softmax, renormalize: false, with_correction_bias: false, dtypes: [bfloat16], label: "qwen3-235b-t32"}
-  - {num_tokens: 512, num_experts: 128, top_k: 8, scoring_func: softmax, renormalize: false, with_correction_bias: false, dtypes: [bfloat16], label: "qwen3-235b-t512"}
-  - {num_tokens: 4096, num_experts: 128, top_k: 8, scoring_func: softmax, renormalize: false, with_correction_bias: false, dtypes: [bfloat16], label: "qwen3-235b-t4096"}
-
+  - {T: 512, E: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}, {G: float16}, {G: float32}], label: "kimi-k2-t512-bias"}
+  - {T: 32, E: 128, top_k: 8, scoring_func: softmax, renormalize: false, dtype_cases: [{G: bfloat16}], label: "qwen3-235b-t32"}
+  - {T: 512, E: 128, top_k: 8, scoring_func: softmax, renormalize: false, dtype_cases: [{G: bfloat16}, {G: float16}, {G: float32}], label: "qwen3-235b-t512"}
+  - {T: 4096, E: 128, top_k: 8, scoring_func: softmax, renormalize: false, dtype_cases: [{G: bfloat16}], label: "qwen3-235b-t4096"}
   roofline:
-    func: "tileops.perf.formulas.fused_topk_roofline"
-
-  source:
-    kernel: tileops/kernels/moe/fused_topk.py
-    kernel_map:
-      fused_topk_kernel: FusedTopKKernel
-    op: tileops/ops/moe/fused_topk.py
-    test: tests/ops/test_moe_fused_topk.py
-    bench: benchmarks/ops/bench_moe_fused_topk.py
-    bench_manifest_driven: true
+    # Score every logit, then keep the top k; a passed bias adds one add per score.
+    flops: "2 * T * E * (1 + top_k) + (T * E if present(correction_bias) else 0)"
 
 FusedMoeFwdOp:
   ref_api: "none"
@@ -330,7 +302,7 @@ FusedMoeFwdOp:
     func: "tileops.perf.formulas.fused_moe_fwd_bytes"
     composition:
     - stage: route_select
-      source: "tileops.perf.formulas.fused_topk_roofline"
+      formula: "2 * num_tokens * num_experts * (1 + top_k), plus num_tokens * num_experts with correction_bias"
     - stage: routed_experts
       formula: "num_tokens * top_k * 6 * ffn_size * hidden_size over the experts the call routes to"
 
@@ -350,187 +322,198 @@ FusedMoeFwdOp:
     kind: composite
     stages:
     - name: route_select
-      op: FusedTopKOp
+      op: FusedTopKFwdOp
     # The tight/indexed branch is chosen inside FusedMoEExpertsFwdOp, whose
     # entry declares it; repeating it here would be one fact in two places.
     - name: routed_experts
       op: FusedMoEExpertsFwdOp
 
 MoePrePermuteFwdOp:
-  ref_api: "none"
   family: moe
   status: implemented
-  torch_compile_fullgraph: true
   signature:
-    inputs:
-      hidden_states: {dtype: "float16 | bfloat16"}
-      local_expert_ids: {dtype: "int32"}
-    outputs:
-      expert_input: {dtype: "same_as(hidden_states)"}
-      layout_metadata: {dtype: "int32"}
-      inverse_indices: {dtype: "int32"}
+    types:
+      LayoutMetadata:
+        params: {layout: MGroupedLayout, E: Dim, P: Dim}
+        match: layout
+        cases:
+        - {when: {contiguous: {metadata_kind: physical_psum}}, is: "[E]"}
+        - {when: {contiguous: {metadata_kind: per_row}}, is: "[P]"}
+    forall: {T: Dim, H: Dim, K: Dim, D: "DType[float16 | bfloat16]"}
     params:
-      layout: {type: MGroupedLayoutSpec}
+      layout: {type: MGroupedLayout}
       num_local_experts: {type: int}
+    inputs:
+      hidden_states: {dtype: D, shape: "[T, H]", contiguous: true}
+      local_expert_ids: {dtype: int32, shape: "[T, K]", contiguous: true, values: "topk_ids(T, K, num_local_experts)", requires: ["in_range(0, num_local_experts)"]}
+    let:
+      P: "moe.capacity(layout, T * K, num_local_experts)"
+    outputs:
+      expert_input: {dtype: D, shape: "[P, H]", contiguous: true}
+      layout_metadata: {dtype: int32, shape: "LayoutMetadata[layout, num_local_experts, P]", contiguous: true}
+      inverse_indices: {dtype: int32, shape: "[T * K]", contiguous: true}
     shape_rules:
-    - "hidden_states.ndim == 2"
-    - "local_expert_ids.ndim == 2"
-    - "local_expert_ids.shape[0] == hidden_states.shape[0]"
+    # A masked slab holds at most max_m routes per expert, which the ids do not promise.
+    - "layout.kind == 'contiguous'"
     - "num_local_experts > 0"
+    - "T > 0"
+    - "K > 0"
   workloads:
-  - {hidden_states_shape: [32, 128], local_expert_ids_shape: [32, 2], num_local_experts: 4, layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "small"}
-  - {hidden_states_shape: [512, 128], local_expert_ids_shape: [512, 2], num_local_experts: 4, layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "prefill"}
+  - {T: 32, H: 128, K: 2, num_local_experts: 4, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "small"}
+  - {T: 512, H: 128, K: 2, num_local_experts: 4, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "prefill"}
+    # DeepSeek-V3 under EP=8: 32 local experts, H=7168, K=8.
+  - {T: 100, H: 7168, K: 8, num_local_experts: 32, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-ep8-t100"}
   roofline:
-    func: "tileops.perf.formulas.moe_pre_permute_roofline"
-  source:
-    kernel: tileops/kernels/moe/permute_contiguous.py
-    op: tileops/ops/moe/staged.py
-    test: tests/ops/test_moe_staged_contracts.py
-    bench: benchmarks/ops/bench_moe_staged.py
-    bench_manifest_driven: true
-    kernel_map:
-      contiguous: MoePrePermuteContiguousKernel
+    # A gather: no arithmetic.
+    flops: "0"
 
 MoeGroupedGemmFwdOp:
-  ref_api: "none"
   family: moe
   status: implemented
-  torch_compile_fullgraph: true
   signature:
-    inputs:
-      a: {dtype: "float16 | bfloat16"}
-      b: {dtype: "same_as(a)"}
-      layout_metadata: {dtype: "int32"}
-    outputs:
-      output: {dtype: "same_as(a)", caller_stated: true}
+    types:
+      Rows:
+        params: {layout: MGroupedLayout, E: Dim, P: Dim, C: Dim}
+        match: layout
+        cases:
+        - {when: {masked: _}, is: "[E, layout.max_m, C]"}
+        - {when: {contiguous: _}, is: "[P, C]"}
+      LayoutMetadata:
+        params: {layout: MGroupedLayout, E: Dim, P: Dim}
+        match: layout
+        cases:
+        - {when: {masked: _}, is: "[E]"}
+        - {when: {contiguous: {metadata_kind: physical_psum}}, is: "[E]"}
+        - {when: {contiguous: {metadata_kind: per_row}}, is: "[P]"}
+    forall: {P: Dim, K: Dim, N: Dim, E: Dim, D: "DType[float16 | bfloat16]"}
     params:
-      layout: {type: MGroupedLayoutSpec}
-      # A gated activation fused into the epilogue: b stacks gate and up along N
-      # and the output keeps act(gate) * up, half of N.
-      activation: {type: "str | None", default: null, kw_only: true}
-      out_dtype: {type: "torch.float32 | None", default: null, kw_only: true}
-      out: {type: "tensor | None", default: null}
+      layout: {type: MGroupedLayout}
+      # A gated activation fused into the epilogue: b stacks gate and up along its second
+      # axis, and the output keeps act(gate) * up, N columns.
+      activation: {type: "'silu_and_mul' | 'gelu_and_mul' | None", default: null, kw_only: true}
+      out_dtype: {type: "float32 | None", default: null, kw_only: true}
+    inputs:
+      a: {dtype: D, shape: "Rows[layout, E, P, K]", contiguous: true}
+      b: {dtype: D, shape: "[E, 2 * N if present(activation) else N, K]", contiguous: true}
+      layout_metadata: {dtype: int32, shape: "LayoutMetadata[layout, E, P]", contiguous: true, values: "moe.layout_metadata(layout, R, E)", requires: ["moe.layout_valid(layout, R, E)"]}
+    let:
+      # Materialized rows of `a`.
+      R: "E * layout.max_m if layout.kind == 'masked' else P"
+    outputs:
+      output: {dtype: "coalesce_dtype(out_dtype, D)", shape: "Rows[layout, E, P, N]", buffer: out, contiguous: true}
     shape_rules:
-    - "a.ndim == 2 or a.ndim == 3"
-    - "b.ndim == 3"
-    - "a.shape[-1] == b.shape[-1]"
-    - "layout_metadata.ndim == 1"
-    - "activation is None or b.shape[1] % 2 == 0"
-    - "output.shape == (*a.shape[:-1], b.shape[1] if activation is None else b.shape[1] // 2)"
+    - "E > 0"
+    - "K > 0"
+    # An aligned layout materializes whole tiles.
+    - "layout.kind == 'masked' or layout.packing == 'tight' or P % layout.alignment == 0"
   workloads:
-  - {a_shape: [4096, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, dtypes: [bfloat16], label: "deepseek-v3-decode-gate-up"}
-  - {a_shape: [32768, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, dtypes: [bfloat16], label: "deepseek-v3-prefill-gate-up"}
-  - {a_shape: [4096, 2048], b_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [bfloat16], label: "deepseek-v3-decode-down"}
-  - {a_shape: [32768, 2048], b_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [bfloat16], label: "deepseek-v3-prefill-down"}
-  - {a_shape: [4096, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, activation: silu_and_mul, dtypes: [bfloat16], label: "deepseek-v3-decode-gate-up-fused"}
-  - {a_shape: [32768, 7168], b_shape: [256, 4096, 7168], layout: tight_physical_psum, activation: silu_and_mul, dtypes: [bfloat16], label: "deepseek-v3-prefill-gate-up-fused"}
+    # DeepSeek-V3: 256 experts, H=7168, F=2048; gate_up is [E, 2F, H], down is [E, H, F].
+  - {P: 4096, K: 7168, E: 256, N: 4096, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}, {D: float16}], label: "deepseek-v3-decode-gate-up"}
+  - {P: 32768, K: 7168, E: 256, N: 4096, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-prefill-gate-up"}
+  - {P: 4096, K: 2048, E: 256, N: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-decode-down"}
+  - {P: 4096, K: 2048, E: 256, N: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, out_dtype: float32, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-decode-down"}
+  - {P: 32768, K: 2048, E: 256, N: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-prefill-down"}
+  - {P: 4096, K: 7168, E: 256, N: 2048, activation: silu_and_mul, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-decode-gate-up-fused"}
+  - {P: 32768, K: 7168, E: 256, N: 2048, activation: silu_and_mul, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-prefill-gate-up-fused"}
+    # DeepSeek-V3 under EP=8 with a masked dispatch: 32 local experts, 128 slots each.
+  - {K: 7168, E: 32, N: 4096, layout: {masked: {max_m: 128}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-ep8-masked-gate-up"}
   roofline:
-    func: "tileops.perf.formulas.moe_grouped_gemm_roofline"
-  source:
-    kernel: tileops/kernels/moe/moe_grouped_gemm.py
-    op: tileops/ops/moe/staged.py
-    test: tests/ops/test_moe_grouped_gemm.py
-    bench: benchmarks/ops/bench_moe_staged.py
-    bench_manifest_driven: true
-    kernel_map:
-      grouped_gemm: MoeGroupedGemmKernel
+    # The contraction, and the fused gated activation (six per output element) when present.
+    flops: "2 * R * (2 * N if present(activation) else N) * K + (6 * R * N if present(activation) else 0)"
 
 MoeExpertMLPFwdOp:
-  ref_api: "none"
   family: moe
   status: implemented
   signature:
-    inputs:
-      expert_input: {dtype: "float16 | bfloat16"}
-      w_gate_up: {dtype: "same_as(expert_input)"}
-      w_down: {dtype: "same_as(expert_input)"}
-      layout_metadata: {dtype: "int32"}
-    outputs:
-      output: {dtype: "same_as(expert_input)"}
+    types:
+      Rows:
+        params: {layout: MGroupedLayout, E: Dim, P: Dim, C: Dim}
+        match: layout
+        cases:
+        - {when: {masked: _}, is: "[E, layout.max_m, C]"}
+        - {when: {contiguous: _}, is: "[P, C]"}
+      LayoutMetadata:
+        params: {layout: MGroupedLayout, E: Dim, P: Dim}
+        match: layout
+        cases:
+        - {when: {masked: _}, is: "[E]"}
+        - {when: {contiguous: {metadata_kind: physical_psum}}, is: "[E]"}
+        - {when: {contiguous: {metadata_kind: per_row}}, is: "[P]"}
+    forall: {P: Dim, H: Dim, F: Dim, E: Dim, D: "DType[float16 | bfloat16]"}
     params:
-      layout: {type: MGroupedLayoutSpec}
-      activation: {type: str, default: silu_and_mul}
-      out: {type: "tensor | None", default: null}
+      layout: {type: MGroupedLayout}
+      activation: {type: "'silu_and_mul' | 'gelu_and_mul'", default: silu_and_mul}
+    inputs:
+      expert_input: {dtype: D, shape: "Rows[layout, E, P, H]", contiguous: true}
+      w_gate_up: {dtype: D, shape: "[E, 2 * F, H]", contiguous: true}
+      w_down: {dtype: D, shape: "[E, H, F]", contiguous: true}
+      layout_metadata: {dtype: int32, shape: "LayoutMetadata[layout, E, P]", contiguous: true, values: "moe.layout_metadata(layout, R, E)", requires: ["moe.layout_valid(layout, R, E)"]}
+    let:
+      # Materialized rows of `expert_input`.
+      R: "E * layout.max_m if layout.kind == 'masked' else P"
+    outputs:
+      output: {dtype: D, shape: "Rows[layout, E, P, H]", buffer: out, contiguous: true}
     shape_rules:
-    - "expert_input.ndim == 2 or expert_input.ndim == 3"
-    - "w_gate_up.ndim == 3"
-    - "w_down.ndim == 3"
-    - "w_gate_up.shape[0] == w_down.shape[0]"
-    - "w_gate_up.shape[1] == 2 * w_down.shape[2]"
-    - "expert_input.shape[-1] == w_gate_up.shape[-1]"
-    - "layout_metadata.ndim == 1"
-    - "output.shape == (*expert_input.shape[:-1], w_down.shape[1])"
+    - "E > 0"
+    - "H > 0"
+    - "F > 0"
+    # An aligned layout materializes whole tiles.
+    - "layout.kind == 'masked' or layout.packing == 'tight' or P % layout.alignment == 0"
   workloads:
-  - {expert_input_shape: [4096, 7168], w_gate_up_shape: [128, 4096, 7168], w_down_shape: [128, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "qwen3-235b-decode"}
-  - {expert_input_shape: [32768, 7168], w_gate_up_shape: [128, 4096, 7168], w_down_shape: [128, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "qwen3-235b-prefill"}
-  - {expert_input_shape: [4096, 7168], w_gate_up_shape: [256, 4096, 7168], w_down_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-decode"}
-  - {expert_input_shape: [32768, 7168], w_gate_up_shape: [256, 4096, 7168], w_down_shape: [256, 7168, 2048], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "deepseek-v3-prefill"}
+    # Qwen3-235B-A22B: H=7168, F=2048, E=128; DeepSeek-V3: E=256.
+  - {P: 4096, H: 7168, E: 128, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-decode"}
+  - {P: 32768, H: 7168, E: 128, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-prefill"}
+  - {P: 4096, H: 7168, E: 256, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-decode"}
+  - {P: 32768, H: 7168, E: 256, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-prefill"}
   roofline:
-    func: "tileops.perf.formulas.moe_expert_mlp_roofline"
-    composition:
-    - stage: gate_up
-      source: "tileops.perf.formulas.moe_grouped_gemm_roofline"
-    - stage: down
-      source: "tileops.perf.formulas.moe_grouped_gemm_roofline"
-
+    # Two GEMMs (2 * 2F * H and 2 * H * F per row) and the gated activation (6F per row).
+    flops: "R * (6 * F * H + 6 * F)"
   composition:
     kind: composite
     stages:
-    - name: gate_up
-      op: MoeGroupedGemmFwdOp
-    - name: down
-      op: MoeGroupedGemmFwdOp
-  source:
-    kernel: tileops/kernels/moe/moe_grouped_gemm.py
-    op: tileops/ops/moe/staged.py
-    test: tests/ops/test_moe_grouped_gemm.py
-    bench: benchmarks/ops/bench_moe_staged.py
-    bench_manifest_driven: true
-    kernel_map:
-      grouped_gemm: MoeGroupedGemmKernel
+    - {name: gate_up, op: MoeGroupedGemmFwdOp}
+    - {name: down, op: MoeGroupedGemmFwdOp}
 
 MoePostPermuteFwdOp:
-  ref_api: "none"
   family: moe
   status: implemented
-  torch_compile_fullgraph: true
   signature:
-    inputs:
-      expert_output: {dtype: "float16 | bfloat16"}
-      topk_weights: {dtype: "float32"}
-      inverse_indices: {dtype: "int32"}
-    outputs:
-      output: {dtype: "same_as(expert_output)", caller_stated: true}
+    types:
+      Rows:
+        params: {layout: MGroupedLayout, E: Dim, P: Dim, C: Dim}
+        match: layout
+        cases:
+        - {when: {masked: _}, is: "[E, layout.max_m, C]"}
+        - {when: {contiguous: _}, is: "[P, C]"}
+    forall: {T: Dim, K: Dim, E: Dim, P: Dim, H: Dim, D: "DType[float16 | bfloat16]"}
     params:
-      layout: {type: MGroupedLayoutSpec}
+      layout: {type: MGroupedLayout}
       epilogue: {type: "RoutingEpilogueSpec | None", default: null}
-      out_dtype: {type: "bfloat16 | float16 | None", default: null}
-      out: {type: "tensor | None", default: null}
+      # The dtype the reduced result is written in; None keeps the expert output's.
+      out_dtype: {type: "float16 | bfloat16 | None", default: null}
+    inputs:
+      expert_output: {dtype: D, shape: "Rows[layout, E, P, H]", contiguous: true}
+      topk_weights: {dtype: float32, shape: "[T, K]", contiguous: true}
+      # The materialized row each route's result sits in.
+      inverse_indices: {dtype: int32, shape: "[T * K]", contiguous: true, values: "sample_indices(T * K, R)", requires: ["in_range(0, R)"]}
+    let:
+      # Materialized rows of `expert_output`.
+      R: "E * layout.max_m if layout.kind == 'masked' else P"
+    outputs:
+      output: {dtype: "coalesce_dtype(out_dtype, D)", shape: "[T, H]", buffer: out, contiguous: true}
     shape_rules:
-    - "expert_output.ndim == 2 or expert_output.ndim == 3"
-    - "topk_weights.ndim == 2"
-    - "output.shape == (topk_weights.shape[0], expert_output.shape[-1])"
+    - "H > 0"
   workloads:
-  - {expert_output_shape: [64, 128], topk_weights_shape: [32, 2], inverse_indices_shape: [64], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "small"}
-  - {expert_output_shape: [1024, 128], topk_weights_shape: [512, 2], inverse_indices_shape: [1024], layout: tight_physical_psum, dtypes: [float16, bfloat16], label: "prefill"}
+  - {T: 32, K: 2, P: 64, H: 128, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "small"}
+    # The output dtype stated explicitly, equal to the expert output's.
+  - {T: 32, K: 2, P: 64, H: 128, out_dtype: float16, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}], label: "small"}
+  - {T: 32, K: 2, P: 64, H: 128, out_dtype: bfloat16, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "small"}
+  - {T: 512, K: 2, P: 1024, H: 128, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "prefill"}
+    # DeepSeek-V3 under EP=8: H=7168, K=8.
+  - {T: 100, K: 8, P: 800, H: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-ep8-t100"}
   roofline:
-    vars:
-      # output.shape == (topk_weights.shape[0], expert_output.shape[-1]), per shape_rules.
-      tokens: "topk_weights.shape[0]"
-      top_k: "topk_weights.shape[1]"
-      hidden: "expert_output.shape[-1]"
-      rows: "product(expert_output.shape) // expert_output.shape[-1]"
-      index_elems: "product(inverse_indices.shape)"
-    flops: "2 * tokens * top_k * hidden"
-    bytes: "(rows * hidden + tokens * hidden) * elem_bytes + (tokens * top_k + index_elems) * 4"
-  source:
-    kernel: tileops/ops/moe/staged.py
-    op: tileops/ops/moe/staged.py
-    test: tests/ops/test_moe_staged_contracts.py
-    bench: benchmarks/ops/bench_moe_staged.py
-    bench_manifest_driven: true
-    kernel_map:
-      contiguous: _ContiguousPostPermuteKernel
+    # The epilogue's scale is a float field of an object the language does not read.
+    func: "tileops.perf.formulas.moe_post_permute_roofline"
 
 FusedMoeSharedExpertFwdOp:
   ref_api: "none"

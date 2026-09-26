@@ -8,13 +8,12 @@ Two assertions per op, both from a cold instance:
    change the graph.
 2. ``torch.compile(op, fullgraph=True)`` returns the shapes and dtypes the fake
    promised, and the same values eager returns wherever the kernel is
-   reproducible. This is the evidence behind the manifest's
-   ``torch_compile_fullgraph``.
+   reproducible. This is the evidence behind each class's compile-boundary
+   declaration.
 
 A composite registers no operator of its own, so the last test asserts the other
 half: the graph of ``FusedMoEExpertsFwdOp`` holds its leaves'
-operators and nothing else. ``FusedMoeFwdOp`` is absent because the routing op it
-builds has no boundary yet.
+operators and nothing else.
 """
 
 import pytest
@@ -28,6 +27,7 @@ from tests.compile_contract import (
 )
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
+    FusedTopKFwdOp,
     MaskedLayoutSpec,
     MoeGroupedGemmFwdOp,
     MoePermuteAlignFwdOp,
@@ -66,7 +66,7 @@ def _grouped_gemm_inputs(numel: int, num_experts: int, n: int, k: int):
 
 def _permute_align_case():
     def make():
-        return MoePermuteAlignFwdOp(_TOKENS, _TOP_K, _NUM_EXPERTS, block_size=4)
+        return MoePermuteAlignFwdOp(_NUM_EXPERTS, block_size=4)
 
     topk_ids = torch.randint(0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda")
     # Only the padded token count is reproducible: a slot inside an expert is claimed
@@ -129,7 +129,18 @@ def _staged_grouped_gemm_masked_case():
     return make, (a, b, masked_m), ()
 
 
+def _fused_topk_case(with_bias: bool = False):
+    def make():
+        return FusedTopKFwdOp(_TOP_K, scoring_func="sigmoid", renormalize=True)
+
+    gating = torch.randn(_TOKENS, _NUM_EXPERTS, dtype=torch.bfloat16, device="cuda")
+    bias = torch.randn(_NUM_EXPERTS, dtype=torch.float32, device="cuda")
+    return make, (gating, bias) if with_bias else (gating,), "all"
+
+
 _LEAF_CASES = {
+    "fused_topk": _fused_topk_case,
+    "fused_topk_bias": lambda: _fused_topk_case(with_bias=True),
     "staged_grouped_gemm": _staged_grouped_gemm_case,
     "staged_grouped_gemm_fp16": lambda: _staged_grouped_gemm_case(torch.float16),
     "staged_grouped_gemm_fused": lambda: _staged_grouped_gemm_case(activation="silu_and_mul"),
@@ -255,6 +266,7 @@ def test_small_route_experts_compile_to_the_indexed_leaf() -> None:
 
 
 for _op_cls in (
+    FusedTopKFwdOp,
     MoePermuteAlignFwdOp,
     MoePrePermuteFwdOp,
     MoePostPermuteFwdOp,
