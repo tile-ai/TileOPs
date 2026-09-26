@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from tileops.manifest.workload import CallView
-    from tileops.ops.op_base import Op
 
 __all__ = [
     "adaptive_pool2d_roofline",
@@ -32,7 +31,6 @@ __all__ = [
     "gqa_prefill_varlen_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
     "gqa_varlen_fwd_roofline",
-    "grouped_gemm_roofline",
     "moe_post_permute_roofline",
     "nsa_closed_chunk_pairs",
     "nsa_cmp_fwd_varlen_roofline",
@@ -272,31 +270,6 @@ def fused_moe_shared_expert_fwd_roofline(call) -> tuple[int, int]:
     flops += 2 * t * weights
     nbytes += (weights + 2 * t * h) * elem
     return flops, nbytes
-
-
-def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
-    batch_sum = int(op.batch_sum)
-    batch_count = int(op.batch_count)
-    # The op carries both spellings and leaves one unset, so a default on the
-    # missing name is not enough.
-    n = int(getattr(op, "N", None) or getattr(op, "n", 0))
-    k = int(getattr(op, "K", None) or getattr(op, "k", 0))
-    elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
-
-    flops = 2 * batch_sum * n * k
-    if not bool(op.transpose_a):
-        memory_a = batch_sum * k
-        memory_c = batch_sum * n
-        memory_b = batch_count * n * k
-    else:
-        memory_a = batch_sum * n
-        memory_c = batch_count * n * k
-        memory_b = k * batch_sum if bool(op.transpose_b) else batch_sum * k
-    # Two of the three int32 tensors: the kernels index batch_sizes and
-    # batch_offsets, and take batch_padded_offsets without reading it -- the
-    # templates pad nothing.
-    metadata_bytes = 2 * batch_count * 4
-    return int(flops), int((memory_a + memory_b + memory_c) * elem + metadata_bytes)
 
 
 def fft_c2c_roofline(call: "CallView") -> tuple[int, int]:
