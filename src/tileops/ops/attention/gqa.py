@@ -3,7 +3,7 @@ from typing import Callable, ClassVar, Dict, Optional
 
 import torch
 
-from tileops.backend import Target
+from tileops.backend import BUILTIN, Target
 from tileops.kernels.attention import (
     FlashAttnBwdPreprocessKernel,
     GQABwdWgmmaPipelinedKernel,
@@ -1298,7 +1298,9 @@ class GroupedQueryAttentionPagedFwdOp(Op):
     Packed Q and its cumulative sequence lengths cover both prefill and decode.
     ``page_table`` maps logical pages to physical entries in ``k_pages`` and
     ``v_pages``. This Op reads the cache only: allocation, append, and mutation
-    remain runtime responsibilities. The shell has no BUILTIN kernel yet.
+    remain runtime responsibilities. The current BUILTIN path serves the
+    one-query-token, 16-bit decode subset; the rest of the public contract
+    remains available to external targets and future in-tree implementations.
     """
 
     def __init__(
@@ -1358,11 +1360,16 @@ class GroupedQueryAttentionPagedFwdOp(Op):
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
         self.target = target
+        self._roofline_kwargs: Optional[dict] = None
+        self._last_input_dtype: Optional[torch.dtype] = None
         self.dispatch_kernel(kernel_map)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {}
+        return {
+            "gqa_decode_paged_kernel": GQADecodePagedKernel,
+            "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,
+        }
 
     def _infer_output_shapes(
         self,
@@ -1421,7 +1428,54 @@ class GroupedQueryAttentionPagedFwdOp(Op):
                 raise ValueError(f"{name} must have float16 or bfloat16 dtype")
 
     def eval_roofline(self) -> tuple[int, int]:
-        raise NotImplementedError("Paged GQA has no in-tree implementation yet")
+        if self._roofline_kwargs is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.eval_roofline() requires a prior forward() call"
+            )
+        from tileops.perf.formulas import gqa_decode_paged_roofline
+
+        return gqa_decode_paged_roofline(**self._roofline_kwargs)
+
+    def compute_roof(self) -> str:
+        """Paged attention's contractions are priced on tensor cores."""
+        return tensor_core_roof(self._last_input_dtype)
+
+    def paged_call(self, inputs: tuple[Optional[torch.Tensor], ...]) -> AttentionCall:
+        """Describe one paged call using runtime tensor geometry and Op semantics."""
+        q, k_pages, _v_pages, page_table, cache_seqlens, cu_q, *_optional = inputs
+        assert q is not None and k_pages is not None
+        assert page_table is not None and cache_seqlens is not None and cu_q is not None
+        _, heads, dim = q.shape
+        num_pages, page_size, heads_kv, _ = k_pages.shape
+        batch = cache_seqlens.shape[0]
+        q_bounds = [int(value) for value in cu_q.detach().cpu().tolist()]
+        q_lens = [end - start for start, end in zip(q_bounds[:-1], q_bounds[1:], strict=True)]
+        return AttentionCall(
+            dtype=q.dtype,
+            batch=batch,
+            heads=heads,
+            heads_kv=heads_kv,
+            dim=dim,
+            max_seqlen_q=max(q_lens, default=0),
+            seqlen_kv=num_pages * page_size,
+            page_size=page_size,
+            max_pages_per_req=page_table.shape[1],
+            is_causal=self.is_causal,
+            sm_scale=self.sm_scale,
+            softcap=self.softcap,
+            window_size_left=self.window_size_left,
+            window_size_right=self.window_size_right,
+            is_fp8=q.dtype == fp8_dtype() or k_pages.dtype == fp8_dtype(),
+            is_uniform=len(set(q_lens)) <= 1,
+            cache_dtype=k_pages.dtype,
+            fuse_rope=self.pos_encoding_mode == "rope",
+            device=q.device,
+        )
+
+    def _get_kernel(
+        self, inputs: tuple[Optional[torch.Tensor], ...]
+    ) -> Callable[..., torch.Tensor]:
+        return self.kernel_for("gqa_paged", inputs, self.paged_call(inputs))
 
     def _validate_forward_inputs(
         self,
@@ -1450,6 +1504,11 @@ class GroupedQueryAttentionPagedFwdOp(Op):
             raise ValueError("page_table and cache_seqlens must have the same batch size")
         if cu_seqlens_q.shape != (batch + 1,):
             raise ValueError(f"cu_seqlens_q must have shape {(batch + 1,)}")
+        q_bounds = [int(value) for value in cu_seqlens_q.detach().cpu().tolist()]
+        if q_bounds[0] != 0 or q_bounds[-1] != q.shape[0]:
+            raise ValueError("cu_seqlens_q must span the packed q tensor")
+        if any(end < start for start, end in zip(q_bounds[:-1], q_bounds[1:], strict=True)):
+            raise ValueError("cu_seqlens_q must be non-decreasing")
 
         _, heads, dim = q.shape
         _, page_size, heads_kv, dim_kv = k_pages.shape
@@ -1577,8 +1636,29 @@ class GroupedQueryAttentionPagedFwdOp(Op):
             rope_cos,
             rope_sin,
         )
-        kernel = self.kernel_for("gqa_paged", inputs)
-        return kernel(*inputs)
+        kernel = self._get_kernel(inputs)
+        self._last_input_dtype = q.dtype
+        self._roofline_kwargs = {
+            "q_shape": tuple(q.shape),
+            "kv_shape": (k_pages.shape[0] * k_pages.shape[1], *k_pages.shape[2:]),
+            "cache_seqlens": cache_seqlens,
+            "page_size": k_pages.shape[1],
+            "dtype": q.dtype,
+        }
+        if self.settled_target != BUILTIN:
+            return kernel(*inputs)
+
+        q_c, k_c, v_c, table_c, lengths_c, *_ = inputs
+        assert q_c is not None and k_c is not None and v_c is not None
+        assert table_c is not None and lengths_c is not None
+        output = kernel(
+            q_c,
+            k_c.flatten(0, 1),
+            v_c.flatten(0, 1),
+            lengths_c,
+            table_c,
+        )
+        return output
 
 
 class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
@@ -2266,11 +2346,14 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
             batch=self.batch,
             heads=self.heads,
             heads_kv=self.heads_kv,
+            max_seqlen_q=1,
             seqlen_kv=self.seqlen_kv,
             dim=self.dim,
             page_size=self.page_size,
+            max_pages_per_req=self.seqlen_kv // self.page_size,
             sm_scale=self.sm_scale,
             softcap=self.softcap,
+            cache_dtype=dtype,
             tune=self.tune,
             device=device,
         )

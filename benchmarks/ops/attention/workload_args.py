@@ -188,14 +188,12 @@ def mha_decode_paged_args(workload: dict[str, Any]) -> tuple[int, int, int, int,
 def gqa_decode_paged_args(
     workload: dict[str, Any],
 ) -> tuple[int, int, int, int, int, int, float | None, float | None]:
-    batch, heads, dim = workload["q_shape"]
-    seq_len_kv, heads_kv, _ = workload["kv_shape"]
     return (
-        batch,
-        heads,
-        heads_kv,
-        seq_len_kv,
-        dim,
+        workload["batch"],
+        workload["heads"],
+        workload["heads_kv"],
+        workload["seqlen_kv"],
+        workload["dim"],
         workload["page_size"],
         workload.get("sm_scale"),
         workload.get("softcap"),
