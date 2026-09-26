@@ -33,7 +33,7 @@ from benchmarks.benchmark_base import (
     workload_params,
 )
 from tileops.manifest import load_workloads
-from tileops.ops.moe import FusedMoeFwdOp, FusedTopKOp
+from tileops.ops.moe import FusedMoeFwdOp, FusedTopKFwdOp
 from workloads.moe import FusedMoeWorkload
 
 
@@ -148,7 +148,7 @@ def _run_bench(
         )
     else:
         # torch-ref baseline: memory-efficient per-expert GEMM loop.
-        fk = FusedTopKOp(
+        fk = FusedTopKFwdOp(
             top_k=top_k,
             scoring_func=scoring_func,
             renormalize=renormalize,

@@ -29,12 +29,6 @@ def _t(*shape: int, dtype: torch.dtype = F16) -> torch.Tensor:
     return torch.empty(shape, dtype=dtype)
 
 
-def _layout():
-    from tileops.ops.moe.contracts import ContiguousLayoutSpec
-
-    return ContiguousLayoutSpec.tight_physical_psum()
-
-
 def _fused_moe(**extra):
     return dict(num_tokens=8, num_experts=4, top_k=2, hidden_size=64, ffn_size=128, **extra)
 
@@ -109,19 +103,6 @@ _CASES = {
     "GemmW4A16FwdOp": lambda c: (
         c(),
         (_t(16, 128), _t(16, 64, dtype=U8), _t(16, 1), _t(16, 1, dtype=U8)),
-    ),
-    "MoePrePermuteFwdOp": lambda c: (c(_layout(), 4), (_t(32, 128), _t(32, 2, dtype=I32))),
-    "MoeGroupedGemmFwdOp": lambda c: (
-        c(_layout()),
-        (_t(32, 64), _t(4, 64, 64), _t(4, dtype=I32)),
-    ),
-    "MoePostPermuteFwdOp": lambda c: (
-        c(_layout()),
-        (_t(64, 128), _t(32, 2, dtype=F32), _t(64, dtype=I32)),
-    ),
-    "MoeExpertMLPFwdOp": lambda c: (
-        c(_layout()),
-        (_t(32, 64), _t(4, 128, 64), _t(4, 64, 64), _t(4, dtype=I32)),
     ),
     "FusedMoEExpertsFwdOp": lambda c: (
         c(**_fused_moe()),

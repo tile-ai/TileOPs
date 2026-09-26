@@ -49,9 +49,7 @@ __all__ = [
     "mean_pooling_fwd_roofline",
     "mhc_post_roofline",
     "mhc_pre_roofline",
-    "moe_expert_mlp_roofline",
-    "moe_grouped_gemm_roofline",
-    "moe_pre_permute_roofline",
+    "moe_post_permute_roofline",
     "rope_position_ids_roofline",
     "rope_roofline",
     "ssd_chunk_scan_fwd_roofline",
@@ -727,24 +725,14 @@ def deepseek_dsa_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[
     return int(flops), int(nbytes)
 
 
-def fused_topk_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for FusedTopKOp: score every logit, then keep the top k of them.
-
-    Func-mode: the float32 ``correction_bias`` a sigmoid call may pass is read at a
-    different width than the logits, so one ``elem_bytes`` cannot express the total.
-    """
-    num_tokens, num_experts = op.gating_output_shape
-    top_k = int(op.top_k)
-    elem_bytes = _dtype_itemsize(op.dtype)
-
-    flops = num_tokens * num_experts * 2 * (1 + top_k)
-    # Out: one float32 weight and one int32 id per kept slot.
-    nbytes = num_tokens * num_experts * elem_bytes + num_tokens * top_k * 8
-    if _supplied(op, "correction_bias"):
-        # One add per score before the selection reads it, and the bias read itself.
-        flops += num_tokens * num_experts
-        nbytes += num_experts * 4
-    return int(flops), int(nbytes)
+def moe_post_permute_roofline(call) -> tuple[int, int]:
+    """One multiply-add per route and hidden element, and a scale per output element when the
+    routing epilogue carries a factor other than one; each tensor moves once."""
+    t, k, h = call.ix["T"], call.ix["K"], call.ix["H"]
+    epilogue = call.ix["epilogue"]
+    scaled = epilogue is not None and epilogue.routed_scaling_factor != 1.0
+    flops = 2 * t * k * h + (t * h if scaled else 0)
+    return flops, sum(call.bytes(name) for name in call.tensors)
 
 
 def fused_moe_fwd_bytes(op: "Op") -> tuple[int, int]:
@@ -919,68 +907,6 @@ def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
     # templates pad nothing.
     metadata_bytes = 2 * batch_count * 4
     return int(flops), int((memory_a + memory_b + memory_c) * elem + metadata_bytes)
-
-
-def _staged_moe_input_shapes(op: "Op") -> tuple:
-    if getattr(op, "input_shapes", None) is None or getattr(op, "dtype", None) is None:
-        raise RuntimeError(f"{type(op).__name__}.eval_roofline requires a prior forward call")
-    return tuple(op.input_shapes)
-
-
-def _staged_moe_rows(a_shape: tuple) -> int:
-    # Contiguous layouts hand over [M, K], masked ones [E, max_m, K].
-    rows = 1
-    for dim in a_shape[:-1]:
-        rows *= int(dim)
-    return rows
-
-
-def moe_grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
-    # Imported here: this module is a leaf the op layer imports, not the other way round.
-    from tileops.ops._output_dtype import output_dtype
-
-    a_shape, b_shape, meta_shape = _staged_moe_input_shapes(op)
-    rows = _staged_moe_rows(a_shape)
-    num_experts, n, k = (int(dim) for dim in b_shape)
-    elem = op.dtype.itemsize
-    # The output width is the op's, not the operands': out_dtype may keep fp32,
-    # and a fused gated activation writes act(gate) * up, half of N.
-    out_elem = output_dtype(op, "output", op.dtype).itemsize
-    n_out = n // 2 if op.activation is not None else n
-    flops = 2 * rows * n * k
-    nbytes = (rows * k + num_experts * n * k) * elem + rows * n_out * out_elem
-    nbytes += int(meta_shape[0]) * 4
-    return int(flops), int(nbytes)
-
-
-def moe_pre_permute_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for layout-dependent pre-permute outputs."""
-    input_shapes = getattr(op, "input_shapes", None)
-    dtype = getattr(op, "dtype", None)
-    if input_shapes is None or dtype is None:
-        raise RuntimeError(f"{type(op).__name__}.eval_roofline() requires a prior forward() call")
-
-    hidden_shape, ids_shape = input_shapes
-    output_shapes = op._infer_output_shapes(hidden_shape, ids_shape)
-    nbytes = (prod(hidden_shape) + prod(output_shapes["expert_input"])) * dtype.itemsize
-    nbytes += (
-        prod(ids_shape)
-        + prod(output_shapes["layout_metadata"])
-        + prod(output_shapes["inverse_indices"])
-    ) * 4
-    return 0, int(nbytes)
-
-
-def moe_expert_mlp_roofline(op: "Op") -> tuple[int, int]:
-    x_shape, gate_shape, down_shape, meta_shape = _staged_moe_input_shapes(op)
-    rows = _staged_moe_rows(x_shape)
-    num_experts, two_ffn, hidden = (int(dim) for dim in gate_shape)
-    ffn = int(down_shape[2])
-    elem = op.dtype.itemsize
-    flops = rows * (2 * two_ffn * hidden + 6 * ffn + 2 * hidden * ffn)
-    weights = num_experts * two_ffn * hidden + num_experts * hidden * ffn
-    nbytes = (2 * rows * hidden + weights) * elem + int(meta_shape[0]) * 4
-    return int(flops), int(nbytes)
 
 
 def rope_roofline(op: "Op") -> tuple[int, int]:

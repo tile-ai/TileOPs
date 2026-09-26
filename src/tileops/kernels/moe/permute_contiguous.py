@@ -368,7 +368,7 @@ class MoePrePermuteContiguousKernel(Kernel):
             else math.ceil((self.numel + self.num_experts * (self.alignment - 1)) / self.alignment)
             * self.alignment
         )
-        self.init_config(config, tune)
+        self.init_config(config, tune or call.tune)
 
         if self.layout_key == "tight_physical_psum":
             self._parallel_scan_fns = None

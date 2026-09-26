@@ -2,228 +2,102 @@ import math
 
 import torch
 
-from workloads.workload_base import WorkloadBase
+from tileops.manifest import load_adts, load_manifest
+from tileops.manifest.plan import entry_plan
+from tileops.manifest.workload import Call, instantiate
+from workloads.workload_base import CallWorkload, WorkloadBase
 
 
-class FusedTopKWorkload(WorkloadBase):
-    def __init__(
-        self,
-        num_tokens,
-        num_experts,
-        top_k,
-        scoring_func,
-        renormalize,
-        dtype,
-        with_correction_bias=False,
-    ):
-        self.num_tokens = num_tokens
-        self.num_experts = num_experts
-        self.top_k = top_k
-        self.scoring_func = scoring_func
-        self.renormalize = renormalize
-        self.dtype = dtype
-        self.with_correction_bias = with_correction_bias
+def moe_call(op: str, dtype_case: dict | None = None, **row) -> Call:
+    """The manifest call of *op* that *row* describes, as a workload row would.
 
-    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        g = self.rng(device="cuda")
-        gating = torch.randn(
-            self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda", generator=g
-        )
-        if not self.with_correction_bias:
-            return (gating,)
-        bias = torch.randn(self.num_experts, dtype=torch.float32, device="cuda", generator=g) * 0.1
-        return gating, bias
+    A test picks its own shapes; the call still takes its metadata from the entry's
+    generators and its contract from the entry's signature (docs/design/manifest.md § Rows).
+    """
+    plan = entry_plan(op, load_manifest()[op], load_adts(), resolve=False)
+    return instantiate(plan, {**row, "label": "test"}, dtype_case or {})
 
 
-class MoePermuteWorkload(WorkloadBase):
-    def __init__(self, total_tokens, top_k, num_experts, hidden_size, dtype):
-        self.total_tokens = total_tokens
-        self.top_k = top_k
-        self.num_experts = num_experts
-        self.hidden_size = hidden_size
-        self.dtype = dtype
+class FusedTopKWorkload(CallWorkload):
+    """Router logits, and the optional bias, of one ``FusedTopKFwdOp`` call."""
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        hidden_states = torch.randn(
-            self.total_tokens, self.hidden_size, dtype=self.dtype, device="cuda"
-        )
-        topk_ids = torch.randint(
-            0,
-            self.num_experts,
-            (self.total_tokens, self.top_k),
-            dtype=torch.int32,
-            device="cuda",
-        )
-        return hidden_states, topk_ids
-
-    def ref_program(self, hidden_states, topk_ids):
-        return ref_moe_permute_nopad(hidden_states, topk_ids, self.num_experts)
+    def ref_program(
+        self, gating_output: torch.Tensor, correction_bias: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Score, select ``top_k`` (on the biased scores when a bias is passed), renormalize."""
+        p = self.call.params
+        logits = gating_output.float()
+        if p["scoring_func"] == "softmax":
+            scores = torch.softmax(logits, dim=-1)
+        else:
+            scores = logits.sigmoid()
+        select = scores if correction_bias is None else scores + correction_bias
+        topk_ids = torch.topk(select, p["top_k"], dim=-1, sorted=False).indices
+        topk_weights = scores.gather(1, topk_ids)
+        if p["renormalize"]:
+            topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+        return topk_weights, topk_ids.int()
 
 
-class MoePermuteAlignWorkload(WorkloadBase):
-    def __init__(self, total_tokens: int, top_k: int, num_experts: int, block_size: int):
-        self.total_tokens = total_tokens
-        self.top_k = top_k
-        self.num_experts = num_experts
-        self.block_size = block_size
-
-    def gen_inputs(self) -> tuple[torch.Tensor]:
-        topk_ids = torch.randint(
-            0,
-            self.num_experts,
-            (self.total_tokens, self.top_k),
-            dtype=torch.int32,
-            device="cuda",
-        )
-        return (topk_ids,)
+class MoePermuteAlignWorkload(CallWorkload):
+    """The routing ids of one ``MoePermuteAlignFwdOp`` call."""
 
     def ref_program(
         self, topk_ids: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        return ref_permute_align(topk_ids, self.block_size, self.num_experts)
+        p = self.call.params
+        return ref_permute_align(topk_ids, p["block_size"], p["num_experts"])
 
 
-class MoeUnpermuteWorkload(WorkloadBase):
-    def __init__(self, total_tokens, top_k, hidden_size, dtype):
-        self.total_tokens = total_tokens
-        self.top_k = top_k
-        self.hidden_size = hidden_size
-        self.dtype = dtype
+class MoePrePermuteWorkload(CallWorkload):
+    """Hidden states and local expert ids of one ``MoePrePermuteFwdOp`` call."""
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        numel = self.total_tokens * self.top_k
-        mm2_pad = torch.randn(numel, self.hidden_size, dtype=self.dtype, device="cuda")
-        # fwd_idx: simulate a valid mapping: random shuffle of [0, numel)
-        fwd_idx = torch.randperm(numel, dtype=torch.int32, device="cuda")
-        topk_weights = torch.rand(self.total_tokens, self.top_k, dtype=torch.float32, device="cuda")
-        return mm2_pad, fwd_idx, topk_weights
+    def ref_program(
+        self, hidden_states: torch.Tensor, local_expert_ids: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Tight physical-psum layout: rows grouped by expert in route order, exclusive ends.
 
-    def ref_program(self, mm2_pad, fwd_idx, topk_weights):
-        return ref_moe_unpermute(mm2_pad, fwd_idx, topk_weights)
+        Raises:
+            NotImplementedError: The call's layout is not tight physical-psum.
+        """
+        layout = self.call.params["layout"]
+        if layout.packing != "tight" or layout.metadata_kind != "physical_psum":
+            raise NotImplementedError(f"no pre-permute reference for {layout!r}")
+        top_k = local_expert_ids.shape[1]
+        flat = local_expert_ids.flatten().long()
+        order = torch.argsort(flat, stable=True)
+        expert_input = hidden_states[order // top_k]
+        counts = torch.bincount(flat, minlength=self.call.params["num_local_experts"])
+        ends = torch.cumsum(counts, dim=0).to(torch.int32)
+        inverse = torch.empty_like(order, dtype=torch.int32)
+        inverse[order] = torch.arange(order.numel(), dtype=torch.int32, device=order.device)
+        return expert_input, ends, inverse
 
 
-def make_expert_sizes_offsets(
-    numel: int,
-    num_experts: int,
-    distribution: str,
-    device: str,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build (true_sizes, true_offsets) for a fixed token-to-expert distribution.
-
-    Args:
-        numel: Total token-expert pairs (T * top_k).
-        num_experts: Number of experts E.
-        distribution: "uniform" — evenly split; "skewed" — most tokens on first
-            20% of experts (one-token floor for the rest).
-        device: CUDA device string.
-
-    Returns:
-        true_sizes [E] int32, true_offsets [E] int32.
-    """
-    if distribution == "uniform":
-        base = max(1, numel // num_experts)
-        sizes = torch.full((num_experts,), base, dtype=torch.int32, device=device)
-        sizes[-1] = numel - base * (num_experts - 1)
-    elif distribution == "skewed":
-        sizes = torch.ones(num_experts, dtype=torch.int32, device=device)
-        extra = numel - num_experts
-        top_experts = max(1, num_experts // 5)
-        per_top = extra // top_experts
-        sizes[:top_experts] += per_top
-        sizes[0] += extra - per_top * top_experts
+def valid_rows(layout, layout_metadata: torch.Tensor, rows: int, num_experts: int) -> torch.Tensor:
+    """Bool mask over the flat materialized rows a grouped GEMM defines an output for."""
+    meta = layout_metadata.tolist()
+    if layout.kind == "contiguous" and layout.metadata_kind == "per_row":
+        return layout_metadata < num_experts
+    valid = torch.zeros(rows, dtype=torch.bool)
+    if layout.kind == "masked":
+        for g, count in enumerate(meta):
+            valid[g * layout.max_m : g * layout.max_m + count] = True
     else:
-        raise ValueError(f"unknown distribution: {distribution}")
-
-    offsets = torch.zeros(num_experts, dtype=torch.int32, device=device)
-    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
-    assert int(sizes.sum().item()) == numel
-    return sizes, offsets
-
-
-def make_expert_layout_metadata(
-    layout: str,
-    rows: int,
-    num_experts: int,
-    distribution: str,
-    device: str,
-    *,
-    alignment: int = 1,
-    max_m: int | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build ``(layout_metadata, valid_rows)`` for one staged expert layout preset.
-
-    ``rows`` is the materialized row count of the activation (``num_experts * max_m``
-    for ``masked``). Per-expert row counts follow ``distribution`` as in
-    :func:`make_expert_sizes_offsets`. ``valid_rows`` is a bool mask over the flat
-    materialized rows naming the rows a GEMM defines an output for: every row for a
-    tight layout, the rows inside an expert's true count for the others.
-
-    * ``tight_physical_psum``: metadata is the running end of each expert's rows.
-    * ``aligned_physical_psum``: each expert starts at the previous end rounded up
-      to ``alignment``; metadata is the end of its true rows, so a segment's last
-      tile is partial.
-    * ``aligned_per_row``: the same segments, metadata is the expert id of every
-      row with the padding rows carrying the sentinel ``num_experts``; ``rows``
-      must hold every rounded segment.
-    * ``masked``: metadata is each expert's valid count within its ``max_m`` slab,
-      a fifth of the experts full and the rest a quarter full (all full for
-      ``uniform``).
-    """
-    if layout == "masked":
-        if max_m is None or rows != num_experts * max_m:
-            raise ValueError("masked rows are num_experts * max_m")
-        masked_m = torch.full((num_experts,), max_m // 4, dtype=torch.int32, device=device)
-        masked_m[: max(1, num_experts // 5)] = max_m
-        if distribution == "uniform":
-            masked_m.fill_(max_m)
-        valid = torch.arange(max_m, device=device)[None, :] < masked_m[:, None]
-        return masked_m, valid.reshape(-1)
-    if layout == "tight_physical_psum":
-        sizes, _ = make_expert_sizes_offsets(rows, num_experts, distribution, device)
-        return torch.cumsum(sizes, dim=0).to(torch.int32), torch.ones(
-            rows, dtype=torch.bool, device=device
-        )
-    if layout not in ("aligned_physical_psum", "aligned_per_row"):
-        raise ValueError(f"unknown layout preset: {layout}")
-    if alignment <= 1 or rows % alignment:
-        raise ValueError("aligned layouts need rows to be a multiple of an alignment > 1")
-    # Distribute the true rows so that every populated expert ends mid-tile and the
-    # rounded segments, plus one whole tile of sentinel padding, fill ``rows``.
-    tiles = rows // alignment
-    if tiles <= num_experts:
-        raise ValueError("aligned layouts need more than one tile per expert")
-    tile_counts, _ = make_expert_sizes_offsets(tiles - 1, num_experts, distribution, device)
-    valid = torch.zeros(rows, dtype=torch.bool, device=device)
-    ends, ids, row = [], torch.full((rows,), num_experts, dtype=torch.int32, device=device), 0
-    for g, t in enumerate(tile_counts.tolist()):
-        true_rows = t * alignment - alignment // 2
-        valid[row : row + true_rows] = True
-        ids[row : row + t * alignment] = g
-        ends.append(row + true_rows)
-        row += t * alignment
-    if layout == "aligned_per_row":
-        return ids, valid
-    return torch.tensor(ends, dtype=torch.int32, device=device), valid
+        start = 0
+        for end in meta:
+            start = -(-start // layout.alignment) * layout.alignment
+            valid[start:end] = True
+            start = end
+    return valid.to(layout_metadata.device)
 
 
-def gated_activation(gate_up: torch.Tensor, activation: str) -> torch.Tensor:
-    """``act(gate) * up`` over columns stacked gate then up, in the input's dtype."""
-    gate, up = gate_up.chunk(2, dim=-1)
-    if activation == "silu_and_mul":
-        return torch.nn.functional.silu(gate) * up
-    if activation == "gelu_and_mul":
-        return torch.nn.functional.gelu(gate) * up
-    raise ValueError(f"unknown gated activation: {activation}")
-
-
-def ref_moe_grouped_gemm_staged(
+def ref_moe_grouped_gemm(
     a: torch.Tensor,
     b: torch.Tensor,
     layout_metadata: torch.Tensor,
-    layout: str,
+    layout,
     out_dtype: torch.dtype | None = None,
-    *,
-    alignment: int = 1,
     activation: str | None = None,
 ) -> torch.Tensor:
     """``out[rows of g] = a[rows of g] @ b[g]^T`` in fp32 per expert; other rows are zero.
@@ -234,140 +108,94 @@ def ref_moe_grouped_gemm_staged(
     out_dtype = a.dtype if out_dtype is None else out_dtype
     num_experts, n, _ = b.shape
     out = torch.zeros(*a.shape[:-1], n, dtype=torch.float32, device=a.device)
-    if layout == "masked":
-        for g, valid in enumerate(layout_metadata.tolist()):
-            out[g, :valid] = a[g, :valid].float() @ b[g].float().T
-    elif layout in ("tight_physical_psum", "aligned_physical_psum"):
+    meta = layout_metadata.tolist()
+    if layout.kind == "masked":
+        for g, count in enumerate(meta):
+            out[g, :count] = a[g, :count].float() @ b[g].float().T
+    elif layout.metadata_kind == "per_row":
+        ids = layout_metadata.long()
+        for g in range(num_experts):
+            selected = ids == g
+            out[selected] = a[selected].float() @ b[g].float().T
+    else:
         start = 0
-        for g, end in enumerate(layout_metadata.tolist()):
-            if layout == "aligned_physical_psum":
-                start = -(-start // alignment) * alignment
+        for g, end in enumerate(meta):
+            start = -(-start // layout.alignment) * layout.alignment
             out[start:end] = a[start:end].float() @ b[g].float().T
             start = end
-    elif layout == "aligned_per_row":
-        ids = layout_metadata.to(torch.int64)
-        for g in range(num_experts):
-            rows = ids == g
-            out[rows] = a[rows].float() @ b[g].float().T
-    else:
-        raise ValueError(f"unknown layout preset: {layout}")
     if activation is not None:
         out = gated_activation(out, activation)
     return out.to(out_dtype)
 
 
-class MoeGroupedGemmStagedWorkload(WorkloadBase):
-    """Expert-materialized ``a``, per-expert ``b`` and the layout's metadata tensor.
+class MoeGroupedGemmWorkload(CallWorkload):
+    """Expert-materialized ``a``, per-expert ``b`` and the layout's generated metadata."""
 
-    ``valid_rows`` (set by ``gen_inputs``) masks the flat rows the GEMM defines an
-    output for; a consumer compares those and ignores the layout's padding.
-    """
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        a, b, metadata = super().gen_inputs()
+        # A small scale keeps fp16 accumulation over K = 7168 finite and within tolerance.
+        return a.mul_(0.02), b.mul_(0.02), metadata
 
-    def __init__(
+    def ref_program(
+        self, a: torch.Tensor, b: torch.Tensor, layout_metadata: torch.Tensor
+    ) -> torch.Tensor:
+        p = self.call.params
+        out_dtype = None if p["out_dtype"] is None else getattr(torch, p["out_dtype"])
+        return ref_moe_grouped_gemm(
+            a, b, layout_metadata, p["layout"], out_dtype, activation=p["activation"]
+        )
+
+
+class MoeExpertMLPWorkload(CallWorkload):
+    """Expert-materialized input, stacked gate/up and down weights, generated metadata."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        x, w_gate_up, w_down, metadata = super().gen_inputs()
+        return x.mul_(0.02), w_gate_up.mul_(0.02), w_down.mul_(0.02), metadata
+
+    def ref_program(
         self,
-        a_shape: tuple[int, ...],
-        b_shape: tuple[int, int, int],
-        layout: str,
-        dtype: torch.dtype,
-        *,
-        alignment: int = 1,
-        max_m: int | None = None,
-        activation: str | None = None,
-        distribution: str = "skewed",
-    ):
-        self.a_shape = tuple(a_shape)
-        self.b_shape = tuple(b_shape)
-        self.layout = layout
-        self.dtype = dtype
-        self.alignment = alignment
-        self.max_m = max_m
-        self.activation = activation
-        self.distribution = distribution
-        self.valid_rows: torch.Tensor | None = None
-
-    @property
-    def rows(self) -> int:
-        return math.prod(self.a_shape[:-1])
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        g = self.rng(device="cuda")
-        dev = "cuda"
-        metadata, self.valid_rows = make_expert_layout_metadata(
-            self.layout,
-            self.rows,
-            self.b_shape[0],
-            self.distribution,
-            dev,
-            alignment=self.alignment,
-            max_m=self.max_m,
+        expert_input: torch.Tensor,
+        w_gate_up: torch.Tensor,
+        w_down: torch.Tensor,
+        layout_metadata: torch.Tensor,
+    ) -> torch.Tensor:
+        p = self.call.params
+        activated = ref_moe_grouped_gemm(
+            expert_input, w_gate_up, layout_metadata, p["layout"], activation=p["activation"]
         )
-        # Small scale keeps fp16 accumulation well within the parity tolerance.
-        a = torch.randn(*self.a_shape, dtype=self.dtype, device=dev, generator=g) * 0.02
-        b = torch.randn(*self.b_shape, dtype=self.dtype, device=dev, generator=g) * 0.02
-        return a, b, metadata
-
-    def ref_program(self, a, b, layout_metadata):
-        return ref_moe_grouped_gemm_staged(
-            a,
-            b,
-            layout_metadata,
-            self.layout,
-            alignment=self.alignment,
-            activation=self.activation,
-        )
+        return ref_moe_grouped_gemm(activated, w_down, layout_metadata, p["layout"])
 
 
-class MoeExpertMLPStagedWorkload(MoeGroupedGemmStagedWorkload):
-    """Expert-materialized input, stacked gate/up and down weights, layout metadata."""
+class MoePostPermuteWorkload(CallWorkload):
+    """Expert outputs, routing weights and inverse indices of one ``MoePostPermuteFwdOp`` call."""
 
-    def __init__(
+    def ref_program(
         self,
-        expert_input_shape: tuple[int, ...],
-        w_gate_up_shape: tuple[int, int, int],
-        w_down_shape: tuple[int, int, int],
-        layout: str,
-        dtype: torch.dtype,
-        *,
-        alignment: int = 1,
-        max_m: int | None = None,
-        activation: str = "silu_and_mul",
-        distribution: str = "skewed",
-    ):
-        super().__init__(
-            expert_input_shape,
-            w_gate_up_shape,
-            layout,
-            dtype,
-            alignment=alignment,
-            max_m=max_m,
-            activation=activation,
-            distribution=distribution,
-        )
-        self.w_down_shape = tuple(w_down_shape)
+        expert_output: torch.Tensor,
+        topk_weights: torch.Tensor,
+        inverse_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """``out[t] = scale * sum_k w[t, k] * rows[inverse[t * K + k]]`` in fp32, then cast."""
+        p = self.call.params
+        tokens, top_k = topk_weights.shape
+        rows = expert_output.reshape(-1, expert_output.shape[-1])
+        gathered = rows[inverse_indices.long()].float().view(tokens, top_k, -1)
+        out = (gathered * topk_weights.unsqueeze(-1)).sum(dim=1)
+        if p["epilogue"] is not None:
+            out = out * p["epilogue"].routed_scaling_factor
+        dtype = expert_output.dtype if p["out_dtype"] is None else getattr(torch, p["out_dtype"])
+        return out.to(dtype)
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        x, w_gate_up, metadata = super().gen_inputs()
-        # Its own tag: the base class drew from the untagged stream, and this
-        # draw must not restart it.
-        g = self.rng("w_down", device="cuda")
-        w_down = (
-            torch.randn(*self.w_down_shape, dtype=self.dtype, device="cuda", generator=g) * 0.02
-        )
-        return x, w_gate_up, w_down, metadata
 
-    def ref_program(self, expert_input, w_gate_up, w_down, layout_metadata):
-        activated = ref_moe_grouped_gemm_staged(
-            expert_input,
-            w_gate_up,
-            layout_metadata,
-            self.layout,
-            expert_input.dtype,
-            alignment=self.alignment,
-            activation=self.activation,
-        )
-        return ref_moe_grouped_gemm_staged(
-            activated, w_down, layout_metadata, self.layout, alignment=self.alignment
-        )
+def gated_activation(gate_up: torch.Tensor, activation: str) -> torch.Tensor:
+    """``act(gate) * up`` over columns stacked gate then up, in the input's dtype."""
+    gate, up = gate_up.chunk(2, dim=-1)
+    if activation == "silu_and_mul":
+        return torch.nn.functional.silu(gate) * up
+    if activation == "gelu_and_mul":
+        return torch.nn.functional.gelu(gate) * up
+    raise ValueError(f"unknown gated activation: {activation}")
 
 
 class FusedMoeWorkload(WorkloadBase):
@@ -636,66 +464,3 @@ def ref_permute_align(
         torch.tensor(expert_ids_list, dtype=torch.int32, device=device),
         torch.tensor([total_padded], dtype=torch.int32, device=device),
     )
-
-
-def ref_moe_permute_nopad(
-    hidden_states: torch.Tensor,
-    topk_ids: torch.Tensor,
-    num_experts: int,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Pure-PyTorch reference for moe_permute (tight, no padding)."""
-    T, H = hidden_states.shape
-    K = topk_ids.shape[1]
-    numel = T * K
-    flat_ids = topk_ids.flatten().cpu().tolist()
-    dev = hidden_states.device
-
-    counts = [0] * num_experts
-    for eid in flat_ids:
-        counts[eid] += 1
-
-    offsets = [0] * (num_experts + 1)
-    for e in range(num_experts):
-        offsets[e + 1] = offsets[e] + counts[e]
-
-    write_ptr = list(offsets[:-1])
-    slot_to_row = [0] * numel
-    fwd_idx_list = [0] * numel
-
-    for flat_idx, eid in enumerate(flat_ids):
-        slot = write_ptr[eid]
-        slot_to_row[slot] = flat_idx // K
-        fwd_idx_list[flat_idx] = slot
-        write_ptr[eid] += 1
-
-    perm_h = torch.empty(numel, H, dtype=hidden_states.dtype, device=dev)
-    for slot in range(numel):
-        perm_h[slot] = hidden_states[slot_to_row[slot]]
-
-    true_offsets_t = torch.tensor(offsets[:-1], dtype=torch.int32, device=dev)
-    true_sizes_t = torch.tensor(counts, dtype=torch.int32, device=dev)
-    expert_first_token_offset = torch.tensor(offsets, dtype=torch.int64, device=dev)
-    fwd_idx_t = torch.tensor(fwd_idx_list, dtype=torch.int32, device=dev)
-
-    return perm_h, true_offsets_t, true_sizes_t, expert_first_token_offset, fwd_idx_t
-
-
-def ref_moe_unpermute(
-    mm2_pad: torch.Tensor,
-    fwd_idx: torch.Tensor,
-    topk_weights: torch.Tensor,
-) -> torch.Tensor:
-    """Pure-PyTorch reference for moe_unpermute."""
-    _, H = mm2_pad.shape
-    T, K = topk_weights.shape
-    dtype = mm2_pad.dtype
-
-    output = torch.zeros(T, H, dtype=torch.float32, device=mm2_pad.device)
-    for i in range(T):
-        for k in range(K):
-            flat_idx = i * K + k
-            padded_slot = fwd_idx[flat_idx].item()
-            w = topk_weights[i, k].item()
-            output[i] += mm2_pad[padded_slot].float() * w
-
-    return output.to(dtype)

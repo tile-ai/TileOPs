@@ -298,6 +298,37 @@ def topk_ids(rng, rows, k, experts):
     return [rng.sample(range(experts), k) for _ in range(rows)]
 
 
+def sample_indices(rng, n, hi):
+    if not 0 <= n <= hi:
+        raise ValueError(f"sample_indices needs 0 <= n <= hi, got n={n}, hi={hi}")
+    return rng.sample(range(hi), n)
+
+
+def _segment_ids(sizes, scale=1):
+    return [i for i, n in enumerate(sizes) for _ in range(n * scale)]
+
+
+def moe_layout_metadata(layout, rows, experts):
+    if experts <= 0 or rows < 0:
+        raise ValueError(f"moe.layout_metadata needs E > 0 and R >= 0, got R={rows}, E={experts}")
+    if layout.kind == "masked":
+        if rows != experts * layout.max_m:
+            raise ValueError(f"masked metadata needs R == E * max_m, got R={rows}")
+        return [layout.max_m if i % 2 == 0 else layout.max_m // 2 for i in range(experts)]
+    per_row = layout.metadata_kind == "per_row"
+    if layout.packing == "tight":
+        sizes = balanced_sizes(rows, experts)
+        return _segment_ids(sizes) if per_row else prefix_sum(sizes)[1:]
+    a = layout.alignment
+    if rows % a:
+        raise ValueError(f"aligned metadata needs R % alignment == 0, got R={rows}, alignment={a}")
+    tiles = balanced_sizes(rows // a, experts)
+    if per_row:
+        return _segment_ids(tiles, a)
+    starts = prefix_sum(tiles)
+    return [a * starts[i] + (a * t - a // 2 if t > 0 else 0) for i, t in enumerate(tiles)]
+
+
 # Deterministic generators take no RNG; pseudo-random ones take it as their first argument.
 GENERATORS = {
     "as_tensor": as_tensor,
@@ -311,6 +342,8 @@ GENERATORS = {
     "nsa_block_indices": nsa_block_indices,
     "nsa_block_counts": nsa_block_counts,
     "topk_ids": topk_ids,
+    "sample_indices": sample_indices,
+    "moe.layout_metadata": moe_layout_metadata,
 }
 # Argument kinds of each generator; a pseudo-random one's RNG is not an argument.
 GENERATOR_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
@@ -325,6 +358,8 @@ GENERATOR_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "nsa_block_indices": (("Seq[Int]", "Int", "Int", "Int"), "Value"),
     "nsa_block_counts": (("Int", "Int", "Int"), "Value"),
     "topk_ids": (("Int", "Int", "Int"), "Value"),
+    "sample_indices": (("Int", "Int"), "Value"),
+    "moe.layout_metadata": (("ADT", "Int", "Int"), "Value"),
 }
 # The rank of each generator's result.
 GENERATOR_RANKS = {
@@ -339,6 +374,8 @@ GENERATOR_RANKS = {
     "nsa_block_indices": 3,
     "nsa_block_counts": 2,
     "topk_ids": 2,
+    "sample_indices": 1,
+    "moe.layout_metadata": 1,
 }
 # The shape of each generator's result, from its arguments.
 GENERATOR_SHAPES = {
@@ -353,9 +390,13 @@ GENERATOR_SHAPES = {
     "nsa_block_indices": lambda L, block, selected, heads: (sum(L), heads, selected),
     "nsa_block_counts": lambda tokens, heads, selected: (tokens, heads),
     "topk_ids": lambda rows, k, experts: (rows, k),
+    "sample_indices": lambda n, hi: (n,),
+    "moe.layout_metadata": lambda layout, rows, experts: (
+        (rows,) if layout.kind == "contiguous" and layout.metadata_kind == "per_row" else (experts,)
+    ),
 }
 RANDOM_GENERATORS = frozenset(
-    {"paged_block_table", "nsa_block_indices", "nsa_block_counts", "topk_ids"}
+    {"paged_block_table", "nsa_block_indices", "nsa_block_counts", "topk_ids", "sample_indices"}
 )
 
 
@@ -392,19 +433,45 @@ def paged_fits(x, cu, cap):
     )
 
 
+def moe_layout_valid(x, layout, rows, experts):
+    ordered = all(a <= b for a, b in zip(x, x[1:], strict=False))
+    if layout.kind == "masked":
+        return len(x) == experts and all(0 <= v <= layout.max_m for v in x)
+    a = layout.alignment
+    if layout.metadata_kind == "per_row":
+        top = experts + (layout.packing == "aligned")
+        changes = all(i % a == 0 for i in range(1, len(x)) if x[i] != x[i - 1])
+        return len(x) == rows and ordered and all(0 <= v < top for v in x) and changes
+    if len(x) != experts:
+        return False
+    if layout.packing == "tight":
+        return ordered and (not x or (x[0] >= 0 and x[-1] == rows))
+    ends = [0, *x]
+    return all(ends[i + 1] >= ceil_div(ends[i], a) * a for i in range(len(x))) and (
+        not x or x[-1] <= rows
+    )
+
+
 # Argument kinds of each predicate after the constrained tensor's contents.
 PREDICATE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "prefix_offsets": (("Int",), "Bool"),
     "max_segment": (("Int",), "Bool"),
     "in_range": (("Int", "Int"), "Bool"),
     "attn.paged_fits": (("Seq[Int]", "Int"), "Bool"),
+    "moe.layout_valid": (("ADT", "Int", "Int"), "Bool"),
 }
 # The rank a predicate reads its constrained tensor at; `in_range` reads any.
-PREDICATE_RANKS = {"prefix_offsets": 1, "max_segment": 1, "attn.paged_fits": 1}
+PREDICATE_RANKS = {
+    "prefix_offsets": 1,
+    "max_segment": 1,
+    "attn.paged_fits": 1,
+    "moe.layout_valid": 1,
+}
 # The constrained tensor's contents are each predicate's first argument.
 PREDICATES = {
     "prefix_offsets": prefix_offsets,
     "max_segment": max_segment,
     "in_range": in_range,
     "attn.paged_fits": paged_fits,
+    "moe.layout_valid": moe_layout_valid,
 }

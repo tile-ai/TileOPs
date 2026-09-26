@@ -1,0 +1,15 @@
+# Algebraic data types shared by several entries (docs/design/manifest.md § Algebraic Data Types).
+adts:
+  # How the rows of an M-grouped operand are organised by expert, and what its metadata means.
+  MGroupedLayout:
+    sum:
+      contiguous:
+        python: tileops.ops.moe.contracts.ContiguousLayoutSpec
+        fields:
+          packing: {type: "'tight' | 'aligned'", python: tileops.ops.moe.contracts.ContiguousPacking}
+          metadata_kind: {type: "'physical_psum' | 'per_row'", python: tileops.ops.moe.contracts.ContiguousMetadata}
+          alignment: Dim
+        invariant: "(packing == 'tight') == (alignment == 1) and alignment >= 1"
+      masked:
+        python: tileops.ops.moe.contracts.MaskedLayoutSpec
+        fields: {max_m: Dim}

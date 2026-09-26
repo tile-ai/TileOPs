@@ -21,8 +21,7 @@ try:
 except ImportError:
     _SGL_KERNEL_AVAILABLE = False
 
-from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
-from tileops.manifest import load_workloads
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.moe import MoePermuteAlignFwdOp
 from workloads.moe import MoePermuteAlignWorkload
 
@@ -139,25 +138,21 @@ def _triton_permute_align(
     )
 
 
-@pytest.mark.parametrize(
-    "total_tokens, top_k, num_experts, block_size",
-    workload_params(
-        load_workloads(MoePermuteAlignFwdOp),
-        fields("total_tokens", "top_k", "num_experts", "block_size"),
-    ),
-)
-def test_permute_align_bench(
-    total_tokens: int, top_k: int, num_experts: int, block_size: int
-) -> None:
-    numel = total_tokens * top_k
-    test = MoePermuteAlignWorkload(total_tokens, top_k, num_experts, block_size)
+@pytest.mark.parametrize("call", manifest_calls(MoePermuteAlignFwdOp))
+def test_permute_align_bench(call) -> None:
+    test = MoePermuteAlignWorkload(call)
     inputs = test.gen_inputs()
-
-    op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
+    op = MoePermuteAlignFwdOp(**call.arguments({}))
+    num_experts, block_size = op.num_experts, op.block_size
+    numel = inputs[0].numel()
     bm = ManifestBenchmark(op, test)
 
-    op(*inputs)
-    torch.cuda.synchronize()
+    got = op(*inputs)
+    ref = test.ref_program(*inputs)
+    # Slot order inside an expert is not specified; the padded count and block owners are.
+    torch.testing.assert_close(got[2], ref[2])
+    blocks = int(ref[2].item()) // block_size
+    torch.testing.assert_close(got[1][:blocks], ref[1][:blocks])
 
     functors = {"tileops": op}
 

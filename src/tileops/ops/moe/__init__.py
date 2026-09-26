@@ -15,7 +15,7 @@ from .contracts import (
 )
 from .fused_moe import FusedMoe, FusedMoeFwdOp
 from .fused_moe_shared_expert import FusedMoeSharedExpertFwdOp
-from .fused_topk import FusedTopKOp
+from .fused_topk import FusedTopKFwdOp
 from .permute_align import MoePermuteAlignFwdOp
 from .prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from .routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
@@ -35,7 +35,7 @@ __all__ = [
     "FusedMoEPrepareAndFinalize",
     "FusedMoe",
     "FusedMoeFwdOp",
-    "FusedTopKOp",
+    "FusedTopKFwdOp",
     "MaskedLayoutSpec",
     "MoEPrepareAndFinalizeNoDPEP",
     "MoeExpertMLPFwdOp",

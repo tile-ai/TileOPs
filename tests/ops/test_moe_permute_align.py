@@ -10,13 +10,9 @@ Reference: SGLang moe_align_block_size
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase
 from tileops.ops.moe import MoePermuteAlignFwdOp
-from workloads.moe import MoePermuteAlignWorkload, ref_permute_align
-
-
-class MoePermuteAlignTest(MoePermuteAlignWorkload, TestBase):
-    pass
+from workloads.moe import MoePermuteAlignWorkload, moe_call, ref_permute_align
 
 
 class MoePermuteAlignFixture(FixtureBase):
@@ -113,8 +109,15 @@ def _permute_align_compare(
 @MoePermuteAlignFixture
 def test_permute_align_op(total_tokens: int, top_k: int, num_experts: int, block_size: int) -> None:
     numel = total_tokens * top_k
-    test = MoePermuteAlignTest(total_tokens, top_k, num_experts, block_size)
-    op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
+    call = moe_call(
+        "MoePermuteAlignFwdOp",
+        T=total_tokens,
+        K=top_k,
+        num_experts=num_experts,
+        block_size=block_size,
+    )
+    test = MoePermuteAlignWorkload(call)
+    op = MoePermuteAlignFwdOp(num_experts, block_size)
     inputs = test.gen_inputs()
 
     outputs = tuple(op(*inputs))
@@ -135,7 +138,7 @@ def test_permute_align_sentinel_padding() -> None:
         0, num_experts, (total_tokens, top_k), dtype=torch.int32, device="cuda"
     )
 
-    op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
+    op = MoePermuteAlignFwdOp(num_experts, block_size)
     sorted_ids, _, num_post_pad = op(topk_ids)
 
     n = num_post_pad.item()
@@ -153,7 +156,7 @@ def test_permute_align_expert_ids_range() -> None:
         0, num_experts, (total_tokens, top_k), dtype=torch.int32, device="cuda"
     )
 
-    op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
+    op = MoePermuteAlignFwdOp(num_experts, block_size)
     _, expert_ids, num_post_pad = op(topk_ids)
 
     n = num_post_pad.item()
@@ -177,8 +180,17 @@ def test_permute_align_skewed_distribution() -> None:
     # All tokens go to expert 0
     topk_ids = torch.zeros((total_tokens, top_k), dtype=torch.int32, device="cuda")
 
-    op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
+    op = MoePermuteAlignFwdOp(num_experts, block_size)
     outputs = tuple(op(topk_ids))
     outputs_ref = tuple(ref_permute_align(topk_ids, block_size, num_experts))
 
     _permute_align_compare(outputs, outputs_ref, block_size, num_experts, numel)
+
+
+@pytest.mark.smoke
+def test_permute_align_builds_one_kernel_per_routed_count() -> None:
+    """The routed count comes from each call, so a second count builds a second kernel."""
+    op = MoePermuteAlignFwdOp(num_experts=8, block_size=16)
+    for tokens in (4, 4, 6):
+        op(torch.randint(0, 8, (tokens, 2), dtype=torch.int32, device="cuda"))
+    assert len(op.built_kernels("permute_align_kernel")) == 2

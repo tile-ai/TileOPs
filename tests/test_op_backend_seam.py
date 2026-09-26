@@ -824,16 +824,16 @@ def test_an_output_buffer_is_held_to_the_output_s_dtype_and_shape():
 
     registry.register_detector("acme", lambda device: device.type == "cpu")
     registry.register_kernel_builder(
-        "MoeGroupedGemmFwdOp", "acme", lambda *specs, **params: lambda a, b, meta, out=None: None
+        "MoeGroupedGemmFwdOp", "acme", lambda *specs, **params: lambda a, b, meta, out=None: out
     )
     op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
     a, b = torch.randn(32, 64, dtype=DTYPE), torch.randn(4, 16, 64, dtype=DTYPE)
     meta = torch.zeros(4, dtype=torch.int32)
 
     op(a, b, meta, out=torch.empty(32, 16, dtype=DTYPE))
-    with pytest.raises(ValueError, match="shape rule"):
+    with pytest.raises(ValueError, match="out does not have the shape of output"):
         op(a, b, meta, out=torch.empty(32, 8, dtype=DTYPE))
-    with pytest.raises(ValueError, match="output buffer"):
+    with pytest.raises(ValueError, match="out does not have the dtype of output"):
         op(a, b, meta, out=torch.empty(32, 16, dtype=torch.float32))
 
 

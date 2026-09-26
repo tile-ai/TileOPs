@@ -46,6 +46,7 @@ class MoeGroupedGemmKernel(Kernel):
             m_alignment=call.alignment if call.packing == "aligned" else 128,
             cd_dtype=None if call.cd_dtype is call.ab_dtype else call.cd_dtype,
             activation="none" if call.activation is None else call.activation,
+            tune=call.tune,
         )
 
     def forward(

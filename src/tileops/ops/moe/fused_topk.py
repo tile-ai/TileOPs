@@ -1,6 +1,6 @@
 """MoE fused top-k routing operator."""
 
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -10,10 +10,10 @@ from tileops.kernels.moe.fused_topk import FusedTopKKernel
 
 from ..op_base import Op
 
-__all__ = ["FusedTopKOp"]
+__all__ = ["FusedTopKFwdOp"]
 
 
-class FusedTopKOp(Op):
+class FusedTopKFwdOp(Op):
     """MoE top-k routing operator.
 
     Applies scoring (softmax or sigmoid) to router logits and selects the
@@ -21,24 +21,28 @@ class FusedTopKOp(Op):
 
     Example:
         ```python linenums="1"
-        op = FusedTopKOp(top_k=8)
+        op = FusedTopKFwdOp(top_k=8)
         topk_weights, topk_ids = op(gating_output)
         # topk_weights: [512, 8] float32
         # topk_ids:     [512, 8] int32
         ```
     """
 
+    compile_boundary: ClassVar[bool] = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fused_topk_kernel": FusedTopKKernel}
+
     def __init__(
         self,
         top_k: int,
         scoring_func: str = "softmax",
         renormalize: bool = False,
-        config: Optional[dict] = None,
         *,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        config: Optional[dict] = None,
     ):
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             top_k: Number of experts to select per token K.
@@ -47,76 +51,33 @@ class FusedTopKOp(Op):
                 bias is added to sigmoid scores for selection only, and the output
                 weights stay the original scores.
             renormalize: If True, normalize top-k weights to sum to 1.
-            config: Optional kernel config dict.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional kernel map override.
+            tune: Whether to autotune the kernel.
+            config: Optional kernel config dict.
         """
         self.top_k = top_k
         self.scoring_func = scoring_func
         self.renormalize = renormalize
-
         self.config = config
         self.target = target
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"fused_topk_kernel": FusedTopKKernel}
-
-    def _infer_output_shapes(
-        self,
-        gating_output_shape: tuple[int, ...],
-        correction_bias_shape: "tuple[int, ...] | None" = None,
-    ) -> Dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: one weight and one expert id per token and kept slot."""
-        return {
-            "topk_weights": (gating_output_shape[0], self.top_k),
-            "topk_ids": (gating_output_shape[0], self.top_k),
-        }
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        num_tokens: int,
-        num_experts: int,
-        top_k: int,
-        device_index: int | None,
-        with_correction_bias: bool,
-    ) -> Kernel:
-        key = (
-            num_tokens,
-            num_experts,
-            top_k,
-            self.scoring_func,
-            self.renormalize,
-            device_index,
-            with_correction_bias,
-            inputs[0].dtype,
-        )
-        return self.kernel_for("fused_topk_kernel", inputs, key)
-
     def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, routing rule, bias presence and device."""
-        (
-            num_tokens,
-            num_experts,
-            top_k,
-            scoring_func,
-            renormalize,
-            device_index,
-            with_correction_bias,
-            dtype,
-        ) = call
-        return call, lambda: self.kernel_map["fused_topk_kernel"](
+        """One implementation, built per shape, bias presence, dtype and device."""
+        num_tokens, num_experts, with_correction_bias, dtype, device_index = call
+        return call, lambda: self.kernel_map[role](
             num_tokens=num_tokens,
             num_experts=num_experts,
-            top_k=top_k,
-            scoring_func=scoring_func,
-            renormalize=renormalize,
+            top_k=self.top_k,
+            scoring_func=self.scoring_func,
+            renormalize=self.renormalize,
             with_correction_bias=with_correction_bias,
             dtype=dtype,
             config=self.config,
+            tune=self.tune,
             device_index=device_index,
         )
 
@@ -136,51 +97,21 @@ class FusedTopKOp(Op):
             topk_weights: [T, K] float32.
             topk_ids:     [T, K] int32.
         """
-        if not gating_output.is_cuda:
-            raise ValueError("gating_output must be a CUDA tensor")
-        if correction_bias is not None and not correction_bias.is_cuda:
-            raise ValueError("correction_bias must be a CUDA tensor")
-        if correction_bias is not None and gating_output.device != correction_bias.device:
-            raise ValueError(
-                f"Expected gating_output and correction_bias to be on the same device, "
-                f"got {gating_output.device} and {correction_bias.device}"
-            )
-        if gating_output.ndim != 2:
-            raise ValueError(f"Expected gating_output to be 2D [T, E], got {gating_output.ndim}D")
-        if gating_output.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-            raise ValueError(
-                "Expected gating_output.dtype to be torch.float16, "
-                f"torch.bfloat16, or torch.float32, got {gating_output.dtype}"
-            )
-        num_tokens, num_experts = gating_output.shape
-        if not 0 < self.top_k <= num_experts:
-            raise ValueError(f"top_k={self.top_k} must be in (0, num_experts={num_experts}]")
-        if correction_bias is not None:
-            if self.scoring_func != "sigmoid":
-                raise ValueError(
-                    f"correction_bias requires scoring_func='sigmoid', got {self.scoring_func!r}"
-                )
-            if correction_bias.shape != (num_experts,):
-                raise ValueError(
-                    f"Expected correction_bias shape {(num_experts,)}, "
-                    f"got {tuple(correction_bias.shape)}"
-                )
-            if correction_bias.dtype != torch.float32:
-                raise ValueError(
-                    f"Expected correction_bias.dtype torch.float32, got {correction_bias.dtype}"
-                )
+        return self._call_boundary(gating_output, correction_bias)
 
-        self.gating_output_shape = tuple(gating_output.shape)
-        self.correction_bias_shape = (
-            None if correction_bias is None else tuple(correction_bias.shape)
-        )
-        self.dtype = gating_output.dtype
-        kernel = self._get_kernel(
-            (gating_output, correction_bias),
+    def _eager_forward(
+        self,
+        gating_output: torch.Tensor,
+        correction_bias: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Launch inside the operator, where dynamo does not follow the kernel call."""
+        num_tokens, num_experts = gating_output.shape
+        call = (
             num_tokens,
             num_experts,
-            self.top_k,
-            gating_output.device.index,
             correction_bias is not None,
+            gating_output.dtype,
+            gating_output.device.index,
         )
+        kernel = self.kernel_for("fused_topk_kernel", (gating_output, correction_bias), call)
         return kernel(gating_output, correction_bias)
