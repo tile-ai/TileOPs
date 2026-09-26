@@ -9,7 +9,7 @@ from tileops.kernels.elementwise import NanToNumFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import _PerDtypeKernels, _validate_scalar_param_repr
+from ._base import _PerDtypeKernels
 
 
 class NanToNumFwdOp(_PerDtypeKernels, Op):
@@ -35,8 +35,7 @@ class NanToNumFwdOp(_PerDtypeKernels, Op):
             posinf: Replacement for +Inf. Manifest default ``None`` resolves
                 to the largest finite value representable in the element type of the
                 call (matches ``torch.nan_to_num``). An explicit value outside
-                that element type's finite range is rejected rather than stored
-                as Inf.
+                that element type's finite range is stored as Inf, as torch does.
             neginf: Replacement for -Inf. Manifest default ``None`` resolves
                 to the smallest (most negative) finite value representable
                 in the element type of the call.
@@ -58,23 +57,20 @@ class NanToNumFwdOp(_PerDtypeKernels, Op):
         A ``None`` bound means "this dtype's largest finite value", so it
         cannot be resolved before the element type is known. Picking
         ``finfo(dtype).max`` matches ``torch.nan_to_num``; forwarding ``+inf``
-        would write back the infinity the op was called to replace.
+        would write back the infinity the op was called to replace. A given value is
+        cast to *dtype* as torch casts it, through float32, so one past the dtype's
+        range becomes Inf.
         """
-        _validate_scalar_param_repr("nan", self.nan, dtype, self._slot)
-        if self.posinf is None:
-            posinf = torch.finfo(dtype).max
-        else:
-            _validate_scalar_param_repr("posinf", self.posinf, dtype, self._slot)
-            posinf = self.posinf
-        if self.neginf is None:
-            neginf = torch.finfo(dtype).min
-        else:
-            _validate_scalar_param_repr("neginf", self.neginf, dtype, self._slot)
-            neginf = self.neginf
+
+        def cast(value: float) -> float:
+            return torch.tensor(value, dtype=torch.float32).to(dtype).item()
+
+        posinf = torch.finfo(dtype).max if self.posinf is None else cast(self.posinf)
+        neginf = torch.finfo(dtype).min if self.neginf is None else cast(self.neginf)
         # Replacement values are positional; the kernel constructor's
         # parameter naming is encapsulated below the Op layer.
         impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        return impl(n_total, ctor_dtype, self.nan, posinf, neginf, tune=self.tune)
+        return impl(n_total, ctor_dtype, cast(self.nan), posinf, neginf, tune=self.tune)
 
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
         input = input.contiguous()

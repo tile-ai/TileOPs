@@ -253,6 +253,9 @@ RoundFwdOp:
       input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: T, shape: "[*S]"}
+    shape_rules:
+    # torch.round rounds an integral input only to zero decimals.
+    - "decimals == 0 or category(T) == 'float'"
 
   workloads:
   - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}

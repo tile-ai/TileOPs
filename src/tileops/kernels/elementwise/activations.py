@@ -212,10 +212,13 @@ class LeakyReluFwdKernel(ScalarParamUnaryKernel):
     def _make_op_func(self):
         negative_slope = self.negative_slope
 
+        # The slope multiplies in fp32: in a narrow dtype a large slope would overflow
+        # before the product does, and a small one would lose precision.
         def op_func(x):
-            zero = T.cast(0, x.dtype)
-            slope = T.cast(negative_slope, x.dtype)
-            return T.if_then_else(x > zero, x, slope * x)
+            zero = T.cast(0, "float32")
+            slope = T.cast(negative_slope, "float32")
+            wide = T.cast(x, "float32")
+            return T.if_then_else(wide > zero, x, T.Cast(x.dtype, slope * wide))
 
         return op_func
 

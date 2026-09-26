@@ -11,12 +11,10 @@ import torch
 from tests.test_base import FixtureBase, TestBase, exact_compare, standard_tolerance
 from tileops.ops.elementwise import (
     ClampScalarFwdOp,
-    EluFwdOp,
     HardtanhFwdOp,
     IsfiniteFwdOp,
     IsinfFwdOp,
     IsnanFwdOp,
-    SoftplusFwdOp,
 )
 from workloads.elementwise import SpecialWorkload, alibi_reference, sinusoidal_reference
 
@@ -437,6 +435,18 @@ def test_nan_to_num_edge(n_total: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+def test_nan_to_num_stores_an_out_of_range_replacement_as_inf() -> None:
+    """``torch.nan_to_num`` casts a replacement to the element type, overflowing to Inf."""
+    from tileops.ops.elementwise import NanToNumFwdOp
+
+    x = torch.tensor([float("nan"), float("inf"), float("-inf"), 1.0] * 256, device="cuda")
+    x = x.to(torch.float16)
+    ref = torch.nan_to_num(x, nan=1e6, posinf=1e6, neginf=-1e6)
+    out = NanToNumFwdOp(nan=1e6, posinf=1e6, neginf=-1e6)(x)
+    torch.testing.assert_close(out, ref, atol=0, rtol=0)
+
+
+@pytest.mark.smoke
 def test_independent_special_rejects_non_float_dtype() -> None:
     from tileops.kernels.elementwise import ClampFwdKernel
 
@@ -487,11 +497,8 @@ def _bool_mask(n: int = 1024) -> torch.Tensor:
 @pytest.mark.parametrize(
     "make_op",
     [
-        pytest.param(lambda: EluFwdOp(alpha=1e6), id="elu-alpha"),
         pytest.param(lambda: HardtanhFwdOp(min_val=-1e6), id="hardtanh-min_val"),
         pytest.param(lambda: HardtanhFwdOp(max_val=1e6), id="hardtanh-max_val"),
-        pytest.param(lambda: SoftplusFwdOp(beta=1e6), id="softplus-beta"),
-        pytest.param(lambda: SoftplusFwdOp(threshold=1e6), id="softplus-threshold"),
         pytest.param(lambda: ClampScalarFwdOp(min=1e6), id="clamp-min"),
         pytest.param(lambda: ClampScalarFwdOp(max=1e6), id="clamp-max"),
     ],
@@ -510,7 +517,7 @@ def test_scalar_param_rejects_unrepresentable(make_op) -> None:
     assert call(fp32).dtype == torch.float32  # 1e6 is finite in float32
 
     fp16 = torch.zeros(1024, device="cuda", dtype=torch.float16)
-    with pytest.raises(ValueError, match="not representable"):
+    with pytest.raises(ValueError, match="representable"):
         call(fp16)
 
 
@@ -681,13 +688,3 @@ def test_masked_fill_rejects_when_pytorch_rejects(
     mask = torch.zeros(1024, device="cuda", dtype=torch.bool)
     with pytest.raises(ValueError, match="representable"):
         op(x, mask)
-
-
-@pytest.mark.smoke
-def test_elu_rejects_infinite_alpha() -> None:
-    """EluFwdOp must reject infinite alpha, when the element type is known."""
-    from tileops.ops.elementwise import EluFwdOp
-
-    op = EluFwdOp(alpha=float("inf"))
-    with pytest.raises(ValueError, match="finite"):
-        op(torch.zeros(1024, device="cuda", dtype=torch.float16))

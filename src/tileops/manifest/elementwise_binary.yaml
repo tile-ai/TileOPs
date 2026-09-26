@@ -85,6 +85,8 @@ MaskedFillScalarFwdOp:
       mask: {dtype: bool, shape: "[*M]"}
     outputs:
       output: {dtype: T, shape: "[*broadcast(A, M)]"}
+    shape_rules:
+    - "representable(value, T)"
 
   workloads:
   - {A: [4096, 4096], M: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
@@ -107,6 +109,11 @@ AddFwdOp:
       other: {dtype: T, shape: "[*B]"}
     outputs:
       output: {dtype: T, shape: "[*broadcast(A, B)]"}
+    shape_rules:
+    # torch.add: an integral or bool input takes no float alpha, only a bool input takes a bool
+    # one, and alpha must convert to the input dtype.
+    - "category(alpha) == 'int' or category(alpha) == category(T)"
+    - "representable(alpha, T)"
 
   workloads:
   - {A: [2048, 4096], B: [2048, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "hidden-state-prefill"}
@@ -129,6 +136,11 @@ SubFwdOp:
       other: {dtype: T, shape: "[*B]"}
     outputs:
       output: {dtype: T, shape: "[*broadcast(A, B)]"}
+    shape_rules:
+    # torch.add: an integral or bool input takes no float alpha, only a bool input takes a bool
+    # one, and alpha must convert to the input dtype.
+    - "category(alpha) == 'int' or category(alpha) == category(T)"
+    - "representable(alpha, T)"
 
   workloads:
   - {A: [2048, 4096], B: [2048, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "hidden-state-prefill"}
