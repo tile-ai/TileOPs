@@ -13,19 +13,12 @@ Layout convention:
 """
 
 import pytest
-import torch
 from fla.ops.delta_rule import chunk_delta_rule
 
 from benchmarks.baselines import assert_matches_reference, reference_tolerance
-from benchmarks.benchmark_base import (
-    ManifestBenchmark,
-    backward_of,
-    then_dtype,
-    workload_params,
-)
-from tileops.manifest import load_workloads
-from tileops.ops import DeltaNetAutogradOp, DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetInferenceFwdOp
-from workloads.linear_attention import DeltaNetFwdWorkload, DeltaNetInferenceWorkload
+from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
+from tileops.ops import DeltaNetAutogradFwdOp, DeltaNetBwdOp, DeltaNetFwdOp, DeltaNetInferenceFwdOp
+from workloads.linear_attention import DeltaNetChunkwiseCall, DeltaNetInferenceCall
 
 
 def _to_fla_layout(q, k, v, beta):
@@ -38,148 +31,69 @@ def _to_fla_layout(q, k, v, beta):
     )
 
 
-def _deltanet_args(workload: dict) -> tuple[int, int, int, int, int, int]:
-    """Constructor arguments for one manifest workload row."""
-    batch, heads, seq_len, dim_k = workload["q_shape"]
-    dim_v = workload["v_shape"][3]
-    return batch, seq_len, heads, dim_k, dim_v, workload.get("chunk_size", 64)
-
-
-def _inference_args(workload: dict) -> tuple[int, int, int, int]:
-    return workload["q_shape"]
-
-
-@pytest.mark.parametrize(
-    "batch, seq_len, heads, dim, dtype",
-    workload_params(
-        load_workloads(DeltaNetInferenceFwdOp), then_dtype(_inference_args), smoke_first=True
-    ),
-)
-def test_deltanet_dense_prefill_bench(
-    batch: int, seq_len: int, heads: int, dim: int, dtype: torch.dtype
-) -> None:
-    workload = DeltaNetInferenceWorkload(batch, seq_len, heads, dim, dtype)
+@pytest.mark.parametrize("call", manifest_calls(DeltaNetInferenceFwdOp))
+def test_deltanet_dense_prefill_bench(call) -> None:
+    workload = DeltaNetInferenceCall(call)
     inputs = workload.gen_inputs()
-    op = DeltaNetInferenceFwdOp()
-
-    def fla(q, k, v, beta, initial_state):
-        return chunk_delta_rule(q, k, v, beta, initial_state=initial_state, output_final_state=True)
-
-    assert_matches_reference(op, fla, *inputs, **reference_tolerance(dtype))
-    ManifestBenchmark(op, workload).compare({"tileops": op, "fla": fla}, *inputs)
+    op = DeltaNetInferenceFwdOp(**workload.arguments())
+    dtype = inputs[0].dtype
+    assert_matches_reference(op, workload.ref_program, *inputs, **reference_tolerance(dtype))
+    ManifestBenchmark(op, workload).compare({"tileops": op, "fla": workload.ref_program}, *inputs)
 
 
-@pytest.mark.parametrize(
-    "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
-    workload_params(load_workloads(DeltaNetFwdOp), then_dtype(_deltanet_args, tune=False)),
-)
-def test_deltanet_vs_fla_fwd(
-    batch: int,
-    seq_len: int,
-    heads: int,
-    dim_k: int,
-    dim_v: int,
-    chunk_size: int,
-    dtype: torch.dtype,
-    tune: bool,
-) -> None:
-    test = DeltaNetFwdWorkload(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+@pytest.mark.parametrize("call", manifest_calls(DeltaNetFwdOp))
+def test_deltanet_vs_fla_fwd(call) -> None:
+    test = DeltaNetChunkwiseCall(call)
     inputs = test.gen_inputs()  # q, k, v, beta (BHSD)
-
-    # --- TileOPs (BHSD) ---
-    op = DeltaNetFwdOp(chunk_size=chunk_size, tune=tune)
+    op = DeltaNetFwdOp(**test.arguments())
     bm = ManifestBenchmark(op, test)
-    functors = {"tileops": op}
 
-    # --- FLA (BTHK) ---
-    q, k, v, beta = inputs
-    scale = dim_k**-0.5
-    q_fla, k_fla, v_fla, beta_fla = _to_fla_layout(q, k, v, beta)
+    q_fla, k_fla, v_fla, beta_fla = _to_fla_layout(*inputs)
 
+    # FLA has no API returning the chunk buffers the backward reads; it computes o.
     def fla_fwd():
-        return chunk_delta_rule(q_fla, k_fla, v_fla, beta_fla, scale=scale)
+        return chunk_delta_rule(q_fla, k_fla, v_fla, beta_fla, scale=1.0)
 
-    functors["fla"] = (fla_fwd, ())
-
-    bm.compare(functors, *inputs)
+    bm.compare({"tileops": op, "fla": (fla_fwd, ())}, *inputs)
 
 
-@pytest.mark.parametrize(
-    "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
-    workload_params(load_workloads(DeltaNetBwdOp), then_dtype(_deltanet_args, tune=False)),
-)
-def test_deltanet_vs_fla_bwd(
-    batch: int,
-    seq_len: int,
-    heads: int,
-    dim_k: int,
-    dim_v: int,
-    chunk_size: int,
-    dtype: torch.dtype,
-    tune: bool,
-) -> None:
-    test = DeltaNetFwdWorkload(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+@pytest.mark.parametrize("call", manifest_calls(DeltaNetBwdOp))
+def test_deltanet_vs_fla_bwd(call) -> None:
+    test = DeltaNetChunkwiseCall(call)
+    do, q, k, v, beta, *_saved = test.gen_inputs()
 
-    B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
-    q = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
-    beta = torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5
-    do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
+    # The saved buffers are the forward's, so the backward reads what it would in training.
+    fwd_op = DeltaNetFwdOp(test.arguments()["chunk_size"])
+    _o, S, Aw, Au, w, u = fwd_op(q, k, v, beta)
 
-    # --- TileOPs: fwd to get S, Aw, Au, w, u; then profile bwd only ---
-    fwd_op = DeltaNetFwdOp(chunk_size=BC)
-    _o, S_fwd, Aw, Au, w_fwd, u_fwd = fwd_op.forward(q, k, v, beta)
-
-    bwd_op = DeltaNetBwdOp(chunk_size=BC, tune=tune)
+    bwd_op = DeltaNetBwdOp(**test.arguments())
     bm = ManifestBenchmark(bwd_op, test)
-    functors = {"tileops": bwd_op.forward}
 
     # --- FLA (BTHK layout) ---
-    scale = DK**-0.5
-    q_fla, k_fla, v_fla, beta_fla = _to_fla_layout(q, k, v, beta)
+    q_fla, k_fla, v_fla, beta_fla = (
+        t.detach().requires_grad_(True) for t in _to_fla_layout(q, k, v, beta)
+    )
     do_fla = do.permute(0, 2, 1, 3).contiguous()  # [B,H,S,DV] -> [B,S,H,DV]
-
-    q_fla = q_fla.detach().requires_grad_(True)
-    k_fla = k_fla.detach().requires_grad_(True)
-    v_fla = v_fla.detach().requires_grad_(True)
-    beta_fla = beta_fla.detach().requires_grad_(True)
-
-    o_fla, _ = chunk_delta_rule(q_fla, k_fla, v_fla, beta_fla, scale=scale)
+    o_fla, _ = chunk_delta_rule(q_fla, k_fla, v_fla, beta_fla, scale=1.0)
     fla_backward = backward_of(o_fla)
 
     def fla_bwd():
-        return fla_backward(do_fla, None)
+        dq, dk, dv, dbeta = fla_backward(do_fla, None)[:4]
+        return dq.transpose(1, 2), dk.transpose(1, 2), dv.transpose(1, 2), dbeta.transpose(1, 2)
 
-    functors["fla"] = (fla_bwd, ())
-
-    bm.compare(functors, do, q, k, v, beta, S_fwd, Aw, Au, w_fwd, u_fwd)
+    bm.compare({"tileops": bwd_op, "fla": (fla_bwd, ())}, do, q, k, v, beta, S, Aw, Au, w, u)
 
 
-@pytest.mark.parametrize(
-    "batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype, tune",
-    workload_params(load_workloads(DeltaNetAutogradOp), then_dtype(_deltanet_args, tune=False)),
-)
-def test_deltanet_vs_fla_autograd(
-    batch: int,
-    seq_len: int,
-    heads: int,
-    dim_k: int,
-    dim_v: int,
-    chunk_size: int,
-    dtype: torch.dtype,
-    tune: bool,
-) -> None:
-    test = DeltaNetFwdWorkload(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
+@pytest.mark.parametrize("call", manifest_calls(DeltaNetAutogradFwdOp))
+def test_deltanet_vs_fla_autograd(call) -> None:
+    test = DeltaNetChunkwiseCall(call)
     inputs = test.gen_inputs()
-
-    op = DeltaNetAutogradOp(chunk_size=chunk_size, tune=tune)
+    op = DeltaNetAutogradFwdOp(**test.arguments())
     bm = ManifestBenchmark(op, test)
 
-    scale = dim_k**-0.5
     q_fla, k_fla, v_fla, beta_fla = _to_fla_layout(*inputs)
 
     def fla_fwd():
-        return chunk_delta_rule(q_fla, k_fla, v_fla, beta_fla, scale=scale)
+        return chunk_delta_rule(q_fla, k_fla, v_fla, beta_fla, scale=1.0)[0]
 
     bm.compare({"tileops": op, "fla": (fla_fwd, ())}, *inputs)

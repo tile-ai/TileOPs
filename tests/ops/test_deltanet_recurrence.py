@@ -99,27 +99,6 @@ def test_deltanet_decode_multi_step(
         torch.testing.assert_close(state_op, state_ref, **tols)
 
 
-@pytest.mark.smoke
-def test_deltanet_decode_rejects_manifest_shape_mismatch() -> None:
-    op = object.__new__(DeltaNetDecodeFwdOp)
-    op.batch = 2
-    op.heads = 3
-    op.dim_k = 4
-    op.dim_v = 5
-    op.dtype = torch.float32
-
-    q = torch.empty(2, 3, 5)
-    k = torch.empty(2, 3, 4)
-    v = torch.empty(2, 3, 5)
-    beta = torch.empty(2, 3)
-    state = torch.empty(2, 3, 4, 5)
-
-    # The shape check lives in ``_eager_forward``: ``forward`` is one call to the op's
-    # operator, and this instance was built without one on purpose.
-    with pytest.raises(ValueError, match="k must have shape"):
-        op._eager_forward(q, k, v, beta, state)
-
-
 def _skip_unless_raw_cuda_decode_supported() -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA required for raw DeltaNet decode smoke coverage")
@@ -142,7 +121,8 @@ def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None
     op = DeltaNetDecodeFwdOp(tune=False, target=BUILTIN)
     inputs = test.gen_inputs()
     op(*inputs)
-    assert isinstance(op.kernel, DeltaNetDecodeRawCudaFlaStyleKernel)
+    (kernel,) = op.built_kernels("deltanet_decode").values()
+    assert isinstance(kernel, DeltaNetDecodeRawCudaFlaStyleKernel)
     test.check(op, *inputs, **_get_tolerances(dtype))
 
 
@@ -176,7 +156,8 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
         with torch.no_grad():
             o_op, state_op = op(q, k, v, beta, state_op)
 
-        assert isinstance(op.kernel, DeltaNetDecodeRawCudaFlaStyleKernel)
+        (kernel,) = op.built_kernels("deltanet_decode").values()
+        assert isinstance(kernel, DeltaNetDecodeRawCudaFlaStyleKernel)
 
         torch.testing.assert_close(o_op, o_ref, **tols)
         torch.testing.assert_close(state_op, state_ref, **tols)
@@ -249,7 +230,7 @@ def test_deltanet_decode_build_carries_the_tune_flag(tune: bool) -> None:
     """Whatever selection picks is constructed with the op's autotune setting."""
     op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map(), tune=tune)
 
-    kernel = op._get_kernel((), 1, 32, 128, 128, torch.bfloat16, device_index=None)
+    kernel = op.kernel_for("deltanet_decode", (), _stated_call(90, torch.bfloat16, tune=tune))
 
     assert kernel.kwargs["tune"] is tune
 

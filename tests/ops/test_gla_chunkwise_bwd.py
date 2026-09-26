@@ -122,7 +122,8 @@ def test_gla_bwd(
         target=BUILTIN,
     )
     o_fwd, _ = fwd_op.forward(q, k, v, g)
-    h = fwd_op.kernel._h_out  # [B, NT+1, H, K, V] in fp32
+    (fwd_kernel,) = fwd_op.built_kernels("GLAFwdKernel").values()
+    h = fwd_kernel._h_out  # [B, NT+1, H, K, V] in fp32
 
     dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
     bwd_op = GLABwdOp(chunk_size=BC, scale=scale, tune=tune)

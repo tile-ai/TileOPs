@@ -1,85 +1,68 @@
 # linear_attention.yaml -- manifest entries for linear-attention operators.
 #
 # Source of truth for linear-attention op interfaces. Spec-only entries define
-# the public Op contract before the implementation is wired up.
+# the public Op contract before the implementation conforms.
 
 DeltaNetInferenceFwdOp:
   # One inference contract for equal-length prefill, packed varlen, and decode.
-  # The five training buffers of the old chunkwise forward are not public outputs.
-  ref_api: "fla.ops.delta_rule.chunk_delta_rule"
+  # The five training buffers of the chunkwise forward are not public outputs.
+  # A packed call (cu_seqlens) carries one state per sequence.
   family: linear_attention
   status: spec-only
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16", shape: "[B, T, H, K]"}
-      k: {dtype: "same_as(q)", shape: "[B, T, H, K]"}
-      v: {dtype: "same_as(q)", shape: "[B, T, H, V]"}
-      beta: {dtype: "same_as(q)", shape: "[B, T, H]"}
-      initial_state: {dtype: "float32", optional: true}
-      cu_seqlens: {dtype: "int64", optional: true}
-      cu_seqlens_cpu: {dtype: "int64", optional: true}
-    outputs:
-      o: {dtype: "same_as(q)", shape: "[B, T, H, V]"}
-      final_state: {dtype: "float32"}
+    types:
+      State:
+        params: {packed: Bool, B: Dim, N: Dim, H: Dim, K: Dim, V: Dim}
+        match: packed
+        cases:
+        - {when: false, is: "[B, H, K, V]"}
+        - {when: true, is: "[N, H, K, V]"}
+    forall: {B: Dim, S: Dim, H: Dim, K: Dim, V: Dim, N: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
     params:
       scale: {type: "float | None", default: null}
       use_qk_l2norm_in_kernel: {type: bool, default: false}
+    inputs:
+      q: {dtype: T, shape: "[B, S, H, K]"}
+      k: {dtype: T, shape: "[B, S, H, K]"}
+      v: {dtype: T, shape: "[B, S, H, V]"}
+      beta: {dtype: T, shape: "[B, S, H]"}
+      initial_state: {dtype: float32, shape: "State[present(cu_seqlens), B, N, H, K, V]", optional: true}
+      cu_seqlens: {dtype: int64, shape: "[N + 1]", optional: true, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", optional: true, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+    outputs:
+      o: {dtype: T, shape: "[B, S, H, V]"}
+      final_state: {dtype: float32, shape: "State[present(cu_seqlens), B, N, H, K, V]"}
     shape_rules:
-    - "k.shape == q.shape"
-    - "v.shape == (B, T, H, V)"
-    - "beta.shape == (B, T, H)"
-    - "cu_seqlens is None or (B == 1 and cu_seqlens.ndim == 1 and cu_seqlens.shape[0] >= 2)"
-    - "cu_seqlens_cpu is None or cu_seqlens is not None"
-    - "cu_seqlens_cpu is None or cu_seqlens is None or cu_seqlens_cpu.shape == cu_seqlens.shape"
-    - "initial_state is None or initial_state.ndim == 4"
-    - "initial_state is None or cu_seqlens is not None or initial_state.shape == (B, H, K, V)"
-    - "initial_state is None or cu_seqlens is None or initial_state.shape[0] + 1 == cu_seqlens.shape[0]"
-    - "initial_state is None or initial_state.shape[1:] == (H, K, V)"
-    - "o.shape == (B, T, H, V)"
-    - "final_state.ndim == 4"
-    - "cu_seqlens is not None or final_state.shape == (B, H, K, V)"
-    - "cu_seqlens is None or final_state.shape[0] + 1 == cu_seqlens.shape[0]"
-    - "final_state.shape[1:] == (H, K, V)"
-
+    - "K > 0 and V > 0"
+    - "not present(cu_seqlens_cpu) or present(cu_seqlens)"
+    - "not present(cu_seqlens) or B == 1"
   workloads:
-  - {q_shape: [2, 2048, 4, 64], k_shape: [2, 2048, 4, 64], v_shape: [2, 2048, 4, 64], beta_shape: [2, 2048, 4], dtypes: [bfloat16], label: "prefill-medium"}
-  - {q_shape: [2, 8192, 4, 64], k_shape: [2, 8192, 4, 64], v_shape: [2, 8192, 4, 64], beta_shape: [2, 8192, 4], dtypes: [bfloat16], label: "prefill-long"}
-  - {q_shape: [2, 16384, 4, 64], k_shape: [2, 16384, 4, 64], v_shape: [2, 16384, 4, 64], beta_shape: [2, 16384, 4], dtypes: [bfloat16], label: "prefill-very-long"}
-  - {q_shape: [1, 4096, 16, 128], k_shape: [1, 4096, 16, 128], v_shape: [1, 4096, 16, 128], beta_shape: [1, 4096, 16], dtypes: [bfloat16], label: "prefill-wide"}
-  roofline: {func: tileops.perf.formulas.deltanet_inference_roofline}
-  source:
-    kernel: tileops/kernels/linear_attention/deltanet/dense_prefill.py
-    kernel_map:
-      deltanet_dense_prefill: DeltaNetDensePrefillFwdKernel
-    op: tileops/ops/linear_attention/deltanet_inference.py
-    test: tests/ops/test_deltanet_inference.py
-    bench: benchmarks/ops/bench_deltanet.py
-    bench_manifest_driven: true
+  - {B: 2, S: 2048, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-medium}
+  - {B: 2, S: 8192, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-long}
+  - {B: 2, S: 16384, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-very-long}
+  - {B: 1, S: 4096, H: 16, K: 128, V: 128, dtype_cases: [{T: bfloat16}], label: prefill-wide}
+  roofline:
+    flops: "B * S * H * (6 * K * V + 2 * K)"
 
 GatedDeltaNetFwdOp:
   # Inference contract shared by equal-length, packed-varlen, prefill, and
   # single-token decode calls. Unlike the FLA reference, this contract always
   # returns final_state: serving callers need it to continue recurrence.
-  ref_api: "fla.ops.gated_delta_rule.chunk_gated_delta_rule"
+  # state_v_first stores the state as [.., V, K]; A_log and dt_bias are passed
+  # exactly when the gate is computed in the kernel.
   family: linear_attention
   status: spec-only
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16", shape: "[B, T, H, K]"}
-      k: {dtype: "same_as(q)", shape: "[B, T, H, K]"}
-      v: {dtype: "same_as(q)", shape: "[B, T, HV, V]"}
-      g: {dtype: "same_as(q)", shape: "[B, T, HV]"}
-      beta: {dtype: "same_as(q)", shape: "[B, T, HV]"}
-      initial_state: {dtype: "float32", optional: true}
-      cu_seqlens: {dtype: "int64", optional: true}
-      cu_seqlens_cpu: {dtype: "int64", optional: true}
-      A_log: {dtype: "float32", shape: "[HV]", optional: true}
-      dt_bias: {dtype: "float32", shape: "[HV]", optional: true}
-    outputs:
-      o: {dtype: "same_as(q)", shape: "[B, T, HV, V]"}
-      final_state: {dtype: "float32"}
+    types:
+      State:
+        params: {packed: Bool, vf: Bool, B: Dim, N: Dim, HV: Dim, K: Dim, V: Dim}
+        match: [packed, vf]
+        cases:
+        - {when: [false, false], is: "[B, HV, K, V]"}
+        - {when: [false, true], is: "[B, HV, V, K]"}
+        - {when: [true, false], is: "[N, HV, K, V]"}
+        - {when: [true, true], is: "[N, HV, V, K]"}
+    forall: {B: Dim, S: Dim, H: Dim, HV: Dim, K: Dim, V: Dim, N: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
     params:
       scale: {type: "float | None", default: null}
       use_qk_l2norm_in_kernel: {type: bool, default: false}
@@ -87,402 +70,302 @@ GatedDeltaNetFwdOp:
       allow_neg_eigval: {type: bool, default: false}
       state_v_first: {type: bool, default: false}
       use_gate_in_kernel: {type: bool, default: false}
+    inputs:
+      q: {dtype: T, shape: "[B, S, H, K]"}
+      k: {dtype: T, shape: "[B, S, H, K]"}
+      v: {dtype: T, shape: "[B, S, HV, V]"}
+      g: {dtype: T, shape: "[B, S, HV]"}
+      beta: {dtype: T, shape: "[B, S, HV]"}
+      initial_state: {dtype: float32, shape: "State[present(cu_seqlens), state_v_first, B, N, HV, K, V]", optional: true}
+      cu_seqlens: {dtype: int64, shape: "[N + 1]", optional: true, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", optional: true, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      A_log: {dtype: float32, shape: "[HV]", optional: use_gate_in_kernel}
+      dt_bias: {dtype: float32, shape: "[HV]", optional: use_gate_in_kernel}
+    outputs:
+      o: {dtype: T, shape: "[B, S, HV, V]"}
+      final_state: {dtype: float32, shape: "State[present(cu_seqlens), state_v_first, B, N, HV, K, V]"}
     shape_rules:
-      - "k.shape == q.shape"
-      - "v.shape == (B, T, HV, V)"
-      - "g.shape == (B, T, HV)"
-      - "beta.shape == g.shape"
-      - "HV % H == 0"
-      - "cu_seqlens is None or (B == 1 and cu_seqlens.ndim == 1 and cu_seqlens.shape[0] >= 2)"
-      - "cu_seqlens_cpu is None or cu_seqlens is not None"
-      - "cu_seqlens_cpu is None or cu_seqlens is None or cu_seqlens_cpu.shape == cu_seqlens.shape"
-      - "initial_state is None or initial_state.ndim == 4"
-      - "initial_state is None or cu_seqlens is not None or initial_state.shape[0] == B"
-      - "initial_state is None or cu_seqlens is None or initial_state.shape[0] + 1 == cu_seqlens.shape[0]"
-      - "initial_state is None or state_v_first or initial_state.shape[1:] == (HV, K, V)"
-      - "initial_state is None or not state_v_first or initial_state.shape[1:] == (HV, V, K)"
-      - "(A_log is None) == (dt_bias is None)"
-      - "(A_log is None) == (not use_gate_in_kernel)"
-      - "A_log is None or A_log.shape == (HV,)"
-      - "dt_bias is None or dt_bias.shape == (HV,)"
-      - "not allow_neg_eigval or use_beta_sigmoid_in_kernel"
-      - "o.shape == (B, T, HV, V)"
-      - "final_state.ndim == 4"
-      - "cu_seqlens is not None or final_state.shape[0] == B"
-      - "cu_seqlens is None or final_state.shape[0] + 1 == cu_seqlens.shape[0]"
-      - "state_v_first or final_state.shape[1:] == (HV, K, V)"
-      - "not state_v_first or final_state.shape[1:] == (HV, V, K)"
-
+    - "H > 0 and HV % H == 0"
+    - "K > 0 and V > 0"
+    - "not present(cu_seqlens_cpu) or present(cu_seqlens)"
+    - "not present(cu_seqlens) or B == 1"
+    - "not allow_neg_eigval or use_beta_sigmoid_in_kernel"
   workloads:
-  - {q_shape: [1, 4096, 16, 128], k_shape: [1, 4096, 16, 128], v_shape: [1, 4096, 16, 128], g_shape: [1, 4096, 16], beta_shape: [1, 4096, 16], dtypes: [float16, bfloat16], label: "serving-prefill-medium"}
-  - {q_shape: [1, 12288, 16, 128], k_shape: [1, 12288, 16, 128], v_shape: [1, 12288, 16, 128], g_shape: [1, 12288, 16], beta_shape: [1, 12288, 16], dtypes: [float16, bfloat16], label: "serving-prefill-long-irregular"}
-  - {q_shape: [1, 32768, 16, 128], k_shape: [1, 32768, 16, 128], v_shape: [1, 32768, 16, 128], g_shape: [1, 32768, 16], beta_shape: [1, 32768, 16], dtypes: [float16, bfloat16], label: "serving-prefill-long"}
-  - {q_shape: [1, 1, 16, 128], k_shape: [1, 1, 16, 128], v_shape: [1, 1, 16, 128], g_shape: [1, 1, 16], beta_shape: [1, 1, 16], initial_state_shape: [1, 16, 128, 128], dtypes: [float16, bfloat16], label: "serving-decode-b1"}
-  - {q_shape: [8, 1, 32, 128], k_shape: [8, 1, 32, 128], v_shape: [8, 1, 32, 128], g_shape: [8, 1, 32], beta_shape: [8, 1, 32], initial_state_shape: [8, 32, 128, 128], dtypes: [float16, bfloat16], label: "serving-decode-b8"}
-
+  - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: serving-prefill-medium}
+  - {B: 1, S: 12288, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: serving-prefill-long-irregular}
+  - {B: 1, S: 32768, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: serving-prefill-long}
+  - {B: 1, S: 1, H: 16, HV: 16, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: serving-decode-b1}
+  - {B: 8, S: 1, H: 32, HV: 32, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: serving-decode-b8}
   roofline:
-    func: "tileops.perf.formulas.gated_deltanet_fwd_roofline"
-
-  source:
-    kernel: tileops/kernels/linear_attention/gated_deltanet/prefill/dense.py
-    kernel_map:
-      gated_deltanet_dense_decode: GatedDeltaNetDenseDecodeFwdKernel
-      gated_deltanet_dense_prefill: GatedDeltaNetDensePrefillFwdKernel
-    op: tileops/ops/linear_attention/gated_deltanet.py
-    test: tests/ops/test_gated_deltanet.py
-    bench: benchmarks/ops/bench_gated_deltanet.py
-    bench_manifest_driven: true
+    flops: "B * S * HV * 7 * K * V"
 
 DeltaNetDecodeFwdOp:
-  # Single-token ungated DeltaNet decode. Like GDN decode, state ownership is
-  # functional: state is read and new_state is returned.
-  ref_api: "none"
+  # Single-token ungated DeltaNet decode. State ownership is functional: state
+  # is read and new_state is returned.
   family: linear_attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
+    forall: {B: Dim, H: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, DK]"}
-      k: {dtype: "same_as(q)", shape: "[B, H, DK]"}
-      v: {dtype: "same_as(q)", shape: "[B, H, DV]"}
-      beta: {dtype: "same_as(q)", shape: "[B, H]"}
-      state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
+      q: {dtype: T, shape: "[B, H, DK]"}
+      k: {dtype: T, shape: "[B, H, DK]"}
+      v: {dtype: T, shape: "[B, H, DV]"}
+      beta: {dtype: T, shape: "[B, H]"}
+      state: {dtype: T, shape: "[B, H, DK, DV]"}
     outputs:
-      o: {dtype: "same_as(q)", shape: "[B, H, DV]"}
-      new_state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
-    params: {}
+      o: {dtype: T, shape: "[B, H, DV]"}
+      new_state: {dtype: T, shape: "[B, H, DK, DV]"}
     shape_rules:
-    - "q.shape == (B, H, DK)"
-    - "k.shape == (B, H, DK)"
-    - "v.shape == (B, H, DV)"
-    - "beta.shape == (B, H)"
-    - "state.shape == (B, H, DK, DV)"
-    - "o.shape == (B, H, DV)"
-    - "new_state.shape == (B, H, DK, DV)"
-
+    - "B > 0 and H > 0 and DK > 0 and DV > 0"
   workloads:
-  - {q_shape: [1, 8, 128], k_shape: [1, 8, 128], v_shape: [1, 8, 128], beta_shape: [1, 8], state_shape: [1, 8, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b1-h8-d128"}
-  - {q_shape: [1, 16, 128], k_shape: [1, 16, 128], v_shape: [1, 16, 128], beta_shape: [1, 16], state_shape: [1, 16, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b1-h16-d128"}
-  - {q_shape: [1, 32, 128], k_shape: [1, 32, 128], v_shape: [1, 32, 128], beta_shape: [1, 32], state_shape: [1, 32, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b1-h32-d128"}
-  - {q_shape: [1, 48, 128], k_shape: [1, 48, 128], v_shape: [1, 48, 128], beta_shape: [1, 48], state_shape: [1, 48, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b1-h48-d128"}
-  - {q_shape: [1, 64, 128], k_shape: [1, 64, 128], v_shape: [1, 64, 128], beta_shape: [1, 64], state_shape: [1, 64, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b1-h64-d128"}
-  - {q_shape: [8, 32, 128], k_shape: [8, 32, 128], v_shape: [8, 32, 128], beta_shape: [8, 32], state_shape: [8, 32, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b8-h32-d128"}
-  - {q_shape: [8, 48, 128], k_shape: [8, 48, 128], v_shape: [8, 48, 128], beta_shape: [8, 48], state_shape: [8, 48, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b8-h48-d128"}
-  - {q_shape: [8, 64, 128], k_shape: [8, 64, 128], v_shape: [8, 64, 128], beta_shape: [8, 64], state_shape: [8, 64, 128, 128], dtypes: [bfloat16], label: "delta-decode-serving-b8-h64-d128"}
-
+  - {B: 1, H: 8, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: delta-decode-serving-b1-h8-d128}
+  - {B: 1, H: 16, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: delta-decode-serving-b1-h16-d128}
+  - {B: 1, H: 32, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: delta-decode-serving-b1-h32-d128}
+  - {B: 1, H: 48, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: delta-decode-serving-b1-h48-d128}
+  - {B: 1, H: 64, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: delta-decode-serving-b1-h64-d128}
+  - {B: 8, H: 32, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: delta-decode-serving-b8-h32-d128}
+  - {B: 8, H: 48, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: delta-decode-serving-b8-h48-d128}
+  - {B: 8, H: 64, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: delta-decode-serving-b8-h64-d128}
   roofline:
-    func: "tileops.perf.formulas.deltanet_decode_roofline"
-
-  source:
-    kernel: tileops/kernels/linear_attention/deltanet_recurrence.py
-    kernel_map:
-      DeltaNetDecodeKernel: DeltaNetDecodeKernel
-      DeltaNetDecodeFP32Kernel: DeltaNetDecodeFP32Kernel
-      DeltaNetDecodeRawCudaFlaStyleKernel: DeltaNetDecodeRawCudaFlaStyleKernel
-    op: tileops/ops/linear_attention/deltanet_recurrence.py
-    test: tests/ops/test_deltanet_recurrence.py
-    bench: benchmarks/ops/bench_deltanet_recurrence.py
-    bench_manifest_driven: true
+    flops: "2 * B * H * (3 * DK * DV + DK)"
 
 GLADecodeFwdOp:
   # Single-token GLA decode. The scale parameter is semantic and fixed at op
-  # construction; state is returned functionally as new_state.
-  ref_api: "none"
+  # construction (non-positive means DK ** -0.5); state is returned
+  # functionally as new_state.
   family: linear_attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, DK]"}
-      k: {dtype: "same_as(q)", shape: "[B, H, DK]"}
-      v: {dtype: "same_as(q)", shape: "[B, H, DV]"}
-      gk: {dtype: "same_as(q)", shape: "[B, H, DK]"}
-      state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
-    outputs:
-      o: {dtype: "same_as(q)", shape: "[B, H, DV]"}
-      new_state: {dtype: "same_as(q)", shape: "[B, H, DK, DV]"}
+    forall: {B: Dim, H: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       scale: {type: float, default: -1.0}
+    inputs:
+      q: {dtype: T, shape: "[B, H, DK]"}
+      k: {dtype: T, shape: "[B, H, DK]"}
+      v: {dtype: T, shape: "[B, H, DV]"}
+      gk: {dtype: T, shape: "[B, H, DK]"}
+      state: {dtype: T, shape: "[B, H, DK, DV]"}
+    outputs:
+      o: {dtype: T, shape: "[B, H, DV]"}
+      new_state: {dtype: T, shape: "[B, H, DK, DV]"}
     shape_rules:
-    - "q.shape == (B, H, DK)"
-    - "k.shape == (B, H, DK)"
-    - "v.shape == (B, H, DV)"
-    - "gk.shape == (B, H, DK)"
-    - "state.shape == (B, H, DK, DV)"
-    - "o.shape == (B, H, DV)"
-    - "new_state.shape == (B, H, DK, DV)"
-
+    - "B > 0 and H > 0 and DK > 0 and DV > 0"
   workloads:
-  - {q_shape: [1, 8, 128], k_shape: [1, 8, 128], v_shape: [1, 8, 128], gk_shape: [1, 8, 128], state_shape: [1, 8, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h8-d128"}
-  - {q_shape: [1, 16, 128], k_shape: [1, 16, 128], v_shape: [1, 16, 128], gk_shape: [1, 16, 128], state_shape: [1, 16, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h16-d128"}
-  - {q_shape: [1, 32, 128], k_shape: [1, 32, 128], v_shape: [1, 32, 128], gk_shape: [1, 32, 128], state_shape: [1, 32, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h32-d128"}
-  - {q_shape: [1, 48, 128], k_shape: [1, 48, 128], v_shape: [1, 48, 128], gk_shape: [1, 48, 128], state_shape: [1, 48, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h48-d128"}
-  - {q_shape: [1, 64, 128], k_shape: [1, 64, 128], v_shape: [1, 64, 128], gk_shape: [1, 64, 128], state_shape: [1, 64, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b1-h64-d128"}
-  - {q_shape: [8, 32, 128], k_shape: [8, 32, 128], v_shape: [8, 32, 128], gk_shape: [8, 32, 128], state_shape: [8, 32, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b8-h32-d128"}
-  - {q_shape: [8, 48, 128], k_shape: [8, 48, 128], v_shape: [8, 48, 128], gk_shape: [8, 48, 128], state_shape: [8, 48, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b8-h48-d128"}
-  - {q_shape: [8, 64, 128], k_shape: [8, 64, 128], v_shape: [8, 64, 128], gk_shape: [8, 64, 128], state_shape: [8, 64, 128, 128], scale: 0.08838834764831845, dtypes: [bfloat16], label: "gla-decode-serving-b8-h64-d128"}
-
+  - {B: 1, H: 8, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: gla-decode-serving-b1-h8-d128}
+  - {B: 1, H: 16, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: gla-decode-serving-b1-h16-d128}
+  - {B: 1, H: 32, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: gla-decode-serving-b1-h32-d128}
+  - {B: 1, H: 48, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: gla-decode-serving-b1-h48-d128}
+  - {B: 1, H: 64, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: gla-decode-serving-b1-h64-d128}
+  - {B: 8, H: 32, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: gla-decode-serving-b8-h32-d128}
+  - {B: 8, H: 48, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: gla-decode-serving-b8-h48-d128}
+  - {B: 8, H: 64, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: gla-decode-serving-b8-h64-d128}
   roofline:
-    func: "tileops.perf.formulas.gla_decode_roofline"
+    flops: "2 * B * H * (2 * DK * DV + DK)"
 
-  source:
-    kernel: tileops/kernels/linear_attention/gla_recurrence.py
-    kernel_map:
-      GLADecodeKernel: GLADecodeKernel
-      GLADecodeFP32Kernel: GLADecodeFP32Kernel
-    op: tileops/ops/linear_attention/gla_recurrence.py
-    test: tests/ops/test_gla_recurrence.py
-    bench: benchmarks/ops/bench_gla_recurrence.py
-    bench_manifest_driven: true
-
-DeltaNetAutogradOp:
-  ref_api: "none"
+DeltaNetAutogradFwdOp:
+  # The autograd wrapper over DeltaNetFwdOp and DeltaNetBwdOp: one output rather
+  # than the forward's six, because the chunk buffers the backward reads are
+  # saved for it rather than returned. The sequence index is L because S names
+  # the forward's state buffer.
   family: linear_attention
   status: implemented
-  # The autograd wrapper over DeltaNetFwdOp and DeltaNetBwdOp: one output rather than the
-  # forward's six, because the chunk buffers the backward reads are saved for it rather
-  # than returned.
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DK]"}
-      k: {dtype: "same_as(q)", shape: "[B, H, S, DK]"}
-      v: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
-      beta: {dtype: "same_as(q)", shape: "[B, H, S]"}
-    outputs:
-      o: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
+    forall: {B: Dim, H: Dim, L: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       chunk_size: {type: int, default: 64}
+    inputs:
+      q: {dtype: T, shape: "[B, H, L, DK]"}
+      k: {dtype: T, shape: "[B, H, L, DK]"}
+      v: {dtype: T, shape: "[B, H, L, DV]"}
+      beta: {dtype: T, shape: "[B, H, L]"}
+    outputs:
+      o: {dtype: T, shape: "[B, H, L, DV]"}
     shape_rules:
-    - "S % chunk_size == 0"
+    - "B > 0 and H > 0 and L > 0 and DK > 0 and DV > 0"
+    - "chunk_size > 0 and L % chunk_size == 0"
   workloads:
-  - {q_shape: [2, 4, 2048, 64], k_shape: [2, 4, 2048, 64], v_shape: [2, 4, 2048, 64], beta_shape: [2, 4, 2048], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-autograd-b2-s2k-h4-d64"}
-  - {q_shape: [2, 4, 8192, 64], k_shape: [2, 4, 8192, 64], v_shape: [2, 4, 8192, 64], beta_shape: [2, 4, 8192], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-autograd-b2-s8k-h4-d64"}
-  roofline: {func: tileops.perf.formulas.deltanet_autograd_fwd_roofline}
-  source:
-    kernel: tileops/kernels/linear_attention/deltanet/deltanet_fwd.py
-    kernel_map:
-      DeltaNetFwdKernel: DeltaNetFwdKernel
-      DeltaNetBwdKernel: DeltaNetBwdKernel
-    op: tileops/ops/linear_attention/deltanet.py
-    test: tests/ops/test_deltanet_autograd.py
-    bench: benchmarks/ops/bench_deltanet.py
-    bench_manifest_driven: true
+  - {B: 2, H: 4, L: 2048, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-autograd-b2-s2k-h4-d64}
+  - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-autograd-b2-s8k-h4-d64}
+  roofline:
+    flops: "2 * B * H * L * DK * DV"
+  composition:
+    kind: composite
+    stages:
+    - {name: forward, op: DeltaNetFwdOp}
+    - {name: backward, op: DeltaNetBwdOp}
 
 DeltaNetFwdOp:
-  ref_api: "none"
+  # Chunked ungated DeltaNet forward. S is the fp32 state at every chunk
+  # boundary; Aw, Au, w, u are the chunk buffers DeltaNetBwdOp reads, in the
+  # input dtype. The sequence index is L because S names an output.
   family: linear_attention
   status: implemented
-  torch_compile_fullgraph: true
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DK]"}
-      k: {dtype: "same_as(q)", shape: "[B, H, S, DK]"}
-      v: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
-      beta: {dtype: "same_as(q)", shape: "[B, H, S]"}
-    outputs:
-      o: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
-      # The running state accumulates in fp32 whatever the inputs are; the chunk
-      # buffers the backward reads come back in the input dtype.
-      S: {dtype: "float32", shape: "[B, H, NC + 1, DK, DV]"}
-      Aw: {dtype: "same_as(q)", shape: "[B, H, S, chunk_size]"}
-      Au: {dtype: "same_as(q)", shape: "[B, H, S, chunk_size]"}
-      w: {dtype: "same_as(q)", shape: "[B, H, S, DK]"}
-      u: {dtype: "same_as(q)", shape: "[B, H, S, DV]"}
+    forall: {B: Dim, H: Dim, L: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       chunk_size: {type: int, default: 64}
+    inputs:
+      q: {dtype: T, shape: "[B, H, L, DK]"}
+      k: {dtype: T, shape: "[B, H, L, DK]"}
+      v: {dtype: T, shape: "[B, H, L, DV]"}
+      beta: {dtype: T, shape: "[B, H, L]"}
+    outputs:
+      o: {dtype: T, shape: "[B, H, L, DV]"}
+      S: {dtype: float32, shape: "[B, H, NC + 1, DK, DV]"}
+      Aw: {dtype: T, shape: "[B, H, L, chunk_size]"}
+      Au: {dtype: T, shape: "[B, H, L, chunk_size]"}
+      w: {dtype: T, shape: "[B, H, L, DK]"}
+      u: {dtype: T, shape: "[B, H, L, DV]"}
+    let: {NC: "L // chunk_size"}
     shape_rules:
-    - "S % chunk_size == 0"
-    - "NC == S // chunk_size"
+    - "B > 0 and H > 0 and L > 0 and DK > 0 and DV > 0"
+    - "chunk_size > 0 and L % chunk_size == 0"
   workloads:
-  - {q_shape: [2, 4, 2048, 64], k_shape: [2, 4, 2048, 64], v_shape: [2, 4, 2048, 64], beta_shape: [2, 4, 2048], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-b2-s2k-h4-d64"}
-  - {q_shape: [2, 4, 4096, 64], k_shape: [2, 4, 4096, 64], v_shape: [2, 4, 4096, 64], beta_shape: [2, 4, 4096], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-b2-s4k-h4-d64"}
-  - {q_shape: [2, 4, 8192, 64], k_shape: [2, 4, 8192, 64], v_shape: [2, 4, 8192, 64], beta_shape: [2, 4, 8192], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-b2-s8k-h4-d64"}
-  - {q_shape: [2, 4, 16384, 64], k_shape: [2, 4, 16384, 64], v_shape: [2, 4, 16384, 64], beta_shape: [2, 4, 16384], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-b2-s16k-h4-d64"}
-  roofline: {func: tileops.perf.formulas.deltanet_fwd_roofline}
-  source:
-    kernel: tileops/kernels/linear_attention/deltanet/deltanet_fwd.py
-    kernel_map:
-      DeltaNetFwdKernel: DeltaNetFwdKernel
-    op: tileops/ops/linear_attention/deltanet.py
-    test: tests/ops/test_deltanet_fwd.py
-    bench: benchmarks/ops/bench_deltanet.py
-    bench_manifest_driven: true
+  - {B: 2, H: 4, L: 2048, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-b2-s2k-h4-d64}
+  - {B: 2, H: 4, L: 4096, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-b2-s4k-h4-d64}
+  - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-b2-s8k-h4-d64}
+  - {B: 2, H: 4, L: 16384, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-b2-s16k-h4-d64}
+  roofline:
+    flops: "2 * B * H * L * DK * DV"
 
 DeltaNetBwdOp:
-  ref_api: "none"
+  # Chunked ungated DeltaNet backward over the forward's inputs and saved buffers.
   family: linear_attention
   status: implemented
-  torch_compile_fullgraph: true
   signature:
-    inputs:
-      do: {dtype: "float16 | bfloat16 | float32", shape: "[B, H, S, DV]"}
-      q: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
-      k: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
-      v: {dtype: "same_as(do)", shape: "[B, H, S, DV]"}
-      beta: {dtype: "same_as(do)", shape: "[B, H, S]"}
-      # The forward accumulates the running state in fp32 whatever the inputs are.
-      S: {dtype: "float32", shape: "[B, H, NC + 1, DK, DV]"}
-      Aw: {dtype: "same_as(do)", shape: "[B, H, S, chunk_size]"}
-      Au: {dtype: "same_as(do)", shape: "[B, H, S, chunk_size]"}
-      w: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
-      u: {dtype: "same_as(do)", shape: "[B, H, S, DV]"}
-    outputs:
-      dq: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
-      dk: {dtype: "same_as(do)", shape: "[B, H, S, DK]"}
-      dv: {dtype: "same_as(do)", shape: "[B, H, S, DV]"}
-      dbeta: {dtype: "same_as(do)", shape: "[B, H, S]"}
+    forall: {B: Dim, H: Dim, L: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       chunk_size: {type: int, default: 64}
+    inputs:
+      do: {dtype: T, shape: "[B, H, L, DV]"}
+      q: {dtype: T, shape: "[B, H, L, DK]"}
+      k: {dtype: T, shape: "[B, H, L, DK]"}
+      v: {dtype: T, shape: "[B, H, L, DV]"}
+      beta: {dtype: T, shape: "[B, H, L]"}
+      S: {dtype: float32, shape: "[B, H, NC + 1, DK, DV]"}
+      Aw: {dtype: T, shape: "[B, H, L, chunk_size]"}
+      Au: {dtype: T, shape: "[B, H, L, chunk_size]"}
+      w: {dtype: T, shape: "[B, H, L, DK]"}
+      u: {dtype: T, shape: "[B, H, L, DV]"}
+    outputs:
+      dq: {dtype: T, shape: "[B, H, L, DK]"}
+      dk: {dtype: T, shape: "[B, H, L, DK]"}
+      dv: {dtype: T, shape: "[B, H, L, DV]"}
+      dbeta: {dtype: T, shape: "[B, H, L]"}
+    let: {NC: "L // chunk_size"}
     shape_rules:
-    - "S % chunk_size == 0"
-    - "NC == S // chunk_size"
+    - "B > 0 and H > 0 and L > 0 and DK > 0 and DV > 0"
+    - "chunk_size > 0 and L % chunk_size == 0"
   workloads:
-  - {do_shape: [2, 4, 2048, 64], q_shape: [2, 4, 2048, 64], k_shape: [2, 4, 2048, 64], v_shape: [2, 4, 2048, 64], beta_shape: [2, 4, 2048], S_shape: [2, 4, 33, 64, 64], Aw_shape: [2, 4, 2048, 64], Au_shape: [2, 4, 2048, 64], w_shape: [2, 4, 2048, 64], u_shape: [2, 4, 2048, 64], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-bwd-b2-s2k-h4-d64"}
-  - {do_shape: [2, 4, 4096, 64], q_shape: [2, 4, 4096, 64], k_shape: [2, 4, 4096, 64], v_shape: [2, 4, 4096, 64], beta_shape: [2, 4, 4096], S_shape: [2, 4, 65, 64, 64], Aw_shape: [2, 4, 4096, 64], Au_shape: [2, 4, 4096, 64], w_shape: [2, 4, 4096, 64], u_shape: [2, 4, 4096, 64], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-bwd-b2-s4k-h4-d64"}
-  - {do_shape: [2, 4, 8192, 64], q_shape: [2, 4, 8192, 64], k_shape: [2, 4, 8192, 64], v_shape: [2, 4, 8192, 64], beta_shape: [2, 4, 8192], S_shape: [2, 4, 129, 64, 64], Aw_shape: [2, 4, 8192, 64], Au_shape: [2, 4, 8192, 64], w_shape: [2, 4, 8192, 64], u_shape: [2, 4, 8192, 64], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-bwd-b2-s8k-h4-d64"}
-  - {do_shape: [2, 4, 16384, 64], q_shape: [2, 4, 16384, 64], k_shape: [2, 4, 16384, 64], v_shape: [2, 4, 16384, 64], beta_shape: [2, 4, 16384], S_shape: [2, 4, 257, 64, 64], Aw_shape: [2, 4, 16384, 64], Au_shape: [2, 4, 16384, 64], w_shape: [2, 4, 16384, 64], u_shape: [2, 4, 16384, 64], chunk_size: 64, dtypes: [float16, bfloat16], label: "dn-bwd-b2-s16k-h4-d64"}
-  roofline: {func: tileops.perf.formulas.deltanet_bwd_roofline}
-  source:
-    kernel: tileops/kernels/linear_attention/deltanet/deltanet_bwd.py
-    kernel_map:
-      DeltaNetBwdKernel: DeltaNetBwdKernel
-    op: tileops/ops/linear_attention/deltanet.py
-    test: tests/ops/test_deltanet_chunkwise_bwd.py
-    bench: benchmarks/ops/bench_deltanet.py
-    bench_manifest_driven: true
+  - {B: 2, H: 4, L: 2048, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-bwd-b2-s2k-h4-d64}
+  - {B: 2, H: 4, L: 4096, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-bwd-b2-s4k-h4-d64}
+  - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-bwd-b2-s8k-h4-d64}
+  - {B: 2, H: 4, L: 16384, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-bwd-b2-s16k-h4-d64}
+  roofline:
+    flops: "4 * B * H * L * DK * DV"
 
 GLAInferenceFwdOp:
   # One serving contract for equal-length prefill, packed varlen, and decode.
   # The in-tree kernel currently covers Hopper dense prefill only.
-  ref_api: "fla.ops.gla.chunk_gla"
   family: linear_attention
   status: spec-only
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16", shape: "[B, T, H, K]"}
-      k: {dtype: "same_as(q)", shape: "[B, T, H, K]"}
-      v: {dtype: "same_as(q)", shape: "[B, T, H, V]"}
-      g: {dtype: "same_as(q)", shape: "[B, T, H, K]"}
-      initial_state: {dtype: "float32", optional: true}
-      cu_seqlens: {dtype: "int64", optional: true}
-      cu_seqlens_cpu: {dtype: "int64", optional: true}
-    outputs:
-      o: {dtype: "same_as(q)", shape: "[B, T, H, V]"}
-      final_state: {dtype: "float32"}
+    types:
+      State:
+        params: {packed: Bool, B: Dim, N: Dim, H: Dim, K: Dim, V: Dim}
+        match: packed
+        cases:
+        - {when: false, is: "[B, H, K, V]"}
+        - {when: true, is: "[N, H, K, V]"}
+    forall: {B: Dim, S: Dim, H: Dim, K: Dim, V: Dim, N: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
     params:
       scale: {type: "float | None", default: null}
+    inputs:
+      q: {dtype: T, shape: "[B, S, H, K]"}
+      k: {dtype: T, shape: "[B, S, H, K]"}
+      v: {dtype: T, shape: "[B, S, H, V]"}
+      g: {dtype: T, shape: "[B, S, H, K]"}
+      initial_state: {dtype: float32, shape: "State[present(cu_seqlens), B, N, H, K, V]", optional: true}
+      cu_seqlens: {dtype: int64, shape: "[N + 1]", optional: true, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      cu_seqlens_cpu: {dtype: int64, shape: "[N + 1]", optional: true, device: cpu, values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+    outputs:
+      o: {dtype: T, shape: "[B, S, H, V]"}
+      final_state: {dtype: float32, shape: "State[present(cu_seqlens), B, N, H, K, V]"}
     shape_rules:
-    - "k.shape == q.shape"
-    - "g.shape == q.shape"
-    - "v.shape == (B, T, H, V)"
-    - "cu_seqlens is None or (B == 1 and cu_seqlens.ndim == 1 and cu_seqlens.shape[0] >= 2)"
-    - "cu_seqlens_cpu is None or cu_seqlens is not None"
-    - "cu_seqlens_cpu is None or cu_seqlens is None or cu_seqlens_cpu.shape == cu_seqlens.shape"
-    - "initial_state is None or initial_state.ndim == 4"
-    - "initial_state is None or cu_seqlens is not None or initial_state.shape == (B, H, K, V)"
-    - "initial_state is None or cu_seqlens is None or initial_state.shape[0] + 1 == cu_seqlens.shape[0]"
-    - "initial_state is None or initial_state.shape[1:] == (H, K, V)"
-    - "o.shape == (B, T, H, V)"
-    - "final_state.ndim == 4"
-    - "cu_seqlens is not None or final_state.shape == (B, H, K, V)"
-    - "cu_seqlens is None or final_state.shape[0] + 1 == cu_seqlens.shape[0]"
-    - "final_state.shape[1:] == (H, K, V)"
-
+    - "K > 0 and V > 0"
+    - "not present(cu_seqlens_cpu) or present(cu_seqlens)"
+    - "not present(cu_seqlens) or B == 1"
   workloads:
-  - {q_shape: [2, 2048, 4, 64], k_shape: [2, 2048, 4, 64], v_shape: [2, 2048, 4, 64], g_shape: [2, 2048, 4, 64], dtypes: [bfloat16], label: "prefill-medium"}
-  - {q_shape: [2, 4096, 4, 64], k_shape: [2, 4096, 4, 64], v_shape: [2, 4096, 4, 64], g_shape: [2, 4096, 4, 64], initial_state_shape: [2, 4, 64, 64], dtypes: [bfloat16], label: "prefill-seeded"}
-  - {q_shape: [2, 8192, 4, 64], k_shape: [2, 8192, 4, 64], v_shape: [2, 8192, 4, 64], g_shape: [2, 8192, 4, 64], dtypes: [bfloat16], label: "prefill-long"}
-  - {q_shape: [2, 16384, 4, 64], k_shape: [2, 16384, 4, 64], v_shape: [2, 16384, 4, 64], g_shape: [2, 16384, 4, 64], initial_state_shape: [2, 4, 64, 64], dtypes: [bfloat16], label: "prefill-very-long"}
-  roofline: {func: tileops.perf.formulas.gla_fwd_roofline}
-  source:
-    kernel: tileops/kernels/linear_attention/gla/dense_prefill_subchunk.py
-    kernel_map:
-      gla_dense_prefill_partitioned: GLADensePrefillPartitionedKernel
-      gla_dense_prefill_subchunk: GLADensePrefillSubchunkKernel
-    op: tileops/ops/linear_attention/gla_inference.py
-    test: tests/ops/test_gla_inference.py
-    bench: benchmarks/ops/bench_gla_inference.py
-    bench_manifest_driven: true
+  - {B: 2, S: 2048, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-medium}
+  - {B: 2, S: 4096, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-seeded}
+  - {B: 2, S: 8192, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-long}
+  - {B: 2, S: 16384, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-very-long}
+  roofline:
+    flops: "2 * B * H * S * K * V"
 
 GLAFwdOp:
-  ref_api: "none"
+  # Chunked GLA forward. initial_state seeds the recurrence (absent starts from
+  # zeros) and has final_state's dtype, so one call's state feeds the next.
   family: linear_attention
   status: implemented
-  torch_compile_fullgraph: true
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, S, H, DK]"}
-      k: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
-      v: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
-      g: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
-      # The state a caller may seed the recurrence with; not passing it starts
-      # from zeros. Same dtype as final_state, so one call's state feeds the next.
-      initial_state: {dtype: "float32", shape: "[B, H, DK, DV]", optional: true}
-    outputs:
-      o: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
-      # The recurrence carries the state in fp32 whatever the inputs are.
-      final_state: {dtype: "float32", shape: "[B, H, DK, DV]"}
+    forall: {B: Dim, S: Dim, H: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       chunk_size: {type: int, default: 64}
       scale: {type: float, default: -1.0}
+    inputs:
+      q: {dtype: T, shape: "[B, S, H, DK]"}
+      k: {dtype: T, shape: "[B, S, H, DK]"}
+      v: {dtype: T, shape: "[B, S, H, DV]"}
+      g: {dtype: T, shape: "[B, S, H, DK]"}
+      initial_state: {dtype: float32, shape: "[B, H, DK, DV]", optional: true}
+    outputs:
+      o: {dtype: T, shape: "[B, S, H, DV]"}
+      final_state: {dtype: float32, shape: "[B, H, DK, DV]"}
     shape_rules:
-    - "S % chunk_size == 0"
+    - "B > 0 and S > 0 and H > 0 and DK > 0 and DV > 0"
+    - "chunk_size > 0 and S % chunk_size == 0"
   workloads:
-  - {q_shape: [2, 2048, 4, 64], k_shape: [2, 2048, 4, 64], v_shape: [2, 2048, 4, 64], g_shape: [2, 2048, 4, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-noinit-b2-s2k-h4-d64"}
-  - {q_shape: [2, 4096, 4, 64], k_shape: [2, 4096, 4, 64], v_shape: [2, 4096, 4, 64], g_shape: [2, 4096, 4, 64], initial_state_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-init-b2-s4k-h4-d64"}
-  - {q_shape: [2, 8192, 4, 64], k_shape: [2, 8192, 4, 64], v_shape: [2, 8192, 4, 64], g_shape: [2, 8192, 4, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-noinit-b2-s8k-h4-d64"}
-  - {q_shape: [2, 16384, 4, 64], k_shape: [2, 16384, 4, 64], v_shape: [2, 16384, 4, 64], g_shape: [2, 16384, 4, 64], initial_state_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, dtypes: [float16, bfloat16], label: "gla-init-b2-s16k-h4-d64"}
-  roofline: {func: tileops.perf.formulas.gla_fwd_roofline}
-  source:
-    kernel: tileops/kernels/linear_attention/gla/gla_fwd.py
-    kernel_map:
-      GLAFwdKernel: GLAFwdKernel
-    op: tileops/ops/linear_attention/gla.py
-    test: tests/ops/test_gla_chunkwise_fwd.py
-    bench: benchmarks/ops/bench_gla_chunkwise.py
-    bench_manifest_driven: true
+  - {B: 2, S: 2048, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, dtype_cases: [{T: float16}, {T: bfloat16}], label: gla-noinit-b2-s2k-h4-d64}
+  - {B: 2, S: 4096, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: gla-init-b2-s4k-h4-d64}
+  - {B: 2, S: 8192, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, dtype_cases: [{T: float16}, {T: bfloat16}], label: gla-noinit-b2-s8k-h4-d64}
+  - {B: 2, S: 16384, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: gla-init-b2-s16k-h4-d64}
+  roofline:
+    flops: "2 * B * H * S * DK * DV"
 
 GLABwdOp:
-  ref_api: "none"
+  # Chunked GLA backward over the forward's per-chunk states h. Gradients are
+  # fp32 (accumulator dtype). has_initial_state says whether the forward this
+  # backward pairs with was seeded.
   family: linear_attention
   status: implemented
-  torch_compile_fullgraph: true
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16 | float32", shape: "[B, S, H, DK]"}
-      k: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
-      v: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
-      g: {dtype: "same_as(q)", shape: "[B, S, H, DK]"}
-      h: {dtype: "float32", shape: "[B, NC + 1, H, DK, DV]"}
-      do: {dtype: "same_as(q)", shape: "[B, S, H, DV]"}
-      dht: {dtype: "float32", shape: "[B, H, DK, DV]"}
-    outputs:
-      # The gradients come back in the accumulator dtype.
-      dq: {dtype: "float32", shape: "[B, S, H, DK]"}
-      dk: {dtype: "float32", shape: "[B, S, H, DK]"}
-      dv: {dtype: "float32", shape: "[B, S, H, DV]"}
-      dg: {dtype: "float32", shape: "[B, S, H, DK]"}
+    forall: {B: Dim, S: Dim, H: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       chunk_size: {type: int, default: 64}
       scale: {type: float, default: -1.0}
       has_initial_state: {type: bool, default: false}
+    inputs:
+      q: {dtype: T, shape: "[B, S, H, DK]"}
+      k: {dtype: T, shape: "[B, S, H, DK]"}
+      v: {dtype: T, shape: "[B, S, H, DV]"}
+      g: {dtype: T, shape: "[B, S, H, DK]"}
+      h: {dtype: float32, shape: "[B, NC + 1, H, DK, DV]"}
+      do: {dtype: T, shape: "[B, S, H, DV]"}
+      dht: {dtype: float32, shape: "[B, H, DK, DV]"}
+    outputs:
+      dq: {dtype: float32, shape: "[B, S, H, DK]"}
+      dk: {dtype: float32, shape: "[B, S, H, DK]"}
+      dv: {dtype: float32, shape: "[B, S, H, DV]"}
+      dg: {dtype: float32, shape: "[B, S, H, DK]"}
+    let: {NC: "S // chunk_size"}
     shape_rules:
-    - "S % chunk_size == 0"
-    - "NC == S // chunk_size"
+    - "B > 0 and S > 0 and H > 0 and DK > 0 and DV > 0"
+    - "chunk_size > 0 and S % chunk_size == 0"
   workloads:
-  - {q_shape: [2, 2048, 4, 64], k_shape: [2, 2048, 4, 64], v_shape: [2, 2048, 4, 64], g_shape: [2, 2048, 4, 64], h_shape: [2, 33, 4, 64, 64], do_shape: [2, 2048, 4, 64], dht_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, has_initial_state: false, dtypes: [float16, bfloat16], label: "gla-bwd-b2-s2k-h4-d64"}
-  - {q_shape: [2, 4096, 4, 64], k_shape: [2, 4096, 4, 64], v_shape: [2, 4096, 4, 64], g_shape: [2, 4096, 4, 64], h_shape: [2, 65, 4, 64, 64], do_shape: [2, 4096, 4, 64], dht_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, has_initial_state: false, dtypes: [float16, bfloat16], label: "gla-bwd-b2-s4k-h4-d64"}
-  - {q_shape: [2, 8192, 4, 64], k_shape: [2, 8192, 4, 64], v_shape: [2, 8192, 4, 64], g_shape: [2, 8192, 4, 64], h_shape: [2, 129, 4, 64, 64], do_shape: [2, 8192, 4, 64], dht_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, has_initial_state: false, dtypes: [float16, bfloat16], label: "gla-bwd-b2-s8k-h4-d64"}
-  - {q_shape: [2, 16384, 4, 64], k_shape: [2, 16384, 4, 64], v_shape: [2, 16384, 4, 64], g_shape: [2, 16384, 4, 64], h_shape: [2, 257, 4, 64, 64], do_shape: [2, 16384, 4, 64], dht_shape: [2, 4, 64, 64], chunk_size: 64, scale: 0.125, has_initial_state: false, dtypes: [float16, bfloat16], label: "gla-bwd-b2-s16k-h4-d64"}
-  roofline: {func: tileops.perf.formulas.gla_bwd_roofline}
-  source:
-    kernel: tileops/kernels/linear_attention/gla/gla_bwd.py
-    kernel_map:
-      GLABwdKernel: GLABwdKernel
-    op: tileops/ops/linear_attention/gla.py
-    test: tests/ops/test_gla_chunkwise_bwd.py
-    bench: benchmarks/ops/bench_gla_chunkwise.py
-    bench_manifest_driven: true
+  - {B: 2, S: 2048, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: gla-bwd-b2-s2k-h4-d64}
+  - {B: 2, S: 4096, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: gla-bwd-b2-s4k-h4-d64}
+  - {B: 2, S: 8192, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: gla-bwd-b2-s8k-h4-d64}
+  - {B: 2, S: 16384, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: gla-bwd-b2-s16k-h4-d64}
+  roofline:
+    flops: "4 * B * H * S * DK * DV"

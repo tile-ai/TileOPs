@@ -41,7 +41,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GroupedGemmFwdOp,
     )
     from .linear_attention import (
-        DeltaNetAutogradOp,
+        DeltaNetAutogradFwdOp,
         DeltaNetBwdOp,
         DeltaNetDecodeFwdOp,
         DeltaNetFwdOp,
@@ -236,7 +236,7 @@ _LAZY = {
     "FP8LightningIndexerFwdOp": ".fp8_lightning_indexer",
     "TopkSelectorFwdOp": ".topk_selector",
     # Linear attention
-    "DeltaNetAutogradOp": ".linear_attention",
+    "DeltaNetAutogradFwdOp": ".linear_attention",
     "DeltaNetFwdOp": ".linear_attention",
     "DeltaNetBwdOp": ".linear_attention",
     "DeltaNetInferenceFwdOp": ".linear_attention",
