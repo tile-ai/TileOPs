@@ -8,6 +8,7 @@ Output has the same shape as input.
 import pytest
 import torch
 
+from tests.ops.reduction_test_utils import reduction_tolerance
 from tests.test_base import FixtureBase, TestBase, served_in_tree
 from workloads.reduction import CumulativeWorkload
 
@@ -96,12 +97,6 @@ class CumulativeTest(CumulativeWorkload, TestBase):
 # Helper to get tolerances
 
 
-def _tol(dtype: torch.dtype) -> dict:
-    if dtype == torch.float32:
-        return {"atol": 1e-4, "rtol": 1e-4}
-    return {"atol": 1e-2, "rtol": 1e-2}
-
-
 def _cumprod_tol(dtype: torch.dtype) -> dict:
     """Tolerances for cumprod tests (more numerically sensitive)."""
     if dtype == torch.float32:
@@ -115,7 +110,7 @@ def test_cumsum_op(m: int, n: int, dtype: torch.dtype) -> None:
 
     test = CumulativeTest((m, n), dtype, "cumsum")
     op = CumsumFwdOp()
-    test.check(op, *test.gen_inputs(), **_tol(dtype))
+    test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
 
 
 @CumulativeNonContigFixture
@@ -127,7 +122,7 @@ def test_cumsum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     op = CumsumFwdOp()
     ref = x.contiguous().float().cumsum(dim=-1).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
 
@@ -139,7 +134,7 @@ def test_cumsum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
     op = CumsumFwdOp()
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert torch.allclose(y, ref, **tol), f"3D max err: {(y - ref).abs().max()}"
 
 
@@ -151,7 +146,7 @@ def test_cumsum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
     op = CumsumFwdOp()
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert torch.allclose(y, ref, **tol), f"4D max err: {(y - ref).abs().max()}"
 
 
@@ -163,7 +158,7 @@ def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
     op = CumsumFwdOp()
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert torch.allclose(y, ref, **tol), f"1D cumsum max err: {(y - ref).abs().max()}"
 
 
@@ -308,7 +303,7 @@ def test_cumsum_backend_dispatch(M: int, N: int, dtype: torch.dtype, backend: st
     y = op(x)
 
     ref = x.float().cumsum(dim=-1).to(dtype)
-    assert torch.allclose(y, ref, **_tol(dtype)), (
+    assert torch.allclose(y, ref, **reduction_tolerance(dtype)), (
         f"({M}, {N}) {dtype}: max_diff={torch.abs(y - ref).max()}"
     )
 
@@ -394,6 +389,6 @@ def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype)
     y = compiled(x)
 
     ref = x.float().cumsum(dim=-1).to(dtype)
-    assert torch.allclose(y, ref, **_tol(dtype)), (
+    assert torch.allclose(y, ref, **reduction_tolerance(dtype)), (
         f"Compiled output mismatch for shape ({M},{N}): max_diff={torch.abs(y - ref).max()}"
     )

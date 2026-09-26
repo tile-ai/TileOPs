@@ -25,19 +25,7 @@ flowchart LR
 - The manifest contract cases and the benchmarks take their calls from the entry's workload rows. Rows are not unit-test coverage: shapes that target kernel branches are chosen by the test ([testing.md § Test case policy](testing.md#test-case-policy)).
 - Code-dependent checks are skipped for `spec-only` entries only; no check has a per-op opt-out. An entry is demoted to `spec-only` only when its implementation does not conform.
 
-Each module depends only on the manifest, the op interface and other modules' published outputs, never on their internals, so each changes without the others:
-
-| Module                                                      | Depends on                                                                                                                 |
-| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| Validator (CI)                                              | the manifest and the roofline analysis; for an implemented entry, the op's public interface and its `roofline.func` module |
-| Generated checks, fake, operator schemas, `eval_roofline()` | the signature; `roofline` for `eval_roofline()`                                                                            |
-| Implementation                                              | the signature, through the generated checks that wrap `forward`                                                            |
-| Tests                                                       | workload rows, the reference in `workloads/`, the op interface                                                             |
-| Benchmarks                                                  | workload rows, the reference in `workloads/`, the op interface (including `eval_roofline()` and `compute_roof()`)          |
-| Roofline tool (M5)                                          | benchmark output and the GPU profile; it never instantiates an op                                                          |
-| Docs site                                                   | the manifest YAML (read without torch), op docstrings, benchmark and roofline output                                       |
-
-The layer boundaries between the manifest, tests, implementation and benchmarks are in [layer-boundaries.md](layer-boundaries.md).
+What each layer depends on, and the boundaries between layers, are in [layer-boundaries.md](layer-boundaries.md).
 
 ## Field Admission
 

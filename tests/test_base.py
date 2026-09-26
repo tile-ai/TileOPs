@@ -48,11 +48,7 @@ _STANDARD_TOLERANCES = {
 
 
 def standard_tolerance(dtype: torch.dtype) -> dict[str, float]:
-    """Return the standard ``atol``/``rtol`` for *dtype*, ready to splat into a check.
-
-    Raises:
-        KeyError: When *dtype* has no standard tolerance.
-    """
+    """Return the standard ``atol``/``rtol`` for *dtype*, ready to splat into a check."""
     tol = _STANDARD_TOLERANCES[dtype]
     return {"atol": tol, "rtol": tol}
 

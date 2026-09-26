@@ -1,9 +1,22 @@
 # Layer Boundaries
 
-The manifest, the op library, the tests and the benchmarks compose only through
-the manifest, the op interface and [`workloads/`](../../workloads/), so each can
-be replaced without touching the others. Each section states what one layer owns
-and what it must not reach into.
+Each layer depends only on the manifest, the op interface,
+[`workloads/`](../../workloads/) and other layers' published outputs, never on
+their internals, so each can be replaced without touching the others.
+[§Dependencies](#dependencies) lists what each one depends on; the sections after
+it state what one layer owns and what it must not reach into.
+
+## Dependencies
+
+| Layer                                                       | Depends on                                                                                                                 |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Validator (CI)                                              | the manifest and the roofline analysis; for an implemented entry, the op's public interface and its `roofline.func` module |
+| Generated checks, fake, operator schemas, `eval_roofline()` | the signature; `roofline` for `eval_roofline()`                                                                            |
+| Implementation                                              | the signature, through the generated checks that wrap `forward`                                                            |
+| Tests                                                       | workload rows, the reference in `workloads/`, the op interface                                                             |
+| Benchmarks                                                  | workload rows, the reference in `workloads/`, the op interface (including `eval_roofline()` and `compute_roof()`)          |
+| Roofline tool (M5)                                          | benchmark output and the GPU profile; it never instantiates an op                                                          |
+| Docs site                                                   | the manifest YAML (read without torch), op docstrings, benchmark and roofline output                                       |
 
 ## Manifest
 

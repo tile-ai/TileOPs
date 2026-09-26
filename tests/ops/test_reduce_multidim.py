@@ -11,6 +11,7 @@ the corresponding PyTorch reference.
 import pytest
 import torch
 
+from tests.ops.reduction_test_utils import reduction_tolerance
 from tests.test_base import FixtureBase
 
 
@@ -62,12 +63,6 @@ class MultiDimFixture(FixtureBase):
     ]
 
 
-def _tol(dtype: torch.dtype) -> dict:
-    if dtype == torch.float32:
-        return {"atol": 1e-4, "rtol": 1e-4}
-    return {"atol": 1e-2, "rtol": 1e-2}
-
-
 # Simple reduce ops: sum, mean, amax, amin
 
 
@@ -84,7 +79,7 @@ def test_sum_multidim(
     op = SumFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.sum(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -102,7 +97,7 @@ def test_mean_multidim(
     op = MeanFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -135,7 +130,7 @@ def test_amax_multidim(
     op = AmaxFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.amax(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -166,7 +161,7 @@ def test_amin_multidim(
     op = AminFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.amin(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -187,7 +182,7 @@ def test_var_multidim(
     op = VarFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.var(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -205,7 +200,7 @@ def test_std_multidim(
     op = StdFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.std(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -229,7 +224,7 @@ def test_var_mean_multidim(
     ).to(dtype)
     ref_mean = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     var_out, mean_out = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert var_out.shape == ref_var.shape, f"var shape: {var_out.shape} vs {ref_var.shape}"
     assert mean_out.shape == ref_mean.shape, f"mean shape: {mean_out.shape} vs {ref_mean.shape}"
     assert torch.allclose(var_out, ref_var, **tol), f"var err: {(var_out - ref_var).abs().max()}"
@@ -254,7 +249,7 @@ def test_logsumexp_multidim(
     op = LogSumExpFwdOp(dim=dims, keepdim=keepdim)
     ref = torch.logsumexp(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -272,7 +267,7 @@ def test_logsumexp_edge_axes_special_values() -> None:
     assert y[0].item() == float("-inf")
     assert torch.isnan(y[1])
     finite = torch.isfinite(ref)
-    assert torch.allclose(y[finite], ref[finite], **_tol(torch.float16))
+    assert torch.allclose(y[finite], ref[finite], **reduction_tolerance(torch.float16))
 
 
 # Logical reduce ops: all, any, count_nonzero
@@ -434,7 +429,7 @@ def test_l1_norm_multidim(
         keepdim=keepdim,
     ).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -457,7 +452,7 @@ def test_l2_norm_multidim(
         keepdim=keepdim,
     ).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -480,7 +475,7 @@ def test_inf_norm_multidim(
         keepdim=keepdim,
     ).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -514,7 +509,7 @@ def test_sum_empty_dim_full_reduction() -> None:
     x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
     op = SumFwdOp(dim=[], keepdim=False)
     op_none = SumFwdOp(dim=None, keepdim=False)
-    assert torch.allclose(op(x), op_none(x), **_tol(torch.float16))
+    assert torch.allclose(op(x), op_none(x), **reduction_tolerance(torch.float16))
 
 
 @pytest.mark.smoke
@@ -524,7 +519,7 @@ def test_mean_empty_dim_full_reduction() -> None:
     x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
     op = MeanFwdOp(dim=(), keepdim=True)
     op_none = MeanFwdOp(dim=None, keepdim=True)
-    assert torch.allclose(op(x), op_none(x), **_tol(torch.float16))
+    assert torch.allclose(op(x), op_none(x), **reduction_tolerance(torch.float16))
 
 
 @pytest.mark.smoke
@@ -541,7 +536,7 @@ def test_simple_op_empty_dim_full_reduction(op_name: str) -> None:
     if op_name == "count_nonzero":
         assert (y_empty == y_none).all()
     else:
-        assert torch.allclose(y_empty, y_none, **_tol(torch.float16))
+        assert torch.allclose(y_empty, y_none, **reduction_tolerance(torch.float16))
 
 
 @pytest.mark.smoke
@@ -553,7 +548,7 @@ def test_welford_op_empty_dim_full_reduction(op_name: str) -> None:
     x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
     y_empty = op_cls(dim=[], keepdim=False)(x)
     y_none = op_cls(dim=None, keepdim=False)(x)
-    assert torch.allclose(y_empty, y_none, **_tol(torch.float16))
+    assert torch.allclose(y_empty, y_none, **reduction_tolerance(torch.float16))
 
 
 @pytest.mark.smoke
@@ -563,8 +558,8 @@ def test_var_mean_empty_dim_full_reduction() -> None:
     x = torch.randn(2, 3, 4, dtype=torch.float16, device="cuda")
     var_e, mean_e = VarMeanFwdOp(dim=[], keepdim=False)(x)
     var_n, mean_n = VarMeanFwdOp(dim=None, keepdim=False)(x)
-    assert torch.allclose(var_e, var_n, **_tol(torch.float16))
-    assert torch.allclose(mean_e, mean_n, **_tol(torch.float16))
+    assert torch.allclose(var_e, var_n, **reduction_tolerance(torch.float16))
+    assert torch.allclose(mean_e, mean_n, **reduction_tolerance(torch.float16))
 
 
 @pytest.mark.smoke
@@ -612,7 +607,7 @@ def test_negative_dims_accepted() -> None:
     ref = torch.sum(x.float(), dim=[0, 2], keepdim=False).to(torch.float16)
     y = op(x)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    assert torch.allclose(y, ref, **_tol(torch.float16))
+    assert torch.allclose(y, ref, **reduction_tolerance(torch.float16))
 
 
 @pytest.mark.smoke

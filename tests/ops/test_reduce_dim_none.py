@@ -11,6 +11,7 @@ PyTorch reference (full reduction over all dimensions).
 import pytest
 import torch
 
+from tests.ops.reduction_test_utils import reduction_tolerance
 from tests.test_base import FixtureBase
 
 
@@ -57,12 +58,6 @@ class DimNoneFixture(FixtureBase):
     ]
 
 
-def _tol(dtype: torch.dtype) -> dict:
-    if dtype == torch.float32:
-        return {"atol": 1e-4, "rtol": 1e-4}
-    return {"atol": 1e-2, "rtol": 1e-2}
-
-
 def _all_dims(shape: tuple) -> list[int]:
     """Return list of all dim indices for a given shape."""
     return list(range(len(shape)))
@@ -97,7 +92,7 @@ def test_sum_dim_none(
     dims = _all_dims(shape)
     ref = torch.sum(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -115,7 +110,7 @@ def test_mean_dim_none(
     dims = _all_dims(shape)
     ref = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -133,7 +128,7 @@ def test_amax_dim_none(
     dims = _all_dims(shape)
     ref = torch.amax(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -151,7 +146,7 @@ def test_amin_dim_none(
     dims = _all_dims(shape)
     ref = torch.amin(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -183,7 +178,7 @@ def test_var_dim_none(
     dims = _all_dims(shape)
     ref = torch.var(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -201,7 +196,7 @@ def test_std_dim_none(
     dims = _all_dims(shape)
     ref = torch.std(x.float(), dim=dims, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -225,7 +220,7 @@ def test_var_mean_dim_none(
     ).to(dtype)
     ref_mean = torch.mean(x.float(), dim=dims, keepdim=keepdim).to(dtype)
     var_out, mean_out = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert var_out.shape == ref_var.shape, f"var shape: {var_out.shape} vs {ref_var.shape}"
     assert mean_out.shape == ref_mean.shape, f"mean shape: {mean_out.shape} vs {ref_mean.shape}"
     assert torch.allclose(var_out, ref_var, **tol), f"var err: {(var_out - ref_var).abs().max()}"
@@ -375,7 +370,7 @@ def test_l1_norm_dim_none(
         keepdim=keepdim,
     ).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -398,7 +393,7 @@ def test_l2_norm_dim_none(
         keepdim=keepdim,
     ).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
 
@@ -421,6 +416,6 @@ def test_inf_norm_dim_none(
         keepdim=keepdim,
     ).to(dtype)
     y = op(x)
-    tol = _tol(dtype)
+    tol = reduction_tolerance(dtype)
     assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
     assert torch.allclose(y, ref, **tol), f"max err: {(y - ref).abs().max()}"
