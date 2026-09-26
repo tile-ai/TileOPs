@@ -14,30 +14,23 @@ Op                          ← L1: thin base, shared by all ops
         └── ConcreteOp      ← L3: leaf class emitted by the scaffold
 ```
 
-- **L1 (`Op`):** shared host-side plumbing (dispatch, get-or-build kernel caching, kernel enumeration, autotune) plus the contracts for the three codegen methods (`_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`).
+- **L1 (`Op`):** shared host-side plumbing (dispatch, get-or-build kernel caching, kernel enumeration, autotune) plus the methods generated from the manifest signature: the call checks, `_infer_output_shapes`, `_validate_dtypes` and `eval_roofline`.
 - **L2 (`FamilyBase`):** per-family shared `forward()` pipeline (one per family). **Not produced by this playbook** — see [Family-Base Refactoring](#family-base-refactoring).
 - **L3 (`ConcreteOp`):** this playbook's target. New ops start by inheriting L1 directly (T2 shape); see [Family-Base Refactoring](#family-base-refactoring) for when a family graduates to L2.
 
 ### Execution timing
 
-**Do it at the first moment all required information is known, do it once, cache the result.** What an op knows at construction is what the manifest declares there:
+**Do it at the first moment all required information is known, do it once, cache the result.** What an op knows at construction is its `signature.params`; every index the call's tensors carry is solved per call.
 
-| Op category    | `__init__` takes       | The call carries    |
-| -------------- | ---------------------- | ------------------- |
-| Fixed-rank     | the dims `shape` names | nothing about shape |
-| Arbitrary-rank | the `static_dims` keys | every other dim     |
-
-`_infer_output_shapes` runs per call either way, over the shapes it is handed.
-
-**Shape is not a constructor parameter when the tensors carry it.** Only what the manifest declares belongs in `__init__` — `shape` dim names, `static_dims` keys, `params` keys — plus the arguments every op takes (`target`, `kernel_map`, `tune`). A dimension declared nowhere is not construction information: it arrives with the call, and taking it twice lets an instance disagree with the tensors it is handed. What the kernel is compiled for goes in the memory key instead, so a second shape builds a second kernel.
+**Shape is not a constructor parameter when the tensors carry it.** Only `signature.params` belongs in `__init__`, plus the code-owned execution-policy parameters of [manifest.md table 7](manifest.md#t-policy). A dimension declared nowhere is not construction information: it arrives with the call, and taking it twice lets an instance disagree with the tensors it is handed. What the kernel is compiled for goes in the memory key instead, so a second shape builds a second kernel.
 
 **Dtype is not a constructor parameter when the inputs determine it.** An op reads it from the input tensors in `forward()`: a caller who passes fp16 tensors gets the fp16 kernel without having said so twice, and an op can no longer be constructed in a state that disagrees with the tensors it is about to be handed.
 
-**An output dtype has two possible origins and no third.** The manifest states it — a constant, `same_as(x)` or `promote_int_to_float(x)` — or the caller states it, through a parameter named `out_dtype`. Which of the two holds is per output, not per op: an output the caller may restate says so in its own declaration, and an op returning an auxiliary tensor beside its result keeps that one its own. The declaration is the fallback taken when the caller states none, so it resolves to one dtype and never names a set; the set a caller may ask for is the type of `out_dtype`. The name is the contract — the fake reads the output dtype off the attribute of that name — and [manifest.md R23](manifest.md) holds both directions.
+**An output dtype is a dtype expression of the signature** — a `DType` index solved from the inputs, a constant, a dtype primitive, or a dtype parameter the caller passes at construction ([manifest.md](manifest.md#dtypes)).
 
 The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — keyed by every input that selects a specialization, dtype among them. `dispatch_kernel()` stays in `__init__`: resolving the kernel *class* needs no tensor. It also needs no device, and must not ask for one — see [Kernel selection](#kernel-selection).
 
-`_validate_dtypes` is the only dtype gate, and it runs on every `forward()` call: validity depends on the tensors passed, and an op has no constructed dtype to compare them against. `self.dtype` exists for `eval_roofline` / `total_memory` only: it records an earlier call, and the next dtype invalidates it, so no execution path may read it. A family that writes it after the launch returns — the elementwise bases do — narrows that to the last call that completed. Roofline timing and formula semantics are in [roofline.md](roofline.md); see [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
+The generated `_validate_dtypes` is the only dtype gate, and it runs on every `forward()` call: validity depends on the tensors passed, and an op has no constructed dtype to compare them against. `self.dtype` exists for `eval_roofline` / `total_memory` only: it records an earlier call, and the next dtype invalidates it, so no execution path may read it. A family that writes it after the launch returns — the elementwise bases do — narrows that to the last call that completed. Roofline timing and formula semantics are in [roofline.md](roofline.md); see [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
 
 ### Kernel selection
 
@@ -61,13 +54,13 @@ The rule is implementation choice within one slot. Choosing the slot sits above 
 
 **A target replaces the whole op.** A target that registers a builder for an op serves every call of it, and its kernel is called with the tensors its builder was described with. The op's own body is the in-tree implementation and does not run for a target.
 
-**The op layer guarantees a target the manifest, and nothing more.** Every tensor is on one device, every input the call does not write is contiguous, and the call, a caller-supplied output buffer included, meets the dtypes and shape rules the manifest states.
+**The op layer guarantees a target the manifest, and nothing more.** The generated checks run before the target is called. Every tensor is on the call device except those declaring `device: cpu`, every tensor declaring `contiguous: true` is contiguous, and the call, a caller-supplied output buffer included, meets the signature.
 
 **A traced op is one graph node whichever target serves it.** An op on the [compile boundary](#compile-dispatch-boundary) chooses between the in-tree kernels and a target inside its operator.
 
 **A composite needs no builder of its own.** An op that builds no kernel of its own runs its composition when the target registers no builder for it; each sub-op, given the composite's `target`, settles on a target itself.
 
-**An op with no tensor input is placed by its `device` param**, which selects the target and places the output.
+**An op with no call-time tensor input is placed by the call-device rule** of [manifest.md § Call Semantics](manifest.md#call-semantics).
 
 ### Kernel caching and enumeration
 
@@ -83,11 +76,11 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 
 ## Scaffolding an Op from a Manifest Entry
 
-The scaffold emits a T2 (L1-direct) op file from one manifest entry. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`op-slot-rules.md`](op-slot-rules.md). Examples scaffold the fictional `ExampleCumsumFwdOp` (cumulative-sum semantics) in T2 (L1-direct) form from an equally fictional manifest entry; nothing in them mirrors a shipped file.
+The scaffold emits a T2 (L1-direct) op file from one manifest entry. The call checks, `_infer_output_shapes`, `_validate_dtypes` and `eval_roofline` are generated from the entry and are not scaffolded. Each step has typed **Input** (manifest fields consumed), **Output** (the code fragment produced), **Validation** (concrete check), and a **Reference** link to the authoritative slot rule in [`op-slot-rules.md`](op-slot-rules.md). Examples scaffold the fictional `ExampleCumsumFwdOp` (cumulative-sum semantics) in T2 (L1-direct) form from an equally fictional manifest entry; nothing in them mirrors a shipped file.
 
 ### Step 1: File header + imports
 
-**Input.** `source.kernel_map` values (Kernel classes to import).
+**Input.** The Kernel classes the op dispatches to. The kernel map is owned by the code, not the manifest.
 
 **Output.**
 
@@ -103,19 +96,21 @@ from typing import Dict, Optional
 
 import torch
 
+from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel
+from tileops.manifest.primitives import normalize_axis
 
 from ..op_base import Op
 ```
 
-**Validation.** Every concrete-Kernel import matches one `source.kernel_map` value verbatim. The `Kernel` base import and `..op_base` relative import are fixed.
+**Validation.** Every concrete-Kernel import matches one `default_kernel_map` value verbatim. The `Kernel` base import and `..op_base` relative import are fixed.
 
 **Reference.** [Slot S1](op-slot-rules.md#slot-s1), [S2](op-slot-rules.md#slot-s2), [S3](op-slot-rules.md#slot-s3), [S4](op-slot-rules.md#slot-s4).
 
 ### Step 2: Class declaration + docstring + `__all__`
 
-**Input.** Manifest entry key (= class name); `signature.inputs`, `signature.params`, `static_dims` (Args block content).
+**Input.** Manifest entry key (= class name); `signature.inputs`, `signature.params` (Args block content).
 
 **Output.**
 
@@ -129,9 +124,8 @@ class ExampleCumsumFwdOp(Op):
     Output has the same shape and dtype as input.
 
     Args:
-        N: Hidden dimension (size along the reduction axis), committed
-            at ctor via ``static_dims: N: "x.shape[dim]"``.
         dim: Reduction dimension (default -1).
+        target: Backend target to serve this op, or None to decide from the input device.
         kernel_map: Optional override for kernel dispatch.
         tune: Whether to autotune (default False).
     """
@@ -141,45 +135,36 @@ class ExampleCumsumFwdOp(Op):
 
 **Reference.** [Slot S5](op-slot-rules.md#slot-s5), [S6](op-slot-rules.md#slot-s6), [S7](op-slot-rules.md#slot-s7).
 
-### Step 3: `_static_axes` + `__init__` signature and body
+### Step 3: `__init__` signature and body
 
-**Input.** `static_dims` (literal-axis → class-level `_static_axes` frozenset; param-axis → empty class-level default, bind at `forward()` after `dim % x.ndim` normalization); `signature.params`.
+**Input.** `signature.params`, and the execution-policy parameters of [manifest.md table 7](manifest.md#t-policy) the op takes.
 
 **Output.**
 
 ```python
-    # static_dims: N: "x.shape[dim]" — the axis is param-dependent
-    # (may be negative like dim=-1), so the concrete (input_index,
-    # axis) pair cannot be resolved until x.ndim is known. Leave the
-    # class-level default empty; bind in forward() after normalizing
-    # dim against x.ndim (Op base requires a non-negative axis).
-    _static_axes: frozenset[tuple[int, int]] = frozenset()
-
-    def __init__(
-        self,
-        *,
-        N: int,
-        dim: int = -1,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ):
-        self.N = N
-        self.dim = dim
-        self.tune = tune
-        # M is not a static_dim — deferred to forward() where x.ndim
-        # is known and M is derived from the non-reduction axes.
-        self.dispatch_kernel(kernel_map)
+def __init__(
+    self,
+    dim: int = -1,
+    *,
+    target: Target = None,
+    kernel_map: Optional[Dict[str, Kernel]] = None,
+    tune: bool = False,
+):
+    self.dim = dim
+    self.target = target
+    self.tune = tune
+    self.dispatch_kernel(kernel_map)
 ```
 
-**Validation.** Every `__init__` parameter has a manifest source (`static_dims` or `signature.params`); no extras except `target` / `kernel_map` / `tune`. `dtype` is not a kwarg — it is read from the input in `forward()`. In particular, `M` is NOT a ctor kwarg — `ExampleCumsumFwdOp.static_dims` declares only `N`, so `M` is derived at forward time. Manifest parameters keep manifest order; a param declaring `kw_only: true` goes after `*`, and `static_dims` entries take no defaults. `_static_axes` matches the manifest axis form (literal-int axis → populated class-level frozenset; param-dependent axis → empty class-level default, bound at forward after `dim % x.ndim` normalization).
+**Validation.** `__init__` matches `signature.params` item by item ([manifest.md](manifest.md#parameters)), followed by the table-7 execution-policy parameters it takes. `dtype` is not a kwarg — it is read from the input in `forward()`. A param declaring `kw_only: true` goes after `*`.
 
-**Reference.** [Slot S21](op-slot-rules.md#slot-s21), [S12](op-slot-rules.md#slot-s12), [S13](op-slot-rules.md#slot-s13).
+**Reference.** [Slot S12](op-slot-rules.md#slot-s12), [S13](op-slot-rules.md#slot-s13).
 
 ### Step 4: `default_kernel_map` + `forward`
 
-**Input.** Manifest `source.kernel_map`; `signature.inputs`; `static_dims` (for the forward-time commitment check); `shape_rules` (for `dim` range validation).
+**Input.** `signature.inputs`; the kernels of Step 1.
 
-**Optional inputs.** An `optional: true` input takes a `None` default in `forward`, and presence is read from the call rather than settled at construction, so one instance serves both ways of calling the op. A `shape_rules` entry naming it applies to the calls that supply it, and `forward` is what enforces that. Where the presence changes what gets built, it belongs in the kernel cache key alongside the shapes.
+**Optional inputs.** An `optional: true` input takes a `None` default in `forward`, and presence is read from the call rather than settled at construction, so one instance serves both ways of calling the op. Where the presence changes what gets built, it belongs in the kernel cache key alongside the shapes.
 
 **Output.**
 
@@ -189,24 +174,9 @@ class ExampleCumsumFwdOp(Op):
         return {"example_cumsum_fwd": ExampleCumsumKernel}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self._validate_dtypes(x)
-        # Validate `dim` against shape_rule `-x.ndim <= dim < x.ndim`
-        # and normalize to a non-negative axis (Op._static_axes contract).
-        if not -x.ndim <= self.dim < x.ndim:
-            raise ValueError(
-                f"dim {self.dim} out of range for x.ndim={x.ndim}")
-        dim = self.dim % x.ndim
-        # Validate the static_dims commitment: x.shape[dim] == N
-        if x.shape[dim] != self.N:
-            raise ValueError(
-                f"static_dim mismatch: expected x.shape[{dim}] == {self.N}, "
-                f"got {x.shape[dim]}")
-        # Bind _static_axes now that the concrete axis is known.
-        self._static_axes = frozenset({(0, dim)})
-        # Derive M (product of non-reduction dims); cache by shape and dtype.
+        # The generated signature checks have run: dtype, shape, dim range.
+        dim = normalize_axis(self.dim, x.ndim)
         M = math.prod(s for i, s in enumerate(x.shape) if i != dim)
-        self.M = M  # stored for eval_roofline
-        self.dtype = x.dtype  # ditto; the op commits to no dtype before this
         x = x.contiguous()          # handed over as the manifest declares it
         # The tensors the kernel will be handed, then what this call is.
         kernel = self.kernel_for(
@@ -218,66 +188,32 @@ class ExampleCumsumFwdOp(Op):
         """One implementation, built from the whole shape and the axis it scans."""
         _shape, dim, dtype, device_index, m = call
         return call, lambda: self.kernel_map["example_cumsum_fwd"](
-            m, self.N, "sum", dtype, scan_axis=dim, tune=self.tune, device_index=device_index
+            m, _shape[dim], "sum", dtype, scan_axis=dim, tune=self.tune, device_index=device_index
         )
 ```
 
 **Validation.**
 
-- `default_kernel_map` keys / values match manifest `source.kernel_map` verbatim.
-- `forward` calls `self._validate_dtypes(...)` first — not inline dtype comparisons, which are Step 5's job. It checks no device kind: a kernel states which devices it runs on.
-- Every `static_dims` commitment is checked against the tensor shape at the normalized axis, and `_static_axes` is bound from that (non-negative) axis. Both before the get-or-build call.
+- `forward` repeats no check the signature states. It checks no device kind: a kernel states which devices it runs on.
 - The kernel comes from `self.kernel_for`, never a cache dict the op owns:
   - `entry_for` is the in-tree recipe. The kernel is built from `x.dtype` and the identity carries it, so a call with another dtype builds a second kernel rather than reusing the first.
 - The op never trims kernel output, and never reshapes its input for the kernel: a kernel that pads or permutes internally takes and returns the shapes the manifest declares.
 
 **Reference.** [Slot S14](op-slot-rules.md#slot-s14), [S15](op-slot-rules.md#slot-s15), [S16](op-slot-rules.md#slot-s16).
 
-### Step 5: `_infer_output_shapes` + `_validate_dtypes`
+### Step 5: Generated methods
 
-**Input.** Manifest `shape_rules` (for S17); per-tensor `dtype` and `dtype_combos` (for S18).
+**Input.** The whole entry.
 
-**Output.**
+**Output.** Nothing to write. `_infer_output_shapes`, `_validate_dtypes`, the call checks around `forward` and `eval_roofline` are generated from the signature and the `roofline` field; see [manifest.md § Call Semantics](manifest.md#call-semantics) and [roofline.md §4.4](roofline.md#44-op-codegen).
 
-```python
-class ExampleCumsumFwdOp(Op):
-    ...
+**Validation.** `python scripts/validate_manifest.py --strict` on every `status: implemented` entry.
 
-    def _infer_output_shapes(self, x_shape: tuple) -> Dict[str, tuple]:
-        return {"y": x_shape}
-
-    def _validate_dtypes(self, x: torch.Tensor) -> None:
-        if x.dtype not in {torch.float32, torch.float16, torch.bfloat16}:
-            raise ValueError(f"x.dtype must be float32/float16/bfloat16, got {x.dtype}")
-```
-
-**Validation.** `python scripts/validate_manifest.py` exercises both methods at CI on every op with `status: implemented`; `spec-only` entries skip L2/L3. **L2 parity:** `_infer_output_shapes(mock_inputs)` must agree with `shape_rules`. **L3 parity:** `_validate_dtypes` must accept exactly the declared `dtype` union / `dtype_combos` and reject everything else. Parity disagreements route to `strict_errors`; advisory mode (default) reports them as warnings, `--strict` / `MANIFEST_STRICT_BLOCKING=1` makes them blocking.
-
-**Reference.** [Slot S17](op-slot-rules.md#slot-s17), [S18](op-slot-rules.md#slot-s18).
-
-### Step 6: `eval_roofline`
-
-**Input.** Manifest `roofline.vars`, `roofline.flops`, `roofline.bytes`.
-
-**Output.**
-
-```python
-class ExampleCumsumFwdOp(Op):
-    ...
-
-    def eval_roofline(self) -> tuple[int, int]:
-        flops = self.M * self.N
-        bytes_ = 2 * self.M * self.N * self.dtype.itemsize
-        return flops, bytes_
-```
-
-**Validation.** The body is **plain Python** reading `self.*` attributes. Those attributes — `self.M` and `self.dtype` here — are bound by `forward()`, so `eval_roofline` is callable only after at least one forward; there is no ctor-time dtype to read. No class-level roofline expression strings, no `ast.parse`, no shared L1 evaluator — prohibited by [`roofline.md §4.4.6` Evaluator Surface Boundary](roofline.md#446-evaluator-surface-boundary). Return type is `tuple[int, int]`, not `float` or `numpy`. Expressions derive directly from `roofline.vars` bindings + `roofline.flops` + `roofline.bytes`; see [`roofline.md §4.4` Op Codegen](roofline.md#44-op-codegen).
-
-**Reference.** [Slot S19](op-slot-rules.md#slot-s19).
+**Reference.** [Slot S17](op-slot-rules.md#slot-s17), [S18](op-slot-rules.md#slot-s18), [S19](op-slot-rules.md#slot-s19).
 
 **Compute roof.** `Op.compute_roof()` names the GPU-profile unit that prices the FLOPs `eval_roofline()` counts; the base default `"cuda_core.fp32"` covers CUDA-core fp32 arithmetic. An op whose FLOPs are matmul contractions overrides it — normally `return tensor_core_roof(self.dtype)`, branching on instance state (a backend switch) where the contraction dtype differs from the input dtype. Contract and rationale: [`roofline.md §1.4`](roofline.md#14-compute-roof).
 
-### Step 7: Package registration
+### Step 6: Package registration
 
 **Input.** The class name (Step 2) and the op's source filename.
 
@@ -306,22 +242,19 @@ from .ops.reduction import ExampleCumsumFwdOp
 | ---- | -------------- |
 | 1    | S1, S2, S3, S4 |
 | 2    | S5, S6, S7     |
-| 3    | S21, S12, S13  |
+| 3    | S12, S13       |
 | 4    | S14, S15, S16  |
-| 5    | S17, S18       |
-| 6    | S19            |
-| 7    | S20            |
+| 5    | S17, S18, S19  |
+| 6    | S20            |
 
 ## Out of Scope
 
-This playbook emits exactly the 17 slots above. The following are **not** produced by the scaffold — each needs separate treatment:
+This playbook emits exactly the 16 slots above. The following are **not** produced by the scaffold — each needs separate treatment:
 
 - **Family-specific protocol variables.** `_op_kind` (reduction), `_kernel_key`, `_kernel_cls` (norm + reduction T1 wrappers), `_op_name`, `kernel_cls`. Kernel-dispatch-convention-dependent; cannot be mechanically derived from the manifest. See [Family-Base Protocol (Appendix)](ops-design-reference.md#base-class-protocol).
-- **Optional hooks.** `_validate_dim`. Op-specific business logic (e.g., `ArgmaxFwdOp._validate_dim` narrows the accepted `dim`). See [Optional Hooks (Appendix)](ops-design-reference.md#optional-hooks-appendix).
-- **`_cache_key` override.** The default projection via `_static_axes` is correct but sometimes over-fragmenting. Override logic depends on what subset of the input shape the kernel actually depends on — kernel-math-specific.
 - **Family-base (T1) subclassing.** See [Family-Base Refactoring](#family-base-refactoring).
 - **Kernel implementations themselves.** The playbook's scope is the Op (host) layer. See [Implementing a Kernel](#implementing-a-kernel) for the kernel-side interface surface.
-- **`torch_compile_fullgraph` declaration.** Requires registered compile-test evidence. Semantics: [manifest.md](manifest.md#torch_compile_fullgraph).
+- **`fullgraph` compile registration.** An op compiled with `fullgraph=True` is registered in `tests/compile_contract.py`, with its cold compile test.
 - **Compile dispatch boundary.** See [Compile Dispatch Boundary](#compile-dispatch-boundary).
 
 ## Implementing a Kernel
@@ -330,8 +263,8 @@ Kernel implementation is not covered by this playbook. The device-side interface
 
 ## Compile Dispatch Boundary
 
-Contract for every op declaring `torch_compile_fullgraph` while resolving
-kernels at call time.
+Contract for every op registered for `fullgraph=True` compilation while
+resolving kernels at call time.
 
 **Invariant.** A dynamo-traced `forward` MUST NOT construct a `Kernel` or
 enter a TileLang builder. Kernel-cache misses run TileLang JIT machinery
@@ -344,26 +277,18 @@ satisfy the cold-call contract.
 
 1. `Op.dispatch_kernel` registers every op in a weak instance registry at
    `__init__` time and stores `self._instance_key`.
-1. The op declares `compile_boundary`, one `OperatorSpec` per operator it
-   registers. `Op.__init_subclass__` generates each registration from the
-   manifest entry and fills in `compile_op_names`, so no op writes registration
+1. The operators are generated from the manifest entry, one per effect branch
+   ([manifest.md table 9](manifest.md#t-effects)), so no op writes registration
    code and an operator's schema cannot drift from its entry.
-1. One `torch.library.custom_op` per spec — that is what makes the node in the
+1. One `torch.library.custom_op` per branch — that is what makes the node in the
    graph this op's, and keeps it the same node when another target serves it.
-   Its arguments are `signature.inputs` in order plus the instance key, its
-   eager body resolves the instance and runs the call — untraced, through
-   `self._eager_forward` for the in-tree kernels or through the target's kernel —
-   and its fake
-   derives output shapes from `_infer_output_shapes` and each output's dtype
-   from `out_dtype` where the entry marks that output caller-stated, otherwise
-   from `signature.outputs`.
-1. `forward` becomes one call to the generated operator, passing the declared
-   inputs and the instance key; the previous body is renamed `_eager_forward`
-   unchanged.
-1. A spec states which of three kinds its operator is — returning the declared
-   outputs, writing its result into an argument, or writing a caller-supplied
-   buffer — and, for the two writing kinds, which argument it writes. The entry
-   says everything else.
+   Its arguments are `forward_signature(entry)` — the call-time inputs and output
+   buffers in order — then the op's code-defined execution parameters, then the
+   instance key. Its eager body resolves the instance and runs the call — untraced,
+   through `self._eager_forward` for the in-tree kernels or through the target's
+   kernel — and its fake, returns and written arguments come from the signature.
+1. `forward` becomes one call to the generated operator; the previous body is
+   renamed `_eager_forward` unchanged.
 
 **Constraints.**
 
@@ -373,15 +298,16 @@ satisfy the cold-call contract.
   frame. Stale-graph safety comes from dynamo's ID_MATCH guard holding a
   weak reference to the compiled callable: a dead instance forces
   recompilation, so a reused `id()` cannot resolve against a stale graph.
-- The boundary covers forward-only compilation. Declaring
-  `torch_compile_fullgraph` on an op whose compiled graph must
+- The boundary covers forward-only compilation. Registering for
+  `fullgraph=True` an op whose compiled graph must
   backpropagate additionally requires registering an autograd formula for
   the dispatch custom op.
 - An op that builds no kernel in `forward` — every kernel already in its
   cache — does not need the boundary; the invariant still applies to its
   `forward`.
-- Validation and normalization belong in `_eager_forward`, not in `forward`:
-  `forward` runs for every target and only chooses which operator to call.
+- The generated signature checks run once per call, in the operator's eager
+  body, before it dispatches to `_eager_forward` or to a target; `forward` only
+  chooses which operator to call, and `_eager_forward` holds in-tree work only.
 - `_infer_output_shapes` reads only its shape arguments. A shape recorded by an
   earlier call is a state write the fake reads before the write happens.
 - An op with no tensor input has no node to own, so it registers no boundary.
@@ -399,9 +325,9 @@ The scaffold emits T2 (L1-direct) ops only; once a family accumulates 2-3 ops sh
 ## Further Reference
 
 - [Slot Rules](op-slot-rules.md) — full Rule / Derivation / Example / Common mistakes per slot
-- [Codegen Details](ops-design-reference.md#codegen) — calling conventions, inheritance rules, consistency enforcement
+- [Codegen Details](ops-design-reference.md#codegen) — calling conventions, consistency enforcement
 - [Base Class Protocol](ops-design-reference.md#base-class-protocol) — `Op` and `Kernel` base class attributes
 - [Naming Conventions](ops-design-reference.md#naming-conventions) — class / `kernel_map` / builder function rules
-- [Parameter Design](ops-design-reference.md#parameter-design) — static vs dynamic op comparison
-- [manifest.md](manifest.md) — manifest entry structure, `static_dims`, `shape_rules`, `roofline`
+- [Parameter Design](ops-design-reference.md#parameter-design) — construction time versus call time
+- [manifest.md](manifest.md) — manifest entry structure, signature, workloads, call semantics
 - [roofline.md](roofline.md) — roofline formula syntax, codegen, evaluator surface boundary

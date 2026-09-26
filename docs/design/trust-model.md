@@ -6,9 +6,8 @@ a false guarantee.
 
 ## Manifest
 
-Source of truth for op interfaces: signatures, dtypes, workload shapes,
-roofline formulas, status, the `kernel_map` dispatch registration table, and
-user-visible capability declarations (`torch_compile_fullgraph`).
+Source of truth for op interfaces: signatures (shapes, dtypes, presence,
+effects), workload rows, roofline formulas, status and composition.
 
 It carries no kernel internals, dispatch strategy, or test logic. Those are
 implementation choices; freezing one into the spec makes every later
@@ -59,8 +58,8 @@ against the reference before the case is timed.
 
 Which manifest entry a benchmark measures is settled by running it, not by
 reading it. The op is whatever class the benchmark constructs, so the run's
-report carries that class's name and is compared against the entries declaring a
-benchmark. A source check can only look for a marker, and a marker is not the op:
+report carries that class's name and is compared against the ops the bench-file→op
+mapping assigns to that file. A source check can only look for a marker, and a marker is not the op:
 it goes unchecked against what ran, and it makes the shape of the source — a
 literal here, a construction there — a condition of passing.
 
@@ -82,16 +81,19 @@ The shared layer, and the only one both tests and benchmarks import.
 (parametrize), and one workload class per op — or one parameterized class a
 family shares.
 
-**Must contain**: input construction for every op, and — where the class is
-named for an op — that op's reference computation.
+**Must contain**: the reference computation of the op a class is named for,
+and input construction the entry's workload rows do not determine. Shapes,
+dtypes, presence and metadata values come from instantiating the rows
+([manifest.md § Workloads](manifest.md#workloads)).
 
 **Must not contain**: tolerances, `check`, `calculate_flops` /
 `calculate_memory`, or the choice of what to time against. Those are decisions,
 the first three the test's and the last the benchmark's, and a decision placed
 here reaches the other consumer.
 
-The reference computation is not a decision. It is the executable form of the
-manifest's `ref_api`: what the operator means, the same for whoever asks.
+The reference computation is not a decision. It is the executable semantics
+of the op, whether or not the entry records a `ref_api`: what the operator
+means, the same for whoever asks.
 Assigning it to one consumer obliges the other to keep a second copy, and two
 copies of the same math drift apart in silence — the benchmark then reports a
 ratio against a computation no test validated.

@@ -1,14 +1,13 @@
 # Op Manifest Specification
 
-The [`src/tileops/manifest/`](../../src/tileops/manifest/) package is the **source of truth** for op interfaces, benchmark workloads, and roofline metadata.
+The [`src/tileops/manifest/`](../../src/tileops/manifest/) package is the **source of truth** for the external contract of every public op. An entry's core is its signature: a polymorphic function type over explicitly quantified type indices. Code conforms to the manifest, and the validator checks that it does.
 
 ## Layout
 
-One or more YAML files per family (single file by default; large families may shard). Each file is a flat top-level mapping `op_name → entry`. The `tileops.manifest` package merges all files at load; duplicate op names across files are an error.
+One or more YAML files per family (single file by default; large families may shard). Each file is a flat mapping `op_name → entry`. The `tileops.manifest` package merges all files at load; a duplicate op name across files is an error. Algebraic data types shared by several entries live in `types.yaml`.
 
-- **Add or edit an op**: edit the family file matching the op's `family` field. Use `ruamel.yaml` for round-trip edits.
-- **Read programmatically**: `from tileops.manifest import load_manifest, load_workloads, manifest_files`. `load_manifest()` returns the merged `ops` dict.
-- **Read for inspection**: `yaml.safe_load` the relevant family file. No aggregate file on disk.
+- **Add or edit an op**: edit the family file that owns it, with a round-trip parser (`ruamel.yaml`).
+- **Read programmatically**: `from tileops.manifest import load_manifest, load_workloads`.
 
 ## Trust Model
 
@@ -21,711 +20,495 @@ flowchart LR
     C -->|checked by| V
 ```
 
-- The manifest is written against an authoritative reference, never derived from current TileOps code.
-- Ops, tests and benchmarks are generated from the manifest, not the other way round.
-- **Validator** — [`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) in CI. Enforces manifest ↔ code consistency.
+- The manifest is written against an authoritative reference, never derived from current TileOPs code. Code, tests and benchmarks follow it: a disagreement is fixed in the code, with the entry `spec-only` until it conforms, never by editing the manifest to match.
+- Runtime checks, fake/meta functions and operator schemas are generated from the signature. The agent that produces an op does not write or adjust the generated checks or the validator.
+- The manifest contract cases and the benchmarks take their calls from the entry's workload rows. Rows are not unit-test coverage: shapes that target kernel branches are chosen by the test ([testing.md § Test case policy](testing.md#test-case-policy)).
+- Code-dependent checks are skipped for `spec-only` entries only; no check has a per-op opt-out. An entry is demoted to `spec-only` only when its implementation does not conform.
 
-**Invariants:**
+Each module depends only on the manifest, the op interface and other modules' published outputs, never on their internals, so each changes without the others:
 
-1. The manifest is the sole source of truth for op interfaces.
-1. Validation is derived from the manifest, not from the generating agent.
-1. `workloads` define benchmark shapes/dtypes, not unit-test coverage.
-1. `signature.params` ⊆ Op's `__init__()` + `forward()` param names. `forward()` params must match manifest inputs in order. CI enforces this.
-1. Benchmarks must use declared workloads via `load_workloads`. No hardcoded shapes.
+| Module                                                      | Depends on                                                                                                                 |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Validator (CI)                                              | the manifest and the roofline analysis; for an implemented entry, the op's public interface and its `roofline.func` module |
+| Generated checks, fake, operator schemas, `eval_roofline()` | the signature; `roofline` for `eval_roofline()`                                                                            |
+| Implementation                                              | the signature, through the generated checks that wrap `forward`                                                            |
+| Tests                                                       | workload rows, the reference in `workloads/`, the op interface                                                             |
+| Benchmarks                                                  | workload rows, the reference in `workloads/`, the op interface (including `eval_roofline()` and `compute_roof()`)          |
+| Roofline tool (M5)                                          | benchmark output and the GPU profile; it never instantiates an op                                                          |
+| Docs site                                                   | the manifest YAML (read without torch), op docstrings, benchmark and roofline output                                       |
 
-## Rules
+The layer boundaries between the manifest, tests, implementation and benchmarks are in [trust-model.md](trust-model.md).
 
-**R1. Ordered dict.** `inputs`, `outputs`, `params` are keyed by name, and key order is signature position, so reordering is a breaking change and consumers read the file with an order-preserving parser.
+## Field Admission
 
-**R2. Full interface.** Params include all PyTorch-supported parameters, even if the kernel only supports the default.
+A field enters the manifest only when all three hold:
 
-**R3. Param placement.** Default: `__init__` kwarg — architecture-decided and lifetime-fixed. `forward()` only when the reference API puts it there or the value is per-batch. The schema does not encode the distinction.
+1. It is part of a public op's external contract, or a fact a YAML-only reader needs (the validator checking a `spec-only` entry, the docs site built without torch), such as `workloads` and `roofline`.
+1. At least one reader depends on it.
+1. It describes the op's external behaviour. Implementation facts — source paths, kernel selection — are owned by the code and exported from it when needed.
 
-**R4. `dtype` syntax.** `|` separates alternatives. `same_as(ref)` is a dtype-only identity: the tensor's dtype equals `ref`'s at runtime, it adds no axis to R6's product, and it never speaks about shape.
+## Entry Duties
 
-**R5. `promote_int_to_float(ref)`.** An output dtype that resolves to `float32` when `ref`'s runtime dtype is integral and to `same_as(ref)` otherwise, for ops PyTorch promotes (`torch.reciprocal`). `ref` names a `signature.inputs` tensor. Allowed only in `signature.outputs[*].dtype`, and never inside a `|` union (R23).
+An entry serves four duties, plus a record of a composite op's internal structure. Every duty reads the one signature: effects annotate its tensors, workload rows instantiate it, and cost formulas are written over its indices.
 
-Worked example — `torch.reciprocal` accepts integral inputs and returns `float32`, while floating inputs round-trip:
+| No. | Duty                 | Fields                                                                                              | Section                     |
+| --- | -------------------- | --------------------------------------------------------------------------------------------------- | --------------------------- |
+| 1   | Type signature       | `signature`: `forall`, `params`, `inputs`, `outputs`, `types`, `let`, `shape_rules`, `dtype_combos` | [Signature](#signature)     |
+| 2   | Side effects         | `mutated`, `write_only`, `buffer`, `alias` on tensors                                               | [Effects](#effects)         |
+| 3   | Test-case generation | `workloads`; `values`, `requires` on tensors                                                        | [Workloads](#workloads)     |
+| 4   | Cost model           | `roofline`                                                                                          | [roofline.md](roofline.md)  |
+| 5   | Internal structure   | `composition`                                                                                       | [Composition](#composition) |
 
 ```yaml
-ReciprocalFwdOp:
-  ref_api: "torch.reciprocal"
+<Op>:
+  family: <module>
+  status: implemented | spec-only
+  ref_api: <qualified name>          # optional
   signature:
+    forall: {<index>: <kind>}
+    params: {<p>: {type, default, kw_only}}
+    inputs: {<t>: {dtype, shape, optional, mutated, requires, values, ...}}
+    outputs: {<t>: {dtype, shape, nullable, buffer, alias, ...}}
+    types: {<Family>: {params, match, cases}}   # optional
+    let: {<name>: "<expr>"}
+    shape_rules: ["<refinement>"]
+    dtype_combos: [{<DType index>: <dtype>}]
+  workloads: [{<params and indices>, some, dtype_cases, label}]
+  roofline: {flops, bytes} | {func}
+  composition: {kind: composite, stages}      # optional
+```
+
+Most entries use only `forall`, tensor `shape` and `dtype`, construction parameters and simple refinements:
+
+```yaml
+SiluAndMulFwdOp:
+  family: elementwise
+  status: implemented
+  signature:
+    forall: {M: Dim, N: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32 | int8 | int16 | int32 | int64 | uint8"}
+      x: {dtype: T, shape: "[M, 2 * N]"}
     outputs:
-      # int8/int16/int32/int64/uint8 -> float32; float16/bfloat16/float32 unchanged.
-      output: {dtype: "promote_int_to_float(input)"}
+      output: {dtype: T, shape: "[M, N]"}
+  workloads:
+  - {M: 2048, N: 14336, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-swiglu-prefill}
+  roofline:
+    flops: "6 * M * N"
 ```
 
-The op layer mirrors it: integral inputs are cast to `float32` before the float kernel runs, and `output_dtype` is `float32`. The validator expands the resolved set when it checks `_validate_dtypes` and `dtype_combos`.
+## Top-Level Fields
 
-**R6. `dtype_combos`.** The exhaustive list of supported cross-tensor dtype combinations. Absent means every combination of the declared unions is valid; declare it only when the supported set is a strict subset.
+- **Key.** The Python class name of the op, `{PascalCaseName}[{Fwd|Bwd}]Op`. The validator requires `cls.__name__ == key`.
+- **`family`.** The op's public module and a segment of its operator namespace: the op is importable as `tileops.<family>.<Op>`, and the family's `__all__` agrees with the manifest.
+- **`status`.** Required. `implemented`: an implementation conforms to the manifest. `spec-only`: no conforming implementation exists yet; code may be absent or partial.
+- **`ref_api`.** Optional qualified name of the API the op follows semantically. The validator checks its form, and that it resolves when its module imports.
 
-```yaml
-dtype_combos:
-  - {x: float16, weight: float16}
-  - {x: float16, weight: float8_e4m3}
-  - {x: bfloat16, weight: bfloat16}
-```
+## Signature
 
-**R7. Explicit shape.** Every output tensor's shape must be fully specified via `shape` and/or `shape_rules`. Input tensors may omit `shape` (→ arbitrary rank per R9).
+### Indices and Kinds
 
-**R8. `shape` = fixed rank.** Declares exact dimensions (e.g., `"[M, K]"`). One declaration: no ellipsis, no wildcards, no `|` alternatives. A tensor whose rank or axis order varies omits `shape` (R9). Roofline variable binding is defined in [roofline.md](roofline.md).
+`forall` declares every free type index with its kind, e.g. `forall: {M: Dim, K: Dim, T: "DType[float16 | bfloat16]"}`. Indices come from three sources: `forall`; construction parameters that appear in an index position ([table 1](#t-names)); and `let`, a derived index.
 
-**R9. No `shape` = arbitrary rank.** Constraints go in `params` + `shape_rules`. Optionally, `static_dims` declares values the user commits to at Op construction time (R20).
+- `forall` kinds are `Dim` (axis length), `Shape` (tuple of `Dim`), `DType[...]` and the value list `Seq[Int]` ([table 2](#t-forall)). A parameter's kind follows from its `type` ([table 3](#t-types)); expression kinds follow [table 4](#t-expr).
+- A `Dim` may be passed where an `Int` is expected, a `Shape` where a `Seq[Int]` is.
+- Every axis is an integer expression. An axis whose kind is not `Dim`, and every element of a sequence spliced with `*p`, is checked non-negative at run time; under SymInt the check is a generated `torch._check`.
+- The validator, workload instantiation and tests convert YAML values by declared kind or `type`: `Shape` indices and `tuple[...]` parameters become tuples, `Seq[Int]` indices and `list[...]` parameters stay lists, dtype names become `torch.dtype`, ADT values become objects ([table 5](#t-adt)).
+- Within an entry, index, `let` and tensor names are distinct.
 
-**R10. No shape aliasing.** Each tensor declares its own shape. Use shared dimension names (R11) or `shape_rules` (R13) to express shape relationships.
+### Parameters
 
-**R11. Shared dimension names = equality.** `K` in two tensors means their sizes must match.
+`signature.params` is the `__init__` parameter list: `type`, optional `default` and `kw_only`. The manifest is authoritative; for an implemented entry the validator compares it with `__init__` item by item ([table 6](#t-ctor)), and the code may add only the execution-policy parameters of [table 7](#t-policy). It also requires the signature's call-time inputs and output buffers to be the ordered prefix of `forward`'s parameters; `forward` may append code-defined execution parameters, which are not part of the signature.
 
-**R12. `constraints`.** Restricts dimensions: `"64 | 128 | 256"` (enumerated) or `"power_of_2"`, `"divisible_by(k)"`, `"even"`, `"positive"` (predicates). Requires `shape`.
+Parameters enter types directly:
 
-**R13. `shape_rules`.** Python expressions for shape relationships. Required when `shape` alone cannot fully specify output shape.
+- An `int` parameter written into a shape is checked non-negative at construction.
+- A `list[int]` / `tuple[int, ...]` parameter is spliced as `*p`; each element is checked non-negative.
+- A dtype parameter (a `type` over dtype names) is written directly as a tensor `dtype`.
+- An `int | None` parameter has kind `Maybe[Int]` with tag `present(v)`; its payload `v.value` is legal only on branches where `present(v)` holds. A `Maybe` value may be passed as is to a primitive that accepts it.
 
-**R13a. `tensor.shape == (<names>)` declares a shape.** With bare identifiers on the right it states the tensor's rank and names its axes, and those names are in scope for every rule, in any order. Reusing one asserts equality, as shared names in `shape` do (R11). An op declaring `shape` per tensor says the same thing there instead.
+### Inputs and Outputs
 
-**R13b. Every other rule is an assertion.** It is evaluated on its own, over the names R13a and the evaluation context supply. An equality outside R13a's form binds nothing, so a rule reading a name neither supplies asserts nothing. The conv and pool entries that define helpers this way are tracked in [#2161](https://github.com/tile-ai/TileOPs/issues/2161).
+A tensor is `{dtype: ..., shape: "..."}`, i.e. `Tensor[T, s]`. Every role — construction parameter, construction-time tensor, input, output, output buffer — with its phase and type is in [table 8](#t-roles).
 
-**R14. Reduction `dim` semantics.** Live in `shape_rules`, written with the helpers in [`shape_rules.py`](../../src/tileops/manifest/shape_rules.py) — `dim_range_validity`, `dim_uniqueness`, `reduced_axes`, `reduced_shape` — which the op layer calls too, so the two cannot disagree. What an empty `dim` sequence means is per-op and named in the call.
+- A shape is `"[" axis, ... "]"` or a type-family application; an axis is an expression, `*S` or `*primitive(...)`; `"[]"` is rank zero. Two tensors of equal shape write the same shape term.
+- An entry has one signature: output names and count are fixed per call. An op whose output count follows a switch, or that takes one argument as a scalar in one form and a tensor in another, is two entries.
+- An op selects its implementation from parameters and tensor presence; tensor contents are computation input only. One fact is stated in one place.
 
-**R15. Status gating.** `status: spec-only` → L0 only. `status: implemented` → all levels. `--check-op <name>` forces L0-L4 on the targeted entry.
+### Refinements
 
-**R16. Roofline metadata.** See [roofline.md](roofline.md). That document is the source of truth for roofline modes, variable binding, formula syntax, consumers, and codegen behavior.
+Each `shape_rules` item is a refinement: a predicate on index values, checked after unification.
 
-**R17. PyTorch API alignment.** Op signatures match PyTorch's public API (names, parameter set, semantics). Do not invent parameters.
+- Shapes, `let`, type families, refinements and inline roofline share one closed expression language ([table 10](#t-lang)) with Python precedence.
+- A refinement depends only on quantities available at run time and is checked on every call. A constraint on a metadata tensor's contents is that tensor's `requires` ([Generators](#generators)); [table 11](#t-constraints) contrasts the two.
+- A refinement that reads only discriminants — every name and ADT field it reads is fixed by the discriminant values, judged over the whole expression regardless of operand order — is a **domain restriction**. It is checked before a type-family branch is chosen, and values it rejects need no type-family case.
+- Lists among construction parameters are available at run time and may appear anywhere. `forall` value lists appear only as generator arguments.
+- Satisfiability of a refinement is the author's responsibility.
+- The validator rejects rules that declare, define or test presence: `x.shape == (...)`, `x is None`, `isinstance` ([table 12](#t-rejected)).
 
-**R18. Optional tensor inputs.** A tensor input the op *reads* may declare `optional: true`, under `signature.inputs` only; params express optionality with `default`. Not passed means bound to `None`, and whether it was passed is a fact kernel dispatch may read — the tensor's contents are not. A caller-supplied output buffer (`out=`) is a param, not this. Authoring rules: [Optional Inputs](#optional-inputs).
+### Dtypes
 
-**R18.1. Outputs are fixed per entry.** The names and the number of outputs are the same on every call. An op whose return changes with a switch is two entries, because the caller cannot unpack a return whose shape it does not know.
+A tensor `dtype` is a dtype expression ([table 13](#t-dtype)): a `forall` `DType` index, a dtype parameter, a constant, or a dtype primitive. Without `dtype_combos`, each `DType` index ranges over its set independently.
 
-**R19. Tensor layout.** Default: contiguous row-major and no `layout` field. Otherwise `layout` names the order and `shape` names the axes in it. One entry, one memory order: an op serving two is two entries, since the order changes what an axis means. A param may size a dimension, never select which shape a tensor has.
+- **`dtype_combos`.** When only some combinations of several `DType` indices are supported, the entry lists them. Each row maps `{index: dtype}`; all rows have the same keys, which may include dtype parameters; rows are distinct; every column is relevant on every branch. A call's dtype assignment must equal one row.
+- **Packed dtypes.** fp4 and int4 live in carrier dtypes such as `uint8` and are written by carrier: `dtype` is the carrier, `shape` is the carrier shape PyTorch sees (e.g. `[N, K // 2]`), the logical dtype comes from a dtype parameter or the entry, and roofline counts carrier bytes. The dtype registry records each dtype's bits per element and PyTorch representation.
 
-**R20. `static_dims`.** For arbitrary-rank ops (no `shape` declaration), `static_dims` declares values the user commits to at Op construction time. Each entry maps an `__init__` keyword name to a single-axis shape expression `<tensor>.shape[<const_or_param>]`. See [`static_dims`](#static_dims) for full semantics, rules, and examples.
+### Presence
 
-**R21. Workload keys derive from the signature.** In a single-tensor-input op's workloads, the shape key MUST be `{input}_shape` and every other key MUST be a `signature.params` name or one of the reserved `dtype` / `dtypes` / `label`. `dtype` is the row's element type, which a `roofline.func` formula reads to size its tensors; `dtypes` is the dtype axis a row expands over. Multi-input aggregate keys (`kv_shape`) are family bench conventions, out of scope.
+- An optional input is `optional: true`; inputs that must be present together share one discriminant, `optional: "<p>"`. An output that may be `None` is `nullable: "<p>"`.
+- `optional` and `nullable` expressions are built from finite boolean atoms: `Bool` and enum parameters, ADT tags and finite fields, `present`.
+- Optional inputs follow required ones; `forward` takes them in declaration order with default `None`. Omitting one equals passing `None`.
+- An index is relevant only on the branches where it appears.
 
-**R22. Mutated inputs.** A tensor input the op may write declares `mutated: true`. An operator lists its tensor arguments in `signature.inputs` order; the inputs its `mutates_args` names, across every operator the op registers, are exactly the ones marked. A mutated input stays an input: output arity does not change and the return does not alias it. If contiguity normalization had to copy one, the op writes the result back after the launch.
+### Type Families
 
-**R23. Output dtype origin.** An output's `dtype` resolves to exactly one dtype — a constant, `same_as(ref)` or `promote_int_to_float(ref)` — and never names a set. An output the caller may restate declares `caller_stated: true`, and the value travels in a `signature.params` entry named `out_dtype` whose `type` is the set the caller may ask for; the output's own declaration is then the fallback taken when the caller states none. The two declarations imply each other: the param without a marked output states nothing, and a marked output without the param has no one to state it. An unmarked output keeps its declared dtype whatever the caller asked for, which is how an op that returns an auxiliary tensor beside its result keeps that one its own. An entry declaring the param names an `__init__` parameter of the same name, because the generated fake reads the output dtype off the attribute of that name.
-
-## `static_dims`
-
-`static_dims` declares what becomes statically known at the moment the user constructs the Op instance. It is **per-op**, not per-family.
-
-```yaml
-static_dims:
-  N: "x.shape[dim]"
-```
-
-### Semantics
-
-The shape expression is a **forward-time validation rule**, not an init-time derivation. Two time points, one contract:
-
-- `__init__` — **commitment point**. User-supplied value stored on `self`. Expression NOT evaluated (no tensor yet).
-- `forward` — **validation point**. Expression evaluated against the actual tensor; must equal the committed value.
-
-```python
-# __init__ — commitment point. No tensor; expression not evaluated.
-def __init__(self, *, N: int, dim: int = -1, ...):
-    self.N = N
-    self.dim = dim
-    # ...
-
-# forward — validation point. Expression evaluated against the actual tensor.
-def forward(self, x: torch.Tensor):
-    if x.shape[self.dim] != self.N:
-        raise ValueError(
-            f"static_dim mismatch: expected x.shape[{self.dim}] == {self.N}, "
-            f"got {x.shape[self.dim]}"
-        )
-    # ... rest of forward
-```
-
-### Rules
-
-- Every `static_dims` entry's key is a required `__init__` keyword parameter. **No defaults**; the user must supply every committed value at ctor.
-- The expression MUST be a **single-axis reference** of the form `<tensor>.shape[<const_or_param>]`. Multi-axis forms (e.g., `product(x.shape[i] for i in ...)`, comprehensions, arithmetic over shape) are forbidden.
-- Referenced tensor names must be in `signature.inputs`. Referenced axis names (when not integer literals) must be in `signature.params`.
-- Key order determines the order those kwargs appear in the generated `__init__`, consistent with R1.
-- `static_dims` is only for arbitrary-rank ops. Fixed-rank ops get dimensions from `shape` (R8).
-
-### Evaluation context
-
-Shared with `shape_rules`: all `signature.inputs` tensor names (with `.shape` accessor), all `signature.params` names, and the dimension names the rules themselves introduce (R13a).
-
-### Multi-input example — LinearFwdOp
-
-The expression may reference any tensor in `signature.inputs`, not just the primary one. For `torch.nn.functional.linear(input, weight, bias)` with arbitrary-rank `input`:
-
-```yaml
-LinearFwdOp:
-  signature:
-    inputs:
-      input:  {dtype: "float16 | bfloat16"}
-      weight: {dtype: "same_as(input)"}
-      bias:   {dtype: "same_as(input)"}
-    outputs:
-      output: {dtype: "same_as(input)"}
-    static_dims:
-      in_features:  "input.shape[-1]"
-      out_features: "weight.shape[0]"
-    shape_rules:
-      - "weight.shape == (out_features, in_features)"
-      - "bias.shape == (out_features,)"
-      - "output.shape == input.shape[:-1] + (out_features,)"
-```
-
-`out_features` is intrinsically a property of `weight`, not `input` — there is no equivalent expression in terms of `input.shape`. Binding to `weight.shape[0]` is the only faithful declaration.
-
-### Generated `__init__` kwarg block order
-
-Three blocks in order:
-
-1. `static_dims` — manifest key order
-1. `params` — manifest key order
-
-An input dtype is no block: the tensors carry it. A caller-stated output dtype is a `params` entry like any other, named `out_dtype` (R23).
-
-Parameters are positional-or-keyword in that order. A param the caller must name declares `kw_only: true`, and the validator holds `__init__` to it. `target`, `kernel_map` and `tune` are keyword-only in every op and are not manifest params.
-
-### Empty `static_dims`
-
-Empty (`static_dims: {}` or absent) is legal. Typical case: PyTorch-aligned reductions that accept `dim=None`, where the reduction extent depends on the entire input shape and is not a user-provided hyperparameter:
-
-```yaml
-SumFwdOp:
-  signature:
-    inputs:  {x: {dtype: "..."}}
-    outputs: {y: {dtype: "same_as(x)"}}
-    params:
-      dim:     {type: "int | list[int] | tuple[int, ...] | None", default: null}
-      keepdim: {type: bool, default: false}
-    # static_dims absent — equivalent to static_dims: {}
-    shape_rules: [...]
-```
-
-The generated `__init__` has no shape kwargs:
-
-```python
-def __init__(self, *, dim=None, keepdim=False, ...):
-    # ...
-```
-
-**When `static_dims` is empty, the Op author MUST override `_cache_key`.** The default falls back to the full input shape tuple — correct but pathological under dynamic shapes (every distinct input shape recompiles). Typical full-reduce override:
-
-```python
-class SumFwdOp(Op):
-    def _cache_key(self, x_shape):
-        return (
-            math.prod(x_shape),
-        )  # all full-reductions with same numel share a kernel
-```
-
-The base class emits a once-per-type runtime warning when the default `_cache_key` is invoked with empty `static_dims` and no subclass override. See [ops-design-reference.md § `_cache_key` override](ops-design-reference.md#optional-hooks-appendix).
-
-## Manifest Key Format
-
-Each top-level entry is keyed by the **Python class name** of the Op — PascalCase with an `Op` suffix and an optional direction suffix:
-
-```
-{PascalCaseName}[{Direction}]Op
-```
-
-- **PascalCaseName** — descriptive name in PascalCase (`RMSNorm`, `BatchNorm`, `Softmax`). Author chooses; no abbreviation rules. A qualifier is part of this name and always precedes `{Direction}Op` (`MaxPool2dIndicesFwdOp`, never `MaxPool2dFwdOpIndices`).
-- **Direction** — `Fwd` or `Bwd`. REQUIRED when the manifest carries both directions of the same op (a direction sibling exists); single-direction ops MAY omit it.
-- **Op** — literal suffix.
-
-Examples: `RMSNormFwdOp`, `BatchNormFwdOp`, `SoftmaxFwdOp`, `DropoutFwdOp`.
-
-Validator enforces `cls.__name__ == manifest_key` exactly — no heuristic resolution or case conversion.
-
-## Entry Structure
-
-| Field                     | Required | Description                                                            |
-| ------------------------- | -------- | ---------------------------------------------------------------------- |
-| `family`                  | yes      | Op family. See [below](#family).                                       |
-| `ref_api`                 | yes      | External API reference, or `"none"` if no direct counterpart.          |
-| `status`                  | yes      | `spec-only` or `implemented`.                                          |
-| `torch_compile_fullgraph` | no       | Literal `true` only. See [below](#torch_compile_fullgraph).            |
-| `signature`               | yes      | Op interface. See [Signature](#signature).                             |
-| `composition`             | no       | Internal structure of a composite op. See [Composition](#composition). |
-| `resources`               | no       | Execution resources. See [Resources](#resources).                      |
-| `workloads`               | yes      | Benchmark shapes/dtypes.                                               |
-| `roofline`                | yes      | Performance model.                                                     |
-| `source`                  | yes      | Implementation paths.                                                  |
-
-### `family`
-
-Lowercase snake_case family name. Determines which family file owns the entry (see [Layout](#layout)). Introducing a new family means adding a new family file — human-reviewed like any manifest change. The validator checks presence only.
-
-### `torch_compile_fullgraph`
-
-Optional; literal `true` only. Omit for "no promise" — `false` is invalid. Invalid on `status: spec-only`.
-
-`true` declares: for each manifest-supported configuration, the first call through `torch.compile(op, fullgraph=True)` succeeds with no prior eager call and is correct under the op's tolerance policy. Not promised: dynamic shapes, `dynamic=True`, absence of recompilation. Warm-up-dependent capture does not qualify.
-
-Every declared op MUST have a compile test registered in `tests/compile_contract.py`; CI holds declarations and registered evidence in exact set equality.
-
-### `ref_api`
-
-Fully qualified external API name (typically PyTorch), or `"none"`. Informational — validator checks presence only.
-
-```yaml
-RMSNormFwdOp:
-  ref_api: "torch.nn.functional.rms_norm"
-NSAFwdOp:
-  ref_api: "none"
-```
-
-### Signature
+A type family gives a shape by the value of a finite discriminant. It lives in the entry's `signature.types`, so each entry is self-contained.
 
 ```yaml
 signature:
-  inputs:       # tensor name → {dtype, shape?, constraints?}
-  outputs:      # tensor name → {dtype, shape?, constraints?}
-  params:       # param name → {type, default?}
-  static_dims:  # kwarg → "<tensor>.shape[<axis>]" — arbitrary-rank only (R20)
-  shape_rules:  # Python expressions for shape inference
-  dtype_combos: # valid cross-tensor dtype combinations
-```
-
-**Tensor fields:**
-
-| Field           | Required | Description                                                                                                                              |
-| --------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `dtype`         | yes      | `\|` for alternatives, `same_as(ref)` = same dtype as ref, `promote_int_to_float(ref)` = `float32` for integral ref else `same_as(ref)`. |
-| `caller_stated` | no       | Outputs only. `true` when `out_dtype` states this output's dtype and the declaration is the fallback (R23).                              |
-| `shape`         | no       | Dimension names (e.g., `"[M, K]"`). Present = fixed rank.                                                                                |
-| `constraints`   | no       | Dimension restrictions (requires `shape`).                                                                                               |
-| `layout`        | no       | Memory format when non-default (R19).                                                                                                    |
-| `optional`      | no       | `true` when the op may be called without this input (R18). Inputs only.                                                                  |
-| `mutated`       | no       | `true` when the op may write this input (R22). Inputs only.                                                                              |
-| `nullable`      | no       | `true` when this return position may hold `None`. Outputs only. See [Nullable outputs](#nullable-outputs).                               |
-
-**Param fields:** `type`, plus optional `default` and `kw_only`.
-A param that omits `default` MUST have no `__init__` default either: a
-constructor that accepts a placeholder and rejects it later states a contract
-the signature does not.
-
-`type` is a Python type expression: `int`, `float | None`, `torch.dtype`.
-
-The declared type and the implementation's annotation must agree on one point — whether
-`None` is admitted. Spelling stays the author's: `Number` and `bool | int | float` name one
-domain. `None` is the exception because admitting it decides whether a caller may withhold
-the value. A type that does not admit `None` may not carry `default: null`.
-
-#### Shape Decision Tree
-
-```
-Fixed rank, expressible with dimension names?
-├─ YES → shape: "[D1, D2, ...]"                           [R8]
-│   Relationships beyond shared names?
-│   └─ YES → add shape_rules                              [R13]
-└─ NO (arbitrary rank)
-   ├─ write shape_rules                                   [R13]
-   └─ Values committed at Op construction time?
-      └─ YES → add static_dims                            [R20]
-```
-
-#### Optional Inputs
-
-A tensor input the op reads may be optional (R18). One entry then covers passing it and
-omitting it. Optional inputs are the trailing inputs: `forward` takes each with a `None`
-default in the declared order, and a defaulted parameter cannot precede a required one.
-
-```yaml
-signature:
+  types:
+    Mat:
+      params: {t: Bool, R: Dim, C: Dim}
+      match: t
+      cases:
+      - {when: false, is: "[R, C]"}
+      - {when: true, is: "[C, R]"}
   inputs:
-    x:      {dtype: "float32 | float16 | bfloat16"}
-    weight: {dtype: "same_as(x)", optional: true}
-    bias:   {dtype: "same_as(x)", optional: true}
-  shape_rules:
-  - "(weight is None) == (bias is None)"                # one switch, two tensors
-  - "weight is None or weight.shape == (x.shape[1],)"   # guard precedes the use
-  - "bias is None or bias.shape == (x.shape[1],)"
-workloads:
-- {label: image-g32, x_shape: [8, 128, 32, 32], num_groups: 32, dtypes: [float16]}
-- {label: image-g32-affine, x_shape: [8, 128, 32, 32], num_groups: 32,
-   dtypes: [float16], weight_shape: [128], bias_shape: [128]}
+    a: {dtype: T, shape: "Mat[trans_a, M, K]"}
 ```
 
-Optional inputs that share one switch state that relation in `shape_rules`, as the first
-rule above does. The rules are ordinary conjuncts — no new field, no separate list.
+- `match` takes a finite discriminant — `Bool`, enum, ADT, `present` — or a tuple of them; a tuple's `when` is a list.
+- `cases` are exhaustive and disjoint over the discriminant values the entry accepts; values a domain restriction rejects need no case.
+- An ADT is matched by constructor: `{masked: _}` matches any `masked` value, `{contiguous: {metadata_kind: per_row}}` also constrains a finite field, and a constructor's own fields are readable only on its branches.
+- References between type families are acyclic. Tensors applying one family take one branch together. An application's arguments bind to the family's `params` in declared order.
 
-The op branches on whether an argument was supplied — which kernel it builds, which
-buffers it allocates. It does not branch on what the argument contains: that would be a
-device read at dispatch time, and the fact read is not in the signature. A fact that
-selects a kernel is a `params` entry.
+### Algebraic Data Types
 
-**Where the name may appear.** In three places: `X`'s own `dtype` / `shape` declaration; a
-bare presence test `X is None` / `X is not None`; and a use already guarded by `X is None`
-earlier in the same expression. Every other position states something that must hold on
-every call, and absence is not a value — it is the name having no referent — so an
-unconditional declaration that depends on it means nothing on the call that omits it.
-
-| position                             | rule                                                                                                                                               |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `shape_rules`                        | every occurrence of `X` that is not itself a presence test needs a disjunct `X is None` among the leading operands of the rule's top-level `or`    |
-| `roofline` `vars`                    | `X` may appear only as `X is None` or `X is not None`; `X.shape`, `X.ndim`, `X[...]` are rejected even under a guard                               |
-| `roofline` `flops` / `bytes`         | no `X` at all — the arithmetic layer reads `vars`, params, `elem_bytes` and `out_elem_bytes`, so a presence test reaches it through a `vars` entry |
-| `dtype_combos` row                   | no column keyed by `X` — a row assigns a dtype on every call it covers, and an absent input has none                                               |
-| any `dtype` expression               | `same_as(X)` is rejected — an absent input has no dtype to resolve to                                                                              |
-| required input's or output's `shape` | may not use a symbol first bound in `X`'s `shape`                                                                                                  |
-
-The guard is `X is None or <condition>`, never `X is not None and <condition>`:
-`shape_rules` entries are conjuncts, so the second form reports a legal absent call as a
-violation. It must precede the use but need not sit leftmost —
-`min is None or max is None or output.shape == broadcast_shapes(input.shape, min.shape, max.shape)`
-is well formed. A formula that needs an optional tensor's own shape uses
-`roofline: {func: ...}`, where the function sees the actual call.
-
-**Workload coverage.** Every optional input needs at least one row that passes it and at
-least one that omits it, counted per input rather than per combination: n optional inputs
-are 2n states, not 2ⁿ. A row passes `X` by carrying `<X>_shape`, whatever else it writes —
-a row is sample call data, not a contract expression, so the position rules above do not
-reach it. `status: spec-only` entries are exempt (R15 runs them at L0 only).
-
-Coverage reaches optional inputs and nothing else. Which value a param takes is benchmark
-completeness, tracked on its own; which shape range picks which kernel is a branch only the
-kernel knows, and [testing.md](testing.md) already makes the op author cover it with the
-smallest shape that triggers each branch.
-
-**Roofline describes the call that ran.** A formula whose cost varies with an optional
-input reads that input's presence — inline through a `vars` presence test, or `func` mode,
-which sees the call. "Everything passed" is not an upper bound to fall back on. How much of
-a call's traffic a formula models at all is [roofline.md](roofline.md)'s matter.
-
-**What the validator does not check.** Five things, deliberately:
-
-- It does not solve `shape_rules` for the set of legal ways to call the op.
-- It does not sort rules into presence rules and shape rules; both kinds may reference shapes, params and whitelisted helpers.
-- It does not enumerate the 2ⁿ ways to pass n optional inputs.
-- It does not ask the manifest for a field declaring which optional inputs go together; `(weight is None) == (bias is None)` stays an ordinary `shape_rules` string.
-- It does not stop a call that passes half of a co-occurring group. The op's own check in `forward` does, the same way every other shape constraint is caught, and the error names which group was given in part.
-
-What runtime can never report — a contract position no workload row covers — is what the
-coverage rule checks statically.
-
-**What stays separate.** `optional: true` does not merge everything. Three shapes keep
-their own entries: an op whose outputs change with a switch (R18.1), an op that puts the
-same concept in `params` in one form and in `inputs` in another (`LerpFwdOp` versus
-`LerpTensorFwdOp`), and one signature served by genuinely different algorithms (the `Rope*`
-family), which produce different values from the same inputs and so carry a `ref_api` and a
-roofline each. There is no field linking them: each writes the same `source.op`, which is
-where a reader sees they come from one implementation.
-
-### Workloads
-
-Shape keys use `<tensor_name>_shape`. Op-specific parameters can be added per entry.
+A finite-valued parameter with fields is an ADT, defined once in `types.yaml` and shared by entries. Each constructor maps to a Python class ([table 5](#t-adt)).
 
 ```yaml
-- {x_shape: [2048, 4096], dtypes: [float16, bfloat16], label: "llama-8b"}
+adts:
+  MGroupedLayout:
+    sum:
+      contiguous:
+        python: tileops.ops.moe.contracts.ContiguousLayoutSpec
+        fields: {packing: {type: "'tight' | 'aligned'", python: ...}, alignment: Dim, ...}
+        invariant: "(packing == 'tight') == (alignment == 1)"   # optional
+      masked:
+        python: tileops.ops.moe.contracts.MaskedLayoutSpec
+        fields: {max_m: Dim}
 ```
 
-`workloads` are for benchmark parametrization only, not unit-test coverage.
+- An ADT value is written as a literal `{constructor: {field: value}}`, workload rows included.
+- `invariant` is an optional refinement on a constructor, checked at instantiation and at run time.
+- An ADT is sealed: constructors and fields are fixed where it is declared. Adding one edits the definition; an entry that does not accept the new constructor rejects it with a domain restriction and needs no type-family change.
+- Instantiation builds enum fields from their `python` class, then calls the constructor's class with keyword arguments; a test round-trips a real object per ADT.
 
-### Composition
+### Derived Indices and Primitives
 
-`composition` states that one call to the public op is carried out by several stages. A stage is a
-unit the validator and the cost model address by name; a phase internal to a single kernel is not
-one. The field generates no forward and takes no part in dispatch.
+- `let` names a quantity computed from indices; its kind is `Dim` or a value. It is computed at call time from the signature and is never written in a workload row. `let` dependencies are acyclic.
+- A primitive is a built-in function of the expression language. The set is fixed: general primitives in [table 13](#t-dtype) and [table 15](#t-prims), domain primitives such as `pool.out` in [table 14](#t-domain). Each gives a signature, a domain and a symbolic implementation; outside its domain it raises, naming the declaration that called it. Adding a primitive changes this specification and its one implementation, which the validator, the roofline analysis and the generated code share.
+- Axis-taking primitives normalize axes alike: at rank 0, `0` and `-1` name the one scalar axis and anything else raises; at rank above 0, an axis lies in `[-rank, rank)` and is taken modulo rank.
 
-| Field    | Required | Description                         |
-| -------- | -------- | ----------------------------------- |
-| `kind`   | yes      | `composite` — the only value.       |
-| `stages` | yes      | Non-empty list, in execution order. |
+### Construction-Time Tensors, Layout and Device
 
-Each stage:
+- A construction-time tensor is a `params` entry with `dtype` and `shape`, optionally `optional: true`.
+- A `device` parameter is declared only by an op without call-time tensor inputs ([Call Semantics](#call-semantics)).
+- A tensor that must be contiguous declares `contiguous: true`; others accept any stride. A tensor that must live on the CPU declares `device: cpu`.
 
-| Field      | Required | Description                                                                          |
-| ---------- | -------- | ------------------------------------------------------------------------------------ |
-| `name`     | yes      | Unique within the `composition`. Workspaces and `roofline.composition` cite it.      |
-| `op`       | \*       | Manifest entry name, or a dotted path importing to a class. Exclusive with `kernel`. |
-| `kernel`   | \*       | A key of this entry's `source.kernel_map`. Exclusive with `op`.                      |
-| `variants` | no       | Mutually exclusive performance paths. Top-level stages only.                         |
-| `optional` | no       | The stage runs only in some configurations.                                          |
+## Effects
 
-`op` and `kernel` are the only ways to name what runs, so every stage name resolves.
+An op without effect declarations reads its inputs and allocates its outputs. Effects annotate the signature's tensors and decide the operator schema and the roofline read/write count ([table 9](#t-effects)):
 
-A variant's `condition` is prose; the executable condition stays in the op. Which variant a call
-takes is a runtime fact, so no workload row declares one. Where a branch replaces several stages, it
-hangs off the stage referencing that op and its `condition` names the stages it replaces.
+- `buffer: out` on an output: the caller may pass `out`, which the op writes and returns.
+- `mutated: true` on an input: the op may write it; with `write_only: true` it is a required result buffer whose old contents are not read.
+- `mutated: "<discriminant expr>"`: written only when the expression holds; `alias: <input>` on an output: that output is the input object.
+
+The validator checks the generated operator schema against the declarations for every effect branch.
+
+## Workloads
+
+### Rows
+
+A workload row determines one call. Its keys are construction parameter names, relevant index names, `some`, `dtype_cases` and `label` ([table 16](#t-rows)).
+
+- A row gives exactly the relevant indices that no generator determines.
+- An index is relevant on a branch when that branch's shapes, dtypes or refinements use it. Discriminants selecting a type-family branch, presence or `nullable` are always relevant.
+- **case id** is `label` followed by the row's `dtype_cases` values in `forall` order, joined by `-`. It keys nightly history, so changing a `label` is breaking. `label` is non-empty `[A-Za-z0-9._-]`, and an entry's case ids are distinct.
+- **Coverage.** Every optional tensor of an implemented entry is passed in at least one row and omitted in at least one, counted per input.
+- **Instantiation.** A row fixes shapes, dtypes, parameters, presence and metadata values. Devices follow [Call Semantics](#call-semantics), strides are contiguous, tensors do not alias, other data is random. The validator infers the call back from the instantiated inputs and requires agreement.
+
+### Generators
+
+A metadata tensor's type is in the signature; its values come from a generator in its `values` field at instantiation.
+
+```yaml
+cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)",
+               requires: ["prefix_offsets(total_q)"]}
+```
+
+- The generator result is unified with the declaration; shape indices other than the generator's arguments are solved by that unification (here `B`) and are not written in the row.
+- The generator set is fixed ([table 17](#t-generators)); adding one changes this specification, with its domain, seed and tests. Results are int32; a domain violation or int32 overflow raises. Arguments may be value-primitive calls. Each pseudo-random generator draws from a private RNG seeded as `WorkloadBase.rng` is, so a row always yields the same values.
+- `requires` lists named predicates on a metadata tensor's contents. The set is closed: [table 18](#t-predicates) and `attn.paged_fits` of [table 14](#t-domain), each with one checking function in the validator. The first argument is the constrained tensor's contents, implicit; written arguments are expressions over indices, parameters, `let` and the generated values of the call's metadata tensors. The validator checks them after all generators run; at run time they are the caller's obligation.
+- A tensor with `requires` has `values`.
+
+## Composition
+
+A composite op records the sub-ops it holds on its default built-in construction path (no injected implementation object), i.e. what `kernel_delegates()` returns then. Scheduling and forward stay in code.
 
 ```yaml
 composition:
   kind: composite
   stages:
-  - name: prepare
-    op: PrepareFwdOp
-  - name: compute
-    op: ComputeFwdOp
-    variants:
-    - name: tight
-      stages: [{op: InnerFwdOp}]
-    - name: fused
-      condition: "aligned shapes below the small-batch threshold; replaces prepare"
-      stages: [{kernel: fused_compute}]
+  - {name: pre_permute, op: MoePrePermuteFwdOp}
+  - {name: expert_mlp, op: MoeExpertMLPFwdOp}
+  - {name: post_permute, op: MoePostPermuteFwdOp}
+  - {name: indexed_small_route, op: IndexedExpertMLPFwdOp, optional: true}
 ```
 
-### Resources
+- A stage references a manifest entry. A sub-op held only under some construction parameters is an `optional: true` stage; the condition stays in code.
+- Whether a parent's roofline equals its stages' is not specified by this design.
+- Every op with a `composition` overrides `kernel_delegates()`. A test builds the op with `target=BUILTIN`, runs representative rows covering every optional stage, and requires the ordered class names of `kernel_delegates()` to equal the stages in order, optional ones possibly absent; every optional stage appears in some row.
+- The validator checks unique stage names, entry references, boolean `optional` and a non-empty list.
 
-A workspace is scratch the op needs in order to run. The test against an input is the value: an
-input's value changes the result and the reference API takes it too; a workspace holds nothing
-before the call and nothing to rely on after it, and its shape may change with the backend or the
-variant.
+## Call Semantics
 
-| Field      | Required | Description                                                     |
-| ---------- | -------- | --------------------------------------------------------------- |
-| `name`     | yes      | Unique, and not also an input name.                             |
-| `dtype`    | yes      | Same syntax as an input's dtype, `same_as(ref)` included.       |
-| `owner`    | \*       | A stage name. Required when the entry declares a `composition`. |
-| `kind`     | no       | `scratch` — the only value.                                     |
-| `optional` | no       | The workspace is not passed in every configuration.             |
-| `note`     | no       | Free text.                                                      |
+A call has two phases.
 
-A workspace is still a `forward()` argument. Everything that builds that argument list from the
-manifest — parameter order, shape inference, dtype validation, the empty-input guard — reads
-`signature.inputs` followed by `resources.workspaces`, in declaration order. Workspace shape stays
-with the op (`workspace_shapes()` or a runtime check); there is no `shape` key here.
+- **Construction** checks parameter values against their `type` — non-negative ints and sequence elements written into shapes, dtype parameters within range, construction-time tensors present unless optional — and the ADT invariants that depend on parameters only. `Bool`, enum and ADT parameters, `Maybe` presence and construction-time tensor presence are fixed here.
+- **Call.** The checks generated from the signature wrap `forward`: presence of call-time tensors, domain restrictions, type-family branches, then inference and the remaining refinements, output-buffer preconditions, the implementation, and the output checks. Any failure raises and names the declaration. `forward` may take code-defined execution parameters after the signature's prefix; the code allocates and checks them.
 
-Two consumers read `signature.inputs` alone: a `dtype_combos` row, which is the value contract a
-caller writes against, and an inline `roofline` expression, which resolves over inputs and params
-only. Neither carries a workspace.
+**Inference.** Indices are solved from the inputs by unification ([table 19](#t-unify)). Construction parameters and presence are known at the start, and construction-time tensors are unified together with call-time inputs; branch selection, `let` and unification form one dependency graph from which the validator derives the inference plan, independent of declaration order. An index that cannot be solved, or has several solutions, rejects the entry. On a branch where it is relevant, every `Dim`, `Shape` or `DType` index is solved from an input, given by a parameter, or determined by a generator; an index appearing only in outputs is a parameter or a `let`. An output buffer fixes only its presence and is checked against the output type once known. A non-affine relation binds the physical axis to one name, derives the logical dimension with `let`, and equates the two in a refinement.
 
-```yaml
-resources:
-  workspaces:
-  - name: workspace1
-    dtype: float16 | bfloat16
-    owner: compute
-    kind: scratch
-```
+**Device.** Tensors marked `device: cpu` stay on the CPU and take no part in choosing the call device. The call device is that of the other call-time inputs, which must agree; without such inputs it is the `device` parameter when not `None` (a string normalized by `torch.device`), else that of the construction-time tensors, else the choice of the explicit or process-default target among the device classes (CUDA, CPU) it declares, else the current CUDA device. When construction-time tensors decide it, they share one device. `out` and outputs are checked or allocated on the call device; construction-time tensors not marked `device: cpu` are copied there and cast to their signature dtype. Workload instantiation places tensors by the same rule.
 
-### Nullable outputs
+**Symbolic shapes.** Under SymInt, discriminants are already Python values; arithmetic and comparisons lower to SymInt / SymBool; `and` / `or` / `not` short-circuit on Python bools and lower to `sym_and` / `sym_or` / `sym_not` otherwise; `Seq` equality compares lengths as Python ints, then elements with `sym_and`; `in` requires a Python-valued right side; a conditional on a SymBool lowers to `sym_ite` with both arms evaluable; a refinement yielding a SymBool becomes `torch._check`. Primitives use their symbolic implementation. An expression that needs the truth value of a SymBool is evaluated at construction only; an op compiled with `fullgraph=True` contains none. Expression strings are parsed and checked before code generation; generated code never parses them.
 
-Output names and count are fixed per entry. A return position that always exists but may hold
-`None` declares `nullable: true`; a return whose *number* of values changes with a parameter is two
-entries instead. `nullable` is valid on outputs only — an input that may be omitted uses `optional`.
+## Validation
 
-```yaml
-outputs:
-  aux_output: {dtype: "same_as(x)", nullable: true}
-  main_output: {dtype: "same_as(x)"}
-```
+[`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) checks every entry on every combination of its discriminant values: type-family `match`, `optional`, `nullable`, `mutated`, output-buffer presence, and the quantities relevance reads. Discriminants are grouped by dependency. Combinations a domain restriction rejects skip only type-family coverage and inference-plan checks. Above a configured number of combinations (default 256) it reports an advisory diagnostic and keeps the entry whole.
 
-### Roofline
+1. Each name's category matches its kind, and each parameter's `type` fits the kind every use site needs.
+1. Type-family cases are exhaustive and disjoint over accepted values; family references are acyclic.
+1. An inference plan exists.
+1. `let` dependencies are acyclic.
+1. Every expression is in the language and every primitive is built in.
+1. Every generator result unifies with its declaration.
+1. Every expression of an op compiled with `fullgraph=True` is evaluable on SymInt.
+1. Every workload row instantiates.
+1. For every effect branch, the operator schema, aliases and roofline read/write counts agree.
 
-Roofline metadata is required on every manifest entry. Its modes,
-variable binding rules, formula syntax, consumers, and codegen behavior
-are defined in [roofline.md](roofline.md).
+All checks are decidable; every evaluation either succeeds or names the failing declaration. Code-dependent checks are skipped for `spec-only` entries. CI runs the validator with `--strict` over the whole manifest.
 
-A composite op declares what its cost is made of under `roofline.composition`, alongside either
-roofline mode; an entry with a `composition` must have one. The parent's cost is still computed by
-its own `flops`/`bytes` or `func`; `composition` records which stages it covers. What the validator
-checks is structural — every stage accounted for, once, against a `source` that resolves — not that
-the parent's number equals the sum of its stages. A parent may drop a stage whose cost is negligible
-at the shapes the op runs at. Each row names a `stage` and
-gives exactly one of `source` (dotted path to the formula that stage's cost comes from, resolved as
-`func` is) or `formula` (prose where no separate function exists). Every stage not marked `optional`
-appears exactly once.
+- Facts several checks need are derived once, in one layer private to the validator; judgement and diagnostics stay with each check. The facts are `call_tensor_args` (the tensor parameters of `forward`), `value_inputs` (the inputs a caller passes) and `spec_only` (`status` is missing, not a string, or `spec-only`; a malformed `status` is also diagnosed).
+- Parsing is per field: an unreadable field empties only the facts it feeds, and checks reading an empty fact skip.
+- Diagnostics are a contract: the CLI, the diagnostic text and order, and the strict/advisory classification change only through a deliberate, recorded change. Every set entering a diagnostic is sorted, unknown keys by `repr`, so output does not depend on `PYTHONHASHSEED`.
+- Each fixed section's legal keys are defined in one place.
+- Importing an op loads the manifest leniently and succeeds on an incomplete manifest; strict checking belongs to the validator alone.
+- The package exports `forward_signature(entry)`: the ordered call-time inputs and output buffers. Code-defined execution parameters are not in it.
+- A new entry also passes the public-surface test and the roofline classification test.
 
-`roofline.func` resolves as `module.attribute`, so it names a module-level function; a class method
-path does not import. A composite's formula belongs in `tileops.perf.formulas` alongside those of
-the ops it composes, and the op's `eval_roofline()` calls that same function.
+## Reference Tables
 
-```yaml
-roofline:
-  func: "tileops.perf.formulas.composite_fwd_bytes"
-  composition:
-  - stage: compute
-    source: "tileops.perf.formulas.inner_fwd_bytes"
-  - stage: epilogue
-    formula: "2 * num_tokens * hidden_size"
-    optional: true
-```
+**<a id="t-names"></a>Table 1** Name categories
 
-### Source
+| No. | Category    | Definition                                                                                                                                               | Checks                                                   |
+| --- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| 1   | index       | A name in a shape, `dtype`, type-family argument, `optional`, `nullable`, `mutated`, `let`, refinement or `values`, whose `type` is not in table 3 row 8 | kind, inference, exhaustiveness, refinements             |
+| 2   | other param | Any other construction parameter, including those whose `type` is in table 3 row 8 (`eps`, `ord`, `device`)                                              | `type` and `default`; usable in refinements and roofline |
 
-| Field                   | Required | Description                                                            |
-| ----------------------- | -------- | ---------------------------------------------------------------------- |
-| `kernel`                | yes      | Kernel file path(s).                                                   |
-| `kernel_map`            | \*       | Dispatch key → Kernel class name. Required when `status: implemented`. |
-| `op`                    | yes      | Op class file path.                                                    |
-| `test`                  | yes      | Test file path.                                                        |
-| `bench`                 | yes      | Benchmark file path.                                                   |
-| `bench_manifest_driven` | \*       | Required `true` when `status: implemented`; makes L4 a hard CI error.  |
+**<a id="t-forall"></a>Table 2** `forall` kinds
 
-#### kernel_map
+| No. | Kind            | Values                     | Solved from                                 | Written in a row |
+| --- | --------------- | -------------------------- | ------------------------------------------- | ---------------- |
+| 1   | `Dim`           | non-negative integer       | unification of inputs or generator results  | integer          |
+| 2   | `Shape`         | tuple of `Dim`             | unification of inputs                       | integer list     |
+| 3   | `DType[a \| b]` | one of the declared dtypes | unification of inputs                       | `dtype_cases`    |
+| 4   | `Seq[Int]`      | integer list (`q_lens`)    | instantiation only, as a generator argument | integer list     |
 
-Op→Kernel dispatch registration table. Declares which Kernels an Op uses so agents know what to implement, and which slots a caller's `kernel_map=` replaces. Does not describe dispatch strategy (runtime concern). Format: `dispatch_key: KernelClassName`. The validator holds it equal to the op's `default_kernel_map`; a composite op installs none of its own and declares its sub-ops' kernels, which is not checked. See [op-slot-rules.md § Slot S14 `default_kernel_map`](op-slot-rules.md#slot-s14).
+**<a id="t-types"></a>Table 3** Parameter `type` to kind
 
-```yaml
-# Single-kernel op
-source:
-  kernel: src/tileops/kernels/norm/rms_norm.py
-  kernel_map:
-    rms_norm: RMSNormKernel
-  op: src/tileops/ops/norm/rms_norm.py
+| No. | `type`                                                               | Kind                                                |
+| --- | -------------------------------------------------------------------- | --------------------------------------------------- |
+| 1   | `int` / `bool`                                                       | `Int` (signed) / `Bool`                             |
+| 2   | union of string literals                                             | enum                                                |
+| 3   | `list[int]`, `tuple[int, ...]`, `tuple[int, int]`                    | `Seq[Int]`; a fixed-length tuple carries its length |
+| 4   | `X \| None`                                                          | `Maybe[X]`                                          |
+| 5   | `X \| Y`                                                             | finite union, each member mapped by this table      |
+| 6   | ADT name                                                             | that ADT                                            |
+| 7   | `torch.dtype`, union of dtype names                                  | `DType[...]` (a dtype parameter)                    |
+| 8   | `float`, `Number`, open `str`, `dict`, `torch.Tensor`, other objects | takes no part in types; `type` and `default` only   |
 
-# Multi-kernel op
-source:
-  kernel: src/tileops/kernels/attention/gqa_bwd.py
-  kernel_map:
-    gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-    gqa_bwd_kernel: GQABwdWgmmaPipelinedKernel
-  op: src/tileops/ops/attention/gqa.py
-```
+**<a id="t-expr"></a>Table 4** Expression kinds
 
-- Optional when `status: spec-only`. Required when `status: implemented`.
+| No. | Expression                                                       | Kind                                                             |
+| --- | ---------------------------------------------------------------- | ---------------------------------------------------------------- |
+| 1   | `Dim` `+` / `*` `Dim`; `Dim // k`, `Dim % k` for positive `k`    | `Dim`                                                            |
+| 2   | primitive call                                                   | the primitive's declared result                                  |
+| 3   | arithmetic with `-`, a negative, or an `Int`; an indexed integer | `Int`                                                            |
+| 4   | comparison, `and` / `or` / `not`, `in`, predicate primitive      | `Bool`                                                           |
+| 5   | `a if c else b`                                                  | the common kind; `Int` when one arm is `Dim` and the other `Int` |
 
-## Entry Examples
+**<a id="t-adt"></a>Table 5** ADT and Python objects
 
-**Fixed rank — GEMM** \[R8, R11\]:
+| No. | ADT side         | Python side                                    |
+| --- | ---------------- | ---------------------------------------------- |
+| 1   | constructor      | the class named by `python`; an instance of it |
+| 2   | constructor name | the object's `kind` attribute                  |
+| 3   | field            | the attribute of the same name                 |
+| 4   | enum field value | that attribute's `.value`                      |
 
-```yaml
-inputs:
-  a: {dtype: "float16 | bfloat16", shape: "[M, K]"}
-  b: {dtype: "same_as(a)", shape: "[K, N]"}
-outputs:
-  c: {dtype: "same_as(a)", shape: "[M, N]"}
-```
+**<a id="t-ctor"></a>Table 6** Manifest versus `__init__`
 
-**Fixed rank + constraints — FFT** \[R8, R12\]:
+| No. | Item                        | Rule                                                                   |
+| --- | --------------------------- | ---------------------------------------------------------------------- |
+| 1   | parameter set               | equal; the code may add only table 7's execution-policy parameters     |
+| 2   | order, `default`, `kw_only` | equal                                                                  |
+| 3   | type                        | the manifest `type` governs; runtime type checks are generated from it |
+| 4   | parameter kind              | positional-or-keyword, or keyword-only by `kw_only`                    |
 
-```yaml
-inputs:
-  x: {dtype: "complex64", shape: "[M, N]", constraints: {N: "power_of_2"}}
-outputs:
-  y: {dtype: "same_as(x)", shape: "[M, N]"}
-```
+**<a id="t-policy"></a>Table 7** Execution-policy parameters (owned by code)
 
-**Arbitrary rank — RMSNorm** \[R9, R13, R17\]:
+| No. | Class                                | Parameters                                  |
+| --- | ------------------------------------ | ------------------------------------------- |
+| 1   | every op                             | `kernel_map`, `tune`, `target`              |
+| 2   | injected implementation objects      | e.g. FusedMoe `prepare_finalize`, `experts` |
+| 3   | configuration passed only to kernels | reserved name `config`                      |
 
-```yaml
-inputs:
-  x: {dtype: "float16 | bfloat16"}
-  weight: {dtype: "same_as(x)"}
-outputs:
-  output: {dtype: "same_as(x)"}
-params:
-  normalized_shape: {type: "list[int] | tuple[int, ...]"}
-  eps: {type: "float | None", default: null}
-shape_rules:
-  - "len(normalized_shape) > 0"
-  - "tuple(x.shape[-len(normalized_shape):]) == tuple(normalized_shape)"
-  - "weight.shape == tuple(normalized_shape)"
-  - "output.shape == x.shape"
-```
+**<a id="t-roles"></a>Table 8** Roles
 
-**Arbitrary rank — Reduce** \[R9, R13\]:
+| No. | Role                     | Phase        | Declared as                                        | Type                                                                               |
+| --- | ------------------------ | ------------ | -------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| 1   | construction parameter   | construction | `params.<p>`                                       | the kind of its `type` (table 3)                                                   |
+| 2   | `device` parameter       | construction | `params.device`                                    | decides the call device                                                            |
+| 3   | construction-time tensor | construction | `params.<p>` with `dtype`, `shape`                 | `Tensor[T, s]`; if optional, `Maybe[Tensor[T, s]]` with tag `present(p)`           |
+| 4   | required input           | call         | `inputs.<t>`                                       | `Tensor[T, s]`                                                                     |
+| 5   | optional input           | call         | `optional: true`, or `optional: "<p>"` when shared | `Maybe[Tensor[T, s]]` with tag `present(t)` or `p`                                 |
+| 6   | output                   | result       | `outputs.<t>`                                      | `Tensor[T, s]`                                                                     |
+| 7   | nullable output          | result       | `nullable: "<p>"`                                  | `Maybe[Tensor[T, s]]` with tag `p`                                                 |
+| 8   | output buffer            | call         | table 9's `buffer` and `write_only`                | optional: `Maybe` of the output type, tag `present(out)`; required: `Tensor[T, s]` |
 
-```yaml
-inputs:
-  x: {dtype: "float16 | bfloat16 | float32"}
-outputs:
-  output: {dtype: "same_as(x)"}
-params:
-  dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
-  keepdim: {type: bool, default: false}
-shape_rules:
-  - "dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"
-  - "isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"
-  - "output.shape == reduced_shape(x.shape, dim, keepdim)"
-```
+**<a id="t-effects"></a>Table 9** Effect declarations
 
-All reduction ops include `dim` + `keepdim`. **Exception:** softmax/log_softmax preserve the input shape and take no `keepdim`; count_nonzero has no `keepdim` either (R17). What an empty `dim` sequence means is per-op: see R14 and [domain-rules/manifest-spec.md](../../.claude/domain-rules/manifest-spec.md).
+| No. | Declaration                               | Meaning                                                                                                                                                      | Operator schema                                    |
+| --- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- |
+| 1   | output `buffer: out`                      | `forward` gains `out` after all inputs, in output order. Passed: the op writes and returns it; omitted: the op allocates. Same shape and dtype as the output | two: one returning a new tensor, one writing `out` |
+| 2   | input `mutated: true`                     | the op may write it; its prior contents are read                                                                                                             | one; `mutates_args` names it                       |
+| 3   | input `mutated: true`, `write_only: true` | a required result buffer: overwritten, the result depends on other inputs only; if the op returns `None`, `outputs` is empty                                 | one; `mutates_args` names it                       |
+| 4   | input `mutated: "<discriminant expr>"`    | written only when the expression holds                                                                                                                       | one per expression value                           |
+| 5   | output `alias: <input>`                   | when that input is written, the output is that input object                                                                                                  | two; the writing one returns the input object      |
 
-**Full entry — RMSNorm:**
+**<a id="t-lang"></a>Table 10** Expression language
 
-```yaml
-RMSNormFwdOp:
-  family: normalization
-  ref_api: "torch.nn.functional.rms_norm"
-  status: implemented
+| No. | Element   | Content                                                                                                    |
+| --- | --------- | ---------------------------------------------------------------------------------------------------------- |
+| 1   | literals  | int, finite float, bool, None, str, tuple; reserved float `inf` (`-inf` by negation)                       |
+| 2   | names     | indices, `signature.params` parameters, `let`, comprehension variables; each use site checks kind and type |
+| 3   | presence  | `present(x)` for a tensor or `Maybe` value; `x.value` only where `present(x)` holds                        |
+| 4   | operators | `+ - * // %`, comparisons, `and or not`, `in`, conditional; Python precedence                              |
+| 5   | access    | subscript, slice; an ADT field only on its constructor's branch, plus `kind`                               |
+| 6   | calls     | comprehension; built-in primitives                                                                         |
 
-  signature:
-    inputs:
-      x: {dtype: "float16 | bfloat16"}
-      weight: {dtype: "same_as(x)"}
-    outputs:
-      output: {dtype: "same_as(x)"}
-    params:
-      normalized_shape: {type: "list[int] | tuple[int, ...]"}
-      eps: {type: "float | None", default: null}
-    shape_rules:
-      - "len(normalized_shape) > 0"
-      - "tuple(x.shape[-len(normalized_shape):]) == tuple(normalized_shape)"
-      - "weight.shape == tuple(normalized_shape)"
-      - "output.shape == x.shape"
+**<a id="t-constraints"></a>Table 11** Constraints
 
-  workloads:
-    - {x_shape: [2048, 4096], normalized_shape: [4096], dtypes: [float16, bfloat16], label: "llama-8b-prefill"}
-    - {x_shape: [1, 4096], normalized_shape: [4096], dtypes: [bfloat16], label: "llama-8b-decode"}
+| No. | Kind                        | Depends on                   | Checked                                                                                         |
+| --- | --------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------- |
+| 1   | refinement in `shape_rules` | run-time quantities only     | every call; fake/meta emit `torch._check`                                                       |
+| 2   | tensor `requires`           | a metadata tensor's contents | at instantiation, on generated values; at run time, the caller's obligation, listed in API docs |
 
-  roofline:
-    vars:
-      M: "product(x.shape[:x.ndim - len(normalized_shape)])"
-      N: "product(normalized_shape)"
-    flops: "4 * M * N"
-    bytes: "(2 * M * N + N) * elem_bytes"
+**<a id="t-rejected"></a>Table 12** Rejected rule forms
 
-  source:
-    kernel: src/tileops/kernels/norm/rms_norm.py
-    kernel_map:
-      rms_norm: RMSNormKernel
-    op: src/tileops/ops/norm/rms_norm.py
-    test: tests/ops/test_rms_norm.py
-    bench: benchmarks/ops/bench_norm.py
-```
+| No. | Rejected                    | Example                                 | Write instead                        |
+| --- | --------------------------- | --------------------------------------- | ------------------------------------ |
+| 1   | reading a tensor's `shape`  | `x.shape == (B, S, H, D)`               | `x: {shape: "[B, S, H, D]"}`         |
+| 2   | an equality forming a type  | `output.shape == input.shape`           | one shape term for both, e.g. `[*S]` |
+| 3   | an equality defining a name | `C_in_g == C_in // groups`              | `let: {C_in_g: "C_in // groups"}`    |
+| 4   | tensor `x is None`          | `bias is None or ...`                   | `not present(bias) or ...`           |
+| 5   | value `v is None`           | `max_seqlen is None`                    | `not present(max_seqlen)`            |
+| 6   | `isinstance`                | `s[0] if isinstance(s, tuple) else s`   | `per_axis(s, 0, 2)`                  |
+| 7   | set comprehension           | `len({d % n for d in dim}) == len(dim)` | `unique_axes(dim, n)`                |
 
-## Benchmark Pattern
+**<a id="t-dtype"></a>Table 13** Dtype expressions
 
-Benchmarks must use manifest-driven workloads. See [testing.md](testing.md)
-for benchmark structure and [roofline.md](roofline.md) for roofline
-consumption.
+| No. | Form                      | Meaning                                                                            |
+| --- | ------------------------- | ---------------------------------------------------------------------------------- |
+| 1   | `forall` `DType` index    | ranges over its declared set; solved from the inputs                               |
+| 2   | dtype parameter           | the construction parameter's value (`dtype: out_dtype`)                            |
+| 3   | constant                  | a fixed dtype                                                                      |
+| 4   | `promote_int_to_float(T)` | float32 when `T` is integral, else `T`                                             |
+| 5   | `coalesce_dtype(v, T)`    | `Maybe[DType[A]] × DType[B] → DType[A ∪ B]`: `v.value` when `present(v)`, else `T` |
 
-### Workload entry schema
+**<a id="t-domain"></a>Table 14** Domain primitives
 
-Each entry under `workloads:` is a mapping. `dtypes` and `label` are
-reserved. Key rules: R21.
+| No. | Primitive                            | Result                                                                                                         |
+| --- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| 1   | `conv.out(L, k, s, p, d)`            | convolution output length                                                                                      |
+| 2   | `pool.out(L, k, s, p, d, ceil_mode)` | pooling output length                                                                                          |
+| 3   | `moe.capacity(layout, R, E)`         | masked: `E * max_m`; contiguous aligned per-row: `R + E * (alignment - 1)` rounded up to `alignment`; else `R` |
+| 4   | `mhc.expansion(Q)`                   | the positive `n` with `n * n + 2 * n == Q`; raises when none exists                                            |
+| 5   | `attn.paged_fits(cu, cap)`           | `requires` predicate: element `i` plus segment `i` of `cu` is at most `cap`                                    |
 
-| Key             | Required | Meaning                                                                                                                                                                                               |
-| --------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `{input}_shape` | yes\*    | Shape for the single tensor input (list of ints), named per R21. \*Multi-input families define their own aggregate shape keys (e.g. `q_shape`/`kv_shape`) in their family bench files.                |
-| `dtypes`        | yes      | List of dtype strings (`["float16", "bfloat16"]`).                                                                                                                                                    |
-| `label`         | no       | Human-readable id used in the pytest param id and report tables. MUST NOT name a dtype the row's `dtypes` already lists: the case id ends with the dtype it runs, so the label would render it twice. |
-| *any other key* | no       | Op param value (`dim`, `keepdim`, …). MUST be a declared `signature.params` name (R21); overrides its default.                                                                                        |
+**<a id="t-prims"></a>Table 15** General primitives (`Axes = Int | Seq[Int] | None`)
 
-Example — parametrizing a reduction workload over a non-last `dim`:
+| No. | Primitive                       | Signature                                                                          | Domain and result                                                                                                                       | Symbolic implementation                          |
+| --- | ------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| 1   | `broadcast`                     | `Shape... → Shape`                                                                 | PyTorch broadcasting; raises when not broadcastable                                                                                     | guard `a == b or a == 1 or b == 1` per axis pair |
+| 2   | `reduced`                       | `Shape × Axes × Bool × ('full' \| 'noop' \| 'reject') → Shape`                     | `None` reduces all axes; an empty sequence per `mode` (all / none / raise); rank 0 yields `[]`                                          | axes are parameters, evaluated at construction   |
+| 3   | `valid_axes`                    | `Axes × Int → Bool`                                                                | every axis normalizes; `None` is true                                                                                                   | construction                                     |
+| 4   | `unique_axes`                   | `Axes × Int → Bool`                                                                | normalized axes are distinct                                                                                                            | construction                                     |
+| 5   | `per_axis`                      | `(Int \| Seq[Maybe[Int]] \| None) × Int × Int × fallback: Maybe[Int] = None → Int` | a scalar returns itself; a length-`n` sequence yields item `i`; `None` takes `fallback`, raising if that is `None`; other lengths raise | construction                                     |
+| 6   | `ceil_div`                      | `Int × Int → Int`                                                                  | positive divisor                                                                                                                        | SymInt division                                  |
+| 7   | `len`                           | `Seq[A] → Dim`                                                                     | any sequence                                                                                                                            | length must be a Python int                      |
+| 8   | `prod` / `sum`                  | `Seq[Int] → Int`                                                                   | `prod([])` is 1, `sum([])` is 0                                                                                                         | length must be a Python int                      |
+| 9   | `max` / `min`                   | `Seq[Int] × default: Maybe[Int] = None → Int`                                      | empty takes `default`, raising without one                                                                                              | `sym_max` / `sym_min`                            |
+| 10  | `all`                           | `Seq[Bool] → Bool`                                                                 | empty is true                                                                                                                           | length must be a Python int; unrolled            |
+| 11  | comprehension `f(x) for x in s` | `Seq[A] → Seq[B]`                                                                  | only as an argument of `all`, `sum`, `max`, `min`                                                                                       | length must be a Python int; unrolled            |
 
-```yaml
-workloads:
-  - {x_shape: [2048, 4096], dtypes: [bfloat16], dim: -1, label: "reduce-last"}
-  - {x_shape: [2048, 4096], dtypes: [bfloat16], dim:  0, label: "reduce-first"}
-```
+**<a id="t-rows"></a>Table 16** Workload row keys
 
-## Manifest Validation
+| No. | Key                                       | Value                                                                                                                                                                             |
+| --- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | construction parameter name               | its value; required when it has no default                                                                                                                                        |
+| 2   | `some`                                    | the `optional: true` tensors passed                                                                                                                                               |
+| 3   | `forall` `Dim`, `Shape`, `Seq[Int]` index | exactly the branch's relevant indices no generator solves                                                                                                                         |
+| 4   | `dtype_cases`                             | list of assignments to the relevant `forall` `DType` indices, e.g. `[{T: float16}, {T: bfloat16}]`; only when there are such indices; a dtype parameter is written as a parameter |
+| 5   | `label`                                   | the row's name                                                                                                                                                                    |
 
-[`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) runs five levels:
+**<a id="t-generators"></a>Table 17** Metadata generators
 
-| Level | Check     | Description                                                                                                                                                                                                                                                                  |
-| ----- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| L0    | Schema    | Required fields exist, correct types                                                                                                                                                                                                                                         |
-| L1    | Signature | Params ⊆ `__init__()` ∪ `forward()` names; `forward()` order matches                                                                                                                                                                                                         |
-| L2    | Shape     | `shape_rules` are valid Python expressions                                                                                                                                                                                                                                   |
-| L3    | Dtype     | dtype strings are valid torch types, `same_as()` refs, or `promote_int_to_float()` refs                                                                                                                                                                                      |
-| L4    | Benchmark | Bench file calls `load_workloads` / `workloads_to_params` and takes its roofline off an Op — `eval_roofline()` or a `ManifestBenchmark`. It matches no op name: which entry a file benchmarks is settled by a run, see [trust-model.md §Benchmark](trust-model.md#benchmark) |
+| No. | Generator                                          | Domain                                   | Result                                                                                                                                                                            |
+| --- | -------------------------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `as_tensor(L)`                                     | non-negative list                        | `[len(L)]` holding `L`                                                                                                                                                            |
+| 2   | `prefix_sum(L)`                                    | non-negative list, may be empty          | `[len(L) + 1]`, item 0 is 0, item `i` is `sum(L[:i])`                                                                                                                             |
+| 3   | `exclusive_prefix_sum(L)`                          | non-empty non-negative list              | `[len(L)]`, item `i` is `sum(L[:i])`                                                                                                                                              |
+| 4   | `padded_exclusive_prefix_sum(L, pad)`              | as above; `pad > 0`                      | `[len(L)]`, item `i` is `sum(ceil_div(n + 1, pad) * pad for n in L[:i])`                                                                                                          |
+| 5   | `paged_block_table(B, width, pool)`                | `0 < width <= pool`                      | `[B, width]`; disjoint random pages per request when `pool >= B * width`, else each request takes the first `width` of a random permutation                                       |
+| 6   | `chunk_indices(L, c)`                              | non-negative list; `c > 0`               | `[sum(ceil_div(n, c) for n in L), 2]`, rows of (request, chunk)                                                                                                                   |
+| 7   | `token_indices(L)`                                 | non-empty positive list                  | `[sum(L), 2]`; token `j` of sequence `i` is `(i, j)`                                                                                                                              |
+| 8   | `chunk_offsets(L, c)`                              | non-negative list; `c > 0`               | `prefix_sum([ceil_div(n, c) for n in L])`                                                                                                                                         |
+| 9   | `nsa_block_indices(L, block_size, selected, H_kv)` | non-empty positive list; others positive | `[sum(L), H_kv, selected]`; position `j` sees `max(ceil_div(j, block_size), 1)` blocks, draws `min(selected, visible)` distinct ones, pads with sentinel `sum(L)`, rows ascending |
+| 10  | `nsa_block_counts(T, H_kv, selected)`              | positive arguments                       | `[T, H_kv]`, each uniform in `[1, selected]`                                                                                                                                      |
+| 11  | `topk_ids(N, K, E)`                                | `0 < K <= E`                             | `[N, K]`, each row `K` distinct random values in `[0, E)`                                                                                                                         |
 
-`spec-only` ops → L0 only. `implemented` ops → all levels. `--check-op <name>` forces L0-L4 on the targeted entry. L2 and L3 additionally run parity extensions against the implemented Op's `_infer_output_shapes` / `_validate_dtypes` methods; see [ops-design.md](ops-design.md).
+Value primitive: `balanced_sizes(total, count)` requires `count > 0` and `total >= 0`; each item is `total // count`, the first `total % count` items plus one.
 
-Those parity extensions block only under `--strict`, which is how CI runs the validator. A default run reports them as warnings and says so — its first lines name the `parity-mode:` in force, so a green default run is not the same claim as a green CI run.
+**<a id="t-predicates"></a>Table 18** `requires` predicates (the constrained tensor is `x`)
 
-```bash
-python scripts/validate_manifest.py
-python scripts/validate_manifest.py --check-op SoftmaxFwdOp
-```
+| No. | Predicate               | Condition                                                      |
+| --- | ----------------------- | -------------------------------------------------------------- |
+| 1   | `prefix_offsets(total)` | `x` is 1-D, starts at 0, is non-decreasing and ends at `total` |
+| 2   | `max_segment(bound)`    | adjacent differences of `x` are at most `bound`                |
+| 3   | `in_range(lo, hi)`      | every element of `x` lies in `[lo, hi)`                        |
+
+**<a id="t-unify"></a>Table 19** Unification of an input axis
+
+| No. | Axis form                                                                   | Unification                                           |
+| --- | --------------------------------------------------------------------------- | ----------------------------------------------------- |
+| 1   | `M`, unknown                                                                | `M := size`                                           |
+| 2   | `a * M + e`: `a` a known positive constant, `e` known, `M` the only unknown | `M := (size - e) / a`, checking divisibility and sign |
+| 3   | `*S`, the only unknown segment, other axis counts known                     | `S :=` the matching axes                              |
+| 4   | `dtype` an unknown `DType` index `T`                                        | `T :=` the dtype                                      |
+| 5   | anything else                                                               | checked only                                          |
 
 ## Exclusions
 
-The manifest does NOT describe: multi-kernel execution ordering, accumulator dtypes, persistent state, tile sizes, or autotuning config.
+The manifest does not describe kernel selection, multi-kernel ordering, accumulator dtypes, workspaces, tile sizes or autotuning configuration.

@@ -1,87 +1,25 @@
-→ [trust-model.md §Manifest](../../docs/design/trust-model.md#manifest)
+→ [trust-model.md §Manifest](../../docs/design/trust-model.md#manifest) | Spec: [manifest.md](../../docs/design/manifest.md)
 
-- Manifest key must equal the Op `cls.__name__` exactly. Class-naming convention: see [ops-design.md](ops-design.md).
+- Manifest key equals the Op `cls.__name__` exactly.
 
-- `ref_api` (required): the external API the signature mirrors (e.g. `torch.nn.functional.rms_norm`); `"none"` if none. Validator enforces presence + string type only; semantics not checked.
+- The signature is the public contract; write it against the operator's reference semantics, never against current code. When `ref_api` is present it is the semantic oracle. Include every supported parameter even if the kernel only honors the default.
 
-- `inputs`, `outputs`, `params` are ordered dicts — key order is signature position. Don't reorder.
+- `inputs`, `outputs` and `params` are ordered: key order is signature position. Don't reorder.
 
-- Op signatures must match PyTorch's public API (names, set, semantics); include every supported parameter even if the kernel only honors the default. Default to `__init__` kwargs (lifetime-fixed); use `forward()` only when the reference API requires it or the value is per-batch — justify in the introducing issue.
+- Every tensor declares `dtype` and `shape`. Name each free axis in `forall`; write a shared shape once (`[*S]`); derive a dimension with `let`, never with an equality in `shape_rules`.
 
-- A param's `type` is a Python type expression. Against the implementation's annotation one thing is compared — whether `None` is admitted, so `Number` and `bool | int | float` name one domain. A type that excludes `None` may not carry `default: null`. Rule: [manifest.md](../../docs/design/manifest.md#signature).
+- `shape_rules` hold refinements only. Presence is `present(x)`, never `x is None`; an axis helper is a built-in primitive, never `isinstance`. A constraint on a metadata tensor's contents is its `requires`.
 
-- `dtype` syntax: `|` for alternatives. `same_as(ref)` is dtype-only identity (matches `ref` at runtime, no extra axis in `dtype_combos`, never used for shape).
+- A parameter that selects a shape is a discriminant of a type family in `signature.types`. A finite choice with fields is an ADT in `types.yaml`.
 
-- An output's `dtype` names one dtype, never a set (R23). An output the caller may restate declares `caller_stated: true` and takes its value from a `signature.params` entry named `out_dtype`, whose `type` is the set the caller may ask for; the output's own declaration is the fallback. Marked output and param imply each other, and the op's `__init__` takes a parameter of that name.
+- An output dtype is a dtype expression: a `forall` `DType` index, a constant, a dtype primitive, or a dtype parameter. `dtype_combos` only when the supported set is a strict subset of the product.
 
-- `dtype_combos` only when the supported set is a strict subset of the Cartesian product. Omit when all combinations are valid.
+- Mutation and aliasing are declared on tensors (`mutated`, `write_only`, `buffer`, `alias`). Workspaces are not in the manifest.
 
-- Output shapes are fully specified by `shape` and/or `shape_rules`. `shape` present → fixed rank, names become roofline variables; `shape` absent on inputs → arbitrary rank, use `params` + `shape_rules`. Shared dim names across tensors → sizes must match.
+- Workload rows give construction parameters, the relevant indices no generator solves, `some`, `dtype_cases` and `label`. Metadata values come from `values` generators. In an implemented entry, every optional input has a row passing it and a row omitting it.
 
-- `shape_rules` are Python expressions describing shape relationships. For reduction-dim validation, use the canonical predicates / extractors in `tileops.manifest.shape_rules` (callable by bare name from any rule body); never silently wrap out-of-range indices with `% x.ndim`. Inline string expressions are a transitional fallback only.
+- `roofline` gives `flops`; omit `bytes` unless the derived count is wrong, and then add a test.
 
-- **Reduction `dim` authoring contract.** When `dim` accepts an integer or a sequence (`list[int]` / `tuple[int, ...]`), declare three `shape_rules` in this order:
+- `status: spec-only` until an implementation conforms. Never edit the manifest to match non-conforming code, and never delete a rule to silence the validator.
 
-  1. **Range validity.** Every axis in `[-x.ndim, x.ndim)`. For ops accepting `None`: `"dim is None or all(-x.ndim <= d < x.ndim for d in ([dim] if isinstance(dim, int) else dim))"`. Drop the `dim is None or` prefix when the op does not accept `None`.
-  1. **Normalize negatives.** Downstream rules apply `% x.ndim` only after step 1, producing the canonical axis set `{d % x.ndim for d in dim}`.
-  1. **Uniqueness (sequence only).** `"isinstance(dim, (int, type(None))) or len({d % x.ndim for d in dim}) == len(dim)"`.
-
-  Empty-sequence semantics is per-op:
-
-  - Full reduction (`sum`, `mean`, `amax`, `amin`, `var`, `std`, `var_mean`, `count_nonzero`, `linalg.vector_norm` variants): empty sequence ≡ every axis. `reduced_shape(x.shape, dim, keepdim)` reads it that way.
-  - No reduction (`all`, `any`, matching `torch.all` / `torch.any`): empty sequence reduces nothing, so the rule names it: `reduced_shape(x.shape, dim, keepdim, 'noop')`.
-  - Invalid (`logsumexp`, which takes no `dim=None`): declare `"isinstance(dim, int) or len(dim) > 0"`.
-
-- Roofline `vars` maps variable names to Python expressions over tensor shapes and params. Required for arbitrary-rank ops.
-
-- `status` is required: `implemented` or `spec-only`. `spec-only` is for an entry with no implementation behind it; an entry whose op exists and passes the parity gates is `implemented`.
-
-- `torch_compile_fullgraph`: literal `true` only; omit for no promise; invalid on `spec-only`. Declare only ops with a registered cold `fullgraph=True` compile test. Semantics: [manifest.md](../../docs/design/manifest.md#torch_compile_fullgraph).
-
-- A tensor input the op reads may declare `optional: true` under `signature.inputs`. "Not passed" means bound to `None`; presence is a fact kernel dispatch may read. Params express optionality with `default`. A caller-supplied `out=` buffer is not an optional input.
-
-- An optional input's name may appear only in its own `dtype` / `shape` declaration, in a bare `X is None` / `X is not None` test, or in a use guarded by `X is None` earlier in the same expression. `shape_rules` take `X is None or <condition>`; a roofline presence test goes in a `vars` entry, which `flops` / `bytes` then read, and a formula needing the tensor's own shape uses `roofline: {func: ...}`. Symbols first bound in `X`'s `shape` may not appear in a required input's or output's `shape`. Per-position table: [manifest.md](../../docs/design/manifest.md#optional-inputs).
-
-- Every optional input needs a workload row that passes it and one that omits it, counted per input rather than per combination. Param values and kernel shape ranges are out of scope.
-
-- Reserved workload keys are `dtype` (the row's element type, read by a `roofline.func` formula), `dtypes` (the dtype axis the row expands over) and `label`. Every other key names a `signature.params` entry.
-
-- Merging a signature does not merge the performance account: workload rows stay split by presence, and roofline counts the optional inputs the call actually passed rather than assuming all of them.
-
-- A composite public op declares `composition: {kind: composite, stages: [...]}`; a leaf op declares none. `composition` is a contract, not a scheduler IR: it drives no dispatch and needs no stage per kernel launch. Rule: [manifest.md](../../docs/design/manifest.md#composition).
-
-- A stage has a unique `name` and exactly one of `op` (manifest entry, or a dotted path importing to a class) or `kernel` (a key of this entry's `source.kernel_map`). A free-form helper string is not a stage reference.
-
-- A `variant` is a mutually exclusive performance path; its `condition` is prose nothing parses. Workload rows never declare a variant — which one a call takes is a runtime dispatch fact.
-
-- Scratch buffers go under `resources.workspaces`, not `signature.inputs`: an input's value changes the result, a workspace's does not. Each needs `name` and `dtype`; `owner` naming a stage is required when the entry declares a `composition`. Shape stays in the op (`workspace_shapes()` or a runtime check) — there is no `shape` key. Rule: [manifest.md](../../docs/design/manifest.md#resources).
-
-- A workspace is still a `forward()` argument: everything building that argument list from the manifest reads `signature.inputs` followed by `resources.workspaces`, in declaration order. `dtype_combos` is the exception — its columns come from `signature.inputs` alone, because a combo row is the caller's value contract.
-
-- A composite declares its cost composition under `roofline.composition`, and an entry with a `composition` must have one: one row per stage, each with exactly one of `source` (dotted path resolving to a callable) or `formula` (prose). Every non-`optional` stage appears exactly once.
-
-- `roofline.func` resolves as `module.attribute`, so it names a module-level function, never a class method path. A composite's formula lives in `tileops.perf.formulas` and the op's `eval_roofline()` calls that same function.
-
-- Output names and count are fixed per entry; an op whose return changes with a switch is two entries. A return position that always exists but may hold `None` declares `nullable: true`, which is valid on outputs only; an input that may be omitted uses `optional`. Entries that stay separate are independent, sharing only their `source.op` path; no field links them.
-
-- The validator parses `shape_rules` and checks where names appear. It does not evaluate them, does not enumerate ways to call the op, and does not stop a call that passes half of a co-occurring group — the op's `forward` raises for that, naming the group.
-
-- Tensor layout defaults to contiguous row-major. Non-default needs an explicit `layout` field; `shape` dim names reflect memory order.
-
-- **Authoring an entry from its reference.** `signature.{inputs,outputs,params,shape_rules,dtype_combos}` and `roofline.{flops,bytes,vars}` are derived from `ref_api`'s documentation and rewritten whenever that entry is re-derived. `family`, `ref_api`, `workloads`, `status` and every `source.*` field are curated by hand and survive a re-derivation untouched.
-
-- **Reading a reference signature.** A reference Tensor parameter becomes a `signature.inputs` entry in positional order; a non-Tensor parameter becomes a `signature.params` entry with `type` and `default`; the return becomes `signature.outputs`. Names match the reference verbatim. Exclude `float64` and `complex32` / `complex64` / `complex128` from every declared dtype set — TileOPs is GPU-only.
-
-- **Resolving `source.op` and `source.kernel`.** Look them up by class, not by filename: several ops routinely share one file (`SumFwdOp` and `MeanFwdOp` both live in `src/tileops/ops/reduction/reduce.py`). Scan `src/tileops/ops/**/*.py` for `class <op_name>(`, then read that file's imports for the `Kernel` subclass and scan `src/tileops/kernels/**/*.py` the same way. A kernel-less op sets `source.kernel` to `source.op`. Both values are written distribution-relative, with the leading `src/` removed.
-
-- `source.kernel_map`, `source.test` and `source.bench` are discoverability pointers: they name where the current implementation, test and benchmark live, and are retargeted whenever those move. `source.kernel` and `source.op` are contract — they say where the op is *defined*, written as the path inside the distribution because the manifest ships in the wheel and must not name a path absent there; on disk they resolve under `src/`.
-
-- `source.kernel_map` is the Op→Kernel dispatch registration table (`dispatch_key: KernelClassName`). It declares what an Op uses, not how dispatch picks.
-
-- Never modify manifest to match non-conforming code. Code drift → `status: spec-only` and fix code in a follow-up PR. Never remove `params`, roofline `vars`, or `shape_rules` to silence validator errors.
-
-- `ref_api` is the spec oracle for the manifest signature, not an Op-layer dispatch target at forward time.
-
-- **Manifest comment policy.** Comments may carry technical content the DSL can't express (schema clarifications, edge cases, conventions, file headers); they MUST NOT carry process metadata bound to a specific issue, PR, commit, or round. Keep only if meaningful after every issue/PR is renumbered; otherwise move to commit message, PR description, or follow-up issue.
-
-  Discovery scan: `grep -rnE '#[0-9]{3,}|[Ff]ollow.?up|AC-[0-9]+' src/tileops/manifest/*.yaml`
+- Comments carry technical content the schema cannot express, never process metadata bound to an issue, PR or round. Scan: `grep -rnE '#[0-9]{3,}|[Ff]ollow.?up|AC-[0-9]+' src/tileops/manifest/*.yaml`

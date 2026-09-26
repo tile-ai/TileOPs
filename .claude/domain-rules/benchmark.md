@@ -8,5 +8,5 @@
 - A timed callable launches its own work. Gradients come from `backward_of`, never `Tensor.backward`: autograd's engine thread carries no iteration id, so the timer cannot attribute what it launches.
 - Name the scenario (`serving-130m-4k`), not the parameters. A `label` omits the dtype; the case id appends it.
 - Tag names: lowercase, hyphen-separated. A `tileops` prefix marks a TileOPs entry; everything else is a baseline. Exactly one `tileops`-prefixed entry per config — a variant tag like `tileops-lut` is that one entry, not an extra.
-- Cover every dtype in `SUPPORTED_DTYPES`, and ≥3 shapes per op including a non-power-of-2 where the op supports one.
-- Shapes come from real DNN workloads, LLaMA-family by default: hidden ∈ {4096, 5120, 8192}, intermediate ∈ {10240, 11008, 14336, 20480, 28672}, seq_len ∈ {2048, 4096}. Annotate every shape constant with the model or scenario it represents; never a bare flat number (262K, 1M, 4M).
+- Cases come from the entry's workload rows; a representative shape the benchmark lacks is a new row. Rows cover the signature's dtype domain and ≥3 shapes per op, including a non-power-of-2 where the op supports one.
+- Shapes come from real DNN workloads, LLaMA-family by default: hidden ∈ {4096, 5120, 8192}, intermediate ∈ {10240, 11008, 14336, 20480, 28672}, seq_len ∈ {2048, 4096}. The row's `label` names the model or scenario.
