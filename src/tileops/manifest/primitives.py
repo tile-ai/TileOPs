@@ -127,7 +127,7 @@ def pool_out(length, kernel, stride, padding, dilation, ceil_mode):
 def moe_capacity(layout, rows, experts):
     if layout.kind == "masked":
         return experts * layout.max_m
-    if layout.metadata_kind == "per_row" and layout.packing == "aligned":
+    if layout.packing == "aligned":
         a = layout.alignment
         return ceil_div(rows + experts * (a - 1), a) * a
     return rows

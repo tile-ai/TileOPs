@@ -1122,7 +1122,8 @@ class Op(ABC):
             self._resolve_builder(args, kwargs)
         try:
             call, bound = None, None
-            if converted and not self.compile_op_names:
+            # A converted op without a compile boundary claims no traced contract.
+            if converted and not self.compile_op_names and not torch.compiler.is_compiling():
                 bound = self._bind_forward(args, kwargs)
                 call = self._check_signature(*bound)
                 if settled_here:

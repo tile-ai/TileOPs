@@ -263,6 +263,17 @@ _PRIMITIVE_CALLS = [
     ("pool.out", (8, 3, 2, 0, 1, False), 3),
     ("moe.capacity", (_LAYOUT, 10**20 + 1, 3), 10**20 + 24),
     ("moe.capacity", (SimpleNamespace(kind="masked", max_m=5), 7, 3), 15),
+    (
+        "moe.capacity",
+        (
+            SimpleNamespace(
+                kind="contiguous", metadata_kind="physical_psum", packing="aligned", alignment=8
+            ),
+            10,
+            3,
+        ),
+        32,
+    ),
     ("mhc.expansion", (8,), 2),
 ]
 _PRIMITIVE_DOMAIN_ERRORS = [

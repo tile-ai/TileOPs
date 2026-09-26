@@ -621,3 +621,10 @@ def test_a_call_on_meta_tensors_completes_and_is_priced(boundary):
     op = _probe(name, _SILU, forward, boundary=boundary, roofline={"flops": "M * N"})()
     op(torch.empty(3, 8, dtype=torch.float16, device="meta"))
     assert op.eval_roofline() == (12, (3 * 8 + 3 * 4) * 2)
+
+
+def test_a_converted_op_without_a_boundary_traces_inside_a_compiled_caller():
+    op = _probe("ProbeInlineFwdOp", _SILU, lambda self, x: x[:, : x.shape[1] // 2] * 2)()
+    torch._dynamo.reset()
+    compiled = torch.compile(lambda x: op(x) + 1, fullgraph=True)
+    assert compiled(torch.ones(3, 8, dtype=torch.float16)).tolist() == [[3] * 4] * 3
