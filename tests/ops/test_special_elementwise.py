@@ -8,7 +8,7 @@ import inspect
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase, exact_compare
+from tests.test_base import FixtureBase, TestBase, exact_compare, standard_tolerance
 from tileops.ops.elementwise import (
     ClampScalarFwdOp,
     EluFwdOp,
@@ -183,13 +183,7 @@ def test_clamp(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.clamp(x, -0.5, 0.5)
     op = ClampScalarFwdOp(min=-0.5, max=0.5)
     out = op(x)
-    if dtype == torch.float16:
-        tol = {"atol": 1e-3, "rtol": 1e-3}
-    elif dtype == torch.bfloat16:
-        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
-    else:
-        tol = {"atol": 1e-5, "rtol": 1e-5}
-    torch.testing.assert_close(out, ref, **tol)
+    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
 
 
 # --- L1: masked_fill ---
@@ -206,13 +200,7 @@ def test_masked_fill(n_total: int, dtype: torch.dtype) -> None:
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(value=fill_value)
     out = op(x, mask)
-    if dtype == torch.float16:
-        tol = {"atol": 1e-3, "rtol": 1e-3}
-    elif dtype == torch.bfloat16:
-        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
-    else:
-        tol = {"atol": 1e-5, "rtol": 1e-5}
-    torch.testing.assert_close(out, ref, **tol)
+    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
 
 
 # --- L1: nan_to_num ---
@@ -230,13 +218,7 @@ def test_nan_to_num(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
     op = NanToNumFwdOp(nan=0.0, posinf=1e4, neginf=-1e4)
     out = op(x)
-    if dtype == torch.float16:
-        tol = {"atol": 1e-3, "rtol": 1e-3}
-    elif dtype == torch.bfloat16:
-        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
-    else:
-        tol = {"atol": 1e-5, "rtol": 1e-5}
-    torch.testing.assert_close(out, ref, **tol, equal_nan=True)
+    torch.testing.assert_close(out, ref, **standard_tolerance(dtype), equal_nan=True)
 
 
 # --- L1: alibi ---
@@ -349,13 +331,7 @@ def test_clamp_dtype_size(n_total: int, dtype: torch.dtype) -> None:
     ref = torch.clamp(x, -0.5, 0.5)
     op = ClampScalarFwdOp(min=-0.5, max=0.5)
     out = op(x)
-    if dtype == torch.float16:
-        tol = {"atol": 1e-3, "rtol": 1e-3}
-    elif dtype == torch.bfloat16:
-        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
-    else:
-        tol = {"atol": 1e-5, "rtol": 1e-5}
-    torch.testing.assert_close(out, ref, **tol)
+    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
 
 
 # L4 — Edge Cases (8 cases, fp32, 4K)

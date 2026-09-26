@@ -13,6 +13,7 @@ import pytest
 import torch
 
 import tileops.ops.elementwise as elementwise_mod
+from tests.test_base import standard_tolerance
 from tileops.manifest import load_manifest
 
 # Construction and call signatures, for every op in the family. One rule covers
@@ -135,13 +136,7 @@ def test_clamp_tensor_bounds_parity(input_shape, min_shape, max_shape, dtype):
 
     op = ClampFwdOp()
     out = op(inp, mn, mx)
-    if dtype == torch.float16:
-        atol, rtol = 1e-3, 1e-3
-    elif dtype == torch.bfloat16:
-        atol, rtol = 1.6e-2, 1.6e-2
-    else:
-        atol, rtol = 1e-5, 1e-5
-    torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
+    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
 
 
 # ClampFwdOp must accept Tensor min with max=None and

@@ -6,7 +6,7 @@ module-level draw helper, or one injected into a workload as a callable, would
 pass. Both forms existed here and were removed rather than gated for, because
 naming every way to build a tensor is a losing game.
 
-See docs/design/trust-model.md §Benchmark.
+See docs/design/layer-boundaries.md §Benchmark.
 """
 
 import ast

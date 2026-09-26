@@ -37,7 +37,7 @@ Each module depends only on the manifest, the op interface and other modules' pu
 | Roofline tool (M5)                                          | benchmark output and the GPU profile; it never instantiates an op                                                          |
 | Docs site                                                   | the manifest YAML (read without torch), op docstrings, benchmark and roofline output                                       |
 
-The layer boundaries between the manifest, tests, implementation and benchmarks are in [trust-model.md](trust-model.md).
+The layer boundaries between the manifest, tests, implementation and benchmarks are in [layer-boundaries.md](layer-boundaries.md).
 
 ## Field Admission
 

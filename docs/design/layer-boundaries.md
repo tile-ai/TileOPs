@@ -1,8 +1,9 @@
-# Layering
+# Layer Boundaries
 
-Where each kind of content lives, and the couplings that would defeat that.
-Each boundary below exists because crossing it produced duplication, drift, or
-a false guarantee.
+The manifest, the op library, the tests and the benchmarks compose only through
+the manifest, the op interface and [`workloads/`](../../workloads/), so each can
+be replaced without touching the others. Each section states what one layer owns
+and what it must not reach into.
 
 ## Manifest
 
@@ -25,10 +26,6 @@ op that has a workload named for it: both belong in
 [`workloads/`](../../workloads/). Anything left inside `tests/` is unreachable
 from a benchmark — see [§Benchmark](#benchmark) — so it gets copied, and the
 two copies drift.
-
-Ruff's `TID253` rejects a module-level `benchmarks` import under `tests/ops/` and
-`tests/kernels/`. The suites at the top of `tests/` check the benchmark tooling
-itself and are exempt.
 
 → Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md) | Guide: [testing.md §Tests](testing.md#tests)
 
@@ -70,10 +67,6 @@ literal here, a construction there — a condition of passing.
 What the source does answer is the file's own contract: workloads from the
 manifest, roofline from the op. That needs no op name, so no benchmark shape is
 illegal.
-
-[`benchmarks/tests/test_benchmark_boundaries.py`](../../benchmarks/tests/test_benchmark_boundaries.py)
-checks the `tests/` import and a locally defined `gen_inputs`, both by literal
-name.
 
 → Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md) | Guide: [testing.md §Benchmarks](testing.md#benchmarks)
 

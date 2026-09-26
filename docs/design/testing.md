@@ -28,7 +28,7 @@ Rules:
 
 ## Tests
 
-→ Trust boundary: [trust-model.md §Test](trust-model.md#test) | Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md)
+→ Boundary: [layer-boundaries.md §Test](layer-boundaries.md#test) | Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md)
 
 **Framework:** pytest. **Location:** [`tests/ops/`](../../tests/ops/).
 
@@ -120,7 +120,7 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 
 ## Benchmarks
 
-→ Trust boundary: [trust-model.md §Benchmark](trust-model.md#benchmark) | Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md)
+→ Boundary: [layer-boundaries.md §Benchmark](layer-boundaries.md#benchmark) | Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md)
 
 **Framework:** `benchmarks.benchmark_base.BenchmarkBase`. **Location:** [`benchmarks/ops/`](../../benchmarks/ops/).
 

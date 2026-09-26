@@ -1,4 +1,4 @@
-→ [trust-model.md §Manifest](../../docs/design/trust-model.md#manifest) | Spec: [manifest.md](../../docs/design/manifest.md)
+→ [layer-boundaries.md §Manifest](../../docs/design/layer-boundaries.md#manifest) | Spec: [manifest.md](../../docs/design/manifest.md)
 
 - Manifest key equals the Op `cls.__name__` exactly.
 

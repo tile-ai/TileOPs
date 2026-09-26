@@ -5,7 +5,7 @@ Input construction and the op's reference computation live in
 definition. Tolerances, checks and roofline numbers do not: those are decisions,
 and a decision placed there reaches the other stage.
 
-See docs/design/trust-model.md §Test and §Workloads Layer.
+See docs/design/layer-boundaries.md §Test and §Workloads Layer.
 """
 
 import ast

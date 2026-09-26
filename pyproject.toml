@@ -121,7 +121,7 @@ select = [
     # flake8-tidy-imports: banned APIs only. Selected as the exact rule, not the
     # whole TID family, because TID252 (relative imports) has standing violations.
     "TID251",
-    # docs/design/trust-model.md §Test: a test does not import from benchmarks/.
+    # docs/design/layer-boundaries.md §Test: a test does not import from benchmarks/.
     "TID253",
     # flake8-annotations (type hints) — enable when codebase has sufficient coverage
     # "ANN",

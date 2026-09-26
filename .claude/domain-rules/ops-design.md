@@ -1,4 +1,4 @@
-→ [trust-model.md §Implementation](../../docs/design/trust-model.md#implementation) | [ops-design.md](../../docs/design/ops-design.md)
+→ [layer-boundaries.md §Implementation](../../docs/design/layer-boundaries.md#implementation) | [ops-design.md](../../docs/design/ops-design.md)
 
 - Class names: PascalCase `{Name}{Direction}Op` (Op layer) or `{Name}{Direction}Kernel` (Kernel layer); direction suffix mandatory. Manifest author chooses `{Name}`. Builder functions stay snake_case.
 

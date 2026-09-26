@@ -11,7 +11,7 @@ Covers:
 import pytest
 import torch
 
-from tests.test_base import FixtureBase
+from tests.test_base import FixtureBase, standard_tolerance
 
 
 class DropoutStatFixture(FixtureBase):
@@ -114,17 +114,10 @@ def test_dropout_scale_factor(n_total: int, dtype: torch.dtype, p: float) -> Non
     if mask.any():
         expected_scale = 1.0 / (1.0 - p)
         non_zero_vals = y[mask].float()
-        if dtype == torch.float32:
-            atol, rtol = 1e-5, 1e-5
-        elif dtype == torch.float16:
-            atol, rtol = 1e-3, 1e-3
-        else:  # bfloat16
-            atol, rtol = 1.6e-2, 1.6e-2
         torch.testing.assert_close(
             non_zero_vals,
             torch.full_like(non_zero_vals, expected_scale),
-            atol=atol,
-            rtol=rtol,
+            **standard_tolerance(dtype),
         )
 
 

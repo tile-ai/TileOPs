@@ -116,13 +116,7 @@ def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls, **op_kwargs):
     """Build test, instantiate op, and run check."""
     test = UnaryActivationTest(n_total, dtype, gen_fn=gen_fn, ref_fn=ref_fn)
     op = op_cls(**op_kwargs)
-    if dtype == torch.float16:
-        tol = {"atol": 1e-3, "rtol": 1e-3}
-    elif dtype == torch.bfloat16:
-        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
-    else:
-        tol = {"atol": 1e-5, "rtol": 1e-5}
-    test.check(op, *test.gen_inputs(), **tol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 @ActivationFixture
@@ -336,13 +330,7 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
 
     op = PreluFwdOp()
     out = op(x, weight)
-    if dtype == torch.float16:
-        tol = {"atol": 1e-3, "rtol": 1e-3}
-    elif dtype == torch.bfloat16:
-        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
-    else:
-        tol = {"atol": 1e-5, "rtol": 1e-5}
-    torch.testing.assert_close(out, ref, **tol)
+    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
 
 
 @pytest.mark.smoke

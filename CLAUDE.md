@@ -23,7 +23,7 @@ Activate a virtual environment, then `pip install -e '.[dev]' -c constraints.txt
 
 ### Process
 
-- [trust-model.md](docs/design/trust-model.md) — trust boundaries (manifest → test → implementation → benchmark), workloads layer contract
+- [layer-boundaries.md](docs/design/layer-boundaries.md) — what the manifest, op library, tests and benchmarks each own, and the interfaces they compose through; workloads layer contract
 - [testing.md](docs/design/testing.md) — test/benchmark framework, core abstractions, tolerances, reporting rules
 
 ## Reading the ops manifest
@@ -46,7 +46,7 @@ Read the relevant context file **before** modifying files in that domain. Do not
 | `scripts/validate_manifest.py`, `tests/test_validate_manifest.py` | [.claude/domain-rules/manifest-validator.md](.claude/domain-rules/manifest-validator.md) |
 | `src/tileops/ops/`, `src/tileops/kernels/`                        | [.claude/domain-rules/ops-design.md](.claude/domain-rules/ops-design.md)                 |
 | `benchmarks/`                                                     | [.claude/domain-rules/benchmark.md](.claude/domain-rules/benchmark.md)                   |
-| `workloads/`                                                      | [docs/design/trust-model.md](docs/design/trust-model.md)                                 |
+| `workloads/`                                                      | [docs/design/layer-boundaries.md](docs/design/layer-boundaries.md)                       |
 | `docs/design/`                                                    | [.claude/domain-rules/design-docs.md](.claude/domain-rules/design-docs.md)               |
 
 ## Contributing
