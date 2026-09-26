@@ -323,9 +323,12 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
         assert all(a is b for a, b in zip(result, returned[0], strict=True))
     else:
         assert result is returned[0], "the op returns what the target's kernel returned"
-    assert not declared or hasattr(
-        cls, "_signature" if parametric else "_validate_manifest_dtypes"
-    ), "a target is held to its dtypes"
+    if parametric:
+        assert hasattr(cls, "_signature"), "a target is held to its signature"
+    else:
+        assert not declared or hasattr(cls, "_validate_manifest_dtypes"), (
+            "a target is held to its dtypes"
+        )
     inputs = forward_signature(entry).get("inputs") or {}
     assert all((inputs[o] or {}).get("mutated") for o in outputs if o in inputs), (
         "an output passed in as an input is one the call writes"

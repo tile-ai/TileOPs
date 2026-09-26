@@ -63,7 +63,7 @@ _DISPATCH_KEYS: set[str] = set()
 
 
 @functools.lru_cache(maxsize=1)
-def _declared_dispatch_keys() -> frozenset[str]:
+def _declared_dispatch_keys() -> Optional[frozenset[str]]:
     """Every dispatch key a legacy manifest entry declares in ``source.kernel_map``.
 
     A key outside this set names no op's kernel anywhere: a typo, or a name that
@@ -71,15 +71,15 @@ def _declared_dispatch_keys() -> frozenset[str]:
     being constructed, because a composite hands each sub-op the whole set the
     caller gave it and one sub-op's key is another's stranger.
 
-    An empty set disables the check: a manifest that cannot be read says nothing about
-    which keys exist, and refusing every override on that basis would stop ops that are
-    otherwise fine from constructing.
+    ``None`` when the manifest cannot be read, which disables the check: it says nothing
+    about which keys exist, and refusing every override on that basis would stop ops that
+    are otherwise fine from constructing.
     """
     keys: set[str] = set()
     try:
         entries = load_manifest().values()
     except Exception:  # noqa: BLE001 - an unreadable manifest disables the check, not the op
-        return frozenset()
+        return None
     for entry in entries:
         source = entry.get("source") if isinstance(entry, dict) else None
         declared = source.get("kernel_map") if isinstance(source, dict) else None
@@ -413,7 +413,10 @@ class Op(ABC):
         Raises:
             ValueError: *override* names a key nothing declares.
         """
-        declared = _DISPATCH_KEYS | _declared_dispatch_keys()
+        legacy = _declared_dispatch_keys()
+        if legacy is None:
+            return
+        declared = _DISPATCH_KEYS | legacy
         if not declared:
             return
         stale = sorted(set(override) - declared - set(own))
