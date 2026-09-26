@@ -78,7 +78,7 @@ An entry uses one of two modes:
 
 **Derived `bytes`.** An entry omitting `bytes` is charged each tensor read or written once: every tensor argument is its own storage, and a declared alias (`buffer`, `alias`) is one; an input not written counts a read, an output a write, a `mutated` input both, a `write_only` input a write; a tensor's size is `prod(shape) * bits(dtype) / 8`, packed dtypes by carrier. An entry whose traffic differs writes `bytes` and a test for it.
 
-**Func.** `tileops.perf.formulas.<name>`, a module-level function `f(call) -> tuple[int, int]` over the checked call and nothing else: every signature parameter and `call.ix` — the same `ix` an inline formula reads, with the indices, dtype indices and `let`s the call's branch resolves — presence, each tensor's shape, dtype and `bytes(t)`, and the metadata tensors whose values decide traffic (§4.7). A formula introduces no signature dependency and never reads the op; a fact it needs that the call lacks means the call model is incomplete.
+**Func.** `tileops.perf.formulas.<name>`, a module-level function `f(call) -> tuple[int, int]` over the checked call and nothing else: every signature parameter and `call.ix` — the same `ix` an inline formula reads, with the indices, dtype indices and `let`s the call's branch resolves — presence, each tensor's shape, dtype and `bytes(t)`, the metadata tensors whose values decide traffic (§4.7), and, for a composite, `stages`: the checked calls its sub-ops completed during the call, by stage. A formula introduces no signature dependency and never reads the op; a fact it needs that the call lacks means the call model is incomplete.
 
 ```yaml
 roofline:
@@ -236,6 +236,8 @@ A completeness test keeps the three total: an op added to the manifest is recoun
 A few ops move an amount their inputs' values decide: a routed MoE reads the experts `topk_ids` names, a sparse attention the blocks its selection kept. Such a formula prices this call, not an average over calls of that shape, which imposes three rules.
 
 - It reads the checked call's metadata tensors — the routing, the offsets, the block table — and never a quantity the op computed for itself, which would make a recount an identity.
+- A deciding value may reach the formula through a sub-op's checked call, in `stages`.
+- A data-dependent cost that no checked call carries is priced at its data-independent lower bound, the least the signature admits for every value. It can understate efficiency, never overstate it, so it remains the algorithm's minimum traffic (§1.2).
 - Its workload row builds those inputs from a generator of its own, not the global stream: a draw added anywhere upstream would otherwise move the traffic and the efficiency the row reports.
 - It states what decided the number in `Op.roofline_inputs()`, which the benchmark records beside the reading. Nothing judges it; it is what makes a moved number readable.
 

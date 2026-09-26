@@ -639,3 +639,33 @@ def test_a_meta_call_holds_no_metadata_values():
     with pytest.raises(OpNotAvailableError, match="holds no values"):
         call.values("ids")
     assert SignatureCall({}, {}, (), metadata={"ids": torch.ones(2)}).values("ids") == [1.0, 1.0]
+
+
+def _staged_parent(name: str, forward, *, boundary=False):
+    leaf_cls = _probe(f"{name}LeafFwdOp", _SILU, lambda self, x: x[:, : x.shape[1] // 2] * 1)
+    parent_cls = _probe(f"{name}FwdOp", _SILU, forward, boundary=boundary)
+    parent_cls.delegate_types = {"leaf": leaf_cls}
+    return parent_cls()
+
+
+def test_a_composite_call_carries_only_the_stage_calls_it_ran():
+    # A boundary parent's meta call completes in its fake, which runs no sub-op.
+    parent = _staged_parent(
+        "ProbeStaged", lambda self, x: self.delegate_for("leaf", None)(x), boundary=True
+    )
+    parent(torch.ones(3, 8, dtype=torch.float16))
+    (leaf_call,) = parent.last_call.stages["leaf"]
+    assert leaf_call is parent.kernel_delegates()[0].last_call
+    parent(torch.ones(2, 8, dtype=torch.float16, device="meta"))
+    assert parent.last_call.stages == {"leaf": ()}
+
+
+def test_a_composite_call_carries_every_call_of_a_stage():
+    def forward(self, x):
+        leaf = self.delegate_for("leaf", None)
+        leaf(x[:1].contiguous())
+        return leaf(x)
+
+    parent = _staged_parent("ProbeTwice", forward)
+    parent(torch.ones(3, 8, dtype=torch.float16))
+    assert [c.ix["M"] for c in parent.last_call.stages["leaf"]] == [1, 3]

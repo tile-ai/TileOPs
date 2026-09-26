@@ -28,7 +28,7 @@ Abstract interface: `forward()`. Methods generated from the manifest entry: the 
 
 - `kernel_types` (class attribute) is the one declaration of an op's dispatch keys; `default_kernel_map` (property) is derived from it. Each op class created adds its keys to a set `op_base` holds, and a `kernel_map` override naming a key outside that set is refused.
 - `delegate_types` (class attribute) is the one declaration of the sub-ops an op may hold: stage name to op class, in stage order. Default empty.
-- `last_call` (property) is the `SignatureCall` of the op's last successfully completed call: its `ix`, tensors, effects and metadata tensors. It raises `RuntimeError` before one completes. `eval_roofline` prices it.
+- `last_call` (property) is the `SignatureCall` of the op's last successfully completed call: its `ix`, tensors, effects, metadata tensors, and the checked calls its sub-ops completed during it, by stage. It raises `RuntimeError` before one completes. `eval_roofline` prices it.
 
 #### Kernel caching and enumeration methods
 

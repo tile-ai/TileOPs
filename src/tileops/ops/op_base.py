@@ -3,6 +3,7 @@ import dataclasses
 import functools
 import inspect
 import math
+import threading
 import warnings
 from abc import ABC, abstractmethod
 from types import MappingProxyType
@@ -60,6 +61,17 @@ _UNRESOLVED = _Unresolved()
 # Every dispatch key a created op class declares in ``kernel_types``. Constructing an op imports
 # it and every sub-op it builds, so every key that can replace something in that op is here.
 _DISPATCH_KEYS: set[str] = set()
+
+# The converted ops' calls in progress on this thread, innermost last, each with the checked
+# calls completed inside it: what a composite's call collects from its sub-ops.
+_OPEN_CALLS = threading.local()
+
+
+def _open_calls() -> list:
+    calls = getattr(_OPEN_CALLS, "stack", None)
+    if calls is None:
+        calls = _OPEN_CALLS.stack = []
+    return calls
 
 
 @functools.lru_cache(maxsize=1)
@@ -727,6 +739,7 @@ class Op(ABC):
         plan = getattr(type(self), "_signature", None)
         if plan is None:
             return None
+        self._open_call()
         return plan.check(self, {**dict(zip(plan.sig.inputs, inputs, strict=True)), **writes})
 
     def _complete_signature(
@@ -748,8 +761,37 @@ class Op(ABC):
             {**dict(zip(sig.inputs, inputs, strict=True)), **writes},
             tuple(getattr(self, t, None) for t in sig.ctor_tensors),
         )
-        if not torch.compiler.is_compiling():
-            self._signature_call = call
+        if torch.compiler.is_compiling():
+            self._drop_call()
+        else:
+            self._keep_call(call)
+
+    def _open_call(self) -> None:
+        """Start collecting the checked calls this op's sub-ops complete during its call."""
+        _open_calls().append((self, []))
+
+    def _drop_call(self) -> None:
+        """Close a call that did not complete; nothing it collected is kept."""
+        calls = _open_calls()
+        if calls and calls[-1][0] is self:
+            calls.pop()
+
+    def _keep_call(self, call: object) -> None:
+        """Keep *call* as the last completed one, with the checked calls its sub-ops completed
+        during it, by stage and in completion order (docs/design/roofline.md §2.2), and report
+        it to the call this one ran inside."""
+        calls = _open_calls()
+        collected = calls.pop()[1] if calls and calls[-1][0] is self else []
+        held = getattr(self, "_delegates", None) or {}
+        stage_of = {id(op): stage for stage, ops in held.items() for op in ops.values()}
+        stages = {stage: [] for stage in self.delegate_types}
+        for op, done in collected:
+            if id(op) in stage_of:
+                stages[stage_of[id(op)]].append(done)
+        call = dataclasses.replace(call, stages={k: tuple(v) for k, v in stages.items()})
+        self._signature_call = call
+        if calls:
+            calls[-1][1].append((self, call))
 
     def _execution_arguments(self, args: tuple, kwargs: dict) -> "dict[str, object]":
         """What ``forward`` takes after the signature's inputs and ``out``, bound by name."""
@@ -798,6 +840,7 @@ class Op(ABC):
             self._complete_signature(call, result, inputs, writes)
             return result
         except Exception:
+            self._drop_call()
             # Whoever settled it unsettles it. ``__call__``'s handler does not run when
             # the failure comes out of a compiled graph, so this one has to.
             if settled_here:
@@ -1192,6 +1235,7 @@ class Op(ABC):
             if call is not None:
                 self._complete_signature(call, result, *bound)
         except Exception:
+            self._drop_call()
             if settled_here:
                 self._unsettle()
             raise

@@ -212,8 +212,9 @@ _GLOBALS = {
 
 @dataclass(frozen=True)
 class SignatureCall(CallView):
-    """One checked call: `ix`, every present tensor's shape and dtype, its effects, and the
-    metadata tensors whose values decide its traffic (docs/design/roofline.md)."""
+    """One checked call: `ix`, every present tensor's shape and dtype, its effects, the
+    metadata tensors whose values decide its traffic, and the checked calls its sub-ops
+    completed during it (docs/design/roofline.md)."""
 
     ix: dict
     # Present tensors, outputs included, as `(shape, dtype name)`.
@@ -228,6 +229,8 @@ class SignatureCall(CallView):
     key: tuple = ()
     # The metadata tensors the call passed: inputs declaring `values`.
     metadata: dict = None
+    # The checked calls the op's sub-ops completed during this call, by stage.
+    stages: dict = None
 
     def values(self, name: str) -> list:
         """The contents of metadata tensor *name*.
@@ -1134,15 +1137,17 @@ class _Boundary:
             op = get_instance(key)
             passed = dict(zip(sig.inputs, tensors[:count], strict=True))
             call = self.plan.check(op, passed | ({"out": tensors[count]} if out else {}))
-            if detect_fake_mode() is None and not torch.compiler.is_compiling():
-                # An eager call on meta tensors completes here, not in `operator`.
-                op._signature_call = call
             built = tuple(
                 torch.empty(
                     call.tensors[o][0], dtype=getattr(torch, call.tensors[o][1]), device=call.device
                 )
                 for o in returned
             )
+            if detect_fake_mode() is None and not torch.compiler.is_compiling():
+                # An eager call on meta tensors completes here, not in `operator`; it runs no
+                # sub-op, so it opens and closes its call at once.
+                op._open_call()
+                op._keep_call(call)
             return built[0] if len(built) == 1 else built
 
         operator.__name__ = name.replace("::", "_")
