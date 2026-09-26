@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -12,6 +14,12 @@ class BmmWorkload(WorkloadBase):
         self.n = n
         self.k = k
         self.dtype = dtype
+
+    @classmethod
+    def from_call(cls, call: Any) -> "BmmWorkload":
+        """The workload of one manifest call of ``BmmFwdOp``."""
+        ix = call.ix
+        return cls(ix["B"], ix["M"], ix["N"], ix["K"], getattr(torch, ix["T"]))
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         a = torch.randn(self.batch, self.m, self.k, device="cuda", dtype=self.dtype)
@@ -28,17 +36,8 @@ _FP8_INIT_SCALE: float = 0.25
 class BmmFp8Workload(WorkloadBase):
     """Workload for batched FP8 GEMM.
 
-    Layout contract
-    ---------------
-    * ``a`` is produced in ``[B, M, K]`` (K-contiguous, matches manifest input
-      ``a`` signature).
-    * ``b`` is produced in ``[B, K, N]`` (N-contiguous).  This is the *KN*
-      layout advertised by the manifest as the primary path.  The alternate
-      ``[B, N, K]`` layout ``BmmFp8FwdOp`` accepts under ``trans_b`` is exercised in
-      ``tests/ops/test_bmm.py`` (see ``test_bmm_fp8_accepts_nk_layout_when_k_ne_n``),
-      not through this workload.
-    * ``scale_a`` / ``scale_b`` are per-tensor rank-0 fp32 scalars in
-      ``[0.5, 1.5)``.
+    ``a`` is ``[B, M, K]``; ``b`` is a contiguous ``[B, K, N]``, or ``[B, N, K]`` under
+    ``trans_b``; ``scale_a`` / ``scale_b`` are rank-0 fp32 scalars in ``[0.5, 1.5)``.
     """
 
     def __init__(
@@ -49,6 +48,7 @@ class BmmFp8Workload(WorkloadBase):
         k: int,
         dtype: torch.dtype,
         out_dtype: torch.dtype = torch.bfloat16,
+        trans_b: bool = False,
     ) -> None:
         self.batch = batch
         self.m = m
@@ -56,6 +56,21 @@ class BmmFp8Workload(WorkloadBase):
         self.k = k
         self.dtype = dtype
         self.out_dtype = out_dtype
+        self.trans_b = trans_b
+
+    @classmethod
+    def from_call(cls, call: Any) -> "BmmFp8Workload":
+        """The workload of one manifest call of ``BmmFp8FwdOp``."""
+        ix = call.ix
+        return cls(
+            ix["B"],
+            ix["M"],
+            ix["N"],
+            ix["K"],
+            getattr(torch, ix["T"]),
+            out_dtype=getattr(torch, ix["out_dtype"]),
+            trans_b=ix["trans_b"],
+        )
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         a = (
@@ -68,19 +83,16 @@ class BmmFp8Workload(WorkloadBase):
             .to(self.dtype)
             .contiguous()
         )
-        # per_tensor uses 0-D scalars (empty shape); torch.rand accepts an
-        # empty size tuple and produces a rank-0 tensor.
+        if self.trans_b:
+            b = b.transpose(-2, -1).contiguous()
         scale_a = (0.5 + torch.rand((), device="cuda", dtype=torch.float32)).contiguous()
         scale_b = (0.5 + torch.rand((), device="cuda", dtype=torch.float32)).contiguous()
         return a, b, scale_a, scale_b
 
     def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
         a, b, scale_a, scale_b = inputs
-        # per_tensor: 0-D fp32 scalars (matching flashinfer.bmm_fp8).
-        assert scale_a.dim() == 0 and scale_b.dim() == 0, (
-            f"BmmFp8Workload only supports per-tensor scales, got "
-            f"{tuple(scale_a.shape)} / {tuple(scale_b.shape)}"
-        )
+        if self.trans_b:
+            b = b.transpose(-2, -1)
         a_f = a.float() * scale_a
         b_f = b.float() * scale_b
         out = torch.bmm(a_f, b_f)

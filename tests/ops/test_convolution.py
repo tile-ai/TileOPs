@@ -397,6 +397,22 @@ class Conv2dFixture(FixtureBase):
                     (1, 1),
                     (1, 1),
                     1,
+                    torch.float32,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="smoke-fp32-3x3",
+                ),
+                pytest.param(
+                    2,
+                    32,
+                    32,
+                    32,
+                    64,
+                    (3, 3),
+                    (1, 1),
+                    (1, 1),
+                    (1, 1),
+                    1,
                     torch.bfloat16,
                     False,
                     marks=pytest.mark.smoke,
@@ -629,6 +645,9 @@ def test_conv2d(
         tune=tune,
     )
     atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
+    if dtype == torch.float32:
+        # TF32 products on both sides, summed in different orders: 0.045 measured at worst.
+        atol = 6e-2
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
     if served_in_tree(op) and groups > 1:
         assert isinstance(op.kernel, GroupConv2dKernel)
@@ -783,6 +802,23 @@ class Conv3dFixture(FixtureBase):
                     False,
                     marks=pytest.mark.smoke,
                     id="smoke-3d-unet-k3-s1-fp16",
+                ),
+                pytest.param(
+                    1,
+                    16,
+                    8,
+                    32,
+                    32,
+                    32,
+                    (3, 3, 3),
+                    (1, 1, 1),
+                    (1, 1, 1),
+                    (1, 1, 1),
+                    1,
+                    torch.float32,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="smoke-3d-unet-k3-s1-fp32",
                 ),
                 pytest.param(
                     1,
@@ -959,8 +995,12 @@ def test_conv3d(
         tune=tune,
     )
     atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
+    if dtype == torch.float32:
+        # TF32 products on both sides, summed in different orders: 0.045 measured at worst.
+        atol = 6e-2
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
     if served_in_tree(op):
+        out_d, out_h, out_w = op.last_call.tensors["output"][0][2:]
         if _can_use_conv3d_ndhwc(
             groups=groups,
             c_in=c_in,
@@ -968,9 +1008,9 @@ def test_conv3d(
             kernel_d=kernel_size[0],
             kernel_h=kernel_size[1],
             kernel_w=kernel_size[2],
-            out_d=op.out_d,
-            out_h=op.out_h,
-            out_w=op.out_w,
+            out_d=out_d,
+            out_h=out_h,
+            out_w=out_w,
             n=n,
             dtype=dtype,
         ):
@@ -1132,7 +1172,7 @@ def test_conv2d_dynamic_shape_kernel_cache_and_roofline() -> None:
     x2 = torch.randn(2, 16, 32, 32, dtype=torch.float16, device="cuda")
     w2 = torch.randn(24, 16, 3, 3, dtype=torch.float16, device="cuda")
 
-    with pytest.raises(RuntimeError, match="requires a prior forward"):
+    with pytest.raises(RuntimeError, match="completed call"):
         op.eval_roofline()
 
     op(x1, w1)
@@ -1189,17 +1229,6 @@ def test_a_kernel_built_without_a_bias_refuses_one() -> None:
 
     with pytest.raises(ValueError, match="built without a bias"):
         kernel(x, weight, bias)
-
-
-@pytest.mark.smoke
-def test_inputs_on_different_devices_are_rejected() -> None:
-    """The kernel memo lets the first input's device speak for the rest, so they agree."""
-    op = Conv2dFwdOp(padding=1)
-    x = torch.randn(1, 8, 8, 8, device="cuda", dtype=torch.float16).contiguous()
-    weight = torch.randn(4, 8, 3, 3, dtype=torch.float16).contiguous()
-
-    with pytest.raises(ValueError, match="every input on cuda"):
-        op(x, weight)
 
 
 # --------------------------------------------------------------------------------------

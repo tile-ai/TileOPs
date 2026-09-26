@@ -6,15 +6,9 @@ byte counts come from the op's ``eval_roofline()`` via
 """
 
 import pytest
-import torch
 
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
-from benchmarks.benchmark_base import (
-    ManifestBenchmark,
-    fields,
-    workload_params,
-)
-from tileops.manifest import load_workloads
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import FP8QuantFwdOp
 from workloads.fp8_quant import FP8QuantWorkload
 
@@ -23,21 +17,12 @@ from workloads.fp8_quant import FP8QuantWorkload
 _TUNE = True
 
 
-_FP8_QUANT_PARAMS = workload_params(
-    load_workloads(FP8QuantFwdOp),
-    fields("batch", "seq_len_kv", "kv_group", "index_dim", "in_dtype"),
-    smoke_first=True,
-)
-
-
-@pytest.mark.parametrize("batch, seq_len_kv, kv_group, index_dim, in_dtype", _FP8_QUANT_PARAMS)
-def test_fp8_quant_bench(
-    batch: int, seq_len_kv: int, kv_group: int, index_dim: int, in_dtype: torch.dtype
-) -> None:
-    test = FP8QuantWorkload(batch, seq_len_kv, kv_group, index_dim, in_dtype)
+@pytest.mark.parametrize("call", manifest_calls(FP8QuantFwdOp))
+def test_fp8_quant_bench(call) -> None:
+    test = FP8QuantWorkload.from_call(call)
     inputs = test.gen_inputs()
 
-    op = FP8QuantFwdOp(tune=_TUNE)
+    op = FP8QuantFwdOp(**call.arguments({}), tune=_TUNE)
     bm = ManifestBenchmark(op, test)
 
     bm.compare(

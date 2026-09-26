@@ -32,10 +32,6 @@ def _t(*shape: int, dtype: torch.dtype = F16) -> torch.Tensor:
 # Ops whose construction arguments or input shapes no workload row states. Each builds the
 # op and the positional ``forward`` arguments; only dtypes and presence matter here.
 _CASES = {
-    "BmmFp8FwdOp": lambda c: (
-        c(),
-        (_t(2, 32, 32, dtype=FP8), _t(2, 32, 32, dtype=FP8), _t(dtype=F32), _t(dtype=F32)),
-    ),
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp": lambda c: (
         c(1, 16, 2, 8, 512, 64, 4, 1, 1, 0),
         (_t(1, 2, 16, 576), _t(1, 8, 1, 576), _t(1, 2, 1, 4, dtype=I32)),
@@ -91,14 +87,6 @@ _CASES = {
             _t(2, dtype=I32),
             _t(64, 2, dtype=I32),
         ),
-    ),
-    "GemmFp8FwdOp": lambda c: (
-        c(),
-        (_t(16, 32, dtype=FP8), _t(16, 32, dtype=FP8), _t(1, 1, dtype=F32), _t(1, 1, dtype=F32)),
-    ),
-    "GemmW4A16FwdOp": lambda c: (
-        c(),
-        (_t(16, 128), _t(16, 64, dtype=U8), _t(16, 1), _t(16, 1, dtype=U8)),
     ),
 }
 

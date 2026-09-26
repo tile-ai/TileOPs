@@ -25,12 +25,9 @@ __all__ = [
     "deltanet_inference_roofline",
     "fft_c2c_roofline",
     "fp8_lightning_indexer_roofline",
-    "fp8_quant_roofline",
     "fused_moe_fwd_roofline",
     "fused_moe_shared_expert_fwd_roofline",
     "gated_deltanet_fwd_roofline",
-    "gemm_fwd_roofline",
-    "gemm_w4a16_fwd_roofline",
     "gqa_bwd_roofline",
     "gqa_decode_paged_roofline",
     "gqa_fwd_roofline",
@@ -670,70 +667,6 @@ def fused_moe_shared_expert_fwd_roofline(call) -> tuple[int, int]:
     return flops, nbytes
 
 
-def gemm_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for dense ``GemmFwdOp`` (``d = a @ b``, fp16/bf16).
-
-    ``GemmFwdOp`` is input-inferred, so the logical dims ``m/n/k`` and the dtype
-    are bound on the op during ``forward()``; this reads them directly, which
-    stays correct across all ``trans_a``/``trans_b`` layouts (the logical dims
-    are transpose-independent). Valid only after the first ``forward()``.
-
-    Raises:
-        RuntimeError: If called before ``forward()`` has bound the dims.
-    """
-    if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
-        raise RuntimeError(
-            "GemmFwdOp.eval_roofline() is valid only after the first forward(); "
-            "m/n/k and dtype are inferred from the inputs."
-        )
-    m, n, k = op.m, op.n, op.k
-    elem_bytes = op.dtype.itemsize
-    flops = 2 * m * n * k
-    nbytes = (m * k + n * k + m * n) * elem_bytes
-    return int(flops), int(nbytes)
-
-
-def gemm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for dense FP8 ``GemmFp8FwdOp``."""
-    if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
-        raise RuntimeError(
-            "GemmFp8FwdOp.eval_roofline() is valid only after the first forward(); "
-            "m/n/k and dtype are inferred from the inputs."
-        )
-    m, n, k = op.m, op.n, op.k
-    input_bytes = op.dtype.itemsize
-    out_bytes = op.out_dtype.itemsize
-    scale_a_shape = getattr(op, "scale_a_shape", (1, 1))
-    scale_b_shape = getattr(op, "scale_b_shape", (1, 1))
-    scale_elems = scale_a_shape[0] * scale_a_shape[1] + scale_b_shape[0] * scale_b_shape[1]
-    flops = 2 * m * n * k
-    nbytes = (m * k + n * k) * input_bytes + m * n * out_bytes + scale_elems * 4
-    if getattr(op, "has_bias", False):
-        nbytes += n * out_bytes
-    return int(flops), int(nbytes)
-
-
-def gemm_w4a16_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for dense W4A16 ``GemmW4A16FwdOp``."""
-    if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
-        raise RuntimeError(
-            "GemmW4A16FwdOp.eval_roofline() is valid only after the first forward(); "
-            "m/n/k and dtype are inferred from the inputs."
-        )
-    m, n, k = op.m, op.n, op.k
-    elem_bytes = op.dtype.itemsize
-    group_size = int(getattr(op, "group_size", 128))
-    groups = k // group_size
-    flops = 2 * m * n * k
-    activation_bytes = m * k * elem_bytes
-    packed_weight_bytes = n * k // 2
-    # One scale in the activation dtype plus one UINT8 zero point per
-    # (row, group), matching the manifest's weight_scale / weight_zero dtypes.
-    metadata_bytes = n * groups * (elem_bytes + 1)
-    output_bytes = m * n * elem_bytes
-    return int(flops), int(activation_bytes + packed_weight_bytes + metadata_bytes + output_bytes)
-
-
 def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
     batch_sum = int(op.batch_sum)
     batch_count = int(op.batch_count)
@@ -757,19 +690,6 @@ def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
     # templates pad nothing.
     metadata_bytes = 2 * batch_count * 4
     return int(flops), int((memory_a + memory_b + memory_c) * elem + metadata_bytes)
-
-
-def fp8_quant_roofline(op: "Op") -> tuple[int, int]:
-    batch = int(op.batch)
-    seq_len_kv = int(op.seq_len_kv)
-    kv_group = int(op.kv_group)
-    index_dim = int(op.index_dim)
-    in_elem = _dtype_itemsize(getattr(op, "in_dtype", "float16"))
-    groups = batch * seq_len_kv * kv_group
-    elems = groups * index_dim
-    flops = 6 * elems + groups
-    nbytes = elems * in_elem + elems * 1 + groups * 4
-    return int(flops), int(nbytes)
 
 
 def fp8_lightning_indexer_roofline(op: "Op") -> tuple[int, int]:
@@ -835,54 +755,6 @@ def adaptive_pool2d_roofline(call: "CallView") -> tuple[int, int]:
     ix = call.ix
     scan = _adaptive_scan(ix["H_in"], ix["H_out"]) * _adaptive_scan(ix["W_in"], ix["W_out"])
     return prod(ix["B"]) * ix["C"] * scan, sum(call.bytes(t) for t in call.tensors)
-
-
-def bmm_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for batched GEMM ``BmmFwdOp`` (``d[i] = a[i] @ b[i]``).
-
-    Models ``torch.bmm`` exactly: strict 3D-3D with no broadcasting. Each of
-    the ``B`` batch items is an independent ``(M, K) @ (K, N)`` GEMM whose
-    flops/bytes are ``B``-scaled totals. ``BmmFwdOp`` is input-inferred, so
-    the logical dims ``batch/m/n/k`` and the dtype are bound on the op during
-    ``forward()``; this reads them directly, matching ``gemm_fwd_roofline``'s
-    contract. Valid only after the first ``forward()``.
-
-    Raises:
-        RuntimeError: If called before ``forward()`` has bound the dims.
-    """
-    if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
-        raise RuntimeError(
-            "BmmFwdOp.eval_roofline() is valid only after the first forward(); "
-            "batch/m/n/k and dtype are inferred from the inputs."
-        )
-    batch, m, n, k = op.batch, op.m, op.n, op.k
-    elem_bytes = op.dtype.itemsize
-    flops = 2 * batch * m * n * k
-    nbytes = batch * (m * k + n * k + m * n) * elem_bytes
-    return int(flops), int(nbytes)
-
-
-def bmm_fp8_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for batched FP8 GEMM ``BmmFp8FwdOp``.
-
-    Layout matches the fp16 ``bmm_fwd_roofline``: ``a``: $[B \\times M \\times K]$,
-    ``b``: $[B \\times K \\times N]$. Per-tensor scales only and no fused bias, so bytes are
-    ``B*M*K`` (A, fp8) + ``B*K*N`` (B, fp8) + ``B*M*N`` (C, ``out_dtype``)
-    + 8 for the two batch-independent fp32 scales.
-
-    Valid only after the first ``forward()`` binds dims and dtype.
-    """
-    if getattr(op, "m", None) is None or getattr(op, "dtype", None) is None:
-        raise RuntimeError(
-            "BmmFp8FwdOp.eval_roofline() is valid only after the first forward(); "
-            "batch/m/n/k and dtype are inferred from the inputs."
-        )
-    batch, m, n, k = op.batch, op.m, op.n, op.k
-    input_bytes = op.dtype.itemsize
-    out_bytes = op.out_dtype.itemsize
-    flops = 2 * batch * m * n * k
-    nbytes = batch * ((m * k + n * k) * input_bytes + m * n * out_bytes) + 8
-    return int(flops), int(nbytes)
 
 
 def _nsa_request_lens(data: dict[str, Any], c_seq_len: int, seq_num: int) -> list[int]:

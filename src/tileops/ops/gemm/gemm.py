@@ -1,5 +1,5 @@
 import warnings
-from typing import ClassVar, Dict, Optional, Tuple
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -12,12 +12,11 @@ from tileops.kernels.gemm.dense import (
     GemmTmaKernel,
     GemvKernel,
 )
-from tileops.kernels.gemm.w4a16 import _LAYOUT, GROUP_SIZE, GemmW4A16Kernel
+from tileops.kernels.gemm.w4a16 import _LAYOUT, GemmW4A16Kernel
 from tileops.kernels.gemm.w4a16_repack import W4A16RepackKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["GemmFp8FwdOp", "GemmFwdOp", "GemmW4A16FwdOp"]
@@ -35,62 +34,40 @@ class GemmFwdOp(Op):
     | ``(False, False)`` | NN | $d = a \\mathbin{@} b$ |
     | ``(True, False)`` | TN | $d = a^{\\top} \\mathbin{@} b$ |
     | ``(True, True)`` | TT | $d = a^{\\top} \\mathbin{@} b^{\\top}$ |
-
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "gemm_tma_kernel": GemmTmaKernel,
+        "gemm_cp_async_kernel": GemmCpAsyncKernel,
+        "gemv_kernel": GemvKernel,
+    }
 
     def __init__(
         self,
         trans_a: bool = False,
         trans_b: bool = True,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtypes are taken from the first call.
 
         Args:
             trans_a: Whether ``a`` is stored transposed ($[K \\times M]$).
             trans_b: Whether ``b`` is stored transposed ($[N \\times K]$). Default ``True`` (NT).
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune (applied when a kernel is first built).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune (applied when a kernel is first built).
         """
-        self.target = target
         self.trans_a = trans_a
         self.trans_b = trans_b
+        self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._active_sig: Optional[tuple] = None
-        self._active: Optional[object] = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "gemm_tma_kernel": GemmTmaKernel,
-            "gemm_cp_async_kernel": GemmCpAsyncKernel,
-            "gemv_kernel": GemvKernel,
-        }
-
-    def _infer_mnk(self, a: torch.Tensor, b: torch.Tensor) -> Tuple[int, int, int]:
-        """Derive logical ``(m, n, k)`` from input shapes per the trans flags."""
-        if a.ndim != 2 or b.ndim != 2:
-            raise ValueError(
-                f"GemmFwdOp contracts two matrices, got a.ndim={a.ndim}, b.ndim={b.ndim}"
-            )
-        m, n = self._infer_output_shapes(a.shape, b.shape)["d"]
-        k_a = a.shape[0] if self.trans_a else a.shape[1]
-        k_b = b.shape[1] if self.trans_b else b.shape[0]
-        if k_a != k_b:
-            raise ValueError(
-                f"GEMM contraction dim mismatch: a contributes K={k_a}, b contributes K={k_b} "
-                f"(a.shape={tuple(a.shape)}, b.shape={tuple(b.shape)}, "
-                f"trans_a={self.trans_a}, trans_b={self.trans_b})"
-            )
-        return m, n, k_a
 
     def _call_spec(
         self,
@@ -112,19 +89,6 @@ class GemmFwdOp(Op):
             tune=self.tune,
         )
 
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", call: GemmCall) -> object:
-        """Return what serves *call*, building and caching on a miss."""
-        return self.kernel_for("gemm", inputs, call)
-
-    def _infer_output_shapes(
-        self,
-        a_shape: tuple[int, ...],
-        b_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        m = a_shape[1] if self.trans_a else a_shape[0]
-        n = b_shape[0] if self.trans_b else b_shape[1]
-        return {"d": (m, n)}
-
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """Multiply the two matrices under the layout the constructor selected.
 
@@ -136,9 +100,6 @@ class GemmFwdOp(Op):
         Returns:
             The product, $[M \\times N]$, in the dtype of the inputs.
 
-        Raises:
-            ValueError: The contraction dims the two operands contribute do not match.
-
         Example:
             ```python linenums="1"
             op = GemmFwdOp()                      # NT by default
@@ -146,37 +107,38 @@ class GemmFwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        return self._wrapped(a, b, self._instance_key)
+        return self._call_boundary(a, b)
 
     def _eager_forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        sig = (a.shape, b.shape, a.dtype, b.dtype, a.device)
-        if sig != self._active_sig:
-            self._validate_dtypes(a, b)
-            m, n, k = self._infer_mnk(a, b)
-            self.m, self.n, self.k = m, n, k
-            self.dtype = a.dtype
-            self._active = self._get_kernel((a, b), self._call_spec(m, n, k, a.dtype, a.device))
-            self._active_sig = sig
-
-        return self._active(a, b)
+        a, b = a.contiguous(), b.contiguous()
+        m, k = (a.shape[1], a.shape[0]) if self.trans_a else a.shape
+        n = b.shape[0] if self.trans_b else b.shape[1]
+        kernel = self.kernel_for("gemm", (a, b), self._call_spec(m, n, k, a.dtype, a.device))
+        return kernel(a, b)
 
     def compute_roof(self) -> str:
-        return tensor_core_roof(self.dtype)
+        return tensor_core_roof(self.last_call.ix["T"])
 
 
 class GemmFp8FwdOp(Op):
-    """Dense FP8 NT GEMM, input-inferred.
+    """Dense FP8 NT GEMM, input-inferred: $d = (a \\cdot s_a) \\mathbin{@} (b \\cdot s_b)^{\\top} + \\text{bias}$.
 
-    Public layout is ``a``: $[M \\times K]$ and ``b``: $[N \\times K]$. ``scale_a`` and
-    ``scale_b`` must be either per-tensor $[1 \\times 1]$ scales or block128
-    scales with shapes $[M \\times \\lceil K/128 \\rceil]$ and $[N \\times \\lceil K/128 \\rceil]$.
+    ``a`` is $[M \\times K]$ and ``b`` is $[N \\times K]$, the operand ``torch._scaled_mm``
+    receives as ``b.T``. ``scale_a`` and ``scale_b`` are both per-tensor $[1 \\times 1]$
+    scales, or both per 1x128 block along K: $[M \\times \\lceil K/128 \\rceil]$ and
+    $[N \\times \\lceil K/128 \\rceil]$.
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "gemm_fp8_tensor_scale_kernel": GemmFp8TensorScaleKernel,
+        "gemm_fp8_block_scale_kernel": GemmFp8BlockScaleKernel,
+    }
 
     def __init__(
         self,
@@ -186,127 +148,19 @@ class GemmFp8FwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtypes are taken from the first call.
 
         Args:
-            out_dtype: Output dtype.
+            out_dtype: Output dtype, ``torch.bfloat16`` or ``torch.float16``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
         """
-        if out_dtype not in (torch.float16, torch.bfloat16):
-            raise ValueError(
-                f"GemmFp8FwdOp outputs torch.float16 or torch.bfloat16, got {out_dtype}"
-            )
         self.out_dtype = out_dtype
-        self.tune = tune
         self.target = target
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._active_sig: Optional[tuple] = None
-        self._active: Optional[Kernel] = None
-        self.has_bias = False
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "gemm_fp8_tensor_scale_kernel": GemmFp8TensorScaleKernel,
-            "gemm_fp8_block_scale_kernel": GemmFp8BlockScaleKernel,
-        }
-
-    def _validate_dtypes(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> None:
-        if a.dtype != torch.float8_e4m3fn:
-            raise ValueError(f"GemmFp8FwdOp only supports torch.float8_e4m3fn, got {a.dtype}")
-        if b.dtype != a.dtype:
-            raise ValueError(f"GemmFp8FwdOp expects b dtype {a.dtype}, got {b.dtype}")
-        if scale_a.dtype != torch.float32 or scale_b.dtype != torch.float32:
-            raise ValueError("GemmFp8FwdOp expects scale_a and scale_b to be torch.float32")
-        if bias is not None and bias.dtype != self.out_dtype:
-            raise ValueError(f"GemmFp8FwdOp expects bias dtype {self.out_dtype}, got {bias.dtype}")
-
-    def _infer_mnk(self, a: torch.Tensor, b: torch.Tensor) -> Tuple[int, int, int]:
-        if a.ndim != 2 or b.ndim != 2:
-            raise ValueError(f"GemmFp8FwdOp expects 2D a/b, got a.ndim={a.ndim}, b.ndim={b.ndim}")
-        m, k = a.shape
-        n, k_b = b.shape
-        if k != k_b:
-            raise ValueError(
-                f"FP8 GEMM contraction dim mismatch: a.shape={tuple(a.shape)}, "
-                f"b.shape={tuple(b.shape)}"
-            )
-        return m, n, k
-
-    def _infer_output_shapes(
-        self,
-        a_shape: Tuple[int, ...],
-        b_shape: Tuple[int, ...],
-        scale_a_shape: Tuple[int, ...],
-        scale_b_shape: Tuple[int, ...],
-        bias_shape: Optional[Tuple[int, ...]] = None,
-    ) -> dict[str, Tuple[int, int]]:
-        return {"d": (a_shape[0], b_shape[0])}
-
-    def _validate_shapes(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
-        bias: Optional[torch.Tensor],
-    ) -> tuple[int, int, int]:
-        m, n, k = self._infer_mnk(a, b)
-        if scale_a.ndim != 2 or scale_b.ndim != 2:
-            raise ValueError(
-                f"GemmFp8FwdOp expects 2D scales, got {tuple(scale_a.shape)} and "
-                f"{tuple(scale_b.shape)}"
-            )
-        per_tensor = (tuple(scale_a.shape), tuple(scale_b.shape)) == ((1, 1), (1, 1))
-        scale_k = (k + 127) // 128
-        block128 = tuple(scale_a.shape) == (m, scale_k) and tuple(scale_b.shape) == (n, scale_k)
-        if not per_tensor and not block128:
-            raise ValueError(
-                "GemmFp8FwdOp supports scale shapes (1, 1)/(1, 1) or "
-                f"{(m, scale_k)}/{(n, scale_k)}, got "
-                f"{tuple(scale_a.shape)}/{tuple(scale_b.shape)}"
-            )
-        if bias is not None and tuple(bias.shape) != (n,):
-            raise ValueError(f"GemmFp8FwdOp bias must have shape {(n,)}, got {tuple(bias.shape)}")
-        return m, n, k
-
-    def _call_spec(
-        self,
-        m: int,
-        n: int,
-        k: int,
-        dtype: torch.dtype,
-        scale_a_shape: Tuple[int, ...],
-        scale_b_shape: Tuple[int, ...],
-        device: Optional[torch.device] = None,
-    ) -> GemmCall:
-        """State this call, for selection to filter candidates against."""
-        return GemmCall(
-            m=m,
-            n=n,
-            k=k,
-            dtype=dtype,
-            trans_b=True,
-            scale_a_shape=scale_a_shape,
-            scale_b_shape=scale_b_shape,
-            out_dtype=self.out_dtype,
-            device=device,
-            tune=self.tune,
-        )
-
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", call: GemmCall) -> Kernel:
-        """Return the kernel that serves *call*, building and caching on a miss."""
-        return self.kernel_for("gemm_fp8", inputs, call)
 
     def forward(
         self,
@@ -330,11 +184,6 @@ class GemmFp8FwdOp(Op):
         Returns:
             The scaled product plus bias, $[M \\times N]$, in ``out_dtype``.
 
-        Raises:
-            ValueError: A dtype is not one of those listed above, ``a`` or ``b`` is not
-                2D, the contraction dims do not match, the two scales are not both
-                per-tensor or both block128, or the bias is not $[N]$.
-
         Example:
             ```python linenums="1"
             op = GemmFp8FwdOp(out_dtype=torch.bfloat16)
@@ -342,7 +191,7 @@ class GemmFp8FwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        return self._wrapped(a, b, scale_a, scale_b, bias, self._instance_key)
+        return self._call_boundary(a, b, scale_a, scale_b, bias)
 
     def _eager_forward(
         self,
@@ -352,77 +201,60 @@ class GemmFp8FwdOp(Op):
         scale_b: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        sig = (
-            a.device,
-            a.shape,
-            b.shape,
-            scale_a.shape,
-            scale_b.shape,
-            a.dtype,
-            b.dtype,
-            scale_a.dtype,
-            scale_b.dtype,
-            self.out_dtype,
-            (bias.shape, bias.dtype) if bias is not None else None,
+        a, b, scale_a, scale_b = (t.contiguous() for t in (a, b, scale_a, scale_b))
+        bias = None if bias is None else bias.contiguous()
+        (m, k), n = a.shape, b.shape[0]
+        call = GemmCall(
+            m=m,
+            n=n,
+            k=k,
+            dtype=a.dtype,
+            trans_b=True,
+            scale_a_shape=tuple(scale_a.shape),
+            scale_b_shape=tuple(scale_b.shape),
+            out_dtype=self.out_dtype,
+            device=a.device,
+            tune=self.tune,
         )
-        if sig != self._active_sig:
-            self._validate_dtypes(a, b, scale_a, scale_b, bias)
-            m, n, k = self._validate_shapes(a, b, scale_a, scale_b, bias)
-            self.m, self.n, self.k = m, n, k
-            self.dtype = a.dtype
-            self.scale_a_shape = tuple(scale_a.shape)
-            self.scale_b_shape = tuple(scale_b.shape)
-            self.has_bias = bias is not None
-            kernel = self._get_kernel(
-                (a, b, scale_a, scale_b, bias),
-                self._call_spec(
-                    m,
-                    n,
-                    k,
-                    a.dtype,
-                    self.scale_a_shape,
-                    self.scale_b_shape,
-                    a.device,
-                ),
-            )
-            self.kernel = kernel
-            self._active = kernel
-            self._active_sig = sig
-
-        return self._active(a, b, scale_a, scale_b, bias)
+        self.kernel = self.kernel_for("gemm_fp8", (a, b, scale_a, scale_b, bias), call)
+        return self.kernel(a, b, scale_a, scale_b, bias)
 
     def compute_roof(self) -> str:
-        return tensor_core_roof(self.dtype)
+        return tensor_core_roof(self.last_call.ix["T"])
 
 
 class GemmW4A16FwdOp(Op):
     """Dense W4A16 NT GEMM with group-wise affine weight dequantization.
 
     Inputs are activation ``[M, K]``, prepacked weight ``[N, K/2]``, and scale
-    and zero-point tensors ``[N, K/128]``. ``repack`` converts a row-major packed
-    weight once at load time; the two layouts have the same shape and dtype and
-    cannot be distinguished at runtime. The output is ``activation @ W.T`` with
-    shape ``[M, N]``.
+    and zero-point tensors ``[N, K/group_size]``. Weight ``(n, k)`` is
+    ``(q - zero[n, g]) * scale[n, g]`` with ``g = k // group_size`` and ``q`` its
+    INT4 value. ``repack`` converts a row-major packed weight once at load time; the
+    two layouts have the same shape and dtype and cannot be distinguished at runtime.
+    The output is ``activation @ W.T`` with shape ``[M, N]``. The in-tree kernel serves
+    ``group_size = 128`` only and refuses any other value when it is built.
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"gemm_w4a16_kernel": GemmW4A16Kernel}
 
     def __init__(
         self,
-        group_size: int = GROUP_SIZE,
+        group_size: int = 128,
         *,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtypes are taken from the first call.
 
         Args:
-            group_size: Manifest ``params.group_size``, ``int``, default ``128``.
+            group_size: Weights per dequantization group along K (default 128).
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional kernel override dict.
@@ -430,10 +262,6 @@ class GemmW4A16FwdOp(Op):
                 W4A16 uses its calibrated selector because generic autotuning cannot
                 time the composite path.
         """
-        if group_size != GROUP_SIZE:
-            raise ValueError(
-                f"GemmW4A16FwdOp currently supports group_size={GROUP_SIZE}, got {group_size}"
-            )
         self.group_size = group_size
         if tune:
             warnings.warn(
@@ -444,14 +272,6 @@ class GemmW4A16FwdOp(Op):
         self.tune = False
         self.target = target
         self.dispatch_kernel(kernel_map)
-        self._active_sig: Optional[tuple] = None
-        self._active: Optional[Kernel] = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "gemm_w4a16_kernel": GemmW4A16Kernel,
-        }
 
     def autotune(self) -> None:
         """Keep the op out of tuned mode until composite-path tuning is supported."""
@@ -489,106 +309,6 @@ class GemmW4A16FwdOp(Op):
         kernel = W4A16RepackKernel(n, packed_k, device_index=packed_weight.device.index)
         return kernel(packed_weight)
 
-    def _validate_dtypes(
-        self,
-        activation: torch.Tensor,
-        packed_weight: torch.Tensor,
-        weight_scale: torch.Tensor,
-        weight_zero: torch.Tensor,
-    ) -> None:
-        if activation.dtype != torch.float16:
-            raise ValueError(
-                f"GemmW4A16FwdOp currently supports float16 activation, got {activation.dtype}"
-            )
-        if packed_weight.dtype != torch.uint8:
-            raise ValueError(
-                f"GemmW4A16FwdOp expects uint8 packed_weight, got {packed_weight.dtype}"
-            )
-        if weight_scale.dtype != activation.dtype:
-            raise ValueError(
-                f"GemmW4A16FwdOp expects weight_scale in the activation dtype "
-                f"{activation.dtype}, got {weight_scale.dtype}"
-            )
-        if weight_zero.dtype != torch.uint8:
-            raise ValueError(f"GemmW4A16FwdOp expects uint8 weight_zero, got {weight_zero.dtype}")
-
-    def _infer_mnk(
-        self,
-        activation: torch.Tensor,
-        packed_weight: torch.Tensor,
-    ) -> Tuple[int, int, int]:
-        if activation.ndim != 2 or packed_weight.ndim != 2:
-            raise ValueError(
-                "GemmW4A16FwdOp expects rank-2 activation and packed_weight, got "
-                f"{activation.ndim} and {packed_weight.ndim}"
-            )
-        m, k = activation.shape
-        n, packed_k = packed_weight.shape
-        if k % 2 != 0:
-            raise ValueError(f"GemmW4A16FwdOp expects even K for W4 packing, got {k}")
-        if packed_k != k // 2:
-            raise ValueError(
-                "GemmW4A16FwdOp packed_weight shape mismatch: expected second dim "
-                f"{k // 2}, got {packed_k}"
-            )
-        if k % self.group_size != 0:
-            raise ValueError(
-                f"GemmW4A16FwdOp expects K divisible by group_size={self.group_size}, got {k}"
-            )
-        return m, n, k
-
-    def _infer_output_shapes(
-        self,
-        activation_shape: Tuple[int, ...],
-        packed_weight_shape: Tuple[int, ...],
-        weight_scale_shape: Tuple[int, ...],
-        weight_zero_shape: Tuple[int, ...],
-    ) -> dict[str, Tuple[int, int]]:
-        return {"output": (activation_shape[0], packed_weight_shape[0])}
-
-    def _validate_shapes(
-        self,
-        activation: torch.Tensor,
-        packed_weight: torch.Tensor,
-        weight_scale: torch.Tensor,
-        weight_zero: torch.Tensor,
-    ) -> tuple[int, int, int]:
-        m, n, k = self._infer_mnk(activation, packed_weight)
-        groups = k // self.group_size
-        metadata_shape = (n, groups)
-        if tuple(weight_scale.shape) != metadata_shape:
-            raise ValueError(
-                f"GemmW4A16FwdOp weight_scale must have shape {metadata_shape}, "
-                f"got {tuple(weight_scale.shape)}"
-            )
-        if tuple(weight_zero.shape) != metadata_shape:
-            raise ValueError(
-                f"GemmW4A16FwdOp weight_zero must have shape {metadata_shape}, "
-                f"got {tuple(weight_zero.shape)}"
-            )
-        return m, n, k
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        m: int,
-        n: int,
-        k: int,
-        dtype: torch.dtype,
-        device: Optional[torch.device] = None,
-    ) -> Kernel:
-        call = GemmCall(
-            m=m,
-            n=n,
-            k=k,
-            dtype=dtype,
-            trans_b=True,
-            group_size=self.group_size,
-            device=device,
-            tune=self.tune,
-        )
-        return self.kernel_for("gemm_w4a16", inputs, call)
-
     def forward(
         self,
         activation: torch.Tensor,
@@ -602,17 +322,13 @@ class GemmW4A16FwdOp(Op):
             activation: Activations, $[M \\times K]$, ``torch.float16``.
             packed_weight: Weights, $[N \\times K/2]$, ``torch.uint8``, in the order
                 ``repack`` returns.
-            weight_scale: Group scales, $[N \\times K/128]$, in the activation
-                dtype.
-            weight_zero: Group zero points, $[N \\times K/128]$, ``torch.uint8``.
+            weight_scale: Group scales, $[N \\times K/\\text{group\\_size}]$, in the
+                activation dtype.
+            weight_zero: Group zero points, $[N \\times K/\\text{group\\_size}]$,
+                ``torch.uint8``.
 
         Returns:
             The product, $[M \\times N]$, in ``torch.float16``.
-
-        Raises:
-            ValueError: A dtype is not one of those listed above, ``activation`` or
-                ``packed_weight`` is not 2D, $K$ is odd, $K$ is not divisible by
-                ``group_size``, or a packed or metadata shape disagrees with $K$.
 
         Example:
             ```python linenums="1"
@@ -621,9 +337,7 @@ class GemmW4A16FwdOp(Op):
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        return self._wrapped(
-            activation, packed_weight, weight_scale, weight_zero, self._instance_key
-        )
+        return self._call_boundary(activation, packed_weight, weight_scale, weight_zero)
 
     def _eager_forward(
         self,
@@ -632,43 +346,26 @@ class GemmW4A16FwdOp(Op):
         weight_scale: torch.Tensor,
         weight_zero: torch.Tensor,
     ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        sig = (
-            activation.device,
-            activation.shape,
-            packed_weight.shape,
-            weight_scale.shape,
-            weight_zero.shape,
-            activation.dtype,
-            packed_weight.dtype,
-            weight_scale.dtype,
-            weight_zero.dtype,
-            self.group_size,
+        inputs = tuple(
+            t.contiguous() for t in (activation, packed_weight, weight_scale, weight_zero)
         )
-        if sig != self._active_sig:
-            self._validate_dtypes(activation, packed_weight, weight_scale, weight_zero)
-            m, n, k = self._validate_shapes(activation, packed_weight, weight_scale, weight_zero)
-            self.m, self.n, self.k = m, n, k
-            self.dtype = activation.dtype
-            self.packed_weight_shape = tuple(packed_weight.shape)
-            self.weight_scale_shape = tuple(weight_scale.shape)
-            self.weight_zero_shape = tuple(weight_zero.shape)
-            kernel = self._get_kernel(
-                (activation, packed_weight, weight_scale, weight_zero),
-                m,
-                n,
-                k,
-                activation.dtype,
-                activation.device,
-            )
-            self.kernel = kernel
-            self._active = kernel
-            self._active_sig = sig
-
-        return self._active(activation, packed_weight, weight_scale, weight_zero)
+        (m, k), n = activation.shape, packed_weight.shape[0]
+        call = GemmCall(
+            m=m,
+            n=n,
+            k=k,
+            dtype=activation.dtype,
+            trans_b=True,
+            group_size=self.group_size,
+            device=activation.device,
+            tune=self.tune,
+        )
+        self.kernel = self.kernel_for("gemm_w4a16", inputs, call)
+        return self.kernel(*inputs)
 
     def compute_roof(self) -> str:
-        return tensor_core_roof(self.dtype)
+        return tensor_core_roof(self.last_call.ix["T"])

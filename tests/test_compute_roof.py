@@ -1,5 +1,7 @@
 """Contract tests for ``Op.compute_roof`` (docs/design/roofline.md §1.4)."""
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -37,5 +39,5 @@ class TestComputeRoofContract:
         from tileops.ops.gemm.gemm import GemmFwdOp
 
         op = GemmFwdOp.__new__(GemmFwdOp)
-        op.dtype = torch.bfloat16
+        op._signature_call = SimpleNamespace(ix={"T": "bfloat16"})
         assert op.compute_roof() == "tensor_core.bf16"

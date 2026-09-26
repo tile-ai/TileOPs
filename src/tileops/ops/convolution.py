@@ -1,4 +1,12 @@
-from typing import ClassVar, Dict, Optional, Tuple
+"""Convolution operators (host-side Op layer).
+
+Provides:
+  - Conv1dFwdOp: torch.nn.functional.conv1d
+  - Conv2dFwdOp: torch.nn.functional.conv2d
+  - Conv3dFwdOp: torch.nn.functional.conv3d
+"""
+
+from typing import ClassVar, Dict, Mapping, Optional, Tuple
 
 import torch
 
@@ -24,7 +32,6 @@ from tileops.kernels.convolution.call_spec import (
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
-from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
 
 __all__ = [
@@ -34,249 +41,50 @@ __all__ = [
 ]
 
 
-def _conv_tuple(
-    value: int | Tuple[int, ...],
-    dims: int,
-    name: str,
-    op_name: str,
-) -> Tuple[int, ...]:
-    if isinstance(value, bool):
-        raise TypeError(f"{op_name} {name} must be an int or a {dims}-element tuple")
-    if isinstance(value, int):
-        return (value,) * dims
-    if isinstance(value, tuple):
-        if len(value) != dims:
-            raise ValueError(f"{op_name} {name} must be an int or a {dims}-element tuple")
-        if not all(isinstance(v, int) and not isinstance(v, bool) for v in value):
-            raise TypeError(f"{op_name} {name} must contain only ints")
-        return value
-    raise TypeError(f"{op_name} {name} must be an int or a {dims}-element tuple")
+def _axes(value: int | Tuple[int, ...], dims: int) -> Tuple[int, ...]:
+    """A per-axis parameter as one value per spatial axis."""
+    return (value,) * dims if isinstance(value, int) else tuple(value)
 
 
-def _conv_padding_to_tuple(
+def _symmetric_padding(
     padding: int | Tuple[int, ...] | str,
-    stride: Tuple[int, ...],
-    kernel_size: Tuple[int, ...],
+    kernel: Tuple[int, ...],
+    dilation: Tuple[int, ...],
     op_name: str,
-    dilation: Optional[Tuple[int, ...]] = None,
 ) -> Tuple[int, ...]:
-    dims = len(kernel_size)
-    if dilation is None:
-        dilation = (1,) * dims
-    if isinstance(padding, str):
-        if padding == "valid":
-            return (0,) * dims
-        if padding == "same":
-            if any(axis_stride != 1 for axis_stride in stride):
-                raise ValueError(f"{op_name} padding='same' requires stride == 1")
-            effective_kernel = tuple(
-                axis_dilation * (axis_kernel - 1) + 1
-                for axis_kernel, axis_dilation in zip(kernel_size, dilation, strict=True)
-            )
-            if any(axis_kernel % 2 == 0 for axis_kernel in effective_kernel):
-                raise ValueError(
-                    f"{op_name} padding='same' requires odd effective kernel_size values "
-                    f"with the current symmetric padding kernel"
-                )
-            return tuple(axis_kernel // 2 for axis_kernel in effective_kernel)
-        raise ValueError(
-            f"{op_name} padding must be an int, {dims}-element tuple, 'valid', or 'same'"
-        )
-    return _conv_tuple(padding, dims, "padding", op_name)
-
-
-def _validate_positive_int(name: str, value: int, op_name: str) -> None:
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise TypeError(f"{op_name} {name} must be an int")
-    if value <= 0:
-        raise ValueError(f"{op_name} {name} must be greater than zero")
-
-
-def _validate_conv_params(
-    *,
-    op_name: str,
-    input_size: Tuple[int, ...],
-    kernel_size: Tuple[int, ...],
-    stride: Tuple[int, ...],
-    padding: Tuple[int | Tuple[int, int], ...],
-    dilation: Optional[Tuple[int, ...]] = None,
-) -> None:
-    ndim = len(input_size)
-    if dilation is None:
-        dilation = (1,) * ndim
-    if (
-        len(kernel_size) != ndim
-        or len(stride) != ndim
-        or len(padding) != ndim
-        or len(dilation) != ndim
-    ):
-        raise ValueError(
-            f"{op_name} kernel_size, stride, padding, and dilation must match dimensionality"
-        )
-
-    for name, values in (
-        ("input_size", input_size),
-        ("kernel_size", kernel_size),
-        ("stride", stride),
-        ("dilation", dilation),
-    ):
-        if not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
-            raise TypeError(f"{op_name} {name} must contain only ints")
-    for pad in padding:
-        if isinstance(pad, tuple):
-            if len(pad) != 2:
-                raise ValueError(f"{op_name} asymmetric padding entries must have length 2")
-            if not all(isinstance(v, int) and not isinstance(v, bool) for v in pad):
-                raise TypeError(f"{op_name} padding must contain only ints")
-        elif not isinstance(pad, int) or isinstance(pad, bool):
-            raise TypeError(f"{op_name} padding must contain only ints or int pairs")
-
-    if any(v <= 0 for v in input_size):
-        raise ValueError(f"{op_name} input spatial dimensions must be greater than zero")
-    if any(v <= 0 for v in kernel_size):
-        raise ValueError(f"{op_name} kernel_size must be greater than zero")
-    if any(v <= 0 for v in stride):
-        raise ValueError(f"{op_name} stride must be greater than zero")
-    if any(
-        any(axis_pad < 0 for axis_pad in pad) if isinstance(pad, tuple) else pad < 0
-        for pad in padding
-    ):
-        raise ValueError(f"{op_name} padding must be non-negative")
-    if any(v <= 0 for v in dilation):
-        raise ValueError(f"{op_name} dilation must be greater than zero")
-
-    output_size = tuple(
-        (
-            input_dim
-            + (sum(pad) if isinstance(pad, tuple) else 2 * pad)
-            - dilation_dim * (kernel_dim - 1)
-            - 1
-        )
-        // stride_dim
-        + 1
-        for input_dim, kernel_dim, stride_dim, pad, dilation_dim in zip(
-            input_size, kernel_size, stride, padding, dilation, strict=True
-        )
-    )
-    if any(v <= 0 for v in output_size):
-        raise ValueError(f"{op_name} output spatial dimensions must be greater than zero")
-
-
-def _validate_same_device(
-    op_name: str,
-    input: torch.Tensor,
-    weight: torch.Tensor,
-    bias: Optional[torch.Tensor],
-) -> None:
-    """Reject a call whose tensors are not all on one device.
-
-    The kernel memo keys on the first input's device and lets it speak for the rest, so
-    disagreement has to be an error here rather than a wrong lookup there.
-
-    Args:
-        op_name: Name used in the message.
-        input: The call's input tensor, whose device the others must match.
-        weight: The call's weight.
-        bias: The call's bias, or ``None``.
+    """The padding each side of every spatial axis, which the 2D and 3D kernels take.
 
     Raises:
-        ValueError: Some input is on another device.
+        ValueError: ``padding='same'`` with an even effective kernel, which pads one side more
+            than the other; no in-tree kernel serves asymmetric padding.
     """
-    for name, tensor in (("weight", weight), ("bias", bias)):
-        if tensor is not None and tensor.device != input.device:
-            raise ValueError(
-                f"{op_name} expects every input on {input.device}, got {name} on {tensor.device}"
-            )
-
-
-def _device_index(tensor: torch.Tensor) -> int | None:
-    return tensor.device.index
-
-
-def _conv1d_padding_pair_and_l_out(
-    l_in: int,
-    kernel_size: int,
-    stride: int | Tuple[int],
-    padding: int | Tuple[int] | str,
-    dilation: int | Tuple[int],
-) -> tuple[int, int, int]:
-    kernel_size_tuple = _conv_tuple(kernel_size, 1, "kernel_size", "Conv1d")
-    stride_tuple = _conv_tuple(stride, 1, "stride", "Conv1d")
-    dilation_tuple = _conv_tuple(dilation, 1, "dilation", "Conv1d")
+    if padding == "valid":
+        return (0,) * len(kernel)
     if padding == "same":
-        if stride_tuple[0] != 1:
-            raise ValueError("Conv1d padding='same' requires stride == 1")
-        total_pad = dilation_tuple[0] * (kernel_size_tuple[0] - 1)
-        pad_left = total_pad // 2
-        return pad_left, total_pad - pad_left, l_in
-    padding_tuple = _conv_padding_to_tuple(
-        padding, stride_tuple, kernel_size_tuple, "Conv1d", dilation_tuple
-    )
-    l_out = (
-        l_in + 2 * padding_tuple[0] - dilation_tuple[0] * (kernel_size_tuple[0] - 1) - 1
-    ) // stride_tuple[0] + 1
-    return padding_tuple[0], padding_tuple[0], l_out
+        total = tuple(d * (k - 1) for k, d in zip(kernel, dilation, strict=True))
+        if any(t % 2 for t in total):
+            raise ValueError(
+                f"{op_name} padding='same' with an even effective kernel pads asymmetrically, "
+                "which no in-tree kernel serves"
+            )
+        return tuple(t // 2 for t in total)
+    return _axes(padding, len(kernel))
+
+
+def _out_dim(size: int, kernel: int, stride: int, padding: int, dilation: int) -> int:
+    return (size + 2 * padding - dilation * (kernel - 1) - 1) // stride + 1
 
 
 class Conv1dFwdOp(Op):
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    """1D convolution over an NCL input, as ``torch.nn.functional.conv1d``."""
 
-    @staticmethod
-    def _conv1d_call(
-        *,
-        n: int,
-        c_in: int,
-        l_in: int,
-        c_out: int,
-        c_in_g: int,
-        kernel_l: int,
-        stride_l: int,
-        pad_left: int,
-        pad_right: int,
-        dilation_l: int,
-        groups: int,
-        out_l: int,
-        dtype: torch.dtype,
-        has_bias: bool,
-        tune: bool,
-        device: torch.device | None,
-    ) -> Conv1dCall:
-        """Build the Conv1d dispatch record after op-level validation."""
-        return Conv1dCall(
-            n=n,
-            c_in=c_in,
-            c_out=c_out,
-            c_in_g=c_in_g,
-            l_in=l_in,
-            kernel_l=kernel_l,
-            stride_l=stride_l,
-            pad_left=pad_left,
-            pad_right=pad_right,
-            dilation_l=dilation_l,
-            groups=groups,
-            out_l=out_l,
-            dtype=dtype,
-            has_bias=has_bias,
-            tune=tune,
-            device=device,
-        )
+    compile_boundary: ClassVar[bool] = True
 
-    @staticmethod
-    def _conv1d_l_out(
-        l_in: int,
-        kernel_size: int,
-        stride: int | Tuple[int],
-        padding: int | Tuple[int] | str,
-        dilation: int | Tuple[int],
-    ) -> int:
-        _, _, l_out = _conv1d_padding_pair_and_l_out(
-            l_in,
-            kernel_size,
-            stride,
-            padding,
-            dilation,
-        )
-        return l_out
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "conv1d_pointwise_kernel": Conv1dPointwiseKernel,
+        "conv1d_kernel": Conv1dKernel,
+        "group_conv1d_kernel": GroupConv1dKernel,
+    }
 
     def __init__(
         self,
@@ -289,115 +97,25 @@ class Conv1dFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtypes are taken from the first call.
 
         Args:
-            stride: Manifest ``params.stride``, ``int | tuple[int]``, default ``1``.
-            padding: Manifest ``params.padding``, ``int | tuple[int] | str``, default ``0``.
-            dilation: Manifest ``params.dilation``, ``int | tuple[int]``, default ``1``.
-            groups: Manifest ``params.groups``, ``int``, default ``1``.
+            stride: Stride, an int or a 1-tuple (default 1).
+            padding: Padding each side, an int or a 1-tuple, or ``'valid'`` / ``'same'``
+                (default 0). ``'same'`` puts the extra element of an odd total on the right.
+            dilation: Dilation, an int or a 1-tuple (default 1).
+            groups: Number of channel groups (default 1).
             target: Backend target to serve this op, or ``None`` to decide from the input device.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
         """
-        _validate_positive_int("groups", groups, "Conv1d")
-        self.n = None
-        self.c_in = None
-        self.l_in = None
-        self.c_out = None
-        self.kernel_size = None
-        self.stride = _conv_tuple(stride, 1, "stride", "Conv1d")[0]
-        self.dilation = _conv_tuple(dilation, 1, "dilation", "Conv1d")[0]
+        self.stride = stride
         self.padding = padding
+        self.dilation = dilation
         self.groups = groups
-        self.dtype = None
         self.target = target
         self.tune = tune
-
         self.dispatch_kernel(kernel_map)
-        self._last_roofline_spec: Optional[tuple] = None
-        # What the manifest roofline resolves the tensors through.
-        self.input_shape = None
-        self.weight_shape = None
-        self.bias_shape = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "conv1d_pointwise_kernel": Conv1dPointwiseKernel,
-            "conv1d_kernel": Conv1dKernel,
-            "group_conv1d_kernel": GroupConv1dKernel,
-        }
-
-    def _resolve_spec_1d(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-    ) -> tuple[int, int, int, int, int, int, int, int, int, torch.dtype]:
-        if input.ndim != 3:
-            raise ValueError(f"Conv1d expects input to be 3D NCL, got {input.ndim}D")
-        if weight.ndim != 3:
-            raise ValueError(f"Conv1d expects weight to be 3D, got {weight.ndim}D")
-        n, c_in, l_in = input.shape
-        c_out, c_in_g, kernel_l = weight.shape
-        if c_in % self.groups != 0:
-            raise ValueError("Conv1d c_in must be divisible by groups")
-        if c_out % self.groups != 0:
-            raise ValueError("Conv1d c_out must be divisible by groups")
-        if c_in_g != c_in // self.groups:
-            raise ValueError(f"Conv1d expected weight.shape[1]={c_in // self.groups}, got {c_in_g}")
-        pad_left, pad_right, out_l = _conv1d_padding_pair_and_l_out(
-            l_in,
-            kernel_l,
-            self.stride,
-            self.padding,
-            self.dilation,
-        )
-        _validate_conv_params(
-            op_name="Conv1d",
-            input_size=(l_in,),
-            kernel_size=(kernel_l,),
-            stride=(self.stride,),
-            padding=((pad_left, pad_right),),
-            dilation=(self.dilation,),
-        )
-        return n, c_in, l_in, c_out, c_in_g, kernel_l, pad_left, pad_right, out_l, input.dtype
-
-    def _get_kernel_1d(
-        self,
-        n: int,
-        c_in: int,
-        l_in: int,
-        c_out: int,
-        c_in_g: int,
-        kernel_l: int,
-        pad_left: int,
-        pad_right: int,
-        out_l: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-        has_bias: bool,
-        inputs: tuple[torch.Tensor, ...],
-    ) -> Kernel:
-        call = Conv1dFwdOp._conv1d_call(
-            n=n,
-            c_in=c_in,
-            l_in=l_in,
-            c_out=c_out,
-            c_in_g=c_in_g,
-            kernel_l=kernel_l,
-            stride_l=self.stride,
-            pad_left=pad_left,
-            pad_right=pad_right,
-            dilation_l=self.dilation,
-            groups=self.groups,
-            out_l=out_l,
-            dtype=dtype,
-            has_bias=has_bias,
-            tune=self.tune,
-            device=None if device_index is None else torch.device("cuda", device_index),
-        )
-        return self.kernel_for("conv1d", inputs, call)
 
     def forward(
         self,
@@ -405,21 +123,17 @@ class Conv1dFwdOp(Op):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Apply the convolution. One call to this op's operator, nothing else.
+        """Apply the convolution.
 
         Args:
-            input: Input tensor in the manifest's layout.
-            weight: Convolution weight.
-            bias: Per-output-channel bias, or ``None``.
+            input: Input, $[N \\times C_{in} \\times L]$.
+            weight: Weight, $[C_{out} \\times C_{in}/\\text{groups} \\times k]$.
+            bias: Per-output-channel bias, $[C_{out}]$, or ``None``.
 
         Returns:
-            The convolution result.
-
-        Raises:
-            ValueError: Dtypes or shapes disagree with the manifest. Raised from inside the
-                operator, by `_eager_forward`.
+            The convolution result, $[N \\times C_{out} \\times L_{out}]$.
         """
-        return self._wrapped(input, weight, bias, self._instance_key)
+        return self._call_boundary(input, weight, bias)
 
     def _eager_forward(
         self,
@@ -427,182 +141,70 @@ class Conv1dFwdOp(Op):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Validate, normalize, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder, which dynamo cannot
         follow.
         """
-        self._validate_dtypes(input, weight, bias)
-        _validate_same_device("Conv1d", input, weight, bias)
-        (
-            n,
-            c_in,
-            l_in,
-            c_out,
-            c_in_g,
-            kernel_l,
-            pad_left,
-            pad_right,
-            out_l,
-            dtype,
-        ) = self._resolve_spec_1d(input, weight)
-        if bias is not None and tuple(bias.shape) != (c_out,):
-            raise ValueError(f"Conv1d expects bias shape ({c_out},), got {tuple(bias.shape)}")
-
-        # Normalization is the op layer's job for every target: a kernel is handed
-        # contiguous tensors, in the manifest's ``signature.inputs`` order.
+        n, c_in, l_in = input.shape
+        c_out, c_in_g, kernel_l = weight.shape
+        (stride,) = _axes(self.stride, 1)
+        (dilation,) = _axes(self.dilation, 1)
+        if self.padding == "same":
+            total = dilation * (kernel_l - 1)
+            pad_left, pad_right, out_l = total // 2, total - total // 2, l_in
+        else:
+            (pad,) = (0,) if self.padding == "valid" else _axes(self.padding, 1)
+            pad_left = pad_right = pad
+            out_l = _out_dim(l_in, kernel_l, stride, pad, dilation)
+        # A kernel is handed contiguous tensors, in the manifest's ``signature.inputs`` order;
+        # a bias this call did not pass is ``None`` there.
         input = input.contiguous()
         weight = weight.contiguous()
         if bias is not None:
             bias = bias.contiguous()
-        # One argument per ``signature.inputs`` entry, in that order; a bias this call did
-        # not pass is ``None`` there rather than absent, so a builder and the memory key
-        # read presence off the argument rather than off how many arguments there are.
-        inputs = (input, weight, bias)
-        kernel = self._get_kernel_1d(
-            n,
-            c_in,
-            l_in,
-            c_out,
-            c_in_g,
-            kernel_l,
-            pad_left,
-            pad_right,
-            out_l,
-            dtype,
-            _device_index(input),
-            bias is not None,
-            inputs,
-        )
-        out = kernel(input, weight, bias)
-        # Recorded after the launch: eval_roofline and profiling read these, and a call
-        # that raised described nothing.
-        self.kernel = kernel
-        self.n = n
-        self.c_in = c_in
-        self.l_in = l_in
-        self.c_out = c_out
-        self.c_in_g = c_in_g
-        self.c_out_g = c_out // self.groups
-        self.kernel_size = kernel_l
-        self.padding_right = pad_right
-        self.padding_pair = (pad_left, pad_right)
-        self.out_l = out_l
-        self.dtype = dtype
-        # What the manifest roofline resolves the tensors through.
-        self.input_shape = tuple(input.shape)
-        self.weight_shape = tuple(weight.shape)
-        self.bias_shape = None if bias is None else tuple(bias.shape)
-        self._last_roofline_spec = (
-            n,
-            c_in,
-            l_in,
-            c_out,
-            c_in_g,
-            kernel_l,
-            out_l,
-            dtype,
-            bias is not None,
-        )
-        return out
-
-    def _infer_output_shapes(
-        self,
-        input_shape: tuple[int, int, int],
-        weight_shape: tuple[int, int, int],
-        bias_shape: Optional[tuple[int]] = None,
-    ) -> Dict[str, tuple[int, int, int]]:
-        n, _, l_in = input_shape
-        c_out, _, kernel_size = weight_shape
-        l_out = Conv1dFwdOp._conv1d_l_out(
-            l_in,
-            kernel_size,
-            self.stride,
-            self.padding,
-            self.dilation,
-        )
-        return {"output": (n, c_out, l_out)}
-
-    def _validate_dtypes(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> None:
-        if input.dtype not in {torch.float16, torch.bfloat16}:
-            raise ValueError(f"input.dtype must be float16 or bfloat16, got {input.dtype}")
-        if weight.dtype != input.dtype:
-            raise ValueError(
-                f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
-            )
-        if bias is not None and bias.dtype != input.dtype:
-            raise ValueError(f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}")
-
-    def compute_roof(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
-
-
-def _conv_out_dim(
-    input_size: int,
-    kernel_size: int,
-    stride: int,
-    padding: int,
-    dilation: int,
-) -> int:
-    return (input_size + 2 * padding - dilation * (kernel_size - 1) - 1) // stride + 1
-
-
-class Conv2dFwdOp(Op):
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
-
-    @staticmethod
-    def _conv2d_call(
-        *,
-        n: int,
-        c_in: int,
-        h: int,
-        w: int,
-        c_out: int,
-        c_in_g: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride: tuple[int, int],
-        padding: tuple[int, int],
-        dilation: tuple[int, int],
-        groups: int,
-        out_h: int,
-        out_w: int,
-        dtype: torch.dtype,
-        has_bias: bool,
-        tune: bool,
-        device: torch.device | None,
-    ) -> Conv2dCall:
-        """Build the Conv2d dispatch record after op-level validation."""
-        return Conv2dCall(
+        call = Conv1dCall(
             n=n,
             c_in=c_in,
             c_out=c_out,
             c_in_g=c_in_g,
-            h=h,
-            w=w,
-            kernel_h=kernel_h,
-            kernel_w=kernel_w,
-            stride=stride,
-            padding=padding,
-            dilation=dilation,
-            groups=groups,
-            out_h=out_h,
-            out_w=out_w,
-            dtype=dtype,
-            has_bias=has_bias,
-            tune=tune,
-            device=device,
+            l_in=l_in,
+            kernel_l=kernel_l,
+            stride_l=stride,
+            pad_left=pad_left,
+            pad_right=pad_right,
+            dilation_l=dilation,
+            groups=self.groups,
+            out_l=out_l,
+            dtype=input.dtype,
+            has_bias=bias is not None,
+            tune=self.tune,
+            device=input.device,
         )
+        self.kernel = self.kernel_for("conv1d", (input, weight, bias), call)
+        return self.kernel(input, weight, bias)
 
-    @staticmethod
-    def _pair(value: int | Tuple[int, int]) -> Tuple[int, int]:
-        return _conv_tuple(value, 2, "value", "Conv2d")  # type: ignore[return-value]
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.last_call.ix["T"])
+
+
+class Conv2dFwdOp(Op):
+    """2D convolution over an NCHW input, as ``torch.nn.functional.conv2d``.
+
+    The in-tree kernels pad each axis symmetrically, so ``padding='same'`` with an even
+    effective kernel is refused. They multiply float32 operands in TF32, as cuDNN does by
+    default.
+    """
+
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "conv2d_1x1_kernel": Conv2d1x1Kernel,
+        "conv2d_symmetric_kernel": Conv2dSymmetricKernel,
+        "conv2d_kernel": Conv2dKernel,
+        "group_conv2d_kernel": GroupConv2dKernel,
+    }
 
     def __init__(
         self,
@@ -615,148 +217,25 @@ class Conv2dFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtypes are taken from the first call.
 
         Args:
-            stride: Manifest ``params.stride``, ``int | tuple[int, int]``, default ``1``.
-            padding: Manifest ``params.padding``, ``int | tuple[int, int] | str``, default ``0``.
-            dilation: Manifest ``params.dilation``, ``int | tuple[int, int]``, default ``1``.
-            groups: Manifest ``params.groups``, ``int``, default ``1``.
+            stride: Stride, an int or a 2-tuple (default 1).
+            padding: Padding each side, an int or a 2-tuple, or ``'valid'`` / ``'same'``
+                (default 0).
+            dilation: Dilation, an int or a 2-tuple (default 1).
+            groups: Number of channel groups (default 1).
             target: Backend target to serve this op, or ``None`` to decide from the input device.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
         """
-        _validate_positive_int("groups", groups, "Conv2d")
-        self.n = None
-        self.c_in = None
-        self.h = None
-        self.w = None
-        self.c_out = None
-        self.kernel_size = None
-        self.stride = Conv2dFwdOp._pair(stride)
-        self.dilation = _conv_tuple(dilation, 2, "dilation", "Conv2d")
+        self.stride = stride
         self.padding = padding
+        self.dilation = dilation
         self.groups = groups
-        self.dtype = None
         self.target = target
         self.tune = tune
-
         self.dispatch_kernel(kernel_map)
-        self._last_roofline_spec: Optional[tuple] = None
-        # What the manifest roofline resolves the tensors through.
-        self.input_shape = None
-        self.weight_shape = None
-        self.bias_shape = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "conv2d_1x1_kernel": Conv2d1x1Kernel,
-            "conv2d_symmetric_kernel": Conv2dSymmetricKernel,
-            "conv2d_kernel": Conv2dKernel,
-            "group_conv2d_kernel": GroupConv2dKernel,
-        }
-
-    def _resolve_spec_2d(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-    ) -> tuple[
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        torch.dtype,
-    ]:
-        if input.ndim != 4:
-            raise ValueError(f"Conv2d expects input to be 4D NCHW, got {input.ndim}D")
-        if weight.ndim != 4:
-            raise ValueError(f"Conv2d expects weight to be 4D, got {weight.ndim}D")
-        n, c_in, h, w = input.shape
-        c_out, c_in_g, kernel_h, kernel_w = weight.shape
-        if c_in % self.groups != 0:
-            raise ValueError("Conv2d c_in must be divisible by groups")
-        if c_out % self.groups != 0:
-            raise ValueError("Conv2d c_out must be divisible by groups")
-        if c_in_g != c_in // self.groups:
-            raise ValueError(f"Conv2d expected weight.shape[1]={c_in // self.groups}, got {c_in_g}")
-        padding = _conv_padding_to_tuple(
-            self.padding, self.stride, (kernel_h, kernel_w), "Conv2d", self.dilation
-        )
-        _validate_conv_params(
-            op_name="Conv2d",
-            input_size=(h, w),
-            kernel_size=(kernel_h, kernel_w),
-            stride=self.stride,
-            padding=padding,
-            dilation=self.dilation,
-        )
-        out_h = _conv_out_dim(h, kernel_h, self.stride[0], padding[0], self.dilation[0])
-        out_w = _conv_out_dim(w, kernel_w, self.stride[1], padding[1], self.dilation[1])
-        return (
-            n,
-            c_in,
-            h,
-            w,
-            c_out,
-            c_in_g,
-            kernel_h,
-            kernel_w,
-            padding[0],
-            padding[1],
-            out_h,
-            out_w,
-            input.dtype,
-        )
-
-    def _get_kernel_2d(
-        self,
-        n: int,
-        c_in: int,
-        h: int,
-        w: int,
-        c_out: int,
-        c_in_g: int,
-        kernel_h: int,
-        kernel_w: int,
-        pad_h: int,
-        pad_w: int,
-        out_h: int,
-        out_w: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-        has_bias: bool,
-        inputs: tuple[torch.Tensor, ...],
-    ) -> Kernel:
-        call = Conv2dFwdOp._conv2d_call(
-            n=n,
-            c_in=c_in,
-            h=h,
-            w=w,
-            c_out=c_out,
-            c_in_g=c_in_g,
-            kernel_h=kernel_h,
-            kernel_w=kernel_w,
-            stride=self.stride,
-            padding=(pad_h, pad_w),
-            dilation=self.dilation,
-            groups=self.groups,
-            out_h=out_h,
-            out_w=out_w,
-            dtype=dtype,
-            has_bias=has_bias,
-            tune=self.tune,
-            device=None if device_index is None else torch.device("cuda", device_index),
-        )
-        return self.kernel_for("conv2d", inputs, call)
 
     def forward(
         self,
@@ -764,21 +243,20 @@ class Conv2dFwdOp(Op):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Apply the convolution. One call to this op's operator, nothing else.
+        """Apply the convolution.
 
         Args:
-            input: Input tensor in the manifest's layout.
-            weight: Convolution weight.
-            bias: Per-output-channel bias, or ``None``.
+            input: Input, $[N \\times C_{in} \\times H \\times W]$.
+            weight: Weight, $[C_{out} \\times C_{in}/\\text{groups} \\times k_H \\times k_W]$.
+            bias: Per-output-channel bias, $[C_{out}]$, or ``None``.
 
         Returns:
-            The convolution result.
+            The convolution result, $[N \\times C_{out} \\times H_{out} \\times W_{out}]$.
 
         Raises:
-            ValueError: Dtypes or shapes disagree with the manifest. Raised from inside the
-                operator, by `_eager_forward`.
+            ValueError: ``padding='same'`` with an even effective kernel.
         """
-        return self._wrapped(input, weight, bias, self._instance_key)
+        return self._call_boundary(input, weight, bias)
 
     def _eager_forward(
         self,
@@ -786,127 +264,46 @@ class Conv2dFwdOp(Op):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Validate, normalize, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder, which dynamo cannot
         follow.
         """
-        self._validate_dtypes(input, weight, bias)
-        _validate_same_device("Conv2d", input, weight, bias)
-        (
-            n,
-            c_in,
-            h,
-            w,
-            c_out,
-            c_in_g,
-            kernel_h,
-            kernel_w,
-            pad_h,
-            pad_w,
-            out_h,
-            out_w,
-            dtype,
-        ) = self._resolve_spec_2d(input, weight)
-        if bias is not None and tuple(bias.shape) != (c_out,):
-            raise ValueError(f"Conv2d expects bias shape ({c_out},), got {tuple(bias.shape)}")
-
+        n, c_in, h, w = input.shape
+        c_out, c_in_g, kernel_h, kernel_w = weight.shape
+        stride = _axes(self.stride, 2)
+        dilation = _axes(self.dilation, 2)
+        padding = _symmetric_padding(self.padding, (kernel_h, kernel_w), dilation, "Conv2d")
         input = input.contiguous()
         weight = weight.contiguous()
         if bias is not None:
             bias = bias.contiguous()
-        inputs = (input, weight, bias)
-        kernel = self._get_kernel_2d(
-            n,
-            c_in,
-            h,
-            w,
-            c_out,
-            c_in_g,
-            kernel_h,
-            kernel_w,
-            pad_h,
-            pad_w,
-            out_h,
-            out_w,
-            dtype,
-            _device_index(input),
-            bias is not None,
-            inputs,
+        call = Conv2dCall(
+            n=n,
+            c_in=c_in,
+            c_out=c_out,
+            c_in_g=c_in_g,
+            h=h,
+            w=w,
+            kernel_h=kernel_h,
+            kernel_w=kernel_w,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=self.groups,
+            out_h=_out_dim(h, kernel_h, stride[0], padding[0], dilation[0]),
+            out_w=_out_dim(w, kernel_w, stride[1], padding[1], dilation[1]),
+            dtype=input.dtype,
+            has_bias=bias is not None,
+            tune=self.tune,
+            device=input.device,
         )
-        out = kernel(input, weight, bias)
-        # Recorded after the launch: eval_roofline and profiling read these, and a call
-        # that raised described nothing.
-        self.kernel = kernel
-        self.n = n
-        self.c_in = c_in
-        self.h = h
-        self.w = w
-        self.c_out = c_out
-        self.c_in_g = c_in_g
-        self.c_out_g = c_out // self.groups
-        self.kernel_size = (kernel_h, kernel_w)
-        self.resolved_padding = (pad_h, pad_w)
-        self.out_h = out_h
-        self.out_w = out_w
-        self.dtype = dtype
-        # What the manifest roofline resolves the tensors through.
-        self.input_shape = tuple(input.shape)
-        self.weight_shape = tuple(weight.shape)
-        self.bias_shape = None if bias is None else tuple(bias.shape)
-        self._last_roofline_spec = (
-            n,
-            c_in,
-            h,
-            w,
-            c_out,
-            c_in_g,
-            kernel_h,
-            kernel_w,
-            out_h,
-            out_w,
-            dtype,
-            bias is not None,
-        )
-        return out
-
-    def _infer_output_shapes(
-        self,
-        input_shape: tuple[int, int, int, int],
-        weight_shape: tuple[int, int, int, int],
-        bias_shape: Optional[tuple[int]] = None,
-    ) -> Dict[str, tuple[int, int, int, int]]:
-        n, _, h, w = input_shape
-        c_out, _, kernel_h, kernel_w = weight_shape
-        stride = Conv2dFwdOp._pair(self.stride)
-        dilation = _conv_tuple(self.dilation, 2, "dilation", "Conv2d")
-        padding = _conv_padding_to_tuple(
-            self.padding, stride, (kernel_h, kernel_w), "Conv2d", dilation
-        )
-        out_h = _conv_out_dim(h, kernel_h, stride[0], padding[0], dilation[0])
-        out_w = _conv_out_dim(w, kernel_w, stride[1], padding[1], dilation[1])
-        return {"output": (n, c_out, out_h, out_w)}
-
-    def _validate_dtypes(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> None:
-        if input.dtype not in {torch.float32, torch.float16, torch.bfloat16}:
-            raise ValueError(
-                f"input.dtype must be float32, float16, or bfloat16, got {input.dtype}"
-            )
-        if weight.dtype != input.dtype:
-            raise ValueError(
-                f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
-            )
-        if bias is not None and bias.dtype != input.dtype:
-            raise ValueError(f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}")
+        self.kernel = self.kernel_for("conv2d", (input, weight, bias), call)
+        return self.kernel(input, weight, bias)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
+        return tensor_core_roof(self.last_call.ix["T"])
 
 
 def _can_use_conv3d_ndhwc(
@@ -957,41 +354,101 @@ def _can_use_conv3d_ndhwc(
 
 
 class Conv3dFwdOp(Op):
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    """3D convolution over an NCDHW input, as ``torch.nn.functional.conv3d``.
 
-    @staticmethod
-    def _conv3d_call(
+    The in-tree kernels pad each axis symmetrically, so ``padding='same'`` with an even
+    effective kernel is refused. They multiply float32 operands in TF32, as cuDNN does by
+    default.
+    """
+
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "conv3d_kernel": Conv3dKernel,
+        "conv3d_ndhwc_kernel": Conv3dNdhwcKernel,
+        "group_conv3d_kernel": GroupConv3dKernel,
+    }
+
+    def __init__(
+        self,
+        stride: int | Tuple[int, int, int] = 1,
+        padding: int | Tuple[int, int, int] | str = 0,
+        dilation: int | Tuple[int, int, int] = 1,
+        groups: int = 1,
         *,
-        n: int,
-        c_in: int,
-        d: int,
-        h: int,
-        w: int,
-        c_out: int,
-        c_in_g: int,
-        kernel_d: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride: tuple[int, int, int],
-        padding: tuple[int, int, int],
-        dilation: tuple[int, int, int],
-        groups: int,
-        out_d: int,
-        out_h: int,
-        out_w: int,
-        dtype: torch.dtype,
-        has_bias: bool,
-        tune: bool,
-        device: torch.device | None,
-    ) -> Conv3dCall:
-        """Build the Conv3d dispatch record after op-level validation.
+        target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ) -> None:
+        """Build the op. Shapes and dtypes are taken from the first call.
 
-        The record carries the public NCDHW/OIDHW convolution semantics and the
-        resolved output shape. Kernel classes use it to state positive regions, so
-        adding a specialized Conv3d implementation does not require the dense
-        fallback to know that implementation by name.
+        Args:
+            stride: Stride, an int or a 3-tuple (default 1).
+            padding: Padding each side, an int or a 3-tuple, or ``'valid'`` / ``'same'``
+                (default 0).
+            dilation: Dilation, an int or a 3-tuple (default 1).
+            groups: Number of channel groups (default 1).
+            target: Backend target to serve this op, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
         """
-        return Conv3dCall(
+        self.stride = stride
+        self.padding = padding
+        self.dilation = dilation
+        self.groups = groups
+        self.target = target
+        self.tune = tune
+        self.dispatch_kernel(kernel_map)
+
+    def forward(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Apply the convolution.
+
+        Args:
+            input: Input, $[N \\times C_{in} \\times D \\times H \\times W]$.
+            weight: Weight, $[C_{out} \\times C_{in}/\\text{groups} \\times k_D \\times k_H
+                \\times k_W]$.
+            bias: Per-output-channel bias, $[C_{out}]$, or ``None``.
+
+        Returns:
+            The convolution result, $[N \\times C_{out} \\times D_{out} \\times H_{out}
+            \\times W_{out}]$.
+
+        Raises:
+            ValueError: ``padding='same'`` with an even effective kernel.
+        """
+        return self._call_boundary(input, weight, bias)
+
+    def _eager_forward(
+        self,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder, which dynamo cannot
+        follow.
+        """
+        n, c_in, d, h, w = input.shape
+        c_out, c_in_g, kernel_d, kernel_h, kernel_w = weight.shape
+        kernel = (kernel_d, kernel_h, kernel_w)
+        stride = _axes(self.stride, 3)
+        dilation = _axes(self.dilation, 3)
+        padding = _symmetric_padding(self.padding, kernel, dilation, "Conv3d")
+        out_d, out_h, out_w = (
+            _out_dim(size, k, s, p, dl)
+            for size, k, s, p, dl in zip((d, h, w), kernel, stride, padding, dilation, strict=True)
+        )
+        input = input.contiguous()
+        weight = weight.contiguous()
+        if bias is not None:
+            bias = bias.contiguous()
+        call = Conv3dCall(
             n=n,
             c_in=c_in,
             c_out=c_out,
@@ -1005,360 +462,18 @@ class Conv3dFwdOp(Op):
             stride=stride,
             padding=padding,
             dilation=dilation,
-            groups=groups,
-            out_d=out_d,
-            out_h=out_h,
-            out_w=out_w,
-            dtype=dtype,
-            has_bias=has_bias,
-            tune=tune,
-            device=device,
-        )
-
-    @staticmethod
-    def _triple(value: int | Tuple[int, int, int]) -> Tuple[int, int, int]:
-        return _conv_tuple(value, 3, "value", "Conv3d")  # type: ignore[return-value]
-
-    def __init__(
-        self,
-        stride: int | Tuple[int, int, int] = 1,
-        padding: int | Tuple[int, int, int] | str = 0,
-        dilation: int | Tuple[int, int, int] = 1,
-        groups: int = 1,
-        *,
-        target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            stride: Manifest ``params.stride``, ``int | tuple[int, int, int]``, default ``1``.
-            padding: Manifest ``params.padding``, ``int | tuple[int, int, int] | str``, default ``0``.
-            dilation: Manifest ``params.dilation``, ``int | tuple[int, int, int]``, default ``1``.
-            groups: Manifest ``params.groups``, ``int``, default ``1``.
-            target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
-        _validate_positive_int("groups", groups, "Conv3d")
-        self.n = None
-        self.c_in = None
-        self.d = None
-        self.h = None
-        self.w = None
-        self.c_out = None
-        self.kernel_size = None
-        self.stride = Conv3dFwdOp._triple(stride)
-        self.dilation = _conv_tuple(dilation, 3, "dilation", "Conv3d")
-        self.padding = padding
-        self.groups = groups
-        self.dtype = None
-        self.target = target
-        self.tune = tune
-
-        self.dispatch_kernel(kernel_map)
-        self._last_roofline_spec: Optional[tuple] = None
-        # What the manifest roofline resolves the tensors through.
-        self.input_shape = None
-        self.weight_shape = None
-        self.bias_shape = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "conv3d_kernel": Conv3dKernel,
-            "conv3d_ndhwc_kernel": Conv3dNdhwcKernel,
-            "group_conv3d_kernel": GroupConv3dKernel,
-        }
-
-    def _resolve_spec_3d(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-    ) -> tuple[
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        torch.dtype,
-    ]:
-        if input.ndim != 5:
-            raise ValueError(f"Conv3d expects input to be 5D NCDHW, got {input.ndim}D")
-        if weight.ndim != 5:
-            raise ValueError(f"Conv3d expects weight to be 5D, got {weight.ndim}D")
-        n, c_in, d, h, w = input.shape
-        c_out, c_in_g, kernel_d, kernel_h, kernel_w = weight.shape
-        if c_in % self.groups != 0:
-            raise ValueError("Conv3d c_in must be divisible by groups")
-        if c_out % self.groups != 0:
-            raise ValueError("Conv3d c_out must be divisible by groups")
-        if c_in_g != c_in // self.groups:
-            raise ValueError(f"Conv3d expected weight.shape[1]={c_in // self.groups}, got {c_in_g}")
-        padding = _conv_padding_to_tuple(
-            self.padding,
-            self.stride,
-            (kernel_d, kernel_h, kernel_w),
-            "Conv3d",
-            self.dilation,
-        )
-        _validate_conv_params(
-            op_name="Conv3d",
-            input_size=(d, h, w),
-            kernel_size=(kernel_d, kernel_h, kernel_w),
-            stride=self.stride,
-            padding=padding,
-            dilation=self.dilation,
-        )
-        out_d = _conv_out_dim(d, kernel_d, self.stride[0], padding[0], self.dilation[0])
-        out_h = _conv_out_dim(h, kernel_h, self.stride[1], padding[1], self.dilation[1])
-        out_w = _conv_out_dim(w, kernel_w, self.stride[2], padding[2], self.dilation[2])
-        return (
-            n,
-            c_in,
-            d,
-            h,
-            w,
-            c_out,
-            c_in_g,
-            kernel_d,
-            kernel_h,
-            kernel_w,
-            padding[0],
-            padding[1],
-            padding[2],
-            out_d,
-            out_h,
-            out_w,
-            input.dtype,
-        )
-
-    def _get_kernel_3d(
-        self,
-        n: int,
-        c_in: int,
-        d: int,
-        h: int,
-        w: int,
-        c_out: int,
-        c_in_g: int,
-        kernel_d: int,
-        kernel_h: int,
-        kernel_w: int,
-        pad_d: int,
-        pad_h: int,
-        pad_w: int,
-        out_d: int,
-        out_h: int,
-        out_w: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-        has_bias: bool,
-        inputs: tuple[torch.Tensor, ...],
-    ) -> Kernel:
-        call = Conv3dFwdOp._conv3d_call(
-            n=n,
-            c_in=c_in,
-            d=d,
-            h=h,
-            w=w,
-            c_out=c_out,
-            c_in_g=c_in_g,
-            kernel_d=kernel_d,
-            kernel_h=kernel_h,
-            kernel_w=kernel_w,
-            stride=self.stride,
-            padding=(pad_d, pad_h, pad_w),
-            dilation=self.dilation,
             groups=self.groups,
             out_d=out_d,
             out_h=out_h,
             out_w=out_w,
-            dtype=dtype,
-            has_bias=has_bias,
+            dtype=input.dtype,
+            has_bias=bias is not None,
             tune=self.tune,
-            device=None if device_index is None else torch.device("cuda", device_index),
+            device=input.device,
         )
-        return self.kernel_for("conv3d", inputs, call)
-
-    def forward(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Apply the convolution. One call to this op's operator, nothing else.
-
-        Args:
-            input: Input tensor in the manifest's layout.
-            weight: Convolution weight.
-            bias: Per-output-channel bias, or ``None``.
-
-        Returns:
-            The convolution result.
-
-        Raises:
-            ValueError: Dtypes or shapes disagree with the manifest. Raised from inside the
-                operator, by `_eager_forward`.
-        """
-        return self._wrapped(input, weight, bias, self._instance_key)
-
-    def _eager_forward(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Validate, normalize, resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder, which dynamo cannot
-        follow.
-        """
-        self._validate_dtypes(input, weight, bias)
-        _validate_same_device("Conv3d", input, weight, bias)
-        (
-            n,
-            c_in,
-            d,
-            h,
-            w,
-            c_out,
-            c_in_g,
-            kernel_d,
-            kernel_h,
-            kernel_w,
-            pad_d,
-            pad_h,
-            pad_w,
-            out_d,
-            out_h,
-            out_w,
-            dtype,
-        ) = self._resolve_spec_3d(input, weight)
-        if bias is not None and tuple(bias.shape) != (c_out,):
-            raise ValueError(f"Conv3d expects bias shape ({c_out},), got {tuple(bias.shape)}")
-
-        input = input.contiguous()
-        weight = weight.contiguous()
-        if bias is not None:
-            bias = bias.contiguous()
-        inputs = (input, weight, bias)
-        kernel = self._get_kernel_3d(
-            n,
-            c_in,
-            d,
-            h,
-            w,
-            c_out,
-            c_in_g,
-            kernel_d,
-            kernel_h,
-            kernel_w,
-            pad_d,
-            pad_h,
-            pad_w,
-            out_d,
-            out_h,
-            out_w,
-            dtype,
-            _device_index(input),
-            bias is not None,
-            inputs,
-        )
-        out = kernel(input, weight, bias)
-        # Recorded after the launch: eval_roofline and profiling read these, and a call
-        # that raised described nothing.
-        self.kernel = kernel
-        self.n = n
-        self.c_in = c_in
-        self.d = d
-        self.h = h
-        self.w = w
-        self.c_out = c_out
-        self.c_in_g = c_in_g
-        self.c_out_g = c_out // self.groups
-        self.kernel_size = (kernel_d, kernel_h, kernel_w)
-        self.resolved_padding = (pad_d, pad_h, pad_w)
-        self.out_d = out_d
-        self.out_h = out_h
-        self.out_w = out_w
-        self.dtype = dtype
-        # What the manifest roofline resolves the tensors through.
-        self.input_shape = tuple(input.shape)
-        self.weight_shape = tuple(weight.shape)
-        self.bias_shape = None if bias is None else tuple(bias.shape)
-        self._last_roofline_spec = (
-            n,
-            c_in,
-            d,
-            h,
-            w,
-            c_out,
-            c_in_g,
-            kernel_d,
-            kernel_h,
-            kernel_w,
-            out_d,
-            out_h,
-            out_w,
-            dtype,
-            bias is not None,
-        )
-        return out
-
-    def _infer_output_shapes(
-        self,
-        input_shape: tuple[int, int, int, int, int],
-        weight_shape: tuple[int, int, int, int, int],
-        bias_shape: Optional[tuple[int]] = None,
-    ) -> Dict[str, tuple[int, int, int, int, int]]:
-        n, _, d, h, w = input_shape
-        c_out, _, kernel_d, kernel_h, kernel_w = weight_shape
-        stride = Conv3dFwdOp._triple(self.stride)
-        dilation = _conv_tuple(self.dilation, 3, "dilation", "Conv3d")
-        padding = _conv_padding_to_tuple(
-            self.padding, stride, (kernel_d, kernel_h, kernel_w), "Conv3d", dilation
-        )
-        out_d = _conv_out_dim(d, kernel_d, stride[0], padding[0], dilation[0])
-        out_h = _conv_out_dim(h, kernel_h, stride[1], padding[1], dilation[1])
-        out_w = _conv_out_dim(w, kernel_w, stride[2], padding[2], dilation[2])
-        return {"output": (n, c_out, out_d, out_h, out_w)}
-
-    def _validate_dtypes(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> None:
-        if input.dtype not in {torch.float32, torch.float16, torch.bfloat16}:
-            raise ValueError(
-                f"input.dtype must be float32, float16, or bfloat16, got {input.dtype}"
-            )
-        if weight.dtype != input.dtype:
-            raise ValueError(
-                f"weight.dtype must match input.dtype {input.dtype}, got {weight.dtype}"
-            )
-        if bias is not None and bias.dtype != input.dtype:
-            raise ValueError(f"bias.dtype must match input.dtype {input.dtype}, got {bias.dtype}")
+        self.kernel = self.kernel_for("conv3d", (input, weight, bias), call)
+        return self.kernel(input, weight, bias)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
-
-
-# The compile boundary, one operator per op. Module-level because registration happens once
-# per qualified name at import time and the schema is read off the annotations, so ``self``
-# cannot appear; the instance comes back from the string key. See
-# src/tileops/ops/compile_boundary.py.
-#
-# ``new_empty``, not ``empty_like``: a non-contiguous input's strides must not reach the fake.
+        return tensor_core_roof(self.last_call.ix["T"])

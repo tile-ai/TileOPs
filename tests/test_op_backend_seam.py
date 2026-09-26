@@ -619,7 +619,7 @@ def test_a_missing_optional_input_keeps_its_place_in_the_hand_over():
 
     ((inputs, params),) = recorder.calls
     assert inputs == (TensorSpec.of(x), TensorSpec.of(weight), None), "signature.inputs order"
-    assert params == {"stride": (1, 1), "padding": 1, "dilation": (1, 1), "groups": 1}
+    assert params == {"stride": 1, "padding": 1, "dilation": 1, "groups": 1}
 
 
 def test_a_bias_that_is_passed_reaches_the_backend_as_a_third_spec():
@@ -889,7 +889,9 @@ def test_an_input_typed_after_an_output_follows_that_output_s_dtype():
 
     registry.register_detector("acme", lambda device: device.type == "cpu")
     registry.register_kernel_builder(
-        "GemmFp8FwdOp", "acme", lambda *specs, **params: lambda *tensors: torch.empty(16, 16)
+        "GemmFp8FwdOp",
+        "acme",
+        lambda *specs, **params: lambda *tensors: torch.empty(16, 16, dtype=torch.bfloat16),
     )
     fp8 = torch.float8_e4m3fn
     a, b = torch.empty(16, 32, dtype=fp8), torch.empty(16, 32, dtype=fp8)
