@@ -370,7 +370,7 @@ def test_comparison_rejects_unsupported_dtype(
     shape = (16,)
     op = op_cls()
     x = torch.zeros(shape, device="cuda", dtype=dtype)
-    with pytest.raises(ValueError, match="has dtype|does not support dtype"):
+    with pytest.raises(ValueError, match="dtype is outside"):
         op(x, x)
 
 

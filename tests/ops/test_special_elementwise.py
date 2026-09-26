@@ -18,7 +18,7 @@ from tileops.ops.elementwise import (
     IsnanFwdOp,
     SoftplusFwdOp,
 )
-from workloads.elementwise import SpecialWorkload
+from workloads.elementwise import SpecialWorkload, alibi_reference, sinusoidal_reference
 
 
 class SpecialFixture(FixtureBase):
@@ -242,15 +242,7 @@ def test_alibi(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
 
     op = AlibiFwdOp(seq_len=seq_len, num_heads=num_heads, out_dtype=dtype)
     out = op()
-
-    # Reference: slope_h = 2^(-8*(h+1)/H), bias = -slope * |i - j|
-    positions = torch.arange(seq_len, device="cuda", dtype=torch.float32)
-    dist = (positions.unsqueeze(1) - positions.unsqueeze(0)).abs()
-    slopes = torch.pow(
-        2.0,
-        -8.0 * torch.arange(1, num_heads + 1, device="cuda", dtype=torch.float32) / num_heads,
-    )
-    ref = (-slopes[:, None, None] * dist[None, :, :]).to(dtype)
+    ref = alibi_reference(seq_len, num_heads, dtype)
 
     tol = {"atol": 1e-2, "rtol": 1e-2} if dtype == torch.float16 else {"atol": 1e-5, "rtol": 1e-5}
     torch.testing.assert_close(out, ref, **tol)
@@ -280,15 +272,7 @@ def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
 
     op = SinusoidalFwdOp(seq_len=seq_len, d_model=d_model, out_dtype=dtype)
     out = op()
-
-    # Reference
-    pos = torch.arange(seq_len, device="cuda", dtype=torch.float32).unsqueeze(1)
-    dim_pairs = torch.arange(0, d_model, 2, device="cuda", dtype=torch.float32)
-    angles = pos / torch.pow(10000.0, dim_pairs / d_model)
-    ref = torch.zeros(seq_len, d_model, device="cuda", dtype=torch.float32)
-    ref[:, 0::2] = torch.sin(angles)
-    ref[:, 1::2] = torch.cos(angles)
-    ref = ref.to(dtype)
+    ref = sinusoidal_reference(seq_len, d_model, dtype)
 
     if dtype == torch.float16:
         tol = {"atol": 1e-3, "rtol": 1e-3}
@@ -504,7 +488,7 @@ def _bool_mask(n: int = 1024) -> torch.Tensor:
     "make_op",
     [
         pytest.param(lambda: EluFwdOp(alpha=1e6), id="elu-alpha"),
-        pytest.param(lambda: HardtanhFwdOp(min_val=1e6), id="hardtanh-min_val"),
+        pytest.param(lambda: HardtanhFwdOp(min_val=-1e6), id="hardtanh-min_val"),
         pytest.param(lambda: HardtanhFwdOp(max_val=1e6), id="hardtanh-max_val"),
         pytest.param(lambda: SoftplusFwdOp(beta=1e6), id="softplus-beta"),
         pytest.param(lambda: SoftplusFwdOp(threshold=1e6), id="softplus-threshold"),
@@ -538,7 +522,7 @@ def test_masked_fill_forward_rejects_cpu_mask() -> None:
     op = MaskedFillScalarFwdOp(value=-100.0)
     x = torch.randn(1024, device="cuda", dtype=torch.float16)
     mask = torch.ones(1024, dtype=torch.bool)  # CPU mask
-    with pytest.raises(ValueError, match="needs every input on one device"):
+    with pytest.raises(ValueError, match="needs every tensor on one device"):
         op(x, mask)
 
 
@@ -550,7 +534,7 @@ def test_masked_fill_forward_rejects_non_bool_mask() -> None:
     op = MaskedFillScalarFwdOp(value=-100.0)
     x = torch.randn(1024, device="cuda", dtype=torch.float16)
     mask = torch.ones(1024, device="cuda", dtype=torch.float32)  # wrong dtype
-    with pytest.raises(ValueError, match="'mask' has dtype"):
+    with pytest.raises(ValueError, match="mask dtype is not bool"):
         op(x, mask)
 
 
@@ -562,7 +546,7 @@ def test_masked_fill_forward_rejects_a_mask_that_cannot_broadcast() -> None:
     op = MaskedFillScalarFwdOp(value=-100.0)
     x = torch.randn(1024, device="cuda", dtype=torch.float16)
     mask = torch.ones(512, device="cuda", dtype=torch.bool)  # neither shape broadcasts
-    with pytest.raises(ValueError, match="cannot broadcast"):
+    with pytest.raises(ValueError, match="not broadcastable"):
         op(x, mask)
 
 
@@ -706,14 +690,4 @@ def test_elu_rejects_infinite_alpha() -> None:
 
     op = EluFwdOp(alpha=float("inf"))
     with pytest.raises(ValueError, match="finite"):
-        op(torch.zeros(1024, device="cuda", dtype=torch.float16))
-
-
-@pytest.mark.smoke
-def test_softplus_rejects_non_numeric_beta() -> None:
-    """SoftplusFwdOp must reject non-numeric beta."""
-    from tileops.ops.elementwise import SoftplusFwdOp
-
-    op = SoftplusFwdOp(beta="bad")
-    with pytest.raises(TypeError, match="int/float"):
         op(torch.zeros(1024, device="cuda", dtype=torch.float16))

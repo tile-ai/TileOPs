@@ -36,97 +36,81 @@ from ._base import (
 class ExpFwdOp(UnaryOp):
     """Element-wise exp(x)."""
 
-    _op_name = "exp"
-    kernel_cls = ExpFwdKernel
+    kernel_types = {"exp": ExpFwdKernel}
 
 
 class LogFwdOp(UnaryOp):
     """Element-wise log(x)."""
 
-    _op_name = "log"
-    kernel_cls = LogFwdKernel
+    kernel_types = {"log": LogFwdKernel}
 
 
 class SqrtFwdOp(UnaryOp):
     """Element-wise sqrt(x)."""
 
-    _op_name = "sqrt"
-    kernel_cls = SqrtFwdKernel
+    kernel_types = {"sqrt": SqrtFwdKernel}
 
 
 class RsqrtFwdOp(UnaryOp):
     """Element-wise 1/sqrt(x)."""
 
-    _op_name = "rsqrt"
-    kernel_cls = RsqrtFwdKernel
+    kernel_types = {"rsqrt": RsqrtFwdKernel}
 
 
 class AbsFwdOp(_IntIdentityUnaryOp):
     """Element-wise |x|."""
 
-    _op_name = "abs"
-    kernel_cls = AbsFwdKernel
+    kernel_types = {"abs": AbsFwdKernel}
     _int_handler = staticmethod(torch.abs)
 
 
 class NegFwdOp(_IntIdentityUnaryOp):
     """Element-wise -x."""
 
-    _op_name = "neg"
-    kernel_cls = NegFwdKernel
+    kernel_types = {"neg": NegFwdKernel}
     _int_handler = staticmethod(torch.neg)
 
 
 class ReciprocalFwdOp(UnaryOp):
     """Element-wise 1/x.
 
-    Mirrors ``torch.reciprocal`` int-input promotion: the manifest declares the
-    output as ``promote_int_to_float(input)``, and ``ReciprocalFwdKernel.specialize``
-    names float32 as the compute type for an integral input. The semantic dtype
-    keys the specialization and drives roofline accounting — integer input bytes,
-    float32 output bytes — while the kernel is built for the type it computes in.
-    Floating inputs follow the standard same-dtype path.
+    Mirrors ``torch.reciprocal`` int-input promotion: an integral input gives a
+    float32 output, and ``ReciprocalFwdKernel.specialize`` names float32 as the
+    compute type for it. Floating inputs keep their dtype.
     """
 
-    _op_name = "reciprocal"
-    kernel_cls = ReciprocalFwdKernel
+    kernel_types = {"reciprocal": ReciprocalFwdKernel}
 
 
 class SignFwdOp(_IntIdentityUnaryOp):
     """Element-wise sign(x): -1, 0, or +1."""
 
-    _op_name = "sign"
-    kernel_cls = SignFwdKernel
-    # Manifest: flops = "2 * N" (two compares + selects per element).
+    kernel_types = {"sign": SignFwdKernel}
     _int_handler = staticmethod(torch.sign)
 
 
 class SinFwdOp(UnaryOp):
     """Element-wise sin(x)."""
 
-    _op_name = "sin"
-    kernel_cls = SinFwdKernel
+    kernel_types = {"sin": SinFwdKernel}
 
 
 class CosFwdOp(UnaryOp):
     """Element-wise cos(x)."""
 
-    _op_name = "cos"
-    kernel_cls = CosFwdKernel
+    kernel_types = {"cos": CosFwdKernel}
 
 
 class FloorFwdOp(_IntIdentityUnaryOp):
     """Element-wise floor(x)."""
 
-    _op_name = "floor"
-    kernel_cls = FloorFwdKernel
+    kernel_types = {"floor": FloorFwdKernel}
 
 
 class CeilFwdOp(_IntIdentityUnaryOp):
     """Element-wise ceil(x)."""
 
-    _op_name = "ceil"
-    kernel_cls = CeilFwdKernel
+    kernel_types = {"ceil": CeilFwdKernel}
 
 
 class _RoundDecimalsCall:
@@ -165,8 +149,7 @@ class RoundFwdOp(_IntIdentityUnaryOp):
 
     """
 
-    _op_name = "round"
-    kernel_cls = RoundFwdKernel
+    kernel_types = {"round": RoundFwdKernel}
 
     def __init__(
         self,
@@ -185,7 +168,7 @@ class RoundFwdOp(_IntIdentityUnaryOp):
             kernel_map: Optional kernel dispatch override.
             tune: Whether to autotune.
         """
-        self.decimals = int(decimals)
+        self.decimals = decimals
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
     def _build(self, dtype: torch.dtype, n_total: int):
@@ -197,8 +180,7 @@ class RoundFwdOp(_IntIdentityUnaryOp):
 class TruncFwdOp(_IntIdentityUnaryOp):
     """Element-wise trunc(x)."""
 
-    _op_name = "trunc"
-    kernel_cls = TruncFwdKernel
+    kernel_types = {"trunc": TruncFwdKernel}
 
 
 class ErfFwdOp(UnaryOp):
@@ -209,21 +191,16 @@ class ErfFwdOp(UnaryOp):
     order below half a float16 ulp at 1.0. float32 keeps `erff`.
     """
 
-    _op_name = "erf"
-    kernel_cls = ErfFwdKernel
+    kernel_types = {"erf": ErfFwdKernel}
 
 
 class Log1pFwdOp(UnaryOp):
     """Element-wise log(1 + x)."""
 
-    _op_name = "log1p"
-    kernel_cls = Log1pFwdKernel
-    # Manifest: flops = "2 * N" (1 add + 1 log).
+    kernel_types = {"log1p": Log1pFwdKernel}
 
 
 class Expm1FwdOp(UnaryOp):
     """Element-wise exp(x) - 1."""
 
-    _op_name = "expm1"
-    kernel_cls = Expm1FwdKernel
-    # Manifest: flops = "2 * N" (1 exp + 1 sub).
+    kernel_types = {"expm1": Expm1FwdKernel}

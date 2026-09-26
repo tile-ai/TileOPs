@@ -224,7 +224,7 @@ def test_native_bool_backend_is_constructed_with_bool():
     x = torch.tensor([True, False] * 32, device="cuda")
 
     torch.testing.assert_close(op(x, ~x), x & ~x)
-    ((built,),) = [tuple(op.built_kernels(op._op_name).values())]
+    ((built,),) = [tuple(op.built_kernels(op._slot).values())]
     assert isinstance(built, NativeBoolAnd)
     assert built.ctor_dtype == torch.bool, "the op imposed a storage dtype"
     assert sorted(op.kernel_map) == ["bitwise_and"], "a second slot survives"
@@ -266,7 +266,7 @@ def test_integer_fallback_yields_to_a_backend_that_serves_integers():
 
     shipped = FloorFwdOp(target=BUILTIN)
     torch.testing.assert_close(shipped(x), x)
-    ((built,),) = [tuple(shipped.built_kernels(shipped._op_name).values())]
+    ((built,),) = [tuple(shipped.built_kernels(shipped._slot).values())]
     assert isinstance(built, _IntFallbackCall), "float-only kernel was used"
 
     class NativeIntFloor(FloorFwdKernel):
@@ -280,7 +280,7 @@ def test_integer_fallback_yields_to_a_backend_that_serves_integers():
 
     op = FloorFwdOp(kernel_map={"floor": NativeIntFloor}, target=BUILTIN)
     torch.testing.assert_close(op(x), x)
-    ((built,),) = [tuple(op.built_kernels(op._op_name).values())]
+    ((built,),) = [tuple(op.built_kernels(op._slot).values())]
     assert isinstance(built, NativeIntFloor), "the override was bypassed"
     assert built.dtype == torch.int32
 

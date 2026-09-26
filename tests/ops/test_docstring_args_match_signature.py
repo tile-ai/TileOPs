@@ -50,7 +50,7 @@ def _inheriting_op_classes() -> dict:
             continue
         if "__init__" in vars(cls) or not cls.__dict__.get("__doc__"):
             continue
-        if getattr(cls, "_op_name", None) is None:
+        if "kernel_types" not in vars(cls):
             continue
         found[name] = cls
     return found

@@ -129,7 +129,7 @@ def test_bitwise_alternates_between_bool_and_integer_storage():
     torch.testing.assert_close(op(i, i + 1), i & (i + 1))
     torch.testing.assert_close(op(b, b), b & b)  # back to bool after the int kernel
 
-    built = tuple(op.built_kernels(op._op_name).values())
+    built = tuple(op.built_kernels(op._slot).values())
     assert len(built) == 2, "bool and int32 are two specializations"
     if served_in_tree(op):
         assert len({type(k) for k in built}) == 2, "and two different kernel classes"
@@ -148,7 +148,7 @@ def test_logical_and_output_stays_bool_across_input_storage():
     torch.testing.assert_close(op(f, f), torch.logical_and(f, f))
     torch.testing.assert_close(op(b, b), torch.logical_and(b, b))
 
-    built = tuple(op.built_kernels(op._op_name).values())
+    built = tuple(op.built_kernels(op._slot).values())
     assert len(built) == 2, "bool and float32 are two specializations"
     if served_in_tree(op):
         assert len({type(k) for k in built}) == 2, "and two different kernel classes"
@@ -168,7 +168,7 @@ def test_masked_fill_alternates_between_bool_and_float_input():
     torch.testing.assert_close(op(f, mask), f.masked_fill(mask, 1))
     torch.testing.assert_close(op(b, mask), b.masked_fill(mask, 1))
 
-    assert len(op.built_kernels(op._op_name)) == 2, "bool and float32 are two specializations"
+    assert len(op.built_kernels(op._slot)) == 2, "bool and float32 are two specializations"
 
 
 def _single_tensor_elementwise_ops():
@@ -188,7 +188,7 @@ def _single_tensor_elementwise_ops():
         cls = getattr(ew, name)
         if not (inspect.isclass(cls) and issubclass(cls, UnaryOp)):
             continue
-        if name.startswith("_") or getattr(cls, "_op_name", None) is None:
+        if name.startswith("_") or "kernel_types" not in vars(cls):
             continue  # a template base, not a concrete op
         signature = manifest.get(name, {}).get("signature", {})
         if len(signature.get("inputs", {})) == 1 and not signature.get("params"):
@@ -201,18 +201,14 @@ _SINGLE_TENSOR_OPS = _single_tensor_elementwise_ops()
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("name", sorted(_SINGLE_TENSOR_OPS))
-def test_single_tensor_op_records_its_dtype(name):
-    """No op may reach a result without recording the element type it used.
+def test_single_tensor_op_completes_every_declared_dtype(name):
+    """Every declared dtype completes a call, on whichever path serves it.
 
-    An op answering on its own path — an integer identity, a predicate fallback
-    — records for itself, so every declared dtype is driven, not just float32.
+    An op answering on its own path — an integer identity, a predicate fallback — is
+    driven too, not just float32.
     """
-    op = _SINGLE_TENSOR_OPS[name]()
-    declared = load_manifest()[name]["signature"]["inputs"]
-    (spec,) = declared.values()
-    dtypes = [getattr(torch, d.strip()) for d in spec["dtype"].split("|")]
-    dtypes = [d for d in dtypes if d not in (torch.float64, torch.complex64, torch.complex128)]
-    assert dtypes, f"{name} declares no drivable input dtype"
+    union = load_manifest()[name]["signature"]["forall"]["T"]
+    dtypes = [getattr(torch, d.strip()) for d in union[len("DType[") : -1].split("|")]
 
     for dtype in dtypes:
         op = _SINGLE_TENSOR_OPS[name]()
@@ -223,7 +219,7 @@ def test_single_tensor_op_records_its_dtype(name):
         else:
             x = torch.arange(1, 65, device="cuda", dtype=dtype)
         op(x)  # an unexpected failure here is a real defect, not a skip
-        assert op.dtype == dtype, f"{name} did not record {dtype}"
+        assert op.last_call.tensors["input"][1] == str(dtype).removeprefix("torch."), name
 
 
 @pytest.mark.smoke

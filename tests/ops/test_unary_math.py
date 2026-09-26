@@ -518,71 +518,6 @@ def test_round_decimals_default_is_zero() -> None:
 
 
 @pytest.mark.smoke
-def test_round_decimals_binds_call_metadata() -> None:
-    """A forward answered by the torch decomposition still records its element type.
-
-    ``self.dtype`` feeds ``eval_roofline`` / ``total_memory``. A non-zero ``decimals``
-    is served by ``_RoundDecimalsCall`` rather than a TileLang kernel, so if binding
-    lived in the kernel rather than in the get-or-build, this path would leave the
-    metadata describing the previous call — or no call at all.
-    """
-    op = RoundFwdOp(decimals=2)
-    op(torch.randn(256, device="cuda", dtype=torch.float32))
-    assert op.dtype == torch.float32
-    assert op.total_memory == 2 * 256 * 4
-
-    op(torch.randn(256, device="cuda", dtype=torch.float16))
-    assert op.dtype == torch.float16, "metadata still describes the float32 call"
-    assert op.total_memory == 2 * 256 * 2
-
-    op(torch.arange(256, device="cuda", dtype=torch.int32))
-    assert op.dtype == torch.int32
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "invoke",
-    [
-        pytest.param(lambda op, x: op(x), id="call"),
-        pytest.param(lambda op, x: op.forward(x), id="forward"),
-        pytest.param(lambda op, x: op._eager_forward(x), id="eager_forward"),
-        pytest.param(lambda op, x: torch.compile(op, fullgraph=True)(x), id="compiled"),
-    ],
-)
-def test_every_execution_path_records_its_dtype(invoke) -> None:
-    """Metadata must not depend on which entry point the caller used.
-
-    ``torch.compile`` reaches the op twice — once tracing, once through the
-    custom op — so a scheme that records on the outer call publishes nothing on
-    the first compiled invocation.
-    """
-    from tileops.ops.elementwise import AbsFwdOp
-
-    op = AbsFwdOp()
-    invoke(op, torch.randn(256, device="cuda", dtype=torch.float32))
-    assert op.dtype == torch.float32
-    assert op.total_memory == 2 * 256 * 4
-
-
-@pytest.mark.smoke
-def test_rejected_dtype_never_reaches_the_metadata() -> None:
-    """A dtype the op refuses cannot appear in the roofline metadata.
-
-    Validation runs before the specialization is selected, so the refusal path
-    never records anything. A call that fails *after* selecting one does leave
-    its dtype — see ``_PerDtypeKernels`` for why narrowing that needs the
-    invocation context rather than a slot.
-    """
-    op = RoundFwdOp()
-    op(torch.randn(256, device="cuda", dtype=torch.float32))
-    assert op.dtype == torch.float32
-
-    with pytest.raises(ValueError, match="dtype"):
-        op(torch.randn(256, device="cuda", dtype=torch.float64))
-    assert op.dtype == torch.float32, "a rejected dtype reached the metadata"
-
-
-@pytest.mark.smoke
 def test_round_decimals_validates_input() -> None:
     """Non-zero decimals must enforce the same input contract as decimals=0.
 
@@ -638,29 +573,14 @@ def test_reciprocal_int_promotes_to_float32(dtype: torch.dtype) -> None:
     "dtype",
     [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8],
 )
-def test_reciprocal_int_metadata_preserves_input_dtype(
+def test_reciprocal_int_roofline_prices_the_promoted_output(
     dtype: torch.dtype,
 ) -> None:
-    """``op.dtype`` must reflect the user-declared input dtype.
-
-    The float32 promotion is a kernel-side detail; the public
-    ``self.dtype`` metadata and ``eval_roofline`` byte accounting must
-    describe the actual I/O contract — integer input bytes plus
-    float32 output bytes — so downstream consumers (benchmarks,
-    bandwidth math) see the real workload.
-    """
+    """The roofline charges integer input bytes plus float32 output bytes."""
     n_total = 4
     op = ReciprocalFwdOp()
-    x = torch.ones(n_total, device="cuda", dtype=dtype)
-    op(x)
-    # Metadata describes the most recent call: the caller's integer dtype in,
-    # float32 out.
-    assert op.dtype == dtype, f"op.dtype must report the most recent input dtype, got {op.dtype}"
+    op(torch.ones(n_total, device="cuda", dtype=dtype))
     expected_bytes = n_total * (dtype.itemsize + torch.float32.itemsize)
-    assert int(op.total_memory) == expected_bytes, (
-        f"total_memory must charge int input bytes + float32 output "
-        f"bytes; expected {expected_bytes}, got {op.total_memory}"
-    )
     flops, bytes_ = op.eval_roofline()
     assert flops == n_total
     assert bytes_ == expected_bytes
@@ -676,6 +596,6 @@ def test_reciprocal_int_input_validation() -> None:
     op = ReciprocalFwdOp()
     assert op(torch.ones(4, device="cuda", dtype=torch.float32)).dtype == torch.float32
     assert op(torch.ones(4, device="cuda", dtype=torch.int32)).dtype == torch.float32
-    assert len(op.built_kernels(op._op_name)) == 2, "each semantic dtype keys its own entry"
+    assert len(op.built_kernels(op._slot)) == 2, "each semantic dtype keys its own entry"
     with pytest.raises(ValueError, match="dtype"):
         op(torch.ones(4, device="cuda", dtype=torch.float64))

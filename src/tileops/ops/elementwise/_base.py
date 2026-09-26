@@ -6,27 +6,15 @@ Three umbrella Op base classes, one per shape the family's kernels take:
 - ``BinaryOp`` — two tensors broadcast against each other
 - ``FusedGatedOp`` — one ``(M, 2N)`` tensor split into gate and value
 
-What they share is where each thing happens. An op validates the call, normalizes
-contiguity, and hands the *manifest-declared* shapes to its kernel; flattening,
-broadcasting and restoring the output shape are the kernel's own business, so both
-sides of the boundary speak the shapes the manifest declares. Element type is not
-a construction parameter either: an instance serves whichever dtype its caller
+The checks, output shapes and roofline are generated from each op's manifest
+signature, which also registers its compile-boundary operators. An op normalizes
+contiguity and hands the *manifest-declared* shapes to its kernel; flattening,
+broadcasting and restoring the output shape are the kernel's own business. Element
+type is not a construction parameter: an instance serves whichever dtype its caller
 passes, one specialization per element type, built on first use.
-
-torch.compile support: each concrete op is registered as one opaque operator at
-package load time, and publishes its name through ``compile_op_names`` so a test can
-assert the traced graph holds nothing else. The factories below do that for the ops
-that share a shape — unary, binary, fused gated, and the in-place companions; an op
-whose signature is its own registers in its own file, next to the class. Either way
-the fake reads its output shape from the op's ``_infer_output_shapes`` and its dtype
-from the manifest, never from a kernel class, which would make the compiled graph
-depend on which target served the op. Instances are recovered inside the operator by
-key, via the registry in ``tileops.ops.compile_boundary``.
 """
 
-import inspect
 import math
-from math import prod
 from typing import Callable, ClassVar, Dict, Optional
 
 import torch
@@ -34,8 +22,6 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 
-from .._compile_boundary_codegen import OperatorSpec
-from .._output_dtype import resolve_output_dtype
 from ..op_base import Op
 
 _MANIFEST_INT_SCALAR_DTYPES = (
@@ -141,79 +127,17 @@ def _validate_scalar_param_repr(
         )
 
 
-def broadcast_or_raise(op_name: str, **shapes: Optional[tuple]) -> tuple:
-    """The shape these operands broadcast to, or a ``ValueError`` naming the ones that
-    do not fit.
-
-    ``()`` when every operand is 0-dim, which is what the manifest's shape rule says.
-    Reads only its arguments; the registered fake calls it too.
-
-    Args:
-        op_name: Named in the error.
-        shapes: Operand shapes by their manifest names; ``None`` for an optional input
-            this call did not pass.
-    """
-    present = {name: tuple(shape) for name, shape in shapes.items() if shape is not None}
-    try:
-        return tuple(torch.broadcast_shapes(*present.values()))
-    except RuntimeError as exc:
-        listed = ", ".join(f"{name}={shape}" for name, shape in present.items())
-        raise ValueError(f"{op_name} cannot broadcast {listed}") from exc
-
-
-# Target dtype for integral inputs under ``promote_int_to_float``, matching
-# PyTorch's int-input promotion (e.g. ``torch.reciprocal``).
-_PROMOTED_FLOAT_DTYPE = torch.float32
-
-
-def _require_one_device(op_name: str, **tensors: Optional[torch.Tensor]) -> None:
-    """Refuse a call whose tensors are not all on one device.
-
-    Which device that is, and whether any kernel runs there, the kernel answers.
-
-    Args:
-        op_name: Named in the error, so a caller sees which op refused.
-        tensors: The call's tensors by their manifest names; ``None`` for an optional
-            input this call did not pass.
-    """
-    device = None
-    first = ""
-    for name, tensor in tensors.items():
-        if tensor is None:
-            continue
-        if device is None:
-            device, first = tensor.device, name
-        elif tensor.device != device:
-            raise ValueError(
-                f"{op_name} needs every input on one device; got {first} on {device} "
-                f"and {name} on {tensor.device}"
-            )
-
-
 class _PerDtypeKernels:
     """The family's one way to reach a kernel: ``self._kernel(inputs, dtype, *dims)``.
 
     A subclass supplies ``_build(dtype, *dims)`` for one specialization. What comes
     back is called with the manifest-declared tensors, so the in-tree path and a
     target's path hand back the same kind of thing.
-
-    ``self.dtype`` and the recorded input shapes describe the most recent call that
-    completed. ``eval_roofline`` and ``total_memory`` read them; no execution path may.
     """
-
-    def _note_call(self, dtype: torch.dtype, **shapes: Optional[tuple]) -> None:
-        """Record the element type and input shapes of the call that just returned.
-
-        Written after the launch, so a call that raised leaves the previous one's
-        account in place rather than half of its own.
-        """
-        for name, shape in shapes.items():
-            setattr(self, name, shape)
-        self.dtype = dtype
 
     @property
     def _slot(self) -> str:
-        """The one dispatch key this op's ``kernel_map`` declares; also its memory role."""
+        """The one dispatch key this op's ``kernel_map`` holds; also its memory role."""
         ((slot, _),) = self.kernel_map.items()
         return slot
 
@@ -249,22 +173,22 @@ class _PerDtypeKernels:
         """Construct the in-tree kernel for one specialization."""
         raise NotImplementedError(f"{type(self).__name__} must implement _build")
 
+    def _check_kernel_dtype(self, impl: type, dtype: torch.dtype, compute: torch.dtype) -> None:
+        """Refuse a dtype the selected kernel class does not serve."""
+        supported = impl.SUPPORTED_DTYPES
+        if supported is not None and compute not in supported:
+            names = ", ".join(str(dt) for dt in supported)
+            raise ValueError(f"{self._slot} does not support dtype {dtype}. Supported: [{names}]")
+
 
 class UnaryOp(_PerDtypeKernels, Op):
     """Template base class for unary elementwise ops.
 
-    Subclass must set ``kernel_cls`` and ``_op_name``. The element count arrives with
-    the tensor, so nothing about shape is a construction parameter.
-
+    A subclass sets ``kernel_types``, its one dispatch key. The element count arrives
+    with the tensor, so nothing about shape is a construction parameter.
     """
 
-    kernel_cls: type
-    _op_name: str
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
-    # Per-element FLOP count, matching the manifest's ``roofline.flops``
-    # coefficient on ``N``. Subclasses override when the op is more than one
-    # arithmetic op per element (e.g. ``sigmoid`` ≈ 4, ``tanh`` ≈ 5). The
-    # base class default of 1 covers the common ``flops: "N"`` entries.
+    compile_boundary: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -283,12 +207,7 @@ class UnaryOp(_PerDtypeKernels, Op):
         """
         self.target = target
         self.tune = tune
-        self.input_shape: Optional[tuple] = None
         self.dispatch_kernel(kernel_map)
-
-    def _infer_output_shapes(self, input_shape: tuple) -> Dict[str, tuple]:
-        """Manifest ``shape_rules``: ``output.shape == input.shape``."""
-        return {"output": tuple(input_shape)}
 
     def _build(self, dtype: torch.dtype, n_total: int):
         """Build one specialization for the semantic *dtype*."""
@@ -311,90 +230,25 @@ class UnaryOp(_PerDtypeKernels, Op):
         """Construct the kernel. Subclasses override to specialize construction."""
         return impl(N_total, dtype, tune=tune)
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {self._op_name: self.kernel_cls}
-
-    @property
-    def N_total(self) -> int:
-        """Element count of the most recent forward — the roofline's ``N``."""
-        if self.input_shape is None:
-            raise RuntimeError(
-                f"{type(self).__name__}.N_total requires a prior forward() call: the "
-                "element count arrives with the tensor"
-            )
-        return prod(self.input_shape)
-
-    @property
-    def total_memory(self) -> float:
-        """Read x + write y, for the element type of the most recent forward."""
-        if self.dtype is None:
-            raise RuntimeError(
-                f"{type(self).__name__}.total_memory requires a prior forward() "
-                "call to bind the element type"
-            )
-        out = resolve_output_dtype(type(self).__name__, self.dtype)
-        return self.N_total * (self.dtype.itemsize + out.itemsize)
-
-    def _validate_input(self, input: torch.Tensor) -> None:
-        """Validate the input against the manifest dtype union."""
-        self._validate_dtypes(input)
-
     def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Validate, normalize, resolve the kernel and launch, inside the operator."""
-        self._validate_input(input)
+        """Resolve the kernel and launch, inside the operator."""
         input = input.contiguous()
-        result = self._kernel((input,), input.dtype, input.numel())(input)
-        self._note_call(input.dtype, input_shape=tuple(input.shape))
-        return result
+        return self._kernel((input,), input.dtype, input.numel())(input)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
-        return type(self)._wrapped(input, self._instance_key)
+        return self._call_boundary(input)
 
 
 class BinaryOp(_PerDtypeKernels, Op):
     """Template base class for binary elementwise ops with broadcast.
 
-    Subclass must set ``kernel_cls`` and ``_op_name``. Both operand shapes arrive with
-    the tensors; the broadcast *lowering* — dim coalescing and stride synthesis — is the
-    kernel's, so this class only hands the two shapes down.
-
+    A subclass sets ``kernel_types``, its one dispatch key. Both operand shapes arrive
+    with the tensors; the broadcast *lowering* — dim coalescing and stride synthesis —
+    is the kernel's, so this class only hands the two shapes down.
     """
 
-    kernel_cls: type
-    _op_name: str
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
-    # Subclasses may set ``_other_name`` to a manifest-aligned parameter
-    # name (e.g. ``"exponent"`` for ``PowFwdOp``, ``"end"`` for
-    # ``LerpFwdOp``); the L1 signature check sees the renamed parameter
-    # via ``__init_subclass__`` rebinding ``forward.__signature__``.
-    _other_name: str = "other"
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        other_name = cls.__dict__.get("_other_name")
-        if other_name is None or other_name == "other":
-            return
-        base_forward = cls.forward
-        try:
-            sig = inspect.signature(base_forward)
-        except (ValueError, TypeError):
-            return
-        new_params = [
-            p.replace(name=other_name) if p.name == "other" else p for p in sig.parameters.values()
-        ]
-        new_sig = sig.replace(parameters=new_params)
-
-        def forward(self, *args, **kwargs):
-            if other_name in kwargs:
-                kwargs["other"] = kwargs.pop(other_name)
-            return base_forward(self, *args, **kwargs)
-
-        forward.__signature__ = new_sig
-        forward.__name__ = "forward"
-        forward.__qualname__ = f"{cls.__qualname__}.forward"
-        cls.forward = forward
+    compile_boundary: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -413,103 +267,28 @@ class BinaryOp(_PerDtypeKernels, Op):
         """
         self.target = target
         self.tune = tune
-        self.input_shape: Optional[tuple] = None
-        self.other_shape: Optional[tuple] = None
         self.dispatch_kernel(kernel_map)
-
-    def _infer_output_shapes(self, input_shape: tuple, other_shape: tuple) -> Dict[str, tuple]:
-        """Manifest ``shape_rules``: ``output.shape == broadcast_shapes(...)``."""
-        b_name = type(self)._other_name
-        return {
-            "output": broadcast_or_raise(
-                type(self).__name__, **{"input": input_shape, b_name: other_shape}
-            )
-        }
 
     def _build(self, dtype: torch.dtype, a_shape: tuple, b_shape: tuple):
         """Build one specialization for the semantic *dtype* and this broadcast."""
         impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        supported = impl.SUPPORTED_DTYPES
-        if supported is not None and ctor_dtype not in supported:
-            names = ", ".join(str(dt) for dt in supported)
-            raise ValueError(
-                f"{self._op_name} does not support dtype {dtype}. Supported: [{names}]"
-            )
+        self._check_kernel_dtype(impl, dtype, ctor_dtype)
         return self._build_kernel_instance(self.tune, ctor_dtype, impl, a_shape, b_shape)
 
     def _build_kernel_instance(self, tune, dtype, impl, a_shape, b_shape):
         """Construct the kernel. Subclasses override to inject extra kwargs."""
         return impl(a_shape, b_shape, dtype, tune=tune)
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {self._op_name: self.kernel_cls}
-
-    @property
-    def out_shape(self) -> tuple:
-        """Broadcast output shape of the most recent forward."""
-        return self._infer_output_shapes(self._operand_shapes()[0], self._operand_shapes()[1])[
-            "output"
-        ]
-
-    def _operand_shapes(self) -> tuple:
-        if self.input_shape is None or self.other_shape is None:
-            raise RuntimeError(
-                f"{type(self).__name__} needs a prior forward() call: both operand "
-                "shapes arrive with the tensors"
-            )
-        return self.input_shape, self.other_shape
-
-    @property
-    def N_total(self) -> int:
-        """Output element count of the most recent forward."""
-        return prod(self.out_shape)
-
-    @property
-    def a_numel(self) -> int:
-        """Elements actually read from the first operand — the roofline reads this."""
-        return prod(self._operand_shapes()[0])
-
-    @property
-    def b_numel(self) -> int:
-        """Elements actually read from the second operand."""
-        return prod(self._operand_shapes()[1])
-
-    @property
-    def total_memory(self) -> float:
-        """Read a + read b + write y, for the most recent forward's dtype."""
-        if self.dtype is None:
-            raise RuntimeError(
-                f"{type(self).__name__}.total_memory requires a prior forward() "
-                "call to bind the element type"
-            )
-        a_shape, b_shape = self._operand_shapes()
-        out_elem = resolve_output_dtype(type(self).__name__, self.dtype).itemsize
-        reads = (prod(a_shape) + prod(b_shape)) * self.dtype.itemsize
-        return reads + self.N_total * out_elem
-
-    def _validate_operands(self, input: torch.Tensor, other: torch.Tensor) -> None:
-        """Manifest dtype union, the shared element type, and one device."""
-        b_name = type(self)._other_name
-        _require_one_device(type(self).__name__, input=input, **{b_name: other})
-        self._validate_dtypes(input, other)
-        if other.dtype != input.dtype:
-            raise ValueError(f"Expected {b_name}.dtype {input.dtype}, got {other.dtype}")
-
     def _eager_forward(self, input: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
-        """Validate, normalize, resolve the kernel and launch, inside the operator."""
-        self._validate_operands(input, other)
+        """Resolve the kernel and launch, inside the operator."""
         input = input.contiguous()
         other = other.contiguous()
-        a_shape, b_shape = tuple(input.shape), tuple(other.shape)
-        kernel = self._kernel((input, other), input.dtype, a_shape, b_shape)
-        result = kernel(input, other)
-        self._note_call(input.dtype, input_shape=a_shape, other_shape=b_shape)
-        return result
+        kernel = self._kernel((input, other), input.dtype, tuple(input.shape), tuple(other.shape))
+        return kernel(input, other)
 
     def forward(self, input: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input`` and ``other``."""
-        return type(self)._wrapped(input, other, self._instance_key)
+        return self._call_boundary(input, other)
 
 
 class FusedGatedOp(_PerDtypeKernels, Op):
@@ -518,14 +297,11 @@ class FusedGatedOp(_PerDtypeKernels, Op):
     Input: x of shape (M, 2*N). gate = x[:, :N], value = x[:, N:].
     Output: y = activation(gate) * value, shape (M, N).
 
-    Subclass must set ``kernel_cls`` and ``_op_name``. Both dimensions arrive with the
-    tensor.
-
+    A subclass sets ``kernel_types``, its one dispatch key. Both dimensions arrive with
+    the tensor.
     """
 
-    kernel_cls: type
-    _op_name: str
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -544,115 +320,48 @@ class FusedGatedOp(_PerDtypeKernels, Op):
         """
         self.target = target
         self.tune = tune
-        self.x_shape: Optional[tuple] = None
         self.dispatch_kernel(kernel_map)
-
-    def _infer_output_shapes(self, x_shape: tuple) -> Dict[str, tuple]:
-        """Manifest ``shape_rules``: ``output.shape == [x.shape[0], x.shape[1] // 2]``."""
-        return {"output": (int(x_shape[0]), int(x_shape[1]) // 2)}
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {self._op_name: self.kernel_cls}
-
-    @property
-    def M(self) -> int:
-        """Row count of the most recent forward."""
-        return self._dims()[0]
-
-    @property
-    def N(self) -> int:
-        """Output width of the most recent forward."""
-        return self._dims()[1]
-
-    def _dims(self) -> tuple:
-        if self.x_shape is None:
-            raise RuntimeError(
-                f"{type(self).__name__} needs a prior forward() call: both dimensions "
-                "arrive with the tensor"
-            )
-        return self._infer_output_shapes(self.x_shape)["output"]
-
-    @property
-    def total_memory(self) -> float:
-        """Read x (M*2N) + write y (M*N)."""
-        if self.dtype is None:
-            raise RuntimeError("Fused gated dimensions are available after first forward")
-        m, n = self._dims()
-        out_elem = resolve_output_dtype(type(self).__name__, self.dtype).itemsize
-        return m * 2 * n * self.dtype.itemsize + m * n * out_elem
 
     def _build(self, dtype: torch.dtype, m: int, n: int):
         impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
-        supported = impl.SUPPORTED_DTYPES
-        if supported is not None and ctor_dtype not in supported:
-            names = ", ".join(str(dt) for dt in supported)
-            raise ValueError(
-                f"{self._op_name} does not support dtype {dtype}. Supported: [{names}]"
-            )
+        self._check_kernel_dtype(impl, dtype, ctor_dtype)
         return impl(m, n, ctor_dtype, tune=self.tune)
 
-    def _validate_input(self, x: torch.Tensor) -> None:
-        self._validate_dtypes(x)
-        if x.ndim != 2:
-            raise ValueError(f"Expected x to be 2D, got {x.ndim}D")
-        if x.shape[1] % 2 != 0:
-            raise ValueError(f"Expected x.shape[1] to be even, got {x.shape[1]}")
-
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Validate, normalize, resolve the kernel and launch, inside the operator."""
-        self._validate_input(x)
+        """Resolve the kernel and launch, inside the operator."""
         x = x.contiguous()
-        x_shape = tuple(x.shape)
-        m, n = self._infer_output_shapes(x_shape)["output"]
-        result = self._kernel((x,), x.dtype, m, n)(x)
-        self._note_call(x.dtype, x_shape=x_shape)
-        return result
+        return self._kernel((x,), x.dtype, x.shape[0], x.shape[1] // 2)(x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the op on ``x``."""
-        return type(self)._wrapped(x, self._instance_key)
+        return self._call_boundary(x)
 
 
 # Intermediate (private) base classes shared by leaf op modules
 
 
-# The second operator an activation declaring ``inplace`` registers: the kernel writes a
-# fresh buffer, so this one copies the result back and the traced graph carries the write.
-# An activation adds it to its ``compile_boundary``; one whose manifest declares no
-# ``inplace`` does not.
-INPLACE_ACTIVATION = OperatorSpec.inplace("input")
-
-
 class _UnaryActivationMixin:
-    """Shared ``forward`` / inplace dispatch for unary activation Ops.
+    """The ``inplace`` switch of a unary activation.
 
-    The inplace path dispatches through ``_wrapped_inplace``, whose written argument the
-    codegen names from the manifest so ``torch.compile`` traces the mutation, and returns
-    the original ``input``, so callers see ``y is x``.
-
-    Which of the two operators runs is decided by ``self.inplace``, a construction
-    parameter — read on the traced side, never written there. Leaves without
-    ``inplace`` in their signature default it to ``False``.
+    The kernel writes a fresh buffer; with ``inplace`` set the result is copied back into
+    ``input`` and ``input`` is returned, so callers see ``y is x``. The manifest marks
+    ``input`` written exactly when ``inplace`` holds, which selects the operator that
+    carries the write in a traced graph.
     """
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input``."""
-        if self.inplace:
-            type(self)._wrapped_inplace(input, self._instance_key)
-            return input
-        return type(self)._wrapped(input, self._instance_key)
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
+        result = super()._eager_forward(input)
+        if not self.inplace:
+            return result
+        input.copy_(result)
+        return input
 
 
 class _ParamFreeActivationOp(_UnaryActivationMixin, UnaryOp):
-    """Shared base for the param-free activation Op group.
+    """Shared base for the activations whose only parameter is ``inplace``.
 
-    Centralizes the canonical constructor used by activations whose only
-    manifest-declared parameter is ``inplace`` (ReLU, SiLU, HardSwish,
-    HardSigmoid, Mish, SELU). Each leaf only declares its op-specific
-    class fields (``_op_name``, ``kernel_cls``,
-    docstring); ``forward``/``_eager_forward`` come from
-    ``_UnaryActivationMixin`` / ``UnaryOp``.
+    ReLU, SiLU, HardSwish, HardSigmoid, Mish and SELU: each leaf declares only its
+    ``kernel_types`` and docstring.
     """
 
     def __init__(
@@ -666,25 +375,21 @@ class _ParamFreeActivationOp(_UnaryActivationMixin, UnaryOp):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
+            inplace: When True, write the result into ``input`` and return ``input``.
             target: Backend target to serve this op, or ``None`` to decide from the input device.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
         """
-        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
         self.inplace = inplace
+        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
 
-class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
-    """Shared base for the parametric activation Op group.
+class _ParametricActivationOp(UnaryOp):
+    """Shared base for the activations with scalar construction parameters.
 
-    Used by activations that take one or more scalar construction-time
-    parameters (LeakyReLU, ELU, Hardtanh, Softplus). Leaves own their
-    ``__init__`` because scalar names and defaults vary per leaf: each records
-    its scalars on ``self``, then delegates to ``UnaryOp.__init__``.
-
-    Leaves that declare ``inplace`` in the manifest signature accept it
-    in ``__init__``. ``forward`` and ``_eager_forward`` are inherited from the
-    mixin and ``UnaryOp``.
+    LeakyReLU, ELU, Hardtanh and Softplus. Leaves own their ``__init__`` because scalar
+    names and defaults vary per leaf: each records its parameters on ``self``, then
+    delegates to ``UnaryOp.__init__``.
     """
 
     # Names of the scalar parameters baked into the kernel; each names both the
@@ -698,7 +403,7 @@ class _ParametricActivationOp(_UnaryActivationMixin, UnaryOp):
         kwargs = {}
         for name in type(self)._scalar_params:
             value = getattr(self, name)
-            _validate_scalar_param_repr(name, value, dtype, self._op_name)
+            _validate_scalar_param_repr(name, value, dtype, self._slot)
             kwargs[name] = value
         impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
         return impl(n_total, ctor_dtype, tune=self.tune, **kwargs)
@@ -726,12 +431,22 @@ class _AlphaScaledBinaryOp(BinaryOp):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
+            alpha: Multiplier on ``other`` (default 1).
             target: Backend target to serve this op, or ``None`` to decide from the input device.
             kernel_map: Optional kernel override dict.
             tune: Whether to autotune, applied when a kernel is first built.
         """
         self.alpha = alpha
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
+
+    def _build(self, dtype: torch.dtype, a_shape: tuple, b_shape: tuple):
+        # torch.add / torch.sub refuse a floating-point alpha for integral and bool inputs.
+        if isinstance(self.alpha, float) and not dtype.is_floating_point:
+            raise ValueError(
+                f"{type(self).__name__}: alpha={self.alpha!r} is a float, which a {dtype} "
+                "input does not take"
+            )
+        return super()._build(dtype, a_shape, b_shape)
 
     def _build_kernel_instance(self, tune, dtype, impl, a_shape, b_shape):
         return impl(a_shape, b_shape, dtype, tune=tune, alpha=self.alpha)
@@ -763,12 +478,12 @@ class _IntFallbackCall:
     """
 
     def __init__(self, handler):
-        """Build the op. Shapes and dtype are taken from the first call."""
+        """Serve a call with *handler*, a function of the op's input."""
         self._handler = handler
 
     def __call__(self, input: torch.Tensor) -> torch.Tensor:
         # Contiguous like the kernel path: the layout must not depend on which dtype
-        # the op was handed, and it has to agree with the registered fake.
+        # the op was handed.
         return self._handler(input).contiguous()
 
 
@@ -776,15 +491,14 @@ class _IntIdentityUnaryOp(UnaryOp):
     """Base for unary ops whose manifest declares integer dtypes the shipped
     float-only kernels do not serve.
 
-    Such a dtype builds ``_IntFallbackCall``; subclasses set ``_int_handler`` and
-    ``_int_output_dtype``. Every other dtype goes to the kernel, which raises on its
-    own dtype check. A ``kernel_map`` override that declares integer support in
-    ``SUPPORTED_DTYPES`` is used instead — the choice is made in ``_build``, which
-    only the in-tree path reaches.
+    Such a dtype builds ``_IntFallbackCall``; subclasses set ``_int_handler``. Every
+    other dtype goes to the kernel, which raises on its own dtype check. A
+    ``kernel_map`` override that declares integer support in ``SUPPORTED_DTYPES`` is
+    used instead — the choice is made in ``_build``, which only the in-tree path
+    reaches.
     """
 
     _int_handler: Callable[[torch.Tensor], torch.Tensor] = staticmethod(_int_identity)
-    _int_output_dtype: Optional[torch.dtype] = None
     # Subclasses may extend the fallback dtype set when the manifest
     # signature includes additional non-float dtypes (e.g. torch.bool for
     # the is{nan,inf,finite} predicates).
@@ -798,36 +512,3 @@ class _IntIdentityUnaryOp(UnaryOp):
                 return super()._build(dtype, n_total)
             return _IntFallbackCall(type(self)._int_handler)
         return super()._build(dtype, n_total)
-
-
-class _GeluApproximateBase(UnaryOp):
-    """Intermediate base that resolves the manifest ``approximate`` field.
-
-    Validates the ``approximate`` argument against the manifest's allowed
-    values (``'none'`` / ``'tanh'``), records it on ``self.approximate``
-    for introspection, and then delegates to ``UnaryOp.__init__``. The
-    ``default_kernel_map`` of the leaf op picks the kernel implementation
-    from ``self.approximate``.
-    """
-
-    def __init__(
-        self,
-        *,
-        approximate: str = "none",
-        target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ):
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            target: Backend target to serve this op, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
-        if approximate not in ("none", "tanh"):
-            raise ValueError(
-                f"{type(self).__name__}: approximate must be 'none' or 'tanh', got {approximate!r}"
-            )
-        self.approximate = approximate
-        super().__init__(target=target, kernel_map=kernel_map, tune=tune)

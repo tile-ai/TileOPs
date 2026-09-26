@@ -507,7 +507,7 @@ def test_a_clamp_with_neither_bound_never_reaches_the_backend():
     from tileops.ops.elementwise import ClampFwdOp
 
     input, _, _ = _clamp_inputs()
-    with pytest.raises(ValueError, match="shape rule"):
+    with pytest.raises(ValueError, match="ClampOut"):
         ClampFwdOp()(input)
     assert recorder.calls == []
 

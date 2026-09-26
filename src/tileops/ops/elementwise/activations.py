@@ -1,6 +1,6 @@
 """Activation elementwise ops (ReLU + parametric/param-free families)."""
 
-from typing import ClassVar, Dict, Optional
+from typing import Dict, Optional
 
 from tileops.backend import Target
 from tileops.kernels.elementwise import (
@@ -24,154 +24,103 @@ from tileops.kernels.elementwise import (
 )
 from tileops.kernels.kernel_base import Kernel
 
-from .._compile_boundary_codegen import OperatorSpec
 from ._base import (
-    INPLACE_ACTIVATION,
     FusedGatedOp,
     UnaryOp,
-    _GeluApproximateBase,
     _ParametricActivationOp,
     _ParamFreeActivationOp,
+    _UnaryActivationMixin,
 )
 
 
 class ReluFwdOp(_ParamFreeActivationOp):
     """ReLU activation: y = max(x, 0)."""
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
-        INPLACE_ACTIVATION,
-    )
-
-    _op_name = "relu"
-    kernel_cls = ReluFwdKernel
-    # Manifest: flops = "N". Per roofline.md §1.3, one
-    # compare-and-select counts as 1 FLOP per element.
+    kernel_types = {"relu": ReluFwdKernel}
 
 
-class GeluFwdOp(_GeluApproximateBase):
+class GeluFwdOp(UnaryOp):
     """Element-wise GELU honoring the manifest ``approximate`` contract.
 
     On float16 and bfloat16 the error function is evaluated as a polynomial that
     saturates to exactly +/-1; its worst case over the real line is 1.7e-5, an
     order below half a float16 ulp at 1.0. float32 keeps `erff`.
-
-    Args:
-        approximate: Approximation mode. ``'none'`` (default) routes to
-            the erf-based ``GeluFwdKernel``. ``'tanh'`` routes to
-            ``GeluTanhFwdKernel`` (the fused tanh approximation
-            ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``).
-        target: Which set of kernels serves this op.
-        kernel_map: Optional kernel dispatch override.
-        tune: Whether to autotune the kernel.
     """
 
-    _op_name = "gelu"
-    kernel_cls = GeluFwdKernel
-    # Manifest: flops = "5 * N". Per roofline.md §1.3:
-    # gelu(x) = x * 0.5 * (1 + erf(x/sqrt(2))) =
-    # div + erf(transcendental) + add + mul-by-half + mul = 5 per elem.
+    kernel_types = {"gelu": GeluFwdKernel, "gelu_tanh": GeluTanhFwdKernel}
+
+    def __init__(
+        self,
+        *,
+        approximate: str = "none",
+        target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+    ):
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            approximate: ``'none'`` (default) evaluates the erf form; ``'tanh'`` the
+                tanh approximation ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``.
+            target: Which set of kernels serves this op.
+            kernel_map: Optional kernel dispatch override.
+            tune: Whether to autotune the kernel.
+        """
+        self.approximate = approximate
+        super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        kernel_cls = GeluTanhFwdKernel if self.approximate == "tanh" else GeluFwdKernel
-        return {self._op_name: kernel_cls}
+        key = "gelu_tanh" if self.approximate == "tanh" else "gelu"
+        return {key: self.kernel_types[key]}
 
 
 class SiluFwdOp(_ParamFreeActivationOp):
     """Element-wise SiLU (Swish): y = x * sigmoid(x)."""
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
-        INPLACE_ACTIVATION,
-    )
-
-    _op_name = "silu"
-    kernel_cls = SiluFwdKernel
-    # Manifest: flops = "5 * N". Per roofline.md §1.3:
-    # sigmoid = neg + exp + add + recip = 4; silu adds one mul = 5 per elem.
+    kernel_types = {"silu": SiluFwdKernel}
 
 
 class SigmoidFwdOp(UnaryOp):
     """Element-wise sigmoid(x)."""
 
-    _op_name = "sigmoid"
-    kernel_cls = SigmoidFwdKernel
-    # Manifest: flops = "4 * N" (sigmoid(x) = 1 / (1 + exp(-x)) ≈ 4 ops/elem).
+    kernel_types = {"sigmoid": SigmoidFwdKernel}
 
 
 class TanhFwdOp(UnaryOp):
     """Element-wise tanh(x)."""
 
-    _op_name = "tanh"
-    kernel_cls = TanhFwdKernel
-    # Manifest: flops = "N". Per roofline.md §1.3, tanh is one
-    # transcendental call = 1 FLOP per element.
+    kernel_types = {"tanh": TanhFwdKernel}
 
 
 class HardswishFwdOp(_ParamFreeActivationOp):
     """Element-wise HardSwish: y = x * clamp(x + 3, 0, 6) / 6."""
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
-        INPLACE_ACTIVATION,
-    )
-
-    _op_name = "hardswish"
-    kernel_cls = HardswishFwdKernel
-    # Manifest: flops = "4 * N". Per roofline.md §1.3:
-    # hardswish(x) = x * relu6(x+3)/6 =
-    # add + two-sided-clamp(1) + mul + div = 4 per elem.
+    kernel_types = {"hardswish": HardswishFwdKernel}
 
 
 class HardsigmoidFwdOp(_ParamFreeActivationOp):
     """Element-wise HardSigmoid: y = clamp(x + 3, 0, 6) / 6."""
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
-        INPLACE_ACTIVATION,
-    )
-
-    _op_name = "hardsigmoid"
-    kernel_cls = HardsigmoidFwdKernel
-    # Manifest: flops = "3 * N". Per roofline.md §1.3:
-    # hardsigmoid(x) = relu6(x+3)/6 =
-    # add + two-sided-clamp(1) + div = 3 per elem.
+    kernel_types = {"hardsigmoid": HardsigmoidFwdKernel}
 
 
 class MishFwdOp(_ParamFreeActivationOp):
     """Element-wise Mish: y = x * tanh(softplus(x))."""
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
-        INPLACE_ACTIVATION,
-    )
-
-    _op_name = "mish"
-    kernel_cls = MishFwdKernel
-    # Manifest: flops = "4 * N". Per roofline.md §1.3:
-    # mish(x) = x * tanh(softplus(x));
-    # softplus = exp + log1p = 2; tanh(transcendental) + final mul = 4 per elem.
+    kernel_types = {"mish": MishFwdKernel}
 
 
 class SeluFwdOp(_ParamFreeActivationOp):
     """Element-wise SELU activation."""
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
-        INPLACE_ACTIVATION,
-    )
-
-    _op_name = "selu"
-    kernel_cls = SeluFwdKernel
-    # Manifest: flops = "5 * N" (branch + exp/sub/mul + lambda mul).
+    kernel_types = {"selu": SeluFwdKernel}
 
 
-class LeakyReluFwdOp(_ParametricActivationOp):
+class LeakyReluFwdOp(_UnaryActivationMixin, _ParametricActivationOp):
     """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
-        INPLACE_ACTIVATION,
-    )
-
-    _op_name = "leaky_relu"
-    # Manifest: flops = "2 * N". Per roofline.md §1.3:
-    # compare-and-select(1) + mul = 2 per elem.
-
+    kernel_types = {"leaky_relu": LeakyReluFwdKernel}
     _scalar_params = ("negative_slope",)
 
     def __init__(
@@ -187,10 +136,8 @@ class LeakyReluFwdOp(_ParametricActivationOp):
 
         Args:
             negative_slope: Slope for negative inputs (default 0.01).
-            inplace: When True, copy the result back into ``input`` and
-                return ``input`` (preserving tensor identity). The kernel
-                still computes into a fresh buffer; only the user-visible
-                tensor is mutated, mirroring ``torch.nn.functional.leaky_relu``.
+            inplace: When True, write the result into ``input`` and return ``input``.
+            target: Which set of kernels serves this op.
             kernel_map: Optional kernel dispatch override.
             tune: Whether to autotune the kernel.
         """
@@ -198,22 +145,11 @@ class LeakyReluFwdOp(_ParametricActivationOp):
         self.inplace = inplace
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
-    @property
-    def default_kernel_map(self):
-        return {"leaky_relu": LeakyReluFwdKernel}
 
-
-class EluFwdOp(_ParametricActivationOp):
+class EluFwdOp(_UnaryActivationMixin, _ParametricActivationOp):
     """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
-        INPLACE_ACTIVATION,
-    )
-
-    _op_name = "elu"
-    # Manifest: flops = "4 * N". Per roofline.md §1.3:
-    # compare-and-select(1) + exp + sub + mul = 4 per elem.
-
+    kernel_types = {"elu": EluFwdKernel}
     _scalar_params = ("alpha",)
 
     def __init__(
@@ -229,8 +165,8 @@ class EluFwdOp(_ParametricActivationOp):
 
         Args:
             alpha: Scale for the negative part (default 1.0).
-            inplace: When True, copy the result back into ``input`` and
-                return ``input`` (preserving tensor identity).
+            inplace: When True, write the result into ``input`` and return ``input``.
+            target: Which set of kernels serves this op.
             kernel_map: Optional kernel dispatch override.
             tune: Whether to autotune the kernel.
         """
@@ -238,22 +174,11 @@ class EluFwdOp(_ParametricActivationOp):
         self.inplace = inplace
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
-    @property
-    def default_kernel_map(self):
-        return {"elu": EluFwdKernel}
 
-
-class HardtanhFwdOp(_ParametricActivationOp):
+class HardtanhFwdOp(_UnaryActivationMixin, _ParametricActivationOp):
     """Hardtanh: y = clamp(x, min_val, max_val)."""
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = UnaryOp.compile_boundary + (
-        INPLACE_ACTIVATION,
-    )
-
-    _op_name = "hardtanh"
-    # Manifest: flops = "N". Per roofline.md §1.3, two-sided clamp
-    # collapses to 1 compare-and-select per output element.
-
+    kernel_types = {"hardtanh": HardtanhFwdKernel}
     _scalar_params = ("min_val", "max_val")
 
     def __init__(
@@ -271,8 +196,8 @@ class HardtanhFwdOp(_ParametricActivationOp):
         Args:
             min_val: Lower bound (default -1.0).
             max_val: Upper bound (default 1.0).
-            inplace: When True, copy the result back into ``input`` and
-                return ``input`` (preserving tensor identity).
+            inplace: When True, write the result into ``input`` and return ``input``.
+            target: Which set of kernels serves this op.
             kernel_map: Optional kernel dispatch override.
             tune: Whether to autotune the kernel.
         """
@@ -281,19 +206,11 @@ class HardtanhFwdOp(_ParametricActivationOp):
         self.inplace = inplace
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
 
-    @property
-    def default_kernel_map(self):
-        return {"hardtanh": HardtanhFwdKernel}
-
 
 class SoftplusFwdOp(_ParametricActivationOp):
     """Softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x."""
 
-    _op_name = "softplus"
-    # Manifest: flops = "5 * N". Per roofline.md §1.3:
-    # mul-beta + threshold compare-and-select(1) + exp + log1p + div-by-beta
-    # = 5 per elem.
-
+    kernel_types = {"softplus": SoftplusFwdKernel}
     _scalar_params = ("beta", "threshold")
 
     def __init__(
@@ -310,25 +227,19 @@ class SoftplusFwdOp(_ParametricActivationOp):
         Args:
             beta: Scaling factor (default 1.0).
             threshold: Linear regime threshold (default 20.0).
+            target: Which set of kernels serves this op.
             kernel_map: Optional kernel dispatch override.
             tune: Whether to autotune the kernel.
         """
         self.beta = beta
         self.threshold = threshold
-        # Softplus does not expose ``inplace`` to callers.
-        self.inplace = False
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
-
-    @property
-    def default_kernel_map(self):
-        return {"softplus": SoftplusFwdKernel}
 
 
 class SiluAndMulFwdOp(FusedGatedOp):
     """SiLU-and-Mul: y = silu(gate) * value."""
 
-    _op_name = "silu_and_mul"
-    kernel_cls = SiluAndMulFwdKernel
+    kernel_types = {"silu_and_mul": SiluAndMulFwdKernel}
 
 
 class GeluAndMulFwdOp(FusedGatedOp):
@@ -339,12 +250,10 @@ class GeluAndMulFwdOp(FusedGatedOp):
     order below half a float16 ulp at 1.0. float32 keeps `erff`.
     """
 
-    _op_name = "gelu_and_mul"
-    kernel_cls = GeluAndMulFwdKernel
+    kernel_types = {"gelu_and_mul": GeluAndMulFwdKernel}
 
 
 class GeluTanhAndMulFwdOp(FusedGatedOp):
     """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value (tanh approximation)."""
 
-    _op_name = "gelu_tanh_and_mul"
-    kernel_cls = GeluTanhAndMulFwdKernel
+    kernel_types = {"gelu_tanh_and_mul": GeluTanhAndMulFwdKernel}

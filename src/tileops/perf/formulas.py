@@ -17,31 +17,21 @@ if TYPE_CHECKING:
     from tileops.ops.op_base import Op
 
 __all__ = [
-    "add_fwd_roofline",
-    "bitwise_and_fwd_roofline",
-    "bitwise_or_fwd_roofline",
-    "bitwise_xor_fwd_roofline",
     "cb_producer_roofline",
-    "clamp_fwd_roofline",
     "da_cumsum_fwd_roofline",
     "deepseek_dsa_decode_roofline",
     "deepseek_mla_decode_roofline",
     "deltanet_decode_roofline",
     "deltanet_inference_roofline",
-    "div_fwd_roofline",
-    "dropout_roofline",
     "engram_decode_roofline",
     "engram_gate_conv_bwd_roofline",
     "engram_gate_conv_fwd_roofline",
-    "eq_fwd_roofline",
     "fft_c2c_roofline",
-    "floor_divide_fwd_roofline",
     "fp8_lightning_indexer_roofline",
     "fp8_quant_roofline",
     "fused_moe_fwd_bytes",
     "fused_moe_shared_expert_fwd_bytes",
     "gated_deltanet_fwd_roofline",
-    "ge_fwd_roofline",
     "gemm_fwd_roofline",
     "gemm_w4a16_fwd_roofline",
     "gla_decode_roofline",
@@ -53,38 +43,22 @@ __all__ = [
     "gqa_sliding_window_varlen_fwd_roofline",
     "gqa_varlen_fwd_roofline",
     "grouped_gemm_roofline",
-    "gt_fwd_roofline",
-    "le_fwd_roofline",
-    "lerp_fwd_roofline",
-    "lerp_tensor_fwd_roofline",
-    "logical_and_fwd_roofline",
-    "logical_or_fwd_roofline",
-    "lt_fwd_roofline",
     "mamba2_fwd_roofline",
-    "masked_fill_fwd_roofline",
-    "maximum_fwd_roofline",
     "mha_bwd_roofline",
     "mha_decode_paged_roofline",
     "mean_pooling_fwd_roofline",
     "mhc_post_roofline",
     "mhc_pre_roofline",
-    "minimum_fwd_roofline",
     "moe_expert_mlp_roofline",
     "moe_grouped_gemm_roofline",
     "moe_pre_permute_roofline",
-    "mul_fwd_roofline",
-    "ne_fwd_roofline",
-    "pow_fwd_roofline",
-    "remainder_fwd_roofline",
     "rope_position_ids_roofline",
     "rope_roofline",
     "ssd_chunk_scan_fwd_roofline",
     "ssd_chunk_state_fwd_roofline",
     "ssd_decode_roofline",
     "ssd_state_passing_fwd_roofline",
-    "sub_fwd_roofline",
     "topk_selector_roofline",
-    "where_fwd_roofline",
 ]
 
 
@@ -753,200 +727,6 @@ def deepseek_dsa_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[
     return int(flops), int(nbytes)
 
 
-def where_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for ``torch.where`` forward (bool condition + float input/other).
-
-    Func mode: the byte accounting mixes a 1-byte bool condition with the
-    float input/other dtype, which inline mode cannot express (it binds
-    ``elem_bytes`` to a single dtype).
-
-    ``flops = N_total`` (one predicated select per element). The bool
-    condition costs one byte per element of its own shape, input and other one
-    ``elem_bytes`` each of theirs, and the write is at the broadcast size.
-    """
-    n_total = int(op.N_total)
-    elem_bytes = op.dtype.itemsize
-    flops = n_total
-    reads = prod(op.input_shape) + prod(op.other_shape)
-    nbytes = prod(op.condition_shape) + (reads + n_total) * elem_bytes
-    return flops, nbytes
-
-
-# Func mode: ``N_total`` is post-broadcast, and ``broadcast_shapes`` is not in
-# the inline vars-layer namespace (docs/design/roofline.md §4.4.4), so inline
-# codegen cannot bind it. ``ClampScalarFwdOp`` stays inline — no broadcasting.
-
-
-def clamp_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for ``ClampFwdOp`` (Tensor-bound clamp).
-
-    ``torch.clamp(input, min, max)`` with each bound a Tensor or absent,
-    broadcasting across the operands present. Per docs/design/roofline.md §1.3 a
-    two-sided clamp collapses to one fused compare-and-select, so
-    ``flops = N_total`` either way. Bytes read input and each bound that was
-    passed, each at its own size, then write out at the broadcast size.
-    """
-    n_total = int(op.N_total)
-    elem_bytes = op.dtype.itemsize
-    reads = prod(op.input_shape)
-    for bound in ("min", "max"):
-        if _supplied(op, bound):
-            reads += prod(getattr(op, f"{bound}_shape"))
-    return n_total, (reads + n_total) * elem_bytes
-
-
-def lerp_tensor_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for ``LerpTensorFwdOp`` (Tensor-weight ``torch.lerp``).
-
-    Per output element: 3 flops (sub + mul + add). Each of input, end and
-    weight is read at its own size; the write is at the broadcast size.
-    """
-    n_total = int(op.N_total)
-    elem_bytes = op.dtype.itemsize
-    reads = prod(op.input_shape) + prod(op.end_shape) + prod(op.weight_shape)
-    return 3 * n_total, (reads + n_total) * elem_bytes
-
-
-# Func mode: out-of-place ``masked_fill`` broadcasts ``input`` against ``mask``
-# bidirectionally, and ``broadcast_shapes`` is not in the inline vars-layer
-# namespace (docs/design/roofline.md §4.4.4). One function serves both the
-# Tensor-value and Scalar-value variants — the 0-dim read folds into the
-# per-element write cost.
-
-
-def masked_fill_fwd_roofline(op: "Op") -> tuple[int, int]:
-    """Roofline for ``MaskedFillFwdOp`` and ``MaskedFillScalarFwdOp``.
-
-    Out-of-place ``Tensor.masked_fill``; output shape is the bidirectional
-    broadcast of ``input`` and ``mask``. One predicated select per element →
-    ``flops = N_total``. Each operand is read at its own size, not the
-    output's: a broadcast operand occupies one storage however many times the
-    kernel reads it. The mask is bool, one byte per element, and the
-    Tensor-value variant reads its 0-dim ``value`` as well.
-    """
-    n_total = int(op.N_total)
-    elem_bytes = op.dtype.itemsize
-    flops = n_total
-    nbytes = prod(op.mask_shape) + prod(op.input_shape) * elem_bytes + n_total * elem_bytes
-    # The scalar variant declares ``value`` as a param and reads no tensor for it,
-    # so the shape binding is what separates the two, not the name.
-    if getattr(op, "value_shape", None) is not None:
-        nbytes += elem_bytes
-    return flops, nbytes
-
-
-def _binary_broadcast_roofline(
-    op: "Op", *, flops_per_elem: int, bool_output: bool
-) -> tuple[int, int]:
-    """Shared core for the broadcast-binary roofline family."""
-    a_numel = int(op.a_numel)
-    b_numel = int(op.b_numel)
-    n_total = int(op.N_total)
-    elem_bytes = op.dtype.itemsize
-    out_elem_bytes = 1 if bool_output else elem_bytes
-    flops = flops_per_elem * n_total
-    nbytes = (a_numel + b_numel) * elem_bytes + n_total * out_elem_bytes
-    return flops, nbytes
-
-
-def _alpha_scaled_flops_per_elem(op: "Op") -> int:
-    """1 for the default ``alpha``, 2 when the scale multiply is real.
-
-    ``torch.add``/``torch.sub`` compute ``input + alpha * other``. At
-    ``alpha == 1`` the kernel emits no multiply and roofline.md §1.3 prices one
-    basic arithmetic op at 1; any other ``alpha`` adds it.
-    """
-    return 1 if op.alpha == 1 else 2
-
-
-def add_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(
-        op, flops_per_elem=_alpha_scaled_flops_per_elem(op), bool_output=False
-    )
-
-
-def sub_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(
-        op, flops_per_elem=_alpha_scaled_flops_per_elem(op), bool_output=False
-    )
-
-
-def mul_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
-
-
-def div_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
-
-
-def remainder_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=4, bool_output=False)
-
-
-def pow_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=3, bool_output=False)
-
-
-def floor_divide_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=2, bool_output=False)
-
-
-def lerp_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=3, bool_output=False)
-
-
-def maximum_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
-
-
-def minimum_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
-
-
-def eq_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=True)
-
-
-def ne_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=True)
-
-
-def gt_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=True)
-
-
-def lt_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=True)
-
-
-def ge_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=True)
-
-
-def le_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=True)
-
-
-def logical_and_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=3, bool_output=True)
-
-
-def logical_or_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=3, bool_output=True)
-
-
-def bitwise_and_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
-
-
-def bitwise_or_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
-
-
-def bitwise_xor_fwd_roofline(op: "Op") -> tuple[int, int]:
-    return _binary_broadcast_roofline(op, flops_per_elem=1, bool_output=False)
-
-
 def fused_topk_roofline(op: "Op") -> tuple[int, int]:
     """Roofline for FusedTopKOp: score every logit, then keep the top k of them.
 
@@ -1231,16 +1011,6 @@ def rope_position_ids_roofline(op: "Op") -> tuple[int, int]:
     # x read and written, plus the position ids. The cos/sin table is the op's own.
     pos_elems = num_tokens
     return int(4 * x_elems), int(2 * x_elems * elem + pos_elems * 4)
-
-
-def dropout_roofline(op: "Op") -> tuple[int, int]:
-    n_total = int(op.N_total)
-    elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
-    if not bool(getattr(op, "training", True)) or float(getattr(op, "p", 0.5)) == 0.0:
-        return 0, int(2 * n_total * elem)
-    if float(getattr(op, "p", 0.5)) == 1.0:
-        return 0, int(n_total * elem)
-    return int(n_total), int(2 * n_total * elem)
 
 
 def fp8_quant_roofline(op: "Op") -> tuple[int, int]:

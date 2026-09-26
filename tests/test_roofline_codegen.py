@@ -710,18 +710,25 @@ class TestEveryPlanRuns:
 
     The other half of the boundary's contract, and the one that failed by
     example three times -- an async comprehension, a param named `self`, a
-    fullwidth keyword. A cross product holds it instead: the entry is named
-    for a real single-output op, because `out_elem_bytes` resolves the
-    declared output's dtype through the manifest by the class's name.
+    fullwidth keyword. A cross product holds it instead. `out_elem_bytes`
+    resolves the declared output's dtype through the manifest by the class's
+    name, so the synthetic entry is served under that name.
     """
 
-    OP = "SiluAndMulFwdOp"
+    OP = "SyntheticLegacyFwdOp"
     SIG = {
         "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
         "outputs": {"output": {"dtype": "same_as(x)"}},
         "params": {"alpha": {"type": "float"}},
     }
     ROOFLINE = {"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N * elem_bytes"}
+
+    @pytest.fixture(autouse=True)
+    def _serve_the_entry(self, monkeypatch):
+        from tileops.ops import _output_dtype
+
+        entries = {self.OP: {"signature": self.SIG}}
+        monkeypatch.setattr(_output_dtype, "load_manifest", lambda: entries)
 
     # Defects and rarely-written-but-legal forms alike: the ones that yield a
     # plan are the ones this holds.
@@ -999,13 +1006,20 @@ class TestNothingLegalIsRefused:
     spec permits, and no defect corpus would notice.
     """
 
-    OP = "SiluAndMulFwdOp"
+    OP = "SyntheticLegacyFwdOp"
     SIG = {
         "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
         "outputs": {"output": {"dtype": "same_as(x)"}},
         "params": {"alpha": {"type": "float"}},
     }
     ROOFLINE = {"vars": {"N": "product(x.shape)"}, "flops": "N", "bytes": "N * elem_bytes"}
+
+    @pytest.fixture(autouse=True)
+    def _serve_the_entry(self, monkeypatch):
+        from tileops.ops import _output_dtype
+
+        entries = {self.OP: {"signature": self.SIG}}
+        monkeypatch.setattr(_output_dtype, "load_manifest", lambda: entries)
 
     # Every one of these is legal: it appears in the manifest, or §4.4.3 permits it.
     LEGAL = {

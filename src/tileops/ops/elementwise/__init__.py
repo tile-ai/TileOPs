@@ -5,15 +5,10 @@ Re-exports every public symbol of the package module so that
 
 Concrete ops are organised one cluster per leaf module
 (``arithmetic.py``, ``activations.py``, ``clamp.py``, ...). Umbrella
-template classes (``UnaryOp`` / ``BinaryOp`` / ``FusedGatedOp``) and the
-shared registration / broadcast infrastructure live in ``_base.py``.
-
-Concrete ops register their ``torch.library.custom_op`` wrappers at
-package import time via the registration loops at the bottom of this
-module.
+template classes (``UnaryOp`` / ``BinaryOp`` / ``FusedGatedOp``) live in
+``_base.py``. Each op's compile-boundary operators are generated from its
+manifest signature when the class is created.
 """
-
-import torch as _torch
 
 from ._base import BinaryOp, FusedGatedOp, UnaryOp
 from .activations import (
@@ -166,7 +161,3 @@ __all__ = [
     "UnaryOp",
     "WhereFwdOp",
 ]
-
-
-# ``AlibiFwdOp`` and ``SinusoidalFwdOp`` register no operator: they have zero tensor
-# inputs, so there is nothing for a traced graph to hand over, and they run eager-only.

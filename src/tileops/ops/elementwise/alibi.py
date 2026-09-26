@@ -25,7 +25,7 @@ class AlibiFwdOp(Op):
 
     """
 
-    _op_name = "alibi"
+    kernel_types = {"alibi": AlibiFwdKernel}
 
     def __init__(
         self,
@@ -36,8 +36,9 @@ class AlibiFwdOp(Op):
         device: "torch.device | str | None" = None,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op: the extents and dtype are its parameters.
 
         Args:
             seq_len: Sequence length.
@@ -50,48 +51,32 @@ class AlibiFwdOp(Op):
                 the in-tree kernels, or ``None`` to decide from ``device``.
             kernel_map: Optional dispatch override mapping kernel keys to
                 ``Kernel`` subclasses. Falls back to ``default_kernel_map``.
+            tune: Whether to autotune.
         """
         self.seq_len = seq_len
         self.num_heads = num_heads
         self.out_dtype = out_dtype
         self.device = device
         self.target = target
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    @property
-    def default_kernel_map(self):
-        return {"alibi": AlibiFwdKernel}
-
-    def _infer_output_shapes(self) -> dict[str, tuple[int, ...]]:
-        return {"output": (self.num_heads, self.seq_len, self.seq_len)}
-
-    def _validate_dtypes(self) -> None:
-        return None
-
-    @property
-    def total_memory(self) -> int:
-        return self.num_heads * self.seq_len * self.seq_len * self.out_dtype.itemsize
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per dtype and device; the extents are the op's."""
         return call, lambda: self._build(*call)
 
     def _build(self, dtype: torch.dtype, device_index: "int | None" = None):
-        impl, ctor_dtype = self.kernel_map[self._op_name].specialize(dtype)
-        return impl(self.seq_len, self.num_heads, ctor_dtype, device_index=device_index)
+        impl, ctor_dtype = self.kernel_map["alibi"].specialize(dtype)
+        return impl(
+            self.seq_len, self.num_heads, ctor_dtype, tune=self.tune, device_index=device_index
+        )
 
     def forward(self) -> torch.Tensor:
-        # The op promised ``self.out_dtype``; whichever storage the backend chose to
-        # compute in is its own business and does not reach the caller.
-        """Run the op on the inputs the manifest declares.
-
-        Returns:
-            ``output``, as the manifest declares.
-        """
+        """Generate the tensor, in ``out_dtype`` whatever storage the kernel computes in."""
         device = self._declared_device()
         if device is not None and device.type != "cuda":
             raise ValueError(f"{type(self).__name__}'s in-tree kernel runs on CUDA, not {device}")
         index = None if device is None else device.index
-        kernel = self.kernel_for(self._op_name, (), (self.out_dtype, index))
+        kernel = self.kernel_for("alibi", (), (self.out_dtype, index))
         out = kernel().reshape(self.num_heads, self.seq_len, self.seq_len)
         return out if out.dtype == self.out_dtype else out.to(self.out_dtype)
