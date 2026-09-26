@@ -225,6 +225,12 @@ def verdicts(runs: dict[str, FileRun], manifest: dict) -> list[tuple[str, str, s
     for op_name, entry in sorted(manifest.items()):
         if entry.get("status") != "implemented":
             continue
+        # A case id keys the op's history, so two rows sharing one would write one record.
+        cases = [_case_id(c) for run in runs.values() for c in run.recorded.get(op_name, ())]
+        repeated = sorted({c for c in cases if cases.count(c) > 1})
+        if repeated:
+            rows.append((op_name, "-", FAIL, f"case ids recorded twice: {repeated}"))
+            continue
         if not is_legacy(entry):
             rows.append((op_name, *_parametric_verdict(op_name, entry, runs)))
             continue

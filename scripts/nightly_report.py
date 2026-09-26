@@ -291,6 +291,15 @@ def aggregate_bench_results(results: list[dict]) -> dict:
     return dict(ops)
 
 
+def _case_id(name: str) -> str:
+    """The parametrized part of a testcase name, which is the workload's own id and keys the
+    row's history: renaming a test function keeps it. It is unique per op, which
+    ``scripts/check_bench_coverage.py`` holds."""
+    if name.endswith("]") and "[" in name:
+        return name[name.index("[") + 1 : -1]
+    return name
+
+
 def count_bench_skips(results: list[dict]) -> int:
     """Skipped cases, which are neither configs nor failures: without a count they vanish."""
     return sum(1 for r in results if r["outcome"] == "skipped")
@@ -478,7 +487,7 @@ def _verdict_inputs(bench_ops: dict, history_runs: list[dict]):
                 continue
             props = {k.removeprefix("tileops_"): v for k, v in cfg.items()}
             work = _work_counts(props, lat)
-            readings = _config_readings(history_runs, op, cfg["name"], key, work)
+            readings = _config_readings(history_runs, op, _case_id(cfg["name"]), key, work)
             if readings:
                 yield op, cfg, lat, _spread(props), readings
 
@@ -633,7 +642,7 @@ def build_history_entry(bench_ops: dict, run: dict, coverage: list[dict] | None 
                 if bl_entry:
                     entry[btag] = bl_entry
             if entry:
-                cfg_data[cfg["name"]] = entry
+                cfg_data[_case_id(cfg["name"])] = entry
         if cfg_data:
             ops_data[op] = cfg_data
     entry = {

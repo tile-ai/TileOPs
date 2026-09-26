@@ -164,6 +164,15 @@ class TestVerdicts:
         path = _report(tmp_path, _passed("test_foo[foo-case-float16]", op="FooOp"))
         assert _verdicts(path)["FooOp"] == coverage.OK
 
+    def test_two_rows_of_one_op_sharing_a_case_id_fail(self, tmp_path):
+        """The case id keys the op's history, so it names one row."""
+        path = _report(
+            tmp_path,
+            _passed("test_foo_kn[foo-case-float16]", op="FooOp"),
+            _passed("test_foo_nk[foo-case-float16]", op="FooOp"),
+        )
+        assert _verdicts(path)["FooOp"] == coverage.FAIL
+
     def test_one_testcase_may_benchmark_several_ops(self, tmp_path):
         """``op`` alone names the first; the gate reads them all off ``ops``."""
         path = _report(tmp_path, _passed("test_both[foo-case-float16]", op="BarOp,FooOp"))
