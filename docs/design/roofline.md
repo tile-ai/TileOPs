@@ -180,7 +180,7 @@ The primitive tables of [manifest.md](manifest.md#t-prims) are the only list of 
 
 #### 4.4.4 Evaluation Timing
 
-`eval_roofline()` is valid once a call has completed; it prices `Op.last_call`, part of the `Op` base class interface in [ops-design-reference.md](ops-design-reference.md). The dtype is always call-bound, so no op can be priced before its first `forward()`; an arbitrary-rank op's dynamic dims are bound there too. The method recomputes on each call and holds no cache: a cached `(flops, bytes)` would outlive the shapes it was computed for.
+`eval_roofline()` is valid once a call has completed; it prices `Op.last_call`, part of the `Op` base class interface in [ops-design-reference.md](ops-design-reference.md). The dtype is always call-bound, so no op can be priced before its first `forward()`; an arbitrary-rank op's dynamic dims are bound there too. The method recomputes on each call and holds no cache: a cached `(flops, bytes)` would outlive the shapes it was computed for. A call on meta tensors holds no values; a formula that reads metadata values raises `OpNotAvailableError` on it.
 
 A consumer that is not the op itself instantiates the Op or reads pre-computed `(flops, bytes)` from benchmark output.
 

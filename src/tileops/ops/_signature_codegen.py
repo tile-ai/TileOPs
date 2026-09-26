@@ -24,6 +24,7 @@ import torch
 from torch._guards import detect_fake_mode
 from torch.fx.experimental.symbolic_shapes import sym_and, sym_or
 
+from tileops.backend import OpNotAvailableError
 from tileops.manifest import load_adts, try_load_entry
 from tileops.manifest.dtype_rules import DTYPE_BITS
 from tileops.manifest.expr import SignatureError, fold, infer_kinds, names, parse, value_at
@@ -229,7 +230,15 @@ class SignatureCall(CallView):
     metadata: dict = None
 
     def values(self, name: str) -> list:
-        return self.metadata[name].tolist()
+        """The contents of metadata tensor *name*.
+
+        Raises:
+            OpNotAvailableError: The call ran on meta tensors, which hold no values.
+        """
+        tensor = self.metadata[name]
+        if tensor.device.type == "meta":
+            raise OpNotAvailableError(f"{name} is a meta tensor: a meta call holds no values")
+        return tensor.tolist()
 
     def derived_bytes(self) -> int:
         return sum(self.bytes(t) * (r + w) for t, r, w in self.traffic)

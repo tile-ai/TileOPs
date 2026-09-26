@@ -628,3 +628,14 @@ def test_a_converted_op_without_a_boundary_traces_inside_a_compiled_caller():
     torch._dynamo.reset()
     compiled = torch.compile(lambda x: op(x) + 1, fullgraph=True)
     assert compiled(torch.ones(3, 8, dtype=torch.float16)).tolist() == [[3] * 4] * 3
+
+
+def test_a_meta_call_holds_no_metadata_values():
+    from tileops.backend import OpNotAvailableError
+    from tileops.ops._signature_codegen import SignatureCall
+
+    ids = torch.empty(2, 2, dtype=torch.int32, device="meta")
+    call = SignatureCall({}, {"ids": ((2, 2), "int32")}, (), metadata={"ids": ids})
+    with pytest.raises(OpNotAvailableError, match="holds no values"):
+        call.values("ids")
+    assert SignatureCall({}, {}, (), metadata={"ids": torch.ones(2)}).values("ids") == [1.0, 1.0]
