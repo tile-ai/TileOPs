@@ -1,20 +1,18 @@
 """Benchmark for FusedMoeFwdOp (routed MoE FFN).
 
-Workload shapes come from each op's manifest ``workloads`` (via
-``load_workloads``); the benchmark reports TileOPs latency
+Workload shapes come from the op's manifest ``workloads`` (via
+``manifest_calls``); the benchmark reports TileOPs latency
 alongside the manifest-derived roofline (``op.eval_roofline()``)
 and a vLLM / torch-ref baseline.
 
 Coverage:
 
   Qwen3-235B-A22B (softmax), DeepSeek-V3 (sigmoid), and Kimi K2 (sigmoid with
-  a correction bias) — a row passes the bias when it declares
-  ``correction_bias_shape``.
+  a correction bias) — a row passes the bias when it lists it in ``some``.
 """
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 try:
     from vllm.model_executor.layers.fused_moe.fused_moe import (
@@ -28,201 +26,42 @@ try:
 except ImportError:
     _VLLM_AVAILABLE = False
 
-from benchmarks.benchmark_base import (
-    ManifestBenchmark,
-    workload_params,
-)
-from tileops.manifest import load_workloads
-from tileops.ops.moe import FusedMoeFwdOp, FusedTopKFwdOp
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from tileops.ops.moe import FusedMoeFwdOp
 from workloads.moe import FusedMoeWorkload
 
 
-def _routed_scaling_factor(w: dict) -> float:
-    return float(w.get("routed_scaling_factor", 1.0))
-
-
-def _renormalize(w: dict) -> bool:
-    return bool(w.get("renormalize", False))
-
-
-def _fused_moe_args(w: dict, dtype: torch.dtype) -> tuple:
-    """Positional args for one fused-MoE case; a row passes the correction bias
-    exactly when it declares ``correction_bias_shape``."""
-    return (
-        w["num_tokens"],
-        w["num_experts"],
-        w["top_k"],
-        w["hidden_size"],
-        w["ffn_size"],
-        w["scoring_func"],
-        _renormalize(w),
-        "correction_bias_shape" in w,
-        _routed_scaling_factor(w),
-        dtype,
-    )
-
-
-_FWD_PARAMS = workload_params(load_workloads(FusedMoeFwdOp), _fused_moe_args)
-
-
-def _run_bench(
-    num_tokens: int,
-    num_experts: int,
-    top_k: int,
-    hidden_size: int,
-    ffn_size: int,
-    scoring_func: str,
-    renormalize: bool,
-    with_correction_bias: bool,
-    routed_scaling_factor: float,
-    dtype: torch.dtype,
-) -> None:
-    test = FusedMoeWorkload(
-        num_tokens,
-        num_experts,
-        top_k,
-        hidden_size,
-        ffn_size,
-        scoring_func,
-        renormalize,
-        with_correction_bias,
-        routed_scaling_factor,
-        dtype,
-    )
-    hidden, gating, correction_bias, w_gate_up, w_down = test.gen_inputs()
-
-    common_kwargs = dict(
-        num_tokens=num_tokens,
-        num_experts=num_experts,
-        top_k=top_k,
-        hidden_size=hidden_size,
-        ffn_size=ffn_size,
-        scoring_func=scoring_func,
-        renormalize=renormalize,
-        routed_scaling_factor=routed_scaling_factor,
-    )
-
-    forward_args_tileops = (hidden, gating, w_gate_up, w_down, correction_bias)
-
-    # -- TileOPs nopad -----------------------------------------------------
-    op = FusedMoeFwdOp(**common_kwargs)
+@pytest.mark.parametrize("call", manifest_calls(FusedMoeFwdOp))
+def test_fused_moe_fwd_bench(call) -> None:
+    test = FusedMoeWorkload(call)
+    inputs = test.gen_inputs()
+    hidden, gating, w_gate_up, w_down, correction_bias = inputs
+    op = FusedMoeFwdOp(**call.arguments({}))
     bm = ManifestBenchmark(op, test)
-    op(*forward_args_tileops)  # warmup / JIT compile
-    torch.cuda.synchronize()
+    torch.testing.assert_close(
+        op(*inputs).float(), test.ref_program(*inputs).float(), rtol=3e-2, atol=3e-2
+    )
 
     functors = {"tileops": op}
 
-    # -- Baseline ----------------------------------------------------------
-    # vLLM's ``fused_topk`` has no correction_bias parameter, so routing would
-    # diverge from TileOPs on a row that passes one. Fall back to torch-ref for
-    # those; otherwise prefer vLLM when available.
-    use_vllm = _VLLM_AVAILABLE and not with_correction_bias
-    if use_vllm:
-        gating_f32 = gating.float()
+    # vLLM's ``fused_topk`` has no correction_bias parameter, so routing would diverge
+    # from TileOPs on a row that passes one; those rows time the reference instead.
+    if _VLLM_AVAILABLE and correction_bias is None:
+        top_k, renormalize, scale = op.top_k, op.renormalize, op.routed_scaling_factor
 
-        def _vllm_fn(hidden, gating, correction_bias, w_gate_up, w_down):
+        def _vllm_fn(hidden, gating, w_gate_up, w_down, correction_bias):
             tw, tids, _ = _vllm_fused_topk(
                 hidden_states=hidden,
-                gating_output=gating_f32,
+                gating_output=gating,
                 topk=top_k,
                 renormalize=renormalize,
-                scoring_func=scoring_func,
+                scoring_func=op.scoring_func,
             )
             out = _vllm_fused_experts(hidden, w_gate_up, w_down, tw, tids)
-            if routed_scaling_factor != 1.0:
-                out = out * routed_scaling_factor
-            return out
+            return out * scale if scale != 1.0 else out
 
-        _vllm_fn(hidden, gating, correction_bias, w_gate_up, w_down)
-        torch.cuda.synchronize()
-
-        functors["vllm"] = (
-            _vllm_fn,
-            (
-                hidden,
-                gating,
-                correction_bias,
-                w_gate_up,
-                w_down,
-            ),
-        )
+        functors["vllm"] = _vllm_fn
     else:
-        # torch-ref baseline: memory-efficient per-expert GEMM loop.
-        fk = FusedTopKFwdOp(
-            top_k=top_k,
-            scoring_func=scoring_func,
-            renormalize=renormalize,
-        )
-        topk_weights, topk_ids = fk(gating, correction_bias)
-        output_buf = torch.zeros(
-            num_tokens,
-            hidden_size,
-            dtype=torch.float32,
-            device=hidden.device,
-        )
-        ids_i64 = topk_ids.to(torch.int64)
+        functors["torch-ref"] = test.ref_program
 
-        def _ref_fn(hidden, gating, correction_bias, w_gate_up, w_down):
-            E = w_gate_up.shape[0]
-            ffn_dim = w_gate_up.shape[1] // 2
-            output_buf.zero_()
-            for e in range(E):
-                mask = ids_i64 == e
-                if not mask.any():
-                    continue
-                t_idx, k_idx = mask.nonzero(as_tuple=True)
-                h = hidden[t_idx].float()
-                gate_up = h @ w_gate_up[e].float().t()
-                act = F.silu(gate_up[:, :ffn_dim]) * gate_up[:, ffn_dim:]
-                down = act @ w_down[e].float().t()
-                weights = topk_weights[t_idx, k_idx].float().unsqueeze(-1)
-                output_buf.index_add_(0, t_idx, down * weights)
-            return (output_buf * routed_scaling_factor).to(hidden.dtype)
-
-        _ref_fn(hidden, gating, correction_bias, w_gate_up, w_down)
-        torch.cuda.synchronize()
-
-        functors["torch-ref"] = (
-            _ref_fn,
-            (
-                hidden,
-                gating,
-                correction_bias,
-                w_gate_up,
-                w_down,
-            ),
-        )
-
-    bm.compare(functors, *forward_args_tileops)
-
-
-@pytest.mark.parametrize(
-    "num_tokens, num_experts, top_k, hidden_size, ffn_size,"
-    " scoring_func, renormalize, with_correction_bias,"
-    " routed_scaling_factor, dtype",
-    _FWD_PARAMS,
-)
-def test_fused_moe_fwd_bench(
-    num_tokens,
-    num_experts,
-    top_k,
-    hidden_size,
-    ffn_size,
-    scoring_func,
-    renormalize,
-    with_correction_bias,
-    routed_scaling_factor,
-    dtype: torch.dtype,
-) -> None:
-    _run_bench(
-        num_tokens,
-        num_experts,
-        top_k,
-        hidden_size,
-        ffn_size,
-        scoring_func,
-        renormalize,
-        with_correction_bias,
-        routed_scaling_factor,
-        dtype,
-    )
+    bm.compare(functors, *inputs)

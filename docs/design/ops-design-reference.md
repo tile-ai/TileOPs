@@ -27,7 +27,8 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 Abstract interface: `forward()`. Methods generated from the manifest entry: the construction and call checks, `_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`.
 
 - `kernel_types` (class attribute) is the one declaration of an op's dispatch keys; `default_kernel_map` (property) is derived from it. Each op class created adds its keys to a set `op_base` holds, and a `kernel_map` override naming a key outside that set is refused.
-- `last_call` (property) is the `SignatureCall` of the op's last successfully completed call: its `ix`, tensors, effects and metadata tensors. It raises `RuntimeError` before one completes. `eval_roofline` prices it.
+- `delegate_types` (class attribute) is the one declaration of the sub-ops an op may hold: stage name to op class, in stage order. Default empty.
+- `last_call` (property) is the `SignatureCall` of the op's last successfully completed call: its `ix`, tensors, effects, metadata tensors, and the checked calls its sub-ops completed during it, by stage. It raises `RuntimeError` before one completes. `eval_roofline` prices it.
 
 #### Kernel caching and enumeration methods
 
@@ -38,10 +39,11 @@ Rationale and the role / entry vocabulary: [ops-design.md § Kernel caching and 
 | `kernel_for(role, inputs, call)` | The in-tree kernel serving this call, built once on a miss. The only way an op's in-tree implementation reaches a kernel. A target serves the whole op instead |
 | `entry_for(role, call)`          | The in-tree identity and builder. The default selects among the op's candidates and asks the chosen class; an op with one implementation overrides it          |
 | `built_kernels(name)`            | Read-only view of a name's entries, whoever built them; empty before its first build. Introspection only, never dispatch                                       |
-| `kernel_delegates()`             | The ops whose kernels this op runs. Default `()`; a composite op overrides it                                                                                  |
+| `delegate_for(stage, key, ...)`  | The sub-op held for a stage and identity, built once on a miss with the op's execution policy. The only way an op holds a sub-op                               |
+| `kernel_delegates()`             | The sub-ops `delegate_for` holds, in stage order. Derived; never overridden                                                                                    |
 | `iter_kernels()`                 | The TileOPs `Kernel` instances the entries hold, deduplicated: role entries, `self.kernel`, and delegates. What `autotune()` tunes                             |
 | `settled_target`                 | What a call settled the op on: `None` before, `BUILTIN` for the in-tree implementation, else the target's name                                                 |
-| `autotune()`                     | Puts the op in tuned mode: tunes built kernels, and sets `tune` so later in-tree builds tune too; a target is not passed `tune`                                |
+| `autotune()`                     | Puts the op in tuned mode: tunes built kernels, and sets `tune`, under which every later in-tree build is tuned as it is built; a target is not passed `tune`  |
 
 ### `Kernel` base class attributes ([`src/tileops/kernels/kernel_base.py`](../../src/tileops/kernels/kernel_base.py))
 

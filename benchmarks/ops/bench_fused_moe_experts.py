@@ -17,7 +17,8 @@ Baselines:
   - vllm-cutlass:      vLLM CUTLASS fused_experts (when importable)
   - torch-ref:         per-expert GEMM loop with index_add_ (fallback)
 
-``IndexedExpertMLPFwdOp`` is the small-route backend the composite picks below 33 tokens.
+``IndexedExpertMLPFwdOp`` is the small-route backend the composite picks at two routes
+per expert or fewer.
 Its own workloads sit in that band, and it is measured against the staged pipeline the
 composite runs everywhere else, which is what the indexed path has to beat to be chosen.
 """
@@ -26,7 +27,6 @@ import warnings
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 try:
     from vllm.model_executor.layers.fused_moe.fused_moe import (
@@ -59,69 +59,38 @@ except ImportError:
             stacklevel=2,
         )
 
-from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
-from tileops.manifest import load_workloads
-from tileops.ops.moe import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
-from workloads.moe import MoeExpertsWorkload
-
-# Workload
-
-
-@pytest.mark.parametrize(
-    "num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype",
-    workload_params(
-        load_workloads(FusedMoEExpertsFwdOp),
-        fields(
-            "num_tokens",
-            "num_experts",
-            "top_k",
-            "hidden_size",
-            "ffn_size",
-            dtype_last=True,
-        ),
-    ),
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from tileops.ops.moe import (
+    ContiguousLayoutSpec,
+    FusedMoEExpertsFwdOp,
+    IndexedExpertMLPFwdOp,
+    MoeExpertMLPFwdOp,
+    MoePostPermuteFwdOp,
+    MoePrePermuteFwdOp,
+    RoutingEpilogueSpec,
 )
-def test_moe_experts_bench(
-    num_tokens: int,
-    num_experts: int,
-    top_k: int,
-    hidden_size: int,
-    ffn_size: int,
-    dtype: torch.dtype,
-) -> None:
-    test = MoeExpertsWorkload(num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype)
-    hidden, w1, w2, topk_weights, topk_ids = test.gen_inputs()
+from workloads.moe import IndexedExpertMLPWorkload, MoeExpertsWorkload
 
-    experts = FusedMoEExpertsFwdOp(
-        num_tokens=num_tokens,
-        num_experts=num_experts,
-        top_k=top_k,
-        hidden_size=hidden_size,
-        ffn_size=ffn_size,
+
+def _assert_matches(workload, inputs) -> None:
+    torch.testing.assert_close(
+        inputs[0].float(), workload.ref_program(*inputs).float(), rtol=3e-2, atol=3e-2
     )
-    output = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
-    ws1_shape, ws2_shape = experts.workspace_shapes(
-        num_tokens, ffn_size, hidden_size, top_k, num_experts
-    )
-    ws1 = torch.empty(ws1_shape, dtype=dtype, device="cuda")
-    ws2 = torch.empty(ws2_shape, dtype=dtype, device="cuda")
+
+
+@pytest.mark.parametrize("call", manifest_calls(FusedMoEExpertsFwdOp))
+def test_moe_experts_bench(call) -> None:
+    test = MoeExpertsWorkload(call)
+    inputs = test.gen_inputs()
+    output, hidden, w1, w2, topk_weights, topk_ids = inputs
+    experts = FusedMoEExpertsFwdOp(**call.arguments({}))
     bm = ManifestBenchmark(experts, test)
+    experts(*inputs)
+    _assert_matches(test, inputs)
 
     def _experts_fn(hidden, w1, w2, topk_weights, topk_ids):
-        experts.forward(
-            output,
-            hidden,
-            w1,
-            w2,
-            topk_weights,
-            topk_ids,
-            workspace1=ws1,
-            workspace2=ws2,
-        )
+        experts.forward(output, hidden, w1, w2, topk_weights, topk_ids)
         return output
-
-    _experts_fn(hidden, w1, w2, topk_weights, topk_ids)
-    torch.cuda.synchronize()
 
     functors = {"tileops": _experts_fn}
 
@@ -152,90 +121,41 @@ def test_moe_experts_bench(
 
     # -- Torch fallback -------------------------------------------------------
     if not _VLLM_TRITON_AVAILABLE:
-        output_buf = torch.zeros(num_tokens, hidden_size, dtype=torch.float32, device=hidden.device)
-        ids_i64 = topk_ids.to(torch.int64)
 
         def _torch_fn(hidden, w1, w2, topk_weights, topk_ids):
-            output_buf.zero_()
-            for e in range(num_experts):
-                mask = ids_i64 == e
-                if not mask.any():
-                    continue
-                t_idx, k_idx = mask.nonzero(as_tuple=True)
-                h = hidden[t_idx].float()
-                gate_up = h @ w1[e].float().t()
-                ffn_dim = w1.shape[1] // 2
-                act = F.silu(gate_up[:, :ffn_dim]) * gate_up[:, ffn_dim:]
-                down = act @ w2[e].float().t()
-                output_buf.index_add_(
-                    0, t_idx, down * topk_weights[t_idx, k_idx].float().unsqueeze(-1)
-                )
-            return output_buf.to(hidden.dtype)
-
-        _torch_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup
-        torch.cuda.synchronize()
+            return test.ref_program(output, hidden, w1, w2, topk_weights, topk_ids)
 
         functors["torch-ref"] = _torch_fn
 
     bm.compare(functors, hidden, w1, w2, topk_weights, topk_ids)
 
 
-@pytest.mark.parametrize(
-    "num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype",
-    workload_params(
-        load_workloads(IndexedExpertMLPFwdOp),
-        fields(
-            "num_tokens",
-            "num_experts",
-            "top_k",
-            "hidden_size",
-            "ffn_size",
-            dtype_last=True,
-        ),
-    ),
-)
-def test_indexed_expert_mlp_bench(
-    num_tokens: int,
-    num_experts: int,
-    top_k: int,
-    hidden_size: int,
-    ffn_size: int,
-    dtype: torch.dtype,
-) -> None:
-    test = MoeExpertsWorkload(num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype)
-    hidden, w1, w2, topk_weights, topk_ids = test.gen_inputs()
-
-    indexed = IndexedExpertMLPFwdOp(
-        num_tokens=num_tokens,
-        num_experts=num_experts,
-        top_k=top_k,
-        hidden_size=hidden_size,
-        ffn_size=ffn_size,
-    )
-    output = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
-    ws1_shape, ws2_shape = indexed.workspace_shapes()
-    ws1 = torch.empty(ws1_shape, dtype=dtype, device="cuda")
-    ws2 = torch.empty(ws2_shape, dtype=dtype, device="cuda")
+@pytest.mark.parametrize("call", manifest_calls(IndexedExpertMLPFwdOp))
+def test_indexed_expert_mlp_bench(call) -> None:
+    test = IndexedExpertMLPWorkload(call)
+    inputs = test.gen_inputs()
+    output, hidden, w1, w2, topk_weights, topk_ids = inputs
+    indexed = IndexedExpertMLPFwdOp(**call.arguments({}))
+    indexed(*inputs)
+    _assert_matches(test, inputs)
 
     def _indexed_fn(hidden, w1, w2, topk_weights, topk_ids):
-        indexed.forward(output, hidden, w1, w2, topk_weights, topk_ids, ws1, ws2)
+        indexed.forward(output, hidden, w1, w2, topk_weights, topk_ids)
         return output
 
     # The staged pipeline is what the composite runs on every other shape, so it is the
     # comparator the indexed path has to beat.
-    staged = FusedMoEExpertsFwdOp(
-        num_tokens=num_tokens,
-        num_experts=num_experts,
-        top_k=top_k,
-        hidden_size=hidden_size,
-        ffn_size=ffn_size,
-    )
-    staged_output = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
+    layout = ContiguousLayoutSpec.tight_physical_psum()
+    pre = MoePrePermuteFwdOp(layout, num_local_experts=w1.shape[0])
+    mlp = MoeExpertMLPFwdOp(layout)
+    epilogue = RoutingEpilogueSpec(routed_scaling_factor=indexed.routed_scaling_factor)
+    post = MoePostPermuteFwdOp(layout, epilogue)
+    staged_output = torch.empty_like(output)
 
     def _staged_fn(hidden, w1, w2, topk_weights, topk_ids):
-        expert_input, physical_ends, inverse = staged._pre_permute(hidden, topk_ids)
-        expert_output = staged._expert_mlp(expert_input, w1, w2, physical_ends)
-        staged._post_permute(expert_output, topk_weights, inverse, out=staged_output)
+        expert_input, physical_ends, inverse = pre(hidden, topk_ids)
+        expert_output = mlp(expert_input, w1, w2, physical_ends)
+        post(expert_output, topk_weights, inverse, out=staged_output)
         return staged_output
 
     functors = {"tileops": _indexed_fn, "staged": _staged_fn}

@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -31,6 +31,9 @@ class MultiHeadAttentionBwdOp(Op):
     """
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+
+    # Every kernel this op runs is built by GQA backward.
+    delegate_types: ClassVar[Mapping[str, type[Op]]] = {"gqa_backward": GroupedQueryAttentionBwdOp}
 
     _LEGACY_KERNEL_MAP_KEYS = frozenset(
         {
@@ -68,17 +71,17 @@ class MultiHeadAttentionBwdOp(Op):
         self.dim = dim
         self.is_causal = is_causal
 
+        self.tune = tune
         self.dispatch_kernel(self._gqa_kernel_map(kernel_map))
-        self._gqa_op = GroupedQueryAttentionBwdOp(
+        self._gqa_op = self.delegate_for(
+            "gqa_backward",
+            None,
             batch=batch,
             heads=heads,
             heads_kv=heads,
             seq_len=seq_len,
             dim=dim,
             is_causal=is_causal,
-            kernel_map=self.forwarded_overrides(),
-            tune=tune,
-            target=target,
         )
         self.kernel_map = self._gqa_op.kernel_map
 
@@ -88,10 +91,6 @@ class MultiHeadAttentionBwdOp(Op):
             "gqa_bwd_preprocess_kernel": FlashAttnBwdPreprocessKernel,
             "gqa_bwd_kernel": GQABwdWgmmaPipelinedKernel,
         }
-
-    def kernel_delegates(self) -> tuple[GroupedQueryAttentionBwdOp, ...]:
-        """Every kernel this op runs is built by GQA backward."""
-        return (self._gqa_op,)
 
     @staticmethod
     def _gqa_kernel_map(kernel_map: Optional[Dict[str, Kernel]]) -> Optional[Dict[str, Kernel]]:

@@ -30,40 +30,8 @@ def _entry(**over):
     return entry
 
 
-class TestCallVersusValue:
-    """The two lists this layer exists to keep apart."""
-
-    def test_workspace_is_in_the_call_but_not_the_value_contract(self):
-        f = F.build(
-            "Op",
-            _entry(resources={"workspaces": [{"name": "ws", "dtype": "float16"}]}),
-        )
-        assert f.call_names == ("x", "ws")
-        assert f.combo_columns == ("x",)
-
-    def test_a_premerged_signature_gives_the_same_answer(self):
-        """A caller may hand over a signature the workspaces are already in.
-
-        The marker is what tells them apart; without honouring it the workspace
-        would be read back as a caller-visible input.
-        """
-        entry = _entry(resources={"workspaces": [{"name": "ws", "dtype": "float16"}]})
-        direct = F.build("Op", entry)
-        premerged = F.build(
-            "Op",
-            {
-                "status": "implemented",
-                "signature": {
-                    "inputs": {
-                        "x": {"dtype": "float16 | bfloat16"},
-                        "ws": {"dtype": "float16", F.WORKSPACE_ATTR: True},
-                    },
-                    "outputs": {"y": {"dtype": "same_as(x)"}},
-                },
-            },
-        )
-        assert premerged.call_names == direct.call_names
-        assert premerged.combo_columns == direct.combo_columns
+class TestComboColumns:
+    """The columns a ``dtype_combos`` row spans."""
 
     def test_optional_input_is_not_a_required_combo_column(self):
         f = F.build(
@@ -176,7 +144,7 @@ class TestStatusAndSeverity:
 
 
 class TestMutationContract:
-    """Which inputs the op writes in place — the workspaces are never part of it."""
+    """Which inputs the op writes in place."""
 
     def test_only_a_marked_caller_input_counts(self):
         f = F.build(
@@ -194,28 +162,13 @@ class TestMutationContract:
         )
         assert f.mutated_input_names == frozenset({"out"})
 
-    def test_a_workspace_is_never_a_mutated_input(self):
-        """Every call writes one, so marking it would state nothing."""
-        f = F.build(
-            "Op",
-            {
-                "status": "implemented",
-                "signature": {
-                    "inputs": {"x": {"dtype": "float16"}},
-                    "outputs": {"y": {"dtype": "same_as(x)"}},
-                },
-                "resources": {"workspaces": [{"name": "ws", "dtype": "float16", "mutated": True}]},
-            },
-        )
-        assert f.mutated_input_names == frozenset()
-
 
 class TestUnknownKeys:
     """A key the parser does not read is an unknown key."""
 
     def test_a_key_nothing_reads_is_unknown(self):
-        f = F.build("Op", _entry(made_up_field=1))
-        assert f.unknown_keys[F.Section.ENTRY] == ("made_up_field",)
+        f = F.build("Op", _entry(made_up_field=1, resources={"workspaces": []}))
+        assert f.unknown_keys[F.Section.ENTRY] == ("made_up_field", "resources")
 
     def test_every_declared_key_is_accepted(self):
         entry = _entry(
@@ -224,7 +177,6 @@ class TestUnknownKeys:
             roofline={"flops": "1", "bytes": "1"},
             source={"kernel": "k.py", "op": "o.py", "test": "t.py", "bench": "b.py"},
             composition={"kind": "composite", "stages": []},
-            resources={"workspaces": []},
             torch_compile_fullgraph=True,
             family="test",
         )

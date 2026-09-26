@@ -20,7 +20,6 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-import torch
 from torch import Tensor
 
 from tileops.ops.op_base import Op
@@ -33,43 +32,6 @@ __all__ = [
     "WeightedReduce",
     "WeightedReduceNoOp",
 ]
-
-
-def _validate_fused_moe_experts_dtypes(
-    op_dtype: torch.dtype,
-    output: Tensor,
-    hidden_states: Tensor,
-    w_gate_up: Tensor,
-    w_down: Tensor,
-    topk_weights: Tensor,
-    topk_ids: Tensor,
-    workspace1: Tensor,
-    workspace2: Tensor,
-) -> None:
-    """Shared dtype validator for FusedMoEExperts subclasses.
-
-    Covers the inputs every implementation takes; an implementation checks its
-    optional inputs on top. Keeping the common body here avoids drift between
-    implementations.
-    """
-    allowed = (torch.float16, torch.bfloat16)
-    if op_dtype not in allowed:
-        raise ValueError(f"hidden_states.dtype must be one of {allowed}, got {op_dtype}")
-    for name, t in (
-        ("output", output),
-        ("hidden_states", hidden_states),
-        ("w_gate_up", w_gate_up),
-        ("w_down", w_down),
-    ):
-        if t.dtype != op_dtype:
-            raise ValueError(f"Expected {name}.dtype == op dtype ({op_dtype}), got {t.dtype}")
-    if topk_weights.dtype != torch.float32:
-        raise ValueError(f"Expected topk_weights.dtype == float32, got {topk_weights.dtype}")
-    if topk_ids.dtype != torch.int32:
-        raise ValueError(f"Expected topk_ids.dtype == int32, got {topk_ids.dtype}")
-    for name, t in (("workspace1", workspace1), ("workspace2", workspace2)):
-        if t.dtype not in allowed:
-            raise ValueError(f"Expected {name}.dtype in {allowed}, got {t.dtype}")
 
 
 @dataclass
@@ -158,28 +120,11 @@ class FusedMoEExperts(Op, ABC):
     """Abstraction over the expert GEMM computation.
 
     Responsibilities:
-    - workspace_shapes(): declare scratch memory needs
     - output_shape(): declare the shape forward() writes
     - forward(): full expert computation (permute + GEMM + activation + GEMM)
 
     Out of scope: routing, EP communication, quantization.
     """
-
-    @abstractmethod
-    def workspace_shapes(
-        self,
-        M: int,  # T' (post-dispatch token count)
-        N: int,  # ffn_size
-        K: int,  # hidden_size
-        topk: int,
-        num_experts: int,
-    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        """Return (workspace1_shape, workspace2_shape) in element count (not bytes).
-
-        workspace1: gate_up GEMM output buffer.
-        workspace2: post-activation buffer.
-        Implementations with no external workspace return ((0,), (0,)).
-        """
 
     @abstractmethod
     def output_shape(self, T_prime: int, H: int) -> tuple[int, int]:
@@ -199,10 +144,9 @@ class FusedMoEExperts(Op, ABC):
         w_down: Tensor,  # [E_local, H, F]
         topk_weights: Tensor,  # [T', K] float32
         topk_ids: Tensor,  # [T', K] int32
-        workspace1: Tensor,
-        workspace2: Tensor,
     ) -> None:
-        """Write the local expert-compute result to output in-place."""
+        """Write the local expert-compute result to output in-place; scratch is the
+        implementation's own."""
 
 
 class FusedMoEExpertsModular(FusedMoEExperts, ABC):

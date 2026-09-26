@@ -24,6 +24,7 @@ import torch
 from torch._guards import detect_fake_mode
 from torch.fx.experimental.symbolic_shapes import sym_and, sym_or
 
+from tileops.backend import OpNotAvailableError
 from tileops.manifest import load_adts, try_load_entry
 from tileops.manifest.dtype_rules import DTYPE_BITS
 from tileops.manifest.expr import SignatureError, fold, infer_kinds, names, parse, value_at
@@ -211,8 +212,9 @@ _GLOBALS = {
 
 @dataclass(frozen=True)
 class SignatureCall(CallView):
-    """One checked call: `ix`, every present tensor's shape and dtype, its effects, and the
-    metadata tensors whose values decide its traffic (docs/design/roofline.md)."""
+    """One checked call: `ix`, every present tensor's shape and dtype, its effects, the
+    metadata tensors whose values decide its traffic, and the checked calls its sub-ops
+    completed during it (docs/design/roofline.md)."""
 
     ix: dict
     # Present tensors, outputs included, as `(shape, dtype name)`.
@@ -227,9 +229,19 @@ class SignatureCall(CallView):
     key: tuple = ()
     # The metadata tensors the call passed: inputs declaring `values`.
     metadata: dict = None
+    # The checked calls the op's sub-ops completed during this call, by stage.
+    stages: dict = None
 
     def values(self, name: str) -> list:
-        return self.metadata[name].tolist()
+        """The contents of metadata tensor *name*.
+
+        Raises:
+            OpNotAvailableError: The call ran on meta tensors, which hold no values.
+        """
+        tensor = self.metadata[name]
+        if tensor.device.type == "meta":
+            raise OpNotAvailableError(f"{name} is a meta tensor: a meta call holds no values")
+        return tensor.tolist()
 
     def derived_bytes(self) -> int:
         return sum(self.bytes(t) * (r + w) for t, r, w in self.traffic)
@@ -1125,23 +1137,26 @@ class _Boundary:
             op = get_instance(key)
             passed = dict(zip(sig.inputs, tensors[:count], strict=True))
             call = self.plan.check(op, passed | ({"out": tensors[count]} if out else {}))
-            if detect_fake_mode() is None and not torch.compiler.is_compiling():
-                # An eager call on meta tensors completes here, not in `operator`.
-                op._signature_call = call
             built = tuple(
                 torch.empty(
                     call.tensors[o][0], dtype=getattr(torch, call.tensors[o][1]), device=call.device
                 )
                 for o in returned
             )
-            return built[0] if len(built) == 1 else built
+            if detect_fake_mode() is None and not torch.compiler.is_compiling():
+                # An eager call on meta tensors completes here, not in `operator`; it runs no
+                # sub-op, so it opens and closes its call at once.
+                op._open_call()
+                op._keep_call(call)
+            return None if not built else built[0] if len(built) == 1 else built
 
         operator.__name__ = name.replace("::", "_")
         registered = torch.library.custom_op(
             name, mutates_args=tuple(sorted(written)) + (("out",) if out else ()), schema=schema
         )(operator)
-        if returned:
-            registered.register_fake(fake)
+        # Registered even for an operator that returns nothing, so its eager call on meta
+        # tensors runs the checks and completes like any other.
+        registered.register_fake(fake)
         return registered
 
     def call(self, op, inputs: tuple, writes: dict, execution: dict):

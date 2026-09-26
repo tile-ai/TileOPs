@@ -19,8 +19,7 @@ and, in its pyproject::
     acme = "tileops_acme"
 
 A target serves the whole op. ``build_kernel``'s signature is the op's ``forward``
-signature: one argument per ``signature.inputs`` entry, then per ``resources.workspaces``
-entry, with an ``optional: true`` input the call did not pass arriving as ``None``, then the
+signature: one argument per ``signature.inputs`` entry, with an ``optional: true`` input the call did not pass arriving as ``None``, then the
 construction params under ``signature.params`` names. The kernel it returns is called with
 those tensors in the same order, plus a caller-supplied output buffer such as ``out`` by
 keyword. Every tensor is on one device, every input the call does not write is contiguous,

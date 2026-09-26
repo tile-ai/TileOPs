@@ -16,7 +16,7 @@ Chains the five sub-ops in order:
 * All intermediate tensors remain on-device; no host syncs between sub-ops.
 """
 
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Mapping, Optional, Tuple
 
 import torch
 
@@ -43,6 +43,15 @@ class Mamba2FwdOp(Op):
 
     """
 
+    delegate_types: ClassVar[Mapping[str, type[Op]]] = {
+        "da_cumsum_float16": DaCumsumFwdOp,
+        "da_cumsum_bfloat16": DaCumsumFwdOp,
+        "cb_producer": CBProducerFwdOp,
+        "chunk_state": SSDChunkStateFwdOp,
+        "state_passing": SSDStatePassingFwdOp,
+        "chunk_scan": SSDChunkScanFwdOp,
+    }
+
     def __init__(
         self,
         chunk_size: int = 256,
@@ -68,25 +77,21 @@ class Mamba2FwdOp(Op):
         self.tune = tune
         # This composite owns no kernel; the override reaches the sub-ops that do.
         self.dispatch_kernel(kernel_map)
-        shared = {"target": target, "kernel_map": kernel_map, "tune": tune}
         # dt_out is stored in x's dtype, a construction parameter of DaCumsumFwdOp.
         self._da_cumsum_ops = {
-            dtype: DaCumsumFwdOp(chunk_size, out_dtype=dtype, dt_softplus=dt_softplus, **shared)
-            for dtype in (torch.float16, torch.bfloat16)
+            getattr(torch, name): self.delegate_for(
+                f"da_cumsum_{name}",
+                None,
+                chunk_len=chunk_size,
+                out_dtype=getattr(torch, name),
+                dt_softplus=dt_softplus,
+            )
+            for name in ("float16", "bfloat16")
         }
-        self._cb_producer_op = CBProducerFwdOp(chunk_size, **shared)
-        self._chunk_state_op = SSDChunkStateFwdOp(**shared)
-        self._state_passing_op = SSDStatePassingFwdOp(**shared)
-        self._chunk_scan_op = SSDChunkScanFwdOp(**shared)
-
-    def kernel_delegates(self) -> tuple[Op, ...]:
-        return (
-            *self._da_cumsum_ops.values(),
-            self._cb_producer_op,
-            self._chunk_state_op,
-            self._state_passing_op,
-            self._chunk_scan_op,
-        )
+        self._cb_producer_op = self.delegate_for("cb_producer", None, chunk_len=chunk_size)
+        self._chunk_state_op = self.delegate_for("chunk_state", None)
+        self._state_passing_op = self.delegate_for("state_passing", None)
+        self._chunk_scan_op = self.delegate_for("chunk_scan", None)
 
     def forward(
         self,

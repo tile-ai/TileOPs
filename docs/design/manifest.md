@@ -238,7 +238,7 @@ cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)",
 
 ## Composition
 
-A composite op records the sub-ops it holds on its default built-in construction path (no injected implementation object), i.e. what `kernel_delegates()` returns then. Scheduling and forward stay in code.
+A composite op records the sub-op classes its built-in path may hold and where its own kernels sit. When and how often an instance is built stays in code, as do scheduling and forward.
 
 ```yaml
 composition:
@@ -250,9 +250,9 @@ composition:
   - {name: indexed_small_route, op: IndexedExpertMLPFwdOp, optional: true}
 ```
 
-- A stage references a manifest entry. A sub-op held only under some construction parameters is an `optional: true` stage; the condition stays in code.
+- A stage names a manifest entry (`op`) or one of the op's kernel roles (`kernel`). A sub-op not held for every call is an `optional: true` stage; the condition stays in code.
 - Whether a parent's roofline equals its stages' is not specified by this design.
-- On the built-in path, `kernel_delegates()` returns the stages in order, an optional one possibly absent; a test checks it over rows that reach every optional stage.
+- For an implemented parametric entry, the validator holds `op` stages to the class's `delegate_types` and `kernel` stages to its `kernel_types`, each in order.
 - `stages` is a non-empty list; stage names are unique; `optional` is a boolean.
 
 ## Call Semantics

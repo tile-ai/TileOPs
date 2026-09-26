@@ -3,6 +3,7 @@ import dataclasses
 import functools
 import inspect
 import math
+import threading
 import warnings
 from abc import ABC, abstractmethod
 from types import MappingProxyType
@@ -31,7 +32,7 @@ from tileops.backend import (
 from tileops.backend.dispatch import registered_kernel_builder, select_target
 from tileops.backend.registry import ensure_loaded
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.manifest import WORKSPACE_ATTR, forward_signature, load_manifest
+from tileops.manifest import load_manifest
 from tileops.manifest.rule_eval import bind_declared_shapes, eval_shape_rule
 
 from ._output_dtype import output_dtype
@@ -60,6 +61,17 @@ _UNRESOLVED = _Unresolved()
 # Every dispatch key a created op class declares in ``kernel_types``. Constructing an op imports
 # it and every sub-op it builds, so every key that can replace something in that op is here.
 _DISPATCH_KEYS: set[str] = set()
+
+# The converted ops' calls in progress on this thread, innermost last, each with the checked
+# calls completed inside it: what a composite's call collects from its sub-ops.
+_OPEN_CALLS = threading.local()
+
+
+def _open_calls() -> list:
+    calls = getattr(_OPEN_CALLS, "stack", None)
+    if calls is None:
+        calls = _OPEN_CALLS.stack = []
+    return calls
 
 
 @functools.lru_cache(maxsize=1)
@@ -124,7 +136,7 @@ def _forward_input_names(op_name: str) -> tuple[str, ...]:
     if entry is None:
         return ()
     try:
-        return tuple(forward_signature(entry)["inputs"])
+        return tuple(entry["signature"]["inputs"])
     except Exception:
         return ()
 
@@ -166,6 +178,10 @@ class Op(ABC):
     _kernel_roles: dict[str, dict[Hashable, object]]
     # Dispatch keys the caller replaced through ``kernel_map=``.
     _overridden_keys: frozenset = frozenset()
+    # The ``kernel_map=`` the caller passed, as given; what every sub-op this op builds is handed.
+    _given_kernel_map: Optional[dict[str, Kernel]] = None
+    # Held sub-ops, ``{stage: {key: op}}``. Annotation only, like ``_kernel_roles``.
+    _delegates: dict[str, dict[Hashable, "Op"]]
     dtype: Optional[torch.dtype] = None
     # This call's input shapes and dtypes, while a recording block is open.
     _roofline_call_tensors: Optional[dict] = None
@@ -211,6 +227,10 @@ class Op(ABC):
     # The op's dispatch keys and the kernel class each names. An op with no kernel of its own
     # (a composite) declares none.
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = MappingProxyType({})
+
+    # The ops this op holds as sub-ops, by stage name in stage order: the sub-op counterpart of
+    # ``kernel_types``. Every sub-op is held through ``delegate_for``.
+    delegate_types: ClassVar[Mapping[str, type["Op"]]] = MappingProxyType({})
 
     @property
     def default_kernel_map(self) -> dict[str, Kernel]:
@@ -443,6 +463,7 @@ class Op(ABC):
         """
         default_map = self.default_kernel_map
         override = dict(candidate_map) if candidate_map else {}
+        self._given_kernel_map = override or None
         if default_map is None or len(default_map) == 0:
             # Composite op: store override verbatim. Its keys belong to the sub-ops it
             # builds, which is where a name nothing declares is refused.
@@ -457,20 +478,6 @@ class Op(ABC):
         self.kernel_map = resolved
         # Read by select_kernel_key: a replacement is never skipped silently.
         self._overridden_keys = frozenset(override) & frozenset(resolved)
-
-    def forwarded_overrides(self) -> Optional[dict[str, Kernel]]:
-        """The caller's replacements, to hand to a sub-op this op builds.
-
-        Only what the caller supplied. A composite op that passed its whole
-        resolved ``kernel_map`` down would mark every key as replaced, and a
-        replacement that cannot serve a call is an error rather than something to
-        select around.
-        """
-        if not self._overridden_keys or not self.kernel_map:
-            return None
-        return {
-            key: cls for key, cls in self.kernel_map.items() if key in self._overridden_keys
-        } or None
 
     def select_kernel_key(self, keys: "tuple[str, ...]", call: object) -> str:
         """Return the one key among *keys* whose implementation serves *call*.
@@ -596,7 +603,11 @@ class Op(ABC):
                 f"op: {registered_targets(type(self).__name__)}"
             )
         if key not in entries:
-            entries[key] = build()
+            entry = build()
+            if self.tune:
+                for kernel in self._entry_kernels(entry):
+                    kernel.request_tune()
+            entries[key] = entry
         return entries[key]
 
     def entry_for(self, role: str, call: object) -> Entry:
@@ -670,9 +681,8 @@ class Op(ABC):
     def _forward_io(cls) -> "tuple[tuple[str, ...], frozenset[str]]":
         """The ``forward`` inputs a target is called with, and which of them it writes.
 
-        The names are ``signature.inputs`` followed by ``resources.workspaces``; an op the
-        manifest does not describe has none. The written ones are the inputs marked
-        ``mutated`` and every workspace, which is scratch the kernel writes.
+        The names are ``signature.inputs``; an op the manifest does not describe has none.
+        The written ones are the inputs marked ``mutated``.
         """
         plan = getattr(cls, "_signature", None)
         if plan is not None:
@@ -680,11 +690,11 @@ class Op(ABC):
             written = frozenset(n for n, t in plan.sig.inputs.items() if t.mutated or t.write_only)
             return tuple(plan.sig.inputs), written
         entry = load_manifest().get(cls.__name__)
-        inputs = forward_signature(entry)["inputs"] if entry is not None else {}
+        inputs = (entry["signature"].get("inputs") or {}) if entry is not None else {}
         mutated = frozenset(
             name
             for name, attrs in inputs.items()
-            if isinstance(attrs, dict) and (attrs.get("mutated") or attrs.get(WORKSPACE_ATTR))
+            if isinstance(attrs, dict) and attrs.get("mutated")
         )
         return tuple(inputs), mutated
 
@@ -732,6 +742,7 @@ class Op(ABC):
         plan = getattr(type(self), "_signature", None)
         if plan is None:
             return None
+        self._open_call()
         return plan.check(self, {**dict(zip(plan.sig.inputs, inputs, strict=True)), **writes})
 
     def _complete_signature(
@@ -753,8 +764,37 @@ class Op(ABC):
             {**dict(zip(sig.inputs, inputs, strict=True)), **writes},
             tuple(getattr(self, t, None) for t in sig.ctor_tensors),
         )
-        if not torch.compiler.is_compiling():
-            self._signature_call = call
+        if torch.compiler.is_compiling():
+            self._drop_call()
+        else:
+            self._keep_call(call)
+
+    def _open_call(self) -> None:
+        """Start collecting the checked calls this op's sub-ops complete during its call."""
+        _open_calls().append((self, []))
+
+    def _drop_call(self) -> None:
+        """Close a call that did not complete; nothing it collected is kept."""
+        calls = _open_calls()
+        if calls and calls[-1][0] is self:
+            calls.pop()
+
+    def _keep_call(self, call: object) -> None:
+        """Keep *call* as the last completed one, with the checked calls its sub-ops completed
+        during it, by stage and in completion order (docs/design/roofline.md §2.2), and report
+        it to the call this one ran inside."""
+        calls = _open_calls()
+        collected = calls.pop()[1] if calls and calls[-1][0] is self else []
+        held = getattr(self, "_delegates", None) or {}
+        stage_of = {id(op): stage for stage, ops in held.items() for op in ops.values()}
+        stages = {stage: [] for stage in self.delegate_types}
+        for op, done in collected:
+            if id(op) in stage_of:
+                stages[stage_of[id(op)]].append(done)
+        call = dataclasses.replace(call, stages={k: tuple(v) for k, v in stages.items()})
+        self._signature_call = call
+        if calls:
+            calls[-1][1].append((self, call))
 
     def _execution_arguments(self, args: tuple, kwargs: dict) -> "dict[str, object]":
         """What ``forward`` takes after the signature's inputs and ``out``, bound by name."""
@@ -803,6 +843,7 @@ class Op(ABC):
             self._complete_signature(call, result, inputs, writes)
             return result
         except Exception:
+            self._drop_call()
             # Whoever settled it unsettles it. ``__call__``'s handler does not run when
             # the failure comes out of a compiled graph, so this one has to.
             if settled_here:
@@ -980,14 +1021,48 @@ class Op(ABC):
         roles = getattr(self, "_kernel_roles", None) or {}
         return MappingProxyType(roles.get(role, {}))
 
-    def kernel_delegates(self) -> Sequence["Op"]:
-        """Return the ops whose kernels this op runs.
+    def delegate_for(
+        self, stage: str, key: Hashable, given: "Op | None" = None, /, **params: object
+    ) -> "Op":
+        """Return the sub-op held for *stage* under *key*, building it on a miss.
 
-        A composite op — one that resolves its call through another op rather
-        than building the kernel itself — overrides this so enumeration reaches
-        the delegate. Default: this op builds everything it runs.
+        The one way an op holds a sub-op. A miss builds ``delegate_types[stage](**params)``
+        with this op's ``target``, the caller's ``kernel_map`` as given and this op's current
+        ``tune``; *given*, an implementation the caller injected for the stage, is held as is
+        instead. Eager only, like :meth:`kernel_for`: a traced ``forward`` reaches no miss.
+
+        Args:
+            stage: A key of ``delegate_types``.
+            key: The sub-op's identity: everything that can change what gets built.
+            given: The caller's implementation for this stage, or ``None`` to build one.
+            params: The sub-op's constructor arguments other than the execution policy.
+
+        Raises:
+            KeyError: *stage* is not declared in ``delegate_types``.
         """
-        return ()
+        cls = self.delegate_types[stage]
+        held = getattr(self, "_delegates", None)
+        if held is None:
+            held = {}
+            self._delegates = held
+        entries = held.setdefault(stage, {})
+        if key not in entries:
+            entries[key] = (
+                given
+                if given is not None
+                else cls(
+                    **params, target=self.target, kernel_map=self._given_kernel_map, tune=self.tune
+                )
+            )
+        return entries[key]
+
+    def kernel_delegates(self) -> Sequence["Op"]:
+        """Return the sub-ops this op holds, in stage order, then in the order they were built.
+
+        Derived from what :meth:`delegate_for` holds; an op does not override it.
+        """
+        held = getattr(self, "_delegates", None) or {}
+        return tuple(op for stage in self.delegate_types for op in held.get(stage, {}).values())
 
     @property
     def settled_target(self) -> Target:
@@ -1093,14 +1168,16 @@ class Op(ABC):
                 continue
             seen.add(id(op))
             yield op
-            stack.extend(op.kernel_delegates())
+            stack.extend(reversed(op.kernel_delegates()))
 
     def autotune(self) -> None:
         """Put the op in tuned mode: what it holds now, and what it builds next.
 
         It applies to specializations that do not exist yet — an op tuned before its
         first fp16 call is tuned when bf16 arrives later — because ``tune`` is what
-        carries it, and a kernel factory reads that flag when it runs.
+        carries it: every entry built while it is set has its kernels put in tuned mode, so
+        no kernel factory needs to read it. A sub-op receives it from ``delegate_for``.
+        Tuning a kernel is idempotent; one without ``autotune_configs`` stays untuned.
 
         A target's builder is not passed ``tune``, so the flag cannot reach what a target
         builds; an op a target serves warns once instead of ignoring the request.
@@ -1110,7 +1187,7 @@ class Op(ABC):
             if op.settled_target not in (None, BUILTIN):
                 op._warn_tune_not_passed()
         for kernel in self.iter_kernels():
-            kernel.autotune()
+            kernel.request_tune()
 
     def _warn_tune_not_passed(self) -> None:
         """Warn, once per instance, that tuning does not reach this op's target."""
@@ -1163,6 +1240,7 @@ class Op(ABC):
             if call is not None:
                 self._complete_signature(call, result, *bound)
         except Exception:
+            self._drop_call()
             if settled_here:
                 self._unsettle()
             raise
@@ -1211,9 +1289,7 @@ class Op(ABC):
         entry = load_manifest().get(type(self).__name__)
         if entry is None:
             return
-        # A workspace is declared under ``resources`` but passed to forward() like
-        # any other tensor, so it counts toward the argument list this compares.
-        names = tuple(forward_signature(entry)["inputs"])
+        names = tuple(entry["signature"]["inputs"])
         if len(names) != len(inputs):
             return
         try:
@@ -1237,7 +1313,12 @@ class Op(ABC):
         )
 
     def _unsettle(self) -> None:
-        """Undo a settling whose call did not finish, dropping what it built."""
+        """Undo a settling whose call did not finish, dropping what it built.
+
+        The sub-ops are unsettled with it, so none keeps what the failed call settled.
+        """
+        for delegate in self.kernel_delegates():
+            delegate._unsettle()
         dropped = {
             id(entry)
             for entries in (getattr(self, "_kernel_roles", None) or {}).values()

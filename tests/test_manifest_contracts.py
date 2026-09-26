@@ -1,5 +1,5 @@
 """Contracts every implemented parametric entry keeps (docs/design/manifest.md § Workloads,
-§ Algebraic Data Types, § Composition).
+§ Algebraic Data Types).
 
 An op that cannot run on meta tensors keeps its completed-call contract in its family's
 benchmark, which runs every manifest call.
@@ -7,7 +7,7 @@ benchmark, which runs every manifest call.
 
 import pytest
 
-from tileops.backend import BUILTIN, OpNotAvailableError
+from tileops.backend import OpNotAvailableError
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest.plan import check_entry, entry_plan
 from tileops.manifest.registry import op_class
@@ -40,7 +40,11 @@ def test_every_manifest_call_completes_on_meta(name):
             op(*(tensors[t] for t in call.signature.inputs))
         except OpNotAvailableError:
             pytest.skip(f"{name} cannot run on meta tensors")
-        flops, moved = op.eval_roofline()
+        try:
+            flops, moved = op.eval_roofline()
+        except OpNotAvailableError:
+            # A formula reading metadata values is priced in the op's benchmark.
+            continue
         assert flops >= 0 and moved >= 0, call.case_id
 
 
@@ -63,22 +67,3 @@ def test_each_adt_constructor_round_trips(adt):
                 seen.add(literal.kind)
     ctors = load_adts()[adt]["sum"]
     assert seen == set(ctors), f"no row builds {sorted(set(ctors) - seen)}"
-
-
-@pytest.mark.parametrize("name", sorted(n for n in _IMPLEMENTED if "composition" in _PARAMETRIC[n]))
-def test_composition_matches_kernel_delegates(name):
-    stages = _PARAMETRIC[name]["composition"]["stages"]
-    optional = {s["op"] for s in stages if s.get("optional")}
-    order = [s["op"] for s in stages]
-    reached = set()
-    cls = op_class(name, _PARAMETRIC[name])
-    for call in _calls(name):
-        tensors = call.materialize("meta")
-        held = [
-            type(d).__name__
-            for d in cls(**call.arguments(tensors), target=BUILTIN).kernel_delegates()
-        ]
-        assert held == [s for s in order if s in held], (call.case_id, held)
-        assert set(order) - optional <= set(held), (call.case_id, held)
-        reached |= set(held) & optional
-    assert reached == optional, f"no row reaches {sorted(optional - reached)}"

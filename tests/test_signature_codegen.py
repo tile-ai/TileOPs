@@ -628,3 +628,65 @@ def test_a_converted_op_without_a_boundary_traces_inside_a_compiled_caller():
     torch._dynamo.reset()
     compiled = torch.compile(lambda x: op(x) + 1, fullgraph=True)
     assert compiled(torch.ones(3, 8, dtype=torch.float16)).tolist() == [[3] * 4] * 3
+
+
+def test_a_meta_call_holds_no_metadata_values():
+    from tileops.backend import OpNotAvailableError
+    from tileops.ops._signature_codegen import SignatureCall
+
+    ids = torch.empty(2, 2, dtype=torch.int32, device="meta")
+    call = SignatureCall({}, {"ids": ((2, 2), "int32")}, (), metadata={"ids": ids})
+    with pytest.raises(OpNotAvailableError, match="holds no values"):
+        call.values("ids")
+    assert SignatureCall({}, {}, (), metadata={"ids": torch.ones(2)}).values("ids") == [1.0, 1.0]
+
+
+def _staged_parent(name: str, forward, *, boundary=False):
+    leaf_cls = _probe(f"{name}LeafFwdOp", _SILU, lambda self, x: x[:, : x.shape[1] // 2] * 1)
+    parent_cls = _probe(f"{name}FwdOp", _SILU, forward, boundary=boundary)
+    parent_cls.delegate_types = {"leaf": leaf_cls}
+    return parent_cls()
+
+
+def test_a_composite_call_carries_only_the_stage_calls_it_ran():
+    # A boundary parent's meta call completes in its fake, which runs no sub-op.
+    parent = _staged_parent(
+        "ProbeStaged", lambda self, x: self.delegate_for("leaf", None)(x), boundary=True
+    )
+    parent(torch.ones(3, 8, dtype=torch.float16))
+    (leaf_call,) = parent.last_call.stages["leaf"]
+    assert leaf_call is parent.kernel_delegates()[0].last_call
+    parent(torch.ones(2, 8, dtype=torch.float16, device="meta"))
+    assert parent.last_call.stages == {"leaf": ()}
+
+
+def test_a_composite_call_carries_every_call_of_a_stage():
+    def forward(self, x):
+        leaf = self.delegate_for("leaf", None)
+        leaf(x[:1].contiguous())
+        return leaf(x)
+
+    parent = _staged_parent("ProbeTwice", forward)
+    parent(torch.ones(3, 8, dtype=torch.float16))
+    assert [c.ix["M"] for c in parent.last_call.stages["leaf"]] == [1, 3]
+
+
+def test_a_meta_call_of_an_op_returning_nothing_completes_and_is_priced():
+    signature = {
+        "forall": {"M": "Dim", "N": "Dim", "T": "DType[float16 | float32]"},
+        "inputs": {
+            "result": {"dtype": "T", "shape": "[M, N]", "mutated": True, "write_only": True},
+            "x": {"dtype": "T", "shape": "[M, N]"},
+        },
+        "outputs": {},
+    }
+    op = _probe(
+        "ProbeWriteOnlyFwdOp",
+        signature,
+        lambda self, result, x: (result.copy_(x), None)[1],
+        boundary=True,
+        roofline={"flops": "M * N"},
+    )()
+    x = torch.empty(3, 8, dtype=torch.float16, device="meta")
+    assert op(torch.empty_like(x), x) is None
+    assert op.eval_roofline() == (24, 2 * 3 * 8 * 2)

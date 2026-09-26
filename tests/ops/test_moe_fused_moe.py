@@ -185,16 +185,12 @@ def test_fused_moe_qwen3(
     torch.manual_seed(42)
     dev = "cuda"
     hidden = torch.randn(num_tokens, hidden_size, dtype=dtype, device=dev)
-    gating = torch.randn(num_tokens, num_experts, dtype=dtype, device=dev)
+    gating = torch.randn(num_tokens, num_experts, device=dev)
     w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
 
     op_nopad = FusedMoeFwdOp(
-        num_tokens=num_tokens,
-        num_experts=num_experts,
         top_k=top_k,
-        hidden_size=hidden_size,
-        ffn_size=ffn_size,
         scoring_func=scoring_func,
         renormalize=renormalize,
     )
@@ -263,16 +259,12 @@ def test_fused_moe_deterministic(case):
     nt, ne, tk = case["num_tokens"], case["num_experts"], case["top_k"]
     hs, ff, reps = case["hidden_size"], case["ffn_size"], case["reps"]
     hidden = torch.randn(nt, hs, dtype=dtype, device=dev)
-    gating = torch.randn(nt, ne, dtype=dtype, device=dev)
+    gating = torch.randn(nt, ne, device=dev)
     w_gate_up = torch.randn(ne, ff * 2, hs, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(ne, hs, ff, dtype=dtype, device=dev) * 0.02
 
     op = FusedMoeFwdOp(
-        num_tokens=nt,
-        num_experts=ne,
         top_k=tk,
-        hidden_size=hs,
-        ffn_size=ff,
         scoring_func="softmax",
         renormalize=False,
     )
@@ -402,7 +394,7 @@ def test_fused_moe_kimi(
     torch.manual_seed(42)
     dev = "cuda"
     hidden = torch.randn(num_tokens, hidden_size, dtype=dtype, device=dev)
-    gating = torch.randn(num_tokens, num_experts, dtype=dtype, device=dev)
+    gating = torch.randn(num_tokens, num_experts, device=dev)
     correction_bias = (
         torch.randn(num_experts, dtype=torch.float32, device=dev) * 0.1
         if with_correction_bias
@@ -412,11 +404,7 @@ def test_fused_moe_kimi(
     w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
 
     op_nopad = FusedMoeFwdOp(
-        num_tokens=num_tokens,
-        num_experts=num_experts,
         top_k=top_k,
-        hidden_size=hidden_size,
-        ffn_size=ffn_size,
         scoring_func="sigmoid",
         renormalize=True,
         routed_scaling_factor=routed_scaling_factor,
@@ -541,7 +529,7 @@ def test_fused_moe_vs_vllm(
     torch.manual_seed(42)
     dev = "cuda"
     hidden = torch.randn(num_tokens, hidden_size, dtype=dtype, device=dev)
-    gating = torch.randn(num_tokens, num_experts, dtype=dtype, device=dev)
+    gating = torch.randn(num_tokens, num_experts, device=dev)
     correction_bias = torch.randn(num_experts, dtype=torch.float32, device=dev) * 0.1
     w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(num_experts, hidden_size, ffn_size, dtype=dtype, device=dev) * 0.02
@@ -550,11 +538,7 @@ def test_fused_moe_vs_vllm(
     topk_weights, topk_ids = fk(gating, correction_bias)
 
     op = FusedMoeFwdOp(
-        num_tokens=num_tokens,
-        num_experts=num_experts,
         top_k=top_k,
-        hidden_size=hidden_size,
-        ffn_size=ffn_size,
         scoring_func="sigmoid",
         renormalize=True,
         routed_scaling_factor=routed_scaling_factor,
@@ -573,105 +557,34 @@ def test_fused_moe_vs_vllm(
     )
 
 
-# prepare_finalize / experts contract
+# roofline
 
 
 @pytest.mark.smoke
-def test_fused_moe_fwd_op_identity() -> None:
-    """`FusedMoeFwdOp` (no correction bias) matches the `FusedMoe` reference output."""
-    torch.manual_seed(42)
-    dev = "cuda"
-    T, E, K, H, F_ = 32, 8, 2, 64, 32
-    dtype = torch.bfloat16
-
-    hidden = torch.randn(T, H, dtype=dtype, device=dev)
-    gating = torch.randn(T, E, dtype=dtype, device=dev)
-    w_gate_up = torch.randn(E, F_ * 2, H, dtype=dtype, device=dev) * 0.02
-    w_down = torch.randn(E, H, F_, dtype=dtype, device=dev) * 0.02
-
-    op = FusedMoeFwdOp(
-        num_tokens=T,
-        num_experts=E,
-        top_k=K,
-        hidden_size=H,
-        ffn_size=F_,
-    )
-    out = op(hidden, gating, w_gate_up, w_down)
-    assert out.shape == (T, H)
-    assert out.dtype == dtype
-
-    ref_op = FusedMoeFwdOp(
-        num_tokens=T,
-        num_experts=E,
-        top_k=K,
-        hidden_size=H,
-        ffn_size=F_,
-    )
-    ref = ref_op(hidden, gating, w_gate_up, w_down)
-    torch.testing.assert_close(out.float(), ref.float(), rtol=1e-2, atol=1e-2)
-
-    flops, nbytes = op.eval_roofline()
-    assert flops > 0 and nbytes > 0
-
-
-@pytest.mark.smoke
-def test_fused_moe_fwd_correction_bias_identity() -> None:
-    """A call passing correction_bias, end-to-end smoke."""
+def test_the_routed_weights_are_priced_from_the_experts_stage() -> None:
+    """The in-tree call prices the experts its routed-experts stage read; with no stage call
+    the price falls to the data-independent bound of top_k experts."""
     torch.manual_seed(7)
     dev = "cuda"
     T, E, K, H, F_ = 32, 8, 2, 64, 32
     dtype = torch.bfloat16
-
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
-    gating = torch.randn(T, E, dtype=dtype, device=dev)
-    correction_bias = torch.randn(E, dtype=torch.float32, device=dev) * 0.1
+    gating = torch.randn(T, E, device=dev)
     w_gate_up = torch.randn(E, F_ * 2, H, dtype=dtype, device=dev) * 0.02
     w_down = torch.randn(E, H, F_, dtype=dtype, device=dev) * 0.02
 
-    op = FusedMoeFwdOp(
-        num_tokens=T,
-        num_experts=E,
-        top_k=K,
-        hidden_size=H,
-        ffn_size=F_,
-        scoring_func="sigmoid",
-        renormalize=True,
-    )
-    out = op(hidden, gating, w_gate_up, w_down, correction_bias)
-    assert out.shape == (T, H)
-    assert out.dtype == dtype
-
-    ref_op = FusedMoeFwdOp(
-        num_tokens=T,
-        num_experts=E,
-        top_k=K,
-        hidden_size=H,
-        ffn_size=F_,
-        scoring_func="sigmoid",
-        renormalize=True,
-    )
-    ref = ref_op(hidden, gating, w_gate_up, w_down, correction_bias)
-    torch.testing.assert_close(out.float(), ref.float(), rtol=1e-2, atol=1e-2)
-
+    op = FusedMoeFwdOp(top_k=K)
+    op(hidden, gating, w_gate_up, w_down)
+    _, topk_ids = FusedTopKFwdOp(K)(gating)
+    active = topk_ids.unique().numel()
+    per_expert = 3 * F_ * H * 2
+    fixed = 2 * T * H * 2 + T * E * 4
     flops, nbytes = op.eval_roofline()
-    assert flops > 0 and nbytes > 0
+    assert flops == 6 * T * K * F_ * H
+    assert nbytes == active * per_expert + fixed
+    assert op.roofline_inputs() == {"active_experts": active}
 
+    import dataclasses
 
-@pytest.mark.smoke
-def test_prepare_finalize_without_experts_raises() -> None:
-    """Supplying prepare_finalize= without experts= must raise ValueError.
-
-    prepare_finalize can change the dispatched token count T'; the default
-    experts instance is JIT-compiled for the original T and cannot be reused.
-    """
-    from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
-
-    with pytest.raises(ValueError, match="experts="):
-        FusedMoeFwdOp(
-            num_tokens=16,
-            num_experts=4,
-            top_k=2,
-            hidden_size=64,
-            ffn_size=32,
-            prepare_finalize=MoEPrepareAndFinalizeNoDPEP(),
-        )
+    op._signature_call = dataclasses.replace(op.last_call, stages={})
+    assert op.eval_roofline()[1] == K * per_expert + fixed

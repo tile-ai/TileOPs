@@ -52,7 +52,6 @@ import _manifest_facts as facts_mod  # noqa: E402
 
 import tileops.manifest as manifest_pkg  # noqa: E402
 from tileops.manifest import (  # noqa: E402
-    forward_signature,
     types_document,
 )
 from tileops.manifest.dtype_rules import (  # noqa: E402
@@ -119,11 +118,6 @@ _VALID_LAYOUTS = {"channels_last"}
 
 # composition: the internal structure contract of a composite public op.
 _VALID_COMPOSITION_KINDS = {"composite"}
-
-# resources: the execution resource contract. A workspace is scratch the op
-# needs to run, not a value the result depends on, so it is declared here
-# rather than among ``signature.inputs``.
-_VALID_WORKSPACE_KINDS = {"scratch"}
 
 # roofline.composition: which stages the parent's cost is made of.
 
@@ -1339,19 +1333,14 @@ def _l0_optional(op_name: str, entry: dict, sig: dict) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# composition and resources
+# composition
 # ---------------------------------------------------------------------------
 
 
-def _declared_workspaces(entry: dict) -> list[dict]:
-    """``resources.workspaces`` entries that carry a string name."""
-    resources = entry.get("resources")
-    if not isinstance(resources, dict):
-        return []
-    workspaces = resources.get("workspaces")
-    if not isinstance(workspaces, list):
-        return []
-    return [w for w in workspaces if isinstance(w, dict) and isinstance(w.get("name"), str)]
+def _signature(entry: dict) -> dict:
+    """The entry's ``signature``, or an empty one where the entry does not hold a mapping."""
+    sig = entry.get("signature")
+    return sig if isinstance(sig, dict) else {}
 
 
 def _facts(entry: dict, op_name: str = "") -> "facts_mod.Facts":
@@ -1360,21 +1349,8 @@ def _facts(entry: dict, op_name: str = "") -> "facts_mod.Facts":
 
 
 def _facts_from_sig(sig: dict, op_name: str = "") -> "facts_mod.Facts":
-    """Facts for a caller holding only a signature.
-
-    The signature may already carry merged workspaces, which the facts layer
-    tells apart by their marker, so the same derivations apply.
-    """
+    """Facts for a caller holding only a signature."""
     return facts_mod.build(op_name, {"signature": sig})
-
-
-def _forward_signature(entry: dict) -> dict:
-    """``signature`` as ``forward()`` sees it — see ``tileops.manifest``.
-
-    Kept as a module-local name so every parity check reads the same helper the
-    op layer's codegen does.
-    """
-    return forward_signature(entry)
 
 
 def _stage_names(entry: dict) -> list[str]:
@@ -1408,7 +1384,7 @@ def _l0_stage(
     where: str,
     named: bool,
     all_op_names: Collection[str],
-    kernel_keys: Collection[str],
+    kernel_keys: Collection[str] | None,
     depth: int = 0,
 ) -> list[str]:
     """One ``composition.stages`` element, or one element of a variant's stages."""
@@ -1448,14 +1424,18 @@ def _l0_stage(
         ref = stage["kernel"]
         if not isinstance(ref, str) or not ref.strip():
             err(f"{where}.kernel must be a non-empty string")
-        elif ref not in kernel_keys:
+        elif kernel_keys is not None and ref not in kernel_keys:
             err(f"{where}.kernel {ref!r} is not a key of source.kernel_map {sorted(kernel_keys)}")
 
     if "optional" in stage and not isinstance(stage["optional"], bool):
         err(f"{where}.optional must be a bool")
 
     variants = stage.get("variants")
-    if variants is not None:
+    if variants is not None and kernel_keys is None:
+        err(
+            f"{where}.variants is a legacy field; a parametric stage is name, op or kernel, optional"
+        )
+    elif variants is not None:
         if depth:
             err(f"{where}.variants is only allowed on a top-level stage")
         elif not isinstance(variants, list) or not variants:
@@ -1532,8 +1512,9 @@ def _l0_composition(
     if kind not in _VALID_COMPOSITION_KINDS:
         err(f"composition.kind must be one of {sorted(_VALID_COMPOSITION_KINDS)}, got {kind!r}")
 
-    # The dispatch keys a stage may name, read off the facts.
-    kernel_keys = set(_facts(entry, op_name).kernel_map)
+    # The dispatch keys a stage may name, read off the facts. A parametric entry's are the
+    # class's `kernel_types`, which the code parity check compares instead.
+    kernel_keys = set(_facts(entry, op_name).kernel_map) if is_legacy(entry) else None
 
     stages = composition.get("stages")
     if not isinstance(stages, list) or not stages:
@@ -1558,77 +1539,6 @@ def _l0_composition(
                 err(f"composition.stages[{i}].name {stage['name']!r} is declared twice")
             else:
                 seen.add(stage["name"])
-    return errors
-
-
-def _l0_resources(op_name: str, entry: dict, resources: dict) -> list[str]:
-    """``resources.workspaces``: scratch buffers the op needs to run."""
-    errors: list[str] = []
-    err = _emit_to(errors, "schema", op_name)
-
-    unknown = sorted(
-        repr(k) for k in facts_mod.unknown_keys_of(facts_mod.Section.RESOURCES, resources)
-    )
-    if unknown:
-        err(
-            f"resources has unknown keys [{', '.join(unknown)}]; "
-            f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.RESOURCES])}"
-        )
-
-    workspaces = resources.get("workspaces")
-    if workspaces is None:
-        return errors
-    if not isinstance(workspaces, list) or not workspaces:
-        err("resources.workspaces must be a non-empty list")
-        return errors
-
-    stage_names = set(_stage_names(entry))
-    has_composition = isinstance(entry.get("composition"), dict)
-    input_names = set((entry.get("signature") or {}).get("inputs") or {})
-    seen: set[str] = set()
-    for i, ws in enumerate(workspaces):
-        where = f"resources.workspaces[{i}]"
-        if not isinstance(ws, dict):
-            err(f"{where} must be a mapping, got {type(ws).__name__}")
-            continue
-        unknown_w = sorted(
-            repr(k) for k in facts_mod.unknown_keys_of(facts_mod.Section.WORKSPACE, ws)
-        )
-        if unknown_w:
-            err(
-                f"{where} has unknown keys [{', '.join(unknown_w)}]; "
-                f"valid keys are {sorted(facts_mod.SECTION_KEYS[facts_mod.Section.WORKSPACE])}"
-            )
-        name = ws.get("name")
-        if not isinstance(name, str) or not name.strip():
-            err(f"{where} must have a non-empty string 'name'")
-        elif name in seen:
-            err(f"{where}.name {name!r} is declared twice")
-        else:
-            seen.add(name)
-            # The same name in both places would leave dtype and shape
-            # checks reading two declarations of one tensor.
-            if name in input_names:
-                err(f"{where}.name {name!r} is also declared in signature.inputs")
-        # dtype is required: dtype parity builds this tensor like any other
-        # forward argument, and an undeclared dtype drops that coverage.
-        if not isinstance(ws.get("dtype"), str) or not ws["dtype"].strip():
-            err(f"{where} must have a non-empty string 'dtype'")
-        kind = ws.get("kind")
-        if kind is not None and kind not in _VALID_WORKSPACE_KINDS:
-            err(f"{where}.kind must be one of {sorted(_VALID_WORKSPACE_KINDS)}, got {kind!r}")
-        if "optional" in ws and not isinstance(ws["optional"], bool):
-            err(f"{where}.optional must be a bool")
-        owner = ws.get("owner")
-        if has_composition:
-            if owner is None:
-                err(f"{where} must have an 'owner' naming a composition stage")
-            elif owner not in stage_names:
-                err(
-                    f"{where}.owner {owner!r} is not a composition stage name {sorted(stage_names)}"
-                )
-        elif owner is not None:
-            err(f"{where}.owner is set but the entry declares no composition")
     return errors
 
 
@@ -1719,12 +1629,6 @@ def check_l0(
         errors.extend(_l0_composition(op_name, entry, composition, all_op_names=all_op_names))
     elif "composition" in entry:
         err("composition must be a mapping")
-
-    resources = entry.get("resources")
-    if isinstance(resources, dict):
-        errors.extend(_l0_resources(op_name, entry, resources))
-    elif "resources" in entry:
-        err("resources must be a mapping")
 
     return errors
 
@@ -2106,7 +2010,7 @@ def check_l1(
         )
         return errors
 
-    manifest_inputs = _forward_signature(entry).get("inputs", {})
+    manifest_inputs = _signature(entry).get("inputs", {})
     manifest_params = sig.get("params", {})
     manifest_static_dims = sig.get("static_dims")
     init_params = _get_init_params(result.cls)
@@ -2260,9 +2164,7 @@ def check_l3(op_name: str, entry: dict) -> list[str]:
     """
     errors: list[str] = []
     err = _emit_to(errors, "dtype", op_name)
-    # Workspaces declare a dtype in the same syntax, so they are checked here
-    # as forward arguments rather than left to L0's non-empty-string rule.
-    sig = _forward_signature(entry)
+    sig = _signature(entry)
     raw_inputs = sig.get("inputs")
     raw_outputs = sig.get("outputs")
     inputs = raw_inputs if isinstance(raw_inputs, dict) else {}
@@ -2448,8 +2350,7 @@ def check_l3_dtype_combos_data(op_name: str, sig: dict) -> list[str]:
         errors.extend(_diagnose_unresolvable_signature(op_name, sig))
         return errors
     optional_names = set(_optional_input_names(sig))
-    # Columns come from the facts layer, which excludes workspaces: a combo row
-    # is the caller's value contract and a workspace's dtype is strategy.
+    # Columns come from the facts layer: a combo row is the caller's value contract.
     declared_input_names: list[str] = [
         n for n in _facts_from_sig(sig).combo_columns if n not in optional_names
     ]
@@ -2947,7 +2848,7 @@ def check_l2_infer_parity(
         return errors
     warn = _emit_to(warnings, "shape", op_name)
 
-    sig = _forward_signature(entry)
+    sig = _signature(entry)
     rules = sig.get("shape_rules") or []
     if not isinstance(rules, list):
         rules = []
@@ -3441,27 +3342,6 @@ def _caller_stated_out_dtype(sig: dict, combo: dict[str, str]) -> dict:
     return {}
 
 
-def _workspace_probe_dtype(
-    arg: "facts_mod.TensorArg | None", combo: dict[str, str]
-) -> "str | None":
-    """A concrete dtype for a workspace the probe must pass but no combo names.
-
-    ``same_as(ref)`` follows the row's choice for *ref*. A union prefers a token
-    the row already uses, so an op that wants its workspace to match the
-    activation dtype is probed with a combination it accepts; failing that it
-    takes the first declared token, which the manifest says is legal.
-    """
-    if arg is None or not arg.workspace:
-        return None
-    if arg.same_as is not None:
-        return combo.get(arg.same_as)
-    tokens = _parse_dtype_expr(arg.dtype)
-    if not tokens:
-        return None
-    in_row = [t for t in tokens if t in set(combo.values())]
-    return in_row[0] if in_row else tokens[0]
-
-
 def _combo_accepted(
     cls: type,
     forward_inputs: list[str],
@@ -3491,15 +3371,9 @@ def _combo_accepted(
     if validate_fn is None:
         return False, "no _validate_dtypes"
 
-    sig_facts = _facts_from_sig(sig or {})
     tensors: dict = {}
     for name in forward_inputs:
         dtype_name = combo.get(name)
-        if dtype_name is None:
-            # A workspace is a forward argument the op validates, but never a
-            # combo column. Its dtype comes from its own declaration so the
-            # probe can make the call the combo row describes.
-            dtype_name = _workspace_probe_dtype(sig_facts.arg(name), combo)
         if dtype_name is None:
             return False, f"combo missing input {name!r}"
         t = _make_mock_tensor(dtype_name)
@@ -3708,16 +3582,13 @@ def check_l3_validate_dtypes_parity(
         )
         return errors
 
-    sig = _forward_signature(entry)
+    sig = _signature(entry)
     ef = _facts(entry, op_name)
     if not ef.call_tensor_args:
         return errors
 
-    # Two different lists, both read off the facts. ``forward_inputs`` is what
-    # the call passes, so it carries the workspaces; ``combo_dims`` is what a
-    # dtype_combos row spans, so it does not, and the probe supplies a
-    # workspace's own declared dtype when it builds the call. An optional input
-    # is never a column: a probe demanding one for it could not be satisfied.
+    # Both read off the facts. An optional input is never a column: a probe
+    # demanding one for it could not be satisfied.
     optional_inputs = set(ef.optional_names)
     forward_inputs = [n for n in ef.call_names if n not in optional_inputs]
     combo_dims = list(ef.required_combo_columns)
@@ -4361,7 +4232,7 @@ def check_c4_forward_signature_parity(
     if cls is None:
         return errors
 
-    # What the call passes, in declaration order: inputs then workspaces.
+    # What the call passes, in declaration order.
     expected = list(_facts(entry, op_name).call_names)
 
     positional = _forward_positional_params(cls)
@@ -4542,9 +4413,8 @@ def check_c8_mutated_inputs_parity(
         return errors
     ef = _facts(entry, op_name)
     declared = set(ef.mutated_input_names)
-    # Positional names of the operator's arguments: the caller's inputs, since
-    # a workspace is not part of the mutation contract.
-    inputs = [a.name for a in ef.value_inputs]
+    # Positional names of the operator's arguments: the caller's inputs.
+    inputs = [a.name for a in ef.call_tensor_args]
     names = getattr(cls, "compile_op_names", ()) or ()
     if not names:
         if declared and warnings is not None:
@@ -4790,13 +4660,16 @@ def _normal_default(value):
 
 
 def _check_parametric_parity(op_name: str, entry: dict) -> list[str]:
-    """`__init__` and `forward` against the signature (docs/design/manifest.md § Signature).
+    """`__init__`, `forward` and the class's sub-op and kernel declarations against the entry
+    (docs/design/manifest.md § Signature, § Composition).
 
     `__init__` takes `signature.params` in order with their defaults, a `kw_only` one after
     `*`, then keyword-only `target`, `kernel_map` and `tune`, and only the injected objects the
     class lists in `execution_parameters` or the reserved `config`. `forward` begins with the
     call-time inputs in order, positional, the optional ones defaulting to `None` and the
-    others to nothing, then `out` when an output is a buffer.
+    others to nothing, then `out` when an output is a buffer. The `op` stages of `composition`
+    are `delegate_types`, and an entry with a composition lists `kernel_types` as its `kernel`
+    stages, each in order.
     """
     where = f"[signature] {op_name}"
     try:
@@ -4851,6 +4724,19 @@ def _check_parametric_parity(op_name: str, entry: dict) -> list[str]:
         elif got.default is not (None if optional else empty):
             want = "default to None" if optional else "have no default"
             errors.append(f"{where}: forward {name!r} must {want}")
+    stages = [
+        st for st in (entry.get("composition") or {}).get("stages") or [] if isinstance(st, dict)
+    ]
+    ops = [(st.get("name"), st["op"]) for st in stages if "op" in st]
+    delegates = [(stage, c.__name__) for stage, c in getattr(cls, "delegate_types", {}).items()]
+    if ops != delegates:
+        errors.append(f"{where}: composition op stages {ops} are not delegate_types {delegates}")
+    kernels = [st["kernel"] for st in stages if "kernel" in st]
+    kernel_types = list(getattr(cls, "kernel_types", {}))
+    if stages and kernels != kernel_types:
+        errors.append(
+            f"{where}: composition kernel stages {kernels} are not kernel_types {kernel_types}"
+        )
     return errors
 
 

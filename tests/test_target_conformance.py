@@ -13,7 +13,7 @@ import torch
 
 from tests import roofline_binder as rb
 from tileops.backend import TensorSpec, registry
-from tileops.manifest import forward_signature, load_adts, load_manifest, load_workloads
+from tileops.manifest import load_adts, load_manifest, load_workloads
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.signature import is_legacy
 from tileops.manifest.workload import instantiate
@@ -27,10 +27,6 @@ FP8 = torch.float8_e4m3fn
 
 def _t(*shape: int, dtype: torch.dtype = F16) -> torch.Tensor:
     return torch.empty(shape, dtype=dtype)
-
-
-def _fused_moe(**extra):
-    return dict(num_tokens=8, num_experts=4, top_k=2, hidden_size=64, ffn_size=128, **extra)
 
 
 # Ops whose construction arguments or input shapes no workload row states. Each builds the
@@ -104,51 +100,12 @@ _CASES = {
         c(),
         (_t(16, 128), _t(16, 64, dtype=U8), _t(16, 1), _t(16, 1, dtype=U8)),
     ),
-    "FusedMoEExpertsFwdOp": lambda c: (
-        c(**_fused_moe()),
-        (
-            *[_t(8, 64)] * 2,
-            _t(4, 256, 64),
-            _t(4, 64, 128),
-            _t(8, 2, dtype=F32),
-            _t(8, 2, dtype=I32),
-            *[_t(4096)] * 2,
-        ),
-    ),
-    "IndexedExpertMLPFwdOp": lambda c: (
-        c(1, 4, 2, 128, 256),
-        (
-            *[_t(1, 128)] * 2,
-            _t(4, 512, 128),
-            _t(4, 128, 256),
-            _t(1, 2, dtype=F32),
-            _t(1, 2, dtype=I32),
-            _t(1 * 2 * 256),
-            _t(1 * 2 * 128),
-        ),
-    ),
-    "FusedMoeFwdOp": lambda c: (
-        c(**_fused_moe()),
-        (_t(8, 64), _t(8, 4, dtype=F32), _t(4, 256, 64), _t(4, 64, 128)),
-    ),
-    "FusedMoeSharedExpertFwdOp": lambda c: (
-        c(**_fused_moe(shared_ffn_size=128)),
-        (
-            _t(8, 64),
-            _t(8, 4, dtype=F32),
-            _t(4, 256, 64),
-            _t(4, 64, 128),
-            None,
-            _t(256, 64),
-            _t(64, 128),
-        ),
-    ),
 }
 
 
 def _from_workload(cls: type, name: str, entry: dict) -> tuple:
     """The op and its ``forward`` arguments, from the smallest workload row that states them."""
-    signature = forward_signature(entry)
+    signature = entry["signature"]
     inputs, params = signature.get("inputs") or {}, signature.get("params") or {}
     best = None
     for row in load_workloads(name) or [{}]:
@@ -256,7 +213,7 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
     else:
         make = _CASES.get(name)
         op, args = make(cls) if make else _from_workload(cls, name, entry)
-    declared = tuple(forward_signature(entry).get("inputs") or {})
+    declared = tuple(entry["signature"].get("inputs") or {})
     passed = args + (None,) * (len(declared) - len(args))
     described = tuple(None if t is None else TensorSpec.of(t) for t in passed)
     seen, returned = [], []
@@ -269,7 +226,9 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
             seen.append(tensors)
             if parametric:
                 result = declared_outputs
-                returned.append(result[0] if len(result) == 1 else tuple(result))
+                returned.append(
+                    None if not result else result[0] if len(result) == 1 else tuple(result)
+                )
                 return returned[-1]
             shapes = [None if t is None else tuple(t.shape) for t in tensors]
             try:
@@ -310,7 +269,7 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
         assert not declared or hasattr(cls, "_validate_manifest_dtypes"), (
             "a target is held to its dtypes"
         )
-    inputs = forward_signature(entry).get("inputs") or {}
+    inputs = entry["signature"].get("inputs") or {}
     assert all((inputs[o] or {}).get("mutated") for o in outputs if o in inputs), (
         "an output passed in as an input is one the call writes"
     )

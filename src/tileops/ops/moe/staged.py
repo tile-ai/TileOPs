@@ -261,6 +261,11 @@ class MoeExpertMLPFwdOp(Op):
     no operator of its own, its graph is its two leaves'.
     """
 
+    delegate_types: ClassVar[Mapping[str, type[Op]]] = {
+        "gate_up": MoeGroupedGemmFwdOp,
+        "down": MoeGroupedGemmFwdOp,
+    }
+
     def __init__(
         self,
         layout: MGroupedLayoutSpec,
@@ -285,14 +290,8 @@ class MoeExpertMLPFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        overrides = self.forwarded_overrides() or None
-        self.gate_up = MoeGroupedGemmFwdOp(
-            layout, activation=activation, target=target, kernel_map=overrides, tune=tune
-        )
-        self.down = MoeGroupedGemmFwdOp(layout, target=target, kernel_map=overrides, tune=tune)
-
-    def kernel_delegates(self) -> tuple[Op, Op]:
-        return self.gate_up, self.down
+        self.gate_up = self.delegate_for("gate_up", None, layout=layout, activation=activation)
+        self.down = self.delegate_for("down", None, layout=layout)
 
     def compute_roof(self) -> str:
         """The two GEMMs dominate the FLOPs; priced on tensor cores."""

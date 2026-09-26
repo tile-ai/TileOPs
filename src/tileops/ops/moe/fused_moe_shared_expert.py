@@ -3,11 +3,7 @@
 Combines routed experts (via FusedMoe) with shared experts (SharedExpertMLPKernel).
 
 Usage (single GPU, tp_size=1):
-    op = FusedMoeSharedExpertFwdOp(
-        num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F,
-        shared_ffn_size=F_s,
-    )
+    op = FusedMoeSharedExpertFwdOp(top_k=K)
     shared_out, routed_out = op(
         hidden, gating, w_gate_up, w_down,
         shared_w_gate_up=shared_w_gate_up,  # [2*F_s, H]
@@ -15,12 +11,7 @@ Usage (single GPU, tp_size=1):
     )
 
 Usage (TP, tp_size>1):
-    op = FusedMoeSharedExpertFwdOp(
-        num_tokens=T, num_experts=E, top_k=K,
-        hidden_size=H, ffn_size=F,
-        shared_ffn_size=F_s,
-        tp_size=tp_size, tp_rank=tp_rank,
-    )
+    op = FusedMoeSharedExpertFwdOp(top_k=K, tp_size=tp_size, tp_rank=tp_rank)
     # Pass complete weights; op shards them internally per tp_rank.
     # shared_out is a partial result — caller must all-reduce across TP ranks.
     shared_out_partial, routed_out = op(
@@ -32,7 +23,7 @@ Usage (TP, tp_size>1):
     # Must use the TP process group, not the default group (important in EP/DP setups).
 """
 
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -48,8 +39,9 @@ __all__ = ["FusedMoeSharedExpertFwdOp"]
 class FusedMoeSharedExpertFwdOp(FusedMoe):
     """FusedMoE with shared expert support, optionally TP-aware.
 
-    Extends FusedMoe to compute both shared and routed expert outputs.
-    The shared expert is computed via SharedExpertMLPKernel (TileLang).
+    Extends FusedMoe to compute both shared and routed expert outputs. Passing the
+    shared expert's weights enables it; the shared expert is computed via
+    SharedExpertMLPKernel (TileLang), which applies ``silu_and_mul``.
 
     TP support (shared expert only):
         When tp_size > 1, the op shards the shared expert weights internally:
@@ -60,171 +52,66 @@ class FusedMoeSharedExpertFwdOp(FusedMoe):
 
     Returns:
         (shared_output, routed_output): tuple of [T, H] tensors.
-            shared_output is None when shared_ffn_size is None.
+            shared_output is None when the shared weights are not passed.
             shared_output is a partial sum when tp_size > 1.
     """
 
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "shared_expert_mlp": SharedExpertMLPKernel
+    }
+
     def __init__(
         self,
-        num_tokens: int,
-        num_experts: int,
         top_k: int,
-        hidden_size: int,
-        ffn_size: int,
         scoring_func: str = "softmax",
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
-        shared_ffn_size: Optional[int] = None,
         tp_size: int = 1,
         tp_rank: int = 0,
-        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
-        experts: Optional[FusedMoEExpertsModular] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
+        experts: Optional[FusedMoEExpertsModular] = None,
     ):
-        # SharedExpertMLPKernel hardcodes silu_and_mul internally. Allowing a
-        # non-default activation alongside an enabled shared expert would
-        # silently produce mixed outputs (routed=gelu, shared=silu). Validate
-        # before super().__init__() to avoid building routed experts that
-        # would be discarded by the exception.
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            shared_ffn_size: FFN intermediate size for the shared expert (full size,
-                before TP sharding). If None, no shared expert is computed.
+            top_k: K -- experts selected per token.
+            scoring_func: "softmax" (Qwen3) or "sigmoid" (Kimi K2 / DeepSeek-V3).
+            renormalize: Renormalize top-k weights to sum to 1.
+            routed_scaling_factor: Multiplier on the routed expert output.
             tp_size: Tensor parallel world size. Default 1 (no TP).
             tp_rank: This rank's index in the TP group. Default 0.
-            prepare_finalize: Override the PrepareAndFinalize implementation.
-            experts: Override the Experts implementation.
-            kernel_map: Override the dispatched kernel map.
+            activation: Gated activation of the routed experts; the shared expert
+                supports ``silu_and_mul`` only.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-
-        Every other parameter is ``FusedMoe``'s, with the same meaning.
+            kernel_map: Kernel overrides, for this op's kernel and its sub-ops.
+            tune: Whether the kernels tune themselves when built.
+            prepare_finalize: Override the PrepareAndFinalize implementation.
+            experts: Override the Experts implementation.
         """
-        if shared_ffn_size is not None and activation != "silu_and_mul":
-            raise NotImplementedError(
-                "FusedMoeSharedExpertFwdOp shared-expert path only supports "
-                f"activation='silu_and_mul', got {activation!r}. "
-                "The routed-experts path is configurable, but "
-                "SharedExpertMLPKernel does not yet plumb activation."
-            )
-
-        super().__init__(
-            num_tokens=num_tokens,
-            num_experts=num_experts,
-            top_k=top_k,
-            hidden_size=hidden_size,
-            ffn_size=ffn_size,
-            scoring_func=scoring_func,
-            renormalize=renormalize,
-            routed_scaling_factor=routed_scaling_factor,
-            prepare_finalize=prepare_finalize,
-            experts=experts,
-            kernel_map=kernel_map,
-            activation=activation,
-            target=target,
-        )
-
-        if tp_size < 1:
-            raise ValueError(f"tp_size must be >= 1, got {tp_size}")
-        if not (0 <= tp_rank < tp_size):
-            raise ValueError(
-                f"tp_rank must be in [0, tp_size), got tp_rank={tp_rank}, tp_size={tp_size}"
-            )
-        if shared_ffn_size is not None and shared_ffn_size % tp_size != 0:
-            raise ValueError(
-                f"shared_ffn_size ({shared_ffn_size}) must be divisible by tp_size ({tp_size})"
-            )
-
-        self.num_tokens = num_tokens
-        self.hidden_size = hidden_size
-        self.shared_ffn_size = shared_ffn_size
+        self.top_k = top_k
+        self.scoring_func = scoring_func
+        self.renormalize = renormalize
+        self.routed_scaling_factor = routed_scaling_factor
         self.tp_size = tp_size
         self.tp_rank = tp_rank
+        self.activation = activation
+        self.target = target
+        self.tune = tune
+        self.dispatch_kernel(kernel_map)
+        self._build_pipeline(prepare_finalize, experts)
 
-        # Kernel operates on the local shard size
-        self._has_shared_mlp = shared_ffn_size is not None
-        self._shared_mlp_shard_ffn = (
-            shared_ffn_size // tp_size if shared_ffn_size is not None else None
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per token count, width, shard size and dtype."""
+        tokens, hidden, shard_ffn, dtype = call
+        return call, lambda: self.kernel_map[role](
+            num_tokens=tokens, hidden_size=hidden, ffn_size=shard_ffn, dtype=dtype, tune=self.tune
         )
-
-    def _validate_dtypes(
-        self,
-        hidden_states: torch.Tensor,
-        gating_output: torch.Tensor,
-        w_gate_up: torch.Tensor,
-        w_down: torch.Tensor,
-        correction_bias: Optional[torch.Tensor] = None,
-        shared_w_gate_up: Optional[torch.Tensor] = None,
-        shared_w_down: Optional[torch.Tensor] = None,
-    ) -> None:
-        """``FusedMoeFwdOp``'s dtype contract, extended to the shared expert's weights.
-
-        Hand-written rather than generated: the manifest declares ``shared_output``
-        as ``nullable``, and generation does not yet emit the presence checks that
-        a nullable return position needs.
-        """
-        if gating_output.dtype != torch.float32:
-            raise ValueError(
-                f"gating_output.dtype must be torch.float32, got {gating_output.dtype}"
-            )
-        if correction_bias is not None and correction_bias.dtype != torch.float32:
-            raise ValueError(
-                f"correction_bias.dtype must be torch.float32, got {correction_bias.dtype}"
-            )
-        dtype = hidden_states.dtype
-        for name, tensor in (
-            ("w_gate_up", w_gate_up),
-            ("w_down", w_down),
-            ("shared_w_gate_up", shared_w_gate_up),
-            ("shared_w_down", shared_w_down),
-        ):
-            if tensor is not None and tensor.dtype != dtype:
-                raise ValueError(f"{name}.dtype must be {dtype}, got {tensor.dtype}")
-
-    def _infer_output_shapes(
-        self,
-        hidden_states_shape: tuple[int, ...],
-        gating_output_shape: tuple[int, ...],
-        w_gate_up_shape: tuple[int, ...],
-        w_down_shape: tuple[int, ...],
-        correction_bias_shape: tuple[int, ...],
-        shared_w_gate_up_shape: tuple[int, ...],
-        shared_w_down_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: both halves return one row per token, of the input width.
-
-        ``shared_output`` keeps that shape even where the op returns None for it:
-        the manifest declares the position nullable, not variably shaped.
-        """
-        return {
-            "shared_output": tuple(hidden_states_shape),
-            "routed_output": tuple(hidden_states_shape),
-        }
-
-    def _shared_mlp_kernel_for(
-        self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype
-    ) -> Kernel:
-        """Return the shared-expert MLP kernel for *dtype*, building on first use."""
-        return self.kernel_for("shared_expert_mlp", inputs, dtype)
-
-    def entry_for(self, role: str, call: torch.dtype) -> Entry:
-        """One implementation, built per dtype; every extent is the op's."""
-        return call, lambda: self.kernel_map["shared_expert_mlp"](
-            num_tokens=self.num_tokens,
-            hidden_size=self.hidden_size,
-            ffn_size=self._shared_mlp_shard_ffn,
-            dtype=call,
-        )
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        # The routed half's kernels belong to the sub-ops it builds; this one is the
-        # op's own, so it is declared here and a replacement reaches it.
-        return {"shared_expert_mlp": SharedExpertMLPKernel}
 
     def forward(
         self,
@@ -244,67 +131,36 @@ class FusedMoeSharedExpertFwdOp(FusedMoe):
             w_gate_up: [E, 2F, H] routed expert gate+up weights.
             w_down: [E, H, F] routed expert down weights.
             correction_bias: Optional [E] bias for Kimi-style routing.
-            shared_w_gate_up: [2*F_s, H] shared expert gate+up weights (full).
-                Required when shared_ffn_size is not None.
-                When tp_size > 1, sharded along dim=0 internally.
-            shared_w_down: [H, F_s] shared expert down weight (full).
-                Required when shared_ffn_size is not None.
-                When tp_size > 1, sharded along dim=1 internally.
+            shared_w_gate_up: [2*F_s, H] shared expert gate+up weights (full); passing
+                it enables the shared expert. When tp_size > 1, sharded along dim=0.
+            shared_w_down: [H, F_s] shared expert down weight (full), passed with
+                ``shared_w_gate_up``. When tp_size > 1, sharded along dim=1.
 
         Returns:
             (shared_output, routed_output): tuple of [T, H] tensors.
-                shared_output is None when shared_ffn_size is None.
-                shared_output is a partial sum when tp_size > 1;
-                caller must all-reduce across TP ranks.
+                shared_output is None when the shared weights are not passed, and a
+                partial sum when tp_size > 1; the caller all-reduces across TP ranks.
         """
-        if self._has_shared_mlp:
-            if shared_w_gate_up is None or shared_w_down is None:
-                raise ValueError(
-                    "shared_w_gate_up and shared_w_down must be provided "
-                    "when shared_ffn_size is set"
-                )
-            F_s = self.shared_ffn_size
-            H = shared_w_gate_up.shape[1]
-            # Validate that caller passes full weights, not TP-local shards.
-            # In TP mode the op shards internally; passing pre-sharded weights
-            # would produce silently wrong results.
-            if shared_w_gate_up.shape != (2 * F_s, H):
-                raise ValueError(
-                    f"shared_w_gate_up must be full weights with shape ({2 * F_s}, {H}), "
-                    f"got {tuple(shared_w_gate_up.shape)}. "
-                    "Pass complete weights; the op shards them internally per tp_rank."
-                )
-            if shared_w_down.shape != (H, F_s):
-                raise ValueError(
-                    f"shared_w_down must be full weights with shape ({H}, {F_s}), "
-                    f"got {tuple(shared_w_down.shape)}. "
-                    "Pass complete weights; the op shards them internally per tp_rank."
-                )
-            # TP sharding: ColumnParallel on gate_up (dim=0), RowParallel on down (dim=1)
+        shared_out = None
+        if shared_w_gate_up is not None:
+            ffn = shared_w_down.shape[1]
+            shard = ffn // self.tp_size
             if self.tp_size > 1:
-                F_s = self.shared_ffn_size
-                shard_size = F_s // self.tp_size
-                r, s = self.tp_rank, shard_size
-                # shared_w_gate_up is [2*F_s, H]: first F_s rows = gate, last F_s rows = up.
                 # ColumnParallel: rank r computes neurons [r*s, (r+1)*s), so it needs
                 # gate[r*s:(r+1)*s] and up[r*s:(r+1)*s] concatenated into [2*s, H].
-                gate_shard = shared_w_gate_up[r * s : (r + 1) * s]  # [s, H]
-                up_shard = shared_w_gate_up[F_s + r * s : F_s + (r + 1) * s]  # [s, H]
-                gate_up_shard = torch.cat([gate_shard, up_shard], dim=0).contiguous()  # [2*s, H]
-                down_shard = shared_w_down.narrow(1, r * s, s).contiguous()
+                lo, hi = self.tp_rank * shard, (self.tp_rank + 1) * shard
+                gate_up = torch.cat(
+                    [shared_w_gate_up[lo:hi], shared_w_gate_up[ffn + lo : ffn + hi]], dim=0
+                ).contiguous()
+                down = shared_w_down.narrow(1, lo, shard).contiguous()
             else:
-                gate_up_shard = shared_w_gate_up
-                down_shard = shared_w_down
-
-            shared_tensors = (hidden_states, gate_up_shard, down_shard)
-            shared_out = self._shared_mlp_kernel_for(shared_tensors, hidden_states.dtype)(
-                *shared_tensors
+                gate_up, down = shared_w_gate_up, shared_w_down
+            tensors = (hidden_states, gate_up, down)
+            kernel = self.kernel_for(
+                "shared_expert_mlp",
+                tensors,
+                (hidden_states.shape[0], hidden_states.shape[1], shard, hidden_states.dtype),
             )
-        else:
-            shared_out = None
-
-        routed_out = super().forward(
-            hidden_states, gating_output, w_gate_up, w_down, correction_bias
-        )
-
+            shared_out = kernel(*tensors)
+        routed_out = self._routed(hidden_states, gating_output, w_gate_up, w_down, correction_bias)
         return shared_out, routed_out

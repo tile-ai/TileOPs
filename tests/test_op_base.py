@@ -7,6 +7,7 @@ the explicit kernel enumeration ``Op.autotune`` runs over.
 """
 
 import dataclasses
+import types
 import warnings
 
 import pytest
@@ -311,10 +312,10 @@ class TestIterKernels:
         delegate.build("fwd", torch.float16, "delegate")
 
         class CompositeOp(_SlottedOp):
-            def kernel_delegates(self):
-                return (delegate,)
+            delegate_types = {"stage": _SlottedOp}
 
         composite = CompositeOp(tuned)
+        composite.delegate_for("stage", None, delegate)
         composite.build("own", torch.float16, "own")
         assert sorted(k.name for k in composite.iter_kernels()) == ["delegate", "own"]
 
@@ -325,13 +326,13 @@ class TestIterKernels:
         shared = delegate.build("fwd", torch.float16, "shared")
 
         class CompositeOp(_SlottedOp):
-            def kernel_delegates(self):
-                return (delegate,)
+            delegate_types = {"stage": _SlottedOp}
 
             def entry_for(self, role, call):
                 return call, lambda: shared
 
         composite = CompositeOp(tuned)
+        composite.delegate_for("stage", None, delegate)
         composite.kernel_for("fwd", (), torch.float16)
         assert [k.name for k in composite.iter_kernels()] == ["shared"]
 
@@ -357,10 +358,11 @@ class TestAutotune:
         delegate.build("fwd", torch.float16, "delegate")
 
         class CompositeOp(_SlottedOp):
-            def kernel_delegates(self):
-                return (delegate,)
+            delegate_types = {"stage": _SlottedOp}
 
-        CompositeOp(tuned).autotune()
+        composite = CompositeOp(tuned)
+        composite.delegate_for("stage", None, delegate)
+        composite.autotune()
         assert tuned == ["delegate"]
 
 
@@ -395,7 +397,7 @@ class _TunableOp(Op):
         def factory():
             kernel = _RecordingKernel(str(call), self._tuned)
             if self.tune:
-                kernel.autotune()
+                kernel.request_tune()
             return kernel
 
         return call, factory
@@ -430,26 +432,99 @@ class TestTunedMode:
         op.build(torch.float16)
         assert tuned == []
 
-    def test_a_delegate_built_after_autotune_inherits_tuned_mode(self):
-        """The composite passes its own flag on, so the decision carries."""
+    def test_a_kernel_built_after_autotune_is_tuned_once_without_its_factory_reading_tune(self):
+        """The build path tunes what a factory returns, and a second request changes nothing."""
+        tuned: list[str] = []
+        op = _SlottedOp(tuned)
+        op.autotune()
+        op.build("fwd", torch.float16, "fp16")
+        op.autotune()
+        assert tuned == ["fp16"]
+
+    def test_a_kernel_whose_program_is_built_at_launch_tunes_at_that_launch_once(self):
         tuned: list[str] = []
 
+        class LaunchBuiltKernel(Kernel):
+            autotune_configs = [{"threads": 128}]
+
+            def forward(self):
+                self.kernel = "program"
+
+            def tune_jit_kernel(self, kernel, configs, warmup, rep):
+                tuned.append(kernel)
+                return types.SimpleNamespace(config={"threads": 128})
+
+        kernel = LaunchBuiltKernel()
+        kernel.request_tune()
+        assert tuned == []
+        kernel()
+        kernel()
+        assert tuned == ["program"]
+
+    def test_a_delegate_built_after_autotune_inherits_tuned_mode(self):
+        """``delegate_for`` hands the composite's flag on, so the decision carries."""
+        tuned: list[str] = []
+
+        class DelegateOp(_TunableOp):
+            def __init__(self, rec, *, target=None, kernel_map=None, tune=False):
+                super().__init__(rec, tune=tune)
+
         class CompositeOp(_TunableOp):
-            def __init__(self, rec):
-                super().__init__(rec)
-                self.delegate = None
-
-            def kernel_delegates(self):
-                return (self.delegate,) if self.delegate else ()
-
-            def make_delegate(self):
-                self.delegate = _TunableOp(self._tuned, tune=self.tune)
-                return self.delegate
+            delegate_types = {"stage": DelegateOp}
 
         op = CompositeOp(tuned)
         op.autotune()
-        op.make_delegate().build(torch.float16)
+        op.delegate_for("stage", None, rec=tuned).build(torch.float16)
         assert tuned == ["torch.float16"]
+
+
+class TestDelegateFor:
+    """``Op.delegate_for`` is the single get-or-build for sub-ops."""
+
+    def test_builds_the_declared_class_once_per_key_with_the_parents_policy(self):
+        seen: list[dict] = []
+
+        class DelegateOp(_SlottedOp):
+            def __init__(self, *, width, target=None, kernel_map=None, tune=False):
+                super().__init__([])
+                seen.append({"width": width, "target": target, "kernel_map": kernel_map})
+
+        class CompositeOp(_SlottedOp):
+            delegate_types = {"stage": DelegateOp}
+
+        op = CompositeOp([])
+        op.target = "acme"
+        op.dispatch_kernel({"k": Kernel})
+        first = op.delegate_for("stage", 1, width=1)
+        assert op.delegate_for("stage", 1, width=1) is first
+        second = op.delegate_for("stage", 2, width=2)
+        assert type(first) is DelegateOp and second is not first
+        assert seen == [
+            {"width": 1, "target": "acme", "kernel_map": {"k": Kernel}},
+            {"width": 2, "target": "acme", "kernel_map": {"k": Kernel}},
+        ]
+
+    def test_enumerates_held_sub_ops_in_stage_order(self):
+        class CompositeOp(_SlottedOp):
+            delegate_types = {"first": _SlottedOp, "second": _SlottedOp}
+
+        op = CompositeOp([])
+        late, early = _SlottedOp([]), _SlottedOp([])
+        op.delegate_for("second", None, late)
+        op.delegate_for("first", None, early)
+        assert op.kernel_delegates() == (early, late)
+        assert list(op._walk_ops()) == [op, early, late]
+
+    def test_a_failed_settling_call_unsettles_the_sub_ops(self):
+        class CompositeOp(_SlottedOp):
+            delegate_types = {"stage": _SlottedOp}
+
+        op = CompositeOp([])
+        delegate = op.delegate_for("stage", None, _SlottedOp([]))
+        delegate._builder = None
+        delegate.build("fwd", torch.float16, "fp16")
+        op._unsettle()
+        assert delegate.settled_target is None and dict(delegate.built_kernels("fwd")) == {}
 
 
 class TestInstanceKeys:

@@ -190,7 +190,7 @@ class TestTotalContract:
         with pytest.raises(ValueError, match="cannot mix func and inline"):
             synthesize_eval_roofline(
                 "FakeOp",
-                roofline={"func": "tileops.perf.formulas.fused_moe_fwd_bytes", "flops": "1"},
+                roofline={"func": "tileops.perf.formulas.fused_moe_fwd_roofline", "flops": "1"},
                 signature=None,
             )
 

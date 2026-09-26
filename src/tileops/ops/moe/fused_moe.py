@@ -10,7 +10,7 @@ The shared core (`FusedMoe`) wires `FusedTopKFwdOp` (routing),
 expert handling belongs to `FusedMoeSharedExpertFwdOp`.
 """
 
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -34,208 +34,92 @@ class FusedMoe(Op):
 
     The concrete manifest identity (`FusedMoeFwdOp`) subclasses this; the
     routing-and-expert pipeline below is shared with `FusedMoeSharedExpertFwdOp`.
-
     """
 
-    def roofline_inputs(self) -> dict[str, int]:
-        """The experts this call's routing selected, which its weight reads follow."""
-        from tileops.perf.formulas import routed_expert_active_experts
+    delegate_types: ClassVar[Mapping[str, type[Op]]] = {
+        "route_select": FusedTopKFwdOp,
+        "routed_experts": FusedMoEExpertsFwdOp,
+    }
+    execution_parameters: ClassVar[tuple[str, ...]] = ("prepare_finalize", "experts")
 
-        return {"active_experts": routed_expert_active_experts(self)}
-
-    def __init__(
+    def _build_pipeline(
         self,
-        num_tokens: int,
-        num_experts: int,
-        top_k: int,
-        hidden_size: int,
-        ffn_size: int,
-        scoring_func: str = "softmax",
-        renormalize: bool = False,
-        routed_scaling_factor: float = 1.0,
-        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
-        experts: Optional[FusedMoEExpertsModular] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        *,
-        activation: str = "silu_and_mul",
-        target: Target = None,
-    ):
-        """Build the op. Shapes and dtype are taken from the first call.
+        prepare_finalize: Optional[FusedMoEPrepareAndFinalize],
+        experts: Optional[FusedMoEExpertsModular],
+    ) -> None:
+        """Hold the routing sub-op, the prepare/finalize stage and the experts.
 
-        Args:
-            num_tokens: T -- number of input tokens.
-            num_experts: E -- number of experts in this local non-EP pipeline.
-            top_k: K -- experts selected per token.
-            hidden_size: H -- model hidden dimension.
-            ffn_size: F -- per-expert intermediate dimension.
-            scoring_func: "softmax" (Qwen3) or "sigmoid" (Kimi K2 / DeepSeek-V3).
-            renormalize: Renormalize top-k weights to sum to 1.
-            routed_scaling_factor: Multiplier on expert output (Kimi K2: 2.827).
-            prepare_finalize: Override the PrepareAndFinalize implementation.
-            experts: Override the Experts implementation.
-            kernel_map: Override the dispatched kernel map.
-            activation: Gated activation applied to gate_up.
-            target: Which set of kernels serves this op — a target name, ``BUILTIN``
-                for the in-tree kernels, or ``None`` to decide from the input device.
-                The sub-ops it builds are given the same one.
+        Raises:
+            ValueError: An injected ``experts`` names no ``activation``, or one that
+                conflicts with a non-default ``activation`` passed here.
         """
-        self.target = target
-        self.num_tokens = num_tokens
-        self.num_experts = num_experts
-        self.top_k = top_k
-        self.hidden_size = hidden_size
-        self.ffn_size = ffn_size
-        self.scoring_func = scoring_func
-        self.renormalize = renormalize
-        self.routed_scaling_factor = routed_scaling_factor
-
-        self.dispatch_kernel(kernel_map)
-
-        self._fused_topk = FusedTopKFwdOp(
-            top_k=top_k,
-            scoring_func=scoring_func,
-            renormalize=renormalize,
-            kernel_map=kernel_map,
-            target=target,
+        self._fused_topk = self.delegate_for(
+            "route_select",
+            None,
+            top_k=self.top_k,
+            scoring_func=self.scoring_func,
+            renormalize=self.renormalize,
         )
-
         self._prepare: FusedMoEPrepareAndFinalize = (
             prepare_finalize if prepare_finalize is not None else MoEPrepareAndFinalizeNoDPEP()
         )
-
-        if prepare_finalize is not None and experts is None:
-            raise ValueError(
-                "prepare_finalize may change the dispatched token count (T'); "
-                "you must also supply a matching experts= instance sized for T'."
-            )
-
         if experts is not None:
-            # All in-tree FusedMoEExperts*FwdOp set self.activation in __init__.
-            # We require it to be present rather than falling back silently —
-            # a missing attribute on a third-party experts implementation would
-            # otherwise let a non-matching `activation` argument be silently
-            # accepted, producing a wrong-activation pipeline.
+            # A missing attribute on a third-party implementation would otherwise let a
+            # non-matching `activation` pass silently, producing a wrong-activation pipeline.
             if not hasattr(experts, "activation"):
                 raise ValueError(
-                    f"injected experts instance ({type(experts).__name__}) "
-                    "is missing the required `.activation` attribute. "
-                    "Set it in __init__ to the activation string this experts "
-                    "implementation uses (e.g. 'silu_and_mul')."
+                    f"injected experts instance ({type(experts).__name__}) is missing the "
+                    "required `.activation` attribute naming the activation it applies"
                 )
-            experts_activation = experts.activation
-            # Reject only conflicting non-default values. Passing the default
-            # ("silu_and_mul") alongside experts= is silently accepted because
-            # it cannot be distinguished from the bare experts= call. Passing
-            # an explicit value that matches the injected experts' activation
-            # is also accepted.
-            if activation != "silu_and_mul" and activation != experts_activation:
+            # The default cannot be told from an omitted argument, so only a conflicting
+            # non-default value is refused.
+            if self.activation != "silu_and_mul" and self.activation != experts.activation:
                 raise ValueError(
-                    "activation conflicts with the injected experts instance: "
-                    f"got activation={activation!r}, "
-                    f"experts.activation={experts_activation!r} "
-                    f"(experts={type(experts).__name__}). "
-                    "Either omit activation or pass the same value."
+                    f"activation conflicts with the injected experts instance: got "
+                    f"activation={self.activation!r}, experts.activation={experts.activation!r}"
                 )
-            self.activation = experts_activation
-            self._experts: FusedMoEExpertsModular = experts
-        else:
-            self.activation = activation
-            self._experts = FusedMoEExpertsFwdOp(
-                num_tokens=num_tokens,
-                num_experts=num_experts,
-                top_k=top_k,
-                hidden_size=hidden_size,
-                ffn_size=ffn_size,
-                routed_scaling_factor=routed_scaling_factor,
-                kernel_map=kernel_map,
-                activation=activation,
-                target=target,
-            )
+            self.activation = experts.activation
+        self._experts: FusedMoEExpertsModular = self.delegate_for(
+            "routed_experts",
+            None,
+            experts,
+            routed_scaling_factor=self.routed_scaling_factor,
+            activation=self.activation,
+        )
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {}
+    def roofline_inputs(self) -> dict[str, int]:
+        """The experts this call read, which its weight reads follow."""
+        from tileops.perf.formulas import fused_moe_active_experts
 
-    def _infer_output_shapes(
+        return {"active_experts": fused_moe_active_experts(self.last_call)}
+
+    def compute_roof(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.last_call.ix["D"])
+
+    def _routed(
         self,
-        hidden_states_shape: tuple[int, ...],
-        gating_output_shape: tuple[int, ...],
-        w_gate_up_shape: tuple[int, ...],
-        w_down_shape: tuple[int, ...],
-        correction_bias_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: routing returns one row per token, of the input width."""
-        return {"output": tuple(hidden_states_shape)}
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,  # [T, H]
-        gating_output: torch.Tensor,  # [T, E]
-        w_gate_up: torch.Tensor,  # [E, 2*F, H]
-        w_down: torch.Tensor,  # [E, H, F]
-        correction_bias: Optional[torch.Tensor] = None,  # [E] float32
-    ) -> torch.Tensor:  # [T, H]
-        """Run the op on ``hidden_states``, ``gating_output``, ``w_gate_up``, ``w_down`` and ``correction_bias``."""
+        hidden_states: torch.Tensor,
+        gating_output: torch.Tensor,
+        w_gate_up: torch.Tensor,
+        w_down: torch.Tensor,
+        correction_bias: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Route, prepare, run the experts and finalize; the ``[T, H]`` routed output."""
         topk_weights, topk_ids = self._fused_topk(gating_output, correction_bias)
-        # The roofline counts the bias bytes of the call that ran, so this is
-        # set once routing succeeded. Keep the shape, not the tensor: the op
-        # need not hold the caller's memory.
-        self.correction_bias_shape = (
-            None if correction_bias is None else tuple(correction_bias.shape)
-        )
-        # The roofline prices hidden states and weights at the call's dtype.
-        self.dtype = hidden_states.dtype
-
-        r = self._prepare.prepare(
-            hidden_states,
-            topk_weights,
-            topk_ids,
-            self.num_experts,
-        )
-        # Post-prepare ids name the local experts whose weights are read.
-        self._roofline_topk_ids = r.topk_ids
-
-        T_prime = r.hidden_q.shape[0]
-        ws1_shape, ws2_shape = self._experts.workspace_shapes(
-            T_prime,
-            self.ffn_size,
-            self.hidden_size,
-            self.top_k,
-            self.num_experts,
-        )
-        ws1 = hidden_states.new_empty(ws1_shape)
-        ws2 = hidden_states.new_empty(ws2_shape)
-
+        r = self._prepare.prepare(hidden_states, topk_weights, topk_ids, w_gate_up.shape[0])
         output = hidden_states.new_empty(hidden_states.shape)
-        expert_out_shape = self._experts.output_shape(T_prime, self.hidden_size)
+        expert_out_shape = self._experts.output_shape(r.hidden_q.shape[0], hidden_states.shape[1])
         expert_out = (
             output
             if expert_out_shape == tuple(hidden_states.shape)
             else hidden_states.new_empty(expert_out_shape)
         )
-        self._experts.forward(
-            expert_out,
-            r.hidden_q,
-            w_gate_up,
-            w_down,
-            r.topk_weights,
-            r.topk_ids,
-            workspace1=ws1,
-            workspace2=ws2,
-        )
-
+        self._experts(expert_out, r.hidden_q, w_gate_up, w_down, r.topk_weights, r.topk_ids)
         self._prepare.finalize(
-            output,
-            expert_out,
-            r.topk_weights,
-            r.topk_ids,
-            self._experts.make_weighted_reduce(),
+            output, expert_out, r.topk_weights, r.topk_ids, self._experts.make_weighted_reduce()
         )
         return output
-
-    def compute_roof(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
 
 
 class FusedMoeFwdOp(FusedMoe):
@@ -250,49 +134,51 @@ class FusedMoeFwdOp(FusedMoe):
 
     def __init__(
         self,
-        num_tokens: int,
-        num_experts: int,
         top_k: int,
-        hidden_size: int,
-        ffn_size: int,
         scoring_func: str = "softmax",
         renormalize: bool = False,
         routed_scaling_factor: float = 1.0,
-        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
-        experts: Optional[FusedMoEExpertsModular] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         activation: str = "silu_and_mul",
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
+        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
+        experts: Optional[FusedMoEExpertsModular] = None,
     ):
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            num_tokens: Manifest ``params.num_tokens``, ``int``.
-            num_experts: Manifest ``params.num_experts``, ``int``.
-            top_k: Manifest ``params.top_k``, ``int``.
-            hidden_size: Manifest ``params.hidden_size``, ``int``.
-            ffn_size: Manifest ``params.ffn_size``, ``int``.
-            scoring_func: Manifest ``params.scoring_func``, ``str``, default ``'softmax'``.
-            renormalize: Manifest ``params.renormalize``, ``bool``, default ``False``.
-            routed_scaling_factor: Manifest ``params.routed_scaling_factor``, ``float``, default ``1.0``.
-            kernel_map: Optional kernel override dict.
-            activation: Manifest ``params.activation``, ``str``, default ``'silu_and_mul'``.
+            top_k: K -- experts selected per token.
+            scoring_func: "softmax" (Qwen3) or "sigmoid" (Kimi K2 / DeepSeek-V3).
+            renormalize: Renormalize top-k weights to sum to 1.
+            routed_scaling_factor: Multiplier on expert output (Kimi K2: 2.827).
+            activation: Gated activation applied to gate_up.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+                The sub-ops it builds are given the same one.
+            kernel_map: Kernel overrides handed to the sub-ops.
+            tune: Whether the sub-ops' kernels tune themselves when built.
+            prepare_finalize: Override the PrepareAndFinalize implementation.
+            experts: Override the Experts implementation.
         """
-        super().__init__(
-            num_tokens=num_tokens,
-            num_experts=num_experts,
-            top_k=top_k,
-            hidden_size=hidden_size,
-            ffn_size=ffn_size,
-            scoring_func=scoring_func,
-            renormalize=renormalize,
-            routed_scaling_factor=routed_scaling_factor,
-            prepare_finalize=prepare_finalize,
-            experts=experts,
-            kernel_map=kernel_map,
-            activation=activation,
-            target=target,
-        )
+        self.top_k = top_k
+        self.scoring_func = scoring_func
+        self.renormalize = renormalize
+        self.routed_scaling_factor = routed_scaling_factor
+        self.activation = activation
+        self.target = target
+        self.tune = tune
+        self.dispatch_kernel(kernel_map)
+        self._build_pipeline(prepare_finalize, experts)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        gating_output: torch.Tensor,
+        w_gate_up: torch.Tensor,
+        w_down: torch.Tensor,
+        correction_bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Route each token to its top-k experts and return the ``[T, H]`` weighted sum."""
+        return self._routed(hidden_states, gating_output, w_gate_up, w_down, correction_bias)

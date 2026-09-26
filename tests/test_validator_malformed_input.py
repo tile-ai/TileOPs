@@ -137,7 +137,6 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
                     "outputs": {"y": {"dtype": "same_as(x)"}},
                 },
                 "composition": {"kind": "composite", "stages": [{"name": "s", "kernel": "k"}]},
-                "resources": {"workspaces": [{"name": "x", "dtype": "float16"}]},
                 "workloads": [{"x_shape": [4], "dtypes": ["float16"]}],
                 "roofline": {"flops": "1", "bytes": "1"},
                 "source": {"kernel": "k.py", "op": "o.py", "test": "t.py", "bench": "b.py"},

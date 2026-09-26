@@ -1,3 +1,4 @@
+import warnings
 from abc import ABC, abstractmethod
 from typing import Any, Callable, ClassVar, Dict, Hashable, Optional, Union
 
@@ -81,6 +82,11 @@ class Kernel(ABC):
     # is what lets a specialisation appear, or be replaced, without the general
     # implementation naming it.
     general: bool = False
+
+    # Set when tuning was requested before the program existed; the next launch tunes it.
+    _tune_pending: bool = False
+    # Whether this kernel has been put in tuned mode, so a second request changes nothing.
+    _tune_requested: bool = False
 
     @classmethod
     def applies(cls, call: Any) -> bool:
@@ -205,6 +211,7 @@ class Kernel(ABC):
                     "Both 'config' and 'tune' are set. "
                     "'config' will be ignored in favor of autotuning."
                 )
+            self._tune_requested = True
             self.autotune()
         else:
             if config is not None:
@@ -254,7 +261,19 @@ class Kernel(ABC):
         raise NotImplementedError
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        return self.forward(*args, **kwargs)
+        result = self.forward(*args, **kwargs)
+        if self._tune_pending:
+            # Tuning was requested before the program existed; the launch has built it.
+            self._tune_pending = False
+            if getattr(self, "kernel", None) is None:
+                warnings.warn(
+                    f"{type(self).__name__} exposes no program as `self.kernel`, so the "
+                    "tuning requested of it cannot run.",
+                    stacklevel=2,
+                )
+            else:
+                self.autotune()
+        return result
 
     @property
     def autotune_supply_prog(self) -> Optional[Callable]:
@@ -397,14 +416,23 @@ class Kernel(ABC):
 
         return self._call_autotuned_kernel(autotuned_kernel_fn, jit_kernel, seed_config)
 
+    def request_tune(self) -> None:
+        """Put this kernel in tuned mode, once.
+
+        What :meth:`autotune` does with it: tune now, or at the launch that builds the program.
+        """
+        if self._tune_requested:
+            return
+        self._tune_requested = True
+        self.autotune()
+
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         if self.autotune_configs is None:
             return  # kernel doesn't support autotuning
-        if not hasattr(self, "kernel") or self.kernel is None:
-            raise AttributeError(
-                f"Cannot autotune {self.__class__.__name__}: 'self.kernel' is not set. "
-                "Set 'self.kernel' in __init__ before calling init_config with tune=True."
-            )
+        if getattr(self, "kernel", None) is None:
+            # The program is built at launch, and the launch tunes it (``__call__``).
+            self._tune_pending = True
+            return
         print(f"Start autotuning {self.__class__.__name__}...")
 
         tuned_kernel = self.tune_jit_kernel(
