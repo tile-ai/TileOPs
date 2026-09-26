@@ -328,53 +328,6 @@ _ROW_SUPPLEMENT = {
         "cu_seqlens_q_shape": (row["batch"] + 1,),
         "cu_seqlens_k_shape": (row["batch"] + 1,),
     },
-    "DaCumsumFwdOp": lambda row: {
-        "batch": row["dt_shape"][0],
-        "seq_len": row["dt_shape"][1],
-        "n_heads": row["dt_shape"][2],
-    },
-    "SSDChunkStateFwdOp": lambda row: {
-        "batch": row["x_shape"][0],
-        "seq_len": row["x_shape"][1],
-        "n_heads": row["x_shape"][2],
-        "d_head": row["x_shape"][3],
-        "d_state": row["Bmat_shape"][3],
-        "n_groups": row["Bmat_shape"][2],
-        "chunk_len": row["dt_shape"][3],
-        "num_chunks": row["dt_shape"][2],
-    },
-    "SSDChunkScanFwdOp": lambda row: {
-        "batch": row["x_shape"][0],
-        "seq_len": row["x_shape"][1],
-        "n_heads": row["x_shape"][2],
-        "d_head": row["x_shape"][3],
-        "d_state": row["C_shape"][3],
-        "n_groups": row["C_shape"][2],
-        "chunk_len": row["dt_shape"][3],
-        "num_chunks": row["dt_shape"][2],
-    },
-    "SSDStatePassingFwdOp": lambda row: {
-        "batch": row["states_shape"][0],
-        "num_chunks": row["states_shape"][1],
-        "n_heads": row["dA_chunk_cumsum_shape"][1],
-        "d_state": row["states_shape"][3],
-    },
-    "Mamba2FwdOp": lambda row: {
-        "batch": row["x_shape"][0],
-        "seqlen": row["x_shape"][1],
-        "n_heads": row["x_shape"][2],
-        "d_head": row["x_shape"][3],
-        "d_state": row["B_shape"][3],
-        "n_groups": row["B_shape"][2],
-        "num_chunks": row["x_shape"][1] // 256,
-    },
-    "SSDDecodeFwdOp": lambda row: {
-        "batch": row["x_shape"][0],
-        "n_heads": row["x_shape"][1],
-        "d_head": row["x_shape"][2],
-        "d_state": row["state_shape"][3],
-        "n_groups": row["B_in_shape"][1],
-    },
 }
 
 

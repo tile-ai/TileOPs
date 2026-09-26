@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -6,7 +6,6 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba import SSDStatePassingFwdKernel
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["SSDStatePassingFwdOp"]
@@ -23,7 +22,10 @@ class SSDStatePassingFwdOp(Op):
 
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "ssd_state_passing_fwd": SSDStatePassingFwdKernel
+    }
 
     def __init__(
         self,
@@ -32,48 +34,17 @@ class SSDStatePassingFwdOp(Op):
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-                in-tree kernels, or ``None`` to decide from the input device.
-            tune:               Whether to autotune tile config on construction.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune the tile config when a kernel is first built.
         """
-        self.batch = None
-        self.num_chunks = None
-        self.n_heads = None
-        self.d_state = None
-        self.dtype = None
-        self.tune = tune
         self.target = target
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"ssd_state_passing_fwd": SSDStatePassingFwdKernel}
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        num_chunks: int,
-        n_heads: int,
-        d_state: int,
-        dtype: torch.dtype,
-        has_initial_states: bool,
-        device_index: int | None,
-    ) -> Kernel:
-        key = (
-            batch,
-            num_chunks,
-            n_heads,
-            d_state,
-            has_initial_states,
-            dtype,
-            device_index,
-        )
-        return self.kernel_for("ssd_state_passing_fwd", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, initial-state presence, dtype and device."""
@@ -88,16 +59,6 @@ class SSDStatePassingFwdOp(Op):
             tune=self.tune,
         )
 
-    def _infer_output_shapes(
-        self,
-        states_shape: tuple[int, ...],
-        dA_chunk_cumsum_shape: tuple[int, ...],
-        initial_states_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: the scan writes one state per chunk, plus the last one."""
-        b, nc, h, n = states_shape
-        return {"out": (b, nc, h, n), "final_states": (b, h, n)}
-
     def forward(
         self,
         states: torch.Tensor,
@@ -109,13 +70,13 @@ class SSDStatePassingFwdOp(Op):
         Args:
             states:           (batch, num_chunks, n_heads, d_state)
             dA_chunk_cumsum:  (batch, n_heads, num_chunks) float32
-            initial_states:   (batch, n_heads, d_state) float32
+            initial_states:   (batch, n_heads, d_state) float32, optional
 
         Returns:
-            out:          (batch, num_chunks, n_heads, d_state) float32
+            prev_states:  (batch, num_chunks, n_heads, d_state) float32
             final_states: (batch, n_heads, d_state) float32
         """
-        return self._wrapped(states, dA_chunk_cumsum, initial_states, self._instance_key)
+        return self._call_boundary(states, dA_chunk_cumsum, initial_states)
 
     def _eager_forward(
         self,
@@ -123,35 +84,23 @@ class SSDStatePassingFwdOp(Op):
         dA_chunk_cumsum: torch.Tensor,
         initial_states: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if not states.is_cuda:
-            raise ValueError("states must be a CUDA tensor")
-        if states.ndim != 4:
-            raise ValueError("states must have shape [batch, num_chunks, n_heads, d_state]")
         batch, num_chunks, n_heads, d_state = states.shape
-        if dA_chunk_cumsum.shape != (batch, n_heads, num_chunks):
-            raise ValueError("dA_chunk_cumsum must have shape [batch, n_heads, num_chunks]")
-        if initial_states is not None and initial_states.shape != (batch, n_heads, d_state):
-            raise ValueError("initial_states must have shape [batch, n_heads, d_state]")
-
-        self.batch = batch
-        self.num_chunks = num_chunks
-        self.n_heads = n_heads
-        self.d_state = d_state
-        self.dtype = states.dtype
-        self.initial_states_shape = None if initial_states is None else tuple(initial_states.shape)
-        self.kernel = self._get_kernel(
+        kernel = self.kernel_for(
+            "ssd_state_passing_fwd",
             (states, dA_chunk_cumsum, initial_states),
-            batch,
-            num_chunks,
-            n_heads,
-            d_state,
-            states.dtype,
-            initial_states is not None,
-            states.device.index,
+            (
+                batch,
+                num_chunks,
+                n_heads,
+                d_state,
+                initial_states is not None,
+                states.dtype,
+                states.device.index,
+            ),
         )
 
         states = states.contiguous()
@@ -163,4 +112,4 @@ class SSDStatePassingFwdOp(Op):
         else:
             initial_states = initial_states.contiguous()
 
-        return self.kernel(states, dA_chunk_cumsum, initial_states)
+        return kernel(states, dA_chunk_cumsum, initial_states)

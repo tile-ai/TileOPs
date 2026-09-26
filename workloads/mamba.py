@@ -3,7 +3,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
-from workloads.workload_base import FixtureBase, WorkloadBase
+from workloads.workload_base import CallWorkload, FixtureBase, WorkloadBase
 
 
 class DaCumsumFwdFixture(FixtureBase):
@@ -673,28 +673,106 @@ def cb_producer_fwd_ref(
     return (cb * mask).to(dtype)
 
 
-class CBProducerFwdWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        num_chunks: int,
-        n_groups: int,
-        chunk_len: int,
-        d_state: int,
-        dtype: torch.dtype,
-    ):
-        self.batch = batch
-        self.num_chunks = num_chunks
-        self.n_groups = n_groups
-        self.chunk_len = chunk_len
-        self.d_state = d_state
-        self.dtype = dtype
+# Manifest calls: shapes, dtypes and presence come from a workload row; these
+# classes condition the values the row does not determine and carry the reference.
+
+
+def _decay_cumsum(like: torch.Tensor) -> torch.Tensor:
+    """A non-increasing float32 cumulative sum of negative decays, shaped like *like*."""
+    return -torch.rand(like.shape, dtype=torch.float32, device=like.device).cumsum(-1)
+
+
+def _step_sizes(like: torch.Tensor) -> torch.Tensor:
+    """Positive post-softplus step sizes in ``[0.01, 0.11)``, with *like*'s shape and dtype."""
+    return torch.rand(like.shape, device=like.device).to(like.dtype) * 0.1 + 0.01
+
+
+class DaCumsumFwdCall(CallWorkload):
+    """A manifest call of DaCumsumFwdOp with a negative decay ``A``."""
 
     def gen_inputs(self):
-        shape = (self.batch, self.num_chunks * self.chunk_len, self.n_groups, self.d_state)
-        c_mat = torch.randn(shape, dtype=self.dtype, device="cuda") * 0.1
-        b_mat = torch.randn(shape, dtype=self.dtype, device="cuda") * 0.1
-        return c_mat, b_mat
+        dt, A, dt_bias = super().gen_inputs()
+        return dt, -A.abs(), None if dt_bias is None else dt_bias * 0.5
+
+    def ref_program(self, dt, A, dt_bias):
+        ix = self.call.ix
+        return da_cumsum_fwd_ref(
+            dt,
+            A,
+            ix["NC"],
+            ix["chunk_len"],
+            dt_bias=dt_bias,
+            dt_softplus=ix["dt_softplus"],
+            dt_min=ix["dt_min"],
+            dt_max=ix["dt_max"],
+            dtype=getattr(torch, ix["out_dtype"]),
+        )
+
+
+class CBProducerFwdCall(CallWorkload):
+    """A manifest call of CBProducerFwdOp."""
+
+    def gen_inputs(self):
+        return tuple(t * 0.1 for t in super().gen_inputs())
 
     def ref_program(self, C_mat, B_mat):
-        return cb_producer_fwd_ref(C_mat, B_mat, self.num_chunks, self.chunk_len, self.dtype)
+        ix = self.call.ix
+        return cb_producer_fwd_ref(C_mat, B_mat, ix["NC"], ix["chunk_len"], C_mat.dtype)
+
+
+class SSDChunkStateFwdCall(CallWorkload):
+    """A manifest call of SSDChunkStateFwdOp; a passed ``seq_idx`` packs two sequences."""
+
+    def gen_inputs(self):
+        x, Bmat, dt, dA_cumsum, seq_idx = super().gen_inputs()
+        if seq_idx is not None:
+            seq_idx = torch.zeros_like(seq_idx)
+            seq_idx[:, seq_idx.shape[1] // 2 :] = 1
+        return x * 0.1, Bmat * 0.1, _step_sizes(dt), _decay_cumsum(dA_cumsum), seq_idx
+
+    def ref_program(self, x, Bmat, dt, dA_cumsum, seq_idx):
+        return ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, self.call.ix["G"], seq_idx=seq_idx)
+
+
+class SSDStatePassingFwdCall(CallWorkload):
+    """A manifest call of SSDStatePassingFwdOp."""
+
+    def gen_inputs(self):
+        states, dA_chunk_cumsum, initial_states = super().gen_inputs()
+        return (
+            states * 0.1,
+            _decay_cumsum(dA_chunk_cumsum),
+            None if initial_states is None else initial_states * 0.1,
+        )
+
+    def ref_program(self, states, dA_chunk_cumsum, initial_states):
+        return ssd_state_passing_fwd_ref(states, dA_chunk_cumsum, initial_states)
+
+
+class SSDChunkScanFwdCall(CallWorkload):
+    """A manifest call of SSDChunkScanFwdOp."""
+
+    def gen_inputs(self):
+        x, cb, dA_cumsum, C, prev_states, dt = super().gen_inputs()
+        return (
+            x * 0.1,
+            cb * 0.1,
+            _decay_cumsum(dA_cumsum),
+            C * 0.1,
+            prev_states * 0.1,
+            _step_sizes(dt),
+        )
+
+    def ref_program(self, x, cb, dA_cumsum, C, prev_states, dt):
+        return ssd_chunk_scan_fwd_ref(x, cb, dA_cumsum, C, prev_states, dt, self.call.ix["G"])
+
+
+class SSDDecodeFwdCall(CallWorkload):
+    """A manifest call of SSDDecodeFwdOp with ``A <= 0`` and a positive ``dt``."""
+
+    def gen_inputs(self):
+        A, dt, x, B_in, C_in, state = super().gen_inputs()
+        return -A.abs(), _step_sizes(dt), x * 0.1, B_in * 0.1, C_in * 0.1, state * 0.1
+
+    def ref_program(self, A, dt, x, B_in, C_in, state):
+        return ssd_decode_ref(A, dt, x, B_in, C_in, state)

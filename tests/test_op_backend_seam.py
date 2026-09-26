@@ -829,12 +829,15 @@ def _mamba2():
 
 def test_a_target_that_builds_a_composite_serves_it_whole():
     op, inputs = _mamba2()
+    x, b = inputs[0], inputs[3]
+    served = (x.float(), torch.zeros(x.shape[0], x.shape[2], x.shape[3], b.shape[3]))
     registry.register_detector("acme", lambda device: False)
     registry.register_kernel_builder(
-        "Mamba2FwdOp", "acme", lambda *specs, **params: lambda *tensors: tensors[0]
+        "Mamba2FwdOp", "acme", lambda *specs, **params: lambda *tensors: served
     )
 
-    assert op(*inputs) is inputs[0]
+    y, final_states = op(*inputs)
+    assert y is served[0] and final_states is served[1]
 
 
 def test_a_composite_without_a_builder_hands_each_sub_op_to_the_target():

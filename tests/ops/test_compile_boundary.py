@@ -313,7 +313,7 @@ def _mamba_cases():
         return op, (_x(_B, _S, _H, **f32), -_x(_H, **f32).abs(), None)
 
     def cb_producer():
-        op = CBProducerFwdOp(_B, _NC, _G, _Q, _N)
+        op = CBProducerFwdOp(_Q)
         return op, (_x(_B, _S, _G, _N), _x(_B, _S, _G, _N))
 
     def ssd_chunk_state():
