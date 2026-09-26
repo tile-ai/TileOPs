@@ -2,19 +2,12 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from benchmarks.benchmark_base import (
-    ManifestBenchmark,
-    backward_of,
-    then_dtype,
-    workload_params,
-)
-from benchmarks.ops.attention.workload_args import mha_qkv_args
-from tileops.manifest import load_workloads
+from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
 from tileops.ops import MultiHeadAttentionBwdOp
-from workloads.attention.mha import MhaBwdWorkload
+from workloads.attention.mha import MhaBwdCall
 
 
-def _fa3_mha_bwd(test: MhaBwdWorkload):
+def _fa3_mha_bwd(test: MhaBwdCall):
     """Return FA3 backward baseline callable, or None if not installed."""
     try:
         from flash_attn_interface import flash_attn_func
@@ -51,19 +44,13 @@ def _torch_mha_bwd(test):
     return fn
 
 
-_MHA_BWD_BENCH_PARAMS = workload_params(
-    load_workloads(MultiHeadAttentionBwdOp), then_dtype(mha_qkv_args, tune=True)
-)
-
-
-@pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", _MHA_BWD_BENCH_PARAMS)
-def test_mha_bwd_bench(
-    batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype, tune: bool
-) -> None:
-    test = MhaBwdWorkload(batch, heads, seq_len, dim, causal, dtype)
+@pytest.mark.parametrize("call", manifest_calls(MultiHeadAttentionBwdOp))
+def test_mha_bwd_bench(call) -> None:
+    """Backward is timed in training, so the kernels tune."""
+    test = MhaBwdCall(call)
     inputs = test.gen_inputs()
 
-    op = MultiHeadAttentionBwdOp(causal, tune=tune)
+    op = MultiHeadAttentionBwdOp(**test.arguments(), tune=True)
     bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 

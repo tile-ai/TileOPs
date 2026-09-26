@@ -310,6 +310,54 @@ def sample_indices(rng, n, hi):
     return rng.sample(range(hi), n)
 
 
+def causal_topk_indices(rng, batch, seq, heads_kv, k, extent, start, stride):
+    if min(batch, seq, heads_kv, k, extent, stride) <= 0 or start < 0:
+        raise ValueError(
+            "causal_topk_indices needs positive B, S, H_kv, K, E, stride and start >= 0"
+        )
+    rows = []
+    for _ in range(batch):
+        per_token = []
+        for t in range(seq):
+            visible = min(max(1, (t + start) // stride), extent)
+            per_head = []
+            for _ in range(heads_kv):
+                picked = rng.sample(range(visible), min(k, visible))
+                per_head.append(picked + [extent] * (k - len(picked)))
+            per_token.append(per_head)
+        rows.append(per_token)
+    return rows
+
+
+def key_windows(lengths, first, count, side):
+    if not lengths or any(n <= 0 for n in lengths):
+        raise ValueError(f"key_windows needs a non-empty positive list, got {lengths}")
+    if first < 0 or count < 0 or first + count > sum(lengths):
+        raise ValueError(
+            f"key_windows needs 0 <= first and first + count <= {sum(lengths)}, "
+            f"got first={first}, count={count}"
+        )
+    if side not in ("start", "end"):
+        raise ValueError(f"key_windows side must be 'start' or 'end', got {side!r}")
+    starts = prefix_sum(lengths)
+    out, segment = [], 0
+    for p in range(first, first + count):
+        while starts[segment + 1] <= p:
+            segment += 1
+        out.append(starts[segment] if side == "start" else p + 1)
+    return out
+
+
+def full(shape, value):
+    if any(n < 0 for n in shape):
+        raise ValueError(f"full needs non-negative extents, got {shape}")
+
+    def fill(axes):
+        return value if not axes else [fill(axes[1:]) for _ in range(axes[0])]
+
+    return fill(list(shape))
+
+
 def _segment_ids(sizes, scale=1):
     return [i for i, n in enumerate(sizes) for _ in range(n * scale)]
 
@@ -351,6 +399,9 @@ GENERATORS = {
     "topk_ids": topk_ids,
     "sample_indices": sample_indices,
     "moe.layout_metadata": moe_layout_metadata,
+    "causal_topk_indices": causal_topk_indices,
+    "key_windows": key_windows,
+    "full": full,
 }
 # Argument kinds of each generator; a pseudo-random one's RNG is not an argument.
 GENERATOR_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
@@ -368,8 +419,11 @@ GENERATOR_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "topk_ids": (("Int", "Int", "Int"), "Value"),
     "sample_indices": (("Int", "Int"), "Value"),
     "moe.layout_metadata": (("ADT", "Int", "Int"), "Value"),
+    "causal_topk_indices": (("Int", "Int", "Int", "Int", "Int", "Int", "Int"), "Value"),
+    "key_windows": (("Seq[Int]", "Int", "Int", "'start' | 'end'"), "Value"),
+    "full": (("Seq[Int]", "Int"), "Value"),
 }
-# The rank of each generator's result.
+# The rank of each generator's result where it is fixed; `full`'s is the length of its shape.
 GENERATOR_RANKS = {
     "as_tensor": 1,
     "prefix_sum": 1,
@@ -385,6 +439,8 @@ GENERATOR_RANKS = {
     "topk_ids": 2,
     "sample_indices": 1,
     "moe.layout_metadata": 1,
+    "causal_topk_indices": 4,
+    "key_windows": 1,
 }
 # The shape of each generator's result, from its arguments.
 GENERATOR_SHAPES = {
@@ -404,9 +460,24 @@ GENERATOR_SHAPES = {
     "moe.layout_metadata": lambda layout, rows, experts: (
         (rows,) if layout.kind == "contiguous" and layout.metadata_kind == "per_row" else (experts,)
     ),
+    "causal_topk_indices": lambda batch, seq, heads, k, extent, start, stride: (
+        batch,
+        seq,
+        heads,
+        k,
+    ),
+    "key_windows": lambda L, first, count, side: (count,),
+    "full": lambda shape, value: tuple(shape),
 }
 RANDOM_GENERATORS = frozenset(
-    {"paged_block_table", "nsa_block_indices", "nsa_block_counts", "topk_ids", "sample_indices"}
+    {
+        "paged_block_table",
+        "nsa_block_indices",
+        "nsa_block_counts",
+        "topk_ids",
+        "sample_indices",
+        "causal_topk_indices",
+    }
 )
 
 

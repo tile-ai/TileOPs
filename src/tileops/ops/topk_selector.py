@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -6,7 +6,6 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.topk_selector import TopkSelectorKernel
 
-from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
 
 __all__ = ["TopkSelectorFwdOp"]
@@ -23,59 +22,40 @@ class TopkSelectorFwdOp(Op):
       one input select the same positions and may place them in different slots.
     - A window holding fewer than ``topk`` positions fills the rest with ``seq_len_kv``,
       one past the last key, which selects nothing.
+
+    The in-tree kernel keeps at most 4096 candidates that share the score bucket the
+    ``topk``-th score falls in; a window with more such ties may select a lower score.
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "topk_selector_kernel": TopkSelectorKernel
+    }
 
     def __init__(
         self,
         topk: int,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             topk: Manifest ``params.topk``, ``int``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.target = target
-        self.batch = None
-        self.seq_len = None
-        self.seq_len_kv = None
-        self.kv_group = None
         self.topk = topk
-        self.in_dtype = None
         self.out_dtype = torch.int32
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
         self.kernel = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"topk_selector_kernel": TopkSelectorKernel}
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        seq_len: int,
-        seq_len_kv: int,
-        kv_group: int,
-        in_dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        return self.kernel_for(
-            "topk_selector_kernel",
-            inputs,
-            (batch, seq_len, seq_len_kv, kv_group, self.topk, in_dtype, device_index),
-        )
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, dtype and device; ``out_dtype`` is the op's."""
@@ -84,64 +64,36 @@ class TopkSelectorFwdOp(Op):
             batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, self.out_dtype, tune=self.tune
         )
 
-    def _infer_output_shapes(
-        self,
-        index_score_shape: tuple[int, ...],
-        starts_shape: tuple[int, ...],
-        ends_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: $[batch \\times seq\\_len \\times kv\\_group \\times topk]$."""
-        batch, seq_len, _, kv_group = index_score_shape
-        return {"indexes": (batch, seq_len, kv_group, self.topk)}
-
     def forward(self, index_score, starts, ends) -> torch.Tensor:
-        """Run the op on the inputs the manifest declares.
+        """Select each query row's ``topk`` highest-scoring keys inside its window.
 
         Args:
-            index_score: Input tensor, dtype ``float32``.
-            starts: Input tensor, dtype ``int32``.
-            ends: Input tensor, dtype ``int32``.
+            index_score: Scores [batch, seq_len, seq_len_kv, kv_group], ``float32``.
+            starts: First key of each row's window [batch, seq_len], ``int32``.
+            ends: One past the last key of each row's window [batch, seq_len], ``int32``.
 
         Returns:
-            ``indexes``, as the manifest declares.
+            Selected key positions [batch, seq_len, kv_group, topk], ``int32``.
         """
-        return self._wrapped(index_score, starts, ends, self._instance_key)
+        return self._call_boundary(index_score, starts, ends)
 
     def _eager_forward(self, index_score, starts, ends) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if not index_score.is_cuda:
-            raise ValueError("TopkSelectorFwdOp expects CUDA inputs")
-        if index_score.ndim != 4:
-            raise ValueError("TopkSelectorFwdOp expects index_score shape [B, S, S_kv, G]")
-        if starts.ndim != 2 or ends.ndim != 2:
-            raise ValueError("TopkSelectorFwdOp expects starts/ends shape [B, S]")
-        if not starts.is_cuda or not ends.is_cuda:
-            raise ValueError("starts and ends must be CUDA tensors")
-        if starts.dtype != torch.int32 or ends.dtype != torch.int32:
-            raise ValueError("TopkSelectorFwdOp expects int32 starts/ends tensors")
-
         batch, seq_len, seq_len_kv, kv_group = index_score.shape
-        if starts.shape != (batch, seq_len) or ends.shape != (batch, seq_len):
-            raise ValueError("TopkSelectorFwdOp starts/ends must match index_score batch/seq_len")
-        if not 0 < self.topk <= seq_len_kv:
-            raise ValueError(f"topk must satisfy 0 < topk <= seq_len_kv={seq_len_kv}")
-
-        self.batch = batch
-        self.seq_len = seq_len
-        self.seq_len_kv = seq_len_kv
-        self.kv_group = kv_group
-        self.in_dtype = index_score.dtype
-        self.kernel = self._get_kernel(
+        self.kernel = self.kernel_for(
+            "topk_selector_kernel",
             (index_score, starts, ends),
-            batch,
-            seq_len,
-            seq_len_kv,
-            kv_group,
-            index_score.dtype,
-            index_score.device.index,
+            (
+                batch,
+                seq_len,
+                seq_len_kv,
+                kv_group,
+                self.topk,
+                index_score.dtype,
+                index_score.device.index,
+            ),
         )
-
         return self.kernel(index_score, starts, ends)
