@@ -4,18 +4,15 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.attention import (
-    FlashAttnBwdPreprocessKernel,
-    GQABwdWgmmaPipelinedKernel,
     MHADecodePagedKernel,
     MHADecodePagedWsKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 from .gqa import GroupedQueryAttentionBwdOp
-from .selection import AttentionCall, device_of
+from .selection import AttentionCall
 
 __all__ = [
     "MultiHeadAttentionBwdOp",
@@ -30,8 +27,7 @@ class MultiHeadAttentionBwdOp(Op):
     matching the forward path's dispatch through GQA.
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
-
+    compile_boundary = True
     # Every kernel this op runs is built by GQA backward.
     delegate_types: ClassVar[Mapping[str, type[Op]]] = {"gqa_backward": GroupedQueryAttentionBwdOp}
 
@@ -45,30 +41,22 @@ class MultiHeadAttentionBwdOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        heads: int,
-        seq_len: int,
-        dim: int,
         is_causal: bool = True,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.target = target
-        self.batch = batch
-        self.heads = heads
-        self.seq_len = seq_len  # TODO: support s_q != s_kv
-        self.dim = dim
         self.is_causal = is_causal
 
         self.tune = tune
@@ -76,21 +64,9 @@ class MultiHeadAttentionBwdOp(Op):
         self._gqa_op = self.delegate_for(
             "gqa_backward",
             None,
-            batch=batch,
-            heads=heads,
-            heads_kv=heads,
-            seq_len=seq_len,
-            dim=dim,
             is_causal=is_causal,
         )
         self.kernel_map = self._gqa_op.kernel_map
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "gqa_bwd_preprocess_kernel": FlashAttnBwdPreprocessKernel,
-            "gqa_bwd_kernel": GQABwdWgmmaPipelinedKernel,
-        }
 
     @staticmethod
     def _gqa_kernel_map(kernel_map: Optional[Dict[str, Kernel]]) -> Optional[Dict[str, Kernel]]:
@@ -105,18 +81,6 @@ class MultiHeadAttentionBwdOp(Op):
                 "Use gqa_bwd_* keys with kernels that implement the GQA backward ABI."
             )
         return dict(kernel_map)
-
-    def _infer_output_shapes(
-        self,
-        q_shape: tuple[int, ...],
-        k_shape: tuple[int, ...],
-        v_shape: tuple[int, ...],
-        o_shape: tuple[int, ...],
-        do_shape: tuple[int, ...],
-        lse_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: each gradient has the shape of what it is for."""
-        return {"dq": tuple(q_shape), "dk": tuple(k_shape), "dv": tuple(v_shape)}
 
     def forward(
         self,
@@ -140,7 +104,7 @@ class MultiHeadAttentionBwdOp(Op):
         Returns:
             ``dq``, ``dk``, ``dv``, as the manifest declares. Shape rules: ``dq.shape == (B, S, H, D)``; ``dk.shape == (B, S, H, D)``; ``dv.shape == (B, S, H, D)``.
         """
-        return self._wrapped(q, k, v, o, do, lse, self._instance_key)
+        return self._call_boundary(q, k, v, o, do, lse)
 
     def _eager_forward(
         self,
@@ -155,12 +119,11 @@ class MultiHeadAttentionBwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        self.dtype = q.dtype
         return self._gqa_op(q, k, v, o, do, lse)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
+        return tensor_core_roof(self.last_call.tensors["q"][1])
 
 
 class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
@@ -168,86 +131,57 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
     K, V physical cache [seqlen_kv, heads, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "mha_decode_paged_kernel": MHADecodePagedKernel,
+        "mha_decode_paged_ws_kernel": MHADecodePagedWsKernel,
+    }
 
     def __init__(
         self,
-        batch: int,
-        heads: int,
-        seqlen_q: int,
-        seqlen_kv: int,
-        dim: int,
         page_size: int,
         is_causal: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             page_size: Manifest ``params.page_size``, ``int``.
             is_causal: Manifest ``params.is_causal``, ``bool``, default ``False``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.target = target
-        self.batch = batch
-        self.heads = heads
-        self.seqlen_q = seqlen_q
-        self.seqlen_kv = seqlen_kv
-        self.dim = dim
         self.page_size = page_size
         self.is_causal = is_causal
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        call = self._attention_call(dtype, device_of(inputs))
-        return self.kernel_for("mha_decode_paged", inputs, call)
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "mha_decode_paged_kernel": MHADecodePagedKernel,
-            "mha_decode_paged_ws_kernel": MHADecodePagedWsKernel,
-        }
-
-    def _attention_call(
-        self, dtype: torch.dtype, device: Optional[torch.device] = None
-    ) -> AttentionCall:
+    def _attention_call(self, q: torch.Tensor, k: torch.Tensor) -> AttentionCall:
         """State what one paged decode call is, for selection to filter against.
 
-        The element type arrives with the inputs rather than with the op, so one
-        instance serves every dtype it is handed.
+        Every extent and the element type arrive with the inputs, so one instance serves
+        every shape and dtype it is handed.
         """
+        batch, seqlen_q, heads, dim = q.shape
         return AttentionCall(
-            dtype=dtype,
-            batch=self.batch,
-            heads=self.heads,
-            heads_kv=self.heads,
-            dim=self.dim,
-            max_seqlen_q=self.seqlen_q,
-            seqlen_kv=self.seqlen_kv,
+            dtype=q.dtype,
+            batch=batch,
+            heads=heads,
+            heads_kv=heads,
+            dim=dim,
+            max_seqlen_q=seqlen_q,
+            seqlen_kv=k.shape[0],
             page_size=self.page_size,
             is_causal=self.is_causal,
             tune=self.tune,
-            device=device,
+            device=q.device,
         )
-
-    def _infer_output_shapes(
-        self,
-        q_shape: tuple[int, ...],
-        k_shape: tuple[int, ...],
-        v_shape: tuple[int, ...],
-        real_seqlen_kv_shape: tuple[int, ...],
-        block_table_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``shape_rules``: ``o.shape == q.shape``."""
-        return {"o": tuple(q_shape)}
 
     def forward(
         self,
@@ -269,7 +203,7 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         Returns:
             ``o``, as the manifest declares. Shape rules: ``o.shape == (B, S_q, H, D)``.
         """
-        return self._wrapped(q, k, v, real_seqlen_kv, block_table, self._instance_key)
+        return self._call_boundary(q, k, v, real_seqlen_kv, block_table)
 
     def _eager_forward(
         self,
@@ -283,11 +217,10 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        self.dtype = q.dtype
-        return self._get_kernel((q, k, v, real_seqlen_kv, block_table), q.dtype)(
-            q, k, v, real_seqlen_kv, block_table
-        )
+        inputs = (q, k, v, real_seqlen_kv, block_table)
+        kernel = self.kernel_for("mha_decode_paged", inputs, self._attention_call(q, k))
+        return kernel(*inputs)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
+        return tensor_core_roof(self.last_call.tensors["q"][1])

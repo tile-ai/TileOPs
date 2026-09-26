@@ -1,15 +1,9 @@
 import pytest
 import torch
 
-from benchmarks.benchmark_base import (
-    ManifestBenchmark,
-    then_dtype,
-    workload_params,
-)
-from benchmarks.ops.attention.workload_args import mha_decode_paged_args
-from tileops.manifest import load_workloads
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
-from workloads.attention.mha import MhaDecodePagedWorkload
+from workloads.attention.mha import MhaDecodePagedCall
 
 
 def _fa3_mha_decode_paged(test, k, v):
@@ -81,36 +75,13 @@ def _flashinfer_mha_decode_paged(test, q, k, v, real_seqlen_kv, block_table):
     return run_fn
 
 
-_MHA_DECODE_PAGED_BENCH_PARAMS = workload_params(
-    load_workloads(MultiHeadAttentionDecodePagedWithKVCacheFwdOp),
-    then_dtype(mha_decode_paged_args, tune=True),
-)
-
-
-@pytest.mark.parametrize(
-    "batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype, tune",
-    _MHA_DECODE_PAGED_BENCH_PARAMS,
-)
-def test_mha_decode_paged_bench(
-    batch: int,
-    heads: int,
-    seqlen_q: int,
-    seqlen_kv: int,
-    dim: int,
-    page_size: int,
-    is_causal: bool,
-    dtype: torch.dtype,
-    tune: bool,
-) -> None:
-    test = MhaDecodePagedWorkload(
-        batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype
-    )
+@pytest.mark.parametrize("call", manifest_calls(MultiHeadAttentionDecodePagedWithKVCacheFwdOp))
+def test_mha_decode_paged_bench(call) -> None:
+    test = MhaDecodePagedCall(call)
     inputs = test.gen_inputs()
     q, k, v, real_seqlen_kv, block_table = inputs
 
-    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
-        batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, tune=tune
-    )
+    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(**test.arguments(), tune=True)
     bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 

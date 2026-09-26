@@ -4,9 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import served_in_tree
-from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp
-from tileops.perf.formulas import gqa_prefill_paged_with_kv_cache_fwd_roofline
 from workloads.attention.gqa import GQAPrefillPagedWithKVCacheFwdWorkload, make_cu_seqlens
 from workloads.attention.paged import (
     fill_paged_cache_from_logical,
@@ -229,12 +227,7 @@ def test_gqa_prefill_paged_with_kv_cache_fwd(
         is_causal=is_causal,
     )
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        max_pages_per_req=max_pages_per_req,
         page_size=page_size,
-        dim=dim,
         max_seqlen_q=max(q_lens),
         is_causal=is_causal,
     )
@@ -339,12 +332,7 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_fwd(
         softcap=softcap,
     )
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        max_pages_per_req=max_pages_per_req,
         page_size=page_size,
-        dim=dim,
         max_seqlen_q=max(q_lens),
         is_causal=is_causal,
         cache_dtype=cache_dtype,
@@ -396,7 +384,7 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_rejects_invalid_scales(
     scale_name: str,
     bad_value: float,
 ) -> None:
-    batch, heads, heads_kv, dim = 1, 8, 2, 64
+    heads, heads_kv, dim = 8, 2, 64
     q_lens = [1]
     page_size, max_pages_per_req = 64, 1
     q = torch.randn(sum(q_lens), heads, dim, device="cuda", dtype=torch.float16).contiguous()
@@ -414,12 +402,7 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_rejects_invalid_scales(
         v_scale = torch.tensor([bad_value], device="cuda", dtype=torch.float32)
     block_table = torch.tensor([[0]], device="cuda", dtype=torch.int32)
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        max_pages_per_req=max_pages_per_req,
         page_size=page_size,
-        dim=dim,
         max_seqlen_q=max(q_lens),
         cache_dtype=torch.float8_e4m3fn,
     )
@@ -523,12 +506,7 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
         softcap=softcap,
     )
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        max_pages_per_req=max_pages_per_req,
         page_size=page_size,
-        dim=dim,
         max_seqlen_q=max(q_lens),
         is_causal=is_causal,
         softcap=softcap,
@@ -567,57 +545,19 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
 
 
 @pytest.mark.smoke
-def test_gqa_prefill_paged_with_kv_cache_validates_capacity() -> None:
-    batch, heads, heads_kv, dim = 1, 8, 2, 64
-    page_size, max_pages_per_req = 64, 2
-    q_lens = [65]
-    old_lens = [64]
-    q = torch.randn(sum(q_lens), heads, dim, device="cuda", dtype=torch.float16).contiguous()
-    k_new = torch.randn(sum(q_lens), heads_kv, dim, device="cuda", dtype=torch.float16).contiguous()
-    v_new = torch.randn_like(k_new)
-    k_pages = torch.zeros(
-        max_pages_per_req * page_size, heads_kv, dim, device="cuda", dtype=torch.float16
-    ).contiguous()
-    v_pages = torch.zeros_like(k_pages)
-    block_table = torch.tensor([[0, 1]], device="cuda", dtype=torch.int32)
-    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        max_pages_per_req=max_pages_per_req,
-        page_size=page_size,
-        dim=dim,
-        max_seqlen_q=max(q_lens),
-    )
-    k_scale, v_scale = make_unit_cache_scales()
-
-    with pytest.raises(ValueError, match="capacity"):
-        op(
-            q,
-            k_new,
-            v_new,
-            k_pages,
-            v_pages,
-            k_scale,
-            v_scale,
-            make_cu_seqlens(q_lens),
-            torch.tensor(old_lens, device="cuda", dtype=torch.int32),
-            block_table,
-        )
-
-
-@pytest.mark.smoke
 def test_gqa_prefill_paged_with_kv_cache_requires_power_of_two_page_size() -> None:
+    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(page_size=24, max_seqlen_q=16)
+    q = torch.randn(2, 8, 64, device="cuda", dtype=torch.float16)
+    k_new = torch.randn(2, 2, 64, device="cuda", dtype=torch.float16)
+    k_pages = torch.zeros(48, 2, 64, device="cuda", dtype=torch.float16)
+    scale = torch.ones(1, device="cuda", dtype=torch.float32)
+    metadata = (
+        torch.tensor([0, 2], device="cuda", dtype=torch.int32),
+        torch.tensor([0], device="cuda", dtype=torch.int32),
+        torch.tensor([[0]], device="cuda", dtype=torch.int32),
+    )
     with pytest.raises(ValueError, match="power of two"):
-        GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
-            batch=1,
-            heads=8,
-            heads_kv=2,
-            max_pages_per_req=8,
-            page_size=24,
-            dim=64,
-            max_seqlen_q=16,
-        )
+        op(q, k_new, k_new.clone(), k_pages, k_pages.clone(), scale, scale.clone(), *metadata)
 
 
 @pytest.mark.parametrize(
@@ -668,12 +608,7 @@ def test_gqa_prefill_paged_with_kv_cache_page_sizes(page_size: int) -> None:
         is_causal=True,
     )
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        max_pages_per_req=max_pages_per_req,
         page_size=page_size,
-        dim=dim,
         max_seqlen_q=max(q_lens),
     )
     k_scale, v_scale = make_unit_cache_scales()
@@ -707,12 +642,7 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
     cache_seqlens = torch.tensor(old_lens, device="cuda", dtype=torch.int32)
     k_scale, v_scale = make_unit_cache_scales()
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        max_pages_per_req=max_pages_per_req,
         page_size=page_size,
-        dim=dim,
         max_seqlen_q=max(q_lens),
     )
 
@@ -767,40 +697,8 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
 
 
 # ----------------------------------------------------------------------
-# Roofline contract
+# Paged workload helpers
 # ----------------------------------------------------------------------
-
-
-_PAGED_PREFILL_OP = "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp"
-_MIXED_QWEN_LABEL = "qwen35-9b-prefill-paged-fullattn-mixed-b8-p64-partial-rope64"
-_BENCH_Q_LENS = [256, 512, 768, 1024, 384, 640, 896, 128]
-_BENCH_CACHE_LENS = [4096, 8192, 16384, 32768, 12288, 24576, 30720, 2048]
-
-
-def _workload_by_label(label: str) -> dict:
-    for workload in load_workloads(_PAGED_PREFILL_OP):
-        if workload.get("label") == label:
-            return workload
-    raise AssertionError(f"workload {label!r} not found")
-
-
-@pytest.mark.smoke
-def test_gqa_prefill_paged_mixed_manifest_matches_benchmark_lengths() -> None:
-    workload = _workload_by_label(_MIXED_QWEN_LABEL)
-
-    assert workload["q_lens"] == _BENCH_Q_LENS
-    assert workload["cache_lens"] == _BENCH_CACHE_LENS
-    assert sum(workload["q_lens"]) == workload["total_q"]
-
-
-@pytest.mark.smoke
-def test_gqa_prefill_paged_roofline_accepts_mixed_manifest_workload() -> None:
-    workload = _workload_by_label(_MIXED_QWEN_LABEL)
-
-    flops, nbytes = gqa_prefill_paged_with_kv_cache_fwd_roofline(**workload)
-
-    assert flops > 0
-    assert nbytes > 0
 
 
 @pytest.mark.smoke

@@ -115,14 +115,7 @@ def test_mha_decode_paged_op(
 ) -> None:
     test = MhaDecodePagedTest(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
     op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
-        batch=batch,
-        heads=heads,
-        seqlen_q=seqlen_q,
-        seqlen_kv=seqlen_kv,
-        dim=dim,
-        page_size=page_size,
-        is_causal=is_causal,
-        tune=tune,
+        page_size=page_size, is_causal=is_causal, tune=tune
     )
     test.check(op, *test.gen_inputs(), compare=test._maxdiff_cosine_compare)
 
@@ -149,15 +142,7 @@ def test_mha_decode_paged_cache_shorter_than_bound(real_lengths: list) -> None:
     q, k, v, _full, block_table = test.gen_inputs()
     real_seqlen_kv = torch.tensor(real_lengths, dtype=torch.int32, device=q.device)
 
-    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
-        batch=batch,
-        heads=heads,
-        seqlen_q=1,
-        seqlen_kv=seqlen_kv,
-        dim=dim,
-        page_size=page_size,
-        is_causal=False,
-    )
+    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=page_size, is_causal=False)
     output = op(q, k, v, real_seqlen_kv, block_table)
 
     assert torch.isfinite(output).all(), "output is not finite for a partly filled cache"
@@ -171,8 +156,8 @@ def test_mha_decode_paged_dispatch_declines_multi_token_query() -> None:
     The warp-specialized kernel exists because ``seqlen_q`` is 1; selection has
     to hand a longer query back rather than serve it.
     """
-    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
-        batch=1, heads=8, seqlen_q=4, seqlen_kv=1024, dim=64, page_size=256, is_causal=False
-    )
-    chosen = op.select_kernel(op._attention_call(torch.float16))
+    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=256, is_causal=False)
+    q = torch.empty(1, 4, 8, 64, dtype=torch.float16, device="cuda")
+    k = torch.empty(1024, 8, 64, dtype=torch.float16, device="cuda")
+    chosen = op.select_kernel(op._attention_call(q, k))
     assert chosen.__name__ == "MHADecodePagedKernel"

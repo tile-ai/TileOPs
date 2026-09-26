@@ -91,8 +91,11 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                     histogram_idx = j * BLOCK_SIZE + tx
                     if histogram_idx < RADIX + 1:
                         s_histogram[histogram_idx] = 0
+                # A window holding at most topk candidates has no bin above which fewer
+                # than topk remain; -1 then selects every candidate.
                 if tx == 0:
                     s_num_input[0] = 0
+                    s_threshold_bin_id[0] = -1
 
                 T.sync_threads()
 
@@ -166,6 +169,7 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                             s_histogram[histogram_idx] = 0
                     if tx == 0:
                         s_num_input[r_idx ^ 1] = 0
+                        s_threshold_bin_id[0] = -1
                     T.sync_threads()
 
                     l_num_input = T.min(s_num_input[r_idx], SMEM_INPUT_SIZE)

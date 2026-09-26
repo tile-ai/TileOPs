@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import NSACmpFwdVarlenOp
+from tileops.ops import NSACmpVarlenFwdOp
 from workloads.attention.deepseek import NsaCmpFwdWorkload
 
 
@@ -13,8 +13,7 @@ class NsaCmpFwdTest(NsaCmpFwdWorkload, TestBase):
 class NsaCmpFwdFixture(FixtureBase):
     PARAMS = [
         (
-            "seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs, "
-            "dtype, accum_dtype, tune",
+            "seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bs, dtype, tune",
             [
                 pytest.param(
                     9,
@@ -25,9 +24,7 @@ class NsaCmpFwdFixture(FixtureBase):
                     16,
                     128**-0.5,
                     32,
-                    32,
                     torch.float16,
-                    torch.float32,
                     False,
                     marks=pytest.mark.smoke,
                 ),
@@ -45,18 +42,14 @@ def test_nsa_cmp_fwd_varlen_op(
     dim_v: int,
     group: int,
     scale: float,
-    bc: int,
     bs: int,
     dtype: torch.dtype,
-    accum_dtype: torch.dtype,
     tune: bool,
 ) -> None:
     assert group % 16 == 0, "Group size must be a multiple of 16 in NSA"
 
-    test = NsaCmpFwdTest(
-        seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bc, bs, dtype, accum_dtype
-    )
+    test = NsaCmpFwdTest(seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bs, dtype)
     inputs = test.gen_inputs()
 
-    op = NSACmpFwdVarlenOp(scale=scale, bc=bc, bs=bs, accum_dtype=accum_dtype, tune=tune)
+    op = NSACmpVarlenFwdOp(scale=scale, bs=bs, tune=tune)
     test.check(op, *inputs, atol=4e-3, rtol=1e-5)

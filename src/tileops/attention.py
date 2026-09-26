@@ -13,9 +13,9 @@ from .ops.attention import (
     MultiHeadAttentionBwdOp,
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
     MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,
-    NSACmpFwdVarlenOp,
-    NSAFwdVarlenOp,
-    NSATopkVarlenOp,
+    NSACmpVarlenFwdOp,
+    NSATopkVarlenFwdOp,
+    NSAVarlenFwdOp,
 )
 from .ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
 from .ops.topk_selector import TopkSelectorFwdOp
@@ -32,9 +32,9 @@ __all__ = [
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp",
     "GroupedQueryAttentionVarlenFwdOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
-    "NSACmpFwdVarlenOp",
-    "NSATopkVarlenOp",
-    "NSAFwdVarlenOp",
+    "NSACmpVarlenFwdOp",
+    "NSATopkVarlenFwdOp",
+    "NSAVarlenFwdOp",
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
     "FP8LightningIndexerFwdOp",
     "TopkSelectorFwdOp",

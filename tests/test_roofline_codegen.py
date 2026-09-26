@@ -175,7 +175,7 @@ class TestTotalContract:
         sound = analyze_roofline(
             "FakeOp",
             roofline={
-                "func": "tileops.perf.formulas.mha_bwd_roofline",
+                "func": "tileops.perf.formulas.gqa_dense_fwd_roofline",
                 "flops": "1",
                 "bytes": "1",
             },
@@ -1244,12 +1244,14 @@ class TestCallPayload:
     """Call-bound formula inputs override construction-bound state."""
 
     def test_requires_prior_forward(self):
-        from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
+        from tileops.perf.formulas import _shape_or_attrs
 
-        op = GroupedQueryAttentionDenseFwdOp.__new__(GroupedQueryAttentionDenseFwdOp)
-        op._roofline_kwargs = None
+        class _Unrun:
+            def __init__(self):
+                self._roofline_kwargs = None
+
         with pytest.raises(RuntimeError, match="requires a prior forward"):
-            op.eval_roofline()
+            _shape_or_attrs(_Unrun(), {})
 
     def test_rejects_non_mapping_payload(self):
         from tileops.perf.formulas import _shape_or_attrs

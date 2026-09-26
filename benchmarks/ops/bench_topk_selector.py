@@ -19,28 +19,16 @@ from benchmarks.baselines import (
     compiled_reference,
     flashinfer_op,
 )
-from benchmarks.benchmark_base import (
-    ManifestBenchmark,
-    fields,
-    workload_params,
-)
-from tileops.manifest import load_workloads
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import TopkSelectorFwdOp
-from workloads.topk_selector import TopkSelectorWorkload
+from workloads.topk_selector import TopkSelectorCall
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
 _TUNE = True
 
 
-_TOPK_SELECTOR_PARAMS = workload_params(
-    load_workloads(TopkSelectorFwdOp),
-    fields("batch", "seq_len", "seq_len_kv", "kv_group", "topk", "in_dtype", "out_dtype"),
-    smoke_first=True,
-)
-
-
-def _flashinfer_topk(test: TopkSelectorWorkload, starts: torch.Tensor, ends: torch.Tensor):
+def _flashinfer_topk(test: TopkSelectorCall, starts: torch.Tensor, ends: torch.Tensor):
     """FlashInfer's top-k over the same scores, or None for a row it cannot serve.
 
     It selects over the last dimension, which is ``seq_len_kv`` only while
@@ -79,23 +67,12 @@ def _assert_selects_same_scores(fn, reference, *inputs: torch.Tensor) -> None:
     torch.testing.assert_close(selected(fn(*inputs)), selected(reference(*inputs)))
 
 
-@pytest.mark.parametrize(
-    "batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype",
-    _TOPK_SELECTOR_PARAMS,
-)
-def test_topk_selector_bench(
-    batch: int,
-    seq_len: int,
-    seq_len_kv: int,
-    kv_group: int,
-    topk: int,
-    in_dtype: torch.dtype,
-    out_dtype: torch.dtype,
-) -> None:
-    test = TopkSelectorWorkload(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)
+@pytest.mark.parametrize("call", manifest_calls(TopkSelectorFwdOp))
+def test_topk_selector_bench(call) -> None:
+    test = TopkSelectorCall(call)
     inputs = test.gen_inputs()
 
-    op = TopkSelectorFwdOp(topk=topk, tune=_TUNE)
+    op = TopkSelectorFwdOp(**test.arguments(), tune=_TUNE)
     bm = ManifestBenchmark(op, test)
 
     functors = {

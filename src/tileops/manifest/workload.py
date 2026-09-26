@@ -490,9 +490,9 @@ def _generate(sig: Signature, t: str, b: PlanBranch, scope: dict) -> tuple[list,
     shape = GENERATOR_SHAPES[fn](*(a for a in args if not isinstance(a, random.Random)))
     rank = _fixed_rank(
         b.shapes[t],
-        lambda e: len(_evaluate(sig, e, scope, f"tensor {t!r} shape"))
-        if names(e) <= set(scope)
-        else None,
+        lambda e: (
+            len(_evaluate(sig, e, scope, f"tensor {t!r} shape")) if names(e) <= set(scope) else None
+        ),
     )
     if rank is not None and rank != len(shape):
         raise RowError(

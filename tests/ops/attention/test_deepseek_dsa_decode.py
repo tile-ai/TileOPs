@@ -85,18 +85,7 @@ def test_sparse_mla_decode(
         dtype=dtype,
     )
     op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(
-        batch,
-        heads,
-        seq_len_q,
-        seq_len_kv,
-        dim,
-        dim_tail,
-        topk,
-        stride_kv,
-        heads_kv,
-        q_start_index_s,
-        sm_scale=sm_scale,
-        tune=tune,
+        dim_tail, stride_kv, q_start_index_s, sm_scale=sm_scale, tune=tune
     )
     test.check(op, *test.gen_inputs(), atol=3e-4, rtol=1e-5)
 
@@ -134,9 +123,7 @@ def test_sparse_mla_decode_ignores_padded_topk_slots() -> None:
     test = DsaDecodeTest(
         batch, heads, seq_len, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv, q_start
     )
-    op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(
-        batch, heads, seq_len, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv, q_start
-    )
+    op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(dim_tail, stride_kv, q_start)
     q, kv, _ = test.gen_inputs()
 
     # seq_len_kv is the padding the workloads write and the reference reads.

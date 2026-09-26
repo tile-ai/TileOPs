@@ -217,6 +217,41 @@ def test_each_effect_branch_registers_its_own_operator():
     assert y is not x and y.tolist() == [2, 2]
 
 
+def test_a_spec_only_entry_gets_its_boundary_and_keeps_its_methods():
+    """A spec-only class keeps its hand-written checks and shape inference; the signature
+    still decides its operator and fake, so a traced call is one graph."""
+    from tileops.ops.op_base import Op
+
+    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
+
+    def construct(self):
+        self.dispatch_kernel(None)
+
+    def eager(self, x):
+        return x + 1
+
+    cls = type(
+        "ProbeSpecOnlyFwdOp",
+        (Op,),
+        {
+            "__init__": construct,
+            "default_kernel_map": property(lambda self: {}),
+            "forward": _boundary_forward(eager),
+            "_eager_forward": eager,
+            "_infer_output_shapes": lambda self, x_shape: {"y": x_shape},
+            "_validate_dtypes": lambda self, x: None,
+            "eval_roofline": lambda self: (0, 0),
+            "compile_boundary": True,
+        },
+    )
+    assert install(cls, {"family": "probe", "status": "spec-only", "signature": signature})
+    assert cls.compile_op_names == ("tileops::probe_spec_only_fwd",)
+    assert "_signature" not in vars(cls)
+    torch._dynamo.reset()
+    compiled = torch.compile(cls(), fullgraph=True)
+    assert compiled(torch.zeros(4, dtype=torch.float16)).tolist() == [1] * 4
+
+
 def test_a_traced_boundary_call_is_one_graph():
     signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
     op = _probe("ProbeTracedFwdOp", signature, lambda self, x: x + 1, boundary=True)()
