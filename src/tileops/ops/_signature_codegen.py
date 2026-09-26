@@ -994,7 +994,7 @@ def check_result(
 def _shares_storage(a: torch.Tensor, b: torch.Tensor) -> bool:
     if detect_fake_mode() is not None or torch.compiler.is_compiling():
         return False
-    if a.numel() == 0 or b.numel() == 0:
+    if a.numel() == 0 or b.numel() == 0 or a.is_meta or b.is_meta:
         return False
     return a.untyped_storage().data_ptr() == b.untyped_storage().data_ptr()
 
@@ -1125,6 +1125,9 @@ class _Boundary:
             op = get_instance(key)
             passed = dict(zip(sig.inputs, tensors[:count], strict=True))
             call = self.plan.check(op, passed | ({"out": tensors[count]} if out else {}))
+            if detect_fake_mode() is None and not torch.compiler.is_compiling():
+                # An eager call on meta tensors completes here, not in `operator`.
+                op._signature_call = call
             built = tuple(
                 torch.empty(
                     call.tensors[o][0], dtype=getattr(torch, call.tensors[o][1]), device=call.device

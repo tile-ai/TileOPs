@@ -612,3 +612,12 @@ def test_a_target_served_call_leaves_constructor_attributes_alone():
         assert op.dtype == torch.float32
     finally:
         registry.restore(state)
+
+
+@pytest.mark.parametrize("boundary", [False, True])
+def test_a_call_on_meta_tensors_completes_and_is_priced(boundary):
+    forward = lambda self, x: x[:, : x.shape[1] // 2].clone()  # noqa: E731
+    name = f"ProbeMeta{'Boundary' if boundary else ''}FwdOp"
+    op = _probe(name, _SILU, forward, boundary=boundary, roofline={"flops": "M * N"})()
+    op(torch.empty(3, 8, dtype=torch.float16, device="meta"))
+    assert op.eval_roofline() == (12, (3 * 8 + 3 * 4) * 2)
