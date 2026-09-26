@@ -2,9 +2,7 @@
 
 Workload shapes, dtypes, and transpose layouts come from the ops manifest;
 per-variant roofline FLOP and byte counts come from the op's
-``eval_roofline()`` via :class:`ManifestBenchmark`. The composed
-forward+backward case keeps a local roofline because it aggregates four
-GEMM launches, which no single manifest workload describes.
+``eval_roofline()`` via :class:`ManifestBenchmark`.
 """
 
 import pytest
@@ -16,12 +14,7 @@ from benchmarks.baselines import (
     compiled_reference,
     reference_tolerance,
 )
-from benchmarks.benchmark_base import (
-    ManifestBenchmark,
-    fields,
-    workload_params,
-)
-from tileops.manifest import load_workloads
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import GroupedGemmFwdOp
 from workloads.grouped_gemm import (
     GroupedGemmWorkload,
@@ -30,13 +23,6 @@ from workloads.grouped_gemm import (
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
 _TUNE = True
-
-
-_GROUPED_GEMM_PARAMS = workload_params(
-    load_workloads(GroupedGemmFwdOp),
-    fields("batch_sum", "batch_count", "n", "k", "dtype", "transpose_a", "transpose_b"),
-    smoke_first=True,
-)
 
 
 def _torch_grouped_mm(test: GroupedGemmWorkload, inputs: tuple):
@@ -70,23 +56,13 @@ def _torch_grouped_mm(test: GroupedGemmWorkload, inputs: tuple):
     return fn
 
 
-@pytest.mark.parametrize(
-    "batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b",
-    _GROUPED_GEMM_PARAMS,
-)
-def test_grouped_gemm_bench(
-    batch_sum: int,
-    batch_count: int,
-    N: int,
-    K: int,
-    dtype: torch.dtype,
-    transpose_a: bool,
-    transpose_b: bool,
-) -> None:
-    test = GroupedGemmWorkload(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
+@pytest.mark.parametrize("call", manifest_calls(GroupedGemmFwdOp))
+def test_grouped_gemm_bench(call) -> None:
+    test = GroupedGemmWorkload.from_call(call)
     inputs = test.gen_inputs()
+    dtype = test.dtype
 
-    op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b, tune=_TUNE)
+    op = GroupedGemmFwdOp(**call.arguments({}), tune=_TUNE)
     bm = ManifestBenchmark(op, test)
 
     functors = {

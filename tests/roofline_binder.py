@@ -231,31 +231,6 @@ _ROW_SUPPLEMENT = {
         "scale_a_shape": (),
         "scale_b_shape": (),
     },
-    # The row gives the packed row total, the group count and the two inner dims;
-    # the three int32 metadata tensors hold one entry per group.
-    "GroupedGemmFwdOp": lambda row: {
-        # transpose_a is the form whose output keeps the group axis: the packed rows
-        # are the contraction, and b is two-dimensional.
-        "a_shape": (
-            (row["batch_sum"], row["n"]) if row.get("transpose_a") else (row["batch_sum"], row["k"])
-        ),
-        "b_shape": (
-            (
-                (row["k"], row["batch_sum"])
-                if row.get("transpose_b")
-                else (row["batch_sum"], row["k"])
-            )
-            if row.get("transpose_a")
-            else (
-                (row["batch_count"], row["n"], row["k"])
-                if row.get("transpose_b")
-                else (row["batch_count"], row["k"], row["n"])
-            )
-        ),
-        "batch_sizes_shape": (row["batch_count"],),
-        "batch_offsets_shape": (row["batch_count"],),
-        "batch_padded_offsets_shape": (row["batch_count"],),
-    },
     # Paged decode: the cache is one page pool, and the call carries a length per
     # request plus the pages that request's tokens sit in.
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp": lambda row: {
