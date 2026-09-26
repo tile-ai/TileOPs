@@ -53,6 +53,7 @@ def broadcast(*shapes):
 
 
 def reduced(shape, dim, keepdim, mode):
+    """The shape after reducing `dim`; `None` reduces every axis, an empty sequence follows `mode` (all, none, raise)."""
     rank = len(shape)
     if dim is None:
         axes = set(range(rank))
@@ -83,6 +84,7 @@ def unique_axes(dim, rank):
 
 
 def per_axis(value, i, n, fallback=None):
+    """Item `i` of a length-`n` sequence, a scalar itself, or `fallback` for `None`."""
     if isinstance(value, (list, tuple)):
         if len(value) != n:
             raise ValueError(f"expected {n} values, got {value}")
@@ -125,6 +127,7 @@ def pool_out(length, kernel, stride, padding, dilation, ceil_mode):
 
 
 def moe_capacity(layout, rows, experts):
+    """Rows the layout materializes: `E * max_m` masked, `R + E * (alignment - 1)` rounded up to `alignment` aligned, else `R`."""
     if layout.kind == "masked":
         return experts * layout.max_m
     if layout.packing == "aligned":
@@ -149,6 +152,7 @@ def mhc_expansion(q):
 
 
 def balanced_sizes(total, count):
+    """`count` sizes summing to `total`, each `total // count`, the first `total % count` one larger."""
     if count <= 0 or total < 0:
         raise ValueError(f"balanced_sizes needs count > 0 and total >= 0, got {total}, {count}")
     return [total // count + (i < total % count) for i in range(count)]
@@ -238,18 +242,21 @@ def exclusive_prefix_sum(lengths):
 
 
 def padded_exclusive_prefix_sum(lengths, pad):
+    """Item `i` is `sum(ceil_div(n + 1, pad) * pad for n in lengths[:i])`."""
     if pad <= 0:
         raise ValueError(f"pad must be positive, got {pad}")
     return exclusive_prefix_sum([ceil_div(n + 1, pad) * pad for n in as_tensor(lengths)])
 
 
 def chunk_indices(lengths, chunk):
+    """One `(request, chunk)` row per `chunk`-sized piece of each length."""
     if chunk <= 0:
         raise ValueError(f"chunk must be positive, got {chunk}")
     return [[i, j] for i, n in enumerate(as_tensor(lengths)) for j in range(ceil_div(n, chunk))]
 
 
 def token_indices(lengths):
+    """One `(sequence, position)` row per token."""
     if not lengths or any(n <= 0 for n in lengths):
         raise ValueError(f"token_indices needs a non-empty positive list, got {lengths}")
     return [[i, j] for i, n in enumerate(lengths) for j in range(n)]
@@ -268,6 +275,7 @@ def chunk_offsets(lengths, chunk):
 
 
 def paged_block_table(rng, batch, width, pool):
+    """Disjoint random pages per request when the pool holds them all, else the first `width` of a permutation per request."""
     if not 0 < width <= pool:
         raise ValueError(f"paged_block_table needs 0 < width <= pool, got {width}, {pool}")
     if pool >= batch * width:
@@ -277,6 +285,7 @@ def paged_block_table(rng, batch, width, pool):
 
 
 def nsa_block_indices(rng, lengths, block_size, selected, heads_kv):
+    """Position `j` sees `max(ceil_div(j, block_size), 1)` blocks and draws up to `selected` distinct ones per head, ascending, padded with the sentinel `sum(lengths)`."""
     if not lengths or any(n <= 0 for n in lengths) or min(block_size, selected, heads_kv) <= 0:
         raise ValueError("nsa_block_indices needs positive arguments and a non-empty positive list")
     sentinel = sum(lengths)
@@ -293,6 +302,7 @@ def nsa_block_indices(rng, lengths, block_size, selected, heads_kv):
 
 
 def nsa_block_counts(rng, tokens, heads_kv, selected):
+    """Each count uniform in `[1, selected]`."""
     if min(tokens, heads_kv, selected) <= 0:
         raise ValueError("nsa_block_counts needs positive arguments")
     return [[rng.randint(1, selected) for _ in range(heads_kv)] for _ in range(tokens)]
@@ -315,6 +325,7 @@ def _segment_ids(sizes, scale=1):
 
 
 def moe_layout_metadata(layout, rows, experts):
+    """Metadata of `layout` for `rows` rows split across `experts` as evenly as the layout allows."""
     if experts <= 0 or rows < 0:
         raise ValueError(f"moe.layout_metadata needs E > 0 and R >= 0, got R={rows}, E={experts}")
     if layout.kind == "masked":
@@ -418,6 +429,7 @@ def _flat(values):
 
 
 def prefix_offsets(x, total):
+    """`x` starts at 0, is non-decreasing and ends at `total`."""
     return (
         bool(x)
         and x[0] == 0
@@ -427,10 +439,12 @@ def prefix_offsets(x, total):
 
 
 def max_segment(x, bound):
+    """Adjacent differences of `x` are at most `bound`."""
     return all(b - a <= bound for a, b in zip(x, x[1:], strict=False))
 
 
 def in_range(x, lo, hi):
+    """Every element of `x` lies in `[lo, hi)`."""
     return all(lo <= v < hi for v in _flat(x))
 
 
@@ -456,6 +470,7 @@ def indices_within(x, offsets):
 
 
 def paged_fits(x, cu, cap):
+    """Element `i` of `x` plus segment `i` of `cu` is at most `cap`."""
     flat = all(isinstance(v, int) for v in (*x, *cu))
     return (
         flat
@@ -465,6 +480,7 @@ def paged_fits(x, cu, cap):
 
 
 def moe_layout_valid(x, layout, rows, experts):
+    """`x` is valid metadata of `layout` for `rows` rows and `experts` experts."""
     ordered = all(a <= b for a, b in zip(x, x[1:], strict=False))
     if layout.kind == "masked":
         return len(x) == experts and all(0 <= v <= layout.max_m for v in x)

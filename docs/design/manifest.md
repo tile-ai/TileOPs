@@ -193,7 +193,7 @@ adts:
 ### Derived Indices and Primitives
 
 - `let` names a quantity computed from indices; its kind is `Dim` or a value. It is computed from the signature, at construction when construction can evaluate it and otherwise per call, and is never written in a workload row. `let` dependencies are acyclic.
-- A primitive is a built-in function of the expression language. The set is fixed: general primitives in [table 13](#t-dtype) and [table 15](#t-prims), domain primitives such as `pool.out` in [table 14](#t-domain). Each gives a signature, a domain and a symbolic implementation; outside its domain it raises, naming the declaration that called it. Adding a primitive changes this specification and its one implementation, which the validator, the roofline analysis and the generated code share.
+- A primitive is a built-in function of the expression language. The set is fixed: general primitives in [table 13](#t-dtype) and [table 15](#t-prims), domain primitives such as `pool.out` in [table 14](#t-domain). Each gives a signature, a domain and a symbolic implementation; outside its domain it raises, naming the declaration that called it. The tables give each primitive's, generator's and predicate's name, domain and result shape; what it computes is its implementation in `tileops.manifest.primitives`. Adding a primitive changes this specification and its one implementation, which the validator, the roofline analysis and the generated code share.
 - Axis-taking primitives normalize axes alike: at rank 0, `0` and `-1` name the one scalar axis and anything else raises; at rank above 0, an axis lies in `[-rank, rank)` and is taken modulo rank.
 
 ### Construction-Time Tensors, Layout and Device
@@ -421,30 +421,30 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 
 **<a id="t-domain"></a>Table 14** Domain primitives
 
-| No. | Primitive                            | Result                                                                                                 |
-| --- | ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| 1   | `conv.out(L, k, s, p, d)`            | convolution output length                                                                              |
-| 2   | `pool.out(L, k, s, p, d, ceil_mode)` | pooling output length                                                                                  |
-| 3   | `moe.capacity(layout, R, E)`         | masked: `E * max_m`; contiguous aligned: `R + E * (alignment - 1)` rounded up to `alignment`; else `R` |
-| 4   | `mhc.expansion(Q)`                   | the positive `n` with `n * n + 2 * n == Q`; raises when none exists                                    |
-| 5   | `attn.paged_fits(cu, cap)`           | `requires` predicate: element `i` plus segment `i` of `cu` is at most `cap`                            |
-| 6   | `moe.layout_valid(layout, R, E)`     | `requires` predicate: `x` is valid metadata of `layout` for `R` rows and `E` experts                   |
+| No. | Primitive                            | Domain                                              | Result |
+| --- | ------------------------------------ | --------------------------------------------------- | ------ |
+| 1   | `conv.out(L, k, s, p, d)`            | convolution extents                                 | `Int`  |
+| 2   | `pool.out(L, k, s, p, d, ceil_mode)` | pooling extents                                     | `Dim`  |
+| 3   | `moe.capacity(layout, R, E)`         | an `MGroupedLayout`, `R >= 0`, `E > 0`              | `Dim`  |
+| 4   | `mhc.expansion(Q)`                   | `Q == n * n + 2 * n` for a positive `n`             | `Dim`  |
+| 5   | `attn.paged_fits(cu, cap)`           | `requires` predicate; `x` 1-D, `cu` of `len(x) + 1` | `Bool` |
+| 6   | `moe.layout_valid(layout, R, E)`     | `requires` predicate; `x` 1-D                       | `Bool` |
 
 **<a id="t-prims"></a>Table 15** General primitives (`Axes = Int | Seq[Int] | None`)
 
-| No. | Primitive                       | Signature                                                                          | Domain and result                                                                                                                       |
-| --- | ------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `broadcast`                     | `Shape... → Shape`                                                                 | PyTorch broadcasting; raises when not broadcastable                                                                                     |
-| 2   | `reduced`                       | `Shape × Axes × Bool × ('full' \| 'noop' \| 'reject') → Shape`                     | `None` reduces all axes; an empty sequence per `mode` (all / none / raise); rank 0 yields `[]`                                          |
-| 3   | `valid_axes`                    | `Axes × Int → Bool`                                                                | every axis normalizes; `None` is true                                                                                                   |
-| 4   | `unique_axes`                   | `Axes × Int → Bool`                                                                | normalized axes are distinct                                                                                                            |
-| 5   | `per_axis`                      | `(Int \| Seq[Maybe[Int]] \| None) × Int × Int × fallback: Maybe[Int] = None → Int` | a scalar returns itself; a length-`n` sequence yields item `i`; `None` takes `fallback`, raising if that is `None`; other lengths raise |
-| 6   | `ceil_div`                      | `Int × Int → Int`                                                                  | positive divisor                                                                                                                        |
-| 7   | `len`                           | `Seq[A] → Dim`                                                                     | any sequence                                                                                                                            |
-| 8   | `prod` / `sum`                  | `Seq[Int] → Int`                                                                   | `prod([])` is 1, `sum([])` is 0                                                                                                         |
-| 9   | `max` / `min`                   | `Seq[Int] × default: Maybe[Int] = None → Int`                                      | empty takes `default`, raising without one                                                                                              |
-| 10  | `all`                           | `Seq[Bool] → Bool`                                                                 | empty is true                                                                                                                           |
-| 11  | comprehension `f(x) for x in s` | `Seq[A] → Seq[B]`                                                                  | only as an argument of `all`, `sum`, `max`, `min`                                                                                       |
+| No. | Primitive                       | Signature                                                                          | Domain                                                 |
+| --- | ------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| 1   | `broadcast`                     | `Shape... → Shape`                                                                 | broadcastable shapes                                   |
+| 2   | `reduced`                       | `Shape × Axes × Bool × ('full' \| 'noop' \| 'reject') → Shape`                     | axes valid for the shape's rank                        |
+| 3   | `valid_axes`                    | `Axes × Int → Bool`                                                                | any                                                    |
+| 4   | `unique_axes`                   | `Axes × Int → Bool`                                                                | valid axes                                             |
+| 5   | `per_axis`                      | `(Int \| Seq[Maybe[Int]] \| None) × Int × Int × fallback: Maybe[Int] = None → Int` | a scalar, a length-`n` sequence, or a present fallback |
+| 6   | `ceil_div`                      | `Int × Int → Int`                                                                  | positive divisor                                       |
+| 7   | `len`                           | `Seq[A] → Dim`                                                                     | any sequence                                           |
+| 8   | `prod` / `sum`                  | `Seq[Int] → Int`                                                                   | any sequence                                           |
+| 9   | `max` / `min`                   | `Seq[Int] × default: Maybe[Int] = None → Int`                                      | non-empty, or a default                                |
+| 10  | `all`                           | `Seq[Bool] → Bool`                                                                 | any sequence                                           |
+| 11  | comprehension `f(x) for x in s` | `Seq[A] → Seq[B]`                                                                  | only as an argument of `all`, `sum`, `max`, `min`      |
 
 **<a id="t-rows"></a>Table 16** Workload row keys
 
@@ -458,35 +458,35 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 
 **<a id="t-generators"></a>Table 17** Metadata generators
 
-| No. | Generator                                          | Domain                                      | Result                                                                                                                                                                            |
-| --- | -------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `as_tensor(L)`                                     | non-negative list                           | `[len(L)]` holding `L`                                                                                                                                                            |
-| 2   | `prefix_sum(L)`                                    | non-negative list, may be empty             | `[len(L) + 1]`, item 0 is 0, item `i` is `sum(L[:i])`                                                                                                                             |
-| 3   | `exclusive_prefix_sum(L)`                          | non-empty non-negative list                 | `[len(L)]`, item `i` is `sum(L[:i])`                                                                                                                                              |
-| 4   | `padded_exclusive_prefix_sum(L, pad)`              | as above; `pad > 0`                         | `[len(L)]`, item `i` is `sum(ceil_div(n + 1, pad) * pad for n in L[:i])`                                                                                                          |
-| 5   | `paged_block_table(B, width, pool)`                | `0 < width <= pool`                         | `[B, width]`; disjoint random pages per request when `pool >= B * width`, else each request takes the first `width` of a random permutation                                       |
-| 6   | `chunk_indices(L, c)`                              | non-negative list; `c > 0`                  | `[sum(ceil_div(n, c) for n in L), 2]`, rows of (request, chunk)                                                                                                                   |
-| 7   | `token_indices(L)`                                 | non-empty positive list                     | `[sum(L), 2]`; token `j` of sequence `i` is `(i, j)`                                                                                                                              |
-| 8   | `chunk_offsets(L, c)`                              | non-negative list; `c > 0`                  | `prefix_sum([ceil_div(n, c) for n in L])`                                                                                                                                         |
-| 9   | `nsa_block_indices(L, block_size, selected, H_kv)` | non-empty positive list; others positive    | `[sum(L), H_kv, selected]`; position `j` sees `max(ceil_div(j, block_size), 1)` blocks, draws `min(selected, visible)` distinct ones, pads with sentinel `sum(L)`, rows ascending |
-| 10  | `nsa_block_counts(T, H_kv, selected)`              | positive arguments                          | `[T, H_kv]`, each uniform in `[1, selected]`                                                                                                                                      |
-| 11  | `topk_ids(N, K, E)`                                | `0 < K <= E`                                | `[N, K]`, each row `K` distinct random values in `[0, E)`                                                                                                                         |
-| 12  | `sample_indices(n, hi)`                            | `0 <= n <= hi`                              | `[n]`, `n` distinct random values in `[0, hi)`                                                                                                                                    |
-| 13  | `moe.layout_metadata(layout, R, E)`                | `E > 0`, `R >= 0`, `R` admitted by `layout` | metadata of `layout` for `R` rows split as evenly as the layout allows                                                                                                            |
-| 14  | `packed_positions(L)`                              | non-empty positive list                     | `[sum(L)]`, positions restarting at 0 for each sequence                                                                                                                           |
+| No. | Generator                                          | Domain                                      | Result shape                           |
+| --- | -------------------------------------------------- | ------------------------------------------- | -------------------------------------- |
+| 1   | `as_tensor(L)`                                     | non-negative list                           | `[len(L)]`                             |
+| 2   | `prefix_sum(L)`                                    | non-negative list, may be empty             | `[len(L) + 1]`                         |
+| 3   | `exclusive_prefix_sum(L)`                          | non-empty non-negative list                 | `[len(L)]`                             |
+| 4   | `padded_exclusive_prefix_sum(L, pad)`              | as above; `pad > 0`                         | `[len(L)]`                             |
+| 5   | `paged_block_table(B, width, pool)`                | `0 < width <= pool`                         | `[B, width]`                           |
+| 6   | `chunk_indices(L, c)`                              | non-negative list; `c > 0`                  | `[sum(ceil_div(n, c) for n in L), 2]`  |
+| 7   | `token_indices(L)`                                 | non-empty positive list                     | `[sum(L), 2]`                          |
+| 8   | `chunk_offsets(L, c)`                              | non-negative list; `c > 0`                  | `[len(L) + 1]`                         |
+| 9   | `nsa_block_indices(L, block_size, selected, H_kv)` | non-empty positive list; others positive    | `[sum(L), H_kv, selected]`             |
+| 10  | `nsa_block_counts(T, H_kv, selected)`              | positive arguments                          | `[T, H_kv]`                            |
+| 11  | `topk_ids(N, K, E)`                                | `0 < K <= E`                                | `[N, K]`                               |
+| 12  | `sample_indices(n, hi)`                            | `0 <= n <= hi`                              | `[n]`                                  |
+| 13  | `moe.layout_metadata(layout, R, E)`                | `E > 0`, `R >= 0`, `R` admitted by `layout` | `[R]` for per-row metadata, else `[E]` |
+| 14  | `packed_positions(L)`                              | non-empty positive list                     | `[sum(L)]`                             |
 
-Value primitive: `balanced_sizes(total, count)` requires `count > 0` and `total >= 0`; each item is `total // count`, the first `total % count` items plus one.
+Value primitive: `balanced_sizes(total, count)`, domain `count > 0` and `total >= 0`, result a `Seq[Int]` of length `count`.
 
-**<a id="t-predicates"></a>Table 18** `requires` predicates (the constrained tensor is `x`)
+**<a id="t-predicates"></a>Table 18** `requires` predicates, each a `Bool` over the constrained tensor's contents `x`
 
-| No. | Predicate                 | Condition                                                                                                     |
-| --- | ------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| 1   | `prefix_offsets(total)`   | `x` is 1-D, starts at 0, is non-decreasing and ends at `total`                                                |
-| 2   | `max_segment(bound)`      | adjacent differences of `x` are at most `bound`                                                               |
-| 3   | `in_range(lo, hi)`        | every element of `x` lies in `[lo, hi)`                                                                       |
-| 4   | `sums_to(total)`          | the elements of `x` sum to `total`                                                                            |
-| 5   | `exclusive_prefix_of(L)`  | `x` has `len(L)` elements; element `i` is `sum(L[:i])`                                                        |
-| 6   | `indices_within(offsets)` | `x` is `[n, 2]`; each row `(i, j)` has `0 <= i < len(offsets) - 1` and `0 <= j < offsets[i + 1] - offsets[i]` |
+| No. | Predicate                 | Arguments   | Rank of `x` |
+| --- | ------------------------- | ----------- | ----------- |
+| 1   | `prefix_offsets(total)`   | `Int`       | 1           |
+| 2   | `max_segment(bound)`      | `Int`       | 1           |
+| 3   | `in_range(lo, hi)`        | `Int × Int` | any         |
+| 4   | `sums_to(total)`          | `Int`       | 1           |
+| 5   | `exclusive_prefix_of(L)`  | `Seq[Int]`  | 1           |
+| 6   | `indices_within(offsets)` | `Seq[Int]`  | 2           |
 
 **<a id="t-unify"></a>Table 19** Unification of an input axis
 
