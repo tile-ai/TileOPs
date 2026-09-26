@@ -588,3 +588,27 @@ def test_a_compile_boundary_needs_a_call_time_tensor_input():
     }
     with pytest.raises(TypeError, match="compile_boundary needs a call-time tensor input"):
         _probe("ProbeSourceFwdOp", signature, lambda self: None, boundary=True)
+
+
+def test_a_target_served_call_leaves_constructor_attributes_alone():
+    from tileops.backend import registry
+
+    state = registry.snapshot()
+    try:
+        registry.DETECTORS.clear()
+        registry.BUILDERS.clear()
+        registry.default_target = None
+        registry._loaded = True
+        registry.register_detector("acme", lambda device: True)
+        registry.register_kernel_builder(
+            "ProbeTargetDtypeFwdOp",
+            "acme",
+            lambda *i, **p: lambda x: x[:, : x.shape[1] // 2].clone(),
+        )
+        op = _probe("ProbeTargetDtypeFwdOp", _SILU, lambda self, x: None)
+        op = op(dtype=torch.float32)
+        op(torch.zeros(3, 8, dtype=torch.float16))
+        assert op.settled_target == "acme"
+        assert op.dtype == torch.float32
+    finally:
+        registry.restore(state)

@@ -797,8 +797,8 @@ class Op(ABC):
         What the op layer guarantees every target: every tensor on one device, every
         input the call does not write contiguous, and — checked once per signature — the
         input dtypes and shape rules the manifest states. The kernel is built once per
-        device and per input dtype and shape. A call that completes leaves
-        ``self.<input>_shape`` and ``self.dtype``, the state the op's roofline reads.
+        device and per input dtype and shape. A legacy op's completed call leaves
+        ``self.<input>_shape`` and ``self.dtype``, the state its roofline reads.
 
         Raises:
             ValueError: The call breaks that guarantee, or every output would be empty.
@@ -845,9 +845,12 @@ class Op(ABC):
         if kernel is None:
             kernel = kernels[signature] = self._build_target_kernel(named)
         result = kernel(*inputs, **writes, **(execution or {}))
-        for name, t in zip(names, inputs, strict=True):
-            setattr(self, f"{name}_shape", None if t is None else tuple(t.shape))
-        self.dtype = next((t.dtype for t in inputs if t is not None), self.dtype)
+        # A legacy roofline reads the last call from attributes; a converted op reads
+        # `last_call`, and its attributes may be constructor parameters such as `dtype`.
+        if not converted:
+            for name, t in zip(names, inputs, strict=True):
+                setattr(self, f"{name}_shape", None if t is None else tuple(t.shape))
+            self.dtype = next((t.dtype for t in inputs if t is not None), self.dtype)
         # An op whose every output is an input it writes returns nothing, as its forward does.
         outputs = self._forward_outputs()
         if outputs and all(name in named for name in outputs):
