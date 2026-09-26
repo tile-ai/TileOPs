@@ -74,8 +74,6 @@ class SinusoidalFwdOp(Op):
     def forward(self) -> torch.Tensor:
         """Generate the tensor, in ``out_dtype`` whatever storage the kernel computes in."""
         device = self._declared_device()
-        if device is not None and device.type != "cuda":
-            raise ValueError(f"{type(self).__name__}'s in-tree kernel runs on CUDA, not {device}")
         index = None if device is None else device.index
         kernel = self.kernel_for("sinusoidal", (), (self.out_dtype, index))
         out = kernel().reshape(self.seq_len, self.d_model)

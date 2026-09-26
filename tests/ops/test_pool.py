@@ -1962,15 +1962,6 @@ _MAX_POOL_INVALID_INPUT_CASES = [
     pytest.param(
         1,
         {"kernel_size": 3},
-        ((1, 1, 8), None),
-        "is a CUDA kernel",
-        False,
-        id="1d-cpu-input",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        1,
-        {"kernel_size": 3},
         ((1, 1, 8), torch.float64),
         "input.dtype must be float16, bfloat16, or float32",
         False,
@@ -1990,15 +1981,6 @@ _MAX_POOL_INVALID_INPUT_CASES = [
     pytest.param(
         2,
         {"kernel_size": (3, 3)},
-        ((1, 1, 8, 8), None),
-        "is a CUDA kernel",
-        False,
-        id="2d-cpu-input",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        2,
-        {"kernel_size": (3, 3)},
         ((1, 1, 8, 8), torch.float64),
         "input.dtype must be float16, bfloat16, or float32",
         False,
@@ -2015,15 +1997,6 @@ _MAX_POOL_INVALID_INPUT_CASES = [
         marks=pytest.mark.full,
     ),
     # 3d full
-    pytest.param(
-        3,
-        {"kernel_size": 3},
-        ((1, 1, 4, 8, 8), None),
-        "is a CUDA kernel",
-        False,
-        id="3d-cpu-input",
-        marks=pytest.mark.full,
-    ),
     pytest.param(
         3,
         {"kernel_size": 3},

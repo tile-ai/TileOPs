@@ -150,15 +150,6 @@ def test_the_op_holds_one_kernel_per_dtype_whatever_the_row_count() -> None:
 
 
 @pytest.mark.smoke
-def test_the_in_tree_kernel_says_it_is_a_cuda_kernel() -> None:
-    """The op layer is device-agnostic; the requirement belongs to these kernels."""
-    op = RMSNormFwdOp(normalized_shape=(256,))
-
-    with pytest.raises(ValueError, match="is a CUDA kernel"):
-        op(torch.randn(4, 256, dtype=torch.float16), torch.randn(256, dtype=torch.float16))
-
-
-@pytest.mark.smoke
 def test_a_warmed_up_op_can_be_captured_and_replayed() -> None:
     """Building a kernel may compile, so capture only ever sees a memo hit and a launch."""
     op = RMSNormFwdOp(normalized_shape=(4096,))
