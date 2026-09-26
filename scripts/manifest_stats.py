@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from tileops.manifest import load_manifest
+from tileops.manifest.signature import is_legacy
 
 # ---------------------------------------------------------------------------
 # Aggregation
@@ -37,11 +38,17 @@ def _has_roofline(op: dict[str, Any]) -> bool:
 
 
 def _has_kernel_map(op: dict[str, Any]) -> bool:
+    # A parametric entry's kernels are the code's (`kernel_types`); only a legacy one lists them.
+    if not is_legacy(op):
+        return True
     km = (op.get("source") or {}).get("kernel_map")
     return isinstance(km, dict) and len(km) > 0
 
 
 def _has_bench_manifest_driven(op: dict[str, Any]) -> bool:
+    # A parametric entry's benchmark is held to the contract by its file, not a manifest flag.
+    if not is_legacy(op):
+        return True
     return bool((op.get("source") or {}).get("bench_manifest_driven"))
 
 

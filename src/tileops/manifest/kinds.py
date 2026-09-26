@@ -11,7 +11,28 @@ from dataclasses import dataclass, field
 
 from .dtype_rules import DTYPE_BITS
 
-__all__ = ["Kind", "common", "comparable", "fits", "join", "ordered", "parse_spec", "parse_type"]
+__all__ = [
+    "BOOL",
+    "DTYPE",
+    "INT",
+    "NONE",
+    "VALUE",
+    "Kind",
+    "common",
+    "comparable",
+    "dtypes",
+    "exclude",
+    "fits",
+    "join",
+    "literals",
+    "ordered",
+    "parse_spec",
+    "parse_type",
+    "restrict",
+    "seq",
+    "split_union",
+    "union",
+]
 
 
 @dataclass(frozen=True)
@@ -107,7 +128,7 @@ def union(*kinds: Kind) -> Kind:
     return Kind("Maybe", item=inner) if optional else inner
 
 
-def _split(text: str) -> list[str]:
+def split_union(text: str) -> list[str]:
     """The top-level members of `A | B`, splitting only outside brackets and quotes."""
     parts, depth, start, quoted = [], 0, 0, False
     for i, c in enumerate(text):
@@ -130,9 +151,9 @@ def _bracket(text: str, head: str) -> str | None:
     return None
 
 
-def parse_type(text: object, adts: dict) -> Kind:  # noqa: C901 - one case per table-3 row
+def parse_type(text: object, adts: dict) -> Kind:  # noqa: C901 - one case per type form
     """A parameter `type` as a kind; `ValueError` if malformed."""
-    members = _split(str(text).strip())
+    members = split_union(str(text).strip())
     if len(members) > 1:
         return union(*(parse_type(m, adts) for m in members))
     t = members[0]
@@ -147,19 +168,25 @@ def parse_type(text: object, adts: dict) -> Kind:  # noqa: C901 - one case per t
         return dtypes([t])
     if t in adts:
         return adt(t)
-    # A sequence holds ints, fixed-length when a tuple lists them.
-    if _bracket(t, "list") == "int":
-        return seq(INT)
+    # A sequence's element type maps by this same table; a fixed tuple also carries its arity.
+    if (inner := _bracket(t, "list")) is not None:
+        return seq(_element(inner, text, adts))
     if (inner := _bracket(t, "tuple")) is not None:
         items = _commas(inner)
-        if items == ["int", "..."]:
-            return seq(INT)
-        if items and all(i == "int" for i in items):
-            return seq(INT, len(items))
-        raise ValueError(f"{text!r}: a tuple type is tuple[int, ...] or lists int items")
+        if len(items) == 2 and items[1] == "...":
+            return seq(_element(items[0], text, adts))
+        return seq(union(*(_element(i, text, adts) for i in items)), len(items))
     if t.replace(".", "_").isidentifier():
         return VALUE  # another Python object
     raise ValueError(f"{text!r} is not a parameter type")
+
+
+def _element(text: str, whole: object, adts: dict) -> Kind:
+    """A container's element kind; only `Int` and `Maybe[Int]` are admitted."""
+    kind = parse_type(text, adts)
+    if kind not in (INT, Kind("Maybe", item=INT)):
+        raise ValueError(f"{whole!r}: a sequence holds int or int | None, not {text}")
+    return kind
 
 
 def _commas(text: str) -> list[str]:
@@ -175,7 +202,7 @@ def _commas(text: str) -> list[str]:
 def parse_spec(text: str, adts: dict | None = None) -> Kind:  # noqa: C901 - one case per form
     """A kind as the tables write it: `Dim`, `Seq[Int]`, `Maybe[X]`, `DType[a | b]`, unions."""
     adts = adts or {}
-    members = _split(text.strip())
+    members = split_union(text.strip())
     if len(members) > 1 and not all(_quoted(m) for m in members):
         return union(*(parse_spec(m, adts) for m in members))
     if all(_quoted(m) for m in members):
@@ -285,17 +312,78 @@ def ordered(a: Kind | None, b: Kind | None) -> bool:
     )
 
 
+def _named(kind: Kind) -> frozenset | None:
+    """The strings a `Str` or `DType` kind holds; a string names a dtype only if registered."""
+    if kind.tag == "DType":
+        return kind.values if kind.values is not None else frozenset(DTYPE_BITS)
+    return kind.values
+
+
 def comparable(a: Kind | None, b: Kind | None) -> bool:
-    """Whether `a == b` can hold for some values of the two kinds."""
+    """Whether `a == b` can hold for some values of the two kinds.
+
+    A string literal meets an enum or a `DType[S]` only when it is one of its members.
+    """
     if a is None or b is None or VALUE in (a, b):
         return True
     for x in a.members or (a,):
         for y in b.members or (b,):
-            if x.tag == y.tag == "Str" and x.values and y.values:
-                if x.values & y.values:
+            if {x.tag, y.tag} <= {"Str", "DType"} and "Str" in (x.tag, y.tag):
+                left, right = _named(x), _named(y)
+                if left is None or right is None or left & right:
                     return True
             elif x.tag == y.tag or {x.tag, y.tag} <= {"Maybe", "None"}:
                 return True
             if "Maybe" in (x.tag, y.tag) and comparable(x.payload(), y.payload()):
                 return True
     return False
+
+
+def _members(kind: Kind) -> tuple:
+    """`kind` flattened to its members: a `Maybe` contributes its payload's members and `None`."""
+    if kind.tag == "Union":
+        return tuple(m for k in kind.members for m in _members(k))
+    return (*_members(kind.item), NONE) if kind.tag == "Maybe" else (kind,)
+
+
+def _literal_tag(value) -> str:
+    if value is None:
+        return "None"
+    if isinstance(value, bool):
+        return "Bool"
+    return "Int" if isinstance(value, int) else "Str" if isinstance(value, str) else "Value"
+
+
+def restrict(kind: Kind | None, values: frozenset) -> Kind | None:
+    """`kind` where it equals one of the literal `values`: the members some literal inhabits,
+    an enum or dtype set intersected with the strings."""
+    if kind is None:
+        return kind
+    strings = frozenset(v for v in values if isinstance(v, str))
+    tags = {_literal_tag(v) for v in values}
+    kept = []
+    for m in _members(kind):
+        if m.tag in ("Str", "DType"):
+            named = _named(m)
+            narrowed = strings if named is None else named & strings
+            if narrowed:
+                kept.append(Kind(m.tag, values=narrowed))
+        elif m.tag in tags or m.tag == "Value":
+            kept.append(m)
+    return union(*kept) if kept else kind
+
+
+def exclude(kind: Kind | None, values: frozenset) -> Kind | None:
+    """`kind` where it equals none of the literal `values`: enum and dtype members lose those
+    strings, and a member left without values, or the `None` a `None` literal names, drops."""
+    if kind is None:
+        return kind
+    kept = []
+    for m in _members(kind):
+        if m.tag in ("Str", "DType") and _named(m) is not None:
+            rest = _named(m) - values
+            if rest:
+                kept.append(Kind(m.tag, values=rest))
+        elif not (m.tag == "None" and None in values):
+            kept.append(m)
+    return union(*kept) if kept else kind

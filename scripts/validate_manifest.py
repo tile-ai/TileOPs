@@ -52,7 +52,6 @@ import _manifest_facts as facts_mod  # noqa: E402
 
 import tileops.manifest as manifest_pkg  # noqa: E402
 from tileops.manifest import (  # noqa: E402
-    LEGACY_FAMILIES,
     forward_signature,
     types_document,
 )
@@ -61,22 +60,23 @@ from tileops.manifest.dtype_rules import (  # noqa: E402
     PROMOTE_INT_TO_FLOAT_RE,
     SAME_AS_RE,
 )
+from tileops.manifest.plan import check_adts as _check_adts  # noqa: E402
+from tileops.manifest.plan import check_entry as _check_signature  # noqa: E402
+from tileops.manifest.plan import (  # noqa: E402
+    effect_errors,
+    roofline_plan,
+)
+from tileops.manifest.plan import (  # noqa: E402
+    signature_schema_errors as _signature_schema_errors,
+)
+from tileops.manifest.registry import op_class  # noqa: E402
 from tileops.manifest.rule_eval import (  # noqa: E402
     RULE_BUILTINS as _SHAPE_RULE_BUILTINS,
 )
 from tileops.manifest.rule_eval import (  # noqa: E402
     eval_shape_rule as _eval_shape_rule,
 )
-from tileops.manifest.signature import check_adts as _check_adts  # noqa: E402
-from tileops.manifest.signature import check_entry as _check_signature  # noqa: E402
-from tileops.manifest.signature import (  # noqa: E402
-    effect_errors,
-    parse_signature,
-    roofline_plan,
-)
-from tileops.manifest.signature import (  # noqa: E402
-    signature_schema_errors as _signature_schema_errors,
-)
+from tileops.manifest.signature import is_legacy, parse_signature  # noqa: E402
 from tileops.manifest.workload import check_workloads as _check_workloads  # noqa: E402
 
 PACKAGE_ROOT = "src"
@@ -4079,26 +4079,26 @@ def _honours_same_as(sig: dict, candidate: dict[str, str]) -> bool:
 def _reads_manifest_workloads(tree: ast.Module) -> bool:
     """Whether the file loads its workloads from the manifest.
 
-    Either ``load_workloads`` from ``tileops.manifest`` or the
-    ``workloads_to_params`` wrapper in ``benchmarks.benchmark_base``, imported
-    and called. Which op it names is a run-time fact, checked against a
-    benchmark run by ``scripts/check_bench_coverage.py``, never against the
-    source: a bench file may reach its op through a loop, a factory or a
-    helper, and none of those shapes is worse than a literal.
+    ``load_workloads`` from ``tileops.manifest``, or ``workloads_to_params`` or
+    ``manifest_calls`` from ``benchmarks.benchmark_base``, imported and called.
+    Which op it names is a run-time fact, checked against a benchmark run by
+    ``scripts/check_bench_coverage.py``, never against the source: a bench file
+    may reach its op through a loop, a factory or a helper, and none of those
+    shapes is worse than a literal.
     """
     imported = False
     called = False
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.names:
             module_targets = {
-                "tileops.manifest": "load_workloads",
-                "benchmarks.benchmark_base": "workloads_to_params",
+                "tileops.manifest": {"load_workloads"},
+                "benchmarks.benchmark_base": {"workloads_to_params", "manifest_calls"},
             }
-            target = module_targets.get(node.module or "")
-            if target and any(alias.name == target for alias in node.names):
+            targets = module_targets.get(node.module or "", set())
+            if any(alias.name in targets for alias in node.names):
                 imported = True
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in ("load_workloads", "workloads_to_params"):
+            if node.func.id in ("load_workloads", "workloads_to_params", "manifest_calls"):
                 called = True
     return imported and called
 
@@ -4154,8 +4154,8 @@ def check_l4_benchmark(op_name: str, bench_path: str, repo_root: Path) -> list[s
     if not _reads_manifest_workloads(tree):
         errors.append(
             f"[bench] {op_name}: bench file {bench_path} must import and call "
-            "load_workloads from tileops.manifest, or workloads_to_params from "
-            "benchmarks.benchmark_base"
+            "load_workloads from tileops.manifest, or workloads_to_params or "
+            "manifest_calls from benchmarks.benchmark_base"
         )
     if not _reads_op_roofline(tree):
         errors.append(
@@ -4675,6 +4675,17 @@ def check_bench_declaration(op_name: str, entry: dict) -> list[str]:
 ALL_LEVELS = frozenset({"schema", "signature", "shape", "dtype", "bench"})
 
 
+def _check_bench_files(checked: set, repo_root: Path) -> list[str]:
+    """The benchmark contract on every ``benchmarks/ops/**/bench_*.py`` whose check did not
+    already run for a legacy entry (the resolved paths in *checked*)."""
+    errors = []
+    for path in sorted((repo_root / "benchmarks" / "ops").rglob("bench_*.py")):
+        if path.resolve() not in checked:
+            relative = path.relative_to(repo_root).as_posix()
+            errors += check_l4_benchmark(relative, relative, repo_root)
+    return errors
+
+
 _PARAMETRIC_KEYS = {
     "family": str,
     "status": str,
@@ -4789,7 +4800,7 @@ def _check_parametric_parity(op_name: str, entry: dict) -> list[str]:
     """
     where = f"[signature] {op_name}"
     try:
-        cls = getattr(importlib.import_module(f"tileops.{entry['family']}"), op_name)
+        cls = op_class(op_name, entry)
     except (ImportError, AttributeError) as exc:
         return [f"{where}: cannot import tileops.{entry['family']}.{op_name}: {exc}"]
     sig = entry["signature"]
@@ -4800,6 +4811,8 @@ def _check_parametric_parity(op_name: str, entry: dict) -> list[str]:
     params = list(sig.get("params") or {})
     for i, name in enumerate(params):
         decl = sig["params"][name]
+        if "shape" in decl and decl.get("optional", False) is not False:
+            decl = {**decl, "default": None}  # an optional construction-time tensor
         got = init[i] if i < len(init) else None
         kind = keyword if decl.get("kw_only") else inspect.Parameter.POSITIONAL_OR_KEYWORD
         if got is None or got.name != name or got.kind is not kind:
@@ -4888,6 +4901,8 @@ def validate_manifest(
     # orchestrator can route them to either errors (strict mode) or
     # warnings (advisory mode) once all per-op checks have run.
     strict_errors: list[str] = []
+    # Bench files a legacy entry's own benchmark check read.
+    checked_benches: set = set()
     # Entries see only the ADTs `check_adts` accepts; the others are reported once, here.
     document = types_document()
     adts, adt_errors = {}, []
@@ -4905,8 +4920,7 @@ def validate_manifest(
         if verbose:
             print(f"  Checking {op_name}...")
 
-        family = entry.get("family") if isinstance(entry, dict) else None
-        if isinstance(entry, dict) and not (isinstance(family, str) and family in LEGACY_FAMILIES):
+        if isinstance(entry, dict) and not is_legacy(entry):
             if "schema" in levels:
                 all_errors.extend(_check_parametric_schema(op_name, entry, ops))
             signature_errors, signature_warnings = _check_signature(op_name, entry, adts)
@@ -5036,10 +5050,14 @@ def validate_manifest(
             bench_path = _facts(entry, op_name).source_paths.get("bench", "")
             if bench_path:
                 bench_errors = check_l4_benchmark(op_name, bench_path, repo_root)
+                checked_benches.add((repo_root / bench_path).resolve())
                 if _is_bench_manifest_driven(entry):
                     all_errors.extend(bench_errors)
                 else:
                     all_warnings.extend(bench_errors)
+
+    if "bench" in levels and selected is None:
+        all_errors.extend(_check_bench_files(checked_benches, repo_root))
 
     # Deduplicate while preserving order: ``check_l3`` and
     # ``check_l3_validate_dtypes_parity`` both surface ``dtype_combos``

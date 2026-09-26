@@ -579,3 +579,27 @@ def test_an_unreadable_manifest_disables_the_check(monkeypatch: pytest.MonkeyPat
         GemmFwdOp(kernel_map={"gemm_kernel": GemmTmaKernel})
     finally:
         op_base._declared_dispatch_keys.cache_clear()
+
+
+def test_kernel_types_declare_the_keys_an_override_may_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``default_kernel_map`` is ``kernel_types``, and an override may name only a key some
+    created op class declares."""
+    from tileops.kernels.gemm import GemmTmaKernel
+
+    monkeypatch.setattr(op_base, "_DISPATCH_KEYS", set())
+    monkeypatch.setattr(op_base, "_declared_dispatch_keys", frozenset)
+    attrs = {
+        "kernel_types": {"probe_kernel": GemmTmaKernel},
+        "forward": lambda self, *a, **kw: None,
+        "_infer_output_shapes": lambda self, *shapes: {},
+        "_validate_dtypes": lambda self, *args: None,
+        "eval_roofline": lambda self: (0, 0),
+    }
+    keyed = type("KeyedOp", (Op,), attrs)
+    op = keyed()
+    op.dispatch_kernel({"probe_kernel": GemmTmaKernel})
+    assert op.kernel_map == {"probe_kernel": GemmTmaKernel}
+    with pytest.raises(ValueError, match="no op has"):
+        keyed().dispatch_kernel({"stale_kernel": GemmTmaKernel})

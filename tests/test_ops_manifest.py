@@ -78,21 +78,16 @@ class TestForwardTensorArgumentCount:
         workspaces = (entry.get("resources") or {}).get("workspaces") or []
         return list(entry["signature"]["inputs"]) + [w["name"] for w in workspaces]
 
-    @staticmethod
-    def _op_class(op_name: str, entry: dict):
-        import importlib
-
-        module = entry["source"]["op"].removesuffix(".py").replace("/", ".")
-        return getattr(importlib.import_module(module), op_name)
-
     def test_every_entry_with_workspaces_matches_its_forward_arity(self):
         import inspect
+
+        from tileops.manifest.registry import op_class
 
         checked = 0
         for op_name, entry in load_manifest().items():
             if entry.get("status") != "implemented" or not entry.get("resources"):
                 continue
-            cls = self._op_class(op_name, entry)
+            cls = op_class(op_name, entry)
             params = [
                 p.name
                 for p in inspect.signature(cls.forward).parameters.values()

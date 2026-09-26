@@ -27,11 +27,14 @@ from benchmarks.timing import (
 )
 from tileops.manifest import (
     WORKLOAD_RESERVED_KEYS,
+    load_adts,
     load_manifest,
     load_workloads,
     manifest_key,
     single_input_workload_contract,
 )
+from tileops.manifest.plan import entry_plan
+from tileops.manifest.workload import instantiate
 
 __all__ = [
     "BenchmarkBase",
@@ -42,6 +45,7 @@ __all__ = [
     "backward_of",
     "bench_kernel",
     "fields",
+    "manifest_calls",
     "then_dtype",
     "workload_params",
     "workloads_to_params",
@@ -267,6 +271,23 @@ def then_dtype(
         return (*row_args(w), *tail)
 
     return build
+
+
+def manifest_calls(op: "str | type") -> list:
+    """One ``pytest.param(call)`` per manifest call of *op*, an Op class or its manifest key.
+
+    Each workload row of the op's parametric entry is instantiated once per dtype case, and the
+    case is ided by its case id (docs/design/manifest.md § Rows). ``CallWorkload(call)`` builds
+    the call's inputs.
+    """
+    name = manifest_key(op)
+    plan = entry_plan(name, load_manifest()[name], load_adts(), resolve=False)
+    calls = [
+        instantiate(plan, row, case)
+        for row in load_workloads(name)
+        for case in row.get("dtype_cases") or [{}]
+    ]
+    return [pytest.param(call, id=call.case_id) for call in calls]
 
 
 def workloads_to_params(op: "str | type", include_extra: bool = False) -> list:

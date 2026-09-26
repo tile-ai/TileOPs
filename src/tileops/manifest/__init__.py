@@ -24,7 +24,6 @@ import yaml
 
 __all__ = [
     "WORKLOAD_RESERVED_KEYS",
-    "LEGACY_FAMILIES",
     "WORKSPACE_ATTR",
     "combo_input_names",
     "forward_signature",
@@ -40,31 +39,6 @@ __all__ = [
 
 _PACKAGE = "tileops.manifest"
 _TYPES_FILE = "types.yaml"
-
-# FIXME(staged-rollout): families still written in the legacy manifest form.
-#
-# Broken invariant: every entry is a parametric signature (docs/design/manifest.md).
-# Why: the migration converts one family per PR, and the validator reads both forms meanwhile.
-# Cleanup: delete this set, and the legacy checks it routes to, once it is empty.
-LEGACY_FAMILIES: frozenset[str] = frozenset(
-    {
-        "attention",
-        "convolution",
-        "elementwise",
-        "gemm",
-        "linear_attention",
-        "mamba",
-        "moe",
-        "normalization",
-        "pool",
-        "position_encoding",
-        "quantization",
-        "reduction",
-        "scan",
-        "sequence_modeling",
-        "spectral",
-    }
-)
 
 
 def manifest_files() -> list:
@@ -117,7 +91,7 @@ def types_document() -> object:
 @functools.lru_cache(maxsize=1)
 def load_adts() -> dict[str, Any]:
     """Return the ADTs of ``types.yaml`` that ``check_adts`` accepts; empty when the file is absent."""
-    from .signature import check_adts
+    from .plan import check_adts
 
     data = types_document()
     return check_adts(data.get("adts", {}) if isinstance(data, dict) else {})[0]

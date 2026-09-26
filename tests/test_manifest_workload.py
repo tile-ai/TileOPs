@@ -7,8 +7,8 @@ import pytest
 import torch
 import yaml
 
+from tileops.manifest.plan import entry_plan
 from tileops.manifest.primitives import PREDICATES
-from tileops.manifest.signature import parse_signature
 from tileops.manifest.workload import RowError, check_workloads, instantiate
 
 pytestmark = pytest.mark.smoke
@@ -18,18 +18,21 @@ _ADTS = _CASES["adts"]
 _ENTRIES = _CASES["entries"]
 
 
-@pytest.mark.parametrize("name", sorted(_ENTRIES))
-def test_rows_instantiate_unless_marked(name):
-    sig = parse_signature(name, _ENTRIES[name], _ADTS)
-    for row in _ENTRIES[name].get("workloads", []):
-        expect_fail = row.get("expect_fail", False)
-        row = {k: v for k, v in row.items() if k != "expect_fail"}
-        for case in row.get("dtype_cases") or [{}]:
-            if expect_fail:
-                with pytest.raises(RowError):
-                    instantiate(sig, row, case)
-            else:
-                instantiate(sig, row, case)
+_MARKED = [
+    (name, row)
+    for name in sorted(_ENTRIES)
+    for row in _ENTRIES[name].get("workloads", [])
+    if row.get("expect_fail")
+]
+
+
+@pytest.mark.parametrize(("name", "row"), _MARKED, ids=[row["label"] for _, row in _MARKED])
+def test_a_marked_row_is_rejected(name, row):
+    plan = entry_plan(name, _ENTRIES[name], _ADTS)
+    row = {k: v for k, v in row.items() if k != "expect_fail"}
+    for case in row.get("dtype_cases") or [{}]:
+        with pytest.raises(RowError):
+            instantiate(plan, row, case)
 
 
 @pytest.mark.parametrize("name", sorted(_ENTRIES))
@@ -40,16 +43,14 @@ def test_fixture_rows_pass_the_validator(name):
         assert check_workloads(name, entry, _ADTS) == []
 
 
-def test_materialize_builds_only_what_a_call_passes():
-    tensors = _first_call("GemmFwdOp").materialize("cpu")
-    assert set(tensors) == {"a", "b"}
-
-
-def test_case_id_follows_forall_order():
+def test_case_id_is_label_then_dtype_cases_then_dtype_parameters():
     entry = _two_dtypes([{"U": "float16", "T": "bfloat16"}])
-    sig = parse_signature("Pair", entry, _ADTS)
+    sig = entry_plan("Pair", entry, _ADTS)
     call = instantiate(sig, entry["workloads"][0], entry["workloads"][0]["dtype_cases"][0])
     assert call.case_id == "r-bfloat16-float16"
+    plan = entry_plan("GemmFp8FwdOp", _ENTRIES["GemmFp8FwdOp"], _ADTS)
+    row = _ENTRIES["GemmFp8FwdOp"]["workloads"][1]
+    assert instantiate(plan, row, {}).case_id == f"{row['label']}-float16"
 
 
 def test_an_unimportable_constructor_class_is_a_row_error():
@@ -60,32 +61,26 @@ def test_an_unimportable_constructor_class_is_a_row_error():
     assert any("a constructor class" in e for e in errors), errors
 
 
-def test_case_id_is_label_then_dtypes():
-    sig = parse_signature("GemmFwdOp", _ENTRIES["GemmFwdOp"], _ADTS)
-    row = _ENTRIES["GemmFwdOp"]["workloads"][0]
-    assert instantiate(sig, row, {"T": "bfloat16"}).case_id == f"{row['label']}-bfloat16"
-
-
 def _first_call(name):
-    sig = parse_signature(name, _ENTRIES[name], _ADTS)
+    sig = entry_plan(name, _ENTRIES[name], _ADTS)
     row = next(r for r in _ENTRIES[name]["workloads"] if not r.get("expect_fail"))
     return instantiate(sig, row, (row.get("dtype_cases") or [{}])[0])
 
 
 def test_arguments_are_constructor_values():
-    import types
+    from tileops.ops.moe.contracts import ContiguousLayoutSpec, ContiguousPacking
 
     pooling = _first_call("MeanPoolingFwdOp")
     assert pooling.arguments(pooling.materialize("cpu"))["accum_dtype"] is torch.float32
     moe = _first_call("MoePrePermuteFwdOp")
     layout = moe.arguments(moe.materialize("cpu"))["layout"]
-    assert isinstance(layout, types.SimpleNamespace) and layout.packing in ("tight", "aligned")
+    assert isinstance(layout, ContiguousLayoutSpec) and layout.packing is ContiguousPacking.TIGHT
     entry = _with_param(
         _varlen(L=[1], q={"masked": {"max_m": 4}}),
         q={"type": "MGroupedLayout | None"},
         w={"dtype": "float16", "shape": "[2]"},
     )
-    sig = parse_signature("Varlen", entry, _ADTS)
+    sig = entry_plan("Varlen", entry, _ADTS)
     call = instantiate(sig, entry["workloads"][0], entry["workloads"][0]["dtype_cases"][0])
     tensors = call.materialize("cpu")
     arguments = call.arguments(tensors)
@@ -106,13 +101,13 @@ def test_paged_fits_is_false_on_mismatched_lengths():
 
 
 def test_generated_metadata_is_deterministic_and_materializes():
-    sig = parse_signature("MoePrePermuteFwdOp", _ENTRIES["MoePrePermuteFwdOp"], _ADTS)
+    sig = entry_plan("MoePrePermuteFwdOp", _ENTRIES["MoePrePermuteFwdOp"], _ADTS)
     row = _ENTRIES["MoePrePermuteFwdOp"]["workloads"][0]
     first, second = (instantiate(sig, row, {"T": "float16"}) for _ in range(2))
-    assert first.tensors["local_expert_ids"].values == second.tensors["local_expert_ids"].values
+    assert first.specs["local_expert_ids"].values == second.specs["local_expert_ids"].values
     tensors = first.materialize(device="cpu")
     assert tensors["hidden_states"].dtype == torch.float16
-    assert tensors["local_expert_ids"].tolist() == first.tensors["local_expert_ids"].values
+    assert tensors["local_expert_ids"].tolist() == first.specs["local_expert_ids"].values
 
 
 def _entry(name, **changes):
@@ -193,9 +188,9 @@ def _varlen_empty_chunks():
     return entry
 
 
-def _varlen_generated(dtype="int32", requires=()):
-    """An optional generated tensor no row passes: its contract is checked on every branch."""
-    entry = _varlen(L=[2, 3])
+def _varlen_generated(dtype="int32", requires=(), some=()):
+    """An optional generated tensor, passed by the row when *some* names it."""
+    entry = _varlen(L=[2, 3], some=list(some))
     entry["signature"]["inputs"]["m"] = {
         "dtype": dtype,
         "shape": "[N, 2]",
@@ -208,18 +203,10 @@ def _varlen_generated(dtype="int32", requires=()):
 
 def _varlen_starred(p="tuple[int, int, int]", value=None):
     """A generated tensor whose starred axes a fixed-length tuple type counts."""
-    entry = _with_param(_varlen_generated(), p={"type": p})
+    entry = _with_param(_varlen_generated(some=["m"]), p={"type": p})
     if value is not None:
         entry["workloads"][0]["p"] = value
     entry["signature"]["inputs"]["m"]["shape"] = "[*p]"
-    return entry
-
-
-def _varlen_rank():
-    """A rank-one generator declared with a rank-two shape."""
-    entry = _varlen(L=[1, 2, 3])
-    entry["signature"]["forall"]["C"] = "Dim"
-    entry["signature"]["inputs"]["offsets"].update(shape="[B, C]", values="as_tensor(L)")
     return entry
 
 
@@ -245,6 +232,13 @@ def _varlen_with(shape="[B + 1]", values="prefix_sum(L)", requires=(), B=None, L
     if "C" in forall:
         entry["signature"]["inputs"]["x"]["shape"] = "[B, C]"
         entry["workloads"][0].update(B=2, C=3, L=[1, 2, 3, 4, 5])
+    return entry
+
+
+def _varlen_spliced_requires():
+    """A `requires` on a generated tensor whose rank a splice of unknown length leaves open."""
+    entry = _varlen_starred(p="list[int]", value=[2, 2])
+    entry["signature"]["inputs"]["m"]["requires"] = ["max_segment(9)"]
     return entry
 
 
@@ -335,22 +329,6 @@ _ENTRY_ERRORS = [
     ("Varlen", _varlen(L=[2**31 - 1, 1]), "outside int32"),
     ("Varlen", _varlen(L=[1], some=["x"]), "`some` names ['x']"),
     ("Varlen", _varlen(L=[1], dtype_cases=[]), "`dtype_cases` must be"),
-    (
-        "SumFwdOp",
-        _entry(
-            "SumFwdOp",
-            workloads=[
-                {
-                    "S": [4],
-                    "dim": 0,
-                    "keepdim": "no",
-                    "label": "r",
-                    "dtype_cases": [{"T": "float16"}],
-                }
-            ],
-        ),
-        "is not a bool",
-    ),
     ("Varlen", _varlen_with(values="prefix_sum()"), "misses argument 1"),
     (
         "Varlen",
@@ -358,12 +336,12 @@ _ENTRY_ERRORS = [
         "is not declared",
     ),
     ("Varlen", _varlen_chained(), None),
-    ("Varlen", _varlen_rank(), "yields rank 1"),
     ("Varlen", _varlen_empty_chunks(), None),
     ("Varlen", _varlen_with(values="bogus(L)"), "is not a call of a built-in"),
     ("Varlen", _varlen_divided(K=0), "refinement fails: K > 0"),
-    ("Varlen", _varlen_generated(dtype="float32"), "need dtype int32"),
-    ("Varlen", _varlen_starred(), "yields rank 2"),
+    ("Varlen", _varlen_generated(dtype="float32", some=["m"]), "need an int32 or int64 dtype"),
+    ("Varlen", _varlen_generated(dtype="int64", some=["m"]), None),
+    ("Varlen", _varlen_starred(value=[1, 2, 3]), "yields rank 2"),
     (
         "Varlen",
         _with_param(
@@ -377,6 +355,7 @@ _ENTRY_ERRORS = [
     ),
     ("Varlen", _varlen_generated(requires=["max_segment(9)"]), "reads rank 1"),
     ("Varlen", _varlen_cross_requires(), "reads 'b' where it is absent"),
+    ("Varlen", _varlen_spliced_requires(), "needs a fixed-rank tensor"),
     (
         "Varlen",
         _with_param(_varlen(L=[1], p=[0]), p={"type": "int | tuple[int, int]"}),

@@ -6,10 +6,7 @@ The [`src/tileops/manifest/`](../../src/tileops/manifest/) package is the **sour
 
 One or more YAML files per family (single file by default; large families may shard). Each file is a flat mapping `op_name → entry`. The `tileops.manifest` package merges all files at load; a duplicate op name across files is an error. Algebraic data types shared by several entries live in `types.yaml`.
 
-- **Add or edit an op**: edit the family file that owns it, with a round-trip parser (`ruamel.yaml`).
-- **Read programmatically**: `from tileops.manifest import load_manifest, load_workloads`.
-
-## Trust Model
+## Layer Boundaries
 
 ```mermaid
 flowchart LR
@@ -99,9 +96,9 @@ SiluAndMulFwdOp:
 
 - `forall` kinds are `Dim` (axis length), `Shape` (tuple of `Dim`), `DType[...]` and the value list `Seq[Int]` ([table 2](#t-forall)). A parameter's kind follows from its `type` ([table 3](#t-types)); expression kinds follow [table 4](#t-expr).
 - A `Dim` may be passed where an `Int` is expected, a `Shape` where a `Seq[Int]` is.
-- Every axis is an integer expression. An axis whose kind is not `Dim`, and every element of a sequence spliced with `*p`, is checked non-negative at run time; under SymInt the check is a generated `torch._check`.
-- The validator, workload instantiation and tests convert YAML values by declared kind or `type`: `Shape` indices and `tuple[...]` parameters become tuples, `Seq[Int]` indices and `list[...]` parameters stay lists, dtype names become `torch.dtype`, ADT values become objects ([table 5](#t-adt)).
-- Within an entry, index, `let` and tensor names are distinct.
+- Every axis is an integer expression. An axis whose kind is not `Dim`, and every element of a sequence spliced with `*p`, carries the obligation to be non-negative, checked where [Call Semantics](#call-semantics) places it.
+- A YAML value denotes the Python value its kind or `type` declares: a tuple for `Shape` and `tuple[...]`, a list for `Seq[Int]` and `list[...]`, a `torch.dtype` for a dtype name, an object for an ADT value ([table 5](#t-adt)).
+- Within an entry, index, `let` and tensor names are distinct. `out` is reserved: no tensor, parameter or index is named `out`.
 
 ### Parameters
 
@@ -109,8 +106,8 @@ SiluAndMulFwdOp:
 
 Parameters enter types directly:
 
-- An `int` parameter written into a shape is checked non-negative at construction.
-- A `list[int]` / `tuple[int, ...]` parameter is spliced as `*p`; each element is checked non-negative.
+- An `int` parameter written into a shape forms an axis, which carries the obligation; a parameter passed to a signed primitive formal (`Int`, `Axes`) carries none of its own.
+- A `list[int]` / `tuple[int, ...]` parameter is spliced as `*p`; each element carries the obligation.
 - A dtype parameter (a `type` over dtype names) is written directly as a tensor `dtype`.
 - An `int | None` parameter has kind `Maybe[Int]` with tag `present(v)`; its payload `v.value` is legal only on branches where `present(v)` holds. A `Maybe` value may be passed as is to a primitive that accepts it.
 
@@ -127,7 +124,8 @@ A tensor is `{dtype: ..., shape: "..."}`, i.e. `Tensor[T, s]`. Every role — co
 Each `shape_rules` item is a refinement: a predicate on index values, checked after unification.
 
 - Shapes, `let`, type families, refinements and inline roofline share one closed expression language ([table 10](#t-lang)) with Python precedence.
-- A refinement depends only on quantities available at run time and is checked on every call. A constraint on a metadata tensor's contents is that tensor's `requires` ([Generators](#generators)); [table 11](#t-constraints) contrasts the two.
+- A refinement depends only on quantities available at run time. It is checked at construction when construction can evaluate it, otherwise on every call ([Call Semantics](#call-semantics)). A constraint on a metadata tensor's contents is that tensor's `requires` ([Generators](#generators)); [table 11](#t-constraints) contrasts the two.
+- A guard narrows kinds in the arm it selects: `present(v)` narrows `Maybe[X]` to `X`; `x == lit` and `x in (...)` intersect `x`'s kind with the literals, `x != lit` and `x not in (...)` subtract them; narrowing composes through `not`, `and`, `or` and conditionals. A string inhabits `DType[S]` only when it names a registered member of `S`, so a comparison with literals no member of an enum or dtype set takes is rejected.
 - A refinement that reads only discriminants — every name and ADT field it reads is fixed by the discriminant values, judged over the whole expression regardless of operand order — is a **domain restriction**. It is checked before a type-family branch is chosen, and values it rejects need no type-family case.
 - Lists among construction parameters are available at run time and may appear anywhere. `forall` value lists appear only as generator arguments.
 - Satisfiability of a refinement is the author's responsibility.
@@ -138,13 +136,14 @@ Each `shape_rules` item is a refinement: a predicate on index values, checked af
 A tensor `dtype` is a dtype expression ([table 13](#t-dtype)): a `forall` `DType` index, a dtype parameter, a constant, or a dtype primitive. Without `dtype_combos`, each `DType` index ranges over its set independently.
 
 - **`dtype_combos`.** When only some combinations of several `DType` indices are supported, the entry lists them. Each row maps `{index: dtype}`; all rows have the same keys, which may include dtype parameters; rows are distinct; every column is relevant on every branch. A call's dtype assignment must equal one row.
-- **Packed dtypes.** fp4 and int4 live in carrier dtypes such as `uint8` and are written by carrier: `dtype` is the carrier, `shape` is the carrier shape PyTorch sees (e.g. `[N, K // 2]`), the logical dtype comes from a dtype parameter or the entry, and roofline counts carrier bytes. The dtype registry records each dtype's bits per element and PyTorch representation.
+- **Packed dtypes.** fp4 and int4 live in carrier dtypes such as `uint8` and are written by carrier: `dtype` is the carrier, `shape` is the carrier shape PyTorch sees (e.g. `[N, K // 2]`), the logical dtype comes from a dtype parameter or the entry, and roofline counts carrier bytes.
 
 ### Presence
 
 - An optional input is `optional: true`; inputs that must be present together share one discriminant, `optional: "<p>"`. An output that may be `None` is `nullable: "<p>"`.
 - `optional` and `nullable` expressions are built from finite boolean atoms: `Bool` and enum parameters, ADT tags and finite fields, `present`.
 - Optional inputs follow required ones; `forward` takes them in declaration order with default `None`. Omitting one equals passing `None`.
+- Construction-time tensor presence is fixed at construction; call-time tensor presence per call.
 - An index is relevant only on the branches where it appears.
 
 ### Type Families
@@ -187,13 +186,13 @@ adts:
 ```
 
 - An ADT value is written as a literal `{constructor: {field: value}}`, workload rows included.
-- `invariant` is an optional refinement on a constructor, checked at instantiation and at run time.
+- `invariant` is an optional refinement on a constructor, checked at instantiation and at construction.
 - An ADT is sealed: constructors and fields are fixed where it is declared. Adding one edits the definition; an entry that does not accept the new constructor rejects it with a domain restriction and needs no type-family change.
 - Instantiation builds enum fields from their `python` class, then calls the constructor's class with keyword arguments; a test round-trips a real object per ADT.
 
 ### Derived Indices and Primitives
 
-- `let` names a quantity computed from indices; its kind is `Dim` or a value. It is computed at call time from the signature and is never written in a workload row. `let` dependencies are acyclic.
+- `let` names a quantity computed from indices; its kind is `Dim` or a value. It is computed from the signature, at construction when construction can evaluate it and otherwise per call, and is never written in a workload row. `let` dependencies are acyclic.
 - A primitive is a built-in function of the expression language. The set is fixed: general primitives in [table 13](#t-dtype) and [table 15](#t-prims), domain primitives such as `pool.out` in [table 14](#t-domain). Each gives a signature, a domain and a symbolic implementation; outside its domain it raises, naming the declaration that called it. Adding a primitive changes this specification and its one implementation, which the validator, the roofline analysis and the generated code share.
 - Axis-taking primitives normalize axes alike: at rank 0, `0` and `-1` name the one scalar axis and anything else raises; at rank above 0, an axis lies in `[-rank, rank)` and is taken modulo rank.
 
@@ -211,8 +210,6 @@ An op without effect declarations reads its inputs and allocates its outputs. Ef
 - `mutated: true` on an input: the op may write it; with `write_only: true` it is a required result buffer whose old contents are not read.
 - `mutated: "<discriminant expr>"`: written only when the expression holds; `alias: <input>` on an output: that output is the input object.
 
-The validator checks the generated operator schema against the declarations for every effect branch.
-
 ## Workloads
 
 ### Rows
@@ -220,8 +217,8 @@ The validator checks the generated operator schema against the declarations for 
 A workload row determines one call. Its keys are construction parameter names, relevant index names, `some`, `dtype_cases` and `label` ([table 16](#t-rows)).
 
 - A row gives exactly the relevant indices that no generator determines.
-- An index is relevant on a branch when that branch's shapes, dtypes or refinements use it. Discriminants selecting a type-family branch, presence or `nullable` are always relevant.
-- **case id** is `label` followed by the row's `dtype_cases` values in `forall` order, joined by `-`. It keys nightly history, so changing a `label` is breaking. `label` is non-empty `[A-Za-z0-9._-]`, and an entry's case ids are distinct.
+- An index is relevant on a branch when that branch's shapes, dtypes, refinements, generator arguments, the `requires` of its passed tensors or its inline roofline use it, each folded at the branch first, so a refinement whose guard folds to true there makes nothing relevant; a `let` passes on what it reads. A `func` roofline makes nothing relevant. Discriminants selecting a type-family branch, presence or `nullable` are always relevant.
+- **case id** is `label` followed by the row's `dtype_cases` values in `forall` order, then its dtype parameters' values in `signature.params` order, joined by `-`. It keys nightly history, so changing a `label` is breaking. `label` is non-empty `[A-Za-z0-9._-]`, and an entry's case ids are distinct.
 - **Coverage.** Every optional tensor of an implemented entry is passed in at least one row and omitted in at least one, counted per input.
 - **Instantiation.** A row fixes shapes, dtypes, parameters, presence and metadata values. Devices follow [Call Semantics](#call-semantics), strides are contiguous, tensors do not alias, other data is random. The validator infers the call back from the instantiated inputs and requires agreement.
 
@@ -235,8 +232,8 @@ cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)",
 ```
 
 - The generator result is unified with the declaration; shape indices other than the generator's arguments are solved by that unification (here `B`) and are not written in the row.
-- The generator set is fixed ([table 17](#t-generators)); adding one changes this specification, with its domain, seed and tests. Results are int32; a domain violation or int32 overflow raises. Arguments may be value-primitive calls. Each pseudo-random generator draws from a private RNG seeded as `WorkloadBase.rng` is, so a row always yields the same values.
-- `requires` lists named predicates on a metadata tensor's contents. The set is closed: [table 18](#t-predicates) and `attn.paged_fits` of [table 14](#t-domain), each with one checking function in the validator. The first argument is the constrained tensor's contents, implicit; written arguments are expressions over indices, parameters, `let` and the generated values of the call's metadata tensors. The validator checks them after all generators run; at run time they are the caller's obligation.
+- The generator set is fixed ([table 17](#t-generators)); adding one changes this specification, with its domain, seed and tests. A generated tensor declares an integer dtype, `int32` or `int64`, and its values take it; a domain violation or an overflow of the declared dtype raises. Arguments may be value-primitive calls. A row always yields the same values.
+- `requires` lists named predicates on a metadata tensor's contents. The set is closed: [table 18](#t-predicates) and `attn.paged_fits` of [table 14](#t-domain). The first argument is the constrained tensor's contents, implicit; written arguments are expressions over indices, parameters, `let` and the generated values of the call's metadata tensors. They are checked at instantiation, after all generators run; at run time they are the caller's obligation. As a contract they are also checked on every discriminant point where their tensor is present: every metadata tensor a predicate reads is present, and the predicate reads the rank the constrained tensor declares.
 - A tensor with `requires` has `values`.
 
 ## Composition
@@ -255,45 +252,42 @@ composition:
 
 - A stage references a manifest entry. A sub-op held only under some construction parameters is an `optional: true` stage; the condition stays in code.
 - Whether a parent's roofline equals its stages' is not specified by this design.
-- Every op with a `composition` overrides `kernel_delegates()`. A test builds the op with `target=BUILTIN`, runs representative rows covering every optional stage, and requires the ordered class names of `kernel_delegates()` to equal the stages in order, optional ones possibly absent; every optional stage appears in some row.
-- The validator checks unique stage names, entry references, boolean `optional` and a non-empty list.
+- On the built-in path, `kernel_delegates()` returns the stages in order, an optional one possibly absent; a test checks it over rows that reach every optional stage.
+- `stages` is a non-empty list; stage names are unique; `optional` is a boolean.
 
 ## Call Semantics
 
 A call has two phases.
 
-- **Construction** checks parameter values against their `type` — non-negative ints and sequence elements written into shapes, dtype parameters within range, construction-time tensors present unless optional — and the ADT invariants that depend on parameters only. `Bool`, enum and ADT parameters, `Maybe` presence and construction-time tensor presence are fixed here.
+- **Construction** checks parameter values against their `type` — dtype parameters within range, construction-time tensors present unless optional — and ADT invariants. `Bool`, enum and ADT parameters, `Maybe` presence and construction-time tensor presence are fixed here. Parameters, ADT fields, construction-time tensor presence, the indices unified from construction-time tensors' shapes and dtypes, and the `let`s these make evaluable are available at construction; call-time tensors, their presence and what unifies from them are available per call. An obligation — an axis or spliced element non-negative, a refinement or invariant holding — is checked at construction when both what activates it (its tensor, type-family branch or guard) and its value are available there, otherwise in the call check.
 - **Call.** The checks generated from the signature wrap `forward`: presence of call-time tensors, domain restrictions, type-family branches, then inference and the remaining refinements, output-buffer preconditions, the implementation, and the output checks. Any failure raises and names the declaration. `forward` may take code-defined execution parameters after the signature's prefix; the code allocates and checks them.
 
-**Inference.** Indices are solved from the inputs by unification ([table 19](#t-unify)). Construction parameters and presence are known at the start, and construction-time tensors are unified together with call-time inputs; branch selection, `let` and unification form one dependency graph from which the validator derives the inference plan, independent of declaration order. An index that cannot be solved, or has several solutions, rejects the entry. On a branch where it is relevant, every `Dim`, `Shape` or `DType` index is solved from an input, given by a parameter, or determined by a generator; an index appearing only in outputs is a parameter or a `let`. An output buffer fixes only its presence and is checked against the output type once known. A non-affine relation binds the physical axis to one name, derives the logical dimension with `let`, and equates the two in a refinement.
+**Inference.** Indices are solved from the inputs by unification ([table 19](#t-unify)). Branch selection, `let` and unification form one dependency graph from which the validator derives the inference plan, independent of declaration order. Its construction-available prefix — construction-time tensor presence, shapes and dtypes, the branches they select and the `let`s they make evaluable — is solved at construction, and call inference continues the same graph with call-time facts. An index that cannot be solved, or has several solutions, rejects the entry. On a branch where it is relevant, every `Dim`, `Shape` or `DType` index is solved from an input, given by a parameter, or determined by a generator; an index appearing only in outputs is a parameter or a `let`. An output buffer fixes only its presence and is checked against the output type once known. A non-affine relation binds the physical axis to one name, derives the logical dimension with `let`, and equates the two in a refinement.
 
-**Device.** Tensors marked `device: cpu` stay on the CPU and take no part in choosing the call device. The call device is that of the other call-time inputs, which must agree; without such inputs it is the `device` parameter when not `None` (a string normalized by `torch.device`), else that of the construction-time tensors, else the choice of the explicit or process-default target among the device classes (CUDA, CPU) it declares, else the current CUDA device. When construction-time tensors decide it, they share one device. `out` and outputs are checked or allocated on the call device; construction-time tensors not marked `device: cpu` are copied there and cast to their signature dtype. Workload instantiation places tensors by the same rule.
+**Device.** Tensors marked `device: cpu` stay on the CPU and take no part in choosing the call device. The call device is that of the other call-time inputs, which must agree; without such inputs it is the `device` parameter when not `None`, else that of the construction-time tensors, else the choice of the explicit or process-default target among the device classes (CUDA, CPU) it declares, else the current CUDA device. When construction-time tensors decide it, they share one device. `out` and outputs are checked or allocated on the call device; construction-time tensors not marked `device: cpu` are copied there and cast to their signature dtype. Workload instantiation places tensors by the same rule.
 
-**Symbolic shapes.** Under SymInt, discriminants are already Python values; arithmetic and comparisons lower to SymInt / SymBool; `and` / `or` / `not` short-circuit on Python bools and lower to `sym_and` / `sym_or` / `sym_not` otherwise; `Seq` equality compares lengths as Python ints, then elements with `sym_and`; `in` requires a Python-valued right side; a conditional on a SymBool lowers to `sym_ite` with both arms evaluable; a refinement yielding a SymBool becomes `torch._check`. Primitives use their symbolic implementation. An expression that needs the truth value of a SymBool is evaluated at construction only; an op compiled with `fullgraph=True` contains none. Expression strings are parsed and checked before code generation; generated code never parses them.
+**Symbolic shapes.** The generated checks evaluate on SymInt, discriminants being Python values. An expression that needs the truth value of a SymBool is evaluated at construction only; an op compiled with `fullgraph=True` contains none. Expression strings are parsed and checked before code generation; generated code never parses them.
 
 ## Validation
 
-[`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) checks every entry on every combination of its discriminant values: type-family `match`, `optional`, `nullable`, `mutated`, output-buffer presence, and the quantities relevance reads. Discriminants are grouped by dependency. Combinations a domain restriction rejects skip only type-family coverage and inference-plan checks. Above a configured number of combinations (default 256) it reports an advisory diagnostic and keeps the entry whole.
+An entry's format identifies it: a legacy entry declares `source`, a parametric one does not. [`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) checks every parametric entry on every combination of its discriminant values: type-family `match`, `optional`, `nullable`, `mutated`, output-buffer presence, and the quantities relevance reads. Discriminants are grouped by dependency. Combinations a domain restriction rejects skip only type-family coverage and inference-plan checks. Above a configured number of combinations (default 256) it reports an advisory diagnostic and keeps the entry whole.
 
 1. Each name's category matches its kind, and each parameter's `type` fits the kind every use site needs.
-1. Type-family cases are exhaustive and disjoint over accepted values; family references are acyclic.
+1. Type-family cases are exhaustive and disjoint over accepted values; family references are acyclic; a family no shape applies is rejected.
 1. An inference plan exists.
 1. `let` dependencies are acyclic.
 1. Every expression is in the language and every primitive is built in.
-1. Every generator result unifies with its declaration.
-1. Every expression of an op compiled with `fullgraph=True` is evaluable on SymInt.
+1. Every generator result, on every workload row, unifies with its declaration; every `requires` meets its contract on every discriminant point.
+1. Every expression of a class declaring a compile boundary, which is its claim of `fullgraph=True` support, is evaluable on SymInt. The class's declaration is the source, never the test registry.
 1. Every workload row instantiates.
 1. For every effect branch, the operator schema, aliases and roofline read/write counts agree.
 
 All checks are decidable; every evaluation either succeeds or names the failing declaration. Code-dependent checks are skipped for `spec-only` entries. CI runs the validator with `--strict` over the whole manifest.
 
-- Facts several checks need are derived once, in one layer private to the validator; judgement and diagnostics stay with each check. The facts are `call_tensor_args` (the tensor parameters of `forward`), `value_inputs` (the inputs a caller passes) and `spec_only` (`status` is missing, not a string, or `spec-only`; a malformed `status` is also diagnosed).
-- Parsing is per field: an unreadable field empties only the facts it feeds, and checks reading an empty fact skip.
+- Parsing is per field: an unreadable field is reported and skipped only by the checks that read it.
 - Diagnostics are a contract: the CLI, the diagnostic text and order, and the strict/advisory classification change only through a deliberate, recorded change. Every set entering a diagnostic is sorted, unknown keys by `repr`, so output does not depend on `PYTHONHASHSEED`.
 - Each fixed section's legal keys are defined in one place.
 - Importing an op loads the manifest leniently and succeeds on an incomplete manifest; strict checking belongs to the validator alone.
-- The package exports `forward_signature(entry)`: the ordered call-time inputs and output buffers. Code-defined execution parameters are not in it.
-- A new entry also passes the public-surface test and the roofline classification test.
 
 ## Reference Tables
 
@@ -315,16 +309,16 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 
 **<a id="t-types"></a>Table 3** Parameter `type` to kind
 
-| No. | `type`                                                               | Kind                                                |
-| --- | -------------------------------------------------------------------- | --------------------------------------------------- |
-| 1   | `int` / `bool`                                                       | `Int` (signed) / `Bool`                             |
-| 2   | union of string literals                                             | enum                                                |
-| 3   | `list[int]`, `tuple[int, ...]`, `tuple[int, int]`                    | `Seq[Int]`; a fixed-length tuple carries its length |
-| 4   | `X \| None`                                                          | `Maybe[X]`                                          |
-| 5   | `X \| Y`                                                             | finite union, each member mapped by this table      |
-| 6   | ADT name                                                             | that ADT                                            |
-| 7   | `torch.dtype`, union of dtype names                                  | `DType[...]` (a dtype parameter)                    |
-| 8   | `float`, `Number`, open `str`, `dict`, `torch.Tensor`, other objects | takes no part in types; `type` and `default` only   |
+| No. | `type`                                                               | Kind                                                                                                                |
+| --- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| 1   | `int` / `bool`                                                       | `Int` (signed) / `Bool`                                                                                             |
+| 2   | union of string literals                                             | enum                                                                                                                |
+| 3   | `list[X]`, `tuple[X, ...]`, `tuple[X, Y]`                            | `Seq[K]`, `K` the element type's kind by this table, `Int` or `Maybe[Int]`; a fixed-length tuple carries its length |
+| 4   | `X \| None`                                                          | `Maybe[X]`                                                                                                          |
+| 5   | `X \| Y`                                                             | finite union, each member mapped by this table                                                                      |
+| 6   | ADT name                                                             | that ADT                                                                                                            |
+| 7   | `torch.dtype`, union of dtype names                                  | `DType[...]` (a dtype parameter)                                                                                    |
+| 8   | `float`, `Number`, open `str`, `dict`, `torch.Tensor`, other objects | takes no part in types; `type` and `default` only                                                                   |
 
 **<a id="t-expr"></a>Table 4** Expression kinds
 
@@ -364,26 +358,26 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 
 **<a id="t-roles"></a>Table 8** Roles
 
-| No. | Role                     | Phase        | Declared as                                        | Type                                                                               |
-| --- | ------------------------ | ------------ | -------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| 1   | construction parameter   | construction | `params.<p>`                                       | the kind of its `type` (table 3)                                                   |
-| 2   | `device` parameter       | construction | `params.device`                                    | decides the call device                                                            |
-| 3   | construction-time tensor | construction | `params.<p>` with `dtype`, `shape`                 | `Tensor[T, s]`; if optional, `Maybe[Tensor[T, s]]` with tag `present(p)`           |
-| 4   | required input           | call         | `inputs.<t>`                                       | `Tensor[T, s]`                                                                     |
-| 5   | optional input           | call         | `optional: true`, or `optional: "<p>"` when shared | `Maybe[Tensor[T, s]]` with tag `present(t)` or `p`                                 |
-| 6   | output                   | result       | `outputs.<t>`                                      | `Tensor[T, s]`                                                                     |
-| 7   | nullable output          | result       | `nullable: "<p>"`                                  | `Maybe[Tensor[T, s]]` with tag `p`                                                 |
-| 8   | output buffer            | call         | table 9's `buffer` and `write_only`                | optional: `Maybe` of the output type, tag `present(out)`; required: `Tensor[T, s]` |
+| No. | Role                     | Phase        | Declared as                                        | Type                                                                                           |
+| --- | ------------------------ | ------------ | -------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| 1   | construction parameter   | construction | `params.<p>`                                       | the kind of its `type` (table 3)                                                               |
+| 2   | `device` parameter       | construction | `params.device`                                    | decides the call device                                                                        |
+| 3   | construction-time tensor | construction | `params.<p>` with `dtype`, `shape`                 | `Tensor[T, s]`; if optional, `Maybe[Tensor[T, s]]` with tag `present(p)`, defaulting to `None` |
+| 4   | required input           | call         | `inputs.<t>`                                       | `Tensor[T, s]`                                                                                 |
+| 5   | optional input           | call         | `optional: true`, or `optional: "<p>"` when shared | `Maybe[Tensor[T, s]]` with tag `present(t)` or `p`                                             |
+| 6   | output                   | result       | `outputs.<t>`                                      | `Tensor[T, s]`                                                                                 |
+| 7   | nullable output          | result       | `nullable: "<p>"`                                  | `Maybe[Tensor[T, s]]` with tag `p`                                                             |
+| 8   | output buffer            | call         | table 9's `buffer` and `write_only`                | optional: `Maybe` of the output type, tag `present(out)`; required: `Tensor[T, s]`             |
 
 **<a id="t-effects"></a>Table 9** Effect declarations
 
-| No. | Declaration                               | Meaning                                                                                                                                                      | Operator schema                                    |
-| --- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- |
-| 1   | output `buffer: out`                      | `forward` gains `out` after all inputs, in output order. Passed: the op writes and returns it; omitted: the op allocates. Same shape and dtype as the output | two: one returning a new tensor, one writing `out` |
-| 2   | input `mutated: true`                     | the op may write it; its prior contents are read                                                                                                             | one; `mutates_args` names it                       |
-| 3   | input `mutated: true`, `write_only: true` | a required result buffer: overwritten, the result depends on other inputs only; if the op returns `None`, `outputs` is empty                                 | one; `mutates_args` names it                       |
-| 4   | input `mutated: "<discriminant expr>"`    | written only when the expression holds                                                                                                                       | one per expression value                           |
-| 5   | output `alias: <input>`                   | when that input is written, the output is that input object                                                                                                  | two; the writing one returns the input object      |
+| No. | Declaration                               | Meaning                                                                                                                                                      |
+| --- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | output `buffer: out`                      | `forward` gains `out` after all inputs, in output order. Passed: the op writes and returns it; omitted: the op allocates. Same shape and dtype as the output |
+| 2   | input `mutated: true`                     | the op may write it; its prior contents are read                                                                                                             |
+| 3   | input `mutated: true`, `write_only: true` | a required result buffer: overwritten, the result depends on other inputs only; if the op returns `None`, `outputs` is empty                                 |
+| 4   | input `mutated: "<discriminant expr>"`    | written only when the expression holds                                                                                                                       |
+| 5   | output `alias: <input>`                   | when that input is written, the output is that input object                                                                                                  |
 
 **<a id="t-lang"></a>Table 10** Expression language
 
@@ -398,10 +392,10 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 
 **<a id="t-constraints"></a>Table 11** Constraints
 
-| No. | Kind                        | Depends on                   | Checked                                                                                         |
-| --- | --------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------- |
-| 1   | refinement in `shape_rules` | run-time quantities only     | every call; fake/meta emit `torch._check`                                                       |
-| 2   | tensor `requires`           | a metadata tensor's contents | at instantiation, on generated values; at run time, the caller's obligation, listed in API docs |
+| No. | Kind                        | Depends on                   | Checked                                                                     |
+| --- | --------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
+| 1   | refinement in `shape_rules` | run-time quantities only     | at construction when construction can evaluate it, else every call          |
+| 2   | tensor `requires`           | a metadata tensor's contents | at instantiation, on generated values; at run time, the caller's obligation |
 
 **<a id="t-rejected"></a>Table 12** Rejected rule forms
 
@@ -437,19 +431,19 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 
 **<a id="t-prims"></a>Table 15** General primitives (`Axes = Int | Seq[Int] | None`)
 
-| No. | Primitive                       | Signature                                                                          | Domain and result                                                                                                                       | Symbolic implementation                          |
-| --- | ------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| 1   | `broadcast`                     | `Shape... → Shape`                                                                 | PyTorch broadcasting; raises when not broadcastable                                                                                     | guard `a == b or a == 1 or b == 1` per axis pair |
-| 2   | `reduced`                       | `Shape × Axes × Bool × ('full' \| 'noop' \| 'reject') → Shape`                     | `None` reduces all axes; an empty sequence per `mode` (all / none / raise); rank 0 yields `[]`                                          | axes are parameters, evaluated at construction   |
-| 3   | `valid_axes`                    | `Axes × Int → Bool`                                                                | every axis normalizes; `None` is true                                                                                                   | construction                                     |
-| 4   | `unique_axes`                   | `Axes × Int → Bool`                                                                | normalized axes are distinct                                                                                                            | construction                                     |
-| 5   | `per_axis`                      | `(Int \| Seq[Maybe[Int]] \| None) × Int × Int × fallback: Maybe[Int] = None → Int` | a scalar returns itself; a length-`n` sequence yields item `i`; `None` takes `fallback`, raising if that is `None`; other lengths raise | construction                                     |
-| 6   | `ceil_div`                      | `Int × Int → Int`                                                                  | positive divisor                                                                                                                        | SymInt division                                  |
-| 7   | `len`                           | `Seq[A] → Dim`                                                                     | any sequence                                                                                                                            | length must be a Python int                      |
-| 8   | `prod` / `sum`                  | `Seq[Int] → Int`                                                                   | `prod([])` is 1, `sum([])` is 0                                                                                                         | length must be a Python int                      |
-| 9   | `max` / `min`                   | `Seq[Int] × default: Maybe[Int] = None → Int`                                      | empty takes `default`, raising without one                                                                                              | `sym_max` / `sym_min`                            |
-| 10  | `all`                           | `Seq[Bool] → Bool`                                                                 | empty is true                                                                                                                           | length must be a Python int; unrolled            |
-| 11  | comprehension `f(x) for x in s` | `Seq[A] → Seq[B]`                                                                  | only as an argument of `all`, `sum`, `max`, `min`                                                                                       | length must be a Python int; unrolled            |
+| No. | Primitive                       | Signature                                                                          | Domain and result                                                                                                                       |
+| --- | ------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `broadcast`                     | `Shape... → Shape`                                                                 | PyTorch broadcasting; raises when not broadcastable                                                                                     |
+| 2   | `reduced`                       | `Shape × Axes × Bool × ('full' \| 'noop' \| 'reject') → Shape`                     | `None` reduces all axes; an empty sequence per `mode` (all / none / raise); rank 0 yields `[]`                                          |
+| 3   | `valid_axes`                    | `Axes × Int → Bool`                                                                | every axis normalizes; `None` is true                                                                                                   |
+| 4   | `unique_axes`                   | `Axes × Int → Bool`                                                                | normalized axes are distinct                                                                                                            |
+| 5   | `per_axis`                      | `(Int \| Seq[Maybe[Int]] \| None) × Int × Int × fallback: Maybe[Int] = None → Int` | a scalar returns itself; a length-`n` sequence yields item `i`; `None` takes `fallback`, raising if that is `None`; other lengths raise |
+| 6   | `ceil_div`                      | `Int × Int → Int`                                                                  | positive divisor                                                                                                                        |
+| 7   | `len`                           | `Seq[A] → Dim`                                                                     | any sequence                                                                                                                            |
+| 8   | `prod` / `sum`                  | `Seq[Int] → Int`                                                                   | `prod([])` is 1, `sum([])` is 0                                                                                                         |
+| 9   | `max` / `min`                   | `Seq[Int] × default: Maybe[Int] = None → Int`                                      | empty takes `default`, raising without one                                                                                              |
+| 10  | `all`                           | `Seq[Bool] → Bool`                                                                 | empty is true                                                                                                                           |
+| 11  | comprehension `f(x) for x in s` | `Seq[A] → Seq[B]`                                                                  | only as an argument of `all`, `sum`, `max`, `min`                                                                                       |
 
 **<a id="t-rows"></a>Table 16** Workload row keys
 

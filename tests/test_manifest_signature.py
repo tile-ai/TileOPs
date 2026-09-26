@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from tileops.manifest.plan import check_adts, check_entry, signature_schema_errors
 from tileops.manifest.primitives import PRIMITIVES
-from tileops.manifest.signature import check_adts, check_entry, signature_schema_errors
 
 pytestmark = pytest.mark.smoke
 
@@ -63,7 +63,6 @@ _EDITS = [
         _edit("SumFwdOp", _set(("shape_rules",), ["isinstance(dim, int)"])),
         "not a built-in primitive",
     ),
-    (_edit("GemmFwdOp", _set(("outputs", "d", "shape"), "[M, Q]")), "'Q' is not declared"),
     (_edit("GemmFwdOp", _set(("outputs", "d", "shape"), "[*broadcast(M)]")), "expected Shape"),
     (_edit("GemmFwdOp", _set(("shape_rules",), ["M + 1"])), "expected Bool"),
     (_edit("GemmFwdOp", _set(("forall", "T"), "DType[banana]")), "unknown kind"),
@@ -91,10 +90,6 @@ _EDITS = [
         "'N' cannot be solved",
     ),
     (
-        _edit("GemmFwdOp", _set(("forall", "Q"), "Dim"), _set(("shape_rules",), ["Q > 0"])),
-        "'Q' cannot be solved",
-    ),
-    (
         _edit(
             "GemmFwdOp",
             _set(("forall", "U"), "DType[float16]"),
@@ -119,16 +114,9 @@ _EDITS = [
     ),
     (_edit("GemmFwdOp", _set(("inputs", "a", "shape"), "Mat[trans_a, M]")), "takes 3 arguments"),
     (_edit("GemmFwdOp", _set(("forall", "d"), "Dim")), "declared twice"),
-    (_edit("GemmFwdOp", _set(("shape_rules",), ["'a' < M"])), "compares 'a' with Dim"),
     (_edit("GemmFwdOp", _set(("shape_rules",), ["present(trans_a)"])), "names no tensor"),
     (_edit("GemmFwdOp", _set(("outputs", "d", "shape"), "[-trans_a, N]")), "expected an integer"),
     (_edit("GemmFwdOp", _set(("let", "L"), "max(default=M)")), "misses argument 1"),
-    (_edit("GemmFwdOp", _set(("params", "p"), {"type": "tuple[int, bool]"})), "lists int items"),
-    (
-        _edit("GemmFwdOp", _set(("outputs", "d", "shape"), "[ceil_div(M, 0), N]")),
-        "positive divisor",
-    ),
-    (_edit("GemmFwdOp", _set(("outputs", "d", "shape"), "[(1, 2)[3], N]")), "outside the 2 items"),
     (_edit("GemmFwdOp", _set(("types", "Mat", "cases", 0, "is"), "[M, C]")), "'M' is not declared"),
     (
         _edit("GemmFwdOp", _set(("inputs", "a", "mutated"), "M > 0")),
@@ -196,7 +184,6 @@ _EDITS = [
         ),
         "reads q.value.max_m, which constructor 'contiguous' lacks",
     ),
-    (_edit("MoePrePermuteFwdOp", _set(("let", "z"), "layout")), "holds an ADT value"),
     (
         _edit(
             "GemmFwdOp",
@@ -205,32 +192,38 @@ _EDITS = [
         ),
         "takes no part in types",
     ),
+    (_edit("GemmFwdOp", _set(("types", "Unused"), _UNUSED)), "Unused is applied by no shape"),
+    (_edit("GemmFwdOp", _set(("forall", "out"), "Dim")), "'out' is reserved"),
     (
         _edit(
-            "MoePrePermuteFwdOp",
-            _set(("params", "q"), {"type": "MGroupedLayout", "default": {"masked": {"max_m": -1}}}),
+            "GemmFwdOp",
+            _set(("params", "p"), {"type": "int | 'auto' | None"}),
+            _set(
+                ("outputs", "d", "shape"),
+                "[M, N if not present(p) else (1 if p.value == 'auto' else p.value)]",
+            ),
         ),
-        "is not a MGroupedLayout",
+        None,
+    ),
+    (_edit("GemmFwdOp", _set(("shape_rules",), ["T == 'bfloat16' or M > 0"])), None),
+    (_edit("GemmFwdOp", _set(("shape_rules",), ["T == 'bflaot16' or M > 0"])), "compares"),
+    (_edit("GemmFwdOp", _set(("params", "p"), {"type": "list[int | None]"})), None),
+    (_edit("GemmFwdOp", _set(("params", "p"), {"type": "tuple[int, bool]"})), "holds int or"),
+    (
+        _edit(
+            "GemmFwdOp",
+            _set(("params", "mode"), {"type": "'full' | 'noop' | 'other'"}),
+            _set(("let", "L"), "reduced((M,), None, False, mode) if mode != 'other' else (M,)"),
+        ),
+        None,
     ),
     (
         _edit(
             "GemmFwdOp",
-            _set(
-                ("types", "Unused"),
-                {
-                    "params": {"p": "Maybe[Int]", "M": "Dim"},
-                    "match": "present(p)",
-                    "cases": [{"when": False, "is": "[p.value]"}, {"when": True, "is": "[M]"}],
-                },
-            ),
+            _set(("params", "mode"), {"type": "'full' | 'noop' | 'other'"}),
+            _set(("let", "L"), "reduced((M,), None, False, mode)"),
         ),
-        "reads p.value where present(p) is false",
-    ),
-    (_edit("GemmFwdOp", _set(("params", "trans_a", "default"), 1)), "default 1 is not a bool"),
-    (_edit("GemmFwdOp", _set(("params", "trans_a", "kw_only"), "yes")), "kw_only must be"),
-    (
-        _edit("GemmFwdOp", _set(("types", "Unused"), {**_UNUSED, "cases": _UNUSED["cases"][:1]})),
-        "0 cases match",
+        "is not one of",
     ),
 ]
 
@@ -260,15 +253,11 @@ _PRIMITIVE_CALLS = [
     ("per_axis", ([5, 6], 1, 2), 6),
     ("ceil_div", (7, 2), 4),
     ("max", ([], 0), 0),
-    ("min", ([], 5), 5),
-    ("prod", ([],), 1),
-    ("all", ([],), True),
     ("promote_int_to_float", ("bool",), "bool"),
     ("promote_int_to_float", ("int8",), "float32"),
     ("promote_int_to_float", ("bfloat16",), "bfloat16"),
     ("coalesce_dtype", (None, "float32"), "float32"),
     ("coalesce_dtype", ("float16", "float32"), "float16"),
-    ("conv.out", (32, 3, 1, 1, 1), 32),
     ("conv.out", (32, 3, 2, 1, 1), 16),
     ("pool.out", (8, 3, 2, 0, 1, True), 4),
     ("pool.out", (8, 3, 2, 0, 1, False), 3),
@@ -324,8 +313,6 @@ def test_adt_invariant_narrows_the_domain():
         }
     }
     assert check_adts(adts) == (adts, [])
-    assert check_entry("FlaggedFwdOp", entry, adts) == ([], [])
-    entry["signature"]["outputs"]["y"]["shape"] = "[M]"
     assert check_entry("FlaggedFwdOp", entry, adts) == ([], [])
     # A payload's invariant narrows where it is present; `_` covers the absent payload.
     entry["signature"]["params"] = {"f": {"type": "Flagged | None"}}

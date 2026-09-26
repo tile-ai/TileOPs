@@ -3026,6 +3026,17 @@ class TestCheckOp:
         non_schema = [e for e in errors if "[schema]" not in e]
         assert non_schema == [], non_schema
 
+    def test_a_spec_only_entrys_bench_file_meets_the_contract(self, validator, tmp_path):
+        """Every bench file is held to the benchmark contract, whichever entry names it."""
+        bench_file = tmp_path / "benchmarks" / "ops" / "bench_spec.py"
+        bench_file.parent.mkdir(parents=True)
+        bench_file.write_text("import pytest\n")
+        entry = _make_entry(status="spec-only")
+        entry["source"]["bench"] = "benchmarks/ops/bench_spec.py"
+        manifest_file = _write_manifest(tmp_path, {"my_op": entry})
+        errors, _ = validator.validate_manifest(manifest_path=manifest_file, repo_root=tmp_path)
+        assert any("[bench] benchmarks/ops/bench_spec.py" in e for e in errors), errors
+
     def test_check_op_nonexistent_op_reports_error(self, validator, tmp_path):
         """--check-op with a name not in manifest reports an error."""
         manifest_file = _write_manifest(tmp_path, {"my_op": _make_entry()})
@@ -3697,15 +3708,23 @@ class TestCompileContractRegistry:
     """
 
     def test_declarations_match_registered_evidence(self):
-        """Manifest declarations == registered compile-test evidence;
-        broken registration or typo'd op names surface as a set diff."""
+        """Fullgraph declarations == registered compile-test evidence; broken registration
+        or typo'd op names surface as a set diff. A parametric entry's declaration is its
+        implemented class declaring a compile boundary; a legacy entry's is the manifest's."""
         from tests.compile_contract import compile_contract_ops
         from tileops.manifest import load_manifest
+        from tileops.manifest.registry import op_class
+        from tileops.manifest.signature import is_legacy
 
         declared = {
             name
             for name, entry in load_manifest().items()
-            if entry.get("torch_compile_fullgraph") is True
+            if (
+                entry.get("torch_compile_fullgraph") is True
+                if is_legacy(entry)
+                else entry.get("status") == "implemented"
+                and getattr(op_class(name, entry), "compile_boundary", ()) is True
+            )
         }
         registered = compile_contract_ops()
         assert declared == registered, (

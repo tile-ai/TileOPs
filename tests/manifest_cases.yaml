@@ -4,14 +4,18 @@ adts:
   MGroupedLayout:
     sum:
       contiguous:
-        python: types.SimpleNamespace
+        python: tileops.ops.moe.contracts.ContiguousLayoutSpec
         fields:
-          packing: '''tight'' | ''aligned'''
-          metadata_kind: '''physical_psum'' | ''per_row'''
+          packing:
+            type: '''tight'' | ''aligned'''
+            python: tileops.ops.moe.contracts.ContiguousPacking
+          metadata_kind:
+            type: '''physical_psum'' | ''per_row'''
+            python: tileops.ops.moe.contracts.ContiguousMetadata
           alignment: Dim
         invariant: (packing == 'tight') == (alignment == 1) and alignment >= 1
       masked:
-        python: types.SimpleNamespace
+        python: tileops.ops.moe.contracts.MaskedLayoutSpec
         fields:
           max_m: Dim
 entries:
@@ -522,64 +526,6 @@ entries:
       ceil_mode: true
       dtype_cases:
       - T: float32
-  RopeNeoxFwdOp:
-    signature:
-      types:
-        RopeX:
-          params:
-            layout: '''1d'' | ''2d'''
-            B: Dim
-            S: Dim
-            H: Dim
-            D: Dim
-          match: layout
-          cases:
-          - when: 1d
-            is: '[S, D]'
-          - when: 2d
-            is: '[B, S, H, D]'
-      forall:
-        B: Dim
-        S: Dim
-        H: Dim
-        D: Dim
-        T: DType[float16 | bfloat16 | float32]
-      params:
-        layout:
-          type: '''1d'' | ''2d'''
-      inputs:
-        x:
-          dtype: T
-          shape: RopeX[layout, B, S, H, D]
-      outputs:
-        output:
-          dtype: T
-          shape: RopeX[layout, B, S, H, D]
-      shape_rules:
-      - D % 2 == 0
-    workloads:
-    - label: ropeneox-0
-      layout: 1d
-      S: 8192
-      D: 128
-      dtype_cases:
-      - T: bfloat16
-    - label: ropeneox-1
-      layout: 2d
-      B: 1
-      S: 8192
-      H: 32
-      D: 128
-      dtype_cases:
-      - T: float16
-    - label: ropeneox-2
-      layout: 1d
-      B: 1
-      S: 8192
-      D: 128
-      expect_fail: true
-      dtype_cases:
-      - T: bfloat16
   GemmFp8FwdOp:
     signature:
       forall:

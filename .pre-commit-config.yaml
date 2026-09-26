@@ -61,7 +61,6 @@ repos:
         entry: python scripts/lint/shipped_refs_lint.py
         language: python
         files: ^(src/tileops|tests|benchmarks|scripts|workloads)/
-        exclude: ^src/tileops/manifest/
         types: [text]
       - id: workload-names-lint
         name: benchmark case name lint

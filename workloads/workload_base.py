@@ -57,6 +57,25 @@ class WorkloadBase(ABC):
         return torch.Generator(device=device).manual_seed(seed)
 
 
+class CallWorkload(WorkloadBase):
+    """The inputs of one manifest call, a workload row instantiated from the op's entry.
+
+    ``gen_inputs()`` returns the call-time inputs in signature order, ``None`` where the call
+    omits one; ``arguments()`` the op's constructor arguments.
+    """
+
+    def __init__(self, call: Any, device: "torch.device | str" = "cuda"):
+        self.call = call
+        self.device = device
+
+    def gen_inputs(self) -> tuple[Any, ...]:
+        tensors = self.call.materialize(self.device)
+        return tuple(tensors[t] for t in self.call.signature.inputs)
+
+    def arguments(self) -> dict[str, Any]:
+        return self.call.arguments(self.call.materialize(self.device))
+
+
 class RandnWorkload(WorkloadBase):
     """Workload base for ops whose inputs are generated via ``torch.randn``."""
 

@@ -20,11 +20,14 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 | `_op_name`    | elementwise | `torch.library.custom_op` registration key                                                                       |
 | `kernel_cls`  | elementwise | Kernel class reference                                                                                           |
 
-**The scaffolding playbook does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); Adding a new protocol variable requires updating the L2 base, all concrete ops, and the manifest schema if applicable.
+**The scaffolding playbook does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); Adding a new protocol variable requires updating the L2 base and all concrete ops.
 
 ### `Op` base class interface ([`src/tileops/ops/op_base.py`](../../src/tileops/ops/op_base.py))
 
-Abstract interface: `default_kernel_map` (property), `forward()`. Methods generated from the manifest entry: the call checks, `_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`. An op whose `__init__` takes injected implementation objects names them in the class attribute `execution_parameters`; the validator admits no other parameter beyond the signature's and the execution policy's.
+Abstract interface: `forward()`. Methods generated from the manifest entry: the construction and call checks, `_infer_output_shapes`, `_validate_dtypes`, `eval_roofline`.
+
+- `kernel_types` (class attribute) is the one declaration of an op's dispatch keys; `default_kernel_map` (property) is derived from it. Each op class created adds its keys to a set `op_base` holds, and a `kernel_map` override naming a key outside that set is refused.
+- `last_call` (property) is the `SignatureCall` of the op's last successfully completed call: its `ix`, tensors, effects and metadata tensors. It raises `RuntimeError` before one completes. `eval_roofline` prices it.
 
 #### Kernel caching and enumeration methods
 
@@ -82,7 +85,7 @@ class RMSNormFwdOp(Op):
 
 ## Codegen Details (Appendix) <a id="codegen"></a>
 
-The manifest ([`src/tileops/manifest/`](../../src/tileops/manifest/)) is the sole source of truth. The call checks, dtype validation, shape inference and the fake derive from the signature; roofline codegen is defined in [roofline.md](roofline.md).
+The manifest ([`src/tileops/manifest/`](../../src/tileops/manifest/)) is the sole source of truth. The call checks, dtype validation, shape inference and the fake derive from the signature; roofline codegen is defined in [roofline.md](roofline.md). What the validator holds the code to is [manifest.md § Validation](manifest.md#validation).
 
 ### Parameter design <a id="parameter-design"></a>
 
@@ -92,17 +95,7 @@ Two time points: `__init__` takes `signature.params`, construction-time tensors 
 
 - **Kernel construction:** in `_eager_forward`, through `kernel_for` — never in the traced `forward`, which is one call to the op's operator ([Compile Dispatch Boundary](ops-design.md#compile-dispatch-boundary)). See [Slot S16](op-slot-rules.md#slot-s16).
 - **`_validate_dtypes`:** runs on every call, and is the only place an op rejects a dtype.
-- **Non-runtime consumers** (validator, graph compiler): call `_infer_output_shapes` with concrete shape tuples without constructing tensors. Roofline consumers use interfaces in [`roofline.md`](roofline.md).
-
-### Consistency enforcement
-
-| Check                                                           | Mechanism                                                          |
-| --------------------------------------------------------------- | ------------------------------------------------------------------ |
-| Manifest entries are well-formed signatures                     | Validator (CI), [manifest.md § Validation](manifest.md#validation) |
-| `__init__` matches `signature.params`                           | Validator signature check                                          |
-| `forward` starts with the signature's inputs and output buffers | Validator signature check                                          |
-
-Checks beyond this table are tracked as separate issues, not as spec status.
+- **Non-runtime consumers** (validator, graph compiler): call `_infer_output_shapes` with concrete shape tuples, and the input dtypes (keyword `dtypes`) where an output shape reads a dtype index, without constructing tensors. Roofline consumers use interfaces in [`roofline.md`](roofline.md).
 
 ## Development Path (Appendix) <a id="development-path"></a>
 

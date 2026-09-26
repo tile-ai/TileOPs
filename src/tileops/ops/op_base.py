@@ -57,9 +57,14 @@ class _Unresolved:
 _UNRESOLVED = _Unresolved()
 
 
+# Every dispatch key a created op class declares in ``kernel_types``. Constructing an op imports
+# it and every sub-op it builds, so every key that can replace something in that op is here.
+_DISPATCH_KEYS: set[str] = set()
+
+
 @functools.lru_cache(maxsize=1)
 def _declared_dispatch_keys() -> frozenset[str]:
-    """Every dispatch key the manifest declares, across all ops.
+    """Every dispatch key a legacy manifest entry declares in ``source.kernel_map``.
 
     A key outside this set names no op's kernel anywhere: a typo, or a name that
     was renamed out of existence. A key inside it may still be unknown to the op
@@ -188,6 +193,7 @@ class Op(ABC):
         its own override, or is marked ``status: spec-only``.
         """
         super().__init_subclass__(**kwargs)
+        _DISPATCH_KEYS.update(cls.__dict__.get("kernel_types", {}))
         from tileops.ops._compile_boundary_codegen import maybe_install_compile_boundary
         from tileops.ops._dtype_codegen import maybe_install_validator
         from tileops.ops._params_codegen import maybe_install_param_names
@@ -202,10 +208,27 @@ class Op(ABC):
         if not converted:
             maybe_install_compile_boundary(cls)
 
+    # The op's dispatch keys and the kernel class each names. An op with no kernel of its own
+    # (a composite) declares none.
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = MappingProxyType({})
+
     @property
-    @abstractmethod
     def default_kernel_map(self) -> dict[str, Kernel]:
-        raise NotImplementedError("Op must implement default_kernel_map")
+        """This instance's dispatch table: every entry of ``kernel_types``, unless a
+        construction parameter selects some of them."""
+        return dict(self.kernel_types)
+
+    @property
+    def last_call(self) -> object:
+        """The ``SignatureCall`` of this op's last completed call: its ``ix``, tensors and effects.
+
+        Raises:
+            RuntimeError: No call has completed yet.
+        """
+        call = getattr(self, "_signature_call", None)
+        if call is None:
+            raise RuntimeError(f"{type(self).__name__}: no call has completed yet")
+        return call
 
     # Operators this op registers on the torch.compile boundary. Naming them is what lets
     # a test assert the traced graph holds nothing else, which is what keeps the graph the
@@ -215,10 +238,11 @@ class Op(ABC):
     # ``register_compile_contract`` requires.
     compile_op_names: ClassVar[tuple[str, ...]] = ()
 
-    # One ``OperatorSpec`` per operator the op registers; ``_compile_boundary_codegen``
-    # turns them into the registrations and fills in ``compile_op_names``. Empty leaves
-    # the op off the boundary.
-    compile_boundary: ClassVar[tuple[object, ...]] = ()
+    # The compile boundary this op declares, which is its claim that it supports
+    # ``fullgraph=True``: ``True`` for a parametric entry, whose operators the signature
+    # generates; for a legacy entry, one ``OperatorSpec`` per operator it registers. Empty
+    # leaves the op off the boundary.
+    compile_boundary: ClassVar["bool | tuple[object, ...]"] = ()
 
     # Injected implementation objects ``__init__`` takes beyond ``signature.params`` and the
     # execution-policy parameters every op takes (docs/design/manifest.md § Signature).
@@ -283,6 +307,10 @@ class Op(ABC):
             The read half in bytes, or ``None`` when the call has not bound what
             the write half needs.
         """
+        if getattr(type(self), "_signature", None) is not None:
+            call = self.last_call
+            write_bytes = sum(call.bytes(t) * w for t, _, w in call.traffic)
+            return int(self.eval_roofline()[1]) - write_bytes
         write_bytes = self._roofline_write_bytes()
         if write_bytes is None:
             return None
@@ -385,7 +413,7 @@ class Op(ABC):
         Raises:
             ValueError: *override* names a key nothing declares.
         """
-        declared = _declared_dispatch_keys()
+        declared = _DISPATCH_KEYS | _declared_dispatch_keys()
         if not declared:
             return
         stale = sorted(set(override) - declared - set(own))

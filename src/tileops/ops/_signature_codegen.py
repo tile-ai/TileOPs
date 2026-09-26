@@ -1,12 +1,13 @@
 """Methods generated from a parametric signature (docs/design/manifest.md § Call Semantics).
 
-`install` gives an op class, from its manifest entry, the call checks, `_validate_dtypes`,
-`_infer_output_shapes`, `_check_construction`, `eval_roofline` and, when the class declares a
-compile boundary, one operator per effect branch. The check of each discriminant point is
-emitted as Python source when the class is created, so a call parses no expression string and
-a traced call only looks its check up. Under SymInt the emitted code lowers `and`, `or`,
-`not`, conditionals and sequence equality to their symbolic forms, and a refinement becomes
-`torch._check`.
+`install` gives an op class, from its manifest entry, `_check_construction`, the call checks,
+`_validate_dtypes`, `_infer_output_shapes`, `eval_roofline` and, when the class declares a
+compile boundary, one operator per effect branch. Each check is emitted as Python source when
+the class is created, one per discriminant point, so a call parses no expression string and a
+traced call only looks its check up. What construction can decide is checked there, once; the
+call check continues from what construction solved. Under SymInt the emitted code lowers
+`and`, `or`, `not`, conditionals and sequence equality to their symbolic forms, and a
+refinement becomes `torch._check`. A failure names the declaration it came from.
 """
 
 from __future__ import annotations
@@ -14,10 +15,8 @@ from __future__ import annotations
 import abc
 import ast
 import copy
-import importlib
 import inspect
 import itertools
-import math
 import string
 from dataclasses import dataclass
 
@@ -25,36 +24,38 @@ import torch
 from torch._guards import detect_fake_mode
 from torch.fx.experimental.symbolic_shapes import sym_and, sym_or
 
-from tileops.manifest import LEGACY_FAMILIES, load_adts, try_load_entry
+from tileops.manifest import load_adts, try_load_entry
 from tileops.manifest.dtype_rules import DTYPE_BITS
+from tileops.manifest.expr import SignatureError, fold, infer_kinds, names, parse, value_at
+from tileops.manifest.plan import EntryPlan, PlanBranch, entry_plan
 from tileops.manifest.primitives import namespace
 from tileops.manifest.signature import (
     Signature,
-    SignatureError,
-    _discriminant_axes,
-    _emitted,
-    _field_kind,
-    _parse,
-    _passed,
-    _value_at,
-    branch,
     complete_point,
-    names,
+    discriminant_axes,
+    expand,
+    is_legacy,
+    kind_env,
+    output_emitted,
     param_kind,
-    parse_signature,
     rejecting_rule,
-    roofline_plan,
+    tensor_passed,
     unification,
 )
-from tileops.manifest.workload import RowError, _param_value
+from tileops.manifest.values import convert
+from tileops.manifest.workload import CallView
 
 from ._compile_boundary_codegen import operator_name
 from .compile_boundary import get_instance
 
-__all__ = ["SignatureCall", "install", "maybe_install_signature"]
+__all__ = ["CheckError", "SignatureCall", "install", "maybe_install_signature"]
 
 
 # ---------------------------------------------------------------- run-time helpers
+
+
+class CheckError(ValueError):
+    """A call or construction outside its signature; the message names the declaration."""
 
 
 def _and(value, *rest):
@@ -101,7 +102,7 @@ def _require(value, message: str) -> None:
     if isinstance(value, torch.SymBool):
         torch._check(value, lambda: message)
     elif not value:
-        raise ValueError(message)
+        raise CheckError(message)
 
 
 def _solve(size, axis, message: str):
@@ -119,16 +120,22 @@ def _dname(dtype) -> str | None:
     return None if dtype is None else str(dtype).removeprefix("torch.")
 
 
+def _field(value, name: str):
+    """An ADT field as expressions read it: an enum field by its `.value`."""
+    field = getattr(value, name)
+    return getattr(field, "value", field)
+
+
 def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
     """The call device (docs/design/manifest.md § Call Semantics)."""
     devices = {t.device for t in tensors}
     if len(devices) > 1:
-        raise ValueError(
+        raise CheckError(
             f"{name} needs every tensor on one device; got {sorted(map(str, devices))}"
         )
     for t in cpu:
         if t.device.type != "cpu":
-            raise ValueError(f"{name}: a tensor declaring `device: cpu` is on {t.device}")
+            raise CheckError(f"{name}: a tensor declaring `device: cpu` is on {t.device}")
     if devices:
         return devices.pop()
     declared = op._declared_device() if hasattr(op, "_declared_device") else None
@@ -136,7 +143,7 @@ def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
         return declared
     held = {t.device for t in ctor}
     if len(held) > 1:
-        raise ValueError(f"{name}: construction-time tensors are on {sorted(map(str, held))}")
+        raise CheckError(f"{name}: construction-time tensors are on {sorted(map(str, held))}")
     if held:
         return held.pop()
     # FIXME(staged-rollout): the target's device classes are not consulted
@@ -162,10 +169,22 @@ def _placed(op, name: str, device, dtype: str):
     return tensor
 
 
+def _failed(name: str, where: str, exc: Exception) -> ValueError:
+    """The one contextual failure a generated method raises for an evaluation that failed."""
+    return ValueError(f"{name}: {where}: {exc}")
+
+
 _GLOBALS = {
     **namespace(),
     # The builtins generated code calls; expressions themselves reach only primitives.
     "__builtins__": {
+        "AttributeError": AttributeError,
+        "ArithmeticError": ArithmeticError,
+        "IndexError": IndexError,
+        "KeyError": KeyError,
+        "NameError": NameError,
+        "TypeError": TypeError,
+        "ValueError": ValueError,
         "frozenset": frozenset,
         "getattr": getattr,
         "int": int,
@@ -181,15 +200,19 @@ _GLOBALS = {
     "_require": _require,
     "_solve": _solve,
     "_dname": _dname,
+    "_field": _field,
     "_call_device": _call_device,
-    "torch": torch,
     "_placed": _placed,
+    "_failed": _failed,
+    "CheckError": CheckError,
+    "torch": torch,
 }
 
 
 @dataclass(frozen=True)
-class SignatureCall:
-    """What one checked call bound: `ix`, every present tensor's shape and dtype, its effects."""
+class SignatureCall(CallView):
+    """One checked call: `ix`, every present tensor's shape and dtype, its effects, and the
+    metadata tensors whose values decide its traffic (docs/design/roofline.md)."""
 
     ix: dict
     # Present tensors, outputs included, as `(shape, dtype name)`.
@@ -200,10 +223,13 @@ class SignatureCall:
     # The inputs this call writes, and whether a caller passed `out`.
     written: frozenset = frozenset()
     out: bool = False
+    # The discriminant point the call took, as its plan keys it.
+    key: tuple = ()
+    # The metadata tensors the call passed: inputs declaring `values`.
+    metadata: dict = None
 
-    def bytes(self, name: str) -> int:
-        shape, dtype = self.tensors[name]
-        return (math.prod(shape) * DTYPE_BITS[dtype] + 7) // 8
+    def values(self, name: str) -> list:
+        return self.metadata[name].tolist()
 
     def derived_bytes(self) -> int:
         return sum(self.bytes(t) * (r + w) for t, r, w in self.traffic)
@@ -264,10 +290,10 @@ class _Lower(ast.NodeTransformer):
             return node.value
         if (
             isinstance(node.value, ast.Name)
-            and node.value.id in self.sig.params
+            and node.value.id in {*self.sig.params, *self.sig.let}
             and node.attr != "kind"
         ):
-            # An ADT enum field reads as its `.value`.
+            # An ADT field, on a parameter or a `let` holding one, reads an enum by its `.value`.
             return _call("_field", [node.value, ast.Constant(node.attr)])
         return node
 
@@ -290,19 +316,17 @@ class _Lower(ast.NodeTransformer):
         return node
 
 
-def _field(value, name: str):
-    field = getattr(value, name)
-    return getattr(field, "value", field)
-
-
-_GLOBALS["_field"] = _field
-
-
 def _code(sig: Signature, node: ast.expr, present=None) -> str:
     return ast.unparse(ast.fix_missing_locations(_Lower(sig, present).visit(copy.deepcopy(node))))
 
 
-# ---------------------------------------------------------------- the check at one point
+def _compiled(name: str, source: str, where: str, extra: dict | None = None):
+    scope = {**_GLOBALS, **(extra or {})}
+    exec(compile(source, f"<{where}>", "exec"), scope)  # noqa: S102
+    return scope[name]
+
+
+# ---------------------------------------------------------------- effects
 
 
 def _written(sig: Signature, point: dict, present: set[str]) -> frozenset:
@@ -314,7 +338,7 @@ def _written(sig: Signature, point: dict, present: set[str]) -> frozenset:
         and (
             t.write_only
             or t.mutated is True
-            or (isinstance(t.mutated, str) and _value_at(_parse(t.mutated), point) is True)
+            or (isinstance(t.mutated, str) and value_at(parse(t.mutated), point) is True)
         )
     )
 
@@ -333,193 +357,232 @@ def _traffic(sig: Signature, point: dict, present: set[str]) -> tuple:
     return tuple(out)
 
 
-class _Emitter:
-    """The check at one discriminant point, as Python source.
+# ---------------------------------------------------------------- construction
 
-    With `shapes_only` it takes shape tuples and yields output shapes: no dtype or device.
+
+class _Construction:
+    """What construction decides at one construction point: the obligations it checks and the
+    names it solves, which the call check at every point above it continues from."""
+
+    def __init__(self, plan: EntryPlan, point: dict, env):
+        """Decide, at construction point *point* of *plan*, what construction checks and solves."""
+        sig = plan.sig
+        self.point, self.rejected = point, rejecting_rule(sig, point)
+        self.known = set(sig.params)
+        # Construction-time tensors construction unifies.
+        self.tensors = {}
+        for t in sig.ctor_tensors.values():
+            if point.get(f"present({t.name})") is not True:
+                continue
+            try:
+                self.tensors[t.name] = fold(expand(sig, t.shape, point), point)
+            except SignatureError:
+                continue
+        self.dtypes = {}
+        for t in self.tensors:
+            node = fold(parse(sig.ctor_tensors[t].dtype), point)
+            if isinstance(node, ast.Name) and node.id in sig.forall and node.id not in self.known:
+                self.dtypes[t] = node.id
+                self.known.add(node.id)
+        self.lets = {}
+        for n, e in sig.let.items():
+            try:
+                self.lets[n] = fold(parse(e), point, f"let {n}")
+            except SignatureError:
+                continue
+        self.steps = unification(self.tensors, self.known, self.lets)
+        self.known |= {s.name for s in self.steps if s.name}
+        # The construction-time tensor elements construction bound or checked.
+        self.done = {(s.tensor, s.index) for s in self.steps if s.tensor is not None}
+        # Tensors whose rank construction can check: every spliced length is known here.
+        self.ranked = {
+            t
+            for t, node in self.tensors.items()
+            if all(names(e.value) <= self.known for e in node.elts if isinstance(e, ast.Starred))
+        }
+        # Refinements whose activation and value construction has.
+        self.rules = {}
+        for i, r in enumerate(sig.rules):
+            try:
+                node = fold(parse(r), point, f"shape_rules[{i}]")
+            except SignatureError:
+                continue
+            if names(node) <= self.known and not (
+                isinstance(node, ast.Constant) and node.value is True
+            ):
+                self.rules[i] = node
+        # Axes of inputs and outputs present here that are not a `Dim` and that construction has.
+        self.axes = {}
+        for t in (*sig.inputs.values(), *sig.outputs.values()):
+            if point.get(f"present({t.name})") is not True:
+                continue
+            try:
+                node = fold(expand(sig, t.shape, point), point)
+            except SignatureError:
+                continue
+            for i, e in enumerate(node.elts):
+                value = e.value if isinstance(e, ast.Starred) else e
+                if names(value) <= self.known and _signed(value, e, env):
+                    self.axes[(t.name, i)] = e
+
+    def source(self, sig: Signature) -> str:
+        e = _Emitter(sig)
+        for p, decl in sig.params.items():
+            dtype = param_kind(decl.get("type"), sig.adts).payload().tag == "DType"
+            e.emit(f"{p} = {f'_dname(self.{p})' if dtype else f'self.{p}'}")
+        for t in sig.ctor_tensors:
+            present = self.point.get(f"present({t})")
+            if present is True:
+                e.require(f"self.{t} is not None", f"construction-time tensor {t!r} is required")
+                e.require(
+                    f"isinstance(self.{t}, torch.Tensor)",
+                    f"construction-time tensor {t!r} is not a tensor",
+                )
+            elif present is False:
+                e.require(
+                    f"self.{t} is None", f"{t!r} is given where its presence condition is false"
+                )
+        if self.rejected is not None:
+            e.emit(f"raise CheckError({f'{sig.name}: refinement fails: {self.rejected}'!r})")
+            return e.function("construct", "self")
+        for t in self.tensors:
+            e.emit(f"_s_{t} = tuple(self.{t}.shape)")
+        for t, index in self.dtypes.items():
+            e.bind_dtype(index, f"_dname(self.{t}.dtype)", t)
+        e.unify(self.tensors, self.steps, self.lets, self.ranked, set())
+        for i, rule in self.rules.items():
+            e.where(f"shape_rules[{i}]")
+            e.require(_code(sig, rule), f"shape_rules[{i}]: {sig.rules[i]}")
+        for (t, i), axis in self.axes.items():
+            e.nonnegative(t, i, axis)
+        e.emit(f"return {{{', '.join(f'{n!r}: {n}' for n in sorted(self.known))}}}")
+        return e.function("construct", "self")
+
+
+def _signed(value: ast.expr, element: ast.expr, env) -> bool:
+    """Whether an axis carries a non-negativity obligation: its kind is not a `Dim`."""
+    kind, _ = infer_kinds(value, env, "")
+    if isinstance(element, ast.Starred):
+        kind = kind.sequence().item if kind is not None and kind.sequence() is not None else None
+    return not (kind is not None and kind.tag == "Int" and kind.nonneg)
+
+
+# ---------------------------------------------------------------- the check at one point
+
+
+class _Emitter:
+    """Python source for one generated function, statement by statement.
+
+    Every statement that evaluates a declaration is preceded by its name, and the function's
+    one handler turns any failure an evaluation raises into a failure naming it.
     """
 
-    def __init__(
-        self, sig: Signature, point: dict, shapes_only: bool = False, rejected: str | None = None
-    ):
-        """Emit the check *sig* states at *point*; a *rejected* point fails after presence."""
-        self.sig, self.point, self.shapes_only, self.lines = sig, point, shapes_only, []
-        self.rejected = rejected
+    def __init__(self, sig: Signature):
+        """Start an empty function body for *sig*."""
+        self.sig, self.lines = sig, []
 
     def emit(self, line: str) -> None:
-        self.lines.append(f"    {line}")
+        self.lines.append(f"        {line}")
+
+    def where(self, text: str) -> None:
+        self.emit(f"_w = {text!r}")
 
     def require(self, cond: str, message: str) -> None:
         self.emit(f"_require({cond}, {f'{self.sig.name}: {message}'!r})")
 
-    def source(self) -> str:  # noqa: C901 - one pass per stage of the check
-        sig, point, shapes_only = self.sig, self.point, self.shapes_only
-        present = {
-            t.name
-            for t in (*sig.call_tensors.values(), *sig.outputs.values())
-            if (_emitted if t.name in sig.outputs else _passed)(sig, t, point)
-        }
-        buffer = point.get("present(out)", False)
-        known = set(sig.params)
-        for p, decl in sig.params.items():
-            dtype = param_kind(decl.get("type"), sig.adts).payload().tag == "DType"
-            read = f"_dname(self.{p})" if dtype else f"self.{p}"
-            self.emit(f"{p} = {read}")
-        for t in sig.inputs:
-            self.emit(f"{t} = tensors.get({t!r})")
-            if t in present:
-                self.require(f"{t} is not None", f"{t!r} is required")
-                if not shapes_only:
-                    self.require(f"isinstance({t}, torch.Tensor)", f"{t!r} is not a tensor")
-            else:
-                self.require(
-                    f"{t} is None", f"{t!r} is given where its presence condition is false"
-                )
-        for t in sig.ctor_tensors:
-            if t in present:
-                self.require(f"self.{t} is not None", f"construction-time tensor {t!r} is required")
-        if self.rejected is not None:
-            self.emit(f"raise ValueError({f'{sig.name}: refinement fails: {self.rejected}'!r})")
-            return f"def {'shapes' if shapes_only else 'check'}(self, tensors):\n" + "\n".join(
-                self.lines
-            )
-        b = branch(sig, point)
-        if buffer:
-            self.emit("out = tensors['out']")
-            if not shapes_only:
-                self.require("isinstance(out, torch.Tensor)", "'out' is not a tensor")
-        inputs = [t for t in sig.inputs if t in present]
-        ctor = [t for t in sig.ctor_tensors if t in present]
-        if shapes_only:
-            for t in inputs:
-                self.emit(f"_s_{t} = tuple({t})")
-            for t in ctor:
-                self.emit(f"_s_{t} = tuple(self.{t}.shape)")
-        else:
-            self._device_and_dtypes(inputs, ctor, known, buffer)
-        self._shapes(b, [*inputs, *ctor], known)
-        for i, rule in enumerate(b.rules):
-            if isinstance(rule, ast.Constant) and rule.value is True:
-                continue
-            if shapes_only and names(rule) & {n for n in sig.forall if sig.kind(n).tag == "DType"}:
-                continue
-            self.require(_code(sig, rule), f"shape_rules[{i}]: {sig.rules[i]}")
-        outputs = [o for o in sig.outputs if o in present]
-        for o in outputs:
-            axes = [
-                f"*tuple({_code(sig, a.value)})" if isinstance(a, ast.Starred) else _code(sig, a)
-                for a in b.shapes[o].elts
+    def function(self, name: str, args: str) -> str:
+        return "\n".join(
+            [
+                f"def {name}({args}):",
+                "    _w = 'the signature'",
+                "    try:",
+                *(self.lines or ["        pass"]),
+                "    except CheckError:",
+                "        raise",
+                "    except (ValueError, TypeError, ArithmeticError, IndexError, KeyError, AttributeError, NameError) as _e:",
+                f"        raise _failed({self.sig.name!r}, _w, _e) from None",
             ]
-            self.emit(f"_s_{o} = ({', '.join(axes)}{',' if len(axes) == 1 else ''})")
-            self.emit(f"for _v in _s_{o}:")
-            self.emit(f"    _require(_v >= 0, {f'{sig.name}: an axis of {o} is negative'!r})")
-            if shapes_only:
-                continue
-            self.emit(f"_d_{o} = {_code(sig, _parse(sig.outputs[o].dtype))}")
-            if buffer and sig.outputs[o].buffer:
-                self.require(
-                    f"_eq(tuple(out.shape), _s_{o})", f"out does not have the shape of {o}"
-                )
-                self.require(f"_dname(out.dtype) == _d_{o}", f"out does not have the dtype of {o}")
-                self.require("out.device == _device", "out is not on the call device")
-                if sig.outputs[o].contiguous:
-                    self.require("out.is_contiguous()", "out must be contiguous")
-        if shapes_only:
-            self.emit(f"return {{{', '.join(f'{o!r}: _s_{o}' for o in outputs)}}}")
-            return "def shapes(self, tensors):\n" + "\n".join(self.lines)
-        solved = sorted(known - set(sig.params))
-        self.emit(f"_ix = {{{', '.join(f'{n!r}: {n}' for n in (*sig.params, *solved))}}}")
-        shapes = ", ".join(f"{t!r}: (_s_{t}, _d_{t})" for t in (*inputs, *ctor, *outputs))
-        written = _written(sig, point, present)
-        traffic = _traffic(sig, point, present)
-        self.emit(
-            f"return _SignatureCall(_ix, {{{shapes}}}, {traffic!r}, _device, "
-            f"frozenset({sorted(written)!r}), {buffer!r})"
         )
-        return "def check(self, tensors):\n" + "\n".join(self.lines)
 
-    def _device_and_dtypes(
-        self, inputs: list[str], ctor: list[str], known: set[str], buffer
-    ) -> None:
-        """The call device, then dtypes: inputs bind them, construction-time tensors are cast."""
-        sig = self.sig
-        cpu = [t for t in inputs if sig.inputs[t].cpu]
-        held_cpu = [f"self.{t}" for t in ctor if sig.ctor_tensors[t].cpu]
-        args = ["".join(f"{t}, " for t in inputs if t not in cpu)]
-        args.append("".join(f"{t}, " for t in [*cpu, *held_cpu]))
-        args.append("".join(f"self.{t}, " for t in ctor if not sig.ctor_tensors[t].cpu))
-        self.emit(
-            f"_device = _call_device({sig.name!r}, self, ({args[0]}), ({args[1]}), ({args[2]}))"
-        )
-        for t in inputs:
-            self.emit(f"_s_{t} = tuple({t}.shape)")
-            self.emit(f"_d_{t} = _dname({t}.dtype)")
-            if sig.inputs[t].contiguous:
-                self.require(f"{t}.is_contiguous()", f"{t} must be contiguous")
-        deferred = []
-        for t in inputs:
-            node = _parse(sig.inputs[t].dtype)
-            if (
-                isinstance(node, ast.Name)
-                and node.id in sig.forall
-                and sig.kind(node.id).tag == "DType"
-            ):
-                if node.id in known:
-                    self.require(f"_d_{t} == {node.id}", f"{t} dtype differs from {node.id}")
-                else:
-                    self._bind_dtype(node.id, f"_d_{t}", t)
-                    known.add(node.id)
-            else:
-                deferred.append((t, node))
-        for t, node in deferred:
-            self.require(f"_d_{t} == {_code(sig, node)}", f"{t} dtype is not {ast.unparse(node)}")
-        for t in ctor:
-            node = _parse(sig.ctor_tensors[t].dtype)
-            unbound = isinstance(node, ast.Name) and node.id in sig.forall and node.id not in known
-            if unbound:
-                self._bind_dtype(node.id, f"_dname(self.{t}.dtype)", t)
-                known.add(node.id)
-            device = "None" if sig.ctor_tensors[t].cpu else "_device"
-            self.emit(f"{t} = _placed(self, {t!r}, {device}, {_code(sig, node)})")
-            self.emit(f"_s_{t} = tuple({t}.shape)")
-            self.emit(f"_d_{t} = {_code(sig, node)}")
-            if sig.ctor_tensors[t].contiguous:
-                self.require(f"{t}.is_contiguous()", f"{t} must be contiguous")
-        if sig.dtype_combos:
-            columns = sorted(sig.dtype_combos[0])
-            rows = sorted({tuple(r[c] for c in columns) for r in sig.dtype_combos})
-            self.require(
-                f"({', '.join(columns)},) in {rows!r}", f"{columns} is not a dtype_combos row"
-            )
-
-    def _bind_dtype(self, index: str, value: str, tensor: str) -> None:
+    def bind_dtype(self, index: str, value: str, tensor: str) -> None:
         members = sorted(self.sig.kind(index).values or ())
         self.emit(f"{index} = {value}")
         self.require(f"{index} in {tuple(members)!r}", f"{tensor} dtype is outside {members}")
 
-    def _shapes(self, b, tensors: list[str], known: set[str]) -> None:
-        """Rank checks, the inference plan's bindings, then every remaining axis equality."""
+    def bind_input_dtypes(
+        self, b, inputs: list[str], known: set[str], absent: bool = False
+    ) -> list:
+        """Bind or check each `DType` index an input's dtype `_d_<t>` names; the inputs whose
+        dtype is another expression are returned. With *absent* a dtype may be None, and an
+        index no passed dtype names is left unbound."""
+        sig, deferred, indices = self.sig, [], set()
+        for t in inputs:
+            node = b.dtypes[t]
+            if not (
+                isinstance(node, ast.Name)
+                and node.id in sig.forall
+                and sig.kind(node.id).tag == "DType"
+            ):
+                deferred.append((t, node))
+            elif absent:
+                message = f"{sig.name}: {t} dtype differs from {node.id}"
+                self.emit(f"if _d_{t} is not None:")
+                self.emit(
+                    f"    _require(_dt.setdefault({node.id!r}, _d_{t}) == _d_{t}, {message!r})"
+                )
+                indices.add(node.id)
+            elif node.id in known:
+                self.require(f"_d_{t} == {node.id}", f"{t} dtype differs from {node.id}")
+            else:
+                self.bind_dtype(node.id, f"_d_{t}", t)
+                known.add(node.id)
+        for index in sorted(indices - known):
+            members = sorted(sig.kind(index).values or ())
+            message = f"{sig.name}: {index} is outside {members}"
+            self.emit(f"if {index!r} in _dt:")
+            self.emit(f"    {index} = _dt[{index!r}]")
+            self.emit(f"    _require({index} in {tuple(members)!r}, {message!r})")
+            known.add(index)
+        return deferred
+
+    def nonnegative(self, t: str, i: int, axis: ast.expr) -> None:
+        self.where(f"tensor {t!r} shape")
+        message = f"axis {i} of {t}, {ast.unparse(axis)}, is negative"
+        if isinstance(axis, ast.Starred):
+            self.emit(f"for _v in {_code(self.sig, axis.value)}:")
+            self.emit(f"    _require(_v >= 0, {f'{self.sig.name}: {message}'!r})")
+        else:
+            self.require(f"{_code(self.sig, axis)} >= 0", message)
+
+    def unify(self, nodes: dict, steps: list, lets: dict, ranked: set, skip: set) -> None:
+        """Rank checks of `ranked`, the plan's bindings, then every remaining axis equality;
+        elements in `skip` were bound or checked at construction."""
         sig = self.sig
-        nodes = {t: b.shapes[t] for t in tensors}
-        for t, node in nodes.items():
+        for t in ranked:
+            node = nodes[t]
             fixed = sum(not isinstance(e, ast.Starred) for e in node.elts)
             op = ">=" if fixed < len(node.elts) else "=="
             self.require(f"len(_s_{t}) {op} {fixed}", f"{t} needs rank {op} {fixed}")
 
         def length(parts) -> str:
-            lengths = [
-                f"len({_code(sig, p.value)})" if isinstance(p, ast.Starred) else "1" for p in parts
-            ]
-            return " + ".join(lengths) or "0"
+            return (
+                " + ".join(
+                    f"len({_code(sig, p.value)})" if isinstance(p, ast.Starred) else "1"
+                    for p in parts
+                )
+                or "0"
+            )
 
         checks = []
-        for step in unification(nodes, known, b.lets):
-            if step.name:
-                known.add(step.name)
+        for step in steps:
             if step.action == "let":
-                self.emit(f"{step.name} = {_code(sig, b.lets[step.name])}")
+                self.where(f"let {step.name}")
+                self.emit(f"{step.name} = {_code(sig, lets[step.name])}")
+                continue
+            if (step.tensor, step.index) in skip:
                 continue
             t, e = step.tensor, nodes[step.tensor].elts[step.index]
+            self.where(f"tensor {t!r} shape")
             start = length(step.before) if step.before is not None else None
             end = f"len(_s_{t}) - ({length(step.after)})" if step.after is not None else None
             if isinstance(e, ast.Starred):
@@ -537,14 +600,176 @@ class _Emitter:
             else:
                 message = f"{sig.name}: {t} axis {step.index} is not {ast.unparse(e)}"
                 self.emit(
-                    f"{step.name} = _solve(_s_{t}[{index}], lambda {step.name}: {_code(sig, e)}, "
-                    f"{message!r})"
+                    f"{step.name} = _solve(_s_{t}[{index}], lambda {step.name}: {_code(sig, e)}, {message!r})"
                 )
-        for t, node in nodes.items():
-            if any(isinstance(e, ast.Starred) for e in node.elts):
-                self.require(f"len(_s_{t}) == {length(node.elts)}", f"{t} has the wrong rank")
+        for t in ranked:
+            if any(isinstance(e, ast.Starred) for e in nodes[t].elts):
+                self.require(f"len(_s_{t}) == {length(nodes[t].elts)}", f"{t} has the wrong rank")
         for cond, t, e in checks:
+            self.where(f"tensor {t!r} shape")
             self.require(cond, f"{t} shape does not match {ast.unparse(e)}")
+
+
+class _CallCheck:
+    """The call check at one discriminant point, as Python source.
+
+    With `shapes_only` it takes shape tuples and yields output shapes: no dtype or device.
+    """
+
+    def __init__(
+        self, plan: EntryPlan, point: dict, key: tuple, built: _Construction, env, shapes_only: bool
+    ):
+        """The check of *plan* at *point*, keyed *key*, continuing from construction *built*."""
+        self.plan, self.point, self.key, self.built, self.env = plan, point, key, built, env
+        self.shapes_only = shapes_only
+
+    def source(self) -> str:  # noqa: C901 - one pass per stage of the check
+        plan, point, built, shapes_only = self.plan, self.point, self.built, self.shapes_only
+        sig = plan.sig
+        e = _Emitter(sig)
+        name = "shapes" if shapes_only else "check"
+        b = plan.branch(point)
+        present = set(b.shapes)
+        buffer = point.get("present(out)", False)
+        e.emit("_k = self._construction_ix")
+        for n in sorted(built.known):
+            e.emit(f"{n} = _k[{n!r}]")
+        for t in sig.inputs:
+            e.emit(f"{t} = tensors.get({t!r})")
+            if t in present:
+                e.require(f"{t} is not None", f"{t!r} is required")
+                if not shapes_only:
+                    e.require(f"isinstance({t}, torch.Tensor)", f"{t!r} is not a tensor")
+            else:
+                e.require(f"{t} is None", f"{t!r} is given where its presence condition is false")
+        rejected = rejecting_rule(sig, point)
+        if rejected is not None:
+            e.emit(f"raise CheckError({f'{sig.name}: refinement fails: {rejected}'!r})")
+            return e.function(name, "self, tensors, dtypes" if shapes_only else "self, tensors")
+        if buffer:
+            e.emit("out = tensors['out']")
+            if not shapes_only:
+                e.require("isinstance(out, torch.Tensor)", "'out' is not a tensor")
+        inputs = [t for t in sig.inputs if t in present]
+        ctor = [t for t in sig.ctor_tensors if t in present]
+        known = set(built.known)
+        dtype_indices = {n for n in sig.forall if sig.kind(n).tag == "DType"}
+        if shapes_only:
+            for t in inputs:
+                e.emit(f"_s_{t} = tuple({t})")
+                e.emit(f"_d_{t} = _dname(dtypes.get({t!r}))")
+            for t in ctor:
+                e.emit(f"_s_{t} = tuple(self.{t}.shape)")
+            e.emit("_dt = {}")
+            e.bind_input_dtypes(b, inputs, known, absent=True)
+        else:
+            self._device_and_dtypes(e, b, inputs, ctor, known)
+        nodes = {t: b.shapes[t] for t in (*inputs, *ctor)}
+        ranked = {t for t in nodes if t not in built.ranked}
+        e.unify(nodes, unification(nodes, known, b.lets), b.lets, ranked, built.done)
+        for i, rule in enumerate(b.rules):
+            if (isinstance(rule, ast.Constant) and rule.value is True) or i in built.rules:
+                continue
+            if shapes_only and names(rule) & dtype_indices:
+                continue
+            e.where(f"shape_rules[{i}]")
+            e.require(_code(sig, rule), f"shape_rules[{i}]: {sig.rules[i]}")
+        outputs = [o for o in sig.outputs if o in present]
+        for o in outputs:
+            e.where(f"tensor {o!r} shape")
+            axes = [
+                f"*tuple({_code(sig, a.value)})" if isinstance(a, ast.Starred) else _code(sig, a)
+                for a in b.shapes[o].elts
+            ]
+            e.emit(f"_s_{o} = ({', '.join(axes)}{',' if len(axes) == 1 else ''})")
+            for i, a in enumerate(b.shapes[o].elts):
+                value = a.value if isinstance(a, ast.Starred) else a
+                if (o, i) not in built.axes and _signed(value, a, self.env):
+                    e.nonnegative(o, i, a)
+            if shapes_only:
+                continue
+            e.where(f"tensor {o!r} dtype")
+            e.emit(f"_d_{o} = {_code(sig, b.dtypes[o])}")
+            if buffer and sig.outputs[o].buffer:
+                e.require(f"_eq(tuple(out.shape), _s_{o})", f"out does not have the shape of {o}")
+                e.require(f"_dname(out.dtype) == _d_{o}", f"out does not have the dtype of {o}")
+                e.require("out.device == _device", "out is not on the call device")
+                if sig.outputs[o].contiguous:
+                    e.require("out.is_contiguous()", "out must be contiguous")
+        if shapes_only:
+            e.emit(f"return {{{', '.join(f'{o!r}: _s_{o}' for o in outputs)}}}")
+            return e.function(name, "self, tensors, dtypes")
+        values = {n for n, k in sig.forall.items() if k == "Seq[Int]"}
+        solved = {s.name for s in unification(nodes, known, b.lets) if s.name}
+        ix = sorted((known | solved) - values)
+        e.emit(f"_ix = {{{', '.join(f'{n!r}: {n}' for n in ix)}}}")
+        shapes = ", ".join(f"{t!r}: (_s_{t}, _d_{t})" for t in (*inputs, *ctor, *outputs))
+        metadata = ", ".join(
+            f"{t!r}: {t}" for t in (*inputs, *ctor) if sig.call_tensors[t].values is not None
+        )
+        e.emit(
+            f"return _SignatureCall(_ix, {{{shapes}}}, {_traffic(sig, point, present)!r}, _device, "
+            f"frozenset({sorted(_written(sig, point, present))!r}), {buffer!r}, {self.key!r}, {{{metadata}}})"
+        )
+        return e.function(name, "self, tensors")
+
+    def _device_and_dtypes(
+        self, e: _Emitter, b: PlanBranch, inputs: list[str], ctor: list[str], known: set[str]
+    ) -> None:
+        """The call device, then dtypes: inputs bind them, construction-time tensors are cast."""
+        sig = self.plan.sig
+        cpu = [t for t in inputs if sig.inputs[t].cpu]
+        held_cpu = [f"self.{t}" for t in ctor if sig.ctor_tensors[t].cpu]
+        args = ["".join(f"{t}, " for t in inputs if t not in cpu)]
+        args.append("".join(f"{t}, " for t in [*cpu, *held_cpu]))
+        args.append("".join(f"self.{t}, " for t in ctor if not sig.ctor_tensors[t].cpu))
+        e.emit(f"_device = _call_device({sig.name!r}, self, ({args[0]}), ({args[1]}), ({args[2]}))")
+        for t in inputs:
+            e.emit(f"_s_{t} = tuple({t}.shape)")
+            e.emit(f"_d_{t} = _dname({t}.dtype)")
+            if sig.inputs[t].contiguous:
+                e.require(f"{t}.is_contiguous()", f"{t} must be contiguous")
+        for t, node in e.bind_input_dtypes(b, inputs, known):
+            e.where(f"tensor {t!r} dtype")
+            e.require(f"_d_{t} == {_code(sig, node)}", f"{t} dtype is not {ast.unparse(node)}")
+        for t in ctor:
+            node = b.dtypes[t]
+            if isinstance(node, ast.Name) and node.id in sig.forall and node.id not in known:
+                e.bind_dtype(node.id, f"_dname(self.{t}.dtype)", t)
+                known.add(node.id)
+            e.where(f"tensor {t!r} dtype")
+            device = "None" if sig.ctor_tensors[t].cpu else "_device"
+            e.emit(f"{t} = _placed(self, {t!r}, {device}, {_code(sig, node)})")
+            e.emit(f"_s_{t} = tuple({t}.shape)")
+            e.emit(f"_d_{t} = {_code(sig, node)}")
+            if sig.ctor_tensors[t].contiguous:
+                e.require(f"{t}.is_contiguous()", f"{t} must be contiguous")
+        if sig.dtype_combos:
+            columns = sorted(sig.dtype_combos[0])
+            rows = sorted({tuple(r[c] for c in columns) for r in sig.dtype_combos})
+            e.require(
+                f"({', '.join(columns)},) in {rows!r}", f"{columns} is not a dtype_combos row"
+            )
+
+
+def _roofline_source(sig: Signature, b: PlanBranch) -> str:
+    """`roofline(_c)` at one point: its folded inline formula over the call's `ix`."""
+    tensors = {*sig.call_tensors, *sig.outputs, "out"}
+    exprs = [n for n in b.roofline.values() if n is not None]
+    read = sorted(set().union(set(), *(names(n) for n in exprs)) - tensors)
+    flops = _code(sig, b.roofline["flops"], present="_c.present")
+    moved = (
+        _code(sig, b.roofline["bytes"], present="_c.present")
+        if b.roofline["bytes"] is not None
+        else "_c.derived_bytes()"
+    )
+    return "\n".join(
+        [
+            "def roofline(_c):",
+            *(f"    {n} = _c.ix[{n!r}]" for n in read),
+            f"    return ({flops}, {moved})",
+        ]
+    )
 
 
 def _read_names(sig: Signature) -> set[str]:
@@ -557,12 +782,12 @@ def _read_names(sig: Signature) -> set[str]:
         conditions = (t.optional, t.nullable, t.mutated)
         texts += [t.shape, t.dtype, *(c for c in conditions if isinstance(c, str))]
     read = {t.name for t in sig.call_tensors.values() if t.optional is True} | {"out"}
-    return read.union(*(names(_parse(text)) for text in texts))
+    return read.union(*(names(parse(text)) for text in texts))
 
 
 def _rejecting(sig: Signature, message: str):
-    def check(self, tensors):
-        raise ValueError(f"{sig.name}: {message}")
+    def check(self, *args):
+        raise CheckError(f"{sig.name}: {message}")
 
     return check
 
@@ -573,48 +798,94 @@ class _Plan:
     Every point is emitted when the class is installed, so a traced call only looks one up.
     """
 
-    def __init__(self, sig: Signature):
-        """Emit a check, a shape-only check and the effect branch of every point of *sig*.
+    def __init__(self, plan: EntryPlan):
+        """Emit, for every point of *plan*'s signature, a check, a shape-only check, the effect
+        branch and the roofline; and for every construction point, the construction check.
 
         A point is keyed by its axes; the presence of tensors whose condition reads them is
         settled here, once.
         """
-        self.sig = sig
+        sig = self.sig = plan.sig
+        self.entry = plan
+        env, _ = kind_env(sig, {n: parse(e) for n, e in sig.let.items()})
         # An axis nothing in the signature reads cannot change its checks.
         read = _read_names(sig)
-        self.axes = {a: v for a, v in _discriminant_axes(sig).items() if a in read}
-        self.keys = sorted(
-            {key for key, _ in self.axes.values() if key is not None}
-            | {k for key, values in self.axes.values() if key is None for v in values for k in v}
-        )
-        self.points, self.checks, self.shapes, self.effects = [], {}, {}, {}
-        for combo in itertools.product(*(values for _, values in self.axes.values())):
-            base = {}
-            for (key, _), value in zip(self.axes.values(), combo, strict=True):
-                base.update(value if key is None else {key: value})
+        self.axes = {a: v for a, v in discriminant_axes(sig).items() if a in read}
+        self.built_axes = {
+            a: v for a, v in self.axes.items() if a in sig.params or a in sig.ctor_tensors
+        }
+        self.keys, self.built_keys = self._keys(self.axes), self._keys(self.built_axes)
+        self.constructions, self.checks, self.shapes, self.effects, self.roofs = {}, {}, {}, {}, {}
+        built = {}
+        for base in self._points(self.built_axes):
+            key = self.built_key(base)
+            try:
+                point = complete_point(sig, base, strict=False)
+                built[key] = _Construction(plan, point, env)
+                self.constructions[key] = _compiled(
+                    "construct", built[key].source(sig), f"{sig.name} construction"
+                )
+            except SignatureError as exc:
+                self.constructions[key] = _rejecting(sig, str(exc))
+        for base in self._points(self.axes):
             key = self.key(base)
+            construction = built.get(self.built_key(base))
             try:
                 point = complete_point(sig, base)
+                if construction is None:
+                    raise SignatureError("its construction point is outside the signature")
+                present = {t for t in sig.call_tensors if tensor_passed(sig.call_tensors[t], point)}
+                emitted = frozenset(o for o in sig.outputs if output_emitted(sig.outputs[o], point))
+                self.effects[key] = (
+                    _written(sig, point, present),
+                    point.get("present(out)", False),
+                    emitted,
+                )
+                for table, shapes_only in ((self.checks, False), (self.shapes, True)):
+                    source = _CallCheck(plan, point, key, construction, env, shapes_only).source()
+                    table[key] = _compiled(
+                        "shapes" if shapes_only else "check",
+                        source,
+                        f"{sig.name} check",
+                        {"_SignatureCall": SignatureCall},
+                    )
+                if (
+                    plan.roofline is not None
+                    and "flops" in plan.roofline
+                    and rejecting_rule(sig, point) is None
+                ):
+                    self.roofs[key] = _compiled(
+                        "roofline",
+                        _roofline_source(sig, plan.branch(point)),
+                        f"{sig.name} roofline",
+                    )
             except SignatureError as exc:
                 self.checks[key] = self.shapes[key] = _rejecting(sig, str(exc))
-                continue
-            present = {t for t in sig.call_tensors if _passed(sig, sig.call_tensors[t], point)}
-            emitted = frozenset(o for o, d in sig.outputs.items() if _emitted(sig, d, point))
-            self.points.append(point)
-            self.effects[key] = (
-                _written(sig, point, present),
-                point.get("present(out)", False),
-                emitted,
-            )
-            self.checks[key] = self._emit(point, shapes_only=False)
-            self.shapes[key] = self._emit(point, shapes_only=True)
+
+    @staticmethod
+    def _keys(axes: dict) -> list:
+        return sorted(
+            {key for key, _ in axes.values() if key is not None}
+            | {k for key, values in axes.values() if key is None for v in values for k in v}
+        )
+
+    @staticmethod
+    def _points(axes: dict):
+        for combo in itertools.product(*(values for _, values in axes.values())):
+            base = {}
+            for (key, _), value in zip(axes.values(), combo, strict=True):
+                base.update(value if key is None else {key: value})
+            yield base
 
     def key(self, point: dict) -> tuple:
         return tuple(point.get(k) for k in self.keys)
 
-    def point(self, op, tensors: dict) -> dict:
+    def built_key(self, point: dict) -> tuple:
+        return tuple(point.get(k) for k in self.built_keys)
+
+    def point(self, op, tensors: dict, axes: dict | None = None) -> dict:
         point = {}
-        for name, (key, values) in self.axes.items():
+        for name, (key, values) in (self.axes if axes is None else axes).items():
             if name in self.sig.params:
                 value = getattr(op, name)
                 if key is None:
@@ -640,32 +911,37 @@ class _Plan:
                 point[key] = tensors.get(name) is not None
         return point
 
+    def construct(self, op) -> None:
+        """Check what construction decides and keep what it solved on *op*."""
+        key = self.built_key(self.point(op, {}, self.built_axes))
+        fn = self.constructions.get(key)
+        if fn is None:
+            raise CheckError(f"{self.sig.name}: discriminants {key} are outside their types")
+        op._construction_ix = fn(op)
+
     def check(self, op, tensors: dict) -> SignatureCall:
         return self._lookup(self.checks, op, tensors)(op, tensors)
 
-    def output_shapes(self, op, shapes: dict) -> dict:
-        return self._lookup(self.shapes, op, shapes)(op, shapes)
+    def output_shapes(self, op, shapes: dict, dtypes: dict) -> dict:
+        """Output shapes from input shapes; `DType` indices bind from *dtypes* where given."""
+        return self._lookup(self.shapes, op, shapes)(op, shapes, dtypes)
 
     def effect(self, op, tensors: dict) -> tuple:
         """The inputs this call writes, whether it passes `out`, and the outputs it emits."""
         return self._lookup(self.effects, op, tensors)
 
+    def roofline(self, call: SignatureCall) -> tuple[int, int]:
+        """`(flops, bytes)` of a checked call (docs/design/roofline.md)."""
+        if self.entry.roofline is not None and "func" in self.entry.roofline:
+            return _counts(self.sig.name, self.entry.roofline["func"](call))
+        return _counts(self.sig.name, self.roofs[call.key](call))
+
     def _lookup(self, table: dict, op, tensors: dict):
         point = self.point(op, tensors)
         fn = table.get(self.key(point))
         if fn is None:
-            raise ValueError(f"{self.sig.name}: discriminants {point} are outside their types")
+            raise CheckError(f"{self.sig.name}: discriminants {point} are outside their types")
         return fn
-
-    def _emit(self, point: dict, shapes_only: bool):
-        rule = rejecting_rule(self.sig, point)
-        try:
-            source = _Emitter(self.sig, point, shapes_only, rule).source()
-        except SignatureError as exc:
-            return _rejecting(self.sig, str(exc))
-        scope = {**_GLOBALS, "_SignatureCall": SignatureCall}
-        exec(compile(source, f"<{self.sig.name} check>", "exec"), scope)  # noqa: S102
-        return scope["shapes" if shapes_only else "check"]
 
 
 def check_result(
@@ -723,136 +999,26 @@ def _shares_storage(a: torch.Tensor, b: torch.Tensor) -> bool:
     return a.untyped_storage().data_ptr() == b.untyped_storage().data_ptr()
 
 
-# ---------------------------------------------------------------- construction
-
-
-def _resolve(path: str):
-    module, _, name = path.rpartition(".")
-    return getattr(importlib.import_module(module), name)
-
-
-def _adt_classes(adt: dict) -> dict:
-    """The Python class of each constructor, and of each enum field declared with one."""
-    classes = {}
-    for ctor, spec in adt["sum"].items():
-        fields = {
-            f: _resolve(d["python"])
-            for f, d in (spec.get("fields") or {}).items()
-            if isinstance(d, dict)
-        }
-        classes[ctor] = (_resolve(spec["python"]), fields)
-    return classes
-
-
-def _adt_ok(adt: dict, classes: dict, value) -> bool:
-    """A Python ADT object against its declaration: its class, constructor and field kinds."""
-    ctor = getattr(value, "kind", None)
-    if ctor not in adt["sum"] or not isinstance(value, classes[ctor][0]):
-        return False
-    for f, decl in (adt["sum"][ctor].get("fields") or {}).items():
-        if not hasattr(value, f):
-            return False
-        raw, kind = getattr(value, f), _field_kind(decl)
-        if f in classes[ctor][1] and not isinstance(raw, classes[ctor][1][f]):
-            return False
-        v = getattr(raw, "value", raw)
-        if kind.tag == "Str":
-            ok = v in kind.values
-        elif kind.tag == "Bool":
-            ok = isinstance(v, bool)
-        else:
-            ok = isinstance(v, int) and not isinstance(v, bool) and (v >= 0 or not kind.nonneg)
-        if not ok:
-            return False
-    return True
-
-
-def _construction_check(sig: Signature):
-    """Parameter values against their `type`, construction-time tensor presence, ADT invariants."""
-    shaped = set().union(
-        set(),
-        *(names(_parse(t.shape)) for t in (*sig.call_tensors.values(), *sig.outputs.values())),
-    )
-    kinds = {p: param_kind(d.get("type"), sig.adts).payload() for p, d in sig.params.items()}
-    adts = {p: k.name for p, k in kinds.items() if k.tag == "ADT"}
-    classes = {name: _adt_classes(sig.adts[name]) for name in set(adts.values())}
-    invariants = {
-        p: {
-            ctor: compile(spec["invariant"], f"<{p} invariant>", "eval")
-            for ctor, spec in sig.adts[name]["sum"].items()
-            if "invariant" in spec
-        }
-        for p, name in adts.items()
+def _construction_check(plan: _Plan):
+    """`_check_construction`: parameter values against their `type`, construction-time tensor
+    presence, then what the construction point decides."""
+    sig = plan.sig
+    dtypes = {
+        p
+        for p, d in sig.params.items()
+        if param_kind(d.get("type"), sig.adts).payload().tag == "DType"
     }
 
     def check(self) -> None:
         for p, decl in sig.params.items():
-            value, kind = getattr(self, p), kinds[p]
-            if p in adts:
-                name = adts[p]
-                if value is not None and not _adt_ok(sig.adts[name], classes[name], value):
-                    raise ValueError(f"{sig.name}: {p} is not a {name} value")
-            else:
-                plain = _dname(value) if kind.tag == "DType" else value
-                plain = list(plain) if isinstance(plain, tuple) else plain
-                try:
-                    _param_value(sig, p, decl.get("type"), plain)
-                except RowError as exc:
-                    raise ValueError(f"{sig.name}: {exc}") from None
-            values = value if isinstance(value, (list, tuple)) else [value]
-            integral = kind.tag == "Int" or (
-                kind.tag == "Seq" and getattr(kind.item, "tag", None) == "Int"
-            )
-            if p in shaped and integral and any(v is not None and v < 0 for v in values):
-                raise ValueError(f"{sig.name}: {p} = {value} is negative")
-            code = invariants.get(p, {}).get(getattr(value, "kind", None))
-            fields = {k: _field(value, k) for k in vars(value)} if code else {}
-            if code is not None and not eval(code, dict(_GLOBALS), fields):  # noqa: S307
-                raise ValueError(f"{sig.name}: {p} breaks its invariant")
-        for t, decl in sig.ctor_tensors.items():
-            value = getattr(self, t)
-            if decl.optional is False and value is None:
-                raise ValueError(f"{sig.name}: construction-time tensor {t!r} is required")
-            if value is not None and not isinstance(value, torch.Tensor):
-                raise ValueError(f"{sig.name}: construction-time tensor {t!r} is not a tensor")
+            value = getattr(self, p)
+            try:
+                convert(_dname(value) if p in dtypes else value, decl.get("type"), sig.adts)
+            except ValueError as exc:
+                raise CheckError(f"{sig.name}: {p} = {exc}") from None
+        plan.construct(self)
 
     return check
-
-
-# ---------------------------------------------------------------- roofline
-
-
-def _roofline_method(sig: Signature, plan: dict):
-    """`eval_roofline` over the `ix` of the op's last call, from `roofline_plan`."""
-    if "func" in plan:
-        fn = plan["func"]
-
-        def eval_roofline(self):
-            return _counts(sig.name, fn(_last_call(self).ix, self))
-
-        return eval_roofline
-    tensors = {*sig.call_tensors, *sig.outputs}
-    exprs = [n for n in (plan["flops"], plan["bytes"]) if n is not None]
-    read = sorted(set().union(set(), *(names(n) for n in exprs)) - tensors - {"out"})
-    body = [f"    {n} = _c.ix[{n!r}]" for n in read]
-    flops = _code(sig, plan["flops"], present="_has")
-    moved = (
-        _code(sig, plan["bytes"], present="_has")
-        if plan["bytes"] is not None
-        else "_c.derived_bytes()"
-    )
-    source = "\n".join(
-        [
-            "def eval_roofline(self):",
-            "    _c = _last_call(self)",
-            "    _has = lambda t: _c.out if t == 'out' else t in _c.tensors",
-            *body,
-            f"    return _counts({sig.name!r}, ({flops}, {moved}))",
-        ]
-    )
-    scope = {**_GLOBALS, "_last_call": _last_call, "_counts": _counts}
-    exec(compile(source, f"<{sig.name} roofline>", "exec"), scope)  # noqa: S102
-    return scope["eval_roofline"]
 
 
 def _counts(name: str, result) -> tuple[int, int]:
@@ -1051,11 +1217,18 @@ def _schema_type(cls: type, parameter: inspect.Parameter) -> str:
 # ---------------------------------------------------------------- installation
 
 
-def _input_binder(sig: Signature, name: str, body):
-    """A method taking the signature's inputs as `forward` does, that calls `body(self, tensors)`."""
-    formal = ", ".join(f"{t}=None" if d.optional is not False else t for t, d in sig.inputs.items())
+def _input_binder(sig: Signature, name: str, body, dtypes: bool = False):
+    """A method taking the signature's inputs as `forward` does, that calls `body(self, tensors)`;
+    with *dtypes* it also takes keyword-only `dtypes`, an input name to dtype mapping, and calls
+    `body(self, tensors, dtypes)`."""
+    formal = [
+        "self",
+        *(f"{t}=None" if d.optional is not False else t for t, d in sig.inputs.items()),
+    ]
+    formal += ["*", "dtypes=None"] if dtypes else []
     tensors = ", ".join(f"{t!r}: {t}" for t in sig.inputs)
-    source = f"def {name}(self, {formal}):\n    return _body(self, {{{tensors}}})"
+    tail = ", dtypes or {}" if dtypes else ""
+    source = f"def {name}({', '.join(formal)}):\n    return _body(self, {{{tensors}}}{tail})"
     scope = {"_body": body}
     exec(compile(source, f"<{sig.name} {name}>", "exec"), scope)  # noqa: S102
     return scope[name]
@@ -1064,23 +1237,28 @@ def _input_binder(sig: Signature, name: str, body):
 def install(cls: type, entry: dict, adts: dict | None = None) -> bool:
     """Give `cls` the methods its entry's signature generates; False when the signature is malformed."""
     try:
-        sig = parse_signature(cls.__name__, entry, load_adts() if adts is None else adts)
+        entry_plan_ = entry_plan(cls.__name__, entry, load_adts() if adts is None else adts)
     except SignatureError:
         return False
-    plan = _Plan(sig)
+    plan = _Plan(entry_plan_)
+    sig = plan.sig
     cls._signature = plan
-    cls._check_construction = _construction_check(sig)
-
+    cls._check_construction = _construction_check(plan)
     cls._validate_dtypes = _input_binder(
         sig, "_validate_dtypes", lambda self, ts: plan.check(self, ts)
     )
     cls._infer_output_shapes = _input_binder(
-        sig, "_infer_output_shapes", lambda self, ss: plan.output_shapes(self, ss)
+        sig,
+        "_infer_output_shapes",
+        lambda self, ss, ds: plan.output_shapes(self, ss, ds),
+        dtypes=True,
     )
-    errors, roofline = roofline_plan(sig, entry.get("roofline"))
-    if not errors:
-        cls.eval_roofline = _roofline_method(sig, roofline)
-    if getattr(cls, "compile_boundary", ()) and sig.inputs:
+    if entry_plan_.roofline is not None:
+        cls.eval_roofline = lambda self: plan.roofline(_last_call(self))
+    # Declaring a compile boundary is the class's claim that it supports `fullgraph=True`.
+    if getattr(cls, "compile_boundary", ()) is True:
+        if not sig.inputs:
+            raise TypeError(f"{cls.__name__}: compile_boundary needs a call-time tensor input")
         boundary = _Boundary(cls, plan, entry["family"])
         cls._call_boundary = boundary.binder(cls)
     abc.update_abstractmethods(cls)
@@ -1088,10 +1266,8 @@ def install(cls: type, entry: dict, adts: dict | None = None) -> bool:
 
 
 def maybe_install_signature(cls: type) -> bool:
-    """Install for an implemented entry of a converted family; the manifest is read leniently."""
+    """Install for an implemented parametric entry; the manifest is read leniently."""
     entry = try_load_entry(cls.__name__)
-    if not isinstance(entry, dict) or entry.get("status") != "implemented":
-        return False
-    if entry.get("family") in LEGACY_FAMILIES:
+    if not isinstance(entry, dict) or entry.get("status") != "implemented" or is_legacy(entry):
         return False
     return install(cls, entry)

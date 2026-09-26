@@ -1,14 +1,13 @@
 """Methods generated from a parametric signature (docs/design/manifest.md § Call Semantics)."""
 
 import functools
-import types
 from pathlib import Path
 
 import pytest
 import torch
 import yaml
 
-from tileops.manifest.signature import parse_signature
+from tileops.manifest.plan import entry_plan
 from tileops.manifest.workload import instantiate
 from tileops.ops._signature_codegen import install
 
@@ -23,11 +22,12 @@ def _op(name, params):
     install(cls, _ENTRIES[name], _CASES["adts"])
     op = cls()
     vars(op).update(params)
+    op._check_construction()
     return op
 
 
 def _calls(name):
-    sig = parse_signature(name, _ENTRIES[name], _CASES["adts"])
+    sig = entry_plan(name, _ENTRIES[name], _CASES["adts"])
     for row in _ENTRIES[name].get("workloads", []):
         if not row.get("expect_fail"):
             for case in row.get("dtype_cases") or [{}]:
@@ -38,26 +38,18 @@ def _calls(name):
 def test_check_accepts_every_instantiated_row(name):
     for call in _calls(name):
         tensors = call.materialize(device="cpu")
-        op = _op(
-            name,
-            {
-                **call.params,
-                **{
-                    t: tensors[t]
-                    for t in _ENTRIES[name]["signature"].get("params", {})
-                    if t in tensors
-                },
-            },
-        )
+        op = _op(name, call.arguments(tensors))
         checked = type(op)._signature.check(op, tensors)
-        for t, spec in call.tensors.items():
+        for t, spec in call.specs.items():
             assert checked.tensors.get(t) == (None if spec is None else (spec.shape, spec.dtype))
 
 
 def _gemm(**roofline):
     cls = type("GemmFwdOp", (), {"__init__": lambda self, **p: vars(self).update(p)})
     install(cls, {**_ENTRIES["GemmFwdOp"], "roofline": roofline}, _CASES["adts"])
-    return cls(trans_a=False, trans_b=True)
+    op = cls(trans_a=False, trans_b=True)
+    op._check_construction()
+    return op
 
 
 _A, _B = torch.zeros(4, 8, dtype=torch.float16), torch.zeros(16, 8, dtype=torch.float16)
@@ -79,19 +71,11 @@ def test_check_rejects(tensors, message):
         type(op)._signature.check(op, tensors)
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        "ClampFwdOp",
-        "GQAPrefillVarlenFwdOp",
-        "SiluAndMulFwdOp",
-        "SumFwdOp",
-    ],
-)
+@pytest.mark.parametrize("name", ["ClampFwdOp", "GQAPrefillVarlenFwdOp", "SumFwdOp"])
 def test_check_traces_on_symints(name):
     call = next(_calls(name))
     tensors = call.materialize(device="cpu")
-    op = _op(name, call.params)
+    op = _op(name, call.arguments(tensors))
     plan = type(op)._signature
     torch._dynamo.reset()
     compiled = torch.compile(lambda ts: plan.check(op, ts).tensors, fullgraph=True, dynamic=True)
@@ -108,19 +92,25 @@ def test_eval_roofline_prices_the_last_call(monkeypatch):
     import tileops.perf.formulas
 
     monkeypatch.setattr(
-        tileops.perf.formulas, "probe_gemm", lambda ix, op: (ix["M"], ix["K"]), raising=False
+        tileops.perf.formulas,
+        "probe_gemm",
+        lambda call: (call.ix["M"], call.bytes("a")),
+        raising=False,
     )
     func = _gemm(func="tileops.perf.formulas.probe_gemm")
     func._signature_call = derived._signature_call
-    assert func.eval_roofline() == (4, 8)
+    assert func.eval_roofline() == (4, 4 * 8 * 2)
     with pytest.raises(RuntimeError, match="needs a completed call"):
         _gemm(flops="1").eval_roofline()
 
 
-def test_construction_check_refuses_a_negative_shape_parameter():
-    op = _op("DSADecodeFwdOp", {"dim_tail": -1})
-    with pytest.raises(ValueError, match="dim_tail = -1 is negative"):
-        op._check_construction()
+def test_construction_checks_what_construction_decides():
+    _op("DSADecodeFwdOp", {"dim_tail": -1})  # a signed offset carries no obligation of its own
+    with pytest.raises(ValueError, match="axis 1 of hidden_states, hidden_size, is negative"):
+        _op(
+            "FusedMoeSharedExpertFwdOp",
+            {"num_tokens": 2, "hidden_size": -1, "shared_ffn_size": None},
+        )
 
 
 def _boundary_forward(eager):
@@ -135,7 +125,6 @@ def _boundary_forward(eager):
 
 def _probe(name, signature, forward, *, boundary=False, roofline=None):
     """An `Op` subclass whose converted entry is *signature* and whose `forward` is *forward*."""
-    from tileops.ops._compile_boundary_codegen import OperatorSpec
     from tileops.ops.op_base import Op
 
     entry = {
@@ -156,7 +145,7 @@ def _probe(name, signature, forward, *, boundary=False, roofline=None):
         "_eager_forward": forward,
     }
     if boundary:
-        body["compile_boundary"] = (OperatorSpec(),)
+        body["compile_boundary"] = True
     cls = type(name, (Op,), body)
     install(cls, entry)
     return cls
@@ -173,8 +162,11 @@ def test_op_call_runs_the_check_and_keeps_its_binding():
         roofline={"flops": "M * N"},
     )
     op = probe()
+    with pytest.raises(RuntimeError, match="no call has completed"):
+        _ = op.last_call
     op(torch.zeros(3, 8, dtype=torch.float16))
     assert op.eval_roofline() == (12, (3 * 8 + 3 * 4) * 2)
+    assert op.eval_roofline_read_bytes() == 3 * 8 * 2
     with pytest.raises(ValueError, match="axis 1 is not 2 \\* N"):
         op(torch.zeros(3, 7, dtype=torch.float16))
     assert op._infer_output_shapes((5, 8)) == {"output": (5, 4)}
@@ -289,7 +281,8 @@ def test_construction_holds_parameters_to_their_type():
 
 
 def test_roofline_expressions_read_only_ix():
-    from tileops.manifest.signature import parse_signature, roofline_plan
+    from tileops.manifest.plan import roofline_plan
+    from tileops.manifest.signature import parse_signature
 
     sig = parse_signature("SiluAndMulFwdOp", {"signature": _SILU}, {})
     assert roofline_plan(sig, {"flops": "M * N", "bytes": "bytes(x) + bytes(output)"})[0] == []
@@ -324,16 +317,16 @@ def test_a_returned_out_buffer_is_checked_after_the_call():
         op(torch.zeros(3, dtype=torch.float16), torch.empty(3, dtype=torch.float16))
 
 
-def test_presence_is_checked_before_a_domain_restriction():
+def test_a_domain_restriction_on_parameters_is_checked_at_construction():
     signature = {
         **_VEC,
         "params": {"flag": {"type": "bool"}},
         "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
         "shape_rules": ["flag"],
     }
-    op = _probe("ProbeFlaggedFwdOp", signature, lambda self, x=None: x)(flag=False)
-    with pytest.raises(ValueError, match="'x' is required"):
-        type(op)._signature.check(op, {})
+    probe = _probe("ProbeFlaggedFwdOp", signature, lambda self, x=None: x)
+    with pytest.raises(ValueError, match="refinement fails: flag"):
+        probe(flag=False)
 
 
 def test_a_contiguous_input_must_be_contiguous():
@@ -361,13 +354,15 @@ def test_an_alias_is_priced_as_a_fresh_output_where_its_input_is_not_written():
 
 
 def test_an_adt_parameter_must_be_its_declared_class():
+    from tileops.ops.moe.contracts import MaskedLayoutSpec
+
     cls = type("MoePrePermuteFwdOp", (), {})
     install(cls, _ENTRIES["MoePrePermuteFwdOp"], _CASES["adts"])
     op = cls()
-    vars(op).update(layout=types.SimpleNamespace(kind="masked", max_m=4), num_local_experts=2)
+    vars(op).update(layout=MaskedLayoutSpec(max_m=4), num_local_experts=2)
     op._check_construction()
     op.layout = type("Impostor", (), {"kind": "masked", "max_m": 4})()
-    with pytest.raises(ValueError, match="is not a MGroupedLayout value"):
+    with pytest.raises(ValueError, match="is not an object of a MGroupedLayout constructor"):
         op._check_construction()
 
 
@@ -425,9 +420,7 @@ def test_a_cpu_construction_tensor_takes_its_declared_dtype():
 def test_a_roofline_func_must_yield_two_ints(monkeypatch):
     import tileops.perf.formulas
 
-    monkeypatch.setattr(
-        tileops.perf.formulas, "probe_float", lambda ix, op: (1.5, 2), raising=False
-    )
+    monkeypatch.setattr(tileops.perf.formulas, "probe_float", lambda call: (1.5, 2), raising=False)
     signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
     op = _probe(
         "ProbeFloatRoofFwdOp",
@@ -485,7 +478,8 @@ def test_a_roofline_reads_the_presence_of_out():
 
 
 def test_one_output_at_most_takes_the_out_buffer():
-    from tileops.manifest.signature import effect_errors, parse_signature
+    from tileops.manifest.plan import effect_errors
+    from tileops.manifest.signature import parse_signature
 
     buffered = {"dtype": "T", "shape": "[M]", "buffer": "out"}
     signature = {**_VEC, "outputs": {"y": buffered, "z": buffered}}
@@ -500,3 +494,97 @@ def test_a_non_tensor_out_fails_by_name():
     op = _probe("ProbeIntOutFwdOp", signature, lambda self, x, out=None: x.clone())()
     with pytest.raises(ValueError, match="'out' is not a tensor"):
         op(torch.zeros(2, dtype=torch.float16), 3)
+
+
+def test_a_failed_evaluation_names_its_declaration():
+    signature = {
+        "forall": {"A": "Shape", "B": "Shape", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[*A]"}, "y": {"dtype": "T", "shape": "[*B]"}},
+        "outputs": {"z": {"dtype": "T", "shape": "[*broadcast(A, B)]"}},
+    }
+    op = _probe("ProbeBroadcastFwdOp", signature, lambda self, x, y: x + y)()
+    x, y = torch.zeros(2, dtype=torch.float16), torch.zeros(3, dtype=torch.float16)
+    with pytest.raises(
+        ValueError, match="ProbeBroadcastFwdOp: tensor 'z' shape: .*not broadcastable"
+    ):
+        op(x, y)
+
+
+def test_a_construction_tensor_spliced_by_a_call_index_is_checked_per_call():
+    signature = {
+        "forall": {"S": "Shape", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[*S]"}},
+        "params": {"table": {"dtype": "T", "shape": "[*broadcast(S, S)]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[*S]"}},
+    }
+    probe = _probe("ProbeSplicedFwdOp", signature, lambda self, x: x.clone())
+    op = probe(table=torch.zeros(2, 3, dtype=torch.float16))
+    op(torch.zeros(2, 3, dtype=torch.float16))
+    with pytest.raises(ValueError, match="table has the wrong rank|table shape does not match"):
+        op(torch.zeros(2, 3, 1, dtype=torch.float16))
+
+
+def test_an_obligation_a_call_time_presence_activates_waits_for_the_call():
+    signature = {
+        **_VEC,
+        "params": {"p": {"type": "int", "default": -1}},
+        "inputs": {**_VEC["inputs"], "w": {"dtype": "T", "shape": "[p]", "optional": True}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+        "shape_rules": ["not present(w) or p >= 0"],
+    }
+    op = _probe("ProbeDeferredFwdOp", signature, lambda self, x, w=None: x + 1)(p=-1)
+    op(torch.zeros(2, dtype=torch.float16))
+    with pytest.raises(ValueError, match="w shape does not match p"):
+        op(torch.zeros(2, dtype=torch.float16), torch.zeros(0, dtype=torch.float16))
+
+
+def test_a_construction_time_tensor_is_given_exactly_where_its_presence_holds():
+    signature = {
+        **_VEC,
+        "params": {
+            "flag": {"type": "bool"},
+            "table": {"dtype": "T", "shape": "[M]", "optional": "flag"},
+        },
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    probe = _probe("ProbeGatedFwdOp", signature, lambda self, x: x + 1)
+    with pytest.raises(ValueError, match="'table' is given where its presence condition is false"):
+        probe(flag=False, table=torch.zeros(2, dtype=torch.float16))
+    with pytest.raises(ValueError, match="construction-time tensor 'table' is required"):
+        probe(flag=True, table=None)
+
+
+def test_the_checked_call_holds_generated_construction_time_tensors():
+    signature = {
+        **_VEC,
+        "forall": {**_VEC["forall"], "L": "Seq[Int]", "N": "Dim"},
+        "params": {"table": {"dtype": "int32", "shape": "[N]", "values": "as_tensor(L)"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    table = torch.tensor([3, 1], dtype=torch.int32)
+    op = _probe("ProbeTableValuesFwdOp", signature, lambda self, x: x + 1)(table=table)
+    op(torch.zeros(2, dtype=torch.float16))
+    assert op.last_call.values("table") == [3, 1]
+
+
+def test_shape_inference_binds_dtype_indices_from_the_dtypes_passed():
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16 | float32]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        "let": {"H": "M // 2 if T == 'float16' else M"},
+        "outputs": {"y": {"dtype": "T", "shape": "[H]"}},
+    }
+    op = _probe("ProbePackedFwdOp", signature, lambda self, x: x[: x.shape[0] // 2].clone())()
+    assert op._infer_output_shapes((4,), dtypes={"x": torch.float16}) == {"y": (2,)}
+    with pytest.raises(ValueError, match="let H: .*'T'"):
+        op._infer_output_shapes((4,))
+
+
+def test_a_compile_boundary_needs_a_call_time_tensor_input():
+    signature = {
+        "forall": {"T": "DType[float16]"},
+        "params": {"n": {"type": "int"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[n]"}},
+    }
+    with pytest.raises(TypeError, match="compile_boundary needs a call-time tensor input"):
+        _probe("ProbeSourceFwdOp", signature, lambda self: None, boundary=True)

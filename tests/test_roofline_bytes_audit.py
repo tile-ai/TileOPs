@@ -84,6 +84,7 @@ class TestReadBoundException:
         can be predicated away can follow it. The audited row is what the condition
         sees, so this goes through the run that produces a verdict."""
         entry = {
+            "source": {},
             "signature": {"params": {}},
             "roofline": {
                 "read_bound_exception": {

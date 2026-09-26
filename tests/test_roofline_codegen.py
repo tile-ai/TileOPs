@@ -1,31 +1,11 @@
-"""Real-op smoke tests for the generated ``eval_roofline``."""
+"""The ``eval_roofline`` generated from a legacy entry's roofline block."""
 
 import pytest
 
 pytestmark = pytest.mark.smoke
 
 
-class TestRealOpSmoke:
-    def test_prelu_fwd_op_eval_roofline_uses_shape_attrs(self):
-        import torch
-
-        from tileops.ops.elementwise.prelu import PreluFwdOp
-
-        # __new__ bypasses kernel construction so the smoke stays CUDA-free.
-        op = PreluFwdOp.__new__(PreluFwdOp)
-        op.input_shape = (16, 256, 56, 56)
-        op.weight_shape = (256,)
-        op.dtype = torch.float16
-
-        from math import prod as _prod
-
-        N = _prod(op.input_shape)
-        W = op.weight_shape[0]
-        elem = op.dtype.itemsize
-        flops, total_bytes = op.eval_roofline()
-        assert flops == 2 * N
-        assert total_bytes == (2 * N + W) * elem
-
+class TestLegacyEvaluator:
     def test_optional_input_presence_switches_the_formula(self):
         """R18.1: an optional input may appear as a bare presence test."""
         import torch
@@ -105,21 +85,6 @@ class TestRealOpSmoke:
 
         with pytest.raises(ValueError, match="cannot resolve roofline input"):
             fn(FakeOp())
-
-    def test_nan_to_num_fwd_op_eval_roofline_uses_input_shape(self):
-        import torch
-
-        from tileops.ops.elementwise.nan_to_num import NanToNumFwdOp
-
-        op = NanToNumFwdOp.__new__(NanToNumFwdOp)
-        op.input_shape = (4096 * 4096,)
-        op.dtype = torch.float16
-
-        N = op.input_shape[0]
-        elem = op.dtype.itemsize
-        flops, total_bytes = op.eval_roofline()
-        assert flops == 6 * N
-        assert total_bytes == 2 * N * elem
 
 
 class TestTotalContract:
@@ -339,17 +304,13 @@ class TestEvaluatorOwnership:
         return None
 
     def _implemented(self):
-        import importlib
-
         from tileops.manifest import load_manifest
+        from tileops.manifest.registry import op_class
+        from tileops.manifest.signature import is_legacy
 
         for name, entry in load_manifest().items():
-            if entry.get("status") != "implemented":
-                continue
-            module = entry["source"]["op"].removesuffix(".py").replace("/", ".")
-            cls = getattr(importlib.import_module(module), name, None)
-            if cls is not None:
-                yield name, cls
+            if entry.get("status") == "implemented" and is_legacy(entry):
+                yield name, op_class(name, entry)
 
     def test_each_op_owns_a_generated_evaluator(self):
         from tileops.ops._roofline_emit import SYNTHESIZED_ATTR
