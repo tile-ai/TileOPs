@@ -28,7 +28,7 @@ Rules:
 
 ## Tests
 
-→ Trust boundary: [trust-model.md §Test](trust-model.md#test) | Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md)
+→ Boundary: [layer-boundaries.md §Test](layer-boundaries.md#test) | Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md)
 
 **Framework:** pytest. **Location:** [`tests/ops/`](../../tests/ops/).
 
@@ -43,7 +43,9 @@ Rules:
 
 ### Tolerance
 
-- Use `torch.testing.assert_close` for floating-point verification:
+- Use `torch.testing.assert_close` for floating-point verification. The standard per-dtype
+  tolerances are below; `standard_tolerance(dtype)` in `tests/test_base.py` returns them.
+  - **FP32**: `rtol=1e-5`, `atol=1e-5`
   - **FP16**: `rtol=1e-3`, `atol=1e-3`
   - **BF16**: `rtol=1.6e-2`, `atol=1.6e-2`
 - Use exact comparison (`torch.equal`) for non-floating outputs (bool, masks, index tensors).
@@ -118,7 +120,7 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 
 ## Benchmarks
 
-→ Trust boundary: [trust-model.md §Benchmark](trust-model.md#benchmark) | Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md)
+→ Boundary: [layer-boundaries.md §Benchmark](layer-boundaries.md#benchmark) | Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md)
 
 **Framework:** `benchmarks.benchmark_base.BenchmarkBase`. **Location:** [`benchmarks/ops/`](../../benchmarks/ops/).
 

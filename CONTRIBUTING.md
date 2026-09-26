@@ -21,7 +21,7 @@ Read the document for the area before changing it, and review against the same o
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | an op or kernel  | [ops-design.md](docs/design/ops-design.md), [op-slot-rules.md](docs/design/op-slot-rules.md), [.claude/rules/code-style.md](.claude/rules/code-style.md) |
 | a manifest entry | [manifest.md](docs/design/manifest.md), [.claude/domain-rules/manifest-spec.md](.claude/domain-rules/manifest-spec.md)                                   |
-| a test           | [testing.md](docs/design/testing.md), [trust-model.md](docs/design/trust-model.md)                                                                       |
+| a test           | [testing.md](docs/design/testing.md), [layer-boundaries.md](docs/design/layer-boundaries.md)                                                             |
 | a benchmark      | [testing.md § Benchmarks](docs/design/testing.md#benchmarks), [.claude/domain-rules/benchmark.md](.claude/domain-rules/benchmark.md)                     |
 | a design doc     | [.claude/domain-rules/design-docs.md](.claude/domain-rules/design-docs.md)                                                                               |
 

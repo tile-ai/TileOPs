@@ -1,8 +1,22 @@
-# Layering
+# Layer Boundaries
 
-Where each kind of content lives, and the couplings that would defeat that.
-Each boundary below exists because crossing it produced duplication, drift, or
-a false guarantee.
+Each layer depends only on the manifest, the op interface,
+[`workloads/`](../../workloads/) and other layers' published outputs, never on
+their internals, so each can be replaced without touching the others.
+[§Dependencies](#dependencies) lists what each one depends on; the sections after
+it state what one layer owns and what it must not reach into.
+
+## Dependencies
+
+| Layer                                                       | Depends on                                                                                                                 |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Validator (CI)                                              | the manifest and the roofline analysis; for an implemented entry, the op's public interface and its `roofline.func` module |
+| Generated checks, fake, operator schemas, `eval_roofline()` | the signature; `roofline` for `eval_roofline()`                                                                            |
+| Implementation                                              | the signature, through the generated checks that wrap `forward`                                                            |
+| Tests                                                       | workload rows, the reference in `workloads/`, the op interface                                                             |
+| Benchmarks                                                  | workload rows, the reference in `workloads/`, the op interface (including `eval_roofline()` and `compute_roof()`)          |
+| Roofline tool (M5)                                          | benchmark output and the GPU profile; it never instantiates an op                                                          |
+| Docs site                                                   | the manifest YAML (read without torch), op docstrings, benchmark and roofline output                                       |
 
 ## Manifest
 
@@ -66,10 +80,6 @@ literal here, a construction there — a condition of passing.
 What the source does answer is the file's own contract: workloads from the
 manifest, roofline from the op. That needs no op name, so no benchmark shape is
 illegal.
-
-[`benchmarks/tests/test_benchmark_boundaries.py`](../../benchmarks/tests/test_benchmark_boundaries.py)
-checks the `tests/` import and a locally defined `gen_inputs`, both by literal
-name.
 
 → Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md) | Guide: [testing.md §Benchmarks](testing.md#benchmarks)
 

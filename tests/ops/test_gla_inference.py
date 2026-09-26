@@ -5,8 +5,7 @@ from functools import partial
 import pytest
 import torch
 
-from benchmarks.baselines import reference_tolerance
-from tests.test_base import TestBase, allclose_compare
+from tests.test_base import TestBase, allclose_compare, standard_tolerance
 from tileops.backend import TensorSpec, registry
 from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
     GLADensePrefillPartitionedKernel,
@@ -154,10 +153,10 @@ def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: in
     test = GLAInferenceTest(2, seq_len, 4, dim, dim, dtype, has_initial_state=True)
     inputs = test.gen_inputs()
     op = GLAInferenceFwdOp()
-    test.check(op, *inputs, **reference_tolerance(dtype))
-    test.check(op, *inputs[:4], **reference_tolerance(dtype))
+    test.check(op, *inputs, **standard_tolerance(dtype))
+    test.check(op, *inputs[:4], **standard_tolerance(dtype))
     inputs[3].mul_(3.0)
-    test.check(op, *inputs, **reference_tolerance(dtype))
+    test.check(op, *inputs, **standard_tolerance(dtype))
 
 
 @pytest.mark.skipif(not is_h200(), reason="partitioned prefill is selected on H200")
@@ -173,7 +172,7 @@ def test_gla_long_prefill_uses_partitioned_kernel(
     inputs = test.gen_inputs()
     inputs[3].mul_(gate_scale)
     op = GLAInferenceFwdOp()
-    tolerance = reference_tolerance(dtype)
+    tolerance = standard_tolerance(dtype)
     state_tolerance = tolerance.copy()
     if dtype == torch.float16:
         # H200 / FLA 0.5.2, T=16384, K=V=64, gate_scale=3, seed=2160:

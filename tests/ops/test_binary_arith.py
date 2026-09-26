@@ -8,7 +8,7 @@ Also includes L4 edge case tests for div, remainder, floor_divide, pow.
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from tileops.kernels.elementwise import (
     AddFwdKernel,
     DivTruncFwdKernel,
@@ -90,15 +90,6 @@ def test_coalesce_broadcast_dims(a_shape, b_shape, expected_ndim) -> None:
     assert len(b_strides) == len(coalesced_shape)
 
 
-def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
-    if dtype == torch.float32:
-        return 1e-5, 1e-5
-    elif dtype == torch.float16:
-        return 1e-3, 1e-3
-    else:  # bfloat16
-        return 1.6e-2, 1.6e-2
-
-
 # Add op correctness tests
 
 
@@ -120,8 +111,7 @@ class AddSameShapeFixture(FixtureBase):
 def test_add_same_shape(n_total: int, dtype: torch.dtype) -> None:
     test = AddSameShapeTest(n_total, dtype)
     op = AddFwdOp()
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 # Broadcast pattern tests (L3)
@@ -169,8 +159,7 @@ class AddBroadcastTest(AddBroadcastWorkload, TestBase):
 def test_add_broadcast(a_shape, b_shape, dtype: torch.dtype) -> None:
     test = AddBroadcastTest(a_shape, b_shape, dtype)
     op = AddFwdOp()
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 # Broadcast pattern tests for all binary arith ops (L3)
@@ -292,10 +281,10 @@ def test_binary_arith_broadcast(
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
-    atol, rtol = _get_tolerances(dtype)
+    tolerance = standard_tolerance(dtype)
     if op_name == "floor_divide":
-        atol = 1.0  # floor rounding tolerance
-    torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
+        tolerance["atol"] = 1.0  # floor rounding tolerance
+    torch.testing.assert_close(out, ref, **tolerance)
 
 
 class AddStrategyFixture(FixtureBase):
@@ -322,8 +311,7 @@ def test_add_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None
     )
     assert kernel.strategy == strategy
     assert kernel.config["strategy"] == strategy
-    atol, rtol = _get_tolerances(dtype)
-    test.check(kernel, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(kernel, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 # Generic binary test helper
@@ -410,8 +398,7 @@ class BinaryArithOpFixture(FixtureBase):
 def test_binary_arith_op(op_cls, make_test, n_total: int, dtype: torch.dtype) -> None:
     test = make_test(n_total, dtype)
     op = op_cls()
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 class FloorDivideFixture(FixtureBase):
@@ -1017,13 +1004,12 @@ def test_div_rounding_mode_eager(rounding_mode: str, dtype: torch.dtype) -> None
     with torch.no_grad():
         out = op(a, b)
     ref = torch.div(a.float(), b.float(), rounding_mode=rounding_mode).to(dtype)
-    atol, rtol = _get_tolerances(dtype)
+    tolerance = standard_tolerance(dtype)
     # rounding-mode divergence in reduced precision can flip by 1 unit at
     # quotient boundaries; mirror the floor_divide convention.
     if dtype != torch.float32:
-        atol = 1.0
-        rtol = 0.0
-    torch.testing.assert_close(out, ref, atol=atol, rtol=rtol)
+        tolerance = {"atol": 1.0, "rtol": 0.0}
+    torch.testing.assert_close(out, ref, **tolerance)
 
 
 @pytest.mark.smoke

@@ -20,7 +20,7 @@ import math
 import pytest
 import torch
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from workloads.rope import RopeWorkload
 
 
@@ -315,15 +315,6 @@ class RopeTest(RopeWorkload, TestBase):
             raise ValueError(f"Unknown variant: {self.variant}")
 
 
-def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
-    if dtype == torch.float32:
-        return 1e-5, 1e-5
-    elif dtype == torch.float16:
-        return 1e-3, 1e-3
-    else:
-        return 1.6e-2, 1.6e-2
-
-
 class RopeBasicFixture(FixtureBase):
     """Basic RoPE fixture: shapes x dtypes."""
 
@@ -368,8 +359,7 @@ def test_rope_neox_1d(
 
     test = RopeTest("neox", "1d", batch, seq_len, num_heads, head_dim, dtype)
     op = RopeNeoxFwdOp(layout="1d")
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 @RopeBasicFixture
@@ -380,8 +370,7 @@ def test_rope_neox_2d(
 
     test = RopeTest("neox", "2d", batch, seq_len, num_heads, head_dim, dtype)
     op = RopeNeoxFwdOp(layout="2d")
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 @pytest.mark.smoke
@@ -411,8 +400,7 @@ def test_rope_neox_position_ids_thd(rotary_dim: int | None, dtype: torch.dtype) 
         rotary_dim=rotary_dim,
     )
     output = op(x, position_ids)
-    atol, rtol = _get_tolerances(dtype)
-    torch.testing.assert_close(output, ref, atol=atol, rtol=rtol)
+    torch.testing.assert_close(output, ref, **standard_tolerance(dtype))
 
 
 @pytest.mark.smoke
@@ -458,8 +446,7 @@ def test_rope_non_neox_1d(
 
     test = RopeTest("non_neox", "1d", batch, seq_len, num_heads, head_dim, dtype)
     op = RopeNonNeoxFwdOp(layout="1d")
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 @RopeBasicFixture
@@ -470,8 +457,7 @@ def test_rope_non_neox_2d(
 
     test = RopeTest("non_neox", "2d", batch, seq_len, num_heads, head_dim, dtype)
     op = RopeNonNeoxFwdOp(layout="2d")
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 # Llama 3.1 RoPE tests
@@ -493,8 +479,7 @@ def test_rope_llama31_1d(
         "rope_llama31", "1d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
     )
     op = RopeLlama31FwdOp(layout="1d", **extra)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 @RopeBasicFixture
@@ -513,8 +498,7 @@ def test_rope_llama31_2d(
         "rope_llama31", "2d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
     )
     op = RopeLlama31FwdOp(layout="2d", **extra)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 # YaRN RoPE tests
@@ -537,8 +521,7 @@ def test_rope_yarn_1d(
         "yarn_rope", "1d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
     )
     op = RopeYarnFwdOp(layout="1d", **extra)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 @RopeBasicFixture
@@ -558,8 +541,7 @@ def test_rope_yarn_2d(
         "yarn_rope", "2d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
     )
     op = RopeYarnFwdOp(layout="2d", **extra)
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 # LongRoPE tests
@@ -589,8 +571,7 @@ def test_rope_longrope_1d(
         max_position_embeddings=max_pos,
         original_max_position_embeddings=orig_max_pos,
     )
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 @RopeBasicFixture
@@ -617,8 +598,7 @@ def test_rope_longrope_2d(
         max_position_embeddings=max_pos,
         original_max_position_embeddings=orig_max_pos,
     )
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 # Edge case tests
@@ -633,8 +613,7 @@ def test_rope_neox_edge(
 
     test = RopeTest("neox", "2d", batch, seq_len, num_heads, head_dim, dtype)
     op = RopeNeoxFwdOp(layout="2d")
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 @RopeEdgeFixture
@@ -646,8 +625,7 @@ def test_rope_non_neox_edge(
 
     test = RopeTest("non_neox", "2d", batch, seq_len, num_heads, head_dim, dtype)
     op = RopeNonNeoxFwdOp(layout="2d")
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 # Input validation regression tests

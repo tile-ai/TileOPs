@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from tests.ops.reduction_test_utils import reduction_tolerance
 from tileops.ops.reduction.reduce import StdFwdOp, VarFwdOp, VarMeanFwdOp
 
 _SHAPE = (4, 8, 256)
@@ -24,14 +25,6 @@ _DIMS = [
     pytest.param((0, 2), id="dim=tuple"),
     pytest.param(None, id="dim=None"),
 ]
-
-
-def _tol(dtype: torch.dtype) -> dict:
-    # The reduction-test convention: 1e-4 for fp32, 1e-2 for half precision. Welford
-    # accumulates in fp32, but the narrowing cast at the boundary still rounds.
-    if dtype == torch.float32:
-        return {"atol": 1e-4, "rtol": 1e-4}
-    return {"atol": 1e-2, "rtol": 1e-2}
 
 
 def _ref_var(x, dim, keepdim, correction):
@@ -64,7 +57,7 @@ def _check(op_cls, ref_fn, x, dim, keepdim, correction) -> None:
     for g, w in zip(got, want, strict=True):
         assert g.shape == w.shape, f"shape {g.shape} vs ref {w.shape}"
         assert g.dtype == w.dtype, f"dtype {g.dtype} vs ref {w.dtype}"
-        torch.testing.assert_close(g, w, **_tol(x.dtype))
+        torch.testing.assert_close(g, w, **reduction_tolerance(x.dtype))
 
 
 @pytest.mark.smoke
@@ -139,5 +132,5 @@ def test_var_mean_returns_the_pair_in_torch_s_order() -> None:
 
     assert isinstance(out, tuple) and len(out) == 2, out
     ref_var, ref_mean = _ref_var_mean(x, -1, False, 1)
-    torch.testing.assert_close(out[0], ref_var, **_tol(x.dtype))
-    torch.testing.assert_close(out[1], ref_mean, **_tol(x.dtype))
+    torch.testing.assert_close(out[0], ref_var, **reduction_tolerance(x.dtype))
+    torch.testing.assert_close(out[1], ref_mean, **reduction_tolerance(x.dtype))

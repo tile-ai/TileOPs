@@ -81,7 +81,7 @@ code stay in step.
 
 The implementation is split in two layers. **L2**, the Python entry point, owns the
 caller-facing contract: validation, dtype casting, and memory layout. **L1**, the TileLang
-kernel, owns the GPU implementation. [trust-model.md](docs/design/trust-model.md) defines the
+kernel, owns the GPU implementation. [architecture.md](docs/design/architecture.md#two-layer-separation-m2) defines the
 boundary between them.
 
 ## Installation
@@ -113,15 +113,15 @@ build troubleshooting.
 
 ## Documentation
 
-|                                                |                                                  |
-| ---------------------------------------------- | ------------------------------------------------ |
-| [CONTRIBUTING.md](CONTRIBUTING.md)             | Naming, PR shape, what a review checks           |
-| [development.md](docs/development.md)          | Build, test, benchmark, dev image                |
-| [architecture.md](docs/design/architecture.md) | Module map and the agent production loop         |
-| [manifest.md](docs/design/manifest.md)         | The spec format every operator starts from       |
-| [ops-design.md](docs/design/ops-design.md)     | Adding an operator, step by step                 |
-| [roofline.md](docs/design/roofline.md)         | How performance is scored against Speed-of-Light |
-| [trust-model.md](docs/design/trust-model.md)   | What each layer may assume about the others      |
+|                                                        |                                                                 |
+| ------------------------------------------------------ | --------------------------------------------------------------- |
+| [CONTRIBUTING.md](CONTRIBUTING.md)                     | Naming, PR shape, what a review checks                          |
+| [development.md](docs/development.md)                  | Build, test, benchmark, dev image                               |
+| [architecture.md](docs/design/architecture.md)         | Module map and the agent production loop                        |
+| [manifest.md](docs/design/manifest.md)                 | The spec format every operator starts from                      |
+| [ops-design.md](docs/design/ops-design.md)             | Adding an operator, step by step                                |
+| [roofline.md](docs/design/roofline.md)                 | How performance is scored against Speed-of-Light                |
+| [layer-boundaries.md](docs/design/layer-boundaries.md) | What each layer owns, and the interfaces layers compose through |
 
 The rendered site carries what this table cannot: the
 [API reference](https://tile-ai.github.io/TileOPs.github.io/api/) generated from the operator

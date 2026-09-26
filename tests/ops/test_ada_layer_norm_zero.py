@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from tileops.kernels.norm.ada_layer_norm import AdaLayerNormKernel
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from workloads.normalization import AdaLayerNormZeroWorkload
@@ -38,21 +38,11 @@ class AdaLayerNormZeroFixture(FixtureBase):
     ]
 
 
-def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
-    if dtype == torch.float32:
-        return 1e-5, 1e-5
-    elif dtype == torch.float16:
-        return 1e-3, 1e-3
-    else:  # bfloat16
-        return 1.6e-2, 1.6e-2
-
-
 @AdaLayerNormZeroFixture
 def test_ada_layer_norm_zero_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = AdaLayerNormZeroTest(m, n, dtype)
     op = AdaLayerNormZeroFwdOp()
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 @pytest.mark.smoke
@@ -67,8 +57,7 @@ def test_ada_layer_norm_zero_kernel_handles_natural_unaligned_shape(
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
     assert actual.shape == (m, n)
-    atol, rtol = _get_tolerances(dtype)
-    torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+    torch.testing.assert_close(actual, expected, **standard_tolerance(dtype))
 
 
 @pytest.mark.smoke
@@ -88,8 +77,7 @@ def test_ada_layer_norm_zero_async_copy_handles_row_tail() -> None:
     assert kernel.use_cp_async
     actual = kernel(*inputs)
     expected = test.ref_program(*inputs)
-    atol, rtol = _get_tolerances(dtype)
-    torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+    torch.testing.assert_close(actual, expected, **standard_tolerance(dtype))
 
 
 class AdaLayerNormZero3DFixture(FixtureBase):
@@ -127,7 +115,6 @@ def test_ada_layer_norm_zero_3d(batch: int, seq: int, hidden: int, dtype: torch.
     y_ref = (gate.float() * (scale.float() * normed + shift.float())).to(dtype)
 
     y = op(x, scale, shift, gate)
-    atol, rtol = _get_tolerances(dtype)
-    assert torch.allclose(y, y_ref, atol=atol, rtol=rtol), (
+    assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
         f"3D test failed, max err: {(y - y_ref).abs().max()}"
     )

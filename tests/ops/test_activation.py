@@ -7,7 +7,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase
+from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from tileops.kernels.elementwise import ReluFwdKernel
 from tileops.ops.elementwise import ReluFwdOp
 from workloads.elementwise import RandnFlatWorkload, ReluWorkload
@@ -36,21 +36,11 @@ class ReluFixture(FixtureBase):
     ]
 
 
-def _get_tolerances(dtype: torch.dtype) -> tuple[float, float]:
-    if dtype == torch.float32:
-        return 1e-5, 1e-5
-    elif dtype == torch.float16:
-        return 1e-3, 1e-3
-    else:  # bfloat16
-        return 1.6e-2, 1.6e-2
-
-
 @ReluFixture
 def test_relu_op(n_total: int, dtype: torch.dtype) -> None:
     test = ReluTest(n_total, dtype)
     op = ReluFwdOp()
-    atol, rtol = _get_tolerances(dtype)
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 class ReluStrategyFixture(FixtureBase):
@@ -73,8 +63,7 @@ def test_relu_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> Non
     kernel = ReluFwdKernel(n_total, dtype, config={"strategy": strategy})
     assert kernel.strategy == strategy
     assert kernel.config["strategy"] == strategy
-    atol, rtol = _get_tolerances(dtype)
-    test.check(kernel, *test.gen_inputs(), atol=atol, rtol=rtol)
+    test.check(kernel, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 # Template-based activation ops
@@ -127,13 +116,7 @@ def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls, **op_kwargs):
     """Build test, instantiate op, and run check."""
     test = UnaryActivationTest(n_total, dtype, gen_fn=gen_fn, ref_fn=ref_fn)
     op = op_cls(**op_kwargs)
-    if dtype == torch.float16:
-        tol = {"atol": 1e-3, "rtol": 1e-3}
-    elif dtype == torch.bfloat16:
-        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
-    else:
-        tol = {"atol": 1e-5, "rtol": 1e-5}
-    test.check(op, *test.gen_inputs(), **tol)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
 @ActivationFixture
@@ -347,13 +330,7 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
 
     op = PreluFwdOp()
     out = op(x, weight)
-    if dtype == torch.float16:
-        tol = {"atol": 1e-3, "rtol": 1e-3}
-    elif dtype == torch.bfloat16:
-        tol = {"atol": 1.6e-2, "rtol": 1.6e-2}
-    else:
-        tol = {"atol": 1e-5, "rtol": 1e-5}
-    torch.testing.assert_close(out, ref, **tol)
+    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
 
 
 @pytest.mark.smoke
