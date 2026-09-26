@@ -128,6 +128,7 @@ Each `shape_rules` item is a refinement: a predicate on index values, checked af
 - A guard narrows kinds in the arm it selects: `present(v)` narrows `Maybe[X]` to `X`; `x == lit` and `x in (...)` intersect `x`'s kind with the literals, `x != lit` and `x not in (...)` subtract them; narrowing composes through `not`, `and`, `or` and conditionals. A string inhabits `DType[S]` only when it names a registered member of `S`, so a comparison with literals no member of an enum or dtype set takes is rejected.
 - A refinement that reads only discriminants — every name and ADT field it reads is fixed by the discriminant values, judged over the whole expression regardless of operand order — is a **domain restriction**. It is checked before a type-family branch is chosen, and values it rejects need no type-family case.
 - Lists among construction parameters are available at run time and may appear anywhere. `forall` value lists appear only as generator arguments.
+- A scalar parameter whose admitted values depend on a dtype index states the dependence as a refinement with `category` and `representable` ([table 15](#t-prims)), so the call check holds an in-tree and a target-served call to the same rule.
 - Satisfiability of a refinement is the author's responsibility.
 - The validator rejects rules that declare, define or test presence: `x.shape == (...)`, `x is None`, `isinstance` ([table 12](#t-rejected)).
 
@@ -445,6 +446,8 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 | 9   | `max` / `min`                   | `Seq[Int] × default: Maybe[Int] = None → Int`                                      | non-empty, or a default                                |
 | 10  | `all`                           | `Seq[Bool] → Bool`                                                                 | any sequence                                           |
 | 11  | comprehension `f(x) for x in s` | `Seq[A] → Seq[B]`                                                                  | only as an argument of `all`, `sum`, `max`, `min`      |
+| 12  | `category`                      | `Value → 'bool' \| 'int' \| 'float' \| 'complex'`                                  | a number or a dtype name                               |
+| 13  | `representable`                 | `Value × DType → Bool`                                                             | any number; PyTorch's scalar conversion rule           |
 
 **<a id="t-rows"></a>Table 16** Workload row keys
 

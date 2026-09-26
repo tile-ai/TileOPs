@@ -252,11 +252,12 @@ def test_rounding_op_int_identity(op_cls, int_dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_round_int_identity_with_decimals() -> None:
-    """RoundFwdOp's decimals!=0 path also short-circuits on integer inputs."""
+def test_round_rejects_decimals_on_integer_input() -> None:
+    """``torch.round`` rounds an integral input only to zero decimals."""
     op = RoundFwdOp(decimals=2)
     x = torch.randint(-100, 100, (256,), device="cuda", dtype=torch.int32)
-    assert torch.equal(op(x), x)
+    with pytest.raises(ValueError, match="decimals"):
+        op(x)
 
 
 # Integer-dtype op-layer fallbacks for abs / neg / sign and the

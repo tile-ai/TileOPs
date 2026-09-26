@@ -9,7 +9,7 @@ from tileops.kernels.elementwise import ClampFwdKernel, ClampTensorFwdKernel
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import _PerDtypeKernels, _validate_scalar_param_repr
+from ._base import _PerDtypeKernels
 
 
 class ClampFwdOp(_PerDtypeKernels, Op):
@@ -120,11 +120,7 @@ class ClampScalarFwdOp(_PerDtypeKernels, Op):
         self.dispatch_kernel(kernel_map)
 
     def _build(self, dtype: torch.dtype, n_total: int):
-        """The bounds are baked into the kernel, so they are checked per dtype."""
-        if self.min is not None:
-            _validate_scalar_param_repr("min", self.min, dtype, self._slot)
-        if self.max is not None:
-            _validate_scalar_param_repr("max", self.max, dtype, self._slot)
+        """The bounds are baked into the kernel, one specialization per dtype."""
         impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
         return impl(
             n_total,

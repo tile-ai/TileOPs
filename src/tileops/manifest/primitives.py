@@ -7,7 +7,10 @@ implementation on Python values.
 from __future__ import annotations
 
 import math
+import numbers
 from types import SimpleNamespace
+
+from .dtype_rules import DTYPE_BITS
 
 # The seed both conftests give the global RNG; every private workload RNG derives from it.
 WORKLOAD_SEED = 1235
@@ -158,6 +161,67 @@ def balanced_sizes(total, count):
     return [total // count + (i < total % count) for i in range(count)]
 
 
+# The largest finite value of each floating dtype; the lowest is its negation.
+_FLOAT_MAX = {
+    "float16": 65504.0,
+    "bfloat16": 3.3895313892515355e38,
+    "float32": 3.4028234663852886e38,
+    "float64": 1.7976931348623157e308,
+    "float8_e4m3fn": 448.0,
+    "float8_e4m3": 240.0,
+    "float8_e5m2": 57344.0,
+    "float8_e4m3fnuz": 240.0,
+    "float8_e5m2fnuz": 57344.0,
+}
+_COMPLEX_PART = {"complex64": "float32", "complex128": "float64"}
+
+
+def category(x):
+    """`'bool'`, `'int'`, `'float'` or `'complex'`: the category of a number or a dtype name."""
+    if isinstance(x, str):
+        if x == "bool":
+            return "bool"
+        if x in _COMPLEX_PART:
+            return "complex"
+        return "float" if x in _FLOAT_MAX else "int"
+    if isinstance(x, bool):
+        return "bool"
+    if isinstance(x, numbers.Integral):
+        return "int"
+    return "float" if isinstance(x, numbers.Real) else "complex"
+
+
+# Floating formats without an infinity.
+_NO_INF = frozenset({"float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2fnuz"})
+
+
+def _fits_float(v, dtype):
+    if math.isinf(v):
+        return dtype not in _NO_INF
+    return math.isnan(v) or -_FLOAT_MAX[dtype] <= v <= _FLOAT_MAX[dtype]
+
+
+def representable(v, dtype):
+    """Whether `v` converts to `dtype` without overflow, by PyTorch's scalar conversion rule."""
+    if dtype == "bool":
+        return True
+    if dtype in _COMPLEX_PART:
+        part = _COMPLEX_PART[dtype]
+        return _fits_float(complex(v).real, part) and _fits_float(complex(v).imag, part)
+    if isinstance(v, numbers.Complex) and not isinstance(v, numbers.Real):
+        return False
+    if dtype in _FLOAT_MAX:
+        return _fits_float(v, dtype)
+    bits = DTYPE_BITS[dtype]
+    lo, hi = (
+        (0, 2**bits - 1) if dtype.startswith("uint") else (-(2 ** (bits - 1)), 2 ** (bits - 1) - 1)
+    )
+    if isinstance(v, numbers.Integral):
+        # An unsigned dtype also takes a negative int it can wrap.
+        return (-hi if lo == 0 else lo) <= v <= hi
+    return math.isfinite(v) and lo <= v <= hi
+
+
 PRIMITIVES = {
     "broadcast": broadcast,
     "reduced": reduced,
@@ -178,6 +242,8 @@ PRIMITIVES = {
     "promote_int_to_float": promote_int_to_float,
     "coalesce_dtype": coalesce_dtype,
     "balanced_sizes": balanced_sizes,
+    "category": category,
+    "representable": representable,
 }
 
 
@@ -216,6 +282,8 @@ PRIMITIVE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "promote_int_to_float": (("DType",), "DType"),
     "coalesce_dtype": (("Maybe[DType]", "DType"), "DType"),
     "balanced_sizes": (("Int", "Int"), "Seq[Int]"),
+    "category": (("Value",), "'bool' | 'int' | 'float' | 'complex'"),
+    "representable": (("Value", "DType"), "Bool"),
 }
 
 

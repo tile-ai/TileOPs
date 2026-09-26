@@ -27,7 +27,6 @@ from tileops.kernels.elementwise import (
 from tileops.kernels.kernel_base import Kernel
 
 from ._base import (
-    _MANIFEST_INT_DTYPES,
     UnaryOp,
     _IntIdentityUnaryOp,
 )
@@ -128,10 +127,6 @@ class _RoundDecimalsCall:
         self._decimals = decimals
 
     def __call__(self, input: torch.Tensor) -> torch.Tensor:
-        # Integer dtypes are no-ops regardless of decimals (rounding an int
-        # produces the same int). Match the float-path identity contract.
-        if input.dtype in _MANIFEST_INT_DTYPES:
-            return input.clone()
         # Run through fp32 so low-precision inputs (fp16/bf16) cannot overflow
         # when ``torch.round`` internally scales by ``10**decimals`` — e.g.
         # ``100 * 10**4 = 1e6`` exceeds fp16 max (~65504). The single down-cast
