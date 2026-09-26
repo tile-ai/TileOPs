@@ -113,7 +113,7 @@ def test_gqa_bwd_bench(
     test = GroupedQueryAttentionBwdWorkload(batch, heads, heads_kv, seq_len, dim, causal, dtype)
     inputs = test.gen_inputs()
 
-    op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
+    op = GroupedQueryAttentionBwdOp(causal, tune=tune)
     bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
@@ -200,10 +200,6 @@ def test_gqa_sliding_window_varlen_fwd_bench(
     )
     inputs = test.gen_inputs()
     op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(
-        batch,
-        heads,
-        heads_kv,
-        dim,
         max(q_lens),
         causal,
         window_size_left,
@@ -700,12 +696,7 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(
         )
 
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        max_pages_per_req=test.max_pages_per_req,
         page_size=page_size,
-        dim=dim,
         max_seqlen_q=test.max_seqlen_q,
         is_causal=causal,
         cache_dtype=cache_dtype,

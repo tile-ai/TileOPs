@@ -178,11 +178,6 @@ def test_gqa_decode_paged_bench(
     q, k, v, real_seqlen_kv, block_table = inputs
 
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
-        batch,
-        heads,
-        heads_kv,
-        seqlen_kv,
-        dim,
         page_size,
         sm_scale=sm_scale,
         softcap=softcap,

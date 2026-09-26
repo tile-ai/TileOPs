@@ -28,15 +28,8 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        heads: int,
-        seq_len: int,
-        seq_len_kv: int,
-        dim: int,
         dim_tail: int,
-        topk: int,
         stride_kv: int,
-        heads_kv: int,
         q_start_index_s: int,
         sm_scale: Optional[float] = None,
         is_causal: bool = True,
@@ -45,18 +38,11 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         *,
         target: Target = None,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            batch (int): The batch size.
-            heads (int): The number of attention heads.
-            seq_len (int): The length of the input sequence.
-            seq_len_kv (int): The length of the key-value sequence.
-            dim (int): The dimension of the attention vectors.
             dim_tail (int): The dimension of the tail portion of the attention vectors.
-            topk (int): The number of top elements to consider in sparse attention.
             stride_kv (int): The stride for the key-value sequence.
-            heads_kv (int): The number of key-value heads.
             q_start_index_s (int): The start index for queries in the sequence.
             sm_scale (Optional[float], default=None): Scaling factor for the softmax function.
             is_causal (bool, default=True): Whether the attention is causal
@@ -68,15 +54,8 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.target = target
-        self.batch = batch
-        self.heads = heads
-        self.seq_len = seq_len
-        self.seq_len_kv = seq_len_kv
-        self.dim = dim
         self.dim_tail = dim_tail
-        self.topk = topk
         self.stride_kv = stride_kv
-        self.heads_kv = heads_kv
         self.sm_scale = sm_scale
         self.is_causal = is_causal
 
@@ -96,28 +75,29 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        return self.kernel_for(
-            "sparse_mla",
-            inputs,
-            SparseMlaCall(
-                batch=self.batch,
-                seq_len=self.seq_len,
-                seq_len_kv=self.seq_len_kv,
-                heads=self.heads,
-                dim=self.dim,
-                tail_dim=self.dim_tail,
-                dtype=dtype,
-                topk=self.topk,
-                kv_stride=self.stride_kv,
-                q_start_index_s=self.q_start_index_s,
-                kv_group=self.heads_kv,
-                sm_scale=self.sm_scale,
-                is_causal=self.is_causal,
-                cp0=self._cp0,
-                device=inputs[0].device,
-                tune=self.tune,
-            ),
+    def _sparse_mla_call(
+        self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor
+    ) -> SparseMlaCall:
+        """State what one call is, for selection to filter against."""
+        batch, seq_len, heads, q_dim = q.shape
+        _, seq_len_kv, heads_kv, _ = kv.shape
+        return SparseMlaCall(
+            batch=batch,
+            seq_len=seq_len,
+            seq_len_kv=seq_len_kv,
+            heads=heads,
+            dim=q_dim - self.dim_tail,
+            tail_dim=self.dim_tail,
+            dtype=q.dtype,
+            topk=indices.shape[3],
+            kv_stride=self.stride_kv,
+            q_start_index_s=self.q_start_index_s,
+            kv_group=heads_kv,
+            sm_scale=self.sm_scale,
+            is_causal=self.is_causal,
+            cp0=self._cp0,
+            device=q.device,
+            tune=self.tune,
         )
 
     @property
@@ -171,7 +151,14 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         """
         self._validate_dtypes(q, kv, indices)
         self.dtype = q.dtype
-        return self._get_kernel((q, kv, indices), q.dtype)(q, kv, indices)
+        # The legacy roofline formula reads these off the op.
+        self.batch, self.seq_len, self.heads, q_dim = q.shape
+        _, self.seq_len_kv, self.heads_kv, _ = kv.shape
+        self.dim = q_dim - self.dim_tail
+        self.topk = indices.shape[3]
+        inputs = (q, kv, indices)
+        kernel = self.kernel_for("sparse_mla", inputs, self._sparse_mla_call(q, kv, indices))
+        return kernel(*inputs)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

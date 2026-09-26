@@ -304,13 +304,7 @@ def test_legacy_varlen_ops_remain_implemented_during_migration() -> None:
         2, [65, 127], [129, 255], 8, 2, 64, True, 64, -1, torch.float16
     )
     windowed_op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(
-        2,
-        8,
-        2,
-        64,
-        127,
-        is_causal=True,
-        window_size_left=64,
+        127, is_causal=True, window_size_left=64
     )
     windowed.check(windowed_op, *windowed.gen_inputs(), atol=1e-3, rtol=1e-3)
 
@@ -473,7 +467,7 @@ def test_sliding_varlen_compatibility_rejects_invalid_offsets(
     q, k, v, _, _ = test.gen_inputs()
     cu_q = torch.tensor(cu_q_values, dtype=torch.int32, device=q.device)
     cu_kv = torch.tensor(cu_kv_values, dtype=torch.int32, device=q.device)
-    op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(2, 8, 2, 64, 8, window_size_left=32)
+    op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(8, window_size_left=32)
 
     with pytest.raises(ValueError, match=message):
         op(q, k, v, cu_q, cu_kv)

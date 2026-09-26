@@ -52,7 +52,6 @@ class NsaFwdWorkload(WorkloadBase):
         groups: int,
         selected_blocks: int,
         dtype: torch.dtype,
-        accum_dtype: torch.dtype,
         seq_lens: "list[int] | None" = None,
     ) -> None:
         self.batch = batch
@@ -65,7 +64,6 @@ class NsaFwdWorkload(WorkloadBase):
         self.groups = groups
         self.selected_blocks = selected_blocks
         self.dtype = dtype
-        self.accum_dtype = accum_dtype
         self.seq_lens = seq_lens
 
         self.head_kv = self.heads // self.groups
@@ -192,10 +190,8 @@ class NsaCmpFwdWorkload(WorkloadBase):
         dim_v: int,
         group: int,
         scale: float,
-        bc: int,
         bs: int,
         dtype: torch.dtype,
-        accum_dtype: torch.dtype,
         seq_lens: "list[int] | None" = None,
     ) -> None:
         self.seq_num = seq_num
@@ -205,10 +201,8 @@ class NsaCmpFwdWorkload(WorkloadBase):
         self.dim_v = dim_v
         self.group = group
         self.scale = scale
-        self.bc = bc
         self.bs = bs
         self.dtype = dtype
-        self.accum_dtype = accum_dtype
         self.seq_lens = seq_lens
 
         self.head_kv = self.heads // self.group
@@ -264,10 +258,8 @@ class NsaTopkWorkload(WorkloadBase):
         group: int,
         scale: float,
         selected_block_num: int,
-        bc: int,
         bs: int,
         dtype: torch.dtype,
-        accum_dtype: torch.dtype,
         seq_lens: "list[int] | None" = None,
     ) -> None:
         self.seq_num = seq_num
@@ -277,10 +269,8 @@ class NsaTopkWorkload(WorkloadBase):
         self.group = group
         self.scale = scale
         self.selected_block_num = selected_block_num
-        self.bc = bc
         self.bs = bs
         self.dtype = dtype
-        self.accum_dtype = accum_dtype
         self.seq_lens = seq_lens
 
         self.head_kv = self.heads // self.group

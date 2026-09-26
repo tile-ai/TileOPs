@@ -35,9 +35,7 @@ def test_mla_decode_bench(
     test = MlaDecodeWorkload(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
     inputs = test.gen_inputs()
 
-    op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(
-        batch, heads, heads_kv, seq_len_kv, dim, dim_pe, tune=tune
-    )
+    op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(tune=tune)
     bm = ManifestBenchmark(op, test)
 
     bm.compare(

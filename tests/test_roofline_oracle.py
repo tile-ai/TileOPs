@@ -388,7 +388,7 @@ class TestBytesOracle:
         workload = NsaFwdWorkload(
             batch=batch, heads=heads, c_seq_len=c_seq_len, dim=dim, is_causal=True,
             scale=0.1, block_size=block_size, groups=heads, selected_blocks=selected,
-            dtype=torch.float16, accum_dtype=torch.float32, seq_lens=[c_seq_len // batch] * batch,
+            dtype=torch.float16, seq_lens=[c_seq_len // batch] * batch,
         )  # fmt: skip
         q, k, v, block_indices, block_counts, offsets, token_indices = workload.gen_inputs()[:7]
 
@@ -418,7 +418,7 @@ class TestBytesOracle:
             dtype="float16",
         )  # fmt: skip
         oracle = _ledger(
-            "NSAFwdVarlenOp",
+            "NSAVarlenFwdOp",
             q=((c_seq_len, heads, dim), torch.float16),
             # k and v are read through the selection, not end to end
             k=((gathered,), torch.float16),
@@ -455,7 +455,7 @@ class TestBytesOracle:
             "dtype": "float16",
         }
         oracle = _ledger(
-            "NSATopkVarlenOp",
+            "NSATopkVarlenFwdOp",
             q=((c_seq_len, heads, dim), torch.float16),
             k_cmp=((chunk_num, head_kv, dim), torch.float16),
             lse_in_unread=True,
@@ -664,8 +664,8 @@ HAND_WRITTEN = {
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp": "the per-request lengths the call packed decide the traffic",
     "GroupedGemmFwdOp": "`batch_padded_offsets` is passed and no kernel indexes it",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": "it reads the pages its block table names, not the pool",
-    "NSAFwdVarlenOp": "how much it reads follows the values in `block_counts`",
-    "NSATopkVarlenOp": "`lse_in` is passed and the kernel recomputes the lse instead of reading it",
+    "NSAVarlenFwdOp": "how much it reads follows the values in `block_counts`",
+    "NSATopkVarlenFwdOp": "`lse_in` is passed and the kernel recomputes the lse instead of reading it",
     "IndexedExpertMLPFwdOp": "the routed weight reads follow the values in `topk_ids`",
 }
 
@@ -826,7 +826,7 @@ class TestValueDeterminedTraffic:
             workload = NsaFwdWorkload(
                 batch=4, heads=16, c_seq_len=8192, dim=64, is_causal=True, scale=0.1,
                 block_size=32, groups=16, selected_blocks=16, dtype=torch.float16,
-                accum_dtype=torch.float32, seq_lens=[2048] * 4,
+                seq_lens=[2048] * 4,
             )  # fmt: skip
             for _ in range(builds - 1):
                 workload.gen_inputs()

@@ -35,7 +35,5 @@ def test_mla_decode(
     tune: bool,
 ):
     test = MlaDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
-    op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(
-        batch, heads, heads_kv, seq_len_kv, dim, dim_pe, tune=tune
-    )
+    op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(tune=tune)
     test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)

@@ -108,9 +108,7 @@ def test_mha_decode_paged_bench(
     inputs = test.gen_inputs()
     q, k, v, real_seqlen_kv, block_table = inputs
 
-    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
-        batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, tune=tune
-    )
+    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size, is_causal, tune=tune)
     bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 

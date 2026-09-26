@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
-from tileops.attention import NSACmpFwdVarlenOp, NSAFwdVarlenOp, NSATopkVarlenOp
+from tileops.attention import NSACmpVarlenFwdOp, NSATopkVarlenFwdOp, NSAVarlenFwdOp
 from tileops.manifest import load_workloads
 from workloads.attention.deepseek import (
     NsaCmpFwdWorkload,
@@ -23,9 +23,9 @@ _TUNE = False
 
 
 @pytest.mark.parametrize(
-    "seq_num, c_seq_len, heads, head_kv, dim_k, dim_v, scale, bc, bs, accum_dtype, seq_lens, dtype",
+    "seq_num, c_seq_len, heads, head_kv, dim_k, dim_v, scale, bs, seq_lens, dtype",
     workload_params(
-        load_workloads(NSACmpFwdVarlenOp),
+        load_workloads(NSACmpVarlenFwdOp),
         fields(
             "seq_num",
             "c_seq_len",
@@ -34,9 +34,7 @@ _TUNE = False
             "dim_k",
             "dim_v",
             "scale",
-            "bc",
             "bs",
-            "accum_dtype",
             "seq_lens",
             dtype_last=True,
         ),
@@ -50,9 +48,7 @@ def test_nsa_cmp_fwd_varlen_bench(
     dim_k: int,
     dim_v: int,
     scale: float,
-    bc: int,
     bs: int,
-    accum_dtype: torch.dtype,
     seq_lens: List[int],
     dtype: torch.dtype,
 ) -> None:
@@ -64,24 +60,21 @@ def test_nsa_cmp_fwd_varlen_bench(
         dim_v,
         heads // head_kv,
         scale,
-        bc,
         bs,
         dtype,
-        accum_dtype,
         seq_lens=seq_lens,
     )
     inputs = test.gen_inputs()
-    op = NSACmpFwdVarlenOp(scale=scale, bc=bc, bs=bs, accum_dtype=accum_dtype, tune=_TUNE)
+    op = NSACmpVarlenFwdOp(scale=scale, bs=bs, tune=_TUNE)
 
     bm = ManifestBenchmark(op, test)
     bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs)
 
 
 @pytest.mark.parametrize(
-    "seq_num, c_seq_len, heads, head_kv, dim, selected_block_num, scale, bc, bs, "
-    "accum_dtype, seq_lens, dtype",
+    "seq_num, c_seq_len, heads, head_kv, dim, selected_block_num, scale, bs, seq_lens, dtype",
     workload_params(
-        load_workloads(NSATopkVarlenOp),
+        load_workloads(NSATopkVarlenFwdOp),
         fields(
             "seq_num",
             "c_seq_len",
@@ -90,9 +83,7 @@ def test_nsa_cmp_fwd_varlen_bench(
             "dim",
             "selected_block_num",
             "scale",
-            "bc",
             "bs",
-            "accum_dtype",
             "seq_lens",
             dtype_last=True,
         ),
@@ -106,9 +97,7 @@ def test_nsa_topk_varlen_bench(
     dim: int,
     selected_block_num: int,
     scale: float,
-    bc: int,
     bs: int,
-    accum_dtype: torch.dtype,
     seq_lens: List[int],
     dtype: torch.dtype,
 ) -> None:
@@ -120,19 +109,15 @@ def test_nsa_topk_varlen_bench(
         heads // head_kv,
         scale,
         selected_block_num,
-        bc,
         bs,
         dtype,
-        accum_dtype,
         seq_lens=seq_lens,
     )
     inputs = test.gen_inputs()
-    op = NSATopkVarlenOp(
+    op = NSATopkVarlenFwdOp(
         scale=scale,
         selected_block_num=selected_block_num,
-        bc=bc,
         bs=bs,
-        accum_dtype=accum_dtype,
         tune=_TUNE,
     )
 
@@ -142,9 +127,9 @@ def test_nsa_topk_varlen_bench(
 
 @pytest.mark.parametrize(
     "batch, c_seq_len, heads, head_kv, dim, selected_blocks, is_causal, scale, block_size, "
-    "accum_dtype, seq_lens, dtype",
+    "seq_lens, dtype",
     workload_params(
-        load_workloads(NSAFwdVarlenOp),
+        load_workloads(NSAVarlenFwdOp),
         fields(
             "batch",
             "c_seq_len",
@@ -155,7 +140,6 @@ def test_nsa_topk_varlen_bench(
             "is_causal",
             "scale",
             "block_size",
-            "accum_dtype",
             "seq_lens",
             dtype_last=True,
         ),
@@ -171,7 +155,6 @@ def test_nsa_fwd_varlen_bench(
     is_causal: bool,
     scale: float,
     block_size: int,
-    accum_dtype: torch.dtype,
     seq_lens: List[int],
     dtype: torch.dtype,
 ) -> None:
@@ -186,15 +169,13 @@ def test_nsa_fwd_varlen_bench(
         heads // head_kv,
         selected_blocks,
         dtype,
-        accum_dtype,
         seq_lens=seq_lens,
     )
     inputs = test.gen_inputs()
-    op = NSAFwdVarlenOp(
+    op = NSAVarlenFwdOp(
         is_causal=is_causal,
         scale=scale,
         block_size=block_size,
-        accum_dtype=accum_dtype,
         tune=_TUNE,
     )
 

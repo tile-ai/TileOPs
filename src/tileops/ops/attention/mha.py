@@ -15,7 +15,7 @@ from tileops.perf.profile import tensor_core_roof
 from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 from .gqa import GroupedQueryAttentionBwdOp
-from .selection import AttentionCall, device_of
+from .selection import AttentionCall
 
 __all__ = [
     "MultiHeadAttentionBwdOp",
@@ -45,17 +45,13 @@ class MultiHeadAttentionBwdOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        heads: int,
-        seq_len: int,
-        dim: int,
         is_causal: bool = True,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
         *,
         target: Target = None,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
@@ -65,10 +61,6 @@ class MultiHeadAttentionBwdOp(Op):
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.target = target
-        self.batch = batch
-        self.heads = heads
-        self.seq_len = seq_len  # TODO: support s_q != s_kv
-        self.dim = dim
         self.is_causal = is_causal
 
         self.tune = tune
@@ -76,11 +68,6 @@ class MultiHeadAttentionBwdOp(Op):
         self._gqa_op = self.delegate_for(
             "gqa_backward",
             None,
-            batch=batch,
-            heads=heads,
-            heads_kv=heads,
-            seq_len=seq_len,
-            dim=dim,
             is_causal=is_causal,
         )
         self.kernel_map = self._gqa_op.kernel_map
@@ -156,6 +143,8 @@ class MultiHeadAttentionBwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         self.dtype = q.dtype
+        # The legacy roofline formula reads these off the op.
+        self.batch, self.seq_len, self.heads, self.dim = q.shape
         return self._gqa_op(q, k, v, o, do, lse)
 
     def compute_roof(self) -> str:
@@ -172,11 +161,6 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        heads: int,
-        seqlen_q: int,
-        seqlen_kv: int,
-        dim: int,
         page_size: int,
         is_causal: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
@@ -184,7 +168,7 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         *,
         target: Target = None,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             page_size: Manifest ``params.page_size``, ``int``.
@@ -195,19 +179,10 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.target = target
-        self.batch = batch
-        self.heads = heads
-        self.seqlen_q = seqlen_q
-        self.seqlen_kv = seqlen_kv
-        self.dim = dim
         self.page_size = page_size
         self.is_causal = is_causal
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        call = self._attention_call(dtype, device_of(inputs))
-        return self.kernel_for("mha_decode_paged", inputs, call)
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
@@ -216,26 +191,25 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
             "mha_decode_paged_ws_kernel": MHADecodePagedWsKernel,
         }
 
-    def _attention_call(
-        self, dtype: torch.dtype, device: Optional[torch.device] = None
-    ) -> AttentionCall:
+    def _attention_call(self, q: torch.Tensor, k: torch.Tensor) -> AttentionCall:
         """State what one paged decode call is, for selection to filter against.
 
-        The element type arrives with the inputs rather than with the op, so one
-        instance serves every dtype it is handed.
+        Every extent and the element type arrive with the inputs, so one instance serves
+        every shape and dtype it is handed.
         """
+        batch, seqlen_q, heads, dim = q.shape
         return AttentionCall(
-            dtype=dtype,
-            batch=self.batch,
-            heads=self.heads,
-            heads_kv=self.heads,
-            dim=self.dim,
-            max_seqlen_q=self.seqlen_q,
-            seqlen_kv=self.seqlen_kv,
+            dtype=q.dtype,
+            batch=batch,
+            heads=heads,
+            heads_kv=heads,
+            dim=dim,
+            max_seqlen_q=seqlen_q,
+            seqlen_kv=k.shape[0],
             page_size=self.page_size,
             is_causal=self.is_causal,
             tune=self.tune,
-            device=device,
+            device=q.device,
         )
 
     def _infer_output_shapes(
@@ -284,9 +258,12 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         self.dtype = q.dtype
-        return self._get_kernel((q, k, v, real_seqlen_kv, block_table), q.dtype)(
-            q, k, v, real_seqlen_kv, block_table
-        )
+        # The legacy roofline formula reads these off the op.
+        self.batch, self.seqlen_q, self.heads, self.dim = q.shape
+        self.seqlen_kv = k.shape[0]
+        inputs = (q, k, v, real_seqlen_kv, block_table)
+        kernel = self.kernel_for("mha_decode_paged", inputs, self._attention_call(q, k))
+        return kernel(*inputs)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

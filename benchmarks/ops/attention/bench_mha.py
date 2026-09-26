@@ -63,7 +63,7 @@ def test_mha_bwd_bench(
     test = MhaBwdWorkload(batch, heads, seq_len, dim, causal, dtype)
     inputs = test.gen_inputs()
 
-    op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, tune=tune)
+    op = MultiHeadAttentionBwdOp(causal, tune=tune)
     bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 

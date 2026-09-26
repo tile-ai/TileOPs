@@ -116,18 +116,7 @@ def test_dsa_decode_bench(
     inputs = test.gen_inputs()
 
     op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(
-        batch,
-        heads,
-        seq_len_q,
-        seq_len_kv,
-        dim,
-        dim_tail,
-        topk,
-        stride_kv,
-        heads_kv,
-        q_start_index_s,
-        sm_scale=sm_scale,
-        tune=tune,
+        dim_tail, stride_kv, q_start_index_s, sm_scale=sm_scale, tune=tune
     )
     bm = ManifestBenchmark(op, test)
 

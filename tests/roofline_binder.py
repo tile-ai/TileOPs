@@ -204,7 +204,7 @@ _ROW_SUPPLEMENT = {
     },
     # NSA compression and top-k read the request bounds out of `offsets`. The row
     # states the lengths, so the tensor is their running sum, not an invention.
-    "NSACmpFwdVarlenOp": lambda row: {
+    "NSACmpVarlenFwdOp": lambda row: {
         "q_shape": (row["c_seq_len"], row["heads"], row["dim_k"]),
         "k_cmp_shape": (row["chunk_num"], row["head_kv"], row["dim_k"]),
         "v_cmp_shape": (row["chunk_num"], row["head_kv"], row["dim_v"]),
@@ -213,7 +213,7 @@ _ROW_SUPPLEMENT = {
         "offsets": _packed_bounds(row["seq_lens"]),
         "offsets_shape": (row["seq_num"] + 1,),
     },
-    "NSATopkVarlenOp": lambda row: {
+    "NSATopkVarlenFwdOp": lambda row: {
         "q_shape": (row["c_seq_len"], row["heads"], row["dim"]),
         "k_cmp_shape": (row["chunk_num"], row["head_kv"], row["dim"]),
         "lse_in_shape": (row["c_seq_len"], row["heads"]),

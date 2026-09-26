@@ -449,7 +449,6 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
       - {q: float16, k_new: float16, v_new: float16, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32}
       - {q: bfloat16, k_new: bfloat16, v_new: bfloat16, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32}
     params:
-      max_pages_per_req: {type: int}
       page_size: {type: int}
       max_seqlen_q: {type: int}
       cache_dtype: {type: "dtype | None", default: null}
@@ -680,8 +679,6 @@ MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
       k_pe: {dtype: "same_as(q)"}
     outputs:
       o: {dtype: "same_as(q)"}
-    params:
-      pe_dim: {type: int}
     shape_rules:
       - "q.shape == (B, H, D)"
       - "q_pe.shape == (B, H, pe_dim)"
@@ -726,7 +723,6 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
       o: {dtype: "same_as(q)"}
     params:
       dim_tail: {type: int}
-      topk: {type: int}
       stride_kv: {type: int}
       q_start_index_s: {type: int}
       is_causal: {type: bool, default: true}
@@ -757,7 +753,7 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
 # Native Sparse Attention (NSA) runs as three passes over one packed batch: compress the
 # keys and values per block, select the blocks each token keeps, then attend to those
 # blocks only. `offsets` carries the request boundaries through all three.
-NSACmpFwdVarlenOp:
+NSACmpVarlenFwdOp:
   ref_api: "none"
   family: attention
   status: implemented
@@ -776,9 +772,7 @@ NSACmpFwdVarlenOp:
       lse: {dtype: "same_as(q)"}
     params:
       scale: {type: float}
-      bc: {type: int}
       bs: {type: int}
-      accum_dtype: {type: torch.dtype}
     shape_rules:
     - "q.shape == (c_seq_len, heads, dim_k)"
     - "k_cmp.shape == (chunk_num, head_kv, dim_k)"
@@ -793,8 +787,8 @@ NSACmpFwdVarlenOp:
     - "heads // head_kv % 16 == 0"
 
   workloads:
-  - {seq_num: 8, c_seq_len: 8192, heads: 32, head_kv: 2, dim_k: 128, dim_v: 128, chunk_num: 256, scale: 0.08838834764831845, bc: 32, bs: 32, accum_dtype: float32, seq_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-cmp-s8k-r8-h32-d128"}
-  - {seq_num: 4, c_seq_len: 4096, heads: 32, head_kv: 2, dim_k: 128, dim_v: 128, chunk_num: 128, scale: 0.08838834764831845, bc: 32, bs: 32, accum_dtype: float32, seq_lens: [1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-cmp-s4k-r4-h32-d128"}
+  - {seq_num: 8, c_seq_len: 8192, heads: 32, head_kv: 2, dim_k: 128, dim_v: 128, chunk_num: 256, scale: 0.08838834764831845, bs: 32, seq_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-cmp-s8k-r8-h32-d128"}
+  - {seq_num: 4, c_seq_len: 4096, heads: 32, head_kv: 2, dim_k: 128, dim_v: 128, chunk_num: 128, scale: 0.08838834764831845, bs: 32, seq_lens: [1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-cmp-s4k-r4-h32-d128"}
 
   roofline:
     func: "tileops.perf.formulas.nsa_cmp_fwd_varlen_roofline"
@@ -808,7 +802,7 @@ NSACmpFwdVarlenOp:
     bench: benchmarks/ops/attention/bench_deepseek_nsa.py
     bench_manifest_driven: true
 
-NSATopkVarlenOp:
+NSATopkVarlenFwdOp:
   ref_api: "none"
   family: attention
   status: implemented
@@ -833,9 +827,7 @@ NSATopkVarlenOp:
     params:
       scale: {type: float}
       selected_block_num: {type: int}
-      bc: {type: int}
       bs: {type: int}
-      accum_dtype: {type: torch.dtype}
     shape_rules:
     - "q.shape == (c_seq_len, heads, dim)"
     - "k_cmp.shape == (chunk_num, head_kv, dim)"
@@ -848,8 +840,8 @@ NSATopkVarlenOp:
     - "heads // head_kv % 16 == 0"
 
   workloads:
-  - {seq_num: 8, c_seq_len: 8192, heads: 32, head_kv: 2, dim: 128, chunk_num: 256, scale: 1.0, selected_block_num: 16, bc: 32, bs: 32, accum_dtype: float32, seq_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-topk-s8k-r8-h32-d128"}
-  - {seq_num: 4, c_seq_len: 4096, heads: 32, head_kv: 2, dim: 128, chunk_num: 128, scale: 1.0, selected_block_num: 16, bc: 32, bs: 32, accum_dtype: float32, seq_lens: [1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-topk-s4k-r4-h32-d128"}
+  - {seq_num: 8, c_seq_len: 8192, heads: 32, head_kv: 2, dim: 128, chunk_num: 256, scale: 1.0, selected_block_num: 16, bs: 32, seq_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-topk-s8k-r8-h32-d128"}
+  - {seq_num: 4, c_seq_len: 4096, heads: 32, head_kv: 2, dim: 128, chunk_num: 128, scale: 1.0, selected_block_num: 16, bs: 32, seq_lens: [1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-topk-s4k-r4-h32-d128"}
 
   roofline:
     func: "tileops.perf.formulas.nsa_topk_varlen_roofline"
@@ -863,7 +855,7 @@ NSATopkVarlenOp:
     bench: benchmarks/ops/attention/bench_deepseek_nsa.py
     bench_manifest_driven: true
 
-NSAFwdVarlenOp:
+NSAVarlenFwdOp:
   ref_api: "none"
   family: attention
   status: implemented
@@ -884,7 +876,6 @@ NSAFwdVarlenOp:
       is_causal: {type: bool}
       scale: {type: float}
       block_size: {type: int}
-      accum_dtype: {type: torch.dtype}
     shape_rules:
     - "q.shape == (c_seq_len, heads, dim)"
     - "k.shape == (c_seq_len, head_kv, dim)"
@@ -900,8 +891,8 @@ NSAFwdVarlenOp:
     - "dim <= 128"
 
   workloads:
-  - {batch: 4, c_seq_len: 8192, heads: 16, head_kv: 1, dim: 64, selected_blocks: 1, is_causal: true, scale: 0.1, block_size: 32, accum_dtype: float32, seq_lens: [2048, 2048, 2048, 2048], dtypes: [float16], label: "nsa-slc-s8k-r4-h16-d64-b1"}
-  - {batch: 2, c_seq_len: 8192, heads: 16, head_kv: 1, dim: 64, selected_blocks: 4, is_causal: true, scale: 0.1, block_size: 32, accum_dtype: float32, seq_lens: [4096, 4096], dtypes: [float16], label: "nsa-slc-s8k-r2-h16-d64-b4"}
+  - {batch: 4, c_seq_len: 8192, heads: 16, head_kv: 1, dim: 64, selected_blocks: 1, is_causal: true, scale: 0.1, block_size: 32, seq_lens: [2048, 2048, 2048, 2048], dtypes: [float16], label: "nsa-slc-s8k-r4-h16-d64-b1"}
+  - {batch: 2, c_seq_len: 8192, heads: 16, head_kv: 1, dim: 64, selected_blocks: 4, is_causal: true, scale: 0.1, block_size: 32, seq_lens: [4096, 4096], dtypes: [float16], label: "nsa-slc-s8k-r2-h16-d64-b4"}
 
   roofline:
     func: "tileops.perf.formulas.nsa_fwd_varlen_roofline"

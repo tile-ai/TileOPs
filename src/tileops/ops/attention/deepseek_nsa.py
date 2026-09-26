@@ -16,9 +16,9 @@ from .._validation import check_tensor_shape
 from ..op_base import Op
 
 __all__ = [
-    "NSACmpFwdVarlenOp",
-    "NSAFwdVarlenOp",
-    "NSATopkVarlenOp",
+    "NSACmpVarlenFwdOp",
+    "NSAVarlenFwdOp",
+    "NSATopkVarlenFwdOp",
 ]
 
 
@@ -65,7 +65,7 @@ def _resolve_group(heads: int, head_kv: int) -> int:
     return group
 
 
-class NSATopkVarlenOp(Op):
+class NSATopkVarlenFwdOp(Op):
     """Native Sparse Attention (NSA) block selection over a ragged batch.
 
     Scores each compressed chunk against the query and returns, per token and per KV
@@ -78,13 +78,15 @@ class NSATopkVarlenOp(Op):
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
+    # Kernel configuration, not contract: the chunk tile width and the accumulator dtype.
+    bc: ClassVar[int] = 32
+    accum_dtype: ClassVar[torch.dtype] = torch.float32
+
     def __init__(
         self,
         scale: float,
         selected_block_num: int,
-        bc: int,
         bs: int,
-        accum_dtype: torch.dtype,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
@@ -95,21 +97,17 @@ class NSATopkVarlenOp(Op):
         Args:
             scale: Softmax scale applied to the QK product.
             selected_block_num: Blocks to keep per token and KV head.
-            bc: Chunk tile width.
             bs: Compression block size.
-            accum_dtype: Accumulator dtype.
             tune: Whether to autotune, applied when a kernel is first built.
             kernel_map: Optional kernel override dict.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.target = target
-        _validate_tiling(selected_block_num=selected_block_num, bc=bc, bs=bs)
+        _validate_tiling(selected_block_num=selected_block_num, bs=bs)
         self.scale = scale
         self.selected_block_num = selected_block_num
-        self.bc = bc
         self.bs = bs
-        self.accum_dtype = accum_dtype
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
@@ -266,22 +264,24 @@ class NSATopkVarlenOp(Op):
         return tensor_core_roof(self.dtype)
 
 
-class NSAFwdVarlenOp(Op):
+class NSAVarlenFwdOp(Op):
     """Native Sparse Attention (NSA) sparse forward over a ragged batch.
 
-    Attends each token to the blocks ``NSATopkVarlenOp`` selected for it. Sequence
+    Attends each token to the blocks ``NSATopkVarlenFwdOp`` selected for it. Sequence
     layout is packed: ``offsets`` marks the request boundaries, so the batch size and
     the block count come from the call rather than from construction.
     """
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
+    # Kernel configuration, not contract: the accumulator dtype.
+    accum_dtype: ClassVar[torch.dtype] = torch.float32
+
     def __init__(
         self,
         is_causal: bool,
         scale: float,
         block_size: int,
-        accum_dtype: torch.dtype,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
@@ -293,7 +293,6 @@ class NSAFwdVarlenOp(Op):
             is_causal: Whether a token may attend past its own position.
             scale: Softmax scale applied to the QK product.
             block_size: Tokens per selected block.
-            accum_dtype: Accumulator dtype.
             tune: Whether to autotune, applied when a kernel is first built.
             kernel_map: Optional kernel override dict.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
@@ -304,7 +303,6 @@ class NSAFwdVarlenOp(Op):
         self.is_causal = is_causal
         self.scale = scale
         self.block_size = block_size
-        self.accum_dtype = accum_dtype
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)
@@ -471,11 +469,11 @@ class NSAFwdVarlenOp(Op):
         return tensor_core_roof(self.dtype)
 
 
-class NSACmpFwdVarlenOp(Op):
+class NSACmpVarlenFwdOp(Op):
     """Native Sparse Attention (NSA) compression forward over a ragged batch.
 
     Attends each token to the compressed chunk summaries of its own request and
-    returns both the output and the log-sum-exp ``NSATopkVarlenOp`` scores against.
+    returns both the output and the log-sum-exp ``NSATopkVarlenFwdOp`` scores against.
 
     Sequence layout is packed: ``offsets`` marks the request boundaries, so the batch
     size and the chunk count come from the call rather than from construction.
@@ -483,12 +481,14 @@ class NSACmpFwdVarlenOp(Op):
 
     compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
 
+    # Kernel configuration, not contract: the chunk tile width and the accumulator dtype.
+    bc: ClassVar[int] = 32
+    accum_dtype: ClassVar[torch.dtype] = torch.float32
+
     def __init__(
         self,
         scale: float,
-        bc: int,
         bs: int,
-        accum_dtype: torch.dtype,
         tune: bool = False,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
@@ -498,20 +498,16 @@ class NSACmpFwdVarlenOp(Op):
 
         Args:
             scale: Softmax scale applied to the QK product.
-            bc: Chunk tile width.
             bs: Compression block size.
-            accum_dtype: Accumulator dtype.
             tune: Whether to autotune, applied when a kernel is first built.
             kernel_map: Optional kernel override dict.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.target = target
-        _validate_tiling(bc=bc, bs=bs)
+        _validate_tiling(bs=bs)
         self.scale = scale
-        self.bc = bc
         self.bs = bs
-        self.accum_dtype = accum_dtype
         self.tune = tune
 
         self.dispatch_kernel(kernel_map)

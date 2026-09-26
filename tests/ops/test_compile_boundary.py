@@ -20,7 +20,7 @@ from tests.compile_contract import (
 )
 from tileops.ops.attention.deepseek_dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from tileops.ops.attention.deepseek_mla import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
-from tileops.ops.attention.deepseek_nsa import NSACmpFwdVarlenOp, NSAFwdVarlenOp, NSATopkVarlenOp
+from tileops.ops.attention.deepseek_nsa import NSACmpVarlenFwdOp, NSATopkVarlenFwdOp, NSAVarlenFwdOp
 from tileops.ops.attention.gqa import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
@@ -91,7 +91,7 @@ def _attention_cases():
 
     def gqa_bwd():
         case = GroupedQueryAttentionBwdWorkload(1, _HEADS, _HEADS_KV, 256, _DIM, True, _DTYPE)
-        op = GroupedQueryAttentionBwdOp(1, _HEADS, _HEADS_KV, 256, _DIM, is_causal=True)
+        op = GroupedQueryAttentionBwdOp(is_causal=True)
         return op, case.gen_inputs()
 
     def gqa_varlen():
@@ -119,9 +119,7 @@ def _attention_cases():
         case = GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(
             2, lens, lens, _HEADS, _HEADS_KV, _DIM, True, 64, -1, _DTYPE
         )
-        op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(
-            2, _HEADS, _HEADS_KV, _DIM, 128, window_size_left=64
-        )
+        op = GroupedQueryAttentionSlidingWindowVarlenFwdOp(128, window_size_left=64)
         return op, case.gen_inputs()
 
     def gqa_prefill_paged():
@@ -129,12 +127,7 @@ def _attention_cases():
             2, _HEADS, _HEADS_KV, [64, 64], [128, 128], 64, _DIM, True, _DTYPE
         )
         op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
-            batch=2,
-            heads=_HEADS,
-            heads_kv=_HEADS_KV,
-            max_pages_per_req=case.max_pages_per_req,
             page_size=64,
-            dim=_DIM,
             max_seqlen_q=case.max_seqlen_q,
             is_causal=True,
         )
@@ -144,57 +137,43 @@ def _attention_cases():
 
     def gqa_decode_paged():
         case = GroupedQueryAttentionDecodePagedWorkload(2, _HEADS, _HEADS_KV, 256, _DIM, 64, _DTYPE)
-        op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
-            batch=2, heads=_HEADS, heads_kv=_HEADS_KV, seqlen_kv=256, dim=_DIM, page_size=64
-        )
+        op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(page_size=64)
         return op, case.gen_inputs()
 
     def mha_bwd():
         case = GroupedQueryAttentionBwdWorkload(1, _HEADS, _HEADS, 256, _DIM, True, _DTYPE)
-        op = MultiHeadAttentionBwdOp(1, _HEADS, 256, _DIM, is_causal=True)
+        op = MultiHeadAttentionBwdOp(is_causal=True)
         return op, case.gen_inputs()
 
     def mha_decode_paged():
         case = MhaDecodePagedWorkload(1, _HEADS, 1, 256, _DIM, 128, False, _DTYPE)
-        op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
-            batch=1,
-            heads=_HEADS,
-            seqlen_q=1,
-            seqlen_kv=256,
-            dim=_DIM,
-            page_size=128,
-            is_causal=False,
-        )
+        op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=128, is_causal=False)
         return op, case.gen_inputs()
 
     def mla_decode():
         case = MlaDecodeWorkload(1, 64, 1, 256, _DIM, 64, _DTYPE)
-        op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(1, 64, 1, 256, _DIM, 64)
+        op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp()
         return op, case.gen_inputs()
 
     def nsa_fwd():
-        case = NsaFwdWorkload(1, 16, 512, 64, True, 0.1, 32, 16, 1, _DTYPE, torch.float32)
-        op = NSAFwdVarlenOp(is_causal=True, scale=0.1, block_size=32, accum_dtype=torch.float32)
+        case = NsaFwdWorkload(1, 16, 512, 64, True, 0.1, 32, 16, 1, _DTYPE)
+        op = NSAVarlenFwdOp(is_causal=True, scale=0.1, block_size=32)
         return op, case.gen_inputs()
 
     def nsa_cmp_fwd():
-        case = NsaCmpFwdWorkload(1, 512, 32, _DIM, _DIM, 16, 0.088, 32, 32, _DTYPE, torch.float32)
-        op = NSACmpFwdVarlenOp(scale=0.088, bc=32, bs=32, accum_dtype=torch.float32)
+        case = NsaCmpFwdWorkload(1, 512, 32, _DIM, _DIM, 16, 0.088, 32, _DTYPE)
+        op = NSACmpVarlenFwdOp(scale=0.088, bs=32)
         return op, case.gen_inputs()
 
     def nsa_topk():
-        case = NsaTopkWorkload(1, 512, 32, _DIM, 16, 1.0, 16, 32, 32, _DTYPE, torch.float32)
-        op = NSATopkVarlenOp(
-            scale=1.0, selected_block_num=16, bc=32, bs=32, accum_dtype=torch.float32
-        )
+        case = NsaTopkWorkload(1, 512, 32, _DIM, 16, 1.0, 16, 32, _DTYPE)
+        op = NSATopkVarlenFwdOp(scale=1.0, selected_block_num=16, bs=32)
         return op, case.gen_inputs()
 
     def dsa_decode():
         batch, heads, seq_len, seq_len_kv, dim, tail, topk = 1, 64, 64, 128, 512, 64, 128
         case = DsaDecodeWorkload(batch, heads, seq_len, seq_len_kv, dim, tail, topk, 1, 1, seq_len)
-        op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(
-            batch, heads, seq_len, seq_len_kv, dim, tail, topk, 1, 1, q_start_index_s=seq_len
-        )
+        op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(tail, 1, q_start_index_s=seq_len)
         return op, case.gen_inputs()
 
     def fp8_lightning_indexer():
@@ -596,9 +575,9 @@ for _op_cls in (
     MultiHeadAttentionBwdOp,
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
     MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,
-    NSAFwdVarlenOp,
-    NSACmpFwdVarlenOp,
-    NSATopkVarlenOp,
+    NSAVarlenFwdOp,
+    NSACmpVarlenFwdOp,
+    NSATopkVarlenFwdOp,
     DeepSeekSparseAttentionDecodeWithKVCacheFwdOp,
     FP8LightningIndexerFwdOp,
     TopkSelectorFwdOp,

@@ -14,6 +14,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _prefill_call_tensors() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """``q``, ``k_new`` and ``block_table`` of a two-request fp16 paged prefill call."""
+    q = torch.empty(16, 32, 128, dtype=torch.float16, device="cuda")
+    k_new = torch.empty(16, 8, 128, dtype=torch.float16, device="cuda")
+    block_table = torch.empty(2, 8, dtype=torch.int32, device="cuda")
+    return q, k_new, block_table
+
+
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("ctor", "dtype", "expected"),
@@ -31,17 +39,12 @@ pytestmark = pytest.mark.skipif(
 )
 def test_paged_decode_dispatch_is_unchanged(ctor: dict, dtype: torch.dtype, expected: str) -> None:
     """Paged decode keeps its batch-1 fast path and its page-tile guard."""
-    kwargs = {
-        "batch": 1,
-        "heads": 32,
-        "heads_kv": 4,
-        "seqlen_kv": 8192,
-        "dim": 128,
-        "page_size": 256,
-    }
-    kwargs.update(ctor)
-    op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(**kwargs)
-    candidate = op.select_kernel(op.attention_call(dtype)).__name__
+    extents = {"batch": 1, "seqlen_kv": 8192, "page_size": 256}
+    extents.update(ctor)
+    op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(extents["page_size"])
+    q = torch.empty(extents["batch"], 32, 128, dtype=dtype, device="cuda")
+    k = torch.empty(extents["seqlen_kv"], 4, 128, dtype=dtype, device="cuda")
+    candidate = op.select_kernel(op.attention_call(q, k)).__name__
     assert candidate == expected
 
 
@@ -59,18 +62,8 @@ def test_paged_decode_dispatch_is_unchanged(ctor: dict, dtype: torch.dtype, expe
 )
 def test_paged_prefill_dispatch_is_unchanged(ctor: dict, expected: str) -> None:
     """Paged prefill keeps its plain and fused-RoPE regions."""
-    kwargs = {
-        "batch": 2,
-        "heads": 32,
-        "heads_kv": 8,
-        "max_pages_per_req": 8,
-        "page_size": 256,
-        "dim": 128,
-        "max_seqlen_q": 512,
-    }
-    kwargs.update(ctor)
-    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(**kwargs)
-    candidate = op.select_kernel(op.attention_call(torch.float16)).__name__
+    op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(page_size=256, max_seqlen_q=512, **ctor)
+    candidate = op.select_kernel(op.attention_call(*_prefill_call_tensors())).__name__
     assert candidate == expected
 
 
@@ -80,14 +73,7 @@ def test_paged_prefill_fp8_cache_dispatch_is_unchanged() -> None:
     if not hasattr(torch, "float8_e4m3fn"):
         pytest.skip("this torch build has no float8_e4m3fn")
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
-        batch=2,
-        heads=32,
-        heads_kv=8,
-        max_pages_per_req=8,
-        page_size=256,
-        dim=128,
-        max_seqlen_q=512,
-        cache_dtype=torch.float8_e4m3fn,
+        page_size=256, max_seqlen_q=512, cache_dtype=torch.float8_e4m3fn
     )
-    candidate = op.select_kernel(op.attention_call(torch.float16)).__name__
+    candidate = op.select_kernel(op.attention_call(*_prefill_call_tensors())).__name__
     assert candidate == "GQAPrefillPagedWithFP8KVCacheFwdKernel"
