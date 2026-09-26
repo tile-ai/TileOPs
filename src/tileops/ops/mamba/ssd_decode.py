@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -6,7 +6,6 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba import SSDDecodeKernel
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["SSDDecodeFwdOp"]
@@ -29,50 +28,27 @@ class SSDDecodeFwdOp(Op):
 
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"ssd_decode": SSDDecodeKernel}
 
     def __init__(
         self,
-        tune: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            tune:     Whether to autotune tile config on construction.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune the tile config when a kernel is first built.
         """
         self.target = target
-        self.batch = None
-        self.n_heads = None
-        self.d_head = None
-        self.d_state = None
-        self.n_groups = None
-        self.dtype = None
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"ssd_decode": SSDDecodeKernel}
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        n_heads: int,
-        d_head: int,
-        d_state: int,
-        n_groups: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        key = (batch, n_heads, d_head, d_state, n_groups, dtype, device_index)
-        return self.kernel_for("ssd_decode", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, dtype and device."""
@@ -80,18 +56,6 @@ class SSDDecodeFwdOp(Op):
         return call, lambda: self.kernel_map["ssd_decode"](
             batch, n_heads, d_head, d_state, n_groups, dtype, tune=self.tune
         )
-
-    def _infer_output_shapes(
-        self,
-        A_shape: tuple[int, ...],
-        dt_shape: tuple[int, ...],
-        x_shape: tuple[int, ...],
-        B_in_shape: tuple[int, ...],
-        C_in_shape: tuple[int, ...],
-        state_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: ``y_out`` has the shape of *x*, $[B \\times H \\times P]$."""
-        return {"y_out": tuple(x_shape)}
 
     def forward(
         self,
@@ -115,7 +79,7 @@ class SSDDecodeFwdOp(Op):
         Returns:
             y_out: (batch, n_heads, d_head) float32
         """
-        return self._wrapped(A, dt, x, B_in, C_in, state, self._instance_key)
+        return self._call_boundary(A, dt, x, B_in, C_in, state)
 
     def _eager_forward(
         self,
@@ -126,59 +90,23 @@ class SSDDecodeFwdOp(Op):
         C_in: torch.Tensor,
         state: torch.Tensor,
     ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if x.ndim != 3:
-            raise ValueError("x must have shape [batch, n_heads, d_head]")
         batch, n_heads, d_head = x.shape
-        if state.ndim != 4:
-            raise ValueError("state must have shape [batch, n_heads, d_head, d_state]")
-        if state.shape[:3] != (batch, n_heads, d_head):
-            raise ValueError("state must match x batch, n_heads, and d_head")
         d_state = state.shape[3]
-        if B_in.ndim != 3 or B_in.shape[0] != batch or B_in.shape[2] != d_state:
-            raise ValueError("B_in must have shape [batch, n_groups, d_state]")
         n_groups = B_in.shape[1]
-        if n_heads % n_groups != 0:
-            raise ValueError("n_heads must be divisible by n_groups")
-        if C_in.shape != (batch, n_groups, d_state):
-            raise ValueError("C_in must have shape [batch, n_groups, d_state]")
-        if A.shape != (n_heads, d_head, d_state):
-            raise ValueError("A must have shape [n_heads, d_head, d_state]")
-        if dt.shape != (batch, n_heads, d_head):
-            raise ValueError("dt must have shape [batch, n_heads, d_head]")
-        if dt.dtype != torch.float32:
-            raise ValueError(f"Expected float32 dt, got {dt.dtype}")
-        if state.dtype != torch.float32:
-            raise ValueError(f"Expected float32 state, got {state.dtype}")
-        if not state.is_contiguous():
-            raise ValueError("state must be contiguous for in-place update")
-
-        self.batch = batch
-        self.n_heads = n_heads
-        self.d_head = d_head
-        self.d_state = d_state
-        self.n_groups = n_groups
-        self.dtype = x.dtype
-        self.kernel = self._get_kernel(
+        kernel = self.kernel_for(
+            "ssd_decode",
             (A, dt, x, B_in, C_in, state),
-            batch,
-            n_heads,
-            d_head,
-            d_state,
-            n_groups,
-            x.dtype,
-            x.device.index,
+            (batch, n_heads, d_head, d_state, n_groups, x.dtype, x.device.index),
         )
-
-        A = A.contiguous()
-        dt = dt.contiguous()
-        x = x.contiguous()
-        B_in = B_in.contiguous()
-        C_in = C_in.contiguous()
-
-        return self.kernel(A, dt, x, B_in, C_in, state)
+        return kernel(
+            A.contiguous(),
+            dt.contiguous(),
+            x.contiguous(),
+            B_in.contiguous(),
+            C_in.contiguous(),
+            state,
+        )

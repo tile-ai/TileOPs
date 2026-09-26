@@ -91,7 +91,7 @@ def test_cb_producer_serves_two_dtypes_from_one_instance():
     from tileops.ops.mamba.cb_producer import CBProducerFwdOp
 
     batch, chunks, groups, chunk_len, d_state = 1, 2, 1, 64, 64
-    op = CBProducerFwdOp(batch, chunks, groups, chunk_len, d_state)
+    op = CBProducerFwdOp(chunk_len)
     s = chunks * chunk_len
     for dtype in _DTYPES:
         c = torch.randn(batch, s, groups, d_state, dtype=dtype, device="cuda")

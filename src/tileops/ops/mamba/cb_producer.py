@@ -2,7 +2,7 @@
 CB Producer Op - High-level interface for CB matrix computation.
 """
 
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -11,8 +11,6 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba.cb_producer import CBProducerKernel
 from tileops.perf.profile import tensor_core_roof
 
-from .._compile_boundary_codegen import OperatorSpec
-from .._validation import check_tensor_shape
 from ..op_base import Op
 
 __all__ = ["CBProducerFwdOp"]
@@ -21,76 +19,47 @@ __all__ = ["CBProducerFwdOp"]
 class CBProducerFwdOp(Op):
     """CB (C@B) matrix producer operator.
 
-    Computes cb[b,c,g,l,s] = sum_n C[b,c,g,l,n] * B[b,c,g,s,n]
+    Computes cb[b,c,g,l,s] = sum_n C[b,c*Q+l,g,n] * B[b,c*Q+s,g,n]
     with causal masking (cb[l,s] = 0 if s > l).
-
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"cb_producer": CBProducerKernel}
 
     def __init__(
         self,
-        batch: int,
-        num_chunks: int,
-        n_groups: int,
         chunk_len: int,
-        d_state: int,
         *,
         target: Target = None,
         kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ):
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            batch: Batch size
-            num_chunks: Number of chunks
-            n_groups: Number of groups
-            chunk_len: Chunk length (Q)
-            d_state: State dimension (N)
+            chunk_len: Chunk length (Q).
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional pre-initialized kernels
             tune: Whether to autotune
         """
-        self.batch = batch
-        self.num_chunks = num_chunks
-        self.n_groups = n_groups
         self.chunk_len = chunk_len
-        self.d_state = d_state
         self.tune = tune
-
         self.target = target
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernel(self, inputs: "tuple[torch.Tensor | None, ...]", dtype: torch.dtype) -> Kernel:
-        return self.kernel_for("cb_producer", inputs, dtype)
-
-    def entry_for(self, role: str, call: torch.dtype) -> Entry:
-        """One implementation, built per dtype; every extent is the op's."""
+    def entry_for(self, role: str, call: tuple) -> Entry:
+        """One implementation, built per shape, dtype and device."""
+        batch, seq_len, n_groups, d_state, dtype, _device = call
         return call, lambda: self.kernel_map["cb_producer"](
-            self.batch,
-            self.num_chunks,
-            self.n_groups,
+            batch,
+            seq_len // self.chunk_len,
+            n_groups,
             self.chunk_len,
-            self.d_state,
-            call,
+            d_state,
+            dtype,
             tune=self.tune,
         )
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        """Default kernel map - returns kernel class, not instance."""
-        return {"cb_producer": CBProducerKernel}
-
-    def _infer_output_shapes(
-        self,
-        C_mat_shape: tuple[int, ...],
-        B_mat_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: one causal ``(Q, Q)`` block per batch, chunk and group."""
-        batch, _, groups, _ = C_mat_shape
-        return {"cb": (batch, self.num_chunks, groups, self.chunk_len, self.chunk_len)}
 
     def forward(
         self,
@@ -99,33 +68,33 @@ class CBProducerFwdOp(Op):
     ) -> torch.Tensor:
         """
         Args:
-            C_mat: [B, S, G, N]  dtype (contiguous)
-            B_mat: [B, S, G, N]  dtype (contiguous)
+            C_mat: [B, S, G, N]  dtype
+            B_mat: [B, S, G, N]  dtype
 
         Returns:
             cb: [B, C, G, Q, Q]  dtype
         """
-        return self._wrapped(C_mat, B_mat, self._instance_key)
+        return self._call_boundary(C_mat, B_mat)
 
     def _eager_forward(
         self,
         C_mat: torch.Tensor,
         B_mat: torch.Tensor,
     ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        self._validate_dtypes(C_mat, B_mat)
-        S = self.num_chunks * self.chunk_len
-        expected_shape = (self.batch, S, self.n_groups, self.d_state)
-        self.dtype = C_mat.dtype
-        check_tensor_shape("C_mat", C_mat, expected_shape)
-        check_tensor_shape("B_mat", B_mat, expected_shape)
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
-        return self._get_kernel((C_mat, B_mat), C_mat.dtype)(C_mat, B_mat)
+        batch, seq_len, n_groups, d_state = C_mat.shape
+        kernel = self.kernel_for(
+            "cb_producer",
+            (C_mat, B_mat),
+            (batch, seq_len, n_groups, d_state, C_mat.dtype, C_mat.device.index),
+        )
+        return kernel(C_mat, B_mat)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
+        return tensor_core_roof(self.last_call.tensors["C_mat"][1])

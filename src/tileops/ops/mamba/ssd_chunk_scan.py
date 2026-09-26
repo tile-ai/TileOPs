@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Optional
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -7,7 +7,6 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba import SSDChunkScanFwdKernel
 from tileops.perf.profile import tensor_core_roof
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["SSDChunkScanFwdOp"]
@@ -24,64 +23,29 @@ class SSDChunkScanFwdOp(Op):
 
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "ssd_chunk_scan_fwd": SSDChunkScanFwdKernel
+    }
 
     def __init__(
         self,
-        tune: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ):
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            tune:       Whether to autotune tile config on construction.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional override for kernel dispatch.
+            tune: Whether to autotune the tile config when a kernel is first built.
         """
         self.target = target
-        self.batch = None
-        self.num_chunks = None
-        self.chunk_len = None
-        self.n_heads = None
-        self.d_head = None
-        self.d_state = None
-        self.n_groups = None
-        self.dtype = None
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self.kernel = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"ssd_chunk_scan_fwd": SSDChunkScanFwdKernel}
-
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        num_chunks: int,
-        chunk_len: int,
-        n_heads: int,
-        d_head: int,
-        d_state: int,
-        n_groups: int,
-        dtype: torch.dtype,
-        device_index: int | None,
-    ) -> Kernel:
-        key = (
-            batch,
-            num_chunks,
-            chunk_len,
-            n_heads,
-            d_head,
-            d_state,
-            n_groups,
-            dtype,
-            device_index,
-        )
-        return self.kernel_for("ssd_chunk_scan_fwd", inputs, key)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, dtype and device."""
@@ -100,18 +64,6 @@ class SSDChunkScanFwdOp(Op):
             batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups, dtype, tune=self.tune
         )
 
-    def _infer_output_shapes(
-        self,
-        x_shape: tuple[int, ...],
-        cb_shape: tuple[int, ...],
-        dA_cumsum_shape: tuple[int, ...],
-        C_shape: tuple[int, ...],
-        prev_states_shape: tuple[int, ...],
-        dt_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: ``y`` has the shape of *x*, $[B \\times S \\times H \\times P]$."""
-        return {"y": tuple(x_shape)}
-
     def forward(
         self,
         x: torch.Tensor,
@@ -121,20 +73,20 @@ class SSDChunkScanFwdOp(Op):
         prev_states: torch.Tensor,
         dt: torch.Tensor,
     ) -> torch.Tensor:
-        """Run the fused SSD chunk scan.
+        """Run the fused SSD chunk output pass.
 
         Args:
             x:           (batch, seqlen, n_heads, d_head)                    dtype
             cb:          (batch, num_chunks, n_groups, chunk_len, chunk_len)  dtype
             dA_cumsum:   (batch, n_heads, num_chunks, chunk_len)              float32
             C:           (batch, seqlen, n_groups, d_state)                   dtype
-            prev_states: (batch, num_chunks, n_heads, d_head, d_state)        dtype
+            prev_states: (batch, num_chunks, n_heads, d_head, d_state)        float32
             dt:          (batch, n_heads, num_chunks, chunk_len)              dtype
 
         Returns:
-            out: (batch, seqlen, n_heads, d_head)  float32
+            y: (batch, seqlen, n_heads, d_head) float32
         """
-        return self._wrapped(x, cb, dA_cumsum, C, prev_states, dt, self._instance_key)
+        return self._call_boundary(x, cb, dA_cumsum, C, prev_states, dt)
 
     def _eager_forward(
         self,
@@ -145,68 +97,37 @@ class SSDChunkScanFwdOp(Op):
         prev_states: torch.Tensor,
         dt: torch.Tensor,
     ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if x.ndim != 4:
-            raise ValueError("x must have shape [batch, seq_len, n_heads, d_head]")
-        batch, seq_len, n_heads, d_head = x.shape
-        if dA_cumsum.ndim != 4:
-            raise ValueError("dA_cumsum must have shape [batch, n_heads, num_chunks, chunk_len]")
-        if dA_cumsum.shape[0] != batch or dA_cumsum.shape[1] != n_heads:
-            raise ValueError("dA_cumsum must match x batch and n_heads")
-        num_chunks, chunk_len = dA_cumsum.shape[2], dA_cumsum.shape[3]
-        if seq_len != num_chunks * chunk_len:
-            raise ValueError("x seq_len must equal num_chunks * chunk_len")
-        if C.ndim != 4 or C.shape[0] != batch or C.shape[1] != seq_len:
-            raise ValueError("C must have shape [batch, seq_len, n_groups, d_state]")
-        n_groups, d_state = C.shape[2], C.shape[3]
-        if n_heads % n_groups != 0:
-            raise ValueError("n_heads must be divisible by n_groups")
-        if cb.shape != (batch, num_chunks, n_groups, chunk_len, chunk_len):
-            raise ValueError(
-                "cb must have shape [batch, num_chunks, n_groups, chunk_len, chunk_len]"
-            )
-        if prev_states.shape != (batch, num_chunks, n_heads, d_head, d_state):
-            raise ValueError(
-                "prev_states must have shape [batch, num_chunks, n_heads, d_head, d_state]"
-            )
-        if dt.shape != (batch, n_heads, num_chunks, chunk_len):
-            raise ValueError("dt must have shape [batch, n_heads, num_chunks, chunk_len]")
-
-        self.batch = batch
-        self.num_chunks = num_chunks
-        self.chunk_len = chunk_len
-        self.n_heads = n_heads
-        self.d_head = d_head
-        self.d_state = d_state
-        self.n_groups = n_groups
-        self.dtype = x.dtype
-        self.kernel = self._get_kernel(
+        batch, _seq_len, n_heads, d_head = x.shape
+        num_chunks, n_groups, chunk_len = cb.shape[1], cb.shape[2], cb.shape[3]
+        d_state = C.shape[3]
+        kernel = self.kernel_for(
+            "ssd_chunk_scan_fwd",
             (x, cb, dA_cumsum, C, prev_states, dt),
-            batch,
-            num_chunks,
-            chunk_len,
-            n_heads,
-            d_head,
-            d_state,
-            n_groups,
-            x.dtype,
-            x.device.index,
+            (
+                batch,
+                num_chunks,
+                chunk_len,
+                n_heads,
+                d_head,
+                d_state,
+                n_groups,
+                x.dtype,
+                x.device.index,
+            ),
         )
-
-        x = x.contiguous()
-        cb = cb.contiguous()
-        dA_cumsum = dA_cumsum.contiguous()
-        C = C.contiguous()
-        prev_states = prev_states.contiguous()
-        dt = dt.contiguous()
-
-        return self.kernel(x, cb, dA_cumsum, C, prev_states, dt)
+        return kernel(
+            x.contiguous(),
+            cb.contiguous(),
+            dA_cumsum.contiguous(),
+            C.contiguous(),
+            prev_states.contiguous(),
+            dt.contiguous(),
+        )
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.dtype)
+        return tensor_core_roof(self.last_call.tensors["x"][1])

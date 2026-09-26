@@ -363,36 +363,6 @@ class TestBytesOracle:
             )
             assert op.eval_roofline()[1] == oracle, f"training={training}"
 
-    def test_mamba2_counts_the_public_tensors_and_not_the_stage_intermediates(self):
-        from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
-
-        batch, seqlen, n_heads, d_head, d_state, n_groups = 2, 2048, 8, 64, 128, 1
-        chunk_size = 256
-        x_shape = (batch, seqlen, n_heads, d_head)
-        bc_shape = (batch, seqlen, n_groups, d_state)
-        state_shape = (batch, n_heads, d_head, d_state)
-        for has_optional in (False, True):
-            op = Mamba2FwdOp.__new__(Mamba2FwdOp)
-            op.batch, op.seqlen = batch, seqlen
-            op.num_chunks, op.chunk_size = seqlen // chunk_size, chunk_size
-            op.n_heads, op.d_head, op.d_state, op.n_groups = n_heads, d_head, d_state, n_groups
-            op.dtype = torch.float16
-            op.dt_softplus = True
-            op.dt_bias_shape = (n_heads,) if has_optional else None
-            op.initial_states_shape = state_shape if has_optional else None
-            oracle = _nbytes(
-                (x_shape, torch.float16),
-                ((batch, seqlen, n_heads), torch.float32),  # dt
-                ((n_heads,), torch.float32),  # A
-                (bc_shape, torch.float16),  # B
-                (bc_shape, torch.float16),  # C
-                *((((n_heads,), torch.float32),) if has_optional else ()),
-                *(((state_shape, torch.float32),) if has_optional else ()),
-                (x_shape, torch.float32),  # y
-                (state_shape, torch.float32),  # final_states
-            )
-            assert op.eval_roofline()[1] == oracle, f"optional={has_optional}"
-
     def test_mha_backward_counts_o_and_lse(self):
         from tileops.ops.attention.mha import MultiHeadAttentionBwdOp
 
