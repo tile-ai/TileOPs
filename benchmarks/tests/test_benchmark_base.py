@@ -18,37 +18,54 @@ from benchmarks.timing import (
 )
 from tileops.manifest import load_workloads
 
+# A legacy single-input entry: the format ``workloads_to_params`` reads.
+_LEGACY_ENTRY = {
+    "family": "reduction",
+    "status": "implemented",
+    "source": {},
+    "signature": {
+        "inputs": {"x": {"dtype": "float16 | bfloat16"}},
+        "outputs": {"y": {"dtype": "same_as(x)"}},
+        "params": {"dim": {"type": "int | None", "default": None}},
+    },
+    "workloads": [
+        {"x_shape": [4, 8], "dtypes": ["float16"], "label": "no-extra"},
+        {"x_shape": [4, 8], "dim": 0, "dtypes": ["bfloat16"], "label": "with-dim"},
+    ],
+}
+
+
+class ExampleReduceFwdOp:
+    """Stands for the op class the legacy entry names."""
+
+
+@pytest.fixture
+def legacy_manifest(monkeypatch):
+    import benchmarks.benchmark_base
+    import tileops.manifest
+
+    manifest = {"ExampleReduceFwdOp": _LEGACY_ENTRY}
+    monkeypatch.setattr(tileops.manifest, "load_manifest", lambda: manifest)
+    monkeypatch.setattr(benchmarks.benchmark_base, "load_manifest", lambda: manifest)
+
 
 @pytest.mark.smoke
+@pytest.mark.usefixtures("legacy_manifest")
 def test_workloads_to_params_include_extra_propagates_dim():
-    """When a workload entry carries ``dim``, ``include_extra=True`` should
-    surface it in the pytest param triple.
-    """
-    # End-to-end with the manifest: include_extra=True must still yield
-    # well-formed triples with the (shape, dtype, extra) mapping. The
-    # contract being asserted is per-triple shape/dtype/extra typing; it
-    # must not depend on the ordering of SumFwdOp.workloads (which is QA
-    # curated and may be reordered without regressing the helper).
-    triples = workloads_to_params("SumFwdOp", include_extra=True)
-    assert len(triples) > 0
-    assert any("dim" in p.values[2] for p in triples), (
-        "at least one SumFwdOp workload must propagate a dim param"
-    )
-    for p in triples:
-        shape, dtype, extra = p.values
-        assert isinstance(shape, tuple)
-        assert isinstance(dtype, torch.dtype)
-        assert isinstance(extra, dict)
-    # A workload with no extras must yield an empty dict, not a missing slot.
-    assert any(p.values[2] == {} for p in triples)
+    """``include_extra=True`` surfaces a row's op parameters as the third element,
+    an empty dict for a row that carries none."""
+    triples = workloads_to_params("ExampleReduceFwdOp", include_extra=True)
+    assert [p.values for p in triples] == [
+        ((4, 8), torch.float16, {}),
+        ((4, 8), torch.bfloat16, {"dim": 0}),
+    ]
 
 
+@pytest.mark.usefixtures("legacy_manifest")
 def test_an_op_class_names_its_own_workloads():
     """A caller holding the Op class does not have to repeat its name as a string."""
-    from tileops.ops.reduction.reduce import SumFwdOp
-
-    assert load_workloads(SumFwdOp) == load_workloads("SumFwdOp")
-    assert workloads_to_params(SumFwdOp) == workloads_to_params("SumFwdOp")
+    assert load_workloads(ExampleReduceFwdOp) == load_workloads("ExampleReduceFwdOp")
+    assert workloads_to_params(ExampleReduceFwdOp) == workloads_to_params("ExampleReduceFwdOp")
 
 
 def test_no_bench_reaches_its_gradients_through_the_autograd_engine():

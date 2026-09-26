@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Optional, Tuple
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -6,7 +6,6 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm import AdaLayerNormKernel
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
 
 __all__ = ["AdaLayerNormFwdOp"]
@@ -36,7 +35,8 @@ class AdaLayerNormFwdOp(Op):
 
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary: ClassVar[bool] = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"ada_layer_norm": AdaLayerNormKernel}
 
     def __init__(
         self,
@@ -59,20 +59,6 @@ class AdaLayerNormFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-        self._last_roofline_mn: Optional[tuple[int, int]] = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"ada_layer_norm": AdaLayerNormKernel}
-
-    def _infer_output_shapes(
-        self,
-        x_shape: Tuple[int, ...],
-        scale_shape: Tuple[int, ...],
-        shift_shape: Tuple[int, ...],
-    ) -> Dict[str, Tuple[int, ...]]:
-        """Manifest ``shape_rules``: ``output.shape == x.shape``."""
-        return {"output": tuple(x_shape)}
 
     def forward(self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor) -> torch.Tensor:
         """Apply adaptive layer normalization.
@@ -86,38 +72,25 @@ class AdaLayerNormFwdOp(Op):
             Tensor of the same shape as *x*.
 
         Raises:
-            ValueError: Dtypes or shapes disagree. Raised from inside the operator, by
-                `_eager_forward`.
+            ValueError: Dtypes or shapes disagree. Raised by the generated signature checks.
         """
-        return self._wrapped(x, scale, shift, self._instance_key)
+        return self._call_boundary(x, scale, shift)
 
     def _eager_forward(
         self, x: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor
     ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
         """
-        self._validate_dtypes(x, scale, shift)
-        self.dtype = x.dtype
-        if scale.dtype != x.dtype:
-            raise ValueError(f"Expected scale.dtype {x.dtype}, got {scale.dtype}")
-        if scale.shape != x.shape:
-            raise ValueError(f"Expected scale shape {tuple(x.shape)}, got {tuple(scale.shape)}")
-        if shift.dtype != x.dtype:
-            raise ValueError(f"Expected shift.dtype {x.dtype}, got {shift.dtype}")
-        if shift.shape != x.shape:
-            raise ValueError(f"Expected shift shape {tuple(x.shape)}, got {tuple(shift.shape)}")
-
+        if x.numel() == 0:
+            return torch.empty_like(x)
         # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()
         scale = scale.contiguous()
         shift = shift.contiguous()
         n = x.shape[-1]
         kernel = self.kernel_for("ada_layer_norm", (x, scale, shift), (n, x.dtype))
-        self._last_roofline_mn = (x.numel() // n, n)
-        # What the manifest roofline resolves ``x`` through.
-        self.x_shape = tuple(x.shape)
         return kernel(x, scale, shift)
 
     def entry_for(self, role: str, call: tuple) -> Entry:

@@ -1,6 +1,7 @@
 """The suite runs the in-tree kernels, whatever backend the environment has installed."""
 
 import pytest
+import torch
 
 from tests.conftest import _pin_default_target
 from tests.test_op_backend_seam import _inputs, _Recorder, _register, _stub_op
@@ -27,8 +28,9 @@ def test_an_installed_backend_does_not_serve_the_suite(request, empty_registry) 
     _register(recorder, op="StubOp")  # claims every device, CPU included
     op = _stub_op()
 
-    # The stub's in-tree builder returns None; the target's path would refuse the call.
-    assert op(*_inputs()) is None
+    # The stub's in-tree body returns zeros; the target's kernel is never built.
+    x, weight = _inputs()
+    assert torch.equal(op(x, weight), torch.zeros_like(x))
     assert op._settled_target is BUILTIN
     assert recorder.calls == []
 

@@ -6,8 +6,6 @@ carries two torch tags: an autograd node driven on this thread, and aten's backw
 kernel by itself. The difference between them is the forward the autograd one rebuilds.
 """
 
-import math
-
 import pytest
 import torch
 
@@ -17,46 +15,14 @@ from benchmarks.baselines import (
     assert_matches_reference,
     compiled_reference,
     flaggems_op,
+    reference_tolerance,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, backward_of, workload_params
-from tileops.manifest import load_workloads
+from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
-from workloads.normalization import BatchNormBwdWorkload, BatchNormFwdWorkload
+from workloads.normalization import BatchNormBwdCall, RunningStatsCall
 
 
-def _make_inputs(N, C, spatial, dtype, device="cuda"):
-    shape = (N, C, *spatial)
-    x = torch.randn(*shape, device=device, dtype=dtype)
-    weight = torch.randn(C, device=device, dtype=torch.float32)
-    bias = torch.randn(C, device=device, dtype=torch.float32)
-    running_mean = torch.zeros(C, device=device, dtype=torch.float32)
-    running_var = torch.ones(C, device=device, dtype=torch.float32)
-    return x, weight, bias, running_mean, running_var
-
-
-def _make_bwd_inputs(N, C, spatial, dtype, device="cuda"):
-    x, weight, bias, running_mean, running_var = _make_inputs(N, C, spatial, dtype, device)
-    grad_out = torch.randn_like(x)
-    L = N * math.prod(spatial) if spatial else N
-    x_cl = x.float().permute(1, 0, *range(2, x.ndim)).reshape(C, L).contiguous()
-    mean = x_cl.mean(dim=1)
-    var = x_cl.var(dim=1, unbiased=False)
-    rstd = 1.0 / torch.sqrt(var + 1e-5)
-    return grad_out, x, weight, mean, rstd
-
-
-def _torch_bn_fwd(x, weight, bias, running_mean, running_var):
-    return torch.nn.functional.batch_norm(
-        x.float(),
-        running_mean.clone(),
-        running_var.clone(),
-        weight.float(),
-        bias.float(),
-        training=True,
-    )
-
-
-def _flaggems_bn_fwd(running_mean: torch.Tensor, running_var: torch.Tensor):
+def _flaggems_bn_fwd(running_mean, running_var, training: bool, momentum: float, eps: float):
     """flag_gems' batch_norm on its own running statistics, output only.
 
     Training mode updates them in place, and the cuDNN reference clones before it
@@ -66,7 +32,8 @@ def _flaggems_bn_fwd(running_mean: torch.Tensor, running_var: torch.Tensor):
     private_mean, private_var = running_mean.clone(), running_var.clone()
 
     def baseline_fn(x, _running_mean, _running_var, weight, bias):
-        return fn(x.float(), weight, bias, private_mean, private_var, True, 0.1, 1e-5)[0]
+        out = fn(x.float(), weight, bias, private_mean, private_var, training, momentum, eps)
+        return out[0].to(x.dtype)
 
     return baseline_fn
 
@@ -104,63 +71,47 @@ def _aten_bn_bwd(grad_out, x, weight, mean, rstd):
     )
 
 
-def _fwd_args(w: dict, dtype: torch.dtype) -> tuple:
-    n, c, *spatial = w["x_shape"]
-    return (n, c, tuple(spatial), dtype, True, False)
-
-
-def _bwd_args(w: dict, dtype: torch.dtype) -> tuple:
-    n, c, *spatial = w["x_shape"]
-    return (n, c, tuple(spatial), dtype)
-
-
-@pytest.mark.parametrize(
-    "N, C, spatial, dtype, training, tune",
-    workload_params(load_workloads(BatchNormFwdOp), _fwd_args),
-)
-def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
-    x, weight, bias, running_mean, running_var = _make_inputs(N, C, spatial, dtype)
-    # Manifest input order: (x, running_mean, running_var, weight, bias).
-    inputs = (x, running_mean, running_var, weight, bias)
-
-    op = BatchNormFwdOp(training=training, tune=tune)
-
-    test = BatchNormFwdWorkload(N, C, spatial, dtype, training)
-    bm = ManifestBenchmark(op, test)
+@pytest.mark.parametrize("call", manifest_calls(BatchNormFwdOp))
+def test_batch_norm_fwd_bench(call):
+    workload = RunningStatsCall(call)
+    inputs = workload.gen_inputs()
+    op = BatchNormFwdOp(**workload.arguments())
+    training, momentum, eps = (call.params[k] for k in ("training", "momentum", "eps"))
 
     def torch_fn(x, rm, rv, w, b):
-        return _torch_bn_fwd(x, w, b, rm, rv)
+        rm, rv = (None, None) if rm is None else (rm.clone(), rv.clone())
+        return torch.nn.functional.batch_norm(
+            x.float(), rm, rv, w, b, training=training, momentum=momentum, eps=eps
+        ).to(x.dtype)
 
-    flaggems_fn = _flaggems_bn_fwd(running_mean, running_var)
-    # cuDNN and Triton both reduce over N*H*W in fp32; agreement is at fp32 strength.
-    assert_matches_reference(flaggems_fn, torch_fn, *inputs, rtol=1e-4, atol=1e-4)
+    # cuDNN and the kernels reduce over N*H*W in fp32; agreement is at the storage dtype's.
+    tolerance = reference_tolerance(inputs[0].dtype)
+    reference_inputs = tuple(t if t is None else t.clone() for t in inputs)
+    assert_matches_reference(op, torch_fn, *reference_inputs, **tolerance)
+    functors = {"tileops": op}
+    # flag_gems' entry point takes every tensor; a row omitting one has no tag.
+    if all(t is not None for t in inputs):
+        flaggems_fn = _flaggems_bn_fwd(inputs[1], inputs[2], training, momentum, eps)
+        assert_matches_reference(flaggems_fn, torch_fn, *inputs, **tolerance)
+        functors[FLAGGEMS_TAG] = flaggems_fn
+    functors["torch-cudnn"] = torch_fn
+    functors[TORCH_COMPILE_TAG] = compiled_reference(torch_fn)
+    ManifestBenchmark(op, workload).compare(functors, *inputs)
 
-    bm.compare(
-        {
-            "tileops": lambda *a: op(*a),
-            FLAGGEMS_TAG: flaggems_fn,
-            "torch-cudnn": torch_fn,
-            TORCH_COMPILE_TAG: compiled_reference(torch_fn),
-        },
-        *inputs,
-    )
 
-
-@pytest.mark.parametrize(
-    "N, C, spatial, dtype", workload_params(load_workloads(BatchNormBwdOp), _bwd_args)
-)
-def test_batch_norm_bwd_bench(N, C, spatial, dtype):
-    inputs = _make_bwd_inputs(N, C, spatial, dtype)
-
-    op = BatchNormBwdOp()
-
-    test = BatchNormBwdWorkload(N, C, spatial, dtype)
-    bm = ManifestBenchmark(op, test)
+@pytest.mark.parametrize("call", manifest_calls(BatchNormBwdOp))
+def test_batch_norm_bwd_bench(call):
+    workload = BatchNormBwdCall(call)
+    inputs = workload.gen_inputs()
+    op = BatchNormBwdOp(**workload.arguments())
 
     # A reduction this long disagrees with the reference's order past float32's tolerance.
     assert_matches_reference(_aten_bn_bwd, _torch_bn_bwd, *inputs, rtol=1e-3, atol=1e-3)
+    assert_matches_reference(
+        op, workload.ref_program, *inputs, **reference_tolerance(inputs[0].dtype)
+    )
 
-    bm.compare(
+    ManifestBenchmark(op, workload).compare(
         {
             "tileops": op,
             "torch-autograd": _torch_bn_bwd,

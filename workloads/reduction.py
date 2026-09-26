@@ -2,7 +2,7 @@
 
 import torch
 
-from workloads.workload_base import RandnWorkload, WorkloadBase
+from workloads.workload_base import CallWorkload, RandnWorkload, WorkloadBase
 
 
 class SumWorkload(RandnWorkload):
@@ -109,6 +109,31 @@ class AllWorkload(_LogicalWorkload):
 
 class CountNonzeroWorkload(_LogicalWorkload):
     """Workload definition for CountNonzeroFwdOp."""
+
+
+class ReductionCall(CallWorkload):
+    """One manifest call of a reduction op, with the input shape and dtype a report shows."""
+
+    def __init__(self, call, device: "torch.device | str" = "cuda"):
+        super().__init__(call, device)
+        spec = call.specs["x"]
+        self.shape, self.dtype = spec.shape, spec.dtype
+
+
+class ProdCall(ReductionCall):
+    """A product over thousands of elements stays finite only near 1: values in [0.99, 1)."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        dtype = getattr(torch, self.dtype)
+        return (torch.rand(*self.shape, dtype=dtype, device=self.device) * 0.01 + 0.99,)
+
+
+class LogicalCall(ReductionCall):
+    """A logical reduction's input mixes zeros and nonzeros, with an all-zero and an
+    all-nonzero leading row."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        return (_make_logical_input(self.shape, getattr(torch, self.dtype)),)
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,6 @@ import inspect
 import pytest
 import torch
 import torch.nn.functional as F
-import yaml
 
 from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
@@ -151,41 +150,6 @@ def test_instance_norm_affine_free_running_stats(
 
 
 @pytest.mark.smoke
-def test_instance_norm_rejects_half_a_switch() -> None:
-    """weight and bias move together, and so do the running stats."""
-    n, c, spatial, dtype = 2, 16, (8, 8), torch.float16
-    op = InstanceNormFwdOp()
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-    weight = torch.randn((c,), dtype=dtype, device="cuda")
-    stat = torch.zeros((c,), dtype=torch.float32, device="cuda")
-
-    with pytest.raises(ValueError, match="one switch"):
-        op(x, weight=weight)
-    with pytest.raises(ValueError, match="one switch"):
-        op(x, bias=weight)
-    with pytest.raises(ValueError, match="one switch"):
-        op(x, running_mean=stat)
-
-
-@pytest.mark.smoke
-def test_instance_norm_rejects_input_affine_dtype_mismatch() -> None:
-    op = InstanceNormFwdOp.__new__(InstanceNormFwdOp)
-
-    fp16 = torch.empty(0, dtype=torch.float16)
-    bf16 = torch.empty(0, dtype=torch.bfloat16)
-    int32 = torch.empty(0, dtype=torch.int32)
-
-    op._validate_dtypes(fp16, weight=fp16, bias=fp16)
-
-    with pytest.raises(ValueError, match="x.dtype"):
-        op._validate_dtypes(int32, weight=fp16, bias=fp16)
-    with pytest.raises(ValueError, match="weight.dtype"):
-        op._validate_dtypes(fp16, weight=bf16, bias=fp16)
-    with pytest.raises(ValueError, match="bias.dtype"):
-        op._validate_dtypes(fp16, weight=fp16, bias=bf16)
-
-
-@pytest.mark.smoke
 def test_instance_norm_validate_dtypes_matches_manifest_inputs() -> None:
     """``_validate_dtypes`` accepts kwargs matching manifest ``signature.inputs``.
 
@@ -322,52 +286,6 @@ def test_instance_norm_init_accepts_use_input_stats_and_momentum(
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("op_cls, manifest_key", _OP_CLASSES)
-def test_instance_norm_init_signature_covers_manifest_params(
-    op_cls: type,
-    manifest_key: str,
-) -> None:
-    """Union of `__init__` and `forward` params must cover manifest params."""
-    from pathlib import Path
-
-    manifest_file = (
-        Path(__file__).resolve().parents[2] / "src" / "tileops" / "manifest" / "normalization.yaml"
-    )
-    with open(manifest_file) as fp:
-        manifest = yaml.safe_load(fp) or {}
-    manifest_params = set(manifest[manifest_key]["signature"]["params"].keys())
-    init_params = set(inspect.signature(op_cls.__init__).parameters)
-    forward_params = set(inspect.signature(op_cls.forward).parameters)
-    code_params = (init_params | forward_params) - {"self"}
-    missing = manifest_params - code_params
-    assert not missing, f"manifest params not covered by code: {missing}"
-
-
-@pytest.mark.smoke
-def test_instance_norm_batch_stats_path_rejects_running_stats() -> None:
-    """They normalize on the eval path only, and no path updates them."""
-    c = 16
-    op = InstanceNormFwdOp()
-    x = torch.randn((2, c, 8, 8), dtype=torch.float32, device="cuda")
-    stat = torch.randn(c, dtype=torch.float32, device="cuda")
-    with pytest.raises(ValueError, match="use_input_stats=False"):
-        op(x, stat, stat.abs() + 0.1)
-
-
-@pytest.mark.smoke
-def test_instance_norm_running_stats_path_rejects_affine() -> None:
-    """The affine variant still defers `use_input_stats=False`."""
-    op = InstanceNormFwdOp(use_input_stats=False)
-    x = torch.randn((2, 16, 8, 8), dtype=torch.float16, device="cuda")
-    stat = torch.zeros((16,), dtype=torch.float32, device="cuda")
-    affine = torch.randn((16,), dtype=torch.float16, device="cuda")
-    with pytest.raises(NotImplementedError, match="affine-free"):
-        op(x, stat, stat + 1, affine, affine)
-    with pytest.raises(ValueError, match="running_mean and running_var must"):
-        op(x)
-
-
-@pytest.mark.smoke
 def test_instance_norm_default_momentum_does_not_change_output() -> None:
     """Per-batch path is independent of `momentum`; default value must match torch."""
     n, c, spatial, dtype = 2, 16, (8, 8), torch.float16
@@ -381,3 +299,34 @@ def test_instance_norm_default_momentum_does_not_change_output() -> None:
     y1 = op_default(x, weight=weight, bias=bias)
     y2 = op_other(x, weight=weight, bias=bias)
     assert torch.allclose(y1, y2, **standard_tolerance(dtype))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "use_input_stats, affine",
+    [(True, "weight"), (True, "bias"), (False, "both"), (True, "none")],
+)
+def test_instance_norm_matches_torch_on_every_presence_branch(use_input_stats, affine) -> None:
+    """Affine tensors are independent, and running statistics are read in eval and updated
+    in the input's dtype otherwise, as ``torch.nn.functional.instance_norm`` does."""
+    c, dtype = 16, torch.float16
+    x = torch.randn((2, c, 8, 8), dtype=dtype, device="cuda") * 3 + 1
+    weight = torch.randn(c, dtype=dtype, device="cuda") if affine in ("weight", "both") else None
+    bias = torch.randn(c, dtype=dtype, device="cuda") if affine in ("bias", "both") else None
+    stats = (torch.randn(c, device="cuda"), torch.rand(c, device="cuda") + 0.5)
+    mine, ref = [s.clone() for s in stats], [s.clone() for s in stats]
+    op = InstanceNormFwdOp(use_input_stats=use_input_stats)
+    y = op(x, *mine, weight, bias)
+    y_ref = F.instance_norm(x, *ref, weight, bias, use_input_stats=use_input_stats)
+    torch.testing.assert_close(y, y_ref, **standard_tolerance(dtype))
+    torch.testing.assert_close(mine, ref, **standard_tolerance(dtype))
+
+
+@pytest.mark.smoke
+def test_instance_norm_needs_both_running_statistics_to_read_them() -> None:
+    x = torch.randn((2, 16, 8, 8), dtype=torch.float16, device="cuda")
+    stat = torch.zeros(16, device="cuda")
+    with pytest.raises(ValueError, match="use_input_stats or present"):
+        InstanceNormFwdOp(use_input_stats=False)(x)
+    with pytest.raises(ValueError, match="'running_var' is required"):
+        InstanceNormFwdOp()(x, stat)

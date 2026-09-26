@@ -1,8 +1,6 @@
 """GroupNorm forward operator.
 
-Wraps GroupNormKernel in the standard TileOPs Op interface.
-
-User-facing API mirrors torch.nn.functional.group_norm:
+User-facing API follows torch.nn.functional.group_norm:
 
     op = GroupNormFwdOp(num_groups=groups)
     y = op(x, weight, bias)   # affine
@@ -13,7 +11,7 @@ Input tensors accept shape (N, C, *spatial); the kernel reshapes to
 """
 
 import math
-from typing import ClassVar, Dict, Optional, Tuple
+from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -21,8 +19,8 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
 
-from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
+from .norm_base import affine_or_constant
 
 __all__ = ["GroupNormFwdOp"]
 
@@ -38,24 +36,18 @@ class GroupNormFwdOp(Op):
     $$
 
     where the mean and variance are computed per group over
-    ``(C/num_groups, *spatial)`` elements.
+    ``(C/num_groups, *spatial)`` elements. ``weight`` and ``bias`` are independent, as in
+    torch: an absent one scales by one or shifts by zero.
 
     Supported dtypes:
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
-
-    Note:
-        Supports arbitrary spatial dimensions (1-D, 2-D, 3-D+).
-        Handles non-contiguous inputs via explicit ``contiguous()`` call.
-        The per-channel affine is applied inside the kernel, so the op does
-        no post-kernel arithmetic.
-
-    ``weight`` and ``bias`` are one switch: pass both for the affine form,
-    pass neither for ``torch.nn.GroupNorm(affine=False)``. Passing one alone
-    is an error — the manifest states the same in ``shape_rules``.
-
     """
 
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    compile_boundary: ClassVar[bool] = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "group_norm": GroupNormKernel,
+        "group_norm_no_affine": GroupNormNoAffineKernel,
+    }
 
     def __init__(
         self,
@@ -69,62 +61,19 @@ class GroupNormFwdOp(Op):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
-            num_groups: Number of groups (manifest ``params.num_groups``).
-                Must divide *C* evenly.
-            eps: Epsilon for numerical stability (manifest ``params.eps``).
+            num_groups: Number of groups; it divides the channel count.
+            eps: Epsilon for numerical stability.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional kernel override dictionary.
             tune: If ``True``, autotune tile configurations.
         """
         self.num_groups = num_groups
-        self.dtype: Optional[torch.dtype] = None
         self.eps = eps
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         self.kernel = None
-        self._last_roofline_spec: Optional[tuple[int, int, int, torch.dtype, bool]] = None
-
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "group_norm": GroupNormKernel,
-            "group_norm_no_affine": GroupNormNoAffineKernel,
-        }
-
-    def _infer_output_shapes(
-        self,
-        x_shape: Tuple[int, ...],
-        weight_shape: Optional[Tuple[int, ...]],
-        bias_shape: Optional[Tuple[int, ...]],
-    ) -> Dict[str, Tuple[int, ...]]:
-        """Manifest ``shape_rules``: ``output.shape == x.shape``."""
-        return {"output": tuple(x_shape)}
-
-    def _resolve_spec(self, x: torch.Tensor) -> Tuple[int, int, int, int, int, torch.dtype]:
-        if x.ndim < 2:
-            raise ValueError("x must have shape (N, C, *spatial)")
-        if x.dtype not in (torch.float32, torch.float16, torch.bfloat16):
-            raise ValueError(f"x.dtype must be float32, float16, or bfloat16, got {x.dtype}")
-        N, C, *spatial = x.shape
-        if C % self.num_groups != 0:
-            raise ValueError(f"C={C} must be divisible by num_groups={self.num_groups}")
-        spatial_size = math.prod(spatial)
-        cpg = C // self.num_groups
-        return N, C, spatial_size, cpg, cpg * spatial_size, x.dtype
-
-    def _bind_spec(
-        self,
-        N: int,
-        C: int,
-        spatial_size: int,
-        dtype: torch.dtype,
-        affine: bool,
-    ) -> None:
-        """Bind what ``eval_roofline`` reads off the call that just ran."""
-        self.dtype = dtype
-        self._last_roofline_spec = (N, C, spatial_size, dtype, affine)
 
     def forward(
         self,
@@ -138,17 +87,11 @@ class GroupNormFwdOp(Op):
             x: Input tensor of shape ``(N, C, *spatial)``.
             weight: Affine scale of shape $[C]$, or ``None``.
             bias: Affine shift of shape $[C]$, or ``None``.
-                ``weight`` and ``bias`` are one switch: give both or neither.
 
         Returns:
             Normalized tensor of the same shape as *x*.
-
-        Raises:
-            ValueError: Only one of ``weight`` / ``bias`` is given, dtypes disagree, or a
-                shape is incompatible with *x*. Raised from inside the operator, by
-                `_eager_forward`.
         """
-        return self._wrapped(x, weight, bias, self._instance_key)
+        return self._call_boundary(x, weight, bias)
 
     def _eager_forward(
         self,
@@ -156,49 +99,28 @@ class GroupNormFwdOp(Op):
         weight: Optional[torch.Tensor] = None,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
         """
-        N, C, spatial_size, cpg, D, dtype = self._resolve_spec(x)
-        # weight and bias are a single affine switch.
-        if (weight is None) != (bias is None):
-            given, missing = ("weight", "bias") if bias is None else ("bias", "weight")
-            raise ValueError(
-                f"weight and bias are one switch: got {given} without "
-                f"{missing}. Pass both for the affine form, or neither for "
-                f"torch.nn.GroupNorm(affine=False)"
-            )
-        affine = weight is not None
+        if x.numel() == 0:
+            return torch.empty_like(x)
+        channels = x.shape[1]
+        cpg = channels // self.num_groups
+        d = cpg * math.prod(x.shape[2:])
+        affine = weight is not None or bias is not None
         if affine:
-            for name, t in (("weight", weight), ("bias", bias)):
-                if t.device != x.device:
-                    raise ValueError(f"Expected {name} on {x.device}, got {t.device}")
-                if t.dtype != dtype:
-                    raise ValueError(f"Expected {name}.dtype {dtype}, got {t.dtype}")
-                if t.ndim != 1 or t.shape[0] != C:
-                    raise ValueError(f"Expected {name} shape ({C},), got {tuple(t.shape)}")
-
-        self._bind_spec(N, C, spatial_size, dtype, affine)
-        # What the manifest roofline resolves the tensors through.
-        self.x_shape = tuple(x.shape)
-        self.weight_shape = None if weight is None else tuple(weight.shape)
-        self.bias_shape = None if bias is None else tuple(bias.shape)
-
-        # Handed over as the manifest declares it; the layout a kernel wants is its own business.
+            weight = affine_or_constant(weight, (channels,), 1.0, x.dtype, x.device)
+            bias = affine_or_constant(bias, (channels,), 0.0, x.dtype, x.device)
         x = x.contiguous()
-        if affine:
-            weight = weight.contiguous()
-            bias = bias.contiguous()
-        kernel = self.kernel_for("group_norm", (x, weight, bias), (D, cpg, dtype, affine))
+        kernel = self.kernel_for("group_norm", (x, weight, bias), (d, cpg, x.dtype, affine))
         self.kernel = kernel
-
         # The affine kernel derives each element's channel from its position
         # in the row, so the per-channel affine is applied inside the kernel.
         return kernel(x, weight, bias)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
-        """The affine pair picks the implementation, so it is in the identity."""
+        """The affine form picks the implementation, so it is in the identity."""
         d, cpg, dtype, affine = call
         if affine:
             cls = self.kernel_map["group_norm"]

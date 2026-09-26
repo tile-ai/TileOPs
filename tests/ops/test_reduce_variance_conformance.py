@@ -4,7 +4,7 @@
 ``torch.var_mean``. The three share a forward, so they share a case table.
 
 The axes are kept apart rather than crossed, because each answers a different question:
-the ``dim`` shape picks a ``normalize_dim`` branch and ``keepdim`` an output-shape branch,
+the ``dim`` shape picks which axes reduce and ``keepdim`` an output-shape branch,
 so those two are crossed; ``correction`` is a constant the kernel bakes in, where only
 "zero" and "nonzero" differ; and the element type has to be swept but changes no branch.
 """
@@ -134,3 +134,15 @@ def test_var_mean_returns_the_pair_in_torch_s_order() -> None:
     ref_var, ref_mean = _ref_var_mean(x, -1, False, 1)
     torch.testing.assert_close(out[0], ref_var, **reduction_tolerance(x.dtype))
     torch.testing.assert_close(out[1], ref_mean, **reduction_tolerance(x.dtype))
+
+
+@pytest.mark.smoke
+@pytest.mark.filterwarnings("ignore:.*degrees of freedom:UserWarning")
+@pytest.mark.parametrize("correction", [0.5, 2, 3])
+@pytest.mark.parametrize("op_cls, ref_fn", [(VarFwdOp, torch.var), (StdFwdOp, torch.std)])
+def test_a_fractional_or_excess_correction_matches_torch(op_cls, ref_fn, correction) -> None:
+    """torch divides by ``max(0, n - correction)``: a spread over no degrees of freedom is
+    ``inf``, including one too small for the storage dtype, and no spread is NaN."""
+    x = torch.tensor([[0.0, 1e-4], [1.0, 1.0]], dtype=torch.float16, device="cuda")
+    got = op_cls(dim=1, correction=correction)(x)
+    torch.testing.assert_close(got, ref_fn(x, dim=1, correction=correction), equal_nan=True)

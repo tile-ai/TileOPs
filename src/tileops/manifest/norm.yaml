@@ -1,0 +1,265 @@
+# norm.yaml -- manifest entries for the norm family (docs/design/manifest.md).
+
+RMSNormFwdOp:
+  ref_api: torch.nn.functional.rms_norm
+  family: norm
+  status: implemented
+  signature:
+    forall: {B: Shape, T: "DType[float16 | bfloat16]"}
+    params:
+      normalized_shape: {type: "list[int] | tuple[int, ...]"}
+      eps: {type: "float | None", default: null}
+    inputs:
+      x: {dtype: T, shape: "[*B, *normalized_shape]"}
+      weight: {dtype: T, shape: "[*normalized_shape]", optional: true}
+    outputs:
+      output: {dtype: T, shape: "[*B, *normalized_shape]"}
+    shape_rules:
+    - "len(normalized_shape) > 0"
+  workloads:
+  - {B: [2048], normalized_shape: [4096], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-prefill}
+  - {B: [1], normalized_shape: [4096], eps: 1.0e-6, some: [weight], dtype_cases: [{T: bfloat16}], label: llama-8b-decode}
+  - {B: [2048], normalized_shape: [8192], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-prefill}
+  - {B: [1], normalized_shape: [8192], eps: 1.0e-6, some: [weight], dtype_cases: [{T: bfloat16}], label: llama-70b-decode}
+  - {B: [2048], normalized_shape: [16384], eps: 1.0e-6, some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-405b-prefill}
+  - {B: [1], normalized_shape: [16384], eps: 1.0e-6, some: [weight], dtype_cases: [{T: bfloat16}], label: llama-405b-decode}
+  - {B: [2048], normalized_shape: [5120], some: [weight], dtype_cases: [{T: bfloat16}], label: llama-13b-prefill}
+  - {B: [4, 2048], normalized_shape: [128], dtype_cases: [{T: bfloat16}], label: qk-norm-head}
+  roofline:
+    flops: "4 * prod(B) * prod(normalized_shape)"
+
+LayerNormFwdOp:
+  ref_api: torch.nn.functional.layer_norm
+  family: norm
+  status: implemented
+  signature:
+    forall: {B: Shape, T: "DType[float32 | float16 | bfloat16]"}
+    params:
+      normalized_shape: {type: "list[int] | tuple[int, ...]"}
+      eps: {type: float, default: 1.0e-5}
+    inputs:
+      x: {dtype: T, shape: "[*B, *normalized_shape]"}
+      weight: {dtype: T, shape: "[*normalized_shape]", optional: true}
+      bias: {dtype: T, shape: "[*normalized_shape]", optional: true}
+    outputs:
+      output: {dtype: T, shape: "[*B, *normalized_shape]"}
+    shape_rules:
+    - "len(normalized_shape) > 0"
+  workloads:
+  - {B: [2048], normalized_shape: [4096], some: [weight, bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-prefill}
+  - {B: [1], normalized_shape: [4096], some: [weight, bias], dtype_cases: [{T: bfloat16}], label: llama-8b-decode}
+  - {B: [2048], normalized_shape: [8192], some: [weight, bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-prefill}
+  - {B: [1], normalized_shape: [8192], some: [weight, bias], dtype_cases: [{T: bfloat16}], label: llama-70b-decode}
+  - {B: [2048], normalized_shape: [16384], some: [weight, bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-405b-prefill}
+  - {B: [1], normalized_shape: [16384], some: [weight, bias], dtype_cases: [{T: bfloat16}], label: llama-405b-decode}
+  - {B: [2048], normalized_shape: [5120], some: [weight], dtype_cases: [{T: float32}], label: llama-13b-prefill}
+  - {B: [1024], normalized_shape: [1152], dtype_cases: [{T: bfloat16}], label: dit-xl-2}
+  roofline:
+    flops: "5 * prod(B) * prod(normalized_shape)"
+
+AdaLayerNormFwdOp:
+  family: norm
+  status: implemented
+  signature:
+    forall: {B: Shape, N: Dim, T: "DType[float32 | float16 | bfloat16]"}
+    params:
+      eps: {type: float, default: 1.0e-5}
+    inputs:
+      x: {dtype: T, shape: "[*B, N]"}
+      scale: {dtype: T, shape: "[*B, N]"}
+      shift: {dtype: T, shape: "[*B, N]"}
+    outputs:
+      output: {dtype: T, shape: "[*B, N]"}
+  workloads:
+  - {B: [1024], N: 1152, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: dit-xl-2}
+  - {B: [2048], N: 4096, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-prefill}
+  - {B: [1], N: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-decode}
+  roofline:
+    flops: "5 * prod(B) * N"
+
+AdaLayerNormZeroFwdOp:
+  family: norm
+  status: implemented
+  signature:
+    forall: {B: Shape, N: Dim, T: "DType[float32 | float16 | bfloat16]"}
+    params:
+      eps: {type: float, default: 1.0e-5}
+    inputs:
+      x: {dtype: T, shape: "[*B, N]"}
+      scale: {dtype: T, shape: "[*B, N]"}
+      shift: {dtype: T, shape: "[*B, N]"}
+      gate: {dtype: T, shape: "[*B, N]"}
+    outputs:
+      output: {dtype: T, shape: "[*B, N]"}
+  workloads:
+  - {B: [1024], N: 1152, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: dit-xl-2}
+  - {B: [2048], N: 4096, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-prefill}
+  - {B: [1], N: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-decode}
+  roofline:
+    flops: "6 * prod(B) * N"
+
+FusedAddLayerNormFwdOp:
+  family: norm
+  status: implemented
+  signature:
+    forall: {B: Shape, N: Dim, T: "DType[float32 | float16 | bfloat16]"}
+    params:
+      eps: {type: float, default: 1.0e-5}
+    inputs:
+      x: {dtype: T, shape: "[*B, N]"}
+      residual: {dtype: T, shape: "[*B, N]"}
+      weight: {dtype: T, shape: "[N]"}
+      bias: {dtype: T, shape: "[N]"}
+    outputs:
+      output: {dtype: T, shape: "[*B, N]"}
+      residual_out: {dtype: T, shape: "[*B, N]"}
+  workloads:
+  - {B: [2048], N: 4096, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-prefill}
+  - {B: [1], N: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-decode}
+  - {B: [2048], N: 8192, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-prefill}
+  - {B: [1], N: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-decode}
+  - {B: [2048], N: 5120, dtype_cases: [{T: float32}], label: llama-13b-prefill}
+  roofline:
+    flops: "6 * prod(B) * N"
+
+FusedAddRMSNormFwdOp:
+  family: norm
+  status: implemented
+  signature:
+    forall: {B: Shape, N: Dim, T: "DType[float16 | bfloat16]"}
+    params:
+      eps: {type: float, default: 1.0e-6}
+    inputs:
+      x: {dtype: T, shape: "[*B, N]"}
+      residual: {dtype: T, shape: "[*B, N]"}
+      weight: {dtype: T, shape: "[N]"}
+    outputs:
+      output: {dtype: T, shape: "[*B, N]"}
+      residual_out: {dtype: T, shape: "[*B, N]"}
+  workloads:
+  - {B: [2048], N: 4096, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-prefill}
+  - {B: [1], N: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-decode}
+  - {B: [2048], N: 8192, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-prefill}
+  - {B: [1], N: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-decode}
+  - {B: [2048], N: 16384, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-405b-prefill}
+  - {B: [1], N: 16384, dtype_cases: [{T: bfloat16}], label: llama-405b-decode}
+  - {B: [2048], N: 5120, dtype_cases: [{T: bfloat16}], label: llama-13b-prefill}
+  roofline:
+    flops: "5 * prod(B) * N"
+
+BatchNormFwdOp:
+  ref_api: torch.nn.functional.batch_norm
+  family: norm
+  status: implemented
+  signature:
+    forall: {B: Dim, C: Dim, L: Shape, T: "DType[float32 | float16 | bfloat16]"}
+    params:
+      training: {type: bool, default: false}
+      momentum: {type: float, default: 0.1}
+      eps: {type: float, default: 1.0e-5}
+    inputs:
+      x: {dtype: T, shape: "[B, C, *L]"}
+      running_mean: {dtype: float32, shape: "[C]", optional: true, mutated: "training and present(running_mean)"}
+      running_var: {dtype: float32, shape: "[C]", optional: "present(running_mean)", mutated: "training and present(running_mean)"}
+      weight: {dtype: float32, shape: "[C]", optional: true}
+      bias: {dtype: float32, shape: "[C]", optional: true}
+    outputs:
+      output: {dtype: T, shape: "[B, C, *L]"}
+    shape_rules:
+    - "training or present(running_mean)"
+    - "not training or B * prod(L) != 1"
+  workloads:
+  - {B: 32, C: 64, L: [], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: resnet50-fc}
+  - {B: 8, C: 64, L: [32, 32], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet50-stage1}
+  - {B: 4, C: 128, L: [32, 32], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: resnet50-stage2}
+  - {B: 4, C: 256, L: [28, 28], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}, {T: float32}], label: resnet50-stage3}
+  - {B: 4, C: 128, L: [1024, 1024], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: large-spatial}
+  - {B: 4, C: 256, L: [28, 28], some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: resnet50-stage3-eval}
+  - {B: 8, C: 64, L: [56, 56], training: true, dtype_cases: [{T: bfloat16}], label: resnet50-stem-no-stats}
+  roofline:
+    flops: "10 * B * C * prod(L)"
+
+BatchNormBwdOp:
+  family: norm
+  status: implemented
+  signature:
+    forall: {B: Dim, C: Dim, L: Shape, T: "DType[float32 | float16 | bfloat16]"}
+    inputs:
+      grad_out: {dtype: T, shape: "[B, C, *L]"}
+      x: {dtype: T, shape: "[B, C, *L]"}
+      weight: {dtype: float32, shape: "[C]"}
+      mean: {dtype: float32, shape: "[C]"}
+      rstd: {dtype: float32, shape: "[C]"}
+    outputs:
+      grad_x: {dtype: T, shape: "[B, C, *L]"}
+      grad_weight: {dtype: float32, shape: "[C]"}
+      grad_bias: {dtype: float32, shape: "[C]"}
+  workloads:
+  - {B: 32, C: 64, L: [], dtype_cases: [{T: float16}], label: resnet50-fc}
+  - {B: 8, C: 64, L: [32, 32], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet50-stage1}
+  - {B: 4, C: 128, L: [32, 32], dtype_cases: [{T: float16}], label: resnet50-stage2}
+  - {B: 4, C: 256, L: [28, 28], dtype_cases: [{T: float16}, {T: float32}], label: resnet50-stage3}
+  - {B: 4, C: 128, L: [1024, 1024], dtype_cases: [{T: float16}], label: large-spatial}
+  roofline:
+    flops: "8 * B * C * prod(L)"
+
+GroupNormFwdOp:
+  ref_api: torch.nn.functional.group_norm
+  family: norm
+  status: implemented
+  signature:
+    forall: {B: Dim, C: Dim, L: Shape, T: "DType[float32 | float16 | bfloat16]"}
+    params:
+      num_groups: {type: int}
+      eps: {type: float, default: 1.0e-5}
+    inputs:
+      x: {dtype: T, shape: "[B, C, *L]"}
+      weight: {dtype: T, shape: "[C]", optional: true}
+      bias: {dtype: T, shape: "[C]", optional: true}
+    outputs:
+      output: {dtype: T, shape: "[B, C, *L]"}
+    shape_rules:
+    - "num_groups > 0 and C % num_groups == 0"
+    - "B * (C // num_groups) * prod(L) != 1"
+  workloads:
+  - {B: 8, C: 128, L: [32, 32], num_groups: 32, dtype_cases: [{T: float16}, {T: bfloat16}], label: image-g32}
+  - {B: 4, C: 256, L: [28, 28], num_groups: 32, dtype_cases: [{T: float16}, {T: float32}], label: wider-channel-g32}
+  - {B: 4, C: 128, L: [30, 30], num_groups: 16, dtype_cases: [{T: float16}], label: tail-spatial-g16}
+  - {B: 8, C: 128, L: [32, 32], num_groups: 32, some: [weight, bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: image-g32-affine}
+  - {B: 4, C: 256, L: [28, 28], num_groups: 32, some: [weight, bias], dtype_cases: [{T: float16}, {T: float32}], label: wider-channel-g32-affine}
+  - {B: 4, C: 128, L: [30, 30], num_groups: 16, some: [weight, bias], dtype_cases: [{T: float16}], label: tail-spatial-g16-affine}
+  roofline:
+    flops: "(5 if present(weight) or present(bias) else 3) * B * C * prod(L)"
+
+InstanceNormFwdOp:
+  ref_api: torch.nn.functional.instance_norm
+  family: norm
+  status: implemented
+  signature:
+    forall: {B: Dim, C: Dim, L: Shape, T: "DType[float32 | float16 | bfloat16]"}
+    params:
+      use_input_stats: {type: bool, default: true}
+      momentum: {type: float, default: 0.1}
+      eps: {type: float, default: 1.0e-5}
+    inputs:
+      x: {dtype: T, shape: "[B, C, *L]"}
+      running_mean: {dtype: float32, shape: "[C]", optional: true, mutated: "use_input_stats and present(running_mean)"}
+      running_var: {dtype: float32, shape: "[C]", optional: "present(running_mean)", mutated: "use_input_stats and present(running_mean)"}
+      weight: {dtype: T, shape: "[C]", optional: true}
+      bias: {dtype: T, shape: "[C]", optional: true}
+    outputs:
+      output: {dtype: T, shape: "[B, C, *L]"}
+    shape_rules:
+    - "use_input_stats or present(running_mean)"
+    - "not use_input_stats or prod(L) != 1"
+  workloads:
+  - {B: 8, C: 128, L: [32, 32], some: [weight, bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: image-affine}
+  - {B: 4, C: 256, L: [28, 28], some: [weight, bias], dtype_cases: [{T: float16}, {T: float32}], label: wider-channel-affine}
+  - {B: 4, C: 64, L: [30, 30], some: [weight, bias], dtype_cases: [{T: float16}], label: tail-spatial-affine}
+  - {B: 8, C: 128, L: [32, 32], dtype_cases: [{T: float16}, {T: bfloat16}], label: image}
+  - {B: 4, C: 256, L: [28, 28], dtype_cases: [{T: float16}, {T: float32}], label: wider-channel}
+  - {B: 4, C: 64, L: [30, 30], dtype_cases: [{T: float16}], label: tail-spatial}
+  - {B: 8, C: 128, L: [32, 32], some: [running_mean], dtype_cases: [{T: float16}], label: image-track-running-stats}
+  - {B: 8, C: 128, L: [32, 32], use_input_stats: false, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: image-running-stats}
+  roofline:
+    flops: "(5 if present(weight) or present(bias) else 3) * B * C * prod(L)"

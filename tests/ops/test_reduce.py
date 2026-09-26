@@ -702,3 +702,20 @@ def test_var_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.d
     assert torch.allclose(mean_out, ref_mean, **tol), (
         f"var_mean spec mean err: {(mean_out - ref_mean).abs().max()}"
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "in_dtype, out_dtype",
+    [(torch.bfloat16, torch.float32), (torch.float32, torch.float16)],
+    ids=["widen", "narrow"],
+)
+def test_dtype_casts_the_input_before_reducing(in_dtype, out_dtype) -> None:
+    """``dtype`` casts the input first and is the output's, as in torch."""
+    from tileops.ops.reduction.reduce import SumFwdOp
+
+    x = torch.randn(8, 512, dtype=in_dtype, device="cuda")
+    got = SumFwdOp(dim=-1, dtype=out_dtype)(x)
+    assert got.dtype == out_dtype
+    ref = torch.sum(x, -1, dtype=out_dtype)
+    torch.testing.assert_close(got, ref, **reduction_tolerance(out_dtype))

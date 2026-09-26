@@ -124,50 +124,6 @@ class TestBytesOracle:
             )
             assert op.eval_roofline()[1] == oracle, f"has_bias={has_bias}"
 
-    def test_var_mean_counts_both_outputs(self):
-        from tileops.ops.reduction.reduce import VarMeanFwdOp
-
-        m, n = 8192, 4096
-        op = VarMeanFwdOp.__new__(VarMeanFwdOp)
-        op.x_shape = (m, n)
-        op.dim = -1
-        op.keepdim = False
-        op.correction = 1
-        op.dtype = torch.float32
-        oracle = _nbytes(
-            ((m, n), torch.float32),
-            ((m,), torch.float32),  # var
-            ((m,), torch.float32),  # mean
-        )
-        assert op.eval_roofline()[1] == oracle
-
-    def test_argmax_counts_int64_indices(self):
-        from tileops.ops.reduction.argreduce import ArgmaxFwdOp
-
-        m, n = 8192, 4096
-        op = ArgmaxFwdOp.__new__(ArgmaxFwdOp)
-        op.x_shape = (m, n)
-        op.dim = -1
-        op.keepdim = False
-        op.dtype = torch.float16
-        oracle = _nbytes(((m, n), torch.float16), ((m,), torch.int64))
-        assert op.eval_roofline()[1] == oracle
-
-    def test_rms_norm_counts_x_weight_and_output(self):
-        from tileops.ops.norm.rms_norm import RMSNormFwdOp
-
-        m, n = 16384, 8192
-        op = RMSNormFwdOp.__new__(RMSNormFwdOp)
-        op.x_shape = (m, n)
-        op.normalized_shape = (n,)
-        op.dtype = torch.float16
-        oracle = _nbytes(
-            ((m, n), torch.float16),
-            ((n,), torch.float16),
-            ((m, n), torch.float16),
-        )
-        assert op.eval_roofline()[1] == oracle
-
     def test_w4a16_counts_packed_weights_and_group_metadata(self):
         from tileops.ops.gemm.gemm import GemmW4A16FwdOp
 
@@ -338,31 +294,6 @@ class TestBytesOracle:
             )
             assert op.eval_roofline()[1] == oracle, label
 
-    def test_batch_norm_counts_the_running_stat_write_only_when_training(self):
-        from tileops.ops.norm.batch_norm import BatchNormFwdOp
-
-        x_shape, channels = (32, 256, 28, 28), 256
-        for training in (False, True):
-            op = BatchNormFwdOp.__new__(BatchNormFwdOp)
-            op.x_shape = x_shape
-            op.dtype = torch.float16
-            op.training = training
-            stat = ((channels,), torch.float32)
-            written_back = stat if training else None
-            oracle = _ledger(
-                "BatchNormFwdOp",
-                x=(x_shape, torch.float16),
-                running_mean=stat,
-                running_var=stat,
-                weight=stat,
-                bias=stat,
-                output=(x_shape, torch.float16),
-                # running_mean and running_var are mutated: written back too.
-                running_mean_write=written_back,
-                running_var_write=written_back,
-            )
-            assert op.eval_roofline()[1] == oracle, f"training={training}"
-
     def test_mha_backward_counts_o_and_lse(self):
         from tileops.ops.attention.mha import MultiHeadAttentionBwdOp
 
@@ -430,32 +361,6 @@ class TestBytesOracle:
                 ((batch, seq_len, seq_len_kv, kv_group), torch.float32),  # logits
             )
             assert op.eval_roofline()[1] == oracle, label
-
-    def test_instance_norm_counts_the_running_stats_only_in_eval_mode(self):
-        from tileops.ops.norm.instance_norm import InstanceNormFwdOp
-
-        x_shape, channels = (8, 128, 32, 32), 128
-        # running_mean and running_var normalize the input only when the op was
-        # built with use_input_stats=False; otherwise they are not read.
-        for use_input_stats in (True, False):
-            op = InstanceNormFwdOp.__new__(InstanceNormFwdOp)
-            op.x_shape = x_shape
-            op.weight_shape = op.bias_shape = None
-            op.running_mean_shape = op.running_var_shape = (channels,)
-            op.use_input_stats = use_input_stats
-            op.dtype = torch.float16
-            reads_stats = not use_input_stats
-            stat = ((channels,), torch.float32) if reads_stats else None
-            oracle = _ledger(
-                "InstanceNormFwdOp",
-                x=(x_shape, torch.float16),
-                running_mean=stat,
-                running_var=stat,
-                weight=None,
-                bias=None,
-                output=(x_shape, torch.float16),
-            )
-            assert op.eval_roofline()[1] == oracle, f"use_input_stats={use_input_stats}"
 
     def test_gqa_prefill_varlen_counts_its_packed_tensors_and_bounds(self):
         from tileops.ops.attention.gqa import GroupedQueryAttentionPrefillVarlenFwdOp
@@ -810,14 +715,12 @@ class TestBytesOracle:
 # generated case cannot, which is what the hand-written one supplies.
 #
 # Two kinds sit here. For most, the binder cannot build the call at all. For
-# four -- BatchNorm, InstanceNorm and the two GQA entries -- it builds one and
-# counts something that is not this call's traffic, because a param decides
-# whether an input is read or written, or the op translates the call before the
-# formula sees it. Those four are the ones where a formula
+# the two GQA entries it builds one and counts something that is not this call's
+# traffic, because the op translates the call before the formula sees it. Those
+# two are the ones where a formula
 # defect would look like the stated reason, so their cases are what check them
 # and `_ledger` is what checks the cases.
 HAND_WRITTEN = {
-    "BatchNormFwdOp": "whether the running statistics are written follows `training`",
     "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "FusedMoeFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "FusedMoeSharedExpertFwdOp": "the routed weight reads follow the values in `topk_ids`",
@@ -831,7 +734,6 @@ HAND_WRITTEN = {
     "NSAFwdVarlenOp": "how much it reads follows the values in `block_counts`",
     "NSATopkVarlenOp": "`lse_in` is passed and the kernel recomputes the lse instead of reading it",
     "IndexedExpertMLPFwdOp": "the routed weight reads follow the values in `topk_ids`",
-    "InstanceNormFwdOp": "whether the running statistics are read follows `use_input_stats`",
 }
 
 # Level three: no independent recount is available. Empty, and an entry here has

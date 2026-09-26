@@ -1,14 +1,21 @@
 """Helpers shared by the normalization Op family."""
 
-import math
-from typing import Sequence
+from typing import Optional, Sequence
 
-__all__ = ["normalized_shape_to_n"]
+import torch
+
+__all__ = ["affine_or_constant"]
 
 
-def normalized_shape_to_n(normalized_shape: Sequence[int]) -> int:
-    """Return the product of ``normalized_shape``, which must be non-empty."""
-    shape = tuple(int(d) for d in normalized_shape)
-    if len(shape) == 0:
-        raise ValueError("normalized_shape must be non-empty")
-    return math.prod(shape)
+def affine_or_constant(
+    tensor: Optional[torch.Tensor],
+    shape: Sequence[int],
+    value: float,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> torch.Tensor:
+    """*tensor*, or the constant an absent affine tensor stands for: ones for a scale,
+    zeros for a shift. Multiplying by one and adding zero leave every value unchanged."""
+    if tensor is not None:
+        return tensor.contiguous()
+    return torch.full(tuple(shape), value, dtype=dtype, device=device)

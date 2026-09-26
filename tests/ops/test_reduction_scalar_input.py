@@ -219,9 +219,7 @@ def test_var_mean_scalar_input(dim) -> None:
         assert any(issubclass(w.category, UserWarning) for w in op_caught)
 
 
-# Duplicate-dim regression — aliasing sequences on a 0-D tensor must raise
-# the same RuntimeError PyTorch raises ("dim 0 appears multiple times in
-# the list of dims") instead of silently returning a scalar.
+# Aliasing sequences on a 0-D tensor are refused, as torch refuses them.
 
 
 @pytest.mark.smoke
@@ -237,7 +235,7 @@ def test_sum_scalar_duplicate_dim_matches_torch(dim) -> None:
     with pytest.raises(RuntimeError, match="appears multiple times"):
         torch.sum(x, dim=list(dim))
     op = SumFwdOp(dim=list(dim))
-    with pytest.raises(RuntimeError, match="appears multiple times"):
+    with pytest.raises(ValueError, match="unique_axes"):
         op(x)
 
 
@@ -274,3 +272,21 @@ def test_var_mean_scalar_requires_grad_preserves_grad_fn() -> None:
     assert var_out.requires_grad and var_ref.requires_grad
     assert mean_out.requires_grad and mean_ref.requires_grad
     assert var_out.grad_fn is not None and mean_out.grad_fn is not None
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "name, ref",
+    [
+        ("SoftmaxFwdOp", lambda x: torch.softmax(x, 0)),
+        ("LogSoftmaxFwdOp", lambda x: torch.log_softmax(x, 0)),
+        ("LogSumExpFwdOp", lambda x: torch.logsumexp(x, 0)),
+        ("ArgmaxFwdOp", lambda x: torch.argmax(x, 0)),
+        ("L2NormFwdOp", lambda x: torch.linalg.vector_norm(x, 2, 0)),
+    ],
+)
+def test_a_scalar_input_to_an_axis_op_matches_torch(name: str, ref) -> None:
+    import tileops.reduction as reduction
+
+    x = torch.tensor(-1.5, dtype=torch.float32, device="cuda")
+    torch.testing.assert_close(getattr(reduction, name)(dim=0)(x), ref(x))

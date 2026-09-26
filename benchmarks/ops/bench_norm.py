@@ -23,18 +23,12 @@ from benchmarks.baselines import (
     reference_tolerance,
     vllm_op,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, workload_params
-from tileops.manifest import load_workloads
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
-from workloads.normalization import (
-    FusedAddLayerNormWorkload,
-    FusedAddRMSNormWorkload,
-    LayerNormWorkload,
-    RMSNormWorkload,
-)
+from workloads.normalization import NormCall
 
 
 def _flaggems_rms_norm(n: int, eps: float):
@@ -102,106 +96,113 @@ def _assert_fused_add_matches(fn, reference, x, residual, weight, eps, **toleran
     torch.testing.assert_close(residual_copy, expected_add, **tolerance)
 
 
-def _norm_args(w: dict, dtype: torch.dtype) -> tuple:
-    m, n = w["x_shape"]
-    return (m, n, dtype, True)
+def _eps(call) -> float:
+    """The row's ``eps``; ``None`` is float32's machine epsilon, torch's accumulation dtype."""
+    eps = call.params["eps"]
+    return torch.finfo(torch.float32).eps if eps is None else eps
 
 
-@pytest.mark.parametrize(
-    "m, n, dtype, tune", workload_params(load_workloads(RMSNormFwdOp), _norm_args)
-)
-def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = RMSNormWorkload(m, n, dtype)
-    inputs = test.gen_inputs()
+@pytest.mark.parametrize("call", manifest_calls(RMSNormFwdOp))
+def test_rms_norm_bench(call) -> None:
+    workload = NormCall(call)
+    inputs = workload.gen_inputs()
+    x, weight = inputs
+    op = RMSNormFwdOp(**workload.arguments(), tune=True)
+    shape, eps = tuple(call.params["normalized_shape"]), _eps(call)
 
-    op = RMSNormFwdOp(normalized_shape=(n,), tune=tune)
-    bm = ManifestBenchmark(op, test)
+    def reference(x, weight):
+        return F.rms_norm(x.float(), shape, None if weight is None else weight.float(), eps).to(
+            x.dtype
+        )
 
-    tolerance = reference_tolerance(dtype)
-    library = {
-        FLAGGEMS_TAG: _flaggems_rms_norm(n, test.eps),
-        FLASHINFER_TAG: _flashinfer_rms_norm(test.eps),
-        VLLM_TAG: _vllm_rms_norm(inputs[0], test.eps),
-    }
+    tolerance = reference_tolerance(x.dtype)
+    assert_matches_reference(op, reference, *inputs, **tolerance)
+    # The library kernels take a 2-D input and a weight; a row without one has no tag.
+    library = {}
+    if weight is not None and x.ndim == 2:
+        library = {
+            FLAGGEMS_TAG: _flaggems_rms_norm(shape[-1], eps),
+            FLASHINFER_TAG: _flashinfer_rms_norm(eps),
+            VLLM_TAG: _vllm_rms_norm(x, eps),
+        }
     for baseline_fn in library.values():
-        assert_matches_reference(baseline_fn, test.ref_program, *inputs, **tolerance)
+        assert_matches_reference(baseline_fn, reference, *inputs, **tolerance)
 
-    bm.compare(
+    ManifestBenchmark(op, workload).compare(
         {
             "tileops": op,
             **library,
-            "torch-ref": test.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+            "torch-ref": reference,
+            TORCH_COMPILE_TAG: compiled_reference(reference),
         },
         *inputs,
     )
 
 
-@pytest.mark.parametrize(
-    "m, n, dtype, tune", workload_params(load_workloads(FusedAddRMSNormFwdOp), _norm_args)
-)
-def test_fused_add_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = FusedAddRMSNormWorkload(m, n, dtype)
-    inputs = test.gen_inputs()
-
-    op = FusedAddRMSNormFwdOp(tune=tune)
-    bm = ManifestBenchmark(op, test)
+@pytest.mark.parametrize("call", manifest_calls(FusedAddRMSNormFwdOp))
+def test_fused_add_rms_norm_bench(call) -> None:
+    workload = NormCall(call)
+    inputs = workload.gen_inputs()
+    op = FusedAddRMSNormFwdOp(**workload.arguments(), tune=True)
+    eps = call.params["eps"]
 
     # Baseline: add + manual rmsnorm (separate ops)
     def baseline_fn(x, residual, weight):
         add_result = (x.float() + residual.float()).to(x.dtype)
-        rms = torch.sqrt(add_result.float().pow(2).mean(dim=-1, keepdim=True) + test.eps)
+        rms = torch.sqrt(add_result.float().pow(2).mean(dim=-1, keepdim=True) + eps)
         y = ((add_result.float() / rms) * weight.float()).to(x.dtype)
         return y, add_result
 
-    tolerance = reference_tolerance(dtype)
+    tolerance = reference_tolerance(inputs[0].dtype)
+    assert_matches_reference(op, baseline_fn, *inputs, **tolerance)
     fused_kernels = {
         FLASHINFER_TAG: flashinfer_op("fused_add_rmsnorm"),
         VLLM_TAG: vllm_op("fused_add_rms_norm"),
     }
     functors = {"tileops": op}
     for tag, fn in fused_kernels.items():
-        _assert_fused_add_matches(fn, baseline_fn, *inputs, eps=test.eps, **tolerance)
-        functors[tag] = _in_place_fused_add(fn, inputs, test.eps)
+        _assert_fused_add_matches(fn, baseline_fn, *inputs, eps=eps, **tolerance)
+        functors[tag] = _in_place_fused_add(fn, inputs, eps)
     functors["torch-ref"] = baseline_fn
     functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
 
-    bm.compare(functors, *inputs)
+    ManifestBenchmark(op, workload).compare(functors, *inputs)
 
 
-@pytest.mark.parametrize(
-    "m, n, dtype, tune", workload_params(load_workloads(LayerNormFwdOp), _norm_args)
-)
-def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = LayerNormWorkload(m, n, dtype)
-    inputs = test.gen_inputs()
+@pytest.mark.parametrize("call", manifest_calls(LayerNormFwdOp))
+def test_layer_norm_bench(call) -> None:
+    workload = NormCall(call)
+    inputs = workload.gen_inputs()
+    x, weight, bias = inputs
+    op = LayerNormFwdOp(**workload.arguments(), tune=True)
+    shape, eps = tuple(call.params["normalized_shape"]), call.params["eps"]
 
-    op = LayerNormFwdOp(normalized_shape=(n,), tune=tune)
-    bm = ManifestBenchmark(op, test)
-
-    # Baseline uses torch.nn.functional.layer_norm
     def baseline_fn(x, weight, bias):
-        return F.layer_norm(x, (n,), weight=weight, bias=bias, eps=1e-5)
+        return F.layer_norm(x, shape, weight=weight, bias=bias, eps=eps)
 
-    flaggems_layer_norm = flaggems_op("layer_norm")
-    flashinfer_layer_norm = flashinfer_op("layernorm")
+    tolerance = reference_tolerance(x.dtype)
+    assert_matches_reference(op, baseline_fn, *inputs, **tolerance)
+    # The library kernels take both affine tensors; a row without them has no tag.
+    library = {}
+    if weight is not None and bias is not None:
+        flaggems_layer_norm = flaggems_op("layer_norm")
+        flashinfer_layer_norm = flashinfer_op("layernorm")
 
-    def flaggems_fn(x, weight, bias):
-        # Returns (output, mean, rstd); the row reports the output.
-        return flaggems_layer_norm(x, [n], weight, bias, 1e-5)[0]
+        def flaggems_fn(x, weight, bias):
+            # Returns (output, mean, rstd); the row reports the output.
+            return flaggems_layer_norm(x, list(shape), weight, bias, eps)[0]
 
-    def flashinfer_fn(x, weight, bias):
-        return flashinfer_layer_norm(x, weight, bias, 1e-5)
+        def flashinfer_fn(x, weight, bias):
+            return flashinfer_layer_norm(x, weight, bias, eps)
 
-    tolerance = reference_tolerance(dtype)
-    for library_fn in (flaggems_fn, flashinfer_fn):
+        library = {FLAGGEMS_TAG: flaggems_fn, FLASHINFER_TAG: flashinfer_fn}
+    for library_fn in library.values():
         assert_matches_reference(library_fn, baseline_fn, *inputs, **tolerance)
 
-    bm.compare(
+    ManifestBenchmark(op, workload).compare(
         {
             "tileops": op,
-            FLAGGEMS_TAG: flaggems_fn,
-            FLASHINFER_TAG: flashinfer_fn,
+            **library,
             "torch": baseline_fn,
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },
@@ -209,24 +210,23 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
     )
 
 
-@pytest.mark.parametrize(
-    "m, n, dtype, tune", workload_params(load_workloads(FusedAddLayerNormFwdOp), _norm_args)
-)
-def test_fused_add_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
-    test = FusedAddLayerNormWorkload(m, n, dtype)
-    inputs = test.gen_inputs()
-
-    op = FusedAddLayerNormFwdOp(tune=tune)
-    bm = ManifestBenchmark(op, test)
+@pytest.mark.parametrize("call", manifest_calls(FusedAddLayerNormFwdOp))
+def test_fused_add_layer_norm_bench(call) -> None:
+    workload = NormCall(call)
+    inputs = workload.gen_inputs()
+    op = FusedAddLayerNormFwdOp(**workload.arguments(), tune=True)
+    eps = call.params["eps"]
 
     # Baseline: add + F.layer_norm (separate ops)
     def baseline_fn(x, residual, weight, bias):
         add_result = (x.float() + residual.float()).to(x.dtype)
-        return F.layer_norm(add_result, (n,), weight=weight, bias=bias, eps=test.eps), add_result
+        n = x.shape[-1]
+        return F.layer_norm(add_result, (n,), weight=weight, bias=bias, eps=eps), add_result
 
+    assert_matches_reference(op, baseline_fn, *inputs, **reference_tolerance(inputs[0].dtype))
     # flashinfer's and vllm's fused-add kernels are RMSNorm only, so this row is
     # torch against itself, eager and compiled.
-    bm.compare(
+    ManifestBenchmark(op, workload).compare(
         {
             "tileops": op,
             "torch-ref": baseline_fn,

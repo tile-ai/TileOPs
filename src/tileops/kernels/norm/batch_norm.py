@@ -55,9 +55,6 @@ class _TiledPath:
     # Widest tile one block takes, bounding register pressure.
     MAX_BLOCK_L = 512
 
-    # Tile widths tried when no reduce width divides the channel, widest first.
-    FALLBACK_BLOCK_L = (512, 256, 128, 64, 32, 16)
-
     @classmethod
     def for_length(cls, L: int) -> list[dict]:
         """The pairs accepted for *L*, best first; element zero runs untuned."""
@@ -80,18 +77,13 @@ class _TiledPath:
         if configs:
             return configs
 
-        # No reduce width divides L. Below the threshold the channel is still
-        # one tile, at the narrowest width; above it, the widest tile that does
-        # divide L.
-        if L <= cls.PERSISTENT_MAX_L:
-            return [{"block_l": L, "threads": cls.REDUCE_THREADS[-1]}]
-        for block_l in cls.FALLBACK_BLOCK_L:
-            if L % block_l == 0:
-                return [{"block_l": block_l, "threads": min(cls.REDUCE_THREADS[0], block_l)}]
-        raise ValueError(
-            f"L={L} is not divisible by any supported block_l. L must be divisible "
-            f"by at least {cls.FALLBACK_BLOCK_L[-1]}."
-        )
+        # No tile divides L: the last tile is masked. Below the threshold one
+        # block still holds the channel, rounded up to a whole thread count.
+        threads = max((t for t in cls.REDUCE_THREADS if t <= L), default=cls.REDUCE_THREADS[-1])
+        block_l = -(-L // threads) * threads
+        if block_l <= cls.PERSISTENT_MAX_L:
+            return [{"block_l": block_l, "threads": threads}]
+        return [{"block_l": cls.MAX_BLOCK_L, "threads": cls.REDUCE_THREADS[0]}]
 
 
 class _WholePath:
@@ -250,13 +242,17 @@ def _batch_norm_fwd_train_kernel(
 
     Non-persistent path (block_l < L): two global reads (classic two-pass BN).
 
-    Requirements: L must be divisible by block_l; threads must divide block_l.
+    A *block_l* that does not divide L masks the last tile; threads must divide block_l.
     """
     accum_dtype = "float32"
     plane = C * S
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _bn_fwd_train_func(block_l: int, threads: int) -> Callable:
+        # A divisible length keeps the unguarded body: a predicated load costs a read.
+        ragged = L % block_l != 0
+        tiles = -(-L // block_l)
+
         @T.prim_func
         def _bn_fwd_train(
             x: T.Tensor([C * L], dtype),
@@ -277,18 +273,36 @@ def _batch_norm_fwd_train_kernel(
                 T.clear(xsum_frag)
                 T.clear(xsq_frag)
 
-                # Pass 1 – accumulate sum(x) and sum(x^2) over all tiles.
+                # Pass 1 – accumulate sum(x) and sum(x^2) over all tiles. A masked
+                # element loads zero, which adds nothing to either sum.
                 if block_l >= L:
                     # One tile: a pipelined loop has nothing to overlap.
-                    for _i, j in T.Parallel(1, block_l):
-                        x_shared[j] = x[(j // S) * plane + bc * S + j % S]
+                    if ragged:
+                        for _i, j in T.Parallel(1, block_l):
+                            x_shared[j] = T.if_then_else(
+                                j < L, x[(j // S) * plane + bc * S + j % S], T.cast(0, dtype)
+                            )
+                    else:
+                        for _i, j in T.Parallel(1, block_l):
+                            x_shared[j] = x[(j // S) * plane + bc * S + j % S]
                     for _i, j in T.Parallel(1, block_l):
                         xval = T.cast(x_shared[j], accum_dtype)
                         xsum_frag[_i, j] += xval
                         xsq_frag[_i, j] += xval * xval
+                elif ragged:
+                    for l_tile in T.Pipelined(tiles, num_stages=0):
+                        for _i, j in T.Parallel(1, block_l):
+                            l = l_tile * block_l + j
+                            xval = T.if_then_else(
+                                l < L,
+                                T.cast(x[(l // S) * plane + bc * S + l % S], accum_dtype),
+                                T.cast(0, accum_dtype),
+                            )
+                            xsum_frag[_i, j] += xval
+                            xsq_frag[_i, j] += xval * xval
                 else:
                     # T.copy inside T.Pipelined races with the async copy.
-                    for l_tile in T.Pipelined(L // block_l, num_stages=0):
+                    for l_tile in T.Pipelined(tiles, num_stages=0):
                         for _i, j in T.Parallel(1, block_l):
                             l = l_tile * block_l + j
                             xval = T.cast(x[(l // S) * plane + bc * S + l % S], accum_dtype)
@@ -326,16 +340,33 @@ def _batch_norm_fwd_train_kernel(
                     ] + mom * unbiased_var
 
                 # Pass 2 – normalize.
-                if block_l >= L:
+                if block_l >= L and ragged:
                     # x_shared still holds the channel: no second global read.
+                    for _i, j in T.Parallel(1, block_l):
+                        if j < L:
+                            xval = T.cast(x_shared[j], accum_dtype)
+                            y[(j // S) * plane + bc * S + j % S] = T.cast(
+                                weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype
+                            )
+                elif block_l >= L:
                     for _i, j in T.Parallel(1, block_l):
                         xval = T.cast(x_shared[j], accum_dtype)
                         y[(j // S) * plane + bc * S + j % S] = T.cast(
                             weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype
                         )
+                elif ragged:
+                    for l_tile in T.Pipelined(tiles, num_stages=0):
+                        for _i, j in T.Parallel(1, block_l):
+                            l = l_tile * block_l + j
+                            if l < L:
+                                flat = (l // S) * plane + bc * S + l % S
+                                xval = T.cast(x[flat], accum_dtype)
+                                y[flat] = T.cast(
+                                    weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype
+                                )
                 else:
                     # T.copy inside T.Pipelined races with the async copy.
-                    for l_tile in T.Pipelined(L // block_l, num_stages=0):
+                    for l_tile in T.Pipelined(tiles, num_stages=0):
                         for _i, j in T.Parallel(1, block_l):
                             l = l_tile * block_l + j
                             flat = (l // S) * plane + bc * S + l % S
@@ -733,7 +764,7 @@ class BatchNormFwdTrainKernel(Kernel):
 
     Args:
         C: Number of channels.
-        L: Total reduction length = N * H * W * ... (must be divisible by block_l).
+        L: Total reduction length = N * H * W * ....
         dtype: Input/output data type.
         eps: Numerical stability constant.
         momentum: Running-stat update momentum.
@@ -1240,12 +1271,16 @@ def _batch_norm_bwd_kernel(
 
     Non-persistent path (block_l < L): two global reads (classic two-pass BN bwd).
 
-    Requirements: L must be divisible by block_l.
+    A *block_l* that does not divide L masks the last tile.
     """
     accum_dtype = "float32"
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _bn_bwd_func(block_l: int, threads: int) -> Callable:
+        # A divisible length keeps the unguarded body: a predicated load costs a read.
+        ragged = L % block_l != 0
+        tiles = -(-L // block_l)
+
         @T.prim_func
         def _bn_bwd(
             grad_out: T.Tensor([C, L], dtype),
@@ -1265,7 +1300,8 @@ def _batch_norm_bwd_kernel(
                 rstd_val = rstd[bc]
                 w_val = weight[bc]
 
-                # Accumulators for sum(grad_out) and sum(grad_out * x_hat).
+                # Accumulators for sum(grad_out) and sum(grad_out * x_hat). A masked
+                # element loads a zero gradient, which adds nothing to either sum.
                 do_frag = T.alloc_fragment([1, block_l], accum_dtype)
                 do_xhat_frag = T.alloc_fragment([1, block_l], accum_dtype)
                 T.clear(do_frag)
@@ -1274,21 +1310,43 @@ def _batch_norm_bwd_kernel(
                 # Pass 1 – accumulate grad_bias and grad_weight contributions.
                 if block_l >= L:
                     # One tile: a pipelined loop has nothing to overlap.
-                    T.copy(grad_out[bc, 0:block_l], go_shared)
-                    T.copy(x[bc, 0:block_l], x_shared)
-                    for _i, j in T.Parallel(1, block_l):
-                        go_val = T.cast(go_shared[j], accum_dtype)
-                        x_hat = (T.cast(x_shared[j], accum_dtype) - mean_val) * rstd_val
-                        do_frag[_i, j] += go_val
-                        do_xhat_frag[_i, j] += go_val * x_hat
+                    if ragged:
+                        for _i, j in T.Parallel(1, block_l):
+                            go_shared[j] = T.if_then_else(j < L, grad_out[bc, j], T.cast(0, dtype))
+                            x_shared[j] = T.if_then_else(j < L, x[bc, j], T.cast(0, dtype))
+                        # A padded lane adds nothing, whatever its normalized value would be.
+                        for _i, j in T.Parallel(1, block_l):
+                            go_val = T.cast(go_shared[j], accum_dtype)
+                            x_hat = (T.cast(x_shared[j], accum_dtype) - mean_val) * rstd_val
+                            zero = T.cast(0, accum_dtype)
+                            do_frag[_i, j] += go_val
+                            do_xhat_frag[_i, j] += T.if_then_else(j < L, go_val * x_hat, zero)
+                    else:
+                        T.copy(grad_out[bc, 0:block_l], go_shared)
+                        T.copy(x[bc, 0:block_l], x_shared)
+                        for _i, j in T.Parallel(1, block_l):
+                            go_val = T.cast(go_shared[j], accum_dtype)
+                            x_hat = (T.cast(x_shared[j], accum_dtype) - mean_val) * rstd_val
+                            do_frag[_i, j] += go_val
+                            do_xhat_frag[_i, j] += go_val * x_hat
                 else:
                     # T.copy inside T.Pipelined races with the async copy.
-                    for l_tile in T.Pipelined(L // block_l, num_stages=0):
+                    for l_tile in T.Pipelined(tiles, num_stages=0):
                         for _i, j in T.Parallel(1, block_l):
-                            go_val = T.cast(grad_out[bc, l_tile * block_l + j], accum_dtype)
-                            x_hat = (
-                                T.cast(x[bc, l_tile * block_l + j], accum_dtype) - mean_val
-                            ) * rstd_val
+                            l = l_tile * block_l + j
+                            if ragged:
+                                go_val = T.if_then_else(
+                                    l < L,
+                                    T.cast(grad_out[bc, l], accum_dtype),
+                                    T.cast(0, accum_dtype),
+                                )
+                                x_val = T.if_then_else(
+                                    l < L, T.cast(x[bc, l], accum_dtype), mean_val
+                                )
+                            else:
+                                go_val = T.cast(grad_out[bc, l], accum_dtype)
+                                x_val = T.cast(x[bc, l], accum_dtype)
+                            x_hat = (x_val - mean_val) * rstd_val
                             do_frag[_i, j] += go_val
                             do_xhat_frag[_i, j] += go_val * x_hat
 
@@ -1312,19 +1370,35 @@ def _batch_norm_bwd_kernel(
                         gx = w_rstd_over_L * (
                             T.cast(L, accum_dtype) * go_val - sum_do[0] - x_hat * sum_do_xhat[0]
                         )
-                        grad_x[bc, j] = T.cast(gx, dtype)
+                        if ragged:
+                            if j < L:
+                                grad_x[bc, j] = T.cast(gx, dtype)
+                        else:
+                            grad_x[bc, j] = T.cast(gx, dtype)
                 else:
                     # T.copy inside T.Pipelined races with the async copy.
-                    for l_tile in T.Pipelined(L // block_l, num_stages=0):
+                    for l_tile in T.Pipelined(tiles, num_stages=0):
                         for _i, j in T.Parallel(1, block_l):
-                            go_val = T.cast(grad_out[bc, l_tile * block_l + j], accum_dtype)
-                            x_hat = (
-                                T.cast(x[bc, l_tile * block_l + j], accum_dtype) - mean_val
-                            ) * rstd_val
-                            gx = w_rstd_over_L * (
-                                T.cast(L, accum_dtype) * go_val - sum_do[0] - x_hat * sum_do_xhat[0]
-                            )
-                            grad_x[bc, l_tile * block_l + j] = T.cast(gx, dtype)
+                            l = l_tile * block_l + j
+                            if ragged:
+                                if l < L:
+                                    go_val = T.cast(grad_out[bc, l], accum_dtype)
+                                    x_hat = (T.cast(x[bc, l], accum_dtype) - mean_val) * rstd_val
+                                    gx = w_rstd_over_L * (
+                                        T.cast(L, accum_dtype) * go_val
+                                        - sum_do[0]
+                                        - x_hat * sum_do_xhat[0]
+                                    )
+                                    grad_x[bc, l] = T.cast(gx, dtype)
+                            else:
+                                go_val = T.cast(grad_out[bc, l], accum_dtype)
+                                x_hat = (T.cast(x[bc, l], accum_dtype) - mean_val) * rstd_val
+                                gx = w_rstd_over_L * (
+                                    T.cast(L, accum_dtype) * go_val
+                                    - sum_do[0]
+                                    - x_hat * sum_do_xhat[0]
+                                )
+                                grad_x[bc, l] = T.cast(gx, dtype)
 
         return _bn_bwd
 
@@ -1336,7 +1410,7 @@ class BatchNormBwdKernel(Kernel):
 
     Args:
         C: Number of channels.
-        L: Total reduction length = N * H * W * ... (must be divisible by block_l).
+        L: Total reduction length = N * H * W * ....
         dtype: grad_out/x/grad_x data type.
         config: Optional tile config dict.
         tune: If True, autotune tile config.

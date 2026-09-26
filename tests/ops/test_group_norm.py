@@ -247,15 +247,16 @@ def test_group_norm_forward_signature() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("give", ["weight", "bias"])
-def test_group_norm_rejects_half_the_affine_switch(give: str) -> None:
-    """weight and bias are one switch; half of it is an error."""
+def test_group_norm_takes_either_affine_tensor_alone(give: str) -> None:
+    """weight and bias are independent, as in ``torch.nn.functional.group_norm``."""
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
     op = GroupNormFwdOp(num_groups=g)
     x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
     t = torch.randn((c,), dtype=dtype, device="cuda")
     kwargs = {give: t}
-    with pytest.raises(ValueError, match="one switch"):
-        op(x, **kwargs)
+    torch.testing.assert_close(
+        op(x, **kwargs), F.group_norm(x, g, **kwargs), **standard_tolerance(dtype)
+    )
 
 
 @pytest.mark.smoke

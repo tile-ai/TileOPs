@@ -1,10 +1,11 @@
 """Benchmarks for softmax-family ops (softmax, log_softmax, logsumexp).
 
-Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
-Workload shapes and roofline formulas are loaded from the ops manifest (src/tileops/manifest/).
+Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines. Each case is one
+manifest call (src/tileops/manifest/); the roofline comes from ``op.eval_roofline()``.
 
 softmax and log_softmax are timed against flag_gems' Triton kernels as well as
-torch, eager and compiled. logsumexp has no flag_gems entry point.
+torch, eager and compiled, except on a row passing ``dtype``, which flag_gems' entry points
+do not take. logsumexp has no flag_gems entry point.
 """
 
 import pytest
@@ -19,112 +20,60 @@ from benchmarks.baselines import (
     flaggems_op,
     reference_tolerance,
 )
-from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
-from workloads.reduction import (
-    LogSoftmaxWorkload,
-    LogSumExpWorkload,
-    SoftmaxWorkload,
-)
+from workloads.reduction import ReductionCall
 
 
-def _flaggems_softmax(name: str, dim: int):
-    """Bind a flag_gems softmax entry point to *dim*."""
-    fn = flaggems_op(name)
+def _bench(op_cls: type, call, baseline_fn, flaggems_name: "str | None") -> None:
+    workload = ReductionCall(call)
+    inputs = workload.gen_inputs()
+    op = op_cls(**workload.arguments(), tune=True)
+    tolerance = reference_tolerance(inputs[0].dtype)
+    functors = {"tileops": op}
+    if flaggems_name is not None and not call.params.get("dtype"):
+        fn = flaggems_op(flaggems_name)
+        dim = call.params["dim"]
 
-    def baseline_fn(x):
-        return fn(x, dim)
+        def flaggems_fn(x):
+            return fn(x, dim)
 
-    return baseline_fn
-
-
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(SoftmaxFwdOp))
-def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = SoftmaxWorkload(shape, dtype)
-    inputs = test.gen_inputs()
-
-    op = SoftmaxFwdOp(dim=-1, tune=True)
-    bm = ManifestBenchmark(op, test)
-
-    def baseline_fn(x):
-        return F.softmax(x, dim=-1)
-
-    flaggems_fn = _flaggems_softmax("softmax", -1)
-    assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **reference_tolerance(dtype))
-
-    try:
-        bm.compare(
-            {
-                "tileops": op,
-                FLAGGEMS_TAG: flaggems_fn,
-                "torch": baseline_fn,
-                TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-            },
-            *inputs,
-        )
-    except ValueError as exc:
-        if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
-        raise
+        assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **tolerance)
+        functors[FLAGGEMS_TAG] = flaggems_fn
+    functors["torch"] = baseline_fn
+    functors[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
+    ManifestBenchmark(op, workload).compare(functors, *inputs)
 
 
-@pytest.mark.parametrize("shape, dtype", workloads_to_params(LogSoftmaxFwdOp))
-def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
-    test = LogSoftmaxWorkload(shape, dtype)
-    inputs = test.gen_inputs()
+def _dtype(params: dict) -> "torch.dtype | None":
+    return getattr(torch, params["dtype"]) if params.get("dtype") else None
 
-    op = LogSoftmaxFwdOp(dim=-1, tune=True)
-    bm = ManifestBenchmark(op, test)
+
+@pytest.mark.parametrize("call", manifest_calls(SoftmaxFwdOp))
+def test_softmax_bench(call) -> None:
+    dim, dtype = call.params["dim"], _dtype(call.params)
 
     def baseline_fn(x):
-        return F.log_softmax(x, dim=-1)
+        return F.softmax(x, dim=dim, dtype=dtype)
 
-    flaggems_fn = _flaggems_softmax("log_softmax", -1)
-    assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **reference_tolerance(dtype))
-
-    try:
-        bm.compare(
-            {
-                "tileops": op,
-                FLAGGEMS_TAG: flaggems_fn,
-                "torch": baseline_fn,
-                TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-            },
-            *inputs,
-        )
-    except ValueError as exc:
-        if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
-        raise
+    _bench(SoftmaxFwdOp, call, baseline_fn, "softmax")
 
 
-@pytest.mark.parametrize(
-    "shape, dtype, op_params",
-    workloads_to_params(LogSumExpFwdOp, include_extra=True),
-)
-def test_logsumexp_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> None:
-    test = LogSumExpWorkload(shape, dtype)
-    inputs = test.gen_inputs()
+@pytest.mark.parametrize("call", manifest_calls(LogSoftmaxFwdOp))
+def test_log_softmax_bench(call) -> None:
+    dim, dtype = call.params["dim"], _dtype(call.params)
 
-    op_params.setdefault("dim", -1)
-    op = LogSumExpFwdOp(tune=True, **op_params)
-    bm = ManifestBenchmark(op, test)
-    dim = op_params["dim"]
-    keepdim = op_params.get("keepdim", False)
+    def baseline_fn(x):
+        return F.log_softmax(x, dim=dim, dtype=dtype)
+
+    _bench(LogSoftmaxFwdOp, call, baseline_fn, "log_softmax")
+
+
+@pytest.mark.parametrize("call", manifest_calls(LogSumExpFwdOp))
+def test_logsumexp_bench(call) -> None:
+    dim, keepdim = call.params["dim"], call.params["keepdim"]
 
     def baseline_fn(x):
         return torch.logsumexp(x, dim=dim, keepdim=keepdim)
 
-    try:
-        bm.compare(
-            {
-                "tileops": op,
-                "torch": baseline_fn,
-                TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-            },
-            *inputs,
-        )
-    except ValueError as exc:
-        if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
-        raise
+    _bench(LogSumExpFwdOp, call, baseline_fn, None)

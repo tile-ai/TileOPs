@@ -11,8 +11,7 @@ import pytest
 import torch
 
 from tileops.ops.elementwise import AddFwdOp, ReluFwdOp
-from tileops.ops.norm import BatchNormFwdOp, RMSNormFwdOp
-from tileops.ops.reduction import SumFwdOp, VarMeanFwdOp
+from tileops.ops.reduction import SumFwdOp
 
 pytestmark = [
     pytest.mark.smoke,
@@ -39,28 +38,12 @@ def empty() -> torch.Tensor:
     [
         pytest.param(lambda x: ReluFwdOp()(x), "ReluFwdOp", "input", id="unary"),
         pytest.param(lambda x: AddFwdOp()(x, x), "AddFwdOp", "input", id="binary"),
-        pytest.param(lambda x: SumFwdOp(dim=1)(x), "SumFwdOp", "x", id="reduce_to_empty"),
-        pytest.param(
-            lambda x: RMSNormFwdOp((8,))(x, torch.ones(8, device=x.device, dtype=x.dtype)),
-            "RMSNormFwdOp",
-            "x",
-            id="norm",
-        ),
-        pytest.param(lambda x: VarMeanFwdOp(dim=1)(x), "VarMeanFwdOp", "x", id="two_outputs"),
     ],
 )
 def test_empty_input_is_refused(empty, call, op_class_name, input_name):
     """The message names the op, the input and its shape."""
     with pytest.raises(ValueError, match=re.escape(_message(op_class_name, input_name, (0, 8)))):
         call(empty)
-
-
-def test_batch_norm_training_is_refused():
-    """An op reading a private multi-output from its kernel is refused like any other."""
-    x = torch.empty(0, 4, 2, 2, device="cuda", dtype=DTYPE)
-    stat = lambda: torch.zeros(4, device="cuda")  # noqa: E731
-    with pytest.raises(ValueError, match=re.escape(_message("BatchNormFwdOp", "x", (0, 4, 2, 2)))):
-        BatchNormFwdOp(training=True)(x, stat(), stat(), stat(), stat())
 
 
 def test_compiled_call_is_refused_the_same_way(empty):
@@ -83,7 +66,7 @@ def test_the_refusal_precedes_what_the_kernel_states():
         ReluFwdOp()(torch.empty(0, 8))
 
 
-def test_an_empty_input_with_a_non_empty_output_is_not_refused(empty):
-    """An input's zero-length axis is legitimate where the op still produces something."""
-    with pytest.raises(ZeroDivisionError):
-        SumFwdOp(dim=0)(empty)
+def test_a_parametric_op_answers_an_empty_input_as_torch_does(empty):
+    """A converted entry admits every non-negative extent, so an empty call has a result."""
+    torch.testing.assert_close(SumFwdOp(dim=0)(empty), torch.sum(empty, dim=0))
+    torch.testing.assert_close(SumFwdOp(dim=1)(empty), torch.sum(empty, dim=1))
