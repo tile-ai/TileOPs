@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import json
+import re
 import subprocess
 import xml.etree.ElementTree as ET
 from collections import defaultdict
@@ -300,6 +301,15 @@ def _case_id(name: str) -> str:
     return name
 
 
+# A dtype name as a case id spells it: the id ends in its dtype cases and dtype parameters.
+_DTYPE_TOKEN = re.compile(r"bfloat16|bool|u?int\d+|float\d+(?:_[a-z0-9]+)?|complex\d+")
+
+
+def _dtypes_of(name: str) -> tuple[str, ...]:
+    """The dtype names in a row's case id, in order."""
+    return tuple(t for t in _case_id(name).split("-") if _DTYPE_TOKEN.fullmatch(t))
+
+
 def count_bench_skips(results: list[dict]) -> int:
     """Skipped cases, which are neither configs nor failures: without a count they vanish."""
     return sum(1 for r in results if r["outcome"] == "skipped")
@@ -416,12 +426,14 @@ def _alias_name(runs: list[dict], op: str, config_name: str, work: _WorkCounts) 
     """The unique prior display name of this row in history, or None.
 
     A name is adopted only when its recorded FLOP and byte counts equal the
-    current row's exactly and it never shares a run with the current name: a
-    renamed row and its new name never co-occur, while another variant of the
-    same workload does.
+    current row's exactly, its case id names the same dtypes, and it never shares
+    a run with the current name: a renamed row and its new name never co-occur,
+    while another variant of the same workload does. Equal counts do not tell two
+    dtypes of one width apart.
     """
     if not work.flops_recorded or work.flops is None or work.nbytes is None:
         return None
+    dtypes = _dtypes_of(config_name)
     candidates: set[str] = set()
     excluded: set[str] = set()
     for run in runs:
@@ -436,7 +448,12 @@ def _alias_name(runs: list[dict], op: str, config_name: str, work: _WorkCounts) 
             tileops_data = entry.get("tileops", {})
             ms = tileops_data.get(_CONCLUSION_KEY, tileops_data.get("latency_ms"))
             hist = _work_counts(tileops_data, ms)
-            if hist.flops_recorded and hist.flops == work.flops and hist.nbytes == work.nbytes:
+            if (
+                hist.flops_recorded
+                and hist.flops == work.flops
+                and hist.nbytes == work.nbytes
+                and _dtypes_of(name) == dtypes
+            ):
                 candidates.add(name)
     candidates -= excluded
     return candidates.pop() if len(candidates) == 1 else None
