@@ -13,7 +13,10 @@ import torch
 
 from tests import roofline_binder as rb
 from tileops.backend import TensorSpec, registry
-from tileops.manifest import forward_signature, load_manifest, load_workloads
+from tileops.manifest import forward_signature, load_adts, load_manifest, load_workloads
+from tileops.manifest.plan import entry_plan
+from tileops.manifest.signature import is_legacy
+from tileops.manifest.workload import instantiate
 from tileops.ops._output_dtype import output_dtype
 
 pytestmark = pytest.mark.smoke
@@ -202,6 +205,27 @@ def _from_workload(cls: type, name: str, entry: dict) -> tuple:
     return op, tuple(args)
 
 
+def _from_call(cls: type, name: str, entry: dict) -> tuple:
+    """A converted op, its ``forward`` arguments and the outputs its call declares, from the
+    manifest call with the smallest inputs."""
+    plan = entry_plan(name, entry, load_adts(), resolve=False)
+    calls = [
+        instantiate(plan, row, case)
+        for row in entry["workloads"]
+        for case in row.get("dtype_cases") or [{}]
+    ]
+    call = min(calls, key=lambda c: sum(math.prod(c.tensors[t][0]) for t in c.tensors))
+    tensors = {
+        n: None if spec is None else torch.empty(spec.shape, dtype=getattr(torch, spec.dtype))
+        for n, spec in call.specs.items()
+    }
+    args = [tensors[n] for n in plan.sig.inputs]
+    while args and args[-1] is None:
+        args.pop()
+    outputs = [tensors[o] for o in plan.sig.outputs]
+    return cls(**call.arguments(tensors)), tuple(args), outputs
+
+
 def _implemented() -> list[str]:
     return sorted(n for n, e in load_manifest().items() if e.get("status") == "implemented")
 
@@ -245,9 +269,13 @@ def no_cuda(monkeypatch):
 def test_a_target_is_described_and_called_with_the_forward_inputs(name):
     entry = load_manifest()[name]
     cls = rb.op_class(name, entry)
-    make = _CASES.get(name)
-    op, args = make(cls) if make else _from_workload(cls, name, entry)
-    declared = tuple(forward_signature(entry)["inputs"])
+    parametric = not is_legacy(entry)
+    if parametric:
+        op, args, declared_outputs = _from_call(cls, name, entry)
+    else:
+        make = _CASES.get(name)
+        op, args = make(cls) if make else _from_workload(cls, name, entry)
+    declared = tuple(forward_signature(entry).get("inputs") or {})
     passed = args + (None,) * (len(declared) - len(args))
     described = tuple(None if t is None else TensorSpec.of(t) for t in passed)
     seen, returned = [], []
@@ -258,6 +286,10 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
 
         def kernel(*tensors, **writes):
             seen.append(tensors)
+            if parametric:
+                result = declared_outputs
+                returned.append(result[0] if len(result) == 1 else tuple(result))
+                return returned[-1]
             shapes = [None if t is None else tuple(t.shape) for t in tensors]
             try:
                 out_shapes = op._infer_output_shapes(*shapes)
@@ -291,10 +323,13 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
         assert all(a is b for a, b in zip(result, returned[0], strict=True))
     else:
         assert result is returned[0], "the op returns what the target's kernel returned"
-    assert not declared or hasattr(cls, "_validate_manifest_dtypes"), (
-        "a target is held to its dtypes"
-    )
-    inputs = forward_signature(entry)["inputs"]
+    if parametric:
+        assert hasattr(cls, "_signature"), "a target is held to its signature"
+    else:
+        assert not declared or hasattr(cls, "_validate_manifest_dtypes"), (
+            "a target is held to its dtypes"
+        )
+    inputs = forward_signature(entry).get("inputs") or {}
     assert all((inputs[o] or {}).get("mutated") for o in outputs if o in inputs), (
         "an output passed in as an input is one the call writes"
     )
