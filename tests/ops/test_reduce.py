@@ -706,16 +706,29 @@ def test_var_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.d
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "in_dtype, out_dtype",
-    [(torch.bfloat16, torch.float32), (torch.float32, torch.float16)],
-    ids=["widen", "narrow"],
+    "name, in_dtype, out_dtype",
+    [
+        ("sum", torch.bfloat16, torch.float32),
+        ("prod", torch.bfloat16, torch.float32),
+        ("l2", torch.bfloat16, torch.float32),
+        ("sum", torch.float32, torch.float16),
+    ],
+    ids=["sum-widen", "prod-widen", "l2-widen", "sum-narrow"],
 )
-def test_dtype_casts_the_input_before_reducing(in_dtype, out_dtype) -> None:
+def test_dtype_casts_the_input_before_reducing(name, in_dtype, out_dtype) -> None:
     """``dtype`` casts the input first and is the output's, as in torch."""
-    from tileops.ops.reduction.reduce import SumFwdOp
+    from tileops.ops.reduction.reduce import ProdFwdOp, SumFwdOp
+    from tileops.ops.reduction.vector_norm import L2NormFwdOp
 
-    x = torch.randn(8, 512, dtype=in_dtype, device="cuda")
-    got = SumFwdOp(dim=-1, dtype=out_dtype)(x)
+    op, ref_fn = {
+        "sum": (SumFwdOp(dim=-1, dtype=out_dtype), lambda x: torch.sum(x, -1, dtype=out_dtype)),
+        "prod": (ProdFwdOp(-1, dtype=out_dtype), lambda x: torch.prod(x, -1, dtype=out_dtype)),
+        "l2": (
+            L2NormFwdOp(dim=-1, dtype=out_dtype),
+            lambda x: torch.linalg.vector_norm(x, 2, -1, dtype=out_dtype),
+        ),
+    }[name]
+    x = torch.rand(8, 512, device="cuda").mul(0.01).add(0.995).to(in_dtype)
+    got = op(x)
     assert got.dtype == out_dtype
-    ref = torch.sum(x, -1, dtype=out_dtype)
-    torch.testing.assert_close(got, ref, **reduction_tolerance(out_dtype))
+    torch.testing.assert_close(got, ref_fn(x), **reduction_tolerance(out_dtype))

@@ -58,7 +58,8 @@ class _ReduceOpBase(Op):
     - ``_identity``: the result over an empty reduced extent.
     - ``_scalar_forward(x)``: the result on a 0-d input.
     - ``_build_kernel_kwargs(shape, axes, device_index)``: extra kernel constructor kwargs.
-    - ``_call_kwargs(n)``: kernel constructor kwargs that depend on the call's extent.
+    - ``_call_kwargs(n)``: kernel constructor kwargs beyond the shared ones: the output dtype
+      when ``dtype`` is passed, and what depends on the call's extent.
     """
 
     compile_boundary: ClassVar[bool] = True
@@ -106,10 +107,17 @@ class _ReduceOpBase(Op):
         """
         return self._call_boundary(x)
 
-    def _cast(self, x: torch.Tensor) -> torch.Tensor:
-        """*x* in the dtype the reduction runs in: the ``dtype`` parameter's when passed."""
-        dtype = getattr(self, "dtype", None)
-        return x if dtype is None or x.dtype == dtype else x.to(dtype)
+    def _cast(self, x: torch.Tensor, *, for_kernel: bool = False) -> torch.Tensor:
+        """*x* in the dtype the reduction runs in: the ``dtype`` parameter's when passed.
+
+        A kernel reads each element into a float32 accumulator, and every admitted input
+        dtype widens to float32 exactly, so a kernel input is not cast to float32: the
+        kernel reads it as stored and writes float32. Any other cast runs first, as in torch.
+        """
+        dtype = self.dtype
+        if dtype is None or x.dtype == dtype or (for_kernel and dtype == torch.float32):
+            return x
+        return x.to(dtype)
 
     def _output_dtype(self, x: torch.Tensor) -> torch.dtype:
         return x.dtype
@@ -123,15 +131,14 @@ class _ReduceOpBase(Op):
 
     def _eager_forward(self, x: torch.Tensor):
         """Resolve the kernel and launch, inside the operator; closed forms need no kernel."""
-        x = self._cast(x)
         if x.ndim == 0:
-            return self._scalar_forward(x)
+            return self._scalar_forward(self._cast(x))
         axes = reduce_axes(self.dim, x.ndim, self._empty)
         if not axes:
-            return self._noop_forward(x)
+            return self._noop_forward(self._cast(x))
         if x.numel() == 0:
-            return self._empty_forward(x)
-        x = x.contiguous()
+            return self._empty_forward(self._cast(x))
+        x = self._cast(x, for_kernel=True).contiguous()
         n = math.prod(x.shape[a] for a in axes)
         m = x.numel() // n
         return self._launch(x, axes, m, n)
@@ -161,7 +168,7 @@ class _ReduceOpBase(Op):
 
     def _call_kwargs(self, n: int) -> tuple:
         """Kernel constructor arguments this call decides, as ``(name, value)`` pairs."""
-        return ()
+        return () if self.dtype is None else (("out_dtype", self.dtype),)
 
     def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int) -> object:
         """What this call is, for :meth:`entry_for`: the facts the kernel is built from."""

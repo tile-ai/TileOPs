@@ -94,6 +94,8 @@ class ReduceKernel(Kernel):
         tune: Whether to autotune (default False).
         device_index: CUDA device the input lives on, for the shared-memory budget.
             ``None`` reads the current device.
+        out_dtype: Element type of the output, for sum, mean and prod; ``None`` is
+            *dtype*. The kernel reads the input as stored either way.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -110,12 +112,14 @@ class ReduceKernel(Kernel):
         config: Optional[dict] = None,
         tune: bool = False,
         device_index: "int | None" = None,
+        out_dtype: Optional[torch.dtype] = None,
     ):
         super().__init__(device_index=device_index)
         self.M = M
         self.N = N
         self.op_kind = op_kind
         self.dtype = dtype
+        self.out_dtype_str = self.dtype_to_str(out_dtype or dtype)
         self.reduce_axes = tuple(reduce_axes)
         self.keepdim = keepdim
         self.correction = correction
@@ -143,7 +147,9 @@ class ReduceKernel(Kernel):
         self.strategy = self._select_strategy()
 
         if self.strategy == "prod":
-            self.kernel = self._prod_reduce_kernel(self.M, self.N, self.dtype_str, DEFAULT_THREADS)
+            self.kernel = self._prod_reduce_kernel(
+                self.M, self.N, self.dtype_str, self.out_dtype_str, DEFAULT_THREADS
+            )
         elif self.strategy == "welford":
             self.kernel = self._welford_reduce_kernel(
                 self.M,
@@ -158,6 +164,7 @@ class ReduceKernel(Kernel):
                 self.N,
                 self.op_kind,
                 self.dtype_str,
+                self.out_dtype_str,
             )
         # For tiled path, kernel is built lazily using tile_n from config.
         # Tiled kernels use wrapped dispatch functions (not a single self.kernel),
@@ -288,7 +295,7 @@ class ReduceKernel(Kernel):
             partials.reshape(lead, kept),
             self.op_kind,
             "float32",
-            self.dtype_str,
+            self.out_dtype_str,
             divisor,
         )
 
@@ -335,7 +342,7 @@ class ReduceKernel(Kernel):
             x.reshape(reduced, kept),
             self.op_kind,
             self.dtype_str,
-            self.dtype_str,
+            self.out_dtype_str,
             divisor,
         )
 
@@ -427,13 +434,18 @@ class ReduceKernel(Kernel):
                 self.N,
                 self.op_kind,
                 self.dtype_str,
-                self.dtype_str,
+                self.out_dtype_str,
                 self._stream_vec(),
             )
             return program(threads)(x)
         if self.strategy == "simple_tiled":
             program = self._simple_reduce_kernel_tiled(
-                self.M, self.N, self.op_kind, self.dtype_str, self.config["tile_n"]
+                self.M,
+                self.N,
+                self.op_kind,
+                self.dtype_str,
+                self.config["tile_n"],
+                self.out_dtype_str,
             )
         else:
             program = self.kernel
@@ -640,7 +652,7 @@ class ReduceKernel(Kernel):
 
     @staticmethod
     @functools.lru_cache(maxsize=32)
-    def _prod_reduce_kernel(M: int, N: int, dtype: str, threads: int):
+    def _prod_reduce_kernel(M: int, N: int, dtype: str, out_dtype: str, threads: int):
         """Build a product reduce: one block per row, multiplying in fp32.
 
         With enough rows to fill the device, each thread reads its
@@ -669,7 +681,7 @@ class ReduceKernel(Kernel):
             @T.prim_func
             def main(
                 x: T.Tensor[(M, N), dtype],
-                out: T.Tensor[(M,), dtype],
+                out: T.Tensor[(M,), out_dtype],
             ):
                 with T.Kernel(M, threads=threads) as row:
                     tx = T.get_thread_binding()
@@ -726,7 +738,7 @@ class ReduceKernel(Kernel):
                     if tx == 0:
                         for w in T.serial(1, num_warps):
                             warp_prod[0] = warp_prod[0] * warp_prod[w]
-                        out[row] = T.cast(warp_prod[0], dtype)
+                        out[row] = T.cast(warp_prod[0], out_dtype)
 
             return main
 
