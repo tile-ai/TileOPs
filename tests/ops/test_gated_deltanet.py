@@ -4,6 +4,7 @@ import torch
 from tests.test_base import TestBase
 from tileops.backend import TensorSpec, registry
 from tileops.ops import GatedDeltaNetFwdOp
+from workloads.device import run_device
 from workloads.linear_attention import GatedDeltaNetFwdWorkload
 
 pytestmark = pytest.mark.smoke
@@ -38,7 +39,7 @@ def test_gated_deltanet_dense_prefill_matches_reference(dtype: torch.dtype) -> N
     atol, rtol = (1e-3, 1e-3) if dtype == torch.float16 else (1.6e-2, 1.6e-2)
     test.check(op, *inputs, atol=atol, rtol=rtol)
 
-    initial_state = torch.zeros(1, 2, 128, 128, dtype=torch.float32, device="cuda")
+    initial_state = torch.zeros(1, 2, 128, 128, dtype=torch.float32, device=run_device())
     with pytest.raises(ValueError, match="initial_state"):
         op(*inputs, initial_state=initial_state)
 

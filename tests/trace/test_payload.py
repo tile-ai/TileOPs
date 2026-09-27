@@ -8,7 +8,7 @@ import torch
 from tileops.trace import trace
 
 # Mark all tests in this file as 'full' tier
-pytestmark = pytest.mark.full
+pytestmark = [pytest.mark.full, pytest.mark.cuda_only]
 
 
 @pytest.fixture

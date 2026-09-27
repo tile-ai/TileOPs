@@ -361,6 +361,7 @@ def test_default_h_block_v_prefers_a_tiled_width_and_stays_declared() -> None:
         assert la.default_h_block_v(dim_v, chunk_size) in declared
 
 
+@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "kernel_cls",
     [deltanet_fwd.DeltaNetFwdKernel, gated_deltanet_fwd.GatedDeltaNetFwdKernel],
@@ -388,6 +389,7 @@ def test_default_config_width_is_one_the_kernel_builds(kernel_cls) -> None:
     assert sys.modules[kernel_cls.__module__].tune_delta_rule_fwd is la.tune_delta_rule_fwd
 
 
+@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "kernel_cls",
     [deltanet_fwd.DeltaNetFwdKernel, gated_deltanet_fwd.GatedDeltaNetFwdKernel],

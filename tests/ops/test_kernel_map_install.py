@@ -58,6 +58,7 @@ def test_construction_succeeds_where_the_device_cannot_be_queried(
         forget_device_properties()
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
     """An override that cannot run here is named, not silently passed over.
@@ -79,6 +80,7 @@ def test_user_supplied_incompatible_kernel_is_refused_at_first_call() -> None:
         op.kernel_for("gemm", (), op._call_spec(128, 128, 128, torch.float16))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     """The auto-discovery path is refused at the same point, the same way."""
@@ -102,6 +104,7 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
         op.kernel_for("gemm", (), op._call_spec(128, 128, 128, torch.float16))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_single_implementation_slot_is_refused_at_first_build() -> None:
     """A slot with one implementation reports the same class as a slot with several.
@@ -123,6 +126,7 @@ def test_single_implementation_slot_is_refused_at_first_build() -> None:
         op(torch.randn(8, device="cuda", dtype=torch.float16))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.smoke
 def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
@@ -157,6 +161,7 @@ def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.smoke
 def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
@@ -185,6 +190,7 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
 # silently tunes nothing.
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_autotune_reaches_elementwise_entries():
     """The elementwise slot is record-valued; every built kernel must be seen."""
@@ -204,6 +210,7 @@ def test_autotune_reaches_elementwise_entries():
 # uint8 construction argument the op chose for it.
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_native_bool_backend_is_constructed_with_bool():
     """An override declaring no bool substitute gets the semantic dtype."""
@@ -248,6 +255,7 @@ def test_default_backend_still_routes_bool_through_uint8():
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_integer_fallback_yields_to_a_backend_that_serves_integers():
     """The op-level integer handler is a fallback, not a decision.
@@ -363,6 +371,7 @@ def test_builder_constructs_what_the_backend_specialized(op_name, kwargs, slots,
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "op_name,kwargs",

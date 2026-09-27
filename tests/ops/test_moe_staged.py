@@ -22,6 +22,7 @@ from tileops.ops.moe import (
     MoePrePermuteFwdOp,
     RoutingEpilogueSpec,
 )
+from workloads.device import run_device
 from workloads.moe import MoeExpertMLPWorkload, MoeGroupedGemmWorkload, moe_call, valid_rows
 
 _TIGHT = ContiguousLayoutSpec.tight_physical_psum()
@@ -252,6 +253,7 @@ def test_grouped_gemm_ambiguous_and_incompatible_override_fail_explicitly() -> N
         overridden.select_kernel_key(("special", "general"), call)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CallSpec records CUDA architecture")
 def test_call_architecture_comes_from_the_input_device(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -273,6 +275,7 @@ def test_call_architecture_comes_from_the_input_device(monkeypatch: pytest.Monke
     assert observed_indices == [device.index]
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="candidate test uses CUDA calls")
 def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
@@ -312,6 +315,7 @@ def test_expert_mlp_forwards_caller_replacements_to_both_gemms() -> None:
     assert MoeExpertMLPFwdOp(_TIGHT, "gelu_and_mul").gate_up.activation == "gelu_and_mul"
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "layout",
@@ -334,9 +338,11 @@ def test_pre_permute_ships_one_contiguous_candidate(
 def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     """The tensor-only staged boundary preserves every routed contribution."""
     tokens, top_k, experts, hidden = 4, 2, 4, 64
-    x = torch.randn(tokens, hidden, dtype=dtype, device="cuda")
-    local_ids = torch.tensor([[0, 1], [2, 3], [0, 2], [1, 3]], dtype=torch.int32, device="cuda")
-    weights = torch.rand(tokens, top_k, dtype=torch.float32, device="cuda")
+    x = torch.randn(tokens, hidden, dtype=dtype, device=run_device())
+    local_ids = torch.tensor(
+        [[0, 1], [2, 3], [0, 2], [1, 3]], dtype=torch.int32, device=run_device()
+    )
+    weights = torch.rand(tokens, top_k, dtype=torch.float32, device=run_device())
     layout = ContiguousLayoutSpec.tight_physical_psum()
 
     pre = MoePrePermuteFwdOp(layout, num_local_experts=experts)
@@ -345,7 +351,7 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     assert metadata.shape == (experts,)
     assert inverse.shape == (tokens * top_k,)
 
-    token_rows = torch.arange(tokens * top_k, device="cuda") // top_k
+    token_rows = torch.arange(tokens * top_k, device=run_device()) // top_k
     torch.testing.assert_close(expert_input[inverse.long()], x[token_rows])
 
     post = MoePostPermuteFwdOp(layout)
@@ -371,19 +377,19 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
 def test_staged_tight_optimized_shapes_round_trip(
     tokens: int, top_k: int, experts: int, hidden: int
 ) -> None:
-    x = torch.randn(tokens, hidden, dtype=torch.bfloat16, device="cuda")
+    x = torch.randn(tokens, hidden, dtype=torch.bfloat16, device=run_device())
     local_ids = (
-        torch.arange(tokens * top_k, dtype=torch.int32, device="cuda")
+        torch.arange(tokens * top_k, dtype=torch.int32, device=run_device())
         .remainder(experts)
         .reshape(tokens, top_k)
     )
-    weights = torch.rand(tokens, top_k, dtype=torch.float32, device="cuda")
+    weights = torch.rand(tokens, top_k, dtype=torch.float32, device=run_device())
     layout = ContiguousLayoutSpec.tight_physical_psum()
     pre = MoePrePermuteFwdOp(layout, num_local_experts=experts)
 
     expert_input, physical_ends, inverse = pre(x, local_ids)
 
-    token_rows = torch.arange(tokens * top_k, device="cuda") // top_k
+    token_rows = torch.arange(tokens * top_k, device=run_device()) // top_k
     torch.testing.assert_close(expert_input[inverse.long()], x[token_rows], rtol=0, atol=0)
     counts = torch.bincount(local_ids.flatten().long(), minlength=experts)
     torch.testing.assert_close(physical_ends, counts.cumsum(0).int(), rtol=0, atol=0)
@@ -397,9 +403,11 @@ def test_staged_tight_optimized_shapes_round_trip(
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     tokens, top_k, experts, hidden, alignment = 4, 2, 4, 64, 4
-    x = torch.randn(tokens, hidden, dtype=dtype, device="cuda")
-    local_ids = torch.tensor([[0, 0], [0, 2], [2, 2], [2, 0]], dtype=torch.int32, device="cuda")
-    weights = torch.rand(tokens, top_k, dtype=torch.float32, device="cuda")
+    x = torch.randn(tokens, hidden, dtype=dtype, device=run_device())
+    local_ids = torch.tensor(
+        [[0, 0], [0, 2], [2, 2], [2, 0]], dtype=torch.int32, device=run_device()
+    )
+    weights = torch.rand(tokens, top_k, dtype=torch.float32, device=run_device())
     layout = ContiguousLayoutSpec.aligned_per_row(alignment)
     capacity = tokens * top_k + experts * (alignment - 1)
 
@@ -409,7 +417,7 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     assert row_expert_ids.shape == (capacity,)
     assert inverse.shape == (tokens * top_k,)
 
-    token_rows = torch.arange(tokens * top_k, device="cuda") // top_k
+    token_rows = torch.arange(tokens * top_k, device=run_device()) // top_k
     torch.testing.assert_close(expert_input[inverse.long()], x[token_rows])
     assert row_expert_ids.tolist() == [0] * 4 + [2] * 4 + [experts] * (capacity - 8)
     torch.testing.assert_close(expert_input[8:], torch.zeros_like(expert_input[8:]))
@@ -420,6 +428,7 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="selection records CUDA architecture")
 def test_grouped_gemm_call_no_candidate_serves_reports_no_implementation() -> None:
@@ -563,7 +572,7 @@ def test_grouped_gemm_fp32_output_and_preallocated_out():
     workload = MoeGroupedGemmWorkload(call)
     a, b, metadata = workload.gen_inputs()
     op = MoeGroupedGemmFwdOp(**call.arguments({}))
-    out = torch.empty(600, 256, dtype=torch.float32, device="cuda")
+    out = torch.empty(600, 256, dtype=torch.float32, device=run_device())
     assert op(a, b, metadata, out=out) is out
     torch.testing.assert_close(out, workload.ref_program(a, b, metadata), rtol=1e-3, atol=1e-2)
 
@@ -576,7 +585,7 @@ def test_grouped_gemm_refuses_a_strided_out():
         _gemm_call(torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=64, K=64, E=2, N=64)
     )
     op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
-    out = torch.empty(64, 128, dtype=torch.bfloat16, device="cuda")[:, ::2]
+    out = torch.empty(64, 128, dtype=torch.bfloat16, device=run_device())[:, ::2]
     with pytest.raises(ValueError, match="out must be contiguous"):
         op(*workload.gen_inputs(), out=out)
 
@@ -586,23 +595,23 @@ def test_grouped_gemm_refuses_a_strided_out():
 def test_grouped_gemm_refuses_what_the_template_cannot_run_at_selection():
     """Calls outside the adapter's region are refused by selection, naming the reason."""
     op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
-    a = torch.randn(8, 60, dtype=torch.bfloat16, device="cuda")
-    b = torch.randn(2, 16, 60, dtype=torch.bfloat16, device="cuda")
-    ends = torch.tensor([4, 8], dtype=torch.int32, device="cuda")
+    a = torch.randn(8, 60, dtype=torch.bfloat16, device=run_device())
+    b = torch.randn(2, 16, 60, dtype=torch.bfloat16, device=run_device())
+    ends = torch.tensor([4, 8], dtype=torch.int32, device=run_device())
     with pytest.raises(ValueError, match="no implementation serves this call"):
         op(a, b, ends)  # K not a multiple of 8
     fused = MoeGroupedGemmFwdOp(
         ContiguousLayoutSpec.tight_physical_psum(), activation="silu_and_mul"
     )
-    a = torch.randn(8, 64, dtype=torch.bfloat16, device="cuda")
-    b = torch.randn(2, 24, 64, dtype=torch.bfloat16, device="cuda")
+    a = torch.randn(8, 64, dtype=torch.bfloat16, device=run_device())
+    b = torch.randn(2, 24, 64, dtype=torch.bfloat16, device=run_device())
     with pytest.raises(ValueError, match="no implementation serves this call"):
         fused(a, b, ends)  # fused N must be a multiple of 16
     # An aligned layout whose alignment is not a tile height has no instantiation either.
     op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.aligned_per_row(8))
-    a = torch.randn(16, 64, dtype=torch.bfloat16, device="cuda")
-    b = torch.randn(2, 16, 64, dtype=torch.bfloat16, device="cuda")
-    ids = torch.tensor([0] * 8 + [1] * 8, dtype=torch.int32, device="cuda")
+    a = torch.randn(16, 64, dtype=torch.bfloat16, device=run_device())
+    b = torch.randn(2, 16, 64, dtype=torch.bfloat16, device=run_device())
+    ids = torch.tensor([0] * 8 + [1] * 8, dtype=torch.int32, device=run_device())
     with pytest.raises(ValueError, match="no implementation serves this call"):
         op(a, b, ids)
 

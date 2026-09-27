@@ -11,6 +11,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase, allclose_compare, served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.reduction.vector_norm import VectorNormKernel
+from workloads.device import run_device
 from workloads.reduction import L1NormWorkload
 
 
@@ -133,12 +134,12 @@ def _norm_compare(output: torch.Tensor, output_ref: torch.Tensor, atol: float, r
 
 def _make_noncontig_input(m: int, n: int, dtype: torch.dtype) -> torch.Tensor:
     """Create a non-contiguous 2D tensor of shape (m, n*2) for slicing tests."""
-    return torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    return torch.randn(m, n * 2, dtype=dtype, device=run_device())
 
 
 def _make_1d_input(n: int, dtype: torch.dtype) -> torch.Tensor:
     """Create a 1D tensor of shape (n,) for 1D tests."""
-    return torch.randn(n, dtype=dtype, device="cuda")
+    return torch.randn(n, dtype=dtype, device=run_device())
 
 
 def _make_op(
@@ -182,7 +183,7 @@ def test_l1_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
 @VectorNorm3DFixture
 def test_l1_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
     op = _make_op("l1")
     ref = torch.linalg.vector_norm(x.float(), ord=1, dim=-1).to(dtype)
     y = op(x)
@@ -192,7 +193,7 @@ def test_l1_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 
 @VectorNorm4DFixture
 def test_l1_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=run_device())
     op = _make_op("l1")
     ref = torch.linalg.vector_norm(x.float(), ord=1, dim=-1).to(dtype)
     y = op(x)
@@ -231,7 +232,7 @@ def test_l2_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
 @VectorNorm3DFixture
 def test_l2_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
     op = _make_op("l2")
     ref = torch.linalg.vector_norm(x.float(), ord=2, dim=-1).to(dtype)
     y = op(x)
@@ -241,7 +242,7 @@ def test_l2_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 
 @VectorNorm4DFixture
 def test_l2_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=run_device())
     op = _make_op("l2")
     ref = torch.linalg.vector_norm(x.float(), ord=2, dim=-1).to(dtype)
     y = op(x)
@@ -280,7 +281,7 @@ def test_inf_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
 @VectorNorm3DFixture
 def test_inf_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
     op = _make_op("inf")
     ref = torch.linalg.vector_norm(x.float(), ord=float("inf"), dim=-1).to(dtype)
     y = op(x)
@@ -290,7 +291,7 @@ def test_inf_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 
 @VectorNorm4DFixture
 def test_inf_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=run_device())
     op = _make_op("inf")
     ref = torch.linalg.vector_norm(x.float(), ord=float("inf"), dim=-1).to(dtype)
     y = op(x)
@@ -328,7 +329,7 @@ class VectorNormNaNFixture(FixtureBase):
 @VectorNormNaNFixture
 def test_inf_nan_propagation(m: int, n: int, dtype: torch.dtype) -> None:
     """InfNormFwdOp must return NaN for rows containing NaN, matching PyTorch."""
-    x = torch.randn(m, n, dtype=dtype, device="cuda")
+    x = torch.randn(m, n, dtype=dtype, device=run_device())
     # Inject NaN into the first row
     x[0, 0] = float("nan")
     # Inject NaN into the last position of the second row
@@ -369,7 +370,7 @@ class VectorNormSpecFixture(FixtureBase):
 @VectorNormSpecFixture
 def test_spec_dim0(op_kind: str, dtype: torch.dtype) -> None:
     """Reduce along dim=0."""
-    x = torch.randn(64, 512, dtype=dtype, device="cuda")
+    x = torch.randn(64, 512, dtype=dtype, device=run_device())
     op = _make_op(op_kind, dim=0)
     ord_val = _ORD_MAP[op_kind]
     ref = torch.linalg.vector_norm(x.float(), ord=ord_val, dim=0).to(dtype)
@@ -381,7 +382,7 @@ def test_spec_dim0(op_kind: str, dtype: torch.dtype) -> None:
 @VectorNormSpecFixture
 def test_spec_dim1_3d(op_kind: str, dtype: torch.dtype) -> None:
     """Reduce along dim=1 of a 3D tensor."""
-    x = torch.randn(4, 64, 512, dtype=dtype, device="cuda")
+    x = torch.randn(4, 64, 512, dtype=dtype, device=run_device())
     op = _make_op(op_kind, dim=1)
     ord_val = _ORD_MAP[op_kind]
     ref = torch.linalg.vector_norm(x.float(), ord=ord_val, dim=1).to(dtype)
@@ -393,7 +394,7 @@ def test_spec_dim1_3d(op_kind: str, dtype: torch.dtype) -> None:
 @VectorNormSpecFixture
 def test_spec_keepdim(op_kind: str, dtype: torch.dtype) -> None:
     """keepdim=True preserves the reduced dimension as size 1."""
-    x = torch.randn(32, 512, dtype=dtype, device="cuda")
+    x = torch.randn(32, 512, dtype=dtype, device=run_device())
     op = _make_op(op_kind, keepdim=True)
     ord_val = _ORD_MAP[op_kind]
     ref = torch.linalg.vector_norm(x.float(), ord=ord_val, dim=-1, keepdim=True).to(dtype)
@@ -406,7 +407,7 @@ def test_spec_keepdim(op_kind: str, dtype: torch.dtype) -> None:
 @VectorNormSpecFixture
 def test_spec_dim0_keepdim(op_kind: str, dtype: torch.dtype) -> None:
     """dim=0 + keepdim=True."""
-    x = torch.randn(64, 512, dtype=dtype, device="cuda")
+    x = torch.randn(64, 512, dtype=dtype, device=run_device())
     op = _make_op(op_kind, dim=0, keepdim=True)
     ord_val = _ORD_MAP[op_kind]
     ref = torch.linalg.vector_norm(x.float(), ord=ord_val, dim=0, keepdim=True).to(dtype)
@@ -521,7 +522,7 @@ def test_inf_smoke_float32(m: int, n: int, dtype: torch.dtype) -> None:
 @pytest.mark.parametrize("keepdim", [False, True])
 def test_empty_dim_full_reduction_keepdim(op_kind: str, keepdim: bool) -> None:
     dtype = torch.float16
-    x = torch.randn(32, 256, dtype=dtype, device="cuda")
+    x = torch.randn(32, 256, dtype=dtype, device=run_device())
     op = _make_op(op_kind, dim=[], keepdim=keepdim)
     ref = torch.linalg.vector_norm(
         x.float(),
@@ -545,7 +546,7 @@ def test_empty_dim_full_reduction_3d_dtypes(
     op_kind: str,
     dtype: torch.dtype,
 ) -> None:
-    x = torch.randn(2, 16, 128, dtype=dtype, device="cuda")
+    x = torch.randn(2, 16, 128, dtype=dtype, device=run_device())
     op = _make_op(op_kind, dim=[], keepdim=False)
     ref = torch.linalg.vector_norm(
         x.float(),
@@ -559,6 +560,7 @@ def test_empty_dim_full_reduction_3d_dtypes(
     allclose_compare(y, ref, atol=atol, rtol=rtol)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("op_kind", ["l1", "l2", "inf"])
 def test_vector_norm_long_sequence_tiled(op_kind: str) -> None:
@@ -605,7 +607,7 @@ def test_vector_norm_edge_axes_in_own_layout(op_kind: str) -> None:
     would compound instead of finishing.
     """
     dtype = torch.float16
-    x = torch.randn(4, 24, 4096, dtype=dtype, device="cuda")
+    x = torch.randn(4, 24, 4096, dtype=dtype, device=run_device())
     op = _make_op(op_kind, dim=[0, 2])
     ords = {"l1": 1, "l2": 2, "inf": torch.inf}
     ref = torch.linalg.vector_norm(x.float(), ords[op_kind], (0, 2)).to(dtype)
@@ -616,7 +618,7 @@ def test_vector_norm_edge_axes_in_own_layout(op_kind: str) -> None:
 @pytest.mark.smoke
 def test_inf_norm_edge_axes_carries_nan() -> None:
     """A NaN survives both passes: the fold compares bit patterns, not floats."""
-    x = torch.randn(4, 24, 4096, dtype=torch.float16, device="cuda")
+    x = torch.randn(4, 24, 4096, dtype=torch.float16, device=run_device())
     x[3, 7, 4095] = float("nan")
     y = _make_op("inf", dim=[0, 2])(x)
     ref = torch.linalg.vector_norm(x, torch.inf, (0, 2))

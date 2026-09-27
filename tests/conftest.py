@@ -5,6 +5,7 @@ import torch
 
 from tests.test_base import _check_result
 from tileops.backend import BUILTIN, UnknownTargetError, registry, set_default_target
+from workloads.device import run_device, set_run_device
 
 
 def _under_repo_tests(item: pytest.Item) -> bool:
@@ -13,7 +14,7 @@ def _under_repo_tests(item: pytest.Item) -> bool:
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Register the opt-in in-kernel timeline-trace flag, and the target the suite runs on.
+    """Register the opt-in in-kernel timeline-trace flag, and the target and device the suite runs on.
 
     Off by default: when ``--trace-kernel`` is absent the process-local trace
     switch stays off, so trace-dump tests no-op and normal runs are zero cost.
@@ -32,14 +33,21 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Which kernels serve the ops under test: 'builtin' (default) for the in-tree "
         "kernels, 'detect' to let installed backends claim their devices, or a target name.",
     )
+    parser.addoption(
+        "--tileops-device",
+        default="cuda",
+        help="The device the suite places its tensors on (default 'cuda'). A run on another "
+        "device deselects the tests marked cuda_only.",
+    )
 
 
-# The process default in force before configure, put back at unconfigure.
+# The process default target and run device in force before configure, put back at unconfigure.
 _OUTER_DEFAULT_TARGET = pytest.StashKey[object]()
+_OUTER_RUN_DEVICE = pytest.StashKey[object]()
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Flip the in-process trace switch on when ``--trace-kernel`` is passed, and pin the target.
+    """Flip the in-process trace switch on when ``--trace-kernel`` is passed, and pin the target and device.
 
     Runs once at startup, before any kernel is built, so the traced build is the
     one that gets cached. No environment variable is involved — the switch lives
@@ -53,6 +61,8 @@ def pytest_configure(config: pytest.Config) -> None:
 
     config.stash[_OUTER_DEFAULT_TARGET] = registry.default_target
     _pin_default_target(config.getoption("--tileops-target"))
+    config.stash[_OUTER_RUN_DEVICE] = run_device()
+    set_run_device(config.getoption("--tileops-device"))
 
 
 def _pin_default_target(choice: str) -> None:
@@ -72,9 +82,11 @@ def _pin_default_target(choice: str) -> None:
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
-    """Put back the process default this conftest replaced."""
+    """Put back the process default target and run device this conftest replaced."""
     if _OUTER_DEFAULT_TARGET in config.stash:
         registry.default_target = config.stash[_OUTER_DEFAULT_TARGET]
+    if _OUTER_RUN_DEVICE in config.stash:
+        set_run_device(config.stash[_OUTER_RUN_DEVICE])
 
 
 @pytest.fixture(autouse=True)
@@ -178,7 +190,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Validate explicit test tier assignments."""
+    """Validate explicit test tier assignments, then drop ``cuda_only`` tests off a CUDA device."""
     tier_errors: list[str] = []
     tier_names = ("smoke", "full", "nightly")
     tilelang_019_skip = pytest.mark.skip(reason=TILELANG_019_SKIP_REASON)
@@ -316,6 +328,17 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         raise pytest.UsageError(
             "Invalid explicit test tier assignments detected:\n" + "\n".join(tier_errors)
         )
+
+    if torch.device(run_device()).type != "cuda":
+        dropped = [
+            item
+            for item in items
+            if _under_repo_tests(item) and item.get_closest_marker("cuda_only") is not None
+        ]
+        if dropped:
+            dropped[0].config.hook.pytest_deselected(items=dropped)
+            kept = set(map(id, items)) - set(map(id, dropped))
+            items[:] = [item for item in items if id(item) in kept]
 
 
 @pytest.hookimpl(hookwrapper=True)

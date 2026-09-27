@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from tileops.ops.norm.group_norm import GroupNormFwdOp
+from workloads.device import run_device
 from workloads.normalization import GroupNormWorkload
 
 
@@ -70,10 +71,10 @@ def test_group_norm_non_contiguous(
 ) -> None:
     """Test with non-contiguous input (sliced tensor)."""
     shape = (n, c * 2, *spatial)
-    x_full = torch.randn(shape, dtype=dtype, device="cuda")
+    x_full = torch.randn(shape, dtype=dtype, device=run_device())
     x = x_full[:, :c]  # non-contiguous slice
-    weight = torch.randn(c, dtype=dtype, device="cuda")
-    bias = torch.randn(c, dtype=dtype, device="cuda")
+    weight = torch.randn(c, dtype=dtype, device=run_device())
+    bias = torch.randn(c, dtype=dtype, device=run_device())
 
     op = GroupNormFwdOp(num_groups=g)
 
@@ -96,7 +97,7 @@ def test_group_norm_no_affine_matches_torch() -> None:
     """Omitting the affine pair is the torch.nn.GroupNorm(affine=False) path."""
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
     op = GroupNormFwdOp(num_groups=g)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
     assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
@@ -104,6 +105,7 @@ def test_group_norm_no_affine_matches_torch() -> None:
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_group_norm_lazily_specializes_per_device() -> None:
     """An op first called on a non-default CUDA device builds its entry there."""
@@ -138,9 +140,9 @@ def test_group_norm_lazy_cache_reuse_and_respecialization() -> None:
     op = GroupNormFwdOp(num_groups=4)
 
     def run_case(n: int, c: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
-        x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-        weight = torch.randn((c,), dtype=dtype, device="cuda")
-        bias = torch.randn((c,), dtype=dtype, device="cuda")
+        x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
+        weight = torch.randn((c,), dtype=dtype, device=run_device())
+        bias = torch.randn((c,), dtype=dtype, device=run_device())
 
         y = op(x, weight, bias)
         y_ref = F.group_norm(
@@ -170,6 +172,7 @@ def test_group_norm_lazy_cache_reuse_and_respecialization() -> None:
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_group_norm_rejects_affine_device_mismatch() -> None:
     """Forward must raise ValueError when weight/bias live on a different CUDA device than x.
@@ -225,7 +228,7 @@ def test_group_norm_no_affine_op(
 ) -> None:
     """No-affine GroupNorm op matches torch.nn.functional.group_norm with weight=bias=None."""
     op = GroupNormFwdOp(num_groups=g)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
     assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (
@@ -251,14 +254,15 @@ def test_group_norm_takes_either_affine_tensor_alone(give: str) -> None:
     """weight and bias are independent, as in ``torch.nn.functional.group_norm``."""
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
     op = GroupNormFwdOp(num_groups=g)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-    t = torch.randn((c,), dtype=dtype, device="cuda")
+    x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
+    t = torch.randn((c,), dtype=dtype, device=run_device())
     kwargs = {give: t}
     torch.testing.assert_close(
         op(x, **kwargs), F.group_norm(x, g, **kwargs), **standard_tolerance(dtype)
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_group_norm_no_affine_lazily_specializes_per_device() -> None:
     """A no-affine op first called on a non-default CUDA device builds its entry there."""
@@ -291,7 +295,7 @@ def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple, g: int)
     """No-affine GroupNorm handles a row count smaller than one grid block."""
     dtype = torch.float16
     op = GroupNormFwdOp(num_groups=g)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
     assert torch.allclose(y, y_ref, **standard_tolerance(dtype)), (

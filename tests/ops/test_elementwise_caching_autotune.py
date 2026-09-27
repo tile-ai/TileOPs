@@ -44,6 +44,7 @@ N = 2048  # small enough for fast tests
 class TestUnaryCaching:
     """UnaryKernel subclasses should have _compiled_fn after __init__."""
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     @pytest.mark.parametrize("kernel_cls", [ReluFwdKernel, SigmoidFwdKernel, AbsFwdKernel])
     def test_unary_has_compiled_fn(self, kernel_cls):
@@ -51,6 +52,7 @@ class TestUnaryCaching:
         assert hasattr(k, "_compiled_fn"), f"{kernel_cls.__name__} missing _compiled_fn after init"
         assert k._compiled_fn is not None
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_unary_forward_uses_cached_fn(self):
         """forward() should use _compiled_fn, not re-lookup the kernel."""
@@ -61,6 +63,7 @@ class TestUnaryCaching:
         # _compiled_fn should not change after forward
         assert k._compiled_fn is fn1
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_unary_direct_strategy_caching(self):
         """Direct strategy kernels should also cache _compiled_fn."""
@@ -75,6 +78,7 @@ class TestUnaryCaching:
 class TestFusedGatedCaching:
     """FusedGatedKernel subclasses should have _compiled_fn after __init__."""
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     @pytest.mark.parametrize(
         "kernel_cls",
@@ -89,6 +93,7 @@ class TestFusedGatedCaching:
         assert hasattr(k, "_compiled_fn"), f"{kernel_cls.__name__} missing _compiled_fn after init"
         assert k._compiled_fn is not None
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_fused_gated_forward_uses_cached_fn(self):
         k = SiluAndMulFwdKernel(32, 64, torch.float16)
@@ -104,66 +109,77 @@ class TestFusedGatedCaching:
 class TestCustomKernelCaching:
     """Custom (non-template) kernels should also cache _compiled_fn."""
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_leaky_relu_caching(self):
         k = LeakyReluFwdKernel(N, torch.float16)
         assert hasattr(k, "_compiled_fn")
         assert k._compiled_fn is not None
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_elu_caching(self):
         k = EluFwdKernel(N, torch.float16)
         assert hasattr(k, "_compiled_fn")
         assert k._compiled_fn is not None
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_hardtanh_caching(self):
         k = HardtanhFwdKernel(N, torch.float16)
         assert hasattr(k, "_compiled_fn")
         assert k._compiled_fn is not None
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_softplus_caching(self):
         k = SoftplusFwdKernel(N, torch.float16)
         assert hasattr(k, "_compiled_fn")
         assert k._compiled_fn is not None
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_prelu_caching(self):
         k = PreluFwdKernel(N, 4, 512, torch.float16)
         assert hasattr(k, "_compiled_fn")
         assert k._compiled_fn is not None
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_where_caching(self):
         k = WhereFwdKernel(N, torch.float16)
         assert hasattr(k, "_compiled_fn")
         assert k._compiled_fn is not None
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_clamp_caching(self):
         k = ClampFwdKernel(N, torch.float16, min_val=-1.0, max_val=1.0)
         assert hasattr(k, "_compiled_fn")
         assert k._compiled_fn is not None
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_masked_fill_caching(self):
         k = MaskedFillFwdKernel(N, torch.float16, fill_value=0.0)
         assert hasattr(k, "_compiled_fn")
         assert k._compiled_fn is not None
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_nan_to_num_caching(self):
         k = NanToNumFwdKernel(N, torch.float16)
         assert hasattr(k, "_compiled_fn")
         assert k._compiled_fn is not None
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_alibi_caching(self):
         k = AlibiFwdKernel(32, 4, torch.float16)
         assert hasattr(k, "_compiled_fn")
         assert k._compiled_fn is not None
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_sinusoidal_caching(self):
         k = SinusoidalFwdKernel(32, 64, torch.float16)
@@ -177,6 +193,7 @@ class TestCustomKernelCaching:
 class TestAutotuneConfigs:
     """UnaryKernel and FusedGatedKernel must define autotune_configs."""
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
     def test_unary_autotune_configs_count(self, dtype):
@@ -189,6 +206,7 @@ class TestAutotuneConfigs:
             assert "threads" in c
             assert "num_per_thread" in c
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
     def test_fused_gated_autotune_configs_count(self, dtype):
@@ -200,6 +218,7 @@ class TestAutotuneConfigs:
             assert "threads" in c
             assert "num_per_thread" in c
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_fused_gated_tune_true_reaches_the_autotuner(self):
         """tune=True picks a config out of the search space, and does not fall back."""
@@ -220,6 +239,7 @@ class TestAutotuneConfigs:
 class TestCachingCorrectness:
     """Verify that caching produces the same results as before."""
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_unary_relu_correctness(self):
         k = ReluFwdKernel(N, torch.float16)
@@ -228,6 +248,7 @@ class TestCachingCorrectness:
         ref = torch.relu(x.float()).to(torch.float16)
         torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_fused_gated_silu_correctness(self):
         M, Nhalf = 32, 64
@@ -239,6 +260,7 @@ class TestCachingCorrectness:
         ref = (torch.nn.functional.silu(gate) * value).to(torch.float16)
         torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
 
+    @pytest.mark.cuda_only
     @pytest.mark.full
     def test_custom_leaky_relu_correctness(self):
         k = LeakyReluFwdKernel(N, torch.float16, negative_slope=0.01)

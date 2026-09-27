@@ -29,6 +29,7 @@ _SM80 = 80
 # it is written for. Non-SM90 falls back to the pipelined mainloop.
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("m", "n", "trans_a", "trans_b", "expected"),
@@ -79,6 +80,7 @@ def test_square_ws_prefill_region_fills_this_device() -> None:
     assert not square_ws_prefill_region(call(sm_count=132, batch=131))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("m", "n", "trans_a", "trans_b", "dim"),
@@ -122,6 +124,7 @@ def test_gemm_misaligned_k_on_sm90_takes_the_pipelined_mainloop() -> None:
     assert op.select_kernel(call) is GemmCpAsyncKernel
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
     """``k = 1`` fp16 spans 2 bytes, under the 4-byte load both mainloops issue.
@@ -139,6 +142,7 @@ def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
         GemmCpAsyncKernel(64, 64, 1, torch.float16, trans_b=True)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_uses_basic_mainloop_off_sm90() -> None:
     op = GemmFwdOp()
@@ -161,6 +165,7 @@ _DELTANET_ROWS = [
 ]
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("dtype", "dim_k", "dim_v", "arch", "expected"),
@@ -175,6 +180,7 @@ def test_deltanet_decode_dispatch(
     assert op.select_kernel(call).__name__ == expected
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_every_family_call_record_reads_the_device_when_unstated() -> None:
     """A record built without an architecture resolves one; a stated one wins."""
@@ -184,6 +190,7 @@ def test_every_family_call_record_reads_the_device_when_unstated() -> None:
     assert DeltaNetDecodeCall(arch=_SM80).arch == _SM80
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemv_kernel_claims_the_layouts_it_was_written_for() -> None:
     """The predicate the op used to carry, over every (m, n, layout) combination."""
@@ -271,6 +278,7 @@ _GQA_DENSE_ROWS = [
 ]
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("row", "expected"),

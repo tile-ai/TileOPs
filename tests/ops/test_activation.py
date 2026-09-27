@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from tileops.kernels.elementwise import ReluFwdKernel
 from tileops.ops.elementwise import ReluFwdOp
+from workloads.device import run_device
 from workloads.elementwise import RandnFlatWorkload, ReluWorkload
 
 
@@ -56,6 +57,7 @@ class ReluStrategyFixture(FixtureBase):
     ]
 
 
+@pytest.mark.cuda_only
 @ReluStrategyFixture
 def test_relu_strategies(n_total: int, dtype: torch.dtype, strategy: str) -> None:
     """All 3 unary strategies selected via the config dict produce correct results."""
@@ -109,7 +111,7 @@ class UnaryActivationTest(RandnFlatWorkload, TestBase):
 
 
 def _randn(n: int, dtype: torch.dtype) -> torch.Tensor:
-    return torch.randn(n, device="cuda", dtype=dtype)
+    return torch.randn(n, device=run_device(), dtype=dtype)
 
 
 def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls, **op_kwargs):
@@ -186,6 +188,7 @@ def test_selu(n_total: int, dtype: torch.dtype) -> None:
     _make_activation_test(n_total, dtype, _randn, F.selu, SeluFwdOp)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_activation_rejects_non_float_dtype() -> None:
     from tileops.kernels.elementwise import GeluFwdKernel
@@ -203,7 +206,7 @@ def test_sigmoid_edge(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SigmoidFwdOp
 
     def _extreme(n, dtype):
-        x = torch.zeros(n, device="cuda", dtype=dtype)
+        x = torch.zeros(n, device=run_device(), dtype=dtype)
         x[: n // 2] = -50.0
         x[n // 2 :] = 50.0
         return x
@@ -217,7 +220,7 @@ def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import TanhFwdOp
 
     def _extreme(n, dtype):
-        x = torch.zeros(n, device="cuda", dtype=dtype)
+        x = torch.zeros(n, device=run_device(), dtype=dtype)
         x[: n // 2] = -50.0
         x[n // 2 :] = 50.0
         return x
@@ -240,7 +243,7 @@ def test_gelu_tails_are_exact(dtype: torch.dtype) -> None:
     inf, nan = float("inf"), float("nan")
     x = torch.tensor(
         [-largest, -1000.0, -8.0, 8.0, 1000.0, largest, -inf, inf, nan],
-        device="cuda",
+        device=run_device(),
         dtype=dtype,
     )
     torch.testing.assert_close(
@@ -324,8 +327,8 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
     H = n_total // C
     # Shape (1, C, H): batch=1, channels=C, spatial=H
     shape = (1, C, H)
-    x = torch.randn(shape, device="cuda", dtype=dtype)
-    weight = torch.randn(C, device="cuda", dtype=dtype).abs() * 0.1 + 0.01
+    x = torch.randn(shape, device=run_device(), dtype=dtype)
+    weight = torch.randn(C, device=run_device(), dtype=dtype).abs() * 0.1 + 0.01
     ref = F.prelu(x.float(), weight.float()).to(dtype)
 
     op = PreluFwdOp()
@@ -340,8 +343,8 @@ def test_prelu_batch_dim() -> None:
 
     dtype = torch.float32
     shape = (2, 4, 8)
-    x = torch.randn(shape, device="cuda", dtype=dtype)
-    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device="cuda", dtype=dtype)
+    x = torch.randn(shape, device=run_device(), dtype=dtype)
+    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device=run_device(), dtype=dtype)
     ref = F.prelu(x, weight)
     op = PreluFwdOp()
     out = op(x, weight)
@@ -360,12 +363,13 @@ def test_prelu_rejects_a_weight_that_does_not_match_the_channel_axis() -> None:
 
     dtype = torch.float32
     op = PreluFwdOp()
-    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device="cuda", dtype=dtype)
-    bad = torch.randn((2, 8, 4), device="cuda", dtype=dtype)
+    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device=run_device(), dtype=dtype)
+    bad = torch.randn((2, 8, 4), device=run_device(), dtype=dtype)
     with pytest.raises(ValueError, match=r"shape_rules"):
         op(bad, weight)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_independent_activation_rejects_non_float_dtype() -> None:
     from tileops.kernels.elementwise import LeakyReluFwdKernel

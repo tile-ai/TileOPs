@@ -12,6 +12,8 @@ from __future__ import annotations
 import pytest
 import torch
 
+from workloads.device import run_device
+
 
 @pytest.mark.smoke
 def test_rms_norm_accepts_normalized_shape() -> None:
@@ -41,8 +43,8 @@ def test_rms_norm_accepts_tuple_normalized_shape_runtime() -> None:
 
     op = RMSNormFwdOp(normalized_shape=(2, 3))
     assert tuple(op.normalized_shape) == (2, 3)
-    x = torch.randn(4, 2, 3, dtype=torch.float16, device="cuda")
-    w = torch.randn(2, 3, dtype=torch.float16, device="cuda")
+    x = torch.randn(4, 2, 3, dtype=torch.float16, device=run_device())
+    w = torch.randn(2, 3, dtype=torch.float16, device=run_device())
     y = op(x, w)
     assert y.shape == x.shape
 
@@ -58,9 +60,9 @@ def test_layer_norm_accepts_tuple_normalized_shape_runtime() -> None:
 
     op = LayerNormFwdOp(normalized_shape=(2, 3))
     assert tuple(op.normalized_shape) == (2, 3)
-    x = torch.randn(4, 2, 3, dtype=torch.float16, device="cuda")
-    w = torch.randn(2, 3, dtype=torch.float16, device="cuda")
-    b = torch.randn(2, 3, dtype=torch.float16, device="cuda")
+    x = torch.randn(4, 2, 3, dtype=torch.float16, device=run_device())
+    w = torch.randn(2, 3, dtype=torch.float16, device=run_device())
+    b = torch.randn(2, 3, dtype=torch.float16, device=run_device())
     y = op(x, w, b)
     assert y.shape == x.shape
 

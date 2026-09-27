@@ -2,6 +2,7 @@
 
 import torch
 
+from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
@@ -26,10 +27,10 @@ class DeltaNetFwdWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         B, H, S, DK, DV = self.batch, self.heads, self.seq_len, self.dim_k, self.dim_v
-        q = torch.randn(B, H, S, DK, device="cuda", dtype=self.dtype) * 0.1
-        k = torch.randn(B, H, S, DK, device="cuda", dtype=self.dtype) * 0.1
-        v = torch.randn(B, H, S, DV, device="cuda", dtype=self.dtype) * 0.1
-        beta = torch.rand(B, H, S, device="cuda", dtype=self.dtype) * 0.5
+        q = torch.randn(B, H, S, DK, device=run_device(), dtype=self.dtype) * 0.1
+        k = torch.randn(B, H, S, DK, device=run_device(), dtype=self.dtype) * 0.1
+        v = torch.randn(B, H, S, DV, device=run_device(), dtype=self.dtype) * 0.1
+        beta = torch.rand(B, H, S, device=run_device(), dtype=self.dtype) * 0.5
         return q, k, v, beta
 
     def ref_program(
@@ -65,11 +66,11 @@ class DeltaNetDecodeWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         B, H, DK, DV = self.batch, self.heads, self.dim_k, self.dim_v
-        q = torch.randn(B, H, DK, device="cuda", dtype=self.dtype) * 0.1
-        k = torch.randn(B, H, DK, device="cuda", dtype=self.dtype) * 0.1
-        v = torch.randn(B, H, DV, device="cuda", dtype=self.dtype) * 0.1
-        beta = torch.rand(B, H, device="cuda", dtype=self.dtype) * 0.5
-        state = torch.randn(B, H, DK, DV, device="cuda", dtype=self.dtype) * 0.1
+        q = torch.randn(B, H, DK, device=run_device(), dtype=self.dtype) * 0.1
+        k = torch.randn(B, H, DK, device=run_device(), dtype=self.dtype) * 0.1
+        v = torch.randn(B, H, DV, device=run_device(), dtype=self.dtype) * 0.1
+        beta = torch.rand(B, H, device=run_device(), dtype=self.dtype) * 0.5
+        state = torch.randn(B, H, DK, DV, device=run_device(), dtype=self.dtype) * 0.1
         return q, k, v, beta, state
 
     def ref_program(
@@ -103,11 +104,11 @@ class GLADecodeWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         B, H, DK, DV = self.batch, self.heads, self.dim_k, self.dim_v
-        q = torch.randn(B, H, DK, device="cuda", dtype=self.dtype) * 0.1
-        k = torch.randn(B, H, DK, device="cuda", dtype=self.dtype) * 0.1
-        v = torch.randn(B, H, DV, device="cuda", dtype=self.dtype) * 0.1
-        gk = -torch.rand(B, H, DK, device="cuda", dtype=self.dtype)
-        state = torch.randn(B, H, DK, DV, device="cuda", dtype=self.dtype) * 0.1
+        q = torch.randn(B, H, DK, device=run_device(), dtype=self.dtype) * 0.1
+        k = torch.randn(B, H, DK, device=run_device(), dtype=self.dtype) * 0.1
+        v = torch.randn(B, H, DV, device=run_device(), dtype=self.dtype) * 0.1
+        gk = -torch.rand(B, H, DK, device=run_device(), dtype=self.dtype)
+        state = torch.randn(B, H, DK, DV, device=run_device(), dtype=self.dtype) * 0.1
         return q, k, v, gk, state
 
     def ref_program(
@@ -134,13 +135,13 @@ class DeltaNetInferenceWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         shape = (self.batch, self.seq_len, self.heads, self.dim)
-        q = torch.randn(shape, device="cuda", dtype=self.dtype) * 0.1
-        k = torch.randn(shape, device="cuda", dtype=self.dtype) * 0.1
-        v = torch.randn(shape, device="cuda", dtype=self.dtype) * 0.1
-        beta = torch.rand(shape[:3], device="cuda", dtype=self.dtype) * 0.5
+        q = torch.randn(shape, device=run_device(), dtype=self.dtype) * 0.1
+        k = torch.randn(shape, device=run_device(), dtype=self.dtype) * 0.1
+        v = torch.randn(shape, device=run_device(), dtype=self.dtype) * 0.1
+        beta = torch.rand(shape[:3], device=run_device(), dtype=self.dtype) * 0.5
         initial_state = (
             torch.randn(
-                self.batch, self.heads, self.dim, self.dim, device="cuda", dtype=torch.float32
+                self.batch, self.heads, self.dim, self.dim, device=run_device(), dtype=torch.float32
             )
             * 0.01
         )
@@ -182,11 +183,11 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         shape = (self.batch, self.seq_len, self.heads, self.dim)
-        q = torch.randn(shape, device="cuda", dtype=self.dtype) * 0.1
-        k = torch.randn(shape, device="cuda", dtype=self.dtype) * 0.1
-        v = torch.randn(shape, device="cuda", dtype=self.dtype) * 0.1
-        g = -torch.rand(shape[:3], device="cuda", dtype=self.dtype)
-        beta = torch.rand(shape[:3], device="cuda", dtype=self.dtype) * 0.5
+        q = torch.randn(shape, device=run_device(), dtype=self.dtype) * 0.1
+        k = torch.randn(shape, device=run_device(), dtype=self.dtype) * 0.1
+        v = torch.randn(shape, device=run_device(), dtype=self.dtype) * 0.1
+        g = -torch.rand(shape[:3], device=run_device(), dtype=self.dtype)
+        beta = torch.rand(shape[:3], device=run_device(), dtype=self.dtype) * 0.5
         if not self.has_initial_state:
             return q, k, v, g, beta
         initial_state = (
@@ -195,7 +196,7 @@ class GatedDeltaNetFwdWorkload(WorkloadBase):
                 self.heads,
                 self.dim,
                 self.dim,
-                device="cuda",
+                device=run_device(),
                 dtype=torch.float32,
             )
             * 0.01
@@ -261,14 +262,14 @@ class GLAChunkwiseWorkload(WorkloadBase):
 
     def gen_inputs(self):
         B, T, H, K, V = self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v
-        q = torch.randn(B, T, H, K, device="cuda", dtype=self.dtype) * 0.1
-        k = torch.randn(B, T, H, K, device="cuda", dtype=self.dtype) * 0.1
-        v = torch.randn(B, T, H, V, device="cuda", dtype=self.dtype) * 0.1
-        g = -torch.rand(B, T, H, K, device="cuda", dtype=self.dtype)
+        q = torch.randn(B, T, H, K, device=run_device(), dtype=self.dtype) * 0.1
+        k = torch.randn(B, T, H, K, device=run_device(), dtype=self.dtype) * 0.1
+        v = torch.randn(B, T, H, V, device=run_device(), dtype=self.dtype) * 0.1
+        g = -torch.rand(B, T, H, K, device=run_device(), dtype=self.dtype)
         # Absent means None: the recurrence then starts from zeros. Present, it is
         # fp32, the dtype the recurrence carries the state in.
         initial_state = (
-            torch.randn(B, H, K, V, device="cuda", dtype=torch.float32) * 0.1
+            torch.randn(B, H, K, V, device=run_device(), dtype=torch.float32) * 0.1
             if self.has_initial_state
             else None
         )

@@ -3,6 +3,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
+from workloads.device import run_device
 from workloads.workload_base import CallWorkload, FixtureBase, WorkloadBase
 
 
@@ -76,12 +77,14 @@ class DaCumsumFwdWorkload(WorkloadBase):
         seq_len = C * Q
         # Raw dt values; softplus maps R -> R+, so randn covers both sides of the nonlinearity.
         # A <= 0 (negative decay)
-        dt_raw = torch.randn(b, seq_len, h, dtype=torch.float32, device="cuda")
-        A = -torch.rand(h, dtype=torch.float32, device="cuda")
+        dt_raw = torch.randn(b, seq_len, h, dtype=torch.float32, device=run_device())
+        A = -torch.rand(h, dtype=torch.float32, device=run_device())
         # Absent means None: the op builds the kernel without that branch, and a
         # zero tensor would instead build the one that reads it.
         dt_bias = (
-            torch.randn(h, dtype=torch.float32, device="cuda") * 0.5 if self.has_dt_bias else None
+            torch.randn(h, dtype=torch.float32, device=run_device()) * 0.5
+            if self.has_dt_bias
+            else None
         )
         return dt_raw, A, dt_bias
 
@@ -159,12 +162,12 @@ class SSDChunkScanFwdWorkload(WorkloadBase):
         S = c * L
 
         # Official layouts (aligned with _chunk_scan_fwd in mamba_ssm)
-        x = torch.randn(b, S, h, p, dtype=self.dtype, device="cuda") * 0.1
-        cb = torch.randn(b, c, g, L, L, dtype=self.dtype, device="cuda") * 0.1
-        dA_cumsum = -torch.rand(b, h, c, L, dtype=torch.float32, device="cuda").cumsum(-1)
-        C = torch.randn(b, S, g, n, dtype=self.dtype, device="cuda") * 0.1
-        prev_states = torch.randn(b, c, h, p, n, dtype=torch.float32, device="cuda") * 0.1
-        dt = torch.rand(b, h, c, L, dtype=self.dtype, device="cuda") * 0.1 + 0.01
+        x = torch.randn(b, S, h, p, dtype=self.dtype, device=run_device()) * 0.1
+        cb = torch.randn(b, c, g, L, L, dtype=self.dtype, device=run_device()) * 0.1
+        dA_cumsum = -torch.rand(b, h, c, L, dtype=torch.float32, device=run_device()).cumsum(-1)
+        C = torch.randn(b, S, g, n, dtype=self.dtype, device=run_device()) * 0.1
+        prev_states = torch.randn(b, c, h, p, n, dtype=torch.float32, device=run_device()) * 0.1
+        dt = torch.rand(b, h, c, L, dtype=self.dtype, device=run_device()) * 0.1 + 0.01
         return x, cb, dA_cumsum, C, prev_states, dt
 
     def ref_program(self, x, cb, dA_cumsum, C, prev_states, dt):
@@ -284,15 +287,15 @@ class SSDChunkStateFwdWorkload(WorkloadBase):
             self.n_groups,
         )
         seq_len = c * Q
-        x = torch.randn(b, seq_len, h, p, dtype=self.dtype, device="cuda") * 0.1
-        Bmat = torch.randn(b, seq_len, g, n, dtype=self.dtype, device="cuda") * 0.1
+        x = torch.randn(b, seq_len, h, p, dtype=self.dtype, device=run_device()) * 0.1
+        Bmat = torch.randn(b, seq_len, g, n, dtype=self.dtype, device=run_device()) * 0.1
         # dA_cumsum: monotonically non-increasing (negative values, cumsum of negatives)
-        dA_cumsum = -torch.rand(b, h, c, Q, dtype=torch.float32, device="cuda").cumsum(-1)
-        dt = torch.rand(b, h, c, Q, dtype=torch.float32, device="cuda") * 0.1 + 0.01
+        dA_cumsum = -torch.rand(b, h, c, Q, dtype=torch.float32, device=run_device()).cumsum(-1)
+        dt = torch.rand(b, h, c, Q, dtype=torch.float32, device=run_device()) * 0.1 + 0.01
         seq_idx = None
         if self.has_seq_idx:
             # simulate two packed sequences per batch row, split at midpoint
-            seq_idx = torch.zeros(b, seq_len, dtype=torch.int32, device="cuda")
+            seq_idx = torch.zeros(b, seq_len, dtype=torch.int32, device=run_device())
             seq_idx[:, seq_len // 2 :] = 1
         return x, Bmat, dt, dA_cumsum, seq_idx
 
@@ -380,12 +383,12 @@ class SSDDecodeWorkload(WorkloadBase):
             self.n_groups,
         )
         # A <= 0 (negative decay), dt > 0 (post-softplus)
-        A = -torch.rand(h, p, n, dtype=torch.float32, device="cuda")
-        dt = torch.rand(b, h, p, dtype=torch.float32, device="cuda") * 0.1 + 0.01
-        x = torch.randn(b, h, p, dtype=self.dtype, device="cuda") * 0.1
-        B_in = torch.randn(b, g, n, dtype=self.dtype, device="cuda") * 0.1
-        C_in = torch.randn(b, g, n, dtype=self.dtype, device="cuda") * 0.1
-        state = torch.randn(b, h, p, n, dtype=torch.float32, device="cuda") * 0.1
+        A = -torch.rand(h, p, n, dtype=torch.float32, device=run_device())
+        dt = torch.rand(b, h, p, dtype=torch.float32, device=run_device()) * 0.1 + 0.01
+        x = torch.randn(b, h, p, dtype=self.dtype, device=run_device()) * 0.1
+        B_in = torch.randn(b, g, n, dtype=self.dtype, device=run_device()) * 0.1
+        C_in = torch.randn(b, g, n, dtype=self.dtype, device=run_device()) * 0.1
+        state = torch.randn(b, h, p, n, dtype=torch.float32, device=run_device()) * 0.1
         return A, dt, x, B_in, C_in, state
 
     def ref_program(self, A, dt, x, B_in, C_in, state):
@@ -429,11 +432,11 @@ class SSDStatePassingFwdWorkload(WorkloadBase):
 
     def gen_inputs(self):
         b, c, h, d = self.batch, self.num_chunks, self.n_heads, self.d_state
-        states = torch.randn(b, c, h, d, dtype=self.dtype, device="cuda") * 0.1
-        dA_chunk_cumsum = -torch.rand(b, h, c, dtype=torch.float32, device="cuda").cumsum(-1)
+        states = torch.randn(b, c, h, d, dtype=self.dtype, device=run_device()) * 0.1
+        dA_chunk_cumsum = -torch.rand(b, h, c, dtype=torch.float32, device=run_device()).cumsum(-1)
         # Absent means None: the op then builds the kernel that starts from zero.
         initial_states = (
-            torch.randn(b, h, d, dtype=torch.float32, device="cuda") * 0.1
+            torch.randn(b, h, d, dtype=torch.float32, device=run_device()) * 0.1
             if self.has_initial_states
             else None
         )

@@ -12,6 +12,7 @@ import torch
 
 from tests.test_base import FixtureBase
 from tileops.ops.moe import MoePermuteAlignFwdOp
+from workloads.device import run_device
 from workloads.moe import MoePermuteAlignWorkload, moe_call, ref_permute_align
 
 
@@ -135,7 +136,7 @@ def test_permute_align_sentinel_padding() -> None:
     total_tokens, top_k, num_experts, block_size = 3, 2, 4, 4
     numel = total_tokens * top_k
     topk_ids = torch.randint(
-        0, num_experts, (total_tokens, top_k), dtype=torch.int32, device="cuda"
+        0, num_experts, (total_tokens, top_k), dtype=torch.int32, device=run_device()
     )
 
     op = MoePermuteAlignFwdOp(num_experts, block_size)
@@ -153,7 +154,7 @@ def test_permute_align_expert_ids_range() -> None:
     """All expert_ids must be in [0, num_experts)."""
     total_tokens, top_k, num_experts, block_size = 16, 4, 8, 16
     topk_ids = torch.randint(
-        0, num_experts, (total_tokens, top_k), dtype=torch.int32, device="cuda"
+        0, num_experts, (total_tokens, top_k), dtype=torch.int32, device=run_device()
     )
 
     op = MoePermuteAlignFwdOp(num_experts, block_size)
@@ -178,7 +179,7 @@ def test_permute_align_skewed_distribution() -> None:
     total_tokens, top_k, num_experts, block_size = 32, 4, 8, 16
     numel = total_tokens * top_k
     # All tokens go to expert 0
-    topk_ids = torch.zeros((total_tokens, top_k), dtype=torch.int32, device="cuda")
+    topk_ids = torch.zeros((total_tokens, top_k), dtype=torch.int32, device=run_device())
 
     op = MoePermuteAlignFwdOp(num_experts, block_size)
     outputs = tuple(op(topk_ids))
@@ -192,5 +193,5 @@ def test_permute_align_builds_one_kernel_per_routed_count() -> None:
     """The routed count comes from each call, so a second count builds a second kernel."""
     op = MoePermuteAlignFwdOp(num_experts=8, block_size=16)
     for tokens in (4, 4, 6):
-        op(torch.randint(0, 8, (tokens, 2), dtype=torch.int32, device="cuda"))
+        op(torch.randint(0, 8, (tokens, 2), dtype=torch.int32, device=run_device()))
     assert len(op.built_kernels("permute_align_kernel")) == 2

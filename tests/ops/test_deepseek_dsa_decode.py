@@ -4,6 +4,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from workloads.deepseek_attention import DsaDecodeWorkload
+from workloads.device import run_device
 
 
 class DsaDecodeTest(DsaDecodeWorkload, TestBase):
@@ -100,12 +101,14 @@ def _padded_topk_indices(
     generator: torch.Generator,
 ) -> torch.Tensor:
     """A top-k list that fills half its slots and pads the rest with *pad*."""
-    indices = torch.full((batch, seq_len, heads_kv, topk), pad, dtype=torch.int32, device="cuda")
+    indices = torch.full(
+        (batch, seq_len, heads_kv, topk), pad, dtype=torch.int32, device=run_device()
+    )
     for b in range(batch):
         for t in range(seq_len):
             for h in range(heads_kv):
                 selected = torch.randperm(seq_len_kv, generator=generator)[: topk // 2]
-                indices[b, t, h, : topk // 2] = selected.to(torch.int32).cuda()
+                indices[b, t, h, : topk // 2] = selected.to(torch.int32).to(run_device())
     return indices
 
 

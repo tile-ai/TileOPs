@@ -28,6 +28,7 @@ from tileops.kernels.elementwise import (
 # Regression: a parametric kernel's block extent has to follow the config it is given
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("threads", "npt"),
@@ -59,6 +60,7 @@ INDEPENDENT_KERNELS_SIMPLE = [LeakyReluFwdKernel, EluFwdKernel, HardtanhFwdKerne
 _WIDE_N = 1 << 24
 
 
+@pytest.mark.cuda_only
 @pytest.mark.full
 @pytest.mark.parametrize(
     ("dtype", "expected_npt"),
@@ -119,6 +121,7 @@ def test_bool_like_elementwise_kernels_expose_torch_dtype_output(kernel_cls):
 # Fix 3: output_dtype attribute on all three base kernel types
 
 
+@pytest.mark.cuda_only
 @pytest.mark.full
 def test_unary_kernel_sets_output_dtype_in_init():
     """Unary kernels should initialize `output_dtype` during construction."""
@@ -130,6 +133,7 @@ def test_unary_kernel_sets_output_dtype_in_init():
     assert kernel.output_dtype == torch.float16
 
 
+@pytest.mark.cuda_only
 @pytest.mark.full
 def test_binary_kernel_sets_output_dtype_in_init():
     """Binary kernels should initialize `output_dtype` during construction."""
@@ -141,6 +145,7 @@ def test_binary_kernel_sets_output_dtype_in_init():
     assert kernel.output_dtype == torch.float16
 
 
+@pytest.mark.cuda_only
 @pytest.mark.full
 def test_fused_gated_kernel_sets_output_dtype_in_init():
     """Fused-gated kernels should initialize `output_dtype` during construction."""
@@ -152,6 +157,7 @@ def test_fused_gated_kernel_sets_output_dtype_in_init():
     assert kernel.output_dtype == torch.float16
 
 
+@pytest.mark.cuda_only
 @pytest.mark.full
 def test_fused_gated_explicit_config_follows_the_work():
     """Fused-gated explicit_parallel sizes its block from the work, not the dtype.

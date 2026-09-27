@@ -2,6 +2,7 @@ from typing import Any
 
 import torch
 
+from workloads.device import run_device
 from workloads.workload_base import WorkloadBase
 
 
@@ -30,7 +31,7 @@ class FP8QuantWorkload(WorkloadBase):
             self.kv_group,
             self.index_dim,
             dtype=self.in_dtype,
-            device="cuda",
+            device=run_device(),
         )
         return (input_tensor,)
 

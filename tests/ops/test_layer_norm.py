@@ -8,6 +8,7 @@ from tests.test_base import FixtureBase, TestBase, served_in_tree, standard_tole
 from tileops.kernels.norm.layer_norm import LayerNormKernel
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
+from workloads.device import run_device
 from workloads.normalization import (
     FusedAddLayerNormWorkload,
     LayerNormWorkload,
@@ -67,6 +68,7 @@ def test_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test.check(op, *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_layer_norm_kernel_handles_unaligned_shape() -> None:
     """The kernel, not the Op layer, owns non-aligned boundary handling."""
@@ -100,10 +102,10 @@ class LayerNormNonContigFixture(FixtureBase):
 @LayerNormNonContigFixture
 def test_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     """Test with non-contiguous input (sliced tensor)."""
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
     x = x_full[:, :n]  # non-contiguous slice
-    weight = torch.randn(n, dtype=dtype, device="cuda")
-    bias = torch.randn(n, dtype=dtype, device="cuda")
+    weight = torch.randn(n, dtype=dtype, device=run_device())
+    bias = torch.randn(n, dtype=dtype, device=run_device())
 
     op = LayerNormFwdOp(normalized_shape=(n,))
 
@@ -140,9 +142,9 @@ class LayerNorm3DFixture(FixtureBase):
 @LayerNorm3DFixture
 def test_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     """Test with 3D input (batch, seq, hidden)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    weight = torch.randn(hidden, dtype=dtype, device="cuda")
-    bias = torch.randn(hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
+    weight = torch.randn(hidden, dtype=dtype, device=run_device())
+    bias = torch.randn(hidden, dtype=dtype, device=run_device())
 
     op = LayerNormFwdOp(normalized_shape=(hidden,))
 
@@ -190,9 +192,9 @@ def test_layer_norm_large_offset(m: int, n: int, dtype: torch.dtype) -> None:
     catastrophic cancellation bug (which produced >100x error) while allowing
     the inherent fp32 parallel reduction precision limits.
     """
-    x = (10000.0 + 0.01 * torch.randn(m, n, device="cuda")).to(dtype)
-    weight = torch.ones(n, dtype=dtype, device="cuda")
-    bias = torch.zeros(n, dtype=dtype, device="cuda")
+    x = (10000.0 + 0.01 * torch.randn(m, n, device=run_device())).to(dtype)
+    weight = torch.ones(n, dtype=dtype, device=run_device())
+    bias = torch.zeros(n, dtype=dtype, device=run_device())
 
     op = LayerNormFwdOp(normalized_shape=(n,))
 
@@ -230,16 +232,16 @@ def test_layer_norm_serves_a_changed_leading_dims_product_from_one_kernel() -> N
     dtype = torch.float16
 
     op = LayerNormFwdOp(normalized_shape=(n,))
-    weight = torch.randn(n, dtype=dtype, device="cuda")
-    bias = torch.randn(n, dtype=dtype, device="cuda")
+    weight = torch.randn(n, dtype=dtype, device=run_device())
+    bias = torch.randn(n, dtype=dtype, device=run_device())
 
-    x1 = torch.randn(512, n, dtype=dtype, device="cuda")
+    x1 = torch.randn(512, n, dtype=dtype, device=run_device())
     y1 = op(x1, weight, bias)
     if served_in_tree(op):
         kernel = op.built_kernels("layer_norm")[dtype]
     assert y1.shape == x1.shape
 
-    x2 = torch.randn(1024, n, dtype=dtype, device="cuda")
+    x2 = torch.randn(1024, n, dtype=dtype, device=run_device())
     y2 = op(x2, weight, bias)
     assert y2.shape == x2.shape
     if served_in_tree(op):
@@ -260,8 +262,8 @@ def test_layer_norm_serves_a_changed_leading_dims_product_from_one_kernel() -> N
 @pytest.mark.parametrize("give", ["weight", "bias", "neither"])
 def test_either_affine_tensor_alone_matches_torch(give: str) -> None:
     n, dtype = 256, torch.float16
-    x = torch.randn(8, n, dtype=dtype, device="cuda")
-    kwargs = {} if give == "neither" else {give: torch.randn(n, dtype=dtype, device="cuda")}
+    x = torch.randn(8, n, dtype=dtype, device=run_device())
+    kwargs = {} if give == "neither" else {give: torch.randn(n, dtype=dtype, device=run_device())}
     got = LayerNormFwdOp(normalized_shape=(n,))(x, **kwargs)
     torch.testing.assert_close(got, F.layer_norm(x, (n,), **kwargs), atol=2e-3, rtol=2e-3)
 
@@ -319,12 +321,12 @@ class FusedAddLayerNormNonContigFixture(FixtureBase):
 @FusedAddLayerNormNonContigFixture
 def test_fused_add_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     """Test with non-contiguous input (sliced tensor)."""
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
-    r_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
+    r_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
     x = x_full[:, :n]  # non-contiguous slice
     residual = r_full[:, :n]
-    weight = torch.randn(n, dtype=dtype, device="cuda")
-    bias = torch.randn(n, dtype=dtype, device="cuda")
+    weight = torch.randn(n, dtype=dtype, device=run_device())
+    bias = torch.randn(n, dtype=dtype, device=run_device())
 
     op = FusedAddLayerNormFwdOp()
 
@@ -358,10 +360,10 @@ class FusedAddLayerNorm3DFixture(FixtureBase):
 @FusedAddLayerNorm3DFixture
 def test_fused_add_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     """Test with 3D input (batch, seq, hidden)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    residual = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    weight = torch.randn(hidden, dtype=dtype, device="cuda")
-    bias = torch.randn(hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
+    residual = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
+    weight = torch.randn(hidden, dtype=dtype, device=run_device())
+    bias = torch.randn(hidden, dtype=dtype, device=run_device())
 
     M = batch * seq
     op = FusedAddLayerNormFwdOp()

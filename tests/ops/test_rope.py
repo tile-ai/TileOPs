@@ -21,6 +21,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, standard_tolerance
+from workloads.device import run_device
 from workloads.rope import RopeWorkload
 
 
@@ -29,13 +30,14 @@ def _compute_freqs_cis_base(
     seq_len: int,
     base: float = 10000.0,
     dtype: torch.dtype = torch.float32,
-    device: str = "cuda",
+    device: str | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute standard RoPE cos/sin tables.
 
     Returns:
         (cos, sin) each of shape (seq_len, head_dim // 2).
     """
+    device = device or run_device()
     half = head_dim // 2
     freqs = 1.0 / (base ** (torch.arange(0, half, device=device, dtype=torch.float32) / half))
     t = torch.arange(seq_len, device=device, dtype=torch.float32)
@@ -128,9 +130,10 @@ def _compute_llama31_freqs(
     high_freq_factor: float = 4.0,
     original_max_position: int = 8192,
     dtype: torch.dtype = torch.float32,
-    device: str = "cuda",
+    device: str | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Llama 3.1 scaled frequency computation."""
+    device = device or run_device()
     half = head_dim // 2
     freqs = 1.0 / (base ** (torch.arange(0, half, device=device, dtype=torch.float32) / half))
 
@@ -188,7 +191,7 @@ def _compute_yarn_freqs(
     beta_slow: float = 1.0,
     attn_factor: float = 1.0,
     dtype: torch.dtype = torch.float32,
-    device: str = "cuda",
+    device: str | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Canonical YaRN frequency computation with NTK-aware interpolation.
 
@@ -200,6 +203,7 @@ def _compute_yarn_freqs(
     - Linear ramp mask between correction dims
     - inv_freq = freq_inter * (1 - mask) + freq_extra * mask
     """
+    device = device or run_device()
     half = head_dim // 2
     dim_indices = torch.arange(0, half, device=device, dtype=torch.float32)
 
@@ -238,7 +242,7 @@ def _compute_longrope_freqs(
     max_position_embeddings: int = 4096,
     original_max_position_embeddings: int = 4096,
     dtype: torch.dtype = torch.float32,
-    device: str = "cuda",
+    device: str | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Canonical LongRoPE frequency computation with amplitude scaling.
 
@@ -249,6 +253,7 @@ def _compute_longrope_freqs(
     - scaling_factor = sqrt(1 + log(scale) / log(orig_max_pos)) if scale > 1
     - cos/sin are multiplied by scaling_factor (amplitude factor)
     """
+    device = device or run_device()
     half = head_dim // 2
     dim_indices = torch.arange(0, half, device=device, dtype=torch.float32)
     divisor = base ** (dim_indices / half)
@@ -388,11 +393,11 @@ def test_rope_neox_position_ids_thd(rotary_dim: int | None, dtype: torch.dtype) 
 
     num_tokens, num_heads, head_dim, max_position = 96, 8, 64, 512
     table_dim = head_dim if rotary_dim is None else rotary_dim
-    x = torch.randn(num_tokens, num_heads, head_dim, device="cuda", dtype=dtype)
+    x = torch.randn(num_tokens, num_heads, head_dim, device=run_device(), dtype=dtype)
     position_ids = (
-        torch.arange(num_tokens, device="cuda", dtype=torch.int32) * 3 + 17
+        torch.arange(num_tokens, device=run_device(), dtype=torch.int32) * 3 + 17
     ) % max_position
-    cos, sin = _compute_freqs_cis_base(table_dim, max_position, dtype=dtype, device="cuda")
+    cos, sin = _compute_freqs_cis_base(table_dim, max_position, dtype=dtype, device=run_device())
     ref = ref_rope_neox_position_ids(x, cos, sin, position_ids.long(), rotary_dim=rotary_dim)
 
     op = RopeNeoxPositionIdsFwdOp(
@@ -408,9 +413,9 @@ def test_rope_neox_position_ids_validates_range() -> None:
     from tileops.ops.rope import RopeNeoxPositionIdsFwdOp
 
     op = RopeNeoxPositionIdsFwdOp(max_position=8)
-    x = torch.randn(2, 1, 16, device="cuda", dtype=torch.float16)
+    x = torch.randn(2, 1, 16, device=run_device(), dtype=torch.float16)
     with pytest.raises(ValueError, match="position_ids"):
-        op(x, torch.tensor([0, 8], device="cuda", dtype=torch.int32))
+        op(x, torch.tensor([0, 8], device=run_device(), dtype=torch.int32))
 
 
 @pytest.mark.smoke
@@ -418,16 +423,16 @@ def test_rope_neox_position_ids_none_rotary_dim_reinfers_head_dim() -> None:
     from tileops.ops.rope import RopeNeoxPositionIdsFwdOp
 
     max_position = 64
-    position_ids = torch.arange(8, device="cuda", dtype=torch.int32)
+    position_ids = torch.arange(8, device=run_device(), dtype=torch.int32)
     op = RopeNeoxPositionIdsFwdOp(max_position=max_position, rotary_dim=None)
 
-    x1 = torch.randn(8, 2, 16, device="cuda", dtype=torch.float16)
-    cos1, sin1 = _compute_freqs_cis_base(16, max_position, dtype=x1.dtype, device="cuda")
+    x1 = torch.randn(8, 2, 16, device=run_device(), dtype=torch.float16)
+    cos1, sin1 = _compute_freqs_cis_base(16, max_position, dtype=x1.dtype, device=run_device())
     ref1 = ref_rope_neox_position_ids(x1, cos1, sin1, position_ids.long(), rotary_dim=None)
     torch.testing.assert_close(op(x1, position_ids), ref1, atol=5e-3, rtol=1e-5)
 
-    x2 = torch.randn(8, 2, 32, device="cuda", dtype=torch.float16)
-    cos2, sin2 = _compute_freqs_cis_base(32, max_position, dtype=x2.dtype, device="cuda")
+    x2 = torch.randn(8, 2, 32, device=run_device(), dtype=torch.float16)
+    cos2, sin2 = _compute_freqs_cis_base(32, max_position, dtype=x2.dtype, device=run_device())
     ref2 = ref_rope_neox_position_ids(x2, cos2, sin2, position_ids.long(), rotary_dim=None)
     torch.testing.assert_close(op(x2, position_ids), ref2, atol=5e-3, rtol=1e-5)
 
@@ -551,7 +556,7 @@ def test_rope_longrope_1d(
     from tileops.ops.rope import RopeLongRopeFwdOp
 
     half = head_dim // 2
-    rescale = torch.linspace(1.0, 2.0, half, device="cuda")
+    rescale = torch.linspace(1.0, 2.0, half, device=run_device())
     max_pos = 16384
     orig_max_pos = 4096
     extra = {
@@ -578,7 +583,7 @@ def test_rope_longrope_2d(
     from tileops.ops.rope import RopeLongRopeFwdOp
 
     half = head_dim // 2
-    rescale = torch.linspace(1.0, 2.0, half, device="cuda")
+    rescale = torch.linspace(1.0, 2.0, half, device=run_device())
     max_pos = 16384
     orig_max_pos = 4096
     extra = {
@@ -637,7 +642,7 @@ def test_rope_noncontiguous_1d_works() -> None:
     op = RopeNeoxFwdOp(layout="1d")
 
     # Create a non-contiguous view: transpose makes it non-contiguous
-    base = torch.randn(head_dim, seq_len, device="cuda", dtype=torch.float32)
+    base = torch.randn(head_dim, seq_len, device=run_device(), dtype=torch.float32)
     x_nc = base.t()  # shape (seq_len, head_dim), non-contiguous
     assert not x_nc.is_contiguous()
 
@@ -648,6 +653,7 @@ def test_rope_noncontiguous_1d_works() -> None:
     torch.testing.assert_close(out_nc, out_c, atol=1e-5, rtol=1e-5)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_rope_rejects_non_float_dtype() -> None:
     from tileops.kernels.rope import RopeNeoxKernel

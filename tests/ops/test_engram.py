@@ -4,6 +4,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
+from workloads.device import run_device
 from workloads.sequence_modeling import (
     EngramDecodeWorkload,
     EngramGateConvBwdWorkload,
@@ -135,22 +136,22 @@ def test_engram_decode_multi_step():
     eps = 1e-6
 
     torch.manual_seed(123)
-    W_K = torch.randn(d_mem, d, dtype=dtype, device="cuda") * 0.02
-    W_V = torch.randn(d_mem, d, dtype=dtype, device="cuda") * 0.02
-    rms_w_h = torch.ones(d, dtype=dtype, device="cuda")
-    rms_w_v = torch.ones(d, dtype=dtype, device="cuda")
-    conv_w = torch.randn(conv_kernel_size, d, dtype=dtype, device="cuda") * 0.02
+    W_K = torch.randn(d_mem, d, dtype=dtype, device=run_device()) * 0.02
+    W_V = torch.randn(d_mem, d, dtype=dtype, device=run_device()) * 0.02
+    rms_w_h = torch.ones(d, dtype=dtype, device=run_device())
+    rms_w_v = torch.ones(d, dtype=dtype, device=run_device())
+    conv_w = torch.randn(conv_kernel_size, d, dtype=dtype, device=run_device()) * 0.02
 
     op = EngramDecodeFwdOp(B, d_mem, d, max_conv_len, conv_kernel_size, dilation)
 
     # Start with empty conv_state (like empty KV cache)
-    conv_state = torch.zeros(B, 0, d, dtype=dtype, device="cuda")
+    conv_state = torch.zeros(B, 0, d, dtype=dtype, device=run_device())
     conv_state_ref = conv_state.clone()
 
     num_steps = max_conv_len + 8  # go past growing phase into steady state
     for step in range(num_steps):
-        e_t = torch.randn(B, d_mem, dtype=dtype, device="cuda") * 0.1
-        h_t = torch.randn(B, d, dtype=dtype, device="cuda")
+        e_t = torch.randn(B, d_mem, dtype=dtype, device=run_device()) * 0.1
+        h_t = torch.randn(B, d, dtype=dtype, device=run_device())
 
         y_op, conv_state = op(e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
         y_ref, conv_state_ref = engram_decode_step_torch(

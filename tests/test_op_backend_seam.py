@@ -114,6 +114,7 @@ def test_a_dtype_the_manifest_does_not_admit_never_reaches_the_backend():
     assert recorder.calls == []
 
 
+@pytest.mark.cuda_only
 def test_tensors_on_two_devices_never_reach_the_backend():
     recorder = _Recorder()
     _register(recorder)
@@ -161,7 +162,11 @@ def test_the_same_input_signature_is_built_once():
         (dict(dtype=torch.bfloat16), "a different dtype certainly does"),
         # A second real device, not meta: meta inputs dispatch to the op's fake, which
         # returns before a kernel is ever asked for.
-        (dict(device="cuda"), "a kernel may hold resources allocated on one device"),
+        pytest.param(
+            dict(device="cuda"),
+            "a kernel may hold resources allocated on one device",
+            marks=pytest.mark.cuda_only,
+        ),
     ],
     ids=["shape", "dtype", "device"],
 )
@@ -457,6 +462,7 @@ def test_a_compiled_call_whose_build_fails_pins_nothing():
     assert torch.equal(op(x, weight), torch.full_like(x, 7)), "asking again tries again"
 
 
+@pytest.mark.cuda_only
 def test_a_settled_instance_is_bound_to_that_target_s_devices():
     """One instance, one target. A kernel asked for on a foreign device is refused."""
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, target=BUILTIN)

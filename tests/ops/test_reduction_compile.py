@@ -36,6 +36,7 @@ from tileops.ops.reduction import (
     VarFwdOp,
     VarMeanFwdOp,
 )
+from workloads.device import run_device
 
 _DTYPE = torch.float16
 _ROWS = 8
@@ -70,7 +71,7 @@ for _op_cls in _OP_CLASSES:
 
 
 def _x(*shape, dtype=_DTYPE):
-    return torch.randn(*shape, dtype=dtype, device="cuda")
+    return torch.randn(*shape, dtype=dtype, device=run_device())
 
 
 def _cases():
@@ -107,7 +108,7 @@ def _cases():
         # result must still be a tensor of its own.
         "all-empty-dim-bool": lambda: (
             AllFwdOp(dim=[]),
-            (torch.randint(2, (_ROWS, _COLS), dtype=torch.bool, device="cuda"),),
+            (torch.randint(2, (_ROWS, _COLS), dtype=torch.bool, device=run_device()),),
         ),
         "any": one_tensor(AnyFwdOp, dim=-1),
         # int64 out.

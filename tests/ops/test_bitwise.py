@@ -15,6 +15,7 @@ from tileops.ops.elementwise import (
     BitwiseOrFwdOp,
     BitwiseXorFwdOp,
 )
+from workloads.device import run_device
 from workloads.elementwise import BitwiseNotWorkload, BitwiseWorkload
 
 
@@ -136,8 +137,8 @@ def test_bitwise_broadcast(
     a_shape,
     b_shape,
 ) -> None:
-    a = torch.randint(-1000, 1000, a_shape, dtype=torch.int32, device="cuda")
-    b = torch.randint(-1000, 1000, b_shape, dtype=torch.int32, device="cuda")
+    a = torch.randint(-1000, 1000, a_shape, dtype=torch.int32, device=run_device())
+    b = torch.randint(-1000, 1000, b_shape, dtype=torch.int32, device=run_device())
     op = op_cls()
     ref = ref_fn(a, b)
     with torch.no_grad():
@@ -176,8 +177,8 @@ def test_bool_bitwise_fast_path(
     a_shape,
     b_shape,
 ) -> None:
-    a = torch.randint(0, 2, a_shape, device="cuda").bool()
-    b = torch.randint(0, 2, b_shape, device="cuda").bool()
+    a = torch.randint(0, 2, a_shape, device=run_device()).bool()
+    b = torch.randint(0, 2, b_shape, device=run_device()).bool()
     op = op_cls()
     ref = ref_fn(a, b)
     with torch.no_grad():
@@ -215,6 +216,7 @@ def test_bitwise_not(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), compare=exact_compare)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -253,6 +255,6 @@ def test_bitwise_binary_rejects_float_dtype(op_cls, dtype: torch.dtype) -> None:
     """Binary bitwise ops only support integer dtypes; floats must be rejected."""
     shape = (16,)
     op = op_cls()
-    x = torch.zeros(shape, device="cuda", dtype=dtype)
+    x = torch.zeros(shape, device=run_device(), dtype=dtype)
     with pytest.raises(ValueError, match="dtype is outside"):
         op(x, x)

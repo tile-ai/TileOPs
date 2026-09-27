@@ -86,6 +86,12 @@ repos:
         language: python
         files: ^(src/tileops|tests|benchmarks|workloads)/.*\.py$
 
+      - id: device-literal-lint
+        name: test and workload device lint
+        entry: python scripts/lint/device_literal_lint.py
+        language: python
+        files: ^(tests|workloads)/.*\.py$
+
       - id: manifest-spec-layout
         name: manifest spec layout
         entry: "manifest YAML goes directly in src/tileops/manifest/spec/ as .yaml, the only place the loader reads"

@@ -2,6 +2,7 @@
 
 import torch
 
+from workloads.device import run_device
 from workloads.workload_base import CallWorkload, RandnWorkload, WorkloadBase
 
 
@@ -32,7 +33,7 @@ class ProdWorkload(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.rand(*self.shape, dtype=self.dtype, device="cuda") * 0.01 + 0.99
+        x = torch.rand(*self.shape, dtype=self.dtype, device=run_device()) * 0.01 + 0.99
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -114,7 +115,7 @@ class CountNonzeroWorkload(_LogicalWorkload):
 class ReductionCall(CallWorkload):
     """One manifest call of a reduction op, with the input shape and dtype a report shows."""
 
-    def __init__(self, call, device: "torch.device | str" = "cuda"):
+    def __init__(self, call, device: "torch.device | str | None" = None):
         super().__init__(call, device)
         spec = call.specs["x"]
         self.shape, self.dtype = spec.shape, spec.dtype
@@ -133,7 +134,7 @@ class LogicalCall(ReductionCall):
     all-nonzero leading row."""
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (_make_logical_input(self.shape, getattr(torch, self.dtype)),)
+        return (_make_logical_input(self.shape, getattr(torch, self.dtype), self.device),)
 
 
 # ---------------------------------------------------------------------------
@@ -141,34 +142,35 @@ class LogicalCall(ReductionCall):
 # ---------------------------------------------------------------------------
 
 
-def _make_logical_input(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
+def _make_logical_input(shape: tuple, dtype: torch.dtype, device=None) -> torch.Tensor:
     """Create a tensor with a mix of zeros and non-zeros.
 
     When the first dimension is large enough (>4), the first row is forced
     to all-zero (meaningful for ``any``) and the second row to all-nonzero
     (meaningful for ``all``).
     """
+    device = device or run_device()
     m = shape[0] if len(shape) >= 1 else 1
 
     if dtype == torch.bool:
-        x = torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
+        x = torch.randint(0, 2, shape, dtype=torch.bool, device=device)
         if m > 4:
             x[0] = False
             x[1] = True
     elif dtype in (torch.complex64, torch.complex128):
-        real = torch.randn(*shape, dtype=torch.float32, device="cuda")
-        imag = torch.randn(*shape, dtype=torch.float32, device="cuda")
+        real = torch.randn(*shape, dtype=torch.float32, device=device)
+        imag = torch.randn(*shape, dtype=torch.float32, device=device)
         x = torch.complex(real, imag).to(dtype)
         if m > 4:
             x[0] = 0 + 0j
             x[1] = 1 + 1j
     elif dtype in (torch.int32, torch.int64):
-        x = torch.randint(-5, 6, shape, dtype=dtype, device="cuda")
+        x = torch.randint(-5, 6, shape, dtype=dtype, device=device)
         if m > 4:
             x[0] = 0
             x[1] = 1
     else:
-        x = torch.randn(*shape, dtype=dtype, device="cuda")
+        x = torch.randn(*shape, dtype=dtype, device=device)
         if m > 4:
             x[0] = 0.0
             x[1] = 1.0
@@ -197,7 +199,7 @@ class CumulativeWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         if self.use_small_range:
-            x = torch.rand(*self.shape, dtype=self.dtype, device="cuda") * 0.01 + 0.99
+            x = torch.rand(*self.shape, dtype=self.dtype, device=run_device()) * 0.01 + 0.99
         else:
-            x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+            x = torch.randn(*self.shape, dtype=self.dtype, device=run_device())
         return (x,)

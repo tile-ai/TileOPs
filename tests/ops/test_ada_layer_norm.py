@@ -11,6 +11,7 @@ from tileops.kernels.norm.ada_layer_norm import (
 )
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
+from workloads.device import run_device
 from workloads.normalization import AdaLayerNormWorkload, AdaLayerNormZeroWorkload
 
 
@@ -51,6 +52,7 @@ def test_ada_layer_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 def test_ada_layer_norm_kernel_handles_natural_unaligned_shape(
@@ -66,6 +68,7 @@ def test_ada_layer_norm_kernel_handles_natural_unaligned_shape(
     torch.testing.assert_close(actual, expected, **standard_tolerance(dtype))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_ada_layer_norm_async_copy_handles_row_tail() -> None:
     """Regression: the async 2-D tile must support block_m > 1 and tail rows."""
@@ -117,6 +120,7 @@ def test_ada_layer_norm_async_policy_shared_memory_limit() -> None:
         assert _should_use_cp_async(n, dtype, has_gate) is expected_async
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "n, dtype",
@@ -156,9 +160,9 @@ class AdaLayerNorm3DFixture(FixtureBase):
 @AdaLayerNorm3DFixture
 def test_ada_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     """Test with 3D input (batch, seq, hidden)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    scale = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    shift = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
+    scale = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
+    shift = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
 
     op = AdaLayerNormFwdOp()
 
@@ -216,6 +220,7 @@ def test_ada_layer_norm_zero_op(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 def test_ada_layer_norm_zero_kernel_handles_natural_unaligned_shape(
@@ -231,6 +236,7 @@ def test_ada_layer_norm_zero_kernel_handles_natural_unaligned_shape(
     torch.testing.assert_close(actual, expected, **standard_tolerance(dtype))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_ada_layer_norm_zero_async_copy_handles_row_tail() -> None:
     """Regression: the async 2-D tile must support block_m > 1 and tail rows."""
@@ -267,10 +273,10 @@ class AdaLayerNormZero3DFixture(FixtureBase):
 @AdaLayerNormZero3DFixture
 def test_ada_layer_norm_zero_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     """Test with 3D input (batch, seq, hidden)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    scale = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    shift = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    gate = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
+    scale = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
+    shift = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
+    gate = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
 
     op = AdaLayerNormZeroFwdOp()
 

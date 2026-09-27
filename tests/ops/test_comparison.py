@@ -9,6 +9,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
+from workloads.device import run_device
 from workloads.elementwise import RandnPairWorkload
 
 
@@ -198,8 +199,8 @@ def test_comparison_broadcast(
     b_shape,
 ) -> None:
     dtype = torch.float16
-    a = torch.randn(*a_shape, dtype=dtype, device="cuda")
-    b = torch.randn(*b_shape, dtype=dtype, device="cuda")
+    a = torch.randn(*a_shape, dtype=dtype, device=run_device())
+    b = torch.randn(*b_shape, dtype=dtype, device=run_device())
     op = op_cls()
     ref = ref_fn(a, b)
     with torch.no_grad():
@@ -224,10 +225,10 @@ class EqEdgeCaseFixture(FixtureBase):
 @EqEdgeCaseFixture
 def test_eq_edge_case(n_total: int, dtype: torch.dtype) -> None:
     """L4: eq with known-equal elements at specific positions."""
-    a = torch.randn(n_total, dtype=dtype, device="cuda")
+    a = torch.randn(n_total, dtype=dtype, device=run_device())
     b = a.clone()
     # Make some elements differ
-    b[::2] = torch.randn(n_total // 2, dtype=dtype, device="cuda")
+    b[::2] = torch.randn(n_total // 2, dtype=dtype, device=run_device())
     op = EqFwdOp()
     ref = torch.eq(a, b)
     with torch.no_grad():
@@ -256,8 +257,8 @@ def _gen_int_inputs(n: int, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Ten
         lo, hi = -16, 16
     else:
         lo, hi = -64, 64
-    a = torch.randint(lo, hi, (n,), dtype=dtype, device="cuda")
-    b = torch.randint(lo, hi, (n,), dtype=dtype, device="cuda")
+    a = torch.randint(lo, hi, (n,), dtype=dtype, device=run_device())
+    b = torch.randint(lo, hi, (n,), dtype=dtype, device=run_device())
     # Inject some equal positions so eq/ge/le exercise the True branch.
     b[: n // 4] = a[: n // 4]
     return a, b
@@ -328,8 +329,8 @@ class ComparisonBoolDtypeFixture(FixtureBase):
 def test_comparison_bool_dtype(op_cls, ref_fn) -> None:
     """Comparison ops match torch reference on torch.bool inputs."""
     n = 4_096
-    a = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
-    b = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
+    a = torch.randint(0, 2, (n,), device=run_device()).to(torch.bool)
+    b = torch.randint(0, 2, (n,), device=run_device()).to(torch.bool)
     op = op_cls()
     ref = ref_fn(a, b)
     with torch.no_grad():
@@ -369,11 +370,12 @@ def test_comparison_rejects_unsupported_dtype(
     """Comparison ops reject dtypes outside the supported set (e.g. complex)."""
     shape = (16,)
     op = op_cls()
-    x = torch.zeros(shape, device="cuda", dtype=dtype)
+    x = torch.zeros(shape, device=run_device(), dtype=dtype)
     with pytest.raises(ValueError, match="dtype is outside"):
         op(x, x)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("strategy", ["explicit_parallel", "direct"])
 def test_comparison_bool_result_per_strategy(strategy: str) -> None:
@@ -403,8 +405,8 @@ def test_comparison_nan_ordering(dtype: torch.dtype) -> None:
     half formats are where the two can disagree.
     """
     nan = float("nan")
-    a = torch.tensor([nan, nan, 1.0, 1.0, 2.0], device="cuda", dtype=dtype)
-    b = torch.tensor([nan, 1.0, nan, 1.0, 3.0], device="cuda", dtype=dtype)
+    a = torch.tensor([nan, nan, 1.0, 1.0, 2.0], device=run_device(), dtype=dtype)
+    b = torch.tensor([nan, 1.0, nan, 1.0, 3.0], device=run_device(), dtype=dtype)
     for op_cls, ref_fn in (
         (EqFwdOp, torch.eq),
         (NeFwdOp, torch.ne),

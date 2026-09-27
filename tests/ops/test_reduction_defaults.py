@@ -17,6 +17,8 @@ from __future__ import annotations
 import pytest
 import torch
 
+from workloads.device import run_device
+
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
 
@@ -25,12 +27,12 @@ _LOGICAL_SHAPE = (2, 4, 8)
 
 
 def _make_float(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
-    return torch.randn(*shape, dtype=dtype, device="cuda")
+    return torch.randn(*shape, dtype=dtype, device=run_device())
 
 
 def _make_logical(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
     # values in {-1, 0, 1} so .bool() has both T and F.
-    return (torch.randint(-1, 2, shape, device="cuda")).to(dtype)
+    return (torch.randint(-1, 2, shape, device=run_device())).to(dtype)
 
 
 # default dim=None for the ten ops -> full reduction on 3-D input
@@ -196,6 +198,7 @@ def test_empty_dim_noop_answers_without_a_target(op_name: str) -> None:
 # A kernel's architecture check reads the device the op handed over
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_the_arch_check_asks_about_the_input_s_device(monkeypatch) -> None:
     """Not whichever device is current: the two differ on a mixed-architecture host.

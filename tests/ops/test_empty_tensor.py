@@ -12,6 +12,7 @@ import torch
 
 from tileops.ops.elementwise import AddFwdOp, ReluFwdOp
 from tileops.ops.reduction import SumFwdOp
+from workloads.device import run_device
 
 pytestmark = [
     pytest.mark.smoke,
@@ -30,7 +31,7 @@ def _message(op_class_name: str, input_name: str, shape: tuple) -> str:
 
 @pytest.fixture
 def empty() -> torch.Tensor:
-    return torch.randn(0, 8, device="cuda", dtype=DTYPE)
+    return torch.randn(0, 8, device=run_device(), dtype=DTYPE)
 
 
 @pytest.mark.parametrize(
@@ -49,11 +50,12 @@ def test_empty_input_is_refused(empty, call, op_class_name, input_name):
 def test_compiled_call_is_refused_the_same_way(empty):
     """The traced path reaches kernel selection too, so it gets the same message."""
     compiled = torch.compile(ReluFwdOp(), fullgraph=True)
-    assert compiled(torch.randn(4, 8, device="cuda", dtype=DTYPE)).shape == (4, 8)
+    assert compiled(torch.randn(4, 8, device=run_device(), dtype=DTYPE)).shape == (4, 8)
     with pytest.raises(ValueError, match=re.escape(_message("ReluFwdOp", "input", (0, 8)))):
         compiled(empty)
 
 
+@pytest.mark.cuda_only
 def test_the_op_s_own_validation_precedes_the_refusal():
     """``_eager_forward``'s prelude runs before kernel selection, so it reports first."""
     with pytest.raises(ValueError, match="needs every tensor on one device"):

@@ -16,6 +16,7 @@ from zlib import crc32
 import torch
 
 from tileops.manifest.primitives import WORKLOAD_SEED
+from workloads.device import run_device
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -50,7 +51,7 @@ class WorkloadBase(ABC):
         seeded generator, so two calls to one ``gen_inputs`` return equal
         inputs.
 
-        A draw on a CUDA tensor needs ``device="cuda"``: a generator only
+        A draw on a device tensor needs that *device*: a generator only
         feeds draws on its own device.
         """
         seed = (WORKLOAD_SEED ^ crc32(f"{type(self).__name__}:{tag}".encode())) & 0xFFFFFFFF
@@ -64,9 +65,14 @@ class CallWorkload(WorkloadBase):
     omits one; ``arguments()`` the op's constructor arguments.
     """
 
-    def __init__(self, call: Any, device: "torch.device | str" = "cuda"):
+    def __init__(self, call: Any, device: "torch.device | str | None" = None):
         self.call = call
-        self.device = device
+        self._device = device
+
+    @property
+    def device(self) -> "torch.device | str":
+        """The device the inputs go on: the one passed in, else the run's."""
+        return self._device if self._device is not None else run_device()
 
     def gen_inputs(self) -> tuple[Any, ...]:
         tensors = self.call.materialize(self.device)
@@ -84,7 +90,7 @@ class RandnWorkload(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+        x = torch.randn(*self.shape, dtype=self.dtype, device=run_device())
         return (x,)
 
 

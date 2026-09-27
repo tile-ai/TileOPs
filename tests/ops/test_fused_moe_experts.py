@@ -9,6 +9,7 @@ from tileops.ops.moe.fused_moe_shared_expert import FusedMoeSharedExpertFwdOp
 from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 from tileops.utils import get_sm_version
+from workloads.device import run_device
 from workloads.moe import MoeExpertsWorkload, moe_call, ref_routed_experts
 
 
@@ -28,12 +29,12 @@ def _small_route_case(ids, dtype=torch.bfloat16):
     """An indexed-path call routed by *ids*: few routes per expert, H = 128, F = 256."""
     T, K = len(ids), len(ids[0])
     E = max(8, max(max(row) for row in ids) + 1)
-    hidden = torch.randn(T, 128, dtype=dtype, device="cuda") * 0.1
-    w1 = torch.randn(E, 512, 128, dtype=dtype, device="cuda") * 0.02
-    w2 = torch.randn(E, 128, 256, dtype=dtype, device="cuda") * 0.02
-    weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), -1)
-    topk_ids = torch.tensor(ids, dtype=torch.int32, device="cuda")
-    output = torch.empty(T, 128, dtype=dtype, device="cuda")
+    hidden = torch.randn(T, 128, dtype=dtype, device=run_device()) * 0.1
+    w1 = torch.randn(E, 512, 128, dtype=dtype, device=run_device()) * 0.02
+    w2 = torch.randn(E, 128, 256, dtype=dtype, device=run_device()) * 0.02
+    weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device=run_device()), -1)
+    topk_ids = torch.tensor(ids, dtype=torch.int32, device=run_device())
+    output = torch.empty(T, 128, dtype=dtype, device=run_device())
     return FusedMoEExpertsFwdOp(), (output, hidden, w1, w2, weights, topk_ids)
 
 
@@ -158,12 +159,12 @@ class TestFusedMoEExpertsFwdOp:
         experts = FusedMoEExpertsFwdOp()
         E, K, H, F = 256, 8, 256, 256
         args = (
-            torch.empty(tokens, H, dtype=torch.bfloat16, device="cuda"),
-            torch.randn(tokens, H, dtype=torch.bfloat16, device="cuda") * 0.1,
-            torch.randn(E, 2 * F, H, dtype=torch.bfloat16, device="cuda") * 0.02,
-            torch.randn(E, H, F, dtype=torch.bfloat16, device="cuda") * 0.02,
-            torch.rand(tokens, K, dtype=torch.float32, device="cuda"),
-            torch.randint(0, E, (tokens, K), dtype=torch.int32, device="cuda"),
+            torch.empty(tokens, H, dtype=torch.bfloat16, device=run_device()),
+            torch.randn(tokens, H, dtype=torch.bfloat16, device=run_device()) * 0.1,
+            torch.randn(E, 2 * F, H, dtype=torch.bfloat16, device=run_device()) * 0.02,
+            torch.randn(E, H, F, dtype=torch.bfloat16, device=run_device()) * 0.02,
+            torch.rand(tokens, K, dtype=torch.float32, device=run_device()),
+            torch.randint(0, E, (tokens, K), dtype=torch.int32, device=run_device()),
         )
         experts(*args)
         assert bool(experts.last_call.stages["indexed_small_route"]) is indexed
@@ -189,6 +190,7 @@ class TestFusedMoEExpertsFwdOp:
             built = {r for r in indexed.kernel_types if indexed.built_kernels(r)}
             assert built == set(indexed.kernel_types), built
 
+    @pytest.mark.cuda_only
     @pytest.mark.smoke
     def test_small_route_dispatch_replays_in_cuda_graph(self):
         experts, args = _small_route_case([[0, 1], [2, 3], [4, 5], [6, 7]])
@@ -279,13 +281,13 @@ def test_the_shared_expert_refuses_a_non_silu_activation():
     T, E, H, F, S = 4, 4, 128, 128, 128
     op = FusedMoeSharedExpertFwdOp(2, activation="gelu_and_mul")
     args = (
-        torch.randn(T, H, dtype=torch.bfloat16, device="cuda"),
-        torch.randn(T, E, device="cuda"),
-        torch.randn(E, 2 * F, H, dtype=torch.bfloat16, device="cuda"),
-        torch.randn(E, H, F, dtype=torch.bfloat16, device="cuda"),
+        torch.randn(T, H, dtype=torch.bfloat16, device=run_device()),
+        torch.randn(T, E, device=run_device()),
+        torch.randn(E, 2 * F, H, dtype=torch.bfloat16, device=run_device()),
+        torch.randn(E, H, F, dtype=torch.bfloat16, device=run_device()),
         None,
-        torch.randn(2 * S, H, dtype=torch.bfloat16, device="cuda"),
-        torch.randn(H, S, dtype=torch.bfloat16, device="cuda"),
+        torch.randn(2 * S, H, dtype=torch.bfloat16, device=run_device()),
+        torch.randn(H, S, dtype=torch.bfloat16, device=run_device()),
     )
     with pytest.raises(ValueError, match="silu_and_mul"):
         op(*args)
