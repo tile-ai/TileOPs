@@ -42,6 +42,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         quantization,
         reduction,
         rope,
+        sampling,
         sequence_modeling,
     )
     from .ops.op_base import Op
@@ -57,6 +58,7 @@ _FAMILIES = (
     "convolution",
     "fft",
     "moe",
+    "sampling",
     "rope",
     "attention",
     "linear_attention",

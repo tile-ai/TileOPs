@@ -1,0 +1,167 @@
+# Logit filters and token draws of a decode step.
+#
+# Logits are [B, V]; a filter returns logits of the same shape and dtype with the removed
+# entries set to -inf, so filters compose. Sampling parameters are per-row tensors. The
+# random ops take their Philox state as (seed, offset) tensors, so a fixed pair gives a
+# fixed result.
+
+TopKMaskFwdOp:
+  # Keeps the k[b] largest logits of row b, ties at the threshold kept; a row with
+  # k[b] >= V is unchanged (FlashInfer top_k_mask_logits).
+  family: sampling
+  status: spec-only
+  signature:
+    forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]", k_list: "Seq[Int]"}
+    inputs:
+      logits: {dtype: T, shape: "[B, V]"}
+      k: {dtype: int32, shape: "[B]", values: "as_tensor(k_list)", requires: ["in_range(1, 2147483648)"]}
+    outputs:
+      masked_logits: {dtype: T, shape: "[B, V]"}
+  workloads:
+  - {V: 128256, k_list: "repeat(50, 1)", dtype_cases: [{T: bfloat16}, {T: float32}], label: llama-8b-b1}
+  - {V: 128256, k_list: "repeat(50, 64)", dtype_cases: [{T: bfloat16}], label: llama-8b-b64}
+  - {V: 128256, k_list: "repeat(50, 256)", dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-b256}
+  - {V: 151936, k_list: "repeat(20, 128)", dtype_cases: [{T: bfloat16}], label: qwen3-235b-b128}
+  - {V: 201088, k_list: "repeat(50, 64)", dtype_cases: [{T: bfloat16}], label: gpt-oss-120b-b64}
+  roofline:
+    # The threshold search and the mask on each row k selects; a row k leaves whole is the identity.
+    func: "tileops.perf.formulas.top_k_mask_roofline"
+
+MinPMaskFwdOp:
+  # Masks every logit whose probability is below min_p[b] * max(prob[b]), i.e. every
+  # logit below max_logit + log(min_p[b]). 0 < min_p <= 1 is the caller's obligation.
+  family: sampling
+  status: spec-only
+  signature:
+    forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]"}
+    inputs:
+      logits: {dtype: T, shape: "[B, V]"}
+      min_p: {dtype: float32, shape: "[B]"}
+    outputs:
+      masked_logits: {dtype: T, shape: "[B, V]"}
+    shape_rules:
+    - "V > 0"
+  workloads:
+  - {B: 1, V: 128256, dtype_cases: [{T: bfloat16}, {T: float32}], label: llama-8b-b1}
+  - {B: 64, V: 128256, dtype_cases: [{T: bfloat16}], label: llama-8b-b64}
+  - {B: 256, V: 128256, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-b256}
+  - {B: 128, V: 151936, dtype_cases: [{T: bfloat16}], label: qwen3-235b-b128}
+  roofline:
+    # Per element: the row max and the masking compare-select; per row: the threshold (log, add).
+    flops: "2 * B * V + 2 * B"
+
+TopPMaskFwdOp:
+  # Keeps the smallest set of highest-probability tokens whose cumulative probability
+  # reaches p[b]: a token survives while the exclusive cumulative sum before it is below
+  # p[b]. 0 < p < 1 is the caller's obligation.
+  family: sampling
+  status: spec-only
+  signature:
+    forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]"}
+    inputs:
+      logits: {dtype: T, shape: "[B, V]"}
+      p: {dtype: float32, shape: "[B]"}
+    outputs:
+      masked_logits: {dtype: T, shape: "[B, V]"}
+    shape_rules:
+    - "V > 0"
+  workloads:
+  - {B: 1, V: 128256, dtype_cases: [{T: bfloat16}, {T: float32}], label: llama-8b-b1}
+  - {B: 64, V: 128256, dtype_cases: [{T: bfloat16}], label: llama-8b-b64}
+  - {B: 256, V: 128256, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-b256}
+  - {B: 128, V: 151936, dtype_cases: [{T: bfloat16}], label: qwen3-235b-b128}
+  - {B: 64, V: 201088, dtype_cases: [{T: bfloat16}], label: gpt-oss-120b-b64}
+  roofline:
+    # Per element: the softmax numerator (max, subtract, exp, sum), a weighted selection of
+    # the threshold (compare, accumulate) and the mask; per row: p times the sum.
+    flops: "7 * B * V + B"
+
+TopKTopPMaskFwdOp:
+  # TopPMaskFwdOp(TopKMaskFwdOp(logits, k), p): top-p's probabilities are renormalized
+  # over the tokens top-k keeps. 0 < p < 1 is the caller's obligation.
+  family: sampling
+  status: spec-only
+  signature:
+    forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]", k_list: "Seq[Int]"}
+    inputs:
+      logits: {dtype: T, shape: "[B, V]"}
+      k: {dtype: int32, shape: "[B]", values: "as_tensor(k_list)", requires: ["in_range(1, 2147483648)"]}
+      p: {dtype: float32, shape: "[B]"}
+    outputs:
+      masked_logits: {dtype: T, shape: "[B, V]"}
+    shape_rules:
+    - "V > 0"
+  workloads:
+  - {V: 128256, k_list: "repeat(50, 1)", dtype_cases: [{T: bfloat16}, {T: float32}], label: llama-8b-b1}
+  - {V: 128256, k_list: "repeat(50, 64)", dtype_cases: [{T: bfloat16}], label: llama-8b-b64}
+  - {V: 128256, k_list: "repeat(50, 256)", dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-b256}
+  - {V: 151936, k_list: "repeat(20, 128)", dtype_cases: [{T: bfloat16}], label: qwen3-235b-b128}
+  roofline:
+    # Top-k on the rows k restricts, top-p over each row's survivors, the final mask.
+    func: "tileops.perf.formulas.top_k_top_p_mask_roofline"
+
+SamplingFromProbsFwdOp:
+  # Draws one index per row with probability proportional to probs[b]; a zero-weight
+  # token is never drawn. Each row finite, non-negative and with a positive total is the
+  # caller's obligation.
+  family: sampling
+  status: spec-only
+  signature:
+    forall: {B: Dim, V: Dim}
+    inputs:
+      probs: {dtype: float32, shape: "[B, V]"}
+      seed: {dtype: int64, shape: "[1]"}
+      offset: {dtype: int64, shape: "[1]"}
+    outputs:
+      samples: {dtype: int32, shape: "[B]"}
+  workloads:
+  - {B: 1, V: 128256, label: llama-8b-b1}
+  - {B: 64, V: 128256, label: llama-8b-b64}
+  - {B: 256, V: 128256, label: llama-8b-b256}
+  - {B: 128, V: 151936, label: qwen3-235b-b128}
+  - {B: 64, V: 201088, label: gpt-oss-120b-b64}
+  roofline:
+    # Per element: the row total, then the running sum and its compare against the draw;
+    # per row: the draw scaled by the total.
+    flops: "3 * B * V + B"
+
+ChainSpeculativeSamplingFwdOp:
+  # Verifies N draft tokens per request. Draft token i is accepted with probability
+  # min(1, target / draft); at the first rejection a token is drawn from
+  # normalize(max(0, target - draft)) and the rest of the row is -1; when every draft is
+  # accepted a bonus token is drawn from target row N. num_accepted is the accepted
+  # prefix length, the bonus excluded. Every probability row finite, non-negative and
+  # normalized, and each draft token of positive draft probability, is the caller's
+  # obligation.
+  family: sampling
+  status: spec-only
+  signature:
+    forall: {B: Dim, N: Dim, V: Dim}
+    inputs:
+      draft_probs: {dtype: float32, shape: "[B, N, V]"}
+      draft_token_ids: {dtype: int32, shape: "[B, N]", values: "topk_ids(B, N, V)", requires: ["in_range(0, V)"]}
+      target_probs: {dtype: float32, shape: "[B, N + 1, V]"}
+      seed: {dtype: int64, shape: "[1]"}
+      offset: {dtype: int64, shape: "[1]"}
+    outputs:
+      output_token_ids: {dtype: int32, shape: "[B, N + 1]"}
+      num_accepted: {dtype: int32, shape: "[B]"}
+    shape_rules:
+    - "N > 0"
+  workloads:
+  - {B: 16, N: 4, V: 128256, label: llama-8b-b16-n4}
+  - {B: 64, N: 4, V: 128256, label: llama-8b-b64-n4}
+  - {B: 64, N: 1, V: 129280, label: ds-v3-mtp-n1}
+  - {B: 64, N: 3, V: 129280, label: ds-v3-mtp-n3}
+  - {B: 32, N: 5, V: 151936, label: qwen3-235b-eagle-n5}
+  roofline:
+    # The work depends on where the chain stops, which the random draws decide, so both
+    # counts are the cheaper of the two extreme outcomes. All accepted: N ratio tests (a
+    # multiply and a compare), a draw from target row N (3 per token, 1 per row), reading
+    # the N token ids, 2 N probabilities and one target row. Rejected at the first: one
+    # test, the residual max(0, t - d) (2 per token) and a draw from it, reading one id and
+    # the two rows.
+    flops: "B * (2 * N + 3 * V + 1 if 2 * N + 3 * V + 1 < 5 * V + 3 else 5 * V + 3)"
+    bytes: >-
+      bytes(seed) + bytes(offset) + bytes(output_token_ids) + bytes(num_accepted)
+      + B * (12 * N + 4 * V if 12 * N + 4 * V < 4 + 8 * V else 4 + 8 * V)

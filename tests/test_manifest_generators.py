@@ -102,3 +102,19 @@ def test_sample_indices_draws_distinct_values_in_range():
     assert sorted(GENERATORS["sample_indices"](random.Random(0), 5, 5)) == list(range(5))
     with pytest.raises(ValueError):
         GENERATORS["sample_indices"](random.Random(0), 3, 2)
+
+
+def test_sparse_topk_positions_draw_visible_positions_and_pad():
+    # Request lengths 3 and 5, two queries: query s of a length-n request sees n - 1 + s positions.
+    rows = GENERATORS["attn.sparse_topk_positions"](random.Random(0), [3, 5], 2, 4)
+    assert (len(rows), len(rows[0]), len(rows[0][0])) == (2, 2, 4)
+    for n, per_query in zip([3, 5], rows, strict=True):
+        for s, slots in enumerate(per_query):
+            visible = n - 1 + s
+            picked = [j for j in slots if j != -1]
+            assert len(picked) == len(set(picked)) == min(4, visible)
+            assert all(0 <= j < visible for j in picked) and slots[len(picked) :] == [-1] * (
+                4 - len(picked)
+            )
+    with pytest.raises(ValueError):
+        GENERATORS["attn.sparse_topk_positions"](random.Random(0), [1], 2, 4)
