@@ -96,7 +96,7 @@ roofline:
 - **Schema validator / CI** — structural checks (schema, mode exclusivity, `func` importability), and it renders the analysis's defects. Does **not** execute formulas or hold a helper whitelist. Spec: §4.1.
 - **Benchmark layer** — instantiates an Op per workload and reads `(flops, bytes)` from `op.eval_roofline()`. Hardcoded formulas in benchmark files are a CI failure. Spec: §4.2.
 - **Roofline tool (M5)** — reads per-workload `(flops, bytes)`, the roof key, and timing from benchmark output, prices them against the GPU profile (§5.1), and emits SOL efficiency and verdicts. Spec: §4.3.
-- **Op codegen** — emits the `eval_roofline()` method of every implemented entry (§4.4.1) from what the analysis decided. Judges nothing. Spec: §4.4.
+- **Op codegen** — emits the `eval_roofline()` method of every entry (§4.4.1) from what the analysis decided. Judges nothing. Spec: §4.4.
 
 Two auditors check the field's values rather than consume them: the structural oracle (§4.6) and the NCU bytes audit (§4.5).
 
@@ -117,7 +117,7 @@ Every roofline entry MUST satisfy:
 
 Rules the validator does not own:
 
-- Name whitelist — a formula's names are checked by the analysis (§4.4), which reads the primitive tables of [manifest.md](manifest.md#t-prims). Validator does not mirror it; it renders what the analysis says.
+- Name whitelist — a formula's names are checked by the analysis (§4.4), which reads the primitive set ([manifest.md § Derived Indices and Primitives](manifest.md#derived-indices-and-primitives)). Validator does not mirror it; it renders what the analysis says.
 - Form checks — the analysis refuses invalid forms. Validator does not mirror them either; it renders what the analysis found.
 - Numeric checks (finite / non-negative / numeric) — outside the validator entirely; tests exercise generated `eval_roofline()` on each workload.
 
@@ -154,9 +154,9 @@ Physics check: every row's implied rates (`bytes / time`, `flops / time`) are co
 
 ### 4.4 Op Codegen
 
-Analysis runs for every entry. Emission runs for `status: implemented` entries only.
+Analysis and emission run for every entry, whatever its `status`.
 
-An inline entry is decided from the entry alone — no op instance, no tensor library, no device — which is what lets the validator (§4.1) ask the question wherever the manifest can be read. A `func` path is imported only for an implemented entry.
+An inline entry is decided from the entry alone — no op instance, no tensor library, no device — which is what lets the validator (§4.1) ask the question wherever the manifest can be read. The validator imports a `func` path only for an implemented entry; emission imports it when the entry's class is created.
 
 The analysis is the authoritative gate for name and form correctness. A formula referencing an unknown name or violating a layer's form constraints fails it, and a manifest that fails it cannot land. Numeric correctness is exercised by tests.
 
@@ -168,7 +168,7 @@ Analysis and emission are separate: analysis reads the entry and decides, emissi
 
 #### 4.4.1 Generated Method
 
-Every implemented manifest entry is served by a generated `eval_roofline()` returning `(flops: int, bytes: int)`. The method belongs to that entry: a subclass with its own entry receives its own evaluator rather than inheriting another entry's formula. It is emitted per discriminant point, like the call checks, and evaluates over the op's last completed call. The signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md).
+Every manifest entry is served by a generated `eval_roofline()` returning `(flops: int, bytes: int)`. The method belongs to that entry: a subclass with its own entry receives its own evaluator rather than inheriting another entry's formula. It is emitted per discriminant point, like the call checks, and evaluates over the op's last completed call. The signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md).
 
 #### 4.4.2 Manifest Inputs
 
@@ -176,7 +176,7 @@ Codegen reads the formula mode of §2.2: an inline body folded at each point, wi
 
 #### 4.4.3 Namespace
 
-The primitive tables of [manifest.md](manifest.md#t-prims) are the only list of names an inline formula may call (§2.2); a primitive is added there and in its one implementation, and nowhere else. A refusal states the allowed names. A name resolves from one place only.
+The primitive set ([manifest.md § Derived Indices and Primitives](manifest.md#derived-indices-and-primitives)) is the only list of names an inline formula may call (§2.2); a primitive is added to that set and nowhere else. A refusal states the allowed names. A name resolves from one place only.
 
 #### 4.4.4 Evaluation Timing
 

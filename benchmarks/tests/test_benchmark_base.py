@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from benchmarks.benchmark_base import ManifestBenchmark, workloads_to_params
+from benchmarks.benchmark_base import ManifestBenchmark
 from benchmarks.timing import (
     Trace,
     _attributed_samples,
@@ -17,55 +17,6 @@ from benchmarks.timing import (
     bench_kernel,
 )
 from tileops.manifest import load_workloads
-
-# A legacy single-input entry: the format ``workloads_to_params`` reads.
-_LEGACY_ENTRY = {
-    "family": "reduction",
-    "status": "implemented",
-    "source": {},
-    "signature": {
-        "inputs": {"x": {"dtype": "float16 | bfloat16"}},
-        "outputs": {"y": {"dtype": "same_as(x)"}},
-        "params": {"dim": {"type": "int | None", "default": None}},
-    },
-    "workloads": [
-        {"x_shape": [4, 8], "dtypes": ["float16"], "label": "no-extra"},
-        {"x_shape": [4, 8], "dim": 0, "dtypes": ["bfloat16"], "label": "with-dim"},
-    ],
-}
-
-
-class ExampleReduceFwdOp:
-    """Stands for the op class the legacy entry names."""
-
-
-@pytest.fixture
-def legacy_manifest(monkeypatch):
-    import benchmarks.benchmark_base
-    import tileops.manifest
-
-    manifest = {"ExampleReduceFwdOp": _LEGACY_ENTRY}
-    monkeypatch.setattr(tileops.manifest, "load_manifest", lambda: manifest)
-    monkeypatch.setattr(benchmarks.benchmark_base, "load_manifest", lambda: manifest)
-
-
-@pytest.mark.smoke
-@pytest.mark.usefixtures("legacy_manifest")
-def test_workloads_to_params_include_extra_propagates_dim():
-    """``include_extra=True`` surfaces a row's op parameters as the third element,
-    an empty dict for a row that carries none."""
-    triples = workloads_to_params("ExampleReduceFwdOp", include_extra=True)
-    assert [p.values for p in triples] == [
-        ((4, 8), torch.float16, {}),
-        ((4, 8), torch.bfloat16, {"dim": 0}),
-    ]
-
-
-@pytest.mark.usefixtures("legacy_manifest")
-def test_an_op_class_names_its_own_workloads():
-    """A caller holding the Op class does not have to repeat its name as a string."""
-    assert load_workloads(ExampleReduceFwdOp) == load_workloads("ExampleReduceFwdOp")
-    assert workloads_to_params(ExampleReduceFwdOp) == workloads_to_params("ExampleReduceFwdOp")
 
 
 def test_no_bench_reaches_its_gradients_through_the_autograd_engine():
@@ -89,12 +40,6 @@ def test_no_bench_reaches_its_gradients_through_the_autograd_engine():
         "cannot tell which iteration they belong to; call the backward node instead, "
         "via benchmarks.benchmark_base.backward_of:\n  " + "\n  ".join(offenders)
     )
-
-
-def test_multi_input_op_raises_keyerror():
-    """Multi-input ops (q/k/v) raise instead of binding a wrong tensor."""
-    with pytest.raises(KeyError, match="exactly one manifest tensor input"):
-        workloads_to_params("GroupedQueryAttentionDenseFwdOp")
 
 
 def _kernel(start_ns: int, end_ns: int, correlation_id: int = 0) -> dict:
@@ -281,6 +226,11 @@ class SumFwdOp:
 
 class NotAManifestOp:
     """A wrapper of the kind a benchmark must not report under."""
+
+
+def test_an_op_class_names_its_own_workloads():
+    """A caller holding the Op class does not have to repeat its name as a string."""
+    assert load_workloads(SumFwdOp) == load_workloads("SumFwdOp")
 
 
 @pytest.mark.smoke

@@ -14,7 +14,6 @@ type is not a construction parameter: an instance serves whichever dtype its cal
 passes, one specialization per element type, built on first use.
 """
 
-import math
 from typing import Callable, ClassVar, Dict, Optional
 
 import torch
@@ -23,108 +22,6 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 
 from ..op_base import Op
-
-_MANIFEST_INT_SCALAR_DTYPES = (
-    torch.uint8,
-    torch.int8,
-    torch.int16,
-    torch.int32,
-    torch.int64,
-)
-
-
-def _validate_scalar_param_repr(
-    param_name: str,
-    value,
-    dtype: torch.dtype,
-    op_name: str,
-    *,
-    allow_nonfinite_float: bool = False,
-) -> None:
-    """Reject scalar params that cannot be represented in the user dtype.
-
-    Validated against the dtype the caller passes, which is the dtype the result
-    is stored in. A kernel widening an operand for the arithmetic does not widen
-    what the scalar has to fit in.
-
-    Integer and bool mirror PyTorch ``Tensor.masked_fill`` coercion:
-
-    - bool: any int/float, reduced to ``{0, 1}``.
-    - Signed int: any value in ``[iinfo.min, iinfo.max]``, truncated toward
-      zero. NaN/Inf and out-of-range raise.
-    - ``uint8``: ints in ``[-255, 255]``, negatives wrapping via ``& 0xFF``;
-      float scalars must be in $[0 \\times 255]$.
-
-    Floats always accept ``NaN`` and require finite values in ``finfo`` range.
-    ``+/-Inf`` passes only under ``allow_nonfinite_float`` — used by
-    ``MaskedFillScalarFwdOp``, which writes the scalar into tensor storage.
-    """
-    if isinstance(value, bool):
-        # ``bool`` is a subclass of ``int``; treat explicitly so the int
-        # range checks below operate on the integer/float branch.
-        return
-    if not isinstance(value, (int, float)):
-        raise TypeError(
-            f"{op_name} expected scalar {param_name} to be int/float, got {type(value)}"
-        )
-
-    if dtype == torch.bool:
-        return
-
-    if dtype in _MANIFEST_INT_SCALAR_DTYPES:
-        iinfo = torch.iinfo(dtype)
-        if isinstance(value, float):
-            if math.isnan(value) or math.isinf(value):
-                raise ValueError(
-                    f"{op_name} received {param_name}={value!r}, but {param_name} must be finite "
-                    f"and representable in dtype {dtype}"
-                )
-            # PyTorch range-checks the real float value, then truncates
-            # toward zero. Negative float scalars never wrap into uint8
-            # (``uint8.masked_fill(mask, -1.0)`` raises in PyTorch).
-            if not (iinfo.min <= value <= iinfo.max):
-                raise ValueError(
-                    f"{op_name} received {param_name}={value!r}, which is not representable in "
-                    f"dtype {dtype} (valid finite range: [{iinfo.min}, {iinfo.max}])"
-                )
-            return
-        # Python int branch. uint8 wraps negatives in [-255, 255] via
-        # two's complement, matching PyTorch.
-        if dtype == torch.uint8 and value < 0:
-            if value < -255:
-                raise ValueError(
-                    f"{op_name} received {param_name}={value!r}, which is not representable in "
-                    f"dtype {dtype} (valid integer range: [-255, 255] with wraparound, "
-                    f"or [0, 255] direct)"
-                )
-            return
-        if not (iinfo.min <= value <= iinfo.max):
-            raise ValueError(
-                f"{op_name} received {param_name}={value!r}, which is not representable in "
-                f"dtype {dtype} (valid integer range: [{iinfo.min}, {iinfo.max}])"
-            )
-        return
-
-    finfo = torch.finfo(dtype)
-    value_f64 = float(value)
-    if math.isnan(value_f64):
-        return
-    if math.isinf(value_f64):
-        # PyTorch preserves +/-Inf for float tensor scalars. Ops needing a
-        # finite scalar (elu alpha, softplus beta) reject here; masked_fill
-        # writes the scalar into storage and opts in.
-        if allow_nonfinite_float:
-            return
-        raise ValueError(
-            f"{op_name} received {param_name}={value!r}, but {param_name} must be finite and "
-            f"representable in dtype {dtype}"
-        )
-    if not (finfo.min <= value_f64 <= finfo.max):
-        raise ValueError(
-            f"{op_name} received {param_name}={value!r}, which is not representable in "
-            f"dtype {dtype} (valid finite range: "
-            f"[{finfo.min}, {finfo.max}])"
-        )
 
 
 class _PerDtypeKernels:
@@ -393,18 +290,11 @@ class _ParametricActivationOp(UnaryOp):
     """
 
     # Names of the scalar parameters baked into the kernel; each names both the
-    # attribute on ``self`` and the kernel kwarg. The entry builder validates
-    # them against the element type before baking, which is why the check
-    # cannot live in ``__init__``: it needs a dtype, and none exists until a
-    # tensor arrives.
+    # attribute on ``self`` and the kernel kwarg.
     _scalar_params: tuple[str, ...] = ()
 
     def _build(self, dtype: torch.dtype, n_total: int):
-        kwargs = {}
-        for name in type(self)._scalar_params:
-            value = getattr(self, name)
-            _validate_scalar_param_repr(name, value, dtype, self._slot)
-            kwargs[name] = value
+        kwargs = {name: getattr(self, name) for name in type(self)._scalar_params}
         impl, ctor_dtype = self._selected_kernel_cls().specialize(dtype)
         return impl(n_total, ctor_dtype, tune=self.tune, **kwargs)
 
@@ -438,15 +328,6 @@ class _AlphaScaledBinaryOp(BinaryOp):
         """
         self.alpha = alpha
         super().__init__(target=target, kernel_map=kernel_map, tune=tune)
-
-    def _build(self, dtype: torch.dtype, a_shape: tuple, b_shape: tuple):
-        # torch.add / torch.sub refuse a floating-point alpha for integral and bool inputs.
-        if isinstance(self.alpha, float) and not dtype.is_floating_point:
-            raise ValueError(
-                f"{type(self).__name__}: alpha={self.alpha!r} is a float, which a {dtype} "
-                "input does not take"
-            )
-        return super()._build(dtype, a_shape, b_shape)
 
     def _build_kernel_instance(self, tune, dtype, impl, a_shape, b_shape):
         return impl(a_shape, b_shape, dtype, tune=tune, alpha=self.alpha)

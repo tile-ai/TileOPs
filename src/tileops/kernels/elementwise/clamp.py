@@ -9,6 +9,7 @@ from ._base import (
     MultiInputElementwiseKernel,
     ScalarParamUnaryKernel,
 )
+from ._nan import nan_max, nan_min
 
 __all__ = [
     "ClampFwdKernel",
@@ -20,7 +21,8 @@ class ClampFwdKernel(ScalarParamUnaryKernel):
     """Clamp: y = clamp(x, min, max) with optional bounds.
 
     Computes in float32 and casts back at the store, so a half input keeps the
-    precision of the comparison. A bound the caller omitted is not applied.
+    precision of the comparison. A bound the caller omitted is not applied. A NaN
+    input or bound gives NaN, as in ``torch.clamp``.
     """
 
     def __init__(self, N_total, dtype, min_val=None, max_val=None, config=None, tune=False):
@@ -37,9 +39,9 @@ class ClampFwdKernel(ScalarParamUnaryKernel):
         def op_func(x):
             wide = T.cast(x, "float32")
             if min_val is not None:
-                wide = T.max(wide, T.cast(min_val, "float32"))
+                wide = nan_max(wide, T.cast(min_val, "float32"))
             if max_val is not None:
-                wide = T.min(wide, T.cast(max_val, "float32"))
+                wide = nan_min(wide, T.cast(max_val, "float32"))
             return T.Cast(x.dtype, wide)
 
         return op_func
@@ -84,14 +86,7 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
                         x32 = T.cast(x_reg[k], "float32")
                         lo32 = T.cast(lo_reg[k], "float32")
                         hi32 = T.cast(hi_reg[k], "float32")
-                        r = T.min(T.max(x32, lo32), hi32)
-                        # fmaxf / fminf return their non-NaN operand where torch
-                        # returns NaN. Restored after both bounds, so one bound's
-                        # NaN is not clamped away by the other.
-                        r = T.if_then_else(T.isnan(hi32), hi32, r)
-                        r = T.if_then_else(T.isnan(lo32), lo32, r)
-                        r = T.if_then_else(T.isnan(x32), x32, r)
-                        x_reg[k] = T.Cast(dtype, r)
+                        x_reg[k] = T.Cast(dtype, nan_min(nan_max(x32, lo32), hi32))
                     T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
 
             return main
@@ -119,10 +114,7 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
                     k = i * npt_arg + j
                     x32 = T.cast(x_reg[k], "float32")
                     b32 = T.cast(bound_reg[k], "float32")
-                    r = T.max(x32, b32) if take_max else T.min(x32, b32)
-                    # fmaxf / fminf return their non-NaN operand; torch returns NaN.
-                    r = T.if_then_else(T.isnan(b32), b32, r)
-                    r = T.if_then_else(T.isnan(x32), x32, r)
+                    r = nan_max(x32, b32) if take_max else nan_min(x32, b32)
                     x_reg[k] = T.Cast(dtype, r)
                 T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
 

@@ -85,7 +85,7 @@ SiluAndMulFwdOp:
 
 - **Key.** The Python class name of the op, `{PascalCaseName}[{Fwd|Bwd}]Op`. The validator requires `cls.__name__ == key`.
 - **`family`.** The op's public module and a segment of its operator namespace: the op is importable as `tileops.<family>.<Op>`, and the family's `__all__` agrees with the manifest.
-- **`status`.** Required. `implemented`: an implementation conforms to the manifest. `spec-only`: no conforming implementation exists yet; code may be absent or partial.
+- **`status`.** Required. `implemented`: an implementation conforms to the manifest. `spec-only`: no conforming implementation exists yet; code may be absent or partial. `status` decides which code-dependent checks run, never which methods the signature generates: a class with an entry gets them all.
 - **`ref_api`.** Optional qualified name of the API the op follows semantically. The validator checks its form, and that it resolves when its module imports.
 
 ## Signature
@@ -128,6 +128,7 @@ Each `shape_rules` item is a refinement: a predicate on index values, checked af
 - A guard narrows kinds in the arm it selects: `present(v)` narrows `Maybe[X]` to `X`; `x == lit` and `x in (...)` intersect `x`'s kind with the literals, `x != lit` and `x not in (...)` subtract them; narrowing composes through `not`, `and`, `or` and conditionals. A string inhabits `DType[S]` only when it names a registered member of `S`, so a comparison with literals no member of an enum or dtype set takes is rejected.
 - A refinement that reads only discriminants — every name and ADT field it reads is fixed by the discriminant values, judged over the whole expression regardless of operand order — is a **domain restriction**. It is checked before a type-family branch is chosen, and values it rejects need no type-family case.
 - Lists among construction parameters are available at run time and may appear anywhere. `forall` value lists appear only as generator arguments.
+- A scalar parameter whose admitted values depend on a dtype index states that dependence as a refinement with the primitives `category` and `representable`. The generated call check then holds in-tree and target-served calls to the same rule.
 - Satisfiability of a refinement is the author's responsibility.
 - The validator rejects rules that declare, define or test presence: `x.shape == (...)`, `x is None`, `isinstance` ([table 12](#t-rejected)).
 
@@ -193,7 +194,11 @@ adts:
 ### Derived Indices and Primitives
 
 - `let` names a quantity computed from indices; its kind is `Dim` or a value. It is computed from the signature, at construction when construction can evaluate it and otherwise per call, and is never written in a workload row. `let` dependencies are acyclic.
-- A primitive is a built-in function of the expression language. The set is fixed: general primitives in [table 13](#t-dtype) and [table 15](#t-prims), domain primitives such as `pool.out` in [table 14](#t-domain). Each gives a signature, a domain and a symbolic implementation; outside its domain it raises, naming the declaration that called it. Adding a primitive changes this specification and its one implementation, which the validator, the roofline analysis and the generated code share.
+- A primitive is a built-in function of the expression language. Primitives are classed by namespace ([table 14](#t-domain)) and by result kind ([table 15](#t-prims)). `Axes` is `Int | Seq[Int] | None`.
+- Primitives, generators ([Generators](#generators)) and predicates are closed sets. `tileops.manifest.primitives` is the list; each member states what it computes in a one-line docstring.
+- Each member declares its argument kinds, its result kind and its domain, and a generator whether it draws seeded random values. A primitive or generator raises outside its domain, naming the declaration that called it.
+- The validator, the roofline analysis and the generated code share one implementation of each.
+- Adding a member changes that module and adds a test. A member outside the classes of tables 14, 15, 17 and 18 changes this specification first.
 - Axis-taking primitives normalize axes alike: at rank 0, `0` and `-1` name the one scalar axis and anything else raises; at rank above 0, an axis lies in `[-rank, rank)` and is taken modulo rank.
 
 ### Construction-Time Tensors, Layout and Device
@@ -232,8 +237,9 @@ cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)",
 ```
 
 - The generator result is unified with the declaration; shape indices other than the generator's arguments are solved by that unification (here `B`) and are not written in the row.
-- The generator set is fixed ([table 17](#t-generators)); adding one changes this specification, with its domain, seed and tests. A generated tensor declares an integer dtype, `int32` or `int64`, and its values take it; a domain violation or an overflow of the declared dtype raises. Arguments may be value-primitive calls. A row always yields the same values.
-- `requires` names predicates on a metadata tensor's contents, from a closed set ([table 18](#t-predicates) and the predicates of [table 14](#t-domain)). The constrained tensor's contents are the implicit first argument.
+- A generator is deterministic or seeded ([table 17](#t-generators)), so a row always yields the same values. Its result rank is fixed, or follows its shape argument.
+- A generated tensor declares an integer dtype, `int32` or `int64`, and its values take it; a domain violation or an overflow of the declared dtype raises. Arguments may be value-primitive calls.
+- `requires` names predicates on a metadata tensor's contents ([table 18](#t-predicates)). The constrained tensor's contents are the implicit first argument. Each predicate reads its tensor at a fixed rank, or at any rank for an elementwise bound.
 - A written argument may name another metadata tensor, so one predicate relates two tensors; that tensor is present wherever the constrained one is.
 - A row is checked against its predicates at instantiation. At run time they are the caller's obligation, so the validator also holds them well-formed wherever their tensor is present.
 - A tensor with `requires` has `values`.
@@ -272,7 +278,7 @@ A call has two phases.
 
 ## Validation
 
-An entry's format identifies it: a legacy entry declares `source`, a parametric one does not. [`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) checks every parametric entry on every combination of its discriminant values: type-family `match`, `optional`, `nullable`, `mutated`, output-buffer presence, and the quantities relevance reads. Discriminants are grouped by dependency. Combinations a domain restriction rejects skip only type-family coverage and inference-plan checks. Above a configured number of combinations (default 256) it reports an advisory diagnostic and keeps the entry whole.
+[`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) checks every entry on every combination of its discriminant values: type-family `match`, `optional`, `nullable`, `mutated`, output-buffer presence, and the quantities relevance reads. Discriminants are grouped by dependency. Combinations a domain restriction rejects skip only type-family coverage and inference-plan checks. Above a configured number of combinations (default 256) it reports an advisory diagnostic and keeps the entry whole.
 
 1. Each name's category matches its kind, and each parameter's `type` fits the kind every use site needs.
 1. Type-family cases are exhaustive and disjoint over accepted values; family references are acyclic; a family no shape applies is rejected.
@@ -284,10 +290,10 @@ An entry's format identifies it: a legacy entry declares `source`, a parametric 
 1. Every workload row instantiates.
 1. For every effect branch, the operator schema, aliases and roofline read/write counts agree.
 
-All checks are decidable; every evaluation either succeeds or names the failing declaration. Code-dependent checks are skipped for `spec-only` entries. CI runs the validator with `--strict` over the whole manifest.
+All checks are decidable; every evaluation either succeeds or names the failing declaration. Code-dependent checks are skipped for `spec-only` entries. CI runs the validator over the whole manifest.
 
 - Parsing is per field: an unreadable field is reported and skipped only by the checks that read it.
-- Diagnostics are a contract: the CLI, the diagnostic text and order, and the strict/advisory classification change only through a deliberate, recorded change. Every set entering a diagnostic is sorted, unknown keys by `repr`, so output does not depend on `PYTHONHASHSEED`.
+- Diagnostics are a contract: the CLI, the diagnostic text and order, and the error/advisory classification change only through a deliberate, recorded change. Every set entering a diagnostic is sorted, unknown keys by `repr`, so output does not depend on `PYTHONHASHSEED`.
 - Each fixed section's legal keys are defined in one place.
 - Importing an op loads the manifest leniently and succeeds on an incomplete manifest; strict checking belongs to the validator alone.
 
@@ -390,7 +396,7 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 | 3   | presence  | `present(x)` for a tensor or `Maybe` value; `x.value` only where `present(x)` holds                        |
 | 4   | operators | `+ - * // %`, comparisons, `and or not`, `in`, conditional; Python precedence                              |
 | 5   | access    | subscript, slice; an ADT field only on its constructor's branch, plus `kind`                               |
-| 6   | calls     | comprehension; built-in primitives                                                                         |
+| 6   | calls     | built-in primitives; a comprehension only as the argument of `all`, `sum`, `max` or `min`                  |
 
 **<a id="t-constraints"></a>Table 11** Constraints
 
@@ -413,40 +419,29 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 
 **<a id="t-dtype"></a>Table 13** Dtype expressions
 
-| No. | Form                      | Meaning                                                                            |
-| --- | ------------------------- | ---------------------------------------------------------------------------------- |
-| 1   | `forall` `DType` index    | ranges over its declared set; solved from the inputs                               |
-| 2   | dtype parameter           | the construction parameter's value (`dtype: out_dtype`)                            |
-| 3   | constant                  | a fixed dtype                                                                      |
-| 4   | `promote_int_to_float(T)` | float32 when `T` is integral, else `T`                                             |
-| 5   | `coalesce_dtype(v, T)`    | `Maybe[DType[A]] × DType[B] → DType[A ∪ B]`: `v.value` when `present(v)`, else `T` |
+| No. | Form                   | Meaning                                                                                                                      |
+| --- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `forall` `DType` index | ranges over its declared set; solved from the inputs                                                                         |
+| 2   | dtype parameter        | the construction parameter's value (`dtype: out_dtype`)                                                                      |
+| 3   | constant               | a fixed dtype                                                                                                                |
+| 4   | dtype primitive        | a primitive whose result is a dtype ([table 15](#t-prims)); its kind is the primitive applied over its arguments' dtype sets |
 
-**<a id="t-domain"></a>Table 14** Domain primitives
+**<a id="t-domain"></a>Table 14** Namespaces of primitives, generators and predicates
 
-| No. | Primitive                            | Result                                                                                                 |
-| --- | ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| 1   | `conv.out(L, k, s, p, d)`            | convolution output length                                                                              |
-| 2   | `pool.out(L, k, s, p, d, ceil_mode)` | pooling output length                                                                                  |
-| 3   | `moe.capacity(layout, R, E)`         | masked: `E * max_m`; contiguous aligned: `R + E * (alignment - 1)` rounded up to `alignment`; else `R` |
-| 4   | `mhc.expansion(Q)`                   | the positive `n` with `n * n + 2 * n == Q`; raises when none exists                                    |
-| 5   | `attn.paged_fits(cu, cap)`           | `requires` predicate: element `i` plus segment `i` of `cu` is at most `cap`                            |
-| 6   | `moe.layout_valid(layout, R, E)`     | `requires` predicate: `x` is valid metadata of `layout` for `R` rows and `E` experts                   |
+| No. | Namespace   | Holds                                                    |
+| --- | ----------- | -------------------------------------------------------- |
+| 1   | none        | general members, which any family may call               |
+| 2   | `<family>.` | domain members: one family's formula, generator or check |
 
-**<a id="t-prims"></a>Table 15** General primitives (`Axes = Int | Seq[Int] | None`)
+**<a id="t-prims"></a>Table 15** Primitive classes, by result kind
 
-| No. | Primitive                       | Signature                                                                          | Domain and result                                                                                                                       |
-| --- | ------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `broadcast`                     | `Shape... → Shape`                                                                 | PyTorch broadcasting; raises when not broadcastable                                                                                     |
-| 2   | `reduced`                       | `Shape × Axes × Bool × ('full' \| 'noop' \| 'reject') → Shape`                     | `None` reduces all axes; an empty sequence per `mode` (all / none / raise); rank 0 yields `[]`                                          |
-| 3   | `valid_axes`                    | `Axes × Int → Bool`                                                                | every axis normalizes; `None` is true                                                                                                   |
-| 4   | `unique_axes`                   | `Axes × Int → Bool`                                                                | normalized axes are distinct                                                                                                            |
-| 5   | `per_axis`                      | `(Int \| Seq[Maybe[Int]] \| None) × Int × Int × fallback: Maybe[Int] = None → Int` | a scalar returns itself; a length-`n` sequence yields item `i`; `None` takes `fallback`, raising if that is `None`; other lengths raise |
-| 6   | `ceil_div`                      | `Int × Int → Int`                                                                  | positive divisor                                                                                                                        |
-| 7   | `len`                           | `Seq[A] → Dim`                                                                     | any sequence                                                                                                                            |
-| 8   | `prod` / `sum`                  | `Seq[Int] → Int`                                                                   | `prod([])` is 1, `sum([])` is 0                                                                                                         |
-| 9   | `max` / `min`                   | `Seq[Int] × default: Maybe[Int] = None → Int`                                      | empty takes `default`, raising without one                                                                                              |
-| 10  | `all`                           | `Seq[Bool] → Bool`                                                                 | empty is true                                                                                                                           |
-| 11  | comprehension `f(x) for x in s` | `Seq[A] → Seq[B]`                                                                  | only as an argument of `all`, `sum`, `max`, `min`                                                                                       |
+| No. | Class   | Result             | States                                                       |
+| --- | ------- | ------------------ | ------------------------------------------------------------ |
+| 1   | shape   | `Shape`            | a shape built from shapes and axes                           |
+| 2   | integer | `Int` or `Dim`     | arithmetic on extents, and folds over sequences              |
+| 3   | test    | `Bool` or a string | a test of axes, sequences or scalars, usable as a refinement |
+| 4   | dtype   | `DType`            | a dtype derived from dtypes ([table 13](#t-dtype))           |
+| 5   | value   | `Seq[Int]`         | a list that only a generator argument takes                  |
 
 **<a id="t-rows"></a>Table 16** Workload row keys
 
@@ -458,40 +453,19 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 | 4   | `dtype_cases`                             | list of assignments to the relevant `forall` `DType` indices, e.g. `[{T: float16}, {T: bfloat16}]`; only when there are such indices; a dtype parameter is written as a parameter |
 | 5   | `label`                                   | the row's name                                                                                                                                                                    |
 
-**<a id="t-generators"></a>Table 17** Metadata generators
+**<a id="t-generators"></a>Table 17** Generator classes
 
-| No. | Generator                                              | Domain                                      | Result                                                                                                                                                                            |
-| --- | ------------------------------------------------------ | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `as_tensor(L)`                                         | non-negative list                           | `[len(L)]` holding `L`                                                                                                                                                            |
-| 2   | `prefix_sum(L)`                                        | non-negative list, may be empty             | `[len(L) + 1]`, item 0 is 0, item `i` is `sum(L[:i])`                                                                                                                             |
-| 3   | `exclusive_prefix_sum(L)`                              | non-empty non-negative list                 | `[len(L)]`, item `i` is `sum(L[:i])`                                                                                                                                              |
-| 4   | `padded_exclusive_prefix_sum(L, pad)`                  | as above; `pad > 0`                         | `[len(L)]`, item `i` is `sum(ceil_div(n + 1, pad) * pad for n in L[:i])`                                                                                                          |
-| 5   | `paged_block_table(B, width, pool)`                    | `0 < width <= pool`                         | `[B, width]`; disjoint random pages per request when `pool >= B * width`, else each request takes the first `width` of a random permutation                                       |
-| 6   | `chunk_indices(L, c)`                                  | non-negative list; `c > 0`                  | `[sum(ceil_div(n, c) for n in L), 2]`, rows of (request, chunk)                                                                                                                   |
-| 7   | `token_indices(L)`                                     | non-empty positive list                     | `[sum(L), 2]`; token `j` of sequence `i` is `(i, j)`                                                                                                                              |
-| 8   | `chunk_offsets(L, c)`                                  | non-negative list; `c > 0`                  | `prefix_sum([ceil_div(n, c) for n in L])`                                                                                                                                         |
-| 9   | `nsa_block_indices(L, block_size, selected, H_kv)`     | non-empty positive list; others positive    | `[sum(L), H_kv, selected]`; position `j` sees `max(ceil_div(j, block_size), 1)` blocks, draws `min(selected, visible)` distinct ones, pads with sentinel `sum(L)`, rows ascending |
-| 10  | `nsa_block_counts(T, H_kv, selected)`                  | positive arguments                          | `[T, H_kv]`, each uniform in `[1, selected]`                                                                                                                                      |
-| 11  | `topk_ids(N, K, E)`                                    | `0 < K <= E`                                | `[N, K]`, each row `K` distinct random values in `[0, E)`                                                                                                                         |
-| 12  | `sample_indices(n, hi)`                                | `0 <= n <= hi`                              | `[n]`, `n` distinct random values in `[0, hi)`                                                                                                                                    |
-| 13  | `moe.layout_metadata(layout, R, E)`                    | `E > 0`, `R >= 0`, `R` admitted by `layout` | metadata of `layout` for `R` rows split as evenly as the layout allows                                                                                                            |
-| 14  | `packed_positions(L)`                                  | non-empty positive list                     | `[sum(L)]`, positions restarting at 0 for each sequence                                                                                                                           |
-| 15  | `causal_topk_indices(B, S, H_kv, K, E, start, stride)` | positive extents; `start >= 0`              | `[B, S, H_kv, K]`                                                                                                                                                                 |
-| 16  | `key_windows(L, first, count, side)`                   | positive list; window within `sum(L)`       | `[count]`                                                                                                                                                                         |
-| 17  | `full(shape, value)`                                   | non-negative extents                        | `shape`                                                                                                                                                                           |
+| No. | Class         | Values                                                       |
+| --- | ------------- | ------------------------------------------------------------ |
+| 1   | deterministic | a function of the arguments                                  |
+| 2   | seeded random | drawn from a private generator seeded from the workload seed |
 
-Value primitive: `balanced_sizes(total, count)` requires `count > 0` and `total >= 0`; each item is `total // count`, the first `total % count` items plus one.
+**<a id="t-predicates"></a>Table 18** Predicate classes
 
-**<a id="t-predicates"></a>Table 18** `requires` predicates (the constrained tensor is `x`)
-
-| No. | Predicate                 | Condition                                                                                                     |
-| --- | ------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| 1   | `prefix_offsets(total)`   | `x` is 1-D, starts at 0, is non-decreasing and ends at `total`                                                |
-| 2   | `max_segment(bound)`      | adjacent differences of `x` are at most `bound`                                                               |
-| 3   | `in_range(lo, hi)`        | every element of `x` lies in `[lo, hi)`                                                                       |
-| 4   | `sums_to(total)`          | the elements of `x` sum to `total`                                                                            |
-| 5   | `exclusive_prefix_of(L)`  | `x` has `len(L)` elements; element `i` is `sum(L[:i])`                                                        |
-| 6   | `indices_within(offsets)` | `x` is `[n, 2]`; each row `(i, j)` has `0 <= i < len(offsets) - 1` and `0 <= j < offsets[i + 1] - offsets[i]` |
+| No. | Class       | Arguments                                   | States                                            |
+| --- | ----------- | ------------------------------------------- | ------------------------------------------------- |
+| 1   | one tensor  | values: scalars, lists, ADT values          | a bound or shape on the constrained tensor        |
+| 2   | two tensors | another metadata tensor, and further values | the relation a generator establishes between them |
 
 **<a id="t-unify"></a>Table 19** Unification of an input axis
 

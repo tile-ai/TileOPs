@@ -45,7 +45,6 @@ __all__ = [
     "expand",
     "field_kind",
     "holds",
-    "is_legacy",
     "kind_env",
     "output_emitted",
     "param_kind",
@@ -57,16 +56,6 @@ __all__ = [
     "tensor_passed",
     "unification",
 ]
-
-
-# FIXME(staged-rollout): an entry still written in the legacy manifest form.
-#
-# Broken invariant: every entry is a parametric signature (docs/design/manifest.md).
-# Why: the migration converts one family per PR, and every consumer reads both forms meanwhile.
-# Cleanup: delete this predicate and every legacy branch that calls it once no entry has `source`.
-def is_legacy(entry: object) -> bool:
-    """Whether an entry is in the legacy form: it declares `source`."""
-    return isinstance(entry, dict) and "source" in entry
 
 
 @dataclass

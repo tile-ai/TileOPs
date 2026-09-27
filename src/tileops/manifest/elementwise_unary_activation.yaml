@@ -243,6 +243,8 @@ HardtanhFwdOp:
       output: {dtype: T, shape: "[*S]", alias: input}
     shape_rules:
     - "min_val <= max_val"
+    - "representable(min_val, T)"
+    - "representable(max_val, T)"
 
   workloads:
   # Quantization-friendly bounded activation
@@ -338,6 +340,8 @@ ClampScalarFwdOp:
       output: {dtype: T, shape: "[*S]"}
     shape_rules:
     - "present(min) or present(max)"
+    - "not present(min) or representable(min.value, T)"
+    - "not present(max) or representable(max.value, T)"
 
   workloads:
   - {S: [4096, 4096], min: -0.5, max: 0.5, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}

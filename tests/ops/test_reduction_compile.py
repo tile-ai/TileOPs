@@ -101,7 +101,7 @@ def _cases():
         # A non-contiguous reduced axis, which is the layout argreduce strides along
         # instead of transposing.
         "argmax-strided-axis": one_tensor(ArgmaxFwdOp, dim=0),
-        # bool out, not same_as(x): the fake reads the manifest, not the input.
+        # bool out, not the input dtype: the fake reads the manifest, not the input.
         "all": one_tensor(AllFwdOp, dim=-1),
         # dim=[] is a no-op, and a bool input makes the cast to bool one too, so the
         # result must still be a tensor of its own.

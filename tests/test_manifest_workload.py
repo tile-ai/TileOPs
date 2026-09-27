@@ -112,6 +112,9 @@ def test_relational_predicates_hold_on_their_generators_and_reject_a_mismatch():
     assert within(GENERATORS["token_indices"](lengths), offsets)
     chunks = GENERATORS["chunk_indices"](lengths, 2)
     assert within(chunks, GENERATORS["chunk_offsets"](lengths, 2))
+    chunk_offsets = GENERATORS["chunk_offsets"](lengths, 2)
+    assert PREDICATES["chunk_offsets_of"](chunk_offsets, offsets, 2)
+    assert not PREDICATES["chunk_offsets_of"](chunk_offsets, offsets, 1)
     assert not within([[0, 2]], offsets) and not within([[2, 0]], offsets)
 
 

@@ -2,6 +2,7 @@
 
 import copy
 import importlib.util
+import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -302,6 +303,38 @@ def test_primitive_domain(name, args):
         PRIMITIVES[name](*args)
 
 
+_SCALARS = (True, 0, 1, -1, 127, 128, -129, 255, 256, -255, -256, 2**31, -(2**31) - 1, 2**40)
+_SCALARS += (1.5, -1.0, 255.9, 65504.0, 65520.0, 1e6, 3.4e38, 1e39, math.inf, -math.inf, math.nan)
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    ["bool", "uint8", "int8", "int16", "int32", "int64", "float16", "bfloat16", "float32"],
+)
+def test_category_and_representable_follow_torch(dtype):
+    import torch
+
+    t = torch.zeros(1, dtype=getattr(torch, dtype))
+    torch_category = (
+        "bool" if t.dtype == torch.bool else "float" if t.dtype.is_floating_point else "int"
+    )
+    assert PRIMITIVES["category"](dtype) == torch_category
+    mask = torch.ones(1, dtype=torch.bool)
+    for v in _SCALARS:
+        try:
+            t.masked_fill(mask, v)
+            accepted = True
+        except RuntimeError:
+            accepted = False
+        assert PRIMITIVES["representable"](v, dtype) == accepted, v
+    assert [PRIMITIVES["category"](v) for v in (True, 1, 1.0, 1j)] == [
+        "bool",
+        "int",
+        "float",
+        "complex",
+    ]
+
+
 def test_adt_invariant_narrows_the_domain():
     adts = {
         "Flagged": {
@@ -351,7 +384,7 @@ def test_adt_invariant_stays_in_the_language():
     assert check_adts(_ADTS) == (_ADTS, [])
 
 
-def test_validator_checks_converted_families(tmp_path):
+def test_validator_checks_every_level_of_an_entry(tmp_path):
     spec = importlib.util.spec_from_file_location(
         "validate_manifest", Path(__file__).parents[1] / "scripts" / "validate_manifest.py"
     )
@@ -359,11 +392,11 @@ def test_validator_checks_converted_families(tmp_path):
     spec.loader.exec_module(validator)
     name, entry = _edit("GemmFwdOp", _set(("outputs", "d", "shape"), "[M, Q]"))
     path = tmp_path / "manifest.yaml"
-    path.write_text(yaml.safe_dump({name: {"family": "converted", **entry}}))
+    path.write_text(yaml.safe_dump({name: {"family": "missing", **entry}}))
     errors, _ = validator.validate_manifest(manifest_path=path)
     assert any("'Q' is not declared" in e for e in errors), errors
     assert any("missing required field 'status'" in e for e in errors), errors
-    assert any("family 'converted' is not a tileops module" in e for e in errors), errors
+    assert any("family 'missing' is not a tileops module" in e for e in errors), errors
     schema_only, _ = validator.validate_manifest(manifest_path=path, levels=frozenset({"schema"}))
     assert not any("'Q' is not declared" in e for e in schema_only), schema_only
     path.write_text(yaml.safe_dump({name: {"family": 1}}))
@@ -391,6 +424,6 @@ def test_validator_holds_an_implemented_key_to_an_exported_class(monkeypatch):
     assert any(
         "does not export the class" in e for e in validator._family_errors("DemoFwdOp", entry)
     )
-    assert validator._check_parametric_schema(1, entry, {1: entry}) == [
+    assert validator._schema_errors(1, entry, {1: entry}) == [
         "[schema] 1: the key is not an op class name `<Name>FwdOp`"
     ]

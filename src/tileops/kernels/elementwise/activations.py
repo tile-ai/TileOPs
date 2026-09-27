@@ -16,6 +16,7 @@ from ._base import (
 )
 from ._dtype import log_for_output_precision
 from ._erf import erf
+from ._nan import nan_max, nan_min
 
 __all__ = [
     "EluFwdKernel",
@@ -146,8 +147,7 @@ class HardsigmoidFwdKernel(FloatUnaryKernel):
 
     Scaling by the reciprocal is what ``torch.nn.functional.hardsigmoid`` does, so
     finite inputs come out bit-identical to it; dividing by 6 lowers to
-    ``div.rn.f32``. A NaN input reads back as 0, since the clamp lowers to
-    ``fminf``/``fmaxf``, which return their non-NaN operand.
+    ``div.rn.f32``. A NaN input gives NaN, as in torch.
     """
 
     @staticmethod
@@ -156,7 +156,7 @@ class HardsigmoidFwdKernel(FloatUnaryKernel):
         six = T.cast(6.0, "float32")
         zero = T.cast(0.0, "float32")
         one_sixth = T.cast(1.0 / 6.0, "float32")
-        return T.min(T.max(x + three, zero), six) * one_sixth
+        return nan_min(nan_max(x + three, zero), six) * one_sixth
 
 
 class MishFwdKernel(FloatUnaryKernel):
@@ -212,10 +212,13 @@ class LeakyReluFwdKernel(ScalarParamUnaryKernel):
     def _make_op_func(self):
         negative_slope = self.negative_slope
 
+        # The slope multiplies in fp32: in a narrow dtype a large slope would overflow
+        # before the product does, and a small one would lose precision.
         def op_func(x):
-            zero = T.cast(0, x.dtype)
-            slope = T.cast(negative_slope, x.dtype)
-            return T.if_then_else(x > zero, x, slope * x)
+            zero = T.cast(0, "float32")
+            slope = T.cast(negative_slope, "float32")
+            wide = T.cast(x, "float32")
+            return T.if_then_else(wide > zero, x, T.Cast(x.dtype, slope * wide))
 
         return op_func
 
@@ -261,7 +264,7 @@ class HardtanhFwdKernel(ScalarParamUnaryKernel):
             lo = T.cast(min_val, "float32")
             hi = T.cast(max_val, "float32")
             wide = T.cast(x, "float32")
-            return T.Cast(x.dtype, T.min(T.max(wide, lo), hi))
+            return T.Cast(x.dtype, nan_min(nan_max(wide, lo), hi))
 
         return op_func
 

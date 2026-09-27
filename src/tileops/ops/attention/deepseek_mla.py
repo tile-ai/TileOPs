@@ -52,9 +52,9 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
 
         Args:
             q: Input tensor, dtype ``float16 | bfloat16``.
-            q_pe: Input tensor, dtype ``same_as(q)``.
-            k: Input tensor, dtype ``same_as(q)``.
-            k_pe: Input tensor, dtype ``same_as(q)``.
+            q_pe: Input tensor, same dtype as ``q``.
+            k: Input tensor, same dtype as ``q``.
+            k_pe: Input tensor, same dtype as ``q``.
 
         Returns:
             ``o``, as the manifest declares. Shape rules: ``o.shape == (B, H, D)``.

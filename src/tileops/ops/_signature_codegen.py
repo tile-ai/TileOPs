@@ -17,6 +17,7 @@ import ast
 import copy
 import inspect
 import itertools
+import re
 import string
 from dataclasses import dataclass
 
@@ -35,7 +36,6 @@ from tileops.manifest.signature import (
     complete_point,
     discriminant_axes,
     expand,
-    is_legacy,
     kind_env,
     output_emitted,
     param_kind,
@@ -46,10 +46,19 @@ from tileops.manifest.signature import (
 from tileops.manifest.values import convert
 from tileops.manifest.workload import CallView
 
-from ._compile_boundary_codegen import operator_name
 from .compile_boundary import get_instance
 
 __all__ = ["CheckError", "SignatureCall", "install", "maybe_install_signature"]
+
+
+def operator_name(family: str, class_name: str) -> str:
+    """``("norm", "RMSNormFwdOp")`` -> ``"norm_rms_norm_fwd"``; a class whose own name already
+    opens with the family, such as ``MoePrePermuteFwdOp``, names it once."""
+    spaced = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", class_name)
+    stem = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", spaced).lower().removesuffix("_op")
+    if stem == family or stem.startswith(f"{family}_"):
+        return stem
+    return f"{family}_{stem}"
 
 
 # ---------------------------------------------------------------- run-time helpers
@@ -1255,20 +1264,13 @@ def _input_binder(sig: Signature, name: str, body, dtypes: bool = False):
 def install(cls: type, entry: dict, adts: dict | None = None) -> bool:
     """Give `cls` the methods its entry's signature generates; False when the signature is malformed.
 
-    A `spec-only` entry keeps its hand-written methods and gets only the compile boundary its
-    class declares, whose operators, schema and fake the signature decides as for any other.
+    The entry's `status` plays no part: what the signature generates derives from it alone.
     """
     try:
         entry_plan_ = entry_plan(cls.__name__, entry, load_adts() if adts is None else adts)
     except SignatureError:
         return False
     plan = _Plan(entry_plan_)
-    if entry.get("status") == "spec-only":
-        if getattr(cls, "compile_boundary", ()) is True:
-            # The boundary's fake evaluates the signature, which reads what construction resolves.
-            cls._check_construction = _construction_check(plan)
-            _install_boundary(cls, plan, entry)
-        return True
     sig = plan.sig
     cls._signature = plan
     cls._check_construction = _construction_check(plan)
@@ -1291,7 +1293,7 @@ def install(cls: type, entry: dict, adts: dict | None = None) -> bool:
 def _install_boundary(cls: type, plan: _Plan, entry: dict) -> None:
     """Register the compile-boundary operators of a class declaring `compile_boundary = True`,
     which is its claim that it supports `fullgraph=True`."""
-    if getattr(cls, "compile_boundary", ()) is not True:
+    if not getattr(cls, "compile_boundary", False):
         return
     if not plan.sig.inputs:
         raise TypeError(f"{cls.__name__}: compile_boundary needs a call-time tensor input")
@@ -1300,9 +1302,9 @@ def _install_boundary(cls: type, plan: _Plan, entry: dict) -> None:
 
 
 def maybe_install_signature(cls: type) -> bool:
-    """Install for a parametric entry, True when one was installed; the manifest is read
-    leniently."""
+    """Install from the class's manifest entry, True when one was installed; the manifest is
+    read leniently."""
     entry = try_load_entry(cls.__name__)
-    if not isinstance(entry, dict) or is_legacy(entry):
+    if not isinstance(entry, dict):
         return False
     return install(cls, entry)

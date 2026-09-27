@@ -1,9 +1,8 @@
 """Roofline cost-model functions for Tier 2 ops (attention, conv, MoE, etc.).
 
-Each function returns a ``(flops, bytes)`` tuple of ints, matching the
-``Op.eval_roofline(self) -> tuple[int, int]`` shape that codegen emits for ``func`` mode
-(see ``docs/design/roofline.md`` §4.4.2). A parametric entry's function takes the checked
-call; a legacy entry's takes the bound Op instance.
+Each function returns a ``(flops, bytes)`` tuple of ints, the shape of
+``Op.eval_roofline(self) -> tuple[int, int]``. A manifest ``roofline.func`` takes the checked
+call (``docs/design/roofline.md`` § Formula Modes).
 
 These are referenced from ``src/tileops/manifest/`` via the ``roofline.func``
 field.
@@ -12,19 +11,16 @@ field.
 from __future__ import annotations
 
 from math import prod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from tileops.manifest.workload import CallView
-    from tileops.ops.op_base import Op
 
 __all__ = [
     "adaptive_pool2d_roofline",
-    "deltanet_inference_roofline",
     "fft_c2c_roofline",
     "fused_moe_fwd_roofline",
     "fused_moe_shared_expert_fwd_roofline",
-    "gated_deltanet_fwd_roofline",
     "gqa_dense_fwd_roofline",
     "gqa_paged_fwd_roofline",
     "gqa_prefill_paged_cached_tokens",
@@ -32,7 +28,6 @@ __all__ = [
     "gqa_prefill_varlen_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
     "gqa_varlen_fwd_roofline",
-    "grouped_gemm_roofline",
     "moe_post_permute_roofline",
     "nsa_closed_chunk_pairs",
     "nsa_cmp_fwd_varlen_roofline",
@@ -43,148 +38,6 @@ __all__ = [
     "packed_visible_scores",
     "visible_scores",
 ]
-
-
-_CALL_PAYLOAD_ATTR = "_roofline_kwargs"
-
-
-def _shape_or_attrs(op: Any | None, kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Return formula inputs, with call-bound state overriding instance state.
-
-    Raises:
-        RuntimeError: The op declares call-bound state but has not run a call.
-        ValueError: The call-bound state is neither a mapping nor ``None``.
-    """
-    if op is None:
-        return kwargs
-    if isinstance(op, dict):
-        return op
-    data = dict(vars(op))
-    if _CALL_PAYLOAD_ATTR not in data:
-        return data
-    payload = data.pop(_CALL_PAYLOAD_ATTR)
-    if payload is None:
-        raise RuntimeError(f"{type(op).__name__}.eval_roofline() requires a prior forward() call")
-    if not isinstance(payload, dict):
-        raise ValueError(
-            f"{type(op).__name__} stores {_CALL_PAYLOAD_ATTR} as {type(payload).__name__}; "
-            "a formula reads it as a mapping of what the call bound"
-        )
-    data.update(payload)
-    return data
-
-
-def _dtype_itemsize(dtype: Any) -> int:
-    if isinstance(dtype, (list, tuple)):
-        dtype = dtype[0] if dtype else "float16"
-    if hasattr(dtype, "itemsize"):
-        return int(dtype.itemsize)
-    dtype_name = str(dtype)
-    if "complex128" in dtype_name:
-        return 16
-    if "complex64" in dtype_name:
-        return 8
-    if "float32" in dtype_name or "int32" in dtype_name:
-        return 4
-    if "float64" in dtype_name or "int64" in dtype_name:
-        return 8
-    if (
-        "bool" in dtype_name
-        or "int8" in dtype_name
-        or "uint8" in dtype_name
-        or "float8" in dtype_name
-        or "fp8" in dtype_name
-    ):
-        return 1
-    return 2
-
-
-def _supplied(op: Any, name: str) -> bool:
-    """Whether the call passed the ``optional: true`` input *name*.
-
-    Mirrors the two bindings inline roofline synthesis accepts: the tensor on
-    ``self.<name>``, or its shape on ``self.<name>_shape``.
-    """
-    if getattr(op, name, None) is not None:
-        return True
-    return getattr(op, f"{name}_shape", None) is not None
-
-
-def deltanet_inference_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Algorithmic lower bound for BTHD ungated DeltaNet inference."""
-    data = _shape_or_attrs(op, kwargs)
-    batch, seq_len, heads, dim_k = data["q_shape"]
-    dim_v = data["v_shape"][-1]
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-    flops = batch * seq_len * heads * (6 * dim_k * dim_v + 2 * dim_k)
-    tensor_elements = batch * seq_len * heads * (2 * dim_k + 2 * dim_v + 1)
-    cu_shape = data.get("cu_seqlens_shape")
-    state_batch = cu_shape[0] - 1 if cu_shape is not None else batch
-    state_elements = state_batch * heads * dim_k * dim_v
-    nbytes = tensor_elements * elem_bytes + state_elements * 4
-    if data.get("initial_state"):
-        nbytes += state_elements * 4
-    return int(flops), int(nbytes)
-
-
-def gated_deltanet_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Algorithmic lower bound for dense Gated DeltaNet inference."""
-    data = _shape_or_attrs(op, kwargs)
-    batch, seq_len, heads, dim_k = data["q_shape"]
-    _batch, _seq_len, value_heads, dim_v = data["v_shape"]
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    # Per recurrent head and token: two state matvecs and one state
-    # outer-product update (six FLOPs per state element), plus the elementwise
-    # state decay (one multiply per state element).
-    flops = batch * seq_len * value_heads * (7 * dim_k * dim_v)
-
-    qk = 2 * batch * seq_len * heads * dim_k
-    token_values = 2 * batch * seq_len * value_heads * dim_v  # v input and o output
-    gates = 2 * batch * seq_len * value_heads
-    cu_shape = data.get("cu_seqlens_shape")
-    state_batch = cu_shape[0] - 1 if cu_shape is not None else batch
-    state = state_batch * value_heads * dim_v * dim_k
-    seeded = data.get("initial_state") is not None or data.get("initial_state_shape") is not None
-    nbytes = (qk + token_values + gates) * elem_bytes
-    nbytes += state * 4 * (2 if seeded else 1)
-    return int(flops), int(nbytes)
-
-
-def _chunkwise_dims_bshd(data: dict) -> tuple[int, int, int, int, int]:
-    """``(batch, heads, seq_len, dim_k, dim_v)`` for an op declaring ``q [B, S, H, DK]``."""
-    if "q_shape" in data:
-        batch, seq_len, heads, dim_k = data["q_shape"]
-        return batch, heads, seq_len, dim_k, data["v_shape"][3]
-    return _chunkwise_dims_bound(data)
-
-
-def _chunkwise_dims_bound(data: dict) -> tuple[int, int, int, int, int]:
-    """The same five numbers off an instance that has run a call, in either order."""
-    return (
-        int(data["batch"]),
-        int(data["heads"]),
-        int(data["seq_len"]),
-        int(data["dim_k"]),
-        int(data["dim_v"]),
-    )
-
-
-def gla_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for the chunked GLA forward, token-major: one state matmul pair per token."""
-    data = _shape_or_attrs(op, kwargs)
-    batch, heads, seq_len, dim_k, dim_v = _chunkwise_dims_bshd(data)
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    flops = 2 * batch * heads * seq_len * dim_k * dim_v
-    tokens = batch * seq_len * heads
-    cu_seqlens_shape = data.get("cu_seqlens_shape")
-    state_batch = cu_seqlens_shape[0] - 1 if cu_seqlens_shape is not None else batch
-    state = state_batch * heads * dim_k * dim_v
-    seeded = data.get("initial_state") is not None or data.get("initial_state_shape") is not None
-    # in: q, k, v, g and the fp32 state a caller may seed; out: o and the fp32 final state.
-    nbytes = tokens * (3 * dim_k + 2 * dim_v) * elem_bytes + state * (2 if seeded else 1) * 4
-    return int(flops), int(nbytes)
 
 
 def _distribute_total(total: int, batch: int, max_len: int) -> list[int]:
@@ -272,31 +125,6 @@ def fused_moe_shared_expert_fwd_roofline(call) -> tuple[int, int]:
     flops += 2 * t * weights
     nbytes += (weights + 2 * t * h) * elem
     return flops, nbytes
-
-
-def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
-    batch_sum = int(op.batch_sum)
-    batch_count = int(op.batch_count)
-    # The op carries both spellings and leaves one unset, so a default on the
-    # missing name is not enough.
-    n = int(getattr(op, "N", None) or getattr(op, "n", 0))
-    k = int(getattr(op, "K", None) or getattr(op, "k", 0))
-    elem = _dtype_itemsize(getattr(op, "dtype", "float16"))
-
-    flops = 2 * batch_sum * n * k
-    if not bool(op.transpose_a):
-        memory_a = batch_sum * k
-        memory_c = batch_sum * n
-        memory_b = batch_count * n * k
-    else:
-        memory_a = batch_sum * n
-        memory_c = batch_count * n * k
-        memory_b = k * batch_sum if bool(op.transpose_b) else batch_sum * k
-    # Two of the three int32 tensors: the kernels index batch_sizes and
-    # batch_offsets, and take batch_padded_offsets without reading it -- the
-    # templates pad nothing.
-    metadata_bytes = 2 * batch_count * 4
-    return int(flops), int((memory_a + memory_b + memory_c) * elem + metadata_bytes)
 
 
 def fft_c2c_roofline(call: "CallView") -> tuple[int, int]:

@@ -1,4 +1,5 @@
 import math
+from typing import Any
 
 import torch
 
@@ -48,6 +49,20 @@ class GroupedGemmWorkload(WorkloadBase):
         self.transpose_b = transpose_b
         self.batch_sizes_list = _generate_batch_sizes(batch_sum, batch_count)
         self.padding_M = 128
+
+    @classmethod
+    def from_call(cls, call: Any) -> "GroupedGemmWorkload":
+        """The workload of one manifest call of ``GroupedGemmFwdOp``."""
+        ix = call.ix
+        return cls(
+            ix["M"],
+            ix["G"],
+            ix["N"],
+            ix["K"],
+            getattr(torch, ix["T"]),
+            ix["transpose_a"],
+            ix["transpose_b"],
+        )
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         batch_sizes_list = self.batch_sizes_list

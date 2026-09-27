@@ -12,7 +12,7 @@ from tileops.kernels.elementwise import (
 from tileops.kernels.kernel_base import Kernel
 
 from ..op_base import Op
-from ._base import _PerDtypeKernels, _validate_scalar_param_repr
+from ._base import _PerDtypeKernels
 
 
 class MaskedFillFwdOp(_PerDtypeKernels, Op):
@@ -116,16 +116,9 @@ class MaskedFillScalarFwdOp(_PerDtypeKernels, Op):
         self.dispatch_kernel(kernel_map)
 
     def _build(self, dtype: torch.dtype, n_total: int):
-        """The fill value is baked in, so it is checked against each dtype."""
+        """The fill value is baked in, one specialization per dtype."""
         impl, compute = self._selected_kernel_cls().specialize(dtype)
         self._check_kernel_dtype(impl, dtype, compute)
-        _validate_scalar_param_repr(
-            "value",
-            self.value,
-            dtype,
-            self._slot,
-            allow_nonfinite_float=True,
-        )
         # The scalar is baked in, so it is normalized to the semantic dtype's
         # value set — bool takes 0 or 1 whatever storage the kernel picked.
         value = (1 if bool(self.value) else 0) if dtype == torch.bool else self.value

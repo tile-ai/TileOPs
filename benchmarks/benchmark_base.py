@@ -6,7 +6,6 @@ are re-exported here, so a bench file keeps importing what it always did.
 
 import statistics
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from typing import Any, Generic, Optional, TypeVar
 
 import pytest
@@ -25,14 +24,7 @@ from benchmarks.timing import (
     bench_kernel,
     median_busy_ms,
 )
-from tileops.manifest import (
-    WORKLOAD_RESERVED_KEYS,
-    load_adts,
-    load_manifest,
-    load_workloads,
-    manifest_key,
-    single_input_workload_contract,
-)
+from tileops.manifest import load_adts, load_manifest, load_workloads, manifest_key
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.workload import instantiate
 
@@ -44,11 +36,7 @@ __all__ = [
     "OpBenchmark",
     "backward_of",
     "bench_kernel",
-    "fields",
     "manifest_calls",
-    "then_dtype",
-    "workload_params",
-    "workloads_to_params",
 ]
 
 W = TypeVar("W")
@@ -72,18 +60,6 @@ def backward_of(output: torch.Tensor) -> Any:
     # A Python autograd.Function's node exposes apply() and is not callable; a node
     # built in C++ is callable and has no apply(). Neither offers the other's form.
     return getattr(node, "apply", None) or node
-
-
-def _workload_contract(op_name: str) -> tuple[str, frozenset[str]]:
-    """Resolve the shared workload contract for an op known to exist."""
-    sig = load_manifest()[op_name].get("signature") or {}
-    contract = single_input_workload_contract(sig)
-    if contract is None:
-        raise KeyError(
-            f"workloads_to_params({op_name!r}) needs exactly one manifest "
-            "tensor input; multi-input ops use their own bench files."
-        )
-    return contract
 
 
 class BenchmarkBase(Generic[W], ABC):
@@ -196,87 +172,10 @@ class BenchmarkBase(Generic[W], ABC):
             return {}
 
 
-# Manifest-driven benchmark helpers
-
-
-def _workload_extra_params(w: dict, shape_key: str) -> dict[str, Any]:
-    """Return op-call params on a workload entry, stripping reserved keys."""
-    reserved = WORKLOAD_RESERVED_KEYS | {shape_key}
-    return {
-        k: v
-        for k, v in w.items()
-        if isinstance(k, str) and k not in reserved and not k.startswith("__")
-    }
-
-
-def workload_params(
-    workloads: list,
-    build_args: "Callable[[dict, torch.dtype], tuple]",
-    *,
-    smoke_first: bool = False,
-    marks: "Callable[[dict, torch.dtype, int], tuple] | None" = None,
-) -> list:
-    """The one place a manifest workload row becomes a pytest case.
-
-    One case per (row, dtype in its ``dtypes``), ided ``f"{label}-{dtype}"`` so a
-    label never has to spell a dtype. *build_args* maps a row and that dtype to
-    the case's positional args — the one thing that differs per family; compose
-    it with :func:`fields` and :func:`then_dtype`. *marks* takes
-    ``(row, dtype, row_index)`` for marks that depend on the dtype, and
-    *smoke_first* marks the first row ``smoke`` and the rest ``full``.
-    """
-    params: list = []
-    for index, w in enumerate(workloads):
-        # A row the manifest says to skip is skipped whichever else applies.
-        skip = (
-            (pytest.mark.skip(reason=w["bench_skip_reason"]),) if w.get("bench_skip_reason") else ()
-        )
-        smoke = (pytest.mark.smoke if index == 0 else pytest.mark.full,) if smoke_first else ()
-        label = w.get("label", "manifest")
-        for dtype_str in w["dtypes"]:
-            dtype = getattr(torch, dtype_str)
-            case_marks = skip or (tuple(marks(w, dtype, index)) if marks else smoke)
-            params.append(
-                pytest.param(
-                    *build_args(w, dtype),
-                    id=f"{label}-{dtype_str}",
-                    marks=case_marks,
-                )
-            )
-    return params
-
-
-def fields(*keys: str, dtype_last: bool = False) -> "Callable[[dict, torch.dtype], tuple]":
-    """Row values under *keys*, positionally; a key ending in ``dtype`` resolves to
-    the ``torch.dtype`` it names, and *dtype_last* appends the case's dtype for a
-    test whose signature ends in one the row does not name."""
-
-    def build(w: dict, dtype: torch.dtype) -> tuple:
-        values = tuple(getattr(torch, w[k]) if k.endswith("dtype") else w[k] for k in keys)
-        return (*values, dtype) if dtype_last else values
-
-    return build
-
-
-def then_dtype(
-    row_args: "Callable[[dict], tuple]",
-    *,
-    tune: bool | None = None,
-) -> "Callable[[dict, torch.dtype], tuple]":
-    """Append the case's dtype to what *row_args* returns, and *tune* after it when
-    the test takes one. *row_args* reads the row only."""
-
-    def build(w: dict, dtype: torch.dtype) -> tuple:
-        tail = (dtype,) if tune is None else (dtype, tune)
-        return (*row_args(w), *tail)
-
-    return build
-
-
 def manifest_calls(op: "str | type") -> list:
     """One ``pytest.param(call)`` per manifest call of *op*, an Op class or its manifest key.
 
-    Each workload row of the op's parametric entry is instantiated once per dtype case, and the
+    Each workload row of the op's entry is instantiated once per dtype case, and the
     case is ided by its case id (docs/design/manifest.md § Rows). ``CallWorkload(call)`` builds
     the call's inputs.
     """
@@ -288,48 +187,6 @@ def manifest_calls(op: "str | type") -> list:
         for case in row.get("dtype_cases") or [{}]
     ]
     return [pytest.param(call, id=call.case_id) for call in calls]
-
-
-def workloads_to_params(op: "str | type", include_extra: bool = False) -> list:
-    """Single-tensor-input wrapper over :func:`workload_params`: reads the manifest
-    entry of *op* (an Op class or its manifest key), checks each row against the
-    signature, and yields ``pytest.param(shape, dtype)``; with *include_extra* a
-    third element carries the row's op-call params (e.g. ``{"dim": 0}``)."""
-    workloads = load_workloads(op)  # canonical not-found error
-    op_name = manifest_key(op)
-    shape_key, allowed = _workload_contract(op_name)
-    for w in workloads:
-        if shape_key not in w:
-            raise KeyError(
-                f"workload {w.get('label', w)!r} of {op_name!r} is missing "
-                f"{shape_key!r} (derived from the signature's input name)."
-            )
-        unknown = sorted(
-            repr(k)
-            for k in w
-            if not isinstance(k, str) or (k not in allowed and not k.startswith("__"))
-        )
-        if unknown:
-            raise KeyError(
-                f"workload {w.get('label', w)!r} of {op_name!r} has unknown "
-                f"keys {unknown}; allowed: {sorted(allowed)}."
-            )
-
-    def build(w: dict, dtype: torch.dtype) -> tuple:
-        shape = tuple(w[shape_key])
-        if not include_extra:
-            return (shape, dtype)
-        # Copy the extras per case so mutation in one cannot leak into a later
-        # case sharing the row.
-        return (shape, dtype, dict(_workload_extra_params(w, shape_key)))
-
-    # Name a copy: an unlabelled row is named by its shape, as the reports did
-    # before, and the rows are the manifest's own dicts.
-    rows = [
-        w if "label" in w else {**w, "label": "x".join(str(s) for s in w[shape_key])}
-        for w in workloads
-    ]
-    return workload_params(rows, build)
 
 
 class OpBenchmark(BenchmarkBase[W]):

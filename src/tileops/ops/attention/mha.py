@@ -95,10 +95,10 @@ class MultiHeadAttentionBwdOp(Op):
 
         Args:
             q: Input tensor, dtype ``float16 | bfloat16``.
-            k: Input tensor, dtype ``same_as(q)``.
-            v: Input tensor, dtype ``same_as(q)``.
-            o: Input tensor, dtype ``same_as(q)``.
-            do: Input tensor, dtype ``same_as(q)``.
+            k: Input tensor, same dtype as ``q``.
+            v: Input tensor, same dtype as ``q``.
+            o: Input tensor, same dtype as ``q``.
+            do: Input tensor, same dtype as ``q``.
             lse: Input tensor, dtype ``float32``.
 
         Returns:
@@ -195,8 +195,8 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
 
         Args:
             q: Input tensor, dtype ``float16 | bfloat16``.
-            k: Input tensor, dtype ``same_as(q)``.
-            v: Input tensor, dtype ``same_as(q)``.
+            k: Input tensor, same dtype as ``q``.
+            v: Input tensor, same dtype as ``q``.
             real_seqlen_kv: Input tensor, dtype ``int32``.
             block_table: Input tensor, dtype ``int32``.
 

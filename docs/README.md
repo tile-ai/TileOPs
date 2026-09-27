@@ -11,7 +11,7 @@ Design-first, spec-driven documentation for TileOPs. [`src/tileops/manifest/`](.
 | Document                                                  | Scope                                                                                                                                           |
 | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | [architecture.md](design/architecture.md)                 | System modules (M1–M8), data flow, agent production loop, directory structure.                                                                  |
-| [manifest.md](design/manifest.md)                         | `src/tileops/manifest/` spec: signature, workloads, roofline fields, source.                                                                    |
+| [manifest.md](design/manifest.md)                         | `src/tileops/manifest/` spec: signature, workloads, roofline fields, composition.                                                               |
 | [ops-design.md](design/ops-design.md)                     | Op interface execution guide — how to add a new op.                                                                                             |
 | [ops-design-reference.md](design/ops-design-reference.md) | Op interface detail reference: interface tables, codegen, naming, protocol.                                                                     |
 | [op-slot-rules.md](design/op-slot-rules.md)               | Per-slot rules for a T2 op file (S1-S7, S12-S21): rule, example, common mistakes.                                                               |

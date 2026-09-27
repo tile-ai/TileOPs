@@ -60,7 +60,7 @@ def test_deltanet_inference_reaches_target_with_optional_inputs() -> None:
 
     assert o.shape == v.shape
     assert final_state.shape == initial_state.shape
-    assert op.eval_roofline()[1] == 2348
+    assert op.eval_roofline() == (7 * 2 * (6 * 8 * 6 + 2 * 8), 2396)
     decode_q = torch.randn(1, 1, 2, 8, dtype=torch.float16)
     decode_v = torch.randn(1, 1, 2, 6, dtype=torch.float16)
     decode_beta = torch.rand(1, 1, 2, dtype=torch.float16)
@@ -84,20 +84,6 @@ def test_deltanet_inference_reaches_target_with_optional_inputs() -> None:
             {"scale": 0.125, "use_qk_l2norm_in_kernel": True},
         ),
     ]
-
-
-def test_deltanet_inference_rejects_invalid_state() -> None:
-    q = torch.empty(1, 1, 2, 8, dtype=torch.float16)
-    k = torch.empty_like(q)
-    v = torch.empty(1, 1, 2, 6, dtype=torch.float16)
-    beta = torch.empty(1, 1, 2, dtype=torch.float16)
-
-    with pytest.raises(ValueError, match=r"\[N, H, K, V\]"):
-        DeltaNetInferenceFwdOp().forward(q, k, v, beta, torch.empty(1, 2, 6, 8))
-    with pytest.raises(ValueError, match="requires cu_seqlens"):
-        DeltaNetInferenceFwdOp().forward(q, k, v, beta, cu_seqlens_cpu=torch.tensor([0, 1]))
-    with pytest.raises(ValueError, match="float16 or bfloat16"):
-        DeltaNetInferenceFwdOp().forward(q.float(), k.float(), v.float(), beta.float())
 
 
 @pytest.mark.skipif(

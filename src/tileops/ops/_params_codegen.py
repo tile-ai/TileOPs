@@ -17,11 +17,7 @@ ATTRIBUTE = "__manifest_param_names__"
 
 
 def maybe_install_param_names(cls: type) -> None:
-    """Attach the op's manifest param names to *cls*.
-
-    Resolution mirrors `tileops.ops._dtype_codegen.maybe_install_validator`: a
-    class-attached ``__manifest_signature__`` first, then the manifest entry keyed by class
-    name. A name in the class body wins.
+    """Attach the op's manifest param names to *cls*; a name in the class body wins.
 
     Every class gets its own answer, never an inherited one: params are exactly this op's
     ``signature.params``, and a class with no entry hands a backend nothing. A param
@@ -30,12 +26,8 @@ def maybe_install_param_names(cls: type) -> None:
     """
     if ATTRIBUTE in cls.__dict__:
         return
-
-    sig = getattr(cls, "__manifest_signature__", None)
-    if sig is None:
-        entry = try_load_entry(cls.__name__)
-        sig = entry.get("signature") if entry is not None else None
-    params = sig.get("params") if isinstance(sig, dict) else None
+    entry = try_load_entry(cls.__name__)
+    params = (entry.get("signature") or {}).get("params") if entry is not None else None
     per_call = set(inspect.signature(cls.forward).parameters)
     names = tuple(p for p in params if p not in per_call) if isinstance(params, dict) else ()
     setattr(cls, ATTRIBUTE, names)

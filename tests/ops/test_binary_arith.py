@@ -752,7 +752,7 @@ def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
     op = SubFwdOp()
     a = torch.randn(16, device="cuda", dtype=torch.float32)
     b = torch.randn(16, device="cuda", dtype=torch.float16)
-    # The manifest declares ``other`` as ``same_as(input)``; the synthesized
+    # The manifest types ``input`` and ``other`` with one index ``T``; the generated
     # gate names the operand that disagrees.
     with pytest.raises(ValueError, match="differs from T"):
         op(a, b)
