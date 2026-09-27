@@ -28,11 +28,11 @@ Activate a virtual environment, then `pip install -e '.[dev]' -c constraints.txt
 
 ## Reading the ops manifest
 
-The manifest lives at `src/tileops/manifest/`, one or more YAML files per op family — most families use a single file; large families may be sharded across multiple files. The `tileops.manifest` package merges them into a single `ops` dict at runtime.
+The spec is `src/tileops/manifest/spec/<family>.yaml`, or `spec/<family>_<shard>.yaml` for a sharded family; an op lives in, and is edited in, the file its `family` names. `spec/types.yaml` holds the ADTs. The `tileops.manifest` package merges the family files into a single `ops` dict at runtime and raises on a file that breaks this rule.
 
 - **Programmatic reads**: prefer `from tileops.manifest import load_manifest, load_workloads`. Never re-implement the merge.
-- **Structural inspection**: parse the relevant family file with `yaml.safe_load` and index `ops` by op name. Pick the file from the op's family field rather than scanning all of them.
-- **Edits**: edit the single family file that owns the op. Use a round-trip parser (`ruamel.yaml`) to preserve comments and key order. Op names must remain unique across files — duplicates raise at load time.
+- **Structural inspection**: parse the op's family file with `yaml.safe_load` and index it by op name, rather than scanning all files.
+- **Edits**: use a round-trip parser (`ruamel.yaml`) to preserve comments and key order. Op names must remain unique across files — duplicates raise at load time.
 - Reserve `Read`/`grep` for targeted line lookups inside one family file, not structural reading.
 
 ## Domain Rules (load on demand)
@@ -42,7 +42,7 @@ Read the relevant context file **before** modifying files in that domain. Do not
 | When you modify                                                                                | Read first                                                                               |
 | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `tests/`                                                                                       | [.claude/domain-rules/testing-budget.md](.claude/domain-rules/testing-budget.md)         |
-| `src/tileops/manifest/*.yaml`                                                                  | [.claude/domain-rules/manifest-spec.md](.claude/domain-rules/manifest-spec.md)           |
+| `src/tileops/manifest/spec/*.yaml`                                                             | [.claude/domain-rules/manifest-spec.md](.claude/domain-rules/manifest-spec.md)           |
 | `src/tileops/manifest/*.py`, `scripts/validate_manifest.py`, `tests/test_validate_manifest.py` | [.claude/domain-rules/manifest-validator.md](.claude/domain-rules/manifest-validator.md) |
 | `src/tileops/ops/`, `src/tileops/kernels/`                                                     | [.claude/domain-rules/ops-design.md](.claude/domain-rules/ops-design.md)                 |
 | `benchmarks/`                                                                                  | [.claude/domain-rules/benchmark.md](.claude/domain-rules/benchmark.md)                   |

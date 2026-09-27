@@ -47,7 +47,7 @@ from tileops.manifest.registry import op_class  # noqa: E402
 from tileops.manifest.signature import parse_signature  # noqa: E402
 from tileops.manifest.workload import check_workloads as _check_workloads  # noqa: E402
 
-MANIFEST_DIR = REPO_ROOT / "src" / "tileops" / "manifest"
+MANIFEST_DIR = REPO_ROOT / "src" / "tileops" / "manifest" / "spec"
 
 ALL_LEVELS = frozenset({"schema", "signature", "bench"})
 

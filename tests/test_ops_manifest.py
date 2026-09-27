@@ -14,7 +14,7 @@ from tileops.manifest import load_manifest, load_workloads, manifest_files
 pytestmark = pytest.mark.smoke
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MANIFEST_DIR = REPO_ROOT / "src" / "tileops" / "manifest"
+MANIFEST_DIR = REPO_ROOT / "src" / "tileops" / "manifest" / "spec"
 
 
 class TestManifestStructure:
@@ -62,3 +62,13 @@ class TestManifestAPI:
             "resolve_roofline_vars",
         ):
             assert not hasattr(manifest, name)
+
+
+def test_family_file_named_after_another_family_raises(tmp_path, monkeypatch):
+    import tileops.manifest as manifest
+
+    path = tmp_path / "sequence_modeling.yaml"
+    path.write_text("FFTC2CFwdOp: {family: fft}\n")
+    monkeypatch.setattr(manifest, "manifest_files", lambda: [path])
+    with pytest.raises(ValueError, match="FFTC2CFwdOp.*family 'fft'"):
+        manifest.load_manifest.__wrapped__()

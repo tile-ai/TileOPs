@@ -1,6 +1,6 @@
 """Pooling benchmarks.
 
-Every case is a manifest call of ``src/tileops/manifest/pool.yaml``. The 2D cases model
+Every case is a manifest call of ``src/tileops/manifest/spec/pool.yaml``. The 2D cases model
 vision-backbone downsampling patterns such as ResNet/ConvNeXt feature stages.
 The 3D cases model video CNN spatiotemporal pooling patterns such as
 I3D/SlowFast-style feature stages.

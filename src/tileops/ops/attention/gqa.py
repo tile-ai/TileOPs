@@ -425,8 +425,8 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
         rope_layout: str = "neox",
         validate_inputs: bool = False,
         *,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
         tune: bool = False,
     ) -> None:
         """Configure packed variable-length GQA semantics.
@@ -442,8 +442,8 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
             rotary_dim: Even rotated width; ``None`` uses the full head dimension.
             rope_layout: ``"neox"`` or ``"interleaved"``.
             validate_inputs: Check cumulative offsets against packed tensors on the CPU.
-            kernel_map: Optional in-tree kernel overrides.
             target: Backend target, or ``None`` to resolve from the input device.
+            kernel_map: Optional in-tree kernel overrides.
             tune: Autotune a kernel when it is first built.
         """
         if sm_scale is not None and not math.isfinite(sm_scale):
@@ -815,13 +815,14 @@ class GroupedQueryAttentionPagedFwdOp(Op):
         window_size_right: int = -1,
         sm_scale: Optional[float] = None,
         softcap: Optional[float] = None,
+        out_dtype: Optional[torch.dtype] = None,
         pos_encoding_mode: str = "none",
         rotary_dim: Optional[int] = None,
         rope_layout: str = "neox",
-        out_dtype: Optional[torch.dtype] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
         """Configure paged GQA semantics without owning or mutating the cache.
 
@@ -831,12 +832,13 @@ class GroupedQueryAttentionPagedFwdOp(Op):
             window_size_right: Visible keys to the right; ``-1`` is unlimited.
             sm_scale: Score scale, or ``None`` for ``1 / sqrt(head_dim)``.
             softcap: Positive score cap; ``None`` or zero disables it.
+            out_dtype: Output dtype, inferred from the input when omitted.
             pos_encoding_mode: ``"none"`` or ``"rope"``.
             rotary_dim: Even rotated width; ``None`` uses the full head dimension.
             rope_layout: ``"neox"`` or ``"interleaved"``.
-            out_dtype: Output dtype, inferred from the input when omitted.
-            kernel_map: Optional in-tree kernel overrides.
             target: Backend target, or ``None`` to resolve from the input device.
+            kernel_map: Optional in-tree kernel overrides.
+            tune: Autotune a kernel when it is first built.
         """
         if sm_scale is not None and not math.isfinite(sm_scale):
             raise ValueError(f"sm_scale must be finite, got {sm_scale}")
@@ -851,6 +853,7 @@ class GroupedQueryAttentionPagedFwdOp(Op):
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
         self.target = target
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
 
     @property

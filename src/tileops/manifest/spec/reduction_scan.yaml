@@ -1,4 +1,4 @@
-# scan.yaml -- the cumulative scans, which the `reduction` module exports.
+# The cumulative scans, which the `reduction` module exports.
 
 CumsumFwdOp:
   ref_api: torch.cumsum

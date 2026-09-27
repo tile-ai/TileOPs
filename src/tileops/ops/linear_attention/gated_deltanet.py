@@ -55,9 +55,10 @@ class GatedDeltaNetFwdOp(Op):
         allow_neg_eigval: bool = False,
         state_v_first: bool = False,
         use_gate_in_kernel: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
         """Fix recurrence semantics; tensor metadata comes from each call.
 
@@ -74,9 +75,10 @@ class GatedDeltaNetFwdOp(Op):
             use_gate_in_kernel: Treat ``g`` as a raw gate and internally
                 compute ``-exp(A_log) * softplus(g + dt_bias)``. Otherwise,
                 ``g`` must already contain the log-space decay.
-            kernel_map: Optional in-tree kernel overrides.
             target: Backend target, or ``None`` to resolve from the input
                 device.
+            kernel_map: Optional in-tree kernel overrides.
+            tune: Autotune a kernel when it is first built.
         """
         if scale is not None and not math.isfinite(scale):
             raise ValueError(f"scale must be finite, got {scale}")
@@ -88,6 +90,7 @@ class GatedDeltaNetFwdOp(Op):
         self.state_v_first = state_v_first
         self.use_gate_in_kernel = use_gate_in_kernel
         self.target = target
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
 
     @property
