@@ -222,6 +222,7 @@ An op without effect declarations reads its inputs and allocates its outputs. Ef
 A workload row determines one call. Its keys are construction parameter names, relevant index names, `some`, `dtype_cases` and `label` ([table 16](#t-rows)).
 
 - A row gives exactly the relevant indices that no generator determines.
+- A `Seq[Int]` index is written as an integer list or as a call of a value primitive ([table 15](#t-prims)) over integer literals, evaluated once at instantiation.
 - An index is relevant on a branch when that branch's shapes, dtypes, refinements, generator arguments, the `requires` of its passed tensors or its inline roofline use it, each folded at the branch first, so a refinement whose guard folds to true there makes nothing relevant; a `let` passes on what it reads. A `func` roofline makes nothing relevant. Discriminants selecting a type-family branch, presence or `nullable` are always relevant.
 - **case id** is `label` followed by the row's `dtype_cases` values in `forall` order, then its dtype parameters' values in `signature.params` order, joined by `-`. It keys nightly history, so changing a `label` is breaking. `label` is non-empty `[A-Za-z0-9._-]`, and an entry's case ids are distinct.
 - **Coverage.** Every optional tensor of an implemented entry is passed in at least one row and omitted in at least one, counted per input.
@@ -308,12 +309,12 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 
 **<a id="t-forall"></a>Table 2** `forall` kinds
 
-| No. | Kind            | Values                     | Solved from                                 | Written in a row |
-| --- | --------------- | -------------------------- | ------------------------------------------- | ---------------- |
-| 1   | `Dim`           | non-negative integer       | unification of inputs or generator results  | integer          |
-| 2   | `Shape`         | tuple of `Dim`             | unification of inputs                       | integer list     |
-| 3   | `DType[a \| b]` | one of the declared dtypes | unification of inputs                       | `dtype_cases`    |
-| 4   | `Seq[Int]`      | integer list (`q_lens`)    | instantiation only, as a generator argument | integer list     |
+| No. | Kind            | Values                     | Solved from                                 | Written in a row                     |
+| --- | --------------- | -------------------------- | ------------------------------------------- | ------------------------------------ |
+| 1   | `Dim`           | non-negative integer       | unification of inputs or generator results  | integer                              |
+| 2   | `Shape`         | tuple of `Dim`             | unification of inputs                       | integer list                         |
+| 3   | `DType[a \| b]` | one of the declared dtypes | unification of inputs                       | `dtype_cases`                        |
+| 4   | `Seq[Int]`      | integer list (`q_lens`)    | instantiation only, as a generator argument | integer list or value-primitive call |
 
 **<a id="t-types"></a>Table 3** Parameter `type` to kind
 
@@ -435,13 +436,13 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 
 **<a id="t-prims"></a>Table 15** Primitive classes, by result kind
 
-| No. | Class   | Result             | States                                                       |
-| --- | ------- | ------------------ | ------------------------------------------------------------ |
-| 1   | shape   | `Shape`            | a shape built from shapes and axes                           |
-| 2   | integer | `Int` or `Dim`     | arithmetic on extents, and folds over sequences              |
-| 3   | test    | `Bool` or a string | a test of axes, sequences or scalars, usable as a refinement |
-| 4   | dtype   | `DType`            | a dtype derived from dtypes ([table 13](#t-dtype))           |
-| 5   | value   | `Seq[Int]`         | a list that only a generator argument takes                  |
+| No. | Class   | Result             | States                                                             |
+| --- | ------- | ------------------ | ------------------------------------------------------------------ |
+| 1   | shape   | `Shape`            | a shape built from shapes and axes                                 |
+| 2   | integer | `Int` or `Dim`     | arithmetic on extents, and folds over sequences                    |
+| 3   | test    | `Bool` or a string | a test of axes, sequences or scalars, usable as a refinement       |
+| 4   | dtype   | `DType`            | a dtype derived from dtypes ([table 13](#t-dtype))                 |
+| 5   | value   | `Seq[Int]`         | a list that a generator argument or a row's `Seq[Int]` index takes |
 
 **<a id="t-rows"></a>Table 16** Workload row keys
 
@@ -449,7 +450,7 @@ All checks are decidable; every evaluation either succeeds or names the failing 
 | --- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | construction parameter name               | its value; required when it has no default                                                                                                                                        |
 | 2   | `some`                                    | the `optional: true` tensors passed                                                                                                                                               |
-| 3   | `forall` `Dim`, `Shape`, `Seq[Int]` index | exactly the branch's relevant indices no generator solves                                                                                                                         |
+| 3   | `forall` `Dim`, `Shape`, `Seq[Int]` index | exactly the branch's relevant indices no generator solves; a `Seq[Int]` index may be a value-primitive call                                                                       |
 | 4   | `dtype_cases`                             | list of assignments to the relevant `forall` `DType` indices, e.g. `[{T: float16}, {T: bfloat16}]`; only when there are such indices; a dtype parameter is written as a parameter |
 | 5   | `label`                                   | the row's name                                                                                                                                                                    |
 

@@ -293,9 +293,8 @@ class TestBytesOracle:
         # One token against an empty or single-page cache names one or two entries of
         # its block-table row; a length that does not divide by the page size is
         # rounded up to a page.
-        short = dict(base, T_q=len(base["q_lens"]))
-        short["q_lens"] = [1] * len(base["q_lens"])
-        short["cache_lens"] = [0, 64] * (len(base["q_lens"]) // 2)
+        batch = len(_manifest_call(name, base).values("cache_seqlens"))
+        short = dict(base, T_q=batch, q_lens=[1] * batch, cache_lens=[0, 64] * (batch // 2))
         rows = {
             "cached": base,
             "fp8 cache": dict(base, cache_dtype="float8_e4m3fn"),
@@ -305,7 +304,8 @@ class TestBytesOracle:
             call = _manifest_call(name, row)
             ix = call.ix
             heads, heads_kv, dim, page_size = ix["H"], ix["H_kv"], ix["D"], ix["page_size"]
-            q_lens, cache_lens = row["q_lens"], row["cache_lens"]
+            offsets, cache_lens = call.values("cu_seqlens_q"), call.values("cache_seqlens")
+            q_lens = [b - a for a, b in zip(offsets, offsets[1:], strict=False)]
             total_q, cached, batch = sum(q_lens), sum(cache_lens), len(q_lens)
             cache = torch.float8_e4m3fn if "cache_dtype" in row else torch.float16
             pages_named = sum(

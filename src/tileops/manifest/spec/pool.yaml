@@ -541,9 +541,9 @@ MeanPoolingFwdOp:
   # Chunk 64 over an 8k sequence is the linear-attention chunking these come from.
   - {B: 1, S: 8192, H: 64, D: 128, chunk_size: 64, accum_dtype: float32, dtype_cases: [{T: float16}, {T: bfloat16}], label: uniform-8k}
   - {B: 2, S: 2048, H: 64, D: 128, chunk_size: 64, accum_dtype: float32, dtype_cases: [{T: float16}], label: uniform-batched}
-  - {B: 1, S: 8192, H: 64, D: 128, seq_lens: [2048, 2048, 2048, 2048], chunk_size: 64, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}, {T: float32}], label: ragged-even}
+  - {B: 1, S: 8192, H: 64, D: 128, seq_lens: "repeat(2048, 4)", chunk_size: 64, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}, {T: float32}], label: ragged-even}
   - {B: 1, S: 1000, H: 64, D: 128, seq_lens: [100, 200, 300, 400], chunk_size: 32, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}], label: ragged-tail}
-  - {B: 2, S: 2048, H: 64, D: 128, seq_lens: [1024, 1024], chunk_size: 64, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}], label: ragged-batched}
+  - {B: 2, S: 2048, H: 64, D: 128, seq_lens: "repeat(1024, 2)", chunk_size: 64, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}], label: ragged-batched}
 
   roofline:
     flops: "B * S * H * D + B * (NC if present(offsets) else ceil_div(S, chunk_size)) * H * D"
