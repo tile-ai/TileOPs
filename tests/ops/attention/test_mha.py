@@ -86,10 +86,6 @@ class MhaBwdFixture(FixtureBase):
 def test_mha_bwd_rejects_legacy_kernel_map_keys() -> None:
     with pytest.raises(ValueError, match="legacy MHA backward kernel_map keys"):
         MultiHeadAttentionBwdOp(
-            batch=1,
-            heads=8,
-            seq_len=128,
-            dim=64,
             is_causal=False,
             kernel_map={"mha_bwd_kernel": _FakeLegacyMhaBwdKernel},
         )
@@ -100,5 +96,5 @@ def test_mha_bwd(
     batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype, tune: bool
 ) -> None:
     test = MhaBwdTest(batch, heads, seq_len, dim, causal, dtype)
-    op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, tune=tune)
+    op = MultiHeadAttentionBwdOp(causal, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)

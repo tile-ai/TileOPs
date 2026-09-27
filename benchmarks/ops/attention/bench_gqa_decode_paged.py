@@ -5,18 +5,12 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from benchmarks.benchmark_base import (
-    ManifestBenchmark,
-    then_dtype,
-    workload_params,
-)
-from benchmarks.ops.attention.workload_args import gqa_decode_paged_args
-from tileops.manifest import load_workloads
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
-from workloads.attention.gqa import GroupedQueryAttentionDecodePagedWorkload
+from workloads.attention.gqa import GroupedQueryAttentionDecodePagedCall
 
 
-class GroupedQueryAttentionDecodePagedTestBaseline(GroupedQueryAttentionDecodePagedWorkload):
+class GroupedQueryAttentionDecodePagedTestBaseline(GroupedQueryAttentionDecodePagedCall):
     """Times SDPA on the reassembled pages, not an explicit softmax.
 
     ``sdpa_kernel(MATH)`` replaces the test reference's explicit
@@ -146,48 +140,13 @@ def _flashinfer_gqa_decode_paged(test, q, k, v, real_seqlen_kv, block_table):
     return run_fn
 
 
-_GQA_DECODE_PAGED_BENCH_PARAMS = workload_params(
-    load_workloads(GroupedQueryAttentionDecodePagedWithKVCacheFwdOp),
-    then_dtype(
-        gqa_decode_paged_args,
-        tune=False,
-    ),
-)
-
-
-@pytest.mark.parametrize(
-    "batch, heads, heads_kv, seqlen_kv, dim, page_size, sm_scale, softcap, dtype, tune",
-    _GQA_DECODE_PAGED_BENCH_PARAMS,
-)
-def test_gqa_decode_paged_bench(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    seqlen_kv: int,
-    dim: int,
-    page_size: int,
-    sm_scale: float | None,
-    softcap: float | None,
-    dtype: torch.dtype,
-    tune: bool,
-) -> None:
-    test = GroupedQueryAttentionDecodePagedTestBaseline(
-        batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, sm_scale=sm_scale, softcap=softcap
-    )
+@pytest.mark.parametrize("call", manifest_calls(GroupedQueryAttentionDecodePagedWithKVCacheFwdOp))
+def test_gqa_decode_paged_bench(call) -> None:
+    test = GroupedQueryAttentionDecodePagedTestBaseline(call)
     inputs = test.gen_inputs()
     q, k, v, real_seqlen_kv, block_table = inputs
 
-    op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(
-        batch,
-        heads,
-        heads_kv,
-        seqlen_kv,
-        dim,
-        page_size,
-        sm_scale=sm_scale,
-        softcap=softcap,
-        tune=tune,
-    )
+    op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(**test.arguments())
     bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 

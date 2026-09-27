@@ -1,188 +1,110 @@
 # attention.yaml -- manifest entries for the 'attention' family.
 #
-# Source of truth for op interfaces in this family. Loaded and merged with
-# other family files by tileops.manifest at runtime. See docs/design/manifest.md
-# for the full schema.
+# Index names shared across this family:
+#   B  batch         S, S_q, S_kv  sequence lengths    H, H_kv  query and KV heads
+#   D  head dim      T_q, T_kv, T_k  packed token totals  N_kv  KV pool rows
+#   W  pages per request            T  element dtype
+# Causal attention over rectangular calls is bottom-right aligned: query i sits at
+# position i + S_kv - S_q.
 
 MultiHeadAttentionBwdOp:
-  ref_api: "torch.nn.functional.scaled_dot_product_attention"
   family: attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k: {dtype: "same_as(q)"}
-      v: {dtype: "same_as(q)"}
-      o: {dtype: "same_as(q)"}
-      do: {dtype: "same_as(q)"}
-      lse: {dtype: "float32"}
-    outputs:
-      dq: {dtype: "same_as(q)"}
-      dk: {dtype: "same_as(q)"}
-      dv: {dtype: "same_as(q)"}
+    forall: {B: Dim, S: Dim, H: Dim, D: Dim, T: "DType[float16 | bfloat16]"}
     params:
       is_causal: {type: bool, default: true}
-    shape_rules:
-      - "q.shape == (B, S, H, D)"
-      - "k.shape == (B, S, H, D)"
-      - "v.shape == (B, S, H, D)"
-      - "o.shape == (B, S, H, D)"
-      - "do.shape == (B, S, H, D)"
-      - "lse.shape == (B, H, S)"
-      - "dq.shape == (B, S, H, D)"
-      - "dk.shape == (B, S, H, D)"
-      - "dv.shape == (B, S, H, D)"
-
+    inputs:
+      q: {dtype: T, shape: "[B, S, H, D]"}
+      k: {dtype: T, shape: "[B, S, H, D]"}
+      v: {dtype: T, shape: "[B, S, H, D]"}
+      o: {dtype: T, shape: "[B, S, H, D]"}
+      do: {dtype: T, shape: "[B, S, H, D]"}
+      lse: {dtype: float32, shape: "[B, H, S]"}
+    outputs:
+      dq: {dtype: T, shape: "[B, S, H, D]"}
+      dk: {dtype: T, shape: "[B, S, H, D]"}
+      dv: {dtype: T, shape: "[B, S, H, D]"}
   workloads:
-    # Llama-3.1-8B (H=32, D=128)
-    - {q_shape: [4, 512, 32, 128], kv_shape: [4, 512, 32, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-short"}
-    - {q_shape: [2, 2048, 32, 128], kv_shape: [2, 2048, 32, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-long"}
-    # Llama-3.1-70B (H=64, D=128)
-    - {q_shape: [2, 512, 64, 128], kv_shape: [2, 512, 64, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-short"}
-    - {q_shape: [1, 2048, 64, 128], kv_shape: [1, 2048, 64, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-long"}
-
+  - {B: 4, S: 512, H: 32, D: 128, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-short}
+  - {B: 2, S: 2048, H: 32, D: 128, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-long}
+  - {B: 2, S: 512, H: 64, D: 128, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-short}
+  - {B: 1, S: 2048, H: 64, D: 128, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-long}
   roofline:
-    func: "tileops.perf.formulas.mha_bwd_roofline"
-    composition:
-    - stage: gqa_backward
-      source: "tileops.perf.formulas.gqa_bwd_roofline"
-
+    # Five contractions per score; causal halves the scores.
+    flops: "10 * B * H * S * S * D // 2 if is_causal else 10 * B * H * S * S * D"
   composition:
     kind: composite
     stages:
     # MHA is GQA with one KV head per query head: every kernel this op runs is
     # built by the GQA backward op it delegates to.
-    - name: gqa_backward
-      op: GroupedQueryAttentionBwdOp
-
-  source:
-    kernel: tileops/kernels/attention/gqa_bwd.py
-    kernel_map:
-      gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-      gqa_bwd_kernel: GQABwdWgmmaPipelinedKernel
-    op: tileops/ops/attention/mha.py
-    test: tests/ops/attention/test_mha.py
-    bench: benchmarks/ops/attention/bench_mha.py
-    bench_manifest_driven: true
+    - {name: gqa_backward, op: GroupedQueryAttentionBwdOp}
 
 GroupedQueryAttentionDenseFwdOp:
-  ref_api: "torch.nn.functional.scaled_dot_product_attention"
   family: attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16 | float8_e4m3fn"}
-      k: {dtype: "same_as(q)"}
-      v: {dtype: "same_as(q)"}
-      q_scale: {dtype: "float32", optional: true}
-      k_scale: {dtype: "float32", optional: true}
-      v_scale: {dtype: "float32", optional: true}
-      rope_cos: {dtype: "same_as(o)", optional: true}
-      rope_sin: {dtype: "same_as(o)", optional: true}
-    outputs:
-      o: {dtype: "same_as(q)", caller_stated: true}
+    forall: {B: Dim, S_q: Dim, S_kv: Dim, H: Dim, H_kv: Dim, D: Dim, P_pad: Dim, T: "DType[float16 | bfloat16 | float8_e4m3fn]"}
     params:
       is_causal: {type: bool, default: true}
-      sm_scale: {type: "float | None", default: null}
-      softcap: {type: "float | None", default: null}
       window_size_left: {type: int, default: -1}
       window_size_right: {type: int, default: -1}
-      out_dtype: {type: "float16 | bfloat16 | None", default: null}
-      pos_encoding_mode: {type: str, default: none}
+      sm_scale: {type: "float | None", default: null}
+      softcap: {type: "float | None", default: null}
+      pos_encoding_mode: {type: "'none' | 'rope'", default: none}
       rotary_dim: {type: "int | None", default: null}
-      rope_layout: {type: str, default: neox}
-    dtype_combos:
-      - {q: float16, k: float16, v: float16, o: float16}
-      - {q: bfloat16, k: bfloat16, v: bfloat16, o: bfloat16}
-      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, o: float16}
-      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, o: bfloat16}
+      rope_layout: {type: "'neox' | 'interleaved'", default: neox}
+      out_dtype: {type: "float16 | bfloat16 | None", default: null}
+    inputs:
+      q: {dtype: T, shape: "[B, S_q, H, D]"}
+      k: {dtype: T, shape: "[B, S_kv, H_kv, D]"}
+      v: {dtype: T, shape: "[B, S_kv, H_kv, D]"}
+      # FP8 dequantization scales, one per batch entry and KV head.
+      q_scale: {dtype: float32, shape: "[B, H_kv]", optional: true}
+      k_scale: {dtype: float32, shape: "[B, H_kv]", optional: "present(q_scale)"}
+      v_scale: {dtype: float32, shape: "[B, H_kv]", optional: "present(q_scale)"}
+      # RoPE tables indexed by KV position and rotated pair.
+      rope_cos: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[S_kv + P_pad, R // 2]", optional: "pos_encoding_mode == 'rope'"}
+      rope_sin: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[S_kv + P_pad, R // 2]", optional: "pos_encoding_mode == 'rope'"}
+    outputs:
+      o: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[B, S_q, H, D]"}
+    let:
+      R: "rotary_dim.value if present(rotary_dim) else D"
     shape_rules:
-      - "q.shape == (B, S_q, H, D)"
-      - "k.shape == (B, S_kv, H_kv, D)"
-      - "v.shape == (B, S_kv, H_kv, D)"
-      # Rectangular calls use bottom-right alignment: query i is at
-      # absolute position i + S_kv - S_q.
-      - "not is_causal or S_q <= S_kv"
-      - "pos_encoding_mode != 'rope' or S_q <= S_kv"
-      - "(q_scale is None) == (k_scale is None)"
-      - "(q_scale is None) == (v_scale is None)"
-      - "q_scale is None or q_scale.shape == (B, H_kv)"
-      - "k_scale is None or k_scale.shape == (B, H_kv)"
-      - "v_scale is None or v_scale.shape == (B, H_kv)"
-      - "(rope_cos is None) == (rope_sin is None)"
-      - "(pos_encoding_mode == 'rope') == (rope_cos is not None)"
-      - "rope_cos is None or rope_cos.ndim == 2"
-      - "rope_cos is None or rope_sin is None or rope_sin.shape == rope_cos.shape"
-      - "rope_cos is None or rope_cos.shape[0] >= S_kv"
-      - "rope_cos is None or rope_cos.shape[1] == (rotary_dim if rotary_dim is not None else D) // 2"
-      - "pos_encoding_mode == 'none' or pos_encoding_mode == 'rope'"
-      - "pos_encoding_mode == 'rope' or rotary_dim is None"
-      - "rotary_dim is None or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D)"
-      - "rope_layout == 'neox' or rope_layout == 'interleaved'"
-      - "o.shape == (B, S_q, H, D)"
-      - "H % H_kv == 0"
-
+    - "H_kv > 0 and H % H_kv == 0"
+    - "window_size_left >= -1 and window_size_right >= -1"
+    - "not is_causal or S_q <= S_kv"
+    - "pos_encoding_mode != 'rope' or S_q <= S_kv"
+    # FP8 input has no FP8 output: it names a 16-bit out_dtype and passes the scales.
+    - "(T == 'float8_e4m3fn') == present(q_scale)"
+    - "present(out_dtype) if T == 'float8_e4m3fn' else (not present(out_dtype) or out_dtype.value == T)"
+    - "pos_encoding_mode == 'rope' or not present(rotary_dim)"
+    - "not present(rotary_dim) or (rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D)"
   workloads:
-    # Dense decode: one query token over a contiguous KV cache.
-    - {q_shape: [32, 1, 32, 128], kv_shape: [32, 4096, 8, 128], dtypes: [float16, bfloat16], label: "decode-llama-8b-4k"}
-    - {q_shape: [8, 1, 32, 128], kv_shape: [8, 32768, 8, 128], dtypes: [float16, bfloat16], label: "decode-llama-8b-32k"}
-    - {q_shape: [16, 1, 64, 128], kv_shape: [16, 4096, 8, 128], dtypes: [float16, bfloat16], label: "decode-llama-70b-4k"}
-    - {q_shape: [4, 1, 64, 128], kv_shape: [4, 32768, 8, 128], dtypes: [float16, bfloat16], label: "decode-llama-70b-32k"}
-    - {q_shape: [32, 1, 32, 128], kv_shape: [32, 4096, 8, 128], softcap: 50.0, dtypes: [float16], label: "decode-llama-8b-4k-softcap50"}
-    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 1024, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-1k"}
-    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 4096, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-4k"}
-    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 8192, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-8k"}
-    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 16384, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-16k"}
-    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 32768, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-32k"}
-    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 65536, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-64k"}
-    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 131072, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-128k"}
-    - {q_shape: [1, 1, 32, 128], kv_shape: [1, 262144, 4, 128], dtypes: [float16], label: "decode-qwen3-30b-a3b-bs1-256k"}
-    # Chunked prefill; the rows that pass the optional inputs.
-    - {q_shape: [1, 256, 8, 128], kv_shape: [1, 1792, 2, 128], rope_cos_shape: [1792, 32], rope_sin_shape: [1792, 32], pos_encoding_mode: rope, rotary_dim: 64, dtypes: [float16, bfloat16], label: "prefill-rope-neox-q256-kv1792"}
-    - {q_shape: [1, 256, 8, 128], kv_shape: [1, 1792, 2, 128], q_scale_shape: [1, 2], k_scale_shape: [1, 2], v_scale_shape: [1, 2], dtype: float16, dtypes: [float8_e4m3fn], label: "prefill-scaled-q256-kv1792"}
-
+  - {B: 32, S_q: 1, S_kv: 4096, H: 32, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-llama-8b-4k}
+  - {B: 8, S_q: 1, S_kv: 32768, H: 32, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-llama-8b-32k}
+  - {B: 16, S_q: 1, S_kv: 4096, H: 64, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-llama-70b-4k}
+  - {B: 4, S_q: 1, S_kv: 32768, H: 64, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-llama-70b-32k}
+  - {B: 32, S_q: 1, S_kv: 4096, H: 32, H_kv: 8, D: 128, softcap: 50.0, dtype_cases: [{T: float16}], label: decode-llama-8b-4k-softcap50}
+  - {B: 1, S_q: 1, S_kv: 1024, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-a3b-bs1-1k}
+  - {B: 1, S_q: 1, S_kv: 4096, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-a3b-bs1-4k}
+  - {B: 1, S_q: 1, S_kv: 8192, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-a3b-bs1-8k}
+  - {B: 1, S_q: 1, S_kv: 16384, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-a3b-bs1-16k}
+  - {B: 1, S_q: 1, S_kv: 32768, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-a3b-bs1-32k}
+  - {B: 1, S_q: 1, S_kv: 65536, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-a3b-bs1-64k}
+  - {B: 1, S_q: 1, S_kv: 131072, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-a3b-bs1-128k}
+  - {B: 1, S_q: 1, S_kv: 262144, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-a3b-bs1-256k}
+  - {B: 1, S_q: 256, S_kv: 1792, H: 8, H_kv: 2, D: 128, pos_encoding_mode: rope, rotary_dim: 64, P_pad: 0, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-rope-neox-q256-kv1792}
+  - {B: 1, S_q: 256, S_kv: 1792, H: 8, H_kv: 2, D: 128, out_dtype: float16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: prefill-scaled-q256-kv1792}
   roofline:
-    # Optional inputs are priced from the tensors bound by the evaluated call.
-    func: "tileops.perf.formulas.gqa_fwd_roofline"
-
-  source:
-    kernel: tileops/kernels/attention/gqa_dense.py
-    kernel_map:
-      gqa_dense: GQADenseWsKernel
-      gqa_dense_decode: GQADecodeKernel
-      gqa_dense_decode_bs1: GQADecodeBs1Kernel
-      gqa_dense_fp8: GQADenseFP8Kernel
-      gqa_dense_fp8_decode: GQADenseFP8DecodeKernel
-      gqa_dense_decode_long_context: GQADecodeLongContextKernel
-      gqa_dense_sliding_window: GQADenseSlidingWindowKernel
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa.py
-    bench: benchmarks/ops/attention/bench_gqa.py
-    bench_manifest_driven: true
+    # The scores each query row sees under bottom-right alignment, the causal mask and both windows.
+    func: "tileops.perf.formulas.gqa_dense_fwd_roofline"
 
 GroupedQueryAttentionVarlenFwdOp:
-  ref_api: "none"
   family: attention
   status: spec-only
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16 | float8_e4m3fn"}
-      k: {dtype: "same_as(q)"}
-      v: {dtype: "same_as(q)"}
-      cu_seqlens_q: {dtype: "int32"}
-      cu_seqlens_kv: {dtype: "int32"}
-      q_scale: {dtype: "float32", optional: true}
-      k_scale: {dtype: "float32", optional: true}
-      v_scale: {dtype: "float32", optional: true}
-      rope_cos: {dtype: "same_as(o)", optional: true}
-      rope_sin: {dtype: "same_as(o)", optional: true}
-    outputs:
-      o: {dtype: "same_as(q)", caller_stated: true}
+    forall: {B: Dim, T_q: Dim, T_kv: Dim, H: Dim, H_kv: Dim, D: Dim, P: Dim, T: "DType[float16 | bfloat16 | float8_e4m3fn]", q_lens: "Seq[Int]", kv_lens: "Seq[Int]"}
     params:
       is_causal: {type: bool, default: true}
       window_size_left: {type: int, default: -1}
@@ -190,82 +112,51 @@ GroupedQueryAttentionVarlenFwdOp:
       sm_scale: {type: "float | None", default: null}
       softcap: {type: "float | None", default: null}
       out_dtype: {type: "float16 | bfloat16 | None", default: null}
-      pos_encoding_mode: {type: str, default: none}
+      pos_encoding_mode: {type: "'none' | 'rope'", default: none}
       rotary_dim: {type: "int | None", default: null}
-      rope_layout: {type: str, default: neox}
+      rope_layout: {type: "'neox' | 'interleaved'", default: neox}
       validate_inputs: {type: bool, default: false}
-    dtype_combos:
-      - {q: float16, k: float16, v: float16, cu_seqlens_q: int32, cu_seqlens_kv: int32, o: float16}
-      - {q: bfloat16, k: bfloat16, v: bfloat16, cu_seqlens_q: int32, cu_seqlens_kv: int32, o: bfloat16}
-      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, cu_seqlens_q: int32, cu_seqlens_kv: int32, o: float16}
-      - {q: float8_e4m3fn, k: float8_e4m3fn, v: float8_e4m3fn, cu_seqlens_q: int32, cu_seqlens_kv: int32, o: bfloat16}
+    inputs:
+      q: {dtype: T, shape: "[T_q, H, D]"}
+      k: {dtype: T, shape: "[T_kv, H_kv, D]"}
+      v: {dtype: T, shape: "[T_kv, H_kv, D]"}
+      cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)", requires: ["prefix_offsets(T_q)"]}
+      cu_seqlens_kv: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(kv_lens)", requires: ["prefix_offsets(T_kv)"]}
+      q_scale: {dtype: float32, shape: "[B, H_kv]", optional: true}
+      k_scale: {dtype: float32, shape: "[B, H_kv]", optional: "present(q_scale)"}
+      v_scale: {dtype: float32, shape: "[B, H_kv]", optional: "present(q_scale)"}
+      rope_cos: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", optional: "pos_encoding_mode == 'rope'"}
+      rope_sin: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", optional: "pos_encoding_mode == 'rope'"}
+    outputs:
+      o: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[T_q, H, D]"}
+    let:
+      R: "rotary_dim.value if present(rotary_dim) else D"
     shape_rules:
-      - "q.shape == (T_q, H, D)"
-      - "k.shape == (T_kv, H_kv, D)"
-      - "v.shape == (T_kv, H_kv, D)"
-      - "cu_seqlens_q.shape == (B + 1,)"
-      - "cu_seqlens_kv.shape == cu_seqlens_q.shape"
-      - "(window_size_left == -1 and window_size_right == -1) or (sm_scale is None and (softcap is None or softcap == 0))"
-      - "(q_scale is None) == (k_scale is None)"
-      - "(q_scale is None) == (v_scale is None)"
-      - "q_scale is None or (q_scale.ndim == 2 and q_scale.shape[0] + 1 == cu_seqlens_q.shape[0] and q_scale.shape[1] == H_kv)"
-      - "k_scale is None or (k_scale.ndim == 2 and k_scale.shape[0] + 1 == cu_seqlens_q.shape[0] and k_scale.shape[1] == H_kv)"
-      - "v_scale is None or (v_scale.ndim == 2 and v_scale.shape[0] + 1 == cu_seqlens_q.shape[0] and v_scale.shape[1] == H_kv)"
-      - "(rope_cos is None) == (rope_sin is None)"
-      - "(pos_encoding_mode == 'rope') == (rope_cos is not None)"
-      - "rope_cos is None or rope_cos.ndim == 2"
-      - "rope_cos is None or rope_sin is None or rope_sin.shape == rope_cos.shape"
-      - "rope_cos is None or rope_cos.shape[0] > 0"
-      - "rope_cos is None or rope_cos.shape[1] == (rotary_dim if rotary_dim is not None else D) // 2"
-      - "pos_encoding_mode == 'none' or pos_encoding_mode == 'rope'"
-      - "pos_encoding_mode == 'rope' or rotary_dim is None"
-      - "rotary_dim is None or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D)"
-      - "rope_layout == 'neox' or rope_layout == 'interleaved'"
-      - "o.shape == (T_q, H, D)"
-      - "H % H_kv == 0"
-
+    - "H_kv > 0 and H % H_kv == 0"
+    - "window_size_left >= -1 and window_size_right >= -1"
+    - "(window_size_left == -1 and window_size_right == -1) or (not present(sm_scale) and (not present(softcap) or softcap.value == 0))"
+    - "(T == 'float8_e4m3fn') == present(q_scale)"
+    - "present(out_dtype) if T == 'float8_e4m3fn' else (not present(out_dtype) or out_dtype.value == T)"
+    - "pos_encoding_mode == 'rope' or not present(rotary_dim)"
+    - "not present(rotary_dim) or (rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D)"
   workloads:
-    - {total_q: 2048, total_kv: 2048, batch: 4, heads: 32, heads_kv: 8, dim: 128, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-uniform"}
-    - {total_q: 1024, total_kv: 3072, batch: 2, heads: 32, heads_kv: 8, dim: 128, q_lens: [512, 512], kv_lens: [1024, 2048], is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-q-lt-kv"}
-    - {total_q: 1024, total_kv: 3072, batch: 2, heads: 64, heads_kv: 8, dim: 128, q_lens: [512, 512], kv_lens: [1024, 2048], is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-q-lt-kv"}
-    - {total_q: 2048, total_kv: 2048, batch: 4, heads: 32, heads_kv: 8, dim: 128, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], is_causal: true, window_size_left: 256, dtypes: [float16, bfloat16], label: "llama-8b-short-w256"}
-    - {total_q: 8192, total_kv: 8192, batch: 4, heads: 32, heads_kv: 8, dim: 128, q_lens: [2048, 2048, 2048, 2048], kv_lens: [2048, 2048, 2048, 2048], is_causal: true, window_size_left: 1024, dtypes: [float16, bfloat16], label: "llama-8b-long-w1024"}
-    - {total_q: 2048, total_kv: 2048, batch: 4, heads: 64, heads_kv: 8, dim: 128, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], is_causal: true, window_size_left: 256, dtypes: [float16, bfloat16], label: "llama-70b-short-w256"}
-    - {total_q: 8192, total_kv: 8192, batch: 4, heads: 64, heads_kv: 8, dim: 128, q_lens: [2048, 2048, 2048, 2048], kv_lens: [2048, 2048, 2048, 2048], is_causal: true, window_size_left: 1024, dtypes: [float16, bfloat16], label: "llama-70b-long-w1024"}
-
+  - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-uniform}
+  - {T_q: 1024, T_kv: 3072, H: 32, H_kv: 8, D: 128, q_lens: [512, 512], kv_lens: [1024, 2048], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-q-lt-kv}
+  - {T_q: 1024, T_kv: 3072, H: 64, H_kv: 8, D: 128, q_lens: [512, 512], kv_lens: [1024, 2048], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-q-lt-kv}
+  - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], is_causal: true, window_size_left: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-short-w256}
+  - {T_q: 8192, T_kv: 8192, H: 32, H_kv: 8, D: 128, q_lens: [2048, 2048, 2048, 2048], kv_lens: [2048, 2048, 2048, 2048], is_causal: true, window_size_left: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-long-w1024}
+  - {T_q: 2048, T_kv: 2048, H: 64, H_kv: 8, D: 128, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], is_causal: true, window_size_left: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-short-w256}
+  - {T_q: 8192, T_kv: 8192, H: 64, H_kv: 8, D: 128, q_lens: [2048, 2048, 2048, 2048], kv_lens: [2048, 2048, 2048, 2048], is_causal: true, window_size_left: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-long-w1024}
   roofline:
     func: "tileops.perf.formulas.gqa_varlen_fwd_roofline"
-
-  source:
-    kernel:
-      - tileops/kernels/attention/gqa_prefill_varlen_fwd.py
-      - tileops/kernels/attention/gqa_prefill_varlen_ws.py
-      - tileops/kernels/attention/gqa_sliding_window_varlen_fwd.py
-    kernel_map:
-      gqa_varlen: GQAPrefillVarlenFwdKernel
-      gqa_varlen_ws: GQAPrefillVarlenWSFwdKernel
-      gqa_varlen_sliding_window: GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa_varlen.py
-    bench: benchmarks/ops/attention/bench_gqa.py
 
 # Compatibility contracts kept implemented until the unified Varlen Op has
 # migrated its remaining FP8 and RoPE capabilities.
 GroupedQueryAttentionPrefillVarlenFwdOp:
-  ref_api: "none"
   family: attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k: {dtype: "same_as(q)"}
-      v: {dtype: "same_as(q)"}
-      cu_seqlens_q: {dtype: "int32"}
-      cu_seqlens_kv: {dtype: "int32"}
-    outputs:
-      o: {dtype: "same_as(q)"}
+    forall: {B: Dim, T_q: Dim, T_kv: Dim, H: Dim, H_kv: Dim, D: Dim, T: "DType[float16 | bfloat16]", q_lens: "Seq[Int]", kv_lens: "Seq[Int]"}
     params:
       max_seqlen_q: {type: int}
       max_seqlen_kv: {type: int}
@@ -273,101 +164,61 @@ GroupedQueryAttentionPrefillVarlenFwdOp:
       sm_scale: {type: "float | None", default: null}
       softcap: {type: "float | None", default: null}
       validate_inputs: {type: bool, default: false}
+    inputs:
+      q: {dtype: T, shape: "[T_q, H, D]"}
+      k: {dtype: T, shape: "[T_kv, H_kv, D]"}
+      v: {dtype: T, shape: "[T_kv, H_kv, D]"}
+      cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)", requires: ["prefix_offsets(T_q)", "max_segment(max_seqlen_q)"]}
+      cu_seqlens_kv: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(kv_lens)", requires: ["prefix_offsets(T_kv)", "max_segment(max_seqlen_kv)"]}
+    outputs:
+      o: {dtype: T, shape: "[T_q, H, D]"}
     shape_rules:
-      - "q.shape == (total_q, H, D)"
-      - "k.shape == (total_kv, H_kv, D)"
-      - "v.shape == (total_kv, H_kv, D)"
-      - "cu_seqlens_q.shape == (B + 1,)"
-      - "cu_seqlens_kv.shape == (B + 1,)"
-      - "o.shape == (total_q, H, D)"
-      - "H % H_kv == 0"
-
+    - "H_kv > 0 and H % H_kv == 0"
+    - "max_seqlen_q > 0 and max_seqlen_kv > 0"
   workloads:
-    - {total_q: 2048, total_kv: 2048, batch: 4, heads: 32, heads_kv: 8, dim: 128, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-uniform"}
-    - {total_q: 1024, total_kv: 3072, batch: 2, heads: 32, heads_kv: 8, dim: 128, q_lens: [512, 512], kv_lens: [1024, 2048], max_seqlen_q: 512, max_seqlen_kv: 2048, is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-q-lt-kv"}
-    - {total_q: 1024, total_kv: 3072, batch: 2, heads: 64, heads_kv: 8, dim: 128, q_lens: [512, 512], kv_lens: [1024, 2048], max_seqlen_q: 512, max_seqlen_kv: 2048, is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-q-lt-kv"}
-
+  - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: [512, 512, 512, 512], kv_lens: [512, 512, 512, 512], max_seqlen_q: 512, max_seqlen_kv: 512, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-uniform}
+  - {T_q: 1024, T_kv: 3072, H: 32, H_kv: 8, D: 128, q_lens: [512, 512], kv_lens: [1024, 2048], max_seqlen_q: 512, max_seqlen_kv: 2048, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-q-lt-kv}
+  - {T_q: 1024, T_kv: 3072, H: 64, H_kv: 8, D: 128, q_lens: [512, 512], kv_lens: [1024, 2048], max_seqlen_q: 512, max_seqlen_kv: 2048, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-q-lt-kv}
   roofline:
-    # The formula prices per-request lengths, which the call passes as cumulative
-    # bounds. The op differences them and answers this one; see its eval_roofline.
+    # Scores per request, from the lengths the call packs.
     func: "tileops.perf.formulas.gqa_prefill_varlen_fwd_roofline"
 
-  source:
-    kernel: tileops/kernels/attention/gqa_prefill_varlen_fwd.py
-    kernel_map:
-      gqa_prefill_varlen_fwd_kernel: GQAPrefillVarlenFwdKernel
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa_varlen.py
-    bench: benchmarks/ops/attention/bench_gqa.py
-    bench_manifest_driven: true
-
 GroupedQueryAttentionSlidingWindowVarlenFwdOp:
-  ref_api: "none"
   family: attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k: {dtype: "same_as(q)"}
-      v: {dtype: "same_as(q)"}
-      cu_seqlens_q: {dtype: "int32"}
-      cu_seqlens_k: {dtype: "int32"}
-    outputs:
-      o: {dtype: "same_as(q)"}
+    forall: {B: Dim, T_q: Dim, T_k: Dim, H: Dim, H_kv: Dim, D: Dim, T: "DType[float16 | bfloat16]", q_lens: "Seq[Int]", k_lens: "Seq[Int]"}
     params:
+      max_seqlen_q: {type: int}
       is_causal: {type: bool, default: true}
       window_size_left: {type: int, default: -1}
       window_size_right: {type: int, default: -1}
-      max_seqlen_q: {type: int}
+    inputs:
+      q: {dtype: T, shape: "[T_q, H, D]"}
+      k: {dtype: T, shape: "[T_k, H_kv, D]"}
+      v: {dtype: T, shape: "[T_k, H_kv, D]"}
+      cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)", requires: ["prefix_offsets(T_q)", "max_segment(max_seqlen_q)"]}
+      cu_seqlens_k: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(k_lens)", requires: ["prefix_offsets(T_k)"]}
+    outputs:
+      o: {dtype: T, shape: "[T_q, H, D]"}
     shape_rules:
-      - "q.shape == (total_q, H, D)"
-      - "k.shape == (total_k, H_kv, D)"
-      - "v.shape == (total_k, H_kv, D)"
-      - "cu_seqlens_q.shape == (B + 1,)"
-      - "cu_seqlens_k.shape == (B + 1,)"
-      - "o.shape == (total_q, H, D)"
-      - "H % H_kv == 0"
-
+    - "H_kv > 0 and H % H_kv == 0"
+    - "window_size_left >= -1 and window_size_right >= -1"
+    - "max_seqlen_q > 0"
   workloads:
-    - {total_q: 2048, total_k: 2048, batch: 4, heads: 32, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 256, max_seqlen_q: 512, dtypes: [float16, bfloat16], label: "llama-8b-short-w256"}
-    - {total_q: 8192, total_k: 8192, batch: 4, heads: 32, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 1024, max_seqlen_q: 2048, dtypes: [float16, bfloat16], label: "llama-8b-long-w1024"}
-    - {total_q: 2048, total_k: 2048, batch: 4, heads: 64, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 256, max_seqlen_q: 512, dtypes: [float16, bfloat16], label: "llama-70b-short-w256"}
-    - {total_q: 8192, total_k: 8192, batch: 4, heads: 64, heads_kv: 8, dim: 128, is_causal: true, window_size_left: 1024, max_seqlen_q: 2048, dtypes: [float16, bfloat16], label: "llama-70b-long-w1024"}
-
+  - {T_q: 2048, T_k: 2048, H: 32, H_kv: 8, D: 128, q_lens: [512, 512, 512, 512], k_lens: [512, 512, 512, 512], max_seqlen_q: 512, is_causal: true, window_size_left: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-short-w256}
+  - {T_q: 8192, T_k: 8192, H: 32, H_kv: 8, D: 128, q_lens: [2048, 2048, 2048, 2048], k_lens: [2048, 2048, 2048, 2048], max_seqlen_q: 2048, is_causal: true, window_size_left: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-long-w1024}
+  - {T_q: 2048, T_k: 2048, H: 64, H_kv: 8, D: 128, q_lens: [512, 512, 512, 512], k_lens: [512, 512, 512, 512], max_seqlen_q: 512, is_causal: true, window_size_left: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-short-w256}
+  - {T_q: 8192, T_k: 8192, H: 64, H_kv: 8, D: 128, q_lens: [2048, 2048, 2048, 2048], k_lens: [2048, 2048, 2048, 2048], max_seqlen_q: 2048, is_causal: true, window_size_left: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-long-w1024}
   roofline:
+    # Scores per request inside the window, from the lengths the call packs.
     func: "tileops.perf.formulas.gqa_sliding_window_varlen_fwd_roofline"
 
-  source:
-    kernel: tileops/kernels/attention/gqa_sliding_window_varlen_fwd.py
-    kernel_map:
-      gqa_sliding_window_varlen_fwd_kernel: GQASlidingWindowVarlenFwdWgmmaPipelinedKernel
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa_varlen.py
-    bench: benchmarks/ops/attention/bench_gqa.py
-    bench_manifest_driven: true
-
 GroupedQueryAttentionPagedFwdOp:
-  ref_api: "none"
   family: attention
   status: spec-only
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16 | float8_e4m3fn"}
-      k_pages: {dtype: "float16 | bfloat16 | float8_e4m3fn"}
-      v_pages: {dtype: "same_as(k_pages)"}
-      page_table: {dtype: "int32"}
-      cache_seqlens: {dtype: "int32"}
-      cu_seqlens_q: {dtype: "int32"}
-      q_scale: {dtype: "float32", optional: true}
-      k_scale: {dtype: "float32", optional: true}
-      v_scale: {dtype: "float32", optional: true}
-      rope_cos: {dtype: "same_as(o)", optional: true}
-      rope_sin: {dtype: "same_as(o)", optional: true}
-    outputs:
-      o: {dtype: "same_as(q)", caller_stated: true}
+    forall: {B: Dim, T_q: Dim, NP: Dim, PS: Dim, W: Dim, H: Dim, H_kv: Dim, D: Dim, P: Dim, SK: Shape, T: "DType[float16 | bfloat16 | float8_e4m3fn]", KV: "DType[float16 | bfloat16 | float8_e4m3fn]", q_lens: "Seq[Int]", cache_lens: "Seq[Int]"}
     params:
       is_causal: {type: bool, default: true}
       window_size_left: {type: int, default: -1}
@@ -375,542 +226,354 @@ GroupedQueryAttentionPagedFwdOp:
       sm_scale: {type: "float | None", default: null}
       softcap: {type: "float | None", default: null}
       out_dtype: {type: "float16 | bfloat16 | None", default: null}
-      pos_encoding_mode: {type: str, default: none}
+      pos_encoding_mode: {type: "'none' | 'rope'", default: none}
       rotary_dim: {type: "int | None", default: null}
-      rope_layout: {type: str, default: neox}
+      rope_layout: {type: "'neox' | 'interleaved'", default: neox}
+    inputs:
+      q: {dtype: T, shape: "[T_q, H, D]"}
+      k_pages: {dtype: KV, shape: "[NP, PS, H_kv, D]"}
+      v_pages: {dtype: KV, shape: "[NP, PS, H_kv, D]"}
+      page_table: {dtype: int32, shape: "[B, W]", values: "paged_block_table(B, W, NP)", requires: ["in_range(0, NP)"]}
+      cache_seqlens: {dtype: int32, shape: "[B]", values: "as_tensor(cache_lens)", requires: ["in_range(0, W * PS + 1)", "attn.paged_fits(cu_seqlens_q, W * PS)"]}
+      cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)", requires: ["prefix_offsets(T_q)"]}
+      q_scale: {dtype: float32, shape: "[B, H_kv]", optional: true}
+      # A per-tensor scale is [1]; a per-request, per-KV-head one is [B, H_kv].
+      k_scale: {dtype: float32, shape: "[*SK]", optional: true}
+      v_scale: {dtype: float32, shape: "[*SK]", optional: "present(k_scale)"}
+      rope_cos: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", optional: "pos_encoding_mode == 'rope'"}
+      rope_sin: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[P, R // 2]", optional: "pos_encoding_mode == 'rope'"}
+    outputs:
+      o: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[T_q, H, D]"}
+    let:
+      R: "rotary_dim.value if present(rotary_dim) else D"
     dtype_combos:
-      - {q: float16, k_pages: float16, v_pages: float16, page_table: int32, cache_seqlens: int32, cu_seqlens_q: int32, o: float16}
-      - {q: bfloat16, k_pages: bfloat16, v_pages: bfloat16, page_table: int32, cache_seqlens: int32, cu_seqlens_q: int32, o: bfloat16}
-      - {q: float16, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, page_table: int32, cache_seqlens: int32, cu_seqlens_q: int32, o: float16}
-      - {q: bfloat16, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, page_table: int32, cache_seqlens: int32, cu_seqlens_q: int32, o: bfloat16}
-      - {q: float8_e4m3fn, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, page_table: int32, cache_seqlens: int32, cu_seqlens_q: int32, o: float16}
-      - {q: float8_e4m3fn, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, page_table: int32, cache_seqlens: int32, cu_seqlens_q: int32, o: bfloat16}
+    - {T: float16, KV: float16}
+    - {T: bfloat16, KV: bfloat16}
+    - {T: float16, KV: float8_e4m3fn}
+    - {T: bfloat16, KV: float8_e4m3fn}
+    - {T: float8_e4m3fn, KV: float8_e4m3fn}
     shape_rules:
-      - "q.shape == (T_q, H, D)"
-      - "k_pages.shape == (N_pages, page_size, H_kv, D)"
-      - "v_pages.shape == (N_pages, page_size, H_kv, D)"
-      - "page_table.shape == (B, max_pages_per_req)"
-      - "cache_seqlens.shape == (B,)"
-      - "cu_seqlens_q.shape == (B + 1,)"
-      - "q_scale is None or q_scale.shape == (B, H_kv)"
-      - "(k_scale is None) == (v_scale is None)"
-      - "k_scale is None or k_scale.shape == (1,) or k_scale.shape == (B, H_kv)"
-      - "v_scale is None or v_scale.shape == (1,) or v_scale.shape == (B, H_kv)"
-      - "(rope_cos is None) == (rope_sin is None)"
-      - "(pos_encoding_mode == 'rope') == (rope_cos is not None)"
-      - "rope_cos is None or rope_cos.ndim == 2"
-      - "rope_cos is None or rope_sin is None or rope_sin.shape == rope_cos.shape"
-      - "rope_cos is None or rope_cos.shape[0] > 0"
-      - "rope_cos is None or rope_cos.shape[1] == (rotary_dim if rotary_dim is not None else D) // 2"
-      - "pos_encoding_mode == 'none' or pos_encoding_mode == 'rope'"
-      - "pos_encoding_mode == 'rope' or rotary_dim is None"
-      - "rotary_dim is None or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D)"
-      - "rope_layout == 'neox' or rope_layout == 'interleaved'"
-      - "o.shape == (T_q, H, D)"
-      - "H % H_kv == 0"
-      - "page_size > 0"
-
-  workloads: []
-
+    - "H_kv > 0 and H % H_kv == 0 and PS > 0"
+    - "window_size_left >= -1 and window_size_right >= -1"
+    - "(T == 'float8_e4m3fn') == present(q_scale)"
+    - "(KV == 'float8_e4m3fn') == present(k_scale)"
+    - "present(out_dtype) if T == 'float8_e4m3fn' else (not present(out_dtype) or out_dtype.value == T)"
+    - "pos_encoding_mode == 'rope' or not present(rotary_dim)"
+    - "not present(rotary_dim) or (rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D)"
+  workloads:
+  - {T_q: 4096, NP: 576, PS: 64, W: 72, H: 32, H_kv: 8, D: 128, q_lens: [512, 512, 512, 512, 512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], dtype_cases: [{T: float16, KV: float16}], label: llama-8b-paged-b8-prefix4k-chunk512-p64}
   roofline:
-    func: "tileops.perf.formulas.gqa_prefill_paged_with_kv_cache_fwd_roofline"
-
-  source:
-    kernel: []
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa.py
-    bench: benchmarks/ops/attention/bench_gqa.py
+    func: "tileops.perf.formulas.gqa_paged_fwd_roofline"
 
 GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
-  ref_api: "none"
   family: attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k_new: {dtype: "same_as(q)"}
-      v_new: {dtype: "same_as(q)"}
-      # The new tokens are appended into the pool, so the call writes these as
-      # well as reading the pages the block table names.
-      k_pages: {dtype: "float16 | bfloat16 | float8_e4m3fn", mutated: true}
-      v_pages: {dtype: "same_as(k_pages)", mutated: true}
-      k_scale: {dtype: "float32"}
-      v_scale: {dtype: "float32"}
-      cu_seqlens_q: {dtype: "int32"}
-      cache_seqlens: {dtype: "int32"}
-      block_table: {dtype: "int32"}
-    outputs:
-      o: {dtype: "same_as(q)"}
-    dtype_combos:
-      - {q: float16, k_new: float16, v_new: float16, k_pages: float16, v_pages: float16, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32}
-      - {q: bfloat16, k_new: bfloat16, v_new: bfloat16, k_pages: bfloat16, v_pages: bfloat16, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32}
-      - {q: float16, k_new: float16, v_new: float16, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32}
-      - {q: bfloat16, k_new: bfloat16, v_new: bfloat16, k_pages: float8_e4m3fn, v_pages: float8_e4m3fn, k_scale: float32, v_scale: float32, cu_seqlens_q: int32, cache_seqlens: int32, block_table: int32}
+    forall: {B: Dim, T_q: Dim, PT: Dim, W: Dim, H: Dim, H_kv: Dim, D: Dim, T: "DType[float16 | bfloat16]", q_lens: "Seq[Int]", cache_lens: "Seq[Int]"}
     params:
-      max_pages_per_req: {type: int}
       page_size: {type: int}
       max_seqlen_q: {type: int}
-      cache_dtype: {type: "dtype | None", default: null}
       is_causal: {type: bool, default: true}
+      cache_dtype: {type: "float16 | bfloat16 | float8_e4m3fn | None", default: null}
       sm_scale: {type: "float | None", default: null}
       softcap: {type: "float | None", default: null}
       fuse_rope: {type: bool, default: false}
       rope_base: {type: float, default: 10000.0}
       max_position: {type: "int | None", default: null}
       rotary_dim: {type: "int | None", default: null}
+    inputs:
+      q: {dtype: T, shape: "[T_q, H, D]"}
+      k_new: {dtype: T, shape: "[T_q, H_kv, D]"}
+      v_new: {dtype: T, shape: "[T_q, H_kv, D]"}
+      # The new tokens are appended into the pool, so the call writes these as
+      # well as reading the pages the block table names.
+      k_pages: {dtype: "coalesce_dtype(cache_dtype, T)", shape: "[PT, H_kv, D]", mutated: true, contiguous: true}
+      v_pages: {dtype: "coalesce_dtype(cache_dtype, T)", shape: "[PT, H_kv, D]", mutated: true, contiguous: true}
+      # Dequantization scales of an FP8 cache; an unquantized cache ignores them.
+      k_scale: {dtype: float32, shape: "[1]"}
+      v_scale: {dtype: float32, shape: "[1]"}
+      cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)", requires: ["prefix_offsets(T_q)", "max_segment(max_seqlen_q)"]}
+      # Each request's cache length before the append.
+      cache_seqlens: {dtype: int32, shape: "[B]", values: "as_tensor(cache_lens)", requires: ["in_range(0, W * page_size + 1)", "attn.paged_fits(cu_seqlens_q, W * page_size)"]}
+      block_table: {dtype: int32, shape: "[B, W]", values: "paged_block_table(B, W, NP)", requires: ["in_range(0, NP)"]}
+    outputs:
+      o: {dtype: T, shape: "[T_q, H, D]"}
+    let:
+      NP: "PT // page_size"
     shape_rules:
-      - "q.shape == (total_q, H, D)"
-      - "k_new.shape == (total_q, H_kv, D)"
-      - "v_new.shape == (total_q, H_kv, D)"
-      - "k_pages.shape == (physical_tokens, H_kv, D)"
-      - "v_pages.shape == (physical_tokens, H_kv, D)"
-      - "k_scale.shape == (1,)"
-      - "v_scale.shape == (1,)"
-      - "cu_seqlens_q.shape == (B + 1,)"
-      - "cache_seqlens.shape == (B,)"
-      - "block_table.shape == (B, max_pages_per_req)"
-      - "o.shape == (total_q, H, D)"
-      - "H % H_kv == 0"
-      - "page_size > 0"
-      - "max_pages_per_req > 0"
-      - "max_seqlen_q > 0"
-      - "physical_tokens % page_size == 0"
-      - "rotary_dim is None or (rotary_dim > 0 and rotary_dim % 2 == 0 and rotary_dim <= D)"
-      - "max_position is None or max_position > 0"
-
+    - "H_kv > 0 and H % H_kv == 0"
+    - "page_size > 0 and max_seqlen_q > 0"
+    - "PT % page_size == 0"
+    - "not present(cache_dtype) or cache_dtype.value == T or cache_dtype.value == 'float8_e4m3fn'"
+    - "not present(rotary_dim) or fuse_rope"
+    - "not present(rotary_dim) or (rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D)"
+    - "not fuse_rope or (present(max_position) and max_position.value > 0)"
   workloads:
-    - {total_q: 8192, batch: 8, q_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], cache_lens: [32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768], heads: 32, heads_kv: 8, dim: 256, page_size: 64, max_pages_per_req: 528, max_seqlen_q: 1024, physical_tokens: 270336, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtypes: [float16], label: "qwen35-9b-prefill-paged-fullattn-b8-prefix32k-chunk1k-p64-partial-rope64"}
-    - {total_q: 4608, batch: 8, q_lens: [256, 512, 768, 1024, 384, 640, 896, 128], cache_lens: [4096, 8192, 16384, 32768, 12288, 24576, 30720, 2048], heads: 32, heads_kv: 8, dim: 256, page_size: 64, max_pages_per_req: 528, max_seqlen_q: 1024, physical_tokens: 270336, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtypes: [float16], label: "qwen35-9b-prefill-paged-fullattn-mixed-b8-p64-partial-rope64"}
-    - {total_q: 4096, batch: 8, q_lens: [512, 512, 512, 512, 512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], heads: 32, heads_kv: 8, dim: 128, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 36864, is_causal: true, fuse_rope: true, max_position: 4608, rotary_dim: null, dtypes: [float16], label: "llama-8b-prefill-paged-b8-prefix4k-chunk512-p64-full-rope"}
-    - {total_q: 2048, batch: 4, q_lens: [512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096], heads: 8, heads_kv: 2, dim: 64, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 18432, is_causal: true, softcap: 50.0, dtypes: [float16], label: "gqa-prefill-paged-softcap50-b4-prefix4k-chunk512-p64"}
-    # Storage-only FP8 cache variants: q/k_new/v_new participate in attention
-    # as same_as(q); old cache pages are dequantized online with scalar
-    # k_scale/v_scale. Fused RoPE + FP8 append remains a follow-up kernel variant.
-    - {total_q: 8192, batch: 8, heads: 32, heads_kv: 8, dim: 256, page_size: 64, max_pages_per_req: 528, max_seqlen_q: 1024, physical_tokens: 270336, is_causal: true, dtypes: [float16], cache_dtype: float8_e4m3fn, label: "qwen35-9b-prefill-paged-fp8-cache-b8-prefix32k-chunk1k-p64"}
-    - {total_q: 4096, batch: 8, heads: 32, heads_kv: 8, dim: 128, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 36864, is_causal: true, dtypes: [float16], cache_dtype: float8_e4m3fn, label: "llama-8b-prefill-paged-fp8-cache-b8-prefix4k-chunk512-p64"}
-    - {total_q: 2048, batch: 4, heads: 8, heads_kv: 2, dim: 64, page_size: 64, max_pages_per_req: 72, max_seqlen_q: 512, physical_tokens: 18432, is_causal: true, softcap: 50.0, dtypes: [float16], cache_dtype: float8_e4m3fn, label: "gqa-prefill-paged-fp8-cache-softcap50-b4-prefix4k-chunk512-p64"}
-
+  - {T_q: 8192, PT: 270336, W: 528, H: 32, H_kv: 8, D: 256, q_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], cache_lens: [32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768], page_size: 64, max_seqlen_q: 1024, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtype_cases: [{T: float16}], label: qwen35-9b-prefill-paged-fullattn-b8-prefix32k-chunk1k-p64-partial-rope64}
+  - {T_q: 4608, PT: 270336, W: 528, H: 32, H_kv: 8, D: 256, q_lens: [256, 512, 768, 1024, 384, 640, 896, 128], cache_lens: [4096, 8192, 16384, 32768, 12288, 24576, 30720, 2048], page_size: 64, max_seqlen_q: 1024, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtype_cases: [{T: float16}], label: qwen35-9b-prefill-paged-fullattn-mixed-b8-p64-partial-rope64}
+  - {T_q: 4096, PT: 36864, W: 72, H: 32, H_kv: 8, D: 128, q_lens: [512, 512, 512, 512, 512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], page_size: 64, max_seqlen_q: 512, is_causal: true, fuse_rope: true, max_position: 4608, dtype_cases: [{T: float16}], label: llama-8b-prefill-paged-b8-prefix4k-chunk512-p64-full-rope}
+  - {T_q: 2048, PT: 18432, W: 72, H: 8, H_kv: 2, D: 64, q_lens: [512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096], page_size: 64, max_seqlen_q: 512, is_causal: true, softcap: 50.0, dtype_cases: [{T: float16}], label: gqa-prefill-paged-softcap50-b4-prefix4k-chunk512-p64}
+  - {T_q: 8192, PT: 270336, W: 528, H: 32, H_kv: 8, D: 256, q_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], cache_lens: [32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768], page_size: 64, max_seqlen_q: 1024, cache_dtype: float8_e4m3fn, is_causal: true, dtype_cases: [{T: float16}], label: qwen35-9b-prefill-paged-fp8-cache-b8-prefix32k-chunk1k-p64}
+  - {T_q: 4096, PT: 36864, W: 72, H: 32, H_kv: 8, D: 128, q_lens: [512, 512, 512, 512, 512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], page_size: 64, max_seqlen_q: 512, cache_dtype: float8_e4m3fn, is_causal: true, dtype_cases: [{T: float16}], label: llama-8b-prefill-paged-fp8-cache-b8-prefix4k-chunk512-p64}
+  - {T_q: 2048, PT: 18432, W: 72, H: 8, H_kv: 2, D: 64, q_lens: [512, 512, 512, 512], cache_lens: [4096, 4096, 4096, 4096], page_size: 64, max_seqlen_q: 512, cache_dtype: float8_e4m3fn, is_causal: true, softcap: 50.0, dtype_cases: [{T: float16}], label: gqa-prefill-paged-fp8-cache-softcap50-b4-prefix4k-chunk512-p64}
   roofline:
+    # Scores and the cached pages each request reaches, from the lengths the call carries.
     func: "tileops.perf.formulas.gqa_prefill_paged_with_kv_cache_fwd_roofline"
 
-  source:
-    kernel: tileops/kernels/attention/gqa_fwd.py
-    kernel_map:
-      gqa_prefill_paged_with_kv_cache_fwd_kernel: GQAPrefillPagedWithKVCacheFwdKernel
-      gqa_prefill_paged_with_kv_cache_rope_fwd_kernel: GQAPrefillPagedWithKVCacheRopeFwdKernel
-      gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel: GQAPrefillPagedWithFP8KVCacheFwdKernel
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa_prefill_paged.py
-    bench: benchmarks/ops/attention/bench_gqa.py
-    bench_manifest_driven: true
-
 GroupedQueryAttentionBwdOp:
-  ref_api: "torch.nn.functional.scaled_dot_product_attention"
   family: attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k: {dtype: "same_as(q)"}
-      v: {dtype: "same_as(q)"}
-      o: {dtype: "same_as(q)"}
-      do: {dtype: "same_as(q)"}
-      lse: {dtype: "float32"}
-    outputs:
-      dq: {dtype: "same_as(q)"}
-      dk: {dtype: "same_as(q)"}
-      dv: {dtype: "same_as(q)"}
+    forall: {B: Dim, S: Dim, H: Dim, H_kv: Dim, D: Dim, T: "DType[float16 | bfloat16]"}
     params:
       is_causal: {type: bool, default: true}
+    inputs:
+      q: {dtype: T, shape: "[B, S, H, D]"}
+      k: {dtype: T, shape: "[B, S, H_kv, D]"}
+      v: {dtype: T, shape: "[B, S, H_kv, D]"}
+      o: {dtype: T, shape: "[B, S, H, D]"}
+      do: {dtype: T, shape: "[B, S, H, D]"}
+      lse: {dtype: float32, shape: "[B, H, S]"}
+    outputs:
+      dq: {dtype: T, shape: "[B, S, H, D]"}
+      dk: {dtype: T, shape: "[B, S, H_kv, D]"}
+      dv: {dtype: T, shape: "[B, S, H_kv, D]"}
     shape_rules:
-      - "q.shape == (B, S, H, D)"
-      - "k.shape == (B, S, H_kv, D)"
-      - "v.shape == (B, S, H_kv, D)"
-      - "o.shape == (B, S, H, D)"
-      - "do.shape == (B, S, H, D)"
-      - "lse.shape == (B, H, S)"
-      - "dq.shape == (B, S, H, D)"
-      - "dk.shape == (B, S, H_kv, D)"
-      - "dv.shape == (B, S, H_kv, D)"
-      - "H % H_kv == 0"
-
+    - "H_kv > 0 and H % H_kv == 0"
   workloads:
-    # Llama-3.1-8B (H=32, H_kv=8, D=128)
-    - {q_shape: [4, 512, 32, 128], kv_shape: [4, 512, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-short"}
-    - {q_shape: [2, 2048, 32, 128], kv_shape: [2, 2048, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-8b-long"}
-    # Llama-3.1-70B (H=64, H_kv=8, D=128)
-    - {q_shape: [2, 512, 64, 128], kv_shape: [2, 512, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-short"}
-    - {q_shape: [1, 2048, 64, 128], kv_shape: [1, 2048, 8, 128], is_causal: true, dtypes: [float16, bfloat16], label: "llama-70b-long"}
-
+  - {B: 4, S: 512, H: 32, D: 128, H_kv: 8, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-short}
+  - {B: 2, S: 2048, H: 32, D: 128, H_kv: 8, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-long}
+  - {B: 2, S: 512, H: 64, D: 128, H_kv: 8, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-short}
+  - {B: 1, S: 2048, H: 64, D: 128, H_kv: 8, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-long}
   roofline:
-    func: "tileops.perf.formulas.gqa_bwd_roofline"
-
-  source:
-    kernel: tileops/kernels/attention/gqa_bwd.py
-    kernel_map:
-      gqa_bwd_preprocess_kernel: FlashAttnBwdPreprocessKernel
-      gqa_bwd_kernel: GQABwdWgmmaPipelinedKernel
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa.py
-    bench: benchmarks/ops/attention/bench_gqa.py
-    bench_manifest_driven: true
+    # Five contractions per score; causal halves the scores.
+    flops: "10 * B * H * S * S * D // 2 if is_causal else 10 * B * H * S * S * D"
 
 # ---------------------------------------------------------------------------
 # attention — decode (single-query against KV cache)
 # ---------------------------------------------------------------------------
 
 MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
-  ref_api: "none"
   family: attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k: {dtype: "same_as(q)"}
-      v: {dtype: "same_as(q)"}
-      real_seqlen_kv: {dtype: "int32"}
-      block_table: {dtype: "int32"}
-    outputs:
-      o: {dtype: "same_as(q)"}
+    forall: {B: Dim, S_q: Dim, H: Dim, D: Dim, N_kv: Dim, W: Dim, T: "DType[float16 | bfloat16]", kv_lens: "Seq[Int]"}
     params:
       page_size: {type: int}
       is_causal: {type: bool, default: false}
+    inputs:
+      q: {dtype: T, shape: "[B, S_q, H, D]"}
+      # One page pool shared by every request.
+      k: {dtype: T, shape: "[N_kv, H, D]"}
+      v: {dtype: T, shape: "[N_kv, H, D]"}
+      real_seqlen_kv: {dtype: int32, shape: "[B]", values: "as_tensor(kv_lens)", requires: ["in_range(0, W * page_size + 1)"]}
+      block_table: {dtype: int32, shape: "[B, W]", values: "paged_block_table(B, W, NP)", requires: ["in_range(0, NP)"]}
+    outputs:
+      o: {dtype: T, shape: "[B, S_q, H, D]"}
+    let:
+      NP: "N_kv // page_size"
     shape_rules:
-      - "q.shape == (B, S_q, H, D)"
-      - "k.shape == (N_kv, H, D)"
-      - "v.shape == (N_kv, H, D)"
-      - "real_seqlen_kv.shape == (B,)"
-      - "block_table.shape == (B, num_pages)"
-      - "o.shape == (B, S_q, H, D)"
-
+    - "page_size > 0 and N_kv % page_size == 0"
   workloads:
-    - {q_shape: [1, 1, 16, 128], kv_shape: [512, 16, 128], page_size: 128, dtypes: [float16], label: "single-token-page128"}
-    - {q_shape: [2, 1, 8, 64], kv_shape: [1024, 8, 64], page_size: 256, dtypes: [float16], label: "batch2-page256"}
-    - {q_shape: [1, 1, 8, 64], kv_shape: [1024, 8, 64], page_size: 256, dtypes: [float16], label: "longer-cache"}
-    - {q_shape: [1, 1, 8, 64], kv_shape: [512, 8, 64], page_size: 256, dtypes: [float16], label: "shorter-cache"}
-
+  - {S_q: 1, H: 16, D: 128, N_kv: 512, W: 4, kv_lens: [512], page_size: 128, dtype_cases: [{T: float16}], label: single-token-page128}
+  - {S_q: 1, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: [1024, 1024], page_size: 256, dtype_cases: [{T: float16}], label: batch2-page256}
+  - {S_q: 1, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: [1024], page_size: 256, dtype_cases: [{T: float16}], label: longer-cache}
+  - {S_q: 1, H: 8, D: 64, N_kv: 512, W: 2, kv_lens: [512], page_size: 256, dtype_cases: [{T: float16}], label: shorter-cache}
   roofline:
-    func: "tileops.perf.formulas.mha_decode_paged_roofline"
-
-  source:
-    kernel: tileops/kernels/attention/mha_decode_paged.py
-    kernel_map:
-      mha_decode_paged_kernel: MHADecodePagedKernel
-      mha_decode_paged_ws_kernel: MHADecodePagedWsKernel
-    op: tileops/ops/attention/mha.py
-    test: tests/ops/attention/test_mha_decode_paged.py
-    bench: benchmarks/ops/attention/bench_mha_decode_paged.py
-    bench_manifest_driven: true
+    flops: "4 * B * H * S_q * N_kv * D"
+    # The whole pool, and one block-table row of the pages the pool holds per request.
+    bytes: "bytes(q) + bytes(k) + bytes(v) + bytes(o) + 4 * B + 4 * B * max((1, ceil_div(N_kv, page_size)))"
 
 GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
-  ref_api: "none"
   family: attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k: {dtype: "same_as(q)"}
-      v: {dtype: "same_as(q)"}
-      real_seqlen_kv: {dtype: "int32"}
-      block_table: {dtype: "int32"}
-    outputs:
-      o: {dtype: "same_as(q)"}
+    forall: {B: Dim, H: Dim, H_kv: Dim, D: Dim, N_kv: Dim, W: Dim, T: "DType[float16 | bfloat16]", kv_lens: "Seq[Int]"}
     params:
       page_size: {type: int}
       sm_scale: {type: "float | None", default: null}
       softcap: {type: "float | None", default: null}
+    inputs:
+      q: {dtype: T, shape: "[B, H, D]"}
+      k: {dtype: T, shape: "[N_kv, H_kv, D]"}
+      v: {dtype: T, shape: "[N_kv, H_kv, D]"}
+      real_seqlen_kv: {dtype: int32, shape: "[B]", values: "as_tensor(kv_lens)", requires: ["in_range(0, W * page_size + 1)"]}
+      block_table: {dtype: int32, shape: "[B, W]", values: "paged_block_table(B, W, NP)", requires: ["in_range(0, NP)"]}
+    outputs:
+      o: {dtype: T, shape: "[B, H, D]"}
+    let:
+      NP: "N_kv // page_size"
     shape_rules:
-      - "q.shape == (B, H, D)"
-      - "k.shape == (N_kv, H_kv, D)"
-      - "v.shape == (N_kv, H_kv, D)"
-      - "real_seqlen_kv.shape == (B,)"
-      - "block_table.shape == (B, num_pages)"
-      - "o.shape == (B, H, D)"
-      - "H % H_kv == 0"
-
+    - "H_kv > 0 and H % H_kv == 0"
+    - "page_size > 0 and N_kv % page_size == 0"
   workloads:
-    - {q_shape: [32, 32, 128], kv_shape: [4096, 8, 128], page_size: 64, dtypes: [float16], label: "serving-8b-p64"}
-    - {q_shape: [8, 32, 128], kv_shape: [32768, 8, 128], page_size: 64, dtypes: [float16], label: "serving-8b-long-p64"}
-    - {q_shape: [64, 32, 128], kv_shape: [2048, 8, 128], page_size: 64, dtypes: [float16], label: "throughput-8b-p64"}
-    - {q_shape: [8, 64, 128], kv_shape: [4096, 8, 128], page_size: 64, dtypes: [float16], label: "serving-70b-p64"}
-    - {q_shape: [32, 32, 128], kv_shape: [4096, 8, 128], page_size: 256, dtypes: [float16], label: "serving-8b-p256"}
-    - {q_shape: [8, 64, 128], kv_shape: [4096, 8, 128], page_size: 256, dtypes: [float16], label: "serving-70b-p256"}
-    - {q_shape: [4, 128, 128], kv_shape: [4096, 8, 128], page_size: 256, dtypes: [float16], label: "serving-405b-p256"}
-    - {q_shape: [32, 32, 128], kv_shape: [4096, 8, 128], page_size: 64, softcap: 50.0, dtypes: [float16], label: "serving-8b-p64-softcap50"}
-    - {q_shape: [32, 32, 128], kv_shape: [4096, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "page_size=16 not yet supported by kernel", label: "serving-8b-p16"}
-    - {q_shape: [64, 32, 128], kv_shape: [2048, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "page_size=16 not yet supported by kernel", label: "throughput-8b-p16"}
-    - {q_shape: [8, 64, 128], kv_shape: [4096, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "page_size=16 not yet supported by kernel", label: "serving-70b-p16"}
-
+  - {H: 32, H_kv: 8, D: 128, N_kv: 4096, W: 64, kv_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], page_size: 64, dtype_cases: [{T: float16}], label: serving-8b-p64}
+  - {H: 32, H_kv: 8, D: 128, N_kv: 32768, W: 512, kv_lens: [32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768], page_size: 64, dtype_cases: [{T: float16}], label: serving-8b-long-p64}
+  - {H: 32, H_kv: 8, D: 128, N_kv: 2048, W: 32, kv_lens: [2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048], page_size: 64, dtype_cases: [{T: float16}], label: throughput-8b-p64}
+  - {H: 64, H_kv: 8, D: 128, N_kv: 4096, W: 64, kv_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], page_size: 64, dtype_cases: [{T: float16}], label: serving-70b-p64}
+  - {H: 32, H_kv: 8, D: 128, N_kv: 4096, W: 16, kv_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], page_size: 256, dtype_cases: [{T: float16}], label: serving-8b-p256}
+  - {H: 64, H_kv: 8, D: 128, N_kv: 4096, W: 16, kv_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], page_size: 256, dtype_cases: [{T: float16}], label: serving-70b-p256}
+  - {H: 128, H_kv: 8, D: 128, N_kv: 4096, W: 16, kv_lens: [4096, 4096, 4096, 4096], page_size: 256, dtype_cases: [{T: float16}], label: serving-405b-p256}
+  - {H: 32, H_kv: 8, D: 128, N_kv: 4096, W: 64, kv_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], page_size: 64, softcap: 50.0, dtype_cases: [{T: float16}], label: serving-8b-p64-softcap50}
+  - {H: 32, H_kv: 8, D: 128, N_kv: 4096, W: 256, kv_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], page_size: 16, dtype_cases: [{T: float16}], label: serving-8b-p16}
+  - {H: 32, H_kv: 8, D: 128, N_kv: 2048, W: 128, kv_lens: [2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048], page_size: 16, dtype_cases: [{T: float16}], label: throughput-8b-p16}
+  - {H: 64, H_kv: 8, D: 128, N_kv: 4096, W: 256, kv_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], page_size: 16, dtype_cases: [{T: float16}], label: serving-70b-p16}
   roofline:
-    func: "tileops.perf.formulas.gqa_decode_paged_roofline"
-
-  source:
-    kernel: tileops/kernels/attention/gqa_decode_paged.py
-    kernel_map:
-      gqa_decode_paged_kernel: GQADecodePagedKernel
-      gqa_decode_paged_bs1_kernel: GQADecodePagedBs1Kernel
-    op: tileops/ops/attention/gqa.py
-    test: tests/ops/attention/test_gqa_decode_paged.py
-    bench: benchmarks/ops/attention/bench_gqa_decode_paged.py
-    bench_manifest_driven: true
+    flops: "4 * B * H * N_kv * D"
+    # The whole pool, and one block-table row of the pages the pool holds per request.
+    bytes: "bytes(q) + bytes(k) + bytes(v) + bytes(o) + 4 * B + 4 * B * max((1, ceil_div(N_kv, page_size)))"
 
 # ---------------------------------------------------------------------------
 # attention — Multi-Head Latent Attention / DeepSeek Sparse Attention decode
 # ---------------------------------------------------------------------------
 
 MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
-  ref_api: "none"
   family: attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
+    forall: {B: Dim, H: Dim, H_kv: Dim, N_kv: Dim, D: Dim, PE: Dim, T: "DType[float16 | bfloat16]"}
     inputs:
-      q: {dtype: "float16 | bfloat16"}
-      q_pe: {dtype: "same_as(q)"}
-      k: {dtype: "same_as(q)"}
-      k_pe: {dtype: "same_as(q)"}
+      q: {dtype: T, shape: "[B, H, D]"}
+      q_pe: {dtype: T, shape: "[B, H, PE]"}
+      k: {dtype: T, shape: "[B, N_kv, H_kv, D]"}
+      k_pe: {dtype: T, shape: "[B, N_kv, H_kv, PE]"}
     outputs:
-      o: {dtype: "same_as(q)"}
-    params:
-      pe_dim: {type: int}
-    shape_rules:
-      - "q.shape == (B, H, D)"
-      - "q_pe.shape == (B, H, pe_dim)"
-      - "k.shape == (B, N_kv, H_kv, D)"
-      - "k_pe.shape == (B, N_kv, H_kv, pe_dim)"
-      - "o.shape == (B, H, D)"
-
+      o: {dtype: T, shape: "[B, H, D]"}
   workloads:
-    # DeepSeek-V2 (H=128, H_kv=1, D=128, pe_dim=64), short KV
-    - {q_shape: [32, 128, 128], q_pe_shape: [32, 128, 64], kv_shape: [32, 4096, 1, 128], k_pe_shape: [32, 4096, 1, 64], pe_dim: 64, dtypes: [float16, bfloat16], label: "deepseek-v2-4k"}
-    # DeepSeek-V2, long KV
-    - {q_shape: [8, 128, 128], q_pe_shape: [8, 128, 64], kv_shape: [8, 32768, 1, 128], k_pe_shape: [8, 32768, 1, 64], pe_dim: 64, dtypes: [float16, bfloat16], label: "deepseek-v2-32k"}
-    # DeepSeek-V3 (H=128, H_kv=1, D=128, pe_dim=64), short KV
-    - {q_shape: [16, 128, 128], q_pe_shape: [16, 128, 64], kv_shape: [16, 4096, 1, 128], k_pe_shape: [16, 4096, 1, 64], pe_dim: 64, dtypes: [bfloat16], label: "deepseek-v3-4k"}
-    # DeepSeek-V3, long KV
-    - {q_shape: [4, 128, 128], q_pe_shape: [4, 128, 64], kv_shape: [4, 32768, 1, 128], k_pe_shape: [4, 32768, 1, 64], pe_dim: 64, dtypes: [bfloat16], label: "deepseek-v3-32k"}
-
+  - {B: 32, H: 128, H_kv: 1, N_kv: 4096, D: 128, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: deepseek-v2-4k}
+  - {B: 8, H: 128, H_kv: 1, N_kv: 32768, D: 128, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: deepseek-v2-32k}
+  - {B: 16, H: 128, H_kv: 1, N_kv: 4096, D: 128, PE: 64, dtype_cases: [{T: bfloat16}], label: deepseek-v3-4k}
+  - {B: 4, H: 128, H_kv: 1, N_kv: 32768, D: 128, PE: 64, dtype_cases: [{T: bfloat16}], label: deepseek-v3-32k}
   roofline:
-    func: "tileops.perf.formulas.deepseek_mla_decode_roofline"
-
-  source:
-    kernel: tileops/kernels/attention/deepseek_mla_decode.py
-    kernel_map:
-      mla_decode_kernel: MLADecodeWsKernel
-    op: tileops/ops/attention/deepseek_mla.py
-    test: tests/ops/attention/test_deepseek_mla_decode.py
-    bench: benchmarks/ops/attention/bench_deepseek_mla_decode.py
-    bench_manifest_driven: true
+    flops: "2 * B * H * N_kv * (2 * D + PE)"
 
 DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
-  ref_api: "none"
   family: attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      kv: {dtype: "same_as(q)"}
-      indices: {dtype: "int32"}
-    outputs:
-      o: {dtype: "same_as(q)"}
+    forall: {B: Dim, S: Dim, S_kv: Dim, H: Dim, H_kv: Dim, D: Dim, K: Dim, T: "DType[float16 | bfloat16]"}
     params:
       dim_tail: {type: int}
-      topk: {type: int}
       stride_kv: {type: int}
       q_start_index_s: {type: int}
-      is_causal: {type: bool, default: true}
       sm_scale: {type: "float | None", default: null}
+      is_causal: {type: bool, default: true}
+    inputs:
+      q: {dtype: T, shape: "[B, S, H, D + dim_tail]"}
+      kv: {dtype: T, shape: "[B, S_kv, H_kv, D + dim_tail]"}
+      # The keys each query row attends to; S_kv pads a row that selects fewer than K.
+      indices:
+        dtype: int32
+        shape: "[B, S, H_kv, K]"
+        values: "causal_topk_indices(B, S, H_kv, K, S_kv, q_start_index_s, stride_kv)"
+        requires: ["in_range(0, S_kv + 1)"]
+    outputs:
+      o: {dtype: T, shape: "[B, S, H, D]"}
     shape_rules:
-      - "q.shape == (B, S, H, D + dim_tail)"
-      - "kv.shape == (B, S_kv, H_kv, D + dim_tail)"
-      - "indices.shape == (B, S, H_kv, topk)"
-      - "o.shape == q.shape[:-1] + (q.shape[-1] - dim_tail,)"
-
+    - "H_kv > 0 and H % H_kv == 0"
+    - "dim_tail >= 0 and stride_kv > 0"
+    # The kernel's first stride_kv - 1 outputs are undefined when queries start at 0.
+    - "q_start_index_s > stride_kv or (q_start_index_s == 0 and stride_kv == 1)"
   workloads:
-    - {q_shape: [1, 1024, 128, 576], kv_shape: [1, 2048, 1, 576], indices_shape: [1, 1024, 1, 2048], topk: 2048, stride_kv: 1, dim_tail: 64, q_start_index_s: 1024, dtypes: [float16], label: "single-batch-mainstream"}
-    - {q_shape: [1, 512, 128, 576], kv_shape: [1, 4096, 1, 576], indices_shape: [1, 512, 1, 1024], topk: 1024, stride_kv: 1, dim_tail: 64, q_start_index_s: 512, dtypes: [float16], label: "longer-kv-lower-topk"}
-
+  - {B: 1, S: 1024, S_kv: 2048, H: 128, H_kv: 1, D: 512, K: 2048, dim_tail: 64, stride_kv: 1, q_start_index_s: 1024, dtype_cases: [{T: float16}], label: single-batch-mainstream}
+  - {B: 1, S: 512, S_kv: 4096, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 64, stride_kv: 1, q_start_index_s: 512, dtype_cases: [{T: float16}], label: longer-kv-lower-topk}
   roofline:
-    func: "tileops.perf.formulas.deepseek_dsa_decode_roofline"
-
-  source:
-    kernel: tileops/kernels/attention/deepseek_dsa_decode.py
-    kernel_map:
-      sparse_mla_kernel: SparseMlaKernel
-      sparse_mla_basic_kernel: SparseMlaBasicKernel
-    op: tileops/ops/attention/deepseek_dsa.py
-    test: tests/ops/attention/test_deepseek_dsa_decode.py
-    bench: benchmarks/ops/attention/bench_deepseek_dsa_decode.py
-    bench_manifest_driven: true
+    flops: "2 * B * S * H * K * (2 * D + dim_tail)"
 
 # Native Sparse Attention (NSA) runs as three passes over one packed batch: compress the
 # keys and values per block, select the blocks each token keeps, then attend to those
 # blocks only. `offsets` carries the request boundaries through all three.
-NSACmpFwdVarlenOp:
-  ref_api: "none"
+NSACmpVarlenFwdOp:
   family: attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k_cmp: {dtype: "same_as(q)"}
-      v_cmp: {dtype: "same_as(q)"}
-      offsets: {dtype: "int32"}
-      chunk_offsets: {dtype: "int32"}
-      token_indices: {dtype: "int32"}
-    outputs:
-      o: {dtype: "same_as(q)"}
-      lse: {dtype: "same_as(q)"}
+    forall: {N: Dim, T_q: Dim, C: Dim, H: Dim, H_kv: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
     params:
       scale: {type: float}
-      bc: {type: int}
       bs: {type: int}
-      accum_dtype: {type: torch.dtype}
+    inputs:
+      q: {dtype: T, shape: "[T_q, H, DK]"}
+      k_cmp: {dtype: T, shape: "[C, H_kv, DK]"}
+      v_cmp: {dtype: T, shape: "[C, H_kv, DV]"}
+      offsets: {dtype: int32, shape: "[N + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)"]}
+      chunk_offsets: {dtype: int32, shape: "[N + 1]", values: "chunk_offsets(seq_lens, bs)", requires: ["prefix_offsets(C)"]}
+      token_indices: {dtype: int32, shape: "[T_q, 2]", values: "token_indices(seq_lens)", requires: ["indices_within(offsets)"]}
+    outputs:
+      o: {dtype: T, shape: "[T_q, H, DV]"}
+      lse: {dtype: T, shape: "[T_q, H]"}
     shape_rules:
-    - "q.shape == (c_seq_len, heads, dim_k)"
-    - "k_cmp.shape == (chunk_num, head_kv, dim_k)"
-    - "v_cmp.shape == (chunk_num, head_kv, dim_v)"
-    - "offsets.shape == (seq_num + 1,)"
-    - "chunk_offsets.shape == (seq_num + 1,)"
-    - "token_indices.shape == (c_seq_len, 2)"
-    - "o.shape == (c_seq_len, heads, dim_v)"
-    - "lse.shape == (c_seq_len, heads)"
     # One query group per KV head, and the MMA the group feeds needs 16 rows.
-    - "heads % head_kv == 0"
-    - "heads // head_kv % 16 == 0"
-
+    - "H_kv > 0 and H % H_kv == 0 and H // H_kv % 16 == 0"
+    - "bs > 0"
   workloads:
-  - {seq_num: 8, c_seq_len: 8192, heads: 32, head_kv: 2, dim_k: 128, dim_v: 128, chunk_num: 256, scale: 0.08838834764831845, bc: 32, bs: 32, accum_dtype: float32, seq_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-cmp-s8k-r8-h32-d128"}
-  - {seq_num: 4, c_seq_len: 4096, heads: 32, head_kv: 2, dim_k: 128, dim_v: 128, chunk_num: 128, scale: 0.08838834764831845, bc: 32, bs: 32, accum_dtype: float32, seq_lens: [1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-cmp-s4k-r4-h32-d128"}
-
+  - {C: 256, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], dtype_cases: [{T: float16}], label: nsa-cmp-s8k-r8-h32-d128}
+  - {C: 128, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: [1024, 1024, 1024, 1024], dtype_cases: [{T: float16}], label: nsa-cmp-s4k-r4-h32-d128}
   roofline:
+    # Each token scores its own request's closed chunks.
     func: "tileops.perf.formulas.nsa_cmp_fwd_varlen_roofline"
 
-  source:
-    kernel: tileops/kernels/attention/deepseek_nsa_cmp_fwd.py
-    kernel_map:
-      nsa_cmp_fwd_varlen_kernel: NSACmpFwdVarlenKernel
-    op: tileops/ops/attention/deepseek_nsa.py
-    test: tests/ops/attention/test_deepseek_nsa_cmp.py
-    bench: benchmarks/ops/attention/bench_deepseek_nsa.py
-    bench_manifest_driven: true
-
-NSATopkVarlenOp:
-  ref_api: "none"
+NSATopkVarlenFwdOp:
   family: attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
+    forall: {N: Dim, T_q: Dim, C: Dim, H: Dim, H_kv: Dim, D: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
+    params:
+      scale: {type: float}
+      selected_block_num: {type: int}
+      bs: {type: int}
     inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k_cmp: {dtype: "same_as(q)"}
+      q: {dtype: T, shape: "[T_q, H, D]"}
+      k_cmp: {dtype: T, shape: "[C, H_kv, D]"}
       # FIXME(staged-rollout): declared and passed, but the kernel discards it.
       #
       # Broken invariant: a manifest input is read by the kernel, and this one is not.
       # Why: the top-k pass recomputes the lse itself; dropping the argument is an op
       #   signature change the NSA pipeline's callers have to move with.
       # Cleanup: drop `lse_in` here and from the kernel, or make the kernel read it.
-      lse_in: {dtype: "same_as(q)"}
-      offsets: {dtype: "int32"}
-      chunk_offsets: {dtype: "int32"}
-      token_indices: {dtype: "int32"}
+      lse_in: {dtype: T, shape: "[T_q, H]"}
+      offsets: {dtype: int32, shape: "[N + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)"]}
+      chunk_offsets: {dtype: int32, shape: "[N + 1]", values: "chunk_offsets(seq_lens, bs)", requires: ["prefix_offsets(C)"]}
+      token_indices: {dtype: int32, shape: "[T_q, 2]", values: "token_indices(seq_lens)", requires: ["indices_within(offsets)"]}
     outputs:
-      block_indices: {dtype: "int32"}
-    params:
-      scale: {type: float}
-      selected_block_num: {type: int}
-      bc: {type: int}
-      bs: {type: int}
-      accum_dtype: {type: torch.dtype}
+      block_indices: {dtype: int32, shape: "[T_q, H_kv, selected_block_num]"}
     shape_rules:
-    - "q.shape == (c_seq_len, heads, dim)"
-    - "k_cmp.shape == (chunk_num, head_kv, dim)"
-    - "lse_in.shape == (c_seq_len, heads)"
-    - "offsets.shape == (seq_num + 1,)"
-    - "chunk_offsets.shape == (seq_num + 1,)"
-    - "token_indices.shape == (c_seq_len, 2)"
-    - "block_indices.shape == (c_seq_len, head_kv, selected_block_num)"
-    - "heads % head_kv == 0"
-    - "heads // head_kv % 16 == 0"
-
+    - "H_kv > 0 and H % H_kv == 0 and H // H_kv % 16 == 0"
+    # The selection ranks at most one block's worth of chunks against its pool.
+    - "0 < selected_block_num and selected_block_num <= bs"
   workloads:
-  - {seq_num: 8, c_seq_len: 8192, heads: 32, head_kv: 2, dim: 128, chunk_num: 256, scale: 1.0, selected_block_num: 16, bc: 32, bs: 32, accum_dtype: float32, seq_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-topk-s8k-r8-h32-d128"}
-  - {seq_num: 4, c_seq_len: 4096, heads: 32, head_kv: 2, dim: 128, chunk_num: 128, scale: 1.0, selected_block_num: 16, bc: 32, bs: 32, accum_dtype: float32, seq_lens: [1024, 1024, 1024, 1024], dtypes: [float16], label: "nsa-topk-s4k-r4-h32-d128"}
-
+  - {C: 256, H: 32, H_kv: 2, D: 128, scale: 1.0, selected_block_num: 16, bs: 32, seq_lens: [1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024], dtype_cases: [{T: float16}], label: nsa-topk-s8k-r8-h32-d128}
+  - {C: 128, H: 32, H_kv: 2, D: 128, scale: 1.0, selected_block_num: 16, bs: 32, seq_lens: [1024, 1024, 1024, 1024], dtype_cases: [{T: float16}], label: nsa-topk-s4k-r4-h32-d128}
   roofline:
+    # Two score passes over the closed chunks; the unread lse_in moves no bytes.
     func: "tileops.perf.formulas.nsa_topk_varlen_roofline"
 
-  source:
-    kernel: tileops/kernels/attention/deepseek_nsa_topk.py
-    kernel_map:
-      nsa_topk_varlen_kernel: NSATopkVarlenKernel
-    op: tileops/ops/attention/deepseek_nsa.py
-    test: tests/ops/attention/test_deepseek_nsa_topk.py
-    bench: benchmarks/ops/attention/bench_deepseek_nsa.py
-    bench_manifest_driven: true
-
-NSAFwdVarlenOp:
-  ref_api: "none"
+NSAVarlenFwdOp:
   family: attention
   status: implemented
-  torch_compile_fullgraph: true
-
   signature:
-    inputs:
-      q: {dtype: "float16 | bfloat16"}
-      k: {dtype: "same_as(q)"}
-      v: {dtype: "same_as(q)"}
-      block_indices: {dtype: "int32"}
-      block_counts: {dtype: "int32"}
-      offsets: {dtype: "int32"}
-      token_indices: {dtype: "int32"}
-    outputs:
-      o_slc: {dtype: "same_as(q)"}
+    forall: {N: Dim, T_q: Dim, H: Dim, H_kv: Dim, D: Dim, SEL: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
     params:
       is_causal: {type: bool}
       scale: {type: float}
       block_size: {type: int}
-      accum_dtype: {type: torch.dtype}
+    inputs:
+      q: {dtype: T, shape: "[T_q, H, D]"}
+      k: {dtype: T, shape: "[T_q, H_kv, D]"}
+      v: {dtype: T, shape: "[T_q, H_kv, D]"}
+      block_indices: {dtype: int32, shape: "[T_q, H_kv, SEL]", values: "nsa_block_indices(seq_lens, block_size, SEL, H_kv)", requires: ["in_range(0, T_q + 1)"]}
+      block_counts: {dtype: int32, shape: "[T_q, H_kv]", values: "nsa_block_counts(T_q, H_kv, SEL)", requires: ["in_range(0, SEL + 1)"]}
+      offsets: {dtype: int32, shape: "[N + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)"]}
+      token_indices: {dtype: int32, shape: "[T_q, 2]", values: "token_indices(seq_lens)", requires: ["indices_within(offsets)"]}
+    outputs:
+      o_slc: {dtype: T, shape: "[T_q, H, D]"}
     shape_rules:
-    - "q.shape == (c_seq_len, heads, dim)"
-    - "k.shape == (c_seq_len, head_kv, dim)"
-    - "v.shape == (c_seq_len, head_kv, dim)"
-    - "block_indices.shape == (c_seq_len, head_kv, selected_blocks)"
-    - "block_counts.shape == (c_seq_len, head_kv)"
-    - "offsets.shape == (batch + 1,)"
-    - "token_indices.shape == (c_seq_len, 2)"
-    - "o_slc.shape == (c_seq_len, heads, dim)"
-    - "heads % head_kv == 0"
-    - "heads // head_kv % 16 == 0"
+    - "H_kv > 0 and H % H_kv == 0 and H // H_kv % 16 == 0"
     # The kernel tiles the head dimension whole; a wider one silently truncates.
-    - "dim <= 128"
-
+    - "D <= 128"
+    - "block_size > 0"
   workloads:
-  - {batch: 4, c_seq_len: 8192, heads: 16, head_kv: 1, dim: 64, selected_blocks: 1, is_causal: true, scale: 0.1, block_size: 32, accum_dtype: float32, seq_lens: [2048, 2048, 2048, 2048], dtypes: [float16], label: "nsa-slc-s8k-r4-h16-d64-b1"}
-  - {batch: 2, c_seq_len: 8192, heads: 16, head_kv: 1, dim: 64, selected_blocks: 4, is_causal: true, scale: 0.1, block_size: 32, accum_dtype: float32, seq_lens: [4096, 4096], dtypes: [float16], label: "nsa-slc-s8k-r2-h16-d64-b4"}
-
+  - {H: 16, H_kv: 1, D: 64, SEL: 1, is_causal: true, scale: 0.1, block_size: 32, seq_lens: [2048, 2048, 2048, 2048], dtype_cases: [{T: float16}], label: nsa-slc-s8k-r4-h16-d64-b1}
+  - {H: 16, H_kv: 1, D: 64, SEL: 4, is_causal: true, scale: 0.1, block_size: 32, seq_lens: [4096, 4096], dtype_cases: [{T: float16}], label: nsa-slc-s8k-r2-h16-d64-b4}
   roofline:
+    # The blocks the selection keeps decide the scores and the key/value rows read.
     func: "tileops.perf.formulas.nsa_fwd_varlen_roofline"
-
-  source:
-    kernel: tileops/kernels/attention/deepseek_nsa_fwd.py
-    kernel_map:
-      nsa_fwd_varlen_kernel: NSAFwdVarlenKernel
-    op: tileops/ops/attention/deepseek_nsa.py
-    test: tests/ops/attention/test_deepseek_nsa.py
-    bench: benchmarks/ops/attention/bench_deepseek_nsa.py
-    bench_manifest_driven: true

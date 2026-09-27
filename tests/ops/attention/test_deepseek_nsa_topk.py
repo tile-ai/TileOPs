@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import NSATopkVarlenOp
+from tileops.ops import NSATopkVarlenFwdOp
 from workloads.attention.deepseek import NsaTopkWorkload
 
 
@@ -40,8 +40,7 @@ class NsaTopkTest(NsaTopkWorkload, TestBase):
 class NsaTopkFixture(FixtureBase):
     PARAMS = [
         (
-            "seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bc, bs, "
-            "dtype, accum_dtype, tune",
+            "seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bs, dtype, tune",
             [
                 pytest.param(
                     5,
@@ -52,9 +51,7 @@ class NsaTopkFixture(FixtureBase):
                     1,
                     16,
                     32,
-                    32,
                     torch.float16,
-                    torch.float32,
                     False,
                     marks=pytest.mark.smoke,
                 ),
@@ -67,9 +64,7 @@ class NsaTopkFixture(FixtureBase):
                     1,
                     16,
                     32,
-                    32,
                     torch.float16,
-                    torch.float32,
                     False,
                     marks=pytest.mark.full,
                 ),
@@ -87,24 +82,18 @@ def test_nsa_topk_varlen_op(
     group: int,
     scale: float,
     selected_block_num: int,
-    bc: int,
     bs: int,
     dtype: torch.dtype,
-    accum_dtype: torch.dtype,
     tune: bool,
 ) -> None:
     assert group % 16 == 0, "Group size must be a multiple of 16 in NSA"
 
-    test = NsaTopkTest(
-        seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bc, bs, dtype, accum_dtype
-    )
+    test = NsaTopkTest(seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bs, dtype)
     inputs = test.gen_inputs()
-    op = NSATopkVarlenOp(
+    op = NSATopkVarlenFwdOp(
         scale=scale,
         selected_block_num=selected_block_num,
-        bc=bc,
         bs=bs,
-        accum_dtype=accum_dtype,
         tune=tune,
     )
     test.check_topk(op, *inputs)

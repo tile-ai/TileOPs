@@ -1,9 +1,9 @@
 from .deepseek_dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from .deepseek_mla import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
 from .deepseek_nsa import (
-    NSACmpFwdVarlenOp,
-    NSAFwdVarlenOp,
-    NSATopkVarlenOp,
+    NSACmpVarlenFwdOp,
+    NSATopkVarlenFwdOp,
+    NSAVarlenFwdOp,
 )
 from .gqa import (
     GroupedQueryAttentionBwdOp,
@@ -33,7 +33,7 @@ __all__ = [
     "MultiHeadAttentionBwdOp",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
-    "NSACmpFwdVarlenOp",
-    "NSAFwdVarlenOp",
-    "NSATopkVarlenOp",
+    "NSACmpVarlenFwdOp",
+    "NSAVarlenFwdOp",
+    "NSATopkVarlenFwdOp",
 ]

@@ -8,7 +8,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from workloads.attention.gqa import _compute_gqa_square_lse
 from workloads.attention.paged import make_fragmented_block_table
-from workloads.workload_base import WorkloadBase
+from workloads.workload_base import CallWorkload, WorkloadBase
 
 
 class MhaBwdWorkload(WorkloadBase):
@@ -180,3 +180,37 @@ class MhaDecodePagedWorkload(WorkloadBase):
             out_b = out_b.transpose(1, 2).contiguous()
             out_list.append(out_b)
         return torch.cat(out_list, dim=0)
+
+
+class MhaBwdCall(CallWorkload, MhaBwdWorkload):
+    """A manifest call of MultiHeadAttentionBwdOp; ``o`` and ``lse`` are the forward's."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix = call.ix
+        MhaBwdWorkload.__init__(
+            self, ix["B"], ix["H"], ix["S"], ix["D"], ix["is_causal"], getattr(torch, ix["T"])
+        )
+
+    gen_inputs = MhaBwdWorkload.gen_inputs
+
+
+class MhaDecodePagedCall(CallWorkload, MhaDecodePagedWorkload):
+    """A manifest call of MultiHeadAttentionDecodePagedWithKVCacheFwdOp."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix, params = call.ix, call.params
+        MhaDecodePagedWorkload.__init__(
+            self,
+            ix["B"],
+            ix["H"],
+            ix["S_q"],
+            ix["N_kv"],
+            ix["D"],
+            params["page_size"],
+            params["is_causal"],
+            getattr(torch, ix["T"]),
+        )
+
+    gen_inputs = CallWorkload.gen_inputs

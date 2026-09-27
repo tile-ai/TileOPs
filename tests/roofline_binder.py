@@ -24,6 +24,7 @@ did not settle, which is the entry condition for the other two coverage levels.
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 from math import prod
 from typing import Any
@@ -141,23 +142,6 @@ def _instance(cls: type, params: dict) -> Any:
 # Shapes a workload row implies but does not spell out, per op. A row states the
 # dims a benchmark needs; each entry restates them as the shapes the signature
 # declares, and states nothing about what those tensors cost.
-def _packed_bounds(lengths: "list[int]") -> torch.Tensor:
-    """The cumulative bounds a packed batch carries, from the row's own lengths."""
-    bounds = [0]
-    for length in lengths:
-        bounds.append(bounds[-1] + int(length))
-    return torch.tensor(bounds, dtype=torch.int32)
-
-
-def _kv_pair(row: dict) -> dict:
-    kv = tuple(row["kv_shape"])
-    return {"k_shape": kv, "v_shape": kv}
-
-
-def _attention_bwd(row: dict) -> dict:
-    q = tuple(row["q_shape"])
-    batch, seq_len, heads, _ = q
-    return {**_kv_pair(row), "o_shape": q, "do_shape": q, "lse_shape": (batch, heads, seq_len)}
 
 
 def _channel_vectors(*names: str):
@@ -169,14 +153,6 @@ def _channel_vectors(*names: str):
 
 
 _ROW_SUPPLEMENT = {
-    # Attention: the row names one KV shape for both k and v, and the backward
-    # pass reads the forward's output and its log-sum-exp alongside them.
-    "MultiHeadAttentionBwdOp": _attention_bwd,
-    "GroupedQueryAttentionBwdOp": _attention_bwd,
-    "GroupedQueryAttentionDenseFwdOp": _kv_pair,
-    "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp": lambda row: {
-        "k_shape": tuple(row["kv_shape"])
-    },
     # Dense GEMM and BMM: the row gives the logical dims.
     "GemmFwdOp": lambda row: {
         "a_shape": (row["k"], row["m"]) if row.get("trans_a") else (row["m"], row["k"]),
@@ -201,26 +177,6 @@ _ROW_SUPPLEMENT = {
             }
         )
         for name in ("Conv1dFwdOp", "Conv2dFwdOp", "Conv3dFwdOp")
-    },
-    # NSA compression and top-k read the request bounds out of `offsets`. The row
-    # states the lengths, so the tensor is their running sum, not an invention.
-    "NSACmpFwdVarlenOp": lambda row: {
-        "q_shape": (row["c_seq_len"], row["heads"], row["dim_k"]),
-        "k_cmp_shape": (row["chunk_num"], row["head_kv"], row["dim_k"]),
-        "v_cmp_shape": (row["chunk_num"], row["head_kv"], row["dim_v"]),
-        "chunk_offsets_shape": (row["seq_num"] + 1,),
-        "token_indices_shape": (row["c_seq_len"], 2),
-        "offsets": _packed_bounds(row["seq_lens"]),
-        "offsets_shape": (row["seq_num"] + 1,),
-    },
-    "NSATopkVarlenOp": lambda row: {
-        "q_shape": (row["c_seq_len"], row["heads"], row["dim"]),
-        "k_cmp_shape": (row["chunk_num"], row["head_kv"], row["dim"]),
-        "lse_in_shape": (row["c_seq_len"], row["heads"]),
-        "chunk_offsets_shape": (row["seq_num"] + 1,),
-        "token_indices_shape": (row["c_seq_len"], 2),
-        "offsets": _packed_bounds(row["seq_lens"]),
-        "offsets_shape": (row["seq_num"] + 1,),
     },
     # Per-tensor scales: two fp32 scalars, which is what the formula's trailing 8
     # bytes are.
@@ -255,40 +211,6 @@ _ROW_SUPPLEMENT = {
         "batch_sizes_shape": (row["batch_count"],),
         "batch_offsets_shape": (row["batch_count"],),
         "batch_padded_offsets_shape": (row["batch_count"],),
-    },
-    # Paged decode: the cache is one page pool, and the call carries a length per
-    # request plus the pages that request's tokens sit in.
-    "MultiHeadAttentionDecodePagedWithKVCacheFwdOp": lambda row: {
-        **_kv_pair(row),
-        "real_seqlen_kv_shape": (row["q_shape"][0],),
-        "block_table_shape": (
-            row["q_shape"][0],
-            max(1, -(-row["kv_shape"][0] // row["page_size"])),
-        ),
-    },
-    "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp": lambda row: {
-        **_kv_pair(row),
-        "real_seqlen_kv_shape": (row["q_shape"][0],),
-        "block_table_shape": (
-            row["q_shape"][0],
-            max(1, -(-row["kv_shape"][0] // row["page_size"])),
-        ),
-    },
-    # Packed-batch attention: the row gives the totals and the request count, and
-    # the cumulative-length tensors hold one bound per request plus the zero.
-    "GroupedQueryAttentionPrefillVarlenFwdOp": lambda row: {
-        "q_shape": (row["total_q"], row["heads"], row["dim"]),
-        "k_shape": (row["total_kv"], row["heads_kv"], row["dim"]),
-        "v_shape": (row["total_kv"], row["heads_kv"], row["dim"]),
-        "cu_seqlens_q_shape": (row["batch"] + 1,),
-        "cu_seqlens_kv_shape": (row["batch"] + 1,),
-    },
-    "GroupedQueryAttentionSlidingWindowVarlenFwdOp": lambda row: {
-        "q_shape": (row["total_q"], row["heads"], row["dim"]),
-        "k_shape": (row["total_k"], row["heads_kv"], row["dim"]),
-        "v_shape": (row["total_k"], row["heads_kv"], row["dim"]),
-        "cu_seqlens_q_shape": (row["batch"] + 1,),
-        "cu_seqlens_k_shape": (row["batch"] + 1,),
     },
 }
 
@@ -456,8 +378,10 @@ def _parametric_cases(op_name: str, entry: dict):
             tensors = call.materialize("meta")
             op = cls(**call.arguments(tensors))
             checked = type(op)._signature.check(op, {t: tensors[t] for t in plan.sig.inputs})
+            # Meta tensors hold no values; the metadata a formula reads carries the row's own.
+            metadata = {n: torch.tensor(call.values(n)) for n in checked.metadata}
             # The formula prices the op's last completed call; this one is that call.
-            op._signature_call = checked
+            op._signature_call = dataclasses.replace(checked, metadata=metadata)
             reads = sum(call.bytes(t) * r for t, r, _ in checked.traffic)
             writes = sum(call.bytes(t) * w for t, _, w in checked.traffic)
             yield row["label"], "-".join(case.values()), op, reads + writes, reads

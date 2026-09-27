@@ -33,11 +33,11 @@ def _t(*shape: int, dtype: torch.dtype = F16) -> torch.Tensor:
 # op and the positional ``forward`` arguments; only dtypes and presence matter here.
 _CASES = {
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp": lambda c: (
-        c(1, 16, 2, 8, 512, 64, 4, 1, 1, 0),
+        c(64, 1, 0),
         (_t(1, 2, 16, 576), _t(1, 8, 1, 576), _t(1, 2, 1, 4, dtype=I32)),
     ),
     "GroupedQueryAttentionBwdOp": lambda c: (
-        c(1, 4, 2, 16, 64),
+        c(),
         (
             _t(1, 16, 4, 64),
             *[_t(1, 16, 2, 64)] * 2,
@@ -46,11 +46,11 @@ _CASES = {
         ),
     ),
     "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp": lambda c: (
-        c(2, 4, 2, 64, 64, 16),
+        c(16),
         (_t(2, 4, 64), *[_t(64, 2, 64)] * 2, _t(2, dtype=I32), _t(2, 4, dtype=I32)),
     ),
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": lambda c: (
-        c(1, 4, 2, 4, 16, 64, 8),
+        c(16, 8),
         (
             _t(8, 4, 64),
             *[_t(8, 2, 64)] * 2,
@@ -62,23 +62,23 @@ _CASES = {
         ),
     ),
     "GroupedQueryAttentionSlidingWindowVarlenFwdOp": lambda c: (
-        c(2, 4, 2, 64, 8),
+        c(8),
         (_t(16, 4, 64), *[_t(16, 2, 64)] * 2, *[_t(3, dtype=I32)] * 2),
     ),
     "MultiHeadAttentionBwdOp": lambda c: (
-        c(1, 4, 16, 64),
+        c(),
         (*[_t(1, 16, 4, 64)] * 5, _t(1, 4, 16, dtype=F32)),
     ),
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp": lambda c: (
-        c(1, 4, 1, 64, 64, 16),
+        c(16),
         (_t(1, 1, 4, 64), *[_t(64, 4, 64)] * 2, _t(1, dtype=I32), _t(1, 4, dtype=I32)),
     ),
     "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp": lambda c: (
-        c(2, 4, 1, 64, 64, 32),
+        c(),
         (_t(2, 4, 64), _t(2, 4, 32), _t(2, 64, 1, 64), _t(2, 64, 1, 32)),
     ),
-    "NSAFwdVarlenOp": lambda c: (
-        c(True, 0.1, 32, F32),
+    "NSAVarlenFwdOp": lambda c: (
+        c(True, 0.1, 32),
         (
             _t(64, 16, 64),
             *[_t(64, 1, 64)] * 2,

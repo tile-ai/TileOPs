@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import NSAFwdVarlenOp
+from tileops.ops import NSAVarlenFwdOp
 from workloads.attention.deepseek import NsaFwdWorkload
 
 
@@ -16,7 +16,7 @@ class NsaFwdFixture(FixtureBase):
     PARAMS = [
         (
             "batch, heads, c_seq_len, dim, is_causal, scale, block_size, "
-            "groups, selected_blocks, dtype, accum_dtype, tune",
+            "groups, selected_blocks, dtype, tune",
             [
                 pytest.param(
                     1,
@@ -29,7 +29,6 @@ class NsaFwdFixture(FixtureBase):
                     16,
                     1,
                     torch.float16,
-                    torch.float32,
                     False,
                     marks=pytest.mark.smoke,
                 ),
@@ -44,7 +43,6 @@ class NsaFwdFixture(FixtureBase):
                     16,
                     1,
                     torch.float16,
-                    torch.float32,
                     False,
                     marks=pytest.mark.full,
                 ),
@@ -59,7 +57,6 @@ class NsaFwdFixture(FixtureBase):
                     16,
                     4,
                     torch.float16,
-                    torch.float32,
                     False,
                     marks=pytest.mark.full,
                 ),
@@ -80,7 +77,6 @@ def test_nsa_varlen_op(
     groups: int,
     selected_blocks: int,
     dtype: torch.dtype,
-    accum_dtype: torch.dtype,
     tune: bool,
 ) -> None:
     assert groups % 16 == 0, "Group size must be a multiple of 16 in NSA"
@@ -96,13 +92,11 @@ def test_nsa_varlen_op(
         groups,
         selected_blocks,
         dtype,
-        accum_dtype,
     )
-    op = NSAFwdVarlenOp(
+    op = NSAVarlenFwdOp(
         is_causal=is_causal,
         scale=scale,
         block_size=block_size,
-        accum_dtype=accum_dtype,
         tune=tune,
     )
     test.check(op, *test.gen_inputs(), atol=5e-4, rtol=1e-5)

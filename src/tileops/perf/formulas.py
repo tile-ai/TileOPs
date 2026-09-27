@@ -20,26 +20,28 @@ if TYPE_CHECKING:
 
 __all__ = [
     "adaptive_pool2d_roofline",
-    "deepseek_dsa_decode_roofline",
-    "deepseek_mla_decode_roofline",
     "deltanet_inference_roofline",
     "fft_c2c_roofline",
-    "fp8_lightning_indexer_roofline",
     "fused_moe_fwd_roofline",
     "fused_moe_shared_expert_fwd_roofline",
     "gated_deltanet_fwd_roofline",
-    "gqa_bwd_roofline",
-    "gqa_decode_paged_roofline",
-    "gqa_fwd_roofline",
+    "gqa_dense_fwd_roofline",
+    "gqa_paged_fwd_roofline",
+    "gqa_prefill_paged_cached_tokens",
     "gqa_prefill_paged_with_kv_cache_fwd_roofline",
     "gqa_prefill_varlen_fwd_roofline",
     "gqa_sliding_window_varlen_fwd_roofline",
     "gqa_varlen_fwd_roofline",
     "grouped_gemm_roofline",
-    "mha_bwd_roofline",
-    "mha_decode_paged_roofline",
     "moe_post_permute_roofline",
-    "topk_selector_roofline",
+    "nsa_closed_chunk_pairs",
+    "nsa_cmp_fwd_varlen_roofline",
+    "nsa_fwd_varlen_roofline",
+    "nsa_selected_block_loads",
+    "nsa_topk_scored_pairs",
+    "nsa_topk_varlen_roofline",
+    "packed_visible_scores",
+    "visible_scores",
 ]
 
 
@@ -70,67 +72,6 @@ def _shape_or_attrs(op: Any | None, kwargs: dict[str, Any]) -> dict[str, Any]:
         )
     data.update(payload)
     return data
-
-
-def mha_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for multi-head attention backward."""
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        batch, seq_len, heads, dim = data["q_shape"]
-    else:
-        batch, seq_len, heads, dim = (
-            data["batch"],
-            data["seq_len"],
-            data["heads"],
-            data["dim"],
-        )
-    is_causal = bool(data.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    flops = 10 * batch * heads * seq_len * seq_len * dim
-    if is_causal:
-        flops //= 2
-    # q, k, v, o and do read; dq, dk and dv written.
-    nbytes = batch * 8 * heads * seq_len * dim * elem_bytes
-    nbytes += batch * heads * seq_len * 4  # lse
-    return int(flops), int(nbytes)
-
-
-def gqa_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for dense grouped-query attention forward."""
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        batch, seq_len_q, heads, dim = data["q_shape"]
-        kv_shape = data.get("k_shape", data.get("kv_shape"))
-        if kv_shape is None:
-            raise KeyError("dense GQA roofline requires k_shape or kv_shape")
-        _, seq_len_kv, heads_kv, _ = kv_shape
-    else:
-        batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = (
-            data["batch"],
-            data.get("seq_len_q", data.get("seq_len")),
-            data.get("seq_len_kv", data.get("seq_len")),
-            data["heads"],
-            data["heads_kv"],
-            data["dim"],
-        )
-    is_causal = bool(data.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-    # FP8 input has no FP8 output, so the write is priced on its own dtype.
-    out_bytes = _dtype_itemsize(data.get("out_dtype", data.get("dtype", "float16")))
-
-    visible_scores = seq_len_q * seq_len_kv
-    if is_causal:
-        visible_scores = seq_len_q * (seq_len_kv - seq_len_q) + seq_len_q * (seq_len_q + 1) // 2
-    flops = 4 * batch * heads * visible_scores * dim
-    q_elems = batch * seq_len_q * heads * dim
-    kv_elems = batch * seq_len_kv * heads_kv * dim
-    # Per-KV-head scales and RoPE tables the call passed, each read once.
-    optional_bytes = sum(
-        prod(shape) * _dtype_itemsize(dtype) for shape, dtype in data.get("optional_shapes", ())
-    )
-    read_bytes = (q_elems + 2 * kv_elems) * elem_bytes + optional_bytes
-    return int(flops), int(read_bytes + q_elems * out_bytes)
 
 
 def _dtype_itemsize(dtype: Any) -> int:
@@ -167,13 +108,6 @@ def _supplied(op: Any, name: str) -> bool:
     if getattr(op, name, None) is not None:
         return True
     return getattr(op, f"{name}_shape", None) is not None
-
-
-def _causal_prefill_visible_scores(seq_len_q: int, seq_len_kv: int) -> int:
-    # Bottom-right alignment: when the query run is longer than the key run, its
-    # leading queries see no keys at all, so only the last seq_len_kv rows count.
-    rows = min(seq_len_q, seq_len_kv)
-    return rows * seq_len_kv - rows * (rows - 1) // 2
 
 
 def deltanet_inference_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
@@ -262,333 +196,6 @@ def _distribute_total(total: int, batch: int, max_len: int) -> list[int]:
         lengths[idx] = value
         remaining -= value
     return lengths
-
-
-def gqa_prefill_varlen_fwd_roofline(
-    op: Any | None = None,
-    **kwargs: Any,
-) -> tuple[int, int]:
-    """Conservative roofline for packed-varlen GQA prefill.
-
-    Preferred workload binding supplies explicit ``q_lens`` and ``kv_lens``.
-    If they are absent, this falls back to a deterministic fill from aggregate
-    totals and ``max_seqlen_*`` so benchmark metadata remains reproducible.
-    Causal mode uses bottom-right alignment independently per request.
-    """
-    data = _shape_or_attrs(op, kwargs)
-    q_shape = data["q_shape"]
-    k_shape = data["k_shape"]
-    total_q, heads, dim = q_shape
-    total_kv, heads_kv, _ = k_shape
-    batch = int(data["batch"])
-    max_seqlen_q = int(data.get("max_seqlen_q", total_q))
-    max_seqlen_kv = int(data.get("max_seqlen_kv", total_kv))
-    is_causal = bool(data.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    q_lens = data.get("q_lens")
-    kv_lens = data.get("kv_lens")
-    if q_lens is None and (cu_seqlens_q := data.get("cu_seqlens_q")) is not None:
-        values = [int(x) for x in cu_seqlens_q.detach().cpu().tolist()]
-        q_lens = [values[idx + 1] - values[idx] for idx in range(len(values) - 1)]
-    if kv_lens is None and (cu_seqlens_kv := data.get("cu_seqlens_kv")) is not None:
-        values = [int(x) for x in cu_seqlens_kv.detach().cpu().tolist()]
-        kv_lens = [values[idx + 1] - values[idx] for idx in range(len(values) - 1)]
-    if q_lens is None:
-        q_lens = _distribute_total(total_q, batch, max_seqlen_q)
-    if kv_lens is None:
-        kv_lens = _distribute_total(total_kv, batch, max_seqlen_kv)
-
-    visible = 0
-    for q_len, kv_len in zip(q_lens, kv_lens, strict=True):
-        visible += (
-            _causal_prefill_visible_scores(int(q_len), int(kv_len))
-            if is_causal
-            else int(q_len) * int(kv_len)
-        )
-    flops = 4 * heads * visible * dim
-
-    q_elems = total_q * heads * dim
-    kv_elems = total_kv * heads_kv * dim
-    o_elems = q_elems
-    cu_bytes = 2 * (batch + 1) * 4
-    nbytes = (q_elems + 2 * kv_elems + o_elems) * elem_bytes + cu_bytes
-    return int(flops), int(nbytes)
-
-
-def gqa_prefill_paged_with_kv_cache_fwd_roofline(
-    op: Any | None = None,
-    **kwargs: Any,
-) -> tuple[int, int]:
-    """Conservative roofline for paged-cache GQA prefill.
-
-    Paged workloads should bind explicit per-request ``q_lens`` and
-    ``cache_lens``. If they are absent, fall back to a deterministic fill from
-    aggregate metadata so older workload entries remain evaluable.
-    """
-    data = _shape_or_attrs(op, kwargs)
-    total_q = int(data["total_q"]) if "total_q" in data else None
-    batch = int(data["batch"])
-    heads = int(data["heads"])
-    heads_kv = int(data["heads_kv"])
-    dim = int(data["dim"])
-    max_pages_per_req = int(data["max_pages_per_req"])
-    page_size = int(data["page_size"])
-    max_seqlen_q = int(data.get("max_seqlen_q", max_pages_per_req * page_size))
-    is_causal = bool(data.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    q_lens = data.get("q_lens")
-    if total_q is None and q_lens is not None:
-        total_q = int(sum(q_lens))
-    if total_q is None:
-        total_q = batch * max_seqlen_q
-    if q_lens is None:
-        q_lens = _distribute_total(total_q, batch, max_seqlen_q)
-    cache_lens = data.get("cache_lens")
-    if cache_lens is None:
-        max_position = data.get("max_position")
-        max_total_len = max_pages_per_req * page_size if max_position is None else int(max_position)
-        cache_lens = [max(max_total_len - int(q_len), 0) for q_len in q_lens]
-
-    visible = 0
-    old_kv_tokens = 0
-    for q_len, old_len in zip(q_lens, cache_lens, strict=True):
-        q_len = int(q_len)
-        old_len = int(old_len)
-        old_kv_tokens += old_len
-        visible += (
-            q_len * old_len + q_len * (q_len + 1) // 2 if is_causal else q_len * (old_len + q_len)
-        )
-    flops = 4 * heads * visible * dim
-
-    # The cache may hold a narrower dtype than the query, and then the call also
-    # reads the two scales that dequantize it.
-    cache_bytes = _dtype_itemsize(data.get("cache_dtype") or data.get("dtype", "float16"))
-    quantized = cache_bytes != elem_bytes
-
-    q_elems = total_q * heads * dim
-    old_kv_elems = 2 * old_kv_tokens * heads_kv * dim
-    new_kv_elems = 2 * total_q * heads_kv * dim
-    append_kv_elems = new_kv_elems
-    o_elems = q_elems
-    # The call indexes the block table only as far as each request's pages reach,
-    # and the rest of the row is capacity the algorithm never reads.
-    pages_named = sum(
-        -(-(int(old_len) + int(q_len)) // page_size)
-        for q_len, old_len in zip(q_lens, cache_lens, strict=True)
-    )
-    metadata_bytes = (batch + 1) * 4 + batch * 4 + pages_named * 4
-    if quantized:
-        metadata_bytes += 2 * 4
-    nbytes = (q_elems + new_kv_elems + o_elems) * elem_bytes
-    nbytes += (old_kv_elems + append_kv_elems) * cache_bytes
-    nbytes += metadata_bytes
-    return int(flops), int(nbytes)
-
-
-def gqa_bwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for grouped-query attention backward."""
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        batch, seq_len, heads, dim = data["q_shape"]
-        _, _, heads_kv, _ = data["kv_shape"]
-    else:
-        batch, seq_len, heads, heads_kv, dim = (
-            data["batch"],
-            data["seq_len"],
-            data["heads"],
-            data["heads_kv"],
-            data["dim"],
-        )
-    is_causal = bool(data.get("is_causal", True))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    flops = 10 * batch * heads * seq_len * seq_len * dim
-    if is_causal:
-        flops //= 2
-    # q, o, do and dq carry all heads; k, v, dk and dv carry the KV heads.
-    nbytes = batch * (4 * heads + 4 * heads_kv) * seq_len * dim * elem_bytes
-    nbytes += batch * heads * seq_len * 4  # lse
-    return int(flops), int(nbytes)
-
-
-def mha_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for paged MHA decode with KV cache."""
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        batch, seqlen_q, heads, dim = data["q_shape"]
-        seqlen_kv, _, _ = data["kv_shape"]
-    else:
-        batch, seqlen_q, heads, seqlen_kv, dim = (
-            data["batch"],
-            data["seqlen_q"],
-            data["heads"],
-            data["seqlen_kv"],
-            data["dim"],
-        )
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-    flops = 4 * batch * heads * seqlen_q * seqlen_kv * dim
-    q_elems = batch * seqlen_q * heads * dim
-    kv_elems = seqlen_kv * heads * dim
-    metadata_bytes = (
-        batch * 4
-        + batch * max(1, (seqlen_kv + int(data["page_size"]) - 1) // int(data["page_size"])) * 4
-    )
-    nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes + metadata_bytes
-    return int(flops), int(nbytes)
-
-
-def gqa_decode_paged_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for paged GQA decode with KV cache."""
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        batch, heads, dim = data["q_shape"]
-        seqlen_kv, heads_kv, _ = data["kv_shape"]
-    else:
-        batch, heads, heads_kv, seqlen_kv, dim = (
-            data["batch"],
-            data["heads"],
-            data["heads_kv"],
-            data["seqlen_kv"],
-            data["dim"],
-        )
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-    flops = 4 * batch * heads * seqlen_kv * dim
-    q_elems = batch * heads * dim
-    kv_elems = seqlen_kv * heads_kv * dim
-    page_size = int(data["page_size"])
-    metadata_bytes = batch * 4 + batch * max(1, (seqlen_kv + page_size - 1) // page_size) * 4
-    nbytes = (q_elems + 2 * kv_elems + q_elems) * elem_bytes + metadata_bytes
-    return int(flops), int(nbytes)
-
-
-def gqa_sliding_window_varlen_fwd_roofline(
-    op: Any | None = None,
-    **kwargs: Any,
-) -> tuple[int, int]:
-    """Roofline for variable-length GQA sliding window forward."""
-    data = _shape_or_attrs(op, kwargs)
-    batch = int(data["batch"])
-    heads = int(data["heads"])
-    heads_kv = int(data["heads_kv"])
-    dim = int(data["dim"])
-    total_q = int(data.get("total_q", 0))
-    total_k = int(data.get("total_k", data.get("total_kv", 0)))
-    max_seqlen_q = int(data.get("max_seqlen_q", total_q // batch if batch else total_q))
-    q_lens = data.get("q_lens")
-    k_lens = data.get("k_lens", data.get("kv_lens"))
-    if q_lens is None and (cu_seqlens_q := data.get("cu_seqlens_q")) is not None:
-        values = [int(x) for x in cu_seqlens_q.detach().cpu().tolist()]
-        q_lens = [values[idx + 1] - values[idx] for idx in range(len(values) - 1)]
-    if k_lens is None and (cu_seqlens_kv := data.get("cu_seqlens_kv")) is not None:
-        values = [int(x) for x in cu_seqlens_kv.detach().cpu().tolist()]
-        k_lens = [values[idx + 1] - values[idx] for idx in range(len(values) - 1)]
-    if q_lens is None:
-        q_lens = _distribute_total(total_q, batch, max_seqlen_q)
-    if k_lens is None:
-        max_seqlen_k = int(data.get("max_seqlen_k", total_k // batch if batch else total_k))
-        k_lens = _distribute_total(total_k, batch, max_seqlen_k)
-    total_q = sum(q_lens)
-    total_k = sum(k_lens)
-    is_causal = bool(data.get("is_causal", True))
-    wl = int(data.get("window_size_left", -1))
-    wr = int(data.get("window_size_right", -1))
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    total_attended = 0
-    for sq, sk in zip(q_lens, k_lens, strict=True):
-        offset = int(sk) - int(sq)
-        for q_pos in range(int(sq)):
-            hi = (
-                min(q_pos + offset, int(sk) - 1)
-                if is_causal
-                else (min(q_pos + offset + wr, int(sk) - 1) if wr >= 0 else int(sk) - 1)
-            )
-            lo = max(0, q_pos + offset - wl) if wl >= 0 else 0
-            total_attended += max(0, hi - lo + 1)
-    flops = 4 * heads * total_attended * dim
-    nbytes = (
-        total_q * heads * dim + 2 * total_k * heads_kv * dim + total_q * heads * dim
-    ) * elem_bytes
-    # The two cumulative-length tensors the kernel walks to find each request's
-    # bounds, one bound per request plus the zero. The packed prefill sibling
-    # counts them; this one did not.
-    nbytes += 2 * (batch + 1) * 4
-    return int(flops), int(nbytes)
-
-
-def gqa_varlen_fwd_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Route unified Varlen GQA workloads to the matching cost model."""
-    data = dict(_shape_or_attrs(op, kwargs))
-    if "q_shape" not in data:
-        data["q_shape"] = (data["total_q"], data["heads"], data["dim"])
-        data["k_shape"] = (
-            data.get("total_kv", data.get("total_k")),
-            data["heads_kv"],
-            data["dim"],
-        )
-    if "kv_lens" in data and "k_lens" not in data:
-        data["k_lens"] = data["kv_lens"]
-    if int(data.get("window_size_left", -1)) != -1 or int(data.get("window_size_right", -1)) != -1:
-        return gqa_sliding_window_varlen_fwd_roofline(**data)
-    return gqa_prefill_varlen_fwd_roofline(**data)
-
-
-def deepseek_mla_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for DeepSeek MLA decode with KV cache."""
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        batch, heads, dim = data["q_shape"]
-        _, seqlen_kv, heads_kv, _ = data["kv_shape"]
-        pe_dim = data["pe_dim"]
-    else:
-        batch, heads, heads_kv, seqlen_kv, dim, pe_dim = (
-            data["batch"],
-            data["heads"],
-            data["heads_kv"],
-            data["seqlen_kv"],
-            data["dim"],
-            data["pe_dim"],
-        )
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-    flops = 2 * batch * heads * seqlen_kv * (2 * dim + pe_dim)
-    nbytes = (
-        batch * heads * (dim + pe_dim)
-        + batch * seqlen_kv * heads_kv * (dim + pe_dim)
-        + batch * heads * dim
-    ) * elem_bytes
-    return int(flops), int(nbytes)
-
-
-def deepseek_dsa_decode_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for DeepSeek sparse attention decode."""
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        batch, seq_len, heads, q_dim = data["q_shape"]
-        _, seq_len_kv, heads_kv, _ = data["kv_shape"]
-        dim_tail = data["dim_tail"]
-        dim = q_dim - dim_tail
-        topk = data["topk"]
-    else:
-        batch, seq_len, heads, seq_len_kv, dim, dim_tail, topk, heads_kv = (
-            data["batch"],
-            data["seq_len"],
-            data["heads"],
-            data["seq_len_kv"],
-            data["dim"],
-            data["dim_tail"],
-            data["topk"],
-            data["heads_kv"],
-        )
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-    flops = 2 * batch * seq_len * heads * topk * (2 * dim + dim_tail)
-    q_elems = batch * seq_len * heads * (dim + dim_tail)
-    kv_elems = batch * seq_len_kv * heads_kv * (dim + dim_tail)
-    o_elems = batch * seq_len * heads * dim
-    index_bytes = batch * seq_len * heads_kv * topk * 4
-    nbytes = (q_elems + kv_elems + o_elems) * elem_bytes + index_bytes
-    return int(flops), int(nbytes)
 
 
 def moe_post_permute_roofline(call) -> tuple[int, int]:
@@ -692,48 +299,6 @@ def grouped_gemm_roofline(op: "Op") -> tuple[int, int]:
     return int(flops), int((memory_a + memory_b + memory_c) * elem + metadata_bytes)
 
 
-def fp8_lightning_indexer_roofline(op: "Op") -> tuple[int, int]:
-    batch = int(op.batch)
-    seq_len = int(op.seq_len)
-    heads = int(op.heads)
-    index_dim = int(op.index_dim)
-    seq_len_kv = int(op.seq_len_kv)
-    kv_group = int(op.kv_group)
-    scores = batch * seq_len * seq_len_kv * kv_group
-    q_elems = batch * seq_len * heads * index_dim
-    k_elems = batch * seq_len_kv * kv_group * index_dim
-    weights = seq_len * heads
-    # The call decides all three terms below. Handed bf16 tensors, the op
-    # quantizes them itself and produces the scale, so the fp8 tensors and the
-    # scale are intermediates and the public reads are bf16. Handed fp8 tensors,
-    # the caller supplies the scale and it is a read of its own. index_q and
-    # index_k carry their own dtypes: the signature lets them differ, and only
-    # the pre-quantized path requires both to be fp8.
-    q_elem = _dtype_itemsize(getattr(op, "dtype", "bfloat16"))
-    k_elem = _dtype_itemsize(getattr(op, "index_k_dtype", None) or "bfloat16")
-    flops = 2 * scores * index_dim
-    nbytes = q_elems * q_elem + k_elems * k_elem
-    if _supplied(op, "index_k_scale"):
-        nbytes += batch * seq_len_kv * kv_group * 4
-    nbytes += weights * 4
-    nbytes += 2 * seq_len * 4 + scores * 4
-    return int(flops), int(nbytes)
-
-
-def topk_selector_roofline(op: "Op") -> tuple[int, int]:
-    batch = int(op.batch)
-    seq_len = int(op.seq_len)
-    seq_len_kv = int(op.seq_len_kv)
-    kv_group = int(op.kv_group)
-    topk = int(op.topk)
-    in_elem = _dtype_itemsize(getattr(op, "in_dtype", "float32"))
-    out_elem = _dtype_itemsize(getattr(op, "out_dtype", "int32"))
-    comparisons = batch * seq_len * kv_group * seq_len_kv
-    nbytes = comparisons * in_elem + batch * seq_len * 2 * out_elem
-    nbytes += batch * seq_len * kv_group * topk * out_elem
-    return int(comparisons), int(nbytes)
-
-
 def fft_c2c_roofline(call: "CallView") -> tuple[int, int]:
     """1D complex FFT: ``5 * n * log2(n)`` FLOPs per transform, each tensor moved once."""
     n = call.ix["n"]
@@ -757,147 +322,195 @@ def adaptive_pool2d_roofline(call: "CallView") -> tuple[int, int]:
     return prod(ix["B"]) * ix["C"] * scan, sum(call.bytes(t) for t in call.tensors)
 
 
-def _nsa_request_lens(data: dict[str, Any], c_seq_len: int, seq_num: int) -> list[int]:
-    """Token count per request, read off ``offsets`` when the call supplied it.
+# ---------------------------------------------------------------- attention
 
-    The manifest path has only the aggregate, so it falls back to an even split; the
-    benchmark path has the tensor and gets the lengths that were actually run.
+
+def _segments(call: "CallView", name: str) -> "list[int]":
+    """Per-request lengths of the packed batch whose bounds are metadata tensor *name*."""
+    bounds = call.values(name)
+    return [end - start for start, end in zip(bounds, bounds[1:], strict=False)]
+
+
+def _derived_bytes(call: "CallView") -> int:
+    """Each tensor the call binds, moved once."""
+    return sum(call.bytes(t) for t in call.tensors)
+
+
+def visible_scores(q_len: int, kv_len: int, is_causal: bool, left: int, right: int) -> int:
+    """Keys each query of one request sees under bottom-right alignment, summed over its queries.
+
+    Query ``i`` sits at key position ``i + kv_len - q_len``; ``left`` and ``right`` bound the
+    window around it, ``-1`` meaning unlimited.
     """
-    offsets = data.get("offsets")
-    if offsets is not None:
-        values = [int(x) for x in offsets.detach().cpu().tolist()]
-        return [values[i + 1] - values[i] for i in range(len(values) - 1)]
-    return _distribute_total(c_seq_len, seq_num, c_seq_len)
+    if left < 0 and right < 0:
+        if not is_causal:
+            return q_len * kv_len
+        rows = min(q_len, kv_len)
+        return rows * kv_len - rows * (rows - 1) // 2
+    offset = kv_len - q_len
+    total = 0
+    for i in range(q_len):
+        position = i + offset
+        if is_causal:
+            hi = min(position, kv_len - 1)
+        else:
+            hi = min(position + right, kv_len - 1) if right >= 0 else kv_len - 1
+        lo = max(0, position - left) if left >= 0 else 0
+        total += max(0, hi - lo + 1)
+    return total
 
 
-def _nsa_ragged_index_bytes(seq_num: int, c_seq_len: int, chunk_offsets: bool = True) -> int:
-    """The int32 metadata every NSA pass reads to walk a packed batch.
+def gqa_dense_fwd_roofline(call: "CallView") -> tuple[int, int]:
+    """Dense GQA forward: two contractions per visible score; each tensor moved once."""
+    ix = call.ix
+    visible = visible_scores(
+        ix["S_q"], ix["S_kv"], ix["is_causal"], ix["window_size_left"], ix["window_size_right"]
+    )
+    return 4 * ix["B"] * ix["H"] * visible * ix["D"], _derived_bytes(call)
 
-    ``offsets`` and ``token_indices`` always; ``chunk_offsets`` for the two passes that
-    index the compressed chunks.
+
+def packed_visible_scores(call: "CallView", cu_kv: str) -> int:
+    """Visible scores of a packed GQA call, summed over the requests its offsets carry."""
+    ix = call.ix
+    left, right = ix.get("window_size_left", -1), ix.get("window_size_right", -1)
+    return sum(
+        visible_scores(q, kv, ix["is_causal"], left, right)
+        for q, kv in zip(_segments(call, "cu_seqlens_q"), _segments(call, cu_kv), strict=True)
+    )
+
+
+def _varlen_fwd(call: "CallView", cu_kv: str) -> tuple[int, int]:
+    """Packed GQA forward: two contractions per visible score; each tensor moved once."""
+    ix = call.ix
+    return 4 * ix["H"] * packed_visible_scores(call, cu_kv) * ix["D"], _derived_bytes(call)
+
+
+def gqa_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
+    """Unified packed GQA forward: two contractions per visible score."""
+    return _varlen_fwd(call, "cu_seqlens_kv")
+
+
+def gqa_prefill_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
+    """Packed GQA prefill: two contractions per visible score; each tensor moved once."""
+    return _varlen_fwd(call, "cu_seqlens_kv")
+
+
+def gqa_sliding_window_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
+    """Packed sliding-window GQA: two contractions per score inside the window."""
+    return _varlen_fwd(call, "cu_seqlens_k")
+
+
+def gqa_prefill_paged_with_kv_cache_fwd_roofline(call: "CallView") -> tuple[int, int]:
+    """Paged GQA prefill with KV append, against the cached lengths the call carries.
+
+    Each request's queries see its cached keys and, causally, the new ones before them. The
+    cache is read as far as each request's cached tokens, the new tokens are appended into
+    it, and the block table is read as far as each request's pages reach.
     """
-    bounds = 2 * (seq_num + 1) if chunk_offsets else seq_num + 1
-    return (bounds + c_seq_len * 2) * 4
+    ix = call.ix
+    heads_kv, dim, page_size = ix["H_kv"], ix["D"], ix["page_size"]
+    q_lens, cache_lens = _segments(call, "cu_seqlens_q"), call.values("cache_seqlens")
+    is_causal = ix["is_causal"]
+    visible = sum(
+        q * c + q * (q + 1) // 2 if is_causal else q * (c + q)
+        for q, c in zip(q_lens, cache_lens, strict=True)
+    )
+    flops = 4 * ix["H"] * visible * dim
+    cache_elem = call.bytes("k_pages") // max(1, prod(call.tensors["k_pages"][0]))
+    old_kv = 2 * sum(cache_lens) * heads_kv * dim
+    append = 2 * ix["T_q"] * heads_kv * dim
+    pages_named = sum(-(-(c + q) // page_size) for q, c in zip(q_lens, cache_lens, strict=True))
+    moved = call.bytes("q") + call.bytes("k_new") + call.bytes("v_new") + call.bytes("o")
+    moved += (old_kv + append) * cache_elem
+    moved += call.bytes("cu_seqlens_q") + call.bytes("cache_seqlens") + pages_named * 4
+    if call.tensors["k_pages"][1] != call.tensors["q"][1]:
+        # A narrower cache is dequantized, and then the call reads both scales.
+        moved += call.bytes("k_scale") + call.bytes("v_scale")
+    return flops, moved
 
 
-def _nsa_closed_chunks(length: int, block_size: int) -> int:
+def gqa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
+    """Read-only paged GQA: two contractions per visible score, each tensor moved once."""
+    ix = call.ix
+    q_lens, cache_lens = _segments(call, "cu_seqlens_q"), call.values("cache_seqlens")
+    visible = sum(
+        visible_scores(q, c, ix["is_causal"], ix["window_size_left"], ix["window_size_right"])
+        for q, c in zip(q_lens, cache_lens, strict=True)
+    )
+    return 4 * ix["H"] * visible * ix["D"], _derived_bytes(call)
+
+
+def _closed_chunks(length: int, block_size: int) -> int:
     """``sum(t // block_size for t in range(length))``, in closed form."""
     full, rest = divmod(length, block_size)
     return block_size * full * (full - 1) // 2 + rest * full
 
 
-def nsa_cmp_fwd_varlen_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for the NSA compression forward over a packed batch.
+def nsa_closed_chunk_pairs(call: "CallView") -> int:
+    """(token, chunk) pairs the NSA compression scores: ``(t + 1) // bs`` chunks at position ``t``."""
+    return sum(_closed_chunks(n + 1, call.ix["bs"]) for n in _segments(call, "offsets"))
 
-    Each token attends to its own request's closed chunks. In: q and the compressed
-    k/v. Out: the attention output and the lse the top-k pass scores against.
+
+def nsa_cmp_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
+    """NSA compression forward: a QK and a PV contraction per scored (token, chunk) pair;
+    every tensor is moved once."""
+    ix = call.ix
+    return 2 * nsa_closed_chunk_pairs(call) * ix["H"] * (ix["DK"] + ix["DV"]), _derived_bytes(call)
+
+
+def nsa_topk_scored_pairs(call: "CallView") -> int:
+    """(token, chunk) pairs the NSA selection scores over its two QK passes.
+
+    The lse pass scores ``(t + 1) // bs`` chunks at position ``t``, the selection pass
+    ``t // bs + 1``.
     """
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        c_seq_len, heads, dim_k = data["q_shape"]
-        chunk_num, head_kv, _ = data["k_cmp_shape"]
-        dim_v = data["v_cmp_shape"][2]
-        seq_num = data["offsets_shape"][0] - 1
-    else:
-        c_seq_len, heads, dim_k = data["c_seq_len"], data["heads"], data["dim_k"]
-        chunk_num, head_kv = data["chunk_num"], data["head_kv"]
-        dim_v, seq_num = data["dim_v"], data["seq_num"]
-    block_size = int(data["bs"])
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    lens = _nsa_request_lens(data, c_seq_len, seq_num)
-    # The kernel scores `(t + 1) // bs` chunks for the token at position `t`.
-    pairs = sum(_nsa_closed_chunks(length + 1, block_size) for length in lens)
-    flops = 2 * pairs * heads * (dim_k + dim_v)
-    nbytes = (
-        c_seq_len * heads * (dim_k + dim_v + 1) + chunk_num * head_kv * (dim_k + dim_v)
-    ) * elem_bytes
-    nbytes += _nsa_ragged_index_bytes(seq_num, c_seq_len)
-    return int(flops), int(nbytes)
-
-
-def nsa_topk_varlen_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for the NSA block selection over a packed batch.
-
-    Two QK passes over the compressed chunks, no PV. Out: one int32 block id per
-    token, KV head and kept block.
-    """
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        c_seq_len, heads, dim = data["q_shape"]
-        chunk_num, head_kv, _ = data["k_cmp_shape"]
-        seq_num = data["offsets_shape"][0] - 1
-    else:
-        c_seq_len, heads, dim = data["c_seq_len"], data["heads"], data["dim"]
-        chunk_num, head_kv, seq_num = data["chunk_num"], data["head_kv"], data["seq_num"]
-    block_size = int(data["bs"])
-    selected = int(data["selected_block_num"])
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
-
-    lens = _nsa_request_lens(data, c_seq_len, seq_num)
-    # Two QK passes over slightly different chunk counts: the lse pass scores
-    # `(t + 1) // bs` chunks for the token at position `t`, the selection pass `t // bs + 1`.
-    pairs = sum(
-        _nsa_closed_chunks(length + 1, block_size) + _nsa_closed_chunks(length, block_size) + length
-        for length in lens
-    )
-    flops = 2 * pairs * heads * dim
-    # `lse_in` produces no read: the top-k kernel recomputes the lse itself and
-    # discards the argument, and a declared input the algorithm does not read
-    # moves no bytes.
-    nbytes = (c_seq_len * heads * dim + chunk_num * head_kv * dim) * elem_bytes
-    nbytes += c_seq_len * head_kv * selected * 4
-    nbytes += _nsa_ragged_index_bytes(seq_num, c_seq_len)
-    return int(flops), int(nbytes)
-
-
-def _nsa_selected_block_loads(
-    data: dict[str, Any], c_seq_len: int, head_kv: int, selected: int, block_size: int
-) -> int:
-    """Block tiles the sparse forward loads, summed over tokens and KV heads.
-
-    The kernel walks ``block_counts`` entries and skips a block starting past the token.
-    The manifest path has only shapes, so it takes the ``selected``-per-token bound.
-    """
-    counts = data.get("block_counts")
-    indices = data.get("block_indices")
-    token_indices = data.get("token_indices")
-    if counts is None or indices is None or token_indices is None:
-        return c_seq_len * head_kv * selected
-
-    # Read as lists, not reduced on device: this module imports where torch does not.
-    kept = counts.reshape(-1).tolist()
-    blocks = indices.reshape(-1, selected).tolist()
-    positions = token_indices[:, 1].tolist()
+    bs = call.ix["bs"]
     return sum(
-        sum(1 for start in row[:n] if 0 <= start * block_size <= positions[i // head_kv])
-        for i, (n, row) in enumerate(zip(kept, blocks, strict=True))
+        _closed_chunks(n + 1, bs) + _closed_chunks(n, bs) + n for n in _segments(call, "offsets")
     )
 
 
-def nsa_fwd_varlen_roofline(op: Any | None = None, **kwargs: Any) -> tuple[int, int]:
-    """Roofline for the NSA sparse forward over a packed batch.
+def nsa_topk_varlen_roofline(call: "CallView") -> tuple[int, int]:
+    """NSA block selection: one QK contraction per scored pair, no PV. ``lse_in`` is passed
+    and discarded, so it moves no bytes."""
+    ix = call.ix
+    flops = 2 * nsa_topk_scored_pairs(call) * ix["H"] * ix["D"]
+    return flops, _derived_bytes(call) - call.bytes("lse_in")
 
-    Each token attends to the blocks of ``block_size`` tokens its selection kept, so the
-    score count comes from that selection rather than from the sequence length. In: q and
-    the gathered k/v of those blocks, plus the selection. Out: the attention output.
+
+def nsa_selected_block_loads(call: "CallView") -> int:
+    """Block tiles the NSA sparse forward loads, summed over tokens and KV heads.
+
+    The kernel walks ``block_counts`` entries of each row and skips a block starting past
+    the token.
     """
-    data = _shape_or_attrs(op, kwargs)
-    if "q_shape" in data:
-        c_seq_len, heads, dim = data["q_shape"]
-        head_kv = data["k_shape"][1]
-        selected = data["block_indices_shape"][2]
-    else:
-        c_seq_len, heads, dim = data["c_seq_len"], data["heads"], data["dim"]
-        head_kv, selected = data["head_kv"], data["selected_blocks"]
-    block_size = int(data["block_size"])
-    elem_bytes = _dtype_itemsize(data.get("dtype", data.get("dtypes", "float16")))
+    counts, picks = call.values("block_counts"), call.values("block_indices")
+    tokens = call.values("token_indices")
+    block_size = call.ix["block_size"]
+    loads = 0
+    for t, (row_counts, row_picks) in enumerate(zip(counts, picks, strict=True)):
+        position = tokens[t][1]
+        for n, blocks in zip(row_counts, row_picks, strict=True):
+            loads += sum(1 for start in blocks[:n] if 0 <= start * block_size <= position)
+    return loads
 
-    loads = _nsa_selected_block_loads(data, c_seq_len, head_kv, selected, block_size)
-    rows = loads * block_size
-    flops = 4 * rows * (heads // head_kv) * dim
-    nbytes = (2 * c_seq_len * heads * dim + 2 * rows * dim) * elem_bytes
-    nbytes += c_seq_len * head_kv * (selected + 1) * 4
-    batch = int(data["offsets_shape"][0]) - 1 if "q_shape" in data else int(data["batch"])
-    nbytes += _nsa_ragged_index_bytes(batch, c_seq_len, chunk_offsets=False)
-    return int(flops), int(nbytes)
+
+def nsa_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
+    """NSA sparse forward over the blocks the selection keeps.
+
+    Scores come from the kept blocks, not the sequence length. In: q, the gathered k/v rows
+    of those blocks and the selection metadata. Out: the attention output.
+    """
+    ix = call.ix
+    rows = nsa_selected_block_loads(call) * ix["block_size"]
+    elem = call.bytes("q") // max(1, prod(call.tensors["q"][0]))
+    flops = 4 * rows * (ix["H"] // ix["H_kv"]) * ix["D"]
+    moved = call.bytes("q") + call.bytes("o_slc") + 2 * rows * ix["D"] * elem
+    moved += call.bytes("block_indices") + call.bytes("block_counts")
+    moved += call.bytes("offsets") + call.bytes("token_indices")
+    return flops, moved
+
+
+def gqa_prefill_paged_cached_tokens(call: "CallView") -> int:
+    """Cached tokens the paged prefill call reads, which its cache traffic follows."""
+    return sum(call.values("cache_seqlens"))

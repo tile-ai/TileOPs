@@ -1,6 +1,6 @@
 import torch
 
-from workloads.workload_base import WorkloadBase
+from workloads.workload_base import CallWorkload, WorkloadBase
 
 
 class TopkSelectorWorkload(WorkloadBase):
@@ -45,3 +45,16 @@ class TopkSelectorWorkload(WorkloadBase):
         indexes_ref = torch.topk(index_score, self.topk, dim=2)[1]
         # Match kernel/output layout: (batch, seq_len, kv_group, topk)
         return indexes_ref.permute(0, 1, 3, 2)
+
+
+class TopkSelectorCall(CallWorkload, TopkSelectorWorkload):
+    """A manifest call of TopkSelectorFwdOp; the row's generators give the windows."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix = call.ix
+        TopkSelectorWorkload.__init__(
+            self, ix["B"], ix["S"], ix["S_kv"], ix["G"], ix["topk"], torch.float32, torch.int32
+        )
+
+    gen_inputs = CallWorkload.gen_inputs

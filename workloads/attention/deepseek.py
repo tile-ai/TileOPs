@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from einops import einsum, rearrange, repeat
 
 from workloads.nsa_utils import prepare_chunk_offsets, prepare_token_indices
-from workloads.workload_base import WorkloadBase
+from workloads.workload_base import CallWorkload, WorkloadBase
 
 
 def _packed_offsets(
@@ -52,7 +52,6 @@ class NsaFwdWorkload(WorkloadBase):
         groups: int,
         selected_blocks: int,
         dtype: torch.dtype,
-        accum_dtype: torch.dtype,
         seq_lens: "list[int] | None" = None,
     ) -> None:
         self.batch = batch
@@ -65,7 +64,6 @@ class NsaFwdWorkload(WorkloadBase):
         self.groups = groups
         self.selected_blocks = selected_blocks
         self.dtype = dtype
-        self.accum_dtype = accum_dtype
         self.seq_lens = seq_lens
 
         self.head_kv = self.heads // self.groups
@@ -192,10 +190,8 @@ class NsaCmpFwdWorkload(WorkloadBase):
         dim_v: int,
         group: int,
         scale: float,
-        bc: int,
         bs: int,
         dtype: torch.dtype,
-        accum_dtype: torch.dtype,
         seq_lens: "list[int] | None" = None,
     ) -> None:
         self.seq_num = seq_num
@@ -205,10 +201,8 @@ class NsaCmpFwdWorkload(WorkloadBase):
         self.dim_v = dim_v
         self.group = group
         self.scale = scale
-        self.bc = bc
         self.bs = bs
         self.dtype = dtype
-        self.accum_dtype = accum_dtype
         self.seq_lens = seq_lens
 
         self.head_kv = self.heads // self.group
@@ -264,10 +258,8 @@ class NsaTopkWorkload(WorkloadBase):
         group: int,
         scale: float,
         selected_block_num: int,
-        bc: int,
         bs: int,
         dtype: torch.dtype,
-        accum_dtype: torch.dtype,
         seq_lens: "list[int] | None" = None,
     ) -> None:
         self.seq_num = seq_num
@@ -277,10 +269,8 @@ class NsaTopkWorkload(WorkloadBase):
         self.group = group
         self.scale = scale
         self.selected_block_num = selected_block_num
-        self.bc = bc
         self.bs = bs
         self.dtype = dtype
-        self.accum_dtype = accum_dtype
         self.seq_lens = seq_lens
 
         self.head_kv = self.heads // self.group
@@ -670,3 +660,121 @@ def _nsa_topk_torch(
         )
 
     return block_indices
+
+
+class MlaDecodeCall(CallWorkload, MlaDecodeWorkload):
+    """A manifest call of MultiHeadLatentAttentionDecodeWithKVCacheFwdOp."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix = call.ix
+        MlaDecodeWorkload.__init__(
+            self,
+            ix["B"],
+            ix["H"],
+            ix["H_kv"],
+            ix["N_kv"],
+            ix["D"],
+            ix["PE"],
+            getattr(torch, ix["T"]),
+        )
+
+    gen_inputs = CallWorkload.gen_inputs
+
+
+class DsaDecodeCall(CallWorkload, DsaDecodeWorkload):
+    """A manifest call of DeepSeekSparseAttentionDecodeWithKVCacheFwdOp; the row's generator
+    selects each query's keys."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix, params = call.ix, call.params
+        DsaDecodeWorkload.__init__(
+            self,
+            ix["B"],
+            ix["H"],
+            ix["S"],
+            ix["S_kv"],
+            ix["D"],
+            params["dim_tail"],
+            ix["K"],
+            params["stride_kv"],
+            ix["H_kv"],
+            params["q_start_index_s"],
+            sm_scale=params["sm_scale"],
+            is_causal=params["is_causal"],
+            dtype=getattr(torch, ix["T"]),
+        )
+
+    gen_inputs = CallWorkload.gen_inputs
+
+
+class NsaCmpFwdCall(CallWorkload, NsaCmpFwdWorkload):
+    """A manifest call of NSACmpVarlenFwdOp."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix, params = call.ix, call.params
+        NsaCmpFwdWorkload.__init__(
+            self,
+            ix["N"],
+            ix["T_q"],
+            ix["H"],
+            ix["DK"],
+            ix["DV"],
+            ix["H"] // ix["H_kv"],
+            params["scale"],
+            params["bs"],
+            getattr(torch, ix["T"]),
+        )
+        self.chunk_num = ix["C"]
+
+    gen_inputs = CallWorkload.gen_inputs
+
+
+class NsaTopkCall(CallWorkload, NsaTopkWorkload):
+    """A manifest call of NSATopkVarlenFwdOp."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix, params = call.ix, call.params
+        NsaTopkWorkload.__init__(
+            self,
+            ix["N"],
+            ix["T_q"],
+            ix["H"],
+            ix["D"],
+            ix["H"] // ix["H_kv"],
+            params["scale"],
+            params["selected_block_num"],
+            params["bs"],
+            getattr(torch, ix["T"]),
+        )
+        self.chunk_num = ix["C"]
+
+    gen_inputs = CallWorkload.gen_inputs
+
+
+class NsaFwdCall(CallWorkload, NsaFwdWorkload):
+    """A manifest call of NSAVarlenFwdOp; the row's generators make the selection."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix, params = call.ix, call.params
+        NsaFwdWorkload.__init__(
+            self,
+            ix["N"],
+            ix["H"],
+            ix["T_q"],
+            ix["D"],
+            params["is_causal"],
+            params["scale"],
+            params["block_size"],
+            ix["H"] // ix["H_kv"],
+            ix["SEL"],
+            getattr(torch, ix["T"]),
+        )
+        # The reference scales the selected branch by its gate, which this op does not take.
+        self.g_slc = torch.ones((ix["N"], ix["T_q"], ix["H"]), dtype=self.dtype, device="cuda")
+
+    gen_inputs = CallWorkload.gen_inputs

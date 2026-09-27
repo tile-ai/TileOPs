@@ -7,26 +7,12 @@ from benchmarks.baselines import (
     compiled_reference,
     reference_tolerance,
 )
-from benchmarks.benchmark_base import (
-    ManifestBenchmark,
-    then_dtype,
-    workload_params,
-)
-from benchmarks.ops.attention.workload_args import dsa_decode_args
-from tileops.manifest import load_workloads
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.deepseek import DsaDecodeWorkload
-
-_DSA_DECODE_BENCH_PARAMS = workload_params(
-    load_workloads(DeepSeekSparseAttentionDecodeWithKVCacheFwdOp),
-    then_dtype(
-        dsa_decode_args,
-        tune=False,
-    ),
-)
+from workloads.attention.deepseek import DsaDecodeCall
 
 
-def _torch_sdpa_dsa(test: DsaDecodeWorkload):
+def _torch_sdpa_dsa(test: DsaDecodeCall):
     """SDPA over the selection ``ref_program`` masks, or None for a row it cannot serve.
 
     Same computation, without the reference's float32 upcast and materialized score
@@ -54,7 +40,7 @@ def _torch_sdpa_dsa(test: DsaDecodeWorkload):
     return fn
 
 
-def _torch_gather_dsa(test: DsaDecodeWorkload):
+def _torch_gather_dsa(test: DsaDecodeCall):
     """Dense attention over only the gathered selection, or None when it buys nothing.
 
     Gathering beats masking only where the selection is smaller than the cache.
@@ -80,55 +66,13 @@ def _torch_gather_dsa(test: DsaDecodeWorkload):
     return fn
 
 
-@pytest.mark.parametrize(
-    "batch, heads, seq_len_q, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv, q_start_index_s, sm_scale, dtype, tune",
-    _DSA_DECODE_BENCH_PARAMS,
-)
-def test_dsa_decode_bench(
-    batch: int,
-    heads: int,
-    seq_len_q: int,
-    seq_len_kv: int,
-    dim: int,
-    dim_tail: int,
-    topk: int,
-    stride_kv: int,
-    heads_kv: int,
-    q_start_index_s: int,
-    sm_scale: float,
-    dtype: torch.dtype,
-    tune: bool,
-) -> None:
-    test = DsaDecodeWorkload(
-        batch,
-        heads,
-        seq_len_q,
-        seq_len_kv,
-        dim,
-        dim_tail,
-        topk,
-        stride_kv,
-        heads_kv,
-        q_start_index_s,
-        sm_scale=sm_scale,
-        dtype=dtype,
-    )
+@pytest.mark.parametrize("call", manifest_calls(DeepSeekSparseAttentionDecodeWithKVCacheFwdOp))
+def test_dsa_decode_bench(call) -> None:
+    test = DsaDecodeCall(call)
     inputs = test.gen_inputs()
+    dtype = test.dtype
 
-    op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(
-        batch,
-        heads,
-        seq_len_q,
-        seq_len_kv,
-        dim,
-        dim_tail,
-        topk,
-        stride_kv,
-        heads_kv,
-        q_start_index_s,
-        sm_scale=sm_scale,
-        tune=tune,
-    )
+    op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(**test.arguments())
     bm = ManifestBenchmark(op, test)
 
     baselines = {}

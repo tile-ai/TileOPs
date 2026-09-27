@@ -2,7 +2,7 @@ from typing import Optional
 
 import torch
 
-from workloads.workload_base import WorkloadBase
+from workloads.workload_base import CallWorkload, WorkloadBase
 
 
 class FP8LightningIndexerWorkload(WorkloadBase):
@@ -226,3 +226,36 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         mask_expanded = mask.unsqueeze(0).unsqueeze(-1)
         logits = logits.masked_fill(~mask_expanded, float("-inf"))
         return (logits,)
+
+
+class FP8LightningIndexerCall(CallWorkload, FP8LightningIndexerWorkload):
+    """A manifest call of FP8LightningIndexerFwdOp; the row's generator gives the windows.
+
+    FP8 index tensors are bf16 draws cast down; a passed ``index_k_scale`` is the per-key
+    absolute maximum the keys were quantized by, so the keys it scales are the bf16 draw.
+    """
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        ix = call.ix
+        FP8LightningIndexerWorkload.__init__(
+            self, ix["B"], ix["S"], ix["H"], ix["D"], ix["S_kv"], ix["G"], ix["clean_logits"]
+        )
+        self.index_dtype = getattr(torch, ix["T"])
+
+    def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
+        index_q, index_k, weights, ks, ke, index_k_scale = CallWorkload.gen_inputs(self)
+        index_q = torch.randn(index_q.shape, device=index_q.device).to(self.index_dtype)
+        keys = torch.randn(index_k.shape, device=index_k.device)
+        if index_k_scale is not None:
+            index_k_scale = keys.abs().amax(dim=-1).clamp(min=1e-4) / 448.0
+            keys = keys / index_k_scale.unsqueeze(-1)
+        return index_q, keys.to(self.index_dtype), weights, ks, ke, index_k_scale
+
+    def ref_program(self, index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale):
+        keys = index_k.float()
+        if index_k_scale is not None:
+            keys = keys * index_k_scale.unsqueeze(-1)
+        return FP8LightningIndexerWorkload.ref_program(
+            self, index_q, keys, weights, cu_seqlen_ks, cu_seqlen_ke
+        )

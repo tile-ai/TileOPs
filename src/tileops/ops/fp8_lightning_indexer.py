@@ -1,4 +1,4 @@
-from typing import ClassVar, Dict, Optional, Tuple
+from typing import ClassVar, Dict, Mapping, Optional, Tuple
 
 import torch
 
@@ -7,44 +7,45 @@ from tileops.kernels.constants import FP8_E4M3_MAX
 from tileops.kernels.fp8_lightning_indexer import FP8LightningIndexerKernel
 from tileops.kernels.kernel_base import Entry, Kernel
 
-from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
 
 __all__ = ["FP8LightningIndexerFwdOp"]
 
 
 class FP8LightningIndexerFwdOp(Op):
-    compile_boundary: ClassVar[tuple[OperatorSpec, ...]] = (OperatorSpec(),)
+    """Lightning indexer logits over FP8 index keys.
+
+    For query ``s`` and key ``t`` of group ``g``, the logit sums ``weights[s, h]`` times
+    ``relu(q[s, h] . k[t, g])`` over the heads of group ``g``, for keys inside the query's
+    window ``[cu_seqlen_ks[s], cu_seqlen_ke[s])``. A bf16 call is quantized to FP8 by the
+    op; an FP8 call passes the per-key scales in ``index_k_scale``.
+    """
+
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "fp8_lightning_indexer_kernel": FP8LightningIndexerKernel
+    }
 
     def __init__(
         self,
-        clean_logits=True,
-        config: Optional[dict] = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune=False,
+        clean_logits: bool = True,
         *,
+        config: Optional[dict] = None,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. Shapes and dtype are taken from each call.
 
         Args:
             clean_logits: Manifest ``params.clean_logits``, ``bool``, default ``True``.
-            config: Manifest ``params.config``, ``dict | None``, default ``None``.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
+            config: Kernel configuration, passed only to the kernel.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
+            kernel_map: Optional kernel override dict.
+            tune: Whether to autotune, applied when a kernel is first built.
         """
         self.target = target
-        self.batch = None
-        self.seq_len = None
-        self.heads = None
-        self.index_dim = None
-        self.seq_len_kv = None
-        self.kv_group = None
-        self.dtype = None
-        self.index_k_dtype = None
-        self.index_k_scale_shape = None
         self.clean_logits = clean_logits
         self.config = config
         self.tune = tune
@@ -53,55 +54,14 @@ class FP8LightningIndexerFwdOp(Op):
         self.kernel = None
 
     @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"fp8_lightning_indexer_kernel": FP8LightningIndexerKernel}
-
-    @property
     def _config_cache_key(self) -> tuple:
         if not self.config:
             return ()
         return tuple(sorted((key, repr(value)) for key, value in self.config.items()))
 
-    def _get_kernel(
-        self,
-        inputs: "tuple[torch.Tensor | None, ...]",
-        batch: int,
-        seq_len: int,
-        heads: int,
-        index_dim: int,
-        seq_len_kv: int,
-        kv_group: int,
-        device_index: int | None,
-    ) -> Kernel:
-        return self.kernel_for(
-            "fp8_lightning_indexer_kernel",
-            inputs,
-            (
-                batch,
-                seq_len,
-                heads,
-                index_dim,
-                seq_len_kv,
-                kv_group,
-                self.clean_logits,
-                self._config_cache_key,
-                device_index,
-            ),
-        )
-
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape and device; the config is the op's."""
-        (
-            batch,
-            seq_len,
-            heads,
-            index_dim,
-            seq_len_kv,
-            kv_group,
-            clean_logits,
-            _config,
-            _dev,
-        ) = call
+        batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, _config, _dev = call
         return call, lambda: self.kernel_map["fp8_lightning_indexer_kernel"](
             batch,
             seq_len,
@@ -114,65 +74,23 @@ class FP8LightningIndexerFwdOp(Op):
             tune=self.tune,
         )
 
-    def _resolve_and_bind(
-        self,
-        index_q: torch.Tensor,
-        index_k: torch.Tensor,
-        weights: torch.Tensor,
-        cu_seqlen_ks: torch.Tensor,
-        cu_seqlen_ke: torch.Tensor,
-        index_k_scale: Optional[torch.Tensor],
-    ) -> None:
-        if not index_q.is_cuda or not index_k.is_cuda:
-            raise ValueError("FP8LightningIndexerFwdOp expects CUDA inputs")
-        if index_q.ndim != 4 or index_k.ndim != 4:
-            raise ValueError("FP8LightningIndexerFwdOp expects index_q/index_k to be 4D tensors")
+    def _bind_kernel(self, index_q: torch.Tensor, index_k: torch.Tensor, inputs: tuple) -> None:
         batch, seq_len, heads, index_dim = index_q.shape
-        k_batch, seq_len_kv, kv_group, k_dim = index_k.shape
-        if k_batch != batch or k_dim != index_dim:
-            raise ValueError("index_q and index_k must agree on batch and index_dim")
-        if heads % kv_group != 0:
-            raise ValueError("heads must be divisible by kv_group")
-        if weights.shape != (seq_len, heads):
-            raise ValueError("weights must have shape [seq_len, heads]")
-        if weights.dtype != torch.float32:
-            raise ValueError(f"weights must be float32, got {weights.dtype}")
-        if cu_seqlen_ks.shape != (seq_len,) or cu_seqlen_ke.shape != (seq_len,):
-            raise ValueError("cu_seqlen_ks/cu_seqlen_ke must have shape [seq_len]")
-        if cu_seqlen_ks.dtype != torch.int32 or cu_seqlen_ke.dtype != torch.int32:
-            raise ValueError("cu_seqlen_ks and cu_seqlen_ke must be int32")
-        if index_k_scale is not None:
-            if index_k_scale.shape != (batch, seq_len_kv, kv_group):
-                raise ValueError("index_k_scale must have shape [batch, seq_len_kv, kv_group]")
-            if index_k_scale.dtype != torch.float32:
-                raise ValueError(f"index_k_scale must be float32, got {index_k_scale.dtype}")
-            if index_q.dtype != torch.float8_e4m3fn or index_k.dtype != torch.float8_e4m3fn:
-                raise ValueError(
-                    "index_q and index_k must be float8_e4m3fn when index_k_scale is provided"
-                )
-
-        self.batch = batch
-        self.seq_len = seq_len
-        self.heads = heads
-        self.index_dim = index_dim
-        self.seq_len_kv = seq_len_kv
-        self.kv_group = kv_group
-        # These three decide the roofline: the call arrives either as bf16
-        # tensors this op quantizes itself, or as fp8 tensors with the scale.
-        # index_q and index_k are priced separately because only the
-        # pre-quantized path requires both to be fp8.
-        self.dtype = index_q.dtype
-        self.index_k_dtype = index_k.dtype
-        self.index_k_scale_shape = None if index_k_scale is None else tuple(index_k_scale.shape)
-        self.kernel = self._get_kernel(
-            (index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale),
-            batch,
-            seq_len,
-            heads,
-            index_dim,
-            seq_len_kv,
-            kv_group,
-            index_q.device.index,
+        _, seq_len_kv, kv_group, _ = index_k.shape
+        self.kernel = self.kernel_for(
+            "fp8_lightning_indexer_kernel",
+            inputs,
+            (
+                batch,
+                seq_len,
+                heads,
+                index_dim,
+                seq_len_kv,
+                kv_group,
+                self.clean_logits,
+                self._config_cache_key,
+                index_q.device.index,
+            ),
         )
 
     def torch_quant_forward(
@@ -199,19 +117,6 @@ class FP8LightningIndexerFwdOp(Op):
     ) -> torch.Tensor:
         return self.kernel(index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
 
-    def _infer_output_shapes(
-        self,
-        index_q_shape: tuple[int, ...],
-        index_k_shape: tuple[int, ...],
-        weights_shape: tuple[int, ...],
-        cu_seqlen_ks_shape: tuple[int, ...],
-        cu_seqlen_ke_shape: tuple[int, ...],
-        index_k_scale_shape: tuple[int, ...],
-    ) -> dict[str, tuple[int, ...]]:
-        """Manifest ``outputs``: $[batch \\times seq\\_len \\times seq\\_len\\_kv \\times kv\\_group]$."""
-        batch, seq_len = index_q_shape[0], index_q_shape[1]
-        return {"logits": (batch, seq_len, index_k_shape[1], index_k_shape[2])}
-
     def forward(
         self,
         index_q: torch.Tensor,
@@ -234,8 +139,8 @@ class FP8LightningIndexerFwdOp(Op):
         Returns:
             ``logits``, as the manifest declares.
         """
-        return self._wrapped(
-            index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale, self._instance_key
+        return self._call_boundary(
+            index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale
         )
 
     def _eager_forward(
@@ -247,11 +152,15 @@ class FP8LightningIndexerFwdOp(Op):
         cu_seqlen_ke: torch.Tensor,
         index_k_scale: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
+        """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        self._resolve_and_bind(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale)
+        self._bind_kernel(
+            index_q,
+            index_k,
+            (index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale),
+        )
         if index_k_scale is None:
             return self.torch_quant_forward(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke)
         return self.tl_quant_forward(
@@ -266,7 +175,7 @@ class FP8LightningIndexerFwdOp(Op):
         if use_ue8m0:
             assert sf.view(-1).amax().item() > 0
             sf = torch.pow(2.0, torch.ceil(torch.log2(x_absmax)))
-        x_scaled = (x * (1.0 / sf)).to(torch.float8_e4m3fn)
+        x_scaled = (x.to(torch.float32) * (1.0 / sf)).to(torch.float8_e4m3fn)
         return x_scaled, sf.squeeze(-1)
 
     def compute_roof(self) -> str:
