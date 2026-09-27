@@ -1,9 +1,9 @@
 """Programmatic access to the ops manifest.
 
 The manifest is split across one or more YAML files per op family in this
-package directory. Most families use a single file, but large families
-(e.g., ``elementwise``) are sharded across multiple files. At load time,
-all files are merged into a single ``ops`` dict; duplicate op names
+package's ``spec/`` directory. Most families use a single file, but large
+families (e.g., ``elementwise``) are sharded across multiple files. At load
+time, all files are merged into a single ``ops`` dict; duplicate op names
 across files raise `ValueError`.
 
 Public entry points:
@@ -33,6 +33,7 @@ __all__ = [
 ]
 
 _PACKAGE = "tileops.manifest"
+_SPEC_DIR = "spec"
 _TYPES_FILE = "types.yaml"
 
 
@@ -43,7 +44,7 @@ def manifest_files() -> list:
     handle with ``read_text``); typed as ``list`` for Python 3.10
     compatibility, since ``importlib.resources.abc`` was added in 3.11.
     """
-    root = resources.files(_PACKAGE)
+    root = resources.files(_PACKAGE) / _SPEC_DIR
     return sorted(
         (
             p
@@ -79,7 +80,7 @@ def load_manifest() -> dict[str, Any]:
 
 def types_document() -> object:
     """The parsed ``types.yaml``, whatever its shape, or None when the file is absent."""
-    path = resources.files(_PACKAGE) / _TYPES_FILE
+    path = resources.files(_PACKAGE) / _SPEC_DIR / _TYPES_FILE
     return yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else None
 
 
