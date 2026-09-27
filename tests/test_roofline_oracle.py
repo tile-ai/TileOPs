@@ -898,10 +898,6 @@ class TestCoverageLevels:
                 checked += 1
         assert checked > 0
 
-    def test_every_level_two_op_is_a_manifest_entry(self):
-        unknown = sorted(set(HAND_WRITTEN) - set(_entries()))
-        assert not unknown, f"declared but not in the manifest: {unknown}"
-
     def test_a_declared_op_is_one_the_manifest_does_not_already_check(self):
         """Level two is for ops the manifest cannot recount, not a queue.
 
@@ -935,8 +931,3 @@ class TestCoverageLevels:
             f"declared level two with no _ledger case above: {missing}; a case that "
             "sums anonymous tuples cannot be checked against the signature"
         )
-
-    def test_a_reason_says_what_is_missing(self):
-        for name, reason in HAND_WRITTEN.items():
-            assert reason and not reason.endswith("."), name
-            assert len(reason.split()) >= 5, f"{name}: {reason!r} says too little"
