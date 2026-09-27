@@ -58,8 +58,9 @@ GemmFp8FwdOp:
 
   signature:
     # b is the [N, K] operand torch._scaled_mm receives transposed. The scales are per-tensor
-    # [1, 1] for both operands, or per 1x128 block along K for both: [M, ceil(K/128)] and
-    # [N, ceil(K/128)].
+    # [1, 1] for both operands, or scale_a per 1x128 block along K, [M, ceil(K/128)], with
+    # scale_b either per 1x128 block, [N, ceil(K/128)], or per 128x128 block,
+    # [ceil(N/128), ceil(K/128)].
     forall: {M: Dim, N: Dim, K: Dim, SA: Shape, SB: Shape, T: "DType[float8_e4m3fn]"}
     params:
       out_dtype: {type: "bfloat16 | float16", default: bfloat16}
@@ -72,7 +73,7 @@ GemmFp8FwdOp:
     outputs:
       d: {dtype: out_dtype, shape: "[M, N]"}
     shape_rules:
-    - "(SA == (1, 1) and SB == (1, 1)) or (SA == (M, ceil_div(K, 128)) and SB == (N, ceil_div(K, 128)))"
+    - "(SA == (1, 1) and SB == (1, 1)) or (SA == (M, ceil_div(K, 128)) and (SB == (N, ceil_div(K, 128)) or SB == (ceil_div(N, 128), ceil_div(K, 128))))"
 
   workloads:
   - {M: 128, N: 2112, K: 7168, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-qkv-a}
@@ -89,6 +90,14 @@ GemmFp8FwdOp:
   - {M: 8, N: 7168, K: 2048, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-m8-down}
   - {M: 1, N: 7168, K: 2048, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-m1-down}
   - {M: 1, N: 7168, K: 2048, SA: [1, 16], SB: [7168, 16], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-m1-down-blk}
+  - {M: 128, N: 2112, K: 7168, SA: [128, 56], SB: [17, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-qkv-a-2d}
+  - {M: 128, N: 7168, K: 2048, SA: [128, 16], SB: [56, 16], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-down-2d}
+  - {M: 4096, N: 2112, K: 7168, SA: [4096, 56], SB: [17, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-qkv-a-2d}
+  - {M: 4096, N: 7168, K: 2048, SA: [4096, 16], SB: [56, 16], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-down-2d}
+  - {M: 4096, N: 4096, K: 7168, SA: [4096, 56], SB: [32, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-mlp-up-2d}
+  - {M: 4096, N: 7168, K: 16384, SA: [4096, 128], SB: [56, 128], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-o-proj-2d}
+  - {M: 4096, N: 24576, K: 1536, SA: [4096, 12], SB: [192, 12], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-q-b-2d}
+  - {M: 1, N: 7168, K: 2048, SA: [1, 16], SB: [56, 16], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-m1-down-2d}
   - {M: 128, N: 2112, K: 7168, SA: [1, 1], SB: [1, 1], some: [bias], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-qkv-a-bias}
   - {M: 128, N: 2112, K: 7168, SA: [1, 1], SB: [1, 1], out_dtype: float16, dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-qkv-a}
   - {M: 128, N: 2112, K: 7168, SA: [128, 56], SB: [2112, 56], out_dtype: float16, dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-qkv-a-blk}

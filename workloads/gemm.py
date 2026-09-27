@@ -72,12 +72,18 @@ class GemmFp8Workload(WorkloadBase):
     def from_call(cls, call: Any) -> "GemmFp8Workload":
         """The workload of one manifest call of ``GemmFp8FwdOp``."""
         ix = call.ix
+        if tuple(ix["SA"]) == (1, 1):
+            scale_mode = "per_tensor"
+        elif tuple(ix["SB"]) == (ix["N"], -(-ix["K"] // 128)):
+            scale_mode = "block128"
+        else:
+            scale_mode = "block128x128"
         return cls(
             ix["M"],
             ix["N"],
             ix["K"],
             getattr(torch, ix["T"]),
-            "per_tensor" if tuple(ix["SA"]) == (1, 1) else "block128",
+            scale_mode,
             out_dtype=getattr(torch, ix["out_dtype"]),
             bias=call.present("bias"),
         )
@@ -89,6 +95,10 @@ class GemmFp8Workload(WorkloadBase):
             if self.k % 128 != 0:
                 raise ValueError("block128 FP8 workloads require k divisible by 128")
             return (self.m, self.k // 128), (self.n, self.k // 128)
+        if self.scale_mode == "block128x128":
+            if self.k % 128 != 0:
+                raise ValueError("block128x128 FP8 workloads require k divisible by 128")
+            return (self.m, self.k // 128), (-(-self.n // 128), self.k // 128)
         raise ValueError(f"unknown FP8 GEMM scale_mode {self.scale_mode!r}")
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
@@ -107,12 +117,18 @@ class GemmFp8Workload(WorkloadBase):
         return a, b, scale_a, scale_b
 
     def _expand_scale(self, scale: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
+        """One scale per element of the ``[rows, cols]`` operand it multiplies.
+
+        A scale grid is per tensor, per 1x128 block along ``cols``, or per 128x128 block.
+        """
         if tuple(scale.shape) == (1, 1):
             return scale.expand(rows, cols)
         scale_cols = (cols + 127) // 128
-        if tuple(scale.shape) != (rows, scale_cols):
-            raise ValueError(f"unsupported FP8 scale shape {tuple(scale.shape)} for {(rows, cols)}")
-        return scale.repeat_interleave(128, dim=1)[:, :cols]
+        if tuple(scale.shape) == (rows, scale_cols):
+            return scale.repeat_interleave(128, dim=1)[:, :cols]
+        if tuple(scale.shape) == ((rows + 127) // 128, scale_cols):
+            return scale.repeat_interleave(128, dim=0).repeat_interleave(128, dim=1)[:rows, :cols]
+        raise ValueError(f"unsupported FP8 scale shape {tuple(scale.shape)} for {(rows, cols)}")
 
     def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
         a, b, scale_a, scale_b = inputs[:4]

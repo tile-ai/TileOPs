@@ -147,6 +147,7 @@ class _GemmFp8Kernel(Kernel):
             call.out_dtype,
             tune=call.tune,
             device_index=index,
+            b_scale_rows=128 if call.block_scale_grid == "1d2d" else 1,
         )
 
     def __init__(
@@ -159,8 +160,10 @@ class _GemmFp8Kernel(Kernel):
         config: Optional[dict] = None,
         tune: bool = False,
         device_index: Optional[int] = None,
+        b_scale_rows: int = 1,
     ) -> None:
         super().__init__(device_index=device_index)
+        self.b_scale_rows = b_scale_rows
         self.m = m
         self.n = n
         self.k = k
@@ -183,9 +186,16 @@ class _GemmFp8Kernel(Kernel):
                 self.BLOCK_SCALED,
                 has_bias=False,
                 sm_count=self.sm_count,
+                b_scale_rows=self.b_scale_rows,
             )
         return _gemm_fp8_kernel(
-            self.m, self.n, self.k, self.dtype_str, self.out_dtype_str, self.BLOCK_SCALED
+            self.m,
+            self.n,
+            self.k,
+            self.dtype_str,
+            self.out_dtype_str,
+            self.BLOCK_SCALED,
+            b_scale_rows=self.b_scale_rows,
         )
 
     def _run_split_k(
@@ -211,6 +221,7 @@ class _GemmFp8Kernel(Kernel):
             tile_config["block_n"],
             tile_config["num_stages"],
             tile_config["group_size_m"],
+            self.b_scale_rows,
         )
         slices = torch.empty((split_k, self.m, self.n), dtype=torch.float32, device=a.device)
         c = torch.empty((self.m, self.n), dtype=self.out_dtype, device=a.device)
@@ -270,6 +281,7 @@ class _GemmFp8Kernel(Kernel):
                     self.BLOCK_SCALED,
                     has_bias=True,
                     sm_count=self.sm_count,
+                    b_scale_rows=self.b_scale_rows,
                 )
             return builder(**tile_config)(a, b, scale_a, scale_b, self._bias_operand(bias, a))
         compiled = _gemm_fp8_kernel(
@@ -280,6 +292,7 @@ class _GemmFp8Kernel(Kernel):
             self.out_dtype_str,
             self.BLOCK_SCALED,
             has_bias=bias is not None,
+            b_scale_rows=self.b_scale_rows,
         )(**self.config)
         if bias is not None:
             return compiled(a, b, scale_a, scale_b, bias)
@@ -297,14 +310,18 @@ class GemmFp8TensorScaleKernel(_GemmFp8Kernel):
 
 
 class GemmFp8BlockScaleKernel(_GemmFp8Kernel):
-    """FP8 NT GEMM for block128 scale grids; each K-step's partial is scaled and folded in."""
+    """FP8 NT GEMM for block128 scale grids; each K-step's partial is scaled and folded in.
+
+    Serves ``scale_b`` per row and per 128x128 block alike, on every shape, bias and
+    output dtype the op admits, so it runs wherever no specialised block kernel does.
+    """
 
     BLOCK_SCALED = True
+    general = True
 
     @classmethod
     def applies(cls, call: GemmCall) -> bool:
-        scale_k = (call.k + 127) // 128
-        return call.scale_a_shape == (call.m, scale_k) and call.scale_b_shape == (call.n, scale_k)
+        return call.block_scale_grid is not None
 
 
 @functools.lru_cache(maxsize=32)
@@ -320,6 +337,7 @@ def _fp8_ws_splitk_pair(
     block_n: int,
     num_stages: int,
     group_size_m: int,
+    b_scale_rows: int = 1,
 ) -> tuple[Callable, Callable]:
     """The compiled (mainloop, reduce) pair for one split-K configuration.
 
@@ -327,7 +345,15 @@ def _fp8_ws_splitk_pair(
     first is already draining.
     """
     mainloop = _gemm_fp8_ws_splitk_kernel(
-        m, n, k, dtype, out_dtype, block_scaled, has_bias, split_k=split_k
+        m,
+        n,
+        k,
+        dtype,
+        out_dtype,
+        block_scaled,
+        has_bias,
+        split_k=split_k,
+        b_scale_rows=b_scale_rows,
     )(block_n, num_stages, group_size_m)
     return mainloop, _splitk_reduce_kernel(split_k, m, n, out_dtype)()
 
@@ -341,6 +367,7 @@ def _gemm_fp8_kernel(
     out_dtype: str,
     block_scaled: bool,
     has_bias: bool = False,
+    b_scale_rows: int = 1,
 ) -> Callable:
     accum_dtype = "float"
 
@@ -365,7 +392,7 @@ def _gemm_fp8_kernel(
                 raise ValueError(f"128 must be divisible by block_k, got {block_k}")
         scale_k = (k + 127) // 128 if block_scaled else 1
         scale_a_shape = (m, scale_k) if block_scaled else (1, 1)
-        scale_b_shape = (n, scale_k) if block_scaled else (1, 1)
+        scale_b_shape = (-(-n // b_scale_rows), scale_k) if block_scaled else (1, 1)
 
         @T.prim_func
         def _gemm_fp8_main(
@@ -425,7 +452,7 @@ def _gemm_fp8_kernel(
                         for j in T.Parallel(block_n):
                             scale_b_local[j] = T.if_then_else(
                                 n_start + j < n,
-                                scale_b[n_start + j, scale_idx],
+                                scale_b[(n_start + j) // b_scale_rows, scale_idx],
                                 0.0,
                             )
                         T.clear(partial)
@@ -516,7 +543,7 @@ def _gemm_fp8_kernel(
                         for j in T.Parallel(block_n):
                             scale_b_local[j] = T.if_then_else(
                                 n_start + j < n,
-                                scale_b[n_start + j, scale_idx],
+                                scale_b[(n_start + j) // b_scale_rows, scale_idx],
                                 0.0,
                             )
                         T.clear(partial)
@@ -585,8 +612,13 @@ def _fp8_ws_stage(
     n: int,
     block_n: int,
     block_scaled: bool,
+    b_scale_rows: int,
 ):
-    """One K-step of the producer: the step's three TMA boxes and its two scale vectors."""
+    """One K-step of the producer: the step's three TMA boxes and its two scale vectors.
+
+    ``b_scale_rows`` is how many rows of ``b`` one ``scale_b`` row covers: 1 for a
+    per-row grid, 128 for a per-128x128-block grid.
+    """
     half_m = _FP8_WS_HALF_M
     block_m = _FP8_WS_BLOCK_M
     ks = kb * _FP8_WS_BLOCK_K
@@ -609,7 +641,7 @@ def _fp8_ws_stage(
         for i in T.Parallel(block_m):
             sa_stage[slot, i] = scale_a[T.min(m_start + i, m - 1), kb]
         for j in T.Parallel(block_n):
-            sb_stage[slot, j] = scale_b[T.min(n_start + j, n - 1), kb]
+            sb_stage[slot, j] = scale_b[T.min(n_start + j, n - 1) // b_scale_rows, kb]
         T.fence_proxy_async()
     T.barrier_arrive(ab_full[slot])
 
@@ -745,6 +777,7 @@ def _gemm_fp8_ws_kernel(
     has_bias: bool,
     *,
     sm_count: int,
+    b_scale_rows: int = 1,
 ) -> Callable:
     """Warp-specialized FP8 NT GEMM for SM90: 1 producer + 2 consumer warpgroups.
 
@@ -775,6 +808,8 @@ def _gemm_fp8_ws_kernel(
         dtype: FP8 operand dtype string.
         out_dtype: Output dtype string.
         block_scaled: True for block128 scale grids, False for per-tensor scalars.
+        b_scale_rows: Rows of ``B`` one ``scale_b`` row covers under block128
+            scaling: 1 for a per-row grid, 128 for a per-128x128-block grid.
         has_bias: Whether the compiled function takes a ``[n]`` bias operand.
         sm_count: Persistent grid width — the device SM count. Part of the cache
             key so a kernel built for one GPU is never reused on another.
@@ -807,7 +842,7 @@ def _gemm_fp8_ws_kernel(
         max_waves = -(-total_tiles // grid) + 1
         k_iters = -(-k // block_k)
         scale_a_shape = (m, scale_k) if block_scaled else (1, 1)
-        scale_b_shape = (n, scale_k) if block_scaled else (1, 1)
+        scale_b_shape = (-(-n // b_scale_rows), scale_k) if block_scaled else (1, 1)
         bias_shape = (n,) if has_bias else (1,)
         stage_rows = num_stages if block_scaled else 1
         stage_store = m > half_m
@@ -901,6 +936,7 @@ def _gemm_fp8_ws_kernel(
                                     n=n,
                                     block_n=block_n,
                                     block_scaled=block_scaled,
+                                    b_scale_rows=b_scale_rows,
                                 )
                                 gi_prod = gi_prod + 1
 
@@ -1080,6 +1116,7 @@ def _gemm_fp8_ws_splitk_kernel(
     has_bias: bool,
     *,
     split_k: int,
+    b_scale_rows: int = 1,
 ) -> Callable:
     """Split-K variant of the warp-specialized FP8 mainloop (NT).
 
@@ -1101,6 +1138,8 @@ def _gemm_fp8_ws_splitk_kernel(
         dtype: FP8 operand dtype string.
         out_dtype: Output dtype string, which the bias operand also carries.
         block_scaled: True for block128 scale grids, False for per-tensor scalars.
+        b_scale_rows: Rows of ``B`` one ``scale_b`` row covers under block128
+            scaling: 1 for a per-row grid, 128 for a per-128x128-block grid.
         has_bias: Whether the compiled function takes a ``[n]`` bias operand.
         split_k: Number of K slices; must divide the block128 K-tile count evenly.
 
@@ -1136,7 +1175,7 @@ def _gemm_fp8_ws_splitk_kernel(
         total_tiles = num_pid_m * num_pid_n
         k_iters = k_iters_total // split_k
         scale_a_shape = (m, scale_k) if block_scaled else (1, 1)
-        scale_b_shape = (n, scale_k) if block_scaled else (1, 1)
+        scale_b_shape = (-(-n // b_scale_rows), scale_k) if block_scaled else (1, 1)
         stage_rows = num_stages if block_scaled else 1
         bias_shape = (n,) if has_bias else (1,)
 
@@ -1216,6 +1255,7 @@ def _gemm_fp8_ws_splitk_kernel(
                             n=n,
                             block_n=block_n,
                             block_scaled=block_scaled,
+                            b_scale_rows=b_scale_rows,
                         )
 
                 elif tx < 256:

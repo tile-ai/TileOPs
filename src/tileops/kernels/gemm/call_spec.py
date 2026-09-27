@@ -35,12 +35,31 @@ class GemmCall(CallSpec):
     dtype: Optional[torch.dtype] = None
     trans_a: bool = False
     trans_b: bool = False
-    # FP8 only: the scale grids separate the two kernels, out_dtype builds both.
+    # FP8 only: the scale grids and the bias separate the kernels, out_dtype builds them.
     scale_a_shape: Optional[tuple] = None
     scale_b_shape: Optional[tuple] = None
     out_dtype: Optional[torch.dtype] = None
+    has_bias: bool = False
     # W4A16 only: the dequantization group its kernels are compiled for.
     group_size: Optional[int] = None
+
+    @property
+    def block_scale_grid(self) -> Optional[Literal["1d1d", "1d2d"]]:
+        """Which block128 grid the FP8 scales form, or ``None`` for any other pair.
+
+        Both take ``scale_a`` per 1x128 block, ``[M, ceil(K/128)]``. ``"1d1d"`` takes
+        ``scale_b`` the same way, ``[N, ceil(K/128)]``; ``"1d2d"`` takes it per 128x128
+        block, ``[ceil(N/128), ceil(K/128)]``. At ``N == 1`` the two grids coincide and
+        mean the same product; that shape reads as ``"1d1d"``.
+        """
+        scale_k = -(-self.k // 128)
+        if self.scale_a_shape != (self.m, scale_k):
+            return None
+        if self.scale_b_shape == (self.n, scale_k):
+            return "1d1d"
+        if self.scale_b_shape == (-(-self.n // 128), scale_k):
+            return "1d2d"
+        return None
 
     @property
     def gemv_mode(self) -> Optional[Literal["lhs_row", "rhs_col"]]:

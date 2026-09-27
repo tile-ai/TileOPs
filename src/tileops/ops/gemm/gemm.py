@@ -12,6 +12,7 @@ from tileops.kernels.gemm.dense import (
     GemmTmaKernel,
     GemvKernel,
 )
+from tileops.kernels.gemm.fp8_1d2d import GemmFp81D2DFwdKernel
 from tileops.kernels.gemm.w4a16 import _LAYOUT, GemmW4A16Kernel
 from tileops.kernels.gemm.w4a16_repack import W4A16RepackKernel
 from tileops.kernels.kernel_base import Kernel
@@ -129,8 +130,9 @@ class GemmFp8FwdOp(Op):
 
     ``a`` is $[M \\times K]$ and ``b`` is $[N \\times K]$, the operand ``torch._scaled_mm``
     receives as ``b.T``. ``scale_a`` and ``scale_b`` are both per-tensor $[1 \\times 1]$
-    scales, or both per 1x128 block along K: $[M \\times \\lceil K/128 \\rceil]$ and
-    $[N \\times \\lceil K/128 \\rceil]$.
+    scales, or ``scale_a`` is per 1x128 block along K, $[M \\times \\lceil K/128 \\rceil]$,
+    with ``scale_b`` per 1x128 block, $[N \\times \\lceil K/128 \\rceil]$, or per 128x128
+    block, $[\\lceil N/128 \\rceil \\times \\lceil K/128 \\rceil]$.
     """
 
     compile_boundary: ClassVar[bool] = True
@@ -138,6 +140,7 @@ class GemmFp8FwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gemm_fp8_tensor_scale_kernel": GemmFp8TensorScaleKernel,
         "gemm_fp8_block_scale_kernel": GemmFp8BlockScaleKernel,
+        "gemm_fp8_1d2d_kernel": GemmFp81D2DFwdKernel,
     }
 
     def __init__(
@@ -176,9 +179,10 @@ class GemmFp8FwdOp(Op):
             a: Left operand, $[M \\times K]$, ``torch.float8_e4m3fn``.
             b: Right operand, $[N \\times K]$, same dtype as ``a``.
             scale_a: ``torch.float32`` scales for ``a``: per-tensor $[1 \\times 1]$, or
-                block128 $[M \\times \\lceil K/128 \\rceil]$.
-            scale_b: The same for ``b``: $[1 \\times 1]$ or
-                $[N \\times \\lceil K/128 \\rceil]$. Both scales take the same form.
+                per 1x128 block $[M \\times \\lceil K/128 \\rceil]$.
+            scale_b: ``torch.float32`` scales for ``b``: $[1 \\times 1]$ when ``scale_a`` is,
+                else per 1x128 block $[N \\times \\lceil K/128 \\rceil]$ or per 128x128
+                block $[\\lceil N/128 \\rceil \\times \\lceil K/128 \\rceil]$.
             bias: Optional bias, $[N]$, in ``out_dtype``.
 
         Returns:
@@ -217,6 +221,7 @@ class GemmFp8FwdOp(Op):
             scale_a_shape=tuple(scale_a.shape),
             scale_b_shape=tuple(scale_b.shape),
             out_dtype=self.out_dtype,
+            has_bias=bias is not None,
             device=a.device,
             tune=self.tune,
         )
