@@ -244,6 +244,31 @@ def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) 
     test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
 
 
+@pytest.mark.parametrize(
+    "op_cls, ref_fn, shape",
+    [
+        pytest.param(SoftmaxFwdOp, F.softmax, (8, 1000), marks=pytest.mark.smoke, id="single"),
+        pytest.param(
+            LogSoftmaxFwdOp, F.log_softmax, (512, 40000), marks=pytest.mark.full, id="tiled"
+        ),
+        pytest.param(
+            LogSoftmaxFwdOp, F.log_softmax, (64, 40000), marks=pytest.mark.full, id="split"
+        ),
+        pytest.param(
+            SoftmaxFwdOp, F.softmax, (4, 128256), marks=pytest.mark.full, id="fused-split"
+        ),
+    ],
+)
+def test_softmax_dtype_widens_in_kernel(op_cls, ref_fn, shape: tuple) -> None:
+    """A float32 ``dtype`` on a bfloat16 input matches torch on every kernel path."""
+    x = torch.randn(shape, device="cuda").to(torch.bfloat16)
+    y = op_cls(dim=-1, dtype=torch.float32)(x)
+    assert y.dtype == torch.float32
+    # Relative only: softmax values sit below any absolute floor that would let a
+    # bfloat16-rounded output pass.
+    torch.testing.assert_close(y, ref_fn(x, dim=-1, dtype=torch.float32), rtol=1e-4, atol=0)
+
+
 # LogSumExp — spec-conformant interface (shape, dim, keepdim, dtype)
 
 

@@ -79,9 +79,15 @@ class _SoftmaxBaseOp(Op):
         return 0 if rank in (0, 1, 3) else 1
 
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Resolve the kernel and launch, inside the operator; closed forms need no kernel."""
-        if self.dtype is not None and x.dtype != self.dtype:
-            x = x.to(self.dtype)
+        """Resolve the kernel and launch, inside the operator; closed forms need no kernel.
+
+        The kernel computes in float32, and every admitted input dtype widens to float32
+        exactly, so a float32 ``dtype`` is not cast first: the kernel reads the input as
+        stored and writes float32. Any other cast runs first, as in torch.
+        """
+        out_dtype = x.dtype if self.dtype is None else self.dtype
+        if x.ndim == 0 or x.numel() == 0 or out_dtype != torch.float32:
+            x = x.to(out_dtype)
         axis = self._axis(x.ndim)
         if x.ndim == 0:
             # One element normalizes to probability one; NaN and inf propagate as in torch.
@@ -92,7 +98,7 @@ class _SoftmaxBaseOp(Op):
         x = x.contiguous()
         n = x.shape[axis]
         m = x.numel() // n
-        call = (tuple(x.shape), axis, x.dtype, x.device.index, m, n)
+        call = (tuple(x.shape), axis, x.dtype, out_dtype, x.device.index, m, n)
         return self.kernel_for("softmax", (x,), call)(x)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
@@ -100,10 +106,17 @@ class _SoftmaxBaseOp(Op):
 
         The kernel owns the permute, so the whole shape decides which kernel it is.
         """
-        _shape, axis, dtype, device_index, m, n = call
+        _shape, axis, dtype, out_dtype, device_index, m, n = call
         cls = self.kernel_map["softmax_fwd"]
         return call, lambda: cls(
-            m, n, self._op_kind, dtype, norm_axis=axis, tune=self.tune, device_index=device_index
+            m,
+            n,
+            self._op_kind,
+            dtype,
+            norm_axis=axis,
+            tune=self.tune,
+            device_index=device_index,
+            out_dtype=out_dtype,
         )
 
 
