@@ -438,12 +438,6 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
     return _func
 
 
-# Custom ops (torch.compile compatible wrappers)
-
-
-# Use distinct op names so paged and non-paged (mha_decode.py) do not overwrite
-# each other in torch.library; otherwise the first-registered impl "changes" the
-# registry and later parametrized tests can hit the wrong implementation.
 def _mha_decode_paged_no_split_run(
     batch: int,
     heads: int,
@@ -466,28 +460,6 @@ def _mha_decode_paged_no_split_run(
     return _mha_decode_no_split_kernel(
         batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype
     )(block_M, block_N, num_stages, threads)(Q, K, V, real_seqlen_kv, block_table)
-
-
-def _(
-    batch: int,
-    heads: int,
-    seqlen_q: int,
-    seqlen_kv: int,
-    dim: int,
-    page_size: int,
-    is_causal: bool,
-    dtype: str,
-    block_M: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    real_seqlen_kv: torch.Tensor,
-    block_table: torch.Tensor,
-) -> torch.Tensor:
-    return torch.empty_like(Q)
 
 
 def _mha_decode_paged_split_run(
@@ -518,32 +490,6 @@ def _mha_decode_paged_split_run(
     )(block_M, block_N, num_split, num_stages, threads)(
         Q, K, V, real_seqlen_kv, block_table, glse, Output_partial, acc_split_length
     )
-
-
-def _(
-    batch: int,
-    heads: int,
-    seqlen_q: int,
-    seqlen_kv: int,
-    dim: int,
-    page_size: int,
-    is_causal: bool,
-    dtype: str,
-    block_M: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    num_split: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    real_seqlen_kv: torch.Tensor,
-    block_table: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor,
-    acc_split_length: torch.Tensor,
-) -> torch.Tensor:
-    return torch.empty_like(Q)
 
 
 def paged_decode_entry(cls: type, call: AttentionCall) -> Entry:

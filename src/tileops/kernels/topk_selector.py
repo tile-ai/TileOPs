@@ -272,10 +272,6 @@ def _topk_selector_run(
     )(index_score, starts, ends)
 
 
-def _(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, *inputs) -> None:
-    return torch.empty([batch, seq_len, kv_group, topk], device=inputs[0].device, dtype=torch.int32)
-
-
 class TopkSelectorKernel(Kernel):
     """Per-row top-k index selection over an $[B \\times S \\times S\\_kv \\times G]$ score tensor.
 

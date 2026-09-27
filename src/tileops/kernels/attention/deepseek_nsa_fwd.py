@@ -1,5 +1,5 @@
 import functools
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import tilelang
 import torch
@@ -194,26 +194,6 @@ def _nsa_fwd_varlen_run(
         dtype,
         accum_dtype,
     )(threads)(q, k, v, block_indices, block_counts, offsets, token_indices)
-
-
-def _(
-    batch: int,
-    heads: int,
-    c_seq_len: int,
-    dim: int,
-    is_causal: bool,
-    scale: float,
-    block_size: int,
-    groups: int,
-    selected_blocks: int,
-    dtype: str,
-    accum_dtype: str,
-    threads: int,
-    *inputs: tuple[Any],
-) -> torch.Tensor:
-    # attention output shape [c_seq_len, heads, dim]
-    _ = (batch, is_causal, scale, block_size, groups, selected_blocks, dtype, accum_dtype, threads)
-    return torch.empty([c_seq_len, heads, dim], dtype=inputs[0].dtype, device=inputs[0].device)
 
 
 class NSAFwdVarlenKernel(Kernel):

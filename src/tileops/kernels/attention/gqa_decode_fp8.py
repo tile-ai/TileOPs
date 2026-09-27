@@ -269,26 +269,6 @@ def _gqa_dense_fp8_decode_ctx_run(
     return kernel(q, k, v, q_descale, k_descale, v_descale, glse, output_partial)
 
 
-def _(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    dim: int,
-    out_dtype: str,
-    sm_scale: float,
-    softcap: float,
-    block_m: int,
-    block_n: int,
-    ctx_splits: int,
-    threads: int,
-    q: torch.Tensor,
-    *args,
-) -> torch.Tensor:
-    del heads_kv, sm_scale, softcap, block_m, block_n, ctx_splits, threads, args
-    dtype = torch.float16 if out_dtype == "float16" else torch.bfloat16
-    return torch.empty((batch, 1, heads, dim), dtype=dtype, device=q.device)
-
-
 class GQADenseFP8DecodeKernel(Kernel):
     """Context-split native-FP8 Dense decode specialization."""
 

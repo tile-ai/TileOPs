@@ -2545,24 +2545,6 @@ def _gemm_coop2s_kernel(
     return _gemm_coop2s_func
 
 
-def _(
-    m: int,
-    n: int,
-    k: int,
-    trans_a: bool,
-    trans_b: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    panel_size: int,
-    split_k: int,
-    *inputs: tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    return torch.empty((m, n), dtype=inputs[0].dtype, device=inputs[0].device)
-
-
 class GemmTmaKernel(Kernel):
     """Dense GEMM kernel family: hand-written SM90 implementations.
 
@@ -2883,18 +2865,6 @@ def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> 
     return _gemm_small_batch_func
 
 
-def _(
-    n: int,
-    k: int,
-    dtype: str,
-    block_n: int,
-    reduce_threads: int,
-    num_stages: int,
-    *inputs: tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    return torch.empty((n,), dtype=inputs[0].dtype, device=inputs[0].device)
-
-
 _TILE_K = 8
 _SMEM_CAP = 224 * 1024
 
@@ -3177,24 +3147,6 @@ def _gemm_basic_kernel(
     return _gemm_basic_func
 
 
-def _(
-    m: int,
-    n: int,
-    k: int,
-    trans_a: bool,
-    trans_b: bool,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    a: torch.Tensor,
-    b: torch.Tensor,
-) -> torch.Tensor:
-    return torch.empty((m, n), dtype=a.dtype, device=a.device)
-
-
 class GemmCpAsyncKernel(Kernel):
     """Dense GEMM kernel: pipelined, architecture-agnostic (sm80+).
 
@@ -3333,8 +3285,6 @@ class GemmCpAsyncKernel(Kernel):
         ]
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        # Call the compiled JIT directly (cf. BmmKernel); the torch custom-op
-        # is retained only for torch.compile compatibility.
         if not hasattr(self, "_compiled_kernel"):
             jit_config = {k: v for k, v in self.config.items() if k != "pass_configs"}
             self._compiled_kernel = self.kernel(**jit_config)

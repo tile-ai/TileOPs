@@ -1,6 +1,6 @@
 import functools
 import itertools
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -369,30 +369,6 @@ def _gqa_prefill_paged_with_kv_cache_fwd_run(
     )(block_m, block_n, num_stages, threads)(
         q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table, max_seqlen_q
     )
-
-
-def _(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    total_q: int,
-    physical_tokens: int,
-    max_pages_per_req: int,
-    page_size: int,
-    dim: int,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    num_stages: int,
-    threads: int,
-    max_seqlen_q: int,
-    *inputs: Tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    fake_o = torch.empty_like(inputs[0])
-    return fake_o
 
 
 class GQAPrefillPagedWithKVCacheFwdKernel(PagedPrefillKernel):
@@ -820,30 +796,6 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_run(
         block_table,
         max_seqlen_q,
     )
-
-
-def _(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    total_q: int,
-    physical_tokens: int,
-    max_pages_per_req: int,
-    page_size: int,
-    dim: int,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    num_stages: int,
-    threads: int,
-    max_seqlen_q: int,
-    *inputs: Tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    fake_o = torch.empty_like(inputs[0])
-    return fake_o
 
 
 class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
@@ -1449,32 +1401,6 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_run(
         sin_table,
         max_seqlen_q,
     )
-
-
-def _(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    total_q: int,
-    physical_tokens: int,
-    max_pages_per_req: int,
-    page_size: int,
-    dim: int,
-    max_position: int,
-    rotary_dim: int,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    num_stages: int,
-    threads: int,
-    max_seqlen_q: int,
-    *inputs: Tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    fake_o = torch.empty_like(inputs[0])
-    return fake_o
 
 
 class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):

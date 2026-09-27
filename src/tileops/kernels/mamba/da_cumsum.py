@@ -196,30 +196,6 @@ def _da_cumsum_fwd_kernel(
     return kernel_func
 
 
-def _(
-    batch: int,
-    num_chunks: int,
-    chunk_len: int,
-    n_heads: int,
-    seq_len: int,
-    dtype: str,
-    threads: int,
-    dt_softplus: bool,
-    has_dt_bias: bool,
-    dt_min: float,
-    dt_max: float,
-    block_h: int,
-    dt: torch.Tensor,
-    A: torch.Tensor,
-    dt_bias: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
-    torch_dtype = dtype_map.get(dtype, torch.float16)
-    dt_out = dt.new_empty((batch, n_heads, num_chunks, chunk_len), dtype=torch_dtype)
-    dA_cumsum = dt.new_empty((batch, n_heads, num_chunks, chunk_len), dtype=torch.float32)
-    return dt_out, dA_cumsum
-
-
 class DaCumsumFwdKernel(Kernel):
     """Mamba-2 dA_cumsum forward kernel.
 

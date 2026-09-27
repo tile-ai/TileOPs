@@ -584,10 +584,6 @@ def _sparse_mla_run(
     )(block_i, threads)(q, kv, indices)
 
 
-def _(batch: int, seq_len: int, heads: int, dim: int, *inputs) -> None:
-    return torch.empty([batch, seq_len, heads, dim], device=inputs[0].device, dtype=inputs[0].dtype)
-
-
 @functools.lru_cache(maxsize=32)
 def _sparse_mla_basic_kernel(
     batch: int,
@@ -837,10 +833,6 @@ def _sparse_mla_basic_run(
         cp0,
         dtype,
     )(block_i, threads, num_stages)(q, kv, indices)
-
-
-def _(batch: int, seq_len: int, heads: int, dim: int, *inputs) -> None:
-    return torch.empty([batch, seq_len, heads, dim], device=inputs[0].device, dtype=inputs[0].dtype)
 
 
 class SparseMlaBasicKernel(Kernel):

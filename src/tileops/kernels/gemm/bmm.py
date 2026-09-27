@@ -635,23 +635,6 @@ def _bmm_fp8_transpose_kernel(batch: int, rows: int, cols: int, dtype: str) -> C
     return _bmm_fp8_transpose_func
 
 
-def _(
-    batch: int,
-    m: int,
-    n: int,
-    k: int,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    a: torch.Tensor,
-    b: torch.Tensor,
-) -> torch.Tensor:
-    return torch.empty((batch, m, n), dtype=a.dtype, device=a.device)
-
-
 class BmmKernel(Kernel):
     """Batched dense GEMM kernel (SM90).
 
@@ -730,8 +713,6 @@ class BmmKernel(Kernel):
         return [c for c in configs if self.k % c["block_k"] == 0]
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        # Call the compiled JIT directly (cf. GemmTmaKernel); the torch custom-op
-        # is retained only for torch.compile compatibility.
         if not hasattr(self, "_compiled_kernel"):
             self._compiled_kernel = self.kernel(**self.config)
         return self._compiled_kernel(a, b)

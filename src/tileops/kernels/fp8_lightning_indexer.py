@@ -231,29 +231,6 @@ def _fp8_lightning_indexer_run(
         clean_logits_(threads=threads)(Logits, CuSeqLenKS, CuSeqLenKE)
 
 
-def _(
-    batch: int,
-    seq_len: int,
-    heads: int,
-    index_dim: int,
-    seq_len_kv: int,
-    kv_group: int,
-    clean_logits: bool,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    block_Q: int,
-    IndexQ: torch.Tensor,
-    IndexK: torch.Tensor,
-    IndexKScale: torch.Tensor,
-    Logits: torch.Tensor,
-    Weights: torch.Tensor,
-    CuSeqLenKS: torch.Tensor,
-    CuSeqLenKE: torch.Tensor,
-) -> None:
-    return None
-
-
 class FP8LightningIndexerKernel(Kernel):
     """FP8 lightning indexer: per-query logits over an fp8-quantized index cache.
 

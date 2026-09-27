@@ -387,36 +387,6 @@ def _deltanet_bwd_run(
     return dq, dk, dv, dbeta
 
 
-def _deltanet_bwd_run_fake(
-    batch: int,
-    head: int,
-    seq_len: int,
-    chunk_size: int,
-    dim_k: int,
-    dim_v: int,
-    dtype: str,
-    num_stages: int,
-    threads: int,
-    parallel_threads: int,
-    recurrence_threads: int,
-    do: torch.Tensor,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    beta: torch.Tensor,
-    S: torch.Tensor,
-    Aw: torch.Tensor,
-    Au: torch.Tensor,
-    w: torch.Tensor,
-    u: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    dq = torch.empty(batch, head, seq_len, dim_k, dtype=q.dtype, device=q.device)
-    dk = torch.empty_like(dq)
-    dv = torch.empty(batch, head, seq_len, dim_v, dtype=v.dtype, device=v.device)
-    dbeta = torch.empty(batch, head, seq_len, dtype=beta.dtype, device=beta.device)
-    return dq, dk, dv, dbeta
-
-
 class DeltaNetBwdKernel(Kernel):
     """DeltaNet backward kernel.
 

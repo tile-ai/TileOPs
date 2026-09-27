@@ -226,26 +226,6 @@ def _ssd_decode_kernel(
     return kernel_func
 
 
-def _(
-    batch: int,
-    n_heads: int,
-    d_head: int,
-    d_state: int,
-    n_groups: int,
-    dtype: str,
-    block_p: int,
-    block_n: int,
-    threads: int,
-    A: torch.Tensor,
-    dt: torch.Tensor,
-    x: torch.Tensor,
-    B_in: torch.Tensor,
-    C_in: torch.Tensor,
-    state: torch.Tensor,
-) -> torch.Tensor:
-    return dt.new_empty((batch, n_heads, d_head), dtype=torch.float32)
-
-
 class SSDDecodeKernel(Kernel):
     """Mamba-2 SSD recurrent decode (step) kernel.
 

@@ -311,9 +311,6 @@ def _mha_decode_paged_ws_kernel(
     return _func
 
 
-# Custom op (torch.compile compatible wrapper)
-
-
 def _mha_decode_paged_ws_run(
     batch: int,
     heads: int,
@@ -334,27 +331,6 @@ def _mha_decode_paged_ws_run(
 ) -> torch.Tensor:
     kernel = _mha_decode_paged_ws_kernel(batch, heads, seqlen_kv, dim, page_size, dtype)
     return kernel(block_N, num_split, stages)(Q, K, V, real_seqlen_kv, block_table, glse, O_partial)
-
-
-def _(
-    batch: int,
-    heads: int,
-    seqlen_kv: int,
-    dim: int,
-    page_size: int,
-    dtype: str,
-    block_N: int,
-    num_split: int,
-    stages: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    real_seqlen_kv: torch.Tensor,
-    block_table: torch.Tensor,
-    glse: torch.Tensor,
-    O_partial: torch.Tensor,
-) -> torch.Tensor:
-    return torch.empty_like(Q)
 
 
 class MHADecodePagedWsKernel(Kernel):

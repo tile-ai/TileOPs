@@ -261,80 +261,6 @@ def _engram_step_kernel(batch, d, d_padded, max_conv_len, conv_kernel_size, dila
     return _func
 
 
-@torch.library.custom_op("tileops::engram_decode", mutates_args=())
-def _engram_decode_wrapped(
-    batch: int,
-    d_mem: int,
-    d: int,
-    max_conv_len: int,
-    conv_kernel_size: int,
-    dilation: int,
-    eps: float,
-    dtype_str: str,
-    block_m: int,
-    block_n: int,
-    block_k: int,
-    num_stages: int,
-    threads: int,
-    step_threads: int,
-    e_t: torch.Tensor,
-    h_t: torch.Tensor,
-    conv_state: torch.Tensor,
-    W_K: torch.Tensor,
-    W_V: torch.Tensor,
-    rms_w_h: torch.Tensor,
-    rms_w_v: torch.Tensor,
-    conv_w: torch.Tensor,
-) -> list[torch.Tensor]:
-    d_padded = align_up(d, ALIGNMENT)
-    kv = torch.empty((2, batch, d_padded), dtype=torch.float32, device=e_t.device)
-    y_t = torch.empty((batch, d_padded), dtype=e_t.dtype, device=e_t.device)
-    new_conv_state = torch.empty(
-        (batch, max_conv_len, d_padded), dtype=e_t.dtype, device=e_t.device
-    )
-    _engram_project_kernel(batch, d_mem, d_padded, max_conv_len, dtype_str)(
-        block_m, block_n, block_k, threads, num_stages
-    )(e_t, W_K, W_V, conv_state, kv, new_conv_state)
-    _engram_step_kernel(
-        batch, d, d_padded, max_conv_len, conv_kernel_size, dilation, eps, dtype_str
-    )(step_threads)(h_t, kv, conv_state, rms_w_h, rms_w_v, conv_w, y_t, new_conv_state)
-    return [y_t, new_conv_state]
-
-
-@_engram_decode_wrapped.register_fake
-def _(
-    batch,
-    d_mem,
-    d,
-    max_conv_len,
-    conv_kernel_size,
-    dilation,
-    eps,
-    dtype_str,
-    block_m,
-    block_n,
-    block_k,
-    num_stages,
-    threads,
-    step_threads,
-    e_t,
-    h_t,
-    conv_state,
-    W_K,
-    W_V,
-    rms_w_h,
-    rms_w_v,
-    conv_w,
-):
-    d_padded = align_up(d, ALIGNMENT)
-    device = e_t.device
-    dt = e_t.dtype
-    return [
-        torch.empty((batch, d_padded), dtype=dt, device=device),
-        torch.empty((batch, max_conv_len, d_padded), dtype=dt, device=device),
-    ]
-
-
 class EngramDecodeKernel(Kernel):
     """Engram fused decode kernel — full single-token pipeline.
 
@@ -506,31 +432,18 @@ class EngramDecodeKernel(Kernel):
             rms_w_h = F.pad(rms_w_h, (0, pad))
             rms_w_v = F.pad(rms_w_v, (0, pad))
             conv_w = F.pad(conv_w, (0, pad))
-        results = _engram_decode_wrapped(
-            self.batch,
-            self.d_mem,
-            self.d,
-            self.max_conv_len,
-            self.conv_kernel_size,
-            self.dilation,
-            self.eps,
-            self.dtype_str,
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["block_k"],
-            self.config["num_stages"],
-            self.config["threads"],
-            self.config["step_threads"],
-            e_t,
-            h_t,
-            conv_state,
-            W_K,
-            W_V,
-            rms_w_h,
-            rms_w_v,
-            conv_w,
+        cfg = self.config
+        kv = torch.empty((2, self.batch, self.d_padded), dtype=torch.float32, device=e_t.device)
+        y_t = torch.empty((self.batch, self.d_padded), dtype=e_t.dtype, device=e_t.device)
+        new_conv_state = torch.empty(
+            (self.batch, self.max_conv_len, self.d_padded), dtype=e_t.dtype, device=e_t.device
+        )
+        self.kernel(
+            cfg["block_m"], cfg["block_n"], cfg["block_k"], cfg["threads"], cfg["num_stages"]
+        )(e_t, W_K, W_V, conv_state, kv, new_conv_state)
+        self.step_jit(cfg["step_threads"])(
+            h_t, kv, conv_state, rms_w_h, rms_w_v, conv_w, y_t, new_conv_state
         )
         if pad:
-            results[0] = results[0][:, : self.d]
-            results[1] = results[1][:, :, : self.d]
-        return results
+            return [y_t[:, : self.d], new_conv_state[:, :, : self.d]]
+        return [y_t, new_conv_state]

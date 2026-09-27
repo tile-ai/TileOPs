@@ -1,5 +1,5 @@
 import functools
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import tilelang
 import torch
@@ -252,31 +252,6 @@ def _nsa_topk_varlen_run(
         dtype,
         accum_dtype,
     )(threads)(q, k_cmp, lse_in, offsets, chunk_offsets, token_indices)
-
-
-def _(
-    seq_num: int,
-    c_seq_len: int,
-    heads: int,
-    dim: int,
-    chunk_num: int,
-    group: int,
-    scale: float,
-    selected_block_num: int,
-    bc: int,
-    bs: int,
-    dtype: str,
-    accum_dtype: str,
-    threads: int,
-    *inputs: tuple[Any],
-) -> torch.Tensor:
-    _ = (seq_num, dim, chunk_num, scale, bc, bs, dtype, accum_dtype, threads)
-    # One int32 block id per token, KV head and kept block: the selection is per KV head.
-    return torch.empty(
-        [c_seq_len, heads // group, selected_block_num],
-        dtype=torch.int32,
-        device=inputs[0].device,
-    )
 
 
 class NSATopkVarlenKernel(Kernel):

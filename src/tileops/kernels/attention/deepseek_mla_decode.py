@@ -650,29 +650,6 @@ def _mla_decode_ws_run(
     )(Q, Q_pe, Kv, K_pe, glse, Output_partial)
 
 
-def _(
-    batch: int,
-    heads: int,
-    kv_head_num: int,
-    seqlen_kv: int,
-    dim: int,
-    pe_dim: int,
-    dtype: str,
-    block_H: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    num_split: int,
-    Q: torch.Tensor,
-    Q_pe: torch.Tensor,
-    Kv: torch.Tensor,
-    K_pe: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor,
-) -> torch.Tensor:
-    return torch.empty((batch, heads, dim), dtype=Q.dtype, device=Q.device)
-
-
 class MLADecodeWsKernel(Kernel):
     supported_archs: list[int] = [90]
 

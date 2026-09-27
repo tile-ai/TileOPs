@@ -254,32 +254,6 @@ def _ssd_chunk_state_fwd_kernel(
     return kernel_func
 
 
-def _(
-    batch: int,
-    num_chunks: int,
-    chunk_len: int,
-    n_heads: int,
-    d_head: int,
-    d_state: int,
-    n_groups: int,
-    has_seq_idx: bool,
-    dtype: str,
-    dt_dtype: str,
-    block_n: int,
-    block_p: int,
-    block_l: int,
-    threads: int,
-    num_stages: int,
-    x: torch.Tensor,
-    Bmat: torch.Tensor,
-    dt: torch.Tensor,
-    dA_cumsum: torch.Tensor,
-    seq_idx: torch.Tensor,
-) -> torch.Tensor:
-    # Output shape: (B, C, H, P, N) matching ssd_minimal bchpn convention
-    return x.new_empty((batch, num_chunks, n_heads, d_head, d_state), dtype=torch.float32)
-
-
 class SSDChunkStateFwdKernel(Kernel):
     """Mamba-2 SSD chunk state forward kernel.
 

@@ -85,14 +85,6 @@ def _fp8_quant_run(
     )
 
 
-def _(batch, seq_len_kv, kv_group, index_dim, in_dtype, threads, block_m, *inputs):
-    return torch.empty(
-        (batch, seq_len_kv, kv_group), dtype=torch.float32, device=inputs[0].device
-    ), torch.empty(
-        (batch, seq_len_kv, kv_group, index_dim), dtype=torch.float8_e4m3fn, device=inputs[0].device
-    )
-
-
 class FP8QuantKernel(Kernel):
     """Per-group fp8 quantization of a $[B \\times S\\_kv \\times G \\times D]$ index tensor.
 
