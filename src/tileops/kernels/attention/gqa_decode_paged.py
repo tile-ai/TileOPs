@@ -444,30 +444,6 @@ def _gqa_decode_paged_no_split_run(
     )(block_H, block_N, num_stages, threads)(Q, K, V, real_seqlen_kv, block_table)
 
 
-def _(
-    batch: int,
-    heads: int,
-    groups: int,
-    seqlen_kv: int,
-    dim: int,
-    page_size: int,
-    max_pages_per_req: int,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_H: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    real_seqlen_kv: torch.Tensor,
-    block_table: torch.Tensor,
-) -> torch.Tensor:
-    return torch.empty_like(Q)
-
-
 def _gqa_decode_paged_split_run(
     batch: int,
     heads: int,
@@ -507,34 +483,6 @@ def _gqa_decode_paged_split_run(
     )(block_H, block_N, num_split, num_stages, threads)(
         Q, K, V, real_seqlen_kv, block_table, glse, Output_partial, acc_split_length
     )
-
-
-def _(
-    batch: int,
-    heads: int,
-    groups: int,
-    seqlen_kv: int,
-    dim: int,
-    page_size: int,
-    max_pages_per_req: int,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_H: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    num_split: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    real_seqlen_kv: torch.Tensor,
-    block_table: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor,
-    acc_split_length: torch.Tensor,
-) -> torch.Tensor:
-    return torch.empty_like(Q)
 
 
 def paged_decode_entry(cls: type, call: AttentionCall) -> Entry:

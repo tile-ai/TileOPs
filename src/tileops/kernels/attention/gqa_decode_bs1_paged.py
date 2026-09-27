@@ -168,32 +168,6 @@ def _gqa_decode_paged_bs1_ctx_run(
     )
 
 
-def _(
-    batch: int,
-    heads: int,
-    groups: int,
-    seqlen_kv: int,
-    dim: int,
-    page_size: int,
-    max_pages_per_req: int,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_M: int,
-    block_N: int,
-    ctx_splits: int,
-    threads: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    real_seqlen_kv: torch.Tensor,
-    block_table: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor,
-) -> torch.Tensor:
-    return torch.empty_like(Q)
-
-
 class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
     """SM90 warp-specialized batch=1 paged GQA decode kernel.
 
