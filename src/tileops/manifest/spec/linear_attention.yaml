@@ -189,8 +189,12 @@ DeltaNetAutogradFwdOp:
   - {B: 2, H: 4, L: 2048, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-2k}
   - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-8k}
   roofline:
-    # The DeltaNet recurrence per token, as DeltaNetDecodeFwdOp counts one step.
-    flops: "2 * B * H * L * (3 * DK * DV + DK)"
+    # The op runs DeltaNetFwdOp's chunked forward, priced as that op prices it.
+    flops: >-
+      B * H * (L // chunk_size) * (6 * chunk_size * DK * DV
+      + 2 * chunk_size * (chunk_size + 1) * (DK + DV)
+      + chunk_size * (chunk_size - 1) * DK + chunk_size * (chunk_size - 1) // 2
+      + chunk_size * (chunk_size * chunk_size - 1) // 3 + chunk_size * (DK + 3 * DV))
   composition:
     kind: composite
     stages:
@@ -282,6 +286,12 @@ DeltaNetBwdOp:
       + chunk_size * (chunk_size - 1) * (4 * DK + DV + 2)
       + 2 * chunk_size * (chunk_size * chunk_size - 1) // 3 + chunk_size * (11 * DK + 6 * DV)
       + 2 * chunk_size)
+    # Aw and Au are read only on the strict-lower triangle of each chunk's C x C block; the
+    # unit diagonal and the zero upper triangle are not data.
+    bytes: >-
+      bytes(do) + bytes(q) + bytes(k) + bytes(v) + bytes(beta) + bytes(S)
+      + (bytes(Aw) + bytes(Au)) * (chunk_size - 1) // (2 * chunk_size)
+      + bytes(w) + bytes(u) + bytes(dq) + bytes(dk) + bytes(dv) + bytes(dbeta)
 
 GLAInferenceFwdOp:
   # One serving contract for equal-length prefill, packed varlen, and decode.
@@ -351,8 +361,13 @@ GLAFwdOp:
   - {B: 2, S: 8192, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-8k}
   - {B: 2, S: 16384, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: train-16k}
   roofline:
-    # The GLA recurrence per token: exp(g), decay, k v^T update, q^T S readout, scale.
-    flops: "B * H * S * (5 * DK * DV + DK + DV)"
+    # The chunked algorithm the op runs, per chunk of C = chunk_size tokens: the gate cumsum
+    # (C * DK), the gate scalings of q and k and the end-of-chunk key decay (9 * C * DK) and
+    # state decay (DK), the causal q k^T, the output from the state and the causal product
+    # with v, and the k^T v state update.
+    flops: >-
+      B * H * (S // chunk_size) * (4 * chunk_size * DK * DV + DK * DV
+      + chunk_size * (chunk_size + 1) * (DK + DV) + 10 * chunk_size * DK + DK)
 
 GLABwdOp:
   # Chunked GLA backward over the forward's per-chunk states h. Gradients are

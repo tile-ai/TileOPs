@@ -416,7 +416,90 @@ class TestBytesOracle:
             o=((2, heads, dim), f16),
         )
         op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(page_size=page)
-        assert self._priced(op, tensors) == (4 * heads * dim * sum(lengths), oracle)
+        # QK and PV (4 * dim) and the softmax (5) per score, a divide per output element.
+        flops = heads * (sum(lengths) * (4 * dim + 5) + len(lengths) * dim)
+        assert self._priced(op, tensors) == (flops, oracle)
+
+    def test_windowed_pools_read_the_positions_some_window_reaches(self):
+        """A stride past the kernel span, or a dilation, leaves input positions no window
+        reads; the case recounts the positions from the row's geometry."""
+        from tileops.perf.formulas import pool_roofline
+
+        for op_name in ("AvgPool1dFwdOp", "MaxPool1dFwdOp", "MaxPool1dIndicesFwdOp"):
+            for row in _manifest_rows(op_name):
+                call = _manifest_call(op_name, row)
+                ix = call.ix
+                read = {
+                    o * ix["sW"] - ix["pW"] + j * ix.get("dW", 1)
+                    for o in range(ix["L_out"])
+                    for j in range(ix["kW"])
+                } & set(range(ix["L_in"]))
+                dtype = getattr(torch, call.tensors["input"][1])
+                out = ((ix["N"], ix["C"], ix["L_out"]), dtype)
+                tensors = {"input": ((ix["N"], ix["C"], len(read)), dtype), "output": out}
+                if op_name == "MaxPool1dIndicesFwdOp":
+                    tensors["indices"] = ((ix["N"], ix["C"], ix["L_out"]), torch.int64)
+                assert pool_roofline(call)[1] == _ledger(op_name, **tensors), row["label"]
+
+    def test_dsa_decode_reads_the_kv_rows_some_query_selects(self):
+        """Top-k slots past the causal bound or repeated select nothing more, so `kv` is
+        read at the rows the row's generated indices reach."""
+        from tileops.perf.formulas import dsa_decode_roofline
+
+        op_name = "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp"
+        for row in _manifest_rows(op_name):
+            call = _manifest_call(op_name, row)
+            ix = call.ix
+            rows = {
+                (b, g, j)
+                for b, batch in enumerate(call.values("indices"))
+                for s, heads in enumerate(batch)
+                for g, slots in enumerate(heads)
+                for j in slots
+                if 0 <= j < ix["S_kv"]
+                and (j + 1) * ix["stride_kv"] - 1 <= ix["q_start_index_s"] + s
+            }
+            dtype = getattr(torch, call.tensors["q"][1])
+            width = ix["D"] + ix["dim_tail"]
+            oracle = _ledger(
+                op_name,
+                q=((ix["B"], ix["S"], ix["H"], width), dtype),
+                kv=((len(rows), width), dtype),
+                indices=((ix["B"], ix["S"], ix["H_kv"], ix["K"]), torch.int32),
+                o=((ix["B"], ix["S"], ix["H"], ix["D"]), dtype),
+            )
+            assert dsa_decode_roofline(call)[1] == oracle, row["label"]
+
+    def test_deltanet_bwd_reads_the_strict_lower_triangle_of_aw_and_au(self):
+        """Each chunk's C x C block of Aw and Au has a unit diagonal and a zero upper
+        triangle, so only the strict-lower C * (C - 1) / 2 entries are read."""
+        from tests.roofline_binder import manifest_cases
+
+        op_name = "DeltaNetBwdOp"
+        rows = {row["label"]: row for row in _manifest_rows(op_name)}
+        for label, dtype_name, op, _oracle, _reads in manifest_cases(op_name):
+            ix = _manifest_call(op_name, rows[label]).ix
+            b, h, n, dk, dv, c = ix["B"], ix["H"], ix["L"], ix["DK"], ix["DV"], ix["chunk_size"]
+            dtype = getattr(torch, dtype_name)
+            triangle = ((b, h, n // c, c * (c - 1) // 2), dtype)
+            oracle = _ledger(
+                op_name,
+                do=((b, h, n, dv), dtype),
+                q=((b, h, n, dk), dtype),
+                k=((b, h, n, dk), dtype),
+                v=((b, h, n, dv), dtype),
+                beta=((b, h, n), dtype),
+                S=((b, h, n // c + 1, dk, dv), torch.float32),
+                Aw=triangle,
+                Au=triangle,
+                w=((b, h, n, dk), dtype),
+                u=((b, h, n, dv), dtype),
+                dq=((b, h, n, dk), dtype),
+                dk=((b, h, n, dk), dtype),
+                dv=((b, h, n, dv), dtype),
+                dbeta=((b, h, n), dtype),
+            )
+            assert op.eval_roofline()[1] == oracle, label
 
     def test_dropout_short_circuits_read_and_write_what_they_touch(self):
         """The generated case covers the masking path its workloads state. The three
@@ -493,6 +576,11 @@ class TestBytesOracle:
 # Level two: a case above recounts these by hand. The value says why the
 # generated case cannot, which is what the hand-written one supplies.
 HAND_WRITTEN = {
+    "AvgPool1dFwdOp": "a stride past the kernel leaves input positions no window reads",
+    "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp": "it reads the kv rows its top-k indices select, not the cache",
+    "DeltaNetBwdOp": "it reads only the strict-lower triangle of each Aw and Au chunk block",
+    "MaxPool1dFwdOp": "a dilated or strided window leaves input positions no window reads",
+    "MaxPool1dIndicesFwdOp": "a dilated or strided window leaves input positions no window reads",
     "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "FusedMoeFwdOp": "the routed weight reads follow the routing its experts stage receives",
     "FusedMoeSharedExpertFwdOp": "the routed weight reads follow the routing its experts stage receives",

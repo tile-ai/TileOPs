@@ -441,7 +441,9 @@ MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
   - {B: 16, H: 128, H_kv: 1, N_kv: 4096, D: 128, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-4k}
   - {B: 4, H: 128, H_kv: 1, N_kv: 32768, D: 128, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-32k}
   roofline:
-    flops: "2 * B * H * N_kv * (2 * D + PE)"
+    # Per key and query head, QK over D + PE, PV over D and the softmax (5); per output
+    # element, the softmax's divide.
+    flops: "B * H * (N_kv * (2 * (D + PE) + 2 * D + 5) + D)"
 
 DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
   family: attention

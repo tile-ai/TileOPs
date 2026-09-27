@@ -550,7 +550,7 @@ def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None
     assert len(list(op.iter_kernels())) == 1
     first_kernel = op.kernel
     assert op.eval_roofline() == (
-        8 * 8 * 32,
+        7 * 8 * 32,
         # training writes running_mean and running_var back
         2 * 8 * 32 * torch.float16.itemsize + 4 * 8 * 4 + 2 * 8 * 4,
     )
@@ -563,7 +563,7 @@ def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None
     assert len(list(op.iter_kernels())) == 2
     assert op.kernel is not first_kernel
     assert op.eval_roofline() == (
-        8 * 12 * 48,
+        7 * 12 * 48,
         2 * 12 * 48 * torch.bfloat16.itemsize + 4 * 12 * 4 + 2 * 12 * 4,
     )
 
