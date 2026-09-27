@@ -8,7 +8,9 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
+
+from .call_spec import GLAInferenceCallSpec, dense_entry, serves_dense
 
 __all__ = ["GLADenseDecodeFwdKernel"]
 
@@ -76,6 +78,16 @@ class GLADenseDecodeFwdKernel(Kernel):
     """Fuse one GLA recurrence step and output projection in one state pass."""
 
     supported_archs = [90]
+
+    @classmethod
+    def applies(cls, call: GLAInferenceCallSpec) -> bool:
+        return serves_dense(call) and call.seq_len == 1
+
+    @classmethod
+    def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
+        return dense_entry(
+            cls, call, batch=call.batch, heads=call.heads, dim_k=call.dim_k, dim_v=call.dim_v
+        )
 
     def __init__(
         self,

@@ -13,7 +13,7 @@ from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
 )
 from tileops.ops import GLABwdOp, GLADecodeFwdOp, GLAFwdOp, GLAInferenceFwdOp
 from tileops.utils import is_h200
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 from workloads.linear_attention import GLADecodeWorkload, GLAInferenceWorkload, gla_decode_torch
 
 try:
@@ -448,9 +448,10 @@ def test_gla_long_prefill_uses_partitioned_kernel(
 
 
 @pytest.mark.smoke
-@pytest.mark.usefixtures("isolated_registry")
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
+    not run_device_available() or torch.cuda.get_device_capability()[0] != 9,
     reason="the in-tree dense decode requires SM90",
 )
 @pytest.mark.parametrize(
@@ -476,9 +477,10 @@ def test_gla_dense_decode_matches_fla(
 
 
 @pytest.mark.smoke
-@pytest.mark.usefixtures("isolated_registry")
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
+    not run_device_available() or torch.cuda.get_device_capability()[0] != 9,
     reason="the in-tree dense decode requires SM90",
 )
 def test_gla_dense_decode_steps_match_one_recurrence() -> None:

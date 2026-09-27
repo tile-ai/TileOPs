@@ -8,7 +8,9 @@ import torch
 from tilelang import language as T
 
 from tileops.kernels.constants import LOG2E
+from tileops.kernels.kernel_base import Entry
 
+from .call_spec import GLAInferenceCallSpec, dense_entry, serves_dense
 from .dense_prefill_subchunk import _gla_fwd_a_kernel
 from .gla_fwd import GLAFwdKernel, _gla_precompute_g_kernel
 
@@ -369,6 +371,31 @@ class GLADensePrefillPartitionedKernel(GLAFwdKernel):
     """GLA prefill with parallel partition summaries and fused output replay."""
 
     supported_archs = [90]
+
+    @classmethod
+    def applies(cls, call: GLAInferenceCallSpec) -> bool:
+        # A 16-chunk partition creates enough independent CTAs only for long calls on
+        # H200; shorter calls keep the serial-state kernel.
+        return (
+            serves_dense(call)
+            and call.dim_k == 64
+            and call.seq_len >= 16384
+            and call.seq_len % 1024 == 0
+            and call.batch * call.heads * (call.seq_len // 1024) >= 128
+            and call.h200
+        )
+
+    @classmethod
+    def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
+        return dense_entry(
+            cls,
+            call,
+            batch=call.batch,
+            seq_len=call.seq_len,
+            heads=call.heads,
+            dim_k=call.dim_k,
+            dim_v=call.dim_v,
+        )
 
     def __init__(
         self,
