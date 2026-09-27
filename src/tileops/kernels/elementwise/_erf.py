@@ -31,9 +31,9 @@ def erf(x, out_dtype):
     ``erff`` is correct to 2 ulp of float32 and costs roughly twice the
     polynomial's instruction count, which only a float32 result can hold.
 
-    NaN is not preserved: the clamp lowers to ``fminf``/``fmaxf``, which return
-    their non-NaN operand, so a NaN argument reads back as -1. Restoring it
-    costs a ``T.if_then_else``, which scalarises the element loop.
+    A NaN argument gives NaN, as in ``torch.erf``. The clamps lower to
+    ``fminf``/``fmaxf``, which return their non-NaN operand, so one select on the
+    argument restores it.
 
     Args:
         x: The argument. Any float dtype; promoted to float32 before evaluation.
@@ -59,4 +59,5 @@ def erf(x, out_dtype):
     # The clip keeps the backend from contracting the product into a caller's add,
     # which would evaluate it to full width and land the tail 7e-9 short of +-1.
     # GELU scales the 1 - erf(x) residual by x, so that error is unbounded in |x|.
-    return T.min(T.max(clamped * acc, -one), one)
+    clipped = T.min(T.max(clamped * acc, -one), one)
+    return T.if_then_else(T.isnan(wide), wide, clipped)

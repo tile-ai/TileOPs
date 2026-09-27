@@ -435,19 +435,11 @@ def test_erf_matches_rounded_erf_over_every_value(dtype: torch.dtype) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_erf_saturates_at_infinity_and_drops_nan(dtype: torch.dtype) -> None:
-    """Edge: erf reaches exactly +-1 at +-inf, and answers NaN with -1.
-
-    The second half is a deviation from ``torch.erf``, taken deliberately: the
-    clamp lowers to ``fminf``/``fmaxf``, which return their non-NaN operand, and
-    the ``T.if_then_else`` that would restore NaN costs the element loop its
-    float4 lanes. Pinned here so a later change to either behaviour is a decision
-    rather than an accident.
-    """
+def test_erf_saturates_at_infinity_and_propagates_nan(dtype: torch.dtype) -> None:
+    """Edge: erf reaches exactly +-1 at +-inf and answers NaN with NaN, as ``torch.erf`` does."""
     x = torch.tensor([float("inf"), -float("inf"), float("nan")], device="cuda", dtype=dtype)
     out = ErfFwdOp()(x)
-    expected = torch.tensor([1.0, -1.0, -1.0], device="cuda", dtype=dtype)
-    torch.testing.assert_close(out, expected, rtol=0, atol=0)
+    torch.testing.assert_close(out, torch.erf(x), rtol=0, atol=0, equal_nan=True)
 
 
 @MathEdgeFixture
