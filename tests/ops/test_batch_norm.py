@@ -39,6 +39,7 @@ class BatchNormFwdFixture(FixtureBase):
                 # BatchNorm1d – (N, C)
                 pytest.param(32, 64, (), torch.float16, True, marks=pytest.mark.smoke),
                 pytest.param(32, 64, (), torch.bfloat16, True, marks=pytest.mark.smoke),
+                pytest.param(4, 256, (28, 28), torch.float32, True, marks=pytest.mark.smoke),
                 pytest.param(32, 64, (), torch.float16, False, marks=pytest.mark.full),
                 pytest.param(32, 256, (), torch.bfloat16, True, marks=pytest.mark.full),
                 # BatchNorm1d – (N, C, L)
@@ -58,6 +59,9 @@ class BatchNormFwdFixture(FixtureBase):
                 # The streamed path, which no other case reaches: a channel too long to
                 # hold in registers (L = 131072) and too many channels to split (C >= 1024).
                 pytest.param(2048, 1024, (64,), torch.float16, True, marks=pytest.mark.full),
+                # The split path with a chunk no vector step divides: a block must stop at
+                # its own chunk rather than sum into the next one's.
+                pytest.param(3, 5, (300, 301), torch.float16, True, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -72,13 +76,20 @@ class BatchNormBwdFixture(FixtureBase):
             [
                 pytest.param(32, 64, (), torch.float16, marks=pytest.mark.smoke),
                 pytest.param(32, 64, (), torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(4, 256, (28, 28), torch.float32, marks=pytest.mark.smoke),
                 pytest.param(8, 64, (32, 32), torch.float16, marks=pytest.mark.full),
                 pytest.param(4, 128, (32, 32), torch.bfloat16, marks=pytest.mark.full),
-                # Non-persistent backward path (L=16384 > 8192).
+                # A register-held channel taking several steps per thread.
                 pytest.param(4, 64, (64, 64), torch.float16, marks=pytest.mark.full),
-                # Non-aligned spatial: H*W=900, exercises partial-tile path
+                # Non-aligned spatial: H*W=900, a vector narrower than the dtype allows.
                 pytest.param(8, 64, (30, 30), torch.float16, marks=pytest.mark.full),
                 pytest.param(8, 64, (30, 30), torch.bfloat16, marks=pytest.mark.full),
+                # The split path with a chunk no vector step divides: a block must stop at
+                # its own chunk rather than sum into the next one's.
+                pytest.param(3, 5, (300, 301), torch.bfloat16, marks=pytest.mark.full),
+                # The streamed tiled path: a channel too long for registers (L = 73728, odd
+                # spatial run) and too many channels to split (C >= 1024).
+                pytest.param(8192, 1024, (9,), torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -101,8 +112,8 @@ def test_batch_norm_fwd(N, C, spatial, dtype, training):
         x, weight, bias, running_mean_ref, running_var_ref, training=training
     )
 
-    # float16 accumulates more error; use loose tolerances.
-    atol, rtol = (1e-2, 1e-2) if dtype == torch.float16 else (2e-2, 2e-2)
+    # Agreement at the storage dtype's precision; both sides accumulate in float32.
+    atol = rtol = {torch.float32: 1e-5, torch.float16: 1e-2, torch.bfloat16: 2e-2}[dtype]
     max_err = (y.float() - ref_y.float()).abs().max()
     assert torch.allclose(y.float(), ref_y.float(), atol=atol, rtol=rtol), (
         f"fwd mismatch (training={training}): max_err={max_err:.4e}"
@@ -137,7 +148,7 @@ def test_batch_norm_bwd(N, C, spatial, dtype):
 
     ref_gx, ref_gw, ref_gb = test.ref_program(grad_out, x, weight, mean, rstd)
 
-    atol, rtol = (1e-2, 1e-2) if dtype == torch.float16 else (2e-2, 2e-2)
+    atol = rtol = {torch.float32: 1e-5, torch.float16: 1e-2, torch.bfloat16: 2e-2}[dtype]
 
     for name, got, ref in [
         ("grad_x", grad_x.float(), ref_gx.float()),
@@ -374,6 +385,7 @@ class _FakeBatchNormFwdTrainKernel(_FakeBatchNormFwdInferKernel):
         momentum: float,
         tune: bool = False,
         S: int | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__(C, L, dtype, eps, tune=tune, S=S)
         self.momentum = momentum
@@ -404,6 +416,8 @@ class _FakeBatchNormBwdKernel(Kernel):
         L: int,
         dtype: torch.dtype,
         tune: bool = False,
+        S: int | None = None,
+        device_index: int | None = None,
     ) -> None:
         super().__init__()
         self.C = C

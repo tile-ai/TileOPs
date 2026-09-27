@@ -137,7 +137,7 @@ class BatchNormFwdOp(Op):
         kernel = self.kernel_for(
             "batch_norm_fwd",
             (x, *handed, weight, bias),
-            (channels, length, x.dtype, self.training, spatial),
+            (channels, length, x.dtype, self.training, spatial, x.device.index),
         )
         self.kernel = kernel
 
@@ -156,13 +156,21 @@ class BatchNormFwdOp(Op):
     def entry_for(self, role: str, call: tuple) -> Entry:
         """Training picks the implementation, so it is in the identity.
 
-        Both paths index the caller's layout, so the spatial extent is there too.
+        Both paths index the caller's layout, so the spatial extent is there too. The
+        training kernel sizes its launch by the device's SM count, so the device is as well.
         """
-        channels, length, dtype, training, spatial = call
+        channels, length, dtype, training, spatial, device_index = call
         if training:
             cls = self.kernel_map["fwd_train_kernel"]
             return call, lambda: cls(
-                channels, length, dtype, self.eps, self.momentum, tune=self.tune, S=spatial
+                channels,
+                length,
+                dtype,
+                self.eps,
+                self.momentum,
+                tune=self.tune,
+                S=spatial,
+                device_index=device_index,
             )
         cls = self.kernel_map["fwd_infer_kernel"]
         return call, lambda: cls(channels, length, dtype, self.eps, tune=self.tune, S=spatial)
@@ -250,16 +258,25 @@ class BatchNormBwdOp(Op):
         weight = weight.contiguous()
         mean = mean.contiguous()
         rstd = rstd.contiguous()
+        spatial = math.prod(x.shape[2:])
         kernel = self.kernel_for(
-            "batch_norm_bwd", (grad_out, x, weight, mean, rstd), (channels, length, x.dtype)
+            "batch_norm_bwd",
+            (grad_out, x, weight, mean, rstd),
+            (channels, length, x.dtype, spatial, x.device.index),
         )
         self.kernel = kernel
         return kernel(grad_out, x, weight, mean, rstd)
 
     def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per channel count, row width and dtype."""
-        channels, length, dtype = call
-        return call, lambda: self.kernel_map["bwd_kernel"](channels, length, dtype, tune=self.tune)
+        """One implementation, built per channel count, length, dtype, spatial extent and device.
+
+        The kernel indexes the caller's layout and sizes its launch by the device's SM count.
+        """
+        channels, length, dtype, spatial, device_index = call
+        cls = self.kernel_map["bwd_kernel"]
+        return call, lambda: cls(
+            channels, length, dtype, tune=self.tune, S=spatial, device_index=device_index
+        )
 
     def forward(
         self,
