@@ -7,13 +7,16 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase, allclose_compare, standard_tolerance
 from tileops.backend import BUILTIN, TensorSpec, registry
+from tileops.kernels.linear_attention.gla.call_spec import GLAInferenceCallSpec
 from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeFwdKernel
 from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
     GLADensePrefillPartitionedKernel,
 )
+from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import (
+    GLADensePrefillSubchunkKernel,
+)
 from tileops.ops import GLABwdOp, GLADecodeFwdOp, GLAFwdOp, GLAInferenceFwdOp
-from tileops.utils import is_h200
-from workloads.device import run_device, run_device_available
+from workloads.device import run_device
 from workloads.linear_attention import GLADecodeWorkload, GLAInferenceWorkload, gla_decode_torch
 
 try:
@@ -293,13 +296,20 @@ def test_gla_bwd(
             assert cos > 0.99, f"TileOPs vs FLA {name} cosine too low: {cos:.6f}"
 
 
-def _run_device_is_sm90() -> bool:
-    # The capability probe needs CUDA, which a collection on another device lacks.
-    return (
-        run_device_available()
-        and torch.cuda.is_available()
-        and torch.cuda.get_device_capability()[0] == 9
+def _skip_unless_kernel_serves(kernel_cls: type, test: GLAInferenceWorkload) -> None:
+    """Skip when *kernel_cls* declares that it does not serve *test*'s call on the run device."""
+    call = GLAInferenceCallSpec(
+        batch=test.batch,
+        seq_len=test.seq_len,
+        heads=test.heads,
+        dim_k=test.dim_k,
+        dim_v=test.dim_v,
+        dtype=test.dtype,
+        device=torch.device(run_device()),
     )
+    reason = kernel_cls.refusal(call)
+    if reason is not None:
+        pytest.skip(f"{kernel_cls.__name__}: {reason}")
 
 
 # The public GLA inference contract and its in-tree dense-prefill path.
@@ -401,16 +411,14 @@ def test_gla_inference_roofline_counts_packed_states(seeded: bool) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.usefixtures("isolated_registry")
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
-    reason="the in-tree dense prefill requires SM90",
-)
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @pytest.mark.parametrize("seq_len, dim", [(128, 64), (128, 128), (1024, 64)])
 def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: int) -> None:
     torch.manual_seed(2160)
     test = GLAInferenceTest(2, seq_len, 4, dim, dim, dtype, has_initial_state=True)
+    _skip_unless_kernel_serves(GLADensePrefillSubchunkKernel, test)
     inputs = test.gen_inputs()
     op = GLAInferenceFwdOp()
     test.check(op, *inputs, **standard_tolerance(dtype))
@@ -419,10 +427,9 @@ def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: in
     test.check(op, *inputs, **standard_tolerance(dtype))
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
-@pytest.mark.usefixtures("isolated_registry")
-@pytest.mark.skipif(not is_h200(), reason="partitioned prefill is selected on H200")
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "dtype,has_initial_state,gate_scale",
     [(torch.bfloat16, True, 1.0), (torch.float16, False, 3.0)],
@@ -432,6 +439,7 @@ def test_gla_long_prefill_uses_partitioned_kernel(
 ) -> None:
     torch.manual_seed(2160)
     test = GLAInferenceTest(2, 16384, 4, 64, 64, dtype, has_initial_state)
+    _skip_unless_kernel_serves(GLADensePrefillPartitionedKernel, test)
     inputs = test.gen_inputs()
     inputs[3].mul_(gate_scale)
     op = GLAInferenceFwdOp()
@@ -459,7 +467,6 @@ def test_gla_long_prefill_uses_partitioned_kernel(
 @pytest.mark.smoke
 @pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
-@pytest.mark.skipif(not _run_device_is_sm90(), reason="the in-tree dense decode requires SM90")
 @pytest.mark.parametrize(
     "dtype,dim,has_initial_state,scale",
     [
@@ -473,6 +480,7 @@ def test_gla_dense_decode_matches_fla(
 ) -> None:
     torch.manual_seed(2174)
     test = GLAInferenceTest(2, 1, 4, dim, dim, dtype, has_initial_state, scale)
+    _skip_unless_kernel_serves(GLADenseDecodeFwdKernel, test)
     inputs = test.gen_inputs()
     op = GLAInferenceFwdOp(scale)
     test.check(op, *inputs, **standard_tolerance(dtype))
@@ -485,12 +493,14 @@ def test_gla_dense_decode_matches_fla(
 @pytest.mark.smoke
 @pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
-@pytest.mark.skipif(not _run_device_is_sm90(), reason="the in-tree dense decode requires SM90")
 def test_gla_dense_decode_steps_match_one_recurrence() -> None:
     """Feeding each step's final_state back matches one recurrence over all the steps."""
     torch.manual_seed(2174)
     steps = 8
     test = GLAInferenceTest(2, steps, 4, 64, 64, torch.bfloat16, has_initial_state=True)
+    _skip_unless_kernel_serves(
+        GLADenseDecodeFwdKernel, GLAInferenceTest(2, 1, 4, 64, 64, torch.bfloat16)
+    )
     q, k, v, g, state = test.gen_inputs()
     ref_o, ref_state = test.ref_program(q, k, v, g, state)
     op = GLAInferenceFwdOp()
