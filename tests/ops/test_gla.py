@@ -7,7 +7,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase, allclose_compare, standard_tolerance
 from tileops.backend import BUILTIN, TensorSpec, registry
-from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeKernel
+from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeFwdKernel
 from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
     GLADensePrefillPartitionedKernel,
 )
@@ -449,27 +449,53 @@ def test_gla_long_prefill_uses_partitioned_kernel(
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
-@pytest.mark.skipif(not is_h200(), reason="the in-tree dense decode requires H200")
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
+    reason="the in-tree dense decode requires SM90",
+)
 @pytest.mark.parametrize(
-    "dtype,dim,has_initial_state",
+    "dtype,dim,has_initial_state,scale",
     [
-        (torch.float16, 128, True),
-        (torch.bfloat16, 64, False),
-        (torch.bfloat16, 64, True),
+        (torch.float16, 128, True, None),
+        (torch.bfloat16, 64, False, None),
+        (torch.bfloat16, 64, True, 0.3),
     ],
 )
 def test_gla_dense_decode_matches_fla(
-    dtype: torch.dtype, dim: int, has_initial_state: bool
+    dtype: torch.dtype, dim: int, has_initial_state: bool, scale: float | None
 ) -> None:
     torch.manual_seed(2174)
-    test = GLAInferenceTest(2, 1, 4, dim, dim, dtype, has_initial_state)
+    test = GLAInferenceTest(2, 1, 4, dim, dim, dtype, has_initial_state, scale)
     inputs = test.gen_inputs()
-    op = GLAInferenceFwdOp()
+    op = GLAInferenceFwdOp(scale)
     test.check(op, *inputs, **standard_tolerance(dtype))
     assert any(
-        isinstance(kernel, GLADenseDecodeKernel)
+        isinstance(kernel, GLADenseDecodeFwdKernel)
         for kernel in op.built_kernels("gla_dense_decode").values()
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_registry")
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
+    reason="the in-tree dense decode requires SM90",
+)
+def test_gla_dense_decode_steps_match_one_recurrence() -> None:
+    """Feeding each step's final_state back matches one recurrence over all the steps."""
+    torch.manual_seed(2174)
+    steps = 8
+    test = GLAInferenceTest(2, steps, 4, 64, 64, torch.bfloat16, has_initial_state=True)
+    q, k, v, g, state = test.gen_inputs()
+    ref_o, ref_state = test.ref_program(q, k, v, g, state)
+    op = GLAInferenceFwdOp()
+    outputs = []
+    for t in range(steps):
+        o, state = op(*(x[:, t : t + 1] for x in (q, k, v, g)), state)
+        outputs.append(o)
+    tolerance = standard_tolerance(torch.bfloat16)
+    torch.testing.assert_close(torch.cat(outputs, dim=1), ref_o, **tolerance)
+    torch.testing.assert_close(state, ref_state, **tolerance)
 
 
 class GLADecodeTest(GLADecodeWorkload, TestBase):

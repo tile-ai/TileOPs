@@ -10,7 +10,7 @@ import torch
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
 
-__all__ = ["GLADenseDecodeKernel"]
+__all__ = ["GLADenseDecodeFwdKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -72,7 +72,7 @@ def _gla_dense_decode_tl(
     return decode()
 
 
-class GLADenseDecodeKernel(Kernel):
+class GLADenseDecodeFwdKernel(Kernel):
     """Fuse one GLA recurrence step and output projection in one state pass."""
 
     supported_archs = [90]

@@ -1,13 +1,13 @@
-"""Inference-facing GLA contract and dense-prefill dispatch."""
+"""Inference-facing GLA contract with dense-prefill and decode dispatch."""
 
 import math
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Mapping, Optional, Tuple
 
 import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeKernel
+from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeFwdKernel
 from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
     GLADensePrefillPartitionedKernel,
 )
@@ -28,9 +28,15 @@ class GLAInferenceFwdOp(Op):
     Q, K, V and the log-space, per-key gate G use FP16/BF16 BTHD layout. One call may
     describe equal-length prefill, packed-varlen prefill, or single-token
     decode. The caller may omit ``initial_state`` to start from zero; every
-    call returns ``(o, final_state)``. Hopper dense prefill and decode are
-    implemented in tree. The old training-forward and decode Ops are intact.
+    call returns ``(o, final_state)``. Hopper dense prefill and single-token
+    decode are implemented in tree; packed varlen is not.
     """
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "gla_dense_decode": GLADenseDecodeFwdKernel,
+        "gla_dense_prefill_partitioned": GLADensePrefillPartitionedKernel,
+        "gla_dense_prefill_subchunk": GLADensePrefillSubchunkKernel,
+    }
 
     def __init__(
         self,
@@ -56,14 +62,6 @@ class GLAInferenceFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {
-            "gla_dense_decode": GLADenseDecodeKernel,
-            "gla_dense_prefill_partitioned": GLADensePrefillPartitionedKernel,
-            "gla_dense_prefill_subchunk": GLADensePrefillSubchunkKernel,
-        }
-
     def entry_for(self, role: str, call: tuple) -> Entry:
         batch, seq_len, heads, dim_k, dim_v, dtype, device, scale, varlen = call
         unsupported = []
@@ -82,10 +80,6 @@ class GLAInferenceFwdOp(Op):
                 "the in-tree GLA dense kernel does not yet support " + ", ".join(unsupported)
             )
         if role == "gla_dense_decode":
-            if seq_len != 1:
-                raise ValueError("GLA dense decode requires T == 1")
-            if not is_h200(device.index):
-                raise ValueError("the in-tree GLA dense-decode kernel requires H200")
             return call, lambda: self.kernel_map["gla_dense_decode"](
                 batch=batch,
                 heads=heads,
@@ -95,8 +89,6 @@ class GLAInferenceFwdOp(Op):
                 dtype=dtype,
                 device_index=device.index,
             )
-        if role != "gla_dense_prefill":
-            raise ValueError(f"unknown GLA inference kernel role: {role}")
         # A 16-chunk partition creates enough independent CTAs only for long
         # calls. Shorter calls keep the existing serial-state specialization.
         partition_ctas = batch * heads * (seq_len // 1024)
@@ -124,8 +116,9 @@ class GLAInferenceFwdOp(Op):
         )
 
     def compute_roof(self) -> str:
-        """The state contractions are priced on tensor cores."""
-        return tensor_core_roof(self.last_call.tensors["q"][1])
+        """Prefill contracts chunks on tensor cores; a decode step is a matvec on CUDA cores."""
+        q_shape, q_dtype = self.last_call.tensors["q"]
+        return super().compute_roof() if q_shape[1] == 1 else tensor_core_roof(q_dtype)
 
     def forward(
         self,
