@@ -714,7 +714,7 @@ class Op(ABC):
 
         ``build_kernel`` is called with these by keyword. Names come from the manifest
         (``_params_codegen``), values off the instance, so a param the manifest defaults to
-        null arrives as the number the op chose.
+        null arrives as the instance holds it: ``None`` unless the caller gave a value.
 
         Raises:
             AttributeError: The op declares a manifest param it keeps under another name.
