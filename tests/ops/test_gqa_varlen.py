@@ -359,12 +359,13 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
         pytest.param([1] * 449, [1] * 449, True, {}, "GQAPrefillVarlenFwdKernel", id="batch-449"),
     ],
 )
-def test_varlen_dim128_serves_ragged_requests_on_sm90(
-    q_lens: list[int], kv_lens: list[int], is_causal: bool, scores: dict, kernel: str
+@pytest.mark.parametrize("dim", [64, 128])
+def test_varlen_ws_dims_serve_ragged_requests_on_sm90(
+    q_lens: list[int], kv_lens: list[int], is_causal: bool, scores: dict, kernel: str, dim: int
 ) -> None:
     """Partial tiles, q_len > kv_len, and empty requests on the warp-specialized kernel."""
     test = GroupedQueryAttentionVarlenFwdTest(
-        len(q_lens), q_lens, kv_lens, 8, 2, 128, is_causal, -1, -1, torch.float16, **scores
+        len(q_lens), q_lens, kv_lens, 8, 2, dim, is_causal, -1, -1, torch.float16, **scores
     )
     op = GroupedQueryAttentionVarlenFwdOp(is_causal=is_causal, **scores)
     inputs = test.gen_inputs()

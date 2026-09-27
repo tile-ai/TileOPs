@@ -420,22 +420,27 @@ def _gqa_prefill_varlen_ws_kernel(
 
 
 class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
-    """SM90 warp-specialized packed prefill for 128-wide heads."""
+    """SM90 warp-specialized packed prefill for heads of dimension 64 or 128.
+
+    Dimension 256 stays on the general kernel: its shared buffers would need 448 KB,
+    about twice the 227 KB an SM90 block may use.
+    """
 
     supported_archs: list[int] = [90]
-    # Fitted on H200 at dim 128; re-measure against the general kernel to change.
+    _DIMS: tuple[int, ...] = (64, 128)
+    # Fitted at dim 128; re-measure against the general kernel to change.
     _BLOCK_N: int = 128
     _STAGES: int = 2
-    # The double Q buffer leaves about 3 KB of H200's 227 KB of shared memory for the
-    # per-request prefix: batch 495 launched and 512 did not. Re-measure if any shared
-    # buffer changes size.
+    # At dim 128 the double Q buffer leaves about 3 KB of the 227 KB of shared memory
+    # for the per-request prefix: batch 495 launched and 512 did not. Dim 64 halves
+    # every buffer. Re-measure if any shared buffer grows.
     _MAX_BATCH: int = 448
 
     @classmethod
     def applies(cls, call) -> bool:
         return (
             call.dtype in ATTENTION_DTYPES
-            and call.dim == 128
+            and call.dim in cls._DIMS
             and not call.is_fp8
             and not call.fuse_rope
             and not uses_sliding_window(call)

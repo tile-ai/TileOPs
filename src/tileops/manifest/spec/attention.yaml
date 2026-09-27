@@ -143,6 +143,8 @@ GroupedQueryAttentionVarlenFwdOp:
   - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-uniform}
   - {T_q: 1024, T_kv: 3072, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 2)", kv_lens: [1024, 2048], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-q-lt-kv}
   - {T_q: 1024, T_kv: 3072, H: 64, H_kv: 8, D: 128, q_lens: "repeat(512, 2)", kv_lens: [1024, 2048], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-q-lt-kv}
+  - {T_q: 2048, T_kv: 2048, H: 64, H_kv: 8, D: 64, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: gpt-oss-uniform}
+  - {T_q: 1024, T_kv: 3072, H: 64, H_kv: 8, D: 64, q_lens: "repeat(512, 2)", kv_lens: [1024, 2048], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: gpt-oss-q-lt-kv}
   - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, window_size_left: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-short-w256}
   - {T_q: 8192, T_kv: 8192, H: 32, H_kv: 8, D: 128, q_lens: "repeat(2048, 4)", kv_lens: "repeat(2048, 4)", is_causal: true, window_size_left: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-long-w1024}
   - {T_q: 2048, T_kv: 2048, H: 64, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, window_size_left: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-short-w256}
