@@ -53,13 +53,9 @@ TL_DEVICE void fp8_tma_store_2d_issue(const CUtensorMap& descriptor,
       "[%0, {%2, %3}], [%1];" : : "l"(desc), "r"(src), "r"(x), "r"(y) : "memory");
 }
 
-// Promote one 64xNx128 WGMMA partial directly in its native per-thread
-// accumulator layout.  This deliberately avoids materialising the fragment as
-// a logical 2-D TileLang array between every K block.
-//
-// The three scales arrive by value: the caller reads them out of shared
-// memory before the WGMMA and releases the stage to the producer before this
-// runs, so nothing here may touch the stage's shared memory.
+// Promote one 64xNx128 WGMMA partial in its per-thread accumulator layout,
+// with no 2-D fragment between K blocks. The three scales arrive by value:
+// the stage is already released, so nothing here may read its shared memory.
 template <int BlockN>
 __device__ __forceinline__ void fp8_gemm_1d2d_promote(
     float* partial, float* final_accum, float scale_a_row0, float scale_a_row1,
