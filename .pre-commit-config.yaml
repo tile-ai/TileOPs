@@ -86,6 +86,12 @@ repos:
         language: python
         files: ^(src/tileops|tests|benchmarks|workloads)/.*\.py$
 
+      - id: manifest-spec-layout
+        name: manifest spec layout
+        entry: "manifest YAML goes directly in src/tileops/manifest/spec/ as .yaml, the only place the loader reads"
+        language: fail
+        files: ^src/tileops/manifest/(?!spec/[^/]+\.yaml$)(?:.*\.ya?ml|spec/.*)$
+
   - repo: https://github.com/executablebooks/mdformat
     rev: 0.7.22
     hooks:

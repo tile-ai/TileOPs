@@ -22,4 +22,4 @@
 
 - `status: spec-only` until an implementation conforms. Never edit the manifest to match non-conforming code, and never delete a rule to silence the validator.
 
-- Comments carry technical content the schema cannot express, never process metadata bound to an issue, PR or round. Scan: `grep -rnE '#[0-9]{3,}|[Ff]ollow.?up|AC-[0-9]+' src/tileops/manifest/*.yaml`
+- Comments carry technical content the schema cannot express, never process metadata bound to an issue, PR or round. Scan: `grep -rnE '#[0-9]{3,}|[Ff]ollow.?up|AC-[0-9]+' src/tileops/manifest/spec/*.yaml`

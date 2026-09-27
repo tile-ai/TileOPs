@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECK_SCRIPT = REPO_ROOT / "scripts" / "ci" / "check_dist_contents.py"
 
 # As they appear in the wheel; `_in_src` gives the repo and sdist form.
-MANIFEST_YAMLS = ["tileops/manifest/attention.yaml", "tileops/manifest/gemm.yaml"]
+MANIFEST_YAMLS = ["tileops/manifest/spec/attention.yaml", "tileops/manifest/spec/gemm.yaml"]
 NESTED_HEADER = "tileops/kernels/attention/_fp8_gqa_helper.h"
 PERF_PROFILE = "tileops/perf/profiles/h200.yaml"
 

@@ -274,7 +274,7 @@ jobs:
               # the skip below would take the recount check -- the only layer that judges
               # a `bytes` total against the tensors a call binds -- out of the run.
               case "$path" in
-                src/tileops/manifest/*.yaml)
+                src/tileops/manifest/spec/*.yaml)
                   has_contract="true"
                   ;;
               esac
@@ -344,7 +344,7 @@ jobs:
               case "$path" in
                 .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|.github/workflows/auto-label.yml|.github/workflows/stale-issues.yml|*.md)
                   ;;
-                src/tileops/manifest/*.yaml)
+                src/tileops/manifest/spec/*.yaml)
                   scope="full-smoke"
                   reason="Manifest contract changed in $path; the recount and parity tests judge it."
                   break

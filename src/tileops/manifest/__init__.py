@@ -3,8 +3,10 @@
 The manifest is split across one or more YAML files per op family in this
 package's ``spec/`` directory. Most families use a single file, but large
 families (e.g., ``elementwise``) are sharded across multiple files. At load
-time, all files are merged into a single ``ops`` dict; duplicate op names
-across files raise `ValueError`.
+time, all files are merged into a single ``ops`` dict. A family file is
+``spec/<family>.yaml`` or ``spec/<family>_<shard>.yaml`` and holds entries of
+that one family; ``spec/types.yaml`` holds the ADTs. A duplicate op name
+across files, or a file that breaks the naming rule, raises `ValueError`.
 
 Public entry points:
 
@@ -55,6 +57,29 @@ def manifest_files() -> list:
     )
 
 
+def _check_family_file(file_name: str, ops: dict[str, Any]) -> None:
+    """Raise `ValueError` unless *ops* is non-empty and every entry's family names the file.
+
+    A family file is ``<family>.yaml`` or ``<family>_<shard>.yaml``.
+    """
+    if not ops:
+        raise ValueError(f"manifest file {file_name} holds no op entries")
+    stem = file_name.removesuffix(".yaml")
+    families = set()
+    for name, entry in ops.items():
+        family = entry.get("family") if isinstance(entry, dict) else None
+        if not isinstance(family, str):
+            raise ValueError(f"op {name!r} in {file_name} has no string `family`")
+        if stem != family and not stem.startswith(family + "_"):
+            raise ValueError(
+                f"op {name!r} in {file_name} has family {family!r}; it belongs in "
+                f"{family}.yaml or {family}_<shard>.yaml"
+            )
+        families.add(family)
+    if len(families) > 1:
+        raise ValueError(f"manifest file {file_name} mixes families {sorted(families)}")
+
+
 @functools.lru_cache(maxsize=1)
 def load_manifest() -> dict[str, Any]:
     """Load and cache the merged ``ops`` mapping. Called once per process."""
@@ -68,6 +93,7 @@ def load_manifest() -> dict[str, Any]:
                 f"manifest file {path.name} must contain a top-level mapping of "
                 f"op name -> entry, got {type(ops).__name__}"
             )
+        _check_family_file(path.name, ops)
         for name, entry in ops.items():
             if name in merged:
                 raise ValueError(

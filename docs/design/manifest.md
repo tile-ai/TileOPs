@@ -4,7 +4,7 @@ The [`src/tileops/manifest/`](../../src/tileops/manifest/) package is the **sour
 
 ## Layout
 
-One or more YAML files per family (single file by default; large families may shard). Each file is a flat mapping `op_name → entry`. The `tileops.manifest` package merges all files at load; a duplicate op name across files is an error. Algebraic data types shared by several entries live in `types.yaml`.
+The YAML lives in `src/tileops/manifest/spec/`, one or more files per family: `<family>.yaml` by default, `<family>_<shard>.yaml` for each shard of a large family. Each file is a flat, non-empty mapping `op_name → entry` whose entries all carry the `family` its name gives. The `tileops.manifest` package merges all files at load; a duplicate op name across files or a file that breaks the naming rule is an error. Algebraic data types shared by several entries live in `spec/types.yaml`.
 
 ## Layer Boundaries
 

@@ -1,6 +1,6 @@
 """Benchmarks for the RoPE op family.
 
-Every case is a manifest call of the op (``src/tileops/manifest/position_encoding.yaml``),
+Every case is a manifest call of the op (``src/tileops/manifest/spec/rope.yaml``),
 the op is built from the call's parameters and the inputs are the call's tensors.
 
 One ``test_*_bench`` per op, so every op this file is declared the benchmark
