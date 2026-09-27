@@ -14,6 +14,7 @@ from tileops.kernels.grouped_gemm.heuristics import (
     spec_from_config,
 )
 from tileops.kernels.grouped_gemm.template import GemmTemplate, GemmType, Major
+from workloads.device import run_device
 
 pytestmark = pytest.mark.sm90
 
@@ -21,10 +22,10 @@ pytestmark = pytest.mark.sm90
 def _batched_operands(g, m, n, k, major_a="k", major_b="k", dtype=torch.bfloat16):
     """Logical ``a[G, M, K]`` and ``b[G, N, K]``; an MN-major one is a transposed view."""
     torch.manual_seed(0)
-    a = torch.randn(g, m, k, device="cuda", dtype=dtype)
+    a = torch.randn(g, m, k, device=run_device(), dtype=dtype)
     if major_a == "mn":
         a = a.transpose(1, 2).contiguous().transpose(1, 2)
-    b = torch.randn(g, n, k, device="cuda", dtype=dtype)
+    b = torch.randn(g, n, k, device=run_device(), dtype=dtype)
     if major_b == "mn":
         b = b.transpose(1, 2).contiguous().transpose(1, 2)
     return a, b
@@ -38,6 +39,7 @@ def _assert_gemm(out, ref):
     torch.testing.assert_close(out.float(), ref.float(), rtol=2e-2, atol=1e-1)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "activation,cd_dtype",
@@ -93,6 +95,7 @@ def test_dense(activation, cd_dtype):
         _assert_gemm(coop1(a, b), ref)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "m,n,k,config",
@@ -123,6 +126,7 @@ def test_batched_tile_shapes(m, n, k, config):
     _assert_gemm(kernel(a, b), _bmm_ref(a, b))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_batched_async_epilogue_store_across_persistent_waves():
     """A staged output survives reuse after its prior tile's async TMA store."""
@@ -145,6 +149,7 @@ def test_batched_async_epilogue_store_across_persistent_waves():
     _assert_gemm(kernel(a, b), _bmm_ref(a, b))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "major_a,major_b",
     [
@@ -163,6 +168,7 @@ def test_batched_layouts_from_strides(major_a, major_b):
     _assert_gemm(kernel(a, b), _bmm_ref(a, b))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.full
 def test_fp32_output():
     a, b = _batched_operands(2, 1000, 1000, 1024)
@@ -172,6 +178,7 @@ def test_fp32_output():
     torch.testing.assert_close(out, _bmm_ref(a, b), rtol=1e-3, atol=1e-2)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.full
 def test_dynamic_m_shares_one_spec():
     """M is dynamic by default: two row counts resolve to one spec, hence one compiled kernel."""
@@ -204,12 +211,12 @@ def _grouped_operands(sizes, n, k, layout, *, alignment=128, major_b="k", dtype=
     total = row + alignment if layout == "per_row" else row
     if layout == "aligned":
         total = math.ceil(total / alignment) * alignment
-    a = torch.randn(total, k, device="cuda", dtype=dtype)
-    b = torch.randn(groups, n, k, device="cuda", dtype=dtype)
+    a = torch.randn(total, k, device=run_device(), dtype=dtype)
+    b = torch.randn(groups, n, k, device=run_device(), dtype=dtype)
     if major_b == "mn":
         b = b.transpose(1, 2).contiguous().transpose(1, 2)
-    ref = torch.zeros(total, n, dtype=torch.float32, device="cuda")
-    valid = torch.zeros(total, dtype=torch.bool, device="cuda")
+    ref = torch.zeros(total, n, dtype=torch.float32, device=run_device())
+    valid = torch.zeros(total, dtype=torch.bool, device=run_device())
     for g in range(groups):
         ref[starts[g] : ends[g]] = a[starts[g] : ends[g]].float() @ b[g].float().T
         valid[starts[g] : ends[g]] = True
@@ -219,9 +226,10 @@ def _grouped_operands(sizes, n, k, layout, *, alignment=128, major_b="k", dtype=
             metadata[starts[g] : starts[g] + math.ceil(sizes[g] / alignment) * alignment] = g
     else:
         metadata = torch.tensor(ends, dtype=torch.int32)
-    return a, b, metadata.cuda(), ref, valid
+    return a, b, metadata.to(run_device()), ref, valid
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "sizes,n,k,major_b,config",
@@ -247,6 +255,7 @@ def test_m_grouped_aligned_per_row(sizes, n, k, major_b, config):
     _assert_gemm(out[valid], ref[valid])
 
 
+@pytest.mark.cuda_only
 @pytest.mark.full
 def test_grouped_requires_layout_and_alignment():
     a, b, ids, _, _ = _grouped_operands([64, 64], 256, 256, "per_row")
@@ -257,6 +266,7 @@ def test_grouped_requires_layout_and_alignment():
         kernel(a[:-64], b, grouped_layout=ids[:-64])
 
 
+@pytest.mark.cuda_only
 @pytest.mark.full
 def test_refuses_operands_tma_cannot_address():
     a = torch.randn(2, 64, 60, device="cuda", dtype=torch.bfloat16)
@@ -563,6 +573,7 @@ def test_spec_rejects_inconsistent_template_parameters():
         )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "sizes,config",
@@ -585,6 +596,7 @@ def test_m_grouped_tight_psum_masks_each_groups_last_tile(sizes, config):
     _assert_gemm(out, ref)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_m_grouped_tight_per_row_recovers_the_psum_schedule():
     """Per-row ids on tight rows: the recovered ends give the psum type's exact output."""
@@ -601,6 +613,7 @@ def test_m_grouped_tight_per_row_recovers_the_psum_schedule():
     assert torch.equal(out, psum(a, b, grouped_layout=ends))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.full
 @pytest.mark.parametrize(
     "sizes,config",
@@ -619,6 +632,7 @@ def test_m_grouped_aligned_psum(sizes, config):
     _assert_gemm(out[valid], ref[valid])
 
 
+@pytest.mark.cuda_only
 @pytest.mark.full
 @pytest.mark.parametrize(
     "masked,max_m,config",
@@ -641,6 +655,7 @@ def test_m_grouped_masked(masked, max_m, config):
             _assert_gemm(out[g, :mm], a[g, :mm].float() @ b[g].float().T)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_fp16_operands_batched_and_tight():
     """fp16 operands take the same kernel; the output follows the operand dtype."""
@@ -664,6 +679,7 @@ def _gated_ref(ref, activation):
     return act(gate) * up
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
 @pytest.mark.parametrize(
@@ -688,6 +704,7 @@ def test_fused_gated_activation_tight(activation, config):
     _assert_gemm(out, _gated_ref(ref, activation))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.full
 def test_fused_gated_activation_masked_and_fp32_output():
     """Masked groups and an fp32 ``out`` take the fused epilogue without a cast."""
@@ -708,6 +725,7 @@ def test_fused_gated_activation_masked_and_fp32_output():
     _assert_gemm(fp32, ref)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.full
 def test_fused_gated_activation_refusals():
     """A fused call needs an even split of N into gate and up, a K-major B, a known name."""
@@ -729,20 +747,21 @@ def _k_grouped_operands(sizes, m, n, major_a="mn", major_b="mn", dtype=torch.bfl
     """
     torch.manual_seed(0)
     sum_k = sum(sizes)
-    a = torch.randn(m, sum_k, device="cuda", dtype=dtype)
+    a = torch.randn(m, sum_k, device=run_device(), dtype=dtype)
     if major_a == "mn":
         a = a.T.contiguous().T
-    b = torch.randn(n, sum_k, device="cuda", dtype=dtype)
+    b = torch.randn(n, sum_k, device=run_device(), dtype=dtype)
     if major_b == "mn":
         b = b.T.contiguous().T
-    ref = torch.zeros(len(sizes), m, n, device="cuda")
+    ref = torch.zeros(len(sizes), m, n, device=run_device())
     start = 0
     for g, size in enumerate(sizes):
         ref[g] = a[:, start : start + size].float() @ b[:, start : start + size].float().T
         start += size
-    return a, b, torch.tensor(sizes, dtype=torch.int32, device="cuda"), ref
+    return a, b, torch.tensor(sizes, dtype=torch.int32, device=run_device()), ref
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "major_a,major_b,config",
@@ -766,6 +785,7 @@ def test_k_grouped_contiguous(major_a, major_b, config):
     _assert_gemm(out, ref)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.full
 def test_k_grouped_contiguous_without_tokens_and_refusals():
     """Every group empty gives zeros without a launch; the fused epilogue is not offered."""

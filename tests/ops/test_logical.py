@@ -10,6 +10,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase, exact_compare
 from tileops.ops.elementwise import LogicalAndFwdOp, LogicalNotFwdOp, LogicalOrFwdOp
+from workloads.device import run_device
 from workloads.elementwise import LogicalNotWorkload, LogicalWorkload
 
 
@@ -115,8 +116,8 @@ def test_logical_broadcast(
     b_shape,
 ) -> None:
     dtype = torch.float16
-    a = (torch.randn(*a_shape, dtype=dtype, device="cuda") > 0).to(dtype)
-    b = (torch.randn(*b_shape, dtype=dtype, device="cuda") > 0).to(dtype)
+    a = (torch.randn(*a_shape, dtype=dtype, device=run_device()) > 0).to(dtype)
+    b = (torch.randn(*b_shape, dtype=dtype, device=run_device()) > 0).to(dtype)
     op = op_cls()
     ref = ref_fn(a.bool(), b.bool())
     with torch.no_grad():
@@ -129,8 +130,8 @@ def test_logical_and_bool_broadcast() -> None:
     """Bool-input binary broadcast path uses uint8 storage internally."""
     a_shape = (2, 512, 768)
     b_shape = (1, 1, 768)
-    a = torch.randint(0, 2, a_shape, device="cuda").to(torch.bool)
-    b = torch.randint(0, 2, b_shape, device="cuda").to(torch.bool)
+    a = torch.randint(0, 2, a_shape, device=run_device()).to(torch.bool)
+    b = torch.randint(0, 2, b_shape, device=run_device()).to(torch.bool)
     op = LogicalAndFwdOp()
     ref = torch.logical_and(a, b)
     with torch.no_grad():
@@ -197,8 +198,8 @@ def _gen_int_logical_inputs(
         lo, hi = -8, 8
     else:
         lo, hi = -32, 32
-    a = torch.randint(lo, hi, (n,), dtype=dtype, device="cuda")
-    b = torch.randint(lo, hi, (n,), dtype=dtype, device="cuda")
+    a = torch.randint(lo, hi, (n,), dtype=dtype, device=run_device())
+    b = torch.randint(lo, hi, (n,), dtype=dtype, device=run_device())
     # Force a mix of zeros so non-zero truthiness is non-trivial.
     a[::3] = 0
     b[::5] = 0
@@ -229,8 +230,8 @@ def test_logical_int_bool_matrix(
     """Each binary logical op matches torch on every int / bool dtype."""
     n = 4_096
     if dtype == torch.bool:
-        a = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
-        b = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
+        a = torch.randint(0, 2, (n,), device=run_device()).to(torch.bool)
+        b = torch.randint(0, 2, (n,), device=run_device()).to(torch.bool)
     else:
         a, b = _gen_int_logical_inputs(n, dtype)
     op = op_cls()

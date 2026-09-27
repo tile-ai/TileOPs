@@ -131,6 +131,7 @@ class _FakeKernelParam:
         return lambda: False
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_supply_prog_keeps_every_row_in_the_k_loop():
     """Random int32 metadata drops the NT/NN guard sum to ~0 and every tile skips the K-loop."""
@@ -157,6 +158,7 @@ def test_supply_prog_keeps_every_row_in_the_k_loop():
 # Which kernel serves which call
 
 
+@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "numel, n, k, transpose_a, transpose_b, expected",
     [

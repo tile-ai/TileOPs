@@ -8,6 +8,7 @@ from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.constants import MAX_BLOCK_THREADS
 from tileops.kernels.fft import FFT_PLANS, FFTC2CCall, FFTC2CDecomposedKernel
 from tileops.ops import FFTC2CFwdOp
+from workloads.device import run_device
 from workloads.fft import FFTWorkload
 
 
@@ -44,6 +45,7 @@ class FFTFixture(FixtureBase):
     PARAMS = [("n, dtype, batch_shape", _CORRECTNESS_CASES)]
 
 
+@pytest.mark.cuda_only
 @FFTFixture
 def test_fft_c2c(n: int, dtype: torch.dtype, batch_shape: tuple) -> None:
     batch = math.prod(batch_shape) if batch_shape else 1
@@ -73,7 +75,7 @@ def test_fft_c2c(n: int, dtype: torch.dtype, batch_shape: tuple) -> None:
 def test_fft_batch_above_grid_y_limit() -> None:
     """The symbolic batch is grid.x, so batch may exceed CUDA grid.y's 65535 limit."""
     n = 64
-    x = torch.randn(65536, n, device="cuda", dtype=torch.complex64)
+    x = torch.randn(65536, n, device=run_device(), dtype=torch.complex64)
 
     got = FFTC2CFwdOp()(x)
 
@@ -83,7 +85,7 @@ def test_fft_batch_above_grid_y_limit() -> None:
 @pytest.mark.smoke
 def test_fft_lazy_conjugate_input() -> None:
     """A conjugate view keeps its conj bit through contiguous(); view_as_real rejects it."""
-    x = torch.randn(4, 64, device="cuda", dtype=torch.complex64).conj()
+    x = torch.randn(4, 64, device=run_device(), dtype=torch.complex64).conj()
 
     got = FFTC2CFwdOp()(x)
 
@@ -111,7 +113,7 @@ def test_every_power_of_two_through_2_28_has_a_kernel(dtype: torch.dtype) -> Non
 
 @pytest.mark.smoke
 def test_fft_n1_is_an_out_of_place_identity() -> None:
-    x = torch.randn(3, 1, device="cuda", dtype=torch.complex64)
+    x = torch.randn(3, 1, device=run_device(), dtype=torch.complex64)
 
     got = FFTC2CFwdOp()(x)
 
@@ -132,7 +134,7 @@ def test_tune_configures_every_kernel_of_a_four_step_plan(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(FFTC2CDecomposedKernel, "tune_jit_kernel", fake_tune)
     # The shortest decomposed length: two kernels.
-    x = torch.randn(2, 1 << 14, device="cuda", dtype=torch.complex128)
+    x = torch.randn(2, 1 << 14, device=run_device(), dtype=torch.complex128)
     op = FFTC2CFwdOp(tune=True)
     got = op(x)
 

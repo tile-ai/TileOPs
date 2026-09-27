@@ -13,30 +13,31 @@ import pytest
 import torch
 
 import tileops.ops.elementwise as elementwise_mod
+from workloads.device import run_device
 
 
 def _randn(s, d):
-    return torch.randn(*s, dtype=d, device="cuda")
+    return torch.randn(*s, dtype=d, device=run_device())
 
 
 def _rand_pos(s, d):
-    return torch.rand(*s, dtype=d, device="cuda") + 0.1
+    return torch.rand(*s, dtype=d, device=run_device()) + 0.1
 
 
 def _rand_bool(s, d):
-    return (torch.randn(*s, dtype=d, device="cuda") > 0).to(d)
+    return (torch.randn(*s, dtype=d, device=run_device()) > 0).to(d)
 
 
 def _randint(s, d):
-    return torch.randint(-1000, 1000, s, dtype=d, device="cuda")
+    return torch.randint(-1000, 1000, s, dtype=d, device=run_device())
 
 
 def _pow_base(s, d):
-    return torch.rand(*s, dtype=d, device="cuda") + 0.5
+    return torch.rand(*s, dtype=d, device=run_device()) + 0.5
 
 
 def _pow_exp(s, d):
-    return torch.rand(*s, dtype=d, device="cuda") * 2.0
+    return torch.rand(*s, dtype=d, device=run_device()) * 2.0
 
 
 # (op_name, dtype, gen_a, gen_b, ref_fn).
@@ -124,8 +125,8 @@ def test_channel_broadcast_with_ragged_inner_dim(op_name: str) -> None:
     swapped operand would not cancel out.
     """
     cls = getattr(elementwise_mod, op_name)
-    a = torch.randn(2, 3, 10, 30, dtype=torch.float16, device="cuda")
-    b = torch.rand(3, 1, 1, dtype=torch.float16, device="cuda") + 0.5
+    a = torch.randn(2, 3, 10, 30, dtype=torch.float16, device=run_device())
+    b = torch.rand(3, 1, 1, dtype=torch.float16, device=run_device()) + 0.5
     ref = torch.maximum(a, b) if op_name == "MaximumFwdOp" else a / b
     out = cls()(a, b)
     torch.testing.assert_close(out, ref, atol=1e-2, rtol=1e-2)
@@ -144,8 +145,8 @@ def test_staged_row_broadcast_matches_torch(a_shape, b_shape):
     """A staged predicate broadcast agrees with torch on every stride pair."""
     from tileops.ops.elementwise import GtFwdOp
 
-    a = torch.randn(a_shape, device="cuda", dtype=torch.float16)
-    b = torch.randn(b_shape, device="cuda", dtype=torch.float16)
+    a = torch.randn(a_shape, device=run_device(), dtype=torch.float16)
+    b = torch.randn(b_shape, device=run_device(), dtype=torch.float16)
     out = GtFwdOp()(a, b)
     assert out.dtype == torch.bool
     assert torch.equal(out, torch.gt(a, b))
@@ -164,6 +165,6 @@ def test_row_broadcast_tail_matches_torch(a_shape, b_shape):
     """Both endings of a ragged row write every element torch writes."""
     from tileops.ops.elementwise import AddFwdOp
 
-    a = torch.randn(a_shape, device="cuda", dtype=torch.float32)
-    b = torch.randn(b_shape, device="cuda", dtype=torch.float32)
+    a = torch.randn(a_shape, device=run_device(), dtype=torch.float32)
+    b = torch.randn(b_shape, device=run_device(), dtype=torch.float32)
     assert torch.equal(AddFwdOp()(a, b), a + b)

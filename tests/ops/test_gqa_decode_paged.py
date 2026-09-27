@@ -8,6 +8,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
+from workloads.device import run_device
 from workloads.gqa import (
     GroupedQueryAttentionDecodePagedWorkload,
 )
@@ -23,8 +24,8 @@ def _built_kernel(
     dtype: torch.dtype = torch.float16,
 ):
     """The kernel *op* builds for a call of these extents."""
-    q = torch.empty(batch, heads, dim, dtype=dtype, device="cuda")
-    k = torch.empty(seqlen_kv, heads_kv, dim, dtype=dtype, device="cuda")
+    q = torch.empty(batch, heads, dim, dtype=dtype, device=run_device())
+    k = torch.empty(seqlen_kv, heads_kv, dim, dtype=dtype, device=run_device())
     return op.kernel_for("gqa_decode_paged", (), op.attention_call(q, k))
 
 
@@ -136,7 +137,9 @@ def test_gqa_decode_paged_non_divisible_128_page_split() -> None:
     q, k, v, real_seqlen_kv, block_table = test.gen_inputs()
     real_seqlen_kv.fill_(seqlen_kv)
     block_table.copy_(
-        torch.arange(seqlen_kv // page_size, device="cuda", dtype=torch.int32).flip(0).unsqueeze(0)
+        torch.arange(seqlen_kv // page_size, device=run_device(), dtype=torch.int32)
+        .flip(0)
+        .unsqueeze(0)
     )
     op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(page_size)
     kernel = _built_kernel(op, batch, heads, heads_kv, seqlen_kv, dim)

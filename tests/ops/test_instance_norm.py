@@ -6,6 +6,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase, standard_tolerance
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
+from workloads.device import run_device
 from workloads.normalization import InstanceNormWorkload
 
 
@@ -59,10 +60,10 @@ class InstanceNormNonContigFixture(FixtureBase):
 def test_instance_norm_non_contiguous(n: int, c: int, spatial: tuple, dtype: torch.dtype) -> None:
     """Test with non-contiguous input (sliced tensor)."""
     shape = (n, c * 2, *spatial)
-    x_full = torch.randn(shape, dtype=dtype, device="cuda")
+    x_full = torch.randn(shape, dtype=dtype, device=run_device())
     x = x_full[:, :c]  # non-contiguous slice
-    weight = torch.randn(c, dtype=dtype, device="cuda")
-    bias = torch.randn(c, dtype=dtype, device="cuda")
+    weight = torch.randn(c, dtype=dtype, device=run_device())
+    bias = torch.randn(c, dtype=dtype, device=run_device())
 
     op = InstanceNormFwdOp()
 
@@ -108,7 +109,7 @@ def test_instance_norm_affine_free_op(
 ) -> None:
     """Withholding the affine matches F.instance_norm(weight=None, bias=None)."""
     op = InstanceNormFwdOp()
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
     y = op(x)
     y_ref = F.instance_norm(
         x.float(),
@@ -131,9 +132,9 @@ def test_instance_norm_affine_free_running_stats(
 ) -> None:
     """use_input_stats=False uses running_mean/running_var; matches torch reference."""
     op = InstanceNormFwdOp(use_input_stats=False)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-    running_mean = torch.randn(c, dtype=torch.float32, device="cuda")
-    running_var = torch.rand(c, dtype=torch.float32, device="cuda") + 0.1
+    x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
+    running_mean = torch.randn(c, dtype=torch.float32, device=run_device())
+    running_var = torch.rand(c, dtype=torch.float32, device=run_device()) + 0.1
     y = op(x, running_mean, running_var)
     y_ref = F.instance_norm(
         x,
@@ -166,6 +167,7 @@ def test_instance_norm_validate_dtypes_matches_manifest_inputs() -> None:
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_instance_norm_lazily_specializes_per_device() -> None:
     """An op first called on a non-default CUDA device builds its entry there."""
@@ -200,9 +202,9 @@ def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
     op = InstanceNormFwdOp()
 
     def run_case(n: int, c: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
-        x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-        weight = torch.randn((c,), dtype=dtype, device="cuda")
-        bias = torch.randn((c,), dtype=dtype, device="cuda")
+        x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
+        weight = torch.randn((c,), dtype=dtype, device=run_device())
+        bias = torch.randn((c,), dtype=dtype, device=run_device())
 
         y = op(x, weight=weight, bias=bias)
         y_ref = F.instance_norm(
@@ -231,6 +233,7 @@ def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_instance_norm_rejects_affine_device_mismatch() -> None:
     """Forward must raise ValueError when weight/bias live on a different CUDA device than x.
@@ -293,9 +296,9 @@ def test_instance_norm_default_momentum_does_not_change_output() -> None:
     op_other = InstanceNormFwdOp(momentum=0.5)
     assert op_default.momentum == pytest.approx(0.1)
     assert op_other.momentum == pytest.approx(0.5)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-    weight = torch.randn((c,), dtype=dtype, device="cuda")
-    bias = torch.randn((c,), dtype=dtype, device="cuda")
+    x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
+    weight = torch.randn((c,), dtype=dtype, device=run_device())
+    bias = torch.randn((c,), dtype=dtype, device=run_device())
     y1 = op_default(x, weight=weight, bias=bias)
     y2 = op_other(x, weight=weight, bias=bias)
     assert torch.allclose(y1, y2, **standard_tolerance(dtype))
@@ -310,10 +313,12 @@ def test_instance_norm_matches_torch_on_every_presence_branch(use_input_stats, a
     """Affine tensors are independent, and running statistics are read in eval and updated
     in the input's dtype otherwise, as ``torch.nn.functional.instance_norm`` does."""
     c, dtype = 16, torch.float16
-    x = torch.randn((2, c, 8, 8), dtype=dtype, device="cuda") * 3 + 1
-    weight = torch.randn(c, dtype=dtype, device="cuda") if affine in ("weight", "both") else None
-    bias = torch.randn(c, dtype=dtype, device="cuda") if affine in ("bias", "both") else None
-    stats = (torch.randn(c, device="cuda"), torch.rand(c, device="cuda") + 0.5)
+    x = torch.randn((2, c, 8, 8), dtype=dtype, device=run_device()) * 3 + 1
+    weight = (
+        torch.randn(c, dtype=dtype, device=run_device()) if affine in ("weight", "both") else None
+    )
+    bias = torch.randn(c, dtype=dtype, device=run_device()) if affine in ("bias", "both") else None
+    stats = (torch.randn(c, device=run_device()), torch.rand(c, device=run_device()) + 0.5)
     mine, ref = [s.clone() for s in stats], [s.clone() for s in stats]
     op = InstanceNormFwdOp(use_input_stats=use_input_stats)
     y = op(x, *mine, weight, bias)
@@ -324,8 +329,8 @@ def test_instance_norm_matches_torch_on_every_presence_branch(use_input_stats, a
 
 @pytest.mark.smoke
 def test_instance_norm_needs_both_running_statistics_to_read_them() -> None:
-    x = torch.randn((2, 16, 8, 8), dtype=torch.float16, device="cuda")
-    stat = torch.zeros(16, device="cuda")
+    x = torch.randn((2, 16, 8, 8), dtype=torch.float16, device=run_device())
+    stat = torch.zeros(16, device=run_device())
     with pytest.raises(ValueError, match="use_input_stats or present"):
         InstanceNormFwdOp(use_input_stats=False)(x)
     with pytest.raises(ValueError, match="'running_var' is required"):

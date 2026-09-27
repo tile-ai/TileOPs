@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionDecodePagedWithKVCacheFwdOp
+from workloads.device import run_device
 from workloads.mha import (
     MhaBwdWorkload,
     MhaDecodePagedWorkload,
@@ -252,7 +253,7 @@ def test_mha_decode_paged_dispatch_declines_multi_token_query() -> None:
     to hand a longer query back rather than serve it.
     """
     op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=256, is_causal=False)
-    q = torch.empty(1, 4, 8, 64, dtype=torch.float16, device="cuda")
-    k = torch.empty(1024, 8, 64, dtype=torch.float16, device="cuda")
+    q = torch.empty(1, 4, 8, 64, dtype=torch.float16, device=run_device())
+    k = torch.empty(1024, 8, 64, dtype=torch.float16, device=run_device())
     chosen = op.select_kernel(op._attention_call(q, k))
     assert chosen.__name__ == "MHADecodePagedKernel"

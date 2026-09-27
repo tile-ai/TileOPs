@@ -25,6 +25,7 @@ from tileops.ops.reduction.reduce import (
     MeanFwdOp,
     SumFwdOp,
 )
+from workloads.device import run_device
 
 # (op_cls, torch_fn) pairs.
 _OP_CASES: list[tuple[type, Callable]] = [
@@ -84,7 +85,7 @@ def test_arithmetic_reduce_conformance(
 ) -> None:
     """Each (op, dim-shape, keepdim, dtype) cell must match PyTorch."""
     torch.manual_seed(0)
-    x = torch.randn(*_SHAPE, dtype=dtype, device="cuda")
+    x = torch.randn(*_SHAPE, dtype=dtype, device=run_device())
     op = op_cls(dim=dim, keepdim=keepdim)
     y = op(x)
     ref = _ref(torch_fn, x, dim, keepdim)
@@ -99,7 +100,7 @@ def test_arithmetic_reduce_conformance(
 @pytest.mark.parametrize("op_cls, torch_fn", _OP_CASES, ids=[c[0].__name__ for c in _OP_CASES])
 def test_dim_none_keepdim_false_returns_0d(op_cls: type, torch_fn: Callable) -> None:
     """``dim=None, keepdim=False`` must return a 0-D tensor matching PyTorch."""
-    x = torch.randn(*_SHAPE, dtype=torch.float32, device="cuda")
+    x = torch.randn(*_SHAPE, dtype=torch.float32, device=run_device())
     op = op_cls(dim=None, keepdim=False)
     y = op(x)
     ref = _ref(torch_fn, x, None, False)
@@ -136,7 +137,7 @@ def test_arithmetic_reduce_unaligned_innermost(
     torch.manual_seed(0)
     unaligned_shape = (4, 8, 255)
     dtype = torch.float16
-    x = torch.randn(*unaligned_shape, dtype=dtype, device="cuda")
+    x = torch.randn(*unaligned_shape, dtype=dtype, device=run_device())
     op = op_cls(dim=dim, keepdim=False)
     y = op(x)
     ref = _ref(torch_fn, x, dim, False)

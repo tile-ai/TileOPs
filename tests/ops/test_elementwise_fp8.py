@@ -5,9 +5,12 @@
 import pytest
 import torch
 
+from workloads.device import run_device
+
 _N = 1024 * 16
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_float_unary_kernel_rejects_fp8():
     """ReluFwdKernel raises ValueError for fp8 (not in narrowed _FLOAT_DTYPES)."""
@@ -17,6 +20,7 @@ def test_float_unary_kernel_rejects_fp8():
         ReluFwdKernel(N_total=_N, dtype=torch.float8_e4m3fn)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_bitwise_kernel_rejects_fp8():
     """BitwiseNotFwdKernel raises ValueError for fp8 (not in _BITWISE_DTYPES)."""
@@ -26,6 +30,7 @@ def test_bitwise_kernel_rejects_fp8():
         BitwiseNotFwdKernel(N_total=_N, dtype=torch.float8_e4m3fn)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_binary_bitwise_kernel_rejects_fp8():
     """BitwiseAndFwdKernel raises ValueError for fp8 (not in _BITWISE_DTYPES)."""
@@ -39,6 +44,7 @@ def test_binary_bitwise_kernel_rejects_fp8():
         )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_binary_arith_kernel_rejects_fp8():
     """MulFwdKernel raises ValueError for fp8 (not in _BINARY_FULL_DTYPES).
@@ -118,6 +124,7 @@ def _binary_kwargs(dtype):
     return {"a_shape": (_N,), "b_shape": (_N,), "dtype": dtype}
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_comparison_family_kernel_rejects_fp8():
     """Comparison family (Eq/Lt/Ge representatives) rejects fp8 at the kernel layer."""
@@ -132,6 +139,7 @@ def test_comparison_family_kernel_rejects_fp8():
             cls(**_binary_kwargs(torch.float8_e4m3fn))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_pow_kernel_rejects_fp8():
     """PowFwdKernel rejects fp8 (narrowed _FLOAT_DTYPES)."""
@@ -141,6 +149,7 @@ def test_pow_kernel_rejects_fp8():
         PowFwdKernel(**_binary_kwargs(torch.float8_e4m3fn))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_division_family_kernel_rejects_fp8():
     """Division family (Div/FloorDivide/Remainder) rejects fp8 at the kernel layer."""
@@ -155,6 +164,7 @@ def test_division_family_kernel_rejects_fp8():
             cls(**_binary_kwargs(torch.float8_e4m3fn))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_lerp_kernel_rejects_fp8():
     """LerpFwdKernel rejects fp8 (narrowed _FLOAT_DTYPES)."""
@@ -164,6 +174,7 @@ def test_lerp_kernel_rejects_fp8():
         LerpFwdKernel(**_binary_kwargs(torch.float8_e4m3fn))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_maximum_minimum_family_kernel_rejects_fp8():
     """Maximum/Minimum family rejects fp8 at the kernel layer."""
@@ -174,6 +185,7 @@ def test_maximum_minimum_family_kernel_rejects_fp8():
             cls(**_binary_kwargs(torch.float8_e4m3fn))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_logical_binary_family_kernel_rejects_fp8():
     """LogicalAnd/LogicalOr family rejects fp8 at the kernel layer."""
@@ -184,6 +196,7 @@ def test_logical_binary_family_kernel_rejects_fp8():
             cls(**_binary_kwargs(torch.float8_e4m3fn))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_logical_unary_kernel_rejects_fp8():
     """LogicalNotFwdKernel (LogicalUnaryKernel base) rejects fp8."""
@@ -193,6 +206,7 @@ def test_logical_unary_kernel_rejects_fp8():
         LogicalNotFwdKernel(N_total=_N, dtype=torch.float8_e4m3fn)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_pow_kernel_rejects_bool_and_int():
     """PowFwdKernel (float-only family) rejects both bool and int inputs.
@@ -208,6 +222,7 @@ def test_pow_kernel_rejects_bool_and_int():
         PowFwdKernel(**_binary_kwargs(torch.int32))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_lerp_kernel_rejects_int():
     """LerpFwdKernel (float-only family) rejects int32 inputs."""
@@ -217,6 +232,7 @@ def test_lerp_kernel_rejects_int():
         LerpFwdKernel(**_binary_kwargs(torch.int32))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_division_family_kernel_rejects_bool_and_int():
     """Division family (Div/FloorDivide/Remainder, float-only ``_FLOAT_DTYPES``)
@@ -249,8 +265,8 @@ def test_where_rejects_fp8_dtype(bad_dtype: torch.dtype) -> None:
 
     shape = (4, 8)
     op = WhereFwdOp()
-    cond = torch.zeros(shape, device="cuda", dtype=torch.bool)
-    x = torch.zeros(shape, device="cuda").to(bad_dtype)
+    cond = torch.zeros(shape, device=run_device(), dtype=torch.bool)
+    x = torch.zeros(shape, device=run_device()).to(bad_dtype)
     with pytest.raises((ValueError, TypeError)):
         op(cond, x, x)
 
@@ -266,9 +282,9 @@ def test_where_accepts_manifest_dtypes(dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import WhereFwdOp
 
     shape = (4, 8)
-    cond = torch.randint(0, 2, shape, device="cuda").bool()
-    inp = torch.randn(shape, device="cuda", dtype=dtype)
-    other = torch.randn(shape, device="cuda", dtype=dtype)
+    cond = torch.randint(0, 2, shape, device=run_device()).bool()
+    inp = torch.randn(shape, device=run_device(), dtype=dtype)
+    other = torch.randn(shape, device=run_device(), dtype=dtype)
     op = WhereFwdOp()
     out = op(cond, inp, other)
     ref = torch.where(cond, inp, other)

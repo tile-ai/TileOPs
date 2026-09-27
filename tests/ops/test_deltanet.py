@@ -20,6 +20,7 @@ from tileops.linear_attention import (
     DeltaNetFwdOp,
 )
 from tileops.ops import DeltaNetDecodeFwdOp, DeltaNetInferenceFwdOp
+from workloads.device import run_device
 from workloads.linear_attention import (
     DeltaNetDecodeWorkload,
     DeltaNetFwdWorkload,
@@ -193,17 +194,17 @@ def test_deltanet_bwd(
 ) -> None:
     torch.manual_seed(42)
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
-    q = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
-    beta = torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5
+    q = torch.randn(B, H, S, DK, device=run_device(), dtype=dtype) * 0.1
+    k = torch.randn(B, H, S, DK, device=run_device(), dtype=dtype) * 0.1
+    v = torch.randn(B, H, S, DV, device=run_device(), dtype=dtype) * 0.1
+    beta = torch.rand(B, H, S, device=run_device(), dtype=dtype) * 0.5
 
     # Forward to get S for backward kernel
     from tileops.ops import DeltaNetFwdOp
 
     fwd_op = DeltaNetFwdOp(chunk_size=BC)
     _o, S_fwd, Aw, Au, w_fwd, u_fwd = fwd_op.forward(q, k, v, beta)
-    do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
+    do = torch.randn(B, H, S, DV, device=run_device(), dtype=dtype) * 0.1
 
     # Reference via autograd
     ref_dq, ref_dk, ref_dv, ref_dbeta = deltanet_autograd_bwd_torch(do, q, k, v, beta, BC)
@@ -233,10 +234,10 @@ B, H, S, DK, DV, BC = 1, 2, 256, 64, 64, 64
 def _inputs(dtype: torch.dtype) -> tuple[torch.Tensor, ...]:
     torch.manual_seed(42)
     scale = 0.1
-    q = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * scale
-    k = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * scale
-    v = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * scale
-    beta = torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5
+    q = torch.randn(B, H, S, DK, device=run_device(), dtype=dtype) * scale
+    k = torch.randn(B, H, S, DK, device=run_device(), dtype=dtype) * scale
+    v = torch.randn(B, H, S, DV, device=run_device(), dtype=dtype) * scale
+    beta = torch.rand(B, H, S, device=run_device(), dtype=dtype) * 0.5
     return q, k, v, beta
 
 
@@ -244,7 +245,7 @@ def _inputs(dtype: torch.dtype) -> tuple[torch.Tensor, ...]:
 def test_deltanet_autograd_matches_the_ops_it_wraps() -> None:
     dtype = torch.float16
     q, k, v, beta = _inputs(dtype)
-    do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
+    do = torch.randn(B, H, S, DV, device=run_device(), dtype=dtype) * 0.1
 
     o_ref, s, aw, au, w, u = DeltaNetFwdOp(chunk_size=BC).forward(q, k, v, beta)
     grads_ref = DeltaNetBwdOp(chunk_size=BC).forward(do, q, k, v, beta, s, aw, au, w, u)
@@ -449,14 +450,14 @@ def test_deltanet_decode_multi_step(
     op = DeltaNetDecodeFwdOp(tune=tune)
     tols = _get_tolerances_deltanet_recurrence(dtype)
 
-    state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
-    state_ref = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
+    state_op = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
+    state_ref = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
 
     for _ in range(num_steps):
-        q = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-        k = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-        v = torch.randn(B, H, DV, device="cuda", dtype=dtype) * 0.1
-        beta = torch.rand(B, H, device="cuda", dtype=dtype) * 0.5
+        q = torch.randn(B, H, DK, device=run_device(), dtype=dtype) * 0.1
+        k = torch.randn(B, H, DK, device=run_device(), dtype=dtype) * 0.1
+        v = torch.randn(B, H, DV, device=run_device(), dtype=dtype) * 0.1
+        beta = torch.rand(B, H, device=run_device(), dtype=dtype) * 0.5
 
         o_ref, state_ref = deltanet_decode_torch(q, k, v, beta, state_ref)
         o_ref = o_ref.to(dtype)
@@ -480,6 +481,7 @@ def _skip_unless_raw_cuda_decode_supported() -> None:
         pytest.skip(f"raw DeltaNet decode requires SM90, got SM{sm_version}")
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None:
@@ -496,6 +498,7 @@ def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None
     test.check(op, *inputs, **_get_tolerances_deltanet_recurrence(dtype))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
@@ -579,6 +582,7 @@ def _stated_call(
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 def test_deltanet_decode_raw_cuda_dispatch_selects_raw_on_supported_sm90(
@@ -589,6 +593,7 @@ def test_deltanet_decode_raw_cuda_dispatch_selects_raw_on_supported_sm90(
     assert op.select_kernel(_stated_call(90, dtype)) is _RawDispatchKernel
 
 
+@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "tune",
     [
@@ -605,6 +610,7 @@ def test_deltanet_decode_build_carries_the_tune_flag(tune: bool) -> None:
     assert kernel.kwargs["tune"] is tune
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_deltanet_decode_raw_cuda_dispatch_falls_back_on_unsupported_sm() -> None:
     op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
@@ -612,6 +618,7 @@ def test_deltanet_decode_raw_cuda_dispatch_falls_back_on_unsupported_sm() -> Non
     assert op.select_kernel(_stated_call(80, torch.bfloat16)) is _DefaultDispatchKernel
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(("dim_k", "dim_v"), [(64, 128), (128, 64)])
 def test_deltanet_decode_raw_cuda_dispatch_falls_back_on_non_128_shapes(
@@ -625,6 +632,7 @@ def test_deltanet_decode_raw_cuda_dispatch_falls_back_on_non_128_shapes(
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_deltanet_decode_raw_cuda_dispatch_uses_fp32_kernel_for_fp32() -> None:
     op = DeltaNetDecodeFwdOp(kernel_map=_dispatch_kernel_map())
@@ -632,6 +640,7 @@ def test_deltanet_decode_raw_cuda_dispatch_uses_fp32_kernel_for_fp32() -> None:
     assert op.select_kernel(_stated_call(90, torch.float32)) is _FP32DispatchKernel
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_deltanet_decode_raw_cuda_config_requires_full_warp_mapping() -> None:
     with pytest.raises(ValueError, match="threads .* must equal raw_group_size \\* v_tile"):
@@ -650,6 +659,7 @@ def test_deltanet_decode_raw_cuda_config_requires_full_warp_mapping() -> None:
         )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_deltanet_decode_raw_cuda_config_requires_two_lane_group() -> None:
     with pytest.raises(ValueError, match="raw_group_size must equal 2"):

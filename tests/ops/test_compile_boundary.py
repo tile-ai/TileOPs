@@ -67,6 +67,7 @@ from workloads.deepseek_attention import (
     NsaFwdWorkload,
     NsaTopkWorkload,
 )
+from workloads.device import run_device
 from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload
 from workloads.gqa import (
     GQAPrefillPagedWithKVCacheFwdWorkload,
@@ -181,9 +182,9 @@ def _attention_cases():
         return FP8LightningIndexerFwdOp(), case.gen_inputs()
 
     def topk_selector():
-        score = torch.randn(1, 256, 512, 1, dtype=torch.float32, device="cuda")
-        starts = torch.zeros(1, 256, dtype=torch.int32, device="cuda")
-        ends = torch.full((1, 256), 512, dtype=torch.int32, device="cuda")
+        score = torch.randn(1, 256, 512, 1, dtype=torch.float32, device=run_device())
+        starts = torch.zeros(1, 256, dtype=torch.int32, device=run_device())
+        ends = torch.full((1, 256), 512, dtype=torch.int32, device=run_device())
         return TopkSelectorFwdOp(topk=64), (score, starts, ends)
 
     return (
@@ -213,7 +214,7 @@ def _gemm_cases():
     _M, _N, _K = 128, 256, 256
 
     def _x(*shape, dtype=_DTYPE):
-        return torch.randn(*shape, dtype=dtype, device="cuda")
+        return torch.randn(*shape, dtype=dtype, device=run_device())
 
     def gemm():
         return GemmFwdOp(), (_x(_M, _K), _x(_N, _K))
@@ -233,15 +234,15 @@ def _gemm_cases():
         group = 128
         return GemmW4A16FwdOp(), (
             _x(_M, _K),
-            torch.randint(0, 255, (_N, _K // 2), dtype=torch.uint8, device="cuda"),
+            torch.randint(0, 255, (_N, _K // 2), dtype=torch.uint8, device=run_device()),
             _x(_N, _K // group).abs(),  # the scale follows the activation dtype
-            torch.randint(0, 15, (_N, _K // group), dtype=torch.uint8, device="cuda"),
+            torch.randint(0, 15, (_N, _K // group), dtype=torch.uint8, device=run_device()),
         )
 
     def grouped_gemm():
         groups, rows = 2, 128
-        sizes = torch.full((groups,), rows, dtype=torch.int32, device="cuda")
-        offsets = torch.tensor([0, rows], dtype=torch.int32, device="cuda")
+        sizes = torch.full((groups,), rows, dtype=torch.int32, device=run_device())
+        offsets = torch.tensor([0, rows], dtype=torch.int32, device=run_device())
         return GroupedGemmFwdOp(), (
             _x(groups * rows, _K),
             _x(groups, _N, _K),
@@ -257,7 +258,7 @@ def _gemm_cases():
     def bmm_fp8():
         batch = 2
         fp8 = dict(dtype=torch.float8_e4m3fn)
-        scale = torch.tensor(1.0, dtype=torch.float32, device="cuda")
+        scale = torch.tensor(1.0, dtype=torch.float32, device=run_device())
         return BmmFp8FwdOp(out_dtype=torch.float16), (
             _x(batch, _M, _K).to(**fp8),
             _x(batch, _K, _N).to(**fp8),
@@ -283,7 +284,7 @@ def _mamba_cases():
     _S = _Q * _NC
 
     def _x(*shape, dtype=_DTYPE):
-        return torch.randn(*shape, dtype=dtype, device="cuda")
+        return torch.randn(*shape, dtype=dtype, device=run_device())
 
     f32 = dict(dtype=torch.float32)
 
@@ -349,7 +350,7 @@ def _linear_attention_cases():
     _SCALE = _D**-0.5
 
     def _x(*shape, dtype=_DTYPE):
-        return torch.randn(*shape, dtype=dtype, device="cuda")
+        return torch.randn(*shape, dtype=dtype, device=run_device())
 
     chunks = _S // _CHUNK + 1
 
@@ -440,7 +441,7 @@ def _sequence_modeling_cases():
     _CONV_TAPS = 4
 
     def _x(*shape, dtype=_DTYPE):
-        return torch.randn(*shape, dtype=dtype, device="cuda")
+        return torch.randn(*shape, dtype=dtype, device=run_device())
 
     def engram_gate_conv_fwd():
         op = EngramGateConvFwdOp(_M, _SEQ_LEN, _D)
@@ -518,7 +519,7 @@ def _rope_cases():
     _SEQ_LEN, _HEADS, _D = 64, 4, 64
 
     def _x(*shape):
-        return torch.randn(*shape, dtype=_DTYPE, device="cuda")
+        return torch.randn(*shape, dtype=_DTYPE, device=run_device())
 
     def one_d(op_cls):
         return lambda: (op_cls(layout="1d"), (_x(_SEQ_LEN, _D),))
@@ -527,12 +528,12 @@ def _rope_cases():
         return lambda: (op_cls(layout="2d"), (_x(2, _SEQ_LEN, _HEADS, _D),))
 
     def longrope():
-        rescale = torch.linspace(1.0, 2.0, _D // 2, device="cuda")
+        rescale = torch.linspace(1.0, 2.0, _D // 2, device=run_device())
         return RopeLongRopeFwdOp(rescale_factors=rescale), (_x(_SEQ_LEN, _D),)
 
     def position_ids():
         op = RopeNeoxPositionIdsFwdOp(max_position=128)
-        positions = torch.arange(_SEQ_LEN, device="cuda", dtype=torch.int32)
+        positions = torch.arange(_SEQ_LEN, device=run_device(), dtype=torch.int32)
         return op, (_x(_SEQ_LEN, _HEADS, _D), positions)
 
     return (

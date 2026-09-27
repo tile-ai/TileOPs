@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from tileops.backend import BUILTIN
+from workloads.device import run_device
 
 _INPLACE_PARAM_FREE_OPS = (
     "ReluFwdOp",
@@ -58,6 +59,7 @@ def _clamp_construct_kwargs(op_name: str) -> dict:
     return {}
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize("op_name", _CLAMP_OPS)
@@ -124,7 +126,7 @@ def test_unary_activation_inplace_true_aliases_input(op_name: str) -> None:
     n_total = 64
     dtype = torch.float16
     op = _construct_inplace_op(mod, op_name, n_total, inplace=True)
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    x = torch.randn(n_total, dtype=dtype, device=run_device())
     expected = _torch_reference(op_name)(x.clone())
     y = op(x)
     assert y is x, (
@@ -149,7 +151,7 @@ def test_unary_activation_inplace_false_returns_fresh_tensor(op_name: str) -> No
     n_total = 64
     dtype = torch.float16
     op = _construct_inplace_op(mod, op_name, n_total, inplace=False)
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    x = torch.randn(n_total, dtype=dtype, device=run_device())
     x_before = x.clone()
     y = op(x)
     assert y is not x, f"{op_name}: inplace=False must return a fresh tensor"
@@ -180,7 +182,7 @@ def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
     n_total = 128
     dtype = torch.float16
     op = mod.GeluFwdOp(approximate=approximate)
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    x = torch.randn(n_total, dtype=dtype, device=run_device())
     y = op(x)
     expected = torch.nn.functional.gelu(x, approximate=approximate)
     assert y.shape == x.shape

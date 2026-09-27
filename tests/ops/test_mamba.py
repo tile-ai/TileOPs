@@ -10,6 +10,7 @@ from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.mamba.ssd_decode import SSDDecodeFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
+from workloads.device import run_device
 from workloads.mamba import (
     DaCumsumFwdFixture,
     DaCumsumFwdWorkload,
@@ -44,8 +45,8 @@ from workloads.mamba import (
 def test_cb_producer_fwd(batch, num_chunks, chunk_len, n_groups, d_state, dtype, tune):
     op = CBProducerFwdOp(chunk_len, tune=tune)
     seq_len = num_chunks * chunk_len
-    C_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device="cuda") * 0.1
-    B_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device="cuda") * 0.1
+    C_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device=run_device()) * 0.1
+    B_mat = torch.randn(batch, seq_len, n_groups, d_state, dtype=dtype, device=run_device()) * 0.1
     ref = cb_producer_fwd_ref(C_mat, B_mat, num_chunks, chunk_len, dtype)
     out = op(C_mat, B_mat)
     allclose_compare(out, ref, atol=1e-3, rtol=1e-3)
@@ -57,8 +58,8 @@ def test_cb_producer_fwd_noncontiguous():
     batch, num_chunks, chunk_len, n_groups, d_state = 1, 2, 64, 1, 64
     dtype = torch.float16
     seq_len = num_chunks * chunk_len
-    C_full = torch.randn(batch, seq_len * 2, n_groups, d_state, dtype=dtype, device="cuda")
-    B_full = torch.randn(batch, seq_len * 2, n_groups, d_state, dtype=dtype, device="cuda")
+    C_full = torch.randn(batch, seq_len * 2, n_groups, d_state, dtype=dtype, device=run_device())
+    B_full = torch.randn(batch, seq_len * 2, n_groups, d_state, dtype=dtype, device=run_device())
     C_mat = C_full[:, ::2, :, :]
     B_mat = B_full[:, ::2, :, :]
     assert not C_mat.is_contiguous()
@@ -95,6 +96,7 @@ def test_da_cumsum_fwd(
     test.check(op, *inputs, atol=1e-5, rtol=1e-5)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_da_cumsum_fwd_missing_bias_raises():
     """DaCumsumFwdKernel must raise when has_dt_bias=True but dt_bias is None."""
@@ -120,8 +122,8 @@ def test_da_cumsum_fwd_padded_head_tile():
     batch, n_heads, chunk_len, num_chunks = 1, 5, 64, 2
     seq_len = chunk_len * num_chunks
     op = DaCumsumFwdOp(chunk_len=chunk_len, out_dtype=torch.float32)
-    dt = torch.rand(batch, seq_len, n_heads, dtype=torch.float32, device="cuda")
-    A = -torch.rand(n_heads, dtype=torch.float32, device="cuda")
+    dt = torch.rand(batch, seq_len, n_heads, dtype=torch.float32, device=run_device())
+    A = -torch.rand(n_heads, dtype=torch.float32, device=run_device())
 
     dt_out, dA_cumsum = op(dt, A)
     ref_dt, ref_cumsum = da_cumsum_fwd_ref(
@@ -188,6 +190,7 @@ def test_ssd_chunk_state_fwd(
     test.check(op, *inputs, atol=atol, rtol=rtol)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_ssd_chunk_state_fwd_seq_idx_semantics():
     """Exercise negative chunk ends and the optional unmasked path."""
@@ -244,6 +247,7 @@ def test_ssd_state_passing_fwd(batch, num_chunks, n_heads, d_state, dtype, tune)
     test.check(op, *inputs, atol=atol, rtol=rtol)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "config",
@@ -302,7 +306,7 @@ def test_ssd_decode(batch, n_heads, d_head, d_state, n_groups, dtype, tune):
 )
 def test_mamba2_fwd_e2e(batch, seqlen, n_heads, d_head, d_state, n_groups, chunk_size, dtype):
     """Mamba2FwdOp output must match the pure-PyTorch reference within tolerance."""
-    dev = "cuda"
+    dev = run_device()
     torch.manual_seed(42)
     x = torch.randn(batch, seqlen, n_heads, d_head, dtype=dtype, device=dev) * 0.1
     dt_raw = torch.randn(batch, seqlen, n_heads, dtype=torch.float32, device=dev) * 0.5

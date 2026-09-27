@@ -10,6 +10,7 @@ from tileops.backend import BUILTIN
 from tileops.kernels.norm import FusedAddRMSNormKernel
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
+from workloads.device import run_device
 from workloads.normalization import FusedAddRMSNormWorkload, RMSNormWorkload
 
 register_compile_contract(RMSNormFwdOp)
@@ -74,9 +75,9 @@ class RMSNormNonContigFixture(FixtureBase):
 @RMSNormNonContigFixture
 def test_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     """Test with non-contiguous input (sliced tensor)."""
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
     x = x_full[:, :n]  # non-contiguous slice
-    weight = torch.randn(n, dtype=dtype, device="cuda")
+    weight = torch.randn(n, dtype=dtype, device=run_device())
 
     op = RMSNormFwdOp(normalized_shape=(n,))
 
@@ -109,8 +110,8 @@ class RMSNorm3DFixture(FixtureBase):
 @RMSNorm3DFixture
 def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     """Test with 3D input (batch, seq, hidden)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    weight = torch.randn(hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
+    weight = torch.randn(hidden, dtype=dtype, device=run_device())
 
     op = RMSNormFwdOp(normalized_shape=(hidden,))
 
@@ -127,6 +128,7 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_the_op_holds_one_kernel_per_dtype_whatever_the_row_count() -> None:
     """The op keys on dtype: the row count reaches the kernel as an argument.
@@ -149,6 +151,7 @@ def test_the_op_holds_one_kernel_per_dtype_whatever_the_row_count() -> None:
     assert grew == 3, "one program per distinct row count, held by the kernel not the op"
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_a_warmed_up_op_can_be_captured_and_replayed() -> None:
     """Building a kernel may compile, so capture only ever sees a memo hit and a launch."""
@@ -176,8 +179,8 @@ def test_a_warmed_up_op_can_be_captured_and_replayed() -> None:
 def test_a_cold_op_traces_fullgraph_and_matches_eager() -> None:
     """Cold is the whole contract: a warm op has nothing left for dynamo to trace into."""
     op = RMSNormFwdOp(normalized_shape=(4096,))
-    x = torch.randn(64, 4096, dtype=torch.float16, device="cuda")
-    weight = torch.randn(4096, dtype=torch.float16, device="cuda")
+    x = torch.randn(64, 4096, dtype=torch.float16, device=run_device())
+    weight = torch.randn(4096, dtype=torch.float16, device=run_device())
 
     torch.testing.assert_close(torch.compile(op, fullgraph=True)(x, weight), op(x, weight))
 
@@ -187,8 +190,8 @@ def test_a_cold_op_traces_fullgraph_and_matches_eager() -> None:
 def test_the_traced_graph_holds_only_this_ops_operator() -> None:
     """The node is the op's, so replacing the kernel cannot change the graph."""
     op = RMSNormFwdOp(normalized_shape=(256,))
-    x = torch.randn(8, 256, dtype=torch.float16, device="cuda")
-    weight = torch.randn(256, dtype=torch.float16, device="cuda")
+    x = torch.randn(8, 256, dtype=torch.float16, device=run_device())
+    weight = torch.randn(256, dtype=torch.float16, device=run_device())
 
     assert_op_owns_graph_nodes(op, x, weight)
 
@@ -198,8 +201,8 @@ def test_the_traced_graph_holds_only_this_ops_operator() -> None:
 def test_a_non_contiguous_input_compiles_to_the_shape_the_fake_promised() -> None:
     """The fake speaks before the body normalizes contiguity, so it promises contiguous."""
     op = RMSNormFwdOp(normalized_shape=(256,))
-    x = torch.randn(8, 512, dtype=torch.float16, device="cuda")[:, ::2]
-    weight = torch.randn(256, dtype=torch.float16, device="cuda")
+    x = torch.randn(8, 512, dtype=torch.float16, device=run_device())[:, ::2]
+    weight = torch.randn(256, dtype=torch.float16, device=run_device())
     assert not x.is_contiguous()
 
     output = torch.compile(op, fullgraph=True)(x, weight)
@@ -211,7 +214,7 @@ def test_a_non_contiguous_input_compiles_to_the_shape_the_fake_promised() -> Non
 @pytest.mark.smoke
 def test_no_weight_and_no_eps_match_torch() -> None:
     """An absent weight scales by one; ``eps=None`` is torch's float32 machine epsilon."""
-    x = torch.full((2, 4), 1e-3, dtype=torch.float16, device="cuda")
+    x = torch.full((2, 4), 1e-3, dtype=torch.float16, device=run_device())
     torch.testing.assert_close(RMSNormFwdOp(normalized_shape=(4,))(x), F.rms_norm(x, [4]))
 
 
@@ -279,11 +282,11 @@ class FusedAddRMSNormNonContigFixture(FixtureBase):
 @FusedAddRMSNormNonContigFixture
 def test_fused_add_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     """Test with non-contiguous input (sliced tensor)."""
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
-    r_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
+    r_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
     x = x_full[:, :n]  # non-contiguous slice
     residual = r_full[:, :n]
-    weight = torch.randn(n, dtype=dtype, device="cuda")
+    weight = torch.randn(n, dtype=dtype, device=run_device())
 
     op = FusedAddRMSNormFwdOp()
 
@@ -316,9 +319,9 @@ class FusedAddRMSNorm3DFixture(FixtureBase):
 @FusedAddRMSNorm3DFixture
 def test_fused_add_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     """Test with 3D input (batch, seq, hidden)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    residual = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    weight = torch.randn(hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
+    residual = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
+    weight = torch.randn(hidden, dtype=dtype, device=run_device())
 
     M = batch * seq
     op = FusedAddRMSNormFwdOp()
@@ -336,6 +339,7 @@ def test_fused_add_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.d
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_fused_add_rms_norm_rejects_partial_access_width() -> None:
     """A width leaving a partial 16-byte access is refused at construction.

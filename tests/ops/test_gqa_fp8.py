@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tileops.ops import GroupedQueryAttentionDenseFwdOp
+from workloads.device import run_device
 
 
 def _quantize_kv_fa3_descale(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -85,9 +86,18 @@ def test_gqa_prefill_fp8_kernel_accepts_fa3_descale_contract(
     input_scale: float,
 ) -> None:
     batch, heads, heads_kv, dim = 1, 8, 2, 128
-    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16) * input_scale
-    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16) * input_scale
-    v = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16) * input_scale
+    q = (
+        torch.randn(batch, seq_len, heads, dim, device=run_device(), dtype=torch.float16)
+        * input_scale
+    )
+    k = (
+        torch.randn(batch, seq_len, heads_kv, dim, device=run_device(), dtype=torch.float16)
+        * input_scale
+    )
+    v = (
+        torch.randn(batch, seq_len, heads_kv, dim, device=run_device(), dtype=torch.float16)
+        * input_scale
+    )
 
     q_fp8, q_descale = _quantize_q_fa3_gqa_descale(q, heads_kv)
     k_fp8, k_descale = _quantize_kv_fa3_descale(k)
@@ -120,10 +130,10 @@ def test_gqa_prefill_fp8_kernel_accepts_fa3_descale_contract(
 def test_gqa_prefill_fp8_tensor_core_handles_tail_tiles(seq_len: int) -> None:
     batch, heads, heads_kv, dim = 1, 8, 2, 128
     fp8 = torch.float8_e4m3fn
-    q = torch.zeros((batch, seq_len, heads, dim), device="cuda", dtype=fp8)
-    k = torch.zeros((batch, seq_len, heads_kv, dim), device="cuda", dtype=fp8)
+    q = torch.zeros((batch, seq_len, heads, dim), device=run_device(), dtype=fp8)
+    k = torch.zeros((batch, seq_len, heads_kv, dim), device=run_device(), dtype=fp8)
     v = torch.ones_like(k)
-    scale = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
+    scale = torch.ones((batch, heads_kv), device=run_device(), dtype=torch.float32)
 
     out = _run_fp8_prefill_kernel(
         batch=batch,
@@ -150,9 +160,9 @@ def test_gqa_prefill_fp8_tensor_core_matches_dequantized_reference() -> None:
     batch, seq_len, heads, heads_kv, dim = 1, 897, 8, 2, 128
     group_size = heads // heads_kv
     torch.manual_seed(123)
-    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16) * 0.25
-    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16) * 0.25
-    v = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16) * 0.25
+    q = torch.randn(batch, seq_len, heads, dim, device=run_device(), dtype=torch.float16) * 0.25
+    k = torch.randn(batch, seq_len, heads_kv, dim, device=run_device(), dtype=torch.float16) * 0.25
+    v = torch.randn(batch, seq_len, heads_kv, dim, device=run_device(), dtype=torch.float16) * 0.25
 
     q_fp8, q_descale = _quantize_q_fa3_gqa_descale(q, heads_kv)
     k_fp8, k_descale = _quantize_kv_fa3_descale(k)

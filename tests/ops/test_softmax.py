@@ -24,6 +24,7 @@ from tileops.kernels.reduction._split_softmax import (
     split_target_blocks,
 )
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
+from workloads.device import run_device
 from workloads.reduction import LogSoftmaxWorkload, LogSumExpWorkload, SoftmaxWorkload
 
 # Tolerances (from docs/design/testing.md)
@@ -126,7 +127,7 @@ class SoftmaxNonContigFixture(FixtureBase):
 def test_softmax_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     """Test softmax with non-contiguous input (sliced tensor)."""
     m, n = shape
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
     x = x_full[:, :n]  # non-contiguous slice
 
     op = SoftmaxFwdOp(dim=-1)
@@ -160,7 +161,7 @@ class Softmax1DFixture(FixtureBase):
 @Softmax1DFixture
 def test_softmax_1d(n: int, dtype: torch.dtype) -> None:
     """Test softmax with 1D input (single row)."""
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    x = torch.randn(n, dtype=dtype, device=run_device())
     op = SoftmaxFwdOp(dim=-1)
 
     y_ref = F.softmax(x.float(), dim=-1).to(dtype)
@@ -261,7 +262,7 @@ def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) 
 )
 def test_softmax_dtype_widens_in_kernel(op_cls, ref_fn, shape: tuple) -> None:
     """A float32 ``dtype`` on a bfloat16 input matches torch on every kernel path."""
-    x = torch.randn(shape, device="cuda").to(torch.bfloat16)
+    x = torch.randn(shape, device=run_device()).to(torch.bfloat16)
     y = op_cls(dim=-1, dtype=torch.float32)(x)
     assert y.dtype == torch.float32
     # Relative only: softmax values sit below any absolute floor that would let a
@@ -371,7 +372,7 @@ class LogSumExpKeepdimFixture(FixtureBase):
 @LogSumExpKeepdimFixture
 def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     """Test logsumexp with keepdim=True — output retains reduced dim as size 1."""
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=run_device())
     op = LogSumExpFwdOp(dim=dim, keepdim=True)
 
     y_ref = torch.logsumexp(x.float(), dim=dim, keepdim=True).to(dtype)
@@ -385,7 +386,7 @@ def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
 @pytest.mark.smoke
 def test_logsumexp_streaming_special_values() -> None:
     """Streaming logsumexp preserves -inf, +inf, and NaN row semantics."""
-    x = torch.randn(256, 16384, dtype=torch.bfloat16, device="cuda")
+    x = torch.randn(256, 16384, dtype=torch.bfloat16, device=run_device())
     x[0] = float("-inf")
     x[1] = float("-inf")
     x[1, 7] = 2.0
@@ -428,7 +429,7 @@ class LogSoftmaxNonContigFixture(FixtureBase):
 def test_log_softmax_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     """Test log_softmax with non-contiguous input (sliced tensor)."""
     m, n = shape
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
     x = x_full[:, :n]
 
     op = LogSoftmaxFwdOp(dim=-1)
@@ -460,7 +461,7 @@ class LogSumExpNonContigFixture(FixtureBase):
 def test_logsumexp_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     """Test logsumexp with non-contiguous input."""
     m, n = shape
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
     x = x_full[:, :n]
 
     op = LogSumExpFwdOp(dim=-1)
@@ -494,7 +495,7 @@ class LogSoftmax1DFixture(FixtureBase):
 @LogSoftmax1DFixture
 def test_log_softmax_1d(n: int, dtype: torch.dtype) -> None:
     """Test log_softmax with 1D input."""
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    x = torch.randn(n, dtype=dtype, device=run_device())
     op = LogSoftmaxFwdOp(dim=-1)
 
     y_ref = F.log_softmax(x.float(), dim=-1).to(dtype)
@@ -523,7 +524,7 @@ class LogSumExp1DFixture(FixtureBase):
 @LogSumExp1DFixture
 def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
     """Test logsumexp with 1D input -- output should be a scalar."""
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    x = torch.randn(n, dtype=dtype, device=run_device())
     op = LogSumExpFwdOp(dim=-1)
 
     y_ref = torch.logsumexp(x.float(), dim=-1).to(dtype)
@@ -545,7 +546,7 @@ def test_softmax_rejects_a_sequence_dim_at_construction(op_cls) -> None:
 @pytest.mark.smoke
 def test_logsumexp_accepts_multidim() -> None:
     """LogSumExpFwdOp must accept list dim without error (multi-dim is supported)."""
-    x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
+    x = torch.randn(4, 8, device=run_device(), dtype=torch.float32)
     op = LogSumExpFwdOp(dim=[0, 1])
     y = op(x)
     y_ref = torch.logsumexp(x.float(), dim=[0, 1])
@@ -575,7 +576,7 @@ def test_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> Non
     """SoftmaxFwdOp(dim=None) must match F.softmax(x, dim=None) and warn."""
     import warnings as _warnings
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=run_device())
     op = SoftmaxFwdOp(dim=None)
 
     with _warnings.catch_warnings(record=True) as caught:
@@ -601,7 +602,7 @@ def test_log_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) ->
     """LogSoftmaxFwdOp(dim=None) must match F.log_softmax(x, dim=None) and warn."""
     import warnings as _warnings
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=run_device())
     op = LogSoftmaxFwdOp(dim=None)
 
     with _warnings.catch_warnings(record=True) as caught:
@@ -629,9 +630,9 @@ def test_softmax_dim_none_reused_across_ranks() -> None:
 
     op = SoftmaxFwdOp(dim=None)
 
-    x1 = torch.randn(4, dtype=torch.float32, device="cuda")
-    x2 = torch.randn(2, 4, dtype=torch.float32, device="cuda")
-    x3 = torch.randn(4, 3, 5, dtype=torch.float32, device="cuda")
+    x1 = torch.randn(4, dtype=torch.float32, device=run_device())
+    x2 = torch.randn(2, 4, dtype=torch.float32, device=run_device())
+    x3 = torch.randn(4, 3, 5, dtype=torch.float32, device=run_device())
 
     with _warnings.catch_warnings():
         _warnings.simplefilter("ignore", UserWarning)
@@ -657,9 +658,9 @@ def test_log_softmax_dim_none_reused_across_ranks() -> None:
 
     op = LogSoftmaxFwdOp(dim=None)
 
-    x1 = torch.randn(4, dtype=torch.float32, device="cuda")
-    x2 = torch.randn(2, 4, dtype=torch.float32, device="cuda")
-    x3 = torch.randn(4, 3, 5, dtype=torch.float32, device="cuda")
+    x1 = torch.randn(4, dtype=torch.float32, device=run_device())
+    x2 = torch.randn(2, 4, dtype=torch.float32, device=run_device())
+    x3 = torch.randn(4, 3, 5, dtype=torch.float32, device=run_device())
 
     with _warnings.catch_warnings():
         _warnings.simplefilter("ignore", UserWarning)
@@ -689,7 +690,7 @@ def test_log_softmax_eval_roofline_flops_5mn() -> None:
     M, N = 64, 256
     dtype = torch.float16
     op = LogSoftmaxFwdOp(dim=-1)
-    x = torch.randn(M, N, dtype=dtype, device="cuda")
+    x = torch.randn(M, N, dtype=dtype, device=run_device())
     op(x)  # bind dynamic shape
     flops, mem_bytes = op.eval_roofline()
     elem_bytes = dtype.itemsize
@@ -708,7 +709,7 @@ def test_softmax_few_long_rows_split_across_blocks(dtype: torch.dtype) -> None:
     102400 is not a segment multiple, so the tail segment's masked lanes
     contribute ``exp(-inf) = 0`` to the fold.
     """
-    x = torch.randn(4, 102400, dtype=dtype, device="cuda")
+    x = torch.randn(4, 102400, dtype=dtype, device=run_device())
     atol, rtol = (1e-6, 1e-6) if dtype == torch.float32 else (1e-3, 1e-3)
     torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1), atol=atol, rtol=rtol)
     torch.testing.assert_close(
@@ -720,7 +721,7 @@ def test_softmax_few_long_rows_split_across_blocks(dtype: torch.dtype) -> None:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_logsumexp_few_long_rows_split_across_blocks() -> None:
     """logsumexp folds the shared segment statistics without re-reading the input."""
-    x = torch.randn(4, 102400, dtype=torch.float32, device="cuda")
+    x = torch.randn(4, 102400, dtype=torch.float32, device=run_device())
     torch.testing.assert_close(
         LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1), atol=1e-5, rtol=1e-5
     )
@@ -736,7 +737,7 @@ def test_split_rows_survive_fully_masked_segments() -> None:
     single-block path computes fine. An all--inf row stays torch: NaN for
     softmax, ``-inf`` for logsumexp.
     """
-    x = torch.randn(4, 102400, dtype=torch.float32, device="cuda")
+    x = torch.randn(4, 102400, dtype=torch.float32, device=run_device())
     x[:, :4096] = float("-inf")  # first segments fully masked, rest finite
     torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1))
     torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1))

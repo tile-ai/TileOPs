@@ -8,10 +8,12 @@ from tileops.ops import (
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
 )
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="attention selection reads the device architecture",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="attention selection reads the device architecture"
+    ),
+    pytest.mark.cuda_only,
+]
 
 
 def _prefill_call_tensors() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

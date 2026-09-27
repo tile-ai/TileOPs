@@ -5,6 +5,7 @@ from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.kernels.gemm.bmm import BmmFp8TransposeKernel, BmmPersistentKernel
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.ops import BmmFp8FwdOp, BmmFwdOp
+from workloads.device import run_device
 from workloads.gemm import BmmFp8Workload, BmmWorkload
 
 # Covering the [B,K,N] path is the point of these tests, so the perf hint
@@ -155,8 +156,8 @@ def test_bmm(batch: int, m: int, n: int, k: int, dtype: torch.dtype, tune: bool)
 def test_bmm_k_not_multiple_of_16_raises() -> None:
     """The in-tree kernels refuse a K that is not a multiple of 16, which torch.bmm admits."""
     op = BmmFwdOp()
-    a = torch.randn(4, 16, 24, device="cuda", dtype=torch.float16)
-    b = torch.randn(4, 24, 16, device="cuda", dtype=torch.float16)
+    a = torch.randn(4, 16, 24, device=run_device(), dtype=torch.float16)
+    b = torch.randn(4, 24, 16, device=run_device(), dtype=torch.float16)
     with pytest.raises(ValueError, match="multiple of 16"):
         op(a, b)
 
@@ -279,10 +280,10 @@ def test_bmm_fp8_rejects_e5m2() -> None:
 @pytest.mark.smoke
 def test_bmm_fp8_k_not_multiple_of_32_raises() -> None:
     op = BmmFp8FwdOp()
-    a = torch.randn(4, 128, 48, device="cuda").to(torch.float8_e4m3fn)
-    b = torch.randn(4, 48, 128, device="cuda").to(torch.float8_e4m3fn)
-    scale_a = torch.tensor(1.0, device="cuda", dtype=torch.float32)
-    scale_b = torch.tensor(1.0, device="cuda", dtype=torch.float32)
+    a = torch.randn(4, 128, 48, device=run_device()).to(torch.float8_e4m3fn)
+    b = torch.randn(4, 48, 128, device=run_device()).to(torch.float8_e4m3fn)
+    scale_a = torch.tensor(1.0, device=run_device(), dtype=torch.float32)
+    scale_b = torch.tensor(1.0, device=run_device(), dtype=torch.float32)
     with pytest.raises(ValueError, match="multiple of 32"):
         op(a, b, scale_a, scale_b)
 
@@ -340,6 +341,7 @@ def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
     torch.testing.assert_close(out_nk, out_kn, atol=0.0, rtol=0.0)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("block", BmmFp8TransposeKernel.TILE_CANDIDATES)
 def test_bmm_fp8_transpose_kernel_matches_torch(block: int) -> None:

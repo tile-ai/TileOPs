@@ -2,6 +2,7 @@
 
 import torch
 
+from workloads.device import run_device
 from workloads.workload_base import WORKLOAD_SEED
 
 
@@ -17,7 +18,7 @@ def make_interleaved_block_table(batch: int, max_pages_per_req: int) -> torch.Te
         start = b * max_pages_per_req
         pages = list(range(start, start + max_pages_per_req))
         rows.append(pages[::2] + pages[1::2])
-    return torch.tensor(rows, device="cuda", dtype=torch.int32).contiguous()
+    return torch.tensor(rows, device=run_device(), dtype=torch.int32).contiguous()
 
 
 def make_fragmented_block_table(
@@ -39,7 +40,7 @@ def make_fragmented_block_table(
         table = torch.stack(
             [torch.randperm(pool_pages, generator=generator)[:pages_per_req] for _ in range(batch)]
         )
-    return table.to(device="cuda", dtype=torch.int32).contiguous()
+    return table.to(device=run_device(), dtype=torch.int32).contiguous()
 
 
 def paged_cache_row(
@@ -54,7 +55,7 @@ def paged_cache_row(
 
 def make_unit_cache_scales() -> tuple[torch.Tensor, torch.Tensor]:
     """The K and V dequantisation scales of an unquantised cache."""
-    scale = torch.ones((1,), device="cuda", dtype=torch.float32)
+    scale = torch.ones((1,), device=run_device(), dtype=torch.float32)
     return scale, scale.clone()
 
 

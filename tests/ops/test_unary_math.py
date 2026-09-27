@@ -30,6 +30,7 @@ from tileops.ops.elementwise import (
     SqrtFwdOp,
     TruncFwdOp,
 )
+from workloads.device import run_device
 from workloads.elementwise import RandnFlatWorkload
 
 
@@ -73,20 +74,20 @@ class UnaryMathTest(RandnFlatWorkload, TestBase):
 
 
 def _randn(n: int, dtype: torch.dtype) -> torch.Tensor:
-    return torch.randn(n, device="cuda", dtype=dtype)
+    return torch.randn(n, device=run_device(), dtype=dtype)
 
 
 def _positive(n: int, dtype: torch.dtype) -> torch.Tensor:
-    return torch.rand(n, device="cuda", dtype=dtype).clamp(min=0.01) + 0.01
+    return torch.rand(n, device=run_device(), dtype=dtype).clamp(min=0.01) + 0.01
 
 
 def _nonzero(n: int, dtype: torch.dtype) -> torch.Tensor:
-    x = torch.randn(n, device="cuda", dtype=dtype)
+    x = torch.randn(n, device=run_device(), dtype=dtype)
     return x + torch.sign(x) * 0.01
 
 
 def _repeat_values(values: list[float], n: int, dtype: torch.dtype) -> torch.Tensor:
-    base = torch.tensor(values, device="cuda", dtype=dtype)
+    base = torch.tensor(values, device=run_device(), dtype=dtype)
     repeats = (n + len(values) - 1) // len(values)
     return base.repeat(repeats)[:n]
 
@@ -203,7 +204,7 @@ def test_erf(n_total: int, dtype: torch.dtype) -> None:
 @MathFixture
 def test_log1p(n_total: int, dtype: torch.dtype) -> None:
     def _gen(n, gen_dtype):
-        return torch.rand(n, device="cuda", dtype=gen_dtype).clamp(min=0.01)
+        return torch.rand(n, device=run_device(), dtype=gen_dtype).clamp(min=0.01)
 
     _make_math_test(n_total, dtype, _gen, torch.log1p, Log1pFwdOp)
 
@@ -213,6 +214,7 @@ def test_expm1(n_total: int, dtype: torch.dtype) -> None:
     _make_math_test(n_total, dtype, _randn, torch.expm1, Expm1FwdOp)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_math_ops_reject_non_float_dtype() -> None:
     from tileops.kernels.elementwise import ExpFwdKernel
@@ -242,9 +244,9 @@ def test_rounding_op_int_identity(op_cls, int_dtype: torch.dtype) -> None:
     n_total = 1024
     op = op_cls()
     if int_dtype == torch.uint8:
-        x = torch.randint(0, 100, (n_total,), device="cuda", dtype=int_dtype)
+        x = torch.randint(0, 100, (n_total,), device=run_device(), dtype=int_dtype)
     else:
-        x = torch.randint(-50, 50, (n_total,), device="cuda", dtype=int_dtype)
+        x = torch.randint(-50, 50, (n_total,), device=run_device(), dtype=int_dtype)
     y = op.forward(x)
     assert y.dtype == int_dtype
     assert y.shape == x.shape
@@ -255,7 +257,7 @@ def test_rounding_op_int_identity(op_cls, int_dtype: torch.dtype) -> None:
 def test_round_rejects_decimals_on_integer_input() -> None:
     """``torch.round`` rounds an integral input only to zero decimals."""
     op = RoundFwdOp(decimals=2)
-    x = torch.randint(-100, 100, (256,), device="cuda", dtype=torch.int32)
+    x = torch.randint(-100, 100, (256,), device=run_device(), dtype=torch.int32)
     with pytest.raises(ValueError, match="decimals"):
         op(x)
 
@@ -290,9 +292,9 @@ def test_unary_int_torch_fallback(op_cls, torch_fn, int_dtype) -> None:
     n_total = 1024
     op = op_cls()
     if int_dtype == torch.uint8:
-        x = torch.randint(0, 100, (n_total,), device="cuda", dtype=int_dtype)
+        x = torch.randint(0, 100, (n_total,), device=run_device(), dtype=int_dtype)
     else:
-        x = torch.randint(-50, 50, (n_total,), device="cuda", dtype=int_dtype)
+        x = torch.randint(-50, 50, (n_total,), device=run_device(), dtype=int_dtype)
     y = op.forward(x)
     assert y.dtype == int_dtype
     assert torch.equal(y, torch_fn(x))
@@ -314,11 +316,11 @@ def test_predicate_non_float_constant(op_cls, expected, non_float_dtype) -> None
     n_total = 256
     op = op_cls()
     if non_float_dtype == torch.bool:
-        x = torch.randint(0, 2, (n_total,), device="cuda", dtype=torch.bool)
+        x = torch.randint(0, 2, (n_total,), device=run_device(), dtype=torch.bool)
     elif non_float_dtype == torch.uint8:
-        x = torch.randint(0, 100, (n_total,), device="cuda", dtype=non_float_dtype)
+        x = torch.randint(0, 100, (n_total,), device=run_device(), dtype=non_float_dtype)
     else:
-        x = torch.randint(-50, 50, (n_total,), device="cuda", dtype=non_float_dtype)
+        x = torch.randint(-50, 50, (n_total,), device=run_device(), dtype=non_float_dtype)
     y = op.forward(x)
     assert y.dtype == torch.bool
     assert y.shape == x.shape
@@ -425,7 +427,7 @@ def test_erf_matches_rounded_erf_over_every_value(dtype: torch.dtype) -> None:
     inputs never reach, and the op tolerance is a whole ulp wider than the fit
     needs. Enumerating the dtype is cheap enough to leave nothing untested.
     """
-    codes = torch.arange(1 << 16, dtype=torch.int32, device="cuda").to(torch.int16)
+    codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
     x = codes.view(dtype)
     finite = torch.isfinite(x)
     out = ErfFwdOp()(x[finite])
@@ -437,7 +439,7 @@ def test_erf_matches_rounded_erf_over_every_value(dtype: torch.dtype) -> None:
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_erf_saturates_at_infinity_and_propagates_nan(dtype: torch.dtype) -> None:
     """Edge: erf reaches exactly +-1 at +-inf and answers NaN with NaN, as ``torch.erf`` does."""
-    x = torch.tensor([float("inf"), -float("inf"), float("nan")], device="cuda", dtype=dtype)
+    x = torch.tensor([float("inf"), -float("inf"), float("nan")], device=run_device(), dtype=dtype)
     out = ErfFwdOp()(x)
     torch.testing.assert_close(out, torch.erf(x), rtol=0, atol=0, equal_nan=True)
 
@@ -473,7 +475,7 @@ def test_round_decimals(dtype: torch.dtype, decimals: int) -> None:
     Uses ``torch.round(x, decimals=k)`` as the reference and the standard
     decomposition under the hood: ``round(x * 10**k) / 10**k``.
     """
-    x = torch.randn(4096, device="cuda", dtype=dtype) * 10.0
+    x = torch.randn(4096, device=run_device(), dtype=dtype) * 10.0
     op = RoundFwdOp(decimals=decimals)
     out = op(x)
     ref = torch.round(x.float(), decimals=decimals).to(dtype)
@@ -492,7 +494,7 @@ def test_round_decimals_no_overflow_low_precision(dtype: torch.dtype) -> None:
     fp16's ~65504 max and produced ``inf``. The reference is
     ``torch.round(x.float(), decimals=k).to(dtype)`` which is just ``100.0``.
     """
-    x = torch.tensor([100.0], device="cuda", dtype=dtype)
+    x = torch.tensor([100.0], device=run_device(), dtype=dtype)
     op = RoundFwdOp(decimals=4)
     out = op(x)
     ref = torch.round(x.float(), decimals=4).to(dtype)
@@ -503,7 +505,7 @@ def test_round_decimals_no_overflow_low_precision(dtype: torch.dtype) -> None:
 @pytest.mark.smoke
 def test_round_decimals_default_is_zero() -> None:
     """Constructing RoundFwdOp without ``decimals`` must round to nearest integer."""
-    x = torch.randn(1024, device="cuda", dtype=torch.float32) * 5.0
+    x = torch.randn(1024, device=run_device(), dtype=torch.float32) * 5.0
     op = RoundFwdOp()
     out = op(x)
     ref = torch.round(x)
@@ -519,10 +521,10 @@ def test_round_decimals_validates_input() -> None:
     """
     op = RoundFwdOp(decimals=2)
     # float16 is in the manifest union, so the same instance accepts it.
-    assert op(torch.ones(2, device="cuda", dtype=torch.float16)).dtype == torch.float16
+    assert op(torch.ones(2, device=run_device(), dtype=torch.float16)).dtype == torch.float16
     # A dtype outside the union must raise.
     with pytest.raises(ValueError, match="dtype"):
-        op(torch.ones(2, device="cuda", dtype=torch.float64))
+        op(torch.ones(2, device=run_device(), dtype=torch.float64))
 
 
 @pytest.mark.smoke
@@ -541,13 +543,13 @@ def test_reciprocal_int_promotes_to_float32(dtype: torch.dtype) -> None:
     if dtype == torch.uint8:
         # uint8 range [1, 255] avoids zero (1/0 = inf disagrees with the
         # tolerance-based comparison) without saturating the reference.
-        x = torch.randint(1, 256, (n_total,), device="cuda", dtype=dtype)
+        x = torch.randint(1, 256, (n_total,), device=run_device(), dtype=dtype)
     elif dtype == torch.int8:
         # int8 range [-127, 127] excluding zero.
-        x = torch.randint(-127, 128, (n_total,), device="cuda", dtype=dtype)
+        x = torch.randint(-127, 128, (n_total,), device=run_device(), dtype=dtype)
         x = torch.where(x == 0, torch.ones_like(x), x)
     else:
-        x = torch.randint(-1000, 1001, (n_total,), device="cuda", dtype=dtype)
+        x = torch.randint(-1000, 1001, (n_total,), device=run_device(), dtype=dtype)
         x = torch.where(x == 0, torch.ones_like(x), x)
     op = ReciprocalFwdOp()
     out = op(x)
@@ -572,7 +574,7 @@ def test_reciprocal_int_roofline_prices_the_promoted_output(
     """The roofline charges integer input bytes plus float32 output bytes."""
     n_total = 4
     op = ReciprocalFwdOp()
-    op(torch.ones(n_total, device="cuda", dtype=dtype))
+    op(torch.ones(n_total, device=run_device(), dtype=dtype))
     expected_bytes = n_total * (dtype.itemsize + torch.float32.itemsize)
     flops, bytes_ = op.eval_roofline()
     assert flops == n_total
@@ -587,8 +589,8 @@ def test_reciprocal_int_input_validation() -> None:
     different entries; a dtype outside the manifest union still raises.
     """
     op = ReciprocalFwdOp()
-    assert op(torch.ones(4, device="cuda", dtype=torch.float32)).dtype == torch.float32
-    assert op(torch.ones(4, device="cuda", dtype=torch.int32)).dtype == torch.float32
+    assert op(torch.ones(4, device=run_device(), dtype=torch.float32)).dtype == torch.float32
+    assert op(torch.ones(4, device=run_device(), dtype=torch.int32)).dtype == torch.float32
     assert len(op.built_kernels(op._slot)) == 2, "each semantic dtype keys its own entry"
     with pytest.raises(ValueError, match="dtype"):
-        op(torch.ones(4, device="cuda", dtype=torch.float64))
+        op(torch.ones(4, device=run_device(), dtype=torch.float64))

@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from workloads.device import run_device
 from workloads.gqa import _compute_gqa_square_lse
 from workloads.paged_kv_cache import make_fragmented_block_table
 from workloads.workload_base import CallWorkload, WorkloadBase
@@ -31,7 +32,7 @@ class MhaBwdWorkload(WorkloadBase):
             self.heads,
             self.dim,
             dtype=self.dtype,
-            device="cuda",
+            device=run_device(),
             requires_grad=True,
         )
         k = torch.randn(
@@ -40,7 +41,7 @@ class MhaBwdWorkload(WorkloadBase):
             self.heads,
             self.dim,
             dtype=self.dtype,
-            device="cuda",
+            device=run_device(),
             requires_grad=True,
         )
         v = torch.randn(
@@ -49,11 +50,11 @@ class MhaBwdWorkload(WorkloadBase):
             self.heads,
             self.dim,
             dtype=self.dtype,
-            device="cuda",
+            device=run_device(),
             requires_grad=True,
         )
         grad_output = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device="cuda"
+            self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device=run_device()
         )
 
         with torch.no_grad():
@@ -126,13 +127,13 @@ class MhaDecodePagedWorkload(WorkloadBase):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         num_pages = self.seqlen_kv // self.page_size
         real_seqlen_kv = (
-            torch.ones((self.batch,), dtype=torch.int32, device="cuda") * self.seqlen_kv
+            torch.ones((self.batch,), dtype=torch.int32, device=run_device()) * self.seqlen_kv
         )
         q = torch.randn(
-            self.batch, self.seqlen_q, self.heads, self.dim, device="cuda", dtype=self.dtype
+            self.batch, self.seqlen_q, self.heads, self.dim, device=run_device(), dtype=self.dtype
         )
-        k = torch.randn(self.seqlen_kv, self.heads, self.dim, device="cuda", dtype=self.dtype)
-        v = torch.randn(self.seqlen_kv, self.heads, self.dim, device="cuda", dtype=self.dtype)
+        k = torch.randn(self.seqlen_kv, self.heads, self.dim, device=run_device(), dtype=self.dtype)
+        v = torch.randn(self.seqlen_kv, self.heads, self.dim, device=run_device(), dtype=self.dtype)
         block_table = make_fragmented_block_table(self.batch, num_pages, num_pages)
 
         q = q.contiguous()

@@ -57,6 +57,7 @@ class GroupedQueryAttentionBwdTest(GroupedQueryAttentionBwdWorkload, TestBase):
         return q.grad, k.grad, v.grad
 
 
+@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "is_causal, rope_layout, rotary_dim, dtype",
     [
@@ -133,6 +134,7 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
     assert isinstance(next(iter(op.iter_kernels())), GQADenseWsKernel)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     (
@@ -233,6 +235,7 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
     assert isinstance(next(iter(op.iter_kernels())), expected_kernel)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("batch", [1, 2])
 def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None:
@@ -262,6 +265,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
     assert len(list(op.iter_kernels())) == 1
 
 
+@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "batch, head_shape, dtype, seq_lens_kv, rope_layout, rotary_dim, kernel_type",
     [
@@ -427,6 +431,7 @@ def test_gqa_dense_decode_effective_num_split(
     assert _effective_dense_num_split(num_split, block_N, real_seqlen_kv) == expected
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
     """A reused op crosses the tile-size boundary in both directions, including KV tails."""
@@ -448,6 +453,7 @@ def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
     assert {kernel.config["block_N"] for kernel in kernels} == {64, 128}
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("seqlen_kv", [1, 63, 128, 1024])
 def test_gqa_decode_autotune_configs_keep_full_tiles_per_split(seqlen_kv: int) -> None:
@@ -462,6 +468,7 @@ def test_gqa_decode_autotune_configs_keep_full_tiles_per_split(seqlen_kv: int) -
     assert any(config["num_split"] == 1 for config in configs)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> None:
     """A tuned num_split the sequence cannot fill shrinks instead of pushing
@@ -510,6 +517,7 @@ def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> No
         assert calls[-1] == expected
 
 
+@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "is_causal,use_rope",
     [

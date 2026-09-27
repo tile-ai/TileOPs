@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, served_in_tree
+from workloads.device import run_device
 from workloads.reduction import ArgmaxWorkload
 
 
@@ -181,7 +182,7 @@ def test_argmax_op(m: int, n: int, dtype: torch.dtype) -> None:
 def test_argmax_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp
 
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
     x = x_full[:, :n]
     op = ArgmaxFwdOp(dim=-1)
     ref = x.contiguous().argmax(dim=-1)
@@ -194,7 +195,7 @@ def test_argmax_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 def test_argmax_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
     op = ArgmaxFwdOp(dim=-1)
     ref = x.argmax(dim=-1)
     y = _call(op, x)
@@ -206,7 +207,7 @@ def test_argmax_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
 def test_argmax_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp
 
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=run_device())
     op = ArgmaxFwdOp(dim=-1)
     ref = x.argmax(dim=-1)
     y = _call(op, x)
@@ -218,7 +219,7 @@ def test_argmax_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
 def test_argmax_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp
 
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    x = torch.randn(n, dtype=dtype, device=run_device())
     op = ArgmaxFwdOp(dim=-1)
     ref = x.argmax(dim=-1)
     y = _call(op, x)
@@ -231,7 +232,7 @@ def test_argmax_3d_dim0(batch: int, seq: int, hidden: int, dtype: torch.dtype) -
     """Argmax along dim=0 on 3D tensors (outermost-dim reduction)."""
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
     op = ArgmaxFwdOp(dim=0)
     ref = x.argmax(dim=0)
     y = _call(op, x)
@@ -245,7 +246,7 @@ def test_argmax_3d_dim0_keepdim(batch: int, seq: int, hidden: int, dtype: torch.
     """Argmax along dim=0 with keepdim=True on 3D tensors."""
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
     op = ArgmaxFwdOp(dim=0, keepdim=True)
     ref = x.argmax(dim=0, keepdim=True)
     y = _call(op, x)
@@ -259,7 +260,7 @@ def test_argmax_4d_dim0(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -
     """Argmax along dim=0 on 4D tensors (outermost-dim reduction, 3D+ regression)."""
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp
 
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=run_device())
     op = ArgmaxFwdOp(dim=0)
     ref = x.argmax(dim=0)
     y = _call(op, x)
@@ -273,7 +274,7 @@ def test_argmax_4d_dim0_keepdim(b0: int, b1: int, b2: int, n: int, dtype: torch.
     """Argmax along dim=0 with keepdim=True on 4D tensors."""
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp
 
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=run_device())
     op = ArgmaxFwdOp(dim=0, keepdim=True)
     ref = x.argmax(dim=0, keepdim=True)
     y = _call(op, x)
@@ -287,7 +288,7 @@ def test_argmax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dty
     """Spec interface: ArgmaxFwdOp with dim + keepdim."""
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=run_device())
     op = ArgmaxFwdOp(dim=dim, keepdim=keepdim)
     ref = x.argmax(dim=dim, keepdim=keepdim)
     y = _call(op, x)
@@ -309,7 +310,7 @@ def test_argmin_op(m: int, n: int, dtype: torch.dtype) -> None:
 def test_argmin_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.argreduce import ArgminFwdOp
 
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
     x = x_full[:, :n]
     op = ArgminFwdOp(dim=-1)
     ref = x.contiguous().argmin(dim=-1)
@@ -322,7 +323,7 @@ def test_argmin_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 def test_argmin_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.argreduce import ArgminFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
     op = ArgminFwdOp(dim=-1)
     ref = x.argmin(dim=-1)
     y = _call(op, x)
@@ -334,7 +335,7 @@ def test_argmin_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
 def test_argmin_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.argreduce import ArgminFwdOp
 
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=run_device())
     op = ArgminFwdOp(dim=-1)
     ref = x.argmin(dim=-1)
     y = _call(op, x)
@@ -346,7 +347,7 @@ def test_argmin_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
 def test_argmin_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.argreduce import ArgminFwdOp
 
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    x = torch.randn(n, dtype=dtype, device=run_device())
     op = ArgminFwdOp(dim=-1)
     ref = x.argmin(dim=-1)
     y = _call(op, x)
@@ -359,7 +360,7 @@ def test_argmin_3d_dim0(batch: int, seq: int, hidden: int, dtype: torch.dtype) -
     """Argmin along dim=0 on 3D tensors (outermost-dim reduction)."""
     from tileops.ops.reduction.argreduce import ArgminFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
     op = ArgminFwdOp(dim=0)
     ref = x.argmin(dim=0)
     y = _call(op, x)
@@ -373,7 +374,7 @@ def test_argmin_3d_dim0_keepdim(batch: int, seq: int, hidden: int, dtype: torch.
     """Argmin along dim=0 with keepdim=True on 3D tensors."""
     from tileops.ops.reduction.argreduce import ArgminFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
     op = ArgminFwdOp(dim=0, keepdim=True)
     ref = x.argmin(dim=0, keepdim=True)
     y = _call(op, x)
@@ -387,7 +388,7 @@ def test_argmin_4d_dim0(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -
     """Argmin along dim=0 on 4D tensors (outermost-dim reduction, 3D+ regression)."""
     from tileops.ops.reduction.argreduce import ArgminFwdOp
 
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=run_device())
     op = ArgminFwdOp(dim=0)
     ref = x.argmin(dim=0)
     y = _call(op, x)
@@ -401,7 +402,7 @@ def test_argmin_4d_dim0_keepdim(b0: int, b1: int, b2: int, n: int, dtype: torch.
     """Argmin along dim=0 with keepdim=True on 4D tensors."""
     from tileops.ops.reduction.argreduce import ArgminFwdOp
 
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=run_device())
     op = ArgminFwdOp(dim=0, keepdim=True)
     ref = x.argmin(dim=0, keepdim=True)
     y = _call(op, x)
@@ -415,7 +416,7 @@ def test_argmin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dty
     """Spec interface: ArgminFwdOp with dim + keepdim."""
     from tileops.ops.reduction.argreduce import ArgminFwdOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=run_device())
     op = ArgminFwdOp(dim=dim, keepdim=keepdim)
     ref = x.argmin(dim=dim, keepdim=keepdim)
     y = _call(op, x)
@@ -434,7 +435,7 @@ def test_argreduce_signed_zero_breaks_to_lower_index(op_name: str, dtype: torch.
     """A row of alternating -0.0 and +0.0 is one tie, which index 0 has to win."""
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
 
-    x = torch.zeros(8, 4096, dtype=dtype, device="cuda")
+    x = torch.zeros(8, 4096, dtype=dtype, device=run_device())
     x[:, ::2] = -0.0
     op = ArgmaxFwdOp(dim=-1) if op_name == "argmax" else ArgminFwdOp(dim=-1)
     y = _call(op, x)
@@ -504,7 +505,7 @@ def test_argmax_dim_none(shape: tuple, dtype: torch.dtype) -> None:
     """ArgmaxFwdOp(dim=None) matches torch.argmax(x); covers keepdim={False, True}."""
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=run_device())
     ref_flat = torch.argmax(x)
 
     y = _call(ArgmaxFwdOp(dim=None), x)
@@ -527,7 +528,7 @@ def test_argmin_dim_none(shape: tuple, dtype: torch.dtype) -> None:
     """ArgminFwdOp(dim=None) matches torch.argmin(x); covers keepdim={False, True}."""
     from tileops.ops.reduction.argreduce import ArgminFwdOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=run_device())
     ref_flat = torch.argmin(x)
 
     y = _call(ArgminFwdOp(dim=None), x)
@@ -554,7 +555,7 @@ def test_argreduce_large_n(op_kind: str, dtype: torch.dtype) -> None:
     """The multi-CTA path supports the LM-head workload without tiling skips."""
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
 
-    x = torch.randn(4, 102400, dtype=dtype, device="cuda")
+    x = torch.randn(4, 102400, dtype=dtype, device=run_device())
     op_cls = ArgmaxFwdOp if op_kind == "argmax" else ArgminFwdOp
     op = op_cls(dim=-1)
     ref = getattr(torch, op_kind)(x, dim=-1)
@@ -574,7 +575,7 @@ def test_argreduce_first_index_and_nan_semantics(op_kind: str) -> None:
             [2.0, 2.0, -1.0, -1.0, 0.0],
         ],
         dtype=torch.float32,
-        device="cuda",
+        device=run_device(),
     )
     op_cls = ArgmaxFwdOp if op_kind == "argmax" else ArgminFwdOp
     op = op_cls(dim=-1)
@@ -596,7 +597,7 @@ def test_argreduce_ties_between_two_nans(op_kind: str, n: int) -> None:
     """
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
 
-    x = torch.arange(1, n + 1, dtype=torch.float32, device="cuda")
+    x = torch.arange(1, n + 1, dtype=torch.float32, device=run_device())
     first, second = n // 4, n // 2
     x[first] = float("nan")
     x[second] = float("nan")
@@ -609,6 +610,7 @@ def test_argreduce_ties_between_two_nans(op_kind: str, n: int) -> None:
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("ctas_per_row", [31, 33, 64])
 def test_argreduce_multicta_reduces_every_partial(ctas_per_row: int) -> None:
@@ -652,7 +654,7 @@ def test_argreduce_strided_axis_crossover(shape, dim, expect_strided) -> None:
     """
     from tileops.ops.reduction.argreduce import ArgmaxFwdOp
 
-    x = torch.randn(*shape, device="cuda", dtype=torch.float16)
+    x = torch.randn(*shape, device=run_device(), dtype=torch.float16)
     op = ArgmaxFwdOp(dim=dim)
     torch.testing.assert_close(_call(op, x), torch.argmax(x, dim=dim))
     if served_in_tree(op):
@@ -660,6 +662,7 @@ def test_argreduce_strided_axis_crossover(shape, dim, expect_strided) -> None:
         assert ("output" in strategies) is expect_strided, strategies
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "m, n, inner_stride, strategy",

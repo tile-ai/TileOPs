@@ -14,7 +14,7 @@ import torch.nn.functional as F
 
 from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
 
-pytestmark = pytest.mark.smoke
+pytestmark = [pytest.mark.smoke, pytest.mark.cuda_only]
 
 _ATOL = _RTOL = 1e-3  # fp16, matching the norm op tests
 

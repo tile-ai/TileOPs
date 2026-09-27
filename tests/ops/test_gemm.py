@@ -23,6 +23,7 @@ from tileops.kernels.gemm.heuristics import (
 )
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE, _select_config, _stage_meta_per_tile
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
+from workloads.device import run_device
 from workloads.gemm import (
     GemmFp8Workload,
     GemmW4A16Workload,
@@ -580,10 +581,12 @@ def test_gemm_w4a16_is_exact_on_a_basis_vector(k_index: int) -> None:
     group = k_index // 128
     centered = quantized[:, k_index].float() - zero[:, group].float()
     expected = (centered * scale[:, group].float()).half()[None, :]
-    activation = torch.zeros((1, k), device="cuda", dtype=torch.float16)
+    activation = torch.zeros((1, k), device=run_device(), dtype=torch.float16)
     activation[0, k_index] = 1
     prepacked = repack_w4a16_weight(packed)
-    actual = GemmW4A16FwdOp()(activation, prepacked.cuda(), scale.cuda(), zero.cuda())
+    actual = GemmW4A16FwdOp()(
+        activation, prepacked.to(run_device()), scale.to(run_device()), zero.to(run_device())
+    )
     torch.testing.assert_close(actual.cpu(), expected, atol=0, rtol=0)
 
 
@@ -615,6 +618,7 @@ def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
         assert op.kernel.__class__.__name__ == "GemmFp8BlockScaleKernel"
 
 
+@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     ("shape", "expected"),
     [
@@ -675,6 +679,7 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
     test.check(op, *test.gen_inputs(), **tolerances)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_lhs_rows_band_dispatch() -> None:
     """``GemvKernel`` takes its ``lhs_rows`` band only at m == 2, on the n band swap_ab leaves it.
@@ -704,6 +709,7 @@ def test_lhs_rows_band_dispatch() -> None:
     assert nn.select_kernel(nn._call_spec(2, 2112, 7168, fp)) is GemmTmaKernel
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemv_bands_build_their_own_body_and_config() -> None:
     """Each band states its own body shape and config band; the band is in the identity.
@@ -745,6 +751,7 @@ def test_gemv_bands_build_their_own_body_and_config() -> None:
         GemvKernel("m2", 2, 2112, 7168, fp)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_explicit_structure_config_is_taken_verbatim() -> None:
     """A structure-flagged ``config=`` survives instead of being merged away.
@@ -770,6 +777,7 @@ def test_explicit_structure_config_is_taken_verbatim() -> None:
     assert "block_m" in merged and "panel_size" in merged
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_routes_tma_misaligned_shapes_to_the_pipelined_mainloop() -> None:
     """An unaligned innermost dimension leaves ``GemmTmaKernel``, which names the dim.
@@ -808,6 +816,7 @@ def test_gemm_routes_tma_misaligned_shapes_to_the_pipelined_mainloop() -> None:
         GemmTmaKernel(256, 512, 1001, fp, trans_a=False, trans_b=True)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("num_stages, stage_n", [(3, 0), (4, 128)])
 def test_coop2_epilogue_chunking_matches_reference(num_stages: int, stage_n: int) -> None:
@@ -846,6 +855,7 @@ def test_b_tile_eviction_hint_follows_the_m_tile_count() -> None:
     assert _b_eviction(4096, 128) is None
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_structure_routing_matches_test_ids() -> None:
     """Each ``GemmFixture`` case reaches the structure its id names.
@@ -896,6 +906,7 @@ def test_structure_routing_matches_test_ids() -> None:
         )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_tma_kernel_tune_falls_back_to_default() -> None:
     """``GemmTmaKernel`` defines no ``autotune_configs``: ``tune=True`` must warn
@@ -944,6 +955,7 @@ def test_small_m_splitk_config_selects_a_shape_band() -> None:
     assert small_m_splitk_config(32, 7168, 18432, 132, "nvidia h200") is not None
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_dense_splitk_interfaces_match_reference() -> None:
     m, n, k = 32, 112, 512
@@ -983,6 +995,7 @@ def test_dense_splitk_interfaces_match_reference() -> None:
     torch.testing.assert_close(actual.float(), expected, rtol=2e-2, atol=1e-1)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_cp_async_kernel_k_tail_padding() -> None:
     """Non-16-aligned k rides on the backend zero-padding the K tail.
@@ -1000,6 +1013,7 @@ def test_gemm_cp_async_kernel_k_tail_padding() -> None:
         torch.testing.assert_close(out.float(), ref, atol=1e-2, rtol=1e-2)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("m", [100, 257])
 def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
@@ -1014,6 +1028,7 @@ def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
     groups_at_crossover = 256  # 64 rows * 256 groups * 3 bytes = 48 KiB.
@@ -1035,12 +1050,14 @@ def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_slices_k_only_where_the_grid_underfills() -> None:
     assert GemmW4A16Kernel(1, 1024, 8192, torch.float16).config["split_k"] > 1
     assert GemmW4A16Kernel(1, 8192, 8192, torch.float16).config["split_k"] == 1
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("split_k", [2, 8])
 def test_gemm_w4a16_sliced_k_matches_the_reference(split_k: int) -> None:
@@ -1063,6 +1080,7 @@ def test_gemm_w4a16_sliced_k_matches_the_reference(split_k: int) -> None:
     )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_autotune_keeps_composite_runtime_state() -> None:
     test = GemmW4A16Test(1, 1024, 8192, torch.float16)
@@ -1101,6 +1119,7 @@ def test_gemm_w4a16_select_config_streams_only_the_underfilled_grid() -> None:
     assert _select_config(128, 4096, 14336, GROUP_SIZE, sms=132)["stream_ctas"] == 0
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_stream_k_compiles_exact_two_way_partition() -> None:
     """The 132-CTA default compiles when 66 N tiles divide into exactly two K slices each."""
@@ -1109,6 +1128,7 @@ def test_gemm_w4a16_stream_k_compiles_exact_two_way_partition() -> None:
     kernel.kernel(**kernel.config)
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_stream_k_matches_the_unstreamed_tile() -> None:
     """Crossing and exact two-way Stream-K partitions handle a partial K tile.
@@ -1166,6 +1186,7 @@ def test_repack_w4a16_weight_permutes_nibbles_inside_a_step() -> None:
         )
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(("n", "k"), [(64, 256), (1024, 512)])
 def test_w4a16_repack_kernel_matches_the_reference(n: int, k: int) -> None:
@@ -1179,6 +1200,7 @@ def test_w4a16_repack_kernel_matches_the_reference(n: int, k: int) -> None:
     assert torch.equal(actual, repack_w4a16_weight(packed))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_repack_feeds_forward() -> None:
     test = GemmW4A16Test(64, 1024, 512, torch.float16)
@@ -1196,4 +1218,4 @@ def test_gemm_w4a16_repack_feeds_forward() -> None:
 @pytest.mark.smoke
 def test_gemm_w4a16_repack_refuses_a_partial_k_step() -> None:
     with pytest.raises(ValueError, match="multiple of 64"):
-        GemmW4A16FwdOp.repack(torch.zeros((8, 96), dtype=torch.uint8, device="cuda"))
+        GemmW4A16FwdOp.repack(torch.zeros((8, 96), dtype=torch.uint8, device=run_device()))

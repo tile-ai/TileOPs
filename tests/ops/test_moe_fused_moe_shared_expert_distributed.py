@@ -127,6 +127,7 @@ class TPFixture:
 # Test: TileOPs FusedMoeSharedExpertFwdOp TP vs vLLM DeepseekV2MLP TP
 
 
+@pytest.mark.cuda_only
 @TPFixture()
 def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
     """TileOPs shared expert TP vs vLLM DeepseekV2MLP TP.

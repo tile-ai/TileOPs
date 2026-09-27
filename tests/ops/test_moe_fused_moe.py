@@ -16,6 +16,7 @@ from tileops.ops.moe import (
     FusedMoeFwdOp,
     FusedTopKFwdOp,
 )
+from workloads.device import run_device
 
 # vLLM optional import
 
@@ -183,7 +184,7 @@ def test_fused_moe_qwen3(
     dtype,
 ) -> None:
     torch.manual_seed(42)
-    dev = "cuda"
+    dev = run_device()
     hidden = torch.randn(num_tokens, hidden_size, dtype=dtype, device=dev)
     gating = torch.randn(num_tokens, num_experts, device=dev)
     w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
@@ -254,7 +255,7 @@ def test_fused_moe_deterministic(case):
     qwen3-medium case trips within ~100 repeats; post-fix it is deterministic.
     """
     torch.manual_seed(42)
-    dev = "cuda"
+    dev = run_device()
     dtype = torch.bfloat16
     nt, ne, tk = case["num_tokens"], case["num_experts"], case["top_k"]
     hs, ff, reps = case["hidden_size"], case["ffn_size"], case["reps"]
@@ -392,7 +393,7 @@ def test_fused_moe_kimi(
     dtype,
 ) -> None:
     torch.manual_seed(42)
-    dev = "cuda"
+    dev = run_device()
     hidden = torch.randn(num_tokens, hidden_size, dtype=dtype, device=dev)
     gating = torch.randn(num_tokens, num_experts, device=dev)
     correction_bias = (
@@ -438,7 +439,7 @@ def test_correction_bias_routing_precision() -> None:
     """
     torch.manual_seed(7)
     T, E, K = 4, 8, 2
-    dev = "cuda"
+    dev = run_device()
 
     logits = torch.randn(T, E, dtype=torch.float32, device=dev)
     bias = torch.randn(E, dtype=torch.float32, device=dev)
@@ -527,7 +528,7 @@ def test_fused_moe_vs_vllm(
         pytest.skip("vllm not installed")
 
     torch.manual_seed(42)
-    dev = "cuda"
+    dev = run_device()
     hidden = torch.randn(num_tokens, hidden_size, dtype=dtype, device=dev)
     gating = torch.randn(num_tokens, num_experts, device=dev)
     correction_bias = torch.randn(num_experts, dtype=torch.float32, device=dev) * 0.1
@@ -565,7 +566,7 @@ def test_the_routed_weights_are_priced_from_the_experts_stage() -> None:
     """The in-tree call prices the experts its routed-experts stage read; with no stage call
     the price falls to the data-independent bound of top_k experts."""
     torch.manual_seed(7)
-    dev = "cuda"
+    dev = run_device()
     T, E, K, H, F_ = 32, 8, 2, 64, 32
     dtype = torch.bfloat16
     hidden = torch.randn(T, H, dtype=dtype, device=dev)

@@ -4,6 +4,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import TopkSelectorFwdOp
 from tileops.utils import str2dtype
+from workloads.device import run_device
 from workloads.topk_selector import TopkSelectorWorkload
 
 
@@ -82,9 +83,9 @@ def test_topk_selector_op(
 def test_topk_selector_returns_a_short_window_whole(width: int) -> None:
     """A window with at most ``topk`` keys selects all of them and pads with ``seq_len_kv``."""
     batch, seq_len, seq_len_kv, topk = 2, 16, 256, 32
-    scores = torch.randn(batch, seq_len, seq_len_kv, 1, device="cuda")
-    starts = torch.full((batch, seq_len), 7, dtype=torch.int32, device="cuda")
+    scores = torch.randn(batch, seq_len, seq_len_kv, 1, device=run_device())
+    starts = torch.full((batch, seq_len), 7, dtype=torch.int32, device=run_device())
     ends = starts + width
     out = TopkSelectorFwdOp(topk=topk)(scores, starts, ends)
     expected = list(range(7, 7 + width)) + [seq_len_kv] * (topk - width)
-    assert (out.sort(dim=-1).values == torch.tensor(expected, device="cuda")).all()
+    assert (out.sort(dim=-1).values == torch.tensor(expected, device=run_device())).all()

@@ -12,6 +12,7 @@ from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
 )
 from tileops.ops import GLABwdOp, GLADecodeFwdOp, GLAFwdOp, GLAInferenceFwdOp
 from tileops.utils import is_h200
+from workloads.device import run_device
 from workloads.linear_attention import GLADecodeWorkload, GLAInferenceWorkload, gla_decode_torch
 
 try:
@@ -120,10 +121,10 @@ def test_gla_fwd(
     B, T, H, K, V, BC = batch, seq_len, heads, dim_k, dim_v, chunk_size
     scale = K**-0.5
 
-    q = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
-    g = -torch.rand(B, T, H, K, device="cuda", dtype=dtype)
+    q = torch.randn(B, T, H, K, device=run_device(), dtype=dtype) * 0.1
+    k = torch.randn(B, T, H, K, device=run_device(), dtype=dtype) * 0.1
+    v = torch.randn(B, T, H, V, device=run_device(), dtype=dtype) * 0.1
+    g = -torch.rand(B, T, H, K, device=run_device(), dtype=dtype)
 
     # --- Torch reference ---
     ref_o = gla_fwd_chunked_torch(q, k, v, g, BC, scale=scale)
@@ -216,6 +217,7 @@ class GLABwdFixture(FixtureBase):
     ]
 
 
+@pytest.mark.cuda_only
 @GLABwdFixture
 def test_gla_bwd(
     batch: int,
@@ -407,6 +409,7 @@ def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: in
     test.check(op, *inputs, **standard_tolerance(dtype))
 
 
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
 @pytest.mark.skipif(not is_h200(), reason="partitioned prefill is selected on H200")
@@ -518,14 +521,14 @@ def test_gla_decode_multi_step(
     op = GLADecodeFwdOp(tune=tune)
     tols = _get_tolerances(dtype)
 
-    state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
-    state_ref = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
+    state_op = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
+    state_ref = torch.zeros(B, H, DK, DV, device=run_device(), dtype=dtype)
 
     for _ in range(num_steps):
-        q = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-        k = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-        v = torch.randn(B, H, DV, device="cuda", dtype=dtype) * 0.1
-        gk = -torch.rand(B, H, DK, device="cuda", dtype=dtype)
+        q = torch.randn(B, H, DK, device=run_device(), dtype=dtype) * 0.1
+        k = torch.randn(B, H, DK, device=run_device(), dtype=dtype) * 0.1
+        v = torch.randn(B, H, DV, device=run_device(), dtype=dtype) * 0.1
+        gk = -torch.rand(B, H, DK, device=run_device(), dtype=dtype)
 
         o_ref, state_ref = gla_decode_torch(q, k, v, gk, state_ref)
         o_ref = o_ref.to(dtype)
@@ -555,11 +558,11 @@ def test_gla_decode_vs_fla(
     B, H, DK, DV = batch, heads, dim_k, dim_v
     scale = DK**-0.5
 
-    q = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, H, DV, device="cuda", dtype=dtype) * 0.1
-    gk = -torch.rand(B, H, DK, device="cuda", dtype=dtype)
-    state = torch.randn(B, H, DK, DV, device="cuda", dtype=dtype) * 0.1
+    q = torch.randn(B, H, DK, device=run_device(), dtype=dtype) * 0.1
+    k = torch.randn(B, H, DK, device=run_device(), dtype=dtype) * 0.1
+    v = torch.randn(B, H, DV, device=run_device(), dtype=dtype) * 0.1
+    gk = -torch.rand(B, H, DK, device=run_device(), dtype=dtype)
+    state = torch.randn(B, H, DK, DV, device=run_device(), dtype=dtype) * 0.1
 
     op = GLADecodeFwdOp(scale=scale, tune=tune)
     with torch.no_grad():

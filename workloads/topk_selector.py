@@ -1,5 +1,6 @@
 import torch
 
+from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
@@ -29,11 +30,11 @@ class TopkSelectorWorkload(WorkloadBase):
             self.seq_len_kv,
             self.kv_group,
             dtype=self.in_dtype,
-            device="cuda",
+            device=run_device(),
         )
-        starts = torch.zeros(self.batch, self.seq_len, dtype=self.out_dtype, device="cuda")
+        starts = torch.zeros(self.batch, self.seq_len, dtype=self.out_dtype, device=run_device())
         ends = (
-            torch.ones(self.batch, self.seq_len, dtype=self.out_dtype, device="cuda")
+            torch.ones(self.batch, self.seq_len, dtype=self.out_dtype, device=run_device())
             * self.seq_len_kv
         )
         return index_score, starts, ends

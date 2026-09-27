@@ -8,6 +8,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.pool import MeanPoolingFwdOp
+from workloads.device import run_device
 from workloads.pool import MeanPoolingWorkload, mean_pooling_chunk_index
 
 
@@ -118,7 +119,7 @@ def _op() -> MeanPoolingFwdOp:
 
 
 def _x() -> torch.Tensor:
-    return torch.randn(1, 64, 2, 64, device="cuda", dtype=torch.float16)
+    return torch.randn(1, 64, 2, 64, device=run_device(), dtype=torch.float16)
 
 
 @pytest.mark.smoke
@@ -163,5 +164,5 @@ def test_mean_pooling_reads_its_shapes_off_the_call() -> None:
     """One op, two shapes, two chunk counts — what taking shapes from the call buys."""
     op = _op()
     assert tuple(op(_x()).shape) == (1, 2, 2, 64)
-    tall = torch.randn(3, 128, 2, 64, device="cuda", dtype=torch.float16)
+    tall = torch.randn(3, 128, 2, 64, device=run_device(), dtype=torch.float16)
     assert tuple(op(tall).shape) == (3, 4, 2, 64)
