@@ -334,8 +334,8 @@ def _gqa_decode_split_paged_kernel(
                     # When loop_range was 0 (split entirely beyond real_seqlen_kv), logsum=0 -> avoid 0/0
                     acc_o[i, j] = T.if_then_else(logsum[i] == 0, 0, acc_o[i, j] / logsum[i])
                 for i in T.Parallel(block_H):
-                    # An empty split carries glse=-inf, weight 0 in combine; its running
-                    # max is -inf, which a zero scale would turn into NaN.
+                    # An empty split gets glse=-inf (weight 0 in combine): its max is
+                    # -inf, which a zero scale would turn into NaN.
                     logsum_safe = T.if_then_else(logsum[i] == 0, 1, logsum[i])
                     logsum[i] = T.if_then_else(
                         logsum[i] == 0,
@@ -513,8 +513,7 @@ class GQADecodePagedKernel(Kernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        # The broad decode region, page-tile condition included. The batch-1 paged
-        # kernel states the narrower one it serves and wins wherever it applies.
+        # The batch-1 paged kernel serves a narrower region and wins where it applies.
         return cls._region_refusal(call) is None
 
     @classmethod

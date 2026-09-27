@@ -170,8 +170,8 @@ GroupedQueryAttentionPagedFwdOp:
       k_pages: {dtype: KV, shape: "[NP, PS, H_kv, D]"}
       v_pages: {dtype: KV, shape: "[NP, PS, H_kv, D]"}
       page_table: {dtype: int32, shape: "[B, W]", values: "paged_block_table(B, W, NP)", requires: ["in_range(0, NP)"]}
-      # Each request's cached length, its query tokens included: they are the last
-      # q_len tokens of the cached sequence, so q_len <= cache_seqlens is the caller's obligation.
+      # Cached length per request, its query tokens (the last q_len) included;
+      # q_len <= cache_seqlens is the caller's obligation.
       cache_seqlens: {dtype: int32, shape: "[B]", values: "as_tensor(cache_lens)", requires: ["in_range(0, W * PS + 1)"]}
       cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)", requires: ["prefix_offsets(T_q)"]}
       q_scale: {dtype: float32, shape: "[B, H_kv]", optional: true}

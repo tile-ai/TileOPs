@@ -164,7 +164,7 @@ def test_gqa_paged_decode_bs1_tiers(cache_len: int, reverse_pages: bool) -> None
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 def test_gqa_paged_decode_bs1_dispatch() -> None:
-    """Eligible SM90 requests select the paged TMA/WGMMA kernel."""
+    """An eligible batch-1 call selects the batch-1 kernel and its tiers."""
     workload = _decode(1, 32, 4, [8192], 128, 256)
     kernel = _built_kernel(GroupedQueryAttentionPagedFwdOp(), workload.gen_inputs())
     assert kernel.__class__.__name__ == "GQADecodePagedBs1Kernel"
