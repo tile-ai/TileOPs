@@ -14,7 +14,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.utils import get_sm_count, is_h200
+from tileops.utils import device_calibration, get_sm_count
 
 from .call_spec import GemmCall
 
@@ -36,48 +36,50 @@ _TMA_SWIZZLE_NONE = 0
 _TMA_L2_128B = 2
 _TMA_OOB_NONE = 0
 
-# Schedules measured per (m, n, k) on the one board they were calibrated on; any
-# other board or shape takes the analytic ``block_n`` band of ``default_config``.
-_FP8_1D2D_H200_CONFIGS: dict[tuple[int, int, int], dict[str, object]] = {
-    (128, 2112, 7168): {
-        "kernel": {"block_n": 16, "num_stages": 8, "group_size_m": 16, "group_unroll": 1},
-        "shared_epilogue": True,
-    },
-    (128, 7168, 2048): {
-        "kernel": {"block_n": 64, "num_stages": 8, "group_size_m": 16, "group_unroll": 1},
-        "shared_epilogue": True,
-        "sm_count": 112,
-    },
-    (4096, 2112, 7168): {
-        "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
-        "shared_epilogue": True,
-    },
-    (4096, 4096, 7168): {
-        "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
-        "shared_epilogue": True,
-    },
-    (4096, 7168, 2048): {
-        "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 32, "group_unroll": 1},
-        "shared_epilogue": True,
-    },
-    (4096, 7168, 16384): {
-        "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
-        "shared_epilogue": False,
-    },
-    (4096, 24576, 1536): {
-        "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 32, "group_unroll": 3},
-        "shared_epilogue": True,
+# Schedules measured per (m, n, k), by calibrated board (``tileops.utils.calibration_key``);
+# any other board or shape takes the analytic ``block_n`` band of ``default_config``.
+_FP8_1D2D_CONFIGS: dict[str, dict[tuple[int, int, int], dict[str, object]]] = {
+    "h200": {
+        (128, 2112, 7168): {
+            "kernel": {"block_n": 16, "num_stages": 8, "group_size_m": 16, "group_unroll": 1},
+            "shared_epilogue": True,
+        },
+        (128, 7168, 2048): {
+            "kernel": {"block_n": 64, "num_stages": 8, "group_size_m": 16, "group_unroll": 1},
+            "shared_epilogue": True,
+            "sm_count": 112,
+        },
+        (4096, 2112, 7168): {
+            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
+            "shared_epilogue": True,
+        },
+        (4096, 4096, 7168): {
+            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
+            "shared_epilogue": True,
+        },
+        (4096, 7168, 2048): {
+            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 32, "group_unroll": 1},
+            "shared_epilogue": True,
+        },
+        (4096, 7168, 16384): {
+            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 16, "group_unroll": 1},
+            "shared_epilogue": False,
+        },
+        (4096, 24576, 1536): {
+            "kernel": {"block_n": 128, "num_stages": 4, "group_size_m": 32, "group_unroll": 3},
+            "shared_epilogue": True,
+        },
     },
 }
 
 
-def _calibrated_epilogue(m: int, n: int, k: int, calibrated_board: bool) -> bool:
-    """Whether the calibrated schedule for this shape stores through shared memory.
+def _calibrated_epilogue(m: int, n: int, k: int, calibration: Optional[str]) -> bool:
+    """Whether the schedule calibrated on *calibration*'s board stores through shared memory.
 
-    False off the calibrated board or shape: the packed global store has the
+    False off a calibrated board or shape: the packed global store has the
     smaller unit, so it addresses every shape the other one does.
     """
-    tuned = _FP8_1D2D_H200_CONFIGS.get((m, n, k)) if calibrated_board else None
+    tuned = _FP8_1D2D_CONFIGS.get(calibration, {}).get((m, n, k))
     return bool(tuned["shared_epilogue"]) if tuned is not None else False
 
 
@@ -550,7 +552,7 @@ class GemmFp81D2DFwdKernel(Kernel):
                 call.m,
                 call.n,
                 call.k,
-                shared_epilogue=_calibrated_epilogue(call.m, call.n, call.k, call.h200),
+                shared_epilogue=_calibrated_epilogue(call.m, call.n, call.k, call.calibration),
             )
             is None
         )
@@ -593,13 +595,12 @@ class GemmFp81D2DFwdKernel(Kernel):
         self.dtype = dtype
         self.out_dtype = out_dtype
         self.sm_count = get_sm_count(self.device_index)
-        self._calibrated = (
-            _FP8_1D2D_H200_CONFIGS.get((m, n, k)) if is_h200(self.device_index) else None
-        )
+        calibration = device_calibration(self.device_index)
+        self._calibrated = _FP8_1D2D_CONFIGS.get(calibration, {}).get((m, n, k))
         if self._calibrated is not None:
             self.sm_count = int(self._calibrated.get("sm_count", self.sm_count))
         self.shared_epilogue = (
-            _calibrated_epilogue(m, n, k, is_h200(self.device_index))
+            _calibrated_epilogue(m, n, k, calibration)
             if shared_epilogue is None
             else bool(shared_epilogue)
         )
