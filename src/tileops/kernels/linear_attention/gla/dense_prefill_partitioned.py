@@ -1,7 +1,7 @@
 """Partitioned long-context GLA prefill kernels."""
 
 import functools
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 import tilelang
 import torch
@@ -367,6 +367,20 @@ def _gla_fwd_partitioned_replay_kernel(
     return _replay_func
 
 
+class _PartitionFit(NamedTuple):
+    """Where a 16-chunk partition beats the serial-state kernel on one calibrated board."""
+
+    dim: int
+    min_seq_len: int
+    # Independent partition CTAs (batch x heads x 1024-token partitions) the call needs.
+    min_ctas: int
+
+
+# A partition creates enough independent CTAs only for long calls. A board without an
+# entry keeps the serial-state kernel.
+_PARTITION_FITS = {"h200": _PartitionFit(dim=64, min_seq_len=16384, min_ctas=128)}
+
+
 class GLADensePrefillPartitionedKernel(GLAFwdKernel):
     """GLA prefill with parallel partition summaries and fused output replay."""
 
@@ -374,16 +388,14 @@ class GLADensePrefillPartitionedKernel(GLAFwdKernel):
 
     @classmethod
     def applies(cls, call: GLAInferenceCallSpec) -> bool:
-        # A 16-chunk partition creates enough independent CTAs only for long calls; the
-        # thresholds were fitted where ``call.h200`` holds. Other calls keep the
-        # serial-state kernel.
+        fit = _PARTITION_FITS.get(call.calibration)
         return (
-            serves_dense(call)
-            and call.dim_k == 64
-            and call.seq_len >= 16384
+            fit is not None
+            and serves_dense(call)
+            and call.dim_k == fit.dim
+            and call.seq_len >= fit.min_seq_len
             and call.seq_len % 1024 == 0
-            and call.batch * call.heads * (call.seq_len // 1024) >= 128
-            and call.h200
+            and call.batch * call.heads * (call.seq_len // 1024) >= fit.min_ctas
         )
 
     @classmethod

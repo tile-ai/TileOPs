@@ -9,7 +9,7 @@ import enum
 import functools
 import math
 
-from tileops.utils import is_h200_name
+from tileops.utils import calibration_key
 
 __all__ = [
     "ACTIVATIONS",
@@ -49,23 +49,11 @@ class _HeuristicPolicy:
     block_n_step: int = 64
     block_n_max: int = 256
 
-    # Fitted: depth to reach, depth past which not to bother, wave count past
-    # which the store rounds are all that is left.
-    staged_epilogue_stages: int = 4
-    staged_epilogue_depth_cap: int = 6
-    staged_epilogue_wave_limit: int = 20
-
     # Fitted: a shallow ring only costs where both hold -- few waves, and too
     # few tiles to fill the SMs.
     shallow_wave_limit: int = 4
     shallow_tiles_per_sm: float = 2.5
     hiding_stages: int = 4
-
-    # Fitted: the band where one tile beats whatever the cost function scores.
-    short_group_rows: int = 32
-    short_group_min_k: int = 1024
-    short_group_unfused_max_n: int = 5120
-    short_group_tile: tuple[int, int, int] = (64, 128, 128)
 
     # A patch, not a fit: the cost function prices a tile by block_m + block_n
     # and so reads a 192-wide tile as cheap, while its WGMMA issues twice.
@@ -78,6 +66,28 @@ class _HeuristicPolicy:
 
 #: One instance for the process: nothing varies it per call.
 _POLICY = _HeuristicPolicy()
+
+
+@dataclasses.dataclass(frozen=True)
+class _CalibratedBands:
+    """Selection bands fitted on one calibrated board; refit them as `_HeuristicPolicy` describes."""
+
+    # Depth to reach, depth past which not to bother, wave count past which the store
+    # rounds are all that is left.
+    staged_epilogue_stages: int = 4
+    staged_epilogue_depth_cap: int = 6
+    staged_epilogue_wave_limit: int = 20
+
+    # The band where one tile beats whatever the cost function scores.
+    short_group_rows: int = 32
+    short_group_min_k: int = 1024
+    short_group_unfused_max_n: int = 5120
+    short_group_tile: tuple[int, int, int] = (64, 128, 128)
+
+
+#: The bands by calibrated board (``tileops.utils.calibration_key``). A board without an
+#: entry is served by the cost function alone.
+_CALIBRATED_BANDS = {"h200": _CalibratedBands()}
 
 
 class GemmType(str, enum.Enum):
@@ -290,13 +300,9 @@ class GemmDesc:
         return self.activation != "none"
 
     @property
-    def h200(self) -> bool:
-        """Whether the bands fitted on H200 apply to this device.
-
-        Read through :func:`tileops.utils.is_h200_name`, so a band and the
-        selection that routes work to it agree on every H200 SKU.
-        """
-        return is_h200_name(self.device_name)
+    def bands(self) -> "_CalibratedBands | None":
+        """The bands fitted on this device's calibrated board, or ``None`` without one."""
+        return _CALIBRATED_BANDS.get(calibration_key(self.device_name))
 
     @property
     def c_cols(self) -> int:
@@ -504,18 +510,18 @@ def _best_layout(desc: GemmDesc, candidates: list[_Layout]) -> _Layout:
 
 def _short_group_layout(desc: GemmDesc) -> _Layout | None:
     """The tile pinned for short tight groups, or ``None`` outside that band."""
-    policy = desc.policy
+    bands = desc.bands
     rows_per_group = math.ceil(desc.m / desc.num_groups)
     if (
-        desc.h200
+        bands is not None
         and desc.gemm_type is GemmType.M_GROUPED_TIGHT_PSUM
         and desc.ab_dtype == desc.cd_dtype
         and desc.activation in ("none", "silu_and_mul")
-        and rows_per_group <= policy.short_group_rows
-        and desc.k >= policy.short_group_min_k
-        and (desc.activation != "none" or desc.n <= policy.short_group_unfused_max_n)
+        and rows_per_group <= bands.short_group_rows
+        and desc.k >= bands.short_group_min_k
+        and (desc.activation != "none" or desc.n <= bands.short_group_unfused_max_n)
     ):
-        return _Layout(*policy.short_group_tile)
+        return _Layout(*bands.short_group_tile)
     return None
 
 
@@ -559,8 +565,8 @@ def _staged_epilogue(desc: GemmDesc, layout: _Layout) -> GroupedGemmSpec | None:
     enough in waves not to need one, and so only costs the extra staging rounds.
     The widest chunk that reaches the policy's depth wins.
     """
-    policy = desc.policy
-    if desc.activation != "none" or not desc.h200:
+    bands = desc.bands
+    if desc.activation != "none" or bands is None:
         return None
     if desc.gemm_type in _TIGHT_TYPES:
         # A tight group's last tile is ragged, and those rows are stored under a
@@ -568,17 +574,17 @@ def _staged_epilogue(desc: GemmDesc, layout: _Layout) -> GroupedGemmSpec | None:
         # staging round each, for a store that was never going to widen; how many
         # tiles are ragged is a property of the routing, not of the shape.
         return None
-    if _num_stages(desc, layout) >= policy.staged_epilogue_depth_cap:
+    if _num_stages(desc, layout) >= bands.staged_epilogue_depth_cap:
         return None
     if (
         desc.gemm_type is GemmType.M_GROUPED_ALIGNED_PSUM
-        and _layout_features(desc, layout).num_waves >= policy.staged_epilogue_wave_limit
+        and _layout_features(desc, layout).num_waves >= bands.staged_epilogue_wave_limit
     ):
         return None
     base = _num_stages(desc, layout)
     for stage_n in (layout.block_n // 2, layout.block_n // 4):
         stages = _num_stages(desc, layout, epilogue_stage_n=stage_n)
-        if stages > base and stages >= policy.staged_epilogue_stages:
+        if stages > base and stages >= bands.staged_epilogue_stages:
             return _spec(desc, layout, stages, epilogue_stage_n=stage_n)
     return None
 

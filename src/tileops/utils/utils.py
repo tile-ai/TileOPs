@@ -32,31 +32,32 @@ def _sm_version(index: int) -> int:
     return major * 10 + minor
 
 
-def is_h200_name(device_name: str) -> bool:
-    """Whether a CUDA device name is an H200 board.
+# The boards the in-tree selection tables were fitted on, by the key those tables use
+# and the name fragment CUDA reports for the board. Every SKU of one board shares its
+# key: a selection band is an approximation two SKUs of one board can share. A GPU
+# profile matches the full name instead (:func:`tileops.perf.find_profile`), since a
+# speed-of-light reading is a measurement, left blank rather than borrowed from a
+# sibling SKU.
+_CALIBRATION_BOARDS = {"h200": "H200"}
 
-    The one H200 test. A band fitted on H200 and the selection that routes work
-    to it both read this, so they cannot disagree on an SKU whose reported name
-    carries a suffix.
 
-    Case is normalised here rather than by the caller: a name reaches this both
-    straight from ``torch.cuda.get_device_name`` and through a call record that
-    carried it, and a test that held for one spelling only would pass on the
-    board it was written on.
+def calibration_key(device_name: str) -> "str | None":
+    """The key of the calibrated board *device_name* belongs to, or ``None``.
 
-    A profile matches the full name instead (:func:`tileops.perf.find_profile`).
-    A selection band is an approximation two SKUs of one board can share; a
-    speed-of-light reading is a measurement, and is left blank rather than
-    borrowed from a sibling SKU.
+    The one place a device name is matched. A family's fitted tuning data is keyed by
+    this value, and selection asks the table for the call's key rather than testing the
+    name. Case is normalised here: a name reaches this both straight from
+    ``torch.cuda.get_device_name`` and through a call record that carried it.
     """
-    return "H200" in device_name.upper()
+    upper = device_name.upper()
+    return next((key for key, board in _CALIBRATION_BOARDS.items() if board in upper), None)
 
 
-def is_h200(index: "int | None" = None) -> bool:
-    """Whether the device is an H200; defaults to the current device."""
+def device_calibration(index: "int | None" = None) -> "str | None":
+    """:func:`calibration_key` of the device; defaults to the current device."""
     if not torch.cuda.is_available():
-        return False
-    return is_h200_name(_device_name(torch.cuda.current_device() if index is None else index))
+        return None
+    return calibration_key(_device_name(torch.cuda.current_device() if index is None else index))
 
 
 def get_sm_version(index: "int | None" = None) -> int:
@@ -78,13 +79,13 @@ def get_sm_count(index: "int | None" = None) -> int:
 
 
 @functools.lru_cache(maxsize=16)
-def _device_facts(index: int) -> "tuple[int, bool, int]":
+def _device_facts(index: int) -> "tuple[int, str | None, int]":
     props = torch.cuda.get_device_properties(index)
-    return _sm_version(index), is_h200_name(_device_name(index)), props.multi_processor_count
+    return _sm_version(index), calibration_key(_device_name(index)), props.multi_processor_count
 
 
-def device_facts(index: "int | None" = None) -> "tuple[int, bool, int]":
-    """``(arch, h200, sm_count)`` of the device; defaults to the current device.
+def device_facts(index: "int | None" = None) -> "tuple[int, str | None, int]":
+    """``(arch, calibration, sm_count)`` of the device; defaults to the current device.
 
     One cached lookup for a call record, which is built on the per-call path. The
     index is resolved before the cache is read, so ``None`` never names whichever
