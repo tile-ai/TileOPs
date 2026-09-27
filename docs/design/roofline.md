@@ -96,7 +96,7 @@ roofline:
 - **Schema validator / CI** — structural checks (schema, mode exclusivity, `func` importability), and it renders the analysis's defects. Does **not** execute formulas or hold a helper whitelist. Spec: §4.1.
 - **Benchmark layer** — instantiates an Op per workload and reads `(flops, bytes)` from `op.eval_roofline()`. Hardcoded formulas in benchmark files are a CI failure. Spec: §4.2.
 - **Roofline tool (M5)** — reads per-workload `(flops, bytes)`, the roof key, and timing from benchmark output, prices them against the GPU profile (§5.1), and emits SOL efficiency and verdicts. Spec: §4.3.
-- **Op codegen** — emits the `eval_roofline()` method of every implemented entry (§4.4.1) from what the analysis decided. Judges nothing. Spec: §4.4.
+- **Op codegen** — emits the `eval_roofline()` method of every entry (§4.4.1) from what the analysis decided. Judges nothing. Spec: §4.4.
 
 Two auditors check the field's values rather than consume them: the structural oracle (§4.6) and the NCU bytes audit (§4.5).
 
@@ -154,9 +154,9 @@ Physics check: every row's implied rates (`bytes / time`, `flops / time`) are co
 
 ### 4.4 Op Codegen
 
-Analysis runs for every entry. Emission runs for `status: implemented` entries only.
+Analysis and emission run for every entry, whatever its `status`.
 
-An inline entry is decided from the entry alone — no op instance, no tensor library, no device — which is what lets the validator (§4.1) ask the question wherever the manifest can be read. A `func` path is imported only for an implemented entry.
+An inline entry is decided from the entry alone — no op instance, no tensor library, no device — which is what lets the validator (§4.1) ask the question wherever the manifest can be read. The validator imports a `func` path only for an implemented entry; emission imports it when the entry's class is created.
 
 The analysis is the authoritative gate for name and form correctness. A formula referencing an unknown name or violating a layer's form constraints fails it, and a manifest that fails it cannot land. Numeric correctness is exercised by tests.
 
@@ -168,7 +168,7 @@ Analysis and emission are separate: analysis reads the entry and decides, emissi
 
 #### 4.4.1 Generated Method
 
-Every implemented manifest entry is served by a generated `eval_roofline()` returning `(flops: int, bytes: int)`. The method belongs to that entry: a subclass with its own entry receives its own evaluator rather than inheriting another entry's formula. It is emitted per discriminant point, like the call checks, and evaluates over the op's last completed call. The signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md).
+Every manifest entry is served by a generated `eval_roofline()` returning `(flops: int, bytes: int)`. The method belongs to that entry: a subclass with its own entry receives its own evaluator rather than inheriting another entry's formula. It is emitted per discriminant point, like the call checks, and evaluates over the op's last completed call. The signature is part of the shared Op interface defined in [ops-design-reference.md](ops-design-reference.md).
 
 #### 4.4.2 Manifest Inputs
 

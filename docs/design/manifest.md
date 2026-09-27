@@ -85,7 +85,7 @@ SiluAndMulFwdOp:
 
 - **Key.** The Python class name of the op, `{PascalCaseName}[{Fwd|Bwd}]Op`. The validator requires `cls.__name__ == key`.
 - **`family`.** The op's public module and a segment of its operator namespace: the op is importable as `tileops.<family>.<Op>`, and the family's `__all__` agrees with the manifest.
-- **`status`.** Required. `implemented`: an implementation conforms to the manifest. `spec-only`: no conforming implementation exists yet; code may be absent or partial.
+- **`status`.** Required. `implemented`: an implementation conforms to the manifest. `spec-only`: no conforming implementation exists yet; code may be absent or partial. `status` decides which code-dependent checks run, never which methods the signature generates: a class with an entry gets them all.
 - **`ref_api`.** Optional qualified name of the API the op follows semantically. The validator checks its form, and that it resolves when its module imports.
 
 ## Signature

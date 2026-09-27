@@ -123,13 +123,13 @@ def _boundary_forward(eager):
     return forward
 
 
-def _probe(name, signature, forward, *, boundary=False, roofline=None):
+def _probe(name, signature, forward, *, boundary=False, roofline=None, status="implemented"):
     """An `Op` subclass whose entry is *signature* and whose `forward` is *forward*."""
     from tileops.ops.op_base import Op
 
     entry = {
         "family": "probe",
-        "status": "implemented",
+        "status": status,
         "signature": signature,
         "roofline": roofline or {"flops": "1"},
     }
@@ -215,41 +215,6 @@ def test_each_effect_branch_registers_its_own_operator():
     assert probe(inplace=True)(x) is x and x.tolist() == [1, 1]
     y = probe(inplace=False)(x)
     assert y is not x and y.tolist() == [2, 2]
-
-
-def test_a_spec_only_entry_gets_its_boundary_and_keeps_its_methods():
-    """A spec-only class keeps its hand-written checks and shape inference; the signature
-    still decides its operator and fake, so a traced call is one graph."""
-    from tileops.ops.op_base import Op
-
-    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
-
-    def construct(self):
-        self.dispatch_kernel(None)
-
-    def eager(self, x):
-        return x + 1
-
-    cls = type(
-        "ProbeSpecOnlyFwdOp",
-        (Op,),
-        {
-            "__init__": construct,
-            "default_kernel_map": property(lambda self: {}),
-            "forward": _boundary_forward(eager),
-            "_eager_forward": eager,
-            "_infer_output_shapes": lambda self, x_shape: {"y": x_shape},
-            "_validate_dtypes": lambda self, x: None,
-            "eval_roofline": lambda self: (0, 0),
-            "compile_boundary": True,
-        },
-    )
-    assert install(cls, {"family": "probe", "status": "spec-only", "signature": signature})
-    assert cls.compile_op_names == ("tileops::probe_spec_only_fwd",)
-    assert "_signature" not in vars(cls)
-    torch._dynamo.reset()
-    compiled = torch.compile(cls(), fullgraph=True)
-    assert compiled(torch.zeros(4, dtype=torch.float16)).tolist() == [1] * 4
 
 
 def test_a_traced_boundary_call_is_one_graph():
@@ -649,6 +614,28 @@ def test_a_target_served_call_leaves_constructor_attributes_alone():
         registry.restore(state)
 
 
+def test_a_target_served_spec_only_call_is_checked_before_the_target_is_asked():
+    from tileops.backend import registry
+
+    state = registry.snapshot()
+    try:
+        registry.DETECTORS.clear()
+        registry.BUILDERS.clear()
+        registry.default_target = None
+        registry._loaded = True
+        registry.register_detector("acme", lambda device: True)
+        asked = []
+        registry.register_kernel_builder(
+            "ProbeSpecOnlyFwdOp", "acme", lambda *i, **p: asked.append(i) or (lambda x: x)
+        )
+        op = _probe("ProbeSpecOnlyFwdOp", _SILU, lambda self, x: None, status="spec-only")()
+        with pytest.raises(ValueError, match="x dtype"):
+            op(torch.zeros(3, 8, dtype=torch.float32))
+        assert asked == []
+    finally:
+        registry.restore(state)
+
+
 @pytest.mark.parametrize("boundary", [False, True])
 def test_a_call_on_meta_tensors_completes_and_is_priced(boundary):
     forward = lambda self, x: x[:, : x.shape[1] // 2].clone()  # noqa: E731
@@ -658,7 +645,7 @@ def test_a_call_on_meta_tensors_completes_and_is_priced(boundary):
     assert op.eval_roofline() == (12, (3 * 8 + 3 * 4) * 2)
 
 
-def test_a_converted_op_without_a_boundary_traces_inside_a_compiled_caller():
+def test_an_op_without_a_boundary_traces_inside_a_compiled_caller():
     op = _probe("ProbeInlineFwdOp", _SILU, lambda self, x: x[:, : x.shape[1] // 2] * 2)()
     torch._dynamo.reset()
     compiled = torch.compile(lambda x: op(x) + 1, fullgraph=True)

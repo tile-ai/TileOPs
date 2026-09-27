@@ -190,18 +190,3 @@ def test_gated_deltanet_contract_reaches_target_builder() -> None:
             },
         )
     ]
-
-
-def test_gated_deltanet_rejects_invalid_optional_inputs() -> None:
-    q = torch.empty(1, 1, 2, 8, dtype=torch.float16)
-    k = torch.empty_like(q)
-    v = torch.empty(1, 1, 2, 6, dtype=torch.float16)
-    g = torch.empty(1, 1, 2, dtype=torch.float16)
-    beta = torch.empty_like(g)
-
-    with pytest.raises(ValueError, match="requires A_log and dt_bias"):
-        GatedDeltaNetFwdOp(use_gate_in_kernel=True).forward(q, k, v, g, beta)
-
-    bad_state = torch.empty(1, 2, 6, 8, dtype=torch.float32)
-    with pytest.raises(ValueError, match=r"\[N, HV, K, V\]"):
-        GatedDeltaNetFwdOp().forward(q, k, v, g, beta, bad_state)

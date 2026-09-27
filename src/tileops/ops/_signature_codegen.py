@@ -1264,20 +1264,13 @@ def _input_binder(sig: Signature, name: str, body, dtypes: bool = False):
 def install(cls: type, entry: dict, adts: dict | None = None) -> bool:
     """Give `cls` the methods its entry's signature generates; False when the signature is malformed.
 
-    A `spec-only` entry keeps its hand-written methods and gets only the compile boundary its
-    class declares, whose operators, schema and fake the signature decides as for any other.
+    The entry's `status` plays no part: what the signature generates derives from it alone.
     """
     try:
         entry_plan_ = entry_plan(cls.__name__, entry, load_adts() if adts is None else adts)
     except SignatureError:
         return False
     plan = _Plan(entry_plan_)
-    if entry.get("status") == "spec-only":
-        if getattr(cls, "compile_boundary", False):
-            # The boundary's fake evaluates the signature, which reads what construction resolves.
-            cls._check_construction = _construction_check(plan)
-            _install_boundary(cls, plan, entry)
-        return True
     sig = plan.sig
     cls._signature = plan
     cls._check_construction = _construction_check(plan)

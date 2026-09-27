@@ -118,8 +118,8 @@ class Op(ABC):
         """Install what the subclass's manifest entry generates, and the param names a
         backend's ``build_kernel`` is called with.
 
-        A subclass without an entry gets neither; a ``status: spec-only`` one gets only the
-        compile boundary it declares.
+        A subclass without an entry gets neither. An entry's ``status`` does not change what
+        its signature generates.
         """
         super().__init_subclass__(**kwargs)
         _DISPATCH_KEYS.update(cls.__dict__.get("kernel_types", {}))
@@ -170,51 +170,30 @@ class Op(ABC):
     execution_parameters: ClassVar[tuple[str, ...]] = ()
 
     @abstractmethod
-    def _infer_output_shapes(self, **shape_kwargs: tuple[int, ...]) -> dict[str, tuple[int, ...]]:
-        """Infer output tensor shapes from input shapes.
+    def _infer_output_shapes(self, *shapes: tuple[int, ...], dtypes=None) -> dict:
+        """Infer output tensor shapes from input shapes, in ``signature.inputs`` order.
 
-        Concrete ops override this with a signature matching the named input
-        shapes declared in their manifest ``shape_rules`` section (e.g.
-        ``_infer_output_shapes(self, x_shape, weight_shape)``). The uniform
-        ``**shape_kwargs`` base signature exists only to make the L1 contract
-        grepable and discoverable; see docs/design/ops-design.md §``_infer_output_shapes``.
-        Abstract: a concrete op supplies the body, and the validator's C6 check names
-        it when a class inherits this one instead.
+        Generated from the op's manifest entry; abstract so that a class without one
+        cannot be instantiated.
         """
-        raise NotImplementedError(
-            "_infer_output_shapes must be implemented by the concrete Op subclass; "
-            "see docs/design/ops-design.md §`_infer_output_shapes` (codegen)"
-        )
+        raise NotImplementedError("generated from the op's manifest entry")
 
     @abstractmethod
     def _validate_dtypes(self, *args: torch.Tensor) -> None:
-        """Validate dtypes of input tensors passed to ``forward``.
+        """Validate the ``forward`` inputs against the signature.
 
-        Concrete ops override this with a signature matching their manifest
-        ``signature.inputs`` (e.g. ``_validate_dtypes(self, x, weight)``).
-        See docs/design/ops-design.md §``_validate_dtypes``.
+        Generated from the op's manifest entry; abstract so that a class without one
+        cannot be instantiated.
         """
-        raise NotImplementedError(
-            "_validate_dtypes must be implemented by the concrete Op subclass; "
-            "see docs/design/ops-design.md §`_validate_dtypes` (codegen)"
-        )
+        raise NotImplementedError("generated from the op's manifest entry")
 
     @abstractmethod
     def eval_roofline(self) -> tuple[int, int]:
-        """Return ``(flops, bytes)`` for this op instance.
+        """Return ``(flops, bytes)`` for the last completed call.
 
-        Per docs/design/roofline.md §4.4 and §4.4.6, each concrete op's
-        ``eval_roofline`` body is emitted by codegen as plain Python directly
-        over ``self.*`` attributes — there is no shared roofline expression
-        evaluator at L1, by design (§4.4.6 rejects "Op-local AST evaluator").
-        The L1 base only declares the contract; concrete ops supply the body.
+        Generated from the op's manifest ``roofline`` (docs/design/roofline.md §4.4).
         """
-        raise NotImplementedError(
-            "eval_roofline must be implemented by the concrete Op subclass, "
-            "emitted per docs/design/roofline.md §4.4 (codegen); the L1 base "
-            "intentionally does not provide a generic evaluator — see "
-            "docs/design/roofline.md §4.4.6 (Evaluator Surface Boundary)"
-        )
+        raise NotImplementedError("generated from the op's manifest entry")
 
     def eval_roofline_read_bytes(self) -> Optional[int]:
         """The read half of ``eval_roofline()[1]``, for the NCU bytes audit.
@@ -225,10 +204,9 @@ class Op(ABC):
         ``bytes`` already counted that part.
 
         Returns:
-            The read half in bytes, or ``None`` for an op without a generated signature.
+            The read half in bytes, or ``None`` from an override whose read half the
+            signature cannot settle.
         """
-        if getattr(type(self), "_signature", None) is None:
-            return None
         call = self.last_call
         write_bytes = sum(call.bytes(t) * w for t, _, w in call.traffic)
         return int(self.eval_roofline()[1]) - write_bytes
@@ -521,22 +499,12 @@ class Op(ABC):
     def _forward_io(cls) -> "tuple[tuple[str, ...], frozenset[str]]":
         """The ``forward`` inputs a target is called with, and which of them it writes.
 
-        The names are ``signature.inputs``; an op the manifest does not describe has none.
-        The written ones are the inputs marked ``mutated``.
+        The names are ``signature.inputs``; the written ones are every input some branch
+        writes. A call's own set is ``SignatureCall.written``.
         """
-        plan = getattr(cls, "_signature", None)
-        if plan is not None:
-            # Every input some branch writes; a call's own set is `SignatureCall.written`.
-            written = frozenset(n for n, t in plan.sig.inputs.items() if t.mutated or t.write_only)
-            return tuple(plan.sig.inputs), written
-        entry = load_manifest().get(cls.__name__)
-        inputs = (entry["signature"].get("inputs") or {}) if entry is not None else {}
-        mutated = frozenset(
-            name
-            for name, attrs in inputs.items()
-            if isinstance(attrs, dict) and attrs.get("mutated")
-        )
-        return tuple(inputs), mutated
+        sig = cls._signature.sig
+        written = frozenset(n for n, t in sig.inputs.items() if t.mutated or t.write_only)
+        return tuple(sig.inputs), written
 
     @classmethod
     @functools.cache
@@ -548,8 +516,7 @@ class Op(ABC):
     @functools.cache
     def _forward_outputs(cls) -> "tuple[str, ...]":
         """The op's declared outputs, in order."""
-        entry = load_manifest().get(cls.__name__)
-        return tuple((entry or {}).get("signature", {}).get("outputs") or ())
+        return tuple(cls._signature.sig.outputs)
 
     def _bind_forward(self, args: tuple, kwargs: dict) -> "tuple[tuple, dict[str, torch.Tensor]]":
         """Split a ``forward`` call into its manifest inputs and its written buffers.
@@ -562,26 +529,20 @@ class Op(ABC):
         bound.apply_defaults()
         names, _ = self._forward_io()
         inputs = tuple(bound.arguments.get(name) for name in names)
-        # A generated check reports a non-tensor `out` by name.
-        generated = getattr(type(self), "_signature", None) is not None
+        # The check reports a non-tensor `out` by name.
         writes = {
             name: value
             for name, value in bound.arguments.items()
             if name not in names
-            and (
-                isinstance(value, torch.Tensor)
-                or (generated and name == "out" and value is not None)
-            )
+            and (isinstance(value, torch.Tensor) or (name == "out" and value is not None))
         }
         return inputs, writes
 
     def _check_signature(
         self, inputs: "tuple[torch.Tensor | None, ...]", writes: "dict[str, torch.Tensor]"
     ) -> object:
-        """Run the checks generated from the entry's signature; None for an op without them."""
-        plan = getattr(type(self), "_signature", None)
-        if plan is None:
-            return None
+        """Run the checks generated from the entry's signature."""
+        plan = type(self)._signature
         self._open_call()
         return plan.check(self, {**dict(zip(plan.sig.inputs, inputs, strict=True)), **writes})
 
@@ -666,15 +627,9 @@ class Op(ABC):
             OpNotAvailableError: What :meth:`_resolve_builder` raises.
         """
         settled_here = self._builder is _UNRESOLVED
-        generated = getattr(type(self), "_signature", None) is not None
-        if settled_here and not generated:
-            # ``__call__`` settled this already — unless it was traced. Dynamo defers a
-            # traced frame's attribute writes until after the graph has run, so the
-            # operator body arrives here still ``_UNRESOLVED``.
-            self._resolve_builder(inputs, writes)
         try:
             call = self._check_signature(inputs, writes)
-            if settled_here and generated:
+            if settled_here:
                 self._resolve_builder(inputs, writes, call.device)
             if self._served_by_target():
                 result = self._call_target(inputs, writes, _written, _execution)
@@ -704,20 +659,11 @@ class Op(ABC):
         The kernel is built once per device and per input dtype and shape.
 
         Raises:
-            ValueError: The tensors of an op without a generated signature are on several
-                devices.
             OpNotAvailableError: The builder returned something that is not callable.
         """
         devices = {t.device for t in (*inputs, *writes.values()) if t is not None}
         # The generated checks placed the call, `device: cpu` tensors aside.
-        generated = getattr(type(self), "_signature", None) is not None
-        if generated:
-            devices = {d for d in devices if d.type != "cpu"} or devices
-        if len(devices) > 1 and not generated:
-            raise ValueError(
-                f"{type(self).__name__} needs every tensor on one device; got "
-                f"{sorted(map(str, devices))}"
-            )
+        devices = {d for d in devices if d.type != "cpu"} or devices
         names, mutated = self._forward_io()
         written = mutated if written is None else written
         inputs = tuple(
@@ -998,14 +944,11 @@ class Op(ABC):
         A call that fails settles nothing, so one invalid call cannot aim the instance
         for good.
         """
-        generated = getattr(type(self), "_signature", None) is not None
-        settled_here = self._builder is _UNRESOLVED and not (generated and self.compile_op_names)
-        if settled_here and not generated:
-            self._resolve_builder(args, kwargs)
+        settled_here = self._builder is _UNRESOLVED and not self.compile_op_names
         try:
             call, bound = None, None
             # An op without a compile boundary claims no traced contract.
-            if generated and not self.compile_op_names and not torch.compiler.is_compiling():
+            if not self.compile_op_names and not torch.compiler.is_compiling():
                 bound = self._bind_forward(args, kwargs)
                 call = self._check_signature(*bound)
                 if settled_here:
