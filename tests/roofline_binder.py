@@ -1,6 +1,8 @@
 """Build a bytes-oracle case for each workload row of an op from its manifest entry alone.
 
 Each row is instantiated, the op constructed from it and its call checked on meta tensors.
+An implemented entry's op is its class; a spec-only entry's is a class carrying only what its
+signature generates, since the recount needs no implementation.
 In parallel the oracle counts the traffic the checked call implies -- one read per input it
 binds, one write per output, both for a written input -- and the caller requires the two to
 be equal. The `roofline` block is never read.
@@ -19,15 +21,36 @@ from tileops.manifest import load_adts, load_manifest
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.registry import op_class
 from tileops.manifest.workload import instantiate
+from tileops.ops._signature_codegen import install
+from tileops.ops.op_base import Op
 
-__all__ = ["manifest_cases"]
+__all__ = ["manifest_cases", "signature_class"]
+
+
+def signature_class(op_name: str, entry: dict) -> type:
+    """An `Op` subclass with *entry*'s generated methods and no kernel."""
+
+    def construct(self, **params):
+        vars(self).update(params)
+        self.dispatch_kernel(None)
+
+    body = {"__init__": construct, "default_kernel_map": property(lambda self: {})}
+    body["forward"] = body["_eager_forward"] = lambda self, *args: None
+    cls = type(f"Signature{op_name}", (Op,), body)
+    if not install(cls, entry):
+        raise ValueError(f"{op_name}: the signature does not generate")
+    return cls
 
 
 def manifest_cases(op_name: str):
     """Yield ``(label, dtype case, op, oracle bytes, oracle read bytes)`` per row and dtype case."""
     entry = load_manifest()[op_name]
     plan = entry_plan(op_name, entry, load_adts())
-    cls = op_class(op_name, entry)
+    cls = (
+        op_class(op_name, entry)
+        if entry["status"] == "implemented"
+        else signature_class(op_name, entry)
+    )
     for row in entry["workloads"]:
         for case in row.get("dtype_cases") or [{}]:
             call = instantiate(plan, row, case)
