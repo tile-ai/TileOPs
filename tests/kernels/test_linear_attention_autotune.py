@@ -364,9 +364,8 @@ def test_default_h_block_v_prefers_a_tiled_width_and_stays_declared() -> None:
 def test_default_config_width_is_one_the_kernel_builds() -> None:
     """The kernel draws its untuned width from the shared candidates.
 
-    dim_v=48 is the shape that regressed silently: a tiled width of 32 gives
-    one tile covering 32 of 48 columns. The width rules themselves are checked
-    on the helper; this checks the kernel is wired to them.
+    At dim_v=48 a tiled width of 32 gives one tile covering 32 of 48 columns.
+    The width rules are checked on the helper; this checks the kernel uses them.
     """
     kernel_cls = deltanet_fwd.DeltaNetFwdKernel
     kernel = kernel_cls(
