@@ -10,11 +10,13 @@ from tileops.kernels.gemm import (
     GemvKernel,
     W4A16RepackKernel,
 )
+from tileops.kernels.gemm.call_spec import GemmCall
 from tileops.kernels.gemm.dense import (
     GemmFp8BlockScaleKernel,
     _b_eviction,
     _bandwidth_autotune_grid,
 )
+from tileops.kernels.gemm.fp8_1d2d import GemmFp81D2DFwdKernel
 from tileops.kernels.gemm.heuristics import (
     best_config,
     gemv_config,
@@ -388,6 +390,17 @@ class GemmFp8Fixture(FixtureBase):
                     id="smoke-fp8-e5m2-per-tensor",
                 ),
                 pytest.param(
+                    128,
+                    256,
+                    512,
+                    torch.float8_e4m3fn,
+                    "block128x128",
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="smoke-fp8-e4m3-block128x128",
+                ),
+                pytest.param(
                     4096,
                     256,
                     256,
@@ -441,6 +454,50 @@ class GemmFp8Fixture(FixtureBase):
                     True,
                     marks=pytest.mark.full,
                     id="full-fp8-e4m3-per-tensor-split-k-bias",
+                ),
+                pytest.param(
+                    200,
+                    300,
+                    1536,
+                    torch.float8_e4m3fn,
+                    "block128x128",
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp8-e4m3-block128x128-mn-tail",
+                ),
+                pytest.param(
+                    512,
+                    8576,
+                    512,
+                    torch.float8_e4m3fn,
+                    "block128x128",
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp8-e4m3-block128x128-multi-wave",
+                ),
+                pytest.param(
+                    8,
+                    300,
+                    256,
+                    torch.float8_e4m3fn,
+                    "block128x128",
+                    torch.float16,
+                    True,
+                    marks=pytest.mark.full,
+                    id="full-fp8-e4m3-block128x128-general-kernel",
+                ),
+                pytest.param(
+                    64,
+                    256,
+                    6144,
+                    torch.float8_e4m3fn,
+                    "block128x128",
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp8-e4m3-block128x128-general-split-k",
                 ),
             ],
         ),
@@ -658,6 +715,77 @@ def test_gemm_fp8_block128_default_config(
     )
 
     assert (kernel.config["block_n"], kernel.config["num_stages"]) == expected
+
+
+def _skip_off_1d2d_arch() -> None:
+    from tileops.utils import get_sm_version
+
+    if get_sm_version() not in GemmFp81D2DFwdKernel.supported_archs:
+        pytest.skip("the 1D2D kernel does not run on this architecture")
+
+
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("m", "scale_b_rows", "bias", "out_dtype", "expected"),
+    [
+        pytest.param(128, 128, False, torch.bfloat16, "GemmFp81D2DFwdKernel", id="1d2d"),
+        pytest.param(64, 128, False, torch.bfloat16, "GemmFp8BlockScaleKernel", id="1d2d-small-m"),
+        pytest.param(128, 128, True, torch.bfloat16, "GemmFp8BlockScaleKernel", id="1d2d-bias"),
+        pytest.param(128, 128, False, torch.float16, "GemmFp8BlockScaleKernel", id="1d2d-fp16"),
+        pytest.param(128, 1, False, torch.bfloat16, "GemmFp8BlockScaleKernel", id="1d1d"),
+    ],
+)
+def test_gemm_fp8_block_scale_selection(
+    m: int, scale_b_rows: int, bias: bool, out_dtype: torch.dtype, expected: str
+) -> None:
+    """The 1D2D kernel serves its region; the general block kernel serves the rest."""
+    _skip_off_1d2d_arch()
+    n, k = 256, 512
+    call = GemmCall(
+        m=m,
+        n=n,
+        k=k,
+        dtype=torch.float8_e4m3fn,
+        trans_b=True,
+        scale_a_shape=(m, k // 128),
+        scale_b_shape=(-(-n // scale_b_rows), k // 128),
+        out_dtype=out_dtype,
+        has_bias=bias,
+    )
+    assert GemmFp8FwdOp(out_dtype=out_dtype).select_kernel(call).__name__ == expected
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
+    """The shared-memory epilogue publishes the whole tile."""
+    _skip_off_1d2d_arch()
+    test = GemmFp8Test(128, 256, 512, torch.float8_e4m3fn, "block128x128")
+    kernel = GemmFp81D2DFwdKernel(
+        128, 256, 512, torch.float8_e4m3fn, torch.bfloat16, shared_epilogue=True
+    )
+    inputs = test.gen_inputs()
+    torch.testing.assert_close(kernel(*inputs), test.ref_program(*inputs), atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gemm_fp8_1d2d_refuses_a_block_n_that_splits_a_scale_block() -> None:
+    """A ``block_n`` that does not divide 128 would leave STSM columns unwritten."""
+    _skip_off_1d2d_arch()
+    kernel = GemmFp81D2DFwdKernel(
+        128,
+        256,
+        512,
+        torch.float8_e4m3fn,
+        torch.bfloat16,
+        config={"block_n": 56, "num_stages": 3, "group_size_m": 16, "group_unroll": 1},
+    )
+    inputs = GemmFp8Test(128, 256, 512, torch.float8_e4m3fn, "block128x128").gen_inputs()
+    with pytest.raises(ValueError, match="block_n must be one of"):
+        kernel(*inputs)
 
 
 @GemvBoundaryFixture

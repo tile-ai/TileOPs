@@ -1,7 +1,6 @@
 """Benchmark TileOPs GEMM, FP8 GEMM and W4A16 GEMM, one case per manifest call, against cuBLAS and the library kernels available for each."""
 
 import contextlib
-import functools
 from typing import Any, Callable, Optional
 
 import pytest
@@ -13,6 +12,7 @@ from benchmarks.baselines import (
     assert_matches_reference,
     deepgemm_op,
     flaggems_op,
+    flashinfer_op,
     reference_tolerance,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
@@ -131,33 +131,64 @@ def cublaslt_best(
         return None
 
 
-def _flashinfer_fp8_blockscale_ref(
+def _flashinfer_fp8_blockscale_1d2d(
     workload: GemmFp8Workload, *inputs: torch.Tensor
-) -> torch.Tensor:
-    from flashinfer.gemm import fp8_blockscale_gemm_sm90
+) -> Callable[..., torch.Tensor]:
+    """FlashInfer's FP8 block-scale GEMM over 1D2D scales.
 
+    It reads ``scale_a`` as M-contiguous rows padded to a multiple of 4, whatever the
+    tensor's strides say, so the adapter lays the scales out that way under the
+    ``[M, K/128]`` shape it checks.
+
+    Raises:
+        ValueError: When the row falls outside that path.
+    """
+    gemm = flashinfer_op("gemm.fp8_blockscale_gemm_sm90")
     a, b, scale_a, scale_b = inputs[:4]
     if len(inputs) == 5:
         raise ValueError("FlashInfer FP8 blockscale GEMM baseline does not support bias.")
-    if a.dtype != torch.float8_e4m3fn or b.dtype != torch.float8_e4m3fn:
-        raise ValueError("FlashInfer FP8 blockscale GEMM baseline requires float8_e4m3fn.")
     if workload.out_dtype != torch.bfloat16:
         raise ValueError("FlashInfer FP8 blockscale GEMM baseline requires bfloat16 output.")
     if workload.k % _FP8_BLOCK != 0:
         raise ValueError(
             f"FlashInfer FP8 blockscale GEMM baseline requires k divisible by {_FP8_BLOCK}."
         )
-    if scale_a.shape != (workload.m, workload.k // _FP8_BLOCK) or scale_b.shape != (
-        workload.n,
-        workload.k // _FP8_BLOCK,
-    ):
-        raise ValueError(
-            "FlashInfer FP8 blockscale GEMM baseline requires exact "
-            f"scale shapes {(workload.m, workload.k // _FP8_BLOCK)} "
-            f"and {(workload.n, workload.k // _FP8_BLOCK)}, "
-            f"got {tuple(scale_a.shape)} and {tuple(scale_b.shape)}"
-        )
-    return fp8_blockscale_gemm_sm90(a, b, scale_a, scale_b, out_dtype=workload.out_dtype)
+    m, scale_k = scale_a.shape
+    padded_m = -(-m // 4) * 4
+    m_major = torch.zeros((scale_k, padded_m), dtype=scale_a.dtype, device=scale_a.device)
+    m_major[:, :m] = scale_a.T
+    m_major_scale_a = torch.as_strided(m_major, (m, scale_k), (1, padded_m))
+
+    def run(a: torch.Tensor, b: torch.Tensor, *_: torch.Tensor) -> torch.Tensor:
+        return gemm(a, b, m_major_scale_a, scale_b, out_dtype=workload.out_dtype)
+
+    return run
+
+
+def _deepgemm_fp8_1d2d(
+    workload: GemmFp8Workload, *inputs: torch.Tensor
+) -> Callable[..., torch.Tensor]:
+    """DeepGEMM's dense FP8 GEMM over 1D2D scales, the granularity it reads natively.
+
+    Raises:
+        ValueError: When the row falls outside that path.
+    """
+    gemm = deepgemm_op("fp8_gemm_nt")
+    align = deepgemm_op("get_mn_major_tma_aligned_tensor")
+    if len(inputs) == 5:
+        raise ValueError("DeepGEMM FP8 GEMM baseline does not support bias.")
+    if workload.out_dtype != torch.bfloat16:
+        raise ValueError("DeepGEMM FP8 GEMM baseline requires bfloat16 output.")
+    m, n = workload.m, workload.n
+    aligned_scale_a = align(inputs[2])
+    scale_b = inputs[3]
+
+    def run(a: torch.Tensor, b: torch.Tensor, *_: torch.Tensor) -> torch.Tensor:
+        out = torch.empty((m, n), dtype=workload.out_dtype, device=a.device)
+        gemm((a, aligned_scale_a), (b, scale_b), out)
+        return out
+
+    return run
 
 
 def _deepgemm_bf16_nt(
@@ -426,27 +457,23 @@ def test_gemm_fp8_bench(call) -> None:
                 print(f"  [skip] flashinfer-mm-fp8: {str(exc).splitlines()[0]}")
             else:
                 functors["flashinfer-mm-fp8"] = (flashinfer_fn, (inputs[0],))
-    else:
-        try:
-            import flashinfer  # noqa: F401
-
-            blockscale_fn = functools.partial(_flashinfer_fp8_blockscale_ref, workload)
-            assert_matches_reference(
-                blockscale_fn,
-                workload.ref_program,
-                *inputs,
-                **reference_tolerance(out_dtype),
-            )
-        except (ImportError, ValueError) as exc:
-            print(f"  [skip] flashinfer-fp8-blockscale-sm90: {str(exc).splitlines()[0]}")
-        except AssertionError as exc:
-            # Preferred, not selected: drop the tag rather than fail the row.
-            print(
-                "  [skip] flashinfer-fp8-blockscale-sm90: disagrees with the reference "
-                f"({str(exc).splitlines()[0]})"
-            )
-        else:
-            functors["flashinfer-fp8-blockscale-sm90"] = (blockscale_fn, inputs)
+    elif scale_mode == "block128x128":
+        baselines = {
+            "flashinfer-fp8-blockscale-sm90": _flashinfer_fp8_blockscale_1d2d,
+            DEEPGEMM_TAG: _deepgemm_fp8_1d2d,
+        }
+        for tag, adapter in baselines.items():
+            try:
+                fn = adapter(workload, *inputs)
+                assert_matches_reference(
+                    fn, workload.ref_program, *inputs, **reference_tolerance(out_dtype)
+                )
+            except ValueError as exc:
+                print(f"  [skip] {tag}: {str(exc).splitlines()[0]}")
+            else:
+                functors[tag] = (fn, inputs)
+    # A 1D1D row has no library baseline: the FlashInfer and DeepGEMM block-scale GEMMs
+    # read scale_b per 128x128 block only.
 
     bm.compare(functors, *inputs)
 

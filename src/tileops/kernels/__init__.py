@@ -54,6 +54,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GemmCpAsyncKernel,
         GemmFp8BlockScaleKernel,
         GemmFp8TensorScaleKernel,
+        GemmFp81D2DFwdKernel,
         GemmTmaKernel,
         GemvKernel,
     )
@@ -177,6 +178,7 @@ _LAZY = {
     "GatedDeltaNetDenseDecodeFwdKernel": ".linear_attention",
     "GatedDeltaNetDensePrefillFwdKernel": ".linear_attention",
     "GemmCpAsyncKernel": ".gemm",
+    "GemmFp81D2DFwdKernel": ".gemm",
     "GemmFp8BlockScaleKernel": ".gemm",
     "GemmFp8TensorScaleKernel": ".gemm",
     "GemmTmaKernel": ".gemm",
