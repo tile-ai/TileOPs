@@ -234,9 +234,9 @@ class Op(ABC):
 
         The base default covers ops whose arithmetic runs on CUDA cores in
         fp32 (elementwise, reductions, norms, scans). An op whose FLOPs are
-        matmul contractions overrides this with ``tensor_core_roof(self.dtype)``
-        (or a backend-specific key). Valid whenever ``eval_roofline()`` is —
-        after the dtype is bound.
+        matmul contractions overrides this with ``tensor_core_roof`` of the
+        contraction's input dtype read from ``self.last_call`` (or a
+        backend-specific key). Valid whenever ``eval_roofline()`` is.
         """
         return "cuda_core.fp32"
 
