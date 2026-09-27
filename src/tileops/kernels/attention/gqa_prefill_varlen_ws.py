@@ -422,9 +422,8 @@ def _gqa_prefill_varlen_ws_kernel(
 class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
     """SM90 warp-specialized packed prefill for heads of dimension 64 or 128.
 
-    Dimension 256 stays on the general kernel: the double Q buffer, the K and V stages
-    and the output tile need 448 KB of shared memory there, about twice the 227 KB an SM90
-    block may use.
+    Dimension 256 stays on the general kernel: its shared buffers would need 448 KB,
+    about twice the 227 KB an SM90 block may use.
     """
 
     supported_archs: list[int] = [90]
@@ -434,7 +433,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
     _STAGES: int = 2
     # At dim 128 the double Q buffer leaves about 3 KB of the 227 KB of shared memory
     # for the per-request prefix: batch 495 launched and 512 did not. Dim 64 halves
-    # every buffer, so the bound holds there too. Re-measure if any shared buffer grows.
+    # every buffer. Re-measure if any shared buffer grows.
     _MAX_BATCH: int = 448
 
     @classmethod
