@@ -26,8 +26,6 @@ from tileops.ops import (
     GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
-    GroupedQueryAttentionPrefillVarlenFwdOp,
-    GroupedQueryAttentionSlidingWindowVarlenFwdOp,
     GroupedQueryAttentionVarlenFwdOp,
 )
 from tileops.utils import get_sm_version
@@ -101,32 +99,6 @@ def test_gqa_bwd_bench(call) -> None:
 
     bm.compare(functors, *inputs)
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)
-
-
-def _bench_packed(op_cls, call, cu_kv: str) -> None:
-    """Time a packed GQA op against its reference and FA3 over the same layout."""
-    workload = GroupedQueryAttentionVarlenCall(call, cu_kv)
-    inputs = workload.gen_inputs()
-    op = op_cls(**workload.arguments())
-    bm = ManifestBenchmark(op, workload)
-    tolerance = reference_tolerance(workload.dtype)
-    assert_matches_reference(op, workload.ref_program, *inputs, **tolerance)
-    functors = {"tileops": op, "torch-ref": workload.ref_program}
-    fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr)
-    if fa3_fn is not None:
-        assert_matches_reference(fa3_fn, workload.ref_program, *inputs, **tolerance)
-        functors["fa3"] = fa3_fn
-    bm.compare(functors, *inputs)
-
-
-@pytest.mark.parametrize("call", manifest_calls(GroupedQueryAttentionPrefillVarlenFwdOp))
-def test_gqa_prefill_varlen_fwd_bench(call) -> None:
-    _bench_packed(GroupedQueryAttentionPrefillVarlenFwdOp, call, "cu_seqlens_kv")
-
-
-@pytest.mark.parametrize("call", manifest_calls(GroupedQueryAttentionSlidingWindowVarlenFwdOp))
-def test_gqa_sliding_window_varlen_fwd_bench(call) -> None:
-    _bench_packed(GroupedQueryAttentionSlidingWindowVarlenFwdOp, call, "cu_seqlens_k")
 
 
 def _fa3_gqa_dense_decode(workload: GroupedQueryAttentionDenseDecodeCall):

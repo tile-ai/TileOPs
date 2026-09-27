@@ -32,8 +32,6 @@ __all__ = [
     "gqa_paged_fwd_roofline",
     "gqa_prefill_paged_cache_rows",
     "gqa_prefill_paged_with_kv_cache_fwd_roofline",
-    "gqa_prefill_varlen_fwd_roofline",
-    "gqa_sliding_window_varlen_fwd_roofline",
     "gqa_varlen_fwd_roofline",
     "lightning_indexer_scored_keys",
     "moe_expert_mlp_roofline",
@@ -47,8 +45,6 @@ __all__ = [
     "nsa_selected_rows",
     "nsa_topk_scored_pairs",
     "nsa_topk_varlen_roofline",
-    "packed_visible_score_rows",
-    "packed_visible_scores",
     "paged_decode_cache_rows",
     "paged_decode_roofline",
     "paged_rows",
@@ -427,43 +423,20 @@ def gqa_dense_fwd_roofline(call: "CallView") -> tuple[int, int]:
     return flops, _derived_bytes(call)
 
 
-def packed_visible_score_rows(call: "CallView", cu_kv: str) -> "tuple[int, int]":
-    """``(scores, rows)`` of a packed GQA call, summed over the requests its offsets carry."""
+def gqa_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
+    """Packed GQA forward: the attention arithmetic of the scores each request sees under its
+    mask and window, summed over the requests the offsets carry; each tensor moved once."""
     ix = call.ix
-    left, right = ix.get("window_size_left", -1), ix.get("window_size_right", -1)
+    left, right = ix["window_size_left"], ix["window_size_right"]
     pairs = [
         visible_score_rows(q, kv, ix["is_causal"], left, right)
-        for q, kv in zip(_segments(call, "cu_seqlens_q"), _segments(call, cu_kv), strict=True)
+        for q, kv in zip(
+            _segments(call, "cu_seqlens_q"), _segments(call, "cu_seqlens_kv"), strict=True
+        )
     ]
-    return sum(p[0] for p in pairs), sum(p[1] for p in pairs)
-
-
-def packed_visible_scores(call: "CallView", cu_kv: str) -> int:
-    """Visible scores of a packed GQA call, summed over the requests its offsets carry."""
-    return packed_visible_score_rows(call, cu_kv)[0]
-
-
-def _varlen_fwd(call: "CallView", cu_kv: str) -> tuple[int, int]:
-    """Packed GQA forward: the attention arithmetic of the visible scores; each tensor moved once."""
-    ix = call.ix
-    scores, rows = packed_visible_score_rows(call, cu_kv)
+    scores, rows = sum(p[0] for p in pairs), sum(p[1] for p in pairs)
     flops = attention_flops(ix["H"], scores, rows, ix["D"], ix["D"], _softcap(call))
     return flops, _derived_bytes(call)
-
-
-def gqa_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
-    """Unified packed GQA forward over the visible scores."""
-    return _varlen_fwd(call, "cu_seqlens_kv")
-
-
-def gqa_prefill_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
-    """Packed GQA prefill over the visible scores; each tensor moved once."""
-    return _varlen_fwd(call, "cu_seqlens_kv")
-
-
-def gqa_sliding_window_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
-    """Packed sliding-window GQA over the scores inside the window."""
-    return _varlen_fwd(call, "cu_seqlens_k")
 
 
 def gqa_prefill_paged_with_kv_cache_fwd_roofline(call: "CallView") -> tuple[int, int]:

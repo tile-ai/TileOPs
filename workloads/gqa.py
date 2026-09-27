@@ -759,9 +759,9 @@ class GroupedQueryAttentionDensePrefillCall(
 
 
 class GroupedQueryAttentionVarlenCall(CallWorkload, GroupedQueryAttentionVarlenFwdWorkload):
-    """A manifest call of a packed GQA op, over the request lengths its offsets carry."""
+    """A manifest call of GroupedQueryAttentionVarlenFwdOp, over the request lengths its offsets carry."""
 
-    def __init__(self, call, cu_kv: str = "cu_seqlens_kv") -> None:
+    def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
         ix, params = call.ix, call.params
         q_lens = _segments(call.values("cu_seqlens_q"))
@@ -769,7 +769,7 @@ class GroupedQueryAttentionVarlenCall(CallWorkload, GroupedQueryAttentionVarlenF
             self,
             len(q_lens),
             q_lens,
-            _segments(call.values(cu_kv)),
+            _segments(call.values("cu_seqlens_kv")),
             ix["H"],
             ix["H_kv"],
             ix["D"],
