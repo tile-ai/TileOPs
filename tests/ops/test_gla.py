@@ -293,6 +293,15 @@ def test_gla_bwd(
             assert cos > 0.99, f"TileOPs vs FLA {name} cosine too low: {cos:.6f}"
 
 
+def _run_device_is_sm90() -> bool:
+    # The capability probe needs CUDA, which a collection on another device lacks.
+    return (
+        run_device_available()
+        and torch.cuda.is_available()
+        and torch.cuda.get_device_capability()[0] == 9
+    )
+
+
 # The public GLA inference contract and its in-tree dense-prefill path.
 class GLAInferenceTest(GLAInferenceWorkload, TestBase):
     pass
@@ -450,10 +459,7 @@ def test_gla_long_prefill_uses_partitioned_kernel(
 @pytest.mark.smoke
 @pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
-@pytest.mark.skipif(
-    not run_device_available() or torch.cuda.get_device_capability()[0] != 9,
-    reason="the in-tree dense decode requires SM90",
-)
+@pytest.mark.skipif(not _run_device_is_sm90(), reason="the in-tree dense decode requires SM90")
 @pytest.mark.parametrize(
     "dtype,dim,has_initial_state,scale",
     [
@@ -479,10 +485,7 @@ def test_gla_dense_decode_matches_fla(
 @pytest.mark.smoke
 @pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
-@pytest.mark.skipif(
-    not run_device_available() or torch.cuda.get_device_capability()[0] != 9,
-    reason="the in-tree dense decode requires SM90",
-)
+@pytest.mark.skipif(not _run_device_is_sm90(), reason="the in-tree dense decode requires SM90")
 def test_gla_dense_decode_steps_match_one_recurrence() -> None:
     """Feeding each step's final_state back matches one recurrence over all the steps."""
     torch.manual_seed(2174)
