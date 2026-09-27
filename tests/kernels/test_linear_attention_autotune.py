@@ -3,7 +3,7 @@
 The real sweep compiles fifteen kernels, so the selection logic is checked here
 against stub JIT builders: which candidates reach the autotuner, which sub-kernel
 winner lands in which merged key, and what happens when a sub-kernel cannot be
-tuned. ``tests/ops/test_deltanet_fwd.py`` covers the same helper on the device.
+tuned. ``tests/ops/test_deltanet.py`` covers the same helper on the device.
 """
 
 import inspect

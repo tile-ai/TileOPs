@@ -23,9 +23,9 @@ from workloads.mamba import (
     SSDStatePassingFwdWorkload,
     cb_producer_fwd_ref,
     da_cumsum_fwd_ref,
+    mamba2_fwd_ref,
     ssd_chunk_state_fwd_ref,
 )
-from workloads.mamba2_e2e import mamba2_fwd_ref
 
 
 @pytest.mark.parametrize(

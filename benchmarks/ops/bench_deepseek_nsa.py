@@ -1,6 +1,6 @@
 """Benchmarks for the three Native Sparse Attention (NSA) varlen passes.
 
-Each pass is compared against the torch reference in ``workloads.attention.deepseek``;
+Each pass is compared against the torch reference in ``workloads.deepseek_attention``;
 the top-k pass returns block ids, so it is timed but not compared for closeness.
 """
 
@@ -8,7 +8,7 @@ import pytest
 
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.attention import NSACmpVarlenFwdOp, NSATopkVarlenFwdOp, NSAVarlenFwdOp
-from workloads.attention.deepseek import NsaCmpFwdCall, NsaFwdCall, NsaTopkCall
+from workloads.deepseek_attention import NsaCmpFwdCall, NsaFwdCall, NsaTopkCall
 
 
 def _bench(op_cls, workload_cls, call) -> None:

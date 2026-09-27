@@ -27,7 +27,7 @@ from tileops.ops import (
     GroupedQueryAttentionDenseFwdOp,
 )
 from tileops.utils import get_sm_version
-from workloads.attention.gqa import (
+from workloads.gqa import (
     GroupedQueryAttentionBwdWorkload,
     apply_dense_rope,
     dense_gqa_ref,

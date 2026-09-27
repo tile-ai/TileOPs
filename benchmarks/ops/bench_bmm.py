@@ -13,7 +13,7 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import BmmFp8FwdOp, BmmFwdOp
-from workloads.bmm import BmmFp8Workload, BmmWorkload
+from workloads.gemm import BmmFp8Workload, BmmWorkload
 
 # The tolerance tests/ops/test_bmm.py holds the FP8 op to against the same reference.
 _FP8_ATOL = 2e-2

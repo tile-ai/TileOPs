@@ -7,7 +7,7 @@ from torch.nn import functional as F
 from benchmarks.baselines import FLASHINFER_TAG
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionDecodePagedWithKVCacheFwdOp
-from workloads.attention.mha import MhaBwdCall, MhaDecodePagedCall
+from workloads.mha import MhaBwdCall, MhaDecodePagedCall
 
 
 def _fa3_mha_bwd(workload: MhaBwdCall):

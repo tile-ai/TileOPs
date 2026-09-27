@@ -1,11 +1,17 @@
+"""Tests for LayerNorm and fused-add LayerNorm."""
+
 import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.test_base import FixtureBase, TestBase, served_in_tree
+from tests.test_base import FixtureBase, TestBase, served_in_tree, standard_tolerance
 from tileops.kernels.norm.layer_norm import LayerNormKernel
+from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
-from workloads.normalization import LayerNormWorkload
+from workloads.normalization import (
+    FusedAddLayerNormWorkload,
+    LayerNormWorkload,
+)
 
 
 class LayerNormTest(LayerNormWorkload, TestBase):
@@ -258,3 +264,116 @@ def test_either_affine_tensor_alone_matches_torch(give: str) -> None:
     kwargs = {} if give == "neither" else {give: torch.randn(n, dtype=dtype, device="cuda")}
     got = LayerNormFwdOp(normalized_shape=(n,))(x, **kwargs)
     torch.testing.assert_close(got, F.layer_norm(x, (n,), **kwargs), atol=2e-3, rtol=2e-3)
+
+
+class FusedAddLayerNormTest(FusedAddLayerNormWorkload, TestBase):
+    pass
+
+
+class FusedAddLayerNormFixture(FixtureBase):
+    PARAMS = [
+        (
+            "m, n, dtype, tune",
+            [
+                # Standard aligned shapes -- fp32
+                pytest.param(1024, 4096, torch.float32, False, marks=pytest.mark.smoke),
+                pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.smoke),
+                pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(4096, 4096, torch.float32, False, marks=pytest.mark.full),
+                # Standard aligned shapes -- fp16
+                pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
+                # Standard aligned shapes -- bf16
+                pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+                # Non-power-of-two hidden dims
+                pytest.param(1024, 3000, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
+                # Tail-M: M not divisible by block_m
+                pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+@FusedAddLayerNormFixture
+def test_fused_add_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
+    test = FusedAddLayerNormTest(m, n, dtype)
+    op = FusedAddLayerNormFwdOp(tune=tune)
+    test.check(op, *test.gen_inputs(), **standard_tolerance(dtype))
+
+
+class FusedAddLayerNormNonContigFixture(FixtureBase):
+    PARAMS = [
+        (
+            "m, n, dtype",
+            [
+                pytest.param(1024, 4096, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.smoke),
+            ],
+        ),
+    ]
+
+
+@FusedAddLayerNormNonContigFixture
+def test_fused_add_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
+    """Test with non-contiguous input (sliced tensor)."""
+    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    r_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x = x_full[:, :n]  # non-contiguous slice
+    residual = r_full[:, :n]
+    weight = torch.randn(n, dtype=dtype, device="cuda")
+    bias = torch.randn(n, dtype=dtype, device="cuda")
+
+    op = FusedAddLayerNormFwdOp()
+
+    # Reference on contiguous copies
+    test = FusedAddLayerNormTest(m, n, dtype)
+    y_ref, add_ref = test.ref_program(x.contiguous(), residual.contiguous(), weight, bias)
+
+    y, residual_out = op(x, residual, weight, bias)
+    tolerance = standard_tolerance(dtype)
+    assert torch.allclose(y, y_ref, **tolerance), (
+        f"Non-contiguous y test failed, max err: {(y - y_ref).abs().max()}"
+    )
+    assert torch.allclose(residual_out, add_ref, **tolerance), (
+        f"Non-contiguous residual_out test failed, max err: {(residual_out - add_ref).abs().max()}"
+    )
+
+
+class FusedAddLayerNorm3DFixture(FixtureBase):
+    PARAMS = [
+        (
+            "batch, seq, hidden, dtype",
+            [
+                pytest.param(2, 512, 4096, torch.float32, marks=pytest.mark.smoke),
+                pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.smoke),
+            ],
+        ),
+    ]
+
+
+@FusedAddLayerNorm3DFixture
+def test_fused_add_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
+    """Test with 3D input (batch, seq, hidden)."""
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    residual = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    weight = torch.randn(hidden, dtype=dtype, device="cuda")
+    bias = torch.randn(hidden, dtype=dtype, device="cuda")
+
+    M = batch * seq
+    op = FusedAddLayerNormFwdOp()
+
+    test = FusedAddLayerNormTest(M, hidden, dtype)
+    y_ref, add_ref = test.ref_program(x, residual, weight, bias)
+
+    y, residual_out = op(x, residual, weight, bias)
+    tolerance = standard_tolerance(dtype)
+    assert torch.allclose(y, y_ref, **tolerance), (
+        f"3D y test failed, max err: {(y - y_ref).abs().max()}"
+    )
+    assert torch.allclose(residual_out, add_ref, **tolerance), (
+        f"3D residual_out test failed, max err: {(residual_out - add_ref).abs().max()}"
+    )

@@ -5,8 +5,8 @@ import torch
 
 from tests.test_base import served_in_tree
 from tileops.ops import GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp
-from workloads.attention.gqa import GQAPrefillPagedWithKVCacheFwdWorkload, make_cu_seqlens
-from workloads.attention.paged import (
+from workloads.gqa import GQAPrefillPagedWithKVCacheFwdWorkload, make_cu_seqlens
+from workloads.paged_kv_cache import (
     fill_paged_cache_from_logical,
     make_fragmented_block_table,
     make_interleaved_block_table,

@@ -18,12 +18,12 @@ from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import (
     CBProducerFwdCall,
     DaCumsumFwdCall,
+    Mamba2FwdCall,
     SSDChunkScanFwdCall,
     SSDChunkStateFwdCall,
     SSDDecodeFwdCall,
     SSDStatePassingFwdCall,
 )
-from workloads.mamba2_e2e import Mamba2FwdCall
 
 # Optional mamba_ssm Triton baselines
 try:

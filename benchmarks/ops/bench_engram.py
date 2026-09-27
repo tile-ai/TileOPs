@@ -15,7 +15,7 @@ from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
-from workloads.engram import (
+from workloads.sequence_modeling import (
     EngramDecodeWorkload,
     EngramGateConvBwdWorkload,
     EngramGateConvFwdWorkload,

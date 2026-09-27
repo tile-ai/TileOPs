@@ -16,7 +16,7 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import GroupedGemmFwdOp
-from workloads.grouped_gemm import (
+from workloads.gemm import (
     GroupedGemmWorkload,
 )
 

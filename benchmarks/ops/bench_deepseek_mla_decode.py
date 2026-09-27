@@ -5,7 +5,7 @@ import pytest
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.deepseek import MlaDecodeCall
+from workloads.deepseek_attention import MlaDecodeCall
 
 
 @pytest.mark.parametrize("call", manifest_calls(MultiHeadLatentAttentionDecodeWithKVCacheFwdOp))

@@ -5,7 +5,7 @@ from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.kernels.gemm.bmm import BmmFp8TransposeKernel, BmmPersistentKernel
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.ops import BmmFp8FwdOp, BmmFwdOp
-from workloads.bmm import BmmFp8Workload, BmmWorkload
+from workloads.gemm import BmmFp8Workload, BmmWorkload
 
 # Covering the [B,K,N] path is the point of these tests, so the perf hint
 # BmmFp8FwdOp emits for it is expected output, not a signal.

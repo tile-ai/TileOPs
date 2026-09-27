@@ -8,7 +8,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
-from workloads.attention.gqa import (
+from workloads.gqa import (
     GroupedQueryAttentionDecodePagedWorkload,
 )
 
