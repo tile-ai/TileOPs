@@ -29,9 +29,7 @@ __all__ = [
 
 ATTENTION_DTYPES = (torch.float16, torch.bfloat16)
 
-# Architecture the warp-specialized prefill kernels are written for. The
-# classes declare it as their ``supported_archs`` and the region below reads
-# the same name, so the two statements of one fact cannot drift apart.
+# Architecture the warp-specialized kernels are written for.
 WS_ARCH = 90
 
 
@@ -55,7 +53,6 @@ class AttentionCall(CallSpec):
     heads_kv: int = 0
     dim: int = 0
     max_seqlen_q: int = 0
-    max_seqlen_kv: int = 0
     seqlen_kv: int = 0
     page_size: int = 0
     max_pages_per_req: int = 0
