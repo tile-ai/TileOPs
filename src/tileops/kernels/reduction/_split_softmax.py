@@ -47,8 +47,8 @@ _SPLIT_MAX_SEG_COLS = FRAGMENT_ELEMS_PER_THREAD * DEFAULT_THREADS
 def split_target_blocks(device_index: "int | None" = None) -> int:
     """The block count a split aims for: ``_OCCUPANCY_FACTOR`` per SM.
 
-    ``None`` reads the current device; without CUDA it falls back to an H200's
-    SM count, mirroring ``device_smem_budget``'s auto-detect fallback.
+    ``None`` reads the current device; without CUDA it falls back to 132 SMs,
+    mirroring ``device_smem_budget``'s auto-detect fallback.
     """
     try:
         if not torch.cuda.is_available():

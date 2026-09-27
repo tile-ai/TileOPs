@@ -24,7 +24,7 @@ class DeltaNetInferenceFwdOp(Op):
     prefill, packed-varlen prefill, and single-token decode. The recurrent
     state is FP32 and belongs to the caller: ``initial_state`` is optional,
     while ``(o, final_state)`` is always returned. The in-tree implementation
-    currently supports Hopper dense prefill; packed varlen and decode remain
+    currently supports SM90 dense prefill; packed varlen and decode remain
     part of the public contract for external targets and future kernels.
 
     ``beta`` contains the already-transformed update strength. This Op does

@@ -1,4 +1,4 @@
-"""Hopper GLA prefill with tiled, gate-aware intra-chunk products."""
+"""GLA prefill with tiled, gate-aware intra-chunk products."""
 
 from typing import Optional
 

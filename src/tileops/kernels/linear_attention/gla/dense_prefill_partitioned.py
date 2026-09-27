@@ -374,8 +374,9 @@ class GLADensePrefillPartitionedKernel(GLAFwdKernel):
 
     @classmethod
     def applies(cls, call: GLAInferenceCallSpec) -> bool:
-        # A 16-chunk partition creates enough independent CTAs only for long calls on
-        # H200; shorter calls keep the serial-state kernel.
+        # A 16-chunk partition creates enough independent CTAs only for long calls; the
+        # thresholds were fitted where ``call.h200`` holds. Other calls keep the
+        # serial-state kernel.
         return (
             serves_dense(call)
             and call.dim_k == 64

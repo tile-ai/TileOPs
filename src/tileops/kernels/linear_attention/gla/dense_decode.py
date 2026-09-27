@@ -1,4 +1,4 @@
-"""Hopper dense GLA decode with caller-owned FP32 recurrent state."""
+"""Dense GLA decode with caller-owned FP32 recurrent state."""
 
 import functools
 from typing import Optional

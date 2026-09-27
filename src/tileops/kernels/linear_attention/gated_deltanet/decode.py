@@ -1,4 +1,4 @@
-"""Hopper single-token Gated DeltaNet inference decode."""
+"""SM90 single-token Gated DeltaNet inference decode."""
 
 import functools
 from typing import Tuple
