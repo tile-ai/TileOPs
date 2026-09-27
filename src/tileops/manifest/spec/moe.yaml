@@ -62,9 +62,9 @@ FusedMoEExpertsFwdOp:
     - "F > 0"
     - "routed_scaling_factor > 0"
   workloads:
-    # Qwen3-235B-A22B: H=7168, F=2048, E=128, K=8
-  - {T: 512, E: 128, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-decode"}
-  - {T: 4096, E: 128, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-prefill"}
+    # Qwen3-235B-A22B: H=4096, F=1536, E=128, K=8
+  - {T: 512, E: 128, K: 8, H: 4096, F: 1536, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-decode"}
+  - {T: 4096, E: 128, K: 8, H: 4096, F: 1536, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-prefill"}
     # DeepSeek-V3: H=7168, F=2048, E=256, K=8
   - {T: 512, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-decode"}
   - {T: 4096, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-prefill"}
@@ -107,8 +107,8 @@ IndexedExpertMLPFwdOp:
   - {T: 1, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-t1"}
   - {T: 32, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-t32"}
   - {T: 64, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-t64"}
-    # Qwen3-235B-A22B: H=7168, F=2048, E=128, K=8
-  - {T: 32, E: 128, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-t32"}
+    # Qwen3-235B-A22B: H=4096, F=1536, E=128, K=8
+  - {T: 32, E: 128, K: 8, H: 4096, F: 1536, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-t32"}
   roofline:
     # Only the experts topk_ids selects are read.
     func: "tileops.perf.formulas.routed_expert_mlp_roofline"
@@ -153,9 +153,9 @@ FusedTopKFwdOp:
   - {T: 4096, E: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, dtype_cases: [{G: bfloat16}], label: "kimi-k2-t4096"}
     # Kimi K2 also routes with a per-expert bias, which is a second kernel build.
   - {T: 512, E: 384, top_k: 8, scoring_func: sigmoid, renormalize: true, some: [correction_bias], dtype_cases: [{G: bfloat16}, {G: float16}, {G: float32}], label: "kimi-k2-t512-bias"}
-  - {T: 32, E: 128, top_k: 8, scoring_func: softmax, renormalize: false, dtype_cases: [{G: bfloat16}], label: "qwen3-235b-t32"}
-  - {T: 512, E: 128, top_k: 8, scoring_func: softmax, renormalize: false, dtype_cases: [{G: bfloat16}, {G: float16}, {G: float32}], label: "qwen3-235b-t512"}
-  - {T: 4096, E: 128, top_k: 8, scoring_func: softmax, renormalize: false, dtype_cases: [{G: bfloat16}], label: "qwen3-235b-t4096"}
+  - {T: 32, E: 128, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{G: bfloat16}], label: "qwen3-235b-t32"}
+  - {T: 512, E: 128, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{G: bfloat16}, {G: float16}, {G: float32}], label: "qwen3-235b-t512"}
+  - {T: 4096, E: 128, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{G: bfloat16}], label: "qwen3-235b-t4096"}
   roofline:
     # Score every logit, then keep the top k; a passed bias adds one add per score.
     flops: "2 * T * E * (1 + top_k) + (T * E if present(correction_bias) else 0)"
@@ -189,8 +189,8 @@ FusedMoeFwdOp:
     - "F > 0"
     - "routed_scaling_factor > 0"
   workloads:
-  - {T: 512, E: 128, H: 7168, F: 2048, top_k: 8, scoring_func: softmax, renormalize: false, dtype_cases: [{D: bfloat16}, {D: float16}], label: "qwen3-235b-decode"}
-  - {T: 4096, E: 128, H: 7168, F: 2048, top_k: 8, scoring_func: softmax, renormalize: false, dtype_cases: [{D: bfloat16}], label: "qwen3-235b-prefill"}
+  - {T: 512, E: 128, H: 4096, F: 1536, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{D: bfloat16}, {D: float16}], label: "qwen3-235b-decode"}
+  - {T: 4096, E: 128, H: 4096, F: 1536, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{D: bfloat16}], label: "qwen3-235b-prefill"}
   - {T: 512, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: false, dtype_cases: [{D: bfloat16}], label: "ds-v3-decode"}
   - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: false, dtype_cases: [{D: bfloat16}], label: "ds-v3-prefill"}
   - {T: 512, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias], dtype_cases: [{D: bfloat16}], label: "kimi-k2-decode"}
@@ -335,9 +335,9 @@ MoeExpertMLPFwdOp:
     # An aligned layout materializes whole tiles.
     - "layout.kind == 'masked' or layout.packing == 'tight' or P % layout.alignment == 0"
   workloads:
-    # Qwen3-235B-A22B: H=7168, F=2048, E=128; DeepSeek-V3: E=256.
-  - {P: 4096, H: 7168, E: 128, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-decode"}
-  - {P: 32768, H: 7168, E: 128, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-prefill"}
+    # Qwen3-235B-A22B: H=4096, F=1536, E=128; DeepSeek-V3: H=7168, F=2048, E=256.
+  - {P: 4096, H: 4096, E: 128, F: 1536, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-decode"}
+  - {P: 32768, H: 4096, E: 128, F: 1536, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-prefill"}
   - {P: 4096, H: 7168, E: 256, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-decode"}
   - {P: 32768, H: 7168, E: 256, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-prefill"}
   roofline:
@@ -452,7 +452,7 @@ FusedMoeSharedExpertFwdOp:
   - {T: 512, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm45-t512"}
   - {T: 2048, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm45-t2048"}
   - {T: 4096, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm45-t4096"}
-  - {T: 512, E: 128, H: 7168, F: 2048, top_k: 8, scoring_func: softmax, renormalize: false, dtype_cases: [{D: bfloat16}], label: "qwen3-235b-t512"}
+  - {T: 512, E: 128, H: 4096, F: 1536, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{D: bfloat16}], label: "qwen3-235b-t512"}
   roofline:
     # The routed half as FusedMoeFwdOp, plus the shared expert's two GEMMs on this rank's shard.
     func: "tileops.perf.formulas.fused_moe_shared_expert_fwd_roofline"

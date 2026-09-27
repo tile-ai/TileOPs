@@ -6,8 +6,8 @@ against vLLM Triton fused_experts and vLLM CUTLASS fused_experts (when available
 Workloads match the manifest entries (shared workload set):
 
   Model              T     H     F     E    K
-  Qwen3-235B-A22B   512  7168  2048  128   8   (decode)
-  Qwen3-235B-A22B  4096  7168  2048  128   8   (prefill)
+  Qwen3-235B-A22B   512  4096  1536  128   8   (decode)
+  Qwen3-235B-A22B  4096  4096  1536  128   8   (prefill)
   DeepSeek-V3       512  7168  2048  256   8   (decode)
   DeepSeek-V3      4096  7168  2048  256   8   (prefill)
 

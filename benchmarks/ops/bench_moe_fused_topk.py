@@ -7,7 +7,7 @@ bias, so a biased row goes to `fused_topk_bias` instead.
 Real model configurations:
   Model              E    K  scoring   renorm
   Kimi K2          384   8  sigmoid   True
-  Qwen3-235B-A22B  128   8  softmax   False
+  Qwen3-235B-A22B  128   8  softmax   True
 """
 
 import pytest
