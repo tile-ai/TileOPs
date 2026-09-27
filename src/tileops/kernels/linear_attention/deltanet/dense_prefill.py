@@ -1,4 +1,4 @@
-"""Hopper DeltaNet prefill with its own dense partition orchestration."""
+"""SM90 DeltaNet prefill with its own dense partition orchestration."""
 
 import functools
 import math

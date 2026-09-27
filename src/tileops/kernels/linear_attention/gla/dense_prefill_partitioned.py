@@ -1,14 +1,16 @@
 """Partitioned long-context GLA prefill kernels."""
 
 import functools
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 import tilelang
 import torch
 from tilelang import language as T
 
 from tileops.kernels.constants import LOG2E
+from tileops.kernels.kernel_base import Entry
 
+from .call_spec import GLAInferenceCallSpec, dense_entry, serves_dense
 from .dense_prefill_subchunk import _gla_fwd_a_kernel
 from .gla_fwd import GLAFwdKernel, _gla_precompute_g_kernel
 
@@ -365,10 +367,48 @@ def _gla_fwd_partitioned_replay_kernel(
     return _replay_func
 
 
+class _PartitionFit(NamedTuple):
+    """Where a 16-chunk partition beats the serial-state kernel on one calibrated board."""
+
+    dim: int
+    min_seq_len: int
+    # Independent partition CTAs (batch x heads x 1024-token partitions) the call needs.
+    min_ctas: int
+
+
+# A partition creates enough independent CTAs only for long calls. A board without an
+# entry keeps the serial-state kernel.
+_PARTITION_FITS = {"h200": _PartitionFit(dim=64, min_seq_len=16384, min_ctas=128)}
+
+
 class GLADensePrefillPartitionedKernel(GLAFwdKernel):
     """GLA prefill with parallel partition summaries and fused output replay."""
 
     supported_archs = [90]
+
+    @classmethod
+    def applies(cls, call: GLAInferenceCallSpec) -> bool:
+        fit = _PARTITION_FITS.get(call.calibration)
+        return (
+            fit is not None
+            and serves_dense(call)
+            and call.dim_k == fit.dim
+            and call.seq_len >= fit.min_seq_len
+            and call.seq_len % 1024 == 0
+            and call.batch * call.heads * (call.seq_len // 1024) >= fit.min_ctas
+        )
+
+    @classmethod
+    def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
+        return dense_entry(
+            cls,
+            call,
+            batch=call.batch,
+            seq_len=call.seq_len,
+            heads=call.heads,
+            dim_k=call.dim_k,
+            dim_v=call.dim_v,
+        )
 
     def __init__(
         self,

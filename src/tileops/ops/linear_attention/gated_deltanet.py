@@ -41,7 +41,7 @@ class GatedDeltaNetFwdOp(Op):
     the current inputs; in particular, ``T == 1`` is decode rather than a
     separate public Op.
 
-    The in-tree implementation currently covers equal-length Hopper prefill
+    The in-tree implementation currently covers equal-length SM90 prefill
     with zero initial state, matching recurrent head counts, 128-wide state,
     and precomputed gate and beta values. Other regions still require an
     external target implementation while their retained kernels are migrated.

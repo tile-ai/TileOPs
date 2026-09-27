@@ -41,7 +41,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
-from tileops.utils import is_h200_name
+from tileops.utils import calibration_key
 
 __all__ = [
     "SWAP_AB_MPAD",
@@ -89,10 +89,11 @@ class _Calibration:
         return dict(self.tensor_core_tflops)[structure]
 
 
-#: One entry per board the scorer has been calibrated on, by the name CUDA
-#: reports. A board absent here is not ranked; see :func:`best_config`.
+#: One entry per board the scorer has been calibrated on, by its calibration key
+#: (``tileops.utils.calibration_key``). A board absent here is not ranked; see
+#: :func:`best_config`.
 _CALIBRATIONS = {
-    "NVIDIA H200": _Calibration(
+    "h200": _Calibration(
         l1_tbps=33.0,
         l2_tbps=17.5,
         reduce_tbps=1.5,
@@ -111,8 +112,8 @@ _CALIBRATIONS = {
 
 
 def _calibration(device_name: str) -> Optional[_Calibration]:
-    """The calibration measured on *device_name*, or ``None`` for a board without one."""
-    return _CALIBRATIONS.get(device_name)
+    """The calibration measured on *device_name*'s board, or ``None`` for a board without one."""
+    return _CALIBRATIONS.get(calibration_key(device_name))
 
 
 @dataclass
@@ -482,13 +483,19 @@ def small_batch_config(n: int, k: int, sm_count: int) -> dict:
     return cfg
 
 
+#: The row count the small-M split-K band was fitted at, by calibration key. A board
+#: without an entry has no band.
+_SMALL_M_SPLITK_M = {"h200": 32}
+
+
 def small_m_splitk_config(
     m: int, n: int, k: int, sm_count: int, device_name: str
 ) -> Optional[dict]:
-    """Select the H200 split-K basic GEMM band for a 32-row NT call."""
+    """Select the split-K basic GEMM band fitted on a calibrated board for a small-M NT call."""
     block_k = 128
     k_tiles = k // block_k
-    if not is_h200_name(device_name) or m != 32 or k % block_k or n % 8 or k_tiles < 48:
+    band_m = _SMALL_M_SPLITK_M.get(calibration_key(device_name))
+    if m != band_m or k % block_k or n % 8 or k_tiles < 48:
         return None
     block_ns = [block_n for block_n in range(8, 129, 8) if n % block_n == 0]
     target_n_tiles = max(1, sm_count // 2)

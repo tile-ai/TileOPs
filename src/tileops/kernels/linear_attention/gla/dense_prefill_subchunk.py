@@ -1,4 +1,4 @@
-"""Hopper GLA prefill with tiled, gate-aware intra-chunk products."""
+"""GLA prefill with tiled, gate-aware intra-chunk products."""
 
 from typing import Optional
 
@@ -6,6 +6,9 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.kernel_base import Entry
+
+from .call_spec import GLAInferenceCallSpec, dense_entry, serves_dense
 from .gla_fwd import (
     LOG2E,
     GLAFwdKernel,
@@ -209,6 +212,23 @@ class GLADensePrefillSubchunkKernel(GLAFwdKernel):
     """Retain the proven state pass while replacing the costly output pass."""
 
     supported_archs = [90]
+    general = True
+
+    @classmethod
+    def applies(cls, call: GLAInferenceCallSpec) -> bool:
+        return serves_dense(call) and call.seq_len >= 64 and call.seq_len % 64 == 0
+
+    @classmethod
+    def entry_for(cls, call: GLAInferenceCallSpec) -> Entry:
+        return dense_entry(
+            cls,
+            call,
+            batch=call.batch,
+            seq_len=call.seq_len,
+            heads=call.heads,
+            dim_k=call.dim_k,
+            dim_v=call.dim_v,
+        )
 
     def __init__(
         self,

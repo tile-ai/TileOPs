@@ -163,10 +163,10 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
 
 
 @pytest.mark.smoke
-def test_bmm_persistent_h200_dispatch_region() -> None:
-    """The persistent path claims aligned H200 calls worth half a persistent wave."""
+def test_bmm_persistent_calibrated_dispatch_region() -> None:
+    """The persistent path claims aligned calls worth half a persistent wave on a calibrated board."""
 
-    def call(batch=64, m=128, n=2048, *, h200=True, tune=False):
+    def call(batch=64, m=128, n=2048, *, calibration="h200", tune=False):
         return BmmCall(
             batch=batch,
             m=m,
@@ -174,7 +174,7 @@ def test_bmm_persistent_h200_dispatch_region() -> None:
             k=2048,
             dtype=torch.bfloat16,
             arch=90,
-            h200=h200,
+            calibration=calibration,
             sm_count=132,
             tune=tune,
         )
@@ -182,7 +182,7 @@ def test_bmm_persistent_h200_dispatch_region() -> None:
     assert BmmPersistentKernel.applies(call())
     assert not BmmPersistentKernel.applies(call(batch=32, m=256, n=256))
     assert not BmmPersistentKernel.applies(call(m=200, n=300))
-    assert not BmmPersistentKernel.applies(call(h200=False))
+    assert not BmmPersistentKernel.applies(call(calibration=None))
     # n is TMA-aligned and the shape is large, so only the tile count rejects it.
     assert not BmmPersistentKernel.applies(call(batch=1, m=2048, n=1024))
     assert BmmPersistentKernel.applies(call(tune=True))
@@ -202,7 +202,7 @@ def test_bmm_persistent_region_holds_manifest_workloads() -> None:
             k=k,
             dtype=torch.bfloat16,
             arch=90,
-            h200=True,
+            calibration="h200",
             sm_count=132,
         )
         assert BmmPersistentKernel.applies(call) is claimed, call

@@ -4,7 +4,7 @@ Shapes are strict 3D-3D — ``a``: $[B \\times M \\times K]$, ``b``: $[B \\times
 """
 
 import functools
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 import tilelang
 import tilelang.language as T
@@ -13,7 +13,7 @@ import torch
 from tileops.kernels.grouped_gemm.heuristics import GemmType
 from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.utils import get_sm_count, is_h200
+from tileops.utils import device_calibration, get_sm_count
 
 from .call_spec import BmmCall
 
@@ -718,8 +718,25 @@ class BmmKernel(Kernel):
         return self._compiled_kernel(a, b)
 
 
+class _PersistentBand(NamedTuple):
+    """Where the persistent path beats :class:`BmmKernel` on one calibrated board."""
+
+    # The tile ``get_best_config`` picks for this path there. Selection and grid
+    # sizing count the same tiles, or the region claimed is not the grid launched.
+    tile_m: int
+    tile_n: int
+    # The path claims a call whose tiles fill 1 / min_wave_denom of a persistent wave.
+    min_wave_denom: int
+
+
+# Fitted on the manifest workloads: square-512 reaches 128 tiles and wins, square-256
+# reaches 64 and loses. Re-fit against benchmarks/ops/bench_bmm.py whenever the tile or
+# the epilogue changes. A board without an entry keeps BmmKernel.
+_PERSISTENT_BANDS = {"h200": _PersistentBand(tile_m=128, tile_n=256, min_wave_denom=2)}
+
+
 class BmmPersistentKernel(Kernel):
-    """Persistent H200 BMM adapter over :class:`GemmTemplate`.
+    """Persistent BMM adapter over :class:`GemmTemplate`, on a calibrated board.
 
     The template reads the zero-copy ``[batch, n, k]`` view of public
     ``b[batch, k, n]`` storage. :class:`BmmKernel` serves calls outside
@@ -728,32 +745,26 @@ class BmmPersistentKernel(Kernel):
 
     supported_archs: list[int] = [90]
 
-    # The tile ``get_best_config`` picks for this path on H200. Selection and grid
-    # sizing count the same tiles, or the region claimed is not the grid launched.
-    TILE_M: int = 128
-    TILE_N: int = 256
-
-    # Half a persistent wave of those tiles is enough to beat BmmKernel. Fitted on
-    # the manifest workloads: square-512 reaches 128 tiles and wins,
-    # square-256 reaches 64 and loses. Re-fit against benchmarks/ops/bench_bmm.py
-    # whenever the tile above or the epilogue changes.
-    MIN_WAVE_DENOM: int = 2
-
-    @classmethod
-    def _tiles(cls, batch: int, m: int, n: int) -> int:
-        """Output tiles this call launches at :attr:`TILE_M` x :attr:`TILE_N`."""
-        return batch * -(-m // cls.TILE_M) * -(-n // cls.TILE_N)
+    @staticmethod
+    def _tiles(band: _PersistentBand, batch: int, m: int, n: int) -> int:
+        """Output tiles this call launches at the band's tile."""
+        return batch * -(-m // band.tile_m) * -(-n // band.tile_n)
 
     @classmethod
     def applies(cls, call: BmmCall) -> bool:
+        band = _PERSISTENT_BANDS.get(call.calibration)
+        if band is None:
+            return False
         step = 16 // call.dtype.itemsize
-        tiles = cls._tiles(call.batch, call.m, call.n)
-        return call.h200 and call.n % step == 0 and tiles * cls.MIN_WAVE_DENOM > call.sm_count
+        tiles = cls._tiles(band, call.batch, call.m, call.n)
+        return call.n % step == 0 and tiles * band.min_wave_denom > call.sm_count
 
     @classmethod
-    def _persistent_grid(cls, batch: int, m: int, n: int, physical_sms: int) -> int:
-        """Choose a full-wave H200 grid for the selector's tile."""
-        tiles = cls._tiles(batch, m, n)
+    def _persistent_grid(
+        cls, band: _PersistentBand, batch: int, m: int, n: int, physical_sms: int
+    ) -> int:
+        """Choose a full-wave grid for the band's tile."""
+        tiles = cls._tiles(band, batch, m, n)
         power_of_two_grid = 1 << (physical_sms.bit_length() - 1)
         return power_of_two_grid if tiles % power_of_two_grid == 0 else physical_sms
 
@@ -778,10 +789,9 @@ class BmmPersistentKernel(Kernel):
     ) -> None:
         super().__init__(device_index=device_index)
         physical_sms = get_sm_count(device_index)
+        band = _PERSISTENT_BANDS.get(device_calibration(device_index))
         persistent_sms = (
-            self._persistent_grid(batch, m, n, physical_sms)
-            if is_h200(device_index)
-            else physical_sms
+            physical_sms if band is None else self._persistent_grid(band, batch, m, n, physical_sms)
         )
         self.template = GemmTemplate(
             GemmType.BATCHED,

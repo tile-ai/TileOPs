@@ -531,7 +531,7 @@ class _MaxPool1dKernelBase(Kernel):
 
     _BLOCK_OUTPUTS: ClassVar[int] = 256
     _FALLBACK_THREADS: ClassVar[int] = 128
-    # ``(block_ol, threads)`` per body, measured on an H200. A body is given one thread
+    # ``(block_ol, threads)`` per body, fitted on the calibration device. A body is given one thread
     # count where its rate falls off either side of it.
     _CANDIDATES: ClassVar[dict] = {
         "windowed": ((256, 128), (512, 256), (1024, 256)),

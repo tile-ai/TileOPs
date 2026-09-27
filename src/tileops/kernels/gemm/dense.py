@@ -2236,16 +2236,15 @@ def _splitk_pair(
     """Resolve the (mainloop, reduce) compiled pair for a split-K config.
 
     Both split-K paths run two kernels back to back, so every microsecond the
-    host spends between the two launches is GPU idle the span metric charges
-    to us: on the short-mainloop shapes the mainloop drains before the reduce
-    is even enqueued. Folding the builder lookup and the ``@tilelang.jit``
+    host spends between the two launches is GPU idle that the span metric
+    counts: on short-mainloop shapes the mainloop drains before the reduce is
+    enqueued. Folding the builder lookup and the ``@tilelang.jit``
     factory call of *both* kernels into one cached resolution keeps that
     window to the two launches themselves.
 
-    The other host step that used to land in that window is allocating ``C``.
-    ``_splitk_reduce_kernel`` therefore takes it as an explicit parameter, and
-    both callers allocate it *before* launching the mainloop, which closes the
-    remaining gap to the floor torch reaches on the same rows.
+    Allocating ``C`` would also fall in that window, so
+    ``_splitk_reduce_kernel`` takes it as an explicit parameter and both
+    callers allocate it *before* launching the mainloop.
     """
     if coop2:
         mainloop = _gemm_coop2_splitk_kernel(m, n, k, trans_a, trans_b, dtype)(
@@ -3287,7 +3286,7 @@ class GemmCpAsyncKernel(Kernel):
     @property
     def default_config(self) -> dict:
         # Modal winner shape of the pipelined BMM kernel across the manifest
-        # workloads, measured on one SM90 board.
+        # workloads, fitted on the calibration device.
         # Prefer block_k dividing k; k with no 32/64 factor (or not
         # 16-aligned at all) falls back to 16 — the mma.sync floor — and
         # the backend zero-pads the K tail.

@@ -295,7 +295,7 @@ DeltaNetBwdOp:
 
 GLAInferenceFwdOp:
   # One serving contract for equal-length prefill, packed varlen, and decode.
-  # The in-tree kernel currently covers Hopper dense prefill only.
+  # The in-tree kernels currently cover Hopper dense prefill and decode.
   family: linear_attention
   status: spec-only
   signature:
@@ -329,6 +329,9 @@ GLAInferenceFwdOp:
   - {B: 2, S: 4096, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-4k}
   - {B: 2, S: 8192, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-8k}
   - {B: 2, S: 16384, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-16k}
+  - {B: 1, S: 1, H: 32, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-b1-d64}
+  - {B: 8, S: 1, H: 32, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: bfloat16}], label: decode-b8-d128}
+  - {B: 3, S: 1, H: 24, K: 128, V: 128, dtype_cases: [{T: float16}], label: decode-first-token}
   roofline:
     # The GLA recurrence per token: exp(g), decay, k v^T update, q^T S readout, scale.
     flops: "B * H * S * (5 * K * V + K + V)"

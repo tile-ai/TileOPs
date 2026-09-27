@@ -15,7 +15,7 @@ from tileops.kernels.moe import (
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
-from tileops.utils import get_sm_version, is_h200
+from tileops.utils import device_calibration, get_sm_version
 
 from .contracts import MaskedLayoutSpec, MGroupedLayoutSpec, RoutingEpilogueSpec
 
@@ -119,7 +119,7 @@ class MoePrePermuteFwdOp(Op):
         device = hidden_states.device
         call = PrePermuteCall(
             arch=get_sm_version(device.index),
-            h200=is_h200(device.index),
+            calibration=device_calibration(device.index),
             layout=self.layout,
             device_type=device.type,
             input_dtype=hidden_states.dtype,
@@ -238,7 +238,7 @@ class MoeGroupedGemmFwdOp(Op):
         device = a.device
         call = MGroupedGemmCall(
             arch=get_sm_version(device.index),
-            h200=is_h200(device.index),
+            calibration=device_calibration(device.index),
             kind=layout.kind,
             packing=None if masked else layout.packing.value,
             metadata_kind=None if masked else layout.metadata_kind.value,

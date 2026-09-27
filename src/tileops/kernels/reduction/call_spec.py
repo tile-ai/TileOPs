@@ -38,20 +38,21 @@ def logical_reduce_region(call: LogicalReduceCall) -> bool:
 
 
 # The fused pass runs one block per kept column and has no other parallelism, so
-# it takes over only where that alone is enough. Other devices use the general
-# implementation until they have a region of their own.
-_EDGE_FUSED_MIN_KEPT_H200 = 32
+# it takes over only where that alone is enough: the fewest kept columns that fill the
+# device, per calibrated board. A board without an entry uses the general implementation.
+_EDGE_FUSED_MIN_KEPT = {"h200": 32}
 
 
 def logical_edge_fused_region(call: LogicalReduceCall) -> bool:
-    """The H200 edge-axis logical reduction region served by the fused pass."""
+    """The edge-axis logical reduction region a calibrated board serves with the fused pass."""
 
     if not logical_reduce_region(call):
         return False
-    if not call.h200:
+    min_kept = _EDGE_FUSED_MIN_KEPT.get(call.calibration)
+    if min_kept is None:
         return False
     if not call.edge_axes or call.trail_needs_tiling:
         return False
-    if call.kept < _EDGE_FUSED_MIN_KEPT_H200:
+    if call.kept < min_kept:
         return False
     return call.op_kind != "count_nonzero" or call.reduced_count <= 1 << 24

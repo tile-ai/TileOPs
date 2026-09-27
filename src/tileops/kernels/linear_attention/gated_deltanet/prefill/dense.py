@@ -230,7 +230,7 @@ def _gated_deltanet_production_bthd(
 
 
 class GatedDeltaNetDensePrefillFwdKernel(Kernel):
-    """Hopper equal-length BTHD inference prefill.
+    """SM90 equal-length BTHD inference prefill.
 
     This is the inference owner of the retained partitioned prefill pipeline.
     The Op layer admits only the currently supported region; the kernel keeps

@@ -757,10 +757,10 @@ def test_logical_reduce_edge_axes_fused_dispatch(
     op_kind: str, dtype: torch.dtype, tune: bool
 ) -> None:
     from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
-    from tileops.utils import is_h200
+    from tileops.utils import device_calibration
 
-    if not is_h200():
-        pytest.skip("fused edge logical reduce is selected only for the measured H200 region")
+    if device_calibration() is None:
+        pytest.skip("fused edge logical reduce is selected only on a calibrated board")
 
     op_map = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}
     op = op_map[op_kind](dim=[0, 2], tune=tune, target=BUILTIN)

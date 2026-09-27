@@ -12,7 +12,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_count, is_h200
+from tileops.utils import device_calibration, get_sm_count
 
 from .call_spec import GemmCall
 from .dense import _splitk_reduce_kernel
@@ -35,7 +35,7 @@ class _Layout:
 
 @dataclass(frozen=True)
 class _Calibration:
-    """H200 coefficients used only to rank valid kernel configurations."""
+    """Coefficients fitted on one calibrated board, used only to rank valid configurations."""
 
     dequant: float = 1.8958e-08
     dequant_ws: float = 1.3231e-08
@@ -73,7 +73,10 @@ class _ConfigSpace:
 
 
 _LAYOUT = _Layout()
-_H200_CALIBRATION = _Calibration()
+# Fits by calibrated board. Every board ranks with the one fit; a board without an
+# entry is warned.
+_CALIBRATIONS = {"h200": _Calibration()}
+_CALIBRATION = _CALIBRATIONS["h200"]
 _CONFIG_SPACE = _ConfigSpace()
 
 __all__ = ["GROUP_SIZE", "GemmW4A16Kernel"]
@@ -120,7 +123,7 @@ def _stage_meta_per_tile(threads: int, block_k: int, block_n: int, all_groups: i
     reload when staging all metadata exceeds the calibrated crossover.
     """
     return threads == 128 and (
-        block_k <= 256 or block_n * all_groups * 3 > _H200_CALIBRATION.meta_staging_crossover_bytes
+        block_k <= 256 or block_n * all_groups * 3 > _CALIBRATION.meta_staging_crossover_bytes
     )
 
 
@@ -156,9 +159,9 @@ def _smem_bytes(
 @functools.lru_cache(maxsize=8)
 def _warn_off_calibration_board(device_index: Optional[int]) -> None:
     """Warn once per device that the tile ranking is running off its fit."""
-    if not is_h200(device_index):
+    if device_calibration(device_index) not in _CALIBRATIONS:
         warnings.warn(
-            f"{torch.cuda.get_device_name(device_index)} is not the H200 the W4A16 tile "
+            f"{torch.cuda.get_device_name(device_index)} is not a board the W4A16 tile "
             "cost model was fitted on, so `default_config` ranks tiles by coefficients "
             "that do not describe this board; pass `config=` to choose one yourself",
             RuntimeWarning,
@@ -171,7 +174,7 @@ def _config_cost(m: int, n: int, k: int, cfg: dict, sms: int) -> float:
     block_m, block_n = cfg["block_m"], cfg["block_n"]
     block_k, num_stages, threads = cfg["block_k"], cfg["num_stages"], cfg["threads"]
     split_k = cfg.get("split_k", 1)
-    c = _H200_CALIBRATION
+    c = _CALIBRATION
     k_eff = k / split_k
     waves = -(-((-(-m // block_m)) * (-(-n // block_n)) * split_k) // sms)
     math_warpgroups = min(threads // 128, block_n // 64)
@@ -247,7 +250,7 @@ def _legal_configs(m: int, n: int, k: int, group_size: int, sms: Optional[int] =
                                 and _stage_meta_per_tile(threads, block_k, block_n, k // group_size)
                                 and ctas < sms
                                 and sms <= (_CONFIG_SPACE.stream_slots - 1) * ctas
-                                and (sms - ctas) / sms >= _H200_CALIBRATION.stream_min_idle_fraction
+                                and (sms - ctas) / sms >= _CALIBRATION.stream_min_idle_fraction
                             )
                             if stream_eligible:
                                 yield {**config, "stream_ctas": sms}
@@ -282,7 +285,7 @@ def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
     scored = [(_config_cost(m, n, k, cfg, sms), cfg) for cfg in legal if cfg["split_k"] == 1]
     if not scored:
         raise ValueError(f"no legal W4A16 tile for m={m}, n={n}, k={k}")
-    floor = min(cost for cost, _ in scored) * (1 + _H200_CALIBRATION.tie_window)
+    floor = min(cost for cost, _ in scored) * (1 + _CALIBRATION.tie_window)
     tied = [(cost, cfg) for cost, cfg in scored if cost <= floor]
     tile = min(tied, key=lambda t: (-t[1]["block_k"], t[0]))[1]
     slicings = [cfg for cfg in legal if all(cfg[key] == tile[key] for key in _TILE_KEYS)]
@@ -920,8 +923,8 @@ class GemmW4A16Kernel(Kernel):
         """The cheapest legal tile, scored against this device's SM count.
 
         Returns:
-            One tile config. The ranking comes from an H200 fit; on another
-            board it still returns a legal tile and warns that it did.
+            One tile config. The ranking comes from a calibrated board's fit; on
+            another board it still returns a legal tile and warns that it did.
         """
         _warn_off_calibration_board(self.device_index)
         return _select_config(

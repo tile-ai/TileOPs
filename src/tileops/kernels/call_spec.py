@@ -22,7 +22,9 @@ class CallSpec:
     """
 
     arch: int = -1
-    h200: bool = False
+    # The key of the calibrated board the device belongs to (``tileops.utils.calibration_key``),
+    # or ``None``. A family's fitted tuning data is keyed by it.
+    calibration: "str | None" = None
     sm_count: int = 0
     # The device whose facts decide selection. ``None`` reads the current device.
     device: "torch.device | None" = None
@@ -37,10 +39,10 @@ class CallSpec:
         from tileops.utils import device_facts
 
         index = self.device.index if self.device is not None else None
-        arch, h200, sm_count = device_facts(index)
+        arch, calibration, sm_count = device_facts(index)
         if self.arch < 0:
             object.__setattr__(self, "arch", arch)
-            object.__setattr__(self, "h200", h200)
+            object.__setattr__(self, "calibration", calibration)
         if self.sm_count <= 0:
             object.__setattr__(self, "sm_count", sm_count)
 
@@ -51,14 +53,22 @@ class CallSpec:
         fields buries the device facts that decided it.
         """
         default = type(self)(
-            arch=self.arch, h200=self.h200, sm_count=self.sm_count, device=self.device
+            arch=self.arch,
+            calibration=self.calibration,
+            sm_count=self.sm_count,
+            device=self.device,
         )
         stated = [
             f"{f.name}={getattr(self, f.name)!r}"
             for f in dataclasses.fields(self)
-            if f.name not in ("arch", "h200", "sm_count", "device", "tune")
+            if f.name not in ("arch", "calibration", "sm_count", "device", "tune")
             and getattr(self, f.name) != getattr(default, f.name)
         ]
         return ", ".join(
-            [f"arch={self.arch}", f"h200={self.h200}", f"sm_count={self.sm_count}", *stated]
+            [
+                f"arch={self.arch}",
+                f"calibration={self.calibration}",
+                f"sm_count={self.sm_count}",
+                *stated,
+            ]
         )
