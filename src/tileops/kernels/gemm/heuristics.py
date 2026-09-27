@@ -67,6 +67,11 @@ SWAP_AB_MPAD = 8
 _NS_CAP = {"basic": 4, "splitk": 4, "coop2": 4, "coop2_splitk": 4}
 
 
+#: The row count the small-M split-K band was fitted at, by calibration key. A board
+#: without an entry has no band.
+_SMALL_M_SPLITK_M = {"h200": 32}
+
+
 @dataclass(frozen=True)
 class _Calibration:
     """The scorer's ranking constants for one board.
@@ -481,11 +486,6 @@ def small_batch_config(n: int, k: int, sm_count: int) -> dict:
     if n >= 28 * sm_count and k_iters >= 12:
         cfg["num_stages"] = 2
     return cfg
-
-
-#: The row count the small-M split-K band was fitted at, by calibration key. A board
-#: without an entry has no band.
-_SMALL_M_SPLITK_M = {"h200": 32}
 
 
 def small_m_splitk_config(

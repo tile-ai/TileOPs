@@ -38,6 +38,11 @@ from .compile_boundary import register_instance
 _Entry = TypeVar("_Entry")
 
 
+# Every dispatch key a created op class declares in ``kernel_types``. Constructing an op imports
+# it and every sub-op it builds, so every key that can replace something in that op is here.
+_DISPATCH_KEYS: set[str] = set()
+
+
 class _Unresolved:
     """The type of :data:`_UNRESOLVED`, so a traceback says what it is."""
 
@@ -51,10 +56,6 @@ class _Unresolved:
 # "run the in-tree implementation".
 _UNRESOLVED = _Unresolved()
 
-
-# Every dispatch key a created op class declares in ``kernel_types``. Constructing an op imports
-# it and every sub-op it builds, so every key that can replace something in that op is here.
-_DISPATCH_KEYS: set[str] = set()
 
 # The calls in progress on this thread, innermost last, each with the checked calls completed
 # inside it: what a composite's call collects from its sub-ops.

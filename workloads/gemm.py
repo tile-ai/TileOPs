@@ -11,6 +11,9 @@ from workloads.workload_base import WorkloadBase
 W4A16_GROUP_SIZE = 128
 
 
+_FP8_INIT_SCALE: float = 0.25
+
+
 class GemmWorkload(WorkloadBase):
     def __init__(
         self,
@@ -332,9 +335,6 @@ class BmmWorkload(WorkloadBase):
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return torch.bmm(a, b)
-
-
-_FP8_INIT_SCALE: float = 0.25
 
 
 class BmmFp8Workload(WorkloadBase):

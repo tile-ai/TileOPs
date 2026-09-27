@@ -48,12 +48,6 @@ SMALL_WORKLOAD_BYTES = 32 * 2**20
 COLD_CACHE_PREMISE = "cold-cache replay (ncu --cache-control all)"
 
 
-def _op_class(op_name: str, entry: dict):
-    from tileops.manifest.registry import op_class
-
-    return op_class(op_name, entry)
-
-
 # The calls whose read half is not a lower bound: op name -> (condition over the call's ``ix``,
 # reason).
 READ_BOUND_EXCEPTIONS: dict = {
@@ -66,6 +60,12 @@ READ_BOUND_EXCEPTIONS: dict = {
         "the mask can predicate away a dropped position's load",
     ),
 }
+
+
+def _op_class(op_name: str, entry: dict):
+    from tileops.manifest.registry import op_class
+
+    return op_class(op_name, entry)
 
 
 def _call(op_name: str, entry: dict, row: dict, case: dict):

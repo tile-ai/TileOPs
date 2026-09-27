@@ -20,6 +20,18 @@ _NUMERIC_KEYS = frozenset(
 )
 
 
+# Tensor-core dtype keys, by the dtype the contraction consumes. fp32 maps to
+# tf32 because that is the unit an fp32 contraction runs on when tensor cores
+# serve it. Encode side of the roof-key format; ``resolve_roof`` is the decode.
+_TENSOR_CORE_DTYPE_KEYS = {
+    "float16": "fp16",
+    "bfloat16": "bf16",
+    "float32": "tf32",
+    "float8_e4m3fn": "fp8",
+    "float8_e5m2": "fp8",
+}
+
+
 def get_profile_path(gpu_name: str) -> Path:
     """Return the path to a GPU profile YAML.
 
@@ -69,18 +81,6 @@ def _inject_effective(profile):
     for section in sections:
         if isinstance(section, dict) and "effective" not in section and "calibration" in section:
             section["effective"] = section["theoretical"] * section["calibration"]
-
-
-# Tensor-core dtype keys, by the dtype the contraction consumes. fp32 maps to
-# tf32 because that is the unit an fp32 contraction runs on when tensor cores
-# serve it. Encode side of the roof-key format; ``resolve_roof`` is the decode.
-_TENSOR_CORE_DTYPE_KEYS = {
-    "float16": "fp16",
-    "bfloat16": "bf16",
-    "float32": "tf32",
-    "float8_e4m3fn": "fp8",
-    "float8_e5m2": "fp8",
-}
 
 
 def tensor_core_roof(dtype) -> str:

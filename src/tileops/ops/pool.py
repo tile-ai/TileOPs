@@ -45,6 +45,17 @@ __all__ = [
 ]
 
 
+# Per-axis name suffixes, indexed by spatial dimensionality.
+_POOL_DIM_NAMES: Dict[int, Tuple[str, ...]] = {1: ("l",), 2: ("h", "w"), 3: ("d", "h", "w")}
+# Kernel-kwarg suffixes for kernel_size/stride/padding(/dilation).
+# Why: the 1d max-pool kernels name their pooling axis `w`, not `l`.
+_MAX_POOL_PARAM_SUFFIXES: Dict[int, Tuple[str, ...]] = {
+    1: ("w",),
+    2: ("h", "w"),
+    3: ("d", "h", "w"),
+}
+
+
 def _per_axis(value: "int | Sequence[int]", ndim: int) -> tuple[int, ...]:
     """A pooling parameter as one value per spatial axis, as ``per_axis`` reads it."""
     return (value,) * ndim if isinstance(value, int) else tuple(value)
@@ -290,17 +301,6 @@ class MeanPoolingFwdOp(Op):
         chunk_base = per_seq.cumsum(0) - per_seq
         if int(torch.unique(chunk_base[seq_ids] + chunk_ids).numel()) != chunks:
             raise ValueError("indices must name each chunk offsets implies exactly once")
-
-
-# Per-axis name suffixes, indexed by spatial dimensionality.
-_POOL_DIM_NAMES: Dict[int, Tuple[str, ...]] = {1: ("l",), 2: ("h", "w"), 3: ("d", "h", "w")}
-# Kernel-kwarg suffixes for kernel_size/stride/padding(/dilation).
-# Why: the 1d max-pool kernels name their pooling axis `w`, not `l`.
-_MAX_POOL_PARAM_SUFFIXES: Dict[int, Tuple[str, ...]] = {
-    1: ("w",),
-    2: ("h", "w"),
-    3: ("d", "h", "w"),
-}
 
 
 class _AvgPoolFwdOpBase(Op):

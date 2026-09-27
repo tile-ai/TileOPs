@@ -85,6 +85,22 @@ _GREEN = "\U0001f7e2"  # 🟢
 # ---------------------------------------------------------------------------
 
 
+# A dtype name as a case id spells it: the id ends in its dtype cases and dtype parameters.
+_DTYPE_TOKEN = re.compile(r"bfloat16|bool|u?int\d+|float\d+(?:_[a-z0-9]+)?|complex\d+")
+# Verdicts are drawn on device execution time, not on the span that also covers the
+# gaps between a call's kernels.
+_CONCLUSION_KEY = "device_busy_ms"
+#: Absorbs the rounding a count recovered from ``tflops`` carries.
+_DERIVED_COUNT_RTOL = 1e-3
+# A kernel file below this share of executed lines was never constructed by any
+# test. The lowest genuinely-built kernel file measures 36.9%, so the threshold
+# has room before it starts catching built kernels.
+_KERNEL_BUILT_PCT = 25
+# Below this, one statement swings the percentage too far to read.
+_COVERAGE_MIN_STMTS = 20
+_COVERAGE_WORST_N = 15  # rows in the least-covered file list
+
+
 def _get_properties(testcase: ET.Element) -> dict[str, str]:
     """Extract user properties from a JUnit testcase element."""
     props = {}
@@ -301,10 +317,6 @@ def _case_id(name: str) -> str:
     return name
 
 
-# A dtype name as a case id spells it: the id ends in its dtype cases and dtype parameters.
-_DTYPE_TOKEN = re.compile(r"bfloat16|bool|u?int\d+|float\d+(?:_[a-z0-9]+)?|complex\d+")
-
-
 def _dtypes_of(name: str) -> tuple[str, ...]:
     """The dtype names in a row's case id, in order."""
     return tuple(t for t in _case_id(name).split("-") if _DTYPE_TOKEN.fullmatch(t))
@@ -353,11 +365,6 @@ def history_window(runs: list[dict], retention_days: int = HISTORY_RETENTION_DAY
     return sorted(kept.values(), key=lambda r: r["date"])
 
 
-# Verdicts are drawn on device execution time, not on the span that also covers the
-# gaps between a call's kernels.
-_CONCLUSION_KEY = "device_busy_ms"
-
-
 def _conclusion(cfg: dict) -> tuple[float | None, str]:
     """The reading a verdict is drawn on, and which key it came from.
 
@@ -374,10 +381,6 @@ def _conclusion(cfg: dict) -> tuple[float | None, str]:
 
 def _conclusion_ms(cfg: dict) -> float | None:
     return _conclusion(cfg)[0]
-
-
-#: Absorbs the rounding a count recovered from ``tflops`` carries.
-_DERIVED_COUNT_RTOL = 1e-3
 
 
 class _WorkCounts(NamedTuple):
@@ -1129,15 +1132,6 @@ def generate_report(
 
 def _pct(hit: int, total: int) -> str:
     return f"{100 * hit / total:.1f}%" if total else "-"
-
-
-# A kernel file below this share of executed lines was never constructed by any
-# test. The lowest genuinely-built kernel file measures 36.9%, so the threshold
-# has room before it starts catching built kernels.
-_KERNEL_BUILT_PCT = 25
-# Below this, one statement swings the percentage too far to read.
-_COVERAGE_MIN_STMTS = 20
-_COVERAGE_WORST_N = 15  # rows in the least-covered file list
 
 
 def _coverage_signals(files: list[dict]) -> dict:

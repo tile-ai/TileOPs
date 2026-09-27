@@ -51,6 +51,22 @@ _FILE_LEVEL_NOQA = re.compile(r"^#\s*(ruff|flake8)\s*:\s*noqa")
 _DTYPE_NAME = re.compile(r"^(u?int[0-9]+|b?float[0-9]+|float8[a-z0-9_]*|bool|handle)$")
 
 
+_NONSCALAR_KINDS = {
+    ast.List: "list",
+    ast.ListComp: "list",
+    ast.Dict: "dict",
+    ast.DictComp: "dict",
+    ast.Set: "set",
+    ast.SetComp: "set",
+    ast.Tuple: "tuple",
+    ast.GeneratorExp: "generator",
+    ast.Lambda: "function",
+}
+_SCOPE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+_Func = ast.FunctionDef | ast.AsyncFunctionDef
+_SCALAR_ANNOTATIONS = frozenset({"int", "float", "str", "bool", "None", "NoneType"})
+
+
 def _attr_path(node: ast.AST) -> str | None:
     """Dotted name of an attribute chain, e.g. ``T.reinterpret``; None otherwise."""
     parts = []
@@ -150,23 +166,6 @@ def _arg(call: ast.Call, pos: int, name: str) -> ast.AST | None:
     return next((k.value for k in call.keywords if k.arg == name), None)
 
 
-_NONSCALAR_KINDS = {
-    ast.List: "list",
-    ast.ListComp: "list",
-    ast.Dict: "dict",
-    ast.DictComp: "dict",
-    ast.Set: "set",
-    ast.SetComp: "set",
-    ast.Tuple: "tuple",
-    ast.GeneratorExp: "generator",
-    ast.Lambda: "function",
-}
-
-_SCOPE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-
-_Func = ast.FunctionDef | ast.AsyncFunctionDef
-
-
 def _jit_names(tree: ast.Module) -> tuple[set[str], set[str]]:
     """What this file binds to ``tilelang.jit``: module aliases, then bare names.
 
@@ -237,9 +236,6 @@ def _function_tables(top: symtable.SymbolTable) -> dict[tuple[str, int], symtabl
             tables.setdefault((table.get_name(), table.get_lineno()), table)
         stack.extend(table.get_children())
     return tables
-
-
-_SCALAR_ANNOTATIONS = frozenset({"int", "float", "str", "bool", "None", "NoneType"})
 
 
 def _string_annotation_kind(annotation: str) -> str | None:

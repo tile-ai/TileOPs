@@ -35,6 +35,22 @@ from workloads.elementwise import (
 )
 from workloads.workload_base import FixtureBase
 
+# Scenario -> (tokens, width).
+_STRATEGY_SHAPES = {
+    "llama-hidden-1k-tokens": (1024, 4096),
+    "llama-7b-ffn-1k-tokens": (1024, 11008),
+    "llama-hidden-4k-tokens": (4096, 4096),
+}
+_STRATEGY_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
+_STRATEGY_KERNELS = [
+    ("silu_and_mul", SiluAndMulFwdKernel),
+    ("gelu_and_mul", GeluAndMulFwdKernel),
+    ("gelu_tanh_and_mul", GeluTanhAndMulFwdKernel),
+]
+# How far behind the fastest strategy the default may sit before the choice is
+# stale. Wide enough to clear run-to-run spread, narrow enough to flag a flip.
+_STRATEGY_MARGIN = 1.25
+
 
 class FusedGatedBenchmark(BenchmarkBase[FusedGatedBenchCase]):
     """Times the strategy decision; it records no row, so both metrics are ``None``."""
@@ -82,20 +98,6 @@ def test_gelu_tanh_and_mul_bench(call) -> None:
     _profile_fused_gated(GeluTanhAndMulFwdOp, call, "gelu_tanh_and_mul")
 
 
-# Scenario -> (tokens, width).
-_STRATEGY_SHAPES = {
-    "llama-hidden-1k-tokens": (1024, 4096),
-    "llama-7b-ffn-1k-tokens": (1024, 11008),
-    "llama-hidden-4k-tokens": (4096, 4096),
-}
-_STRATEGY_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
-_STRATEGY_KERNELS = [
-    ("silu_and_mul", SiluAndMulFwdKernel),
-    ("gelu_and_mul", GeluAndMulFwdKernel),
-    ("gelu_tanh_and_mul", GeluTanhAndMulFwdKernel),
-]
-
-
 def _strategy_params():
     """Default-strategy sentinel: shape and dtype axes on the first kernel, plus
     one reference-point direct-vs-explicit sentinel per remaining kernel.
@@ -125,11 +127,6 @@ def _strategy_params():
 
 class FusedGatedStrategyBenchFixture(FixtureBase):
     PARAMS = [("op_name, M, N, dtype, kernel_cls", _strategy_params())]
-
-
-# How far behind the fastest strategy the default may sit before the choice is
-# stale. Wide enough to clear run-to-run spread, narrow enough to flag a flip.
-_STRATEGY_MARGIN = 1.25
 
 
 @FusedGatedStrategyBenchFixture

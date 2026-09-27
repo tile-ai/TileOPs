@@ -75,6 +75,11 @@ DEFAULT_THREADS: int = 256
 FRAGMENT_ELEMS_PER_THREAD: int = 64
 
 
+# Largest integer count fp32 carries exactly; a statistic folded through
+# fp32 counts or weights is trusted only below it.
+FP32_EXACT_INT_LIMIT = 1 << 24
+
+
 def ceildiv_int(x: int, y: int) -> int:
     """Return ``ceil(x / y)`` for positive integer dimensions."""
     return -(-x // y)
@@ -854,11 +859,6 @@ class _LeadingAxisReducePolicy:
 
 
 _LEADING_POLICY = _LeadingAxisReducePolicy()
-
-
-# Largest integer count fp32 carries exactly; a statistic folded through
-# fp32 counts or weights is trusted only below it.
-FP32_EXACT_INT_LIMIT = 1 << 24
 
 
 def edge_axis_plan(

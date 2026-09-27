@@ -24,6 +24,8 @@ from tileops.kernels.kernel_base import Kernel
 from ..op_base import Op
 from ._base import BinaryOp, _AlphaScaledBinaryOp, _PerDtypeKernels
 
+_DIV_KEY_BY_ROUNDING_MODE = {None: "div", "trunc": "div_trunc", "floor": "floor_divide"}
+
 
 class AddFwdOp(_AlphaScaledBinaryOp):
     """Element-wise addition with broadcast: y = input + alpha * other.
@@ -51,9 +53,6 @@ class MulFwdOp(BinaryOp):
     """Element-wise multiplication with broadcast: y = input * other."""
 
     kernel_types = {"mul": MulFwdKernel}
-
-
-_DIV_KEY_BY_ROUNDING_MODE = {None: "div", "trunc": "div_trunc", "floor": "floor_divide"}
 
 
 class DivFwdOp(BinaryOp):

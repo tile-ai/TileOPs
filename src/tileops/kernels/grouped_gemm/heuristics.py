@@ -25,6 +25,12 @@ __all__ = [
 ]
 
 
+# Gated activations the epilogue can fuse: B stacks gate and up along N; a tile's B
+# half-loads block_n / 2 gate columns and the matching up columns, one accumulator
+# holds both, and the epilogue stores act(gate) * up, so C has N / 2 columns.
+ACTIVATIONS = ("none", "silu_and_mul", "gelu_and_mul")
+
+
 @dataclasses.dataclass(frozen=True)
 class _HeuristicPolicy:
     """The constants the selector reads, in three kinds a reader must tell apart.
@@ -146,12 +152,6 @@ PER_ROW_TYPES = (GemmType.M_GROUPED_ALIGNED_PER_ROW, GemmType.M_GROUPED_TIGHT_PE
 # takes the widest tiles.
 # One full tile grid per group, and no M-grouping to constrain the tile.
 _FLAT_LIKE_TYPES = (GemmType.DENSE, GemmType.BATCHED, GemmType.K_GROUPED_CONTIGUOUS)
-
-
-# Gated activations the epilogue can fuse: B stacks gate and up along N; a tile's B
-# half-loads block_n / 2 gate columns and the matching up columns, one accumulator
-# holds both, and the epilogue stores act(gate) * up, so C has N / 2 columns.
-ACTIVATIONS = ("none", "silu_and_mul", "gelu_and_mul")
 
 
 class Major(str, enum.Enum):

@@ -25,14 +25,6 @@ __all__ = [
 ]
 
 
-def _tile_stage_thread_configs() -> list[dict]:
-    """The default GQA search space: block_m x block_n x num_stages x threads."""
-    return [
-        {"block_m": bm, "block_n": bn, "num_stages": ns, "threads": th}
-        for bm, bn, ns, th in itertools.product((32, 64, 128), (32, 64, 128), (1, 2, 3), (128, 256))
-    ]
-
-
 _FAST_COMPILE_FLAGS = [
     "-O3",
     "--use_fast_math",
@@ -45,6 +37,14 @@ _FAST_COMPILE_FLAGS = [
     "--expt-extended-lambda",
     "-DENABLE_BF16",
 ]
+
+
+def _tile_stage_thread_configs() -> list[dict]:
+    """The default GQA search space: block_m x block_n x num_stages x threads."""
+    return [
+        {"block_m": bm, "block_n": bn, "num_stages": ns, "threads": th}
+        for bm, bn, ns, th in itertools.product((32, 64, 128), (32, 64, 128), (1, 2, 3), (128, 256))
+    ]
 
 
 def _make_apply_softcap_no_mask_guard(score_scale, softcap, accum_dtype, block_rows, block_cols):

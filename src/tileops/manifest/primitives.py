@@ -10,7 +10,7 @@ import math
 import numbers
 from types import SimpleNamespace
 
-from .dtype_rules import DTYPE_BITS
+from .dtype_rules import DTYPE_BITS, DTYPE_CATEGORY
 
 # The seed both conftests give the global RNG; every private workload RNG derives from it.
 WORKLOAD_SEED = 1235
@@ -30,6 +30,23 @@ __all__ = [
     "namespace",
     "normalize_axis",
 ]
+
+
+# The largest finite value of each floating dtype; the lowest is its negation.
+_FLOAT_MAX = {
+    "float16": 65504.0,
+    "bfloat16": 3.3895313892515355e38,
+    "float32": 3.4028234663852886e38,
+    "float64": 1.7976931348623157e308,
+    "float8_e4m3fn": 448.0,
+    "float8_e4m3": 240.0,
+    "float8_e5m2": 57344.0,
+    "float8_e4m3fnuz": 240.0,
+    "float8_e5m2fnuz": 57344.0,
+}
+_COMPLEX_PART = {"complex64": "float32", "complex128": "float64"}
+# Floating formats without an infinity.
+_NO_INF = frozenset({"float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2fnuz"})
 
 
 def normalize_axis(axis: int, rank: int) -> int:
@@ -163,7 +180,7 @@ def moe_capacity(layout, rows, experts):
 
 def promote_int_to_float(dtype):
     """float32 for an integral dtype, else the dtype itself."""
-    return "float32" if dtype in ("uint8", "int8", "int16", "int32", "int64") else dtype
+    return "float32" if category(dtype) == "int" else dtype
 
 
 def coalesce_dtype(value, dtype):
@@ -193,38 +210,15 @@ def repeat(value, count):
     return [value] * count
 
 
-# The largest finite value of each floating dtype; the lowest is its negation.
-_FLOAT_MAX = {
-    "float16": 65504.0,
-    "bfloat16": 3.3895313892515355e38,
-    "float32": 3.4028234663852886e38,
-    "float64": 1.7976931348623157e308,
-    "float8_e4m3fn": 448.0,
-    "float8_e4m3": 240.0,
-    "float8_e5m2": 57344.0,
-    "float8_e4m3fnuz": 240.0,
-    "float8_e5m2fnuz": 57344.0,
-}
-_COMPLEX_PART = {"complex64": "float32", "complex128": "float64"}
-
-
 def category(x):
     """`'bool'`, `'int'`, `'float'` or `'complex'`: the category of a number or a dtype name."""
     if isinstance(x, str):
-        if x == "bool":
-            return "bool"
-        if x in _COMPLEX_PART:
-            return "complex"
-        return "float" if x in _FLOAT_MAX else "int"
+        return DTYPE_CATEGORY.get(x, "int")
     if isinstance(x, bool):
         return "bool"
     if isinstance(x, numbers.Integral):
         return "int"
     return "float" if isinstance(x, numbers.Real) else "complex"
-
-
-# Floating formats without an infinity.
-_NO_INF = frozenset({"float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2fnuz"})
 
 
 def _fits_float(v, dtype):

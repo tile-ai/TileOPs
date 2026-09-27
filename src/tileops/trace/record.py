@@ -21,6 +21,25 @@ __all__ = [
 ]
 
 
+# Per-slot record capacity (config default; callers may override).
+MAX_EVENTS_DEFAULT = 768
+# Field widths and bit offsets within w1.
+_EVENT_ID_BITS = 24
+_KIND_BITS = 4
+_LANE_BITS = 4
+_PAYLOAD_BITS = 32
+_EVENT_ID_SHIFT = 0
+_KIND_SHIFT = 24
+_LANE_SHIFT = 28
+_PAYLOAD_SHIFT = 32
+_EVENT_ID_MASK = (1 << _EVENT_ID_BITS) - 1
+_KIND_MASK = (1 << _KIND_BITS) - 1
+_LANE_MASK = (1 << _LANE_BITS) - 1
+_PAYLOAD_MASK = (1 << _PAYLOAD_BITS) - 1
+# Max distinct lanes that fit the 4-bit lane field.
+MAX_LANES = 1 << _LANE_BITS
+
+
 class EventKind(IntEnum):
     """Event kind packed into ``w1`` bits 24..27."""
 
@@ -30,29 +49,6 @@ class EventKind(IntEnum):
     # Reserved: ``trace.dag`` is now a build-time declaration (no runtime record),
     # so no DAG record is ever emitted. Kept to keep the enum value stable.
     DAG = 3
-
-
-# Per-slot record capacity (config default; callers may override).
-MAX_EVENTS_DEFAULT = 768
-
-# Field widths and bit offsets within w1.
-_EVENT_ID_BITS = 24
-_KIND_BITS = 4
-_LANE_BITS = 4
-_PAYLOAD_BITS = 32
-
-_EVENT_ID_SHIFT = 0
-_KIND_SHIFT = 24
-_LANE_SHIFT = 28
-_PAYLOAD_SHIFT = 32
-
-_EVENT_ID_MASK = (1 << _EVENT_ID_BITS) - 1
-_KIND_MASK = (1 << _KIND_BITS) - 1
-_LANE_MASK = (1 << _LANE_BITS) - 1
-_PAYLOAD_MASK = (1 << _PAYLOAD_BITS) - 1
-
-# Max distinct lanes that fit the 4-bit lane field.
-MAX_LANES = 1 << _LANE_BITS
 
 
 def pack_w1(event_id: int, kind: int, lane: int, payload: int) -> int:

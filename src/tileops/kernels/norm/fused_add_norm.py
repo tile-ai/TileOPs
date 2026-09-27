@@ -37,6 +37,10 @@ __all__ = ["FusedAddLayerNormKernel", "FusedAddRMSNormKernel"]
 # Fused Add + LayerNorm kernel
 
 
+# This kernel serves 16-bit dtypes only, so one 16-byte access moves eight elements.
+_VEC = VECTOR_ACCESS_BYTES // 2
+
+
 @functools.lru_cache(maxsize=32)
 def _fused_add_layer_norm_kernel(M, N, eps, dtype):
     N_padded = align_up(N, ALIGNMENT)
@@ -228,9 +232,6 @@ class FusedAddLayerNormKernel(Kernel):
 
 
 # Fused Add + RMSNorm kernel
-
-# This kernel serves 16-bit dtypes only, so one 16-byte access moves eight elements.
-_VEC = VECTOR_ACCESS_BYTES // 2
 
 
 @functools.lru_cache(maxsize=32)

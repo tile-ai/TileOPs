@@ -30,6 +30,9 @@ from tileops.perf import load_profile
 _CU_SRC = Path(__file__).parent / "hbm_saturation.cu"
 
 
+_MIXES = ("copy", "triad", "read", "write")
+
+
 def _compile(cu_path, binary_path, arch="sm_90"):
     """Compile the CUDA source. Raises on failure."""
     cmd = [
@@ -55,9 +58,6 @@ def _run(binary_path, size_mb, theo_peak_gbs):
         print(f"Benchmark failed:\n{result.stderr}", file=sys.stderr)
         sys.exit(1)
     return result.stdout.strip().splitlines()
-
-
-_MIXES = ("copy", "triad", "read", "write")
 
 
 def _parse_peaks(lines):

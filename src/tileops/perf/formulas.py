@@ -13,6 +13,8 @@ from __future__ import annotations
 from math import prod
 from typing import TYPE_CHECKING
 
+from tileops.manifest.dtype_rules import FLOAT8_DTYPES
+
 if TYPE_CHECKING:
     from tileops.manifest.workload import CallView
 
@@ -65,6 +67,17 @@ __all__ = [
 ]
 
 
+# Per gated element: the activation of the gate (silu: 5; the erf gelu: 5) and the multiply
+# by the up projection.
+_GATED_ACTIVATION = 6
+# Per score: the scale, the running max, the subtraction, the exp and the sum of a softmax.
+_SOFTMAX_PER_SCORE = 5
+# Per score: the divide, tanh and multiply of a logit softcap.
+_SOFTCAP_PER_SCORE = 3
+# Per head score: the relu, the weight multiply and the add into the sum over heads.
+_INDEXER_EPILOGUE_PER_SCORE = 3
+
+
 def _distribute_total(total: int, batch: int, max_len: int) -> list[int]:
     lengths = [0] * batch
     remaining = total
@@ -95,11 +108,6 @@ def _expert_weight_bytes(call) -> int:
     """One expert's gate/up and down weights."""
     experts = call.ix["E"]
     return (call.bytes("w_gate_up") + call.bytes("w_down")) // experts
-
-
-# Per gated element: the activation of the gate (silu: 5; the erf gelu: 5) and the multiply
-# by the up projection.
-_GATED_ACTIVATION = 6
 
 
 def _routing_flops(call) -> int:
@@ -404,12 +412,6 @@ def visible_score_rows(
 def visible_scores(q_len: int, kv_len: int, is_causal: bool, left: int, right: int) -> int:
     """Keys each query of one request sees under bottom-right alignment, summed over its queries."""
     return visible_score_rows(q_len, kv_len, is_causal, left, right)[0]
-
-
-# Per score: the scale, the running max, the subtraction, the exp and the sum of a softmax.
-_SOFTMAX_PER_SCORE = 5
-# Per score: the divide, tanh and multiply of a logit softcap.
-_SOFTCAP_PER_SCORE = 3
 
 
 def attention_flops(
@@ -731,10 +733,6 @@ def lightning_indexer_scored_keys(call: "CallView") -> int:
     )
 
 
-# Per head score: the relu, the weight multiply and the add into the sum over heads.
-_INDEXER_EPILOGUE_PER_SCORE = 3
-
-
 def fp8_lightning_indexer_roofline(call: "CallView") -> tuple[int, int]:
     """Lightning indexer: per query head and windowed key, a D-long contraction and the relu,
     weight and head-sum epilogue; each tensor moves once, ``logits`` written whole."""
@@ -773,9 +771,6 @@ def gqa_prefill_paged_cache_rows(call: "CallView") -> int:
 # ---------------------------------------------------------------- paged caches and MLA
 
 
-_FP8 = "float8_e4m3fn"
-
-
 def _elem_bytes(call: "CallView", name: str) -> int:
     """Bytes of one element of tensor *name*."""
     return call.bytes(name) // max(1, prod(call.tensors[name][0]))
@@ -805,7 +800,7 @@ def mla_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
     pairs = [visible_score_rows(ix["S_q"], c, ix["is_causal"], -1, -1) for c in lengths]
     scores, rows = sum(p[0] for p in pairs), sum(p[1] for p in pairs)
     flops = attention_flops(ix["H"], scores, rows, ix["DK"], ix["kv_lora_rank"])
-    if call.tensors["kv_cache"][1] == _FP8:
+    if call.tensors["kv_cache"][1] in FLOAT8_DTYPES:
         flops += ix["H"] * rows
     moved = _derived_bytes(call) - call.bytes("kv_cache") - call.bytes("block_table")
     moved += _paged_cache_read_bytes(call, "kv_cache", "block_table", lengths)
@@ -870,7 +865,7 @@ def paged_kv_cache_write_roofline(call: "CallView") -> tuple[int, int]:
     into both caches; an FP8 cache scales and saturates each value (2 per value)."""
     shape = call.tensors["k"][0]
     tokens, row = _written_slots(call), prod(shape[1:])
-    flops = 4 * tokens * row if call.tensors["k_pages"][1] == _FP8 else 0
+    flops = 4 * tokens * row if call.tensors["k_pages"][1] in FLOAT8_DTYPES else 0
     moved = 2 * tokens * row * (_elem_bytes(call, "k") + _elem_bytes(call, "k_pages"))
     moved += call.bytes("slot_mapping")
     if tokens * row:
@@ -886,7 +881,7 @@ def mla_kv_cache_write_roofline(call: "CallView") -> tuple[int, int]:
     width, pe = ix["DC"] + ix["PE"], ix["PE"]
     slots = call.values("slot_mapping")
     tokens = _written_slots(call)
-    flops = 2 * tokens * width if call.tensors["kv_cache"][1] == _FP8 else 0
+    flops = 2 * tokens * width if call.tensors["kv_cache"][1] in FLOAT8_DTYPES else 0
     moved = tokens * width * (_elem_bytes(call, "kv_c") + _elem_bytes(call, "kv_cache"))
     moved += call.bytes("slot_mapping")
     moved += call.bytes("scale") if tokens * width and call.present("scale") else 0
@@ -904,7 +899,7 @@ def paged_kv_cache_gather_roofline(call: "CallView") -> tuple[int, int]:
     lengths = _segments(call, "cu_seq_lens")
     starts = call.values("seq_starts") if call.present("seq_starts") else [0] * len(lengths)
     ends = [s + n for s, n in zip(starts, lengths, strict=True)]
-    fp8 = call.tensors["cache"][1] == _FP8
+    fp8 = call.tensors["cache"][1] in FLOAT8_DTYPES
     flops = prod(call.tensors["dst"][0]) if fp8 else 0
     moved = _derived_bytes(call) - call.bytes("cache") - call.bytes("block_table")
     moved += _paged_cache_read_bytes(call, "cache", "block_table", ends, starts)

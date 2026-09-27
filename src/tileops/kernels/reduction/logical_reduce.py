@@ -70,6 +70,15 @@ _WIDENED_STORAGE_DTYPES = frozenset(
 _UNSUPPORTED_STORAGE_DTYPES = _BYTE_REINTERPRETED_DTYPES | _WIDENED_STORAGE_DTYPES
 
 
+# Elements a lane folds in the edge-fused pass. One block holds a `trail`-wide
+# fp32 fragment, so this is what fixes its register footprint per lane rather
+# than letting it grow with the row. Eight is the flat optimum at every width
+# the manifest asks for.
+_FUSED_EDGE_ELEMS_PER_LANE = 8
+_FUSED_EDGE_MIN_THREADS = 64
+_FUSED_EDGE_MAX_THREADS = 1024
+
+
 def storage_dtype_for(dtype: torch.dtype) -> torch.dtype:
     """The dtype the prim_func declares for an input of *dtype*."""
     if dtype in _BYTE_REINTERPRETED_DTYPES:
@@ -106,15 +115,6 @@ def _logical_out_dtype(op_kind: str, partial: bool) -> str:
     if op_kind != "count_nonzero":
         return "int8"
     return "float32" if partial else "int64"
-
-
-# Elements a lane folds in the edge-fused pass. One block holds a `trail`-wide
-# fp32 fragment, so this is what fixes its register footprint per lane rather
-# than letting it grow with the row. Eight is the flat optimum at every width
-# the manifest asks for.
-_FUSED_EDGE_ELEMS_PER_LANE = 8
-_FUSED_EDGE_MIN_THREADS = 64
-_FUSED_EDGE_MAX_THREADS = 1024
 
 
 def fused_edge_threads(trail: int) -> int:

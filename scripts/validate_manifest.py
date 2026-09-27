@@ -56,6 +56,23 @@ _COMPOSITION_KEYS = {"kind", "stages"}
 _STAGE_KEYS = {"name", "op", "kernel", "optional"}
 
 
+_ENTRY_KEYS = {
+    "family": str,
+    "status": str,
+    "signature": dict,
+    "workloads": list,
+    "roofline": dict,
+    "ref_api": str,
+    "composition": dict,
+}
+_REQUIRED = ("family", "status", "signature", "workloads", "roofline")
+_OP_KEY = re.compile(r"[A-Z][A-Za-z0-9]*(Fwd|Bwd)Op")
+# Execution-policy parameters every op takes, in order with their defaults, and the reserved one
+# it may take (docs/design/manifest.md § Signature).
+_POLICY_PARAMETERS = {"target": None, "kernel_map": None, "tune": False}
+_RESERVED_POLICY = "config"
+
+
 def _key_format_errors(
     op_name: str,
     all_op_names: Collection[str],
@@ -232,18 +249,6 @@ def _check_bench_files(repo_root: Path) -> list[str]:
     return errors
 
 
-_ENTRY_KEYS = {
-    "family": str,
-    "status": str,
-    "signature": dict,
-    "workloads": list,
-    "roofline": dict,
-    "ref_api": str,
-    "composition": dict,
-}
-_REQUIRED = ("family", "status", "signature", "workloads", "roofline")
-
-
 def _schema_errors(op_name: str, entry: dict, all_op_names) -> list[str]:
     """Top-level fields of an entry (docs/design/manifest.md § Top-Level Fields)."""
     if not isinstance(op_name, str):
@@ -271,9 +276,6 @@ def _schema_errors(op_name: str, entry: dict, all_op_names) -> list[str]:
     if entry.get("status") not in (None, "implemented", "spec-only"):
         errors.append(f"[schema] {op_name}: status must be 'implemented' or 'spec-only'")
     return errors
-
-
-_OP_KEY = re.compile(r"[A-Z][A-Za-z0-9]*(Fwd|Bwd)Op")
 
 
 def _family_errors(op_name: str, entry: dict) -> list[str]:
@@ -315,12 +317,6 @@ def _ref_api_errors(op_name: str, ref: str) -> list[str]:
             target = getattr(target, attr)
         return []
     return [f"[schema] {op_name}: ref_api {ref!r}: no prefix of it is an importable module"]
-
-
-# Execution-policy parameters every op takes, in order with their defaults, and the reserved one
-# it may take (docs/design/manifest.md § Signature).
-_POLICY_PARAMETERS = {"target": None, "kernel_map": None, "tune": False}
-_RESERVED_POLICY = "config"
 
 
 def _normal_default(value):
