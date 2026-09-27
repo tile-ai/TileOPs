@@ -18,16 +18,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCHMARK_DIRS = ("benchmarks/ops",)
 
 
-# A benchmark takes (flops, bytes) from its op — docs/design/roofline.md §4.2. An entry
-# here declares the two methods for a reason the name below states. An entry whose
-# subject is an op goes as soon as that op gains a manifest entry; an entry whose
-# subject is not an op stays, because a manifest entry is something only an op can have.
-_ROOFLINE_OF_ITS_OWN = {
-    "FusedGatedBenchmark": "times a forced kernel strategy, which no op can request and "
-    "no report has a row for; both metrics return None",
-}
-
-
 def _benchmark_files() -> list[Path]:
     return [
         path
@@ -86,7 +76,7 @@ def _writes_its_own_roofline(tree: ast.AST) -> list[str]:
     return [
         f"{node.name}.{fn.name} (line {fn.lineno})"
         for node in ast.walk(tree)
-        if isinstance(node, ast.ClassDef) and node.name not in _ROOFLINE_OF_ITS_OWN
+        if isinstance(node, ast.ClassDef)
         for fn in node.body
         if isinstance(fn, ast.FunctionDef) and fn.name in ("calculate_flops", "calculate_memory")
     ]
@@ -95,6 +85,5 @@ def _writes_its_own_roofline(tree: ast.AST) -> list[str]:
 @pytest.mark.smoke
 def test_benchmarks_take_their_roofline_from_the_op() -> None:
     """Two sources for one op's FLOPs are two numbers that can disagree, and the
-    manifest is the one every other consumer reads. Subclass ``ManifestBenchmark``;
-    where the op has no roofline to take, name the class above and say why."""
+    manifest is the one every other consumer reads. Subclass ``ManifestBenchmark``."""
     assert _scan(_writes_its_own_roofline) == {}
