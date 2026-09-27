@@ -210,6 +210,7 @@ def _experts_args(tokens, experts_count, top_k, hidden, ffn):
     )
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
 def test_the_experts_composite_shows_only_its_leaf_ops() -> None:

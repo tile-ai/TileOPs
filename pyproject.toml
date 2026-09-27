@@ -180,4 +180,5 @@ markers = [
     "packaging: minimal wheel-install sanity check (one case per op family)",
     "sm90: needs compute capability 9.x; skipped elsewhere, never skipped on an SM90 device",
     "cuda_only: needs a CUDA device whatever the target; deselected when --tileops-device is not cuda",
+    "in_tree_kernels: asserts on the in-tree kernels an op built; deselected when --tileops-target is not builtin",
 ]

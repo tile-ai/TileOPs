@@ -29,7 +29,7 @@ from tileops.ops.elementwise import (
     RemainderFwdOp,
     SubFwdOp,
 )
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 from workloads.elementwise import (
     AddBroadcastWorkload,
     PositivePairWorkload,
@@ -793,6 +793,7 @@ def _served_kernel(op, shape: tuple, dtype: torch.dtype):
     return kernel
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_binary_kernel_has_autotune_configs() -> None:
     """BinaryKernel subclasses expose >= 3 distinct autotune_configs."""
@@ -894,6 +895,7 @@ def test_register_copy_downgrades_on_broadcast() -> None:
 # tune=True reaches the autotuner
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_binary_tune_true_reaches_the_autotuner() -> None:
     """tune=True picks a config out of the search space, and does not fall back."""
@@ -928,7 +930,7 @@ def _lerp_tol(dtype: torch.dtype) -> dict:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("dtype", _LERP_TENSOR_DTYPES)
 def test_lerp_tensor_same_shape(dtype: torch.dtype) -> None:
     """LerpTensorFwdOp matches torch.lerp on same-shape inputs."""
@@ -943,7 +945,7 @@ def test_lerp_tensor_same_shape(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 def test_lerp_tensor_broadcast() -> None:
     """LerpTensorFwdOp supports the manifest's 3-way broadcast rule."""
     a_shape, b_shape, w_shape = (3, 1), (1, 4), (3, 4)
@@ -973,7 +975,7 @@ def test_lerp_tensor_rejects_fp8_dtype(bad_dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 def test_lerp_tensor_dtype_mismatch_rejected() -> None:
     """forward() must reject operands that disagree with each other."""
     shape = (4, 8)
@@ -993,7 +995,7 @@ _DIV_ROUNDING_MODES = ["trunc", "floor"]
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("rounding_mode", _DIV_ROUNDING_MODES)
 @pytest.mark.parametrize("dtype", _DIV_ROUNDING_DTYPES)
 def test_div_rounding_mode_eager(rounding_mode: str, dtype: torch.dtype) -> None:

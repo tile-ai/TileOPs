@@ -12,7 +12,7 @@ from tileops.backend import BUILTIN
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import BatchNormFwdTrainKernel
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 from workloads.normalization import (
     BatchNormBwdCall,
     BatchNormBwdWorkload,
@@ -155,8 +155,8 @@ def test_batch_norm_fwd_returns_single_tensor() -> None:
     """BatchNormFwdOp forward must produce one tensor — manifest declares
     a single output. ``training`` is bound at ctor; the runtime kwarg is
     no longer accepted."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required for forward call")
+    if not run_device_available():
+        pytest.skip("the run device is not available")
 
     N, C, H, W = 4, 8, 4, 4
     op = BatchNormFwdOp(training=False)
@@ -174,8 +174,8 @@ def test_batch_norm_fwd_returns_single_tensor() -> None:
 @pytest.mark.smoke
 def test_training_updates_a_non_contiguous_running_stat() -> None:
     """Contiguity normalization must not swallow the write a mutated input promises."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required for forward call")
+    if not run_device_available():
+        pytest.skip("the run device is not available")
 
     N, C, H, W = 4, 8, 4, 4
     op = BatchNormFwdOp(training=True)

@@ -17,9 +17,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+pytestmark = pytest.mark.skipif(
+    not run_device_available(), reason="the run device is not available"
+)
 
 
 _FLOAT_SHAPE = (2, 4, 8)

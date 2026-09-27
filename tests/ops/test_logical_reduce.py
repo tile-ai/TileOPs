@@ -15,7 +15,7 @@ from tileops.kernels.reduction.logical_reduce import (
     LogicalReduceEdgeFusedKernel,
     LogicalReduceKernel,
 )
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 from workloads.reduction import AnyWorkload
 
 
@@ -676,7 +676,7 @@ _N = 256
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("op_name", ["AllFwdOp", "AnyFwdOp"])
 def test_logical_reduce_accepts_bool(op_name: str) -> None:
     """All / Any must accept bool inputs (manifest dtype contract)."""
@@ -691,7 +691,7 @@ def test_logical_reduce_accepts_bool(op_name: str) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 def test_count_nonzero_returns_int64() -> None:
     from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
 
@@ -702,7 +702,7 @@ def test_count_nonzero_returns_int64() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("op_name", ["AllFwdOp", "AnyFwdOp"])
 def test_logical_reduce_returns_bool(op_name: str) -> None:
     import tileops.ops.reduction as mod

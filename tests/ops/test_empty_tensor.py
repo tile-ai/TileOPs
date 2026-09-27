@@ -12,11 +12,11 @@ import torch
 
 from tileops.ops.elementwise import AddFwdOp, ReluFwdOp
 from tileops.ops.reduction import SumFwdOp
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 
 pytestmark = [
     pytest.mark.smoke,
-    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
+    pytest.mark.skipif(not run_device_available(), reason="the run device is not available"),
 ]
 
 DTYPE = torch.float16

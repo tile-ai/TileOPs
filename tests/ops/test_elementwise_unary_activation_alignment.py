@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from tileops.backend import BUILTIN
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 
 _INPLACE_PARAM_FREE_OPS = (
     "ReluFwdOp",
@@ -108,7 +108,7 @@ def test_nan_to_num_canonical_kwarg_names() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize(
     "op_name",
     _INPLACE_PARAM_FREE_OPS + _INPLACE_PARAMETRIC_OPS,
@@ -139,7 +139,7 @@ def test_unary_activation_inplace_true_aliases_input(op_name: str) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize(
     "op_name",
     _INPLACE_PARAM_FREE_OPS + _INPLACE_PARAMETRIC_OPS,
@@ -168,7 +168,7 @@ def test_gelu_approximate_validation() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("approximate", ["none", "tanh"])
 def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
     """Both ``approximate='none'`` and ``'tanh'`` must dispatch end-to-end.

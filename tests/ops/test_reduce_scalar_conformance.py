@@ -14,9 +14,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+pytestmark = pytest.mark.skipif(
+    not run_device_available(), reason="the run device is not available"
+)
 
 _FLOAT_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
 _DTYPE_IDS = ["fp16", "bf16", "fp32"]
@@ -187,8 +189,8 @@ def test_the_scalar_path_prices_one_element_whatever_dim_names(op_name, dim) -> 
     The manifest formulas take ``dim % x.ndim``, which is a division by zero at this
     extent; the entries carry the guard that makes it one element instead.
     """
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required for forward call")
+    if not run_device_available():
+        pytest.skip("the run device is not available")
     try:
         op = _op(op_name, dim=dim)
     except (TypeError, ValueError):

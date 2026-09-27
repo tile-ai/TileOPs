@@ -20,6 +20,7 @@ from tileops.utils import get_sm_version
 from workloads.device import run_device
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("num_tokens", [32, 512])
@@ -234,6 +235,7 @@ def test_fused_moe_shared_expert_tp_rejects_local_shards():
         )
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_a_replaced_shared_expert_kernel_is_the_one_built():
     """The shared half is reachable through kernel_map, like the routed half."""

@@ -561,6 +561,7 @@ def test_fused_moe_vs_vllm(
 # roofline
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_the_routed_weights_are_priced_from_the_experts_stage() -> None:
     """The in-tree call prices the experts its routed-experts stage read; with no stage call

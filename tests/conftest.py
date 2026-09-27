@@ -4,7 +4,13 @@ import pytest
 import torch
 
 from tests.test_base import _check_result
-from tileops.backend import BUILTIN, UnknownTargetError, registry, set_default_target
+from tileops.backend import (
+    BUILTIN,
+    UnknownTargetError,
+    default_target,
+    registry,
+    set_default_target,
+)
 from workloads.device import run_device, set_run_device
 
 
@@ -190,7 +196,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Validate explicit test tier assignments, then drop ``cuda_only`` tests off a CUDA device."""
+    """Validate explicit test tier assignments, then drop the tests this run cannot serve."""
     tier_errors: list[str] = []
     tier_names = ("smoke", "full", "nightly")
     tilelang_019_skip = pytest.mark.skip(reason=TILELANG_019_SKIP_REASON)
@@ -329,16 +335,22 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             "Invalid explicit test tier assignments detected:\n" + "\n".join(tier_errors)
         )
 
+    # A run on another device drops what needs CUDA; a run on another target drops what
+    # reads the in-tree kernels.
+    marks = []
     if torch.device(run_device()).type != "cuda":
-        dropped = [
-            item
-            for item in items
-            if _under_repo_tests(item) and item.get_closest_marker("cuda_only") is not None
-        ]
-        if dropped:
-            dropped[0].config.hook.pytest_deselected(items=dropped)
-            kept = set(map(id, items)) - set(map(id, dropped))
-            items[:] = [item for item in items if id(item) in kept]
+        marks.append("cuda_only")
+    if default_target() is not BUILTIN:
+        marks.append("in_tree_kernels")
+    dropped = [
+        item
+        for item in items
+        if _under_repo_tests(item) and any(item.get_closest_marker(m) for m in marks)
+    ]
+    if dropped:
+        dropped[0].config.hook.pytest_deselected(items=dropped)
+        kept = set(map(id, items)) - set(map(id, dropped))
+        items[:] = [item for item in items if id(item) in kept]
 
 
 @pytest.hookimpl(hookwrapper=True)

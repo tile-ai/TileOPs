@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 
 
 @pytest.mark.smoke
@@ -36,8 +36,8 @@ def test_rms_norm_accepts_tuple_normalized_shape_runtime() -> None:
     """Multi-axis ``normalized_shape`` is the manifest contract; reduction
     runs over the trailing ``len(normalized_shape)`` axes and ``weight``
     must match ``tuple(normalized_shape)``."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required for forward call")
+    if not run_device_available():
+        pytest.skip("the run device is not available")
 
     from tileops.ops.norm.rms_norm import RMSNormFwdOp
 
@@ -53,8 +53,8 @@ def test_rms_norm_accepts_tuple_normalized_shape_runtime() -> None:
 def test_layer_norm_accepts_tuple_normalized_shape_runtime() -> None:
     """Multi-axis ``normalized_shape`` is the manifest contract; weight/bias
     must match ``tuple(normalized_shape)``."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required for forward call")
+    if not run_device_available():
+        pytest.skip("the run device is not available")
 
     from tileops.ops.norm.layer_norm import LayerNormFwdOp
 

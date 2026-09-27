@@ -22,7 +22,7 @@ from tileops.ops.moe import (
     MoePrePermuteFwdOp,
     RoutingEpilogueSpec,
 )
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 from workloads.moe import MoeExpertMLPWorkload, MoeGroupedGemmWorkload, moe_call, valid_rows
 
 _TIGHT = ContiguousLayoutSpec.tight_physical_psum()
@@ -253,6 +253,7 @@ def test_grouped_gemm_ambiguous_and_incompatible_override_fail_explicitly() -> N
         overridden.select_kernel_key(("special", "general"), call)
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CallSpec records CUDA architecture")
@@ -333,7 +334,7 @@ def test_pre_permute_ships_one_contiguous_candidate(
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="staged kernels require CUDA")
+@pytest.mark.skipif(not run_device_available(), reason="staged kernels require CUDA")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     """The tensor-only staged boundary preserves every routed contribution."""
@@ -369,7 +370,7 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="staged kernels require CUDA")
+@pytest.mark.skipif(not run_device_available(), reason="staged kernels require CUDA")
 @pytest.mark.parametrize(
     "tokens,top_k,experts,hidden",
     [(512, 8, 128, 128), (32, 8, 128, 7168)],
@@ -399,7 +400,7 @@ def test_staged_tight_optimized_shapes_round_trip(
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="staged kernels require CUDA")
+@pytest.mark.skipif(not run_device_available(), reason="staged kernels require CUDA")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     tokens, top_k, experts, hidden, alignment = 4, 2, 4, 64, 4
