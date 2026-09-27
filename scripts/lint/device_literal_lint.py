@@ -10,7 +10,7 @@ Flags the string ``"cuda"`` or ``"cuda:<n>"``, an f-string starting with ``cuda:
 argument-less ``.cuda()`` call, unless it sits inside a function or class decorated with
 ``pytest.mark.cuda_only``, a ``pytest.param(..., marks=...)`` carrying it, or a module whose
 ``pytestmark`` carries it. ``workloads/device.py`` holds the default and ``tests/conftest.py``
-resolves the option, so both are exempt.
+compares the run device with it, so both are exempt.
 
 Usage: ``device_literal_lint.py [FILE ...]``. With no arguments, scans ``tests/`` and
 ``workloads/``. Exits 1 on a finding.

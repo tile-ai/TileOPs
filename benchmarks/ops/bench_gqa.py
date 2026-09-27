@@ -31,6 +31,7 @@ from tileops.ops import (
     GroupedQueryAttentionVarlenFwdOp,
 )
 from tileops.utils import get_sm_version
+from workloads.device import run_device
 from workloads.gqa import (
     GQAPrefillPagedWithKVCacheFwdCall,
     GroupedQueryAttentionBwdCall,
@@ -138,7 +139,7 @@ def _fa3_gqa_dense_decode(workload: GroupedQueryAttentionDenseDecodeCall):
         return None
 
     cache_seqlens = torch.full(
-        (workload.batch,), workload.seq_len_kv, dtype=torch.int32, device="cuda"
+        (workload.batch,), workload.seq_len_kv, dtype=torch.int32, device=run_device()
     )
 
     def baseline_fn(q, k, v):

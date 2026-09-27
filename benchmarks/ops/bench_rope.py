@@ -28,6 +28,7 @@ from tileops.ops.rope import (
     RopeNonNeoxFwdOp,
     RopeYarnFwdOp,
 )
+from workloads.device import run_device
 from workloads.workload_base import CallWorkload
 
 # The torch baseline's frequency base; the rows run every op at its default base.
@@ -45,9 +46,11 @@ def _rope_tables(seq_len: int, head_dim: int, dtype: torch.dtype):
     serves all of them.
     """
     half = head_dim // 2
-    freqs = 1.0 / (_BASE ** (torch.arange(0, half, device="cuda", dtype=torch.float32) / half))
+    freqs = 1.0 / (
+        _BASE ** (torch.arange(0, half, device=run_device(), dtype=torch.float32) / half)
+    )
     angles = torch.outer(
-        torch.arange(seq_len, device="cuda", dtype=torch.float32),
+        torch.arange(seq_len, device=run_device(), dtype=torch.float32),
         freqs,
     )
     return (
@@ -93,7 +96,7 @@ def _vllm_rope(
 def _bench_rope(op_cls, call) -> None:
     """Profile the op on one manifest call against the torch rotation baseline."""
     workload = CallWorkload(call)
-    tensors = call.materialize("cuda")
+    tensors = call.materialize(run_device())
     op = op_cls(**call.arguments(tensors))
     bm = ManifestBenchmark(op, workload)
     x = tensors["x"]
@@ -144,7 +147,7 @@ def test_rope_longrope_bench(call) -> None:
 @pytest.mark.parametrize("call", manifest_calls(RopeNeoxPositionIdsFwdOp))
 def test_rope_neox_position_ids_bench(call) -> None:
     workload = CallWorkload(call)
-    tensors = call.materialize("cuda")
+    tensors = call.materialize(run_device())
     x, position_ids = tensors["x"], tensors["position_ids"]
     head_dim = x.shape[-1]
     op = RopeNeoxPositionIdsFwdOp(**call.arguments(tensors))
