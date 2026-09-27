@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from tests.conftest import _pin_default_target
+from conftest import _pin_default_target
 from tests.test_op_backend_seam import _inputs, _Recorder, _register, _stub_op
 from tileops.backend import BUILTIN, registry, set_default_target
 

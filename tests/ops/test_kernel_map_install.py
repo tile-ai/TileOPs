@@ -12,9 +12,10 @@ import torch
 from tileops.backend import BUILTIN
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import forget_device_properties, get_sm_version
+from workloads.device import run_device_available
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(),
+    not run_device_available(),
     reason="kernel-map install tests build kernels on the current device",
 )
 

@@ -328,6 +328,28 @@ jobs:
             tests/test_check_bench_coverage.py \
             tests/test_target_conformance.py
 
+      # A backend run names another device and target. On this GPU-less runner the suite
+      # must collect, must drop every cuda_only and in_tree_kernels test, and the
+      # benchmarks must refuse the device, since their timer is CUDA-only.
+      - name: Collect the suite for a backend on another device
+        run: |
+          set +e -u
+          opts=(--collect-only -q -p no:cacheprovider --tileops-device=cpu --tileops-target=detect)
+          python -m pytest "${opts[@]}" tests > /dev/null || { echo "tests/ does not collect off CUDA"; exit 1; }
+          python -m pytest "${opts[@]}" -m "cuda_only or in_tree_kernels" tests > kept.txt
+          status=$?
+          if [ "$status" -ne 5 ]; then
+            cat kept.txt
+            echo "a cuda_only or in_tree_kernels test was collected (pytest exit $status)"
+            exit 1
+          fi
+          if python -m pytest "${opts[@]}" benchmarks > bench.txt 2>&1 \
+              || ! grep -q "benchmarks time with CUDA events" bench.txt; then
+            cat bench.txt
+            echo "benchmarks did not refuse --tileops-device=cpu"
+            exit 1
+          fi
+
   packaging-check:
     # Build-and-inspect only: keep torch/tilelang and GPU needs out of here.
     needs: [validate-pr-title, ci-gate]

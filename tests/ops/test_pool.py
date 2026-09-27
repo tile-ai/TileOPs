@@ -36,7 +36,7 @@ from tileops.ops import (
     MaxPool3dFwdOp,
     MaxPool3dIndicesFwdOp,
 )
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 from workloads.pool import (
     AdaptivePool2dWorkload,
     AvgPoolWorkload,
@@ -664,7 +664,7 @@ def test_avg_pool2d_dispatches_kernel() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize(
     ("ndim", "shape"),
     [
@@ -1498,7 +1498,7 @@ _MAX_POOL_DYNAMIC_SHAPES: dict[int, tuple[tuple[int, ...], tuple[int, ...]]] = {
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("return_indices", [False, True], ids=["plain", "indices"])
 @pytest.mark.parametrize("ndim", [1, 2, 3], ids=["1d", "2d", "3d"])
 def test_max_pool_dynamic_shape_kernel_cache_and_roofline(
@@ -1539,7 +1539,7 @@ for _case in _MAX_POOL_COMPILE_CASES:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.usefixtures("isolated_dynamo")
 @pytest.mark.parametrize(
     ("op_cls", "ndim", "return_indices", "x_shape"),
@@ -1603,7 +1603,7 @@ def test_pool_output_dim_with_dilation(
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.usefixtures("isolated_dynamo")
 def test_pool_compile_two_instances_one_frame() -> None:
     """Second instance through the same frame must not degrade the dispatch key.
@@ -1633,7 +1633,7 @@ for _case in _AVG_POOL_COMPILE_CASES:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.usefixtures("isolated_dynamo")
 @pytest.mark.parametrize(("op_cls", "x_shape"), _AVG_POOL_COMPILE_CASES)
 def test_avg_pool_compile_fullgraph(op_cls: type, x_shape: tuple) -> None:
@@ -1708,7 +1708,7 @@ def test_avg_pool2d_explicit_generic_kernel_map_keeps_fast_path() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 def test_avg_pool2d_kernel_cache_separates_dtypes() -> None:
     op = AvgPool2dFwdOp(kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
     shape = (1, 4, 16, 16)
@@ -1933,7 +1933,7 @@ for _case in _ADAPTIVE_POOL_COMPILE_CASES:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.usefixtures("isolated_dynamo")
 @pytest.mark.parametrize(
     ("op_cls", "x_shape", "return_indices"),

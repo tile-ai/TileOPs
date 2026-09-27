@@ -24,7 +24,7 @@ from tileops.kernels.reduction._split_softmax import (
     split_target_blocks,
 )
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 from workloads.reduction import LogSoftmaxWorkload, LogSumExpWorkload, SoftmaxWorkload
 
 # Tolerances (from docs/design/testing.md)
@@ -684,7 +684,7 @@ def test_log_softmax_dim_none_reused_across_ranks() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 def test_log_softmax_eval_roofline_flops_5mn() -> None:
     """LogSoftmaxFwdOp.eval_roofline() must report flops == 5 * M * N."""
     M, N = 64, 256
@@ -701,7 +701,7 @@ def test_log_softmax_eval_roofline_flops_5mn() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16], ids=["fp32", "fp16"])
 def test_softmax_few_long_rows_split_across_blocks(dtype: torch.dtype) -> None:
     """A handful of long rows runs as segments plus a fold, not one block per row.
@@ -718,7 +718,7 @@ def test_softmax_few_long_rows_split_across_blocks(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 def test_logsumexp_few_long_rows_split_across_blocks() -> None:
     """logsumexp folds the shared segment statistics without re-reading the input."""
     x = torch.randn(4, 102400, dtype=torch.float32, device=run_device())
@@ -728,7 +728,7 @@ def test_logsumexp_few_long_rows_split_across_blocks() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 def test_split_rows_survive_fully_masked_segments() -> None:
     """A segment of only ``-inf`` contributes zero to the fold, not NaN.
 

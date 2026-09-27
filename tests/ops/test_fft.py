@@ -121,6 +121,7 @@ def test_fft_n1_is_an_out_of_place_identity() -> None:
     assert got.data_ptr() != x.data_ptr()
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_tune_configures_every_kernel_of_a_four_step_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression: a decomposed plan tuned nothing and silently kept its defaults."""

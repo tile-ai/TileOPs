@@ -77,6 +77,16 @@ def setup() -> None:
         torch.cuda.manual_seed_all(1235)
 
 
+def pytest_configure(config):
+    """Refuse a run device other than CUDA: the timer is CUDA events and CUPTI."""
+    device = torch.device(config.getoption("--tileops-device"))
+    if device.type != "cuda":
+        raise pytest.UsageError(
+            f"--tileops-device={device}: benchmarks time with CUDA events and CUPTI, "
+            "so they run on cuda only"
+        )
+
+
 def pytest_sessionstart(session):
     BenchmarkReport.clear()
 

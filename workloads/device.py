@@ -21,3 +21,11 @@ def set_run_device(device: torch.device | str) -> None:
     """Place this run's tensors on *device* from now on."""
     global _device
     _device = device
+
+
+def run_device_available() -> bool:
+    """Whether this process can place tensors on the run device."""
+    kind = torch.device(_device).type
+    if kind in ("cpu", "meta"):
+        return True
+    return getattr(torch, kind).is_available()

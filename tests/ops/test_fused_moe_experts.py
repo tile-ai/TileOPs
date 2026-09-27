@@ -127,6 +127,7 @@ class TestFusedMoEExpertsFwdOp:
             inputs[0].float(), workload.ref_program(*inputs).float(), rtol=2e-2, atol=2e-2
         )
 
+    @pytest.mark.in_tree_kernels
     @pytest.mark.smoke
     def test_one_instance_serves_two_expert_counts(self):
         """The pre-permute stage takes the call's expert count, so each count holds its own."""
@@ -152,6 +153,7 @@ class TestFusedMoEExpertsFwdOp:
         assert experts.eval_roofline()[1] == expected
         assert experts.roofline_inputs() == {"active_experts": active}
 
+    @pytest.mark.in_tree_kernels
     @pytest.mark.smoke
     @pytest.mark.parametrize("tokens,indexed", [(64, True), (65, False)])
     def test_the_indexed_path_ends_at_two_routes_per_expert(self, tokens, indexed):
@@ -169,6 +171,7 @@ class TestFusedMoEExpertsFwdOp:
         experts(*args)
         assert bool(experts.last_call.stages["indexed_small_route"]) is indexed
 
+    @pytest.mark.in_tree_kernels
     @pytest.mark.smoke
     @pytest.mark.parametrize(
         "ids",

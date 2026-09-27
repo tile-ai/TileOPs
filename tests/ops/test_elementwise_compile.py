@@ -80,7 +80,7 @@ from tileops.ops.elementwise import (
     TruncFwdOp,
     WhereFwdOp,
 )
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 from workloads.elementwise import (
     AddCompileWorkload,
     EqCompileWorkload,
@@ -1053,7 +1053,7 @@ _DIV_ROUNDING_COMPILE_MODES = ["trunc", "floor"]
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("rounding_mode", _DIV_ROUNDING_COMPILE_MODES)
 @pytest.mark.parametrize("dtype", _DIV_ROUNDING_COMPILE_DTYPES)
 def test_div_rounding_mode_compile(rounding_mode: str, dtype: torch.dtype) -> None:

@@ -32,9 +32,9 @@ Rules:
 
 **Framework:** pytest. **Location:** [`tests/ops/`](../../tests/ops/).
 
-**Target:** the suite tests the in-tree kernels. A pytest run defaults to `BUILTIN`, so a backend installed in the environment does not serve it; `--tileops-target=detect` restores device detection and `--tileops-target=<name>` selects that target. A test of target dispatch names its target or isolates the registry.
+**Target:** the suite tests the in-tree kernels. A pytest run defaults to `BUILTIN`, so a backend installed in the environment does not serve it; `--tileops-target=detect` restores device detection and `--tileops-target=<name>` selects that target. A test of target dispatch names its target or isolates the registry. A test whose assertion depends on the op having built the in-tree kernels — `iter_kernels`, `built_kernels`, a kernel's `.config`, `autotune_configs`, the selected kernel class, a `kernel_map` pin — carries `pytest.mark.in_tree_kernels` and is deselected when the target is not `builtin`.
 
-**Device:** tests and workloads place tensors on `workloads.device.run_device()`, the device `--tileops-device` names (default `cuda`); a backend run names its target and its device. A test that needs CUDA whatever the target — it builds an in-tree kernel or kernel call record directly, needs a second CUDA device, or calls a `torch.cuda` runtime API — carries `pytest.mark.cuda_only`, writes `"cuda"`, and is deselected on any other device.
+**Device:** tests and workloads place tensors on `workloads.device.run_device()`, the device `--tileops-device` names (default `cuda`); a backend run names its target and its device. A test that needs CUDA whatever the target — it builds an in-tree kernel or kernel call record directly, needs a second CUDA device, or calls a `torch.cuda` runtime API — carries `pytest.mark.cuda_only`, writes `"cuda"`, and is deselected on any other device. An availability gate asks `workloads.device.run_device_available()`, not `torch.cuda.is_available()`.
 
 ### File checklist
 
@@ -62,7 +62,7 @@ Rules:
 - Tests must parameterize over common shapes (batch size, heads, sequence length).
 - Tests must encode the dtype contract: supported dtypes are covered, unsupported dtypes are rejected, output dtypes are asserted when they differ from input.
 - GPU-dependent tests must run on a real machine with host-visible CUDA devices. Sandbox-only results are not final correctness evidence.
-- An assertion about the in-tree implementation — which kernel class, strategy or config was chosen, how the in-tree cache key folds a shape — is gated on `served_in_tree(op)`, so the rest of the test also runs against a backend that serves the op. A whole test is pinned to `target=BUILTIN` only when its core depends on in-tree internals or it has no backend-neutral assertion.
+- An assertion about the in-tree implementation — which kernel class, strategy or config was chosen, how the in-tree cache key folds a shape — is gated on `served_in_tree(op)`, so the rest of the test also runs against a backend that serves the op. A whole test whose core depends on in-tree internals either pins `target=BUILTIN`, and then runs the in-tree kernels under any target, or carries `in_tree_kernels` and is deselected off the builtin target.
 
 ### Test case policy
 
@@ -127,6 +127,8 @@ python scripts/test_node_delta.py --base origin/release   # different base branc
 **Framework:** `benchmarks.benchmark_base.BenchmarkBase`. **Location:** [`benchmarks/ops/`](../../benchmarks/ops/).
 
 **Execution:** `pytest benchmarks/` auto-generates `profile_run.log` (markdown format).
+
+**Target and device:** the repository-root `conftest.py` owns `--tileops-target` and `--tileops-device` for tests and benchmarks alike, so a benchmark run defaults to `BUILTIN` and a backend measuring itself names its target. The timer is CUDA events and CUPTI, so a benchmark run refuses any device but `cuda`.
 
 ### Workloads
 

@@ -824,6 +824,21 @@ def test_an_op_with_no_tensor_input_is_placed_by_its_device_param():
     assert calls == [{"seq_len": 8, "num_heads": 4, "out_dtype": torch.float32, "device": "cpu"}]
 
 
+@pytest.mark.cuda_only
+def test_a_device_param_without_an_index_accepts_the_output_on_the_current_device():
+    """``device="cuda"`` names the current CUDA device; its output reports ``cuda:<index>``."""
+    from tileops.ops.elementwise import AlibiFwdOp
+
+    registry.register_detector("acme", lambda device: False)
+    registry.register_kernel_builder(
+        "AlibiFwdOp", "acme", lambda **params: lambda: torch.zeros(4, 8, 8, device=params["device"])
+    )
+
+    out = AlibiFwdOp(seq_len=8, num_heads=4, device="cuda", target="acme")()
+
+    assert out.device == torch.device("cuda", torch.cuda.current_device())
+
+
 def _mamba2():
     from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
 

@@ -13,7 +13,7 @@ import pytest
 import torch
 
 import tileops.ops.elementwise as elementwise_mod
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 
 
 def _randn(s, d):
@@ -79,7 +79,7 @@ _BROADCAST_OPS = [
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize(
     "op_name, dtype, gen_a, gen_b, ref_fn",
     _BROADCAST_OPS,
@@ -115,7 +115,7 @@ def test_binary_op_bidirectional_broadcast(
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("op_name", ["MaximumFwdOp", "DivFwdOp"])
 def test_channel_broadcast_with_ragged_inner_dim(op_name: str) -> None:
     """A per-channel operand over a non-tile-multiple inner dim.

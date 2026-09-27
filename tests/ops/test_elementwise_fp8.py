@@ -5,7 +5,7 @@
 import pytest
 import torch
 
-from workloads.device import run_device
+from workloads.device import run_device, run_device_available
 
 _N = 1024 * 16
 
@@ -272,7 +272,7 @@ def test_where_rejects_fp8_dtype(bad_dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize(
     "dtype",
     [torch.float16, torch.bfloat16, torch.float32],

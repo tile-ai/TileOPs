@@ -240,7 +240,7 @@ class AlibiFixture(FixtureBase):
 def test_alibi(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import AlibiFwdOp
 
-    op = AlibiFwdOp(seq_len=seq_len, num_heads=num_heads, out_dtype=dtype)
+    op = AlibiFwdOp(seq_len=seq_len, num_heads=num_heads, out_dtype=dtype, device=run_device())
     out = op()
     ref = alibi_reference(seq_len, num_heads, dtype)
 
@@ -270,7 +270,7 @@ class SinusoidalFixture(FixtureBase):
 def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SinusoidalFwdOp
 
-    op = SinusoidalFwdOp(seq_len=seq_len, d_model=d_model, out_dtype=dtype)
+    op = SinusoidalFwdOp(seq_len=seq_len, d_model=d_model, out_dtype=dtype, device=run_device())
     out = op()
     ref = sinusoidal_reference(seq_len, d_model, dtype)
 
