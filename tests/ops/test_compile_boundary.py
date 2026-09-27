@@ -238,7 +238,6 @@ def _gemm_cases():
             _x(groups, _N, _K),
             sizes,
             offsets,
-            offsets,
         )
 
     def bmm():

@@ -1,6 +1,5 @@
 """Workloads for GEMM, batched matmul and grouped GEMM."""
 
-import math
 from typing import Any
 
 import torch
@@ -412,18 +411,11 @@ def _generate_batch_sizes(batch_sum: int, batch_count: int):
     return batch_sizes
 
 
-def _generate_offsets(batch_sizes_list, padding_M):
-    batch_count = len(batch_sizes_list)
+def _generate_offsets(batch_sizes_list):
     batch_offsets_list = [0]
-    batch_padded_offsets_list = [0]
-    for i in range(batch_count - 1):
-        batch_offsets_list.append(batch_offsets_list[-1] + batch_sizes_list[i])
-    for i in range(batch_count - 1):
-        batch_padded_offsets_list.append(
-            batch_padded_offsets_list[-1]
-            + math.ceil((batch_sizes_list[i] + 1) / padding_M) * padding_M
-        )
-    return batch_offsets_list, batch_padded_offsets_list
+    for size in batch_sizes_list[:-1]:
+        batch_offsets_list.append(batch_offsets_list[-1] + size)
+    return batch_offsets_list
 
 
 class GroupedGemmWorkload(WorkloadBase):
@@ -445,7 +437,6 @@ class GroupedGemmWorkload(WorkloadBase):
         self.transpose_a = transpose_a
         self.transpose_b = transpose_b
         self.batch_sizes_list = _generate_batch_sizes(batch_sum, batch_count)
-        self.padding_M = 128
 
     @classmethod
     def from_call(cls, call: Any) -> "GroupedGemmWorkload":
@@ -468,9 +459,7 @@ class GroupedGemmWorkload(WorkloadBase):
         dtype = self.dtype
         batch_sum = sum(batch_sizes_list)
         batch_count = len(batch_sizes_list)
-        batch_offsets_list, batch_padded_offsets_list = _generate_offsets(
-            batch_sizes_list, self.padding_M
-        )
+        batch_offsets_list = _generate_offsets(batch_sizes_list)
 
         if not self.transpose_a:
             # NT / NN: A is (batch_sum, K)
@@ -493,10 +482,7 @@ class GroupedGemmWorkload(WorkloadBase):
 
         batch_sizes = torch.tensor(batch_sizes_list, device=device, dtype=torch.int32)
         batch_offsets = torch.tensor(batch_offsets_list, device=device, dtype=torch.int32)
-        batch_padded_offsets = torch.tensor(
-            batch_padded_offsets_list, device=device, dtype=torch.int32
-        )
-        return A, B, batch_sizes, batch_offsets, batch_padded_offsets
+        return A, B, batch_sizes, batch_offsets
 
     def ref_program(
         self,
@@ -504,7 +490,6 @@ class GroupedGemmWorkload(WorkloadBase):
         B: torch.Tensor,
         batch_sizes: torch.Tensor,
         batch_offsets: torch.Tensor,
-        batch_padded_offsets: torch.Tensor,
     ) -> torch.Tensor:
         if not self.transpose_a:
             # NT / NN: output is (batch_sum, N)

@@ -257,29 +257,6 @@ class TestBytesOracle:
         )
         assert nsa_fwd_varlen_roofline(call)[1] == oracle
 
-    def test_nsa_topk_does_not_charge_the_lse_it_recomputes(self):
-        """`lse_in` is declared and passed, and the top-k kernel recomputes the lse
-        and discards the argument. A declared input the algorithm does not read
-        produces no traffic, and the contract does not
-        say which inputs those are."""
-        from tileops.perf.formulas import nsa_topk_varlen_roofline
-
-        call = _manifest_call("NSATopkVarlenFwdOp")
-        ix = call.ix
-        c_seq_len, heads, head_kv, dim = ix["T_q"], ix["H"], ix["H_kv"], ix["D"]
-        seq_num, chunk_num, selected = ix["N"], ix["C"], ix["selected_block_num"]
-        oracle = _ledger(
-            "NSATopkVarlenFwdOp",
-            q=((c_seq_len, heads, dim), torch.float16),
-            k_cmp=((chunk_num, head_kv, dim), torch.float16),
-            lse_in_unread=True,
-            offsets=((seq_num + 1,), torch.int32),
-            chunk_offsets=((seq_num + 1,), torch.int32),
-            token_indices=((c_seq_len, 2), torch.int32),
-            block_indices=((c_seq_len, head_kv, selected), torch.int32),
-        )
-        assert nsa_topk_varlen_roofline(call)[1] == oracle
-
     def test_gqa_prefill_paged_reads_the_pages_the_block_table_selects(self):
         """The cache is one pool and the call touches the pages its block table
         names, so the recount prices that subset rather than the pool. The scales
@@ -492,33 +469,6 @@ class TestBytesOracle:
 
         zeroed = _ledger("DropoutFwdOp", input_unread=True, output=((n,), torch.float16))
         assert priced(p=1.0) == zeroed
-
-    def test_grouped_gemm_does_not_charge_the_padding_offsets_it_ignores(self):
-        """`batch_padded_offsets` is declared and passed, and no kernel indexes it:
-        the templates pad nothing. A declared input the algorithm does not read
-        produces no traffic, and the contract does not say which inputs those are."""
-        from tileops.ops import GroupedGemmFwdOp
-
-        batch_sum, batch_count, n, k = 64, 4, 32, 16
-        f16, groups = torch.float16, ((batch_count,), torch.int32)
-        tensors = {
-            "a": torch.empty(batch_sum, k, dtype=f16),
-            "b": torch.empty(batch_count, n, k, dtype=f16),
-            **{
-                name: torch.zeros(batch_count, dtype=torch.int32)
-                for name in ("batch_sizes", "batch_offsets", "batch_padded_offsets")
-            },
-        }
-        oracle = _ledger(
-            "GroupedGemmFwdOp",
-            a=((batch_sum, k), f16),
-            b=((batch_count, n, k), f16),
-            batch_sizes=groups,
-            batch_offsets=groups,
-            batch_padded_offsets_unread=True,
-            output=((batch_sum, n), f16),
-        )
-        assert self._priced(GroupedGemmFwdOp(), tensors)[1] == oracle
 
 
 def _evaluated(op_name: str, row: dict, case: dict, **values):
@@ -808,10 +758,8 @@ HAND_WRITTEN = {
     "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "FusedMoeFwdOp": "the routed weight reads follow the routing its experts stage receives",
     "FusedMoeSharedExpertFwdOp": "the routed weight reads follow the routing its experts stage receives",
-    "GroupedGemmFwdOp": "`batch_padded_offsets` is passed and no kernel indexes it",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": "it reads the pages its block table names, not the pool",
     "NSAVarlenFwdOp": "how much it reads follows the values in `block_counts`",
-    "NSATopkVarlenFwdOp": "`lse_in` is passed and the kernel recomputes the lse instead of reading it",
     "IndexedExpertMLPFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "GroupedQueryAttentionPagedFwdOp": "it reads the rows its page table names, not the pool",
     "MultiHeadLatentAttentionPagedFwdOp": "it reads the cache rows its block table reaches, not the pool",

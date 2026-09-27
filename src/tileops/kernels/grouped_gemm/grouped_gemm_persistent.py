@@ -51,7 +51,7 @@ class GroupedGemmPersistentKernel(Kernel):
     the transposed view of its ``[E, K, N]`` storage. The two K-grouped layouts
     (TN, TT) run ``K_GROUPED_CONTIGUOUS`` on ``batch_sizes`` over the transposed
     views of ``a`` and ``b``, so a TT ``b`` keeps its ``[K, batch_sum]`` storage
-    K-major. ``batch_padded_offsets`` is not read: the template pads nothing.
+    K-major.
 
     Claims bf16 or fp16 operands whose TMA-addressed extents are multiples of 8:
     every contiguous operand extent and the output row pitch. ``GroupedGemmKernel``
@@ -103,7 +103,6 @@ class GroupedGemmPersistentKernel(Kernel):
         b: torch.Tensor,
         batch_sizes: torch.Tensor,
         batch_offsets: torch.Tensor,
-        batch_padded_offsets: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """One GEMM per group, packed along rows (NT / NN) or along K (TN / TT)."""

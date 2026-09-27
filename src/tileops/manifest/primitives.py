@@ -340,13 +340,6 @@ def exclusive_prefix_sum(lengths):
     return prefix_sum(lengths)[:-1]
 
 
-def padded_exclusive_prefix_sum(lengths, pad):
-    """Item `i` is `sum(ceil_div(n + 1, pad) * pad for n in lengths[:i])`."""
-    if pad <= 0:
-        raise ValueError(f"pad must be positive, got {pad}")
-    return exclusive_prefix_sum([ceil_div(n + 1, pad) * pad for n in as_tensor(lengths)])
-
-
 def chunk_indices(lengths, chunk):
     """One `(request, chunk)` row per `chunk`-sized piece of each length."""
     if chunk <= 0:
@@ -523,7 +516,6 @@ GENERATORS = {
     "as_tensor": as_tensor,
     "prefix_sum": prefix_sum,
     "exclusive_prefix_sum": exclusive_prefix_sum,
-    "padded_exclusive_prefix_sum": padded_exclusive_prefix_sum,
     "chunk_indices": chunk_indices,
     "token_indices": token_indices,
     "packed_positions": packed_positions,
@@ -544,7 +536,6 @@ GENERATOR_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "as_tensor": (("Seq[Int]",), "Value"),
     "prefix_sum": (("Seq[Int]",), "Value"),
     "exclusive_prefix_sum": (("Seq[Int]",), "Value"),
-    "padded_exclusive_prefix_sum": (("Seq[Int]", "Int"), "Value"),
     "paged_block_table": (("Int", "Int", "Int"), "Value"),
     "chunk_indices": (("Seq[Int]", "Int"), "Value"),
     "token_indices": (("Seq[Int]",), "Value"),
@@ -565,7 +556,6 @@ GENERATOR_RANKS = {
     "as_tensor": 1,
     "prefix_sum": 1,
     "exclusive_prefix_sum": 1,
-    "padded_exclusive_prefix_sum": 1,
     "paged_block_table": 2,
     "chunk_indices": 2,
     "token_indices": 2,
@@ -585,7 +575,6 @@ GENERATOR_SHAPES = {
     "as_tensor": lambda L: (len(L),),
     "prefix_sum": lambda L: (len(L) + 1,),
     "exclusive_prefix_sum": lambda L: (len(L),),
-    "padded_exclusive_prefix_sum": lambda L, pad: (len(L),),
     "paged_block_table": lambda batch, width, pool: (batch, width),
     "chunk_indices": lambda L, c: (sum(ceil_div(n, c) for n in L), 2),
     "token_indices": lambda L: (sum(L), 2),
