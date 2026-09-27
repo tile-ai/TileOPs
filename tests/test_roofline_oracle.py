@@ -221,9 +221,8 @@ class TestBytesOracle:
         ix = call.ix
         c_seq_len, heads, head_kv, dim = ix["T_q"], ix["H"], ix["H_kv"], ix["D"]
         block_size, selected = ix["block_size"], ix["SEL"]
-        # The key rows some token scores, per KV head: the kept picks, each block cut at the
-        # token when causal and at the sequence end otherwise. A row several tokens score is
-        # read once. Counted here from the tensors.
+        # Key rows some token scores, per KV head: each kept block cut at the token (causal)
+        # or the sequence end; a row several tokens score is read once.
         offsets = call.values("offsets")
         rows = {
             (h, offsets[request] + r)

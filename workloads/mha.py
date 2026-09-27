@@ -153,8 +153,8 @@ class MhaDecodePagedWorkload(WorkloadBase):
     ) -> torch.Tensor:
         """Reassemble paged K/V to logical layout per batch, then attend.
 
-        A causal query ``i`` sees the keys up to position ``i + kv_len - seqlen_q``: the
-        queries sit at the end of the cache. A query that sees no key outputs zeros.
+        A causal query ``i`` sees the keys up to position ``i + kv_len - seqlen_q``; a query
+        that sees no key outputs zeros.
         """
         batch, seqlen_q, heads, dim = q.shape
         seqlen_kv = k.shape[0]

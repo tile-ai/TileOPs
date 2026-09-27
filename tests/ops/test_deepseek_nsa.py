@@ -33,8 +33,7 @@ class NsaFwdFixture(FixtureBase):
                     None,
                     marks=pytest.mark.smoke,
                 ),
-                # Lengths no block size divides, and blocks past the token: a non-causal
-                # token scores every selected block up to its sequence end, no further.
+                # Non-causal, with lengths no block size divides.
                 pytest.param(
                     2,
                     16,

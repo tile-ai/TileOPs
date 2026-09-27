@@ -98,11 +98,9 @@ _GATED_ACTIVATION = 6
 
 
 def _routing_flops(call) -> int:
-    """Routing as FusedTopKFwdOp prices it, per token: the scoring of every logit (sigmoid 4;
-    softmax max, subtract and exp, plus the sum and a divide per kept weight unless
-    renormalizing, where the row sum cancels), one compare-and-select per logit per top-k
-    round, the bias add per score when passed, and the sum and divide of the renormalized
-    weights."""
+    """Routing as FusedTopKFwdOp prices it, per token: scoring (sigmoid 4 per logit; softmax 3,
+    plus the row sum and a divide per kept weight unless renormalizing), top_k
+    compare-and-selects per logit, the bias add, and 2 * top_k to renormalize."""
     ix = call.ix
     experts, top_k, renormalize = ix["E"], ix["top_k"], ix["renormalize"]
     if ix["scoring_func"] == "sigmoid":

@@ -212,8 +212,8 @@ def _mha_decode_paged_ws_kernel(
                             T.mbarrier_wait_parity(v_ready[st], ready_parity)
                             for jj in T.serial(rows_per_warp):
                                 j = warp * rows_per_warp + jj
-                                # A row past the cache weighs zero, but a non-finite
-                                # value there would survive the multiply: skip it.
+                                # Skip rows past the cache: a non-finite value survives
+                                # a zero weight.
                                 if row0 + j < kv_len:
                                     prob[0] = T.exp2(scores[jj] - m_run[0])
                                     l_run[0] += prob[0]

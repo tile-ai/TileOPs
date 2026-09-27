@@ -98,7 +98,7 @@ def _nsa_fwd_varlen_kernel(
                 i_n, i_t = token_indices[i_c, 0], token_indices[i_c, 1]
 
                 bos = offsets[i_n]
-                # Keys a token sees end after itself when causal, at its sequence end otherwise.
+                # Causal: keys up to the token. Otherwise: up to the sequence end.
                 limit = i_t + 1 if is_causal else offsets[i_n + 1] - bos
 
                 ns = block_counts[bos + i_t, i_h]
@@ -111,8 +111,7 @@ def _nsa_fwd_varlen_kernel(
                 for i in T.Pipelined(ns, num_stages=num_stages):
                     i_s = block_indices[bos + i_t, i_h, i] * bs
                     if i_s < limit and i_s >= 0:
-                        # Keys past the bound load as zeros: a row of the next request
-                        # must not reach the GEMM, since a non-finite value survives the mask.
+                        # Rows past the bound load as zeros: a non-finite value survives the mask.
                         if i_s + bs <= limit:
                             T.copy(k[bos + i_s : bos + i_s + bs, i_h, :bk], k_shared)
                             T.copy(v[bos + i_s : bos + i_s + bs, i_h, :bv], v_shared)

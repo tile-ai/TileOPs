@@ -18,18 +18,16 @@ from .online_softmax import (
 
 __all__ = ["MHADecodePagedKernel"]
 
-# A row whose largest split log-sum-exp is below this saw no key in any split: an empty split
-# stores -inf, one whose tiles were all masked stores about -1e38. A threshold, not an
-# equality with -inf, because fast math folds comparisons against infinity away.
+# Below this, no split of the row saw a key. A threshold, not an equality with -inf:
+# fast math folds comparisons with infinity away.
 _NO_KEY_LSE = -1.0e30
 
 
 def make_load_kv_tile(block_N, dim, dtype):
     """A T.macro loading key/value tile ``logical`` of a request from pool tile ``physical``.
 
-    Rows at or past ``kv_len`` load as zeros: a pool row outside the request must not reach
-    the GEMM even masked, since a non-finite value survives both the -inf mask and a zero
-    weight.
+    Rows at or past ``kv_len`` load as zeros: a non-finite value survives both the -inf mask
+    and a zero weight.
     """
 
     @T.macro
@@ -106,8 +104,7 @@ def _mha_decode_no_split_kernel(
                 T.clear(logsum)
                 T.fill(scores_max, -T.infinity(accum_dtype))
 
-                # Causal queries sit at the end of the cache: row r sees keys up to
-                # r + causal_offset, and none past the cache.
+                # Causal row r sees keys up to r + causal_offset.
                 causal_offset = seqlen_kv - seqlen_q
                 loop_range = (
                     T.ceildiv(
@@ -396,8 +393,7 @@ def _mha_decode_split_kernel(batch, heads, seqlen_q, seqlen_kv, dim, page_size, 
                     T.copy(lse_shared[k, :], lse_local_split)
                     for i in T.Parallel(block_M):
                         lse_logsum_local[i] += T.exp2(lse_local_split[i] - lse_max_local[i])
-                # Each split weighs exp2(lse - max) / sum: relative to the max, so a large
-                # max does not round the small normalization term away.
+                # Weights relative to the max keep the normalization term from rounding away.
                 for k in T.Pipelined(num_split, num_stages=2):
                     T.copy(
                         Output_partial[bz, bx * block_M : (bx + 1) * block_M, by, k, :],
