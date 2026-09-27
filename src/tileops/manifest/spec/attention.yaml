@@ -544,8 +544,7 @@ MultiHeadLatentAttentionPagedFwdOp:
 MultiHeadLatentAttentionVarlenFwdOp:
   # MLA prefill over packed requests after the latent is decompressed: the key of head h
   # is k_nope[:, h] ‖ k_pe, with k_pe shared by every head; queries and keys are the same
-  # tokens. The request length bound follows from cu_seqlens. sm_scale defaults to
-  # (DN + PE) ** -0.5.
+  # tokens. sm_scale defaults to (DN + PE) ** -0.5.
   family: attention
   status: spec-only
   signature:
@@ -706,8 +705,8 @@ DeepSeekSparseAttentionPagedFwdOp:
 PagedKVCacheGatherFwdOp:
   # Gathers request b's cache positions [start_b, start_b + len_b) into rows
   # cu_seq_lens[b] .. cu_seq_lens[b + 1] of dst, start_b = seq_starts[b] or 0; an FP8
-  # cache is dequantized by scale into out_dtype. dst is passed because its length is
-  # cu_seq_lens[-1], a value no shape carries.
+  # cache is dequantized by scale into out_dtype. dst carries the length cu_seq_lens[-1],
+  # which no input shape states.
   family: attention
   status: spec-only
   signature:

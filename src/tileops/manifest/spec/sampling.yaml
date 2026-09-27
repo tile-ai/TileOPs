@@ -24,7 +24,7 @@ TopKMaskFwdOp:
   - {V: 151936, k_list: "repeat(20, 128)", dtype_cases: [{T: bfloat16}], label: qwen3-235b-b128}
   - {V: 201088, k_list: "repeat(50, 64)", dtype_cases: [{T: bfloat16}], label: gpt-oss-120b-b64}
   roofline:
-    # The threshold search and the mask on each row k selects; a row k leaves whole is the identity.
+    # The threshold search and the mask on each row k restricts; a row with k >= V is the identity.
     func: "tileops.perf.formulas.top_k_mask_roofline"
 
 MinPMaskFwdOp:
