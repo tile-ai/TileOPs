@@ -206,6 +206,7 @@ def _gqa_bwd_wgmma_pipelined_kernel(
                 T.copy(v[bz, by * block_m : (by + 1) * block_m, bx // groups, :], v_shared)
                 T.clear(dv_frag)
                 T.clear(dk_frag)
+                stage_hold = T.alloc_local([1], dtype)
 
                 loop_st = T.floordiv(by * block_m, block_n) if is_causal else 0
                 loop_ed = T.ceildiv(seq_len, block_n)
@@ -248,9 +249,6 @@ def _gqa_bwd_wgmma_pipelined_kernel(
                     for i, j in T.Parallel(block_m, block_n):
                         dst_cast[i, j] = qkt[i, j] * (dst[i, j] - delta_shared[j]) * sm_scale
                     T.wgmma_gemm(dst_cast, q_frag, dk_frag, policy=T.GemmWarpPolicy.FullRow)
-                    # dK is q_frag's last reader, and the pipeline hands its stage back
-                    # to the producer as soon as dK is issued.
-                    T.wait_wgmma(0)
                     T.copy(dst_cast, dst_shared)
                     T.wgmma_gemm(dst_shared, k_shared, dq_frag, transpose_A=True, clear_accum=True)
                     T.wait_wgmma(0)
@@ -260,6 +258,10 @@ def _gqa_bwd_wgmma_pipelined_kernel(
                         dq_shared,
                         use_tma=True,
                     )
+                    # The pipeline hands a stage back after its buffer's last access, and
+                    # a WGMMA issue is not a completed read: touching q_frag and do_shared
+                    # after the wait above holds both stages until dK and dV are done.
+                    stage_hold[0] = q_frag[0, 0] + do_shared[0, 0]
                 rows = slice(by * block_m, (by + 1) * block_m)
                 T.copy(dv_frag, dv_shared)
                 if groups == 1:
