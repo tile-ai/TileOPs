@@ -176,7 +176,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, out_dtype: s
     (row_max, row_sum) if the same names are reused.  The dual-buffer shared
     memory cost is accounted for by passing ``num_buffers=2`` to
     ``compute_tile_n``. An *out_dtype* other than *dtype* stages the output tile in
-    a third buffer of its own, which ``SoftmaxKernel`` also accounts for.
+    a third buffer of its own.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     num_tiles = (N_padded + tile_n - 1) // tile_n
@@ -639,8 +639,7 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         tune: Whether to autotune (default False).
         device_index: CUDA device index for shared memory budget query.
             When ``None``, ``torch.cuda.current_device()`` is used.
-        out_dtype: Output data type; ``None`` is *dtype*. The kernel reads the input
-            as stored either way.
+        out_dtype: Output data type; ``None`` is *dtype*.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]

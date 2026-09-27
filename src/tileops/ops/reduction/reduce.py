@@ -110,9 +110,8 @@ class _ReduceOpBase(Op):
     def _cast(self, x: torch.Tensor, *, for_kernel: bool = False) -> torch.Tensor:
         """*x* in the dtype the reduction runs in: the ``dtype`` parameter's when passed.
 
-        A kernel reads each element into a float32 accumulator, and every admitted input
-        dtype widens to float32 exactly, so a kernel input is not cast to float32: the
-        kernel reads it as stored and writes float32. Any other cast runs first, as in torch.
+        A float32 ``dtype`` is not cast first: widening is exact and the kernel reads the
+        input as stored. Any other cast runs first, as in torch.
         """
         dtype = self.dtype
         if dtype is None or x.dtype == dtype or (for_kernel and dtype == torch.float32):

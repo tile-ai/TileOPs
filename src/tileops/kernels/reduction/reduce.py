@@ -94,8 +94,7 @@ class ReduceKernel(Kernel):
         tune: Whether to autotune (default False).
         device_index: CUDA device the input lives on, for the shared-memory budget.
             ``None`` reads the current device.
-        out_dtype: Element type of the output, for sum, mean and prod; ``None`` is
-            *dtype*. The kernel reads the input as stored either way.
+        out_dtype: Element type of the output, for sum, mean and prod; ``None`` is *dtype*.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]

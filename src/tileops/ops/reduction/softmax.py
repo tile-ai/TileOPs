@@ -81,9 +81,8 @@ class _SoftmaxBaseOp(Op):
     def _eager_forward(self, x: torch.Tensor) -> torch.Tensor:
         """Resolve the kernel and launch, inside the operator; closed forms need no kernel.
 
-        The kernel computes in float32, and every admitted input dtype widens to float32
-        exactly, so a float32 ``dtype`` is not cast first: the kernel reads the input as
-        stored and writes float32. Any other cast runs first, as in torch.
+        A float32 ``dtype`` is not cast first: widening is exact and the kernel reads the
+        input as stored. Any other cast runs first, as in torch.
         """
         out_dtype = x.dtype if self.dtype is None else self.dtype
         if x.ndim == 0 or x.numel() == 0 or out_dtype != torch.float32:

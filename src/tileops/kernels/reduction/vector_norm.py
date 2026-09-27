@@ -260,8 +260,7 @@ class VectorNormKernel(Kernel):
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
         device_index: CUDA device the input lives on, for the shared-memory budget.
-        out_dtype: Output data type; ``None`` is *dtype*. The kernel reads the input
-            as stored either way.
+        out_dtype: Output data type; ``None`` is *dtype*.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
