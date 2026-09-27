@@ -157,6 +157,10 @@ class NSAVarlenFwdOp(Op):
     Attends each token to the blocks ``NSATopkVarlenFwdOp`` selected for it. Sequence
     layout is packed: ``offsets`` marks the request boundaries, so the batch size and
     the block count come from the call rather than from construction.
+
+    A causal token sees the keys of its selected blocks up to its own position, a
+    non-causal one up to the end of its sequence; a block starting past that bound
+    contributes nothing, and a token no block gives a key outputs zeros.
     """
 
     compile_boundary = True
@@ -180,7 +184,7 @@ class NSAVarlenFwdOp(Op):
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            is_causal: Whether a token may attend past its own position.
+            is_causal: Whether a token sees keys only up to its own position.
             scale: Softmax scale applied to the QK product.
             block_size: Tokens per selected block.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``

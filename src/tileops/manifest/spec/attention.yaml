@@ -323,11 +323,14 @@ MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
       NP: "N_kv // page_size"
     shape_rules:
     - "page_size > 0 and N_kv % page_size == 0"
+    # A key tile never straddles a page; the narrowest tile is 16 rows.
+    - "page_size % 16 == 0"
   workloads:
   - {S_q: 1, H: 16, D: 128, N_kv: 512, W: 4, kv_lens: [512], page_size: 128, dtype_cases: [{T: float16}], label: serving-p128}
   - {S_q: 1, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: "repeat(1024, 2)", page_size: 256, dtype_cases: [{T: float16}], label: serving-b2}
   - {S_q: 1, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: [1024], page_size: 256, dtype_cases: [{T: float16}], label: serving-kv1k}
   - {S_q: 1, H: 8, D: 64, N_kv: 512, W: 2, kv_lens: [512], page_size: 256, dtype_cases: [{T: float16}], label: serving-kv512}
+  - {S_q: 4, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: "repeat(1000, 2)", page_size: 256, is_causal: true, dtype_cases: [{T: float16}], label: speculative-decode}
   roofline:
     func: tileops.perf.formulas.paged_decode_roofline
 
@@ -484,6 +487,7 @@ NSAVarlenFwdOp:
   workloads:
   - {H: 16, H_kv: 1, D: 64, SEL: 1, is_causal: true, scale: 0.1, block_size: 32, seq_lens: "repeat(2048, 4)", dtype_cases: [{T: float16}], label: prefill-4x2k}
   - {H: 16, H_kv: 1, D: 64, SEL: 4, is_causal: true, scale: 0.1, block_size: 32, seq_lens: "repeat(4096, 2)", dtype_cases: [{T: float16}], label: prefill-2x4k}
+  - {H: 16, H_kv: 1, D: 64, SEL: 4, is_causal: false, scale: 0.1, block_size: 32, seq_lens: [4000, 4190], dtype_cases: [{T: float16}], label: prefill-noncausal-2x4k}
   roofline:
     # The blocks the selection keeps decide the scores and the key/value rows read.
     func: "tileops.perf.formulas.nsa_fwd_varlen_roofline"

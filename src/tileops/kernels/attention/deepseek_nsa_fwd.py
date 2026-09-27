@@ -98,6 +98,8 @@ def _nsa_fwd_varlen_kernel(
                 i_n, i_t = token_indices[i_c, 0], token_indices[i_c, 1]
 
                 bos = offsets[i_n]
+                # Causal: keys up to the token. Otherwise: up to the sequence end.
+                limit = i_t + 1 if is_causal else offsets[i_n + 1] - bos
 
                 ns = block_counts[bos + i_t, i_h]
                 T.copy(q[bos + i_t, i_h * g : (i_h + 1) * g, :bk], q_shared)
@@ -108,19 +110,24 @@ def _nsa_fwd_varlen_kernel(
 
                 for i in T.Pipelined(ns, num_stages=num_stages):
                     i_s = block_indices[bos + i_t, i_h, i] * bs
-                    if i_s <= i_t and i_s >= 0:
-                        # [BS, BK]
-                        # TODO(TileOPs): may have some padding issues
-                        # we should learn from mha varlen templates to handle this
-                        T.copy(k[bos + i_s : bos + i_s + bs, i_h, :bk], k_shared)
-
-                        if is_causal:
-                            for i, j in T.Parallel(g, bs):
-                                acc_s[i, j] = T.if_then_else(
-                                    i_t >= (i_s + j), 0, -T.infinity(acc_s.dtype)
-                                )
+                    if i_s < limit and i_s >= 0:
+                        # Rows past the bound load as zeros: a non-finite value survives the mask.
+                        if i_s + bs <= limit:
+                            T.copy(k[bos + i_s : bos + i_s + bs, i_h, :bk], k_shared)
+                            T.copy(v[bos + i_s : bos + i_s + bs, i_h, :bv], v_shared)
                         else:
-                            T.clear(acc_s)
+                            for j, d in T.Parallel(bs, bk):
+                                if (i_s + j < limit) & (d < dim):
+                                    k_shared[j, d] = k[bos + i_s + j, i_h, d]
+                                    v_shared[j, d] = v[bos + i_s + j, i_h, d]
+                                else:
+                                    k_shared[j, d] = T.cast(0, dtype)
+                                    v_shared[j, d] = T.cast(0, dtype)
+
+                        for i, j in T.Parallel(g, bs):
+                            acc_s[i, j] = T.if_then_else(
+                                i_s + j < limit, 0, -T.infinity(acc_s.dtype)
+                            )
 
                         T.gemm(
                             q_shared,
@@ -138,13 +145,11 @@ def _nsa_fwd_varlen_kernel(
                         rescale(acc_o, scores_scale)
 
                         # V * softmax(Q * K)
-                        T.copy(
-                            v[bos + i_s : bos + i_s + bs, i_h, i_v * bv : (i_v + 1) * bv], v_shared
-                        )
                         T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
+                # A token no selected block gives a key outputs zeros.
                 for i, j in T.Parallel(g, bv):
-                    acc_o[i, j] /= logsum[i]
+                    acc_o[i, j] = T.if_then_else(logsum[i] == 0, 0, acc_o[i, j] / logsum[i])
                 T.copy(acc_o, o_shared)
                 T.copy(
                     o_shared, o_slc[bos + i_t, i_h * g : (i_h + 1) * g, i_v * bv : (i_v + 1) * bv]

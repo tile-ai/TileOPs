@@ -97,8 +97,7 @@ def paged_decode_ws_region(call: AttentionCall) -> bool:
     to the general kernel: a query longer than one token (this kernel's whole
     reason for skipping the tensor cores is that ``seqlen_q`` is 1), a head dim
     that does not divide across a warp, a page size no tile height divides, a
-    softcap, and a causal request -- which for a one-token query against a
-    finished cache is not the same computation.
+    softcap, and a causal request, whose mask this kernel does not apply.
     """
     if call.max_seqlen_q != 1 or call.is_causal or call.softcap != 0.0:
         return False

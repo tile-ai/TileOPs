@@ -157,8 +157,10 @@ FusedTopKFwdOp:
   - {T: 512, E: 128, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{G: bfloat16}, {G: float16}, {G: float32}], label: "qwen3-235b-t512"}
   - {T: 4096, E: 128, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{G: bfloat16}], label: "qwen3-235b-t4096"}
   roofline:
-    # Score every logit, then keep the top k; a passed bias adds one add per score.
-    flops: "2 * T * E * (1 + top_k) + (T * E if present(correction_bias) else 0)"
+    # Per token: scoring (sigmoid 4 per logit; softmax 3, plus the row sum and a divide per
+    # kept weight unless renormalizing), top_k compare-and-selects per logit, the bias add,
+    # and 2 * top_k to renormalize.
+    flops: "T * (top_k * E + (4 * E if scoring_func == 'sigmoid' else 3 * E + (0 if renormalize else E + top_k)) + (E if present(correction_bias) else 0) + (2 * top_k if renormalize else 0))"
 
 FusedMoeFwdOp:
   family: moe

@@ -16,7 +16,7 @@ class NsaFwdFixture(FixtureBase):
     PARAMS = [
         (
             "batch, heads, c_seq_len, dim, is_causal, scale, block_size, "
-            "groups, selected_blocks, dtype, tune",
+            "groups, selected_blocks, dtype, tune, seq_lens",
             [
                 pytest.param(
                     1,
@@ -30,6 +30,23 @@ class NsaFwdFixture(FixtureBase):
                     1,
                     torch.float16,
                     False,
+                    None,
+                    marks=pytest.mark.smoke,
+                ),
+                # Non-causal, with lengths no block size divides.
+                pytest.param(
+                    2,
+                    16,
+                    256,
+                    64,
+                    False,
+                    0.1,
+                    32,
+                    16,
+                    4,
+                    torch.float16,
+                    False,
+                    [100, 156],
                     marks=pytest.mark.smoke,
                 ),
                 pytest.param(
@@ -44,6 +61,7 @@ class NsaFwdFixture(FixtureBase):
                     1,
                     torch.float16,
                     False,
+                    None,
                     marks=pytest.mark.full,
                 ),
                 pytest.param(
@@ -58,6 +76,7 @@ class NsaFwdFixture(FixtureBase):
                     4,
                     torch.float16,
                     False,
+                    None,
                     marks=pytest.mark.full,
                 ),
             ],
@@ -78,6 +97,7 @@ def test_nsa_varlen_op(
     selected_blocks: int,
     dtype: torch.dtype,
     tune: bool,
+    seq_lens: "list[int] | None",
 ) -> None:
     assert groups % 16 == 0, "Group size must be a multiple of 16 in NSA"
 
@@ -92,6 +112,7 @@ def test_nsa_varlen_op(
         groups,
         selected_blocks,
         dtype,
+        seq_lens,
     )
     op = NSAVarlenFwdOp(
         is_causal=is_causal,

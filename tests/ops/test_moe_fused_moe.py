@@ -582,9 +582,9 @@ def test_the_routed_weights_are_priced_from_the_experts_stage() -> None:
     per_expert = 3 * F_ * H * 2
     fixed = 2 * T * H * 2 + T * E * 4
     flops, nbytes = op.eval_roofline()
-    # Routing as FusedTopKFwdOp prices it, then per route the two GEMMs, the gated
+    # Softmax routing as FusedTopKFwdOp prices it, then per route the two GEMMs, the gated
     # activation and the weighted combine.
-    assert flops == 2 * T * E * (1 + K) + T * K * (6 * F_ * H + 6 * F_ + 2 * H)
+    assert flops == T * (4 * E + K + K * E) + T * K * (6 * F_ * H + 6 * F_ + 2 * H)
     assert nbytes == active * per_expert + fixed
     assert op.roofline_inputs() == {"active_experts": active}
 

@@ -151,15 +151,19 @@ class MhaDecodePagedWorkload(WorkloadBase):
         real_seqlen_kv: torch.Tensor,
         block_table: torch.Tensor,
     ) -> torch.Tensor:
-        """Reassemble paged K/V to logical layout per batch, then SDPA."""
+        """Reassemble paged K/V to logical layout per batch, then attend.
+
+        A causal query ``i`` sees the keys up to position ``i + kv_len - seqlen_q``; a query
+        that sees no key outputs zeros.
+        """
         batch, seqlen_q, heads, dim = q.shape
         seqlen_kv = k.shape[0]
         out_list = []
         for i_b in range(batch):
-            q_b = q[i_b : i_b + 1, :, :, :]
+            kv_len = real_seqlen_kv[i_b].item()
             k_logical = torch.zeros(seqlen_kv, heads, dim, dtype=q.dtype, device=q.device)
             v_logical = torch.zeros(seqlen_kv, heads, dim, dtype=q.dtype, device=q.device)
-            num_pages = math.ceil(real_seqlen_kv[i_b].item() / self.page_size)
+            num_pages = math.ceil(kv_len / self.page_size)
             for i_paged in range(num_pages):
                 start_pos = block_table[i_b, i_paged].item() * self.page_size
                 end_pos = min(start_pos + self.page_size, seqlen_kv)
@@ -170,16 +174,16 @@ class MhaDecodePagedWorkload(WorkloadBase):
                 v_logical[i_paged * self.page_size : i_paged * self.page_size + page_len, :, :] = v[
                     start_pos:end_pos, :, :
                 ]
-            k_logical = k_logical[: real_seqlen_kv[i_b].item(), :, :]
-            v_logical = v_logical[: real_seqlen_kv[i_b].item(), :, :]
-            k_b = k_logical.unsqueeze(0)
-            v_b = v_logical.unsqueeze(0)
-            q_bhsd = q_b.transpose(1, 2)
-            k_bhsd = k_b.transpose(1, 2)
-            v_bhsd = v_b.transpose(1, 2)
-            out_b = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd)
-            out_b = out_b.transpose(1, 2).contiguous()
-            out_list.append(out_b)
+            q_b = q[i_b].float().transpose(0, 1)  # [H, S_q, D]
+            k_b = k_logical[:kv_len].float().transpose(0, 1)  # [H, kv_len, D]
+            v_b = v_logical[:kv_len].float().transpose(0, 1)
+            scores = q_b @ k_b.transpose(1, 2) * dim**-0.5
+            if self.is_causal:
+                last_key = torch.arange(seqlen_q, device=q.device)[:, None] + kv_len - seqlen_q
+                visible = torch.arange(kv_len, device=q.device) <= last_key
+                scores = scores.masked_fill(~visible, float("-inf"))
+            probs = scores.softmax(-1).nan_to_num(0.0)
+            out_list.append((probs @ v_b).transpose(0, 1).unsqueeze(0).to(q.dtype))
         return torch.cat(out_list, dim=0)
 
 

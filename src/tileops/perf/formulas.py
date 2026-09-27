@@ -93,10 +93,19 @@ def _expert_weight_bytes(call) -> int:
 _GATED_ACTIVATION = 6
 
 
-def _routing_flops(tokens: int, experts: int, top_k: int, biased: bool) -> int:
-    """Routing as FusedTopKFwdOp prices it: two per logit to score it, two per logit per round
-    of the top-k selection, and the bias add per score when passed."""
-    return 2 * tokens * experts * (1 + top_k) + (tokens * experts if biased else 0)
+def _routing_flops(call) -> int:
+    """Routing as FusedTopKFwdOp prices it, per token: scoring (sigmoid 4 per logit; softmax 3,
+    plus the row sum and a divide per kept weight unless renormalizing), top_k
+    compare-and-selects per logit, the bias add, and 2 * top_k to renormalize."""
+    ix = call.ix
+    experts, top_k, renormalize = ix["E"], ix["top_k"], ix["renormalize"]
+    if ix["scoring_func"] == "sigmoid":
+        scoring = 4 * experts
+    else:
+        scoring = 3 * experts + (0 if renormalize else experts + top_k)
+    per_token = scoring + top_k * experts + (2 * top_k if renormalize else 0)
+    per_token += experts if call.present("correction_bias") else 0
+    return ix["T"] * per_token
 
 
 def _routed_flops(tokens: int, routes: int, ffn: int, hidden: int, scaled: bool) -> int:
@@ -141,7 +150,7 @@ def fused_moe_fwd_roofline(call) -> tuple[int, int]:
     """
     ix = call.ix
     t, f, h, top_k = ix["T"], ix["F"], ix["H"], ix["top_k"]
-    flops = _routing_flops(t, ix["E"], top_k, call.present("correction_bias"))
+    flops = _routing_flops(call)
     flops += _routed_flops(t, t * top_k, f, h, ix["routed_scaling_factor"] != 1.0)
     nbytes = fused_moe_active_experts(call) * _expert_weight_bytes(call)
     nbytes += 2 * call.bytes("hidden_states")
@@ -617,9 +626,9 @@ def nsa_topk_varlen_roofline(call: "CallView") -> tuple[int, int]:
 def _nsa_selection(call: "CallView") -> "tuple[int, int, int]":
     """``(scored, distinct, rows)`` key rows of the NSA sparse forward, over tokens and KV heads.
 
-    Token ``t`` scores the first ``block_counts`` blocks of its selection; a block starting
-    past it scores nothing, and a causal call clips each block at ``t``, a non-causal one at
-    the sequence end. ``scored`` counts a row once per token that scores it, ``distinct``
+    Token ``t`` scores the first ``block_counts`` blocks of its selection, each clipped at
+    ``t`` when causal and at the sequence end otherwise; a block starting past that bound
+    scores nothing. ``scored`` counts a row once per token that scores it, ``distinct``
     once per KV head, which is what is read; ``rows`` counts the (token, KV head) pairs
     that score at least one key.
     """
@@ -635,7 +644,7 @@ def _nsa_selection(call: "CallView") -> "tuple[int, int, int]":
             before = scored
             for start in blocks[:n]:
                 lo = start * block_size
-                if 0 <= lo <= position:
+                if 0 <= lo < end:
                     hi = min(lo + block_size, end)
                     scored += hi - lo
                     distinct.update((head, bos + r) for r in range(lo, hi))

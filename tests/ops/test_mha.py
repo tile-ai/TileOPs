@@ -217,28 +217,33 @@ def test_mha_decode_paged_op(
 
 
 @pytest.mark.parametrize(
-    "real_lengths",
+    "seqlen_q, is_causal, real_lengths",
     [
-        pytest.param([1], marks=pytest.mark.smoke),
-        pytest.param([37], marks=pytest.mark.full),
-        pytest.param([700, 1024, 1], marks=pytest.mark.full),
+        pytest.param(1, False, [1], marks=pytest.mark.smoke),
+        # Several queries; a cache shorter than the query block leaves the first ones no key.
+        pytest.param(2, True, [65], marks=pytest.mark.smoke),
+        pytest.param(4, True, [700, 3], marks=pytest.mark.smoke),
+        pytest.param(4, False, [700, 3], marks=pytest.mark.smoke),
+        pytest.param(1, False, [37], marks=pytest.mark.full),
+        pytest.param(1, False, [700, 1024, 1], marks=pytest.mark.full),
     ],
 )
-def test_mha_decode_paged_cache_shorter_than_bound(real_lengths: list) -> None:
-    """A cache far shorter than the static bound leaves splits with no rows.
+def test_mha_decode_paged_cache_shorter_than_bound(
+    seqlen_q: int, is_causal: bool, real_lengths: list
+) -> None:
+    """Splits, warps and query rows that see no key keep the output finite and exact.
 
-    Regression: a split past the end of the cache, and a consumer warp whose
-    rows are all masked, reach the epilogue having seen no live score. With the
-    running max initialised to -inf that epilogue evaluates exp2(-inf - -inf),
-    and the NaN propagates through the cross-split merge into every element of
-    the output.
+    A cache far shorter than the static bound, or shorter than the causal queries,
+    leaves them with no live score.
     """
     batch, heads, seqlen_kv, dim, page_size = len(real_lengths), 8, 1024, 64, 256
-    test = MhaDecodePagedTest(batch, heads, 1, seqlen_kv, dim, page_size, False, torch.float16)
+    test = MhaDecodePagedTest(
+        batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, torch.float16
+    )
     q, k, v, _full, block_table = test.gen_inputs()
     real_seqlen_kv = torch.tensor(real_lengths, dtype=torch.int32, device=q.device)
 
-    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=page_size, is_causal=False)
+    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=page_size, is_causal=is_causal)
     output = op(q, k, v, real_seqlen_kv, block_table)
 
     assert torch.isfinite(output).all(), "output is not finite for a partly filled cache"
