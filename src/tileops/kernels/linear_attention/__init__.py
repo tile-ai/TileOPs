@@ -2,8 +2,8 @@
 
 The three share the chunked-recurrence formulation, so they share the V-tile width
 rule (``v_tile``) and the autotune search space (``autotune``). The chunkwise
-kernels live in the per-variant subpackages; the single-token decode kernels are the
-``*_recurrence`` modules.
+kernels live in the per-variant subpackages; the DeltaNet and GLA single-token decode
+kernels are the ``*_recurrence`` modules.
 """
 
 from .deltanet import DeltaNetBwdKernel, DeltaNetDensePrefillFwdKernel, DeltaNetFwdKernel

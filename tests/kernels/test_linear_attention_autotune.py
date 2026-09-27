@@ -366,7 +366,7 @@ def test_default_config_width_is_one_the_kernel_builds() -> None:
 
     dim_v=48 is the shape that regressed silently: a tiled width of 32 gives
     one tile covering 32 of 48 columns. The width rules themselves are checked
-    on the helper; this checks the kernels are wired to them.
+    on the helper; this checks the kernel is wired to them.
     """
     kernel_cls = deltanet_fwd.DeltaNetFwdKernel
     kernel = kernel_cls(

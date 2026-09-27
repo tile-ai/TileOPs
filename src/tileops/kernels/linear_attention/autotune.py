@@ -1,6 +1,6 @@
-"""Autotune sweep shared by the chunked delta-rule forward kernels.
+"""Autotune sweep for the chunked delta-rule forward kernel.
 
-DeltaNet and Gated DeltaNet forward each run as three sub-kernels — the fused
+The DeltaNet forward runs as three sub-kernels — the fused
 w/u preparation, the state recurrence, and the output projection — and each
 sub-kernel carries its own launch config. The sweep tunes them independently and
 merges the winners into the single flat config the wrapped kernel reads.
