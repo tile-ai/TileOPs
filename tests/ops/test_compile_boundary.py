@@ -553,7 +553,6 @@ for _op_cls in (
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
-    GroupedQueryAttentionPagedFwdOp,
     MultiHeadAttentionBwdOp,
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
     MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,
