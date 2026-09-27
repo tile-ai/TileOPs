@@ -149,6 +149,10 @@ SubFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
+  - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-intermediate"}
+  - {A: [1024, 10240], B: [1, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-bias-broadcast"}
+  - {A: [1024, 11008], B: [1, 11008], dtype_cases: [{T: float16}], label: "llama-7b-ffn-broadcast"}
 
   roofline:
     flops: "(1 if alpha == 1 else 2) * prod(broadcast(A, B))"
@@ -171,6 +175,10 @@ MulFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
+  - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-intermediate"}
+  - {A: [1024, 10240], B: [1, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-bias-broadcast"}
+  - {A: [1024, 11008], B: [1, 11008], dtype_cases: [{T: float16}], label: "llama-7b-ffn-broadcast"}
 
   roofline:
     flops: "prod(broadcast(A, B))"
@@ -195,6 +203,10 @@ DivFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
+  - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-intermediate"}
+  - {A: [1024, 10240], B: [1, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-bias-broadcast"}
+  - {A: [1024, 11008], B: [1, 11008], dtype_cases: [{T: float16}], label: "llama-7b-ffn-broadcast"}
 
   roofline:
     flops: "prod(broadcast(A, B))"
@@ -217,6 +229,8 @@ RemainderFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
+  - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-intermediate"}
 
   roofline:
     flops: "4 * prod(broadcast(A, B))"
@@ -239,6 +253,8 @@ PowFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
+  - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-intermediate"}
 
   roofline:
     flops: "3 * prod(broadcast(A, B))"
@@ -261,6 +277,8 @@ FloorDivideFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
+  - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-intermediate"}
 
   roofline:
     flops: "2 * prod(broadcast(A, B))"
@@ -288,6 +306,8 @@ LerpFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
+  - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-intermediate"}
 
   roofline:
     flops: "3 * prod(broadcast(A, B))"
@@ -310,6 +330,8 @@ MaximumFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
+  - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-intermediate"}
 
   roofline:
     flops: "prod(broadcast(A, B))"
@@ -332,6 +354,8 @@ MinimumFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
+  - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-intermediate"}
 
   roofline:
     flops: "prod(broadcast(A, B))"
@@ -354,6 +378,8 @@ EqFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
+  - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-intermediate"}
 
   roofline:
     flops: "prod(broadcast(A, B))"
@@ -376,6 +402,7 @@ NeFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
 
   roofline:
     flops: "prod(broadcast(A, B))"
@@ -398,6 +425,7 @@ GtFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
 
   roofline:
     flops: "prod(broadcast(A, B))"
@@ -420,6 +448,7 @@ LtFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
 
   roofline:
     flops: "prod(broadcast(A, B))"
@@ -442,6 +471,7 @@ GeFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
 
   roofline:
     flops: "prod(broadcast(A, B))"
@@ -464,6 +494,7 @@ LeFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
 
   roofline:
     flops: "prod(broadcast(A, B))"
@@ -486,6 +517,8 @@ LogicalAndFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: bool}, {T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: bool}, {T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: bool}, {T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
+  - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-intermediate"}
 
   roofline:
     flops: "3 * prod(broadcast(A, B))"
@@ -508,6 +541,8 @@ LogicalOrFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: bool}, {T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: bool}, {T: float16}, {T: bfloat16}, {T: float32}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: bool}, {T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: float16}], label: "llama-7b-hidden"}
+  - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-intermediate"}
 
   roofline:
     flops: "3 * prod(broadcast(A, B))"
@@ -530,6 +565,8 @@ BitwiseAndFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: bool}, {T: int32}, {T: int64}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: bool}, {T: int32}, {T: int64}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: bool}, {T: int32}, {T: int64}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: int32}], label: "llama-7b-hidden"}
+  - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: int32}], label: "phi-2-ffn-intermediate"}
 
   roofline:
     flops: "prod(broadcast(A, B))"
@@ -552,6 +589,7 @@ BitwiseOrFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: bool}, {T: int32}, {T: int64}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: bool}, {T: int32}, {T: int64}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: bool}, {T: int32}, {T: int64}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: int32}], label: "llama-7b-hidden"}
 
   roofline:
     flops: "prod(broadcast(A, B))"
@@ -574,6 +612,7 @@ BitwiseXorFwdOp:
   - {A: [16, 256, 56, 56], B: [256, 1, 1], dtype_cases: [{T: bool}, {T: int32}, {T: int64}], label: "cnn-feat-broadcast"}
   - {A: [1024, 11008], B: [1024, 11008], dtype_cases: [{T: bool}, {T: int32}, {T: int64}], label: "llama-7b-ffn-intermediate"}
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: bool}, {T: int32}, {T: int64}], label: "linear-bias-broadcast"}
+  - {A: [1024, 4096], B: [1024, 4096], dtype_cases: [{T: int32}], label: "llama-7b-hidden"}
 
   roofline:
     flops: "prod(broadcast(A, B))"

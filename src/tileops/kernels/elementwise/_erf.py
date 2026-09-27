@@ -2,6 +2,8 @@
 
 import tilelang.language as T
 
+from ._nan import keep_nan
+
 __all__ = ["erf"]
 
 # |x| taken as saturated. erf(3.6) = 1 - 7.4e-7, far below half a float16 ulp.
@@ -46,6 +48,11 @@ def erf(x, out_dtype):
     wide = T.cast(x, "float32")
     if out_dtype == "float32":
         return T.erf(wide)
+    return keep_nan(wide, _clamped_polynomial)
+
+
+def _clamped_polynomial(wide):
+    """erf of float32 *wide* by the clamped polynomial; the clamps drop a NaN argument."""
     one = T.cast(1.0, "float32")
     clamped = T.min(T.max(wide, T.cast(-_CLAMP, "float32")), T.cast(_CLAMP, "float32"))
     # Scaling the clamp out before squaring, not after, is what makes w exactly zero
@@ -59,5 +66,4 @@ def erf(x, out_dtype):
     # The clip keeps the backend from contracting the product into a caller's add,
     # which would evaluate it to full width and land the tail 7e-9 short of +-1.
     # GELU scales the 1 - erf(x) residual by x, so that error is unbounded in |x|.
-    clipped = T.min(T.max(clamped * acc, -one), one)
-    return T.if_then_else(T.isnan(wide), wide, clipped)
+    return T.min(T.max(clamped * acc, -one), one)
