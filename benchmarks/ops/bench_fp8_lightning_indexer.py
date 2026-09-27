@@ -18,17 +18,17 @@ from workloads.fp8_lightning_indexer import FP8LightningIndexerCall
 
 @pytest.mark.parametrize("call", manifest_calls(FP8LightningIndexerFwdOp))
 def test_fp8_lightning_indexer_bench(call) -> None:
-    test = FP8LightningIndexerCall(call)
-    inputs = test.gen_inputs()
+    workload = FP8LightningIndexerCall(call)
+    inputs = workload.gen_inputs()
 
-    op = FP8LightningIndexerFwdOp(**test.arguments())
-    bm = ManifestBenchmark(op, test)
+    op = FP8LightningIndexerFwdOp(**workload.arguments())
+    bm = ManifestBenchmark(op, workload)
 
     bm.compare(
         {
             "tileops": op,
-            "torch-ref": test.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+            "torch-ref": workload.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
     )

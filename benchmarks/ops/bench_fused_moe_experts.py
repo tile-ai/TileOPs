@@ -80,13 +80,13 @@ def _assert_matches(workload, inputs) -> None:
 
 @pytest.mark.parametrize("call", manifest_calls(FusedMoEExpertsFwdOp))
 def test_moe_experts_bench(call) -> None:
-    test = MoeExpertsWorkload(call)
-    inputs = test.gen_inputs()
+    workload = MoeExpertsWorkload(call)
+    inputs = workload.gen_inputs()
     output, hidden, w1, w2, topk_weights, topk_ids = inputs
     experts = FusedMoEExpertsFwdOp(**call.arguments({}))
-    bm = ManifestBenchmark(experts, test)
+    bm = ManifestBenchmark(experts, workload)
     experts(*inputs)
-    _assert_matches(test, inputs)
+    _assert_matches(workload, inputs)
 
     def _experts_fn(hidden, w1, w2, topk_weights, topk_ids):
         experts.forward(output, hidden, w1, w2, topk_weights, topk_ids)
@@ -123,7 +123,7 @@ def test_moe_experts_bench(call) -> None:
     if not _VLLM_TRITON_AVAILABLE:
 
         def _torch_fn(hidden, w1, w2, topk_weights, topk_ids):
-            return test.ref_program(output, hidden, w1, w2, topk_weights, topk_ids)
+            return workload.ref_program(output, hidden, w1, w2, topk_weights, topk_ids)
 
         functors["torch-ref"] = _torch_fn
 
@@ -132,12 +132,12 @@ def test_moe_experts_bench(call) -> None:
 
 @pytest.mark.parametrize("call", manifest_calls(IndexedExpertMLPFwdOp))
 def test_indexed_expert_mlp_bench(call) -> None:
-    test = IndexedExpertMLPWorkload(call)
-    inputs = test.gen_inputs()
+    workload = IndexedExpertMLPWorkload(call)
+    inputs = workload.gen_inputs()
     output, hidden, w1, w2, topk_weights, topk_ids = inputs
     indexed = IndexedExpertMLPFwdOp(**call.arguments({}))
     indexed(*inputs)
-    _assert_matches(test, inputs)
+    _assert_matches(workload, inputs)
 
     def _indexed_fn(hidden, w1, w2, topk_weights, topk_ids):
         indexed.forward(output, hidden, w1, w2, topk_weights, topk_ids)
@@ -163,4 +163,4 @@ def test_indexed_expert_mlp_bench(call) -> None:
         fn(hidden, w1, w2, topk_weights, topk_ids)
     torch.cuda.synchronize()
 
-    ManifestBenchmark(indexed, test).compare(functors, hidden, w1, w2, topk_weights, topk_ids)
+    ManifestBenchmark(indexed, workload).compare(functors, hidden, w1, w2, topk_weights, topk_ids)

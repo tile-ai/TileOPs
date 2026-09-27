@@ -1,3 +1,5 @@
+"""Benchmark TileOPs GEMM, FP8 GEMM and W4A16 GEMM, one case per manifest call, against cuBLAS and the library kernels available for each."""
+
 import contextlib
 import functools
 from typing import Any, Callable, Optional

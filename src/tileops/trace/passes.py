@@ -54,11 +54,22 @@ import tilelang.language as T
 import tvm.tirx as tx
 from tvm.tirx.stmt_functor import ir_transform, post_order_visit
 
-from .device import _HELPER
 from .record import MAX_EVENTS_DEFAULT, pack_w1_tir
 from .state import MARKER, begin_build_epoch, build_state
 
 __all__ = ["MAX_EVENTS_DEFAULT", "lookup_meta", "lower", "strip"]
+
+# clock64() is a CUDA builtin (no inline asm); the cast keeps the return type a
+# plain u64.
+_HELPER = r"""
+__device__ __forceinline__ unsigned long long __tl_now() {
+    return (unsigned long long)clock64();  // per-SM cycle counter (CUDA builtin)
+}
+
+__device__ __forceinline__ int __tl_thread_idx_x() {
+    return threadIdx.x;  // Writer-election fallback for implicit thread blocks
+}
+"""
 
 # Header words per slot: word[0] = count, word[1] = reserved. Events follow.
 HEADER_WORDS = 2
@@ -114,14 +125,9 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
 
     post_order_visit(primfunc.body, collect)
 
-    # Writer-election fallback for kernels with implicit thread blocks (T.Kernel(..., threads=N))
-    # When threadIdx.x is not explicitly bound, we need to synthesize it for writer election
-    # (determining which thread writes markers). This does NOT affect payload semantics:
-    # payloads remain explicit user-provided values or None (defaults to 0).
-    # Strategy: use the __tl_thread_idx_x() helper (injected by inject_helper)
+    # T.Kernel(..., threads=N) binds no threadIdx.x; _HELPER's __tl_thread_idx_x() stands
+    # in for it when electing the thread that writes markers.
     if "threadIdx.x" not in bind:
-        # Create a call to our injected helper that wraps threadIdx.x
-        # T.call_extern returns a TIR expression for writer-election logic
         tx_ = T.call_extern("int32", "__tl_thread_idx_x")
     else:
         tx_ = bind["threadIdx.x"].loop_var

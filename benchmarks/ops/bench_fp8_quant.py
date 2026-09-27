@@ -19,17 +19,17 @@ _TUNE = True
 
 @pytest.mark.parametrize("call", manifest_calls(FP8QuantFwdOp))
 def test_fp8_quant_bench(call) -> None:
-    test = FP8QuantWorkload.from_call(call)
-    inputs = test.gen_inputs()
+    workload = FP8QuantWorkload.from_call(call)
+    inputs = workload.gen_inputs()
 
     op = FP8QuantFwdOp(**call.arguments({}), tune=_TUNE)
-    bm = ManifestBenchmark(op, test)
+    bm = ManifestBenchmark(op, workload)
 
     bm.compare(
         {
             "tileops": op,
-            "torch-ref": test.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+            "torch-ref": workload.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
     )

@@ -2,7 +2,7 @@
 
 import torch
 
-from workloads.workload_base import WorkloadBase  # noqa: F401
+from workloads.workload_base import WorkloadBase
 
 
 class RopeWorkload(WorkloadBase):

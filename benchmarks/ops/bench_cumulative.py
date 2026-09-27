@@ -43,30 +43,30 @@ class CumulativeBenchmarkWorkload(CumulativeWorkload):
 
 @pytest.mark.parametrize("call", manifest_calls(CumsumFwdOp))
 def test_cumsum_bench(call) -> None:
-    test = CumulativeBenchmarkWorkload(call, "cumsum")
-    inputs = test.gen_inputs()
-    dtype = test.dtype
+    workload = CumulativeBenchmarkWorkload(call, "cumsum")
+    inputs = workload.gen_inputs()
+    dtype = workload.dtype
 
     op = CumsumFwdOp(**call.arguments({}))
-    bm = ManifestBenchmark(op, test)
+    bm = ManifestBenchmark(op, workload)
 
     flaggems_cumsum = flaggems_op("cumsum")
 
     def flaggems_fn(x):
-        return flaggems_cumsum(x, test.dim)
+        return flaggems_cumsum(x, workload.dim)
 
     # A scan's error grows with the prefix length it sums in another order, so atol scales
     # with the square root of the scanned length.
     tolerance = reference_tolerance(dtype)
-    tolerance["atol"] *= math.sqrt(test.shape[test.dim])
-    assert_matches_reference(flaggems_fn, test.ref_program, *inputs, **tolerance)
+    tolerance["atol"] *= math.sqrt(workload.shape[workload.dim])
+    assert_matches_reference(flaggems_fn, workload.ref_program, *inputs, **tolerance)
 
     bm.compare(
         {
             "tileops": op,
             FLAGGEMS_TAG: flaggems_fn,
-            "torch": test.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+            "torch": workload.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
     )
@@ -74,17 +74,17 @@ def test_cumsum_bench(call) -> None:
 
 @pytest.mark.parametrize("call", manifest_calls(CumprodFwdOp))
 def test_cumprod_bench(call) -> None:
-    test = CumulativeBenchmarkWorkload(call, "cumprod")
-    inputs = test.gen_inputs()
+    workload = CumulativeBenchmarkWorkload(call, "cumprod")
+    inputs = workload.gen_inputs()
 
     op = CumprodFwdOp(**call.arguments({}))
-    bm = ManifestBenchmark(op, test)
+    bm = ManifestBenchmark(op, workload)
 
     bm.compare(
         {
             "tileops": op,
-            "torch": test.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+            "torch": workload.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
     )

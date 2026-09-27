@@ -12,11 +12,11 @@ from workloads.attention.deepseek import NsaCmpFwdCall, NsaFwdCall, NsaTopkCall
 
 
 def _bench(op_cls, workload_cls, call) -> None:
-    test = workload_cls(call)
-    inputs = test.gen_inputs()
-    op = op_cls(**test.arguments())
-    bm = ManifestBenchmark(op, test)
-    bm.compare({"tileops": op, "torch-ref": test.ref_program}, *inputs)
+    workload = workload_cls(call)
+    inputs = workload.gen_inputs()
+    op = op_cls(**workload.arguments())
+    bm = ManifestBenchmark(op, workload)
+    bm.compare({"tileops": op, "torch-ref": workload.ref_program}, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(NSACmpVarlenFwdOp))

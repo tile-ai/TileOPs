@@ -1,3 +1,5 @@
+"""Benchmark TileOPs batched matmul and its FP8 variant, one case per manifest call, against cuBLAS, FlagGems and FlashInfer."""
+
 from typing import Optional
 
 import pytest

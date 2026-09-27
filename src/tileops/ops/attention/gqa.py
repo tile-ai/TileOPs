@@ -24,12 +24,12 @@ from tileops.kernels.attention import (
     GQAPrefillVarlenWSFwdKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
 )
+from tileops.kernels.attention.call_spec import AttentionCall, fp8_dtype
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.perf.profile import tensor_core_roof
 
 from ..op_base import Op
 from ..rope import base_freqs
-from .selection import AttentionCall, fp8_dtype
 
 __all__ = [
     "GroupedQueryAttentionBwdOp",

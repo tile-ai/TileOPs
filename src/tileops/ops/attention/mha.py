@@ -7,12 +7,12 @@ from tileops.kernels.attention import (
     MHADecodePagedKernel,
     MHADecodePagedWsKernel,
 )
+from tileops.kernels.attention.call_spec import AttentionCall
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
 from ..op_base import Op
 from .gqa import GroupedQueryAttentionBwdOp
-from .selection import AttentionCall
 
 __all__ = [
     "MultiHeadAttentionBwdOp",

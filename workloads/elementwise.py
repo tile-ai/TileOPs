@@ -1,7 +1,5 @@
 """Workload definitions for elementwise op workloads with custom generators."""
 
-from math import prod
-
 import torch
 import torch.nn.functional as F
 
@@ -21,26 +19,6 @@ class ReluWorkload(WorkloadBase):
         return torch.relu(x.float()).to(x.dtype)
 
 
-class BinaryBenchCase:
-    """Two same-shape tensors drawn from a named value domain."""
-
-    def __init__(
-        self,
-        shape: tuple,
-        dtype: torch.dtype,
-        output_dtype: torch.dtype,
-        domain: str = "normal",
-    ):
-        self.shape = shape
-        self.n_total = prod(shape)
-        self.dtype = dtype
-        self.output_dtype = output_dtype
-        self.domain = domain
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return PAIR_DOMAINS[self.domain](self.shape, self.dtype)
-
-
 class FusedGatedBenchCase:
     """Minimal workload for fused gated ops."""
 
@@ -53,28 +31,6 @@ class FusedGatedBenchCase:
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         return (torch.randn(self.M, 2 * self.N, device="cuda", dtype=self.dtype),)
-
-
-class BroadcastBenchCase:
-    """Workload for broadcast binary ops with asymmetric shapes."""
-
-    def __init__(
-        self,
-        a_shape: tuple,
-        b_shape: tuple,
-        dtype: torch.dtype,
-        output_dtype: torch.dtype,
-        domain: str = "normal",
-    ):
-        self.a_shape = a_shape
-        self.b_shape = b_shape
-        self.n_total = prod(a_shape)  # output size = broadcast result
-        self.dtype = dtype
-        self.output_dtype = output_dtype
-        self.domain = domain
-
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return BROADCAST_DOMAINS[self.domain](self.a_shape, self.b_shape, self.dtype)
 
 
 class AddBroadcastWorkload(WorkloadBase):
@@ -292,61 +248,6 @@ class GatedRandnWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         return (torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda"),)
-
-
-# Value domains of the benchmark studies. A study names the domain its op requires;
-# the draw itself belongs to this layer.
-
-
-def draw_normal_pair(shape: tuple, dtype: torch.dtype):
-    a = torch.randn(*shape, device="cuda", dtype=dtype)
-    b = torch.randn(*shape, device="cuda", dtype=dtype)
-    return a, b
-
-
-def draw_positive_pair(shape: tuple, dtype: torch.dtype):
-    a = torch.rand(*shape, device="cuda", dtype=dtype) + 0.1
-    b = torch.rand(*shape, device="cuda", dtype=dtype) + 0.1
-    return a, b
-
-
-def draw_int_pair(shape: tuple, dtype: torch.dtype):
-    a = torch.randint(-1000, 1000, shape, device="cuda", dtype=torch.int32)
-    b = torch.randint(-1000, 1000, shape, device="cuda", dtype=torch.int32)
-    return a, b
-
-
-def draw_bool_pair(shape: tuple, dtype: torch.dtype):
-    a = (torch.randn(*shape, device="cuda", dtype=dtype) > 0).to(dtype)
-    b = (torch.randn(*shape, device="cuda", dtype=dtype) > 0).to(dtype)
-    return a, b
-
-
-def draw_normal_broadcast_pair(a_shape, b_shape, dtype):
-    a = torch.randn(*a_shape, device="cuda", dtype=dtype)
-    b = torch.randn(*b_shape, device="cuda", dtype=dtype)
-    return a, b
-
-
-def draw_positive_broadcast_pair(a_shape, b_shape, dtype):
-    a = torch.rand(*a_shape, device="cuda", dtype=dtype) + 0.1
-    b = torch.rand(*b_shape, device="cuda", dtype=dtype) + 0.1
-    return a, b
-
-
-# Domain name -> draw function. The mapping lives here, so a caller names a
-# domain rather than passing a draw, and the set is statically visible.
-PAIR_DOMAINS = {
-    "normal": draw_normal_pair,
-    "positive": draw_positive_pair,
-    "int": draw_int_pair,
-    "bool": draw_bool_pair,
-}
-
-BROADCAST_DOMAINS = {
-    "normal": draw_normal_broadcast_pair,
-    "positive": draw_positive_broadcast_pair,
-}
 
 
 # One manifest call of an elementwise op (docs/design/manifest.md § Workloads).

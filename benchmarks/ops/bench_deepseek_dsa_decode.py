@@ -1,3 +1,5 @@
+"""Benchmark TileOPs DeepSeek sparse-attention (DSA) decode, one case per manifest call, against its torch reference."""
+
 import pytest
 import torch
 
@@ -12,20 +14,20 @@ from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
 from workloads.attention.deepseek import DsaDecodeCall
 
 
-def _torch_sdpa_dsa(test: DsaDecodeCall):
+def _torch_sdpa_dsa(workload: DsaDecodeCall):
     """SDPA over the selection ``ref_program`` masks, or None for a row it cannot serve.
 
     Same computation, without the reference's float32 upcast and materialized score
     tensor. A single kv head lets the mask and the cache broadcast over the query heads.
     """
-    if test.heads_kv != 1:
+    if workload.heads_kv != 1:
         return None
 
     def fn(q, kv, indices):
         b, sq, h, dim_q = q.shape
         sk = kv.shape[1]
-        dim = test.dim
-        mask = test.selection_mask(indices).expand(b, h, sq, sk)
+        dim = workload.dim
+        mask = workload.selection_mask(indices).expand(b, h, sq, sk)
         k = kv.permute(0, 2, 1, 3).expand(b, h, sk, dim_q)
         v = kv[..., :dim].permute(0, 2, 1, 3).expand(b, h, sk, dim)
         out = torch.nn.functional.scaled_dot_product_attention(
@@ -33,31 +35,31 @@ def _torch_sdpa_dsa(test: DsaDecodeCall):
             k,
             v,
             attn_mask=mask,
-            scale=test.sm_scale if test.sm_scale is not None else dim_q**-0.5,
+            scale=workload.sm_scale if workload.sm_scale is not None else dim_q**-0.5,
         )
         return out.permute(0, 2, 1, 3).reshape(b, sq, h, dim).to(torch.float16)
 
     return fn
 
 
-def _torch_gather_dsa(test: DsaDecodeCall):
+def _torch_gather_dsa(workload: DsaDecodeCall):
     """Dense attention over only the gathered selection, or None when it buys nothing.
 
     Gathering beats masking only where the selection is smaller than the cache.
     """
-    if test.heads_kv != 1 or test.topk >= test.seq_len_kv:
+    if workload.heads_kv != 1 or workload.topk >= workload.seq_len_kv:
         return None
 
     def fn(q, kv, indices):
         b, sq, h, dim_q = q.shape
         sk = kv.shape[1]
-        dim, topk = test.dim, indices.shape[-1]
+        dim, topk = workload.dim, indices.shape[-1]
         idx = indices.transpose(1, 2).clamp(max=sk - 1).long()
-        valid = torch.gather(test.selection_mask(indices), 3, idx)
+        valid = torch.gather(workload.selection_mask(indices), 3, idx)
         gathered = torch.gather(
             kv.squeeze(2), 1, idx.reshape(b, sq * topk, 1).expand(-1, -1, dim_q)
         ).view(b, sq, topk, dim_q)
-        scale = test.sm_scale if test.sm_scale is not None else dim_q**-0.5
+        scale = workload.sm_scale if workload.sm_scale is not None else dim_q**-0.5
         scores = torch.einsum("bhqd,bqkd->bhqk", q.permute(0, 2, 1, 3), gathered)
         probs = scores.float().mul(scale).masked_fill(~valid, float("-inf")).softmax(-1)
         out = torch.einsum("bhqk,bqkd->bhqd", probs.to(kv.dtype), gathered[..., :dim])
@@ -68,28 +70,28 @@ def _torch_gather_dsa(test: DsaDecodeCall):
 
 @pytest.mark.parametrize("call", manifest_calls(DeepSeekSparseAttentionDecodeWithKVCacheFwdOp))
 def test_dsa_decode_bench(call) -> None:
-    test = DsaDecodeCall(call)
-    inputs = test.gen_inputs()
-    dtype = test.dtype
+    workload = DsaDecodeCall(call)
+    inputs = workload.gen_inputs()
+    dtype = workload.dtype
 
-    op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(**test.arguments())
-    bm = ManifestBenchmark(op, test)
+    op = DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(**workload.arguments())
+    bm = ManifestBenchmark(op, workload)
 
     baselines = {}
-    sdpa_fn = _torch_sdpa_dsa(test)
+    sdpa_fn = _torch_sdpa_dsa(workload)
     if sdpa_fn is not None:
         baselines["torch-sdpa"] = sdpa_fn
-    gather_fn = _torch_gather_dsa(test)
+    gather_fn = _torch_gather_dsa(workload)
     if gather_fn is not None:
         baselines["torch-gather"] = gather_fn
     for fn in baselines.values():
-        assert_matches_reference(fn, test.ref_program, *inputs, **reference_tolerance(dtype))
+        assert_matches_reference(fn, workload.ref_program, *inputs, **reference_tolerance(dtype))
 
     bm.compare(
         {
             "tileops": op,
-            "torch-ref": test.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+            "torch-ref": workload.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
             **baselines,
         },
         *inputs,

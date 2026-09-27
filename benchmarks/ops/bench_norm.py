@@ -24,6 +24,8 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
+from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
@@ -234,3 +236,41 @@ def test_fused_add_layer_norm_bench(call) -> None:
         },
         *inputs,
     )
+
+
+# AdaLayerNorm and AdaLayerNormZero: no library ships either kernel.
+def _bench(op_cls: type, call, baseline_fn) -> None:
+    workload = NormCall(call)
+    inputs = workload.gen_inputs()
+    op = op_cls(**workload.arguments())
+    assert_matches_reference(op, baseline_fn, *inputs, **reference_tolerance(inputs[0].dtype))
+    ManifestBenchmark(op, workload).compare(
+        {
+            "tileops": op,
+            "torch-ref": baseline_fn,
+            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+        },
+        *inputs,
+    )
+
+
+@pytest.mark.parametrize("call", manifest_calls(AdaLayerNormFwdOp))
+def test_ada_layer_norm_bench(call) -> None:
+    eps = call.params["eps"]
+
+    def baseline_fn(x, scale, shift):
+        normed = F.layer_norm(x.float(), (x.shape[-1],), eps=eps)
+        return (scale.float() * normed + shift.float()).to(x.dtype)
+
+    _bench(AdaLayerNormFwdOp, call, baseline_fn)
+
+
+@pytest.mark.parametrize("call", manifest_calls(AdaLayerNormZeroFwdOp))
+def test_ada_layer_norm_zero_bench(call) -> None:
+    eps = call.params["eps"]
+
+    def baseline_fn(x, scale, shift, gate):
+        normed = F.layer_norm(x.float(), (x.shape[-1],), eps=eps)
+        return (gate.float() * (scale.float() * normed + shift.float())).to(x.dtype)
+
+    _bench(AdaLayerNormZeroFwdOp, call, baseline_fn)

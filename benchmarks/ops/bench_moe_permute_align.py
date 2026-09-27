@@ -140,15 +140,15 @@ def _triton_permute_align(
 
 @pytest.mark.parametrize("call", manifest_calls(MoePermuteAlignFwdOp))
 def test_permute_align_bench(call) -> None:
-    test = MoePermuteAlignWorkload(call)
-    inputs = test.gen_inputs()
+    workload = MoePermuteAlignWorkload(call)
+    inputs = workload.gen_inputs()
     op = MoePermuteAlignFwdOp(**call.arguments({}))
     num_experts, block_size = op.num_experts, op.block_size
     numel = inputs[0].numel()
-    bm = ManifestBenchmark(op, test)
+    bm = ManifestBenchmark(op, workload)
 
     got = op(*inputs)
-    ref = test.ref_program(*inputs)
+    ref = workload.ref_program(*inputs)
     # Slot order inside an expert is not specified; the padded count and block owners are.
     torch.testing.assert_close(got[2], ref[2])
     blocks = int(ref[2].item()) // block_size
