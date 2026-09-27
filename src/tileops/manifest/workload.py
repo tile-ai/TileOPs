@@ -381,7 +381,7 @@ def _fixed_rank(node: ast.List, length) -> int | None:
     return None if None in lengths else sum(lengths)
 
 
-def instantiate(plan: EntryPlan, row: dict, dtype_case: dict) -> Call:  # noqa: C901
+def instantiate(plan: EntryPlan, row: dict, dtype_case: dict) -> Call:
     """The call one row and one dtype case state; raises `RowError` when they state none."""
     sig = plan.sig
     scope = {}

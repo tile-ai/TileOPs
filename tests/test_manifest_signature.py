@@ -415,7 +415,7 @@ def test_validator_holds_an_implemented_key_to_an_exported_class(monkeypatch):
     validator = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(validator)
 
-    def DemoFwdOp():  # noqa: N802 - a function under the op's name
+    def DemoFwdOp():
         pass
 
     module = types.ModuleType("tileops.demo")

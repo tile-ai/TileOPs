@@ -123,6 +123,8 @@ select = [
     "TID251",
     # docs/design/layer-boundaries.md §Test: a test does not import from benchmarks/.
     "TID253",
+    # A `noqa` that suppresses nothing, or names a rule this config does not select.
+    "RUF100",
     # flake8-annotations (type hints) — enable when codebase has sufficient coverage
     # "ANN",
 ]

@@ -591,7 +591,7 @@ def _shape_errors(node: ast.expr | None, env: KindEnv, where: str, families: dic
     return [f"{where}: {ast.unparse(node)!r} is not a list or a type-family application"]
 
 
-def check_entry(name: str, entry: dict, adts: dict) -> tuple[list[str], list[str]]:  # noqa: C901
+def check_entry(name: str, entry: dict, adts: dict) -> tuple[list[str], list[str]]:
     """Return `(errors, warnings)` for one entry; each message is prefixed with its op name.
 
     *adts* are the ADTs `check_adts` accepts.

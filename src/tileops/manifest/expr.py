@@ -394,7 +394,7 @@ class _Infer:
         if not fits(kind, expected):
             self.error(f"{ast.unparse(node)} has kind {kind}, expected {expected}")
 
-    def of(self, node: ast.expr) -> Kind | None:  # noqa: C901 - one case per node kind
+    def of(self, node: ast.expr) -> Kind | None:
         if isinstance(node, ast.Constant):
             return _constant_kind(node.value)
         if isinstance(node, ast.Name):
@@ -523,7 +523,7 @@ class _Infer:
                 self.error(f"{ast.unparse(node)} compares {left} with {right}")
             left = right
 
-    def _attribute(self, node: ast.Attribute) -> Kind | None:  # noqa: C901 - payloads and fields
+    def _attribute(self, node: ast.Attribute) -> Kind | None:
         receiver = node.value
         env = self.env
         if (
@@ -703,7 +703,7 @@ def evaluate(node: ast.expr, scope: dict, where: str, extra: dict | None = None)
         code = compile(
             ast.Expression(ast.fix_missing_locations(copy.deepcopy(node))), "<manifest>", "eval"
         )
-        return eval(code, {**_NAMESPACE, **(extra or {})}, dict(scope))  # noqa: S307
-    except Exception as exc:  # noqa: BLE001 - every failure names its declaration
+        return eval(code, {**_NAMESPACE, **(extra or {})}, dict(scope))
+    except Exception as exc:  # every failure names its declaration
         prefix = f"{where}: " if where else ""
         raise EvaluationError(f"{prefix}{ast.unparse(node)} raises {exc}") from None

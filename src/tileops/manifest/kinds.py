@@ -51,7 +51,7 @@ class Kind:
     # ADT: its name.
     name: str | None = None
 
-    def __str__(self) -> str:  # noqa: C901 - one case per tag
+    def __str__(self) -> str:
         if self.tag == "Int":
             return "Dim" if self.nonneg else "Int"
         if self.tag == "Str":
@@ -151,7 +151,7 @@ def _bracket(text: str, head: str) -> str | None:
     return None
 
 
-def parse_type(text: object, adts: dict) -> Kind:  # noqa: C901 - one case per type form
+def parse_type(text: object, adts: dict) -> Kind:
     """A parameter `type` as a kind; `ValueError` if malformed."""
     members = split_union(str(text).strip())
     if len(members) > 1:
@@ -199,7 +199,7 @@ def _commas(text: str) -> list[str]:
     return [*parts, text[start:].strip()]
 
 
-def parse_spec(text: str, adts: dict | None = None) -> Kind:  # noqa: C901 - one case per form
+def parse_spec(text: str, adts: dict | None = None) -> Kind:
     """A kind as the tables write it: `Dim`, `Seq[Int]`, `Maybe[X]`, `DType[a | b]`, unions."""
     adts = adts or {}
     members = split_union(text.strip())
@@ -236,7 +236,7 @@ def parse_spec(text: str, adts: dict | None = None) -> Kind:  # noqa: C901 - one
     raise ValueError(f"{text!r} is not a kind")
 
 
-def fits(kind: Kind | None, expected: Kind) -> bool:  # noqa: C901 - one case per tag
+def fits(kind: Kind | None, expected: Kind) -> bool:
     """Whether every value of `kind` is a value of `expected`; an unknown kind was reported."""
     if kind is None:
         return True

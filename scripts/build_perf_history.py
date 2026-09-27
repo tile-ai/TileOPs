@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import nightly_report as report  # noqa: E402
+import nightly_report as report
 
 
 def _git(repo: Path, *args: str) -> str | None:
