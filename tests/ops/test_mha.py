@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionDecodePagedWithKVCacheFwdOp
-from workloads.attention.mha import (
+from workloads.mha import (
     MhaBwdWorkload,
     MhaDecodePagedWorkload,
 )

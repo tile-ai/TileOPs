@@ -3,7 +3,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.deepseek import DsaDecodeWorkload
+from workloads.deepseek_attention import DsaDecodeWorkload
 
 
 class DsaDecodeTest(DsaDecodeWorkload, TestBase):

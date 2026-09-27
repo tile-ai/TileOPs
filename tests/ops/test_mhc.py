@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MHCPostFwdOp, MHCPreFwdOp
-from workloads.mhc import MHCPostWorkload, MHCPreWorkload
+from workloads.sequence_modeling import MHCPostWorkload, MHCPreWorkload
 
 
 class MHCPreTest(MHCPreWorkload, TestBase):

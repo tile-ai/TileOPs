@@ -10,7 +10,7 @@ from tileops.ops import (
     GroupedQueryAttentionVarlenFwdOp,
 )
 from tileops.perf.formulas import visible_scores
-from workloads.attention.gqa import (
+from workloads.gqa import (
     GroupedQueryAttentionVarlenFwdWorkload,
 )
 

@@ -5,7 +5,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import NSACmpVarlenFwdOp, NSATopkVarlenFwdOp, NSAVarlenFwdOp
-from workloads.attention.deepseek import NsaCmpFwdWorkload, NsaFwdWorkload, NsaTopkWorkload
+from workloads.deepseek_attention import NsaCmpFwdWorkload, NsaFwdWorkload, NsaTopkWorkload
 
 
 class NsaFwdTest(NsaFwdWorkload, TestBase):

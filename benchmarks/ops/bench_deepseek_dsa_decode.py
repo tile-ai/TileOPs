@@ -11,7 +11,7 @@ from benchmarks.baselines import (
 )
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
-from workloads.attention.deepseek import DsaDecodeCall
+from workloads.deepseek_attention import DsaDecodeCall
 
 
 def _torch_sdpa_dsa(workload: DsaDecodeCall):

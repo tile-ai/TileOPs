@@ -60,14 +60,15 @@ from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGate
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from tileops.ops.sequence_modeling.mhc import MHCPostFwdOp, MHCPreFwdOp
 from tileops.ops.topk_selector import TopkSelectorFwdOp
-from workloads.attention.deepseek import (
+from workloads.deepseek_attention import (
     DsaDecodeWorkload,
     MlaDecodeWorkload,
     NsaCmpFwdWorkload,
     NsaFwdWorkload,
     NsaTopkWorkload,
 )
-from workloads.attention.gqa import (
+from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload
+from workloads.gqa import (
     GQAPrefillPagedWithKVCacheFwdWorkload,
     GQAPrefillVarlenFwdWorkload,
     GroupedQueryAttentionBwdWorkload,
@@ -75,9 +76,8 @@ from workloads.attention.gqa import (
     GroupedQueryAttentionDenseDecodeWorkload,
     GroupedQueryAttentionSlidingWindowVarlenFwdWorkload,
 )
-from workloads.attention.mha import MhaDecodePagedWorkload
-from workloads.attention.paged import make_unit_cache_scales
-from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload
+from workloads.mha import MhaDecodePagedWorkload
+from workloads.paged_kv_cache import make_unit_cache_scales
 
 
 def _attention_cases():

@@ -4,7 +4,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
-from workloads.engram import (
+from workloads.sequence_modeling import (
     EngramDecodeWorkload,
     EngramGateConvBwdWorkload,
     EngramGateConvFwdWorkload,
