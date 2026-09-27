@@ -341,7 +341,7 @@ _ENTRY_ERRORS = [
                 }
             ],
         ),
-        "longer than 28 characters",
+        "longer than 24 characters",
     ),
     (
         "GemmFwdOp",

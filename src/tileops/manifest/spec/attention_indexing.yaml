@@ -23,9 +23,9 @@ FP8LightningIndexerFwdOp:
     - "G > 0 and H % G == 0"
     - "not present(index_k_scale) or T == 'float8_e4m3fn'"
   workloads:
-  - {B: 1, S: 8192, H: 32, D: 64, S_kv: 32768, G: 1, seq_lens: "repeat(512, 64)", first: 24576, clean_logits: true, dtype_cases: [{T: bfloat16}], label: s8k}
-  - {B: 1, S: 8192, H: 32, D: 64, S_kv: 32768, G: 1, seq_lens: "repeat(512, 64)", first: 24576, clean_logits: true, dtype_cases: [{T: float8_e4m3fn}], label: s8k}
-  - {B: 1, S: 8192, H: 32, D: 64, S_kv: 32768, G: 1, seq_lens: "repeat(512, 64)", first: 24576, clean_logits: true, some: [index_k_scale], dtype_cases: [{T: float8_e4m3fn}], label: s8k-kscale}
+  - {B: 1, S: 8192, H: 32, D: 64, S_kv: 32768, G: 1, seq_lens: "repeat(512, 64)", first: 24576, clean_logits: true, dtype_cases: [{T: bfloat16}], label: chunk-prefill}
+  - {B: 1, S: 8192, H: 32, D: 64, S_kv: 32768, G: 1, seq_lens: "repeat(512, 64)", first: 24576, clean_logits: true, dtype_cases: [{T: float8_e4m3fn}], label: chunk-prefill}
+  - {B: 1, S: 8192, H: 32, D: 64, S_kv: 32768, G: 1, seq_lens: "repeat(512, 64)", first: 24576, clean_logits: true, some: [index_k_scale], dtype_cases: [{T: float8_e4m3fn}], label: chunk-prefill-kscale}
   roofline:
     func: tileops.perf.formulas.fp8_lightning_indexer_roofline
 
@@ -49,7 +49,7 @@ TopkSelectorFwdOp:
     shape_rules:
     - "0 < topk and topk <= S_kv"
   workloads:
-  - {B: 1, S: 32768, S_kv: 65536, G: 1, topk: 1024, label: topk1024}
-  - {B: 1, S: 32768, S_kv: 65536, G: 1, topk: 2048, label: topk2048}
+  - {B: 1, S: 32768, S_kv: 65536, G: 1, topk: 1024, label: prefill-k1024}
+  - {B: 1, S: 32768, S_kv: 65536, G: 1, topk: 2048, label: prefill-k2048}
   roofline:
     func: tileops.perf.formulas.topk_selector_roofline

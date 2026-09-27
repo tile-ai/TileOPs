@@ -37,10 +37,10 @@ DeltaNetInferenceFwdOp:
     - "not present(cu_seqlens_cpu) or present(cu_seqlens)"
     - "not present(cu_seqlens) or B == 1"
   workloads:
-  - {B: 2, S: 2048, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-medium}
-  - {B: 2, S: 8192, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-long}
-  - {B: 2, S: 16384, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-very-long}
-  - {B: 1, S: 4096, H: 16, K: 128, V: 128, dtype_cases: [{T: bfloat16}], label: prefill-wide}
+  - {B: 2, S: 2048, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-2k}
+  - {B: 2, S: 8192, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-8k}
+  - {B: 2, S: 16384, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-16k}
+  - {B: 1, S: 4096, H: 16, K: 128, V: 128, dtype_cases: [{T: bfloat16}], label: prefill-4k}
   roofline:
     flops: "B * S * H * (6 * K * V + 2 * K)"
 
@@ -91,9 +91,9 @@ GatedDeltaNetFwdOp:
     - "not present(cu_seqlens) or B == 1"
     - "not allow_neg_eigval or use_beta_sigmoid_in_kernel"
   workloads:
-  - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-medium}
-  - {B: 1, S: 12288, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-irregular}
-  - {B: 1, S: 32768, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-long}
+  - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-4k}
+  - {B: 1, S: 12288, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-12k}
+  - {B: 1, S: 32768, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-32k}
   - {B: 1, S: 1, H: 16, HV: 16, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-b1}
   - {B: 8, S: 1, H: 32, HV: 32, K: 128, V: 128, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-b8}
   roofline:
@@ -118,14 +118,14 @@ DeltaNetDecodeFwdOp:
     shape_rules:
     - "B > 0 and H > 0 and DK > 0 and DV > 0"
   workloads:
-  - {B: 1, H: 8, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: b1-h8}
-  - {B: 1, H: 16, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: b1-h16}
-  - {B: 1, H: 32, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: b1-h32}
-  - {B: 1, H: 48, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: b1-h48}
-  - {B: 1, H: 64, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: b1-h64}
-  - {B: 8, H: 32, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: b8-h32}
-  - {B: 8, H: 48, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: b8-h48}
-  - {B: 8, H: 64, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: b8-h64}
+  - {B: 1, H: 8, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: serving-b1-h8}
+  - {B: 1, H: 16, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: serving-b1-h16}
+  - {B: 1, H: 32, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: serving-b1-h32}
+  - {B: 1, H: 48, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: serving-b1-h48}
+  - {B: 1, H: 64, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: serving-b1-h64}
+  - {B: 8, H: 32, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: serving-b8-h32}
+  - {B: 8, H: 48, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: serving-b8-h48}
+  - {B: 8, H: 64, DK: 128, DV: 128, dtype_cases: [{T: bfloat16}], label: serving-b8-h64}
   roofline:
     flops: "2 * B * H * (3 * DK * DV + DK)"
 
@@ -151,14 +151,14 @@ GLADecodeFwdOp:
     shape_rules:
     - "B > 0 and H > 0 and DK > 0 and DV > 0"
   workloads:
-  - {B: 1, H: 8, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: b1-h8}
-  - {B: 1, H: 16, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: b1-h16}
-  - {B: 1, H: 32, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: b1-h32}
-  - {B: 1, H: 48, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: b1-h48}
-  - {B: 1, H: 64, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: b1-h64}
-  - {B: 8, H: 32, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: b8-h32}
-  - {B: 8, H: 48, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: b8-h48}
-  - {B: 8, H: 64, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: b8-h64}
+  - {B: 1, H: 8, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: serving-b1-h8}
+  - {B: 1, H: 16, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: serving-b1-h16}
+  - {B: 1, H: 32, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: serving-b1-h32}
+  - {B: 1, H: 48, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: serving-b1-h48}
+  - {B: 1, H: 64, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: serving-b1-h64}
+  - {B: 8, H: 32, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: serving-b8-h32}
+  - {B: 8, H: 48, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: serving-b8-h48}
+  - {B: 8, H: 64, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: serving-b8-h64}
   roofline:
     # exp(gk) (DK), the state decay (DK * DV), the k v^T update (2 * DK * DV), the q^T S
     # readout (2 * DK * DV) and the output scale (DV).
@@ -186,8 +186,8 @@ DeltaNetAutogradFwdOp:
     - "B > 0 and H > 0 and L > 0 and DK > 0 and DV > 0"
     - "chunk_size > 0 and L % chunk_size == 0"
   workloads:
-  - {B: 2, H: 4, L: 2048, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: s2k}
-  - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: s8k}
+  - {B: 2, H: 4, L: 2048, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-2k}
+  - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-8k}
   roofline:
     # The DeltaNet recurrence per token, as DeltaNetDecodeFwdOp counts one step.
     flops: "2 * B * H * L * (3 * DK * DV + DK)"
@@ -224,10 +224,10 @@ DeltaNetFwdOp:
     - "B > 0 and H > 0 and L > 0 and DK > 0 and DV > 0"
     - "chunk_size > 0 and L % chunk_size == 0"
   workloads:
-  - {B: 2, H: 4, L: 2048, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: s2k}
-  - {B: 2, H: 4, L: 4096, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: s4k}
-  - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: s8k}
-  - {B: 2, H: 4, L: 16384, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: s16k}
+  - {B: 2, H: 4, L: 2048, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-2k}
+  - {B: 2, H: 4, L: 4096, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-4k}
+  - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-8k}
+  - {B: 2, H: 4, L: 16384, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-16k}
   roofline:
     # Per chunk of C = chunk_size tokens: the strict-lower Gram K K^T scaled by beta, the
     # unit-lower-triangular inverse (Aw = Au), the beta scalings, w = Aw (beta k) and
@@ -267,10 +267,10 @@ DeltaNetBwdOp:
     - "B > 0 and H > 0 and L > 0 and DK > 0 and DV > 0"
     - "chunk_size > 0 and L % chunk_size == 0"
   workloads:
-  - {B: 2, H: 4, L: 2048, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: s2k}
-  - {B: 2, H: 4, L: 4096, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: s4k}
-  - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: s8k}
-  - {B: 2, H: 4, L: 16384, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: s16k}
+  - {B: 2, H: 4, L: 2048, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-2k}
+  - {B: 2, H: 4, L: 4096, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-4k}
+  - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-8k}
+  - {B: 2, H: 4, L: 16384, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-16k}
   roofline:
     # Per chunk of C = chunk_size tokens: seven C x DK x DV contractions (v_new = u - w S,
     # do S^T, q^T do, k dS, v_new dS^T, and du S^T and w^T du on the merged du), the causal
@@ -315,10 +315,10 @@ GLAInferenceFwdOp:
     - "not present(cu_seqlens_cpu) or present(cu_seqlens)"
     - "not present(cu_seqlens) or B == 1"
   workloads:
-  - {B: 2, S: 2048, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-medium}
-  - {B: 2, S: 4096, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-seeded}
-  - {B: 2, S: 8192, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-long}
-  - {B: 2, S: 16384, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-very-long}
+  - {B: 2, S: 2048, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-2k}
+  - {B: 2, S: 4096, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-4k}
+  - {B: 2, S: 8192, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-8k}
+  - {B: 2, S: 16384, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-16k}
   roofline:
     # The GLA recurrence per token: exp(g), decay, k v^T update, q^T S readout, scale.
     flops: "B * H * S * (5 * K * V + K + V)"
@@ -346,10 +346,10 @@ GLAFwdOp:
     - "B > 0 and S > 0 and H > 0 and DK > 0 and DV > 0"
     - "chunk_size > 0 and S % chunk_size == 0"
   workloads:
-  - {B: 2, S: 2048, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, dtype_cases: [{T: float16}, {T: bfloat16}], label: s2k}
-  - {B: 2, S: 4096, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: s4k}
-  - {B: 2, S: 8192, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, dtype_cases: [{T: float16}, {T: bfloat16}], label: s8k}
-  - {B: 2, S: 16384, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: s16k}
+  - {B: 2, S: 2048, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-2k}
+  - {B: 2, S: 4096, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: train-4k}
+  - {B: 2, S: 8192, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-8k}
+  - {B: 2, S: 16384, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: train-16k}
   roofline:
     # The GLA recurrence per token: exp(g), decay, k v^T update, q^T S readout, scale.
     flops: "B * H * S * (5 * DK * DV + DK + DV)"
@@ -384,10 +384,10 @@ GLABwdOp:
     - "B > 0 and S > 0 and H > 0 and DK > 0 and DV > 0"
     - "chunk_size > 0 and S % chunk_size == 0"
   workloads:
-  - {B: 2, S: 2048, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: s2k}
-  - {B: 2, S: 4096, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: s4k}
-  - {B: 2, S: 8192, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: s8k}
-  - {B: 2, S: 16384, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: s16k}
+  - {B: 2, S: 2048, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-2k}
+  - {B: 2, S: 4096, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-4k}
+  - {B: 2, S: 8192, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-8k}
+  - {B: 2, S: 16384, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-16k}
   roofline:
     # Per chunk of C = chunk_size tokens: four C x DK x DV contractions (q^T do into dh,
     # k dh, do h^T, v dh^T), five causal products on gate-scaled operands (the attention, its

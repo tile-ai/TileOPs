@@ -17,7 +17,7 @@ BmmFwdOp:
 
   workloads:
   # A representative sweep across small/large batch counts and decode/prefill
-  - {B: 8, M: 128, N: 128, K: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: small}
+  - {B: 8, M: 128, N: 128, K: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-128}
   - {B: 8, M: 1024, N: 1024, K: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-1k}
   - {B: 16, M: 512, N: 512, K: 512, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-512}
   - {B: 32, M: 256, N: 256, K: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-256}

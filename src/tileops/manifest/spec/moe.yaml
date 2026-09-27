@@ -21,20 +21,20 @@ MoePermuteAlignFwdOp:
     - "block_size > 0"
   workloads:
     # Kimi K2: E=384, K=8, block_size=64
-  - {T: 1, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-decode"}
-  - {T: 32, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-small"}
-  - {T: 512, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-medium"}
-  - {T: 4096, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-prefill"}
+  - {T: 1, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-t1"}
+  - {T: 32, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-t32"}
+  - {T: 512, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-t512"}
+  - {T: 4096, K: 8, num_experts: 384, block_size: 64, label: "kimi-k2-t4096"}
     # DeepSeek-V3: E=256, K=8, block_size=64
-  - {T: 1, K: 8, num_experts: 256, block_size: 64, label: "deepseek-v3-decode"}
-  - {T: 32, K: 8, num_experts: 256, block_size: 64, label: "deepseek-v3-small"}
-  - {T: 512, K: 8, num_experts: 256, block_size: 64, label: "deepseek-v3-medium"}
-  - {T: 4096, K: 8, num_experts: 256, block_size: 64, label: "deepseek-v3-prefill"}
+  - {T: 1, K: 8, num_experts: 256, block_size: 64, label: "ds-v3-t1"}
+  - {T: 32, K: 8, num_experts: 256, block_size: 64, label: "ds-v3-t32"}
+  - {T: 512, K: 8, num_experts: 256, block_size: 64, label: "ds-v3-t512"}
+  - {T: 4096, K: 8, num_experts: 256, block_size: 64, label: "ds-v3-t4096"}
     # Qwen3: E=128, K=8, block_size=64
-  - {T: 1, K: 8, num_experts: 128, block_size: 64, label: "qwen3-decode"}
-  - {T: 32, K: 8, num_experts: 128, block_size: 64, label: "qwen3-small"}
-  - {T: 512, K: 8, num_experts: 128, block_size: 64, label: "qwen3-medium"}
-  - {T: 4096, K: 8, num_experts: 128, block_size: 64, label: "qwen3-prefill"}
+  - {T: 1, K: 8, num_experts: 128, block_size: 64, label: "qwen3-235b-t1"}
+  - {T: 32, K: 8, num_experts: 128, block_size: 64, label: "qwen3-235b-t32"}
+  - {T: 512, K: 8, num_experts: 128, block_size: 64, label: "qwen3-235b-t512"}
+  - {T: 4096, K: 8, num_experts: 128, block_size: 64, label: "qwen3-235b-t4096"}
   roofline:
     # Integer index computation only.
     flops: "0"
@@ -66,8 +66,8 @@ FusedMoEExpertsFwdOp:
   - {T: 512, E: 128, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-decode"}
   - {T: 4096, E: 128, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-prefill"}
     # DeepSeek-V3: H=7168, F=2048, E=256, K=8
-  - {T: 512, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-decode"}
-  - {T: 4096, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-prefill"}
+  - {T: 512, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-decode"}
+  - {T: 4096, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-prefill"}
   roofline:
     # Only the experts topk_ids selects are read.
     func: "tileops.perf.formulas.routed_expert_mlp_roofline"
@@ -104,11 +104,11 @@ IndexedExpertMLPFwdOp:
     - "routed_scaling_factor > 0"
   workloads:
     # DeepSeek-V3: H=7168, F=2048, E=256, K=8
-  - {T: 1, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-decode-1"}
-  - {T: 32, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-decode-32"}
-  - {T: 64, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-decode-64"}
+  - {T: 1, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-t1"}
+  - {T: 32, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-t32"}
+  - {T: 64, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-t64"}
     # Qwen3-235B-A22B: H=7168, F=2048, E=128, K=8
-  - {T: 32, E: 128, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-decode-32"}
+  - {T: 32, E: 128, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-t32"}
   roofline:
     # Only the experts topk_ids selects are read.
     func: "tileops.perf.formulas.routed_expert_mlp_roofline"
@@ -191,8 +191,8 @@ FusedMoeFwdOp:
   workloads:
   - {T: 512, E: 128, H: 7168, F: 2048, top_k: 8, scoring_func: softmax, renormalize: false, dtype_cases: [{D: bfloat16}, {D: float16}], label: "qwen3-235b-decode"}
   - {T: 4096, E: 128, H: 7168, F: 2048, top_k: 8, scoring_func: softmax, renormalize: false, dtype_cases: [{D: bfloat16}], label: "qwen3-235b-prefill"}
-  - {T: 512, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: false, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-decode"}
-  - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: false, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-prefill"}
+  - {T: 512, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: false, dtype_cases: [{D: bfloat16}], label: "ds-v3-decode"}
+  - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: false, dtype_cases: [{D: bfloat16}], label: "ds-v3-prefill"}
   - {T: 512, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias], dtype_cases: [{D: bfloat16}], label: "kimi-k2-decode"}
   - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias], dtype_cases: [{D: bfloat16}], label: "kimi-k2-prefill"}
   roofline:
@@ -235,10 +235,10 @@ MoePrePermuteFwdOp:
     - "T > 0"
     - "K > 0"
   workloads:
-  - {T: 32, H: 128, K: 2, num_local_experts: 4, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "small"}
-  - {T: 512, H: 128, K: 2, num_local_experts: 4, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "prefill"}
+  - {T: 32, H: 128, K: 2, num_local_experts: 4, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "decode-t32"}
+  - {T: 512, H: 128, K: 2, num_local_experts: 4, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "prefill-t512"}
     # DeepSeek-V3 under EP=8: 32 local experts, H=7168, K=8.
-  - {T: 100, H: 7168, K: 8, num_local_experts: 32, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-ep8-t100"}
+  - {T: 100, H: 7168, K: 8, num_local_experts: 32, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-ep8-t100"}
   roofline:
     # A gather: no arithmetic.
     flops: "0"
@@ -284,15 +284,15 @@ MoeGroupedGemmFwdOp:
     - "layout.kind == 'masked' or layout.packing == 'tight' or P % layout.alignment == 0"
   workloads:
     # DeepSeek-V3: 256 experts, H=7168, F=2048; gate_up is [E, 2F, H], down is [E, H, F].
-  - {P: 4096, K: 7168, E: 256, N: 4096, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}, {D: float16}], label: "deepseek-v3-decode-gate-up"}
-  - {P: 32768, K: 7168, E: 256, N: 4096, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-prefill-gate-up"}
-  - {P: 4096, K: 2048, E: 256, N: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-decode-down"}
-  - {P: 4096, K: 2048, E: 256, N: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, out_dtype: float32, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-decode-down"}
-  - {P: 32768, K: 2048, E: 256, N: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-prefill-down"}
-  - {P: 4096, K: 7168, E: 256, N: 2048, activation: silu_and_mul, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-decode-swiglu"}
-  - {P: 32768, K: 7168, E: 256, N: 2048, activation: silu_and_mul, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-prefill-swiglu"}
+  - {P: 4096, K: 7168, E: 256, N: 4096, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}, {D: float16}], label: "ds-v3-decode-mlp-up"}
+  - {P: 32768, K: 7168, E: 256, N: 4096, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-prefill-mlp-up"}
+  - {P: 4096, K: 2048, E: 256, N: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-decode-down"}
+  - {P: 4096, K: 2048, E: 256, N: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, out_dtype: float32, dtype_cases: [{D: bfloat16}], label: "ds-v3-decode-down"}
+  - {P: 32768, K: 2048, E: 256, N: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-prefill-down"}
+  - {P: 4096, K: 7168, E: 256, N: 2048, activation: silu_and_mul, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-decode-swiglu"}
+  - {P: 32768, K: 7168, E: 256, N: 2048, activation: silu_and_mul, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-prefill-swiglu"}
     # DeepSeek-V3 under EP=8 with a masked dispatch: 32 local experts, 128 slots each.
-  - {K: 7168, E: 32, N: 4096, layout: {masked: {max_m: 128}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-ep8-masked"}
+  - {K: 7168, E: 32, N: 4096, layout: {masked: {max_m: 128}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-ep8-masked"}
   roofline:
     func: tileops.perf.formulas.moe_grouped_gemm_roofline
 
@@ -338,8 +338,8 @@ MoeExpertMLPFwdOp:
     # Qwen3-235B-A22B: H=7168, F=2048, E=128; DeepSeek-V3: E=256.
   - {P: 4096, H: 7168, E: 128, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-decode"}
   - {P: 32768, H: 7168, E: 128, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-prefill"}
-  - {P: 4096, H: 7168, E: 256, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-decode"}
-  - {P: 32768, H: 7168, E: 256, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-prefill"}
+  - {P: 4096, H: 7168, E: 256, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-decode"}
+  - {P: 32768, H: 7168, E: 256, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-prefill"}
   roofline:
     func: tileops.perf.formulas.moe_expert_mlp_roofline
   composition:
@@ -378,13 +378,13 @@ MoePostPermuteFwdOp:
     shape_rules:
     - "H > 0"
   workloads:
-  - {T: 32, K: 2, P: 64, H: 128, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "small"}
+  - {T: 32, K: 2, P: 64, H: 128, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "decode-t32"}
     # The output dtype stated explicitly, equal to the expert output's.
-  - {T: 32, K: 2, P: 64, H: 128, out_dtype: float16, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}], label: "small"}
-  - {T: 32, K: 2, P: 64, H: 128, out_dtype: bfloat16, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "small"}
-  - {T: 512, K: 2, P: 1024, H: 128, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "prefill"}
+  - {T: 32, K: 2, P: 64, H: 128, out_dtype: float16, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}], label: "decode-t32"}
+  - {T: 32, K: 2, P: 64, H: 128, out_dtype: bfloat16, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "decode-t32"}
+  - {T: 512, K: 2, P: 1024, H: 128, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "prefill-t512"}
     # DeepSeek-V3 under EP=8: H=7168, K=8.
-  - {T: 100, K: 8, P: 800, H: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-ep8-t100"}
+  - {T: 100, K: 8, P: 800, H: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-ep8-t100"}
   roofline:
     # The epilogue's scale is a float field of an object the language does not read.
     func: "tileops.perf.formulas.moe_post_permute_roofline"
@@ -438,21 +438,21 @@ FusedMoeSharedExpertFwdOp:
   - {T: 512, E: 384, H: 7168, F: 2048, top_k: 8, S: 18432, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "kimi-k2-t512"}
   - {T: 2048, E: 384, H: 7168, F: 2048, top_k: 8, S: 18432, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "kimi-k2-t2048"}
   - {T: 4096, E: 384, H: 7168, F: 2048, top_k: 8, S: 18432, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "kimi-k2-t4096"}
-  - {T: 1, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "deepseek-v3-t1"}
-  - {T: 32, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}, {D: float16}], label: "deepseek-v3-t32"}
-  - {T: 64, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "deepseek-v3-t64"}
-  - {T: 128, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "deepseek-v3-t128"}
-  - {T: 512, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "deepseek-v3-t512"}
-  - {T: 2048, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "deepseek-v3-t2048"}
-  - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "deepseek-v3-t4096"}
-  - {T: 1, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm-4.5-t1"}
-  - {T: 32, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm-4.5-t32"}
-  - {T: 64, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm-4.5-t64"}
-  - {T: 128, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm-4.5-t128"}
-  - {T: 512, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm-4.5-t512"}
-  - {T: 2048, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm-4.5-t2048"}
-  - {T: 4096, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm-4.5-t4096"}
-  - {T: 512, E: 128, H: 7168, F: 2048, top_k: 8, scoring_func: softmax, renormalize: false, dtype_cases: [{D: bfloat16}], label: "qwen3-235b-routed-only"}
+  - {T: 1, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-t1"}
+  - {T: 32, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}, {D: float16}], label: "ds-v3-t32"}
+  - {T: 64, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-t64"}
+  - {T: 128, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-t128"}
+  - {T: 512, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-t512"}
+  - {T: 2048, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-t2048"}
+  - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, S: 2048, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "ds-v3-t4096"}
+  - {T: 1, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm45-t1"}
+  - {T: 32, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm45-t32"}
+  - {T: 64, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm45-t64"}
+  - {T: 128, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm45-t128"}
+  - {T: 512, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm45-t512"}
+  - {T: 2048, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm45-t2048"}
+  - {T: 4096, E: 160, H: 5120, F: 1536, top_k: 8, S: 1536, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.5, some: [correction_bias, shared_w_gate_up], dtype_cases: [{D: bfloat16}], label: "glm45-t4096"}
+  - {T: 512, E: 128, H: 7168, F: 2048, top_k: 8, scoring_func: softmax, renormalize: false, dtype_cases: [{D: bfloat16}], label: "qwen3-235b-t512"}
   roofline:
     # The routed half as FusedMoeFwdOp, plus the shared expert's two GEMMs on this rank's shard.
     func: "tileops.perf.formulas.fused_moe_shared_expert_fwd_roofline"

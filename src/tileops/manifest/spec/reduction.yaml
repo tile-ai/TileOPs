@@ -18,8 +18,8 @@ SoftmaxFwdOp:
   workloads:
   - {S: [32, 32, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: attn-weights-4k}
   - {S: [32, 32, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: attn-weights-32k}
-  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: lm-head-logits}
-  - {S: [4, 128256], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: llama3-lm-head-logits}
+  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: lm-head}
+  - {S: [4, 128256], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: llama-8b-lm-head}
   roofline:
     flops: "5 * prod(S)"
 
@@ -41,8 +41,8 @@ LogSoftmaxFwdOp:
   workloads:
   - {S: [32, 32, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: attn-weights-4k}
   - {S: [32, 32, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: attn-weights-32k}
-  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: lm-head-logits}
-  - {S: [4, 128256], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: llama3-lm-head-logits}
+  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: lm-head}
+  - {S: [4, 128256], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: llama-8b-lm-head}
   roofline:
     flops: "5 * prod(S)"
 
@@ -64,9 +64,9 @@ LogSumExpFwdOp:
   workloads:
   - {S: [32, 32, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: attn-weights-4k}
   - {S: [32, 32, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: attn-weights-32k}
-  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: lm-head-logits}
+  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: lm-head}
   - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim}
-  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama3-lm-head-logits}
+  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama-8b-lm-head}
   roofline:
     flops: "4 * prod(S)"
 
@@ -294,7 +294,7 @@ ArgmaxFwdOp:
   - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: lm-head}
   - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
   - {S: [4, 128, 4096], dim: 0, dtype_cases: [{T: float16}], label: 3d-non-last-axis}
-  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama3-lm-head}
+  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama-8b-lm-head}
   roofline:
     flops: "prod(S)"
 
@@ -318,7 +318,7 @@ ArgminFwdOp:
   - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: lm-head}
   - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
   - {S: [4, 128, 4096], dim: 0, dtype_cases: [{T: float16}], label: 3d-non-last-axis}
-  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama3-lm-head}
+  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama-8b-lm-head}
   roofline:
     flops: "prod(S)"
 
@@ -388,7 +388,7 @@ CountNonzeroFwdOp:
   - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: sparsity-hidden}
   - {S: [32, 32768], dim: -1, dtype_cases: [{T: float16}, {T: bool}, {T: int32}, {T: int64}], label: sparsity-seq}
   - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}, {T: complex64}, {T: complex128}], label: 3d-multidim}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float16}], label: sparsity-mlp-intermediate}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float16}], label: sparsity-mlp}
   roofline:
     flops: "2 * prod(S)"
 

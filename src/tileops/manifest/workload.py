@@ -62,7 +62,7 @@ __all__ = ["Call", "CallView", "RowError", "TensorSpec", "check_workloads", "ins
 
 _ROW_KEYS = frozenset({"some", "dtype_cases", "label"})
 _LABEL = re.compile(r"[A-Za-z0-9._-]+")
-_LABEL_MAX = 28
+_LABEL_MAX = 24
 # The integer dtypes generated metadata may take, with their ranges.
 _METADATA_RANGES = {"int32": 2**31, "int64": 2**63}
 

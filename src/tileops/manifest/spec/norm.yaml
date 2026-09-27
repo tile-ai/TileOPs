@@ -174,13 +174,13 @@ BatchNormFwdOp:
     - "training or present(running_mean)"
     - "not training or B * prod(L) != 1"
   workloads:
-  - {B: 32, C: 64, L: [], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: resnet50-fc}
-  - {B: 8, C: 64, L: [32, 32], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet50-stage1}
-  - {B: 4, C: 128, L: [32, 32], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: resnet50-stage2}
-  - {B: 4, C: 256, L: [28, 28], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}, {T: float32}], label: resnet50-stage3}
+  - {B: 32, C: 64, L: [], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: resnet-fc}
+  - {B: 8, C: 64, L: [32, 32], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet-stage1}
+  - {B: 4, C: 128, L: [32, 32], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: resnet-stage2}
+  - {B: 4, C: 256, L: [28, 28], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}, {T: float32}], label: resnet-stage3}
   - {B: 4, C: 128, L: [1024, 1024], training: true, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: large-spatial}
-  - {B: 4, C: 256, L: [28, 28], some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: resnet50-stage3-eval}
-  - {B: 8, C: 64, L: [56, 56], training: true, dtype_cases: [{T: bfloat16}], label: resnet50-stem-no-stats}
+  - {B: 4, C: 256, L: [28, 28], some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: resnet-stage3-eval}
+  - {B: 8, C: 64, L: [56, 56], training: true, dtype_cases: [{T: bfloat16}], label: resnet-stem}
   roofline:
     # Training: mean (1), centered variance (3), normalize (2); running statistics: normalize (2).
     # One more per present affine tensor.
@@ -202,10 +202,10 @@ BatchNormBwdOp:
       grad_weight: {dtype: float32, shape: "[C]"}
       grad_bias: {dtype: float32, shape: "[C]"}
   workloads:
-  - {B: 32, C: 64, L: [], dtype_cases: [{T: float16}], label: resnet50-fc}
-  - {B: 8, C: 64, L: [32, 32], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet50-stage1}
-  - {B: 4, C: 128, L: [32, 32], dtype_cases: [{T: float16}], label: resnet50-stage2}
-  - {B: 4, C: 256, L: [28, 28], dtype_cases: [{T: float16}, {T: float32}], label: resnet50-stage3}
+  - {B: 32, C: 64, L: [], dtype_cases: [{T: float16}], label: resnet-fc}
+  - {B: 8, C: 64, L: [32, 32], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet-stage1}
+  - {B: 4, C: 128, L: [32, 32], dtype_cases: [{T: float16}], label: resnet-stage2}
+  - {B: 4, C: 256, L: [28, 28], dtype_cases: [{T: float16}, {T: float32}], label: resnet-stage3}
   - {B: 4, C: 128, L: [1024, 1024], dtype_cases: [{T: float16}], label: large-spatial}
   roofline:
     # x_hat (2), the grad_bias and grad_weight reductions (3), and grad_x from them (4).

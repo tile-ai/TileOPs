@@ -167,7 +167,7 @@ MaxPool1dFwdOp:
   # over waveform features; TextCNN-style classifiers use global temporal
   # max pooling over token-convolution channels; ECG CNN classifiers use
   # repeated 1D max-pooling downsampling on long signals.
-  - {N: 32, C: 80, L_in: 4096, kernel_size: 3, stride: 3, padding: 0, dtype_cases: [{T: float16}, {T: float32}], label: sincnet-speaker-local}
+  - {N: 32, C: 80, L_in: 4096, kernel_size: 3, stride: 3, padding: 0, dtype_cases: [{T: float16}, {T: float32}], label: sincnet-local}
   - {N: 64, C: 256, L_in: 128, kernel_size: 128, stride: 1, padding: 0, dtype_cases: [{T: float16}], label: textcnn-global}
   - {N: 16, C: 128, L_in: 2048, kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtype_cases: [{T: bfloat16}], label: ecg-cnn-dilated}
 
@@ -208,7 +208,7 @@ MaxPool1dIndicesFwdOp:
   workloads:
   # Same model sources as MaxPool1dFwdOp; indices output is consumed by
   # unpooling or argmax-tracking paths rather than changing input shapes.
-  - {N: 32, C: 80, L_in: 4096, kernel_size: 3, stride: 3, padding: 0, dtype_cases: [{T: float16}, {T: float32}], label: sincnet-speaker-local}
+  - {N: 32, C: 80, L_in: 4096, kernel_size: 3, stride: 3, padding: 0, dtype_cases: [{T: float16}, {T: float32}], label: sincnet-local}
   - {N: 64, C: 256, L_in: 128, kernel_size: 128, stride: 1, padding: 0, dtype_cases: [{T: float16}], label: textcnn-global}
   - {N: 16, C: 128, L_in: 2048, kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtype_cases: [{T: bfloat16}], label: ecg-cnn-dilated}
 
@@ -434,10 +434,10 @@ AdaptiveAvgPool2dFwdOp:
   # its final 7x7 feature map before the FC layer; SPP-style heads pool
   # arbitrary feature maps to a fixed grid; the non-divisible case stresses
   # PyTorch adaptive bin-boundary semantics.
-  - {B: [8], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: resnet-global}
+  - {B: [8], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: resnet-gap}
   - {B: [2], C: 128, H_in: 56, W_in: 56, output_size: [6, 6], dtype_cases: [{T: float16}], label: spp-6x6}
   - {B: [2], C: 64, H_in: 55, W_in: 57, output_size: [7, 7], dtype_cases: [{T: bfloat16}], label: nondiv-7x7}
-  - {B: [], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: resnet-global-unbatched}
+  - {B: [], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: resnet-gap-unbatched}
 
   roofline:
     func: tileops.perf.formulas.adaptive_pool2d_roofline

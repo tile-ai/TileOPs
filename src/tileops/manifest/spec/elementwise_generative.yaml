@@ -19,11 +19,11 @@ AlibiFwdOp:
     - "num_heads > 0"
 
   workloads:
-  # Llama-style attention bias dimensions
-  - {seq_len: 2048, num_heads: 32, out_dtype: float16, label: "llama-prefill-2k"}
-  - {seq_len: 2048, num_heads: 32, out_dtype: bfloat16, label: "llama-prefill-2k"}
-  - {seq_len: 4096, num_heads: 32, out_dtype: float16, label: "llama-prefill-4k"}
-  - {seq_len: 4096, num_heads: 32, out_dtype: bfloat16, label: "llama-prefill-4k"}
+  # MPT-7B: an ALiBi model with 32 heads and a 2k training context
+  - {seq_len: 2048, num_heads: 32, out_dtype: float16, label: "mpt-7b-2k"}
+  - {seq_len: 2048, num_heads: 32, out_dtype: bfloat16, label: "mpt-7b-2k"}
+  - {seq_len: 4096, num_heads: 32, out_dtype: float16, label: "mpt-7b-4k"}
+  - {seq_len: 4096, num_heads: 32, out_dtype: bfloat16, label: "mpt-7b-4k"}
 
   roofline:
     # FLOPs: per output element compute |i - j| (sub + abs = 2) and

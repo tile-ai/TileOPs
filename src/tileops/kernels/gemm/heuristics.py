@@ -452,7 +452,7 @@ def gemv_config(k: int) -> dict:
     - very deep rows (k >= 12288, e.g. 7168x16384): 2 rows/block, 64
       threads/row — a 128-way reduction tree over a long row costs more than
       the bandwidth it buys, and 2 rows/block improves wave quantization;
-    - mid-deep rows (k >= 6144, decode gate-up / attn-proj): a 256-lane
+    - mid-deep rows (k >= 6144, decode qkv-a / mlp-up): a 256-lane
       reduction still runs >= 3 pipeline iterations, and the extra per-row
       memory-level parallelism beats rt=128 on a cold read;
     - shorter rows degenerate to ~1 iteration at 256 lanes and stay on

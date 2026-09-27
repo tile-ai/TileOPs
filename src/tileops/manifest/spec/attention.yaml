@@ -81,19 +81,19 @@ GroupedQueryAttentionDenseFwdOp:
     - "pos_encoding_mode == 'rope' or not present(rotary_dim)"
     - "not present(rotary_dim) or (rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D)"
   workloads:
-  - {B: 32, S_q: 1, S_kv: 4096, H: 32, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-llama-8b-4k}
-  - {B: 8, S_q: 1, S_kv: 32768, H: 32, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-llama-8b-32k}
-  - {B: 16, S_q: 1, S_kv: 4096, H: 64, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-llama-70b-4k}
-  - {B: 4, S_q: 1, S_kv: 32768, H: 64, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: decode-llama-70b-32k}
-  - {B: 32, S_q: 1, S_kv: 4096, H: 32, H_kv: 8, D: 128, softcap: 50.0, dtype_cases: [{T: float16}], label: decode-llama-8b-softcap}
-  - {B: 1, S_q: 1, S_kv: 1024, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-1k}
-  - {B: 1, S_q: 1, S_kv: 4096, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-4k}
-  - {B: 1, S_q: 1, S_kv: 8192, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-8k}
-  - {B: 1, S_q: 1, S_kv: 16384, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-16k}
-  - {B: 1, S_q: 1, S_kv: 32768, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-32k}
-  - {B: 1, S_q: 1, S_kv: 65536, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-64k}
-  - {B: 1, S_q: 1, S_kv: 131072, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-128k}
-  - {B: 1, S_q: 1, S_kv: 262144, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: decode-qwen3-30b-256k}
+  - {B: 32, S_q: 1, S_kv: 4096, H: 32, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-4k}
+  - {B: 8, S_q: 1, S_kv: 32768, H: 32, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-32k}
+  - {B: 16, S_q: 1, S_kv: 4096, H: 64, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-4k}
+  - {B: 4, S_q: 1, S_kv: 32768, H: 64, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-32k}
+  - {B: 32, S_q: 1, S_kv: 4096, H: 32, H_kv: 8, D: 128, softcap: 50.0, dtype_cases: [{T: float16}], label: llama-8b-softcap}
+  - {B: 1, S_q: 1, S_kv: 1024, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: qwen3-30b-1k}
+  - {B: 1, S_q: 1, S_kv: 4096, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: qwen3-30b-4k}
+  - {B: 1, S_q: 1, S_kv: 8192, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: qwen3-30b-8k}
+  - {B: 1, S_q: 1, S_kv: 16384, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: qwen3-30b-16k}
+  - {B: 1, S_q: 1, S_kv: 32768, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: qwen3-30b-32k}
+  - {B: 1, S_q: 1, S_kv: 65536, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: qwen3-30b-64k}
+  - {B: 1, S_q: 1, S_kv: 131072, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: qwen3-30b-128k}
+  - {B: 1, S_q: 1, S_kv: 262144, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: qwen3-30b-256k}
   - {B: 1, S_q: 256, S_kv: 1792, H: 8, H_kv: 2, D: 128, pos_encoding_mode: rope, rotary_dim: 64, P_pad: 0, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-rope}
   - {B: 1, S_q: 256, S_kv: 1792, H: 8, H_kv: 2, D: 128, out_dtype: float16, some: [q_scale], dtype_cases: [{T: float8_e4m3fn}], label: prefill-scaled}
   roofline:
@@ -312,10 +312,10 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
   - {T_q: 8192, PT: 270336, W: 528, H: 32, H_kv: 8, D: 256, q_lens: "repeat(1024, 8)", cache_lens: "repeat(32768, 8)", page_size: 64, max_seqlen_q: 1024, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtype_cases: [{T: float16}], label: qwen35-9b-rope}
   - {T_q: 4608, PT: 270336, W: 528, H: 32, H_kv: 8, D: 256, q_lens: [256, 512, 768, 1024, 384, 640, 896, 128], cache_lens: [4096, 8192, 16384, 32768, 12288, 24576, 30720, 2048], page_size: 64, max_seqlen_q: 1024, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtype_cases: [{T: float16}], label: qwen35-9b-mixed}
   - {T_q: 4096, PT: 36864, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4096, 8)", page_size: 64, max_seqlen_q: 512, is_causal: true, fuse_rope: true, max_position: 4608, dtype_cases: [{T: float16}], label: llama-8b-rope}
-  - {T_q: 2048, PT: 18432, W: 72, H: 8, H_kv: 2, D: 64, q_lens: "repeat(512, 4)", cache_lens: "repeat(4096, 4)", page_size: 64, max_seqlen_q: 512, is_causal: true, softcap: 50.0, dtype_cases: [{T: float16}], label: softcap}
+  - {T_q: 2048, PT: 18432, W: 72, H: 8, H_kv: 2, D: 64, q_lens: "repeat(512, 4)", cache_lens: "repeat(4096, 4)", page_size: 64, max_seqlen_q: 512, is_causal: true, softcap: 50.0, dtype_cases: [{T: float16}], label: synthetic-softcap}
   - {T_q: 8192, PT: 270336, W: 528, H: 32, H_kv: 8, D: 256, q_lens: "repeat(1024, 8)", cache_lens: "repeat(32768, 8)", page_size: 64, max_seqlen_q: 1024, cache_dtype: float8_e4m3fn, is_causal: true, dtype_cases: [{T: float16}], label: qwen35-9b}
   - {T_q: 4096, PT: 36864, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4096, 8)", page_size: 64, max_seqlen_q: 512, cache_dtype: float8_e4m3fn, is_causal: true, dtype_cases: [{T: float16}], label: llama-8b}
-  - {T_q: 2048, PT: 18432, W: 72, H: 8, H_kv: 2, D: 64, q_lens: "repeat(512, 4)", cache_lens: "repeat(4096, 4)", page_size: 64, max_seqlen_q: 512, cache_dtype: float8_e4m3fn, is_causal: true, softcap: 50.0, dtype_cases: [{T: float16}], label: softcap}
+  - {T_q: 2048, PT: 18432, W: 72, H: 8, H_kv: 2, D: 64, q_lens: "repeat(512, 4)", cache_lens: "repeat(4096, 4)", page_size: 64, max_seqlen_q: 512, cache_dtype: float8_e4m3fn, is_causal: true, softcap: 50.0, dtype_cases: [{T: float16}], label: synthetic-softcap}
   roofline:
     # Scores and the cached pages each request reaches, from the lengths the call carries.
     func: "tileops.perf.formulas.gqa_prefill_paged_with_kv_cache_fwd_roofline"
@@ -375,10 +375,10 @@ MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
     shape_rules:
     - "page_size > 0 and N_kv % page_size == 0"
   workloads:
-  - {S_q: 1, H: 16, D: 128, N_kv: 512, W: 4, kv_lens: [512], page_size: 128, dtype_cases: [{T: float16}], label: page128}
-  - {S_q: 1, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: "repeat(1024, 2)", page_size: 256, dtype_cases: [{T: float16}], label: batch2}
-  - {S_q: 1, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: [1024], page_size: 256, dtype_cases: [{T: float16}], label: longer-cache}
-  - {S_q: 1, H: 8, D: 64, N_kv: 512, W: 2, kv_lens: [512], page_size: 256, dtype_cases: [{T: float16}], label: shorter-cache}
+  - {S_q: 1, H: 16, D: 128, N_kv: 512, W: 4, kv_lens: [512], page_size: 128, dtype_cases: [{T: float16}], label: serving-p128}
+  - {S_q: 1, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: "repeat(1024, 2)", page_size: 256, dtype_cases: [{T: float16}], label: serving-b2}
+  - {S_q: 1, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: [1024], page_size: 256, dtype_cases: [{T: float16}], label: serving-kv1k}
+  - {S_q: 1, H: 8, D: 64, N_kv: 512, W: 2, kv_lens: [512], page_size: 256, dtype_cases: [{T: float16}], label: serving-kv512}
   roofline:
     func: tileops.perf.formulas.paged_decode_roofline
 
@@ -405,17 +405,17 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
     - "H_kv > 0 and H % H_kv == 0"
     - "page_size > 0 and N_kv % page_size == 0"
   workloads:
-  - {H: 32, H_kv: 8, D: 128, N_kv: 4096, W: 64, kv_lens: "repeat(4096, 32)", page_size: 64, dtype_cases: [{T: float16}], label: serving-8b-p64}
-  - {H: 32, H_kv: 8, D: 128, N_kv: 32768, W: 512, kv_lens: "repeat(32768, 8)", page_size: 64, dtype_cases: [{T: float16}], label: serving-8b-long-p64}
-  - {H: 32, H_kv: 8, D: 128, N_kv: 2048, W: 32, kv_lens: "repeat(2048, 64)", page_size: 64, dtype_cases: [{T: float16}], label: throughput-8b-p64}
-  - {H: 64, H_kv: 8, D: 128, N_kv: 4096, W: 64, kv_lens: "repeat(4096, 8)", page_size: 64, dtype_cases: [{T: float16}], label: serving-70b-p64}
-  - {H: 32, H_kv: 8, D: 128, N_kv: 4096, W: 16, kv_lens: "repeat(4096, 32)", page_size: 256, dtype_cases: [{T: float16}], label: serving-8b-p256}
-  - {H: 64, H_kv: 8, D: 128, N_kv: 4096, W: 16, kv_lens: "repeat(4096, 8)", page_size: 256, dtype_cases: [{T: float16}], label: serving-70b-p256}
-  - {H: 128, H_kv: 8, D: 128, N_kv: 4096, W: 16, kv_lens: "repeat(4096, 4)", page_size: 256, dtype_cases: [{T: float16}], label: serving-405b-p256}
-  - {H: 32, H_kv: 8, D: 128, N_kv: 4096, W: 64, kv_lens: "repeat(4096, 32)", page_size: 64, softcap: 50.0, dtype_cases: [{T: float16}], label: serving-8b-p64-softcap}
-  - {H: 32, H_kv: 8, D: 128, N_kv: 4096, W: 256, kv_lens: "repeat(4096, 32)", page_size: 16, dtype_cases: [{T: float16}], label: serving-8b-p16}
-  - {H: 32, H_kv: 8, D: 128, N_kv: 2048, W: 128, kv_lens: "repeat(2048, 64)", page_size: 16, dtype_cases: [{T: float16}], label: throughput-8b-p16}
-  - {H: 64, H_kv: 8, D: 128, N_kv: 4096, W: 256, kv_lens: "repeat(4096, 8)", page_size: 16, dtype_cases: [{T: float16}], label: serving-70b-p16}
+  - {H: 32, H_kv: 8, D: 128, N_kv: 4096, W: 64, kv_lens: "repeat(4096, 32)", page_size: 64, dtype_cases: [{T: float16}], label: llama-8b-p64}
+  - {H: 32, H_kv: 8, D: 128, N_kv: 32768, W: 512, kv_lens: "repeat(32768, 8)", page_size: 64, dtype_cases: [{T: float16}], label: llama-8b-32k-p64}
+  - {H: 32, H_kv: 8, D: 128, N_kv: 2048, W: 32, kv_lens: "repeat(2048, 64)", page_size: 64, dtype_cases: [{T: float16}], label: llama-8b-b64-p64}
+  - {H: 64, H_kv: 8, D: 128, N_kv: 4096, W: 64, kv_lens: "repeat(4096, 8)", page_size: 64, dtype_cases: [{T: float16}], label: llama-70b-p64}
+  - {H: 32, H_kv: 8, D: 128, N_kv: 4096, W: 16, kv_lens: "repeat(4096, 32)", page_size: 256, dtype_cases: [{T: float16}], label: llama-8b-p256}
+  - {H: 64, H_kv: 8, D: 128, N_kv: 4096, W: 16, kv_lens: "repeat(4096, 8)", page_size: 256, dtype_cases: [{T: float16}], label: llama-70b-p256}
+  - {H: 128, H_kv: 8, D: 128, N_kv: 4096, W: 16, kv_lens: "repeat(4096, 4)", page_size: 256, dtype_cases: [{T: float16}], label: llama-405b-p256}
+  - {H: 32, H_kv: 8, D: 128, N_kv: 4096, W: 64, kv_lens: "repeat(4096, 32)", page_size: 64, softcap: 50.0, dtype_cases: [{T: float16}], label: llama-8b-p64-softcap}
+  - {H: 32, H_kv: 8, D: 128, N_kv: 4096, W: 256, kv_lens: "repeat(4096, 32)", page_size: 16, dtype_cases: [{T: float16}], label: llama-8b-p16}
+  - {H: 32, H_kv: 8, D: 128, N_kv: 2048, W: 128, kv_lens: "repeat(2048, 64)", page_size: 16, dtype_cases: [{T: float16}], label: llama-8b-b64-p16}
+  - {H: 64, H_kv: 8, D: 128, N_kv: 4096, W: 256, kv_lens: "repeat(4096, 8)", page_size: 16, dtype_cases: [{T: float16}], label: llama-70b-p16}
   roofline:
     func: tileops.perf.formulas.paged_decode_roofline
 
@@ -436,10 +436,10 @@ MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
     outputs:
       o: {dtype: T, shape: "[B, H, D]"}
   workloads:
-  - {B: 32, H: 128, H_kv: 1, N_kv: 4096, D: 128, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: deepseek-v2-4k}
-  - {B: 8, H: 128, H_kv: 1, N_kv: 32768, D: 128, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: deepseek-v2-32k}
-  - {B: 16, H: 128, H_kv: 1, N_kv: 4096, D: 128, PE: 64, dtype_cases: [{T: bfloat16}], label: deepseek-v3-4k}
-  - {B: 4, H: 128, H_kv: 1, N_kv: 32768, D: 128, PE: 64, dtype_cases: [{T: bfloat16}], label: deepseek-v3-32k}
+  - {B: 32, H: 128, H_kv: 1, N_kv: 4096, D: 128, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v2-4k}
+  - {B: 8, H: 128, H_kv: 1, N_kv: 32768, D: 128, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v2-32k}
+  - {B: 16, H: 128, H_kv: 1, N_kv: 4096, D: 128, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-4k}
+  - {B: 4, H: 128, H_kv: 1, N_kv: 32768, D: 128, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-32k}
   roofline:
     flops: "2 * B * H * N_kv * (2 * D + PE)"
 
@@ -471,8 +471,8 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
     # The kernel's first stride_kv - 1 outputs are undefined when queries start at 0.
     - "q_start_index_s > stride_kv or (q_start_index_s == 0 and stride_kv == 1)"
   workloads:
-  - {B: 1, S: 1024, S_kv: 2048, H: 128, H_kv: 1, D: 512, K: 2048, dim_tail: 64, stride_kv: 1, q_start_index_s: 1024, dtype_cases: [{T: float16}], label: single-batch-mainstream}
-  - {B: 1, S: 512, S_kv: 4096, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 64, stride_kv: 1, q_start_index_s: 512, dtype_cases: [{T: float16}], label: longer-kv-lower-topk}
+  - {B: 1, S: 1024, S_kv: 2048, H: 128, H_kv: 1, D: 512, K: 2048, dim_tail: 64, stride_kv: 1, q_start_index_s: 1024, dtype_cases: [{T: float16}], label: ds-v32-kv2k}
+  - {B: 1, S: 512, S_kv: 4096, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 64, stride_kv: 1, q_start_index_s: 512, dtype_cases: [{T: float16}], label: ds-v32-kv4k}
   roofline:
     func: tileops.perf.formulas.dsa_decode_roofline
 
@@ -502,8 +502,8 @@ NSACmpVarlenFwdOp:
     - "H_kv > 0 and H % H_kv == 0 and H // H_kv % 16 == 0"
     - "bs > 0"
   workloads:
-  - {C: 256, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: "repeat(1024, 8)", dtype_cases: [{T: float16}], label: s8k}
-  - {C: 128, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: float16}], label: s4k}
+  - {C: 256, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: "repeat(1024, 8)", dtype_cases: [{T: float16}], label: prefill-8x1k}
+  - {C: 128, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: float16}], label: prefill-4x1k}
   roofline:
     # Each token scores its own request's closed chunks.
     func: "tileops.perf.formulas.nsa_cmp_fwd_varlen_roofline"
@@ -537,8 +537,8 @@ NSATopkVarlenFwdOp:
     # The selection ranks at most one block's worth of chunks against its pool.
     - "0 < selected_block_num and selected_block_num <= bs"
   workloads:
-  - {C: 256, H: 32, H_kv: 2, D: 128, scale: 1.0, selected_block_num: 16, bs: 32, seq_lens: "repeat(1024, 8)", dtype_cases: [{T: float16}], label: s8k}
-  - {C: 128, H: 32, H_kv: 2, D: 128, scale: 1.0, selected_block_num: 16, bs: 32, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: float16}], label: s4k}
+  - {C: 256, H: 32, H_kv: 2, D: 128, scale: 1.0, selected_block_num: 16, bs: 32, seq_lens: "repeat(1024, 8)", dtype_cases: [{T: float16}], label: prefill-8x1k}
+  - {C: 128, H: 32, H_kv: 2, D: 128, scale: 1.0, selected_block_num: 16, bs: 32, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: float16}], label: prefill-4x1k}
   roofline:
     # Two score passes over the closed chunks; the unread lse_in moves no bytes.
     func: "tileops.perf.formulas.nsa_topk_varlen_roofline"
@@ -568,8 +568,8 @@ NSAVarlenFwdOp:
     - "D <= 128"
     - "block_size > 0"
   workloads:
-  - {H: 16, H_kv: 1, D: 64, SEL: 1, is_causal: true, scale: 0.1, block_size: 32, seq_lens: "repeat(2048, 4)", dtype_cases: [{T: float16}], label: sel1}
-  - {H: 16, H_kv: 1, D: 64, SEL: 4, is_causal: true, scale: 0.1, block_size: 32, seq_lens: "repeat(4096, 2)", dtype_cases: [{T: float16}], label: sel4}
+  - {H: 16, H_kv: 1, D: 64, SEL: 1, is_causal: true, scale: 0.1, block_size: 32, seq_lens: "repeat(2048, 4)", dtype_cases: [{T: float16}], label: prefill-4x2k}
+  - {H: 16, H_kv: 1, D: 64, SEL: 4, is_causal: true, scale: 0.1, block_size: 32, seq_lens: "repeat(4096, 2)", dtype_cases: [{T: float16}], label: prefill-2x4k}
   roofline:
     # The blocks the selection keeps decide the scores and the key/value rows read.
     func: "tileops.perf.formulas.nsa_fwd_varlen_roofline"

@@ -44,14 +44,14 @@ Conv1dFwdOp:
   #   short/long sequences, and different pipeline stages (entry vs deep layer).
   workloads:
   # Whisper-large encoder conv1: mel spectrogram → hidden (most common ASR entry point)
-  - {N: 1, C_in: 80, L_in: 3000, C_out: 1280, kW: 3, dtype_cases: [{T: float16}, {T: bfloat16}], label: whisper-large-conv1}
+  - {N: 1, C_in: 80, L_in: 3000, C_out: 1280, kW: 3, dtype_cases: [{T: float16}, {T: bfloat16}], label: whisper-conv1}
   # Wav2Vec2 feature extractor layer1: raw 1s waveform, large kernel + stride downsampling
   - {N: 1, C_in: 1, L_in: 16000, C_out: 512, kW: 10, stride: 5, dtype_cases: [{T: float16}, {T: bfloat16}], label: wav2vec2-layer1}
   # EnCodec SEANet encoder init: raw 1s audio @24kHz, narrow channels
   - {N: 1, C_in: 1, L_in: 24000, C_out: 32, kW: 7, dtype_cases: [{T: float16}, {T: bfloat16}], label: encodec-init}
   # EnCodec SEANet deep block: short sequence, wide channels, large kernel
   - {N: 1, C_in: 128, L_in: 600, C_out: 256, kW: 10, dtype_cases: [{T: float16}, {T: bfloat16}], label: encodec-deep}
-  - {N: 1, C_in: 80, L_in: 3000, C_out: 1280, kW: 3, some: [bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: whisper-large-conv1-bias}
+  - {N: 1, C_in: 80, L_in: 3000, C_out: 1280, kW: 3, some: [bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: whisper-conv1-bias}
   - {N: 1, C_in: 1, L_in: 16000, C_out: 512, kW: 10, stride: 5, some: [bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: wav2vec2-layer1-bias}
   - {N: 1, C_in: 1, L_in: 24000, C_out: 32, kW: 7, some: [bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: encodec-init-bias}
   - {N: 1, C_in: 128, L_in: 600, C_out: 256, kW: 10, some: [bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: encodec-deep-bias}
@@ -96,29 +96,29 @@ Conv2dFwdOp:
   workloads:
   - {N: 2, C_in: 64, H: 56, W: 56, C_out: 64, kH: 3, kW: 3, stride: [1, 1], padding: [1, 1], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet-3x3}
   - {N: 1, C_in: 3, H: 112, W: 112, C_out: 64, kH: 3, kW: 3, stride: [2, 2], padding: [1, 1], dtype_cases: [{T: float16}], label: stem}
-  - {N: 1, C_in: 128, H: 56, W: 56, C_out: 256, kH: 3, kW: 3, stride: [2, 2], padding: [1, 1], dtype_cases: [{T: float16}], label: stage-transition-3x3}
+  - {N: 1, C_in: 128, H: 56, W: 56, C_out: 256, kH: 3, kW: 3, stride: [2, 2], padding: [1, 1], dtype_cases: [{T: float16}], label: stage-down-3x3}
   - {N: 1, C_in: 256, H: 112, W: 112, C_out: 512, kH: 3, kW: 3, stride: [1, 1], padding: [1, 1], dtype_cases: [{T: float16}], label: highres}
   - {N: 1, C_in: 64, H: 56, W: 56, C_out: 128, kH: 5, kW: 5, stride: [1, 1], padding: [2, 2], dtype_cases: [{T: float16}], label: midres}
-  - {N: 1, C_in: 128, H: 56, W: 56, C_out: 256, kH: 5, kW: 5, stride: [2, 2], padding: [2, 2], dtype_cases: [{T: float16}], label: stage-transition-5x5}
+  - {N: 1, C_in: 128, H: 56, W: 56, C_out: 256, kH: 5, kW: 5, stride: [2, 2], padding: [2, 2], dtype_cases: [{T: float16}], label: stage-down-5x5}
   - {N: 1, C_in: 128, H: 28, W: 28, C_out: 128, kH: 3, kW: 3, stride: [2, 2], padding: [1, 1], dtype_cases: [{T: bfloat16}], label: stride2}
   - {N: 2, C_in: 64, H: 56, W: 56, C_out: 256, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet-1x1}
-  - {N: 2, C_in: 128, H: 28, W: 28, C_out: 512, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtype_cases: [{T: float16}], label: bottleneck-expand-1x1}
-  - {N: 2, C_in: 512, H: 28, W: 28, C_out: 128, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtype_cases: [{T: float16}], label: bottleneck-reduce-1x1}
+  - {N: 2, C_in: 128, H: 28, W: 28, C_out: 512, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtype_cases: [{T: float16}], label: bottleneck-expand}
+  - {N: 2, C_in: 512, H: 28, W: 28, C_out: 128, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtype_cases: [{T: float16}], label: bottleneck-reduce}
   - {N: 1, C_in: 256, H: 14, W: 14, C_out: 1024, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtype_cases: [{T: float16}], label: late-stage-1x1}
   - {N: 1, C_in: 512, H: 7, W: 7, C_out: 2048, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], dtype_cases: [{T: float16}], label: classifier-1x1}
   - {N: 1, C_in: 2048, H: 32, W: 32, C_out: 256, kH: 3, kW: 3, stride: [1, 1], padding: [12, 12], dilation: [12, 12], dtype_cases: [{T: float16}], label: deeplabv3-aspp}
-  - {N: 1, C_in: 32, H: 56, W: 56, C_out: 32, kH: 3, kW: 3, stride: [1, 1], padding: [1, 1], groups: 32, dtype_cases: [{T: float16}], label: mobilenetv2-depthwise}
+  - {N: 1, C_in: 32, H: 56, W: 56, C_out: 32, kH: 3, kW: 3, stride: [1, 1], padding: [1, 1], groups: 32, dtype_cases: [{T: float16}], label: mbv2-depthwise}
   - {N: 1, C_in: 128, H: 28, W: 28, C_out: 256, kH: 3, kW: 3, stride: [1, 1], padding: [1, 1], groups: 32, dtype_cases: [{T: float16}], label: resnext-grouped-3x3}
   - {N: 2, C_in: 64, H: 56, W: 56, C_out: 64, kH: 3, kW: 3, stride: [1, 1], padding: [1, 1], some: [bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet-3x3-bias}
   - {N: 1, C_in: 3, H: 112, W: 112, C_out: 64, kH: 3, kW: 3, stride: [2, 2], padding: [1, 1], some: [bias], dtype_cases: [{T: float16}], label: stem-bias}
-  - {N: 1, C_in: 128, H: 56, W: 56, C_out: 256, kH: 3, kW: 3, stride: [2, 2], padding: [1, 1], some: [bias], dtype_cases: [{T: float16}], label: stage-transition-3x3-bias}
+  - {N: 1, C_in: 128, H: 56, W: 56, C_out: 256, kH: 3, kW: 3, stride: [2, 2], padding: [1, 1], some: [bias], dtype_cases: [{T: float16}], label: stage-down-3x3-bias}
   - {N: 1, C_in: 256, H: 112, W: 112, C_out: 512, kH: 3, kW: 3, stride: [1, 1], padding: [1, 1], some: [bias], dtype_cases: [{T: float16}], label: highres-bias}
   - {N: 1, C_in: 64, H: 56, W: 56, C_out: 128, kH: 5, kW: 5, stride: [1, 1], padding: [2, 2], some: [bias], dtype_cases: [{T: float16}], label: midres-bias}
-  - {N: 1, C_in: 128, H: 56, W: 56, C_out: 256, kH: 5, kW: 5, stride: [2, 2], padding: [2, 2], some: [bias], dtype_cases: [{T: float16}], label: stage-transition-5x5-bias}
+  - {N: 1, C_in: 128, H: 56, W: 56, C_out: 256, kH: 5, kW: 5, stride: [2, 2], padding: [2, 2], some: [bias], dtype_cases: [{T: float16}], label: stage-down-5x5-bias}
   - {N: 1, C_in: 128, H: 28, W: 28, C_out: 128, kH: 3, kW: 3, stride: [2, 2], padding: [1, 1], some: [bias], dtype_cases: [{T: bfloat16}], label: stride2-bias}
   - {N: 2, C_in: 64, H: 56, W: 56, C_out: 256, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], some: [bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet-1x1-bias}
-  - {N: 2, C_in: 128, H: 28, W: 28, C_out: 512, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], some: [bias], dtype_cases: [{T: float16}], label: bottleneck-expand-1x1-bias}
-  - {N: 2, C_in: 512, H: 28, W: 28, C_out: 128, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], some: [bias], dtype_cases: [{T: float16}], label: bottleneck-reduce-1x1-bias}
+  - {N: 2, C_in: 128, H: 28, W: 28, C_out: 512, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], some: [bias], dtype_cases: [{T: float16}], label: bottleneck-expand-bias}
+  - {N: 2, C_in: 512, H: 28, W: 28, C_out: 128, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], some: [bias], dtype_cases: [{T: float16}], label: bottleneck-reduce-bias}
   - {N: 1, C_in: 256, H: 14, W: 14, C_out: 1024, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], some: [bias], dtype_cases: [{T: float16}], label: late-stage-1x1-bias}
   - {N: 1, C_in: 512, H: 7, W: 7, C_out: 2048, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], some: [bias], dtype_cases: [{T: float16}], label: classifier-1x1-bias}
 
@@ -166,12 +166,12 @@ Conv3dFwdOp:
 
   workloads:
   - {N: 1, C_in: 3, D: 16, H: 112, W: 112, C_out: 64, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], dtype_cases: [{T: float16}], label: r3d-stem}
-  - {N: 1, C_in: 64, D: 8, H: 56, W: 56, C_out: 128, kD: 3, kH: 3, kW: 3, stride: [2, 2, 2], padding: [1, 1, 1], dtype_cases: [{T: float16}], label: video-downsample}
+  - {N: 1, C_in: 64, D: 8, H: 56, W: 56, C_out: 128, kD: 3, kH: 3, kW: 3, stride: [2, 2, 2], padding: [1, 1, 1], dtype_cases: [{T: float16}], label: video-down}
   - {N: 1, C_in: 32, D: 32, H: 64, W: 64, C_out: 64, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], dtype_cases: [{T: bfloat16}], label: unet-encoder}
   - {N: 1, C_in: 256, D: 8, H: 16, W: 16, C_out: 256, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [6, 6, 6], dilation: [6, 6, 6], dtype_cases: [{T: float16}], label: unet-aspp}
   - {N: 1, C_in: 64, D: 8, H: 28, W: 28, C_out: 128, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], groups: 32, dtype_cases: [{T: float16}], label: resnext-grouped}
   - {N: 1, C_in: 3, D: 16, H: 112, W: 112, C_out: 64, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], some: [bias], dtype_cases: [{T: float16}], label: r3d-stem-bias}
-  - {N: 1, C_in: 64, D: 8, H: 56, W: 56, C_out: 128, kD: 3, kH: 3, kW: 3, stride: [2, 2, 2], padding: [1, 1, 1], some: [bias], dtype_cases: [{T: float16}], label: video-downsample-bias}
+  - {N: 1, C_in: 64, D: 8, H: 56, W: 56, C_out: 128, kD: 3, kH: 3, kW: 3, stride: [2, 2, 2], padding: [1, 1, 1], some: [bias], dtype_cases: [{T: float16}], label: video-down-bias}
   - {N: 1, C_in: 32, D: 32, H: 64, W: 64, C_out: 64, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], some: [bias], dtype_cases: [{T: bfloat16}], label: unet-encoder-bias}
 
   roofline:

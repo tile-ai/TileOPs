@@ -195,9 +195,9 @@ RopeNeoxPositionIdsFwdOp:
     - "rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D if present(rotary_dim) else D > 0 and D % 2 == 0"
 
   workloads:
-  - {seq_lens: [2048], H: 32, D: 128, max_position: 4096, dtype_cases: [{T: float16, P: int32}], label: s2k}
-  - {seq_lens: [4096], H: 32, D: 128, max_position: 8192, dtype_cases: [{T: bfloat16, P: int32}], label: s4k}
-  - {seq_lens: [1000, 3000, 1120], H: 32, D: 128, max_position: 4096, dtype_cases: [{T: float32, P: int64}], label: packed3}
+  - {seq_lens: [2048], H: 32, D: 128, max_position: 4096, dtype_cases: [{T: float16, P: int32}], label: prefill-2k}
+  - {seq_lens: [4096], H: 32, D: 128, max_position: 8192, dtype_cases: [{T: bfloat16, P: int32}], label: prefill-4k}
+  - {seq_lens: [1000, 3000, 1120], H: 32, D: 128, max_position: 4096, dtype_cases: [{T: float32, P: int64}], label: prefill-varlen}
 
   roofline:
     # Two multiplies and one add per rotated element; the columns past rotary_dim are copied.

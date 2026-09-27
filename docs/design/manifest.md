@@ -76,7 +76,7 @@ SiluAndMulFwdOp:
     outputs:
       output: {dtype: T, shape: "[M, N]"}
   workloads:
-  - {M: 2048, N: 14336, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-swiglu-prefill}
+  - {M: 2048, N: 14336, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-ffn-prefill}
   roofline:
     flops: "6 * M * N"
 ```
@@ -224,7 +224,7 @@ A workload row determines one call. Its keys are construction parameter names, r
 - A row gives exactly the relevant indices that no generator determines.
 - A `Seq[Int]` index is written as an integer list or as a call of a value primitive ([table 15](#t-prims)) over integer literals, evaluated once at instantiation.
 - An index is relevant on a branch when that branch's shapes, dtypes, refinements, generator arguments, the `requires` of its passed tensors or its inline roofline use it, each folded at the branch first, so a refinement whose guard folds to true there makes nothing relevant; a `let` passes on what it reads. A `func` roofline makes nothing relevant. Discriminants selecting a type-family branch, presence or `nullable` are always relevant.
-- **case id** is `label` followed by the row's `dtype_cases` values in `forall` order, then its dtype parameters' values in `signature.params` order, joined by `-`. It keys nightly history, so changing a `label` is breaking. `label` is non-empty `[A-Za-z0-9._-]` of at most 28 characters, and an entry's case ids are distinct.
+- **case id** is `label` followed by the row's `dtype_cases` values in `forall` order, then its dtype parameters' values in `signature.params` order, joined by `-`. It keys nightly history, so changing a `label` is breaking. `label` is non-empty `[A-Za-z0-9._-]` of at most 24 characters, and an entry's case ids are distinct.
 - **label** names the scenario the row models (`llama-8b-prefill`), plus only the qualifier that tells the row from a sibling (`resnet-3x3-bias` beside `resnet-3x3`). The op name, the row and the case id already state everything else, so repeating it adds length and no information. Rows that share a label differ only in dtype.
 - **Coverage.** Every optional tensor of an implemented entry is passed in at least one row and omitted in at least one, counted per input.
 - **Instantiation.** A row fixes shapes, dtypes, parameters, presence and metadata values. Devices follow [Call Semantics](#call-semantics), strides are contiguous, tensors do not alias, other data is random. The validator infers the call back from the instantiated inputs and requires agreement.
