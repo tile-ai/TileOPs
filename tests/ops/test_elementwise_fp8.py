@@ -1,9 +1,5 @@
-"""Tests for fp8 dtype rejection in elementwise kernels.
-
-After narrowing `_FLOAT_DTYPES` to drop fp8, the elementwise / rope / dropout
-kernels no longer advertise fp8 in `SUPPORTED_DTYPES`. The tests here are
-sentinel checks that float and bitwise kernels correctly reject fp8 inputs
-at the kernel layer (exercising `SUPPORTED_DTYPES`, not `Op._validate_dtypes`).
+"""Tests that the elementwise, rope and dropout kernels reject fp8 inputs at the kernel layer
+(``SUPPORTED_DTYPES``, not ``Op._validate_dtypes``).
 """
 
 import pytest
@@ -236,3 +232,44 @@ def test_division_family_kernel_rejects_bool_and_int():
             cls(**_binary_kwargs(torch.bool))
         with pytest.raises(ValueError, match="only supports dtypes"):
             cls(**_binary_kwargs(torch.int32))
+
+
+# The independent elementwise ops reject fp8 and accept the manifest's non-fp8 dtypes.
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "bad_dtype",
+    [torch.float8_e4m3fn, torch.float8_e5m2],
+)
+def test_where_rejects_fp8_dtype(bad_dtype: torch.dtype) -> None:
+    """WhereFwdOp must reject fp8 dtypes (manifest contract).
+
+    The element type arrives with the tensors, so the rejection does too.
+    """
+    from tileops.ops.elementwise import WhereFwdOp
+
+    shape = (4, 8)
+    op = WhereFwdOp()
+    cond = torch.zeros(shape, device="cuda", dtype=torch.bool)
+    x = torch.zeros(shape, device="cuda").to(bad_dtype)
+    with pytest.raises((ValueError, TypeError)):
+        op(cond, x, x)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    "dtype",
+    [torch.float16, torch.bfloat16, torch.float32],
+)
+def test_where_accepts_manifest_dtypes(dtype: torch.dtype) -> None:
+    """WhereFwdOp constructs and runs for every manifest-declared dtype."""
+    from tileops.ops.elementwise import WhereFwdOp
+
+    shape = (4, 8)
+    cond = torch.randint(0, 2, shape, device="cuda").bool()
+    inp = torch.randn(shape, device="cuda", dtype=dtype)
+    other = torch.randn(shape, device="cuda", dtype=dtype)
+    op = WhereFwdOp()
+    out = op(cond, inp, other)
+    ref = torch.where(cond, inp, other)
+    torch.testing.assert_close(out, ref, atol=0, rtol=0)

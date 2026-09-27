@@ -1,10 +1,5 @@
-"""Tests for BatchNormFwdOp and BatchNormBwdOp.
-
-Correctness is validated against torch.nn.functional.batch_norm and the
-analytical gradient via torch.autograd.
-
-Run:
-    conda run -n tileops python -m pytest tests/ops/test_batch_norm.py -vvs
+"""Tests for BatchNormFwdOp and BatchNormBwdOp, against torch.nn.functional.batch_norm and the analytical
+gradient from torch.autograd.
 """
 
 import re
@@ -13,6 +8,8 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import BatchNormFwdTrainKernel
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.normalization import (
@@ -250,3 +247,369 @@ def test_a_channel_length_no_tile_divides_matches_torch(shape) -> None:
     got = BatchNormBwdOp()(grad_out, x, weight, mean, rstd)
     for a, b in zip(got, workload.ref_program(grad_out, x, weight, mean, rstd), strict=True):
         torch.testing.assert_close(a, b, atol=5e-3, rtol=5e-3)
+
+
+# Input validation and torch.compile.
+@pytest.mark.smoke
+class TestBatchNormFwdValidation:
+    def _make_op(self):
+        from tileops.ops.norm.batch_norm import BatchNormFwdOp
+
+        return BatchNormFwdOp()
+
+    def _make_inputs(self, device="cuda", dtype=torch.float16):
+        x = torch.randn(4, 8, 4, 4, device=device, dtype=dtype)
+        weight = torch.randn(8, device=device, dtype=torch.float32)
+        bias = torch.randn(8, device=device, dtype=torch.float32)
+        rm = torch.zeros(8, device=device, dtype=torch.float32)
+        rv = torch.ones(8, device=device, dtype=torch.float32)
+        return x, weight, bias, rm, rv
+
+    def test_rejects_wrong_dtype(self):
+        from tileops.ops.norm.batch_norm import BatchNormFwdOp
+
+        op = BatchNormFwdOp()
+        x_wrong = torch.randn(4, 8, 4, 4, device="cuda", dtype=torch.float64)
+        _, weight, bias, rm, rv = self._make_inputs()
+        with pytest.raises(ValueError, match="dtype"):
+            op(x_wrong, rm, rv, weight, bias)
+
+    def test_rejects_wrong_shape(self):
+        op = self._make_op()
+        x_wrong = torch.randn(4, 16, 4, 4, device="cuda", dtype=torch.float16)
+        _, weight, bias, rm, rv = self._make_inputs()
+        with pytest.raises(ValueError, match="shape|channel|Channel"):
+            op(x_wrong, rm, rv, weight, bias)
+
+
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_dynamo")
+class TestBatchNormCustomOp:
+    def test_fwd_torch_compile_smoke(self):
+        from tileops.ops.norm.batch_norm import BatchNormFwdOp
+
+        op = BatchNormFwdOp(training=True)
+        x = torch.randn(4, 8, 4, 4, device="cuda", dtype=torch.float16)
+        weight = torch.randn(8, device="cuda", dtype=torch.float32)
+        bias = torch.randn(8, device="cuda", dtype=torch.float32)
+        rm = torch.zeros(8, device="cuda", dtype=torch.float32)
+        rv = torch.ones(8, device="cuda", dtype=torch.float32)
+
+        compiled = torch.compile(op, fullgraph=False)
+        # Manifest input order: (x, running_mean, running_var, weight, bias).
+        y = compiled(x, rm, rv, weight, bias)
+        assert y.shape == x.shape
+
+    def test_bwd_torch_compile_smoke(self):
+        from tileops.ops.norm.batch_norm import BatchNormBwdOp
+
+        N, C, H, W = 4, 8, 4, 4
+        op = BatchNormBwdOp()
+        grad_out = torch.randn(N, C, H, W, device="cuda", dtype=torch.float16)
+        x = torch.randn(N, C, H, W, device="cuda", dtype=torch.float16)
+        weight = torch.randn(C, device="cuda", dtype=torch.float32)
+        x32 = x.float()
+        x_cl = x32.permute(1, 0, 2, 3).reshape(C, -1).contiguous()
+        mean = x_cl.mean(dim=1)
+        rstd = 1.0 / torch.sqrt(x_cl.var(dim=1, unbiased=False) + 1e-5)
+
+        compiled = torch.compile(op, fullgraph=False)
+        gx, gw, gb = compiled(grad_out, x, weight, mean, rstd)
+        assert gx.shape == x.shape
+
+
+def _to_cl(x: torch.Tensor) -> torch.Tensor:
+    return x.permute(1, 0, *range(2, x.ndim)).reshape(x.shape[1], -1).contiguous()
+
+
+def _from_cl(x_cl: torch.Tensor, orig_shape: torch.Size) -> torch.Tensor:
+    n = orig_shape[0]
+    c = orig_shape[1]
+    spatial = orig_shape[2:]
+    return x_cl.reshape(c, n, *spatial).permute(1, 0, *range(2, len(orig_shape))).contiguous()
+
+
+class _FakeBatchNormFwdInferKernel(Kernel):
+    def __init__(
+        self,
+        C: int,
+        L: int,
+        dtype: torch.dtype,
+        eps: float,
+        tune: bool = False,
+        S: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.C = C
+        self.L = L
+        self.dtype = dtype
+        self.eps = eps
+        self.tune = tune
+        self.S = L if S is None else S
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        running_mean: torch.Tensor,
+        running_var: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ) -> torch.Tensor:
+        x_cl = _to_cl(x)
+        y = (x_cl.float() - running_mean[:, None]) * torch.rsqrt(running_var[:, None] + self.eps)
+        y = y * weight[:, None] + bias[:, None]
+        return _from_cl(y.to(self.dtype), x.shape)
+
+
+class _FakeBatchNormFwdTrainKernel(_FakeBatchNormFwdInferKernel):
+    def __init__(
+        self,
+        C: int,
+        L: int,
+        dtype: torch.dtype,
+        eps: float,
+        momentum: float,
+        tune: bool = False,
+        S: int | None = None,
+    ) -> None:
+        super().__init__(C, L, dtype, eps, tune=tune, S=S)
+        self.momentum = momentum
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        running_mean: torch.Tensor,
+        running_var: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        x_cl = _to_cl(x)
+        mean = x_cl.float().mean(dim=1)
+        var = x_cl.float().var(dim=1, unbiased=False)
+        rstd = torch.rsqrt(var + self.eps)
+        running_mean.mul_(1 - self.momentum).add_(self.momentum * mean)
+        running_var.mul_(1 - self.momentum).add_(self.momentum * var)
+        y = (x_cl.float() - mean[:, None]) * rstd[:, None]
+        y = y * weight[:, None] + bias[:, None]
+        return _from_cl(y.to(self.dtype), x.shape), mean, rstd
+
+
+class _FakeBatchNormBwdKernel(Kernel):
+    def __init__(
+        self,
+        C: int,
+        L: int,
+        dtype: torch.dtype,
+        tune: bool = False,
+    ) -> None:
+        super().__init__()
+        self.C = C
+        self.L = L
+        self.dtype = dtype
+        self.tune = tune
+
+    def forward(
+        self,
+        grad_out: torch.Tensor,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        mean: torch.Tensor,
+        rstd: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        grad_out_cl = _to_cl(grad_out)
+        x_cl = _to_cl(x)
+        grad_out_f = grad_out_cl.float()
+        x_hat = (x_cl.float() - mean[:, None]) * rstd[:, None]
+        grad_bias = grad_out_f.sum(dim=1)
+        grad_weight = (grad_out_f * x_hat).sum(dim=1)
+        grad_x = (
+            weight[:, None]
+            * rstd[:, None]
+            * (self.L * grad_out_f - grad_bias[:, None] - x_hat * grad_weight[:, None])
+            / self.L
+        )
+        return _from_cl(grad_x.to(self.dtype), x.shape), grad_weight, grad_bias
+
+
+def _batch_norm_infer_ref(
+    x: torch.Tensor,
+    running_mean: torch.Tensor,
+    running_var: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    eps: float,
+) -> torch.Tensor:
+    affine_shape = (1, x.shape[1]) + (1,) * (x.ndim - 2)
+    y = (x.float() - running_mean.reshape(affine_shape)) * torch.rsqrt(
+        running_var.reshape(affine_shape) + eps
+    )
+    y = y * weight.reshape(affine_shape) + bias.reshape(affine_shape)
+    return y.to(x.dtype)
+
+
+def _batch_norm_train_ref(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    eps: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    x_cl = _to_cl(x)
+    mean = x_cl.float().mean(dim=1)
+    var = x_cl.float().var(dim=1, unbiased=False)
+    rstd = torch.rsqrt(var + eps)
+    y_cl = (x_cl.float() - mean[:, None]) * rstd[:, None]
+    y_cl = y_cl * weight[:, None] + bias[:, None]
+    return _from_cl(y_cl.to(x.dtype), x.shape), mean, rstd
+
+
+def _batch_norm_bwd_ref(
+    grad_out: torch.Tensor,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    mean: torch.Tensor,
+    rstd: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    kernel = _FakeBatchNormBwdKernel(x.shape[1], grad_out.numel() // x.shape[1], x.dtype)
+    return kernel(grad_out, x, weight, mean, rstd)
+
+
+@pytest.mark.smoke
+def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
+    """BatchNorm op-layer cache reuses identical specs and caches changed specs."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for forward call")
+
+    op = BatchNormFwdOp(
+        training=False,
+        kernel_map={
+            "fwd_infer_kernel": _FakeBatchNormFwdInferKernel,
+            "fwd_train_kernel": _FakeBatchNormFwdTrainKernel,
+        },
+        target=BUILTIN,
+    )
+
+    def run_case(N: int, C: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
+        x = torch.randn((N, C, *spatial), device="cuda", dtype=dtype)
+        weight = torch.randn(C, device="cuda", dtype=torch.float32)
+        bias = torch.randn(C, device="cuda", dtype=torch.float32)
+        running_mean = torch.zeros(C, device="cuda", dtype=torch.float32)
+        running_var = torch.ones(C, device="cuda", dtype=torch.float32)
+
+        y = op(x, running_mean, running_var, weight, bias)
+        ref_y = _batch_norm_infer_ref(x, running_mean, running_var, weight, bias, op.eps)
+        assert torch.allclose(y.float(), ref_y.float(), atol=0.0, rtol=0.0)
+
+    run_case(2, 8, (4, 4), torch.float16)
+    assert len(list(op.iter_kernels())) == 1
+    first_kernel = op.kernel
+    assert op.eval_roofline() == (
+        10 * 8 * 32,
+        2 * 8 * 32 * torch.float16.itemsize + 4 * 8 * 4,
+    )
+
+    run_case(2, 8, (4, 4), torch.float16)
+    assert len(list(op.iter_kernels())) == 1
+    assert op.kernel is first_kernel
+
+    run_case(3, 12, (2, 8), torch.bfloat16)
+    assert len(list(op.iter_kernels())) == 2
+    assert op.kernel is not first_kernel
+    assert op.eval_roofline() == (
+        10 * 12 * 48,
+        2 * 12 * 48 * torch.bfloat16.itemsize + 4 * 12 * 4,
+    )
+
+
+@pytest.mark.smoke
+def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None:
+    """Training BatchNorm forward cache path is executable under fake kernels."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for forward call")
+
+    op = BatchNormFwdOp(
+        training=True,
+        kernel_map={
+            "fwd_infer_kernel": _FakeBatchNormFwdInferKernel,
+            "fwd_train_kernel": _FakeBatchNormFwdTrainKernel,
+        },
+        target=BUILTIN,
+    )
+
+    def run_case(N: int, C: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
+        x = torch.randn((N, C, *spatial), device="cuda", dtype=dtype)
+        weight = torch.randn(C, device="cuda", dtype=torch.float32)
+        bias = torch.randn(C, device="cuda", dtype=torch.float32)
+        running_mean = torch.zeros(C, device="cuda", dtype=torch.float32)
+        running_var = torch.ones(C, device="cuda", dtype=torch.float32)
+
+        y = op(x, running_mean, running_var, weight, bias)
+        ref_y, _, _ = _batch_norm_train_ref(x, weight, bias, op.eps)
+        assert torch.allclose(y.float(), ref_y.float(), atol=0.0, rtol=0.0)
+
+    run_case(2, 8, (4, 4), torch.float16)
+    assert len(list(op.iter_kernels())) == 1
+    first_kernel = op.kernel
+    assert op.eval_roofline() == (
+        10 * 8 * 32,
+        # training writes running_mean and running_var back
+        2 * 8 * 32 * torch.float16.itemsize + 4 * 8 * 4 + 2 * 8 * 4,
+    )
+
+    run_case(2, 8, (4, 4), torch.float16)
+    assert len(list(op.iter_kernels())) == 1
+    assert op.kernel is first_kernel
+
+    run_case(3, 12, (2, 8), torch.bfloat16)
+    assert len(list(op.iter_kernels())) == 2
+    assert op.kernel is not first_kernel
+    assert op.eval_roofline() == (
+        10 * 12 * 48,
+        2 * 12 * 48 * torch.bfloat16.itemsize + 4 * 12 * 4 + 2 * 12 * 4,
+    )
+
+
+@pytest.mark.smoke
+def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
+    """BatchNorm backward cache path is executable under fake kernels."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for backward call")
+
+    eps = 1e-5
+    op = BatchNormBwdOp(kernel_map={"bwd_kernel": _FakeBatchNormBwdKernel}, target=BUILTIN)
+
+    def run_case(N: int, C: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
+        x = torch.randn((N, C, *spatial), device="cuda", dtype=dtype)
+        grad_out = torch.randn((N, C, *spatial), device="cuda", dtype=dtype)
+        weight = torch.randn(C, device="cuda", dtype=torch.float32)
+        _y, mean, rstd = _batch_norm_train_ref(
+            x, torch.ones_like(weight), torch.zeros_like(weight), eps
+        )
+
+        grad_x, grad_weight, grad_bias = op(grad_out, x, weight, mean, rstd)
+        ref_grad_x, ref_grad_weight, ref_grad_bias = _batch_norm_bwd_ref(
+            grad_out, x, weight, mean, rstd
+        )
+        assert torch.allclose(grad_x.float(), ref_grad_x.float(), atol=0.0, rtol=0.0)
+        assert torch.allclose(grad_weight, ref_grad_weight, atol=0.0, rtol=0.0)
+        assert torch.allclose(grad_bias, ref_grad_bias, atol=0.0, rtol=0.0)
+
+    run_case(2, 8, (4, 4), torch.float16)
+    assert len(list(op.iter_kernels())) == 1
+    first_kernel = op.kernel
+    assert op.eval_roofline() == (
+        8 * 8 * 32,
+        # weight, mean and rstd read; grad_weight and grad_bias written
+        3 * 8 * 32 * torch.float16.itemsize + 3 * 8 * 4 + 2 * 8 * 4,
+    )
+
+    run_case(2, 8, (4, 4), torch.float16)
+    assert len(list(op.iter_kernels())) == 1
+    assert op.kernel is first_kernel
+
+    run_case(3, 12, (2, 8), torch.bfloat16)
+    assert len(list(op.iter_kernels())) == 2
+    assert op.kernel is not first_kernel
+    assert op.eval_roofline() == (
+        8 * 12 * 48,
+        3 * 12 * 48 * torch.bfloat16.itemsize + 3 * 12 * 4 + 2 * 12 * 4,
+    )
