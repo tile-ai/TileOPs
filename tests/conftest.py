@@ -73,18 +73,6 @@ NON_RUNTIME_OPS_TIER_FILES = {
     "tests/ops/test_elementwise_config_dtype.py",
 }
 
-TILELANG_019_SKIP_REASON = (
-    "Skipped under TileLang 0.1.9: known regressions in autodiff/codegen "
-    "lowering produce incorrect numerics or compile failures; re-enable "
-    "when these tests pass against the current tilelang."
-)
-
-TILELANG_019_KNOWN_FAILING_PATH_SUFFIXES = ()
-
-TILELANG_019_KNOWN_FAILING_NODEIDS = set()
-
-TILELANG_019_KNOWN_FAILING_PREFIXES = ()
-
 
 def _get_callspec_params(item: pytest.Item) -> dict | None:
     callspec = getattr(item, "callspec", None)
@@ -146,21 +134,12 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Validate explicit test tier assignments, then drop the tests this run cannot serve."""
     tier_errors: list[str] = []
     tier_names = ("smoke", "full", "nightly")
-    tilelang_019_skip = pytest.mark.skip(reason=TILELANG_019_SKIP_REASON)
     non_sm90_skip = pytest.mark.skip(reason="needs compute capability 9.x")
     on_sm90 = _is_sm90()
 
     for item in items:
-        path = str(item.path)
         if not _under_repo_tests(item):
             continue
-        if (
-            item.nodeid in TILELANG_019_KNOWN_FAILING_NODEIDS
-            or any(path.endswith(suffix) for suffix in TILELANG_019_KNOWN_FAILING_PATH_SUFFIXES)
-            or any(item.nodeid.startswith(prefix) for prefix in TILELANG_019_KNOWN_FAILING_PREFIXES)
-        ):
-            item.add_marker(tilelang_019_skip)
-
         if item.get_closest_marker("sm90") is not None and not on_sm90:
             item.add_marker(non_sm90_skip)
 
