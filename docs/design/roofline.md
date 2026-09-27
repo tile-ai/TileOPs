@@ -117,7 +117,7 @@ Every roofline entry MUST satisfy:
 
 Rules the validator does not own:
 
-- Name whitelist — a formula's names are checked by the analysis (§4.4), which reads the primitive tables of [manifest.md](manifest.md#t-prims). Validator does not mirror it; it renders what the analysis says.
+- Name whitelist — a formula's names are checked by the analysis (§4.4), which reads the primitive set ([manifest.md § Derived Indices and Primitives](manifest.md#derived-indices-and-primitives)). Validator does not mirror it; it renders what the analysis says.
 - Form checks — the analysis refuses invalid forms. Validator does not mirror them either; it renders what the analysis found.
 - Numeric checks (finite / non-negative / numeric) — outside the validator entirely; tests exercise generated `eval_roofline()` on each workload.
 
@@ -176,7 +176,7 @@ Codegen reads the formula mode of §2.2: an inline body folded at each point, wi
 
 #### 4.4.3 Namespace
 
-The primitive tables of [manifest.md](manifest.md#t-prims) are the only list of names an inline formula may call (§2.2); a primitive is added there and in its one implementation, and nowhere else. A refusal states the allowed names. A name resolves from one place only.
+The primitive set ([manifest.md § Derived Indices and Primitives](manifest.md#derived-indices-and-primitives)) is the only list of names an inline formula may call (§2.2); a primitive is added to that set and nowhere else. A refusal states the allowed names. A name resolves from one place only.
 
 #### 4.4.4 Evaluation Timing
 

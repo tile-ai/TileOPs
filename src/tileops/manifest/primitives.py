@@ -1,7 +1,7 @@
 """Built-in primitives, generators and `requires` predicates (docs/design/manifest.md).
 
-The set is fixed. Each entry maps a primitive's name, as an expression writes it, to its concrete
-implementation on Python values.
+This module is the list of each closed set. Each table maps a member's name, as an expression
+writes it, to its implementation on Python values, whose docstring states what it computes.
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ def _axes(dim) -> list[int]:
 
 
 def broadcast(*shapes):
+    """PyTorch broadcasting of the shapes; raises when they do not broadcast."""
     rank = max(len(s) for s in shapes)
     out = []
     for i in range(rank):
@@ -72,6 +73,7 @@ def reduced(shape, dim, keepdim, mode):
 
 
 def valid_axes(dim, rank):
+    """Whether every axis normalizes at `rank`; `None` is valid."""
     try:
         if dim is not None:
             [normalize_axis(d, rank) for d in _axes(dim)]
@@ -81,6 +83,7 @@ def valid_axes(dim, rank):
 
 
 def unique_axes(dim, rank):
+    """Whether the normalized axes are distinct."""
     if dim is None or isinstance(dim, int):
         return True
     return len({normalize_axis(d, rank) for d in dim}) == len(dim)
@@ -100,13 +103,30 @@ def per_axis(value, i, n, fallback=None):
 
 
 def ceil_div(a, b):
+    """`a / b` rounded up, for a positive `b`."""
     if b <= 0:
         raise ValueError(f"ceil_div needs a positive divisor, got {b}")
     return -(-a // b)
 
 
+def _prod(values):
+    """The product of the values; 1 for none."""
+    return math.prod(values)
+
+
+def _sum(values):
+    """The sum of the values; 0 for none."""
+    return sum(values)
+
+
+def _all(values):
+    """Whether every value holds; true for none."""
+    return all(values)
+
+
 def _seq_extreme(fn):
     def extreme(values, default=None):
+        """The extreme of the values, or `default` when there are none."""
         values = list(values)
         if not values:
             if default is None:
@@ -118,10 +138,12 @@ def _seq_extreme(fn):
 
 
 def conv_out(length, kernel, stride, padding, dilation):
+    """The convolution output length."""
     return (length + 2 * padding - dilation * (kernel - 1) - 1) // stride + 1
 
 
 def pool_out(length, kernel, stride, padding, dilation, ceil_mode):
+    """The pooling output length, never negative."""
     span = dilation * (kernel - 1) + 1
     out = (length + 2 * padding - span + (stride - 1 if ceil_mode else 0)) // stride + 1
     if ceil_mode and (out - 1) * stride >= length + padding:
@@ -140,14 +162,17 @@ def moe_capacity(layout, rows, experts):
 
 
 def promote_int_to_float(dtype):
+    """float32 for an integral dtype, else the dtype itself."""
     return "float32" if dtype in ("uint8", "int8", "int16", "int32", "int64") else dtype
 
 
 def coalesce_dtype(value, dtype):
+    """`value` when present, else `dtype`."""
     return dtype if value is None else value
 
 
 def mhc_expansion(q):
+    """The positive `n` with `n * n + 2 * n == q`."""
     n = math.isqrt(q + 1) - 1
     if n <= 0 or n * n + 2 * n != q:
         raise ValueError(f"no positive n satisfies n * n + 2 * n == {q}")
@@ -230,11 +255,11 @@ PRIMITIVES = {
     "per_axis": per_axis,
     "ceil_div": ceil_div,
     "len": len,
-    "prod": math.prod,
-    "sum": sum,
+    "prod": _prod,
+    "sum": _sum,
     "max": _seq_extreme(max),
     "min": _seq_extreme(min),
-    "all": all,
+    "all": _all,
     "conv.out": conv_out,
     "pool.out": pool_out,
     "moe.capacity": moe_capacity,
@@ -291,12 +316,14 @@ PRIMITIVE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
 
 
 def as_tensor(values):
+    """The non-negative list itself."""
     if any(v < 0 for v in values):
         raise ValueError(f"as_tensor needs a non-negative list, got {values}")
     return list(values)
 
 
 def prefix_sum(lengths):
+    """`[0]` followed by the running sums of the lengths."""
     out = [0]
     for n in as_tensor(lengths):
         out.append(out[-1] + n)
@@ -304,6 +331,7 @@ def prefix_sum(lengths):
 
 
 def exclusive_prefix_sum(lengths):
+    """Item `i` is the sum of the lengths before it."""
     if not lengths:
         raise ValueError("exclusive_prefix_sum needs a non-empty list")
     return prefix_sum(lengths)[:-1]
@@ -331,12 +359,14 @@ def token_indices(lengths):
 
 
 def packed_positions(lengths):
+    """Positions restarting at 0 for each sequence."""
     if not lengths or any(n <= 0 for n in lengths):
         raise ValueError(f"packed_positions needs a non-empty positive list, got {lengths}")
     return [j for n in lengths for j in range(n)]
 
 
 def chunk_offsets(lengths, chunk):
+    """The prefix sum of each length's chunk count."""
     if chunk <= 0:
         raise ValueError(f"chunk must be positive, got {chunk}")
     return prefix_sum([ceil_div(n, chunk) for n in as_tensor(lengths)])
@@ -377,18 +407,21 @@ def nsa_block_counts(rng, tokens, heads_kv, selected):
 
 
 def topk_ids(rng, rows, k, experts):
+    """`rows` rows of `k` distinct random values in `[0, experts)`."""
     if not 0 < k <= experts:
         raise ValueError(f"topk_ids needs 0 < K <= E, got K={k}, E={experts}")
     return [rng.sample(range(experts), k) for _ in range(rows)]
 
 
 def sample_indices(rng, n, hi):
+    """`n` distinct random values in `[0, hi)`."""
     if not 0 <= n <= hi:
         raise ValueError(f"sample_indices needs 0 <= n <= hi, got n={n}, hi={hi}")
     return rng.sample(range(hi), n)
 
 
 def causal_topk_indices(rng, batch, seq, heads_kv, k, extent, start, stride):
+    """Per token and head, up to `k` distinct keys it can see, padded with `extent`."""
     if min(batch, seq, heads_kv, k, extent, stride) <= 0 or start < 0:
         raise ValueError(
             "causal_topk_indices needs positive B, S, H_kv, K, E, stride and start >= 0"
@@ -408,6 +441,7 @@ def causal_topk_indices(rng, batch, seq, heads_kv, k, extent, start, stride):
 
 
 def key_windows(lengths, first, count, side):
+    """Per query position, the first key of its sequence (`start`) or one past itself (`end`)."""
     if not lengths or any(n <= 0 for n in lengths):
         raise ValueError(f"key_windows needs a non-empty positive list, got {lengths}")
     if first < 0 or count < 0 or first + count > sum(lengths):
@@ -427,6 +461,7 @@ def key_windows(lengths, first, count, side):
 
 
 def full(shape, value):
+    """A nested list of `shape` holding `value`."""
     if any(n < 0 for n in shape):
         raise ValueError(f"full needs non-negative extents, got {shape}")
 
