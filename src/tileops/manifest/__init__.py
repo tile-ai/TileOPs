@@ -23,13 +23,11 @@ from typing import Any
 import yaml
 
 __all__ = [
-    "WORKLOAD_RESERVED_KEYS",
     "load_adts",
     "load_manifest",
     "load_workloads",
     "manifest_files",
     "manifest_key",
-    "single_input_workload_contract",
     "try_load_entry",
     "types_document",
 ]
@@ -122,8 +120,7 @@ def load_workloads(op: "str | type") -> list[dict[str, Any]]:
 
     ```python linenums="1"
     workloads = load_workloads(RMSNormFwdOp)
-    workloads[0]
-    # {'x_shape': [2048, 4096], 'dtypes': ['float16', 'bfloat16'], 'label': 'llama-8b-prefill'}
+    workloads[0]["label"]
     ```
     """
     op_name = manifest_key(op)
@@ -131,35 +128,3 @@ def load_workloads(op: "str | type") -> list[dict[str, Any]]:
     if op_name not in ops:
         raise KeyError(f"op '{op_name}' not found in ops manifest")
     return ops[op_name]["workloads"]
-
-
-# Workload keys reserved for benchmark parametrization: ``dtypes`` expands
-# a workload across dtypes, ``label`` names the generated test id.
-WORKLOAD_RESERVED_KEYS: frozenset[str] = frozenset({"dtypes", "label"})
-
-
-def single_input_workload_contract(
-    signature: dict[str, Any],
-) -> tuple[str, frozenset[str]] | None:
-    r"""Return $[shape\_key \times allowed\_workload\_keys]$ for a signature with
-    exactly one tensor input; ``None`` for any other input arity.
-
-    The shape key is ``{input}_shape``; allowed keys are the shape key,
-    :data:`WORKLOAD_RESERVED_KEYS`, and the declared ``params`` names.
-    """
-    sig = signature if isinstance(signature, dict) else {}
-    inputs = sig.get("inputs")
-    if not isinstance(inputs, dict) or len(inputs) != 1:
-        return None
-    (input_name,) = inputs
-    if not isinstance(input_name, str):
-        return None
-    shape_key = f"{input_name}_shape"
-    params = sig.get("params")
-    param_names = (
-        frozenset(k for k in params if isinstance(k, str))
-        if isinstance(params, dict)
-        else frozenset()
-    )
-    allowed = param_names | WORKLOAD_RESERVED_KEYS | {shape_key}
-    return shape_key, allowed

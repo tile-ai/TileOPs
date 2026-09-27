@@ -3,7 +3,7 @@
 An entry can hold anything a YAML file can hold. When a check assumes a mapping
 and gets a string, the run dies and the entry's other problems go unreported —
 which is the opposite of what a validator is for. These drive every malformed
-shape through every level and both parity modes.
+shape through every level.
 """
 
 import importlib.util
@@ -40,8 +40,7 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
                 "status": "spec-only",
                 "signature": {},
                 "workloads": [],
-                "roofline": {"flops": "1", "bytes": "1"},
-                "source": {},
+                "roofline": {"flops": "1"},
             }
         },
     ),
@@ -55,7 +54,6 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
                 "signature": "not a mapping",
                 "workloads": "not a list",
                 "roofline": [],
-                "source": 3,
             }
         },
     ),
@@ -68,13 +66,12 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
                 "status": "spec-only",
                 "made_up_field": True,
                 "signature": {
-                    "inputs": {"x": {"dtype": "float16"}},
-                    "outputs": {"y": {"dtype": "same_as(x)"}},
+                    "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
+                    "outputs": {"y": {"dtype": "float16", "shape": "[N]"}},
                     "also_made_up": 1,
                 },
-                "workloads": [{"x_shape": [4], "dtypes": ["float16"]}],
-                "roofline": {"flops": "1", "bytes": "1"},
-                "source": {"kernel": "k.py", "op": "o.py", "test": "t.py", "bench": "b.py"},
+                "workloads": [{"N": 4, "label": "n4"}],
+                "roofline": {"flops": "1"},
             }
         },
     ),
@@ -86,15 +83,14 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
                 "ref_api": "none",
                 "status": "spec-only",
                 "signature": {
-                    "inputs": {"x": {"dtype": "float16"}},
-                    "outputs": {"y": {"dtype": "same_as(x)"}},
+                    "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
+                    "outputs": {"y": {"dtype": "float16", "shape": "[N]"}},
                     # A key that is not a string: ordering the leftovers by the
                     # key itself would raise rather than report.
                     7: "junk",
                 },
-                "workloads": [{"x_shape": [4], "dtypes": ["float16"]}],
-                "roofline": {"flops": "1", "bytes": "1"},
-                "source": {"kernel": "k.py", "op": "o.py", "test": "t.py", "bench": "b.py"},
+                "workloads": [{"N": 4, "label": "n4"}],
+                "roofline": {"flops": "1"},
             }
         },
     ),
@@ -108,46 +104,37 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
             "BadDtypeOp": {
                 "family": "elementwise",
                 "ref_api": "none",
-                # Implemented, so the dtype level runs: its parser splits the
-                # declaration, and a mapping there raised rather than reported.
+                # Implemented, so the class parity check runs too.
                 "status": "implemented",
                 "signature": {
-                    "inputs": {"x": {"dtype": "float16"}},
-                    "outputs": {"y": {"dtype": {"junk": [1]}}},
-                    "shape_rules": ["y.shape == x.shape"],
+                    "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
+                    "outputs": {"y": {"dtype": {"junk": [1]}, "shape": "[N]"}},
                 },
-                "workloads": [
-                    {"x_shape": [4], "dtypes": ["float16"]},
-                    {"x_shape": [8], "dtypes": ["float16"]},
-                ],
-                "roofline": {"flops": "1", "bytes": "1"},
-                "source": {"kernel": "k.py", "op": "o.py", "test": "t.py", "bench": "b.py"},
+                "workloads": [{"N": 4, "label": "n4"}],
+                "roofline": {"flops": "1"},
             }
         },
     ),
     (
-        "composite_without_roofline_composition",
+        "composite_with_a_malformed_stage",
         {
             "BadCompositeOp": {
                 "family": "elementwise",
                 "ref_api": "none",
                 "status": "spec-only",
                 "signature": {
-                    "inputs": {"x": {"dtype": "float16"}},
-                    "outputs": {"y": {"dtype": "same_as(x)"}},
+                    "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
+                    "outputs": {"y": {"dtype": "float16", "shape": "[N]"}},
                 },
-                "composition": {"kind": "composite", "stages": [{"name": "s", "kernel": "k"}]},
-                "workloads": [{"x_shape": [4], "dtypes": ["float16"]}],
-                "roofline": {"flops": "1", "bytes": "1"},
-                "source": {"kernel": "k.py", "op": "o.py", "test": "t.py", "bench": "b.py"},
+                "composition": {"kind": "composite", "stages": [{"name": 3, "op": ["k"]}]},
+                "workloads": [{"N": 4, "label": "n4"}],
+                "roofline": {"flops": "1"},
             }
         },
     ),
 )
 
-#: Not every level: the three checks that assumed a mapping ran under these,
-#: and running the rest is a cartesian product of one property.
-LEVELS = (None, "schema", "signature", "shape", "dtype", "bench")
+LEVELS = (None, "schema", "signature", "bench")
 
 
 @pytest.fixture(scope="module")
@@ -174,11 +161,7 @@ def _write(path: Path, mapping) -> Path:
 @pytest.mark.parametrize("fixture_name", [name for name, _ in MALFORMED])
 @pytest.mark.parametrize("level", LEVELS, ids=[lv or "all" for lv in LEVELS])
 def test_reports_rather_than_raises(validator, written, fixture_name, level):
-    """Per level, because each ran a different check that assumed a mapping.
-
-    Parity mode is not a dimension here: it routes findings, it does not change
-    whether producing them raises.
-    """
+    """Per level, because each runs a different check that could assume a mapping."""
     levels = frozenset({level}) if level else None
     errors, warnings = validator.validate_manifest(
         manifest_path=written[fixture_name], levels=levels
@@ -189,7 +172,7 @@ def test_reports_rather_than_raises(validator, written, fixture_name, level):
 def test_a_broken_field_does_not_hide_the_others(validator, written):
     """One unreadable field must not stop the rest of the entry being read.
 
-    The parser accumulates for this reason: an entry with a bad source and a
+    The parser accumulates for this reason: an entry with a bad roofline and a
     bad signature should say so about both.
     """
     errors, _ = validator.validate_manifest(manifest_path=written["wrong_types"])

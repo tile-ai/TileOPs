@@ -66,17 +66,6 @@ Hooks family bases expose for op-specific semantics. The scaffolding playbook do
 
 A restriction on the accepted domain is a refinement of the signature, never a hook. A hook that compensates for what a kernel cannot do belongs to that kernel, not here: the op hands over the tensor its manifest declares.
 
-### `_cache_key` override (L1-level, not family-specific)
-
-`Op._cache_key(self, *input_shapes) -> Hashable` defaults to the full input shapes. Override when the kernel's math permits coarser keying — e.g., RMSNorm only depends on the product `M` of the leading axes:
-
-```python
-class RMSNormFwdOp(Op):
-    def _cache_key(self, x_shape):
-        dim = normalize_axis(self.dim, len(x_shape))
-        return (math.prod(s for i, s in enumerate(x_shape) if i != dim),)
-```
-
 ## Naming Conventions (Appendix) <a id="naming-conventions"></a>
 
 - **Op class:** `{PascalCaseName}{Direction}Op`. `Direction` ∈ {`Fwd`, `Bwd`}, mandatory. Manifest key must equal `cls.__name__`. Abbreviation casing: `RMSNormFwdOp`, `SSDDecodeFwdOp` — fully uppercase per `.claude/rules/code-style.md`. Slot [S6](op-slot-rules.md#slot-s6).

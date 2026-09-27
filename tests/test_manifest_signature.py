@@ -384,7 +384,7 @@ def test_adt_invariant_stays_in_the_language():
     assert check_adts(_ADTS) == (_ADTS, [])
 
 
-def test_validator_checks_converted_families(tmp_path):
+def test_validator_checks_every_level_of_an_entry(tmp_path):
     spec = importlib.util.spec_from_file_location(
         "validate_manifest", Path(__file__).parents[1] / "scripts" / "validate_manifest.py"
     )
@@ -392,11 +392,11 @@ def test_validator_checks_converted_families(tmp_path):
     spec.loader.exec_module(validator)
     name, entry = _edit("GemmFwdOp", _set(("outputs", "d", "shape"), "[M, Q]"))
     path = tmp_path / "manifest.yaml"
-    path.write_text(yaml.safe_dump({name: {"family": "converted", **entry}}))
+    path.write_text(yaml.safe_dump({name: {"family": "missing", **entry}}))
     errors, _ = validator.validate_manifest(manifest_path=path)
     assert any("'Q' is not declared" in e for e in errors), errors
     assert any("missing required field 'status'" in e for e in errors), errors
-    assert any("family 'converted' is not a tileops module" in e for e in errors), errors
+    assert any("family 'missing' is not a tileops module" in e for e in errors), errors
     schema_only, _ = validator.validate_manifest(manifest_path=path, levels=frozenset({"schema"}))
     assert not any("'Q' is not declared" in e for e in schema_only), schema_only
     path.write_text(yaml.safe_dump({name: {"family": 1}}))
@@ -424,6 +424,6 @@ def test_validator_holds_an_implemented_key_to_an_exported_class(monkeypatch):
     assert any(
         "does not export the class" in e for e in validator._family_errors("DemoFwdOp", entry)
     )
-    assert validator._check_parametric_schema(1, entry, {1: entry}) == [
+    assert validator._schema_errors(1, entry, {1: entry}) == [
         "[schema] 1: the key is not an op class name `<Name>FwdOp`"
     ]

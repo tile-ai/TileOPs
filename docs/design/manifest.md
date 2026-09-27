@@ -278,7 +278,7 @@ A call has two phases.
 
 ## Validation
 
-An entry's format identifies it: a legacy entry declares `source`, a parametric one does not. [`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) checks every parametric entry on every combination of its discriminant values: type-family `match`, `optional`, `nullable`, `mutated`, output-buffer presence, and the quantities relevance reads. Discriminants are grouped by dependency. Combinations a domain restriction rejects skip only type-family coverage and inference-plan checks. Above a configured number of combinations (default 256) it reports an advisory diagnostic and keeps the entry whole.
+[`scripts/validate_manifest.py`](../../scripts/validate_manifest.py) checks every entry on every combination of its discriminant values: type-family `match`, `optional`, `nullable`, `mutated`, output-buffer presence, and the quantities relevance reads. Discriminants are grouped by dependency. Combinations a domain restriction rejects skip only type-family coverage and inference-plan checks. Above a configured number of combinations (default 256) it reports an advisory diagnostic and keeps the entry whole.
 
 1. Each name's category matches its kind, and each parameter's `type` fits the kind every use site needs.
 1. Type-family cases are exhaustive and disjoint over accepted values; family references are acyclic; a family no shape applies is rejected.
@@ -290,10 +290,10 @@ An entry's format identifies it: a legacy entry declares `source`, a parametric 
 1. Every workload row instantiates.
 1. For every effect branch, the operator schema, aliases and roofline read/write counts agree.
 
-All checks are decidable; every evaluation either succeeds or names the failing declaration. Code-dependent checks are skipped for `spec-only` entries. CI runs the validator with `--strict` over the whole manifest.
+All checks are decidable; every evaluation either succeeds or names the failing declaration. Code-dependent checks are skipped for `spec-only` entries. CI runs the validator over the whole manifest.
 
 - Parsing is per field: an unreadable field is reported and skipped only by the checks that read it.
-- Diagnostics are a contract: the CLI, the diagnostic text and order, and the strict/advisory classification change only through a deliberate, recorded change. Every set entering a diagnostic is sorted, unknown keys by `repr`, so output does not depend on `PYTHONHASHSEED`.
+- Diagnostics are a contract: the CLI, the diagnostic text and order, and the error/advisory classification change only through a deliberate, recorded change. Every set entering a diagnostic is sorted, unknown keys by `repr`, so output does not depend on `PYTHONHASHSEED`.
 - Each fixed section's legal keys are defined in one place.
 - Importing an op loads the manifest leniently and succeeds on an incomplete manifest; strict checking belongs to the validator alone.
 

@@ -6,9 +6,9 @@ control on, and ``dram__bytes_read.sum`` over the call's kernels is compared
 against the formula's read half:
 
 - measured_read < read_bytes × (1 − EPS)  → FAIL  (read-side overestimate), or
-                                            EXEMPT where the entry's
-                                            ``read_bound_exception`` covers
-                                            this row (reported, not judged)
+                                            EXEMPT where ``READ_BOUND_EXCEPTIONS``
+                                            covers this call (reported, not
+                                            judged)
 - measured_read > read_bytes × OVER       → WARN  (multi-pass / replay inflation)
 - missing metric or empty range            → ERROR (never a verdict)
 - a declared read half of zero             → SKIPPED (nothing to judge it by)
@@ -18,14 +18,12 @@ Write traffic is measured and reported, never judged: lines still dirty in L2
 when the kernel ends are written back outside the profiled range, so
 ``dram__bytes_write.sum`` undercounts by up to the L2 capacity.
 
-Coverage: ops reachable through the manifest single-tensor-input contract run
-generically; multi-input ops run through ``INPUT_BUILDERS``; everything else
-is reported SKIPPED with the reason — silent gaps would read as audited.
+Every op's calls are its manifest workload rows, instantiated.
 
 Usage:
     python scripts/validate_roofline_bytes.py [--op OpName] [--family NAME] [--out DIR]
     python scripts/validate_roofline_bytes.py --check-counters
-    python scripts/validate_roofline_bytes.py --child OpName --row JSON --dtype bf16
+    python scripts/validate_roofline_bytes.py --child OpName --row JSON --dtype '{"T": "float16"}'
 """
 
 import argparse
@@ -34,7 +32,6 @@ import io
 import json
 import subprocess
 import sys
-from math import prod
 from pathlib import Path
 
 EPS = 0.05  # counter noise allowance below the formula
@@ -57,69 +54,8 @@ def _op_class(op_name: str, entry: dict):
     return op_class(op_name, entry)
 
 
-def _single_input_case(op_name: str, entry: dict, row: dict, dtype):
-    """(op, inputs) via the manifest single-tensor-input contract, or None."""
-
-    from tileops.manifest import single_input_workload_contract
-
-    contract = single_input_workload_contract(entry.get("signature") or {})
-    if contract is None:
-        return None
-    shape_key, _ = contract
-    if shape_key not in row:
-        return None
-    reserved = {"label", "dtypes", "bench_skip_reason", shape_key}
-    params = {k: v for k, v in row.items() if k not in reserved and not k.startswith("__")}
-    op = _op_class(op_name, entry)(**params)
-    x = _sample(tuple(row[shape_key]), dtype)
-    return op, (x,)
-
-
-def _sample(shape: tuple, dtype) -> "object":
-    """A valid input of *dtype*; the counters read traffic, not values."""
-    import torch
-
-    if dtype is torch.bool:
-        return torch.ones(shape, dtype=torch.bool, device="cuda")
-    if not dtype.is_floating_point:
-        return torch.ones(shape, dtype=dtype, device="cuda")
-    # Positive, away from zero: valid for every unary domain (log, rsqrt, ...).
-    return torch.rand(shape, dtype=dtype, device="cuda") + 0.5
-
-
-def _gemm_case(op_name: str, entry: dict, row: dict, dtype):
-    """The row names the layout, and the operands are stored in it."""
-    import torch
-
-    trans_a = bool(row.get("trans_a", False))
-    trans_b = bool(row.get("trans_b", True))
-    op = _op_class(op_name, entry)(trans_a=trans_a, trans_b=trans_b)
-    m, n, k = row["m"], row["n"], row["k"]
-    a = torch.randn(*((k, m) if trans_a else (m, k)), dtype=dtype, device="cuda")
-    b = torch.randn(*((n, k) if trans_b else (k, n)), dtype=dtype, device="cuda")
-    return op, (a, b)
-
-
-def _bmm_case(op_name: str, entry: dict, row: dict, dtype):
-    import torch
-
-    op = _op_class(op_name, entry)()
-    batch, m, n, k = row["b"], row["m"], row["n"], row["k"]
-    a = torch.randn(batch, m, k, dtype=dtype, device="cuda")
-    b = torch.randn(batch, k, n, dtype=dtype, device="cuda")
-    return op, (a, b)
-
-
-# Multi-input ops the audit can build. Extend per family; an op absent here
-# and outside the single-input contract is SKIPPED, visibly.
-INPUT_BUILDERS = {
-    "GemmFwdOp": _gemm_case,
-    "BmmFwdOp": _bmm_case,
-}
-
-
-# A parametric entry's calls whose read half is not a lower bound: op name -> (condition over
-# the call's ``ix``, reason). A legacy entry declares it as ``roofline.read_bound_exception``.
+# The calls whose read half is not a lower bound: op name -> (condition over the call's ``ix``,
+# reason).
 READ_BOUND_EXCEPTIONS: dict = {
     # Which positions a call drops is drawn at run time, so no smaller subset of the input
     # is the one this call reads, and the read half stays the whole of it. Outside the
@@ -132,14 +68,8 @@ READ_BOUND_EXCEPTIONS: dict = {
 }
 
 
-def _is_parametric(entry: dict) -> bool:
-    from tileops.manifest.signature import is_legacy
-
-    return not is_legacy(entry)
-
-
-def _parametric_call(op_name: str, entry: dict, row: dict, case: dict):
-    """One row and dtype case of a parametric entry, instantiated."""
+def _call(op_name: str, entry: dict, row: dict, case: dict):
+    """One row and dtype case of an entry, instantiated."""
     from tileops.manifest import load_adts
     from tileops.manifest.plan import entry_plan
     from tileops.manifest.workload import instantiate
@@ -147,69 +77,30 @@ def _parametric_call(op_name: str, entry: dict, row: dict, case: dict):
     return instantiate(entry_plan(op_name, entry, load_adts()), row, case)
 
 
-def _parametric_case(op_name: str, entry: dict, row: dict, case: dict):
+def _case(op_name: str, entry: dict, row: dict, case: dict):
     """(op, inputs) built from the instantiated call alone."""
-    call = _parametric_call(op_name, entry, row, case)
+    call = _call(op_name, entry, row, case)
     tensors = call.materialize("cuda")
     op = _op_class(op_name, entry)(**call.arguments(tensors))
     return op, tuple(tensors[t] for t in call.signature.inputs)
 
 
-def _parametric_exception(op_name: str, entry: dict, row: dict, case: dict) -> str:
-    """The reason a parametric call's read half is not a lower bound, or ``""``."""
+def _exception(op_name: str, entry: dict, row: dict, case: dict) -> str:
+    """The reason a call's read half is not a lower bound, or ``""``."""
     when, reason = READ_BOUND_EXCEPTIONS.get(op_name, (None, ""))
     if when is None:
         return ""
-    return reason if when(_parametric_call(op_name, entry, row, case).ix) else ""
-
-
-def _build_case(op_name: str, entry: dict, row: dict, dtype):
-    builder = INPUT_BUILDERS.get(op_name)
-    if builder is not None:
-        return builder(op_name, entry, row, dtype)
-    return _single_input_case(op_name, entry, row, dtype)
-
-
-def _branch_signature(row: dict) -> tuple:
-    """Rows sharing this key exercise the same formula branches."""
-    return (
-        tuple(sorted(row.get("dtypes", []))),
-        row.get("backend"),
-        tuple(sorted(k for k, v in row.items() if v is None)),
-        tuple(sorted((k, v) for k, v in row.items() if isinstance(v, bool))),
-        tuple(sorted(k for k in row if k.endswith("_shape"))),
-    )
+    return reason if when(_call(op_name, entry, row, case).ix) else ""
 
 
 def _pick_workloads(entry: dict, cap: int = 6) -> list[tuple[dict, str]]:
-    """One row per branch signature, largest first, at most *cap*.
-
-    A parametric entry's rows are taken in order, each with its dtype case as JSON.
-    """
-    if _is_parametric(entry):
-        cases = [
-            (row, json.dumps(case))
-            for row in entry.get("workloads") or []
-            for case in row.get("dtype_cases") or [{}]
-        ]
-        return cases[:cap]
-    picked: dict[tuple, tuple[dict, str]] = {}
-    for row in entry.get("workloads") or []:
-        if row.get("bench_skip_reason"):
-            continue
-        for dtype_str in row.get("dtypes", []):
-            key = (*_branch_signature(row), dtype_str)
-            size = 1
-            for v in row.values():
-                if isinstance(v, list) and v and all(isinstance(x, int) for x in v):
-                    size *= prod(v)
-                elif isinstance(v, int) and not isinstance(v, bool) and v > 1:
-                    size *= v  # scalar dims (m/n/k/batch) rank GEMM-style rows
-            held = picked.get(key)
-            if held is None or size > held[0].get("__size", -1):
-                picked[key] = ({**row, "__size": size}, dtype_str)
-    ranked = sorted(picked.values(), key=lambda p: -p[0]["__size"])
-    return [({k: v for k, v in r.items() if k != "__size"}, d) for r, d in ranked[:cap]]
+    """The entry's rows in order, each with its dtype case as JSON, at most *cap*."""
+    cases = [
+        (row, json.dumps(case))
+        for row in entry.get("workloads") or []
+        for case in row.get("dtype_cases") or [{}]
+    ]
+    return cases[:cap]
 
 
 def _declared_read_bytes(op) -> int | None:
@@ -232,19 +123,10 @@ def run_child(op_name: str, row_json: str, dtype_str: str) -> None:
     import torch
 
     from tileops.manifest import load_manifest
-    from tileops.ops.op_base import _recording_roofline_calls
 
     entry = load_manifest()[op_name]
-    if _is_parametric(entry):
-        case = _parametric_case(op_name, entry, json.loads(row_json), json.loads(dtype_str))
-    else:
-        case = _build_case(op_name, entry, json.loads(row_json), getattr(torch, dtype_str))
-    if case is None:
-        print(json.dumps({"error": "no input builder"}))
-        sys.exit(3)
-    op, inputs = case
-    # The read half needs the shapes the call carried; ops do not keep them.
-    with torch.no_grad(), _recording_roofline_calls():
+    op, inputs = _case(op_name, entry, json.loads(row_json), json.loads(dtype_str))
+    with torch.no_grad():
         op(*inputs)  # bind input-inferred roofline vars; build kernels
         torch.cuda.synchronize()
         flops, nbytes = op.eval_roofline()
@@ -305,8 +187,8 @@ def read_side_verdict(
 
     FAIL says the formula charged reads the implementation did not make, which
     holds only where every conforming implementation must fetch what the
-    formula charges. Where *bound* is false -- the entry's
-    ``read_bound_exception`` covers this call -- a shortfall is EXEMPT instead:
+    formula charges. Where *bound* is false -- ``READ_BOUND_EXCEPTIONS`` covers
+    this call -- a shortfall is EXEMPT instead:
     measured and reported, not a verdict on the formula.
     """
     if read_bytes is None:
@@ -324,38 +206,12 @@ def read_side_verdict(
     return "PASS"
 
 
-def read_bound_exception(entry: dict, row: dict, dtype_str: str | None = None) -> str:
-    """The reason this row's read half is not a lower bound, or ``""``.
-
-    A row outside the exception's condition is judged like any other.
-    """
-    exception = (entry.get("roofline") or {}).get("read_bound_exception") or {}
-    when = (exception.get("when") or "").strip()
-    reason = (exception.get("reason") or "").strip()
-    if not when or not reason:
-        return ""
-    names = {
-        name: spec.get("default")
-        for name, spec in ((entry.get("signature") or {}).get("params") or {}).items()
-        if isinstance(spec, dict)
-    }
-    names.update({k: v for k, v in row.items() if not k.startswith("__")})
-    # The row carries the dtype axis; the call runs one element type off it.
-    if dtype_str is not None:
-        names["dtype"] = dtype_str
-    try:
-        holds = eval(when, {"__builtins__": {}}, names)  # noqa: S307 - validator limits the form
-    except Exception:
-        return ""  # a condition this row cannot answer does not waive anything
-    return reason if holds else ""
-
-
 def exit_code(counts: dict[str, int]) -> int:
     """Zero means no unwaived failure, not that every row was judged.
 
     Three verdicts are green: SKIPPED (never run, reason stated), WARN (more
     traffic than the formula charges, which passed the lower-bound check) and
-    EXEMPT (a shortfall the entry's ``read_bound_exception`` covers, measured
+    EXEMPT (a shortfall ``READ_BOUND_EXCEPTIONS`` covers, measured
     and not judged). Anything else, including a verdict this function does not
     know, is red: a spelling nobody reads is not a pass.
     """
@@ -383,11 +239,7 @@ def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
         return [{"op": op_name, "verdict": "SKIPPED", "reason": "no workloads"}]
     for row, dtype_str in cases:
         label = row.get("label", "workload")
-        tag = (
-            "-".join(json.loads(dtype_str).values()) or "case"
-            if _is_parametric(entry)
-            else dtype_str
-        )
+        tag = "-".join(json.loads(dtype_str).values()) or "case"
         csv_path = out_dir / f"{op_name}.{label}.{tag}.csv"
         cmd = [
             "ncu",
@@ -405,9 +257,6 @@ def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
         ]  # fmt: skip
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
         base = {"op": op_name, "workload": label, "dtype": dtype_str}
-        if proc.returncode == 3:
-            results.append({**base, "verdict": "SKIPPED", "reason": "no input builder"})
-            continue
         if proc.returncode != 0:
             reason = (proc.stderr or proc.stdout).strip().splitlines()[-1:] or ["?"]
             results.append({**base, "verdict": "ERROR", "reason": reason[0][:200]})
@@ -426,10 +275,7 @@ def audit_one(op_name: str, entry: dict, out_dir: Path) -> list[dict]:
             )
             continue
         measured_read, measured_write = measured
-        if _is_parametric(entry):
-            waived = _parametric_exception(op_name, entry, row, json.loads(dtype_str))
-        else:
-            waived = read_bound_exception(entry, row, dtype_str)
+        waived = _exception(op_name, entry, row, json.loads(dtype_str))
         verdict = read_side_verdict(measured_read, read_bytes, bound=not waived)
         row_out = {
             **base,

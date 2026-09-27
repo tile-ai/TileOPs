@@ -884,7 +884,7 @@ def test_an_input_this_call_does_not_write_reaches_the_kernel_contiguous():
 
 
 def test_an_input_typed_after_an_output_follows_that_output_s_dtype():
-    """``bias: same_as(d)``: the output's dtype is the op's to state, and it binds the input."""
+    """``bias`` takes the output's dtype: the op states that dtype, and it binds the input."""
     from tileops.ops.gemm.gemm import GemmFp8FwdOp
 
     registry.register_detector("acme", lambda device: device.type == "cpu")

@@ -29,21 +29,8 @@ STATUSES = ("implemented", "spec-only", "deprecated")
 
 def _has_roofline(op: dict[str, Any]) -> bool:
     rf = op.get("roofline") or {}
-    return bool(rf.get("func")) or ("flops" in rf and "bytes" in rf)
-
-
-def _has_kernel_map(op: dict[str, Any]) -> bool:
-    # Only a legacy entry (one with `source`) records kernels and benchmarks in the manifest.
-    if "source" not in op:
-        return True
-    km = (op.get("source") or {}).get("kernel_map")
-    return isinstance(km, dict) and len(km) > 0
-
-
-def _has_bench_manifest_driven(op: dict[str, Any]) -> bool:
-    if "source" not in op:
-        return True
-    return bool((op.get("source") or {}).get("bench_manifest_driven"))
+    # `bytes` is optional: an entry omitting it has its traffic derived from the signature.
+    return bool(rf.get("func")) or "flops" in rf
 
 
 def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
@@ -55,13 +42,10 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
     workloads_impl_total = 0
 
     roofline_ok = 0
-    kernel_map_ok = 0
-    bench_manifest_ok = 0
     ref_api_ok = 0
 
-    missing_kernel_map: list[str] = []
     missing_roofline: list[str] = []
-    missing_bench: list[str] = []
+    unbenched: list[str] = []
     workloads_below_two: list[str] = []
     spec_only: list[str] = []
 
@@ -79,20 +63,15 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
 
         if _has_roofline(op):
             roofline_ok += 1
-        if _has_kernel_map(op):
-            kernel_map_ok += 1
-        if _has_bench_manifest_driven(op):
-            bench_manifest_ok += 1
         if op.get("ref_api"):
             ref_api_ok += 1
 
         if status == "implemented":
-            if not _has_kernel_map(op):
-                missing_kernel_map.append(name)
             if not _has_roofline(op):
                 missing_roofline.append(name)
-            if not _has_bench_manifest_driven(op):
-                missing_bench.append(name)
+            # The benchmarks take an op's calls from its workload rows.
+            if not wls:
+                unbenched.append(name)
             if len(wls) < 2:
                 workloads_below_two.append(name)
         elif status == "spec-only":
@@ -132,13 +111,10 @@ def collect_stats(manifest: dict[str, dict]) -> dict[str, Any]:
         "coverage": {
             "ref_api": ref_api_ok,
             "roofline": roofline_ok,
-            "kernel_map": kernel_map_ok,
-            "bench_manifest_driven": bench_manifest_ok,
         },
         "conformance_gaps": {
-            "implemented_without_kernel_map": sorted(missing_kernel_map),
             "implemented_without_roofline": sorted(missing_roofline),
-            "implemented_without_bench_manifest_driven": sorted(missing_bench),
+            "implemented_without_workloads": sorted(unbenched),
             "implemented_with_fewer_than_two_workloads": sorted(workloads_below_two),
             "spec_only_ops": sorted(spec_only),
         },
@@ -180,9 +156,7 @@ def render_text(stats: dict[str, Any]) -> str:
     cov = stats["coverage"]
     for label, key in [
         ("ref_api declared", "ref_api"),
-        ("roofline (func or flops+bytes)", "roofline"),
-        ("source.kernel_map", "kernel_map"),
-        ("bench_manifest_driven", "bench_manifest_driven"),
+        ("roofline (func or flops)", "roofline"),
     ]:
         n = cov[key]
         p = n / total if total else 0
@@ -196,12 +170,8 @@ def render_text(stats: dict[str, Any]) -> str:
     gaps = stats["conformance_gaps"]
     lines.append("Conformance gaps")
     lines.append("-" * 60)
-    lines.append(f"  implemented without kernel_map: {len(gaps['implemented_without_kernel_map'])}")
     lines.append(f"  implemented without roofline:   {len(gaps['implemented_without_roofline'])}")
-    lines.append(
-        f"  implemented without bench:      "
-        f"{len(gaps['implemented_without_bench_manifest_driven'])}"
-    )
+    lines.append(f"  implemented without workloads:  {len(gaps['implemented_without_workloads'])}")
     lines.append(
         f"  implemented with <2 workloads:  "
         f"{len(gaps['implemented_with_fewer_than_two_workloads'])}"
@@ -246,9 +216,7 @@ def render_markdown(stats: dict[str, Any]) -> str:
     lines.append("| --- | ---: |")
     for label, key in [
         ("`ref_api`", "ref_api"),
-        ("`roofline` (func or flops+bytes)", "roofline"),
-        ("`source.kernel_map`", "kernel_map"),
-        ("`source.bench_manifest_driven`", "bench_manifest_driven"),
+        ("`roofline` (func or flops)", "roofline"),
     ]:
         n = cov[key]
         p = n / total * 100 if total else 0
@@ -262,14 +230,10 @@ def render_markdown(stats: dict[str, Any]) -> str:
     lines.append("### Conformance gaps")
     lines.append("")
     lines.append(
-        f"- Implemented ops without `kernel_map`: **{len(gaps['implemented_without_kernel_map'])}**"
-    )
-    lines.append(
         f"- Implemented ops without `roofline`: **{len(gaps['implemented_without_roofline'])}**"
     )
     lines.append(
-        f"- Implemented ops without `source.bench_manifest_driven`: "
-        f"**{len(gaps['implemented_without_bench_manifest_driven'])}**"
+        f"- Implemented ops without `workloads`: **{len(gaps['implemented_without_workloads'])}**"
     )
     lines.append(
         f"- Implemented ops with fewer than two workloads: "
@@ -303,7 +267,7 @@ def render_badges(stats: dict[str, Any]) -> dict[str, dict[str, Any]]:
     impl = stats["by_status"].get("implemented", 0)
     pct_impl = (impl / total * 100) if total else 0.0
 
-    missing_bench = len(stats["conformance_gaps"]["implemented_without_bench_manifest_driven"])
+    missing_bench = len(stats["conformance_gaps"]["implemented_without_workloads"])
     impl_benched = impl - missing_bench
     pct_bench = (impl_benched / impl * 100) if impl else 0.0
 
@@ -376,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help=(
             "Write a directory containing shields.io endpoint JSON files "
-            "(manifest-implemented.json, manifest-kernel-map.json). "
+            "(manifest-implemented.json, manifest-benchmark.json). "
             "Independent of --format/--output."
         ),
     )

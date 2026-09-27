@@ -1,4 +1,3 @@
-import contextlib
 import dataclasses
 import functools
 import inspect
@@ -33,13 +32,8 @@ from tileops.backend.dispatch import registered_kernel_builder, select_target
 from tileops.backend.registry import ensure_loaded
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.manifest import load_manifest
-from tileops.manifest.rule_eval import bind_declared_shapes, eval_shape_rule
 
-from ._output_dtype import output_dtype
 from .compile_boundary import register_instance
-
-# Module-level dedup for empty-static_dims warnings; keyed by Op subclass.
-_EMPTY_STATIC_DIMS_WARNED: set = set()
 
 _Entry = TypeVar("_Entry")
 
@@ -62,8 +56,8 @@ _UNRESOLVED = _Unresolved()
 # it and every sub-op it builds, so every key that can replace something in that op is here.
 _DISPATCH_KEYS: set[str] = set()
 
-# The converted ops' calls in progress on this thread, innermost last, each with the checked
-# calls completed inside it: what a composite's call collects from its sub-ops.
+# The calls in progress on this thread, innermost last, each with the checked calls completed
+# inside it: what a composite's call collects from its sub-ops.
 _OPEN_CALLS = threading.local()
 
 
@@ -74,73 +68,6 @@ def _open_calls() -> list:
     return calls
 
 
-@functools.lru_cache(maxsize=1)
-def _declared_dispatch_keys() -> Optional[frozenset[str]]:
-    """Every dispatch key a legacy manifest entry declares in ``source.kernel_map``.
-
-    A key outside this set names no op's kernel anywhere: a typo, or a name that
-    was renamed out of existence. A key inside it may still be unknown to the op
-    being constructed, because a composite hands each sub-op the whole set the
-    caller gave it and one sub-op's key is another's stranger.
-
-    ``None`` when the manifest cannot be read, which disables the check: it says nothing
-    about which keys exist, and refusing every override on that basis would stop ops that
-    are otherwise fine from constructing.
-    """
-    keys: set[str] = set()
-    try:
-        entries = load_manifest().values()
-    except Exception:  # noqa: BLE001 - an unreadable manifest disables the check, not the op
-        return None
-    for entry in entries:
-        source = entry.get("source") if isinstance(entry, dict) else None
-        declared = source.get("kernel_map") if isinstance(source, dict) else None
-        if isinstance(declared, dict):
-            keys.update(declared)
-    return frozenset(keys)
-
-
-_RECORDING_CALLS = False
-
-
-@contextlib.contextmanager
-def _recording_roofline_calls() -> "Iterator[None]":
-    """Have every op call inside this block remember its input shapes and dtypes.
-
-    ``eval_roofline_read_bytes()`` prices the write half from the output
-    shapes, which the input shapes decide, and an op keeps only what its own
-    ``eval_roofline`` needs. The NCU bytes audit wraps the call it reads that
-    declaration off.
-
-    Instrumentation, not operator interface, and off outside the block: the
-    recording costs about a microsecond per call, which every benchmark row
-    would otherwise carry.
-    """
-    global _RECORDING_CALLS
-    previous = _RECORDING_CALLS
-    _RECORDING_CALLS = True
-    try:
-        yield
-    finally:
-        _RECORDING_CALLS = previous
-
-
-@functools.lru_cache(maxsize=None)
-def _forward_input_names(op_name: str) -> tuple[str, ...]:
-    """The op's ``forward`` input names, or empty when the manifest has none.
-
-    Cached per op: every call records its tensors, and reading the manifest
-    each time costs more than the rest of the recording together.
-    """
-    entry = load_manifest().get(op_name)
-    if entry is None:
-        return ()
-    try:
-        return tuple(entry["signature"]["inputs"])
-    except Exception:
-        return ()
-
-
 class Op(ABC):
     """Base class for TileOPs operations.
 
@@ -148,7 +75,6 @@ class Op(ABC):
         kernel: single kernel, for ops that hold one; ops that build per
             specialization use ``kernel_for`` instead
         dtype: Data type for computation (e.g., torch.float16)
-        input_shapes: Expected input tensor shapes
 
     Properties:
         total_flops (optional): Total flops for the op.
@@ -183,47 +109,25 @@ class Op(ABC):
     # Held sub-ops, ``{stage: {key: op}}``. Annotation only, like ``_kernel_roles``.
     _delegates: dict[str, dict[Hashable, "Op"]]
     dtype: Optional[torch.dtype] = None
-    # This call's input shapes and dtypes, while a recording block is open.
-    _roofline_call_tensors: Optional[dict] = None
-    input_shapes: Optional[list[tuple]] = None
     # Whether kernels this op builds tune themselves. A ctor kwarg on the ops
     # that offer one, and what ``autotune()`` sets; a factory reads it when it
     # runs, so it governs every build that follows.
     tune: bool = False
 
-    # Set of (input_index, axis) pairs identifying static (ctor-committed) axes.
-    # `input_index` is the position in *input_shapes; `axis` is a non-negative
-    # axis index within that shape. Subclasses set this to reflect their
-    # manifest `static_dims`. Default empty = no committed axes.
-    _static_axes: frozenset[tuple[int, int]] = frozenset()
-
     def __init_subclass__(cls, **kwargs: object) -> None:
-        """Auto-install manifest-derived methods on concrete subclasses.
+        """Install what the subclass's manifest entry generates, and the param names a
+        backend's ``build_kernel`` is called with.
 
-        Synthesizes ``_validate_dtypes`` (per docs/design/ops-design.md
-        §Step 5) and ``eval_roofline`` (per docs/design/roofline.md §4.4)
-        from the subclass's manifest entry, attaches the manifest param names a
-        backend's ``build_kernel`` is called with, and registers the compile-boundary
-        operators the subclass declares. Each codegen pass is a no-op
-        when the subclass does not advertise manifest metadata or supplies
-        its own override; a ``status: spec-only`` subclass gets only the compile
-        boundary it declares.
+        A subclass without an entry gets neither; a ``status: spec-only`` one gets only the
+        compile boundary it declares.
         """
         super().__init_subclass__(**kwargs)
         _DISPATCH_KEYS.update(cls.__dict__.get("kernel_types", {}))
-        from tileops.ops._compile_boundary_codegen import maybe_install_compile_boundary
-        from tileops.ops._dtype_codegen import maybe_install_validator
         from tileops.ops._params_codegen import maybe_install_param_names
-        from tileops.ops._roofline_codegen import maybe_install_eval_roofline
         from tileops.ops._signature_codegen import maybe_install_signature
 
-        converted = maybe_install_signature(cls)
-        if not converted:
-            maybe_install_validator(cls)
-            maybe_install_eval_roofline(cls)
+        maybe_install_signature(cls)
         maybe_install_param_names(cls)
-        if not converted:
-            maybe_install_compile_boundary(cls)
 
     # The op's dispatch keys and the kernel class each names. An op with no kernel of its own
     # (a composite) declares none.
@@ -254,16 +158,12 @@ class Op(ABC):
     # Operators this op registers on the torch.compile boundary. Naming them is what lets
     # a test assert the traced graph holds nothing else, which is what keeps the graph the
     # same when another target serves the op. A tuple because a conditional in-place write
-    # registers two. Registration happens once per class, so this is class state; an op
-    # that declares ``torch_compile_fullgraph`` names its operators, which
-    # ``register_compile_contract`` requires.
+    # registers two. Registration happens once per class, so this is class state.
     compile_op_names: ClassVar[tuple[str, ...]] = ()
 
-    # The compile boundary this op declares, which is its claim that it supports
-    # ``fullgraph=True``: ``True`` for a parametric entry, whose operators the signature
-    # generates; for a legacy entry, one ``OperatorSpec`` per operator it registers. Empty
-    # leaves the op off the boundary.
-    compile_boundary: ClassVar["bool | tuple[object, ...]"] = ()
+    # Whether this op declares a compile boundary, which is its claim that it supports
+    # ``fullgraph=True``; the signature generates its operators.
+    compile_boundary: ClassVar[bool] = False
 
     # Injected implementation objects ``__init__`` takes beyond ``signature.params`` and the
     # execution-policy parameters every op takes (docs/design/manifest.md § Signature).
@@ -325,16 +225,12 @@ class Op(ABC):
         ``bytes`` already counted that part.
 
         Returns:
-            The read half in bytes, or ``None`` when the call has not bound what
-            the write half needs.
+            The read half in bytes, or ``None`` for an op without a generated signature.
         """
-        if getattr(type(self), "_signature", None) is not None:
-            call = self.last_call
-            write_bytes = sum(call.bytes(t) * w for t, _, w in call.traffic)
-            return int(self.eval_roofline()[1]) - write_bytes
-        write_bytes = self._roofline_write_bytes()
-        if write_bytes is None:
+        if getattr(type(self), "_signature", None) is None:
             return None
+        call = self.last_call
+        write_bytes = sum(call.bytes(t) * w for t, _, w in call.traffic)
         return int(self.eval_roofline()[1]) - write_bytes
 
     def roofline_inputs(self) -> "dict[str, int]":
@@ -348,59 +244,6 @@ class Op(ABC):
         unless the op's traffic follows its inputs' values.
         """
         return {}
-
-    def _roofline_write_bytes(self) -> Optional[int]:
-        """Bytes this call writes, from the signature alone, or ``None`` when the
-        call has not bound the shapes or dtypes that price them."""
-        from tileops.manifest import load_manifest
-        from tileops.ops._output_dtype import output_dtype
-
-        entry = load_manifest().get(type(self).__name__)
-        if entry is None:
-            return None
-        signature = entry.get("signature") or {}
-        inputs = signature.get("inputs") or {}
-        outputs = signature.get("outputs") or {}
-        order = list(inputs)
-        recorded = getattr(self, "_roofline_call_tensors", None) or {}
-        shapes = []
-        for name in order:
-            if name in recorded:
-                shapes.append(recorded[name][0])
-                continue
-            bound = getattr(self, name, None)
-            shape = getattr(bound, "shape", None) or getattr(self, f"{name}_shape", None)
-            shapes.append(None if shape is None else tuple(shape))
-        try:
-            out_shapes = self._infer_output_shapes(*shapes)
-        except Exception:
-            return None
-        dtype = getattr(self, "dtype", None)
-        total = 0
-        for name, shape in out_shapes.items():
-            try:
-                elem = output_dtype(self, name, dtype).itemsize
-            except Exception:
-                return None
-            total += math.prod(shape) * elem
-        # A ``mutated`` input is written too, unless that write is the output's:
-        # an op with an ``inplace`` param may write into the input it read.
-        has_inplace = "inplace" in (signature.get("params") or {})
-        for name, spec in inputs.items():
-            if not (spec or {}).get("mutated") or name in outputs or has_inplace:
-                continue
-            shape = shapes[order.index(name)]
-            if shape is None:
-                continue
-            if name in recorded:
-                elem = recorded[name][1].itemsize
-            else:
-                bound = getattr(self, name, None)
-                elem = getattr(getattr(bound, "dtype", None), "itemsize", None)
-            if elem is None:
-                return None
-            total += math.prod(shape) * elem
-        return total
 
     def compute_roof(self) -> str:
         """GPU-profile key of the compute unit that prices this op's FLOPs.
@@ -434,13 +277,9 @@ class Op(ABC):
         Raises:
             ValueError: *override* names a key nothing declares.
         """
-        legacy = _declared_dispatch_keys()
-        if legacy is None:
+        if not _DISPATCH_KEYS:
             return
-        declared = _DISPATCH_KEYS | legacy
-        if not declared:
-            return
-        stale = sorted(set(override) - declared - set(own))
+        stale = sorted(set(override) - _DISPATCH_KEYS - set(own))
         if stale:
             raise ValueError(
                 f"{type(self).__name__} was given kernel_map keys no op has: {stale}. "
@@ -723,15 +562,15 @@ class Op(ABC):
         bound.apply_defaults()
         names, _ = self._forward_io()
         inputs = tuple(bound.arguments.get(name) for name in names)
-        # A converted op's generated check reports a non-tensor `out` by name.
-        converted = getattr(type(self), "_signature", None) is not None
+        # A generated check reports a non-tensor `out` by name.
+        generated = getattr(type(self), "_signature", None) is not None
         writes = {
             name: value
             for name, value in bound.arguments.items()
             if name not in names
             and (
                 isinstance(value, torch.Tensor)
-                or (converted and name == "out" and value is not None)
+                or (generated and name == "out" and value is not None)
             )
         }
         return inputs, writes
@@ -739,7 +578,7 @@ class Op(ABC):
     def _check_signature(
         self, inputs: "tuple[torch.Tensor | None, ...]", writes: "dict[str, torch.Tensor]"
     ) -> object:
-        """Run the checks generated from a converted entry's signature; None for other ops."""
+        """Run the checks generated from the entry's signature; None for an op without them."""
         plan = getattr(type(self), "_signature", None)
         if plan is None:
             return None
@@ -827,15 +666,15 @@ class Op(ABC):
             OpNotAvailableError: What :meth:`_resolve_builder` raises.
         """
         settled_here = self._builder is _UNRESOLVED
-        converted = getattr(type(self), "_signature", None) is not None
-        if settled_here and not converted:
+        generated = getattr(type(self), "_signature", None) is not None
+        if settled_here and not generated:
             # ``__call__`` settled this already — unless it was traced. Dynamo defers a
             # traced frame's attribute writes until after the graph has run, so the
             # operator body arrives here still ``_UNRESOLVED``.
             self._resolve_builder(inputs, writes)
         try:
             call = self._check_signature(inputs, writes)
-            if settled_here and converted:
+            if settled_here and generated:
                 self._resolve_builder(inputs, writes, call.device)
             if self._served_by_target():
                 result = self._call_target(inputs, writes, _written, _execution)
@@ -861,21 +700,20 @@ class Op(ABC):
         """Run the whole op on the target this instance settled on.
 
         What the op layer guarantees every target: every tensor on one device, every
-        input the call does not write contiguous, and — checked once per signature — the
-        input dtypes and shape rules the manifest states. The kernel is built once per
-        device and per input dtype and shape. A legacy op's completed call leaves
-        ``self.<input>_shape`` and ``self.dtype``, the state its roofline reads.
+        input the call does not write contiguous, and the checks generated from the signature.
+        The kernel is built once per device and per input dtype and shape.
 
         Raises:
-            ValueError: The call breaks that guarantee, or every output would be empty.
+            ValueError: The tensors of an op without a generated signature are on several
+                devices.
             OpNotAvailableError: The builder returned something that is not callable.
         """
         devices = {t.device for t in (*inputs, *writes.values()) if t is not None}
-        # A converted entry's generated checks placed the call, `device: cpu` tensors aside.
-        converted = getattr(type(self), "_signature", None) is not None
-        if converted:
+        # The generated checks placed the call, `device: cpu` tensors aside.
+        generated = getattr(type(self), "_signature", None) is not None
+        if generated:
             devices = {d for d in devices if d.type != "cpu"} or devices
-        if len(devices) > 1 and not converted:
+        if len(devices) > 1 and not generated:
             raise ValueError(
                 f"{type(self).__name__} needs every tensor on one device; got "
                 f"{sorted(map(str, devices))}"
@@ -893,17 +731,6 @@ class Op(ABC):
             None if t is None else (t.dtype, tuple(t.shape)) for t in inputs
         )
         named = dict(zip(names, inputs, strict=True))
-        # A caller's output buffer is checked too, but the builder never sees it.
-        checked = signature + tuple(
-            (name, t.dtype, tuple(t.shape)) for name, t in sorted(writes.items())
-        )
-        seen = getattr(self, "_target_checked", None)
-        if seen is None:
-            seen = self._target_checked = set()
-        if checked not in seen:
-            if not converted:
-                self._check_target_call(named, writes)
-            seen.add(checked)
         kernels = getattr(self, "_target_kernels", None)
         if kernels is None:
             kernels = self._target_kernels = {}
@@ -911,58 +738,11 @@ class Op(ABC):
         if kernel is None:
             kernel = kernels[signature] = self._build_target_kernel(named)
         result = kernel(*inputs, **writes, **(execution or {}))
-        # A legacy roofline reads the last call from attributes; a converted op reads
-        # `last_call`, and its attributes may be constructor parameters such as `dtype`.
-        if not converted:
-            for name, t in zip(names, inputs, strict=True):
-                setattr(self, f"{name}_shape", None if t is None else tuple(t.shape))
-            self.dtype = next((t.dtype for t in inputs if t is not None), self.dtype)
         # An op whose every output is an input it writes returns nothing, as its forward does.
         outputs = self._forward_outputs()
         if outputs and all(name in named for name in outputs):
             return None
         return result
-
-    def _check_target_call(
-        self, inputs: "dict[str, torch.Tensor | None]", writes: "dict[str, torch.Tensor]"
-    ) -> None:
-        """Hold a call the target has not seen yet to the manifest.
-
-        A caller-supplied output buffer is the op's output, so it is held to that
-        output's dtype and shape rules under the output's name.
-
-        Raises:
-            ValueError: An input dtype, the buffer's dtype, or a shape rule the manifest
-                states does not hold, or every output would be empty.
-        """
-        check = getattr(type(self), "_validate_manifest_dtypes", None)
-        if check is not None:
-            check(self, **{name: t for name, t in inputs.items() if t is not None})
-        signature = (load_manifest().get(type(self).__name__) or {}).get("signature") or {}
-        outputs = tuple(signature.get("outputs") or ())
-        filled = {}
-        if writes and len(outputs) == 1:
-            (buffer,) = writes.values()
-            dtype = next((t.dtype for t in inputs.values() if t is not None), None)
-            expected = output_dtype(self, outputs[0], dtype)
-            if buffer.dtype != expected:
-                raise ValueError(
-                    f"{type(self).__name__}: the output buffer is {buffer.dtype}, but "
-                    f"{outputs[0]!r} is {expected}"
-                )
-            filled = {outputs[0]: buffer}
-        try:
-            extents = bind_declared_shapes(signature, inputs)
-        except ValueError as exc:
-            raise ValueError(f"{type(self).__name__}: {exc}") from None
-        scope = {**extents, **inputs, **filled, **self._manifest_params()}
-        for rule in signature.get("shape_rules") or ():
-            holds, unevaluable = eval_shape_rule(rule, scope)
-            if not holds and unevaluable is None:
-                raise ValueError(
-                    f"{type(self).__name__}: this call breaks the manifest shape rule {rule!r}"
-                )
-        self._refuse_empty_input(tuple(inputs.values()))
 
     def _build_target_kernel(self, inputs: "dict[str, torch.Tensor | None]") -> object:
         """Ask the target for the kernel serving calls described by *inputs*.
@@ -1218,14 +998,14 @@ class Op(ABC):
         A call that fails settles nothing, so one invalid call cannot aim the instance
         for good.
         """
-        converted = getattr(type(self), "_signature", None) is not None
-        settled_here = self._builder is _UNRESOLVED and not (converted and self.compile_op_names)
-        if settled_here and not converted:
+        generated = getattr(type(self), "_signature", None) is not None
+        settled_here = self._builder is _UNRESOLVED and not (generated and self.compile_op_names)
+        if settled_here and not generated:
             self._resolve_builder(args, kwargs)
         try:
             call, bound = None, None
-            # A converted op without a compile boundary claims no traced contract.
-            if converted and not self.compile_op_names and not torch.compiler.is_compiling():
+            # An op without a compile boundary claims no traced contract.
+            if generated and not self.compile_op_names and not torch.compiler.is_compiling():
                 bound = self._bind_forward(args, kwargs)
                 call = self._check_signature(*bound)
                 if settled_here:
@@ -1245,32 +1025,7 @@ class Op(ABC):
             if settled_here:
                 self._unsettle()
             raise
-        if _RECORDING_CALLS or self._roofline_call_tensors is not None:
-            self._track_roofline_call(args, kwargs)
         return result
-
-    def _track_roofline_call(self, args: tuple, kwargs: dict) -> None:
-        """Keep the record of this call's input tensors current.
-
-        Outside a recording block, and under ``torch.compile`` where building
-        the dict would break the graph, the record is dropped rather than left
-        describing an earlier call.
-        """
-        if not _RECORDING_CALLS or torch.compiler.is_compiling():
-            self._roofline_call_tensors = None
-            return
-        names = _forward_input_names(type(self).__name__)
-        if not names:
-            return
-        # A call may omit an optional input, so the lists need not be equal.
-        recorded = {}
-        for name, value in zip(names, args, strict=False):
-            if isinstance(value, torch.Tensor):
-                recorded[name] = (tuple(value.shape), value.dtype)
-        for name, value in kwargs.items():
-            if name in names and isinstance(value, torch.Tensor):
-                recorded[name] = (tuple(value.shape), value.dtype)
-        self._roofline_call_tensors = recorded
 
     def _refuse_empty_input(self, inputs: "Sequence[torch.Tensor | None]") -> None:
         """Raise for a call whose every declared output would hold no elements.
@@ -1377,35 +1132,3 @@ class Op(ABC):
             )
         self._settled_target = target
         self._builder = builder
-
-    def _cache_key(self, *input_shapes: tuple[int, ...]) -> Hashable:
-        """Return a cache key for kernel dispatch given forward-time input shapes.
-
-        The default is every axis not named by ``self._static_axes``. Correct for any
-        op, but with ``_static_axes`` empty it compiles once per distinct input shape
-        and warns once per subclass.
-
-        Override to project the shape onto whatever the kernel math depends on — for
-        example, flattening leading dims to one product when the kernel treats the
-        input as 2D.
-        """
-        if not self._static_axes and type(self)._cache_key is Op._cache_key:
-            cls = type(self)
-            if cls not in _EMPTY_STATIC_DIMS_WARNED:
-                _EMPTY_STATIC_DIMS_WARNED.add(cls)
-                warnings.warn(
-                    f"{cls.__name__}: Op._cache_key() called with empty "
-                    f"_static_axes and no subclass override. The default "
-                    f"keys the kernel cache by the full input shape, which "
-                    f"produces one compile per distinct shape under dynamic "
-                    f"inputs. Override _cache_key to project onto whatever "
-                    f"the kernel math actually depends on.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-        return tuple(
-            s
-            for i, shape in enumerate(input_shapes)
-            for axis, s in enumerate(shape)
-            if (i, axis) not in self._static_axes
-        )

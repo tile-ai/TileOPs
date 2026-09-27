@@ -1,9 +1,9 @@
 """Roofline cost-model functions for Tier 2 ops (attention, conv, MoE, etc.).
 
-Each function returns a ``(flops, bytes)`` tuple of ints, matching the
-``Op.eval_roofline(self) -> tuple[int, int]`` shape that codegen emits for ``func`` mode
-(see ``docs/design/roofline.md`` §4.4.2). A parametric entry's function takes the checked
-call; a legacy entry's takes the bound Op instance.
+Each function returns a ``(flops, bytes)`` tuple of ints, the shape of
+``Op.eval_roofline(self) -> tuple[int, int]``. A manifest ``roofline.func`` takes the checked
+call (``docs/design/roofline.md`` § Formula Modes); a function taking an op instance serves the
+hand-written ``eval_roofline`` of a spec-only op.
 
 These are referenced from ``src/tileops/manifest/`` via the ``roofline.func``
 field.

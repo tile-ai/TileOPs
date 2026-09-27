@@ -1,4 +1,4 @@
-"""Contracts every implemented parametric entry keeps (docs/design/manifest.md § Workloads,
+"""Contracts every implemented entry keeps (docs/design/manifest.md § Workloads,
 § Algebraic Data Types).
 
 An op that cannot run on meta tensors keeps its completed-call contract in its family's
@@ -11,18 +11,17 @@ from tileops.backend import OpNotAvailableError
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest.plan import check_entry, entry_plan
 from tileops.manifest.registry import op_class
-from tileops.manifest.signature import is_legacy
 from tileops.manifest.values import ADTValue, convert
 from tileops.manifest.workload import instantiate
 
 pytestmark = pytest.mark.smoke
 
-_PARAMETRIC = {n: e for n, e in load_manifest().items() if not is_legacy(e)}
-_IMPLEMENTED = sorted(n for n, e in _PARAMETRIC.items() if e.get("status") == "implemented")
+_MANIFEST = load_manifest()
+_IMPLEMENTED = sorted(n for n, e in _MANIFEST.items() if e.get("status") == "implemented")
 
 
 def _calls(name: str):
-    entry = _PARAMETRIC[name]
+    entry = _MANIFEST[name]
     plan = entry_plan(name, entry, load_adts())
     for row in entry["workloads"]:
         for case in row.get("dtype_cases") or [{}]:
@@ -31,8 +30,8 @@ def _calls(name: str):
 
 @pytest.mark.parametrize("name", _IMPLEMENTED)
 def test_every_manifest_call_completes_on_meta(name):
-    assert check_entry(name, _PARAMETRIC[name], load_adts()) == ([], [])
-    cls = op_class(name, _PARAMETRIC[name])
+    assert check_entry(name, _MANIFEST[name], load_adts()) == ([], [])
+    cls = op_class(name, _MANIFEST[name])
     for call in _calls(name):
         tensors = call.materialize("meta")
         op = cls(**call.arguments(tensors))
@@ -53,7 +52,7 @@ def test_each_adt_constructor_round_trips(adt):
     """A row's literal builds its constructor's object, which the construction check takes
     back with the literal's fields."""
     seen = set()
-    for name in _PARAMETRIC:
+    for name in _MANIFEST:
         for call in _calls(name):
             objects = call.arguments(dict.fromkeys(call.signature.ctor_tensors))
             for p, literal in call.params.items():

@@ -213,7 +213,7 @@ def __init__(
 
 **Output.** Nothing to write. `_infer_output_shapes`, `_validate_dtypes`, the call checks around `forward` and `eval_roofline` are generated from the signature and the `roofline` field; see [manifest.md § Call Semantics](manifest.md#call-semantics) and [roofline.md §4.4](roofline.md#44-op-codegen).
 
-**Validation.** `python scripts/validate_manifest.py --strict` on every `status: implemented` entry.
+**Validation.** `python scripts/validate_manifest.py`.
 
 **Reference.** [Slot S17](op-slot-rules.md#slot-s17), [S18](op-slot-rules.md#slot-s18), [S19](op-slot-rules.md#slot-s19).
 
@@ -275,7 +275,7 @@ Contract for every op registered for `fullgraph=True` compilation while resolvin
 
 **Decisions.**
 
-- A class declaring a compile boundary claims `fullgraph=True` support: a parametric class declares `compile_boundary = True`, a legacy one keeps its `OperatorSpec`s. The manifest records nothing; the registered compile tests are the evidence, and their set equals the implemented classes declaring a boundary.
+- A class declaring `compile_boundary = True` claims `fullgraph=True` support. The manifest records nothing; the registered compile tests are the evidence, and their set equals the implemented classes declaring a boundary.
 - The operators are generated from the manifest entry, one `torch.library.custom_op` per effect branch ([manifest.md § Effects](manifest.md#effects)), so no op writes registration code and a schema cannot drift from its entry. The operator is what makes the graph node this op's, and it stays the same node when a target serves the op.
 - `forward` only chooses which operator to call. The operator's eager body runs the generated checks once, then the in-tree kernels (`_eager_forward`) or the target; its fake comes from the signature.
 - An op's operators write exactly the inputs the manifest marks `mutated`; the validator holds them equal.

@@ -9,7 +9,7 @@ import yaml
 
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.workload import instantiate
-from tileops.ops._signature_codegen import install
+from tileops.ops._signature_codegen import install, operator_name
 
 pytestmark = pytest.mark.smoke
 
@@ -124,7 +124,7 @@ def _boundary_forward(eager):
 
 
 def _probe(name, signature, forward, *, boundary=False, roofline=None):
-    """An `Op` subclass whose converted entry is *signature* and whose `forward` is *forward*."""
+    """An `Op` subclass whose entry is *signature* and whose `forward` is *forward*."""
     from tileops.ops.op_base import Op
 
     entry = {
@@ -725,3 +725,16 @@ def test_a_meta_call_of_an_op_returning_nothing_completes_and_is_priced():
     x = torch.empty(3, 8, dtype=torch.float16, device="meta")
     assert op(torch.empty_like(x), x) is None
     assert op.eval_roofline() == (24, 2 * 3 * 8 * 2)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "family, class_name, expected",
+    [
+        ("norm", "RMSNormFwdOp", "norm_rms_norm_fwd"),
+        ("convolution", "Conv2dFwdOp", "convolution_conv2d_fwd"),
+        ("moe", "MoePrePermuteFwdOp", "moe_pre_permute_fwd"),
+    ],
+)
+def test_the_operator_names_its_family_once(family: str, class_name: str, expected: str) -> None:
+    assert operator_name(family, class_name) == expected

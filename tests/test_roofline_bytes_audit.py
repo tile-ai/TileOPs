@@ -1,13 +1,11 @@
 """Verdict logic of scripts/validate_roofline_bytes.py (roofline.md §4.5)."""
 
 import importlib.util
-import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import torch
 
 pytestmark = pytest.mark.smoke
 
@@ -58,76 +56,15 @@ class TestReadSideVerdict:
 class TestReadBoundException:
     """The exception covers the calls its condition names and no others."""
 
-    ENTRY = {
-        "signature": {"params": {"p": {"default": 0.5}, "training": {"default": True}}},
-        "roofline": {
-            "read_bound_exception": {
-                "when": "training and 0.0 < p < 1.0",
-                "reason": "the mask can predicate away a dropped position's load",
-            }
-        },
-    }
+    def test_the_condition_reads_the_instantiated_call(self):
+        """Eval mode copies the input, so the full read really is required there."""
+        from tileops.manifest import load_manifest
 
-    def test_a_row_inside_the_condition_is_waived(self):
-        assert audit.read_bound_exception(self.ENTRY, {"p": 0.5, "training": True})
-
-    def test_a_row_outside_it_is_judged(self):
-        """Eval mode copies the input, so the full read really is required."""
-        assert audit.read_bound_exception(self.ENTRY, {"p": 0.5, "training": False}) == ""
-        assert audit.read_bound_exception(self.ENTRY, {"p": 0.0, "training": True}) == ""
-
-    def test_a_row_that_omits_the_key_falls_back_to_the_param_default(self):
-        assert audit.read_bound_exception(self.ENTRY, {"p": 0.5})
-
-    def test_the_condition_reads_the_element_type_the_row_expands_to(self, tmp_path):
-        """A row states a dtype axis; the call runs one of them, and whether a load
-        can be predicated away can follow it. The audited row is what the condition
-        sees, so this goes through the run that produces a verdict."""
-        entry = {
-            "source": {},
-            "signature": {"params": {}},
-            "roofline": {
-                "read_bound_exception": {
-                    "when": "dtype == 'float16'",
-                    "reason": "the packed load covers a dropped position",
-                }
-            },
-            "workloads": [
-                {"x_shape": [64], "dtypes": ["float16", "float32"], "label": "row"},
-            ],
-        }
-        verdicts = {}
-        for dtype_str in ("float16", "float32"):
-            rows = self._audited(entry, dtype_str, tmp_path)
-            verdicts[dtype_str] = rows[0]["verdict"]
-        assert verdicts == {"float16": "EXEMPT", "float32": "FAIL"}
-
-    @staticmethod
-    def _audited(entry: dict, dtype_str: str, tmp_path) -> list[dict]:
-        """Run audit_one over one dtype, with the profiler and its CSV stubbed.
-
-        The child would need a GPU and ncu needs counters no test has, so what
-        is exercised here is what the audit does with a measurement: which row
-        and dtype reach the condition.
-        """
-        import subprocess
-        from unittest import mock
-
-        declared, measured = 1024, 512  # a shortfall, whatever the dtype
-        emitted = json.dumps(
-            {"formula_flops": 0, "formula_bytes": declared * 2, "read_bytes": declared}
-        )
-        row = dict(entry["workloads"][0], dtypes=[dtype_str])
-        with (
-            mock.patch.object(audit, "_pick_workloads", return_value=[(row, dtype_str)]),
-            mock.patch.object(
-                subprocess,
-                "run",
-                return_value=subprocess.CompletedProcess([], 0, stdout=emitted, stderr=""),
-            ),
-            mock.patch.object(audit, "_parse_ncu_csv", return_value=((measured, 0.0), 1)),
-        ):
-            return audit.audit_one("Op", entry, tmp_path)
+        entry = load_manifest()["DropoutFwdOp"]
+        row = entry["workloads"][0]
+        case = row["dtype_cases"][0]
+        assert audit._exception("DropoutFwdOp", entry, {**row, "training": True}, case)
+        assert audit._exception("DropoutFwdOp", entry, {**row, "training": False}, case) == ""
 
     def test_an_op_whose_every_row_is_waived_is_named(self):
         """Its read half went unjudged, which a run has to say rather than count as
@@ -139,19 +76,6 @@ class TestReadBoundException:
             {"op": "Judged", "verdict": "PASS"},
         ]
         assert audit.fully_waived(results) == ["Waived"]
-
-    def test_an_entry_without_the_exception_waives_nothing(self):
-        assert audit.read_bound_exception({"roofline": {}}, {"p": 0.5}) == ""
-
-    def test_the_manifest_states_both_halves_wherever_it_waives(self):
-        from tileops.manifest import load_manifest
-
-        for name, entry in load_manifest().items():
-            stated = (entry.get("roofline") or {}).get("read_bound_exception")
-            if stated is None:
-                continue
-            assert stated.get("when", "").strip(), name
-            assert stated.get("reason", "").strip(), name
 
 
 class TestDeclaredReadHalf:
@@ -217,50 +141,6 @@ class TestExitCode:
         """Green is an allowlist: a run whose rows carry a spelling this file does
         not know has not been judged, whatever that spelling was meant to say."""
         assert audit.exit_code({"PASS": 2, "EXEMPTED": 1}) == 1
-
-
-class TestReadHalfAfterACall:
-    """The audit reads the declaration off an op it has just called."""
-
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="the audit calls the op")
-    def test_an_op_that_keeps_no_input_shape_still_declares_its_read_half(self):
-        """An op keeps what its own `eval_roofline` needs: `DropoutFwdOp` keeps an
-        element count and a dtype, never a shape. The write half is priced from the
-        output shapes, which the call's input shapes decide, so `Op.__call__` records
-        them."""
-        from tileops.ops.dropout import DropoutFwdOp
-        from tileops.ops.op_base import _recording_roofline_calls
-
-        op = DropoutFwdOp(p=0.5)
-        x = torch.rand(2048, 4096, dtype=torch.float16, device="cuda")
-        with _recording_roofline_calls():
-            op(x)
-        assert op.eval_roofline_read_bytes() == x.numel() * x.element_size()
-
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="the audit calls the op")
-    def test_a_call_outside_the_block_records_nothing(self):
-        """The recording costs about a microsecond a call, which every other caller
-        must stay clear of."""
-        from tileops.ops.dropout import DropoutFwdOp
-        from tileops.ops.op_base import _recording_roofline_calls
-
-        op = DropoutFwdOp(p=0.5)
-        x = torch.rand(64, 64, dtype=torch.float16, device="cuda")
-        with _recording_roofline_calls():
-            op(x)
-        op(x)
-        assert getattr(op, "_roofline_call_tensors", None) is None
-
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="the audit calls the op")
-    def test_the_gemm_case_builds_the_layout_its_row_names(self):
-        """`trans_a` / `trans_b` decide which axis of each operand contracts, and a
-        row that names them describes operands stored that way."""
-        from tileops.manifest import load_manifest
-
-        entry = load_manifest()["GemmFwdOp"]
-        row = {"m": 64, "n": 128, "k": 256, "trans_a": False, "trans_b": True}
-        op, (a, b) = audit._gemm_case("GemmFwdOp", entry, row, torch.float16)
-        assert (tuple(a.shape), tuple(b.shape)) == ((64, 256), (128, 256))
 
 
 class TestRooflineInputsRecording:

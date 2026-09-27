@@ -97,11 +97,10 @@ jobs:
           benchmark=false
           while IFS= read -r f; do
             [[ -z "$f" ]] && continue
-            # The Python helpers beside the YAML count too:
-            # `scripts/validate_manifest.py` imports `shape_rules` and
-            # `dtype_rules` at module scope, so either one decides what it accepts.
-            # The op classes count as well: the C3-C9 parity gates resolve each
-            # entry's class and compare its ctor, forward and `out_dtype` param
+            # The Python helpers beside the YAML count too: they decide what
+            # `scripts/validate_manifest.py` accepts. The op classes count as
+            # well: the parity check resolves each implemented entry's class and
+            # compares its ctor, forward and sub-op and kernel declarations
             # against the entry, so an op-only change can break the manifest
             # contract while leaving every YAML file untouched.
             case "$f" in
@@ -258,7 +257,7 @@ jobs:
         run: pip install -e . -c constraints.txt
 
       - name: Validate ops manifest
-        run: python scripts/validate_manifest.py --levels schema,signature,shape,dtype,bench --strict
+        run: python scripts/validate_manifest.py
 
   actionlint:
     needs: [validate-pr-title, ci-gate]

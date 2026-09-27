@@ -3,7 +3,7 @@
 What a backend is promised, checked on the whole manifest rather than on a sample: its
 builder is described with the op's ``forward`` inputs, the kernel it returns is called
 with exactly those tensors, and nothing on the way asks a CUDA device anything. A new op
-joins by having a manifest entry; one the workloads cannot build is listed in ``_CASES``.
+joins by having a manifest entry; its call is the manifest call with the smallest inputs.
 """
 
 import math
@@ -11,129 +11,18 @@ import math
 import pytest
 import torch
 
-from tests import roofline_binder as rb
 from tileops.backend import TensorSpec, registry
-from tileops.manifest import load_adts, load_manifest, load_workloads
+from tileops.manifest import load_adts, load_manifest
 from tileops.manifest.plan import entry_plan
-from tileops.manifest.signature import is_legacy
+from tileops.manifest.registry import op_class
 from tileops.manifest.workload import instantiate
-from tileops.ops._output_dtype import output_dtype
 
 pytestmark = pytest.mark.smoke
 
-F16, BF16, F32, I32, U8 = torch.float16, torch.bfloat16, torch.float32, torch.int32, torch.uint8
-FP8 = torch.float8_e4m3fn
-
-
-def _t(*shape: int, dtype: torch.dtype = F16) -> torch.Tensor:
-    return torch.empty(shape, dtype=dtype)
-
-
-# Ops whose construction arguments or input shapes no workload row states. Each builds the
-# op and the positional ``forward`` arguments; only dtypes and presence matter here.
-_CASES = {
-    "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp": lambda c: (
-        c(64, 1, 0),
-        (_t(1, 2, 16, 576), _t(1, 8, 1, 576), _t(1, 2, 1, 4, dtype=I32)),
-    ),
-    "GroupedQueryAttentionBwdOp": lambda c: (
-        c(),
-        (
-            _t(1, 16, 4, 64),
-            *[_t(1, 16, 2, 64)] * 2,
-            *[_t(1, 16, 4, 64)] * 2,
-            _t(1, 4, 16, dtype=F32),
-        ),
-    ),
-    "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp": lambda c: (
-        c(16),
-        (_t(2, 4, 64), *[_t(64, 2, 64)] * 2, _t(2, dtype=I32), _t(2, 4, dtype=I32)),
-    ),
-    "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": lambda c: (
-        c(16, 8),
-        (
-            _t(8, 4, 64),
-            *[_t(8, 2, 64)] * 2,
-            *[_t(64, 2, 64)] * 2,
-            *[_t(1, dtype=F32)] * 2,
-            _t(2, dtype=I32),
-            _t(1, dtype=I32),
-            _t(1, 4, dtype=I32),
-        ),
-    ),
-    "GroupedQueryAttentionSlidingWindowVarlenFwdOp": lambda c: (
-        c(8),
-        (_t(16, 4, 64), *[_t(16, 2, 64)] * 2, *[_t(3, dtype=I32)] * 2),
-    ),
-    "MultiHeadAttentionBwdOp": lambda c: (
-        c(),
-        (*[_t(1, 16, 4, 64)] * 5, _t(1, 4, 16, dtype=F32)),
-    ),
-    "MultiHeadAttentionDecodePagedWithKVCacheFwdOp": lambda c: (
-        c(16),
-        (_t(1, 1, 4, 64), *[_t(64, 4, 64)] * 2, _t(1, dtype=I32), _t(1, 4, dtype=I32)),
-    ),
-    "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp": lambda c: (
-        c(),
-        (_t(2, 4, 64), _t(2, 4, 32), _t(2, 64, 1, 64), _t(2, 64, 1, 32)),
-    ),
-    "NSAVarlenFwdOp": lambda c: (
-        c(True, 0.1, 32),
-        (
-            _t(64, 16, 64),
-            *[_t(64, 1, 64)] * 2,
-            _t(64, 1, 1, dtype=I32),
-            _t(64, 1, dtype=I32),
-            _t(2, dtype=I32),
-            _t(64, 2, dtype=I32),
-        ),
-    ),
-}
-
-
-def _from_workload(cls: type, name: str, entry: dict) -> tuple:
-    """The op and its ``forward`` arguments, from the smallest workload row that states them."""
-    signature = entry["signature"]
-    inputs, params = signature.get("inputs") or {}, signature.get("params") or {}
-    best = None
-    for row in load_workloads(name) or [{}]:
-        dtype = rb._torch_dtype((row.get("dtypes") or ["float16"])[0]) or F16
-        row = {**rb._declared_shapes(inputs, row, params), **row}
-        supplement = rb._ROW_SUPPLEMENT.get(name)
-        if supplement is not None:
-            row = {**supplement(row), **row}
-        shapes = [row.get(f"{n}_shape") for n in inputs]
-        if any(
-            s is None and not (inputs[n] or {}).get("optional")
-            for n, s in zip(inputs, shapes, strict=True)
-        ):
-            continue
-        size = sum(math.prod(s) for s in shapes if s)
-        if best is None or size < best[0]:
-            best = (size, row, dtype, shapes)
-    assert best is not None or not inputs, f"no workload row of {name} states every input"
-    _, row, dtype, shapes = best if best else (0, {}, F16, [])
-    kwargs = {n: rb._param_value(spec, row, n) for n, spec in params.items()}
-    op = cls(**{k: v for k, v in kwargs.items() if v is not None})
-    args = []
-    for n, shape in zip(inputs, shapes, strict=True):
-        built = row.get(n)
-        if isinstance(built, torch.Tensor):
-            args.append(built.cpu())
-        elif shape is None:
-            args.append(None)
-        else:
-            args.append(
-                _t(*shape, dtype=rb._resolve_dtype((inputs[n] or {}).get("dtype"), dtype, inputs))
-            )
-    while args and args[-1] is None:
-        args.pop()
-    return op, tuple(args)
-
 
 def _from_call(cls: type, name: str, entry: dict) -> tuple:
-    """A converted op, its ``forward`` arguments and the outputs its call declares, from the
-    manifest call with the smallest inputs."""
+    """The op, its ``forward`` arguments and the outputs its call declares, from the manifest
+    call with the smallest inputs."""
     plan = entry_plan(name, entry, load_adts(), resolve=False)
     calls = [
         instantiate(plan, row, case)
@@ -194,13 +83,8 @@ def no_cuda(monkeypatch):
 @pytest.mark.parametrize("name", _implemented())
 def test_a_target_is_described_and_called_with_the_forward_inputs(name):
     entry = load_manifest()[name]
-    cls = rb.op_class(name, entry)
-    parametric = not is_legacy(entry)
-    if parametric:
-        op, args, declared_outputs = _from_call(cls, name, entry)
-    else:
-        make = _CASES.get(name)
-        op, args = make(cls) if make else _from_workload(cls, name, entry)
+    cls = op_class(name, entry)
+    op, args, declared_outputs = _from_call(cls, name, entry)
     declared = tuple(entry["signature"].get("inputs") or {})
     passed = args + (None,) * (len(declared) - len(args))
     described = tuple(None if t is None else TensorSpec.of(t) for t in passed)
@@ -212,23 +96,7 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
 
         def kernel(*tensors, **writes):
             seen.append(tensors)
-            if parametric:
-                result = declared_outputs
-                returned.append(
-                    None if not result else result[0] if len(result) == 1 else tuple(result)
-                )
-                return returned[-1]
-            shapes = [None if t is None else tuple(t.shape) for t in tensors]
-            try:
-                out_shapes = op._infer_output_shapes(*shapes)
-            except Exception:
-                out_shapes = {}
-            outputs = entry["signature"]["outputs"]
-            dtype = next((t.dtype for t in tensors if t is not None), F16)
-            result = [
-                torch.empty(out_shapes.get(o, (0,)), dtype=output_dtype(op, o, dtype))
-                for o in outputs
-            ]
+            result = declared_outputs
             returned.append(
                 None if not result else result[0] if len(result) == 1 else tuple(result)
             )
@@ -251,12 +119,7 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
         assert all(a is b for a, b in zip(result, returned[0], strict=True))
     else:
         assert result is returned[0], "the op returns what the target's kernel returned"
-    if parametric:
-        assert hasattr(cls, "_signature"), "a target is held to its signature"
-    else:
-        assert not declared or hasattr(cls, "_validate_manifest_dtypes"), (
-            "a target is held to its dtypes"
-        )
+    assert hasattr(cls, "_signature"), "a target is held to its signature"
     inputs = entry["signature"].get("inputs") or {}
     assert all((inputs[o] or {}).get("mutated") for o in outputs if o in inputs), (
         "an output passed in as an input is one the call writes"

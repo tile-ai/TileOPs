@@ -379,10 +379,8 @@ class TestBytesOracle:
 #   one   The binder builds the case from the manifest: signature, one workload
 #         row, dtypes, mutation. It never reads the `roofline` block, and what it
 #         does share with the formula is written down: the minimum-traffic
-#         definition, the op's own `_infer_output_shapes`, and the manifest's
-#         output-dtype resolution. Computed, not
-#         listed -- adding an op earns this level or fails the completeness test
-#         below.
+#         definition and the checked call. Computed, not listed -- adding an op
+#         earns this level or fails the completeness test below.
 #   two   The binder cannot build the call and a case above does it by hand,
 #         with what the case shares written next to it.
 #   three No independent recount is available yet. Marked with what is missing,
@@ -419,14 +417,11 @@ def _implemented_ops() -> list[str]:
 
 
 def _draws_metadata(op_name: str) -> bool:
-    """Whether a parametric entry generates some metadata tensor at random."""
+    """Whether an entry generates some metadata tensor at random."""
     from tileops.manifest import load_manifest
     from tileops.manifest.primitives import RANDOM_GENERATORS
-    from tileops.manifest.signature import is_legacy
 
     entry = load_manifest()[op_name]
-    if is_legacy(entry):
-        return False
     inputs = entry["signature"].get("inputs") or {}
     return any(
         str(spec.get("values", "")).split("(")[0] in RANDOM_GENERATORS for spec in inputs.values()
@@ -440,15 +435,9 @@ def _binder_builds(op_name: str) -> bool:
     separate question: a formula that raises is a defect, and treating that as
     "the binder cannot build this" would let it qualify for level three.
     """
-    from tests.roofline_binder import NotBindableError, manifest_cases
+    from tests.roofline_binder import manifest_cases
 
-    try:
-        cases = list(manifest_cases(op_name))
-    except NotBindableError:
-        return False
-    # Anything else -- a broken supplement, a constructor regression, a binder
-    # defect -- is a failure to report, not a reason to call an op unrecountable.
-    return bool(cases)
+    return bool(list(manifest_cases(op_name)))
 
 
 def _binder_agrees(op_name: str) -> bool:
@@ -467,17 +456,13 @@ class TestCoverageLevels:
     """Every implemented op sits at exactly one level, and the level is the truth."""
 
     def test_a_generated_case_equals_its_op(self):
-        from tests.roofline_binder import NotBindableError, manifest_cases
+        from tests.roofline_binder import manifest_cases
 
         checked = 0
         for op_name in _implemented_ops():
             if op_name in HAND_WRITTEN or op_name in NOT_RECOUNTABLE:
                 continue
-            try:
-                cases = list(manifest_cases(op_name))
-            except NotBindableError as exc:  # pragma: no cover - the next test names it
-                raise AssertionError(f"{op_name} is level one but does not bind: {exc}") from exc
-            for label, dtype, op, oracle, _reads in cases:
+            for label, dtype, op, oracle, _reads in manifest_cases(op_name):
                 assert op.eval_roofline()[1] == oracle, f"{op_name} {label} {dtype}"
                 checked += 1
         assert checked > 0
@@ -486,17 +471,13 @@ class TestCoverageLevels:
         """The audit judges the read side alone, and an op derives it by taking the
         write side the signature settles off its `bytes`. Where the
         binder recounts the op, the two halves have to be the same halves."""
-        from tests.roofline_binder import NotBindableError, manifest_cases
+        from tests.roofline_binder import manifest_cases
 
         checked = 0
         for op_name in _implemented_ops():
             if op_name in HAND_WRITTEN or op_name in NOT_RECOUNTABLE:
                 continue
-            try:
-                cases = list(manifest_cases(op_name))
-            except NotBindableError:  # pragma: no cover - another test names it
-                continue
-            for label, dtype, op, _oracle, reads in cases:
+            for label, dtype, op, _oracle, reads in manifest_cases(op_name):
                 declared = op.eval_roofline_read_bytes()
                 assert declared is not None, f"{op_name} {label} {dtype}"
                 assert declared == reads, f"{op_name} {label} {dtype}"

@@ -67,6 +67,6 @@ def test_the_refusal_precedes_what_the_kernel_states():
 
 
 def test_a_parametric_op_answers_an_empty_input_as_torch_does(empty):
-    """A converted entry admits every non-negative extent, so an empty call has a result."""
+    """An entry admits every non-negative extent, so an empty call has a result."""
     torch.testing.assert_close(SumFwdOp(dim=0)(empty), torch.sum(empty, dim=0))
     torch.testing.assert_close(SumFwdOp(dim=1)(empty), torch.sum(empty, dim=1))
