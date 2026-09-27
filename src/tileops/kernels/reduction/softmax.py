@@ -54,7 +54,7 @@ __all__ = ["SoftmaxKernel"]
 
 
 @functools.lru_cache(maxsize=64)
-def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
+def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: str):
     """Build a single-tile softmax/log_softmax kernel (N fits in smem).
 
     Accepts an ``(M, N)`` input tensor.  When ``N`` is not a multiple of
@@ -83,7 +83,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
-            y: T.Tensor[(M, N_padded), dtype],
+            y: T.Tensor[(M, N_padded), out_dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 staged = T.alloc_shared((block_m, N_padded if _stages_row else 1), dtype)
@@ -147,7 +147,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
 
                 for i in T.serial(block_m):
                     for j in T.Parallel(N_padded):
-                        y[pid_m * block_m + i, j] = T.cast(x_f32[i, j], dtype)
+                        y[pid_m * block_m + i, j] = T.cast(x_f32[i, j], out_dtype)
 
         return main
 
@@ -158,7 +158,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
 
 
 @functools.lru_cache(maxsize=64)
-def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int):
+def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, out_dtype: str, tile_n: int):
     """Build a multi-tile softmax/log_softmax kernel.
 
     Uses online softmax recurrence across N-tiles:
@@ -175,7 +175,8 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
     fragments across T.Serial loop boundaries, corrupting pass-1 accumulators
     (row_max, row_sum) if the same names are reused.  The dual-buffer shared
     memory cost is accounted for by passing ``num_buffers=2`` to
-    ``compute_tile_n``.
+    ``compute_tile_n``. An *out_dtype* other than *dtype* stages the output tile in
+    a third buffer of its own.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     num_tiles = (N_padded + tile_n - 1) // tile_n
@@ -193,7 +194,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
             @T.prim_func
             def main(
                 x: T.Tensor[(M, N), dtype],
-                y: T.Tensor[(M, total_cols), dtype],
+                y: T.Tensor[(M, total_cols), out_dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                     # --- Pass 1 fragments ---
@@ -268,6 +269,10 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                     # num_buffers=2.
                     p2_shared = T.alloc_shared((block_m, tile_n), dtype)
                     p2_f32 = T.alloc_fragment((block_m, tile_n), "float32")
+                    if out_dtype == dtype:
+                        p2_out = p2_shared
+                    else:
+                        p2_out = T.alloc_shared((block_m, tile_n), out_dtype)
 
                     # Pass 2: normalize, then cast the tile back into the shared
                     # buffer it was read from
@@ -310,8 +315,8 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
 
                         for i in T.serial(block_m):
                             for j in T.Parallel(tile_n):
-                                p2_shared[i, j] = T.cast(p2_f32[i, j], dtype)
-                        T.copy(p2_shared, y[pid_m * block_m, t * tile_n])
+                                p2_out[i, j] = T.cast(p2_f32[i, j], out_dtype)
+                        T.copy(p2_out, y[pid_m * block_m, t * tile_n])
 
             return main
 
@@ -322,7 +327,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
             @T.prim_func
             def main(
                 x: T.Tensor[(M, N), dtype],
-                y: T.Tensor[(M, total_cols), dtype],
+                y: T.Tensor[(M, total_cols), out_dtype],
             ):
                 with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                     # --- Pass 1 fragments ---
@@ -388,6 +393,10 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
                     # (Same aliasing workaround as softmax -- see note above.)
                     p2_shared = T.alloc_shared((block_m, tile_n), dtype)
                     p2_f32 = T.alloc_fragment((block_m, tile_n), "float32")
+                    if out_dtype == dtype:
+                        p2_out = p2_shared
+                    else:
+                        p2_out = T.alloc_shared((block_m, tile_n), out_dtype)
 
                     # Pass 2: log-normalize (cast + compute fused)
                     for t in T.Serial(num_tiles):
@@ -425,8 +434,8 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
 
                         for i in T.serial(block_m):
                             for j in T.Parallel(tile_n):
-                                p2_shared[i, j] = T.cast(p2_f32[i, j], dtype)
-                        T.copy(p2_shared, y[pid_m * block_m, t * tile_n])
+                                p2_out[i, j] = T.cast(p2_f32[i, j], out_dtype)
+                        T.copy(p2_out, y[pid_m * block_m, t * tile_n])
 
             return main
 
@@ -437,20 +446,20 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
 
 
 @functools.lru_cache(maxsize=64)
-def _softmax_kernel(M: int, N: int, op_kind: str, dtype: str, tile_n: int = 0):
+def _softmax_kernel(M: int, N: int, op_kind: str, dtype: str, out_dtype: str, tile_n: int = 0):
     """Build the appropriate softmax kernel.
 
     If tile_n == 0, the full N fits in shared memory and the single-tile
     kernel is used. Otherwise, the multi-tile kernel is used.
     """
     if tile_n == 0:
-        return _softmax_kernel_single(M, N, op_kind, dtype)
-    return _softmax_kernel_tiled(M, N, op_kind, dtype, tile_n)
+        return _softmax_kernel_single(M, N, op_kind, dtype, out_dtype)
+    return _softmax_kernel_tiled(M, N, op_kind, dtype, out_dtype, tile_n)
 
 
 @functools.lru_cache(maxsize=64)
 def _softmax_split_finalize_kernel(
-    M: int, N: int, op_kind: str, dtype: str, seg_n: int, threads: int
+    M: int, N: int, op_kind: str, dtype: str, out_dtype: str, seg_n: int, threads: int
 ):
     """Fold per-segment ``(max, sum)`` and write one normalized segment per block.
 
@@ -471,7 +480,7 @@ def _softmax_split_finalize_kernel(
             x: T.Tensor[(M, N), dtype],
             seg_max: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
             seg_sum: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
-            y: T.Tensor[(M, N), dtype],
+            y: T.Tensor[(M, N), out_dtype],
         ):
             with T.Kernel(num_segs, M, threads=threads) as (pid_s, pid_m):
                 part_max = T.alloc_fragment((1, threads), "float32")
@@ -495,12 +504,12 @@ def _softmax_split_finalize_kernel(
                                 y[pid_m, col] = T.cast(
                                     T.exp(T.cast(x[pid_m, col], "float32") - row_max[0])
                                     * row_scale[0],
-                                    dtype,
+                                    out_dtype,
                                 )
                             else:
                                 y[pid_m, col] = T.cast(
                                     T.cast(x[pid_m, col], "float32") - row_max[0] - row_scale[0],
-                                    dtype,
+                                    out_dtype,
                                 )
 
         return main
@@ -509,7 +518,9 @@ def _softmax_split_finalize_kernel(
 
 
 @functools.lru_cache(maxsize=64)
-def _softmax_fused_split_kernel(M: int, N: int, op_kind: str, dtype: str, seg_n: int, threads: int):
+def _softmax_fused_split_kernel(
+    M: int, N: int, op_kind: str, dtype: str, out_dtype: str, seg_n: int, threads: int
+):
     """Normalize a few long rows in one kernel, reading each row once.
 
     The split pair reads the row twice: once for the segment statistics, once
@@ -536,7 +547,7 @@ def _softmax_fused_split_kernel(M: int, N: int, op_kind: str, dtype: str, seg_n:
             x: T.Tensor[(M, N), dtype],
             seg_max: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
             seg_sum: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
-            y: T.Tensor[(M, N), dtype],
+            y: T.Tensor[(M, N), out_dtype],
         ):
             with T.Kernel(num_segs, M, threads=threads) as (pid_s, pid_m):
                 held = T.alloc_fragment((1, seg_n), "float32")
@@ -589,11 +600,11 @@ def _softmax_fused_split_kernel(M: int, N: int, op_kind: str, dtype: str, seg_n:
                         with T.Then():
                             if op_kind == "softmax":
                                 y[pid_m, pid_s * seg_n + j] = T.cast(
-                                    shifted[0, j] * row_scale[0], dtype
+                                    shifted[0, j] * row_scale[0], out_dtype
                                 )
                             else:
                                 y[pid_m, pid_s * seg_n + j] = T.cast(
-                                    held[0, j] - row_scale[0], dtype
+                                    held[0, j] - row_scale[0], out_dtype
                                 )
 
         return main
@@ -622,12 +633,13 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         M: Rows the normalization runs over — the product of every axis but *norm_axis*.
         N: Length of the normalized axis.
         op_kind: One of "softmax", "log_softmax".
-        dtype: Data type (float32, float16, or bfloat16).
+        dtype: Input data type (float32, float16, or bfloat16).
         norm_axis: Non-negative index of the axis the normalization runs over.
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
         device_index: CUDA device index for shared memory budget query.
             When ``None``, ``torch.cuda.current_device()`` is used.
+        out_dtype: Output data type; ``None`` is *dtype*.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -642,6 +654,7 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         config: Optional[dict] = None,
         tune: bool = False,
         device_index: int | None = None,
+        out_dtype: Optional[torch.dtype] = None,
     ):
         super().__init__(device_index=device_index)
         if op_kind not in ("softmax", "log_softmax"):
@@ -652,16 +665,22 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         self.N = N
         self.op_kind = op_kind
         self.dtype = dtype
+        out_dtype = out_dtype or dtype
+        self.out_dtype_str = self.dtype_to_str(out_dtype)
         self.norm_axis = norm_axis
         self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
         self._elem_bytes = torch_dtype_nbytes(dtype)
+        # The tiled kernel's output stage, counted in input-sized buffers.
+        out_stage = (
+            0 if out_dtype == dtype else -(-torch_dtype_nbytes(out_dtype) // self._elem_bytes)
+        )
         self._smem_budget = device_smem_budget(device_index)
         self._split_target = split_target_blocks(device_index)
         self._planner = BlockConfigPlanner(
             self.N_padded,
             self._elem_bytes,
             self._smem_budget,
-            num_buffers=self._NUM_SHARED_BUFFERS,
+            num_buffers=self._NUM_SHARED_BUFFERS + out_stage,
         )
 
         # Build self.kernel BEFORE init_config: when tune=True, init_config
@@ -675,6 +694,7 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
             self.N,
             self.op_kind,
             self.dtype_str,
+            self.out_dtype_str,
             self._tile_n,
         )
 
@@ -708,6 +728,7 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
                     self.N,
                     self.op_kind,
                     self.dtype_str,
+                    self.out_dtype_str,
                     self._tile_n,
                 )
             self.config["tile_n"] = self._tile_n
@@ -779,7 +800,9 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         }
 
     def _build_row_kernel(self, tile_n: int):
-        return _softmax_kernel(self.M, self.N, self.op_kind, self.dtype_str, tile_n)
+        return _softmax_kernel(
+            self.M, self.N, self.op_kind, self.dtype_str, self.out_dtype_str, tile_n
+        )
 
     def _row_forward(self, x: torch.Tensor) -> torch.Tensor:
         return self._normalize_rows(x)
@@ -793,7 +816,7 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
                 loads + ``-inf`` fill), so no host-side ``F.pad`` is needed.
 
         Returns:
-            A tensor shaped like *x*.
+            A tensor shaped like *x*, in the output dtype.
 
         Raises:
             ValueError: *x* is not on a CUDA device.
@@ -823,7 +846,13 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
                 num_segs = ceildiv_int(self.N, seg_n)
                 stats = torch.empty(2, self.M * num_segs, dtype=torch.float32, device=x.device)
                 return _softmax_fused_split_kernel(
-                    self.M, self.N, self.op_kind, self.dtype_str, seg_n, fused_threads
+                    self.M,
+                    self.N,
+                    self.op_kind,
+                    self.dtype_str,
+                    self.out_dtype_str,
+                    seg_n,
+                    fused_threads,
                 )()(x, stats[0], stats[1])
             # split_seg_n's fragment cap assumes the default width.
             threads = _DEFAULT_TUNE_THREADS
@@ -831,8 +860,10 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
                 self.M, self.N, seg_n, self.dtype_str, threads
             )()(x)
             return _softmax_split_finalize_kernel(
-                self.M, self.N, self.op_kind, self.dtype_str, seg_n, threads
+                self.M, self.N, self.op_kind, self.dtype_str, self.out_dtype_str, seg_n, threads
             )()(x, seg_max, seg_sum)
-        program = _softmax_kernel(self.M, self.N, self.op_kind, self.dtype_str, self._tile_n)
+        program = _softmax_kernel(
+            self.M, self.N, self.op_kind, self.dtype_str, self.out_dtype_str, self._tile_n
+        )
         y = program(self.config["block_m"], self.config["threads"])(x)
         return y[:, : self.N] if y.shape[1] > self.N else y
