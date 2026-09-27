@@ -14,11 +14,16 @@ from __future__ import annotations
 import pytest
 import torch
 
+from tileops.manifest import load_adts, load_manifest
+from tileops.manifest.values import convert
 from workloads.device import run_device, run_device_available
 
 pytestmark = pytest.mark.skipif(
     not run_device_available(), reason="the run device is not available"
 )
+
+_MANIFEST = load_manifest()
+_ADTS = load_adts()
 
 _FLOAT_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
 _DTYPE_IDS = ["fp16", "bf16", "fp32"]
@@ -170,7 +175,7 @@ _SCALAR_WRITE_BYTES = {
     "CountNonzeroFwdOp": lambda e: 8,
 }
 
-#: Every dim form a scalar reduction accepts, the singleton sequences included: each
+#: Every dim form a scalar reduction can be given, the singleton sequences included: each
 #: one reaches ``dim % x.ndim`` in the manifest formula by a different branch.
 _SCALAR_ROOFLINE_DIMS = [None, 0, -1, (), [], [0], [-1], (0,), (-1,)]
 _SCALAR_ROOFLINE_DIM_IDS = [
@@ -179,27 +184,35 @@ _SCALAR_ROOFLINE_DIM_IDS = [
 ]  # fmt: skip
 
 
+def _dim_legal(op_name: str, dim) -> bool:
+    """Whether the op's manifest ``dim`` type admits *dim*."""
+    try:
+        convert(dim, _MANIFEST[op_name]["signature"]["params"]["dim"]["type"], _ADTS)
+    except ValueError:
+        return False
+    return True
+
+
+_SCALAR_ROOFLINE_CASES = [
+    pytest.param(op_name, dim, id=f"{dim_id}-{op_name}")
+    for dim, dim_id in zip(_SCALAR_ROOFLINE_DIMS, _SCALAR_ROOFLINE_DIM_IDS, strict=True)
+    for op_name in sorted(_SCALAR_WRITE_BYTES)
+    if _dim_legal(op_name, dim)
+]
+
+
 @pytest.mark.smoke
 @pytest.mark.filterwarnings("ignore:.*degrees of freedom:UserWarning")
-@pytest.mark.parametrize("op_name", sorted(_SCALAR_WRITE_BYTES))
-@pytest.mark.parametrize("dim", _SCALAR_ROOFLINE_DIMS, ids=_SCALAR_ROOFLINE_DIM_IDS)
+@pytest.mark.parametrize("op_name, dim", _SCALAR_ROOFLINE_CASES)
 def test_the_scalar_path_prices_one_element_whatever_dim_names(op_name, dim) -> None:
-    """A 0-D input has no axis to reduce, so every ``dim`` form prices one element.
+    """A 0-D input has no axis to reduce, so every legal ``dim`` form prices one element.
 
     The manifest formulas take ``dim % x.ndim``, which is a division by zero at this
     extent; the entries carry the guard that makes it one element instead.
     """
-    if not run_device_available():
-        pytest.skip("the run device is not available")
-    try:
-        op = _op(op_name, dim=dim)
-    except (TypeError, ValueError):
-        pytest.skip(f"{op_name} does not accept dim={dim!r}")
+    op = _op(op_name, dim=dim)
     x = torch.tensor(3.0, device=run_device(), dtype=torch.float32)
-    try:
-        op(x)
-    except (TypeError, ValueError):
-        pytest.skip(f"{op_name} does not accept a 0-D input with dim={dim!r}")
+    op(x)
 
     _, nbytes = op.eval_roofline()
     assert nbytes == x.element_size() + _SCALAR_WRITE_BYTES[op_name](x.element_size())

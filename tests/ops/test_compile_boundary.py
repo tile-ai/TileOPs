@@ -9,6 +9,9 @@ One function per family, so a family's extents and dtype stay local to its cases
 two tests are the contract and are written once.
 """
 
+from collections.abc import Callable
+from typing import NamedTuple
+
 import pytest
 import torch
 
@@ -185,9 +188,13 @@ def _attention_cases():
         ("nsa-fwd", nsa_fwd),
         ("nsa-cmp-fwd", nsa_cmp_fwd),
         ("nsa-topk", nsa_topk),
-        ("dsa-decode", dsa_decode),
+        # Sparse MLA reads storage it was not handed, which a NaN-filled caching allocator
+        # turns its whole output into.
+        ("dsa-decode", dsa_decode, False),
         ("fp8-lightning-indexer", fp8_lightning_indexer),
-        ("topk-selector", topk_selector),
+        # Picks the same set every time, but the atomic increments that claim the slots
+        # decide which index lands where.
+        ("topk-selector", topk_selector, False),
     )
 
 
@@ -539,6 +546,16 @@ _FAMILIES = (
 )
 
 
+class _Case(NamedTuple):
+    """One op's case. ``exact`` is False where the kernel returns a tensor a compiled call
+    cannot be held equal to; the contract there is the traced graph plus the shapes and
+    dtypes the op promises."""
+
+    name: str
+    build: Callable[[], tuple]
+    exact: bool = True
+
+
 def _cases():
     """Every family's cases, as pytest params.
 
@@ -546,7 +563,8 @@ def _cases():
     that enforces the compile-contract gate, where a CUDA tensor built at import time
     would fail before any test is selected.
     """
-    return [pytest.param(builder, id=name) for family in _FAMILIES for name, builder in family()]
+    cases = [_Case(*entry) for family in _FAMILIES for entry in family()]
+    return [pytest.param(case, id=case.name) for case in cases]
 
 
 for _op_cls in (
@@ -595,20 +613,12 @@ for _op_cls in (
     register_compile_contract(_op_cls)
 
 
-# Two kernels return a tensor a compiled call cannot be held equal to, so for these the
-# contract is the graph the op traces to plus the shapes and dtypes it promises. The top-k
-# selector picks the same set every time but lets the atomic increments that claim the
-# slots decide which index lands where. Sparse MLA reads storage it was not handed, which
-# a NaN-filled caching allocator turns its whole output into.
-_NONDETERMINISTIC = frozenset({"topk-selector", "dsa-decode"})
-
-
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
-@pytest.mark.parametrize("build_case", _cases())
-def test_a_cold_op_traces_fullgraph_and_matches_eager(build_case, request) -> None:
+@pytest.mark.parametrize("case", _cases())
+def test_a_cold_op_traces_fullgraph_and_matches_eager(case) -> None:
     """Cold is the whole contract: a warm op has nothing left for dynamo to trace into."""
-    op, inputs = build_case()
+    op, inputs = case.build()
     # Its own copies per call: a paged op writes its cache pages. ``detach`` because a
     # backward op's operator carries no autograd formula to answer a history-tracking input.
     compiled_inputs = tuple(None if t is None else t.detach().clone() for t in inputs)
@@ -616,17 +626,15 @@ def test_a_cold_op_traces_fullgraph_and_matches_eager(build_case, request) -> No
 
     compiled = torch.compile(op, fullgraph=True)(*compiled_inputs)
 
-    assert_same_result(
-        compiled, op(*eager_inputs), exact=request.node.callspec.id not in _NONDETERMINISTIC
-    )
+    assert_same_result(compiled, op(*eager_inputs), exact=case.exact)
 
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
-@pytest.mark.parametrize("build_case", _cases())
-def test_the_fake_reports_what_the_op_returns(build_case) -> None:
+@pytest.mark.parametrize("case", _cases())
+def test_the_fake_reports_what_the_op_returns(case) -> None:
     """The fake is the op's whole promise to the compiler, so it must be the truth."""
-    op, inputs = build_case()
+    op, inputs = case.build()
     inputs = tuple(None if t is None else t.detach() for t in inputs)
 
     assert_fake_matches_eager(op, *inputs)
@@ -634,10 +642,10 @@ def test_the_fake_reports_what_the_op_returns(build_case) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
-@pytest.mark.parametrize("build_case", _cases())
-def test_the_traced_graph_holds_only_this_ops_operator(build_case) -> None:
+@pytest.mark.parametrize("case", _cases())
+def test_the_traced_graph_holds_only_this_ops_operator(case) -> None:
     """The node is the op's, so replacing the kernel cannot change the graph."""
-    op, inputs = build_case()
+    op, inputs = case.build()
     inputs = tuple(None if t is None else t.detach() for t in inputs)
 
     assert_op_owns_graph_nodes(op, *inputs)
