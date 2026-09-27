@@ -37,7 +37,7 @@ AvgPool1dFwdOp:
   - {N: 2, C: 128, L_in: 2048, kernel_size: 4, stride: 2, padding: 1, ceil_mode: true, count_include_pad: false, dtype_cases: [{T: bfloat16}], label: ceil}
 
   roofline:
-    flops: "N * C * L_out * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 AvgPool2dFwdOp:
   ref_api: torch.nn.functional.avg_pool2d
@@ -82,7 +82,7 @@ AvgPool2dFwdOp:
   - {N: 3, C: 96, H_in: 55, W_in: 57, kernel_size: [3, 5], stride: [2, 2], padding: [1, 2], ceil_mode: true, count_include_pad: false, divisor_override: 7, dtype_cases: [{T: bfloat16}], label: ceil-divisor}
 
   roofline:
-    flops: "N * C * H_out * W_out * kH * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 AvgPool3dFwdOp:
   ref_api: torch.nn.functional.avg_pool3d
@@ -130,7 +130,7 @@ AvgPool3dFwdOp:
   - {N: 2, C: 24, D_in: 10, H_in: 20, W_in: 22, kernel_size: [2, 2, 3], stride: [2, 2, 2], padding: [0, 1, 1], divisor_override: 7, dtype_cases: [{T: bfloat16}], label: divisor}
 
   roofline:
-    flops: "N * C * D_out * H_out * W_out * kD * kH * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 MaxPool1dFwdOp:
   # Equivalent to torch.nn.functional.max_pool1d (return_indices=False)
@@ -167,12 +167,12 @@ MaxPool1dFwdOp:
   # over waveform features; TextCNN-style classifiers use global temporal
   # max pooling over token-convolution channels; ECG CNN classifiers use
   # repeated 1D max-pooling downsampling on long signals.
-  - {N: 32, C: 80, L_in: 4096, kernel_size: 3, stride: 3, padding: 0, dtype_cases: [{T: float16}, {T: float32}], label: sincnet-speaker-local}
+  - {N: 32, C: 80, L_in: 4096, kernel_size: 3, stride: 3, padding: 0, dtype_cases: [{T: float16}, {T: float32}], label: sincnet-local}
   - {N: 64, C: 256, L_in: 128, kernel_size: 128, stride: 1, padding: 0, dtype_cases: [{T: float16}], label: textcnn-global}
   - {N: 16, C: 128, L_in: 2048, kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtype_cases: [{T: bfloat16}], label: ecg-cnn-dilated}
 
   roofline:
-    flops: "N * C * L_out * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 MaxPool1dIndicesFwdOp:
   # Equivalent to torch.nn.functional.max_pool1d (return_indices=True)
@@ -208,12 +208,12 @@ MaxPool1dIndicesFwdOp:
   workloads:
   # Same model sources as MaxPool1dFwdOp; indices output is consumed by
   # unpooling or argmax-tracking paths rather than changing input shapes.
-  - {N: 32, C: 80, L_in: 4096, kernel_size: 3, stride: 3, padding: 0, dtype_cases: [{T: float16}, {T: float32}], label: sincnet-speaker-local}
+  - {N: 32, C: 80, L_in: 4096, kernel_size: 3, stride: 3, padding: 0, dtype_cases: [{T: float16}, {T: float32}], label: sincnet-local}
   - {N: 64, C: 256, L_in: 128, kernel_size: 128, stride: 1, padding: 0, dtype_cases: [{T: float16}], label: textcnn-global}
   - {N: 16, C: 128, L_in: 2048, kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtype_cases: [{T: bfloat16}], label: ecg-cnn-dilated}
 
   roofline:
-    flops: "N * C * L_out * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 MaxPool2dFwdOp:
   # Equivalent to torch.nn.functional.max_pool2d (return_indices=False)
@@ -259,7 +259,7 @@ MaxPool2dFwdOp:
   - {N: 32, C: 64, H_in: 55, W_in: 55, kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: alexnet-ceil}
 
   roofline:
-    flops: "N * C * H_out * W_out * kH * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 MaxPool2dIndicesFwdOp:
   # Equivalent to torch.nn.functional.max_pool2d (return_indices=True)
@@ -305,7 +305,7 @@ MaxPool2dIndicesFwdOp:
   - {N: 32, C: 64, H_in: 55, W_in: 55, kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: alexnet-ceil}
 
   roofline:
-    flops: "N * C * H_out * W_out * kH * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 MaxPool3dFwdOp:
   # Equivalent to torch.nn.functional.max_pool3d (return_indices=False)
@@ -356,7 +356,7 @@ MaxPool3dFwdOp:
   - {N: 2, C: 64, D_in: 32, H_in: 112, W_in: 112, kernel_size: [3, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, dtype_cases: [{T: bfloat16}], label: medicalnet-stem}
 
   roofline:
-    flops: "N * C * D_out * H_out * W_out * kD * kH * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 MaxPool3dIndicesFwdOp:
   # Equivalent to torch.nn.functional.max_pool3d (return_indices=True)
@@ -407,7 +407,7 @@ MaxPool3dIndicesFwdOp:
   - {N: 2, C: 64, D_in: 32, H_in: 112, W_in: 112, kernel_size: [3, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, dtype_cases: [{T: bfloat16}], label: medicalnet-stem}
 
   roofline:
-    flops: "N * C * D_out * H_out * W_out * kD * kH * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 AdaptiveAvgPool2dFwdOp:
   ref_api: torch.nn.functional.adaptive_avg_pool2d
@@ -434,10 +434,10 @@ AdaptiveAvgPool2dFwdOp:
   # its final 7x7 feature map before the FC layer; SPP-style heads pool
   # arbitrary feature maps to a fixed grid; the non-divisible case stresses
   # PyTorch adaptive bin-boundary semantics.
-  - {B: [8], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: resnet-global}
+  - {B: [8], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: resnet-gap}
   - {B: [2], C: 128, H_in: 56, W_in: 56, output_size: [6, 6], dtype_cases: [{T: float16}], label: spp-6x6}
   - {B: [2], C: 64, H_in: 55, W_in: 57, output_size: [7, 7], dtype_cases: [{T: bfloat16}], label: nondiv-7x7}
-  - {B: [], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: resnet-global-unbatched}
+  - {B: [], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: resnet-gap-unbatched}
 
   roofline:
     func: tileops.perf.formulas.adaptive_pool2d_roofline
@@ -541,9 +541,9 @@ MeanPoolingFwdOp:
   # Chunk 64 over an 8k sequence is the linear-attention chunking these come from.
   - {B: 1, S: 8192, H: 64, D: 128, chunk_size: 64, accum_dtype: float32, dtype_cases: [{T: float16}, {T: bfloat16}], label: uniform-8k}
   - {B: 2, S: 2048, H: 64, D: 128, chunk_size: 64, accum_dtype: float32, dtype_cases: [{T: float16}], label: uniform-batched}
-  - {B: 1, S: 8192, H: 64, D: 128, seq_lens: [2048, 2048, 2048, 2048], chunk_size: 64, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}, {T: float32}], label: ragged-even}
+  - {B: 1, S: 8192, H: 64, D: 128, seq_lens: "repeat(2048, 4)", chunk_size: 64, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}, {T: float32}], label: ragged-even}
   - {B: 1, S: 1000, H: 64, D: 128, seq_lens: [100, 200, 300, 400], chunk_size: 32, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}], label: ragged-tail}
-  - {B: 2, S: 2048, H: 64, D: 128, seq_lens: [1024, 1024], chunk_size: 64, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}], label: ragged-batched}
+  - {B: 2, S: 2048, H: 64, D: 128, seq_lens: "repeat(1024, 2)", chunk_size: 64, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}], label: ragged-batched}
 
   roofline:
     flops: "B * S * H * D + B * (NC if present(offsets) else ceil_div(S, chunk_size)) * H * D"

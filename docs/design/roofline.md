@@ -26,9 +26,10 @@ Inputs:
 
 Bound type is whichever term dominates `sol_time`; a tie is memory-bound. It depends on shape, not on the op; the roofline tool computes it per-workload and the manifest does not declare it.
 
-The metric is **algorithmic** SOL efficiency. Four statements delimit what a reading means:
+The metric is **algorithmic** SOL efficiency. Five statements delimit what a reading means:
 
 1. `bytes_moved` is the algorithm's minimum traffic, not measured DRAM traffic: each distinct input storage the algorithm reads counts one read, each public output one write, a `mutated` input on a branch where it is written both, a `write_only` input one write, and a declared alias one storage. An intermediate never counts, whatever stage produces it, and any other input the algorithm does not read produces no traffic.
+1. An input the algorithm reads in part counts the distinct elements it reads. A formula may charge the whole storage instead where the two differ by under 1% on every workload row.
 1. The metric is defined on a call that binds one storage per declared input, which is what every `workloads` row binds. An aliasing call — `add(x, x)` — is priced at two operands, above what it moves: the metric does not describe that call, and the formula is not wrong. Pricing it would require every multi-operand op to expose storage identity to its formula, which the oracle's meta tensors cannot carry.
 1. `total_flops` follows the §1.3 counting convention, not per-instruction hardware cost; the metric does not certify an SFU-bound kernel as at its limit.
 1. The compute roof is the unit an optimal implementation would use (§1.4), not the unit the current kernel runs on.
@@ -49,6 +50,15 @@ Per-element FLOP rule for elementwise ops:
 - Predicate-only outputs (`eq`, `gt`, etc.) count as 1 FLOP per element.
 
 Composite ops sum their primitives — `sigmoid = neg + exp + add + recip = 4` FLOPs/elem; `silu = sigmoid + mul = 5` FLOPs/elem.
+
+Beyond the elementwise rule, `total_flops` is the least arithmetic of the algorithm the op runs:
+
+- A value the algorithm has already computed is reused, not recomputed.
+- A recurrent op — a linear attention or a state-space scan — whose signature carries a chunk size is priced as the chunked algorithm at that chunk size; one whose signature carries none is priced as its per-token recurrence.
+- An attention forward that produces a softmax-weighted output counts, per score, the QK and PV contractions (2 per multiply-add) and the softmax — scale, running max, subtract, `exp`, sum: 5. Each output element adds the softmax's normalizing divide.
+- A score computed by a contraction also counts every per-score epilogue the op applies: a softcap's divide, `tanh` and multiply; an indexer's `relu`, weight multiply and add into the head sum.
+- A mixture-of-experts op counts every stage it runs — routing, the expert GEMMs, the gated activation, the weighted combine — each as the op that runs that stage alone counts it. An expert that receives no rows reads no weights.
+- An operation that is the identity on the call's dtype counts 0.
 
 ### 1.4 Compute Roof
 

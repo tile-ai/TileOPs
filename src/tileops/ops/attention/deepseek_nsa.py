@@ -197,10 +197,11 @@ class NSAVarlenFwdOp(Op):
         self.dispatch_kernel(kernel_map)
 
     def roofline_inputs(self) -> "dict[str, int]":
-        """The block tiles this call's selection kept, which its key and value reads follow."""
-        from tileops.perf.formulas import nsa_selected_block_loads
+        """The key rows this call's selection scores and the distinct rows it reads."""
+        from tileops.perf.formulas import nsa_selected_rows
 
-        return {"selected_block_loads": nsa_selected_block_loads(self.last_call)}
+        scored, distinct = nsa_selected_rows(self.last_call)
+        return {"scored_rows": scored, "distinct_rows": distinct}
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, dtype and device."""

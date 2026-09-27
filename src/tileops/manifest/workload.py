@@ -40,6 +40,7 @@ from .primitives import (
     PREDICATE_KINDS,
     PREDICATE_RANKS,
     PREDICATES,
+    PRIMITIVE_KINDS,
     PRIMITIVES,
     RANDOM_GENERATORS,
     WORKLOAD_SEED,
@@ -61,6 +62,7 @@ __all__ = ["Call", "CallView", "RowError", "TensorSpec", "check_workloads", "ins
 
 _ROW_KEYS = frozenset({"some", "dtype_cases", "label"})
 _LABEL = re.compile(r"[A-Za-z0-9._-]+")
+_LABEL_MAX = 24
 # The integer dtypes generated metadata may take, with their ranges.
 _METADATA_RANGES = {"int32": 2**31, "int64": 2**63}
 
@@ -212,10 +214,33 @@ def _evaluate(sig: Signature, node: ast.expr, scope: dict, where: str):
         raise RowError(str(exc)) from None
 
 
+def _value_call(key: str, text: str) -> list:
+    """The list a row's value-primitive call over integer literals yields; `RowError` otherwise."""
+    try:
+        node = ast.parse(text, mode="eval").body
+    except SyntaxError:
+        raise RowError(f"{key} = {text!r} is not an expression") from None
+    name = ast.unparse(node.func) if isinstance(node, ast.Call) else None
+    if name not in PRIMITIVES or PRIMITIVE_KINDS[name][1] != "Seq[Int]" or node.keywords:
+        raise RowError(f"{key} = {text!r} is not a call of a Seq[Int] primitive")
+    try:
+        args = [ast.literal_eval(a) for a in node.args]
+    except ValueError:
+        raise RowError(f"{key} = {text!r}: arguments must be integer literals") from None
+    if len(args) != len(PRIMITIVE_KINDS[name][0]) or not all(is_integer(a) for a in args):
+        raise RowError(f"{key} = {text!r}: {name} takes {len(PRIMITIVE_KINDS[name][0])} integers")
+    try:
+        return PRIMITIVES[name](*args)
+    except ValueError as exc:
+        raise RowError(f"{key} = {exc}") from None
+
+
 def _convert(sig: Signature, key: str, value):
     """A row or default value as its declared kind or `type` states it; `RowError` otherwise."""
     if key in sig.forall:
         kind = sig.forall[key]
+        if kind == "Seq[Int]" and isinstance(value, str):
+            value = _value_call(key, value)
         ok = {
             "Dim": lambda v: is_integer(v, 0),
             "Shape": lambda v: isinstance(v, list) and all(is_integer(x, 0) for x in v),
@@ -629,6 +654,8 @@ def _row_errors(sig: Signature, row: object) -> list[str]:
     label = row.get("label")
     if not isinstance(label, str) or not _LABEL.fullmatch(label):
         errors.append("`label` must be a non-empty [A-Za-z0-9._-] string")
+    elif len(label) > _LABEL_MAX:
+        errors.append(f"`label` {label!r} is longer than {_LABEL_MAX} characters")
     optional = {t.name for t in sig.call_tensors.values() if t.optional is True}
     some = row.get("some", [])
     if (

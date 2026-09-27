@@ -161,6 +161,19 @@ def test_generated_metadata_is_deterministic_and_materializes():
     assert tensors["local_expert_ids"].tolist() == first.specs["local_expert_ids"].values
 
 
+def test_a_row_value_call_states_the_call_its_list_does():
+    """A `Seq[Int]` row value written as a primitive call instantiates the literal list."""
+    plan = entry_plan("Varlen", _varlen(L=[3, 3]), _ADTS)
+    written, spelled = (
+        instantiate(plan, _varlen(L=L)["workloads"][0], {"T": "float16"})
+        for L in ("repeat(3, 2)", [3, 3])
+    )
+    assert (written.case_id, written.ix) == (spelled.case_id, spelled.ix)
+    assert {t: s.values for t, s in written.specs.items()} == {
+        t: s.values for t, s in spelled.specs.items()
+    }
+
+
 def _entry(name, **changes):
     entry = copy.deepcopy(_ENTRIES[name])
     entry["workloads"] = [
@@ -324,6 +337,24 @@ _ENTRY_ERRORS = [
                     "trans_a": False,
                     "trans_b": False,
                     "dtype_cases": [{"T": "float16"}],
+                    "label": "llama-8b-prefill-paged-b8-prefix4k-chunk512",
+                }
+            ],
+        ),
+        "longer than 24 characters",
+    ),
+    (
+        "GemmFwdOp",
+        _entry(
+            "GemmFwdOp",
+            workloads=[
+                {
+                    "M": 1,
+                    "N": 1,
+                    "K": 1,
+                    "trans_a": False,
+                    "trans_b": False,
+                    "dtype_cases": [{"T": "float16"}],
                     "label": "x",
                 }
             ]
@@ -414,6 +445,8 @@ _ENTRY_ERRORS = [
     ),
     ("Varlen", _varlen_with(shape="[B + 10]", values="as_tensor(L)"), "is not B + 10 for a Dim"),
     ("Varlen", _varlen_with(values="as_tensor(balanced_sizes(L, 1))"), "expected Int"),
+    ("Varlen", _varlen(L="repeat(3, -1)"), "repeat needs"),
+    ("Varlen", _varlen(L="prefix_sum([1])"), "not a call of a Seq[Int] primitive"),
     (
         "Varlen",
         _varlen_with(values="prefix_sum(L)", requires=["max_segment(1)"]),

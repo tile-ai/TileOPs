@@ -18,8 +18,10 @@ FP8QuantFwdOp:
     - "index_dim > 0"
 
   workloads:
-  - {batch: 1, seq_len_kv: 8192, kv_group: 1, index_dim: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: kv-index-8k-d64}
-  - {batch: 1, seq_len_kv: 4096, kv_group: 1, index_dim: 128, dtype_cases: [{T: float32}], label: kv-index-4k-d128}
+  - {batch: 1, seq_len_kv: 8192, kv_group: 1, index_dim: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: kv-index-8k}
+  - {batch: 1, seq_len_kv: 4096, kv_group: 1, index_dim: 128, dtype_cases: [{T: float32}], label: kv-index-4k}
 
   roofline:
-    flops: "6 * batch * seq_len_kv * kv_group * index_dim + batch * seq_len_kv * kv_group"
+    # Per element: abs, the row-max comparison, the scaling and the clamp; per row: the amax
+    # floor and the scale.
+    flops: "4 * batch * seq_len_kv * kv_group * index_dim + 2 * batch * seq_len_kv * kv_group"

@@ -753,8 +753,8 @@ class BmmPersistentKernel(Kernel):
     TILE_N: int = 256
 
     # Half a persistent wave of those tiles is enough to beat BmmKernel. Fitted on
-    # the manifest workloads: square-b16-512 reaches 128 tiles and wins,
-    # square-b32-256 reaches 64 and loses. Re-fit against benchmarks/ops/bench_bmm.py
+    # the manifest workloads: square-512 reaches 128 tiles and wins,
+    # square-256 reaches 64 and loses. Re-fit against benchmarks/ops/bench_bmm.py
     # whenever the tile above or the epilogue changes.
     MIN_WAVE_DENOM: int = 2
 

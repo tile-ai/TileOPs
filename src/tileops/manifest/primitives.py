@@ -186,6 +186,13 @@ def balanced_sizes(total, count):
     return [total // count + (i < total % count) for i in range(count)]
 
 
+def repeat(value, count):
+    """`count` copies of the integer `value`."""
+    if count < 0 or not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"repeat needs an integer value and count >= 0, got {value!r}, {count}")
+    return [value] * count
+
+
 # The largest finite value of each floating dtype; the lowest is its negation.
 _FLOAT_MAX = {
     "float16": 65504.0,
@@ -267,6 +274,7 @@ PRIMITIVES = {
     "promote_int_to_float": promote_int_to_float,
     "coalesce_dtype": coalesce_dtype,
     "balanced_sizes": balanced_sizes,
+    "repeat": repeat,
     "category": category,
     "representable": representable,
 }
@@ -307,6 +315,7 @@ PRIMITIVE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "promote_int_to_float": (("DType",), "DType"),
     "coalesce_dtype": (("Maybe[DType]", "DType"), "DType"),
     "balanced_sizes": (("Int", "Int"), "Seq[Int]"),
+    "repeat": (("Int", "Int"), "Seq[Int]"),
     "category": (("Value",), "'bool' | 'int' | 'float' | 'complex'"),
     "representable": (("Value", "DType"), "Bool"),
 }

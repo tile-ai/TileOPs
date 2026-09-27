@@ -30,13 +30,15 @@ EngramGateConvFwdOp:
 
   workloads:
   # d is kept 256-aligned so runtime padding does not distort roofline.
-  - {M: 1, seq_len: 32, d: 256, dtype_cases: [{T: float16}], label: fwd-b1-s32-d256}
-  - {M: 2, seq_len: 64, d: 512, dtype_cases: [{T: float16}], label: fwd-b2-s64-d512}
-  - {M: 1, seq_len: 128, d: 256, dtype_cases: [{T: bfloat16}], label: fwd-b1-s128-d256}
-  - {M: 3, seq_len: 96, d: 768, dtype_cases: [{T: bfloat16}], label: fwd-b3-s96-d768}
+  - {M: 1, seq_len: 32, d: 256, dtype_cases: [{T: float16}], label: train-s32}
+  - {M: 2, seq_len: 64, d: 512, dtype_cases: [{T: float16}], label: train-s64}
+  - {M: 1, seq_len: 128, d: 256, dtype_cases: [{T: bfloat16}], label: train-s128}
+  - {M: 3, seq_len: 96, d: 768, dtype_cases: [{T: bfloat16}], label: train-s96}
 
   roofline:
-    flops: "M * seq_len * (24 * d + 20)"
+    # Per position: three RMSNorms, the gate dot and sigmoid, vhat, SiLU and the residual
+    # (21d + 14), and the causal width-4 depthwise convolution over the taps inside the input.
+    flops: "M * (seq_len * (21 * d + 14) + 2 * d * (seq_len + max((seq_len - 1, 0)) + max((seq_len - 2, 0)) + max((seq_len - 3, 0))))"
 
 EngramGateConvBwdOp:
   family: sequence_modeling
@@ -73,13 +75,16 @@ EngramGateConvBwdOp:
     - "d > 0"
 
   workloads:
-  - {M: 1, seq_len: 32, d: 256, dtype_cases: [{T: float16}], label: bwd-b1-s32-d256}
-  - {M: 2, seq_len: 64, d: 512, dtype_cases: [{T: float16}], label: bwd-b2-s64-d512}
-  - {M: 1, seq_len: 128, d: 256, dtype_cases: [{T: bfloat16}], label: bwd-b1-s128-d256}
-  - {M: 3, seq_len: 96, d: 768, dtype_cases: [{T: bfloat16}], label: bwd-b3-s96-d768}
+  - {M: 1, seq_len: 32, d: 256, dtype_cases: [{T: float16}], label: train-s32}
+  - {M: 2, seq_len: 64, d: 512, dtype_cases: [{T: float16}], label: train-s64}
+  - {M: 1, seq_len: 128, d: 256, dtype_cases: [{T: bfloat16}], label: train-s128}
+  - {M: 3, seq_len: 96, d: 768, dtype_cases: [{T: bfloat16}], label: train-s96}
 
   roofline:
-    flops: "M * seq_len * (24 * d + 20) * 5 // 2"
+    # Per position: the normalized-value recomputes, SiLU, RMSNorm, gate and dot backward
+    # (45d + 10), and three convolution passes (recompute, weight and input gradients) over
+    # the taps inside the input.
+    flops: "M * (seq_len * (45 * d + 10) + 6 * d * (seq_len + max((seq_len - 1, 0)) + max((seq_len - 2, 0)) + max((seq_len - 3, 0))))"
 
 EngramDecodeFwdOp:
   # `conv_state` holds the last L steps, L <= max_conv_len, left-padded to
@@ -115,9 +120,9 @@ EngramDecodeFwdOp:
     - "L <= max_conv_len"
 
   workloads:
-  - {batch: 1, d_mem: 512, d: 256, max_conv_len: 12, conv_kernel_size: 4, dilation: 3, L: 12, dtype_cases: [{T: float16}], label: decode-b1-dmem512-d256}
-  - {batch: 4, d_mem: 1024, d: 512, max_conv_len: 20, conv_kernel_size: 4, dilation: 5, L: 20, dtype_cases: [{T: float16}], label: decode-b4-dmem1024-d512}
-  - {batch: 8, d_mem: 512, d: 256, max_conv_len: 18, conv_kernel_size: 4, dilation: 3, L: 18, dtype_cases: [{T: bfloat16}], label: decode-b8-dmem512-d256}
+  - {batch: 1, d_mem: 512, d: 256, max_conv_len: 12, conv_kernel_size: 4, dilation: 3, L: 12, dtype_cases: [{T: float16}], label: serving-b1}
+  - {batch: 4, d_mem: 1024, d: 512, max_conv_len: 20, conv_kernel_size: 4, dilation: 5, L: 20, dtype_cases: [{T: float16}], label: serving-b4}
+  - {batch: 8, d_mem: 512, d: 256, max_conv_len: 18, conv_kernel_size: 4, dilation: 3, L: 18, dtype_cases: [{T: bfloat16}], label: serving-b8}
 
   roofline:
     flops: "4 * batch * d_mem * d + batch * (16 * d + conv_kernel_size * 2 * d) + 20 * batch"
@@ -151,9 +156,9 @@ MHCPreFwdOp:
     - "C > 0 and C % n == 0"
 
   workloads:
-  - {B: 1, C: 5120, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: pre-small}
-  - {B: 2, C: 7680, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: pre-medium}
-  - {B: 4, C: 10240, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: pre-large}
+  - {B: 1, C: 5120, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: hidden-1280}
+  - {B: 2, C: 7680, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: hidden-1920}
+  - {B: 4, C: 10240, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: hidden-2560}
 
   roofline:
     flops: "2 * B * C * Q + 2 * B * c_x * n + 2 * B * n * C"
@@ -172,9 +177,9 @@ MHCPostFwdOp:
       x_out: {dtype: bfloat16, shape: "[B, n * c_x]"}
 
   workloads:
-  - {B: 1, n: 4, c_x: 1280, label: post-small}
-  - {B: 2, n: 4, c_x: 1920, label: post-medium}
-  - {B: 4, n: 4, c_x: 2560, label: post-large}
+  - {B: 1, n: 4, c_x: 1280, label: hidden-1280}
+  - {B: 2, n: 4, c_x: 1920, label: hidden-1920}
+  - {B: 4, n: 4, c_x: 2560, label: hidden-2560}
 
   roofline:
     flops: "2 * B * n * c_x"

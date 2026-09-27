@@ -507,7 +507,7 @@ def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
     assert len(list(op.iter_kernels())) == 1
     first_kernel = op.kernel
     assert op.eval_roofline() == (
-        10 * 8 * 32,
+        4 * 8 * 32,
         2 * 8 * 32 * torch.float16.itemsize + 4 * 8 * 4,
     )
 
@@ -519,7 +519,7 @@ def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
     assert len(list(op.iter_kernels())) == 2
     assert op.kernel is not first_kernel
     assert op.eval_roofline() == (
-        10 * 12 * 48,
+        4 * 12 * 48,
         2 * 12 * 48 * torch.bfloat16.itemsize + 4 * 12 * 4,
     )
 
@@ -555,7 +555,7 @@ def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None
     assert len(list(op.iter_kernels())) == 1
     first_kernel = op.kernel
     assert op.eval_roofline() == (
-        10 * 8 * 32,
+        7 * 8 * 32,
         # training writes running_mean and running_var back
         2 * 8 * 32 * torch.float16.itemsize + 4 * 8 * 4 + 2 * 8 * 4,
     )
@@ -568,7 +568,7 @@ def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None
     assert len(list(op.iter_kernels())) == 2
     assert op.kernel is not first_kernel
     assert op.eval_roofline() == (
-        10 * 12 * 48,
+        7 * 12 * 48,
         2 * 12 * 48 * torch.bfloat16.itemsize + 4 * 12 * 4 + 2 * 12 * 4,
     )
 
@@ -603,7 +603,7 @@ def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
     assert len(list(op.iter_kernels())) == 1
     first_kernel = op.kernel
     assert op.eval_roofline() == (
-        8 * 8 * 32,
+        9 * 8 * 32,
         # weight, mean and rstd read; grad_weight and grad_bias written
         3 * 8 * 32 * torch.float16.itemsize + 3 * 8 * 4 + 2 * 8 * 4,
     )
@@ -616,6 +616,6 @@ def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
     assert len(list(op.iter_kernels())) == 2
     assert op.kernel is not first_kernel
     assert op.eval_roofline() == (
-        8 * 12 * 48,
+        9 * 12 * 48,
         3 * 12 * 48 * torch.bfloat16.itemsize + 3 * 12 * 4 + 2 * 12 * 4,
     )

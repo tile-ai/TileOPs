@@ -32,6 +32,12 @@ class TopkSelectorFwdOp(Op):
         "topk_selector_kernel": TopkSelectorKernel
     }
 
+    def roofline_inputs(self) -> "dict[str, int]":
+        """The scores this call's windows hold, which its flops and score reads follow."""
+        from tileops.perf.formulas import topk_selector_window_scores
+
+        return {"window_scores": topk_selector_window_scores(self.last_call)}
+
     def __init__(
         self,
         topk: int,

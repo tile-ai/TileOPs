@@ -18,11 +18,11 @@ CumsumFwdOp:
 
   workloads:
   # Hidden state cumulative sum (Llama-3.1-8B)
-  - {S: [2048, 4096], dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-scan}
+  - {S: [2048, 4096], dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
   # Long sequence cumulative sum
-  - {S: [64, 32768], dtype_cases: [{T: bfloat16}], label: long-seq-scan}
+  - {S: [64, 32768], dtype_cases: [{T: bfloat16}], label: long-seq}
   # Llama-2-13B hidden size, a scan length that is not a power of two
-  - {S: [4096, 5120], dtype_cases: [{T: float32}], label: llama-13b-hidden-scan}
+  - {S: [4096, 5120], dtype_cases: [{T: float32}], label: llama-13b-hidden}
 
   roofline:
     flops: "prod(S)"
@@ -45,11 +45,11 @@ CumprodFwdOp:
 
   workloads:
   # Hidden state cumulative product (Llama-3.1-8B)
-  - {S: [2048, 4096], dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-scan}
+  - {S: [2048, 4096], dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
   # Long sequence cumulative product
-  - {S: [64, 32768], dtype_cases: [{T: bfloat16}], label: long-seq-scan}
+  - {S: [64, 32768], dtype_cases: [{T: bfloat16}], label: long-seq}
   # Llama-2-13B hidden size, a scan length that is not a power of two
-  - {S: [4096, 5120], dtype_cases: [{T: float32}], label: llama-13b-hidden-scan}
+  - {S: [4096, 5120], dtype_cases: [{T: float32}], label: llama-13b-hidden}
 
   roofline:
     flops: "prod(S)"

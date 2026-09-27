@@ -19,11 +19,11 @@ AlibiFwdOp:
     - "num_heads > 0"
 
   workloads:
-  # Llama-style attention bias dimensions
-  - {seq_len: 2048, num_heads: 32, out_dtype: float16, label: "llama-prefill-2k"}
-  - {seq_len: 2048, num_heads: 32, out_dtype: bfloat16, label: "llama-prefill-2k"}
-  - {seq_len: 4096, num_heads: 32, out_dtype: float16, label: "llama-prefill-4k"}
-  - {seq_len: 4096, num_heads: 32, out_dtype: bfloat16, label: "llama-prefill-4k"}
+  # MPT-7B: an ALiBi model with 32 heads and a 2k training context
+  - {seq_len: 2048, num_heads: 32, out_dtype: float16, label: "mpt-7b-2k"}
+  - {seq_len: 2048, num_heads: 32, out_dtype: bfloat16, label: "mpt-7b-2k"}
+  - {seq_len: 4096, num_heads: 32, out_dtype: float16, label: "mpt-7b-4k"}
+  - {seq_len: 4096, num_heads: 32, out_dtype: bfloat16, label: "mpt-7b-4k"}
 
   roofline:
     # FLOPs: per output element compute |i - j| (sub + abs = 2) and
@@ -61,7 +61,6 @@ SinusoidalFwdOp:
   - {seq_len: 4096, d_model: 4096, out_dtype: bfloat16, label: "transformer-4k-4k"}
 
   roofline:
-    # FLOPs per output element, per roofline.md §1.3: dim_pair (1) +
-    # 2 * dim_pair / d_model (2) + pow (1) + div (1) + sin/cos select (1) = 6.
-    # Hoisting the pair-only terms out of the position loop does not change it.
-    flops: "6 * seq_len * d_model"
+    # Per dimension pair: its divisor 10000^(2i / d_model) (mul, div, pow = 3), computed once.
+    # Per position and pair: the angle (1 div), then one sin and one cos.
+    flops: "3 * d_model // 2 + 3 * seq_len * d_model // 2"

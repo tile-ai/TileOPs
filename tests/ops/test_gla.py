@@ -387,7 +387,7 @@ def test_gla_inference_roofline_counts_packed_states(seeded: bool) -> None:
         (packed_state[:1] if seeded else None, None, 1776 if seeded else 1392),
     ):
         op(q, k, v, g, state, lengths)
-        assert op.eval_roofline() == (2 * 7 * 2 * 8 * 6, expected_bytes)
+        assert op.eval_roofline() == (7 * 2 * (5 * 8 * 6 + 8 + 6), expected_bytes)
 
 
 @pytest.mark.smoke

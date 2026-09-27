@@ -33,6 +33,16 @@ class DeepSeekSparseAttentionDecodeWithKVCacheFwdOp(Op):
         "sparse_mla_basic_kernel": SparseMlaBasicKernel,
     }
 
+    def roofline_inputs(self) -> "dict[str, int]":
+        """The keys this call's selection makes it score, which its flops follow, and the
+        distinct ``kv`` rows they reach, which its bytes follow."""
+        from tileops.perf.formulas import dsa_distinct_kv_rows, dsa_selected_keys
+
+        return {
+            "selected_keys": dsa_selected_keys(self.last_call),
+            "distinct_kv_rows": dsa_distinct_kv_rows(self.last_call),
+        }
+
     def __init__(
         self,
         dim_tail: int,

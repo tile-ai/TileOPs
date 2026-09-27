@@ -218,7 +218,7 @@ def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
     run_case(2, 8, (4, 4), torch.float16)
     assert len(op.built_kernels("instance_norm")) == 1
     assert op.eval_roofline() == (
-        5 * 2 * 8 * 16,
+        7 * 2 * 8 * 16,
         (2 * 2 * 8 * 16 + 2 * 8) * torch.float16.itemsize,
     )
 
@@ -228,7 +228,7 @@ def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
     run_case(3, 12, (2, 8), torch.bfloat16)
     assert len(op.built_kernels("instance_norm")) == 2
     assert op.eval_roofline() == (
-        5 * 3 * 12 * 16,
+        7 * 3 * 12 * 16,
         (2 * 3 * 12 * 16 + 2 * 12) * torch.bfloat16.itemsize,
     )
 

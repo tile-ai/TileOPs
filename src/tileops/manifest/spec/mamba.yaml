@@ -38,11 +38,11 @@ DaCumsumFwdOp:
     - "B > 0 and S > 0 and H > 0"
     - "chunk_len > 0 and S % chunk_len == 0"
   workloads:
-  - {B: 1, S: 4096, H: 48, chunk_len: 256, out_dtype: float16, dt_softplus: true, label: mamba2-780m-b1-s4k}
-  - {B: 8, S: 2048, H: 64, chunk_len: 256, out_dtype: bfloat16, dt_softplus: true, label: mamba2-1p3b-b8-s2k}
-  - {B: 1, S: 4096, H: 48, chunk_len: 256, out_dtype: float16, dt_softplus: true, some: [dt_bias], label: mamba2-780m-b1-s4k-dt-bias}
-  - {B: 8, S: 2048, H: 64, chunk_len: 256, out_dtype: bfloat16, dt_softplus: true, some: [dt_bias], label: mamba2-1p3b-b8-s2k-dt-bias}
-  - {B: 2, S: 32768, H: 80, chunk_len: 256, out_dtype: float16, dt_softplus: true, some: [dt_bias], label: mamba2-2p7b-b2-s32k-dt-bias}
+  - {B: 1, S: 4096, H: 48, chunk_len: 256, out_dtype: float16, dt_softplus: true, label: mamba2-780m}
+  - {B: 8, S: 2048, H: 64, chunk_len: 256, out_dtype: bfloat16, dt_softplus: true, label: mamba2-1p3b}
+  - {B: 1, S: 4096, H: 48, chunk_len: 256, out_dtype: float16, dt_softplus: true, some: [dt_bias], label: mamba2-780m-dt-bias}
+  - {B: 8, S: 2048, H: 64, chunk_len: 256, out_dtype: bfloat16, dt_softplus: true, some: [dt_bias], label: mamba2-1p3b-dt-bias}
+  - {B: 2, S: 32768, H: 80, chunk_len: 256, out_dtype: float16, dt_softplus: true, some: [dt_bias], label: mamba2-2p7b}
   roofline:
     # clamp, dt * A and the cumsum add per token; the bias add and softplus
     # (4 flops) when present.
@@ -67,8 +67,8 @@ CBProducerFwdOp:
     - "B > 0 and S > 0 and G > 0 and N > 0"
     - "chunk_len > 0 and S % chunk_len == 0"
   workloads:
-  - {B: 1, S: 4096, G: 1, N: 128, chunk_len: 256, dtype_cases: [{T: float16}], label: mamba2-780m-b1-s4k}
-  - {B: 4, S: 2048, G: 1, N: 128, chunk_len: 256, dtype_cases: [{T: bfloat16}], label: mamba2-2p7b-b4-s2k}
+  - {B: 1, S: 4096, G: 1, N: 128, chunk_len: 256, dtype_cases: [{T: float16}], label: mamba2-780m}
+  - {B: 4, S: 2048, G: 1, N: 128, chunk_len: 256, dtype_cases: [{T: bfloat16}], label: mamba2-2p7b}
   roofline:
     # Causal masking halves the 2 * Q * Q * N contraction per (batch, chunk, group).
     flops: "B * NC * G * chunk_len * chunk_len * N"
@@ -99,10 +99,10 @@ SSDChunkStateFwdOp:
     - {T: bfloat16, TD: bfloat16}
     - {T: bfloat16, TD: float32}
   workloads:
-  - {B: 1, NC: 16, Q: 256, H: 48, P: 64, G: 1, N: 128, dtype_cases: [{T: float16, TD: float32}, {T: bfloat16, TD: float32}], label: mamba2-780m-b1-s4k}
-  - {B: 4, NC: 8, Q: 256, H: 80, P: 64, G: 1, N: 128, dtype_cases: [{T: bfloat16, TD: float32}], label: mamba2-2p7b-b4-s2k}
-  - {B: 1, NC: 16, Q: 256, H: 48, P: 64, G: 1, N: 128, some: [seq_idx], dtype_cases: [{T: float16, TD: float32}, {T: bfloat16, TD: float32}], label: mamba2-780m-b1-s4k-seq-idx}
-  - {B: 2, NC: 128, Q: 256, H: 64, P: 64, G: 1, N: 128, some: [seq_idx], dtype_cases: [{T: float16, TD: float32}], label: mamba2-1p3b-b2-s32k-seq-idx}
+  - {B: 1, NC: 16, Q: 256, H: 48, P: 64, G: 1, N: 128, dtype_cases: [{T: float16, TD: float32}, {T: bfloat16, TD: float32}], label: mamba2-780m}
+  - {B: 4, NC: 8, Q: 256, H: 80, P: 64, G: 1, N: 128, dtype_cases: [{T: bfloat16, TD: float32}], label: mamba2-2p7b}
+  - {B: 1, NC: 16, Q: 256, H: 48, P: 64, G: 1, N: 128, some: [seq_idx], dtype_cases: [{T: float16, TD: float32}, {T: bfloat16, TD: float32}], label: mamba2-780m-seq-idx}
+  - {B: 2, NC: 128, Q: 256, H: 64, P: 64, G: 1, N: 128, some: [seq_idx], dtype_cases: [{T: float16, TD: float32}], label: mamba2-1p3b}
   roofline:
     # The (P x Q) @ (Q x N) contraction, the per-token decay weight and the x row scaling.
     flops: "2 * B * NC * H * P * N * Q + 4 * B * NC * Q * H + B * NC * Q * H * P"
@@ -127,11 +127,11 @@ SSDStatePassingFwdOp:
     shape_rules:
     - "B > 0 and NC > 0 and H > 0 and N > 0"
   workloads:
-  - {B: 1, NC: 16, H: 64, N: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: mamba2-1p3b-b1-s4k-dstate}
-  - {B: 2, NC: 128, H: 80, N: 128, dtype_cases: [{T: float16}], label: mamba2-2p7b-b2-s32k-dstate}
-  - {B: 1, NC: 16, H: 64, N: 128, some: [initial_states], dtype_cases: [{T: float16}, {T: bfloat16}], label: mamba2-1p3b-b1-s4k-dstate-init-states}
+  - {B: 1, NC: 16, H: 64, N: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: mamba2-1p3b}
+  - {B: 2, NC: 128, H: 80, N: 128, dtype_cases: [{T: float16}], label: mamba2-2p7b}
+  - {B: 1, NC: 16, H: 64, N: 128, some: [initial_states], dtype_cases: [{T: float16}, {T: bfloat16}], label: mamba2-1p3b-init}
   # Flattened d_head * d_state = 8192 as produced inside Mamba2FwdOp.
-  - {B: 1, NC: 16, H: 64, N: 8192, some: [initial_states], dtype_cases: [{T: float32}], label: mamba2-1p3b-b1-s4k-flat-init-states}
+  - {B: 1, NC: 16, H: 64, N: 8192, some: [initial_states], dtype_cases: [{T: float32}], label: mamba2-1p3b-flat}
   roofline:
     # A multiply-add per state element, one exp per (batch, head, chunk).
     flops: "2 * B * NC * H * N + B * H * NC"
@@ -156,9 +156,9 @@ SSDChunkScanFwdOp:
     - "B > 0 and NC > 0 and Q > 0 and H > 0 and P > 0 and N > 0"
     - "G > 0 and H % G == 0"
   workloads:
-  - {B: 1, NC: 16, Q: 256, H: 48, P: 64, G: 1, N: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: mamba2-780m-b1-s4k}
-  - {B: 4, NC: 8, Q: 256, H: 80, P: 64, G: 1, N: 128, dtype_cases: [{T: bfloat16}], label: mamba2-2p7b-b4-s2k}
-  - {B: 2, NC: 128, Q: 256, H: 64, P: 64, G: 1, N: 128, dtype_cases: [{T: float16}], label: mamba2-1p3b-b2-s32k}
+  - {B: 1, NC: 16, Q: 256, H: 48, P: 64, G: 1, N: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: mamba2-780m}
+  - {B: 4, NC: 8, Q: 256, H: 80, P: 64, G: 1, N: 128, dtype_cases: [{T: bfloat16}], label: mamba2-2p7b}
+  - {B: 2, NC: 128, Q: 256, H: 64, P: 64, G: 1, N: 128, dtype_cases: [{T: float16}], label: mamba2-1p3b}
   roofline:
     # History: a (1 x N) @ (N x P) per token and head; intra-chunk: the causal
     # (Q x Q) @ (Q x P) per (batch, chunk, head), halved by the mask.
@@ -185,9 +185,9 @@ SSDDecodeFwdOp:
     - "B > 0 and H > 0 and P > 0 and N > 0"
     - "G > 0 and H % G == 0"
   workloads:
-  - {B: 1, H: 64, P: 64, G: 1, N: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: mamba2-1p3b-decode-b1}
-  - {B: 8, H: 80, P: 64, G: 1, N: 128, dtype_cases: [{T: float16}], label: mamba2-2p7b-decode-b8}
-  - {B: 32, H: 48, P: 64, G: 1, N: 128, dtype_cases: [{T: float16}], label: mamba2-780m-decode-b32}
+  - {B: 1, H: 64, P: 64, G: 1, N: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: mamba2-1p3b}
+  - {B: 8, H: 80, P: 64, G: 1, N: 128, dtype_cases: [{T: float16}], label: mamba2-2p7b}
+  - {B: 32, H: 48, P: 64, G: 1, N: 128, dtype_cases: [{T: float16}], label: mamba2-780m}
   roofline:
     # Per state element: dt * A, exp, dt * x * B (two products), the decay
     # multiply, the state add and the multiply-add against C.
@@ -225,14 +225,14 @@ Mamba2FwdOp:
     - "chunk_size > 0 and S % chunk_size == 0"
     - "G > 0 and H % G == 0"
   workloads:
-  - {Bsz: 1, S: 2048, H: 80, P: 64, G: 1, N: 128, dtype_cases: [{T: bfloat16}], label: mamba2-2p7b-b1-s2k}
-  - {Bsz: 1, S: 8192, H: 64, P: 64, G: 1, N: 128, dtype_cases: [{T: float16}], label: mamba2-1p3b-b1-s8k}
-  - {Bsz: 1, S: 2048, H: 80, P: 64, G: 1, N: 128, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: mamba2-2p7b-b1-s2k-dt-bias}
-  - {Bsz: 1, S: 8192, H: 64, P: 64, G: 1, N: 128, some: [dt_bias], dtype_cases: [{T: float16}], label: mamba2-1p3b-b1-s8k-dt-bias}
-  - {Bsz: 1, S: 2048, H: 80, P: 64, G: 1, N: 128, some: [initial_states], dtype_cases: [{T: bfloat16}], label: mamba2-2p7b-b1-s2k-init-states}
-  - {Bsz: 1, S: 8192, H: 64, P: 64, G: 1, N: 128, some: [initial_states], dtype_cases: [{T: float16}], label: mamba2-1p3b-b1-s8k-init-states}
-  - {Bsz: 1, S: 2048, H: 80, P: 64, G: 1, N: 128, some: [dt_bias, initial_states], dtype_cases: [{T: bfloat16}], label: mamba2-2p7b-b1-s2k-dt-bias-init-states}
-  - {Bsz: 1, S: 8192, H: 64, P: 64, G: 1, N: 128, some: [dt_bias, initial_states], dtype_cases: [{T: float16}], label: mamba2-1p3b-b1-s8k-dt-bias-init-states}
+  - {Bsz: 1, S: 2048, H: 80, P: 64, G: 1, N: 128, dtype_cases: [{T: bfloat16}], label: mamba2-2p7b}
+  - {Bsz: 1, S: 8192, H: 64, P: 64, G: 1, N: 128, dtype_cases: [{T: float16}], label: mamba2-1p3b}
+  - {Bsz: 1, S: 2048, H: 80, P: 64, G: 1, N: 128, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: mamba2-2p7b-dt-bias}
+  - {Bsz: 1, S: 8192, H: 64, P: 64, G: 1, N: 128, some: [dt_bias], dtype_cases: [{T: float16}], label: mamba2-1p3b-dt-bias}
+  - {Bsz: 1, S: 2048, H: 80, P: 64, G: 1, N: 128, some: [initial_states], dtype_cases: [{T: bfloat16}], label: mamba2-2p7b-init}
+  - {Bsz: 1, S: 8192, H: 64, P: 64, G: 1, N: 128, some: [initial_states], dtype_cases: [{T: float16}], label: mamba2-1p3b-init}
+  - {Bsz: 1, S: 2048, H: 80, P: 64, G: 1, N: 128, some: [dt_bias, initial_states], dtype_cases: [{T: bfloat16}], label: mamba2-2p7b-dt-bias-init}
+  - {Bsz: 1, S: 8192, H: 64, P: 64, G: 1, N: 128, some: [dt_bias, initial_states], dtype_cases: [{T: float16}], label: mamba2-1p3b-dt-bias-init}
   roofline:
     # The sum of the five stages' counts: DaCumsum, CBProducer, SSDChunkState,
     # SSDStatePassing over the flattened P * N state, SSDChunkScan.

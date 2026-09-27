@@ -18,8 +18,8 @@ SoftmaxFwdOp:
   workloads:
   - {S: [32, 32, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: attn-weights-4k}
   - {S: [32, 32, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: attn-weights-32k}
-  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: lm-head-logits}
-  - {S: [4, 128256], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: llama3-lm-head-logits}
+  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: lm-head}
+  - {S: [4, 128256], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: llama-8b-lm-head}
   roofline:
     flops: "5 * prod(S)"
 
@@ -41,8 +41,8 @@ LogSoftmaxFwdOp:
   workloads:
   - {S: [32, 32, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: attn-weights-4k}
   - {S: [32, 32, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: attn-weights-32k}
-  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: lm-head-logits}
-  - {S: [4, 128256], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: llama3-lm-head-logits}
+  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: lm-head}
+  - {S: [4, 128256], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: llama-8b-lm-head}
   roofline:
     flops: "5 * prod(S)"
 
@@ -64,9 +64,9 @@ LogSumExpFwdOp:
   workloads:
   - {S: [32, 32, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: attn-weights-4k}
   - {S: [32, 32, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: attn-weights-32k}
-  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: lm-head-logits}
-  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
-  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama3-lm-head-logits}
+  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: lm-head}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim}
+  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama-8b-lm-head}
   roofline:
     flops: "4 * prod(S)"
 
@@ -87,13 +87,13 @@ SumFwdOp:
     shape_rules:
     - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
   workloads:
-  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-reduce}
-  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-reduce}
-  - {S: [2048, 4096], dim: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-reduce-dim0}
-  - {S: [2048, 4096], dim: -1, keepdim: true, dtype_cases: [{T: bfloat16}], label: hidden-state-reduce-keepdim}
-  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-reduce}
-  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state-reduce}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq}
+  - {S: [2048, 4096], dim: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-dim0}
+  - {S: [2048, 4096], dim: -1, keepdim: true, dtype_cases: [{T: bfloat16}], label: hidden-state-keepdim}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate}
+  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state}
   roofline:
     flops: "prod(S)"
 
@@ -114,11 +114,11 @@ MeanFwdOp:
     shape_rules:
     - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
   workloads:
-  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-reduce}
-  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-reduce}
-  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-reduce}
-  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state-reduce}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate}
+  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state}
   roofline:
     flops: "prod(S) + prod(reduced(S, dim, keepdim, 'full'))"
 
@@ -139,10 +139,10 @@ AmaxFwdOp:
     - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
     - "sum(1 if n == 0 else 0 for n in S) == sum(1 if n == 0 else 0 for n in reduced(S, dim, True, 'full'))"
   workloads:
-  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-reduce}
-  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-reduce}
-  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-reduce}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate}
   roofline:
     flops: "prod(S)"
 
@@ -163,10 +163,10 @@ AminFwdOp:
     - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
     - "sum(1 if n == 0 else 0 for n in S) == sum(1 if n == 0 else 0 for n in reduced(S, dim, True, 'full'))"
   workloads:
-  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-reduce}
-  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-reduce}
-  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-reduce}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate}
   roofline:
     flops: "prod(S)"
 
@@ -187,11 +187,11 @@ ProdFwdOp:
     shape_rules:
     - "valid_axes(dim, len(S))"
   workloads:
-  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-reduce}
-  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-reduce}
-  - {S: [4, 128, 4096], dim: 0, dtype_cases: [{T: float16}], label: 3d-non-last-axis-reduce}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-reduce}
-  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state-reduce}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq}
+  - {S: [4, 128, 4096], dim: 0, dtype_cases: [{T: float16}], label: 3d-non-last-axis}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate}
+  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state}
   roofline:
     flops: "prod(S)"
 
@@ -212,13 +212,14 @@ VarFwdOp:
     shape_rules:
     - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
   workloads:
-  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-var}
-  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-var}
-  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-var}
-  - {S: [2048, 4096], dim: -1, correction: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-var-biased}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate}
+  - {S: [2048, 4096], dim: -1, correction: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-biased}
   roofline:
-    flops: "5 * prod(S)"
+    # The mean (1), then subtract, square and accumulate (3) per element.
+    flops: "4 * prod(S)"
 
 StdFwdOp:
   ref_api: torch.std
@@ -237,13 +238,14 @@ StdFwdOp:
     shape_rules:
     - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
   workloads:
-  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-std}
-  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-std}
-  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-std}
-  - {S: [2048, 4096], dim: -1, correction: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-std-biased}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate}
+  - {S: [2048, 4096], dim: -1, correction: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-biased}
   roofline:
-    flops: "5 * prod(S) + prod(reduced(S, dim, keepdim, 'full'))"
+    # The variance (4 per element) and a square root per output.
+    flops: "4 * prod(S) + prod(reduced(S, dim, keepdim, 'full'))"
 
 VarMeanFwdOp:
   ref_api: torch.var_mean
@@ -263,13 +265,14 @@ VarMeanFwdOp:
     shape_rules:
     - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
   workloads:
-  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-var-mean}
-  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-var-mean}
-  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-var-mean}
-  - {S: [2048, 4096], dim: -1, correction: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-var-mean-biased}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate}
+  - {S: [2048, 4096], dim: -1, correction: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-biased}
   roofline:
-    flops: "5 * prod(S)"
+    # The mean (1), then subtract, square and accumulate (3) per element.
+    flops: "4 * prod(S)"
 
 ArgmaxFwdOp:
   ref_api: torch.argmax
@@ -288,10 +291,10 @@ ArgmaxFwdOp:
     - "valid_axes(dim, len(S))"
     - "sum(1 if n == 0 else 0 for n in S) == sum(1 if n == 0 else 0 for n in reduced(S, dim, True, 'full'))"
   workloads:
-  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: lm-head-argmax}
-  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-argmax}
-  - {S: [4, 128, 4096], dim: 0, dtype_cases: [{T: float16}], label: 3d-non-last-axis-argmax}
-  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama3-lm-head-argmax}
+  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: lm-head}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
+  - {S: [4, 128, 4096], dim: 0, dtype_cases: [{T: float16}], label: 3d-non-last-axis}
+  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama-8b-lm-head}
   roofline:
     flops: "prod(S)"
 
@@ -312,10 +315,10 @@ ArgminFwdOp:
     - "valid_axes(dim, len(S))"
     - "sum(1 if n == 0 else 0 for n in S) == sum(1 if n == 0 else 0 for n in reduced(S, dim, True, 'full'))"
   workloads:
-  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: lm-head-argmin}
-  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-argmin}
-  - {S: [4, 128, 4096], dim: 0, dtype_cases: [{T: float16}], label: 3d-non-last-axis-argmin}
-  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama3-lm-head-argmin}
+  - {S: [4, 102400], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: lm-head}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
+  - {S: [4, 128, 4096], dim: 0, dtype_cases: [{T: float16}], label: 3d-non-last-axis}
+  - {S: [4, 128256], dim: -1, dtype_cases: [{T: float32}], label: llama-8b-lm-head}
   roofline:
     flops: "prod(S)"
 
@@ -337,10 +340,11 @@ AllFwdOp:
   workloads:
   - {S: [32, 4096], dim: -1, dtype_cases: [{T: bool}, {T: float16}, {T: bfloat16}, {T: float32}], label: mask-validation-4k}
   - {S: [32, 32768], dim: -1, dtype_cases: [{T: bool}, {T: int32}, {T: int64}], label: mask-validation-32k}
-  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: bool}, {T: complex64}, {T: complex128}], label: 3d-multidim-reduce}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: bool}], label: mlp-intermediate-mask}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: bool}, {T: complex64}, {T: complex128}], label: 3d-multidim}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: bool}], label: mlp-intermediate}
   roofline:
-    flops: "prod(S)"
+    # One truth test per non-bool element, and one combine per element.
+    flops: "(1 if T == 'bool' else 2) * prod(S)"
 
 AnyFwdOp:
   ref_api: torch.any
@@ -360,10 +364,11 @@ AnyFwdOp:
   workloads:
   - {S: [32, 4096], dim: -1, dtype_cases: [{T: bool}, {T: float16}, {T: bfloat16}, {T: float32}], label: mask-validation-4k}
   - {S: [32, 32768], dim: -1, dtype_cases: [{T: bool}, {T: int32}, {T: int64}], label: mask-validation-32k}
-  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: bool}, {T: complex64}, {T: complex128}], label: 3d-multidim-reduce}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: bool}], label: mlp-intermediate-mask}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: bool}, {T: complex64}, {T: complex128}], label: 3d-multidim}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: bool}], label: mlp-intermediate}
   roofline:
-    flops: "prod(S)"
+    # One truth test per non-bool element, and one combine per element.
+    flops: "(1 if T == 'bool' else 2) * prod(S)"
 
 CountNonzeroFwdOp:
   ref_api: torch.count_nonzero
@@ -382,8 +387,8 @@ CountNonzeroFwdOp:
   workloads:
   - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: sparsity-hidden}
   - {S: [32, 32768], dim: -1, dtype_cases: [{T: float16}, {T: bool}, {T: int32}, {T: int64}], label: sparsity-seq}
-  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}, {T: complex64}, {T: complex128}], label: 3d-multidim-reduce}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float16}], label: sparsity-mlp-intermediate}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}, {T: complex64}, {T: complex128}], label: 3d-multidim}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float16}], label: sparsity-mlp}
   roofline:
     flops: "2 * prod(S)"
 
@@ -407,11 +412,11 @@ L1NormFwdOp:
     - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
     - "not present(dtype) or dtype.value == T or dtype.value == 'float32'"
   workloads:
-  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-l1}
-  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-l1}
-  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-l1}
-  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state-l1}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate}
+  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state}
   roofline:
     flops: "2 * prod(S)"
 
@@ -435,11 +440,11 @@ L2NormFwdOp:
     - "valid_axes(dim, len(S)) and unique_axes(dim, len(S))"
     - "not present(dtype) or dtype.value == T or dtype.value == 'float32'"
   workloads:
-  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-l2}
-  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-l2}
-  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-l2}
-  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state-l2}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate}
+  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state}
   roofline:
     flops: "2 * prod(S) + prod(reduced(S, dim, keepdim, 'full'))"
 
@@ -464,10 +469,10 @@ InfNormFwdOp:
     - "not present(dtype) or dtype.value == T or dtype.value == 'float32'"
     - "sum(1 if n == 0 else 0 for n in S) == sum(1 if n == 0 else 0 for n in reduced(S, dim, True, 'full'))"
   workloads:
-  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state-inf}
-  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq-inf}
-  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim-reduce}
-  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-inf}
-  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state-inf}
+  - {S: [2048, 4096], dim: -1, dtype_cases: [{T: float16}, {T: bfloat16}], label: hidden-state}
+  - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq}
+  - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: float16}], label: 3d-multidim}
+  - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate}
+  - {S: [2048, 4096], dim: -1, dtype: float32, dtype_cases: [{T: bfloat16}], label: hidden-state}
   roofline:
     flops: "2 * prod(S)"

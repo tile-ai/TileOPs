@@ -203,31 +203,48 @@ class TestBytesOracle:
         tensors["shared_w_down"] = torch.empty(hidden, shared_ffn, dtype=bf16)
         shared = _nbytes(
             ((3 * shared_ffn // tp, hidden), bf16),  # this rank's shared weights
-            ((tokens, hidden), bf16),  # its own read of the hidden states
             ((tokens, hidden), bf16),  # shared_output, returned separately
         )
         assert self._priced(op, tensors)[1] == routed + shared
 
-    def test_nsa_forward_counts_the_blocks_its_selection_kept(self):
+    def test_nsa_forward_reads_the_rows_its_selection_kept(self):
         """How much this call reads follows `block_counts`, so the case reads the
         selection the manifest row generates rather than inventing one of its own."""
+        row = _manifest_rows("NSAVarlenFwdOp")[0]
+        for is_causal in (True, False):
+            self._nsa_forward_case(_manifest_call("NSAVarlenFwdOp", dict(row, is_causal=is_causal)))
+
+    @staticmethod
+    def _nsa_forward_case(call):
         from tileops.perf.formulas import nsa_fwd_varlen_roofline
 
-        call = _manifest_call("NSAVarlenFwdOp")
         ix = call.ix
         c_seq_len, heads, head_kv, dim = ix["T_q"], ix["H"], ix["H_kv"], ix["D"]
         block_size, selected = ix["block_size"], ix["SEL"]
-        # The blocks the kernel reads: for each token and KV head, the kept picks
-        # whose block starts at or before that token. Counted here from the
-        # tensors, not from the formula's own walk of them.
-        kept = [n for row in call.values("block_counts") for n in row]
-        picks = [p for row in call.values("block_indices") for p in row]
-        positions = [position for _request, position in call.values("token_indices")]
-        tiles = sum(
-            sum(1 for start in row[:n] if 0 <= start * block_size <= positions[i // head_kv])
-            for i, (n, row) in enumerate(zip(kept, picks, strict=True))
-        )
-        gathered = tiles * block_size * dim
+        # The key rows some token scores, per KV head: the kept picks starting at or before
+        # the token, each block cut at the token when causal and at the sequence end
+        # otherwise. A row several tokens score is read once. Counted here from the tensors.
+        offsets = call.values("offsets")
+        rows = {
+            (h, offsets[request] + r)
+            for (request, position), counts, picks in zip(
+                call.values("token_indices"),
+                call.values("block_counts"),
+                call.values("block_indices"),
+                strict=True,
+            )
+            for h in range(head_kv)
+            for start in picks[h][: counts[h]]
+            if start * block_size <= position
+            for r in range(
+                start * block_size,
+                min(
+                    (start + 1) * block_size,
+                    position + 1 if ix["is_causal"] else offsets[request + 1] - offsets[request],
+                ),
+            )
+        }
+        gathered = len(rows) * dim
         oracle = _ledger(
             "NSAVarlenFwdOp",
             q=((c_seq_len, heads, dim), torch.float16),
@@ -236,7 +253,7 @@ class TestBytesOracle:
             v=((gathered,), torch.float16),
             block_indices=((c_seq_len, head_kv, selected), torch.int32),
             block_counts=((c_seq_len, head_kv), torch.int32),
-            offsets=((len(call.values("offsets")),), torch.int32),
+            offsets=((len(offsets),), torch.int32),
             token_indices=((c_seq_len, 2), torch.int32),
             o_slc=((c_seq_len, heads, dim), torch.float16),
         )
@@ -276,9 +293,8 @@ class TestBytesOracle:
         # One token against an empty or single-page cache names one or two entries of
         # its block-table row; a length that does not divide by the page size is
         # rounded up to a page.
-        short = dict(base, T_q=len(base["q_lens"]))
-        short["q_lens"] = [1] * len(base["q_lens"])
-        short["cache_lens"] = [0, 64] * (len(base["q_lens"]) // 2)
+        batch = len(_manifest_call(name, base).values("cache_seqlens"))
+        short = dict(base, T_q=batch, q_lens=[1] * batch, cache_lens=[0, 64] * (batch // 2))
         rows = {
             "cached": base,
             "fp8 cache": dict(base, cache_dtype="float8_e4m3fn"),
@@ -288,7 +304,8 @@ class TestBytesOracle:
             call = _manifest_call(name, row)
             ix = call.ix
             heads, heads_kv, dim, page_size = ix["H"], ix["H_kv"], ix["D"], ix["page_size"]
-            q_lens, cache_lens = row["q_lens"], row["cache_lens"]
+            offsets, cache_lens = call.values("cu_seqlens_q"), call.values("cache_seqlens")
+            q_lens = [b - a for a, b in zip(offsets, offsets[1:], strict=False)]
             total_q, cached, batch = sum(q_lens), sum(cache_lens), len(q_lens)
             cache = torch.float8_e4m3fn if "cache_dtype" in row else torch.float16
             pages_named = sum(
@@ -317,6 +334,172 @@ class TestBytesOracle:
                 o=((total_q, heads, dim), torch.float16),
             )
             assert gqa_prefill_paged_with_kv_cache_fwd_roofline(call)[1] == oracle, label
+
+    def test_gqa_paged_reads_the_rows_its_page_table_names(self):
+        """The cache is one pool, and the call reads the rows its page table names as far
+        as each request's cached length; the pages it never names move nothing."""
+        from tileops.perf.formulas import gqa_paged_fwd_roofline
+
+        name = "GroupedQueryAttentionPagedFwdOp"
+        call = _manifest_call(name)
+        ix = call.ix
+        heads, heads_kv, dim, page = ix["H"], ix["H_kv"], ix["D"], ix["PS"]
+        table, cached = call.values("page_table"), call.values("cache_seqlens")
+        rows = {(table[b][r // page], r % page) for b, n in enumerate(cached) for r in range(n)}
+        kv = ((len(rows), heads_kv, dim), torch.float16)
+        oracle = _ledger(
+            name,
+            q=((ix["T_q"], heads, dim), torch.float16),
+            k_pages=kv,
+            v_pages=kv,
+            page_table=((sum(-(-n // page) for n in cached),), torch.int32),
+            cache_seqlens=((len(cached),), torch.int32),
+            cu_seqlens_q=((len(cached) + 1,), torch.int32),
+            q_scale=None,
+            k_scale=None,
+            v_scale=None,
+            rope_cos=None,
+            rope_sin=None,
+            o=((ix["T_q"], heads, dim), torch.float16),
+        )
+        assert gqa_paged_fwd_roofline(call)[1] == oracle
+
+    def test_topk_selector_reads_only_its_windows(self):
+        """The manifest rows select from whole rows; a narrower window reads and compares
+        only the scores inside it."""
+        from tileops.ops import TopkSelectorFwdOp
+
+        batch, seq, extent, topk = 1, 4, 16, 2
+        starts = torch.tensor([[0, 4, 8, 12]], dtype=torch.int32)
+        ends = torch.tensor([[4, 8, 16, 12]], dtype=torch.int32)
+        tensors = {
+            "index_score": torch.empty(batch, seq, extent, 1),
+            "starts": starts,
+            "ends": ends,
+        }
+        scores = int((ends - starts).clamp(min=0).sum())
+        oracle = _ledger(
+            "TopkSelectorFwdOp",
+            index_score=((scores,), torch.float32),
+            starts=((batch, seq), torch.int32),
+            ends=((batch, seq), torch.int32),
+            indexes=((batch, seq, 1, topk), torch.int32),
+        )
+        assert self._priced(TopkSelectorFwdOp(topk), tensors) == (scores, oracle)
+
+    def test_paged_decode_reads_the_rows_its_lengths_reach(self):
+        """The manifest rows fill the pool; shorter lengths, and two requests sharing a
+        page, read each named row once and consult only the table entries they reach."""
+        from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
+
+        heads, heads_kv, dim, page, pages = 4, 2, 8, 4, 4
+        f16 = torch.float16
+        lengths, table = [6, 3], [[0, 1], [0, 2]]
+        tensors = {
+            "q": torch.empty(2, heads, dim, dtype=f16),
+            "k": torch.empty(pages * page, heads_kv, dim, dtype=f16),
+            "v": torch.empty(pages * page, heads_kv, dim, dtype=f16),
+            "real_seqlen_kv": torch.tensor(lengths, dtype=torch.int32),
+            "block_table": torch.tensor(table, dtype=torch.int32),
+        }
+        # rows 0-3 of page 0 and 0-1 of page 1 for the first request; the second reads
+        # rows 0-2 of page 0, already counted
+        rows, consulted = 6, 3
+        kv = ((rows, heads_kv, dim), f16)
+        oracle = _ledger(
+            "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
+            q=((2, heads, dim), f16),
+            k=kv,
+            v=kv,
+            real_seqlen_kv=((2,), torch.int32),
+            block_table=((consulted,), torch.int32),
+            o=((2, heads, dim), f16),
+        )
+        op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(page_size=page)
+        # QK and PV (4 * dim) and the softmax (5) per score, a divide per output element.
+        flops = heads * (sum(lengths) * (4 * dim + 5) + len(lengths) * dim)
+        assert self._priced(op, tensors) == (flops, oracle)
+
+    def test_windowed_pools_read_the_positions_some_window_reaches(self):
+        """A stride past the kernel span, or a dilation, leaves input positions no window
+        reads; the case recounts the positions from the row's geometry."""
+        from tileops.perf.formulas import pool_roofline
+
+        for op_name in ("AvgPool1dFwdOp", "MaxPool1dFwdOp", "MaxPool1dIndicesFwdOp"):
+            for row in _manifest_rows(op_name):
+                call = _manifest_call(op_name, row)
+                ix = call.ix
+                read = {
+                    o * ix["sW"] - ix["pW"] + j * ix.get("dW", 1)
+                    for o in range(ix["L_out"])
+                    for j in range(ix["kW"])
+                } & set(range(ix["L_in"]))
+                dtype = getattr(torch, call.tensors["input"][1])
+                out = ((ix["N"], ix["C"], ix["L_out"]), dtype)
+                tensors = {"input": ((ix["N"], ix["C"], len(read)), dtype), "output": out}
+                if op_name == "MaxPool1dIndicesFwdOp":
+                    tensors["indices"] = ((ix["N"], ix["C"], ix["L_out"]), torch.int64)
+                assert pool_roofline(call)[1] == _ledger(op_name, **tensors), row["label"]
+
+    def test_dsa_decode_reads_the_kv_rows_some_query_selects(self):
+        """Top-k slots past the causal bound or repeated select nothing more, so `kv` is
+        read at the rows the row's generated indices reach."""
+        from tileops.perf.formulas import dsa_decode_roofline
+
+        op_name = "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp"
+        for row in _manifest_rows(op_name):
+            call = _manifest_call(op_name, row)
+            ix = call.ix
+            rows = {
+                (b, g, j)
+                for b, batch in enumerate(call.values("indices"))
+                for s, heads in enumerate(batch)
+                for g, slots in enumerate(heads)
+                for j in slots
+                if 0 <= j < ix["S_kv"]
+                and (j + 1) * ix["stride_kv"] - 1 <= ix["q_start_index_s"] + s
+            }
+            dtype = getattr(torch, call.tensors["q"][1])
+            width = ix["D"] + ix["dim_tail"]
+            oracle = _ledger(
+                op_name,
+                q=((ix["B"], ix["S"], ix["H"], width), dtype),
+                kv=((len(rows), width), dtype),
+                indices=((ix["B"], ix["S"], ix["H_kv"], ix["K"]), torch.int32),
+                o=((ix["B"], ix["S"], ix["H"], ix["D"]), dtype),
+            )
+            assert dsa_decode_roofline(call)[1] == oracle, row["label"]
+
+    def test_deltanet_bwd_reads_the_strict_lower_triangle_of_aw_and_au(self):
+        """Each chunk's C x C block of Aw and Au has a unit diagonal and a zero upper
+        triangle, so only the strict-lower C * (C - 1) / 2 entries are read."""
+        from tests.roofline_binder import manifest_cases
+
+        op_name = "DeltaNetBwdOp"
+        rows = {row["label"]: row for row in _manifest_rows(op_name)}
+        for label, dtype_name, op, _oracle, _reads in manifest_cases(op_name):
+            ix = _manifest_call(op_name, rows[label]).ix
+            b, h, n, dk, dv, c = ix["B"], ix["H"], ix["L"], ix["DK"], ix["DV"], ix["chunk_size"]
+            dtype = getattr(torch, dtype_name)
+            triangle = ((b, h, n // c, c * (c - 1) // 2), dtype)
+            oracle = _ledger(
+                op_name,
+                do=((b, h, n, dv), dtype),
+                q=((b, h, n, dk), dtype),
+                k=((b, h, n, dk), dtype),
+                v=((b, h, n, dv), dtype),
+                beta=((b, h, n), dtype),
+                S=((b, h, n // c + 1, dk, dv), torch.float32),
+                Aw=triangle,
+                Au=triangle,
+                w=((b, h, n, dk), dtype),
+                u=((b, h, n, dv), dtype),
+                dq=((b, h, n, dk), dtype),
+                dk=((b, h, n, dk), dtype),
+                dv=((b, h, n, dv), dtype),
+                dbeta=((b, h, n), dtype),
+            )
+            assert op.eval_roofline()[1] == oracle, label
 
     def test_dropout_short_circuits_read_and_write_what_they_touch(self):
         """The generated case covers the masking path its workloads state. The three
@@ -393,6 +576,11 @@ class TestBytesOracle:
 # Level two: a case above recounts these by hand. The value says why the
 # generated case cannot, which is what the hand-written one supplies.
 HAND_WRITTEN = {
+    "AvgPool1dFwdOp": "a stride past the kernel leaves input positions no window reads",
+    "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp": "it reads the kv rows its top-k indices select, not the cache",
+    "DeltaNetBwdOp": "it reads only the strict-lower triangle of each Aw and Au chunk block",
+    "MaxPool1dFwdOp": "a dilated or strided window leaves input positions no window reads",
+    "MaxPool1dIndicesFwdOp": "a dilated or strided window leaves input positions no window reads",
     "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "FusedMoeFwdOp": "the routed weight reads follow the routing its experts stage receives",
     "FusedMoeSharedExpertFwdOp": "the routed weight reads follow the routing its experts stage receives",

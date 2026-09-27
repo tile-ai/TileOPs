@@ -626,7 +626,7 @@ def test_gemm_fp8_block128_single_k_block_uses_block_kernel() -> None:
             (4096, 2112, 7168),
             (128, 4),
             marks=pytest.mark.smoke,
-            id="prefill-gate-up",
+            id="prefill-qkv-a",
         ),
         pytest.param(
             (128, 7168, 2048),

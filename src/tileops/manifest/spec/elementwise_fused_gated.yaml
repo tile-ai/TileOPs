@@ -23,8 +23,8 @@ SiluAndMulFwdOp:
 
   workloads:
   # SwiGLU FFN intermediate (Llama-3.1-8B, hidden_dim=14336)
-  - {M: 2048, N: 14336, dtype_cases: [{T: float16}, {T: bfloat16}], label: "llama-8b-swiglu-prefill"}
-  - {M: 1, N: 14336, dtype_cases: [{T: bfloat16}], label: "llama-8b-swiglu-decode"}
+  - {M: 2048, N: 14336, dtype_cases: [{T: float16}, {T: bfloat16}], label: "llama-8b-ffn-prefill"}
+  - {M: 1, N: 14336, dtype_cases: [{T: bfloat16}], label: "llama-8b-ffn-decode"}
 
   roofline:
     # FLOPs: silu(gate) = gate * sigmoid(gate); sigmoid = neg + exp + add +
@@ -47,8 +47,8 @@ GeluAndMulFwdOp:
       output: {dtype: T, shape: "[M, N]"}
 
   workloads:
-  - {M: 2048, N: 14336, dtype_cases: [{T: float16}, {T: bfloat16}], label: "ffn-gelu-prefill"}
-  - {M: 1, N: 14336, dtype_cases: [{T: bfloat16}], label: "ffn-gelu-decode"}
+  - {M: 2048, N: 14336, dtype_cases: [{T: float16}, {T: bfloat16}], label: "llama-8b-ffn-prefill"}
+  - {M: 1, N: 14336, dtype_cases: [{T: bfloat16}], label: "llama-8b-ffn-decode"}
 
   roofline:
     # FLOPs: gelu(gate) = gate * 0.5 * (1 + erf(gate / sqrt(2))).
@@ -71,8 +71,8 @@ GeluTanhAndMulFwdOp:
       output: {dtype: T, shape: "[M, N]"}
 
   workloads:
-  - {M: 2048, N: 14336, dtype_cases: [{T: float16}, {T: bfloat16}], label: "ffn-gelu-tanh-prefill"}
-  - {M: 1, N: 14336, dtype_cases: [{T: bfloat16}], label: "ffn-gelu-tanh-decode"}
+  - {M: 2048, N: 14336, dtype_cases: [{T: float16}, {T: bfloat16}], label: "llama-8b-ffn-prefill"}
+  - {M: 1, N: 14336, dtype_cases: [{T: bfloat16}], label: "llama-8b-ffn-decode"}
 
   roofline:
     # FLOPs: gelu_tanh(g) = 0.5 * g * (1 + tanh(sqrt(2/pi) * (g + 0.044715 * g^3))).

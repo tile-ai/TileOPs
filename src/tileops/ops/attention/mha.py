@@ -137,6 +137,17 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         "mha_decode_paged_ws_kernel": MHADecodePagedWsKernel,
     }
 
+    def roofline_inputs(self) -> "dict[str, int]":
+        """The cached tokens this call's lengths name and the distinct pool rows they reach,
+        which its flops and cache reads follow."""
+        from tileops.perf.formulas import paged_decode_cache_rows
+
+        call = self.last_call
+        return {
+            "kv_tokens": sum(call.values("real_seqlen_kv")),
+            "cache_rows": paged_decode_cache_rows(call),
+        }
+
     def __init__(
         self,
         page_size: int,

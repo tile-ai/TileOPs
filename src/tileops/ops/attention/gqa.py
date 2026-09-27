@@ -808,6 +808,17 @@ class GroupedQueryAttentionPagedFwdOp(Op):
     remain runtime responsibilities. The shell has no BUILTIN kernel yet.
     """
 
+    def roofline_inputs(self) -> "dict[str, int]":
+        """The cached tokens this call's lengths name and the distinct pool rows it reads,
+        which its flops and cache reads follow."""
+        from tileops.perf.formulas import gqa_paged_cache_rows
+
+        call = self.last_call
+        return {
+            "cached_tokens": sum(call.values("cache_seqlens")),
+            "cache_rows": gqa_paged_cache_rows(call),
+        }
+
     def __init__(
         self,
         is_causal: bool = True,
@@ -932,10 +943,10 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         return None
 
     def roofline_inputs(self) -> "dict[str, int]":
-        """The cached tokens this call reads, which its cache traffic follows."""
-        from tileops.perf.formulas import gqa_prefill_paged_cached_tokens
+        """The distinct cache rows this call reads, which its cache traffic follows."""
+        from tileops.perf.formulas import gqa_prefill_paged_cache_rows
 
-        return {"cached_tokens": gqa_prefill_paged_cached_tokens(self.last_call)}
+        return {"cache_rows": gqa_prefill_paged_cache_rows(self.last_call)}
 
     def __init__(
         self,
@@ -1327,6 +1338,17 @@ class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
         "gqa_decode_paged_kernel": GQADecodePagedKernel,
         "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,
     }
+
+    def roofline_inputs(self) -> "dict[str, int]":
+        """The cached tokens this call's lengths name and the distinct pool rows they reach,
+        which its flops and cache reads follow."""
+        from tileops.perf.formulas import paged_decode_cache_rows
+
+        call = self.last_call
+        return {
+            "kv_tokens": sum(call.values("real_seqlen_kv")),
+            "cache_rows": paged_decode_cache_rows(call),
+        }
 
     def __init__(
         self,
