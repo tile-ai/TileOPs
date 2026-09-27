@@ -1,8 +1,8 @@
 """Linear-attention kernels: DeltaNet, Gated DeltaNet and Gated Linear Attention (GLA).
 
-The three share the chunked-recurrence formulation, so they share the V-tile width
-rule (``v_tile``) and the autotune search space (``autotune``). The chunkwise
-kernels live in the per-variant subpackages; the single-token decode kernels are the
+The DeltaNet and GLA chunked kernels share the V-tile width rule (``v_tile``); the
+DeltaNet forward also tunes through ``autotune``. The chunkwise kernels live in the
+per-variant subpackages; the DeltaNet and GLA single-token decode kernels are the
 ``*_recurrence`` modules.
 """
 
@@ -13,16 +13,8 @@ from .deltanet_recurrence import (
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from .gated_deltanet import (
-    GatedDeltaNetBwdKernel,
     GatedDeltaNetDenseDecodeFwdKernel,
     GatedDeltaNetDensePrefillFwdKernel,
-    GatedDeltaNetFwdKernel,
-    GatedDeltaNetFwdProductionKernel,
-)
-from .gated_deltanet_recurrence import (
-    GatedDeltaNetDecodeFP32Kernel,
-    GatedDeltaNetDecodeKernel,
-    GatedDeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from .gla import GLABwdKernel, GLADensePrefillFwdKernel, GLADensePrefillSubchunkKernel, GLAFwdKernel
 from .gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
@@ -40,12 +32,6 @@ __all__ = [
     "GLADensePrefillFwdKernel",
     "GLADensePrefillSubchunkKernel",
     "GLAFwdKernel",
-    "GatedDeltaNetBwdKernel",
     "GatedDeltaNetDenseDecodeFwdKernel",
-    "GatedDeltaNetDecodeFP32Kernel",
-    "GatedDeltaNetDecodeKernel",
-    "GatedDeltaNetDecodeRawCudaFlaStyleKernel",
     "GatedDeltaNetDensePrefillFwdKernel",
-    "GatedDeltaNetFwdKernel",
-    "GatedDeltaNetFwdProductionKernel",
 ]
