@@ -26,7 +26,8 @@ RMSNormFwdOp:
   - {B: [2048], normalized_shape: [5120], some: [weight], dtype_cases: [{T: bfloat16}], label: llama-13b-prefill}
   - {B: [4, 2048], normalized_shape: [128], dtype_cases: [{T: bfloat16}], label: qk-norm-head}
   roofline:
-    flops: "4 * prod(B) * prod(normalized_shape)"
+    # Square and accumulate (2), normalize (1), and the weight (1) when present.
+    flops: "(4 if present(weight) else 3) * prod(B) * prod(normalized_shape)"
 
 LayerNormFwdOp:
   ref_api: torch.nn.functional.layer_norm
@@ -55,7 +56,8 @@ LayerNormFwdOp:
   - {B: [2048], normalized_shape: [5120], some: [weight], dtype_cases: [{T: float32}], label: llama-13b-prefill}
   - {B: [1024], normalized_shape: [1152], dtype_cases: [{T: bfloat16}], label: dit-xl-2}
   roofline:
-    flops: "5 * prod(B) * prod(normalized_shape)"
+    # Mean (1), centered variance (3), normalize (2), and one per present affine tensor.
+    flops: "(6 + (1 if present(weight) else 0) + (1 if present(bias) else 0)) * prod(B) * prod(normalized_shape)"
 
 AdaLayerNormFwdOp:
   family: norm
@@ -75,7 +77,8 @@ AdaLayerNormFwdOp:
   - {B: [2048], N: 4096, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-prefill}
   - {B: [1], N: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-decode}
   roofline:
-    flops: "5 * prod(B) * N"
+    # LayerNorm without affine (6), then scale and shift (2).
+    flops: "8 * prod(B) * N"
 
 AdaLayerNormZeroFwdOp:
   family: norm
@@ -96,7 +99,8 @@ AdaLayerNormZeroFwdOp:
   - {B: [2048], N: 4096, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-prefill}
   - {B: [1], N: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-decode}
   roofline:
-    flops: "6 * prod(B) * N"
+    # LayerNorm without affine (6), then scale, shift and gate (3).
+    flops: "9 * prod(B) * N"
 
 FusedAddLayerNormFwdOp:
   family: norm
@@ -120,7 +124,8 @@ FusedAddLayerNormFwdOp:
   - {B: [1], N: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-decode}
   - {B: [2048], N: 5120, dtype_cases: [{T: float32}], label: llama-13b-prefill}
   roofline:
-    flops: "6 * prod(B) * N"
+    # The residual add (1), then an affine LayerNorm (8).
+    flops: "9 * prod(B) * N"
 
 FusedAddRMSNormFwdOp:
   family: norm
@@ -177,7 +182,9 @@ BatchNormFwdOp:
   - {B: 4, C: 256, L: [28, 28], some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: resnet50-stage3-eval}
   - {B: 8, C: 64, L: [56, 56], training: true, dtype_cases: [{T: bfloat16}], label: resnet50-stem-no-stats}
   roofline:
-    flops: "10 * B * C * prod(L)"
+    # Training: mean (1), centered variance (3), normalize (2); running statistics: normalize (2).
+    # One more per present affine tensor.
+    flops: "((6 if training else 2) + (1 if present(weight) else 0) + (1 if present(bias) else 0)) * B * C * prod(L)"
 
 BatchNormBwdOp:
   family: norm
@@ -201,7 +208,8 @@ BatchNormBwdOp:
   - {B: 4, C: 256, L: [28, 28], dtype_cases: [{T: float16}, {T: float32}], label: resnet50-stage3}
   - {B: 4, C: 128, L: [1024, 1024], dtype_cases: [{T: float16}], label: large-spatial}
   roofline:
-    flops: "8 * B * C * prod(L)"
+    # x_hat (2), the grad_bias and grad_weight reductions (3), and grad_x from them (4).
+    flops: "9 * B * C * prod(L)"
 
 GroupNormFwdOp:
   ref_api: torch.nn.functional.group_norm
@@ -229,7 +237,8 @@ GroupNormFwdOp:
   - {B: 4, C: 256, L: [28, 28], num_groups: 32, some: [weight, bias], dtype_cases: [{T: float16}, {T: float32}], label: wider-channel-g32-affine}
   - {B: 4, C: 128, L: [30, 30], num_groups: 16, some: [weight, bias], dtype_cases: [{T: float16}], label: tail-spatial-g16-affine}
   roofline:
-    flops: "(5 if present(weight) or present(bias) else 3) * B * C * prod(L)"
+    # Mean (1), centered variance (3), normalize (2), and one per present affine tensor.
+    flops: "(6 + (1 if present(weight) else 0) + (1 if present(bias) else 0)) * B * C * prod(L)"
 
 InstanceNormFwdOp:
   ref_api: torch.nn.functional.instance_norm
@@ -262,4 +271,6 @@ InstanceNormFwdOp:
   - {B: 8, C: 128, L: [32, 32], some: [running_mean], dtype_cases: [{T: float16}], label: image-track-running-stats}
   - {B: 8, C: 128, L: [32, 32], use_input_stats: false, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: image-running-stats}
   roofline:
-    flops: "(5 if present(weight) or present(bias) else 3) * B * C * prod(L)"
+    # Input statistics: mean (1), centered variance (3), normalize (2); running statistics:
+    # normalize (2). One more per present affine tensor.
+    flops: "((6 if use_input_stats else 2) + (1 if present(weight) else 0) + (1 if present(bias) else 0)) * B * C * prod(L)"

@@ -36,7 +36,9 @@ EngramGateConvFwdOp:
   - {M: 3, seq_len: 96, d: 768, dtype_cases: [{T: bfloat16}], label: fwd-b3-s96-d768}
 
   roofline:
-    flops: "M * seq_len * (24 * d + 20)"
+    # Per position: three RMSNorms, the gate dot and sigmoid, vhat, SiLU and the residual
+    # (21d + 14), and the causal width-4 depthwise convolution over the taps inside the input.
+    flops: "M * (seq_len * (21 * d + 14) + 2 * d * (seq_len + max((seq_len - 1, 0)) + max((seq_len - 2, 0)) + max((seq_len - 3, 0))))"
 
 EngramGateConvBwdOp:
   family: sequence_modeling
@@ -79,7 +81,10 @@ EngramGateConvBwdOp:
   - {M: 3, seq_len: 96, d: 768, dtype_cases: [{T: bfloat16}], label: bwd-b3-s96-d768}
 
   roofline:
-    flops: "M * seq_len * (24 * d + 20) * 5 // 2"
+    # Per position: the normalized-value recomputes, SiLU, RMSNorm, gate and dot backward
+    # (45d + 10), and three convolution passes (recompute, weight and input gradients) over
+    # the taps inside the input.
+    flops: "M * (seq_len * (45 * d + 10) + 6 * d * (seq_len + max((seq_len - 1, 0)) + max((seq_len - 2, 0)) + max((seq_len - 3, 0))))"
 
 EngramDecodeFwdOp:
   # `conv_state` holds the last L steps, L <= max_conv_len, left-padded to

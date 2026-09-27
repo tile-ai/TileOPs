@@ -52,9 +52,8 @@ GeluFwdOp:
   - {S: [1, 14336], dtype_cases: [{T: bfloat16}], label: "llama-8b-ffn-decode"}
 
   roofline:
-    # FLOPs: gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
-    # div(1) + erf(1) + add(1) + mul-by-half(1) + mul(1) = 5 per elem.
-    flops: "5 * prod(S)"
+    # Exact form 0.5 * x * (1 + erf(x / sqrt(2))): 5 per element; tanh form: 9.
+    flops: "(9 if approximate == 'tanh' else 5) * prod(S)"
 
 SiluFwdOp:
   ref_api: "torch.nn.functional.silu"
@@ -374,5 +373,5 @@ NanToNumFwdOp:
   - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    # isnan + isposinf + isneginf + 3 conditional selects per element
-    flops: "6 * prod(S)"
+    # One compare-and-select per replaced class; the default infinities are one two-bound clamp.
+    flops: "(2 if not present(posinf) and not present(neginf) else 3) * prod(S)"

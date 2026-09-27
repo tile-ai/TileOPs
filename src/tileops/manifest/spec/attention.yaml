@@ -380,9 +380,7 @@ MultiHeadAttentionDecodePagedWithKVCacheFwdOp:
   - {S_q: 1, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: [1024], page_size: 256, dtype_cases: [{T: float16}], label: longer-cache}
   - {S_q: 1, H: 8, D: 64, N_kv: 512, W: 2, kv_lens: [512], page_size: 256, dtype_cases: [{T: float16}], label: shorter-cache}
   roofline:
-    flops: "4 * B * H * S_q * N_kv * D"
-    # The whole pool, and one block-table row of the pages the pool holds per request.
-    bytes: "bytes(q) + bytes(k) + bytes(v) + bytes(o) + 4 * B + 4 * B * max((1, ceil_div(N_kv, page_size)))"
+    func: tileops.perf.formulas.paged_decode_roofline
 
 GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
   family: attention
@@ -419,9 +417,7 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
   - {H: 32, H_kv: 8, D: 128, N_kv: 2048, W: 128, kv_lens: [2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048], page_size: 16, dtype_cases: [{T: float16}], label: throughput-8b-p16}
   - {H: 64, H_kv: 8, D: 128, N_kv: 4096, W: 256, kv_lens: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096], page_size: 16, dtype_cases: [{T: float16}], label: serving-70b-p16}
   roofline:
-    flops: "4 * B * H * N_kv * D"
-    # The whole pool, and one block-table row of the pages the pool holds per request.
-    bytes: "bytes(q) + bytes(k) + bytes(v) + bytes(o) + 4 * B + 4 * B * max((1, ceil_div(N_kv, page_size)))"
+    func: tileops.perf.formulas.paged_decode_roofline
 
 # ---------------------------------------------------------------------------
 # attention — Multi-Head Latent Attention / DeepSeek Sparse Attention decode
@@ -478,7 +474,7 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
   - {B: 1, S: 1024, S_kv: 2048, H: 128, H_kv: 1, D: 512, K: 2048, dim_tail: 64, stride_kv: 1, q_start_index_s: 1024, dtype_cases: [{T: float16}], label: single-batch-mainstream}
   - {B: 1, S: 512, S_kv: 4096, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 64, stride_kv: 1, q_start_index_s: 512, dtype_cases: [{T: float16}], label: longer-kv-lower-topk}
   roofline:
-    flops: "2 * B * S * H * K * (2 * D + dim_tail)"
+    func: tileops.perf.formulas.dsa_decode_roofline
 
 # Native Sparse Attention (NSA) runs as three passes over one packed batch: compress the
 # keys and values per block, select the blocks each token keeps, then attend to those

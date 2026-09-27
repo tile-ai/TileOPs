@@ -294,8 +294,7 @@ MoeGroupedGemmFwdOp:
     # DeepSeek-V3 under EP=8 with a masked dispatch: 32 local experts, 128 slots each.
   - {K: 7168, E: 32, N: 4096, layout: {masked: {max_m: 128}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-ep8-masked-gate-up"}
   roofline:
-    # The contraction, and the fused gated activation (six per output element) when present.
-    flops: "2 * R * (2 * N if present(activation) else N) * K + (6 * R * N if present(activation) else 0)"
+    func: tileops.perf.formulas.moe_grouped_gemm_roofline
 
 MoeExpertMLPFwdOp:
   family: moe
@@ -342,8 +341,7 @@ MoeExpertMLPFwdOp:
   - {P: 4096, H: 7168, E: 256, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-decode"}
   - {P: 32768, H: 7168, E: 256, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "deepseek-v3-prefill"}
   roofline:
-    # Two GEMMs (2 * 2F * H and 2 * H * F per row) and the gated activation (6F per row).
-    flops: "R * (6 * F * H + 6 * F)"
+    func: tileops.perf.formulas.moe_expert_mlp_roofline
   composition:
     kind: composite
     stages:

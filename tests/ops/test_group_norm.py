@@ -155,7 +155,7 @@ def test_group_norm_lazy_cache_reuse_and_respecialization() -> None:
     run_case(2, 16, (4, 4), torch.float16)
     assert len(op.built_kernels("group_norm")) == 1
     assert op.eval_roofline() == (
-        5 * 2 * 16 * 16,
+        8 * 2 * 16 * 16,
         (2 * 2 * 16 * 16 + 2 * 16) * torch.float16.itemsize,
     )
 
@@ -165,7 +165,7 @@ def test_group_norm_lazy_cache_reuse_and_respecialization() -> None:
     run_case(3, 24, (2, 8), torch.bfloat16)
     assert len(op.built_kernels("group_norm")) == 2
     assert op.eval_roofline() == (
-        5 * 3 * 24 * 16,
+        8 * 3 * 24 * 16,
         (2 * 3 * 24 * 16 + 2 * 24) * torch.bfloat16.itemsize,
     )
 

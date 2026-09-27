@@ -160,7 +160,9 @@ GLADecodeFwdOp:
   - {B: 8, H: 48, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: gla-decode-serving-b8-h48-d128}
   - {B: 8, H: 64, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: gla-decode-serving-b8-h64-d128}
   roofline:
-    flops: "2 * B * H * (2 * DK * DV + DK)"
+    # exp(gk) (DK), the state decay (DK * DV), the k v^T update (2 * DK * DV), the q^T S
+    # readout (2 * DK * DV) and the output scale (DV).
+    flops: "B * H * (5 * DK * DV + DK + DV)"
 
 DeltaNetAutogradFwdOp:
   # The autograd wrapper over DeltaNetFwdOp and DeltaNetBwdOp: one output rather
@@ -187,7 +189,8 @@ DeltaNetAutogradFwdOp:
   - {B: 2, H: 4, L: 2048, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-autograd-b2-s2k-h4-d64}
   - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-autograd-b2-s8k-h4-d64}
   roofline:
-    flops: "2 * B * H * L * DK * DV"
+    # The DeltaNet recurrence per token, as DeltaNetDecodeFwdOp counts one step.
+    flops: "2 * B * H * L * (3 * DK * DV + DK)"
   composition:
     kind: composite
     stages:
@@ -226,7 +229,14 @@ DeltaNetFwdOp:
   - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-b2-s8k-h4-d64}
   - {B: 2, H: 4, L: 16384, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-b2-s16k-h4-d64}
   roofline:
-    flops: "2 * B * H * L * DK * DV"
+    # Per chunk of C = chunk_size tokens: the strict-lower Gram K K^T scaled by beta, the
+    # unit-lower-triangular inverse (Aw = Au), the beta scalings, w = Aw (beta k) and
+    # u = Au (beta v), then v_new = u - w S, the q S readout, the causal q k^T and its product
+    # with v_new, and the k^T v_new state update.
+    flops: >-
+      B * H * NC * (6 * chunk_size * DK * DV + 2 * chunk_size * (chunk_size + 1) * (DK + DV)
+      + chunk_size * (chunk_size - 1) * DK + chunk_size * (chunk_size - 1) // 2
+      + chunk_size * (chunk_size * chunk_size - 1) // 3 + chunk_size * (DK + 3 * DV))
 
 DeltaNetBwdOp:
   # Chunked ungated DeltaNet backward over the forward's inputs and saved buffers.
@@ -262,7 +272,16 @@ DeltaNetBwdOp:
   - {B: 2, H: 4, L: 8192, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-bwd-b2-s8k-h4-d64}
   - {B: 2, H: 4, L: 16384, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: dn-bwd-b2-s16k-h4-d64}
   roofline:
-    flops: "4 * B * H * L * DK * DV"
+    # Per chunk of C = chunk_size tokens: seven C x DK x DV contractions (v_new = u - w S,
+    # do S^T, q^T do, k dS, v_new dS^T, and du S^T and w^T du on the merged du), the causal
+    # q k^T and its four gradient products, the w/u and inverse gradients on the strict-lower
+    # triangle, the recomputed strict-lower K K^T for dbeta, and the elementwise merges.
+    flops: >-
+      B * H * NC * (14 * chunk_size * DK * DV + 3 * DK * DV
+      + chunk_size * (chunk_size + 1) * (4 * DK + 3 * DV)
+      + chunk_size * (chunk_size - 1) * (4 * DK + DV + 2)
+      + 2 * chunk_size * (chunk_size * chunk_size - 1) // 3 + chunk_size * (11 * DK + 6 * DV)
+      + 2 * chunk_size)
 
 GLAInferenceFwdOp:
   # One serving contract for equal-length prefill, packed varlen, and decode.
@@ -301,7 +320,8 @@ GLAInferenceFwdOp:
   - {B: 2, S: 8192, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-long}
   - {B: 2, S: 16384, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-very-long}
   roofline:
-    flops: "2 * B * H * S * K * V"
+    # The GLA recurrence per token: exp(g), decay, k v^T update, q^T S readout, scale.
+    flops: "B * H * S * (5 * K * V + K + V)"
 
 GLAFwdOp:
   # Chunked GLA forward. initial_state seeds the recurrence (absent starts from
@@ -331,7 +351,8 @@ GLAFwdOp:
   - {B: 2, S: 8192, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, dtype_cases: [{T: float16}, {T: bfloat16}], label: gla-noinit-b2-s8k-h4-d64}
   - {B: 2, S: 16384, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: gla-init-b2-s16k-h4-d64}
   roofline:
-    flops: "2 * B * H * S * DK * DV"
+    # The GLA recurrence per token: exp(g), decay, k v^T update, q^T S readout, scale.
+    flops: "B * H * S * (5 * DK * DV + DK + DV)"
 
 GLABwdOp:
   # Chunked GLA backward over the forward's per-chunk states h. Gradients are
@@ -368,4 +389,9 @@ GLABwdOp:
   - {B: 2, S: 8192, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: gla-bwd-b2-s8k-h4-d64}
   - {B: 2, S: 16384, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: gla-bwd-b2-s16k-h4-d64}
   roofline:
-    flops: "4 * B * H * S * DK * DV"
+    # Per chunk of C = chunk_size tokens: four C x DK x DV contractions (q^T do into dh,
+    # k dh, do h^T, v dh^T), five causal products on gate-scaled operands (the attention, its
+    # gradient and the dv, dq, dk intra terms), and the per-token gate and dg terms.
+    flops: >-
+      B * H * NC * (8 * chunk_size * DK * DV + 5 * DK * DV
+      + chunk_size * (chunk_size + 1) * (3 * DK + 2 * DV + 1) + 20 * chunk_size * DK - DK)

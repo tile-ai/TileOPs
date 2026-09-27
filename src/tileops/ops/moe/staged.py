@@ -164,6 +164,12 @@ class MoeGroupedGemmFwdOp(Op):
     compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"grouped_gemm": MoeGroupedGemmKernel}
 
+    def roofline_inputs(self) -> "dict[str, int]":
+        """The valid rows this call's layout metadata marks, which its flops follow."""
+        from tileops.perf.formulas import moe_layout_rows
+
+        return {"valid_rows": moe_layout_rows(self.last_call)}
+
     def __init__(
         self,
         layout: MGroupedLayoutSpec,
@@ -265,6 +271,12 @@ class MoeExpertMLPFwdOp(Op):
         "gate_up": MoeGroupedGemmFwdOp,
         "down": MoeGroupedGemmFwdOp,
     }
+
+    def roofline_inputs(self) -> "dict[str, int]":
+        """The valid rows this call's layout metadata marks, which its flops follow."""
+        from tileops.perf.formulas import moe_layout_rows
+
+        return {"valid_rows": moe_layout_rows(self.last_call)}
 
     def __init__(
         self,

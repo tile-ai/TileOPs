@@ -29,7 +29,8 @@ RopeNeoxFwdOp:
   - {layout: 2d, B: 2, S: 2048, H: 32, D: 128, dtype_cases: [{T: float16}], label: neox-2d-b2-s2k-h32-d128}
 
   roofline:
-    flops: "4 * (B * S * H * D if layout == '2d' else S * D)"
+    # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
+    flops: "3 * (B * S * H * D if layout == '2d' else S * D)"
 
 RopeNonNeoxFwdOp:
   family: rope
@@ -60,7 +61,8 @@ RopeNonNeoxFwdOp:
   - {layout: 1d, S: 5120, D: 128, dtype_cases: [{T: float32}], label: non-neox-1d-5k-d128}
 
   roofline:
-    flops: "4 * (B * S * H * D if layout == '2d' else S * D)"
+    # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
+    flops: "3 * (B * S * H * D if layout == '2d' else S * D)"
 
 RopeLlama31FwdOp:
   family: rope
@@ -95,7 +97,8 @@ RopeLlama31FwdOp:
   - {layout: 1d, S: 5120, D: 128, dtype_cases: [{T: float32}], label: llama31-1d-5k-d128}
 
   roofline:
-    flops: "4 * (B * S * H * D if layout == '2d' else S * D)"
+    # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
+    flops: "3 * (B * S * H * D if layout == '2d' else S * D)"
 
 RopeYarnFwdOp:
   family: rope
@@ -131,7 +134,8 @@ RopeYarnFwdOp:
   - {layout: 1d, S: 5120, D: 128, dtype_cases: [{T: float32}], label: yarn-1d-5k-d128}
 
   roofline:
-    flops: "4 * (B * S * H * D if layout == '2d' else S * D)"
+    # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
+    flops: "3 * (B * S * H * D if layout == '2d' else S * D)"
 
 RopeLongRopeFwdOp:
   family: rope
@@ -166,7 +170,8 @@ RopeLongRopeFwdOp:
   - {layout: 1d, S: 8192, D: 128, some: [rescale_factors], dtype_cases: [{T: bfloat16, R: float32}, {T: bfloat16, R: float16}, {T: bfloat16, R: bfloat16}], label: longrope-1d-8k-d128-rescaled}
 
   roofline:
-    flops: "4 * (B * S * H * D if layout == '2d' else S * D)"
+    # Two multiplies and one add per rotated element; the cached cos/sin tables are op state.
+    flops: "3 * (B * S * H * D if layout == '2d' else S * D)"
 
 RopeNeoxPositionIdsFwdOp:
   # Packed [tokens, heads, head_dim] input with one position per token; the first
@@ -195,4 +200,5 @@ RopeNeoxPositionIdsFwdOp:
   - {seq_lens: [1000, 3000, 1120], H: 32, D: 128, max_position: 4096, dtype_cases: [{T: float32, P: int64}], label: position-ids-packed3-h32-d128}
 
   roofline:
-    flops: "4 * N * H * (rotary_dim.value if present(rotary_dim) else D)"
+    # Two multiplies and one add per rotated element; the columns past rotary_dim are copied.
+    flops: "3 * N * H * (rotary_dim.value if present(rotary_dim) else D)"

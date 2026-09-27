@@ -262,7 +262,8 @@ RoundFwdOp:
   - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    flops: "prod(S)"
+    # A nonzero decimals scales, rounds and unscales.
+    flops: "(1 if decimals == 0 else 3) * prod(S)"
 
 TruncFwdOp:
   ref_api: "torch.trunc"
@@ -319,8 +320,7 @@ Log1pFwdOp:
   - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    # log(1 + x): 1 add + 1 log
-    flops: "2 * prod(S)"
+    flops: "prod(S)"
 
 Expm1FwdOp:
   ref_api: "torch.expm1"
@@ -339,8 +339,7 @@ Expm1FwdOp:
   - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
 
   roofline:
-    # exp(x) - 1: 1 exp + 1 sub
-    flops: "2 * prod(S)"
+    flops: "prod(S)"
 
 SigmoidFwdOp:
   ref_api: "torch.sigmoid"
@@ -504,5 +503,6 @@ DropoutFwdOp:
   - {S: [1024, 10240], p: 0.5, training: true, dtype_cases: [{T: bfloat16}], label: "tokens-1k-hidden-10k"}
 
   roofline:
-    flops: "prod(S) if training and 0.0 < p < 1.0 else 0"
+    # The keep mask and the 1 / (1 - p) scale.
+    flops: "2 * prod(S) if training and 0.0 < p < 1.0 else 0"
     bytes: "bytes(output) if training and p == 1.0 else bytes(input) + bytes(output)"

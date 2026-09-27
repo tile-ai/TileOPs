@@ -218,7 +218,8 @@ VarFwdOp:
   - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-var}
   - {S: [2048, 4096], dim: -1, correction: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-var-biased}
   roofline:
-    flops: "5 * prod(S)"
+    # The mean (1), then subtract, square and accumulate (3) per element.
+    flops: "4 * prod(S)"
 
 StdFwdOp:
   ref_api: torch.std
@@ -243,7 +244,8 @@ StdFwdOp:
   - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-std}
   - {S: [2048, 4096], dim: -1, correction: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-std-biased}
   roofline:
-    flops: "5 * prod(S) + prod(reduced(S, dim, keepdim, 'full'))"
+    # The variance (4 per element) and a square root per output.
+    flops: "4 * prod(S) + prod(reduced(S, dim, keepdim, 'full'))"
 
 VarMeanFwdOp:
   ref_api: torch.var_mean
@@ -269,7 +271,8 @@ VarMeanFwdOp:
   - {S: [2048, 11008], dim: -1, dtype_cases: [{T: float32}], label: mlp-intermediate-var-mean}
   - {S: [2048, 4096], dim: -1, correction: 0, dtype_cases: [{T: bfloat16}], label: hidden-state-var-mean-biased}
   roofline:
-    flops: "5 * prod(S)"
+    # The mean (1), then subtract, square and accumulate (3) per element.
+    flops: "4 * prod(S)"
 
 ArgmaxFwdOp:
   ref_api: torch.argmax
@@ -340,7 +343,8 @@ AllFwdOp:
   - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: bool}, {T: complex64}, {T: complex128}], label: 3d-multidim-reduce}
   - {S: [2048, 11008], dim: -1, dtype_cases: [{T: bool}], label: mlp-intermediate-mask}
   roofline:
-    flops: "prod(S)"
+    # One truth test per non-bool element, and one combine per element.
+    flops: "(1 if T == 'bool' else 2) * prod(S)"
 
 AnyFwdOp:
   ref_api: torch.any
@@ -363,7 +367,8 @@ AnyFwdOp:
   - {S: [4, 128, 4096], dim: [0, 2], dtype_cases: [{T: bool}, {T: complex64}, {T: complex128}], label: 3d-multidim-reduce}
   - {S: [2048, 11008], dim: -1, dtype_cases: [{T: bool}], label: mlp-intermediate-mask}
   roofline:
-    flops: "prod(S)"
+    # One truth test per non-bool element, and one combine per element.
+    flops: "(1 if T == 'bool' else 2) * prod(S)"
 
 CountNonzeroFwdOp:
   ref_api: torch.count_nonzero

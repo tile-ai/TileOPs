@@ -37,7 +37,7 @@ AvgPool1dFwdOp:
   - {N: 2, C: 128, L_in: 2048, kernel_size: 4, stride: 2, padding: 1, ceil_mode: true, count_include_pad: false, dtype_cases: [{T: bfloat16}], label: ceil}
 
   roofline:
-    flops: "N * C * L_out * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 AvgPool2dFwdOp:
   ref_api: torch.nn.functional.avg_pool2d
@@ -82,7 +82,7 @@ AvgPool2dFwdOp:
   - {N: 3, C: 96, H_in: 55, W_in: 57, kernel_size: [3, 5], stride: [2, 2], padding: [1, 2], ceil_mode: true, count_include_pad: false, divisor_override: 7, dtype_cases: [{T: bfloat16}], label: ceil-divisor}
 
   roofline:
-    flops: "N * C * H_out * W_out * kH * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 AvgPool3dFwdOp:
   ref_api: torch.nn.functional.avg_pool3d
@@ -130,7 +130,7 @@ AvgPool3dFwdOp:
   - {N: 2, C: 24, D_in: 10, H_in: 20, W_in: 22, kernel_size: [2, 2, 3], stride: [2, 2, 2], padding: [0, 1, 1], divisor_override: 7, dtype_cases: [{T: bfloat16}], label: divisor}
 
   roofline:
-    flops: "N * C * D_out * H_out * W_out * kD * kH * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 MaxPool1dFwdOp:
   # Equivalent to torch.nn.functional.max_pool1d (return_indices=False)
@@ -172,7 +172,7 @@ MaxPool1dFwdOp:
   - {N: 16, C: 128, L_in: 2048, kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtype_cases: [{T: bfloat16}], label: ecg-cnn-dilated}
 
   roofline:
-    flops: "N * C * L_out * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 MaxPool1dIndicesFwdOp:
   # Equivalent to torch.nn.functional.max_pool1d (return_indices=True)
@@ -213,7 +213,7 @@ MaxPool1dIndicesFwdOp:
   - {N: 16, C: 128, L_in: 2048, kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtype_cases: [{T: bfloat16}], label: ecg-cnn-dilated}
 
   roofline:
-    flops: "N * C * L_out * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 MaxPool2dFwdOp:
   # Equivalent to torch.nn.functional.max_pool2d (return_indices=False)
@@ -259,7 +259,7 @@ MaxPool2dFwdOp:
   - {N: 32, C: 64, H_in: 55, W_in: 55, kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: alexnet-ceil}
 
   roofline:
-    flops: "N * C * H_out * W_out * kH * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 MaxPool2dIndicesFwdOp:
   # Equivalent to torch.nn.functional.max_pool2d (return_indices=True)
@@ -305,7 +305,7 @@ MaxPool2dIndicesFwdOp:
   - {N: 32, C: 64, H_in: 55, W_in: 55, kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: alexnet-ceil}
 
   roofline:
-    flops: "N * C * H_out * W_out * kH * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 MaxPool3dFwdOp:
   # Equivalent to torch.nn.functional.max_pool3d (return_indices=False)
@@ -356,7 +356,7 @@ MaxPool3dFwdOp:
   - {N: 2, C: 64, D_in: 32, H_in: 112, W_in: 112, kernel_size: [3, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, dtype_cases: [{T: bfloat16}], label: medicalnet-stem}
 
   roofline:
-    flops: "N * C * D_out * H_out * W_out * kD * kH * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 MaxPool3dIndicesFwdOp:
   # Equivalent to torch.nn.functional.max_pool3d (return_indices=True)
@@ -407,7 +407,7 @@ MaxPool3dIndicesFwdOp:
   - {N: 2, C: 64, D_in: 32, H_in: 112, W_in: 112, kernel_size: [3, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, dtype_cases: [{T: bfloat16}], label: medicalnet-stem}
 
   roofline:
-    flops: "N * C * D_out * H_out * W_out * kD * kH * kW"
+    func: tileops.perf.formulas.pool_roofline
 
 AdaptiveAvgPool2dFwdOp:
   ref_api: torch.nn.functional.adaptive_avg_pool2d

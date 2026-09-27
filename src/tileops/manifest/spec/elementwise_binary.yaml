@@ -197,7 +197,8 @@ DivFwdOp:
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
 
   roofline:
-    flops: "prod(broadcast(A, B))"
+    # A rounding mode adds the trunc or floor.
+    flops: "(2 if present(rounding_mode) else 1) * prod(broadcast(A, B))"
 
 RemainderFwdOp:
   ref_api: "torch.remainder"
@@ -241,7 +242,8 @@ PowFwdOp:
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
 
   roofline:
-    flops: "3 * prod(broadcast(A, B))"
+    # One transcendental call per element.
+    flops: "prod(broadcast(A, B))"
 
 FloorDivideFwdOp:
   ref_api: "torch.floor_divide"
@@ -488,7 +490,8 @@ LogicalAndFwdOp:
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: bool}, {T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
 
   roofline:
-    flops: "3 * prod(broadcast(A, B))"
+    # Two truth tests and the combine; bool operands are already truth values.
+    flops: "(1 if T == 'bool' else 3) * prod(broadcast(A, B))"
 
 LogicalOrFwdOp:
   ref_api: "torch.logical_or"
@@ -510,7 +513,8 @@ LogicalOrFwdOp:
   - {A: [1024, 4096], B: [1, 4096], dtype_cases: [{T: bool}, {T: float16}, {T: bfloat16}, {T: float32}], label: "linear-bias-broadcast"}
 
   roofline:
-    flops: "3 * prod(broadcast(A, B))"
+    # Two truth tests and the combine; bool operands are already truth values.
+    flops: "(1 if T == 'bool' else 3) * prod(broadcast(A, B))"
 
 BitwiseAndFwdOp:
   ref_api: "torch.bitwise_and"
