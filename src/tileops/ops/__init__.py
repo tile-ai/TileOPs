@@ -4,7 +4,6 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
     from .attention import (
         DeepSeekSparseAttentionDecodeWithKVCacheFwdOp,
         GroupedQueryAttentionBwdOp,
-        GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
         GroupedQueryAttentionDenseFwdOp,
         GroupedQueryAttentionPagedFwdOp,
         GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
@@ -222,7 +221,6 @@ _LAZY = {
     "GroupedQueryAttentionDenseFwdOp": ".attention",
     "GroupedQueryAttentionPagedFwdOp": ".attention",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": ".attention",
-    "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp": ".attention",
     "GroupedQueryAttentionVarlenFwdOp": ".attention",
     "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp": ".attention",
     "NSACmpVarlenFwdOp": ".attention",

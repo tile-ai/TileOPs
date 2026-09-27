@@ -1,11 +1,10 @@
 """Benchmark the TileOPs grouped-query attention ops, one case per manifest call, against FA3, FlashInfer and torch."""
 
-import math
+from itertools import accumulate
 
 import pytest
 import torch
 from torch.nn import functional as F
-from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from benchmarks.baselines import (
     FLASHINFER_TAG,
@@ -21,10 +20,11 @@ from benchmarks.benchmark_base import (
     backward_of,
     manifest_calls,
 )
+from tileops.kernels.attention.call_spec import paged_decode_region
 from tileops.ops import (
     GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
     GroupedQueryAttentionDenseFwdOp,
+    GroupedQueryAttentionPagedFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionVarlenFwdOp,
 )
@@ -33,9 +33,9 @@ from workloads.device import run_device
 from workloads.gqa import (
     GQAPrefillPagedWithKVCacheFwdCall,
     GroupedQueryAttentionBwdCall,
-    GroupedQueryAttentionDecodePagedCall,
     GroupedQueryAttentionDenseDecodeCall,
     GroupedQueryAttentionDensePrefillCall,
+    GroupedQueryAttentionPagedCall,
     GroupedQueryAttentionVarlenCall,
 )
 
@@ -409,58 +409,10 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(call) -> None:
     bm.compare({"tileops": op, "fa3": fa3_fn}, *inputs)
 
 
-class GroupedQueryAttentionDecodePagedTestBaseline(GroupedQueryAttentionDecodePagedCall):
-    """Times SDPA on the reassembled pages, not an explicit softmax.
+def _fa3_gqa_paged_decode(workload):
+    """FA3 over the same pages, scale and softcap, or None where it cannot serve the row.
 
-    ``sdpa_kernel(MATH)`` replaces the test reference's explicit
-    matmul/softcap/softmax chain, so the ratio is against torch's own attention.
-    """
-
-    def ref_program(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        real_seqlen_kv: torch.Tensor,
-        block_table: torch.Tensor,
-    ) -> torch.Tensor:
-        """Reassemble paged K/V to logical layout per batch, then GQA (expand to heads) + SDPA."""
-        batch, _, dim = q.shape
-        seqlen_kv, _, _ = k.shape
-        kv_group_num = self.heads // self.heads_kv
-        out_list = []
-        for i_b in range(batch):
-            q_b = q[i_b : i_b + 1, :, :]
-            k_logical = torch.zeros(seqlen_kv, self.heads_kv, dim, dtype=q.dtype, device=q.device)
-            v_logical = torch.zeros(seqlen_kv, self.heads_kv, dim, dtype=q.dtype, device=q.device)
-            num_pages = math.ceil(real_seqlen_kv[i_b].item() / self.page_size)
-            for i_paged in range(num_pages):
-                start_pos = block_table[i_b, i_paged].item() * self.page_size
-                end_pos = min(start_pos + self.page_size, seqlen_kv)
-                page_len = end_pos - start_pos
-                k_logical[i_paged * self.page_size : i_paged * self.page_size + page_len, :, :] = k[
-                    start_pos:end_pos, :, :
-                ]
-                v_logical[i_paged * self.page_size : i_paged * self.page_size + page_len, :, :] = v[
-                    start_pos:end_pos, :, :
-                ]
-            k_logical = k_logical[: real_seqlen_kv[i_b].item(), :, :]
-            v_logical = v_logical[: real_seqlen_kv[i_b].item(), :, :]
-            group_id = torch.arange(self.heads, dtype=torch.long, device=q.device) // kv_group_num
-            k_bhsd = k_logical[:, group_id, :].unsqueeze(0).transpose(1, 2)
-            v_bhsd = v_logical[:, group_id, :].unsqueeze(0).transpose(1, 2)
-            q_bhsd = q_b.unsqueeze(2)
-            with sdpa_kernel(backends=[SDPBackend.MATH]):
-                out_b = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd)
-            out_b = out_b.squeeze(2)
-            out_list.append(out_b)
-        return torch.cat(out_list, dim=0)
-
-
-def _fa3_gqa_decode_paged(workload, k, v):
-    """Set up FA3 paged decode. Returns callable or None.
-
-    FA3 requires page_block_size to be a multiple of 256.
+    FA3 requires a page size that is a multiple of 256.
     """
     if workload.page_size % 256 != 0:
         return None
@@ -469,18 +421,16 @@ def _fa3_gqa_decode_paged(workload, k, v):
     except ImportError:
         return None
 
-    num_pages = k.shape[0] // workload.page_size
-    k_paged = k.view(num_pages, workload.page_size, workload.heads_kv, workload.dim)
-    v_paged = v.view(num_pages, workload.page_size, workload.heads_kv, workload.dim)
-
-    def baseline_fn(q, k, v, real_seqlen_kv, block_table):
-        # Q is (batch, heads, dim) — add seq dim for flash_attn
+    def baseline_fn(q, k_pages, v_pages, page_table, cache_seqlens, *_unused):
         out = flash_attn_with_kvcache(
             q.unsqueeze(1),
-            k_paged,
-            v_paged,
-            cache_seqlens=real_seqlen_kv.int(),
-            page_table=block_table.int(),
+            k_pages,
+            v_pages,
+            cache_seqlens=cache_seqlens,
+            page_table=page_table,
+            softmax_scale=workload.sm_scale,
+            causal=workload.is_causal,
+            softcap=float(workload.softcap or 0.0),
         )
         out = out[0] if isinstance(out, tuple) else out
         return out.squeeze(1)
@@ -488,76 +438,61 @@ def _fa3_gqa_decode_paged(workload, k, v):
     return baseline_fn
 
 
-def _flashinfer_gqa_decode_paged(workload, q, k, v, real_seqlen_kv, block_table):
-    """Set up FlashInfer paged decode wrapper. Returns callable or None.
-
-    FlashInfer decode kernel supports group_size (Q/KV head ratio) up to 8.
-    """
-    try:
-        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper
-    except ImportError:
-        return None
-
+def _flashinfer_gqa_paged_decode(workload, inputs):
+    """FlashInfer paged decode planned with the row's scale and softcap, or None where it
+    cannot serve the row: its decode kernel takes a query-to-KV head ratio up to 8."""
     if workload.heads // workload.heads_kv > 8:
-        return None  # FlashInfer decode kernel does not support group_size > 8
-
-    batch = q.shape[0]
-    num_pages = k.shape[0] // workload.page_size
-    k_paged = k.view(num_pages, workload.page_size, workload.heads_kv, workload.dim)
-    v_paged = v.view(num_pages, workload.page_size, workload.heads_kv, workload.dim)
-    kv_data = (k_paged, v_paged)
-
-    pages_per_batch = (real_seqlen_kv.int() + workload.page_size - 1) // workload.page_size
-    indptr = torch.zeros(batch + 1, dtype=torch.int32, device=q.device)
-    indptr[1:] = torch.cumsum(pages_per_batch, dim=0)
-
-    indices_list = []
-    for b in range(batch):
-        n = pages_per_batch[b].item()
-        indices_list.append(block_table[b, :n])
-    indices = torch.cat(indices_list)
-
-    last_page_len = (real_seqlen_kv.int() - 1) % workload.page_size + 1
-
+        return None
+    q, k_pages, v_pages, page_table, cache_seqlens = inputs[:5]
+    page_size = workload.page_size
+    pages_per_request = ((cache_seqlens + page_size - 1) // page_size).tolist()
+    indptr = torch.tensor([0, *accumulate(pages_per_request)], dtype=torch.int32, device=q.device)
+    indices = torch.cat([page_table[b, :n] for b, n in enumerate(pages_per_request)])
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
-    wrapper = BatchDecodeWithPagedKVCacheWrapper(workspace, kv_layout="NHD")
+    wrapper = flashinfer_op("decode.BatchDecodeWithPagedKVCacheWrapper")(workspace, kv_layout="NHD")
     wrapper.plan(
         indptr=indptr,
         indices=indices,
-        last_page_len=last_page_len,
+        last_page_len=(cache_seqlens - 1) % page_size + 1,
         num_qo_heads=workload.heads,
         num_kv_heads=workload.heads_kv,
         head_dim=workload.dim,
-        page_size=workload.page_size,
+        page_size=page_size,
         q_data_type=workload.dtype,
+        sm_scale=workload.sm_scale,
+        logits_soft_cap=workload.softcap,
     )
 
-    def run_fn(q, k, v, real_seqlen_kv, block_table):
-        # Q is (batch, heads, dim)
-        return wrapper.run(q, kv_data)
+    def run_fn(q, k_pages, v_pages, *_unused):
+        return wrapper.run(q, (k_pages, v_pages))
 
     return run_fn
 
 
-@pytest.mark.parametrize("call", manifest_calls(GroupedQueryAttentionDecodePagedWithKVCacheFwdOp))
-def test_gqa_decode_paged_bench(call) -> None:
-    workload = GroupedQueryAttentionDecodePagedTestBaseline(call)
+@pytest.mark.parametrize("call", manifest_calls(GroupedQueryAttentionPagedFwdOp))
+def test_gqa_paged_fwd_bench(call) -> None:
+    workload = GroupedQueryAttentionPagedCall(call)
     inputs = workload.gen_inputs()
-    q, k, v, real_seqlen_kv, block_table = inputs
-
-    op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(**workload.arguments())
+    op = GroupedQueryAttentionPagedFwdOp(**workload.arguments())
+    q, k_pages, _, page_table, _, cu_seqlens_q = inputs[:6]
+    if not paged_decode_region(op.paged_call(q, k_pages, page_table, cu_seqlens_q)):
+        # FIXME(staged-rollout): a row outside the paged-decode region is not run.
+        #
+        # Broken invariant: every manifest workload row records a result.
+        # Why: the in-tree kernels serve one query token per request only; packed
+        #   prefill and windows of the 16-bit contract have no kernel yet.
+        # Cleanup: an in-tree kernel serves every 16-bit row.
+        pytest.skip("outside the in-tree paged-decode region")
     bm = ManifestBenchmark(op, workload)
-    functors = {"tileops": op}
-
-    fa3_fn = _fa3_gqa_decode_paged(workload, k, v)
+    tolerance = reference_tolerance(workload.dtype)
+    functors = {"tileops": op, "torch-ref": workload.ref_program}
+    assert_matches_reference(op, workload.ref_program, *inputs, **tolerance)
+    fa3_fn = _fa3_gqa_paged_decode(workload)
     if fa3_fn is not None:
+        assert_matches_reference(fa3_fn, workload.ref_program, *inputs, **tolerance)
         functors["fa3"] = fa3_fn
-
-    fi_fn = _flashinfer_gqa_decode_paged(workload, *inputs)
-    if fi_fn is not None:
-        functors[FLASHINFER_TAG] = fi_fn
-
-    if fa3_fn is None and fi_fn is None:
-        functors["torch-ref"] = workload.ref_program
-
+    flashinfer_fn = _flashinfer_gqa_paged_decode(workload, inputs)
+    if flashinfer_fn is not None:
+        assert_matches_reference(flashinfer_fn, workload.ref_program, *inputs, **tolerance)
+        functors[FLASHINFER_TAG] = flashinfer_fn
     bm.compare(functors, *inputs)

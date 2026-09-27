@@ -3,7 +3,6 @@
 from .ops.attention import (
     DeepSeekSparseAttentionDecodeWithKVCacheFwdOp,
     GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPagedFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
@@ -25,7 +24,6 @@ __all__ = [
     "GroupedQueryAttentionDenseFwdOp",
     "GroupedQueryAttentionPagedFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
-    "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
     "GroupedQueryAttentionVarlenFwdOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
     "NSACmpVarlenFwdOp",

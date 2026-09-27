@@ -36,7 +36,6 @@ __all__ = [
     "GroupedQueryAttentionPagedFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionVarlenFwdOp",
-    "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
 ]
 
 
@@ -589,8 +588,17 @@ class GroupedQueryAttentionPagedFwdOp(Op):
     Packed Q and its cumulative sequence lengths cover both prefill and decode.
     ``page_table`` maps logical pages to physical entries in ``k_pages`` and
     ``v_pages``. This Op reads the cache only: allocation, append, and mutation
-    remain runtime responsibilities. The shell has no BUILTIN kernel yet.
+    remain runtime responsibilities. The in-tree kernels serve a call in which
+    every request carries exactly one query token, Q and KV share a float16 or
+    bfloat16 dtype, and no window, RoPE or FP8 is requested; they refuse any
+    other call.
     """
+
+    compile_boundary = True
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "gqa_decode_paged_kernel": GQADecodePagedKernel,
+        "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,
+    }
 
     def roofline_inputs(self) -> "dict[str, int]":
         """The cached tokens this call's lengths name and the distinct pool rows it reads,
@@ -651,19 +659,48 @@ class GroupedQueryAttentionPagedFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    @property
-    def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {}
-
     def compute_roof(self) -> str:
         """Paged attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
-    @staticmethod
-    def _canonicalize_inputs(
-        *inputs: Optional[torch.Tensor],
-    ) -> tuple[Optional[torch.Tensor], ...]:
-        return tuple(tensor.contiguous() if tensor is not None else None for tensor in inputs)
+    def paged_call(
+        self,
+        q: torch.Tensor,
+        k_pages: torch.Tensor,
+        page_table: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+    ) -> AttentionCall:
+        """State what one paged call is, for selection to filter against.
+
+        The query lengths are read from every step of ``cu_seqlens_q``: a packed
+        total equal to the batch does not by itself mean one token per request.
+        """
+        _, heads, dim = q.shape
+        num_pages, page_size, heads_kv, _ = k_pages.shape
+        batch, max_pages_per_req = page_table.shape
+        q_lens = (cu_seqlens_q[1:] - cu_seqlens_q[:-1]).tolist()
+        return AttentionCall(
+            dtype=q.dtype,
+            batch=batch,
+            heads=heads,
+            heads_kv=heads_kv,
+            dim=dim,
+            max_seqlen_q=max(q_lens, default=0),
+            seqlen_kv=num_pages * page_size,
+            page_size=page_size,
+            max_pages_per_req=max_pages_per_req,
+            is_causal=self.is_causal,
+            sm_scale=_attention_scale(dim, self.sm_scale),
+            softcap=self.softcap,
+            window_size_left=self.window_size_left,
+            window_size_right=self.window_size_right,
+            is_fp8=fp8_dtype() in (q.dtype, k_pages.dtype),
+            is_uniform=len(set(q_lens)) <= 1,
+            cache_dtype=k_pages.dtype,
+            fuse_rope=self.pos_encoding_mode == "rope",
+            tune=self.tune,
+            device=q.device,
+        )
 
     def forward(
         self,
@@ -679,8 +716,25 @@ class GroupedQueryAttentionPagedFwdOp(Op):
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Run read-only paged GQA over packed Q and rank-4 KV pages."""
-        inputs = self._canonicalize_inputs(
+        """Run read-only paged GQA over packed Q and rank-4 KV pages.
+
+        Args:
+            q: Packed queries [total_q, heads, dim].
+            k_pages: Key pages [num_pages, page_size, heads_kv, dim].
+            v_pages: Value pages [num_pages, page_size, heads_kv, dim].
+            page_table: Physical page of each request's logical page [batch, pages].
+            cache_seqlens: Each request's cached length, its query tokens included [batch].
+            cu_seqlens_q: Request boundaries in the packed queries [batch + 1].
+            q_scale: Dequantization scale of an FP8 query [batch, heads_kv].
+            k_scale: Dequantization scale of an FP8 key cache.
+            v_scale: Dequantization scale of an FP8 value cache.
+            rope_cos: Rotary cosine table when ``pos_encoding_mode='rope'``.
+            rope_sin: Rotary sine table when ``pos_encoding_mode='rope'``.
+
+        Returns:
+            The attention output [total_q, heads, dim].
+        """
+        return self._call_boundary(
             q,
             k_pages,
             v_pages,
@@ -693,8 +747,45 @@ class GroupedQueryAttentionPagedFwdOp(Op):
             rope_cos,
             rope_sin,
         )
-        kernel = self.kernel_for("gqa_paged", inputs)
-        return kernel(*inputs)
+
+    def _eager_forward(
+        self,
+        q: torch.Tensor,
+        k_pages: torch.Tensor,
+        v_pages: torch.Tensor,
+        page_table: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Resolve the kernel and launch, inside the operator.
+
+        Never traced: kernel construction enters a TileLang builder. The kernels read
+        the pool as ``[num_pages * page_size, heads_kv, dim]``, a view of the pages.
+        """
+        q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q = (
+            t.contiguous() for t in (q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q)
+        )
+        inputs = (
+            q,
+            k_pages,
+            v_pages,
+            page_table,
+            cache_seqlens,
+            cu_seqlens_q,
+            q_scale,
+            k_scale,
+            v_scale,
+            rope_cos,
+            rope_sin,
+        )
+        call = self.paged_call(q, k_pages, page_table, cu_seqlens_q)
+        kernel = self.kernel_for("gqa_paged", inputs, call)
+        return kernel(q, k_pages.flatten(0, 1), v_pages.flatten(0, 1), cache_seqlens, page_table)
 
 
 class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
@@ -1104,121 +1195,6 @@ class GroupedQueryAttentionBwdOp(Op):
         dq = dq.to(q.dtype)
         dk, dv = dk.to(q.dtype), dv.to(q.dtype)
         return dq, dk, dv
-
-    def compute_roof(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.tensors["q"][1])
-
-
-class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
-    """Paged GQA decode with dynamic KV cache. Layout: ``Q`` $[batch \\times heads \\times dim]$ (BHD);
-    K, V physical cache [seqlen_kv, heads_kv, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
-
-    The in-tree kernels refuse a ``page_size`` that no supported key tile width divides.
-    """
-
-    compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gqa_decode_paged_kernel": GQADecodePagedKernel,
-        "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,
-    }
-
-    def roofline_inputs(self) -> "dict[str, int]":
-        """The cached tokens this call's lengths name and the distinct pool rows they reach,
-        which its flops and cache reads follow."""
-        from tileops.perf.formulas import paged_decode_cache_rows
-
-        call = self.last_call
-        return {
-            "kv_tokens": sum(call.values("real_seqlen_kv")),
-            "cache_rows": paged_decode_cache_rows(call),
-        }
-
-    def __init__(
-        self,
-        page_size: int,
-        sm_scale: Optional[float] = None,
-        softcap: Optional[float] = None,
-        *,
-        target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from each call.
-
-        Args:
-            page_size: Manifest ``params.page_size``, ``int``.
-            sm_scale: Manifest ``params.sm_scale``, ``float | None``, default ``None``,
-                which resolves to ``1 / sqrt(D)`` from each call's head dimension.
-            softcap: Manifest ``params.softcap``, ``float | None``, default ``None``.
-            target: Which set of kernels serves this op — a target name, ``BUILTIN``
-                for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
-        self.target = target
-        self.page_size = page_size
-        self.sm_scale = sm_scale
-        self.softcap = _score_softcap(softcap)
-
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-
-    def attention_call(self, q: torch.Tensor, k: torch.Tensor) -> AttentionCall:
-        """State what one paged decode call is, for selection to filter against."""
-        batch, heads, dim = q.shape
-        seqlen_kv, heads_kv, _ = k.shape
-        return AttentionCall(
-            dtype=q.dtype,
-            batch=batch,
-            heads=heads,
-            heads_kv=heads_kv,
-            seqlen_kv=seqlen_kv,
-            dim=dim,
-            page_size=self.page_size,
-            sm_scale=_attention_scale(dim, self.sm_scale),
-            softcap=self.softcap,
-            tune=self.tune,
-            device=q.device,
-        )
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        real_seqlen_kv: torch.Tensor,
-        block_table: torch.Tensor,
-    ) -> torch.Tensor:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            q: Input tensor, dtype ``float16 | bfloat16``.
-            k: Input tensor, same dtype as ``q``.
-            v: Input tensor, same dtype as ``q``.
-            real_seqlen_kv: Input tensor, dtype ``int32``.
-            block_table: Input tensor, dtype ``int32``.
-
-        Returns:
-            ``o``, as the manifest declares. Shape rules: ``o.shape == (B, H, D)``.
-        """
-        return self._call_boundary(q, k, v, real_seqlen_kv, block_table)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        real_seqlen_kv: torch.Tensor,
-        block_table: torch.Tensor,
-    ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
-        inputs = (q, k, v, real_seqlen_kv, block_table)
-        kernel = self.kernel_for("gqa_decode_paged", inputs, self.attention_call(q, k))
-        return kernel(*inputs)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

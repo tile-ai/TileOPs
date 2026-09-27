@@ -23,6 +23,8 @@ __all__ = [
     "dense_ws_region",
     "decode_bs1_region",
     "fp8_dtype",
+    "paged_decode_region",
+    "paged_decode_refusal",
     "paged_decode_ws_region",
     "uses_sliding_window",
 ]
@@ -117,6 +119,32 @@ def paged_decode_ws_region(call: AttentionCall) -> bool:
 def dense_decode_region(call: AttentionCall) -> bool:
     """The contiguous decode region: one query position, no window, not FP8."""
     return not call.is_fp8 and call.max_seqlen_q == 1 and not uses_sliding_window(call)
+
+
+def paged_decode_refusal(call: AttentionCall) -> Optional[str]:
+    """Why the paged-decode kernels cannot serve *call*, or ``None`` when they can.
+
+    They serve one query token per request against a 16-bit cache of the query's
+    dtype, with no window, RoPE or FP8.
+    """
+    if call.max_seqlen_q != 1 or not call.is_uniform:
+        return "requires one query token per request"
+    if call.dtype not in ATTENTION_DTYPES:
+        return "requires float16 or bfloat16 Q"
+    if call.cache_dtype != call.dtype:
+        return "requires Q and KV to share a dtype"
+    if call.is_fp8:
+        return "does not serve FP8"
+    if uses_sliding_window(call):
+        return "does not serve sliding windows"
+    if call.fuse_rope:
+        return "does not serve RoPE"
+    return None
+
+
+def paged_decode_region(call: AttentionCall) -> bool:
+    """The region the paged-decode kernels share; see :func:`paged_decode_refusal`."""
+    return paged_decode_refusal(call) is None
 
 
 def dense_long_context_decode_region(call: AttentionCall) -> bool:

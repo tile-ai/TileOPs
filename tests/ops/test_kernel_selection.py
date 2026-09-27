@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from tileops.ops import (
-    GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
+    GroupedQueryAttentionPagedFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
 )
 
@@ -31,23 +31,33 @@ def _prefill_call_tensors() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         pytest.param({}, torch.float16, "GQADecodePagedBs1Kernel", id="bs1-fp16"),
         pytest.param({}, torch.bfloat16, "GQADecodePagedKernel", id="bf16-falls-back"),
         pytest.param({"batch": 2}, torch.float16, "GQADecodePagedKernel", id="batched"),
+        pytest.param({"dim": 64}, torch.float16, "GQADecodePagedKernel", id="head-dim"),
         pytest.param(
-            {"page_size": 192, "seqlen_kv": 8064},
+            {"page_size": 16, "pages": 512}, torch.float16, "GQADecodePagedKernel", id="small-page"
+        ),
+        pytest.param(
+            {"page_size": 192, "pages": 42},
             torch.float16,
             "GQADecodePagedKernel",
             id="page-tile",
         ),
+        pytest.param({"softcap": 2.0}, torch.float16, "GQADecodePagedKernel", id="softcap"),
     ],
 )
 def test_paged_decode_dispatch_is_unchanged(ctor: dict, dtype: torch.dtype, expected: str) -> None:
     """Paged decode keeps its batch-1 fast path and its page-tile guard."""
-    extents = {"batch": 1, "seqlen_kv": 8192, "page_size": 256}
+    extents = {"batch": 1, "pages": 32, "page_size": 256, "dim": 128, "softcap": None}
     extents.update(ctor)
-    op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(extents["page_size"])
-    q = torch.empty(extents["batch"], 32, 128, dtype=dtype, device="cuda")
-    k = torch.empty(extents["seqlen_kv"], 4, 128, dtype=dtype, device="cuda")
-    candidate = op.select_kernel(op.attention_call(q, k)).__name__
-    assert candidate == expected
+    batch, dim = extents["batch"], extents["dim"]
+    op = GroupedQueryAttentionPagedFwdOp(softcap=extents["softcap"])
+    q = torch.empty(batch, 32, dim, dtype=dtype, device="cuda")
+    k_pages = torch.empty(
+        extents["pages"], extents["page_size"], 4, dim, dtype=dtype, device="cuda"
+    )
+    page_table = torch.empty(batch, extents["pages"], dtype=torch.int32, device="cuda")
+    cu_seqlens_q = torch.arange(batch + 1, dtype=torch.int32, device="cuda")
+    call = op.paged_call(q, k_pages, page_table, cu_seqlens_q)
+    assert op.select_kernel(call).__name__ == expected
 
 
 @pytest.mark.smoke
