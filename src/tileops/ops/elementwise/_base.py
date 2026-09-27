@@ -23,6 +23,15 @@ from tileops.kernels.kernel_base import Entry, Kernel
 
 from ..op_base import Op
 
+_MANIFEST_INT_DTYPES = (
+    torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    torch.int64,
+)
+_PREDICATE_FALLBACK_DTYPES = _MANIFEST_INT_DTYPES + (torch.bool,)
+
 
 class _PerDtypeKernels:
     """The family's one way to reach a kernel: ``self._kernel(inputs, dtype, *dims)``.
@@ -333,21 +342,9 @@ class _AlphaScaledBinaryOp(BinaryOp):
         return impl(a_shape, b_shape, dtype, tune=tune, alpha=self.alpha)
 
 
-_MANIFEST_INT_DTYPES = (
-    torch.uint8,
-    torch.int8,
-    torch.int16,
-    torch.int32,
-    torch.int64,
-)
-
-
 def _int_identity(input: torch.Tensor) -> torch.Tensor:
     """The default integer answer: the op leaves such a value unchanged."""
     return input.clone()
-
-
-_PREDICATE_FALLBACK_DTYPES = _MANIFEST_INT_DTYPES + (torch.bool,)
 
 
 class _IntFallbackCall:

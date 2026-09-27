@@ -112,10 +112,13 @@ def test_each_public_name_has_exactly_one_family():
 
 @pytest.mark.smoke
 def test_public_surface_is_the_manifest():
-    """An op reachable as `tileops.<family>.<Op>` has a manifest entry, and every entry
-    is reachable. Abstract bases are not public at all."""
+    """An op reachable as `tileops.<family>.<Op>` has a manifest entry, and every
+    implemented entry is reachable; a spec-only entry may have no class yet. Abstract
+    bases are not public at all."""
     public = {name for family in FAMILIES for name in _family_module(family).__all__}
-    assert public == set(load_manifest())
+    manifest = load_manifest()
+    assert public <= set(manifest)
+    assert {name for name, entry in manifest.items() if entry["status"] == "implemented"} <= public
 
 
 @pytest.mark.smoke

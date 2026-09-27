@@ -276,3 +276,37 @@ InstanceNormFwdOp:
     # Input statistics: mean (1), centered variance (3), normalize the centered value (1);
     # running statistics: normalize (2). One more per present affine tensor.
     flops: "((5 if use_input_stats else 2) + (1 if present(weight) else 0) + (1 if present(bias) else 0)) * B * C * prod(L)"
+
+FusedQKNormRopeFwdOp:
+  # In place on a packed projection qkv = [q heads | k heads | v heads] of width D each:
+  # RMSNorm over each q head (q_weight) and each k head (k_weight), then RoPE at
+  # positions[n] on the first R columns of each q and k head, from cos_sin_cache (cos ‖ sin
+  # halves). The v columns are untouched.
+  family: norm
+  status: spec-only
+  signature:
+    forall: {N: Dim, D: Dim, P: Dim, R: Dim, T: "DType[float16 | bfloat16]", C: "DType[float16 | bfloat16 | float32]", seq_lens: "Seq[Int]"}
+    params:
+      num_heads: {type: int}
+      num_kv_heads: {type: int}
+      eps: {type: float, default: 1.0e-6}
+      rope_layout: {type: "'neox' | 'interleaved'", default: neox}
+    inputs:
+      qkv: {dtype: T, shape: "[N, (num_heads + 2 * num_kv_heads) * D]", mutated: true}
+      q_weight: {dtype: T, shape: "[D]"}
+      k_weight: {dtype: T, shape: "[D]"}
+      cos_sin_cache: {dtype: C, shape: "[P, R]"}
+      positions: {dtype: int64, shape: "[N]", values: "packed_positions(seq_lens)", requires: ["in_range(0, P)"]}
+    outputs: {}
+    shape_rules:
+    - "num_heads > 0 and num_kv_heads > 0"
+    - "R > 0 and R % 2 == 0 and R <= D"
+  workloads:
+  - {D: 128, P: 40960, R: 128, num_heads: 32, num_kv_heads: 8, seq_lens: [64], dtype_cases: [{T: bfloat16, C: bfloat16}, {T: float16, C: float32}], label: qwen3-8b-t64}
+  - {D: 128, P: 40960, R: 128, num_heads: 32, num_kv_heads: 8, seq_lens: "repeat(1024, 8)", dtype_cases: [{T: bfloat16, C: bfloat16}], label: qwen3-8b-t8192}
+  - {D: 128, P: 40960, R: 128, num_heads: 64, num_kv_heads: 4, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16, C: bfloat16}], label: qwen3-235b-t4096}
+  - {D: 128, P: 131072, R: 64, num_heads: 96, num_kv_heads: 8, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16, C: float32}], label: glm-4.5-partial-rope}
+  roofline:
+    # The q and k columns are read and written, the v columns not touched, and only the
+    # cos/sin rows the positions name are read.
+    func: "tileops.perf.formulas.fused_qk_norm_rope_roofline"

@@ -521,7 +521,268 @@ class TestBytesOracle:
         assert self._priced(GroupedGemmFwdOp(), tensors)[1] == oracle
 
 
-# Coverage levels. Every implemented op sits at
+def _evaluated(op_name: str, row: dict, case: dict, **values):
+    """``(flops, bytes)`` the generated evaluator prices for a row of a spec-only entry, and the
+    call; *values* replace the named metadata tensors' generated contents."""
+    import dataclasses
+
+    from tests.roofline_binder import signature_class
+    from tileops.manifest import load_adts, load_manifest
+    from tileops.manifest.plan import entry_plan
+    from tileops.manifest.workload import instantiate
+
+    entry = load_manifest()[op_name]
+    plan = entry_plan(op_name, entry, load_adts())
+    call = instantiate(plan, {**row, "label": "recount"}, case)
+    specs = {
+        **call.specs,
+        **{n: dataclasses.replace(call.specs[n], values=v) for n, v in values.items()},
+    }
+    call = dataclasses.replace(call, specs=specs)
+    tensors = call.materialize("meta")
+    cls = signature_class(op_name, entry)
+    op = cls(**call.arguments(tensors))
+    checked = cls._signature.check(op, {t: tensors[t] for t in plan.sig.inputs})
+    metadata = {n: torch.tensor(call.values(n)) for n in checked.metadata}
+    op._signature_call = dataclasses.replace(checked, metadata=metadata)
+    return op.eval_roofline(), call
+
+
+def _attention_flops(heads, qk, v, scores, rows):
+    # Per score two contractions and the softmax (5); per output element its divide.
+    return heads * (scores * (2 * qk + 2 * v + 5) + rows * v)
+
+
+_BF16, _F32, _FP8, _I32, _I64 = (
+    torch.bfloat16,
+    torch.float32,
+    torch.float8_e4m3fn,
+    torch.int32,
+    torch.int64,
+)
+
+
+class TestSpecOnlyRecounts:
+    """Spec-only entries whose traffic or arithmetic follows their metadata values, recounted
+    by walking the call. Each case picks metadata that reaches the branches the values decide."""
+
+    @pytest.mark.parametrize(
+        "row,case",
+        [
+            # Two requests with disjoint pages; two causal query rows each.
+            (
+                {"S_q": 2, "NP": 8, "W": 4, "cache_lens": [5, 9]},
+                {"T": "bfloat16", "KV": "bfloat16"},
+            ),
+            # A pool smaller than the requests' pages, so requests share rows; an FP8 cache.
+            (
+                {"S_q": 1, "NP": 3, "W": 3, "cache_lens": [5, 9, 12], "some": ["kv_scale"]},
+                {"T": "bfloat16", "KV": "float8_e4m3fn"},
+            ),
+        ],
+    )
+    def test_mla_paged_reads_the_rows_its_block_table_reaches(self, row, case):
+        name = "MultiHeadLatentAttentionPagedFwdOp"
+        row = {"H": 3, "DK": 12, "PS": 4, "kv_lora_rank": 8, **row}
+        (flops, moved), call = _evaluated(name, row, case)
+        heads, dk, rank, page, s_q = row["H"], row["DK"], row["kv_lora_rank"], row["PS"], row["S_q"]
+        table, lengths = call.values("block_table"), call.values("cache_seqlens")
+        fp8 = case["KV"] == "float8_e4m3fn"
+        scores = rows = 0
+        for c in lengths:
+            for i in range(s_q):
+                seen = c - s_q + i + 1
+                scores, rows = scores + seen, rows + 1
+        cache_rows = {
+            (table[b][j // page], j % page) for b, c in enumerate(lengths) for j in range(c)
+        }
+        pages = {(b, j // page) for b, c in enumerate(lengths) for j in range(c)}
+        batch = len(lengths)
+        assert moved == _ledger(
+            name,
+            q=((batch, s_q, heads, dk), _BF16),
+            kv_cache=((len(cache_rows), dk), _FP8 if fp8 else _BF16),
+            block_table=((len(pages),), _I32),
+            cache_seqlens=((batch,), _I32),
+            kv_scale=((1,), _F32) if fp8 else None,
+            o=((batch, s_q, heads, rank), _BF16),
+            lse=((batch, s_q, heads), _F32),
+        )
+        assert flops == _attention_flops(heads, dk, rank, scores, rows) + (
+            heads * rows if fp8 else 0
+        )
+
+    def test_dsa_paged_scores_each_valid_slot_and_reads_the_rows_they_name(self):
+        name = "DeepSeekSparseAttentionPagedFwdOp"
+        row = {"S_q": 2, "H": 2, "K": 4, "NP": 6, "PS": 4, "W": 3, "cache_lens": [5, 10]}
+        # Request 0: query 0 selects nothing, query 1 three positions on two pages.
+        # Request 1: a repeated slot, then nothing.
+        indices = [[[-1, -1, -1, -1], [0, 4, 3, -1]], [[3, 3, -1, -1], [-1, -1, -1, -1]]]
+        (flops, moved), call = _evaluated(name, row, {}, indices=indices)
+        table, lengths, page = call.values("block_table"), call.values("cache_seqlens"), row["PS"]
+        valid = [
+            [[j for j in slots if 0 <= j < lengths[b]] for slots in per_q]
+            for b, per_q in enumerate(indices)
+        ]
+        scores = sum(len(v) for per_q in valid for v in per_q)
+        rows = sum(1 for per_q in valid for v in per_q if v)
+        cache_rows = {
+            (table[b][j // page], j % page)
+            for b, per_q in enumerate(valid)
+            for v in per_q
+            for j in v
+        }
+        pages = {(b, j // page) for b, per_q in enumerate(valid) for v in per_q for j in v}
+        assert moved == _ledger(
+            name,
+            q=((rows, row["H"], 576), _BF16),  # the query rows that score something
+            kv_cache=((len(cache_rows), 656), torch.uint8),
+            block_table=((len(pages),), _I32),
+            cache_seqlens=((2,), _I32),
+            indices=((2, 2, 4), _I32),
+            o=((2, 2, row["H"], 512), _BF16),
+            lse=((2, 2, row["H"]), _F32),
+        )
+        # Each distinct row's 512 latent values are dequantized once.
+        assert flops == _attention_flops(row["H"], 576, 512, scores, rows) + 512 * len(cache_rows)
+
+    def test_paged_kv_cache_write_moves_only_the_tokens_with_a_slot(self):
+        name = "PagedKVCacheWriteFwdOp"
+        row = {"N": 5, "H_kv": 2, "D": 4, "NP": 4, "PS": 3, "some": ["k_scale"]}
+        slots = [7, -1, 2, -1, 11]
+        (flops, moved), _call = _evaluated(
+            name, row, {"T": "bfloat16", "KV": "float8_e4m3fn"}, slot_mapping=slots
+        )
+        written = ((3, 2, 4), _FP8)
+        assert moved == _ledger(
+            name,
+            k=((3, 2, 4), _BF16),
+            v=((3, 2, 4), _BF16),
+            k_pages_unread=True,
+            k_pages_write=written,
+            v_pages_unread=True,
+            v_pages_write=written,
+            slot_mapping=((5,), _I64),
+            k_scale=((1,), _F32),
+            v_scale=((1,), _F32),
+        )
+        # Per stored FP8 value, the scale and the saturating cast.
+        assert flops == 2 * 2 * 3 * 2 * 4
+
+    def test_mla_kv_cache_write_rotates_and_moves_only_the_tokens_with_a_slot(self):
+        name = "MultiHeadLatentAttentionKVCacheWriteFwdOp"
+        row = {
+            "DC": 6,
+            "PE": 4,
+            "NP": 4,
+            "PS": 3,
+            "P": 16,
+            "seq_lens": [3, 2],
+            "fuse_rope": True,
+            "some": ["scale"],
+        }
+        slots = [5, -1, 0, 8, -1]  # tokens 0, 2 and 3, at positions 0, 2 and 0
+        case = {"T": "bfloat16", "KV": "float8_e4m3fn", "C": "float32"}
+        (flops, moved), _call = _evaluated(name, row, case, slot_mapping=slots)
+        assert moved == _ledger(
+            name,
+            kv_c=((3, 6), _BF16),
+            k_pe=((3, 4), _BF16),
+            kv_cache_unread=True,
+            kv_cache_write=((3, 10), _FP8),
+            slot_mapping=((5,), _I64),
+            scale=((1,), _F32),
+            positions=((3,), _I64),
+            cos_sin_cache=((2, 4), _F32),  # positions 0 and 2
+        )
+        assert flops == 3 * (2 * 10 + 3 * 4)
+
+    @pytest.mark.parametrize(
+        "row,case",
+        [
+            ({"seq_lens": [3, 4], "starts": [2, 5], "some": ["seq_starts"]}, {"KV": "bfloat16"}),
+            (
+                {"seq_lens": [3, 4], "out_dtype": "float16", "some": ["scale"]},
+                {"KV": "float8_e4m3fn"},
+            ),
+        ],
+    )
+    def test_paged_kv_cache_gather_reads_the_rows_each_range_reaches(self, row, case):
+        name = "PagedKVCacheGatherFwdOp"
+        row = {"T_q": 7, "NP": 6, "PS": 4, "W": 3, "E": [2, 3], **row}
+        (flops, moved), call = _evaluated(name, row, case)
+        table, page = call.values("block_table"), row["PS"]
+        starts = row.get("starts", [0, 0])
+        ranges = [range(s, s + n) for s, n in zip(starts, row["seq_lens"], strict=True)]
+        cache_rows = {(table[b][j // page], j % page) for b, r in enumerate(ranges) for j in r}
+        pages = {(b, j // page) for b, r in enumerate(ranges) for j in r}
+        fp8 = case["KV"] == "float8_e4m3fn"
+        assert moved == _ledger(
+            name,
+            dst_unread=True,
+            dst_write=((7, 2, 3), torch.float16 if fp8 else _BF16),
+            cache=((len(cache_rows), 2, 3), _FP8 if fp8 else _BF16),
+            block_table=((len(pages),), _I32),
+            cu_seq_lens=((3,), _I32),
+            seq_starts=None if fp8 else ((2,), _I32),
+            scale=((1,), _F32) if fp8 else None,
+        )
+        assert flops == (7 * 2 * 3 if fp8 else 0)
+
+    def test_fused_qk_norm_rope_touches_the_q_and_k_columns_and_the_named_rows(self):
+        name = "FusedQKNormRopeFwdOp"
+        row = {"D": 8, "P": 16, "R": 4, "num_heads": 3, "num_kv_heads": 1, "seq_lens": [3, 2]}
+        (flops, moved), _call = _evaluated(name, row, {"T": "bfloat16", "C": "float32"})
+        qk = ((5, 4 * 8), _BF16)  # 5 tokens, 3 q heads and 1 k head of width 8
+        assert moved == _ledger(
+            name,
+            qkv=qk,
+            qkv_write=qk,
+            q_weight=((8,), _BF16),
+            k_weight=((8,), _BF16),
+            cos_sin_cache=((3, 4), _F32),  # positions 0, 1, 2
+            positions=((5,), _I64),
+        )
+        assert flops == 5 * 4 * (4 * 8 + 3 * 4)
+
+    def test_chain_speculative_sampling_prices_the_cheaper_outcome(self):
+        name = "ChainSpeculativeSamplingFwdOp"
+        batch, n, vocab = 2, 3, 10
+        (flops, moved), _call = _evaluated(name, {"B": batch, "N": n, "V": vocab}, {})
+        # With N < V, every draft accepted is cheaper than a rejection at the first: the N
+        # ratio tests and a draw from target row N; the ids, 2 N probabilities, one row.
+        assert moved == _ledger(
+            name,
+            draft_probs=((batch * n,), _F32),
+            draft_token_ids=((batch, n), _I32),
+            target_probs=((batch * (n + vocab),), _F32),
+            seed=((1,), _I64),
+            offset=((1,), _I64),
+            output_token_ids=((batch, n + 1), _I32),
+            num_accepted=((batch,), _I32),
+        )
+        assert flops == batch * (2 * n + 3 * vocab + 1)
+
+    def test_top_k_masks_pay_nothing_on_a_row_k_leaves_whole(self):
+        vocab, ks = 10, [3, 10, 12, 1]
+        row = {"V": vocab, "k_list": ks}
+        (flops, _moved), _call = _evaluated("TopKMaskFwdOp", row, {"T": "float32"})
+        assert flops == sum(2 * vocab for k in ks if k < vocab)
+        (flops, _moved), _call = _evaluated("TopKTopPMaskFwdOp", row, {"T": "float32"})
+        # Top-k where k restricts; over the survivors max, subtract, exp, sum, compare and
+        # accumulate; p times the sum; the final mask.
+        assert flops == sum((vocab if k < vocab else 0) + 6 * min(k, vocab) + 1 + vocab for k in ks)
+
+    def test_mla_varlen_scores_each_request_under_its_causal_mask(self):
+        row = {"T_q": 7, "H": 2, "DN": 4, "PE": 2, "DV": 3, "seq_lens": [3, 4]}
+        (flops, _moved), _call = _evaluated(
+            "MultiHeadLatentAttentionVarlenFwdOp", row, {"T": "bfloat16"}
+        )
+        scores = sum(i + 1 for n in row["seq_lens"] for i in range(n))
+        assert flops == _attention_flops(2, 6, 3, scores, 7)
+
+
+# Coverage levels. Every op, implemented or spec-only, sits at
 # exactly one, and the level says what an independent recount rests on.
 #
 #   one   The binder builds the case from the manifest: signature, one workload
@@ -554,6 +815,14 @@ HAND_WRITTEN = {
     "NSAVarlenFwdOp": "how much it reads follows the values in `block_counts`",
     "NSATopkVarlenFwdOp": "`lse_in` is passed and the kernel recomputes the lse instead of reading it",
     "IndexedExpertMLPFwdOp": "the routed weight reads follow the values in `topk_ids`",
+    "GroupedQueryAttentionPagedFwdOp": "it reads the rows its page table names, not the pool",
+    "MultiHeadLatentAttentionPagedFwdOp": "it reads the cache rows its block table reaches, not the pool",
+    "DeepSeekSparseAttentionPagedFwdOp": "it reads the cache rows its valid index slots name",
+    "PagedKVCacheWriteFwdOp": "only the tokens `slot_mapping` gives a slot are read and written",
+    "MultiHeadLatentAttentionKVCacheWriteFwdOp": "only the tokens `slot_mapping` gives a slot are read and written",
+    "PagedKVCacheGatherFwdOp": "it reads the cache rows each request's range reaches, not the pool",
+    "FusedQKNormRopeFwdOp": "it leaves the v columns untouched and reads only the named cos/sin rows",
+    "ChainSpeculativeSamplingFwdOp": "where the chain stops is drawn at run time, so it prices the cheaper outcome",
 }
 
 # Level three: no independent recount is available. Empty, and an entry here has
@@ -561,12 +830,11 @@ HAND_WRITTEN = {
 NOT_RECOUNTABLE: dict[str, str] = {}
 
 
-def _implemented_ops() -> list[str]:
+def _entries() -> list[str]:
+    """Every entry: a spec-only one is recounted from its signature, needing no implementation."""
     from tileops.manifest import load_manifest
 
-    return sorted(
-        name for name, entry in load_manifest().items() if entry.get("status") == "implemented"
-    )
+    return sorted(load_manifest())
 
 
 def _draws_metadata(op_name: str) -> bool:
@@ -606,13 +874,13 @@ def _binder_agrees(op_name: str) -> bool:
 
 
 class TestCoverageLevels:
-    """Every implemented op sits at exactly one level, and the level is the truth."""
+    """Every op sits at exactly one level, and the level is the truth."""
 
     def test_a_generated_case_equals_its_op(self):
         from tests.roofline_binder import manifest_cases
 
         checked = 0
-        for op_name in _implemented_ops():
+        for op_name in _entries():
             if op_name in HAND_WRITTEN or op_name in NOT_RECOUNTABLE:
                 continue
             for label, dtype, op, oracle, _reads in manifest_cases(op_name):
@@ -627,7 +895,7 @@ class TestCoverageLevels:
         from tests.roofline_binder import manifest_cases
 
         checked = 0
-        for op_name in _implemented_ops():
+        for op_name in _entries():
             if op_name in HAND_WRITTEN or op_name in NOT_RECOUNTABLE:
                 continue
             for label, dtype, op, _oracle, reads in manifest_cases(op_name):
@@ -637,11 +905,11 @@ class TestCoverageLevels:
                 checked += 1
         assert checked > 0
 
-    def test_every_implemented_op_sits_at_one_level(self):
+    def test_every_op_sits_at_one_level(self):
         both = sorted(set(HAND_WRITTEN) & set(NOT_RECOUNTABLE))
         assert not both, f"declared at two levels: {both}"
-        unknown = sorted((set(HAND_WRITTEN) | set(NOT_RECOUNTABLE)) - set(_implemented_ops()))
-        assert not unknown, f"declared but not implemented: {unknown}"
+        unknown = sorted((set(HAND_WRITTEN) | set(NOT_RECOUNTABLE)) - set(_entries()))
+        assert not unknown, f"declared but not in the manifest: {unknown}"
 
     def test_a_declared_op_is_one_the_manifest_does_not_already_check(self):
         """Level two and three are for ops the manifest cannot recount, not a queue.

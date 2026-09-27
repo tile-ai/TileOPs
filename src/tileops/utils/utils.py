@@ -21,6 +21,17 @@ str2dtype = {
 # `get_device_name` string scan would run on every forward.
 
 
+# Spin cycles queued before a device_busy_of measurement: tens of milliseconds
+# on any supported clock, ample to enqueue every timed call first.
+_BUSY_TIMING_SPIN_CYCLES = 50_000_000
+
+
+# Calibrated boards: the key selection tables use -> the name fragment CUDA reports.
+# All SKUs of a board share its key. GPU profiles match the full name instead
+# (:func:`tileops.perf.find_profile`): a speed-of-light reading is not shared.
+_CALIBRATION_BOARDS = {"h200": "H200"}
+
+
 @functools.lru_cache(maxsize=16)
 def _device_name(index: int) -> str:
     return torch.cuda.get_device_name(index)
@@ -30,12 +41,6 @@ def _device_name(index: int) -> str:
 def _sm_version(index: int) -> int:
     major, minor = torch.cuda.get_device_capability(index)
     return major * 10 + minor
-
-
-# Calibrated boards: the key selection tables use -> the name fragment CUDA reports.
-# All SKUs of a board share its key. GPU profiles match the full name instead
-# (:func:`tileops.perf.find_profile`): a speed-of-light reading is not shared.
-_CALIBRATION_BOARDS = {"h200": "H200"}
 
 
 def calibration_key(device_name: str) -> "str | None":
@@ -100,11 +105,6 @@ def forget_device_properties() -> None:
     _device_name.cache_clear()
     _sm_version.cache_clear()
     _device_facts.cache_clear()
-
-
-# Spin cycles queued before a device_busy_of measurement: tens of milliseconds
-# on any supported clock, ample to enqueue every timed call first.
-_BUSY_TIMING_SPIN_CYCLES = 50_000_000
 
 
 def device_busy_of(call, device: "torch.device", warmup: int = 5, rep: int = 20) -> float:

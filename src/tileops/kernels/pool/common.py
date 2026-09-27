@@ -7,6 +7,10 @@ import torch
 from tileops.kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
 
+# Window sums promote to fp32 and cast back at the store: a narrow accumulator loses the
+# low bits of a window this wide.
+ACCUM_DTYPE = "float"
+
 
 def dtype_itemsize(dtype: str) -> int:
     """Bytes one element of *dtype* takes, over the dtypes these kernels accept."""
@@ -101,11 +105,6 @@ def pool_output_dim(
         out -= 1
 
     return max(out, 0)
-
-
-# Window sums promote to fp32 and cast back at the store: a narrow accumulator loses the
-# low bits of a window this wide.
-ACCUM_DTYPE = "float"
 
 
 class AvgPoolWindow(NamedTuple):

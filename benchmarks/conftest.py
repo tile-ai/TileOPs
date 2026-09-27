@@ -8,6 +8,9 @@ import torch
 import benchmarks.baselines  # noqa: F401
 from benchmarks.report import BenchmarkReport, _bench_results
 
+# What a row carries besides its measurements.
+_NOT_A_MEASUREMENT = frozenset({"tag", "op", "op_module", "ops", "params", "run_config", "result"})
+
 
 def pytest_make_parametrize_id(config, val, argname):
     """Render the values pytest would otherwise collect as `shape0`, `dtype0`.
@@ -28,10 +31,6 @@ def pytest_make_parametrize_id(config, val, argname):
         name = name.replace("_", "")
         return name if val else f"no{name}"
     return None
-
-
-# What a row carries besides its measurements.
-_NOT_A_MEASUREMENT = frozenset({"tag", "op", "op_module", "ops", "params", "run_config", "result"})
 
 
 def _prop(value) -> str:

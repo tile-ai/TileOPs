@@ -74,6 +74,59 @@ _FONT_FAMILY = "ui-monospace, SFMono-Regular, monospace"
 _INK = "#191a16"
 
 
+# Plotly config: horizontal-only zoom + pan. With yaxis.fixedrange set, scrollZoom
+# stretches only x and pan moves only x; the vertical / box / autoscale buttons are
+# stripped so the y axis can never be rescaled.
+_CONFIG = {
+    "scrollZoom": True,
+    "displaylogo": False,
+    "responsive": True,
+    "modeBarButtonsToRemove": [
+        "zoom2d",
+        "select2d",
+        "lasso2d",
+        "zoomIn2d",
+        "zoomOut2d",
+        "autoScale2d",
+    ],
+}
+_PLOTLY_CDN = "https://cdn.plot.ly/plotly-2.35.2.min.js"
+_HTML_TEMPLATE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<script src="{cdn}" charset="utf-8"></script>
+<style>
+ html,body{{margin:0;height:100%;background:#f3ede1;font-family:ui-monospace,monospace;}}
+ #tabs{{display:flex;gap:6px;padding:8px 14px 4px;overflow-x:auto;white-space:nowrap;
+   border-bottom:1px solid #d8cfbb;}}
+ #tabs button{{font:600 13px ui-monospace,monospace;background:#e8e1d1;color:#191a16;
+   border:1px solid #c9c0b0;border-radius:5px;padding:5px 12px;cursor:pointer;}}
+ #tabs button:hover{{background:#dcd3bf;}}
+ #tabs button.active{{background:#7d5ba6;color:#fff;border-color:#7d5ba6;}}
+ #plot{{width:100vw;height:calc(100vh - 56px);}}
+</style></head><body>
+<div id="tabs">{tab_buttons}</div>
+<div id="plot"></div>
+<script>
+ const figs = {figs_json};
+ const ctas = {ctas_json};
+ const config = {config_json};
+ const plot = document.getElementById('plot');
+ function show(cta){{
+   const f = figs[cta];
+   Plotly.react(plot, f.data, f.layout, config);
+   document.querySelectorAll('#tabs button').forEach(function(b){{
+     b.classList.toggle('active', b.dataset.cta === String(cta));
+   }});
+ }}
+ document.querySelectorAll('#tabs button').forEach(function(b){{
+   b.onclick = function(){{ show(b.dataset.cta); }};
+ }});
+ show(ctas[0]);
+ window.addEventListener('resize', function(){{ Plotly.Plots.resize(plot); }});
+</script></body></html>"""
+
+
 def _lane_label(gid: int, lane: int, group_id_to_name: dict, lane_id_to_name: dict) -> str:
     """Build a lane's y-axis label ``"<group> / <lane>"``.
 
@@ -346,61 +399,6 @@ def _figure_for_cta(
         "annotations": annotations,
     }
     return {"data": data, "layout": layout}
-
-
-# Plotly config: horizontal-only zoom + pan. With yaxis.fixedrange set, scrollZoom
-# stretches only x and pan moves only x; the vertical / box / autoscale buttons are
-# stripped so the y axis can never be rescaled.
-_CONFIG = {
-    "scrollZoom": True,
-    "displaylogo": False,
-    "responsive": True,
-    "modeBarButtonsToRemove": [
-        "zoom2d",
-        "select2d",
-        "lasso2d",
-        "zoomIn2d",
-        "zoomOut2d",
-        "autoScale2d",
-    ],
-}
-
-_PLOTLY_CDN = "https://cdn.plot.ly/plotly-2.35.2.min.js"
-
-_HTML_TEMPLATE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title>
-<script src="{cdn}" charset="utf-8"></script>
-<style>
- html,body{{margin:0;height:100%;background:#f3ede1;font-family:ui-monospace,monospace;}}
- #tabs{{display:flex;gap:6px;padding:8px 14px 4px;overflow-x:auto;white-space:nowrap;
-   border-bottom:1px solid #d8cfbb;}}
- #tabs button{{font:600 13px ui-monospace,monospace;background:#e8e1d1;color:#191a16;
-   border:1px solid #c9c0b0;border-radius:5px;padding:5px 12px;cursor:pointer;}}
- #tabs button:hover{{background:#dcd3bf;}}
- #tabs button.active{{background:#7d5ba6;color:#fff;border-color:#7d5ba6;}}
- #plot{{width:100vw;height:calc(100vh - 56px);}}
-</style></head><body>
-<div id="tabs">{tab_buttons}</div>
-<div id="plot"></div>
-<script>
- const figs = {figs_json};
- const ctas = {ctas_json};
- const config = {config_json};
- const plot = document.getElementById('plot');
- function show(cta){{
-   const f = figs[cta];
-   Plotly.react(plot, f.data, f.layout, config);
-   document.querySelectorAll('#tabs button').forEach(function(b){{
-     b.classList.toggle('active', b.dataset.cta === String(cta));
-   }});
- }}
- document.querySelectorAll('#tabs button').forEach(function(b){{
-   b.onclick = function(){{ show(b.dataset.cta); }};
- }});
- show(ctas[0]);
- window.addEventListener('resize', function(){{ Plotly.Plots.resize(plot); }});
-</script></body></html>"""
 
 
 def export_timeline_html(

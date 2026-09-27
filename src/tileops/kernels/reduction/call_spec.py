@@ -15,6 +15,12 @@ __all__ = [
 ]
 
 
+# The fused pass runs one block per kept column and has no other parallelism, so
+# it takes over only where that alone is enough: the fewest kept columns that fill the
+# device, per calibrated board. A board without an entry uses the general implementation.
+_EDGE_FUSED_MIN_KEPT = {"h200": 32}
+
+
 @dataclasses.dataclass(frozen=True)
 class LogicalReduceCall(CallSpec):
     """Semantic and shape facts used to select a logical reduction implementation."""
@@ -35,12 +41,6 @@ def logical_reduce_region(call: LogicalReduceCall) -> bool:
     """The general logical reduction region."""
 
     return call.op_kind in {"any", "all", "count_nonzero"}
-
-
-# The fused pass runs one block per kept column and has no other parallelism, so
-# it takes over only where that alone is enough: the fewest kept columns that fill the
-# device, per calibrated board. A board without an entry uses the general implementation.
-_EDGE_FUSED_MIN_KEPT = {"h200": 32}
 
 
 def logical_edge_fused_region(call: LogicalReduceCall) -> bool:

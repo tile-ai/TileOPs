@@ -9,11 +9,6 @@ import torch
 BOOL_STORAGE_DTYPE = "int8"
 
 
-def log_for_output_precision(value, wide):
-    """Return ``log(wide)`` computed to the precision *value*'s dtype can keep."""
-    return T.log(wide) if value.dtype == "float32" else T.__log(wide)
-
-
 _BITWISE_DTYPES = (
     torch.bool,
     torch.uint8,
@@ -22,33 +17,28 @@ _BITWISE_DTYPES = (
     torch.int32,
     torch.int64,
 )
-
-
 # The dtypes every elementwise kernel refuses.
 _FP8_DTYPES = (
     torch.float8_e4m3fn,
     torch.float8_e5m2,
 )
-
-
 _FLOAT_DTYPES = (
     torch.float16,
     torch.bfloat16,
     torch.float32,
 )
-
-
 _LOGICAL_DTYPES = _BITWISE_DTYPES + _FLOAT_DTYPES
-
-
 _BINARY_FULL_DTYPES = _BITWISE_DTYPES + (
     torch.float16,
     torch.bfloat16,
     torch.float32,
 )
-
-
 _BINARY_NO_BOOL_DTYPES = tuple(dt for dt in _BINARY_FULL_DTYPES if dt is not torch.bool)
+
+
+def log_for_output_precision(value, wide):
+    """Return ``log(wide)`` computed to the precision *value*'s dtype can keep."""
+    return T.log(wide) if value.dtype == "float32" else T.__log(wide)
 
 
 def _torch_dtype_nbytes(dtype: torch.dtype) -> int:

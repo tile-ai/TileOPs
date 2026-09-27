@@ -38,6 +38,19 @@ from tileops.pool import MeanPoolingFwdOp
 from workloads.pool import MeanPoolingCallWorkload, MeanPoolingWorkload
 from workloads.workload_base import CallWorkload
 
+# Which library serves an op, and the pooling kind and rank its adapter needs. An op absent
+# here has none: no library covers 1D, adaptive pooling, or 3D max-pool indices. Every row
+# is also timed against torch, eager and compiled, so this table is not the whole baseline.
+_BASELINE: dict[str, tuple[str, str, int]] = {
+    "AvgPool2dFwdOp": (FLAGGEMS_TAG, "avg", 2),
+    "AvgPool3dFwdOp": ("cudnn", "avg", 3),
+    "MaxPool2dFwdOp": (FLAGGEMS_TAG, "max", 2),
+    "MaxPool2dIndicesFwdOp": (FLAGGEMS_TAG, "max", 2),
+    "MaxPool3dFwdOp": ("cudnn", "max", 3),
+}
+# Autotuning is a bench-run policy; manifest workloads do not carry it.
+_TUNE = True
+
 
 def flaggems_pool_fn(
     kind: str,
@@ -174,18 +187,6 @@ def flaggems_pool_fn(
 
         return run_max
     return None
-
-
-# Which library serves an op, and the pooling kind and rank its adapter needs. An op absent
-# here has none: no library covers 1D, adaptive pooling, or 3D max-pool indices. Every row
-# is also timed against torch, eager and compiled, so this table is not the whole baseline.
-_BASELINE: dict[str, tuple[str, str, int]] = {
-    "AvgPool2dFwdOp": (FLAGGEMS_TAG, "avg", 2),
-    "AvgPool3dFwdOp": ("cudnn", "avg", 3),
-    "MaxPool2dFwdOp": (FLAGGEMS_TAG, "max", 2),
-    "MaxPool2dIndicesFwdOp": (FLAGGEMS_TAG, "max", 2),
-    "MaxPool3dFwdOp": ("cudnn", "max", 3),
-}
 
 
 def _as_tuple(value, ndim: int) -> tuple:
@@ -340,10 +341,6 @@ def test_adaptive_max_pool2d_indices_bench(call) -> None:
 
 
 # MeanPoolingFwdOp, the chunked sequence mean.
-
-
-# Autotuning is a bench-run policy; manifest workloads do not carry it.
-_TUNE = True
 
 
 def _torch_view_mean(workload: MeanPoolingWorkload):

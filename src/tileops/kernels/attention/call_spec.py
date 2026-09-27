@@ -35,6 +35,15 @@ ATTENTION_DTYPES = (torch.float16, torch.bfloat16)
 WS_ARCH = 90
 
 
+# Tile heights the warp-specialized paged decode kernel can pick from. A tile
+# divides the page size, so one tile never straddles two pages, and it splits
+# evenly across the four consumer warps.
+_WS_DECODE_TILES = (16, 32, 64, 128)
+# Head dims that map onto one warp: the score reduction is a shuffle chain over
+# 32 lanes, so a lane owns ``dim / 32`` elements of the head vector.
+_WS_DECODE_LANES = 32
+
+
 def fp8_dtype() -> Optional[torch.dtype]:
     """Return ``torch.float8_e4m3fn`` when the torch build carries it."""
     return getattr(torch, "float8_e4m3fn", None)
@@ -79,15 +88,6 @@ class AttentionCall(CallSpec):
 def uses_sliding_window(call: AttentionCall) -> bool:
     """Whether either window bound is set, which restricts what may serve the call."""
     return call.window_size_left != -1 or call.window_size_right != -1
-
-
-# Tile heights the warp-specialized paged decode kernel can pick from. A tile
-# divides the page size, so one tile never straddles two pages, and it splits
-# evenly across the four consumer warps.
-_WS_DECODE_TILES = (16, 32, 64, 128)
-# Head dims that map onto one warp: the score reduction is a shuffle chain over
-# 32 lanes, so a lane owns ``dim / 32`` elements of the head vector.
-_WS_DECODE_LANES = 32
 
 
 def paged_decode_ws_region(call: AttentionCall) -> bool:

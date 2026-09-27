@@ -54,17 +54,8 @@ __all__ = [
 ]
 
 
-class SignatureError(ValueError):
-    """A declaration outside the schema; the message names it."""
-
-
-class EvaluationError(SignatureError):
-    """An expression that failed to evaluate; the message names its declaration."""
-
-
 # The value of an expression that reads more than a point fixes.
 OPEN = object()
-
 _COMPREHENSION_CALLEES = frozenset({"all", "sum", "max", "min"})
 _NODES = (
     ast.BoolOp,
@@ -102,6 +93,15 @@ _NODES = (
     ast.comprehension,
     ast.keyword,
 )
+_UNFOLDED = (ast.Constant, ast.Name, ast.List, ast.Starred, ast.Slice, ast.GeneratorExp)
+
+
+class SignatureError(ValueError):
+    """A declaration outside the schema; the message names it."""
+
+
+class EvaluationError(SignatureError):
+    """An expression that failed to evaluate; the message names its declaration."""
 
 
 # ---------------------------------------------------------------- parsing and the language
@@ -644,7 +644,6 @@ class _Bind(ast.NodeTransformer):
 
 
 _NAMESPACE = namespace()
-_UNFOLDED = (ast.Constant, ast.Name, ast.List, ast.Starred, ast.Slice, ast.GeneratorExp)
 
 
 def bind(node: ast.expr, point: dict) -> ast.expr:

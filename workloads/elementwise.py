@@ -141,7 +141,7 @@ class LogicalNotWorkload(WorkloadBase):
 
         if self.dtype == torch.uint8:
             x = torch.randint(0, 8, (self.n_total,), device=run_device(), dtype=self.dtype)
-        elif self.dtype in (torch.int8, torch.int16, torch.int32, torch.int64):
+        elif not (self.dtype.is_floating_point or self.dtype.is_complex) and self.dtype.is_signed:
             x = torch.randint(-4, 4, (self.n_total,), device=run_device(), dtype=self.dtype)
         else:
             x = torch.randn(self.n_total, device=run_device(), dtype=self.dtype)

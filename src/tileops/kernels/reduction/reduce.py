@@ -45,6 +45,9 @@ _FRAG_SLOTS = {
 }
 
 
+_LEADING_AXIS_KINDS = frozenset({"sum", "mean", "amax", "amin"})
+
+
 @dataclass(frozen=True)
 class ProductReducePolicy:
     """Launch heuristics for product reductions."""
@@ -60,9 +63,6 @@ _PROD_POLICY = ProductReducePolicy()
 
 
 # Simple reduce kernel
-
-
-_LEADING_AXIS_KINDS = frozenset({"sum", "mean", "amax", "amin"})
 
 
 class ReduceKernel(Kernel):

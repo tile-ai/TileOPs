@@ -18,6 +18,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCHMARK_DIRS = ("benchmarks/ops",)
 
 
+# A benchmark takes (flops, bytes) from its op — docs/design/roofline.md §4.2. An entry
+# here declares the two methods for a reason the name below states. An entry whose
+# subject is an op goes as soon as that op gains a manifest entry; an entry whose
+# subject is not an op stays, because a manifest entry is something only an op can have.
+_ROOFLINE_OF_ITS_OWN = {
+    "FusedGatedBenchmark": "times a forced kernel strategy, which no op can request and "
+    "no report has a row for; both metrics return None",
+}
+
+
 def _benchmark_files() -> list[Path]:
     return [
         path
@@ -70,16 +80,6 @@ def test_benchmarks_do_not_import_tests_package() -> None:
 def test_benchmarks_do_not_author_gen_inputs() -> None:
     """Import the op's workload from workloads/; if it has none, add it there."""
     assert _scan(_defines_gen_inputs) == {}
-
-
-# A benchmark takes (flops, bytes) from its op — docs/design/roofline.md §4.2. An entry
-# here declares the two methods for a reason the name below states. An entry whose
-# subject is an op goes as soon as that op gains a manifest entry; an entry whose
-# subject is not an op stays, because a manifest entry is something only an op can have.
-_ROOFLINE_OF_ITS_OWN = {
-    "FusedGatedBenchmark": "times a forced kernel strategy, which no op can request and "
-    "no report has a row for; both metrics return None",
-}
 
 
 def _writes_its_own_roofline(tree: ast.AST) -> list[str]:

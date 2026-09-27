@@ -41,6 +41,31 @@ _COMPILE_FLAGS = [
 ]
 
 
+# Causal warp-specialized Dense attention.
+BLOCK_M = 128
+BLOCK_N = 128
+NSK = 2
+NSV = 2
+THREADS = 384
+NMMA = 256
+_pc = {
+    tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+    tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
+}
+_cf = [
+    "-O3",
+    "--use_fast_math",
+    "-Wno-deprecated-declarations",
+    "-U__CUDA_NO_HALF_OPERATORS__",
+    "-U__CUDA_NO_HALF_CONVERSIONS__",
+    "-U__CUDA_NO_HALF2_OPERATORS__",
+    "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+    "--expt-relaxed-constexpr",
+    "--expt-extended-lambda",
+    "-DNDEBUG",
+]
+
+
 @functools.lru_cache(maxsize=32)
 @tilelang.jit(out_idx=[4, 5], pass_configs=_PASS_CONFIGS, compile_flags=_COMPILE_FLAGS)
 def _gqa_dense_rope_qk_kernel(
@@ -199,32 +224,6 @@ def make_dense_qk_rope_preprocessor(
         dtype,
         rope_dtype,
     )
-
-
-# Causal warp-specialized Dense attention.
-BLOCK_M = 128
-BLOCK_N = 128
-NSK = 2
-NSV = 2
-THREADS = 384
-NMMA = 256
-
-_pc = {
-    tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-    tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
-}
-_cf = [
-    "-O3",
-    "--use_fast_math",
-    "-Wno-deprecated-declarations",
-    "-U__CUDA_NO_HALF_OPERATORS__",
-    "-U__CUDA_NO_HALF_CONVERSIONS__",
-    "-U__CUDA_NO_HALF2_OPERATORS__",
-    "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-    "--expt-relaxed-constexpr",
-    "--expt-extended-lambda",
-    "-DNDEBUG",
-]
 
 
 @functools.lru_cache(maxsize=32)

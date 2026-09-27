@@ -51,6 +51,9 @@ from .compile_boundary import get_instance
 __all__ = ["CheckError", "SignatureCall", "install", "maybe_install_signature"]
 
 
+_SCHEMA_TYPES = {int: "SymInt", float: "float", bool: "bool", str: "str"}
+
+
 def operator_name(family: str, class_name: str) -> str:
     """``("norm", "RMSNormFwdOp")`` -> ``"norm_rms_norm_fwd"``; a class whose own name already
     opens with the family, such as ``MoePrePermuteFwdOp``, names it once."""
@@ -1232,9 +1235,6 @@ class _Boundary:
         scope = {**defaults, "_boundary": self}
         exec(compile(source, f"<{cls.__name__} boundary>", "exec"), scope)  # noqa: S102
         return scope["_call_boundary"]
-
-
-_SCHEMA_TYPES = {int: "SymInt", float: "float", bool: "bool", str: "str"}
 
 
 def _schema_type(cls: type, parameter: inspect.Parameter) -> str:

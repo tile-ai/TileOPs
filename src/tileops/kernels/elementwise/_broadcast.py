@@ -4,6 +4,9 @@ from dataclasses import dataclass
 
 import torch
 
+# CUDA caps grid.y at 65535, and one grid axis carries the rows.
+_CUDA_MAX_GRID_Y = 65535
+
 
 def _flat(t):
     """The flat view every PrimFunc here takes."""
@@ -100,10 +103,6 @@ def _is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
         and all(s == 1 for s in a_strides)
         and all(s == 1 for s in b_strides)
     )
-
-
-# CUDA caps grid.y at 65535, and one grid axis carries the rows.
-_CUDA_MAX_GRID_Y = 65535
 
 
 def row_broadcast_split(coalesced_shape, a_strides, b_strides):

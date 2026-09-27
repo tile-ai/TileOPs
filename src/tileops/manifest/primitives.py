@@ -10,7 +10,7 @@ import math
 import numbers
 from types import SimpleNamespace
 
-from .dtype_rules import DTYPE_BITS
+from .dtype_rules import DTYPE_BITS, DTYPE_CATEGORY
 
 # The seed both conftests give the global RNG; every private workload RNG derives from it.
 WORKLOAD_SEED = 1235
@@ -30,6 +30,23 @@ __all__ = [
     "namespace",
     "normalize_axis",
 ]
+
+
+# The largest finite value of each floating dtype; the lowest is its negation.
+_FLOAT_MAX = {
+    "float16": 65504.0,
+    "bfloat16": 3.3895313892515355e38,
+    "float32": 3.4028234663852886e38,
+    "float64": 1.7976931348623157e308,
+    "float8_e4m3fn": 448.0,
+    "float8_e4m3": 240.0,
+    "float8_e5m2": 57344.0,
+    "float8_e4m3fnuz": 240.0,
+    "float8_e5m2fnuz": 57344.0,
+}
+_COMPLEX_PART = {"complex64": "float32", "complex128": "float64"}
+# Floating formats without an infinity.
+_NO_INF = frozenset({"float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2fnuz"})
 
 
 def normalize_axis(axis: int, rank: int) -> int:
@@ -163,7 +180,7 @@ def moe_capacity(layout, rows, experts):
 
 def promote_int_to_float(dtype):
     """float32 for an integral dtype, else the dtype itself."""
-    return "float32" if dtype in ("uint8", "int8", "int16", "int32", "int64") else dtype
+    return "float32" if category(dtype) == "int" else dtype
 
 
 def coalesce_dtype(value, dtype):
@@ -193,38 +210,15 @@ def repeat(value, count):
     return [value] * count
 
 
-# The largest finite value of each floating dtype; the lowest is its negation.
-_FLOAT_MAX = {
-    "float16": 65504.0,
-    "bfloat16": 3.3895313892515355e38,
-    "float32": 3.4028234663852886e38,
-    "float64": 1.7976931348623157e308,
-    "float8_e4m3fn": 448.0,
-    "float8_e4m3": 240.0,
-    "float8_e5m2": 57344.0,
-    "float8_e4m3fnuz": 240.0,
-    "float8_e5m2fnuz": 57344.0,
-}
-_COMPLEX_PART = {"complex64": "float32", "complex128": "float64"}
-
-
 def category(x):
     """`'bool'`, `'int'`, `'float'` or `'complex'`: the category of a number or a dtype name."""
     if isinstance(x, str):
-        if x == "bool":
-            return "bool"
-        if x in _COMPLEX_PART:
-            return "complex"
-        return "float" if x in _FLOAT_MAX else "int"
+        return DTYPE_CATEGORY.get(x, "int")
     if isinstance(x, bool):
         return "bool"
     if isinstance(x, numbers.Integral):
         return "int"
     return "float" if isinstance(x, numbers.Real) else "complex"
-
-
-# Floating formats without an infinity.
-_NO_INF = frozenset({"float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2fnuz"})
 
 
 def _fits_float(v, dtype):
@@ -449,6 +443,24 @@ def causal_topk_indices(rng, batch, seq, heads_kv, k, extent, start, stride):
     return rows
 
 
+def sparse_topk_positions(rng, lengths, queries, k):
+    """Per request of length `n` and query `s`, up to `k` distinct positions in `[0, n - queries + s]`, padded with -1."""
+    if queries <= 0 or k <= 0 or any(n < queries for n in lengths):
+        raise ValueError(
+            f"attn.sparse_topk_positions needs S_q > 0, K > 0 and every length >= S_q, "
+            f"got lengths={lengths}, S_q={queries}, K={k}"
+        )
+    rows = []
+    for n in lengths:
+        per_query = []
+        for s in range(queries):
+            visible = n - queries + s + 1
+            picked = rng.sample(range(visible), min(k, visible))
+            per_query.append(picked + [-1] * (k - len(picked)))
+        rows.append(per_query)
+    return rows
+
+
 def key_windows(lengths, first, count, side):
     """Per query position, the first key of its sequence (`start`) or one past itself (`end`)."""
     if not lengths or any(n <= 0 for n in lengths):
@@ -523,6 +535,7 @@ GENERATORS = {
     "sample_indices": sample_indices,
     "moe.layout_metadata": moe_layout_metadata,
     "causal_topk_indices": causal_topk_indices,
+    "attn.sparse_topk_positions": sparse_topk_positions,
     "key_windows": key_windows,
     "full": full,
 }
@@ -543,6 +556,7 @@ GENERATOR_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "sample_indices": (("Int", "Int"), "Value"),
     "moe.layout_metadata": (("ADT", "Int", "Int"), "Value"),
     "causal_topk_indices": (("Int", "Int", "Int", "Int", "Int", "Int", "Int"), "Value"),
+    "attn.sparse_topk_positions": (("Seq[Int]", "Int", "Int"), "Value"),
     "key_windows": (("Seq[Int]", "Int", "Int", "'start' | 'end'"), "Value"),
     "full": (("Seq[Int]", "Int"), "Value"),
 }
@@ -563,6 +577,7 @@ GENERATOR_RANKS = {
     "sample_indices": 1,
     "moe.layout_metadata": 1,
     "causal_topk_indices": 4,
+    "attn.sparse_topk_positions": 3,
     "key_windows": 1,
 }
 # The shape of each generator's result, from its arguments.
@@ -589,6 +604,7 @@ GENERATOR_SHAPES = {
         heads,
         k,
     ),
+    "attn.sparse_topk_positions": lambda L, queries, k: (len(L), queries, k),
     "key_windows": lambda L, first, count, side: (count,),
     "full": lambda shape, value: tuple(shape),
 }
@@ -600,6 +616,7 @@ RANDOM_GENERATORS = frozenset(
         "topk_ids",
         "sample_indices",
         "causal_topk_indices",
+        "attn.sparse_topk_positions",
     }
 )
 

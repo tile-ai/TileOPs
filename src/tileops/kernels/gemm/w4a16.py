@@ -24,6 +24,10 @@ _DECODE_HELPER_PATH = os.path.abspath(
 )
 
 
+# What identifies a tile shape, as opposed to how its K loop is sliced.
+_TILE_KEYS = ("block_m", "block_n", "block_k", "num_stages", "threads")
+
+
 @dataclass(frozen=True)
 class _Layout:
     """Constants fixed by the packed-weight ABI, not tuning parameters."""
@@ -273,10 +277,6 @@ class _TileBuffers(NamedTuple):
     tmps: tuple
     scales: tuple
     out_shared: Any
-
-
-# What identifies a tile shape, as opposed to how its K loop is sliced.
-_TILE_KEYS = ("block_m", "block_n", "block_k", "num_stages", "threads")
 
 
 def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:

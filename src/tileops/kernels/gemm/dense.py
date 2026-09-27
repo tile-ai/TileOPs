@@ -42,6 +42,10 @@ _FP8_WS_HALF_M = _FP8_WS_BLOCK_M // 2
 _FP8_WS_BLOCK_K = 128
 
 
+_TILE_K = 8
+_SMEM_CAP = 224 * 1024
+
+
 def _tma_misalignment(
     m: int, n: int, k: int, dtype: torch.dtype, trans_a: bool, trans_b: bool
 ) -> Optional[str]:
@@ -2902,10 +2906,6 @@ def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> 
         return _gemm_small_batch_main
 
     return _gemm_small_batch_func
-
-
-_TILE_K = 8
-_SMEM_CAP = 224 * 1024
 
 
 def _bandwidth_autotune_grid(rts: tuple, bns: tuple, nss: tuple) -> list[dict]:
