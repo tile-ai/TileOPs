@@ -415,10 +415,10 @@ _REFERENCES = {
     "GeluAndMulFwdOp": _gated(F.gelu),
     "GeluTanhAndMulFwdOp": _gated(lambda g: F.gelu(g, approximate="tanh")),
     "AlibiFwdOp": lambda a: alibi_reference(
-        a["seq_len"], a["num_heads"], a["out_dtype"], a["device"] or run_device()
+        a["seq_len"], a["num_heads"], a["out_dtype"], a["device"]
     ),
     "SinusoidalFwdOp": lambda a: sinusoidal_reference(
-        a["seq_len"], a["d_model"], a["out_dtype"], a["device"] or run_device()
+        a["seq_len"], a["d_model"], a["out_dtype"], a["device"]
     ),
 }
 
@@ -445,8 +445,12 @@ class ElementwiseCall(CallWorkload):
         )
 
     def arguments(self) -> dict:
-        # No elementwise op takes a construction-time tensor.
-        return self.call.arguments({})
+        # No elementwise op takes a construction-time tensor. A tensorless op's unset
+        # `device` parameter follows the workload's device.
+        arguments = self.call.arguments({})
+        if "device" in arguments and arguments["device"] is None:
+            arguments["device"] = self.device
+        return arguments
 
     def ref_program(self, *inputs):
         return _REFERENCES[self.call.signature.name](self.arguments(), *inputs)

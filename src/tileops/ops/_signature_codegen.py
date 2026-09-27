@@ -136,6 +136,15 @@ def _field(value, name: str):
     return getattr(field, "value", field)
 
 
+def _indexed(device: torch.device) -> torch.device:
+    """*device* as a tensor allocated there reports it.
+
+    ``torch.device("cuda")`` names the current CUDA device but compares unequal to the
+    ``cuda:0`` a tensor built on it carries; ``cpu:1`` is reported as ``cpu``.
+    """
+    return torch.empty(0, device=device).device
+
+
 def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
     """The call device (docs/design/manifest.md § Call Semantics)."""
     devices = {t.device for t in tensors}
@@ -150,7 +159,7 @@ def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
         return devices.pop()
     declared = op._declared_device() if hasattr(op, "_declared_device") else None
     if declared is not None:
-        return declared
+        return _indexed(declared)
     held = {t.device for t in ctor}
     if len(held) > 1:
         raise CheckError(f"{name}: construction-time tensors are on {sorted(map(str, held))}")
