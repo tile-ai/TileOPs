@@ -6,54 +6,56 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
+from .call_spec import AttentionCall
 from .online_softmax import LOG2E
 
 __all__ = ["FlashAttnBwdPreprocessKernel", "GQABwdWgmmaPipelinedKernel"]
 
-# preprocess for gqa bwd
+_ROWS_PER_BLOCK = 64
 
 
 @functools.lru_cache(maxsize=32)
-@tilelang.jit(out_idx=[2])
+@tilelang.jit
 def _flashattn_bwd_preprocess_kernel(
     batch: int, heads: int, seq_len: int, dim: int, dtype: str
 ) -> Callable:
     accum_dtype = "float"
     shape = (batch, seq_len, heads, dim)
-    blk = 256
+    blk = _ROWS_PER_BLOCK
 
     @T.prim_func
     def flash_bwd_prep(
         o: T.Tensor(shape, dtype),  # type: ignore
-        do: T.Tensor(shape, dtype),  # d(out): gradient of output reciprocal
+        do: T.Tensor(shape, dtype),  # type: ignore
         delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
+        dq_accum: T.Tensor(shape, accum_dtype),  # type: ignore
     ) -> None:
-        with T.Kernel(heads, T.ceildiv(seq_len, blk), batch) as (bx, by, bz):
-            o_frag = T.alloc_fragment([blk, blk], dtype)
-            do_frag = T.alloc_fragment([blk, blk], dtype)
-            acc = T.alloc_fragment([blk, blk], accum_dtype)
+        with T.Kernel(heads, T.ceildiv(seq_len, blk), batch, threads=128) as (bx, by, bz):
+            o_frag = T.alloc_fragment([blk, dim], dtype)
+            do_frag = T.alloc_fragment([blk, dim], dtype)
+            acc = T.alloc_fragment([blk, dim], accum_dtype)
             delta_frag = T.alloc_fragment([blk], accum_dtype)
-            T.clear(acc)
-            for k in range(T.ceildiv(dim, blk)):
-                T.copy(o[bz, by * blk : (by + 1) * blk, bx, k * blk : (k + 1) * blk], o_frag)
-                T.copy(do[bz, by * blk : (by + 1) * blk, bx, k * blk : (k + 1) * blk], do_frag)
-                for i, j in T.Parallel(blk, blk):
-                    acc[i, j] += o_frag[i, j] * do_frag[i, j]
+            T.copy(o[bz, by * blk : (by + 1) * blk, bx, :], o_frag)
+            T.copy(do[bz, by * blk : (by + 1) * blk, bx, :], do_frag)
+            for i, j in T.Parallel(blk, dim):
+                acc[i, j] = T.cast(o_frag[i, j], accum_dtype) * T.cast(do_frag[i, j], accum_dtype)
             T.reduce_sum(acc, delta_frag, 1)
             T.copy(delta_frag, delta[bz, bx, by * blk : (by + 1) * blk])
+            T.clear(acc)
+            T.copy(acc, dq_accum[bz, by * blk : (by + 1) * blk, bx, :])
 
     return flash_bwd_prep
 
 
 class FlashAttnBwdPreprocessKernel(Kernel):
-    """Row-wise ``delta = rowsum(o * do)`` preprocessing for the GQA/MHA backward pass.
+    """Row-wise ``delta = rowsum(o * do)`` for the GQA/MHA backward pass; also zeroes
+    the f32 ``dq`` accumulator the backward kernel adds into.
 
-    The launch geometry is fixed (``blk = 256``), so ``default_config`` is empty
-    and ``autotune_configs`` is undefined: ``tune=True`` degrades to the default
-    config with a warning from ``Kernel.init_config``. Both parameters are still
-    accepted so the constructor tail matches every other kernel.
+    The launch geometry is fixed, so ``default_config`` is empty and
+    ``autotune_configs`` is undefined: ``tune=True`` degrades to the default
+    config with a warning from ``Kernel.init_config``.
 
     Args:
         batch: Batch size.
@@ -89,8 +91,41 @@ class FlashAttnBwdPreprocessKernel(Kernel):
         )
         self.init_config(config, tune)
 
-    def forward(self, o: torch.Tensor, do: torch.Tensor) -> torch.Tensor:
-        return self.kernel(o, do)
+    def forward(self, o: torch.Tensor, do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return ``(delta, dq_accum)``, the second zero-filled.
+
+        ``dq_accum`` holds as many f32 elements as ``o``; the backward kernel that adds
+        into it decides their order.
+        """
+        delta = torch.empty(
+            (self.batch, self.heads, self.seq_len), dtype=torch.float32, device=o.device
+        )
+        dq_accum = torch.empty(o.shape, dtype=torch.float32, device=o.device)
+        self.kernel(o, do, delta, dq_accum)
+        return delta, dq_accum
+
+
+@functools.lru_cache(maxsize=32)
+@tilelang.jit
+def _flashattn_bwd_postprocess_kernel(
+    batch: int, heads: int, seq_len: int, dim: int, dtype: str
+) -> Callable:
+    shape = (batch, seq_len, heads, dim)
+    blk = _ROWS_PER_BLOCK
+
+    @T.prim_func
+    def flash_bwd_post(
+        dq_accum: T.Tensor(shape, "float"),  # type: ignore
+        dq: T.Tensor(shape, dtype),  # type: ignore
+    ) -> None:
+        with T.Kernel(heads, T.ceildiv(seq_len, blk), batch, threads=128) as (bx, by, bz):
+            acc = T.alloc_fragment([blk, dim], "float")
+            out = T.alloc_fragment([blk, dim], dtype)
+            T.copy(dq_accum[bz, by * blk : (by + 1) * blk, bx, :], acc)
+            T.copy(acc, out)
+            T.copy(out, dq[bz, by * blk : (by + 1) * blk, bx, :])
+
+    return flash_bwd_post
 
 
 @functools.lru_cache(maxsize=32)
@@ -109,6 +144,8 @@ def _gqa_bwd_wgmma_pipelined_kernel(
         raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
     accum_dtype = "float"
+    # One query head per key/value head writes its dK/dV outright; a shared one adds into f32.
+    dkv_dtype = dtype if groups == 1 else accum_dtype
 
     @tilelang.jit(
         pass_configs={
@@ -131,8 +168,8 @@ def _gqa_bwd_wgmma_pipelined_kernel(
             lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
             delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
             dq: T.Tensor(q_shape, accum_dtype),  # type: ignore
-            dk: T.Tensor(kv_shape, accum_dtype),  # type: ignore
-            dv: T.Tensor(kv_shape, accum_dtype),  # type: ignore
+            dk: T.Tensor(kv_shape, dkv_dtype),  # type: ignore
+            dv: T.Tensor(kv_shape, dkv_dtype),  # type: ignore
         ) -> None:
             with T.Kernel(heads, T.ceildiv(seq_len, block_m), batch, threads=threads) as (
                 bx,
@@ -154,8 +191,8 @@ def _gqa_bwd_wgmma_pipelined_kernel(
                 dk_frag = T.alloc_fragment([block_m, dim], accum_dtype)
                 dq_frag = T.alloc_fragment([block_n, dim], accum_dtype)
                 dq_shared = T.alloc_shared([block_n, dim], accum_dtype)
-                dv_shared = T.alloc_shared([block_m, dim], accum_dtype)
-                dk_shared = T.alloc_shared([block_m, dim], accum_dtype)
+                dv_shared = T.alloc_shared([block_m, dim], dkv_dtype)
+                dk_shared = T.alloc_shared([block_m, dim], dkv_dtype)
 
                 T.annotate_layout(
                     {
@@ -174,47 +211,66 @@ def _gqa_bwd_wgmma_pipelined_kernel(
                 loop_ed = T.ceildiv(seq_len, block_n)
 
                 for k_idx in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
+                    # Every accumulator is read only after a wait that covers its WGMMA:
+                    # a register read of an in-flight accumulator makes ptxas serialize
+                    # every WGMMA in the kernel.
                     T.copy(q[bz, k_idx * block_n : (k_idx + 1) * block_n, bx, :], q_frag)
-                    T.clear(qkt)
                     T.wgmma_gemm(
-                        k_shared, q_frag, qkt, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
+                        k_shared,
+                        q_frag,
+                        qkt,
+                        transpose_B=True,
+                        policy=T.GemmWarpPolicy.FullRow,
+                        clear_accum=True,
+                    )
+                    T.copy(do[bz, k_idx * block_n : (k_idx + 1) * block_n, bx, :], do_shared)
+                    T.wgmma_gemm(
+                        v_shared,
+                        do_shared,
+                        dst,
+                        transpose_B=True,
+                        policy=T.GemmWarpPolicy.FullRow,
+                        clear_accum=True,
                     )
                     T.copy(lse[bz, bx, k_idx * block_n : (k_idx + 1) * block_n], lse_shared)
+                    T.wait_wgmma(1)
                     for i, j in T.Parallel(block_m, block_n):
                         qkt[i, j] = T.exp2(qkt[i, j] * scale - lse_shared[j])
-                    if is_causal:
+                    if is_causal and k_idx * block_n < (by + 1) * block_m:
                         for i, j in T.Parallel(block_m, block_n):
                             qkt[i, j] = T.if_then_else(
                                 by * block_m + i <= k_idx * block_n + j, qkt[i, j], 0
                             )
-                    T.copy(do[bz, k_idx * block_n : (k_idx + 1) * block_n, bx, :], do_shared)
-                    T.clear(dst)
-                    T.wgmma_gemm(
-                        v_shared, do_shared, dst, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
-                    )
-                    T.wait_wgmma(1)
                     T.copy(qkt, qkt_cast)
                     T.wgmma_gemm(qkt_cast, do_shared, dv_frag, policy=T.GemmWarpPolicy.FullRow)
-
                     T.copy(delta[bz, bx, k_idx * block_n : (k_idx + 1) * block_n], delta_shared)
-
+                    T.wait_wgmma(1)
                     for i, j in T.Parallel(block_m, block_n):
                         dst_cast[i, j] = qkt[i, j] * (dst[i, j] - delta_shared[j]) * sm_scale
-                    T.wait_wgmma(0)
                     T.wgmma_gemm(dst_cast, q_frag, dk_frag, policy=T.GemmWarpPolicy.FullRow)
-                    T.wait_wgmma(1)
-
+                    # dK is q_frag's last reader, and the pipeline hands its stage back
+                    # to the producer as soon as dK is issued.
+                    T.wait_wgmma(0)
                     T.copy(dst_cast, dst_shared)
-                    T.clear(dq_frag)
-                    T.wgmma_gemm(dst_shared, k_shared, dq_frag, transpose_A=True)
-                    T.wait_wgmma(1)
+                    T.wgmma_gemm(dst_shared, k_shared, dq_frag, transpose_A=True, clear_accum=True)
                     T.wait_wgmma(0)
                     T.copy(dq_frag, dq_shared)
-                    T.atomic_add(dq[bz, k_idx * block_n : (k_idx + 1) * block_n, bx, :], dq_shared)
+                    T.atomic_add(
+                        dq[bz, k_idx * block_n : (k_idx + 1) * block_n, bx, :],
+                        dq_shared,
+                        use_tma=True,
+                    )
+                rows = slice(by * block_m, (by + 1) * block_m)
                 T.copy(dv_frag, dv_shared)
-                T.atomic_add(dv[bz, by * block_m : (by + 1) * block_m, bx // groups, :], dv_shared)
+                if groups == 1:
+                    T.copy(dv_shared, dv[bz, rows, bx, :])
+                else:
+                    T.atomic_add(dv[bz, rows, bx // groups, :], dv_shared)
                 T.copy(dk_frag, dk_shared)
-                T.atomic_add(dk[bz, by * block_m : (by + 1) * block_m, bx // groups, :], dk_shared)
+                if groups == 1:
+                    T.copy(dk_shared, dk[bz, rows, bx, :])
+                else:
+                    T.atomic_add(dk[bz, rows, bx // groups, :], dk_shared)
 
         return _gqa_bwd_wgmma_pipelined_main
 
@@ -222,7 +278,25 @@ def _gqa_bwd_wgmma_pipelined_kernel(
 
 
 class GQABwdWgmmaPipelinedKernel(Kernel):
+    """GQA/MHA backward, one CTA per key block; dQ is added into an f32 buffer in the
+    layout of ``q`` and landed in the input dtype by a second launch."""
+
     supported_archs: list[int] = [90]
+    # The implementation behind the specialised ones for this key.
+    general: bool = True
+
+    @classmethod
+    def entry_for(cls, call: AttentionCall) -> Entry:
+        args = (
+            call.batch,
+            call.heads,
+            call.heads_kv,
+            call.max_seqlen_q,
+            call.dim,
+            call.is_causal,
+            call.dtype,
+        )
+        return args, lambda: cls(*args, tune=call.tune)
 
     def __init__(
         self,
@@ -254,6 +328,9 @@ class GQABwdWgmmaPipelinedKernel(Kernel):
             self.is_causal,
             self.dtype_str,
         )
+        self.post_kernel = _flashattn_bwd_postprocess_kernel(
+            self.batch, self.heads, self.seq_len, self.dim, self.dtype_str
+        )
 
         self.init_config(config, tune)
 
@@ -274,5 +351,28 @@ class GQABwdWgmmaPipelinedKernel(Kernel):
             for c in _configs
         ]
 
-    def forward(self, *inputs: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, ...]:
-        return self.kernel(**self.config)(*inputs)
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        do: torch.Tensor,
+        lse: torch.Tensor,
+        delta: torch.Tensor,
+        dq_accum: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return ``(dq, dk, dv)`` in the input dtype; ``dq_accum`` arrives zero-filled."""
+        dq_accum = dq_accum.view(q.shape)
+        grouped = self.heads_kv != self.heads
+        make = (
+            functools.partial(torch.zeros_like, dtype=torch.float32)
+            if grouped
+            else torch.empty_like
+        )
+        dk, dv = make(k), make(v)
+        self.kernel(**self.config)(q, k, v, do, lse, delta, dq_accum, dk, dv)
+        if grouped:
+            dk, dv = dk.to(q.dtype), dv.to(q.dtype)
+        dq = torch.empty_like(q)
+        self.post_kernel(dq_accum, dq)
+        return dq, dk, dv

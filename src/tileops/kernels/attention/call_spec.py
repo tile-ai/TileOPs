@@ -90,6 +90,26 @@ def uses_sliding_window(call: AttentionCall) -> bool:
     return call.window_size_left != -1 or call.window_size_right != -1
 
 
+def mha_bwd_ws_region(call: AttentionCall) -> bool:
+    """The backward region the warp-specialized MHA kernel serves.
+
+    One query head per key/value head, head dim 128, a sequence that splits into
+    128-row key blocks, and 16-bit inputs with the default softmax scale. Grouped
+    heads, other head dims and ragged lengths stay with the general kernel.
+    """
+    return (
+        call.heads == call.heads_kv
+        and call.dim == 128
+        and call.max_seqlen_q > 0
+        and call.max_seqlen_q % 128 == 0
+        and call.dtype in ATTENTION_DTYPES
+        and not call.is_fp8
+        and call.softcap == 0.0
+        and call.sm_scale is None
+        and not uses_sliding_window(call)
+    )
+
+
 def paged_decode_ws_region(call: AttentionCall) -> bool:
     """The paged-decode region the warp-specialized MHA kernel serves.
 

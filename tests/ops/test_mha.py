@@ -45,6 +45,17 @@ class MhaBwdFixture(FixtureBase):
                     id="smoke-bwd-bf16",
                 ),
                 pytest.param(
+                    1,
+                    256,
+                    4,
+                    128,
+                    True,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="smoke-bwd-ws-causal",
+                ),
+                pytest.param(
                     16,
                     2048,
                     16,
