@@ -496,7 +496,7 @@ NSACmpVarlenFwdOp:
       k_cmp: {dtype: T, shape: "[C, H_kv, DK]"}
       v_cmp: {dtype: T, shape: "[C, H_kv, DV]"}
       offsets: {dtype: int32, shape: "[N + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)"]}
-      chunk_offsets: {dtype: int32, shape: "[N + 1]", values: "chunk_offsets(seq_lens, bs)", requires: ["prefix_offsets(C)"]}
+      chunk_offsets: {dtype: int32, shape: "[N + 1]", values: "chunk_offsets(seq_lens, bs)", requires: ["prefix_offsets(C)", "chunk_offsets_of(offsets, bs)"]}
       token_indices: {dtype: int32, shape: "[T_q, 2]", values: "token_indices(seq_lens)", requires: ["indices_within(offsets)"]}
     outputs:
       o: {dtype: T, shape: "[T_q, H, DV]"}
@@ -532,7 +532,7 @@ NSATopkVarlenFwdOp:
       # Cleanup: drop `lse_in` here and from the kernel, or make the kernel read it.
       lse_in: {dtype: T, shape: "[T_q, H]"}
       offsets: {dtype: int32, shape: "[N + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)"]}
-      chunk_offsets: {dtype: int32, shape: "[N + 1]", values: "chunk_offsets(seq_lens, bs)", requires: ["prefix_offsets(C)"]}
+      chunk_offsets: {dtype: int32, shape: "[N + 1]", values: "chunk_offsets(seq_lens, bs)", requires: ["prefix_offsets(C)", "chunk_offsets_of(offsets, bs)"]}
       token_indices: {dtype: int32, shape: "[T_q, 2]", values: "token_indices(seq_lens)", requires: ["indices_within(offsets)"]}
     outputs:
       block_indices: {dtype: int32, shape: "[T_q, H_kv, selected_block_num]"}

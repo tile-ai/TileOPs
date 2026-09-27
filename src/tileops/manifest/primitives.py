@@ -597,6 +597,14 @@ def exclusive_prefix_of(x, lengths):
     return len(x) == len(lengths) and all(v == sum(lengths[:i]) for i, v in enumerate(x))
 
 
+def chunk_offsets_of(x, offsets, chunk):
+    """`x` counts, cumulatively, the `chunk`-sized pieces of each segment of `offsets`."""
+    if chunk <= 0:
+        return False
+    sizes = [ceil_div(b - a, chunk) for a, b in zip(offsets, offsets[1:], strict=False)]
+    return all(n >= 0 for n in sizes) and x == prefix_sum(sizes)
+
+
 def indices_within(x, offsets):
     """Each row `(i, j)` of `x` names segment `i` of `offsets` and position `j` inside it."""
     segments = len(offsets) - 1
@@ -646,6 +654,7 @@ PREDICATE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "sums_to": (("Int",), "Bool"),
     "exclusive_prefix_of": (("Seq[Int]",), "Bool"),
     "indices_within": (("Seq[Int]",), "Bool"),
+    "chunk_offsets_of": (("Seq[Int]", "Int"), "Bool"),
     "attn.paged_fits": (("Seq[Int]", "Int"), "Bool"),
     "moe.layout_valid": (("ADT", "Int", "Int"), "Bool"),
 }
@@ -656,6 +665,7 @@ PREDICATE_RANKS = {
     "sums_to": 1,
     "exclusive_prefix_of": 1,
     "indices_within": 2,
+    "chunk_offsets_of": 1,
     "attn.paged_fits": 1,
     "moe.layout_valid": 1,
 }
@@ -667,6 +677,7 @@ PREDICATES = {
     "sums_to": sums_to,
     "exclusive_prefix_of": exclusive_prefix_of,
     "indices_within": indices_within,
+    "chunk_offsets_of": chunk_offsets_of,
     "attn.paged_fits": paged_fits,
     "moe.layout_valid": moe_layout_valid,
 }
