@@ -15,7 +15,6 @@ from benchmarks.baselines import (
     reference_tolerance,
 )
 from benchmarks.benchmark_base import (
-    BenchmarkReport,
     ManifestBenchmark,
     backward_of,
     manifest_calls,
@@ -392,21 +391,16 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(call) -> None:
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(**workload.arguments())
     bm = ManifestBenchmark(op, workload)
     cache_dtype = None if workload.cache_dtype == workload.dtype else workload.cache_dtype
+    tolerance = reference_tolerance(workload.dtype)
+    # Every tag writes k_new and v_new into the slots past cache_seqlens, and no tag's result
+    # depends on what those slots held, so every tag shares the pages.
+    functors = {"tileops": op, "torch-ref": workload.ref_program}
+    assert_matches_reference(op, workload.ref_program, *inputs, **tolerance)
     fa3_fn = _fa3_gqa_prefill_paged(workload, cache_dtype, workload.fuse_rope, workload.softcap)
-    if fa3_fn is None:
-        # FIXME(staged-rollout): this row records no baseline.
-        #
-        # Broken invariant: every benchmark records >=1 non-tileops baseline.
-        # Why: flash_attn_with_kvcache is the only installed implementation that attends
-        #   over a paged cache in place, and it takes neither a fused-RoPE row, where the
-        #   op builds its own rotary table, nor an fp8 cache, which needs q's dtype.
-        # Cleanup: reach those rows too, or a second paged implementation.
-        result = bm.profile(op, *inputs)
-        BenchmarkReport.record(op, bm.case_params(), result, tag="tileops")
-        return
-
-    assert_matches_reference(op, fa3_fn, *inputs, **reference_tolerance(workload.dtype))
-    bm.compare({"tileops": op, "fa3": fa3_fn}, *inputs)
+    if fa3_fn is not None:
+        assert_matches_reference(fa3_fn, workload.ref_program, *inputs, **tolerance)
+        functors["fa3"] = fa3_fn
+    bm.compare(functors, *inputs)
 
 
 def _fa3_gqa_paged_decode(workload):

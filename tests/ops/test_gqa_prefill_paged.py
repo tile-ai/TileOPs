@@ -21,72 +21,6 @@ _PREFILL_PAGED_TOLERANCE = {
 }
 
 
-def _apply_neox_rope_position_ids(
-    x: torch.Tensor,
-    position_ids: torch.Tensor,
-    max_position: int,
-    rotary_dim: int | None = None,
-) -> torch.Tensor:
-    """GPT-NeoX RoPE on ``[tokens, heads, head_dim]``, in torch."""
-    rotary_dim = x.shape[-1] if rotary_dim is None else rotary_dim
-    half = rotary_dim // 2
-    inv_freq = 1.0 / (10000.0 ** (torch.arange(half, device=x.device, dtype=torch.float32) / half))
-    positions = torch.arange(max_position, device=x.device, dtype=torch.float32)
-    angles = torch.outer(positions, inv_freq)
-    # Rounded to x's dtype as the kernel's table is, then rotated in f32 as it rotates.
-    cos = angles.cos().to(x.dtype)[position_ids].float().unsqueeze(1)
-    sin = angles.sin().to(x.dtype)[position_ids].float().unsqueeze(1)
-
-    low = x[..., :half].float()
-    high = x[..., half:rotary_dim].float()
-    rotated = torch.cat([low * cos - high * sin, high * cos + low * sin], dim=-1)
-    return torch.cat([rotated.to(x.dtype), x[..., rotary_dim:]], dim=-1).contiguous()
-
-
-def _gqa_prefill_paged_ref(
-    q: torch.Tensor,
-    k_new: torch.Tensor,
-    v_new: torch.Tensor,
-    k_old: list[torch.Tensor],
-    v_old: list[torch.Tensor],
-    cu_seqlens_q: torch.Tensor,
-    *,
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    is_causal: bool,
-    softcap: float | None = None,
-) -> torch.Tensor:
-    groups = heads // heads_kv
-    dim = q.shape[-1]
-    scale = dim**-0.5
-    outputs = []
-    for b in range(batch):
-        q_start = int(cu_seqlens_q[b].item())
-        q_end = int(cu_seqlens_q[b + 1].item())
-        q_b = q[q_start:q_end]
-        k_all = torch.cat([k_old[b], k_new[q_start:q_end]], dim=0)
-        v_all = torch.cat([v_old[b], v_new[q_start:q_end]], dim=0)
-        q_len = q_end - q_start
-        old_len = k_old[b].shape[0]
-        total_len = old_len + q_len
-
-        q_bhsd = q_b.transpose(0, 1).float()
-        k_bhsd = k_all.repeat_interleave(groups, dim=1).transpose(0, 1).float()
-        v_bhsd = v_all.repeat_interleave(groups, dim=1).transpose(0, 1).float()
-        scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * scale
-        if softcap is not None and softcap > 0:
-            scores = softcap * torch.tanh(scores / softcap)
-        if is_causal:
-            q_pos = torch.arange(q_len, device=q.device)[:, None] + old_len
-            kv_pos = torch.arange(total_len, device=q.device)[None, :]
-            mask = kv_pos <= q_pos
-            scores = scores.masked_fill(~mask.view(1, q_len, total_len), float("-inf"))
-        probs = torch.softmax(scores, dim=-1).nan_to_num()
-        outputs.append(torch.matmul(probs, v_bhsd).transpose(0, 1).to(q.dtype).contiguous())
-    return torch.cat(outputs, dim=0)
-
-
 @pytest.mark.parametrize(
     "q_lens, old_lens, heads, heads_kv, dim, is_causal, dtype",
     [
@@ -215,24 +149,27 @@ def test_gqa_prefill_paged_with_kv_cache_fwd(
     fill_paged_cache_from_logical(k_pages, v_pages, k_old, v_old, block_table, page_size)
     k_pages_before = k_pages.clone()
     v_pages_before = v_pages.clone()
-    ref = _gqa_prefill_paged_ref(
+    k_scale, v_scale = make_unit_cache_scales()
+    case = GQAPrefillPagedWithKVCacheFwdWorkload(
+        batch, heads, heads_kv, q_lens, old_lens, page_size, dim, is_causal, dtype
+    )
+    ref = case.ref_program(
         q,
         k_new,
         v_new,
-        k_old,
-        v_old,
+        k_pages.clone(),
+        v_pages.clone(),
+        k_scale,
+        v_scale,
         cu_seqlens_q,
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        is_causal=is_causal,
+        cache_seqlens,
+        block_table,
     )
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
         page_size=page_size,
         max_seqlen_q=max(q_lens),
         is_causal=is_causal,
     )
-    k_scale, v_scale = make_unit_cache_scales()
 
     output = op(
         q,
@@ -321,20 +258,20 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_fwd(
     )
     k_pages_before = k_pages.clone()
     v_pages_before = v_pages.clone()
-    k_old_dequant = [(k_b.float() * k_scale[0]).to(dtype).contiguous() for k_b in k_old_quant]
-    v_old_dequant = [(v_b.float() * v_scale[0]).to(dtype).contiguous() for v_b in v_old_quant]
-    ref = _gqa_prefill_paged_ref(
+    case = GQAPrefillPagedWithKVCacheFwdWorkload(
+        batch, heads, heads_kv, q_lens, old_lens, page_size, dim, is_causal, dtype, softcap=softcap
+    )
+    ref = case.ref_program(
         q,
         k_new,
         v_new,
-        k_old_dequant,
-        v_old_dequant,
+        k_pages.clone(),
+        v_pages.clone(),
+        k_scale,
+        v_scale,
         cu_seqlens_q,
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        is_causal=is_causal,
-        softcap=softcap,
+        cache_seqlens,
+        block_table,
     )
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
         page_size=page_size,
@@ -474,10 +411,21 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
     old_positions = torch.cat(
         [torch.arange(old_len, device=run_device(), dtype=torch.int32) for old_len in old_lens]
     )
-    q_rot = _apply_neox_rope_position_ids(q_raw, new_positions, max_position, rotary_dim=rotary_dim)
-    k_new_rot = _apply_neox_rope_position_ids(
-        k_new_raw, new_positions, max_position, rotary_dim=rotary_dim
+    case = GQAPrefillPagedWithKVCacheFwdWorkload(
+        batch,
+        heads,
+        heads_kv,
+        q_lens,
+        old_lens,
+        page_size,
+        dim,
+        is_causal,
+        dtype,
+        fuse_rope=True,
+        rotary_dim=rotary_dim,
+        softcap=softcap,
     )
+    k_new_rot = case.rope(k_new_raw, new_positions)
     k_old_raw = [
         torch.randn(old_len, heads_kv, dim, device=run_device(), dtype=dtype).contiguous()
         for old_len in old_lens
@@ -488,9 +436,7 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
     ]
     k_old = list(
         torch.split(
-            _apply_neox_rope_position_ids(
-                torch.cat(k_old_raw, dim=0), old_positions, max_position, rotary_dim=rotary_dim
-            ),
+            case.rope(torch.cat(k_old_raw, dim=0), old_positions),
             old_lens,
             dim=0,
         )
@@ -499,18 +445,18 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
     k_pages_before = k_pages.clone()
     v_pages_before = v_pages.clone()
 
-    ref = _gqa_prefill_paged_ref(
-        q_rot,
-        k_new_rot,
+    k_scale, v_scale = make_unit_cache_scales()
+    ref = case.ref_program(
+        q_raw,
+        k_new_raw,
         v_new,
-        k_old,
-        v_old,
+        k_pages.clone(),
+        v_pages.clone(),
+        k_scale,
+        v_scale,
         cu_seqlens_q,
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        is_causal=is_causal,
-        softcap=softcap,
+        cache_seqlens,
+        block_table,
     )
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
         page_size=page_size,
@@ -521,7 +467,6 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
         max_position=max_position,
         rotary_dim=rotary_dim,
     )
-    k_scale, v_scale = make_unit_cache_scales()
 
     output = op(
         q_raw,
@@ -602,23 +547,26 @@ def test_gqa_prefill_paged_with_kv_cache_page_sizes(page_size: int) -> None:
         for old_len in old_lens
     ]
     fill_paged_cache_from_logical(k_pages, v_pages, k_old, v_old, block_table, page_size)
-    ref = _gqa_prefill_paged_ref(
+    k_scale, v_scale = make_unit_cache_scales()
+    case = GQAPrefillPagedWithKVCacheFwdWorkload(
+        batch, heads, heads_kv, q_lens, old_lens, page_size, dim, True, dtype
+    )
+    ref = case.ref_program(
         q,
         k_new,
         v_new,
-        k_old,
-        v_old,
+        k_pages,
+        v_pages,
+        k_scale,
+        v_scale,
         cu_seqlens_q,
-        batch=batch,
-        heads=heads,
-        heads_kv=heads_kv,
-        is_causal=True,
+        cache_seqlens,
+        block_table,
     )
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
         page_size=page_size,
         max_seqlen_q=max(q_lens),
     )
-    k_scale, v_scale = make_unit_cache_scales()
 
     output = op(
         q,
@@ -670,17 +618,20 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
             for old_len in old_lens
         ]
         fill_paged_cache_from_logical(k_pages, v_pages, k_old, v_old, block_table, page_size)
-        ref = _gqa_prefill_paged_ref(
+        case = GQAPrefillPagedWithKVCacheFwdWorkload(
+            batch, heads, heads_kv, q_lens, old_lens, page_size, dim, True, dtype
+        )
+        ref = case.ref_program(
             q,
             k_new,
             v_new,
-            k_old,
-            v_old,
+            k_pages,
+            v_pages,
+            k_scale,
+            v_scale,
             cu_seqlens_q,
-            batch=batch,
-            heads=heads,
-            heads_kv=heads_kv,
-            is_causal=True,
+            cache_seqlens,
+            block_table,
         )
         output = op(
             q,
