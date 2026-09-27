@@ -5,7 +5,7 @@ import torch
 
 from tests.test_base import _check_result
 from tileops.backend import BUILTIN, default_target
-from workloads.device import run_device
+from workloads.device import run_device_is_cuda
 
 
 def _under_repo_tests(item: pytest.Item) -> bool:
@@ -264,7 +264,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     # A run on another device drops what needs CUDA; a run on another target drops what
     # reads the in-tree kernels.
     marks = []
-    if torch.device(run_device()).type != "cuda":
+    if not run_device_is_cuda():
         marks.append("cuda_only")
     if default_target() is not BUILTIN:
         marks.append("in_tree_kernels")

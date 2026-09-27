@@ -17,6 +17,11 @@ def run_device() -> torch.device | str:
     return _device
 
 
+def run_device_is_cuda() -> bool:
+    """Whether this run places tensors on a CUDA device."""
+    return torch.device(_device).type == "cuda"
+
+
 def set_run_device(device: torch.device | str) -> None:
     """Place this run's tensors on *device* from now on."""
     global _device
