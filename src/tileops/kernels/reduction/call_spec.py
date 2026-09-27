@@ -39,8 +39,7 @@ def logical_reduce_region(call: LogicalReduceCall) -> bool:
 
 # The fused pass runs one block per kept column and has no other parallelism, so
 # it takes over only where that alone is enough: the fewest kept columns that fill the
-# device, per calibrated board. A board without an entry uses the general implementation
-# until it has a region of its own.
+# device, per calibrated board. A board without an entry uses the general implementation.
 _EDGE_FUSED_MIN_KEPT = {"h200": 32}
 
 

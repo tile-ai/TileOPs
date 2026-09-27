@@ -32,22 +32,17 @@ def _sm_version(index: int) -> int:
     return major * 10 + minor
 
 
-# The boards the in-tree selection tables were fitted on, by the key those tables use
-# and the name fragment CUDA reports for the board. Every SKU of one board shares its
-# key: a selection band is an approximation two SKUs of one board can share. A GPU
-# profile matches the full name instead (:func:`tileops.perf.find_profile`), since a
-# speed-of-light reading is a measurement, left blank rather than borrowed from a
-# sibling SKU.
+# Calibrated boards: the key selection tables use -> the name fragment CUDA reports.
+# All SKUs of a board share its key. GPU profiles match the full name instead
+# (:func:`tileops.perf.find_profile`): a speed-of-light reading is not shared.
 _CALIBRATION_BOARDS = {"h200": "H200"}
 
 
 def calibration_key(device_name: str) -> "str | None":
     """The key of the calibrated board *device_name* belongs to, or ``None``.
 
-    The one place a device name is matched. A family's fitted tuning data is keyed by
-    this value, and selection asks the table for the call's key rather than testing the
-    name. Case is normalised here: a name reaches this both straight from
-    ``torch.cuda.get_device_name`` and through a call record that carried it.
+    The one place a device name is matched; fitted tuning data is keyed by the result.
+    Case-insensitive.
     """
     upper = device_name.upper()
     return next((key for key, board in _CALIBRATION_BOARDS.items() if board in upper), None)

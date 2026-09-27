@@ -73,8 +73,8 @@ class _ConfigSpace:
 
 
 _LAYOUT = _Layout()
-# The fits by calibrated board. Ranking uses the one fit on every board; a board without
-# an entry of its own is warned that the ranking is running off its fit.
+# Fits by calibrated board. Every board ranks with the one fit; a board without an
+# entry is warned.
 _CALIBRATIONS = {"h200": _Calibration()}
 _CALIBRATION = _CALIBRATIONS["h200"]
 _CONFIG_SPACE = _ConfigSpace()

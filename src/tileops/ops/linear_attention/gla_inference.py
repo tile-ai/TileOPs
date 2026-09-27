@@ -25,11 +25,10 @@ __all__ = ["GLAInferenceFwdOp"]
 class GLAInferenceFwdOp(Op):
     """Gated linear attention for inference, with caller-owned FP32 state.
 
-    Q, K, V and the log-space, per-key gate G use FP16/BF16 BTHD layout. One call may
-    describe equal-length prefill, packed-varlen prefill, or single-token
-    decode. The caller may omit ``initial_state`` to start from zero; every
-    call returns ``(o, final_state)``. SM90 dense prefill and single-token
-    decode are implemented in tree; packed varlen is not.
+    Q, K, V and the log-space, per-key gate G use FP16/BF16 BTHD layout. One call is
+    equal-length prefill, packed-varlen prefill, or single-token decode. An absent
+    ``initial_state`` starts from zero; every call returns ``(o, final_state)``. The
+    in-tree kernels serve dense prefill and decode; packed varlen is not implemented.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

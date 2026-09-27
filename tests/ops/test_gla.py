@@ -446,7 +446,7 @@ def test_gla_long_prefill_uses_partitioned_kernel(
     tolerance = standard_tolerance(dtype)
     state_tolerance = tolerance.copy()
     if dtype == torch.float16:
-        # H200 / FLA 0.5.2, T=16384, K=V=64, gate_scale=3, seed=2160:
+        # FLA 0.5.2, T=16384, K=V=64, gate_scale=3, seed=2160:
         # max absolute error is 1.908e-4 for output and 2.300e-3 for FP32 state.
         # Only final-state atol needs an exception; output and rtol stay standard.
         state_tolerance["atol"] = 2.5e-3
