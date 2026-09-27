@@ -1,9 +1,9 @@
 """Linear-attention kernels: DeltaNet, Gated DeltaNet and Gated Linear Attention (GLA).
 
-The three share the chunked-recurrence formulation, so they share the V-tile width
-rule (``v_tile``) and the autotune search space (``autotune``). The chunkwise
-kernels live in the per-variant subpackages; the DeltaNet and GLA single-token decode
-kernels are the ``*_recurrence`` modules.
+The DeltaNet and GLA chunked kernels share the V-tile width rule (``v_tile``); the
+DeltaNet forward also tunes through ``autotune``. The chunkwise kernels live in the
+per-variant subpackages; the DeltaNet and GLA single-token decode kernels are the
+``*_recurrence`` modules.
 """
 
 from .deltanet import DeltaNetBwdKernel, DeltaNetDensePrefillFwdKernel, DeltaNetFwdKernel
