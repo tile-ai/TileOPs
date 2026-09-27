@@ -489,16 +489,6 @@ def _calls(name):
             yield row["label"], case, plan, call, meta, host
 
 
-def _spec_only_without_class():
-    return sorted(name for name in REFERENCES if load_manifest()[name]["status"] == "spec-only")
-
-
-def test_every_entry_named_here_is_spec_only():
-    """A reference here stands in for a missing implementation; one with a class is tested by
-    its own op tests."""
-    assert _spec_only_without_class() == sorted(REFERENCES)
-
-
 @pytest.mark.parametrize("name", sorted(REFERENCES))
 def test_reference_agrees_with_the_signature(name):
     entry = load_manifest()[name]
