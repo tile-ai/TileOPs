@@ -63,12 +63,11 @@ test-side refactors, and a tolerance or comparator change cannot move a
 baseline number. Sharing the reference costs none of that, and removes the
 second copy that used to drift.
 
-A baseline that is another idiom for the same computation overrides
-`ref_program` in the benchmark and says why.
-
-A baseline that is a different implementation is timed under its own tag next
-to the reference: the tag is what names it in the report, so it is checked
-against the reference before the case is timed.
+A baseline that is another idiom for the same computation, or a different
+implementation, is timed under its own tag next to the reference: the tag is
+what names it in the report, so it is checked against the reference before the
+case is timed. A benchmark never overrides `ref_program`, because the row timing
+the reference would then time something no test validated.
 
 Which manifest entry a benchmark measures is settled by running it, not by
 reading it. The op is whatever class the benchmark constructs, so the run's

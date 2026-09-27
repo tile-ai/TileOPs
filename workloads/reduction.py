@@ -179,7 +179,7 @@ def _make_logical_input(shape: tuple, dtype: torch.dtype, device=None) -> torch.
 
 
 class CumulativeWorkload(WorkloadBase):
-    """Inputs for cumsum / cumprod over the last dimension.
+    """Inputs for cumsum / cumprod along ``dim``, and the fp32 scan they are checked against.
 
     ``cumprod`` defaults to a narrow band around 1.0 so a long scan stays in
     range; pass ``use_small_range`` explicitly to override.
@@ -191,10 +191,14 @@ class CumulativeWorkload(WorkloadBase):
         dtype: torch.dtype,
         op_kind: str,
         use_small_range: bool | None = None,
+        dim: int = -1,
     ):
+        if op_kind not in ("cumsum", "cumprod"):
+            raise ValueError(f"Unknown op_kind: {op_kind}")
         self.shape = tuple(shape)
         self.dtype = dtype
         self.op_kind = op_kind
+        self.dim = dim
         self.use_small_range = op_kind == "cumprod" if use_small_range is None else use_small_range
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
@@ -203,3 +207,20 @@ class CumulativeWorkload(WorkloadBase):
         else:
             x = torch.randn(*self.shape, dtype=self.dtype, device=run_device())
         return (x,)
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        scan = torch.cumsum if self.op_kind == "cumsum" else torch.cumprod
+        return scan(x.float(), dim=self.dim).to(x.dtype)
+
+
+class CumulativeCall(CallWorkload, CumulativeWorkload):
+    """A manifest call of CumsumFwdOp or CumprodFwdOp, with the workload's inputs."""
+
+    def __init__(self, call, op_kind: str) -> None:
+        CallWorkload.__init__(self, call)
+        shape, dtype = call.tensors["x"]
+        CumulativeWorkload.__init__(
+            self, shape, getattr(torch, dtype), op_kind, dim=call.params["dim"]
+        )
+
+    gen_inputs = CumulativeWorkload.gen_inputs

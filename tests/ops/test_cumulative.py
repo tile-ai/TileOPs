@@ -86,14 +86,6 @@ class Cumulative1DFixture(FixtureBase):
 class CumulativeTest(CumulativeWorkload, TestBase):
     """Parameterized test helper for cumulative ops."""
 
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        x_f32 = x.float()
-        if self.op_kind == "cumsum":
-            return x_f32.cumsum(dim=-1).to(x.dtype)
-        elif self.op_kind == "cumprod":
-            return x_f32.cumprod(dim=-1).to(x.dtype)
-        raise ValueError(f"Unknown op_kind: {self.op_kind}")
-
 
 # Helper to get tolerances
 

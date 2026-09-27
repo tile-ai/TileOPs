@@ -10,7 +10,6 @@ from typing import Callable, Optional
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
@@ -35,8 +34,14 @@ from tileops.ops import (
     MaxPool3dIndicesFwdOp,
 )
 from tileops.pool import MeanPoolingFwdOp
-from workloads.pool import MeanPoolingCallWorkload, MeanPoolingWorkload
-from workloads.workload_base import CallWorkload
+from workloads.pool import (
+    AdaptiveAvgPool2dCall,
+    AdaptiveMaxPool2dCall,
+    AvgPoolCall,
+    MaxPoolCall,
+    MeanPoolingCallWorkload,
+    MeanPoolingWorkload,
+)
 
 # Which library serves an op, and the pooling kind and rank its adapter needs. An op absent
 # here has none: no library covers 1D, adaptive pooling, or 3D max-pool indices. Every row
@@ -236,34 +241,9 @@ def pool_baseline(op_name: str, workload, *inputs) -> tuple:
     return choice, fn
 
 
-class PoolBenchmarkWorkload(CallWorkload):
-    """One manifest call of a pooling op, and the torch function it follows.
-
-    The call's constructor arguments are exposed as attributes, which is what the library
-    baselines read.
-    """
-
-    def __init__(self, call, reference: Callable, return_indices: bool = False) -> None:
-        super().__init__(call)
-        self.params = call.arguments({})
-        vars(self).update(self.params)
-        self.return_indices = return_indices
-        self._reference = reference
-
-    def ref_program(self, x: torch.Tensor):
-        params = dict(self.params)
-        if "output_size" in params:
-            # torch rejects a scalar None here; (None, None) means the same.
-            params["output_size"] = params["output_size"] or (None, None)
-        if self.return_indices:
-            params["return_indices"] = True
-        return self._reference(x, **params)
-
-
-def _bench(op_cls: type, call, reference: Callable, return_indices: bool = False) -> None:
-    workload = PoolBenchmarkWorkload(call, reference, return_indices)
+def _bench(op_cls: type, workload) -> None:
     inputs = workload.gen_inputs()
-    op = op_cls(**workload.params, tune=True)
+    op = op_cls(**workload.call.arguments({}), tune=True)
     bm = ManifestBenchmark(op, workload)
 
     _tag, _baseline_fn = pool_baseline(op_cls.__name__, workload, *inputs)
@@ -282,62 +262,62 @@ def _bench(op_cls: type, call, reference: Callable, return_indices: bool = False
 
 @pytest.mark.parametrize("call", manifest_calls(AvgPool1dFwdOp))
 def test_avg_pool1d_bench(call) -> None:
-    _bench(AvgPool1dFwdOp, call, F.avg_pool1d)
+    _bench(AvgPool1dFwdOp, AvgPoolCall(call))
 
 
 @pytest.mark.parametrize("call", manifest_calls(AvgPool2dFwdOp))
 def test_avg_pool2d_bench(call) -> None:
-    _bench(AvgPool2dFwdOp, call, F.avg_pool2d)
+    _bench(AvgPool2dFwdOp, AvgPoolCall(call))
 
 
 @pytest.mark.parametrize("call", manifest_calls(AvgPool3dFwdOp))
 def test_avg_pool3d_bench(call) -> None:
-    _bench(AvgPool3dFwdOp, call, F.avg_pool3d)
+    _bench(AvgPool3dFwdOp, AvgPoolCall(call))
 
 
 @pytest.mark.parametrize("call", manifest_calls(MaxPool1dFwdOp))
 def test_max_pool1d_bench(call) -> None:
-    _bench(MaxPool1dFwdOp, call, F.max_pool1d)
+    _bench(MaxPool1dFwdOp, MaxPoolCall(call))
 
 
 @pytest.mark.parametrize("call", manifest_calls(MaxPool1dIndicesFwdOp))
 def test_max_pool1d_indices_bench(call) -> None:
-    _bench(MaxPool1dIndicesFwdOp, call, F.max_pool1d, return_indices=True)
+    _bench(MaxPool1dIndicesFwdOp, MaxPoolCall(call, return_indices=True))
 
 
 @pytest.mark.parametrize("call", manifest_calls(MaxPool2dFwdOp))
 def test_max_pool2d_bench(call) -> None:
-    _bench(MaxPool2dFwdOp, call, F.max_pool2d)
+    _bench(MaxPool2dFwdOp, MaxPoolCall(call))
 
 
 @pytest.mark.parametrize("call", manifest_calls(MaxPool2dIndicesFwdOp))
 def test_max_pool2d_indices_bench(call) -> None:
-    _bench(MaxPool2dIndicesFwdOp, call, F.max_pool2d, return_indices=True)
+    _bench(MaxPool2dIndicesFwdOp, MaxPoolCall(call, return_indices=True))
 
 
 @pytest.mark.parametrize("call", manifest_calls(MaxPool3dFwdOp))
 def test_max_pool3d_bench(call) -> None:
-    _bench(MaxPool3dFwdOp, call, F.max_pool3d)
+    _bench(MaxPool3dFwdOp, MaxPoolCall(call))
 
 
 @pytest.mark.parametrize("call", manifest_calls(MaxPool3dIndicesFwdOp))
 def test_max_pool3d_indices_bench(call) -> None:
-    _bench(MaxPool3dIndicesFwdOp, call, F.max_pool3d, return_indices=True)
+    _bench(MaxPool3dIndicesFwdOp, MaxPoolCall(call, return_indices=True))
 
 
 @pytest.mark.parametrize("call", manifest_calls(AdaptiveAvgPool2dFwdOp))
 def test_adaptive_avg_pool2d_bench(call) -> None:
-    _bench(AdaptiveAvgPool2dFwdOp, call, F.adaptive_avg_pool2d)
+    _bench(AdaptiveAvgPool2dFwdOp, AdaptiveAvgPool2dCall(call))
 
 
 @pytest.mark.parametrize("call", manifest_calls(AdaptiveMaxPool2dFwdOp))
 def test_adaptive_max_pool2d_bench(call) -> None:
-    _bench(AdaptiveMaxPool2dFwdOp, call, F.adaptive_max_pool2d)
+    _bench(AdaptiveMaxPool2dFwdOp, AdaptiveMaxPool2dCall(call))
 
 
 @pytest.mark.parametrize("call", manifest_calls(AdaptiveMaxPool2dIndicesFwdOp))
 def test_adaptive_max_pool2d_indices_bench(call) -> None:
-    _bench(AdaptiveMaxPool2dIndicesFwdOp, call, F.adaptive_max_pool2d, return_indices=True)
+    _bench(AdaptiveMaxPool2dIndicesFwdOp, AdaptiveMaxPool2dCall(call, return_indices=True))
 
 
 # MeanPoolingFwdOp, the chunked sequence mean.
