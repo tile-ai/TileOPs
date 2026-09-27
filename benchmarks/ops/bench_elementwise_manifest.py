@@ -2,7 +2,7 @@
 
 Each case is one workload row and dtype case; ``ElementwiseCall`` draws its inputs and holds
 the op's reference. Every row is timed against the reference in torch eager and through
-inductor. The fused gated ops are benchmarked in ``bench_binary_elementwise.py``, beside
+inductor. The fused gated ops are benchmarked in ``bench_fused_gated.py``, beside
 flashinfer's kernels.
 """
 

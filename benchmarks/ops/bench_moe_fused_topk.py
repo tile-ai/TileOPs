@@ -17,6 +17,7 @@ from vllm.model_executor.layers.fused_moe.router.fused_topk_bias_router import (
     fused_topk_bias as _vllm_fused_topk_bias,
 )
 
+from benchmarks.baselines import VLLM_TAG
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.moe import FusedTopKFwdOp
 from workloads.moe import FusedTopKWorkload
@@ -24,18 +25,18 @@ from workloads.moe import FusedTopKWorkload
 
 @pytest.mark.parametrize("call", manifest_calls(FusedTopKFwdOp))
 def test_fused_topk_bench(call) -> None:
-    test = FusedTopKWorkload(call)
-    inputs = test.gen_inputs()
+    workload = FusedTopKWorkload(call)
+    inputs = workload.gen_inputs()
     gating_output, correction_bias = inputs
     if correction_bias is None:
         inputs = (gating_output,)
     op = FusedTopKFwdOp(**call.arguments({}))
     top_k, scoring_func, renormalize = op.top_k, op.scoring_func, op.renormalize
     num_tokens = gating_output.shape[0]
-    bm = ManifestBenchmark(op, test)
+    bm = ManifestBenchmark(op, workload)
 
     weights, _ = op(*inputs)
-    ref_weights, _ = test.ref_program(*inputs)
+    ref_weights, _ = workload.ref_program(*inputs)
     # Ties may pick different experts; the kept weights agree once sorted.
     torch.testing.assert_close(
         weights.sort(dim=-1).values, ref_weights.sort(dim=-1).values, rtol=1e-3, atol=1e-3
@@ -70,6 +71,6 @@ def test_fused_topk_bench(call) -> None:
 
     _vllm_fn(*inputs)  # warmup
     torch.cuda.synchronize()
-    functors["vllm"] = _vllm_fn
+    functors[VLLM_TAG] = _vllm_fn
 
     bm.compare(functors, *inputs)

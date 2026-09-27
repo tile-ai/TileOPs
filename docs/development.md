@@ -130,7 +130,7 @@ Prefer the dev Docker image, which carries FlashAttention-2/3, flash-linear-atte
 
 ```bash
 python -m pytest benchmarks/            # all benchmarks
-python -m pytest benchmarks/ops/attention/bench_gqa.py -q
+python -m pytest benchmarks/ops/bench_gqa.py -q
 ```
 
 Benchmark reporting rules and tolerances are in [design/testing.md](design/testing.md).

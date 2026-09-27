@@ -651,7 +651,7 @@ def _parallel_scan_carry_kernel(M: int, n_tiles: int):
             tile_sums: T.Tensor[(M, n_tiles), "float32"],  # noqa: F821
             tile_carries: T.Tensor[(M, n_tiles), "float32"],  # noqa: F821
         ):
-            with T.Kernel(T.ceildiv(M, threads), threads=threads) as pid:  # noqa: SIM117
+            with T.Kernel(T.ceildiv(M, threads), threads=threads) as pid:
                 tx = T.get_thread_binding()
                 row = pid * threads + tx
 

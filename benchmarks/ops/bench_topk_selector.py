@@ -28,23 +28,23 @@ from workloads.topk_selector import TopkSelectorCall
 _TUNE = True
 
 
-def _flashinfer_topk(test: TopkSelectorCall, starts: torch.Tensor, ends: torch.Tensor):
+def _flashinfer_topk(workload: TopkSelectorCall, starts: torch.Tensor, ends: torch.Tensor):
     """FlashInfer's top-k over the same scores, or None for a row it cannot serve.
 
     It selects over the last dimension, which is ``seq_len_kv`` only while
     ``kv_group`` is 1, and over the whole row, so a narrowed ``[start, end)`` is out.
     """
-    if test.kv_group != 1:
+    if workload.kv_group != 1:
         return None
-    if not (bool((starts == 0).all()) and bool((ends == test.seq_len_kv).all())):
+    if not (bool((starts == 0).all()) and bool((ends == workload.seq_len_kv).all())):
         return None
 
     top_k = flashinfer_op("top_k")
-    rows, topk, out_dtype = test.batch * test.seq_len, test.topk, test.out_dtype
+    rows, topk, out_dtype = workload.batch * workload.seq_len, workload.topk, workload.out_dtype
 
     def fn(index_score, *_):
-        _, indices = top_k(index_score.squeeze(-1).reshape(rows, test.seq_len_kv), topk)
-        return indices.reshape(test.batch, test.seq_len, 1, topk).to(out_dtype)
+        _, indices = top_k(index_score.squeeze(-1).reshape(rows, workload.seq_len_kv), topk)
+        return indices.reshape(workload.batch, workload.seq_len, 1, topk).to(out_dtype)
 
     return fn
 
@@ -69,20 +69,20 @@ def _assert_selects_same_scores(fn, reference, *inputs: torch.Tensor) -> None:
 
 @pytest.mark.parametrize("call", manifest_calls(TopkSelectorFwdOp))
 def test_topk_selector_bench(call) -> None:
-    test = TopkSelectorCall(call)
-    inputs = test.gen_inputs()
+    workload = TopkSelectorCall(call)
+    inputs = workload.gen_inputs()
 
-    op = TopkSelectorFwdOp(**test.arguments(), tune=_TUNE)
-    bm = ManifestBenchmark(op, test)
+    op = TopkSelectorFwdOp(**workload.arguments(), tune=_TUNE)
+    bm = ManifestBenchmark(op, workload)
 
     functors = {
         "tileops": op,
-        "torch": test.ref_program,
-        TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        "torch": workload.ref_program,
+        TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
     }
-    flashinfer_fn = _flashinfer_topk(test, inputs[1], inputs[2])
+    flashinfer_fn = _flashinfer_topk(workload, inputs[1], inputs[2])
     if flashinfer_fn is not None:
-        _assert_selects_same_scores(flashinfer_fn, test.ref_program, *inputs)
+        _assert_selects_same_scores(flashinfer_fn, workload.ref_program, *inputs)
         functors[FLASHINFER_TAG] = flashinfer_fn
 
     bm.compare(functors, *inputs)

@@ -1,4 +1,7 @@
-"""Mamba-2 SSD stage benchmarks, one case per manifest call, against the mamba_ssm Triton stages."""
+"""Mamba-2 SSD benchmarks, one case per manifest call, against the mamba_ssm Triton kernels: each stage,
+and the full forward (DaCumsum, CBProducer, SSDChunkState, SSDStatePassing, SSDChunkScan) against
+mamba_chunk_scan_combined.
+"""
 
 import pytest
 import torch
@@ -7,6 +10,7 @@ from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.mamba.cb_producer import CBProducerFwdOp
 from tileops.ops.mamba.da_cumsum import DaCumsumFwdOp
+from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.mamba.ssd_decode import SSDDecodeFwdOp
@@ -19,6 +23,7 @@ from workloads.mamba import (
     SSDDecodeFwdCall,
     SSDStatePassingFwdCall,
 )
+from workloads.mamba2_e2e import Mamba2FwdCall
 
 # Optional mamba_ssm Triton baselines
 try:
@@ -43,6 +48,13 @@ try:
 except ImportError:
     _mamba_state_passing_fwd = None
 
+try:
+    from mamba_ssm.ops.triton.ssd_combined import (
+        mamba_chunk_scan_combined as _mamba_chunk_scan_combined,
+    )
+except ImportError:
+    _mamba_chunk_scan_combined = None
+
 
 def _torch_baselines(functors: dict, ref_program) -> None:
     functors["torch-ref"] = ref_program
@@ -52,19 +64,19 @@ def _torch_baselines(functors: dict, ref_program) -> None:
 @pytest.mark.parametrize("call", manifest_calls(CBProducerFwdOp))
 def test_cb_producer_fwd_bench(call) -> None:
     """The CB stage on its own, over the shapes the Mamba-2 configs give it."""
-    test = CBProducerFwdCall(call)
-    inputs = test.gen_inputs()
-    op = CBProducerFwdOp(**test.arguments())
-    bm = ManifestBenchmark(op, test)
-    bm.compare({"tileops": op, "torch": (test.ref_program, inputs)}, *inputs)
+    workload = CBProducerFwdCall(call)
+    inputs = workload.gen_inputs()
+    op = CBProducerFwdOp(**workload.arguments())
+    bm = ManifestBenchmark(op, workload)
+    bm.compare({"tileops": op, "torch": (workload.ref_program, inputs)}, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(DaCumsumFwdOp))
 def test_da_cumsum_fwd_bench(call) -> None:
-    test = DaCumsumFwdCall(call)
-    dt, A, dt_bias = inputs = test.gen_inputs()
-    op = DaCumsumFwdOp(**test.arguments())
-    bm = ManifestBenchmark(op, test)
+    workload = DaCumsumFwdCall(call)
+    dt, A, dt_bias = inputs = workload.gen_inputs()
+    op = DaCumsumFwdOp(**workload.arguments())
+    bm = ManifestBenchmark(op, workload)
     functors = {"tileops": op}
 
     # _chunk_cumsum_fwd returns (dA_cumsum, dt_out) with a float32 dt_out; the baseline
@@ -79,16 +91,16 @@ def test_da_cumsum_fwd_bench(call) -> None:
 
         functors["mamba"] = (mamba_fwd, ())
 
-    _torch_baselines(functors, test.ref_program)
+    _torch_baselines(functors, workload.ref_program)
     bm.compare(functors, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(SSDChunkScanFwdOp))
 def test_ssd_chunk_scan_fwd_bench(call) -> None:
-    test = SSDChunkScanFwdCall(call)
-    x, cb, dA_cumsum, C, prev_states, dt = inputs = test.gen_inputs()
-    op = SSDChunkScanFwdOp(**test.arguments())
-    bm = ManifestBenchmark(op, test)
+    workload = SSDChunkScanFwdCall(call)
+    x, cb, dA_cumsum, C, prev_states, dt = inputs = workload.gen_inputs()
+    op = SSDChunkScanFwdOp(**workload.arguments())
+    bm = ManifestBenchmark(op, workload)
     functors = {"tileops": op}
 
     if _mamba_chunk_scan_fwd is not None:
@@ -98,16 +110,16 @@ def test_ssd_chunk_scan_fwd_bench(call) -> None:
 
         functors["mamba"] = (mamba_fwd, ())
 
-    _torch_baselines(functors, test.ref_program)
+    _torch_baselines(functors, workload.ref_program)
     bm.compare(functors, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(SSDChunkStateFwdOp))
 def test_ssd_chunk_state_fwd_bench(call) -> None:
-    test = SSDChunkStateFwdCall(call)
-    x, Bmat, dt, dA_cumsum, seq_idx = inputs = test.gen_inputs()
-    op = SSDChunkStateFwdOp(**test.arguments())
-    bm = ManifestBenchmark(op, test)
+    workload = SSDChunkStateFwdCall(call)
+    x, Bmat, dt, dA_cumsum, seq_idx = inputs = workload.gen_inputs()
+    op = SSDChunkStateFwdOp(**workload.arguments())
+    bm = ManifestBenchmark(op, workload)
     functors = {"tileops": op}
 
     if _mamba_chunk_state_fwd is not None:
@@ -117,16 +129,16 @@ def test_ssd_chunk_state_fwd_bench(call) -> None:
 
         functors["mamba"] = (mamba_fwd, ())
 
-    _torch_baselines(functors, test.ref_program)
+    _torch_baselines(functors, workload.ref_program)
     bm.compare(functors, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(SSDStatePassingFwdOp))
 def test_ssd_state_passing_fwd_bench(call) -> None:
-    test = SSDStatePassingFwdCall(call)
-    states, dA_chunk_cumsum, initial_states = inputs = test.gen_inputs()
-    op = SSDStatePassingFwdOp(**test.arguments())
-    bm = ManifestBenchmark(op, test)
+    workload = SSDStatePassingFwdCall(call)
+    states, dA_chunk_cumsum, initial_states = inputs = workload.gen_inputs()
+    op = SSDStatePassingFwdOp(**workload.arguments())
+    bm = ManifestBenchmark(op, workload)
     functors = {"tileops": op}
 
     if _mamba_state_passing_fwd is not None:
@@ -143,24 +155,63 @@ def test_ssd_state_passing_fwd_bench(call) -> None:
 
         functors["mamba"] = (mamba_fwd, ())
 
-    _torch_baselines(functors, test.ref_program)
+    _torch_baselines(functors, workload.ref_program)
     bm.compare(functors, *inputs)
 
 
 @pytest.mark.parametrize("call", manifest_calls(SSDDecodeFwdOp))
 def test_ssd_decode_bench(call) -> None:
-    test = SSDDecodeFwdCall(call)
-    A, dt, x, B_in, C_in, state = test.gen_inputs()
-    op = SSDDecodeFwdOp(**test.arguments())
-    bm = ManifestBenchmark(op, test)
+    workload = SSDDecodeFwdCall(call)
+    A, dt, x, B_in, C_in, state = workload.gen_inputs()
+    op = SSDDecodeFwdOp(**workload.arguments())
+    bm = ManifestBenchmark(op, workload)
 
     # Each implementation updates its own copy of the state in place.
     functors = {
         "tileops": op,
-        "torch-ref": (test.ref_program, (A, dt, x, B_in, C_in, state.clone())),
+        "torch-ref": (workload.ref_program, (A, dt, x, B_in, C_in, state.clone())),
         TORCH_COMPILE_TAG: (
-            compiled_reference(test.ref_program),
+            compiled_reference(workload.ref_program),
             (A, dt, x, B_in, C_in, state.clone()),
         ),
     }
     bm.compare(functors, A, dt, x, B_in, C_in, state.clone())
+
+
+@pytest.mark.parametrize("call", manifest_calls(Mamba2FwdOp))
+def test_mamba2_fwd_bench(call):
+    workload = Mamba2FwdCall(call)
+    inputs = workload.gen_inputs()
+    x, dt, A, B, C, dt_bias, initial_states = inputs
+    op = Mamba2FwdOp(**workload.arguments())
+    bm = ManifestBenchmark(op, workload)
+    functors = {"tileops": op}
+
+    # Only the five leading tensors are positional, so every path gets identical clone
+    # treatment; the optional tensors are captured.
+    reference_args = (x, dt, A, B, C)
+    if _mamba_chunk_scan_combined is not None:
+
+        def _mamba_wrapper(x, dt, A, B, C):
+            return _mamba_chunk_scan_combined(
+                x,
+                dt,
+                A,
+                B,
+                C,
+                op.chunk_size,
+                dt_bias=dt_bias,
+                dt_softplus=op.dt_softplus,
+                initial_states=initial_states,
+                return_final_states=True,
+            )
+
+        functors["mamba"] = (_mamba_wrapper, reference_args)
+
+    def _torch_wrapper(x, dt, A, B, C):
+        return workload.ref_program(x, dt, A, B, C, dt_bias, initial_states)
+
+    functors["torch-ref"] = (_torch_wrapper, reference_args)
+    functors[TORCH_COMPILE_TAG] = (compiled_reference(_torch_wrapper), reference_args)
+
+    bm.compare(functors, *inputs)

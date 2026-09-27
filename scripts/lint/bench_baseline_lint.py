@@ -7,8 +7,9 @@ baseline yet says why with ``FIXME(staged-rollout)`` above the comparison.
 
 Reads the tags a call site passes, not which survive at runtime: a baseline behind
 an optional import still counts, because dropping its row where the library is
-missing is what the bench is meant to do. A dict built by ``**`` unpacking or
-returned by a helper is decided elsewhere and left alone.
+missing is what the bench is meant to do. A dict built by ``**`` unpacking, keyed
+by a name rather than a literal, or returned by a helper is decided elsewhere and
+left alone.
 
 Usage: ``bench_baseline_lint.py [FILE ...]``. With no arguments, scans
 ``benchmarks/``. Exits 1 for a comparison with no baseline and no marker.
@@ -64,9 +65,11 @@ def _tags_of(name: str, func: ast.AST, before: int) -> set[str] | None:
                 isinstance(target, ast.Subscript)
                 and isinstance(target.value, ast.Name)
                 and target.value.id == name
-                and isinstance(target.slice, ast.Constant)
-                and isinstance(target.slice.value, str)
             ):
+                if not (
+                    isinstance(target.slice, ast.Constant) and isinstance(target.slice.value, str)
+                ):
+                    return None  # a computed key, such as a baselines.py tag constant
                 tags.add(target.slice.value)
     return tags
 

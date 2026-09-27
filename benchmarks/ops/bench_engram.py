@@ -33,17 +33,17 @@ def _dtype(call, tensor: str) -> torch.dtype:
 @pytest.mark.parametrize("call", manifest_calls(EngramGateConvFwdOp))
 def test_engram_gate_conv_fwd_bench(call):
     params = call.arguments({})
-    test = EngramGateConvFwdWorkload(**params, dtype=_dtype(call, "H"))
-    inputs = test.gen_inputs()
+    workload = EngramGateConvFwdWorkload(**params, dtype=_dtype(call, "H"))
+    inputs = workload.gen_inputs()
 
     op = EngramGateConvFwdOp(**params, tune=_TUNE)
-    bm = ManifestBenchmark(op, test)
+    bm = ManifestBenchmark(op, workload)
 
     bm.compare(
         {
             "tileops": op,
-            "torch-ref": test.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+            "torch-ref": workload.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
     )
@@ -52,15 +52,15 @@ def test_engram_gate_conv_fwd_bench(call):
 @pytest.mark.parametrize("call", manifest_calls(EngramGateConvBwdOp))
 def test_engram_gate_conv_bwd_bench(call):
     params = call.arguments({})
-    test = EngramGateConvBwdWorkload(**params, dtype=_dtype(call, "dY"))
-    inputs = test.gen_inputs()
+    workload = EngramGateConvBwdWorkload(**params, dtype=_dtype(call, "dY"))
+    inputs = workload.gen_inputs()
 
     op = EngramGateConvBwdOp(**params, tune=_TUNE)
-    bm = ManifestBenchmark(op, test)
+    bm = ManifestBenchmark(op, workload)
 
     @torch.enable_grad()
     def ref_with_grad(*args):
-        return test.ref_program(*args)
+        return workload.ref_program(*args)
 
     bm.compare(
         {
@@ -75,17 +75,17 @@ def test_engram_gate_conv_bwd_bench(call):
 @pytest.mark.parametrize("call", manifest_calls(EngramDecodeFwdOp))
 def test_engram_decode_bench(call):
     params = call.arguments({})
-    test = EngramDecodeWorkload(**params, dtype=_dtype(call, "e_t"), conv_len=call.ix["L"])
-    inputs = test.gen_inputs()
+    workload = EngramDecodeWorkload(**params, dtype=_dtype(call, "e_t"), conv_len=call.ix["L"])
+    inputs = workload.gen_inputs()
 
     op = EngramDecodeFwdOp(**params, tune=_TUNE)
-    bm = ManifestBenchmark(op, test)
+    bm = ManifestBenchmark(op, workload)
 
     bm.compare(
         {
             "tileops": op,
-            "torch-ref": test.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+            "torch-ref": workload.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
     )

@@ -7,7 +7,7 @@ from vllm.model_executor.layers.fused_moe.moe_permute_unpermute import (
     moe_unpermute,
 )
 
-from benchmarks.baselines import flashinfer_op
+from benchmarks.baselines import VLLM_TAG, flashinfer_op
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from tileops.ops.moe import (
     MoeExpertMLPFwdOp,
@@ -43,7 +43,7 @@ def test_moe_pre_permute_bench(call) -> None:
         return moe_permute(hidden, None, expert_ids, op.num_local_experts)
 
     benchmark.compare(
-        {"tileops": op, "vllm": _vllm_reference, "torch-ref": workload.ref_program},
+        {"tileops": op, VLLM_TAG: _vllm_reference, "torch-ref": workload.ref_program},
         hidden_states,
         local_ids,
     )
@@ -79,7 +79,7 @@ def test_moe_post_permute_bench(call) -> None:
         return out_vllm
 
     benchmark.compare(
-        {"tileops": op, "vllm": _vllm_reference, "torch-ref": workload.ref_program},
+        {"tileops": op, VLLM_TAG: _vllm_reference, "torch-ref": workload.ref_program},
         expert_output,
         weights,
         inverse,

@@ -7,13 +7,10 @@ inserting a case renumbers the ones after it, so their history silently starts
 over.
 
 Flags a ``pytest.param(...)`` without ``id=`` and a bare tuple in a parametrize
-value list. Files that predate the rule are exempt by name; a file whose cases
-have all been named must leave the list, which is what keeps the list from
-outliving the work.
+value list.
 
 Usage: ``workload_names_lint.py [FILE ...]``. With no arguments, scans
-``benchmarks/ops/``. Exits 1 on an unnamed case in a file that is not exempt,
-and on an exempt file that no longer needs to be.
+``benchmarks/ops/``. Exits 1 on an unnamed case.
 """
 
 import ast
@@ -22,11 +19,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCH_DIR = REPO_ROOT / "benchmarks" / "ops"
-
-# Files written before the rule. Name their cases and delete the line.
-EXEMPT = {
-    "benchmarks/ops/bench_binary_elementwise.py",
-}
 
 
 def _case_lists(tree: ast.Module):
@@ -86,15 +78,6 @@ def main(argv: list[str]) -> int:
         if not rel.startswith("benchmarks/ops/"):
             continue
         found = unnamed_cases(path.read_text(encoding="utf-8"))
-        if rel in EXEMPT:
-            if not found:
-                failed = True
-                print(
-                    f"{rel}: every case is named now — drop it from EXEMPT in "
-                    f"{Path(__file__).name}.",
-                    file=sys.stderr,
-                )
-            continue
         if found:
             failed = True
             where = ", ".join(str(n) for n in found[:5])

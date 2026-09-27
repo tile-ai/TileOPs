@@ -25,7 +25,7 @@ from workloads.grouped_gemm import (
 _TUNE = True
 
 
-def _torch_grouped_mm(test: GroupedGemmWorkload, inputs: tuple):
+def _torch_grouped_mm(workload: GroupedGemmWorkload, inputs: tuple):
     """``torch._grouped_mm`` over the same groups, or None where it cannot take them.
 
     Reads B as ``[groups, K, N]`` and takes cumulative group ends, both built here
@@ -33,17 +33,17 @@ def _torch_grouped_mm(test: GroupedGemmWorkload, inputs: tuple):
     """
     if not hasattr(torch, "_grouped_mm"):
         return None
-    if test.transpose_a and test.transpose_b:
+    if workload.transpose_a and workload.transpose_b:
         return None
 
-    sizes = torch.tensor(test.batch_sizes_list, device=inputs[0].device, dtype=torch.int32)
+    sizes = torch.tensor(workload.batch_sizes_list, device=inputs[0].device, dtype=torch.int32)
     offsets = torch.cumsum(sizes, dim=0).to(torch.int32)
 
-    if test.transpose_a:
+    if workload.transpose_a:
 
         def fn(a, b, *_):
             return torch._grouped_mm(a.t(), b, offs=offsets)
-    elif test.transpose_b:
+    elif workload.transpose_b:
         b_kn = inputs[1].transpose(1, 2).contiguous()
 
         def fn(a, _b, *_):
@@ -58,22 +58,22 @@ def _torch_grouped_mm(test: GroupedGemmWorkload, inputs: tuple):
 
 @pytest.mark.parametrize("call", manifest_calls(GroupedGemmFwdOp))
 def test_grouped_gemm_bench(call) -> None:
-    test = GroupedGemmWorkload.from_call(call)
-    inputs = test.gen_inputs()
-    dtype = test.dtype
+    workload = GroupedGemmWorkload.from_call(call)
+    inputs = workload.gen_inputs()
+    dtype = workload.dtype
 
     op = GroupedGemmFwdOp(**call.arguments({}), tune=_TUNE)
-    bm = ManifestBenchmark(op, test)
+    bm = ManifestBenchmark(op, workload)
 
     functors = {
         "tileops": op,
-        "torch-ref": test.ref_program,
-        TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+        "torch-ref": workload.ref_program,
+        TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
     }
-    grouped_mm_fn = _torch_grouped_mm(test, inputs)
+    grouped_mm_fn = _torch_grouped_mm(workload, inputs)
     if grouped_mm_fn is not None:
         assert_matches_reference(
-            grouped_mm_fn, test.ref_program, *inputs, **reference_tolerance(dtype)
+            grouped_mm_fn, workload.ref_program, *inputs, **reference_tolerance(dtype)
         )
         functors["torch"] = grouped_mm_fn
     # Rows are named by the op, with the layout among their params: a row named

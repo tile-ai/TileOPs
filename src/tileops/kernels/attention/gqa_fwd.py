@@ -1,4 +1,5 @@
 import functools
+import itertools
 from typing import Callable, Optional, Tuple
 
 import tilelang
@@ -8,7 +9,6 @@ import torch
 from tileops.kernels.constants import FP8_E4M3_MAX
 from tileops.kernels.kernel_base import Kernel
 
-from ._config import tile_stage_thread_configs
 from .call_spec import dense_prefill_region, fp8_dtype
 from .online_softmax import (
     LOG2E,
@@ -29,6 +29,15 @@ __all__ = [
     "GQAPrefillPagedWithKVCacheRopeAppendKernel",
     "GQAPrefillPagedWithKVCacheRopeFwdKernel",
 ]
+
+
+def _tile_stage_thread_configs() -> list[dict]:
+    """The default GQA search space: block_m x block_n x num_stages x threads."""
+    return [
+        {"block_m": bm, "block_n": bn, "num_stages": ns, "threads": th}
+        for bm, bn, ns, th in itertools.product((32, 64, 128), (32, 64, 128), (1, 2, 3), (128, 256))
+    ]
+
 
 _FAST_COMPILE_FLAGS = [
     "-O3",
@@ -276,7 +285,7 @@ class GQAFwdWgmmaPipelinedKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return tile_stage_thread_configs()
+        return _tile_stage_thread_configs()
 
     def forward(
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
@@ -550,7 +559,7 @@ class GQAPrefillFwdKernel(PackedPrefillKernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return tile_stage_thread_configs()
+        return _tile_stage_thread_configs()
 
     def forward(
         self,
@@ -944,7 +953,7 @@ class GQAPrefillPagedWithKVCacheFwdKernel(PagedPrefillKernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return tile_stage_thread_configs()
+        return _tile_stage_thread_configs()
 
     def forward(
         self,
@@ -1395,7 +1404,7 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return tile_stage_thread_configs()
+        return _tile_stage_thread_configs()
 
     def forward(
         self,
@@ -2054,7 +2063,7 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return tile_stage_thread_configs()
+        return _tile_stage_thread_configs()
 
     def forward(
         self,

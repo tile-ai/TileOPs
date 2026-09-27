@@ -23,23 +23,23 @@ def test_mhc_pre_bench(call) -> None:
     # The manifest workload is the authority for the scaling params, so the case
     # is built with them rather than with the ones the generator would draw.
     params = call.arguments({})
-    test = MHCPreWorkload(
+    workload = MHCPreWorkload(
         call.ix["B"],
         call.ix["n"],
         call.ix["c_x"],
         getattr(torch, call.tensors["x"][1]),
         **params,
     )
-    inputs = test.gen_inputs()
+    inputs = workload.gen_inputs()
 
     op = MHCPreFwdOp(**params, tune=_TUNE)
-    bm = ManifestBenchmark(op, test)
+    bm = ManifestBenchmark(op, workload)
 
     bm.compare(
         {
             "tileops": op,
-            "torch-ref": test.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+            "torch-ref": workload.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
     )
@@ -47,19 +47,19 @@ def test_mhc_pre_bench(call) -> None:
 
 @pytest.mark.parametrize("call", manifest_calls(MHCPostFwdOp))
 def test_mhc_post_bench(call) -> None:
-    test = MHCPostWorkload(
+    workload = MHCPostWorkload(
         call.ix["B"], call.ix["n"], call.ix["c_x"], getattr(torch, call.tensors["x_res"][1])
     )
-    inputs = test.gen_inputs()
+    inputs = workload.gen_inputs()
 
     op = MHCPostFwdOp(**call.arguments({}), tune=_TUNE)
-    bm = ManifestBenchmark(op, test)
+    bm = ManifestBenchmark(op, workload)
 
     bm.compare(
         {
             "tileops": op,
-            "torch-ref": test.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+            "torch-ref": workload.ref_program,
+            TORCH_COMPILE_TAG: compiled_reference(workload.ref_program),
         },
         *inputs,
     )
