@@ -792,8 +792,6 @@ class TestSpecOnlyRecounts:
 #         earns this level or fails the completeness test below.
 #   two   The binder cannot build the call and a case above does it by hand,
 #         with what the case shares written next to it.
-#   three No independent recount is available yet. Marked with what is missing,
-#         and asserted against nothing.
 #
 # Some level-one ops also keep a case above. Those cover a branch one workload
 # row does not reach -- an optional input present and absent, a second dtype
@@ -825,10 +823,6 @@ HAND_WRITTEN = {
     "ChainSpeculativeSamplingFwdOp": "where the chain stops is drawn at run time, so it prices the cheaper outcome",
 }
 
-# Level three: no independent recount is available. Empty, and an entry here has
-# to say what is missing rather than that nobody has got to it.
-NOT_RECOUNTABLE: dict[str, str] = {}
-
 
 def _entries() -> list[str]:
     """Every entry: a spec-only one is recounted from its signature, needing no implementation."""
@@ -852,9 +846,8 @@ def _draws_metadata(op_name: str) -> bool:
 def _binder_builds(op_name: str) -> bool:
     """Whether the manifest alone builds a case for *op_name*.
 
-    The formula is not called here. Whether it agrees, or even returns, is a
-    separate question: a formula that raises is a defect, and treating that as
-    "the binder cannot build this" would let it qualify for level three.
+    The formula is not called here: whether it agrees, or even returns, is a
+    separate question, and a formula that raises is a defect.
     """
     from tests.roofline_binder import manifest_cases
 
@@ -881,7 +874,7 @@ class TestCoverageLevels:
 
         checked = 0
         for op_name in _entries():
-            if op_name in HAND_WRITTEN or op_name in NOT_RECOUNTABLE:
+            if op_name in HAND_WRITTEN:
                 continue
             for label, dtype, op, oracle, _reads in manifest_cases(op_name):
                 assert op.eval_roofline()[1] == oracle, f"{op_name} {label} {dtype}"
@@ -896,7 +889,7 @@ class TestCoverageLevels:
 
         checked = 0
         for op_name in _entries():
-            if op_name in HAND_WRITTEN or op_name in NOT_RECOUNTABLE:
+            if op_name in HAND_WRITTEN:
                 continue
             for label, dtype, op, _oracle, reads in manifest_cases(op_name):
                 declared = op.eval_roofline_read_bytes()
@@ -905,14 +898,12 @@ class TestCoverageLevels:
                 checked += 1
         assert checked > 0
 
-    def test_every_op_sits_at_one_level(self):
-        both = sorted(set(HAND_WRITTEN) & set(NOT_RECOUNTABLE))
-        assert not both, f"declared at two levels: {both}"
-        unknown = sorted((set(HAND_WRITTEN) | set(NOT_RECOUNTABLE)) - set(_entries()))
+    def test_every_level_two_op_is_a_manifest_entry(self):
+        unknown = sorted(set(HAND_WRITTEN) - set(_entries()))
         assert not unknown, f"declared but not in the manifest: {unknown}"
 
     def test_a_declared_op_is_one_the_manifest_does_not_already_check(self):
-        """Level two and three are for ops the manifest cannot recount, not a queue.
+        """Level two is for ops the manifest cannot recount, not a queue.
 
         An op whose rows draw metadata at random stays at level two however its rows fall:
         one row's draw agreeing with the recount says nothing of another's
@@ -920,25 +911,12 @@ class TestCoverageLevels:
         """
         promotable = sorted(
             name
-            for name in {**HAND_WRITTEN, **NOT_RECOUNTABLE}
+            for name in HAND_WRITTEN
             if not _draws_metadata(name) and _binder_builds(name) and _binder_agrees(name)
         )
         assert not promotable, (
             f"the binder now recounts {promotable} and the formula agrees; move them out "
-            "of HAND_WRITTEN / NOT_RECOUNTABLE so the generated case is what checks them"
-        )
-
-    def test_level_three_is_for_a_call_the_binder_cannot_build(self):
-        """A recount the binder can build and the formula disagrees with is a defect.
-
-        Level three says no independent recount is available. If the binder builds one,
-        one is available, and a disagreement is then the formula's, not a coverage gap:
-        it belongs at level two with the condition the contract omits written next to it.
-        """
-        buildable = sorted(name for name in NOT_RECOUNTABLE if _binder_builds(name))
-        assert not buildable, (
-            f"the binder builds a recount for {buildable}; they are not level three, and "
-            "a disagreement there is a formula defect"
+            "of HAND_WRITTEN so the generated case is what checks them"
         )
 
     def test_every_level_two_op_has_a_case_that_names_its_tensors(self):
@@ -959,7 +937,6 @@ class TestCoverageLevels:
         )
 
     def test_a_reason_says_what_is_missing(self):
-        for level in (HAND_WRITTEN, NOT_RECOUNTABLE):
-            for name, reason in level.items():
-                assert reason and not reason.endswith("."), name
-                assert len(reason.split()) >= 5, f"{name}: {reason!r} says too little"
+        for name, reason in HAND_WRITTEN.items():
+            assert reason and not reason.endswith("."), name
+            assert len(reason.split()) >= 5, f"{name}: {reason!r} says too little"
