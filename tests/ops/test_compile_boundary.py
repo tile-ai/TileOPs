@@ -23,8 +23,8 @@ from tileops.ops.attention.deepseek_mla import MultiHeadLatentAttentionDecodeWit
 from tileops.ops.attention.deepseek_nsa import NSACmpVarlenFwdOp, NSATopkVarlenFwdOp, NSAVarlenFwdOp
 from tileops.ops.attention.gqa import (
     GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
     GroupedQueryAttentionDenseFwdOp,
+    GroupedQueryAttentionPagedFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionVarlenFwdOp,
 )
@@ -71,8 +71,8 @@ from workloads.gqa import (
     GQAPrefillPagedWithKVCacheFwdWorkload,
     GQAPrefillVarlenFwdWorkload,
     GroupedQueryAttentionBwdWorkload,
-    GroupedQueryAttentionDecodePagedWorkload,
     GroupedQueryAttentionDenseDecodeWorkload,
+    GroupedQueryAttentionPagedFwdWorkload,
     GroupedQueryAttentionSlidingWindowVarlenFwdWorkload,
 )
 from workloads.mha import MhaDecodePagedWorkload
@@ -120,10 +120,11 @@ def _attention_cases():
         k_scale, v_scale = make_unit_cache_scales()
         return op, (q, k_new, v_new, k_pages, v_pages, k_scale, v_scale, cu_q, cache_seqlens, table)
 
-    def gqa_decode_paged():
-        case = GroupedQueryAttentionDecodePagedWorkload(2, _HEADS, _HEADS_KV, 256, _DIM, 64, _DTYPE)
-        op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(page_size=64)
-        return op, case.gen_inputs()
+    def gqa_paged_decode():
+        case = GroupedQueryAttentionPagedFwdWorkload(
+            _HEADS, _HEADS_KV, _DIM, [1, 1], [256, 200], 64, 4, 8, _DTYPE
+        )
+        return GroupedQueryAttentionPagedFwdOp(), case.gen_inputs()
 
     def mha_bwd():
         case = GroupedQueryAttentionBwdWorkload(1, _HEADS, _HEADS, 256, _DIM, True, _DTYPE)
@@ -177,7 +178,7 @@ def _attention_cases():
         ("gqa-varlen", gqa_varlen),
         ("gqa-sliding-window-varlen", gqa_sliding_window_varlen),
         ("gqa-prefill-paged", gqa_prefill_paged),
-        ("gqa-decode-paged", gqa_decode_paged),
+        ("gqa-paged-decode", gqa_paged_decode),
         ("mha-bwd", mha_bwd),
         ("mha-decode-paged", mha_decode_paged),
         ("mla-decode", mla_decode),
@@ -552,7 +553,7 @@ for _op_cls in (
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
-    GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
+    GroupedQueryAttentionPagedFwdOp,
     MultiHeadAttentionBwdOp,
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
     MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,

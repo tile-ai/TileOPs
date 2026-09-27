@@ -387,39 +387,6 @@ class TestBytesOracle:
         )
         assert self._priced(TopkSelectorFwdOp(topk), tensors) == (scores, oracle)
 
-    def test_paged_decode_reads_the_rows_its_lengths_reach(self):
-        """The manifest rows fill the pool; shorter lengths, and two requests sharing a
-        page, read each named row once and consult only the table entries they reach."""
-        from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
-
-        heads, heads_kv, dim, page, pages = 4, 2, 8, 4, 4
-        f16 = torch.float16
-        lengths, table = [6, 3], [[0, 1], [0, 2]]
-        tensors = {
-            "q": torch.empty(2, heads, dim, dtype=f16),
-            "k": torch.empty(pages * page, heads_kv, dim, dtype=f16),
-            "v": torch.empty(pages * page, heads_kv, dim, dtype=f16),
-            "real_seqlen_kv": torch.tensor(lengths, dtype=torch.int32),
-            "block_table": torch.tensor(table, dtype=torch.int32),
-        }
-        # rows 0-3 of page 0 and 0-1 of page 1 for the first request; the second reads
-        # rows 0-2 of page 0, already counted
-        rows, consulted = 6, 3
-        kv = ((rows, heads_kv, dim), f16)
-        oracle = _ledger(
-            "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
-            q=((2, heads, dim), f16),
-            k=kv,
-            v=kv,
-            real_seqlen_kv=((2,), torch.int32),
-            block_table=((consulted,), torch.int32),
-            o=((2, heads, dim), f16),
-        )
-        op = GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(page_size=page)
-        # QK and PV (4 * dim) and the softmax (5) per score, a divide per output element.
-        flops = heads * (sum(lengths) * (4 * dim + 5) + len(lengths) * dim)
-        assert self._priced(op, tensors) == (flops, oracle)
-
     def test_windowed_pools_read_the_positions_some_window_reaches(self):
         """A stride past the kernel span, or a dilation, leaves input positions no window
         reads; the case recounts the positions from the row's geometry."""

@@ -9,7 +9,6 @@ import torch
 from tileops.kernels.attention.call_spec import (
     AttentionCall,
     paged_decode_refusal,
-    paged_decode_region,
 )
 from tileops.kernels.kernel_base import Entry, Kernel
 
@@ -335,9 +334,14 @@ def _gqa_decode_split_paged_kernel(
                     # When loop_range was 0 (split entirely beyond real_seqlen_kv), logsum=0 -> avoid 0/0
                     acc_o[i, j] = T.if_then_else(logsum[i] == 0, 0, acc_o[i, j] / logsum[i])
                 for i in T.Parallel(block_H):
-                    # Avoid log2(0)=-inf when logsum=0; glse=-inf is ok in combine (weight 0)
+                    # An empty split carries glse=-inf, weight 0 in combine; its running
+                    # max is -inf, which a zero scale would turn into NaN.
                     logsum_safe = T.if_then_else(logsum[i] == 0, 1, logsum[i])
-                    logsum[i] = T.log2(logsum_safe) + scores_max[i] * scale
+                    logsum[i] = T.if_then_else(
+                        logsum[i] == 0,
+                        -T.infinity(accum_dtype),
+                        T.log2(logsum_safe) + scores_max[i] * scale,
+                    )
 
                 for i in T.Parallel(block_H):
                     if i < valid_block_H:
@@ -561,16 +565,30 @@ class GQADecodePagedKernel(Kernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        # The broad migrated decode region. The batch-1 paged kernel states the
-        # narrower one it serves and wins wherever it applies.
-        return paged_decode_region(call)
+        # The broad decode region, page-tile condition included. The batch-1 paged
+        # kernel states the narrower one it serves and wins wherever it applies.
+        return cls._region_refusal(call) is None
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         archs = cls.supported_archs
         if archs is not None and call.arch not in archs:
             return f"built for architectures {sorted(archs)}, device reports {call.arch}"
-        return paged_decode_refusal(call)
+        if not cls.applies(call):
+            return cls._region_refusal(call) or "does not serve this call"
+        return None
+
+    @staticmethod
+    def _region_refusal(call: AttentionCall) -> Optional[str]:
+        """Why *call* is outside the decode region or no key tile covers its pages."""
+        reason = paged_decode_refusal(call)
+        if reason is not None:
+            return reason
+        try:
+            gqa_decode_paged_block_ns(call.page_size)
+        except ValueError as exc:
+            return str(exc)
+        return None
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
@@ -656,9 +674,11 @@ class GQADecodePagedKernel(Kernel):
         from tilelang.utils.tensor import get_tensor_supply as _get_tensor_supply
 
         default_supply = _get_tensor_supply(tilelang.TensorSupplyType.Auto)
-        seqlen_kv = self.seqlen_kv
         batch = self.batch
-        num_pages = self.max_pages_per_req
+        width = self.max_pages_per_req
+        pool_pages = self.seqlen_kv // self.page_size
+        # Every request fills its table, whose entries name pages inside the pool.
+        seqlen_kv = width * self.page_size
 
         def supply_prog(params):
             inputs = []
@@ -666,12 +686,8 @@ class GQADecodePagedKernel(Kernel):
                 if index == 3:
                     value = torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda")
                 elif index == 4:
-                    value = (
-                        torch.arange(num_pages, dtype=torch.int32, device="cuda")
-                        .unsqueeze(0)
-                        .expand(batch, -1)
-                        .contiguous()
-                    )
+                    pages = torch.arange(width, dtype=torch.int32, device="cuda") % pool_pages
+                    value = pages.unsqueeze(0).expand(batch, -1).contiguous()
                 elif index == 7:
                     num_split = param.shape[1]
                     base = seqlen_kv // num_split

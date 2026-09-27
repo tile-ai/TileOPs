@@ -7,7 +7,6 @@ from .deepseek_nsa import (
 )
 from .gqa import (
     GroupedQueryAttentionBwdOp,
-    GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPagedFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
@@ -21,7 +20,6 @@ from .mha import (
 __all__ = [
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",
     "GroupedQueryAttentionBwdOp",
-    "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
     "GroupedQueryAttentionDenseFwdOp",
     "GroupedQueryAttentionPagedFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",

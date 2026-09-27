@@ -36,7 +36,6 @@ __all__ = [
     "GroupedQueryAttentionPagedFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionVarlenFwdOp",
-    "GroupedQueryAttentionDecodePagedWithKVCacheFwdOp",
 ]
 
 
@@ -1196,128 +1195,6 @@ class GroupedQueryAttentionBwdOp(Op):
         dq = dq.to(q.dtype)
         dk, dv = dk.to(q.dtype), dv.to(q.dtype)
         return dq, dk, dv
-
-    def compute_roof(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.tensors["q"][1])
-
-
-class GroupedQueryAttentionDecodePagedWithKVCacheFwdOp(Op):
-    """Paged GQA decode with dynamic KV cache. Layout: ``Q`` $[batch \\times heads \\times dim]$ (BHD);
-    K, V physical cache [seqlen_kv, heads_kv, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
-
-    The in-tree kernels refuse a ``page_size`` that no supported key tile width divides.
-    """
-
-    compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gqa_decode_paged_kernel": GQADecodePagedKernel,
-        "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,
-    }
-
-    def roofline_inputs(self) -> "dict[str, int]":
-        """The cached tokens this call's lengths name and the distinct pool rows they reach,
-        which its flops and cache reads follow."""
-        from tileops.perf.formulas import paged_decode_cache_rows
-
-        call = self.last_call
-        return {
-            "kv_tokens": sum(call.values("real_seqlen_kv")),
-            "cache_rows": paged_decode_cache_rows(call),
-        }
-
-    def __init__(
-        self,
-        page_size: int,
-        sm_scale: Optional[float] = None,
-        softcap: Optional[float] = None,
-        *,
-        target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from each call.
-
-        Args:
-            page_size: Manifest ``params.page_size``, ``int``.
-            sm_scale: Manifest ``params.sm_scale``, ``float | None``, default ``None``,
-                which resolves to ``1 / sqrt(D)`` from each call's head dimension.
-            softcap: Manifest ``params.softcap``, ``float | None``, default ``None``.
-            target: Which set of kernels serves this op — a target name, ``BUILTIN``
-                for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
-        self.target = target
-        self.page_size = page_size
-        self.sm_scale = sm_scale
-        self.softcap = _score_softcap(softcap)
-
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-
-    def attention_call(
-        self, q: torch.Tensor, k: torch.Tensor, block_table: torch.Tensor
-    ) -> AttentionCall:
-        """State what one paged decode call is, for selection to filter against."""
-        batch, heads, dim = q.shape
-        seqlen_kv, heads_kv, _ = k.shape
-        return AttentionCall(
-            dtype=q.dtype,
-            batch=batch,
-            heads=heads,
-            heads_kv=heads_kv,
-            max_seqlen_q=1,
-            seqlen_kv=seqlen_kv,
-            dim=dim,
-            page_size=self.page_size,
-            max_pages_per_req=block_table.shape[1],
-            cache_dtype=k.dtype,
-            sm_scale=_attention_scale(dim, self.sm_scale),
-            softcap=self.softcap,
-            tune=self.tune,
-            device=q.device,
-        )
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        real_seqlen_kv: torch.Tensor,
-        block_table: torch.Tensor,
-    ) -> torch.Tensor:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            q: Input tensor, dtype ``float16 | bfloat16``.
-            k: Input tensor, same dtype as ``q``.
-            v: Input tensor, same dtype as ``q``.
-            real_seqlen_kv: Input tensor, dtype ``int32``.
-            block_table: Input tensor, dtype ``int32``.
-
-        Returns:
-            ``o``, as the manifest declares. Shape rules: ``o.shape == (B, H, D)``.
-        """
-        return self._call_boundary(q, k, v, real_seqlen_kv, block_table)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        real_seqlen_kv: torch.Tensor,
-        block_table: torch.Tensor,
-    ) -> torch.Tensor:
-        """Validate, resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
-        inputs = (q, k, v, real_seqlen_kv, block_table)
-        kernel = self.kernel_for(
-            "gqa_decode_paged", inputs, self.attention_call(q, k, block_table)
-        )
-        return kernel(*inputs)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
