@@ -80,7 +80,7 @@ An entry serves four duties, plus a record of a composite op's internal structur
 
 ### Indices and Kinds
 
-`forall` declares every free type index with its kind, e.g. `forall: {M: Dim, K: Dim, T: "DType[float16 | bfloat16]"}`. Indices come from three sources: `forall`; construction parameters that appear in an index position ([table 1](#t-names)); and `let`, a derived index.
+`forall` maps every free type index to its kind. Indices come from three sources: `forall`; construction parameters that appear in an index position ([table 1](#t-names)); and `let`, a derived index.
 
 - `forall` kinds are `Dim` (axis length), `Shape` (tuple of `Dim`), `DType[...]` and the value list `Seq[Int]` ([table 2](#t-forall)). A parameter's kind follows from its `type` ([table 3](#t-types)); expression kinds follow [table 4](#t-expr).
 - A `Dim` may be passed where an `Int` is expected, a `Shape` where a `Seq[Int]` is.
@@ -136,7 +136,7 @@ A tensor `dtype` is a dtype expression ([table 13](#t-dtype)): a `forall` `DType
   - rows are distinct;
   - every column is relevant on every branch.
 - **Packed dtypes.** fp4 and int4 live in carrier dtypes such as `uint8` and are written by carrier:
-  - `dtype` is the carrier, and `shape` is the carrier shape PyTorch sees (`[N, K // 2]`);
+  - `dtype` is the carrier, and `shape` is the carrier shape PyTorch sees;
   - the logical dtype comes from a dtype parameter or the entry;
   - roofline counts carrier bytes.
 
@@ -152,46 +152,32 @@ A tensor `dtype` is a dtype expression ([table 13](#t-dtype)): a `forall` `DType
 
 A type family gives a shape by the value of a finite discriminant. It lives in the entry's `signature.types`, so each entry is self-contained.
 
-```yaml
-signature:
-  types:
-    Mat:
-      params: {t: Bool, R: Dim, C: Dim}
-      match: t
-      cases:
-      - {when: false, is: "[R, C]"}
-      - {when: true, is: "[C, R]"}
-  inputs:
-    a: {dtype: T, shape: "Mat[trans_a, M, K]"}
-```
+- A family declares `params`, a mapping of formal names to kinds; a `match` over some of them; and `cases`, a list of `{when: <discriminant value>, is: <shape>}`. A tensor applies it in its `shape` as `Family[arg, ...]`.
 
 - `match` takes a finite discriminant — `Bool`, enum, ADT, `present` — or a tuple of them; a tuple's `when` is a list.
+
 - `cases` are exhaustive and disjoint over the discriminant values the entry accepts; values a domain restriction rejects need no case.
-- An ADT is matched by constructor: `{masked: _}` matches any `masked` value, `{contiguous: {metadata_kind: per_row}}` also constrains a finite field, and a constructor's own fields are readable only on its branches.
+
+- An ADT is matched by constructor: `{<constructor>: _}` matches any value of that constructor, `{<constructor>: {<field>: <value>}}` also constrains a finite field, and a constructor's own fields are readable only on its branches.
+
 - References between type families are acyclic.
+
 - Tensors applying one family take one branch together.
+
 - An application's arguments bind to the family's `params` in declared order.
 
 ### Algebraic Data Types
 
 A finite-valued parameter with fields is an ADT, defined once in `types.yaml` and shared by entries. Each constructor maps to a Python class ([table 5](#t-adt)).
 
-```yaml
-adts:
-  MGroupedLayout:
-    sum:
-      contiguous:
-        python: tileops.ops.moe.contracts.ContiguousLayoutSpec
-        fields: {packing: {type: "'tight' | 'aligned'", python: ...}, alignment: Dim, ...}
-        invariant: "(packing == 'tight') == (alignment == 1)"   # optional
-      masked:
-        python: tileops.ops.moe.contracts.MaskedLayoutSpec
-        fields: {max_m: Dim}
-```
+- `types.yaml` declares each ADT under `adts` as a `sum` of constructors. A constructor names its Python class (`python`), its `fields`, and an optional `invariant`. `fields` maps each field name to `Dim`, `Int` or `Bool`, or, for an enum field, to `{type: <union of string literals>, python: <enum class>}`.
 
 - An ADT value is written as a literal `{constructor: {field: value}}`, workload rows included.
+
 - `invariant` is an optional refinement on a constructor, checked at instantiation and at construction.
+
 - An ADT is sealed: constructors and fields are fixed where it is declared. Adding one edits the definition; an entry that does not accept the new constructor rejects it with a domain restriction and needs no type-family change.
+
 - A test round-trips a real object per ADT.
 
 ### Derived Indices and Primitives
@@ -232,45 +218,30 @@ A workload row determines one call. Its keys are construction parameter names, r
 - **case id** is `label` followed by the row's `dtype_cases` values in `forall` order, then its dtype parameters' values in `signature.params` order, joined by `-`. An entry's case ids are distinct.
 - The case id keys nightly history, so changing a `label` is breaking.
 - `label` is non-empty `[A-Za-z0-9._-]` of at most 24 characters.
-- **label** names the scenario the row models (`llama-8b-prefill`), plus only the qualifier that tells the row from a sibling (`-bias`). The op name, the row and the case id already state everything else, so repeating it adds length and no information. Rows that share a label differ only in dtype.
+- **label** names the scenario the row models — the model and its role, or the synthetic purpose — plus only the qualifier that tells the row from a sibling. The op name, the row and the case id already state everything else, so repeating it adds length and no information. Rows that share a label differ only in dtype.
 - **Coverage.** Every optional tensor of an implemented entry is passed in at least one row and omitted in at least one, counted per input.
 - **Instantiation.** A row fixes shapes, dtypes, parameters, presence and metadata values. Devices follow [Call Semantics](#call-semantics); strides are contiguous, tensors do not alias, and other data is random.
 - The validator infers the call back from the instantiated inputs and requires agreement.
 
 ### Generators
 
-A metadata tensor's type is in the signature; its values come from a generator in its `values` field at instantiation.
+A metadata tensor's type is in the signature; its values come from the generator call in its `values` field at instantiation.
 
-```yaml
-cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)",
-               requires: ["prefix_offsets(total_q)"]}
-```
-
-- The generator result is unified with the declaration; shape indices other than the generator's arguments are solved by that unification (here `B`) and are not written in the row.
+- The generator result is unified with the declaration; shape indices other than the generator's arguments are solved by that unification and are not written in the row.
 - A generator is deterministic or seeded ([table 17](#t-generators)), so a row always yields the same values.
 - A generator's result rank is fixed, or follows its shape argument.
 - A generated tensor declares an integer dtype, `int32` or `int64`, and its values take it. A domain violation or an overflow of the declared dtype raises.
 - Generator arguments may be value-primitive calls.
-- `requires` names predicates on a metadata tensor's contents ([table 18](#t-predicates)). The constrained tensor's contents are the implicit first argument. Each predicate reads its tensor at a fixed rank, or at any rank for an elementwise bound.
+- `requires` is a list of predicate calls on a metadata tensor's contents ([table 18](#t-predicates)). The constrained tensor's contents are the implicit first argument. Each predicate reads its tensor at a fixed rank, or at any rank for an elementwise bound.
 - A written argument may name another metadata tensor, so one predicate relates two tensors; that tensor is present wherever the constrained one is.
 - A row is checked against its predicates at instantiation. At run time they are the caller's obligation, so the validator also holds them well-formed wherever their tensor is present.
 - A tensor with `requires` has `values`.
 
 ## Composition
 
-A composite op records the sub-op classes its built-in path may hold and where its own kernels sit. When and how often an instance is built stays in code, as do scheduling and forward.
+A composite op records the sub-op classes its built-in path may hold and where its own kernels sit, as `composition: {kind: composite, stages: [...]}`. When and how often an instance is built stays in code, as do scheduling and forward.
 
-```yaml
-composition:
-  kind: composite
-  stages:
-  - {name: pre_permute, op: MoePrePermuteFwdOp}
-  - {name: expert_mlp, op: MoeExpertMLPFwdOp}
-  - {name: post_permute, op: MoePostPermuteFwdOp}
-  - {name: indexed_small_route, op: IndexedExpertMLPFwdOp, optional: true}
-```
-
-- A stage names a manifest entry (`op`) or one of the op's kernel roles (`kernel`). A sub-op not held for every call is an `optional: true` stage; the condition stays in code.
+- A stage is `{name, op | kernel, optional}`: it names a manifest entry (`op`) or one of the op's kernel roles (`kernel`). A sub-op not held for every call is an `optional: true` stage; the condition stays in code.
 - Whether a parent's roofline equals its stages' is not specified by this design.
 - For an implemented parametric entry, the validator holds `op` stages to the class's `delegate_types` and `kernel` stages to its `kernel_types`, each in order.
 - `stages` is a non-empty list; stage names are unique; `optional` is a boolean.
@@ -342,7 +313,7 @@ The checks:
 | No. | Category    | Definition                                                                                                                                               | Checks                                                   |
 | --- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | 1   | index       | A name in a shape, `dtype`, type-family argument, `optional`, `nullable`, `mutated`, `let`, refinement or `values`, whose `type` is not in table 3 row 8 | kind, inference, exhaustiveness, refinements             |
-| 2   | other param | Any other construction parameter, including those whose `type` is in table 3 row 8 (`eps`, `ord`, `device`)                                              | `type` and `default`; usable in refinements and roofline |
+| 2   | other param | Any other construction parameter, including those whose `type` is in table 3 row 8                                                                       | `type` and `default`; usable in refinements and roofline |
 
 **<a id="t-forall"></a>Table 2** `forall` kinds
 
@@ -351,7 +322,7 @@ The checks:
 | 1   | `Dim`           | non-negative integer       | unification of inputs or generator results  | integer                              |
 | 2   | `Shape`         | tuple of `Dim`             | unification of inputs                       | integer list                         |
 | 3   | `DType[a \| b]` | one of the declared dtypes | unification of inputs                       | `dtype_cases`                        |
-| 4   | `Seq[Int]`      | integer list (`q_lens`)    | instantiation only, as a generator argument | integer list or value-primitive call |
+| 4   | `Seq[Int]`      | integer list               | instantiation only, as a generator argument | integer list or value-primitive call |
 
 **<a id="t-types"></a>Table 3** Parameter `type` to kind
 
@@ -460,7 +431,7 @@ The checks:
 | No. | Form                   | Meaning                                                                                                                      |
 | --- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | 1   | `forall` `DType` index | ranges over its declared set; solved from the inputs                                                                         |
-| 2   | dtype parameter        | the construction parameter's value (`dtype: out_dtype`)                                                                      |
+| 2   | dtype parameter        | the construction parameter's value                                                                                           |
 | 3   | constant               | a fixed dtype                                                                                                                |
 | 4   | dtype primitive        | a primitive whose result is a dtype ([table 15](#t-prims)); its kind is the primitive applied over its arguments' dtype sets |
 
@@ -483,13 +454,13 @@ The checks:
 
 **<a id="t-rows"></a>Table 16** Workload row keys
 
-| No. | Key                                       | Value                                                                                                                                                                             |
-| --- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | construction parameter name               | its value; required when it has no default                                                                                                                                        |
-| 2   | `some`                                    | the `optional: true` tensors passed                                                                                                                                               |
-| 3   | `forall` `Dim`, `Shape`, `Seq[Int]` index | exactly the branch's relevant indices no generator solves                                                                                                                         |
-| 4   | `dtype_cases`                             | list of assignments to the relevant `forall` `DType` indices, e.g. `[{T: float16}, {T: bfloat16}]`; only when there are such indices; a dtype parameter is written as a parameter |
-| 5   | `label`                                   | the row's name                                                                                                                                                                    |
+| No. | Key                                       | Value                                                                                                                                                                                              |
+| --- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | construction parameter name               | its value; required when it has no default                                                                                                                                                         |
+| 2   | `some`                                    | the `optional: true` tensors passed                                                                                                                                                                |
+| 3   | `forall` `Dim`, `Shape`, `Seq[Int]` index | exactly the branch's relevant indices no generator solves                                                                                                                                          |
+| 4   | `dtype_cases`                             | non-empty list of assignments, each a mapping `{<DType index>: <dtype>}` over the relevant `forall` `DType` indices; only when there are such indices; a dtype parameter is written as a parameter |
+| 5   | `label`                                   | the row's name                                                                                                                                                                                     |
 
 **<a id="t-generators"></a>Table 17** Generator classes
 
