@@ -289,10 +289,10 @@ MoeGroupedGemmFwdOp:
   - {P: 4096, K: 2048, E: 256, N: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-decode-down"}
   - {P: 4096, K: 2048, E: 256, N: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, out_dtype: float32, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-decode-down"}
   - {P: 32768, K: 2048, E: 256, N: 7168, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-prefill-down"}
-  - {P: 4096, K: 7168, E: 256, N: 2048, activation: silu_and_mul, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-decode-gate-up-fused"}
-  - {P: 32768, K: 7168, E: 256, N: 2048, activation: silu_and_mul, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-prefill-gate-up-fused"}
+  - {P: 4096, K: 7168, E: 256, N: 2048, activation: silu_and_mul, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-decode-swiglu"}
+  - {P: 32768, K: 7168, E: 256, N: 2048, activation: silu_and_mul, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-prefill-swiglu"}
     # DeepSeek-V3 under EP=8 with a masked dispatch: 32 local experts, 128 slots each.
-  - {K: 7168, E: 32, N: 4096, layout: {masked: {max_m: 128}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-ep8-masked-gate-up"}
+  - {K: 7168, E: 32, N: 4096, layout: {masked: {max_m: 128}}, dtype_cases: [{D: bfloat16}], label: "deepseek-v3-ep8-masked"}
   roofline:
     func: tileops.perf.formulas.moe_grouped_gemm_roofline
 

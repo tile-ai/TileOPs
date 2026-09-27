@@ -30,10 +30,10 @@ EngramGateConvFwdOp:
 
   workloads:
   # d is kept 256-aligned so runtime padding does not distort roofline.
-  - {M: 1, seq_len: 32, d: 256, dtype_cases: [{T: float16}], label: fwd-b1-s32-d256}
-  - {M: 2, seq_len: 64, d: 512, dtype_cases: [{T: float16}], label: fwd-b2-s64-d512}
-  - {M: 1, seq_len: 128, d: 256, dtype_cases: [{T: bfloat16}], label: fwd-b1-s128-d256}
-  - {M: 3, seq_len: 96, d: 768, dtype_cases: [{T: bfloat16}], label: fwd-b3-s96-d768}
+  - {M: 1, seq_len: 32, d: 256, dtype_cases: [{T: float16}], label: s32}
+  - {M: 2, seq_len: 64, d: 512, dtype_cases: [{T: float16}], label: s64}
+  - {M: 1, seq_len: 128, d: 256, dtype_cases: [{T: bfloat16}], label: s128}
+  - {M: 3, seq_len: 96, d: 768, dtype_cases: [{T: bfloat16}], label: s96}
 
   roofline:
     # Per position: three RMSNorms, the gate dot and sigmoid, vhat, SiLU and the residual
@@ -75,10 +75,10 @@ EngramGateConvBwdOp:
     - "d > 0"
 
   workloads:
-  - {M: 1, seq_len: 32, d: 256, dtype_cases: [{T: float16}], label: bwd-b1-s32-d256}
-  - {M: 2, seq_len: 64, d: 512, dtype_cases: [{T: float16}], label: bwd-b2-s64-d512}
-  - {M: 1, seq_len: 128, d: 256, dtype_cases: [{T: bfloat16}], label: bwd-b1-s128-d256}
-  - {M: 3, seq_len: 96, d: 768, dtype_cases: [{T: bfloat16}], label: bwd-b3-s96-d768}
+  - {M: 1, seq_len: 32, d: 256, dtype_cases: [{T: float16}], label: s32}
+  - {M: 2, seq_len: 64, d: 512, dtype_cases: [{T: float16}], label: s64}
+  - {M: 1, seq_len: 128, d: 256, dtype_cases: [{T: bfloat16}], label: s128}
+  - {M: 3, seq_len: 96, d: 768, dtype_cases: [{T: bfloat16}], label: s96}
 
   roofline:
     # Per position: the normalized-value recomputes, SiLU, RMSNorm, gate and dot backward
@@ -120,9 +120,9 @@ EngramDecodeFwdOp:
     - "L <= max_conv_len"
 
   workloads:
-  - {batch: 1, d_mem: 512, d: 256, max_conv_len: 12, conv_kernel_size: 4, dilation: 3, L: 12, dtype_cases: [{T: float16}], label: decode-b1-dmem512-d256}
-  - {batch: 4, d_mem: 1024, d: 512, max_conv_len: 20, conv_kernel_size: 4, dilation: 5, L: 20, dtype_cases: [{T: float16}], label: decode-b4-dmem1024-d512}
-  - {batch: 8, d_mem: 512, d: 256, max_conv_len: 18, conv_kernel_size: 4, dilation: 3, L: 18, dtype_cases: [{T: bfloat16}], label: decode-b8-dmem512-d256}
+  - {batch: 1, d_mem: 512, d: 256, max_conv_len: 12, conv_kernel_size: 4, dilation: 3, L: 12, dtype_cases: [{T: float16}], label: b1}
+  - {batch: 4, d_mem: 1024, d: 512, max_conv_len: 20, conv_kernel_size: 4, dilation: 5, L: 20, dtype_cases: [{T: float16}], label: b4}
+  - {batch: 8, d_mem: 512, d: 256, max_conv_len: 18, conv_kernel_size: 4, dilation: 3, L: 18, dtype_cases: [{T: bfloat16}], label: b8}
 
   roofline:
     flops: "4 * batch * d_mem * d + batch * (16 * d + conv_kernel_size * 2 * d) + 20 * batch"
@@ -156,9 +156,9 @@ MHCPreFwdOp:
     - "C > 0 and C % n == 0"
 
   workloads:
-  - {B: 1, C: 5120, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: pre-small}
-  - {B: 2, C: 7680, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: pre-medium}
-  - {B: 4, C: 10240, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: pre-large}
+  - {B: 1, C: 5120, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: small}
+  - {B: 2, C: 7680, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: medium}
+  - {B: 4, C: 10240, Q: 24, alpha_pre: 1.0, alpha_post: 1.0, alpha_res: 1.0, sinkhorn_repeat: 1, label: large}
 
   roofline:
     flops: "2 * B * C * Q + 2 * B * c_x * n + 2 * B * n * C"
@@ -177,9 +177,9 @@ MHCPostFwdOp:
       x_out: {dtype: bfloat16, shape: "[B, n * c_x]"}
 
   workloads:
-  - {B: 1, n: 4, c_x: 1280, label: post-small}
-  - {B: 2, n: 4, c_x: 1920, label: post-medium}
-  - {B: 4, n: 4, c_x: 2560, label: post-large}
+  - {B: 1, n: 4, c_x: 1280, label: small}
+  - {B: 2, n: 4, c_x: 1920, label: medium}
+  - {B: 4, n: 4, c_x: 2560, label: large}
 
   roofline:
     flops: "2 * B * n * c_x"

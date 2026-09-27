@@ -310,12 +310,12 @@ ClampFwdOp:
     - "present(min) or present(max)"
 
   workloads:
-  - {A: [4096, 4096], L: [4096, 4096], U: [4096, 4096], some: [min, max], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {A: [16384, 16384], L: [16384, 16384], U: [16384, 16384], some: [min, max], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
-  - {A: [4096, 4096], L: [4096, 4096], some: [min], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M-min-only"}
-  - {A: [16384, 16384], L: [16384, 16384], some: [min], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M-min-only"}
-  - {A: [4096, 4096], U: [4096, 4096], some: [max], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M-max-only"}
-  - {A: [16384, 16384], U: [16384, 16384], some: [max], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M-max-only"}
+  - {A: [4096, 4096], L: [4096, 4096], U: [4096, 4096], some: [min, max], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {A: [16384, 16384], L: [16384, 16384], U: [16384, 16384], some: [min, max], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
+  - {A: [4096, 4096], L: [4096, 4096], some: [min], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M-min-only"}
+  - {A: [16384, 16384], L: [16384, 16384], some: [min], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M-min-only"}
+  - {A: [4096, 4096], U: [4096, 4096], some: [max], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M-max-only"}
+  - {A: [16384, 16384], U: [16384, 16384], some: [max], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M-max-only"}
 
   roofline:
     flops: "prod(broadcast(A, L, U)) if present(min) and present(max) else prod(broadcast(A, L)) if present(min) else prod(broadcast(A, U))"
@@ -343,8 +343,8 @@ ClampScalarFwdOp:
     - "not present(max) or representable(max.value, T)"
 
   workloads:
-  - {S: [4096, 4096], min: -0.5, max: 0.5, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], min: -0.5, max: 0.5, dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], min: -0.5, max: 0.5, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], min: -0.5, max: 0.5, dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     # FLOPs: clamp = compare-and-select. Per roofline.md §1.3 convention,
@@ -369,8 +369,8 @@ NanToNumFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     # One compare-and-select per replaced class; the default infinities are one two-bound clamp.

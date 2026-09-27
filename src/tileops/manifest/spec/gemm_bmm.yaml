@@ -17,15 +17,15 @@ BmmFwdOp:
 
   workloads:
   # A representative sweep across small/large batch counts and decode/prefill
-  - {B: 8, M: 128, N: 128, K: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: small-b8-128}
-  - {B: 8, M: 1024, N: 1024, K: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-b8-1k}
-  - {B: 16, M: 512, N: 512, K: 512, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-b16-512}
-  - {B: 32, M: 256, N: 256, K: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-b32-256}
-  - {B: 4, M: 4096, N: 4096, K: 4096, dtype_cases: [{T: bfloat16}], label: square-b4-4k}
-  - {B: 8, M: 2048, N: 2048, K: 2048, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-b8-2k}
-  - {B: 64, M: 128, N: 2048, K: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: mha-decode-b64-qk}
-  - {B: 64, M: 128, N: 128, K: 2048, dtype_cases: [{T: float16}, {T: bfloat16}], label: mha-decode-b64-pv}
-  - {B: 128, M: 512, N: 512, K: 2048, dtype_cases: [{T: bfloat16}], label: moe-prefill-b128}
+  - {B: 8, M: 128, N: 128, K: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: small}
+  - {B: 8, M: 1024, N: 1024, K: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-1k}
+  - {B: 16, M: 512, N: 512, K: 512, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-512}
+  - {B: 32, M: 256, N: 256, K: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-256}
+  - {B: 4, M: 4096, N: 4096, K: 4096, dtype_cases: [{T: bfloat16}], label: square-4k}
+  - {B: 8, M: 2048, N: 2048, K: 2048, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-2k}
+  - {B: 64, M: 128, N: 2048, K: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: mha-decode-qk}
+  - {B: 64, M: 128, N: 128, K: 2048, dtype_cases: [{T: float16}, {T: bfloat16}], label: mha-decode-pv}
+  - {B: 128, M: 512, N: 512, K: 2048, dtype_cases: [{T: bfloat16}], label: moe-prefill}
 
   roofline:
     flops: "2 * B * M * N * K"
@@ -58,17 +58,17 @@ BmmFp8FwdOp:
       d: {dtype: out_dtype, shape: "[B, M, N]"}
 
   workloads:
-  - {B: 4, M: 1024, N: 1024, K: 1024, dtype_cases: [{T: float8_e4m3fn}], label: square-b4-1k-per-tensor}
-  - {B: 8, M: 2048, N: 2048, K: 2048, dtype_cases: [{T: float8_e4m3fn}], label: square-b8-2k-per-tensor}
-  - {B: 32, M: 128, N: 128, K: 2048, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-b32-pv-per-tensor}
-  - {B: 64, M: 128, N: 2048, K: 128, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-b64-qk-per-tensor}
-  - {B: 128, M: 512, N: 512, K: 2048, dtype_cases: [{T: float8_e4m3fn}], label: moe-prefill-b128-per-tensor}
-  - {B: 4, M: 1024, N: 1024, K: 1024, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: square-b4-1k-per-tensor-nk}
-  - {B: 8, M: 2048, N: 2048, K: 2048, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: square-b8-2k-per-tensor-nk}
-  - {B: 32, M: 128, N: 128, K: 2048, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-b32-pv-per-tensor-nk}
-  - {B: 64, M: 128, N: 2048, K: 128, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-b64-qk-per-tensor-nk}
-  - {B: 128, M: 512, N: 512, K: 2048, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: moe-prefill-b128-per-tensor-nk}
-  - {B: 4, M: 1024, N: 1024, K: 1024, out_dtype: float16, dtype_cases: [{T: float8_e4m3fn}], label: square-b4-1k-per-tensor}
+  - {B: 4, M: 1024, N: 1024, K: 1024, dtype_cases: [{T: float8_e4m3fn}], label: square-1k}
+  - {B: 8, M: 2048, N: 2048, K: 2048, dtype_cases: [{T: float8_e4m3fn}], label: square-2k}
+  - {B: 32, M: 128, N: 128, K: 2048, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-pv}
+  - {B: 64, M: 128, N: 2048, K: 128, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-qk}
+  - {B: 128, M: 512, N: 512, K: 2048, dtype_cases: [{T: float8_e4m3fn}], label: moe-prefill}
+  - {B: 4, M: 1024, N: 1024, K: 1024, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: square-1k-nk}
+  - {B: 8, M: 2048, N: 2048, K: 2048, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: square-2k-nk}
+  - {B: 32, M: 128, N: 128, K: 2048, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-pv-nk}
+  - {B: 64, M: 128, N: 2048, K: 128, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-qk-nk}
+  - {B: 128, M: 512, N: 512, K: 2048, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: moe-prefill-nk}
+  - {B: 4, M: 1024, N: 1024, K: 1024, out_dtype: float16, dtype_cases: [{T: float8_e4m3fn}], label: square-1k}
 
   roofline:
     flops: "2 * B * M * N * K"

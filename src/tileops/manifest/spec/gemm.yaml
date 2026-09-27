@@ -27,14 +27,14 @@ GemmFwdOp:
   # trans_a/trans_b pick the storage layout the kernel compiles for. The NT (N, K) shapes mirror
   # DeepGEMM's normal-GEMM test set (DeepSeek-V3 MLP/attention projections), swept over decode
   # (M=128) and prefill (M=4096) token counts.
-  - {M: 1024, N: 1024, K: 1024, trans_a: false, trans_b: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-1k-nn}
+  - {M: 1024, N: 1024, K: 1024, trans_a: false, trans_b: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-1k}
   - {M: 128, N: 2112, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-decode-gate-up}
   - {M: 128, N: 7168, K: 2048, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-decode-down}
   - {M: 4096, N: 2112, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-prefill-gate-up}
   - {M: 4096, N: 7168, K: 2048, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-prefill-down}
-  - {M: 4096, N: 4096, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v3-prefill-attn-proj}
-  - {M: 4096, N: 7168, K: 16384, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: k-dominant-7168x16384}
-  - {M: 4096, N: 24576, K: 1536, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: wide-n-24576}
+  - {M: 4096, N: 4096, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v3-prefill-o-proj}
+  - {M: 4096, N: 7168, K: 16384, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: k-dominant}
+  - {M: 4096, N: 24576, K: 1536, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: wide-n}
   # Mid-M band: samples of M = 9..127, the token-count gap below the decode/prefill sweep; N/K
   # reuse the DeepSeek-V3 projection shapes above.
   - {M: 16, N: 4096, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: mid-m16-attn}
@@ -75,23 +75,23 @@ GemmFp8FwdOp:
     - "(SA == (1, 1) and SB == (1, 1)) or (SA == (M, ceil_div(K, 128)) and SB == (N, ceil_div(K, 128)))"
 
   workloads:
-  - {M: 128, N: 2112, K: 7168, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-gate-up-per-tensor}
-  - {M: 128, N: 7168, K: 2048, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-down-per-tensor}
-  - {M: 4096, N: 2112, K: 7168, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-gate-up-per-tensor}
-  - {M: 4096, N: 7168, K: 2048, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-down-per-tensor}
-  - {M: 128, N: 2112, K: 7168, SA: [128, 56], SB: [2112, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-gate-up-block128}
-  - {M: 128, N: 7168, K: 2048, SA: [128, 16], SB: [7168, 16], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-down-block128}
-  - {M: 4096, N: 2112, K: 7168, SA: [4096, 56], SB: [2112, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-gate-up-block128}
-  - {M: 4096, N: 7168, K: 2048, SA: [4096, 16], SB: [7168, 16], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-down-block128}
-  - {M: 4096, N: 4096, K: 7168, SA: [4096, 56], SB: [4096, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-attn-proj-block128}
-  - {M: 4096, N: 7168, K: 16384, SA: [4096, 128], SB: [7168, 128], dtype_cases: [{T: float8_e4m3fn}], label: k-dominant-7168x16384-block128}
-  - {M: 4096, N: 24576, K: 1536, SA: [4096, 12], SB: [24576, 12], dtype_cases: [{T: float8_e4m3fn}], label: wide-n-24576-block128}
-  - {M: 8, N: 7168, K: 2048, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: small-batch-down-m8-per-tensor}
-  - {M: 1, N: 7168, K: 2048, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: gemv-down-m1-per-tensor}
-  - {M: 1, N: 7168, K: 2048, SA: [1, 16], SB: [7168, 16], dtype_cases: [{T: float8_e4m3fn}], label: gemv-down-m1-block128}
-  - {M: 128, N: 2112, K: 7168, SA: [1, 1], SB: [1, 1], some: [bias], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-gate-up-per-tensor-bias}
-  - {M: 128, N: 2112, K: 7168, SA: [1, 1], SB: [1, 1], out_dtype: float16, dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-gate-up-per-tensor}
-  - {M: 128, N: 2112, K: 7168, SA: [128, 56], SB: [2112, 56], out_dtype: float16, dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-gate-up-block128}
+  - {M: 128, N: 2112, K: 7168, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-gate-up}
+  - {M: 128, N: 7168, K: 2048, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-down}
+  - {M: 4096, N: 2112, K: 7168, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-gate-up}
+  - {M: 4096, N: 7168, K: 2048, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-down}
+  - {M: 128, N: 2112, K: 7168, SA: [128, 56], SB: [2112, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-gate-up-block}
+  - {M: 128, N: 7168, K: 2048, SA: [128, 16], SB: [7168, 16], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-down-block}
+  - {M: 4096, N: 2112, K: 7168, SA: [4096, 56], SB: [2112, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-gate-up-block}
+  - {M: 4096, N: 7168, K: 2048, SA: [4096, 16], SB: [7168, 16], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-down-block}
+  - {M: 4096, N: 4096, K: 7168, SA: [4096, 56], SB: [4096, 56], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-prefill-o-proj-block}
+  - {M: 4096, N: 7168, K: 16384, SA: [4096, 128], SB: [7168, 128], dtype_cases: [{T: float8_e4m3fn}], label: k-dominant-block}
+  - {M: 4096, N: 24576, K: 1536, SA: [4096, 12], SB: [24576, 12], dtype_cases: [{T: float8_e4m3fn}], label: wide-n-block}
+  - {M: 8, N: 7168, K: 2048, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: small-batch-down}
+  - {M: 1, N: 7168, K: 2048, SA: [1, 1], SB: [1, 1], dtype_cases: [{T: float8_e4m3fn}], label: gemv-down}
+  - {M: 1, N: 7168, K: 2048, SA: [1, 16], SB: [7168, 16], dtype_cases: [{T: float8_e4m3fn}], label: gemv-down-block}
+  - {M: 128, N: 2112, K: 7168, SA: [1, 1], SB: [1, 1], some: [bias], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-gate-up-bias}
+  - {M: 128, N: 2112, K: 7168, SA: [1, 1], SB: [1, 1], out_dtype: float16, dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-gate-up}
+  - {M: 128, N: 2112, K: 7168, SA: [128, 56], SB: [2112, 56], out_dtype: float16, dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-decode-gate-up-block}
 
   roofline:
     flops: "2 * M * N * K"
@@ -119,28 +119,28 @@ GemmW4A16FwdOp:
   workloads:
   # Decode-oriented coverage. The small non-decode shapes are compile/smoke checks only; they are
   # not intended to claim full GEMM performance coverage.
-  - {M: 64, N: 64, K: 128, dtype_cases: [{T: float16}], label: compile-smoke-square-64x64x128}
-  - {M: 128, N: 256, K: 256, dtype_cases: [{T: float16}], label: compile-smoke-rect-128x256x256}
-  - {M: 1, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-l2-resident-ish}
-  - {M: 1, N: 8192, K: 16384, dtype_cases: [{T: float16}], label: decode-hbm-streaming-threshold}
-  - {M: 1, N: 7168, K: 20480, dtype_cases: [{T: float16}], label: decode-non-power2-low-cta}
-  - {M: 1, N: 8192, K: 81920, dtype_cases: [{T: float16}], label: decode-long-k-pressure}
+  - {M: 64, N: 64, K: 128, dtype_cases: [{T: float16}], label: smoke-square}
+  - {M: 128, N: 256, K: 256, dtype_cases: [{T: float16}], label: smoke-rect}
+  - {M: 1, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-l2-resident}
+  - {M: 1, N: 8192, K: 16384, dtype_cases: [{T: float16}], label: decode-hbm-streaming}
+  - {M: 1, N: 7168, K: 20480, dtype_cases: [{T: float16}], label: decode-non-pow2}
+  - {M: 1, N: 8192, K: 81920, dtype_cases: [{T: float16}], label: decode-long-k}
   # The token axis at one shape. Server batching lands here, and the kernel picks a different
   # tile at each of these counts.
-  - {M: 2, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: batched-decode-two-requests}
-  - {M: 8, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: batched-decode-server-batch}
-  - {M: 32, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: batched-decode-wide-batch}
+  - {M: 2, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-batch2}
+  - {M: 8, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-batch8}
+  - {M: 32, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-batch32}
   - {M: 128, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: chunked-prefill-tile}
-  - {M: 512, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: prefill-mlp-up-projection}
+  - {M: 512, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: prefill-mlp-up}
   # Hidden sizes other than 8192, where the decode rows above do not predict the result: the
   # one-token grid under-fills the machine at 4096, the prefill one at 5120, and the tile selector
   # answers each differently.
-  - {M: 1, N: 4096, K: 14336, dtype_cases: [{T: float16}], label: decode-llama3-8b-mlp-down}
-  - {M: 128, N: 4096, K: 14336, dtype_cases: [{T: float16}], label: prefill-llama3-8b-mlp-down}
-  - {M: 128, N: 5120, K: 25600, dtype_cases: [{T: float16}], label: prefill-qwen3-32b-mlp-down}
+  - {M: 1, N: 4096, K: 14336, dtype_cases: [{T: float16}], label: llama3-8b-decode-down}
+  - {M: 128, N: 4096, K: 14336, dtype_cases: [{T: float16}], label: llama3-8b-prefill-down}
+  - {M: 128, N: 5120, K: 25600, dtype_cases: [{T: float16}], label: qwen3-32b-prefill-down}
   # A tensor-parallel shard: N is a fraction of the layer's, so the grid is far smaller than the
   # machine and the per-CTA work dominates.
-  - {M: 1, N: 1024, K: 8192, dtype_cases: [{T: float16}], label: decode-tp8-attention-out}
+  - {M: 1, N: 1024, K: 8192, dtype_cases: [{T: float16}], label: decode-tp8-attn-out}
 
   roofline:
     # The contraction, and one subtract and one multiply dequantizing each weight once.
@@ -196,9 +196,9 @@ GroupedGemmFwdOp:
     - "K > 0"
 
   workloads:
-  - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: false, transpose_b: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: nt-batch16-m4096-n4096-k4096}
-  - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: false, transpose_b: false, dtype_cases: [{T: float16}], label: nn-batch16-m4096-n4096-k4096}
-  - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: true, transpose_b: false, dtype_cases: [{T: float16}], label: tn-batch16-m4096-n4096-k4096}
+  - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: false, transpose_b: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: nt}
+  - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: false, transpose_b: false, dtype_cases: [{T: float16}], label: nn}
+  - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: true, transpose_b: false, dtype_cases: [{T: float16}], label: tn}
 
   roofline:
     flops: "2 * M * N * K"

@@ -22,8 +22,8 @@ WhereFwdOp:
       output: {dtype: T, shape: "[*broadcast(C, A, B)]"}
 
   workloads:
-  - {C: [4096, 4096], A: [4096, 4096], B: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {C: [16384, 16384], A: [16384, 16384], B: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {C: [4096, 4096], A: [4096, 4096], B: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {C: [16384, 16384], A: [16384, 16384], B: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(broadcast(C, A, B))"
@@ -48,8 +48,8 @@ LerpTensorFwdOp:
       output: {dtype: T, shape: "[*broadcast(A, E, W)]"}
 
   workloads:
-  - {A: [4096, 4096], E: [4096, 4096], W: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {A: [16384, 16384], E: [16384, 16384], W: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {A: [4096, 4096], E: [4096, 4096], W: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {A: [16384, 16384], E: [16384, 16384], W: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "3 * prod(broadcast(A, E, W))"

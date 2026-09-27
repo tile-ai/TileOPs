@@ -337,6 +337,24 @@ _ENTRY_ERRORS = [
                     "trans_a": False,
                     "trans_b": False,
                     "dtype_cases": [{"T": "float16"}],
+                    "label": "llama-8b-prefill-paged-b8-prefix4k-chunk512",
+                }
+            ],
+        ),
+        "longer than 28 characters",
+    ),
+    (
+        "GemmFwdOp",
+        _entry(
+            "GemmFwdOp",
+            workloads=[
+                {
+                    "M": 1,
+                    "N": 1,
+                    "K": 1,
+                    "trans_a": False,
+                    "trans_b": False,
+                    "dtype_cases": [{"T": "float16"}],
                     "label": "x",
                 }
             ]

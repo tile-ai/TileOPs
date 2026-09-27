@@ -59,8 +59,8 @@ MaskedFillFwdOp:
       output: {dtype: T, shape: "[*broadcast(A, M)]"}
 
   workloads:
-  - {A: [4096, 4096], M: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {A: [16384, 16384], M: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {A: [4096, 4096], M: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {A: [16384, 16384], M: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(broadcast(A, M))"
@@ -89,8 +89,8 @@ MaskedFillScalarFwdOp:
     - "representable(value, T)"
 
   workloads:
-  - {A: [4096, 4096], M: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {A: [16384, 16384], M: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {A: [4096, 4096], M: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {A: [16384, 16384], M: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(broadcast(A, M))"

@@ -230,12 +230,12 @@ GroupNormFwdOp:
     - "num_groups > 0 and C % num_groups == 0"
     - "B * (C // num_groups) * prod(L) != 1"
   workloads:
-  - {B: 8, C: 128, L: [32, 32], num_groups: 32, dtype_cases: [{T: float16}, {T: bfloat16}], label: image-g32}
-  - {B: 4, C: 256, L: [28, 28], num_groups: 32, dtype_cases: [{T: float16}, {T: float32}], label: wider-channel-g32}
-  - {B: 4, C: 128, L: [30, 30], num_groups: 16, dtype_cases: [{T: float16}], label: tail-spatial-g16}
-  - {B: 8, C: 128, L: [32, 32], num_groups: 32, some: [weight, bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: image-g32-affine}
-  - {B: 4, C: 256, L: [28, 28], num_groups: 32, some: [weight, bias], dtype_cases: [{T: float16}, {T: float32}], label: wider-channel-g32-affine}
-  - {B: 4, C: 128, L: [30, 30], num_groups: 16, some: [weight, bias], dtype_cases: [{T: float16}], label: tail-spatial-g16-affine}
+  - {B: 8, C: 128, L: [32, 32], num_groups: 32, dtype_cases: [{T: float16}, {T: bfloat16}], label: image}
+  - {B: 4, C: 256, L: [28, 28], num_groups: 32, dtype_cases: [{T: float16}, {T: float32}], label: wider-channel}
+  - {B: 4, C: 128, L: [30, 30], num_groups: 16, dtype_cases: [{T: float16}], label: tail-spatial}
+  - {B: 8, C: 128, L: [32, 32], num_groups: 32, some: [weight, bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: image-affine}
+  - {B: 4, C: 256, L: [28, 28], num_groups: 32, some: [weight, bias], dtype_cases: [{T: float16}, {T: float32}], label: wider-channel-affine}
+  - {B: 4, C: 128, L: [30, 30], num_groups: 16, some: [weight, bias], dtype_cases: [{T: float16}], label: tail-spatial-affine}
   roofline:
     # Mean (1), centered variance (3), normalize (2), and one per present affine tensor.
     flops: "(6 + (1 if present(weight) else 0) + (1 if present(bias) else 0)) * B * C * prod(L)"
@@ -268,8 +268,8 @@ InstanceNormFwdOp:
   - {B: 8, C: 128, L: [32, 32], dtype_cases: [{T: float16}, {T: bfloat16}], label: image}
   - {B: 4, C: 256, L: [28, 28], dtype_cases: [{T: float16}, {T: float32}], label: wider-channel}
   - {B: 4, C: 64, L: [30, 30], dtype_cases: [{T: float16}], label: tail-spatial}
-  - {B: 8, C: 128, L: [32, 32], some: [running_mean], dtype_cases: [{T: float16}], label: image-track-running-stats}
-  - {B: 8, C: 128, L: [32, 32], use_input_stats: false, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: image-running-stats}
+  - {B: 8, C: 128, L: [32, 32], some: [running_mean], dtype_cases: [{T: float16}], label: image-track-stats}
+  - {B: 8, C: 128, L: [32, 32], use_input_stats: false, some: [running_mean, weight, bias], dtype_cases: [{T: float16}], label: image-eval}
   roofline:
     # Input statistics: mean (1), centered variance (3), normalize (2); running statistics:
     # normalize (2). One more per present affine tensor.

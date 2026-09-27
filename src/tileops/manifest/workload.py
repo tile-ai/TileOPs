@@ -62,6 +62,7 @@ __all__ = ["Call", "CallView", "RowError", "TensorSpec", "check_workloads", "ins
 
 _ROW_KEYS = frozenset({"some", "dtype_cases", "label"})
 _LABEL = re.compile(r"[A-Za-z0-9._-]+")
+_LABEL_MAX = 28
 # The integer dtypes generated metadata may take, with their ranges.
 _METADATA_RANGES = {"int32": 2**31, "int64": 2**63}
 
@@ -653,6 +654,8 @@ def _row_errors(sig: Signature, row: object) -> list[str]:
     label = row.get("label")
     if not isinstance(label, str) or not _LABEL.fullmatch(label):
         errors.append("`label` must be a non-empty [A-Za-z0-9._-] string")
+    elif len(label) > _LABEL_MAX:
+        errors.append(f"`label` {label!r} is longer than {_LABEL_MAX} characters")
     optional = {t.name for t in sig.call_tensors.values() if t.optional is True}
     some = row.get("some", [])
     if (

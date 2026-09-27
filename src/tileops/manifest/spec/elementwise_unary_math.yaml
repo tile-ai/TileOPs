@@ -22,8 +22,8 @@ ExpFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -41,8 +41,8 @@ LogFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -60,8 +60,8 @@ SqrtFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -79,8 +79,8 @@ RsqrtFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -98,8 +98,8 @@ AbsFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -117,8 +117,8 @@ NegFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -138,8 +138,8 @@ ReciprocalFwdOp:
       output: {dtype: "promote_int_to_float(T)", shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -157,8 +157,8 @@ SignFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     # 2 comparisons per element (sign uses two compares + selects)
@@ -177,8 +177,8 @@ SinFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -196,8 +196,8 @@ CosFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -215,8 +215,8 @@ FloorFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -234,8 +234,8 @@ CeilFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -258,8 +258,8 @@ RoundFwdOp:
     - "decimals == 0 or category(T) == 'float'"
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     # A nonzero decimals scales, rounds and unscales.
@@ -278,8 +278,8 @@ TruncFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -297,8 +297,8 @@ ErfFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -316,8 +316,8 @@ Log1pFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -335,8 +335,8 @@ Expm1FwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -354,8 +354,8 @@ SigmoidFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     # FLOPs: sigmoid(x) = 1 / (1 + exp(-x)).
@@ -375,8 +375,8 @@ TanhFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     # FLOPs: tanh is one transcendental call; per roofline.md §1.3
@@ -396,8 +396,8 @@ LogicalNotFwdOp:
       output: {dtype: bool, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: bool}, {T: float16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: bool}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: bool}, {T: float16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: bool}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -415,8 +415,8 @@ BitwiseNotFwdOp:
       output: {dtype: T, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: int32}, {T: int64}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: int32}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: int32}, {T: int64}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: int32}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -434,8 +434,8 @@ IsnanFwdOp:
       output: {dtype: bool, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -453,8 +453,8 @@ IsinfFwdOp:
       output: {dtype: bool, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -472,8 +472,8 @@ IsfiniteFwdOp:
       output: {dtype: bool, shape: "[*S]"}
 
   workloads:
-  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "elementwise-16M"}
-  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "elementwise-256M"}
+  - {S: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
+  - {S: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
 
   roofline:
     flops: "prod(S)"
@@ -499,8 +499,8 @@ DropoutFwdOp:
   workloads:
   # Normal kernel path. p=0, p=1, and training=false are short-circuit paths
   # and should be tested separately from release-facing roofline workloads.
-  - {S: [1024, 4096], p: 0.5, training: true, dtype_cases: [{T: float16}, {T: float32}], label: "tokens-1k-hidden-4k"}
-  - {S: [1024, 10240], p: 0.5, training: true, dtype_cases: [{T: bfloat16}], label: "tokens-1k-hidden-10k"}
+  - {S: [1024, 4096], p: 0.5, training: true, dtype_cases: [{T: float16}, {T: float32}], label: "hidden-4k"}
+  - {S: [1024, 10240], p: 0.5, training: true, dtype_cases: [{T: bfloat16}], label: "hidden-10k"}
 
   roofline:
     # The keep mask and the 1 / (1 - p) scale.
