@@ -84,7 +84,12 @@ def _fa3_mha_decode_paged(workload, k, v):
 
     def baseline_fn(q, k, v, real_seqlen_kv, block_table):
         out = flash_attn_with_kvcache(
-            q, k_paged, v_paged, cache_seqlens=real_seqlen_kv.int(), page_table=block_table.int()
+            q,
+            k_paged,
+            v_paged,
+            cache_seqlens=real_seqlen_kv.int(),
+            page_table=block_table.int(),
+            causal=workload.is_causal,
         )
         return out[0] if isinstance(out, tuple) else out
 
@@ -92,7 +97,12 @@ def _fa3_mha_decode_paged(workload, k, v):
 
 
 def _flashinfer_mha_decode_paged(workload, q, k, v, real_seqlen_kv, block_table):
-    """Set up FlashInfer paged decode wrapper. Returns callable or None."""
+    """Set up FlashInfer paged decode wrapper. Returns callable or None.
+
+    The decode wrapper takes one query token per request.
+    """
+    if q.shape[1] != 1:
+        return None
     try:
         from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper
     except ImportError:

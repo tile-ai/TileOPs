@@ -212,10 +212,13 @@ def _mha_decode_paged_ws_kernel(
                             T.mbarrier_wait_parity(v_ready[st], ready_parity)
                             for jj in T.serial(rows_per_warp):
                                 j = warp * rows_per_warp + jj
-                                prob[0] = T.exp2(scores[jj] - m_run[0])
-                                l_run[0] += prob[0]
-                                for c in T.serial(vec):
-                                    acc_o[c] += prob[0] * T.cast(Vs[st, j, d0 + c], accum)
+                                # A row past the cache weighs zero, but a non-finite
+                                # value there would survive the multiply: skip it.
+                                if row0 + j < kv_len:
+                                    prob[0] = T.exp2(scores[jj] - m_run[0])
+                                    l_run[0] += prob[0]
+                                    for c in T.serial(vec):
+                                        acc_o[c] += prob[0] * T.cast(Vs[st, j, d0 + c], accum)
                             T.mbarrier_arrive(v_free[st])
 
                         # Merge the warp partials, then publish one partial per

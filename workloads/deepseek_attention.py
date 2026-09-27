@@ -94,8 +94,13 @@ class NsaFwdWorkload(WorkloadBase):
         ).requires_grad_(True)
 
         token_indices = prepare_token_indices(offsets)
-        # How many blocks each token may attend to: the one it sits in, and those before.
-        chunks = ((token_indices[:, 1] + self.block_size - 1) // self.block_size).clamp(min=1)
+        # How many blocks each token may attend to: causally the one it sits in and those
+        # before, otherwise every block of its sequence.
+        if self.is_causal:
+            chunks = ((token_indices[:, 1] + self.block_size - 1) // self.block_size).clamp(min=1)
+        else:
+            seq_len = (offsets[1:] - offsets[:-1])[token_indices[:, 0]]
+            chunks = (seq_len + self.block_size - 1) // self.block_size
         n_cand = max(int(chunks.max().item()), self.selected_blocks)
         # Each token picks selected_blocks distinct blocks out of its candidates. Sorting
         # one random key per candidate is a batched randperm; the ineligible tail sorts
@@ -169,14 +174,17 @@ class NsaFwdWorkload(WorkloadBase):
             # Out-of-range positions are masked below; clamping only keeps the gather legal.
             k_slc, v_slc = (x[pos.clamp(0, n_token - 1), head] for x in (k_b, v_b))
 
+            # A causal token sees keys up to itself, a non-causal one up to the sequence end.
             i_q = torch.arange(n_token, device=device).view(n_token, 1, 1)
+            beyond = pos > i_q if self.is_causal else pos >= n_token
             attn = (
                 einsum(q_b * scale, k_slc, "t h d, t n h d -> t n h")
                 .masked_fill(
-                    (pos < 0) | (pos > i_q) | (slot_block >= block_counts[bos:eos].unsqueeze(1)),
+                    (pos < 0) | beyond | (slot_block >= block_counts[bos:eos].unsqueeze(1)),
                     float("-inf"),
                 )
                 .softmax(1)
+                .nan_to_num(0.0)  # a token no selected block gives a key outputs zeros
             )
             o_slc[bos:eos] = einsum(attn, v_slc, "t n h, t n h v -> t h v") * self.g_slc[
                 0, bos:eos

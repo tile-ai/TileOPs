@@ -129,6 +129,10 @@ class MultiHeadAttentionBwdOp(Op):
 class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
     """Paged MHA decode with dynamic KV cache. Layout: ``Q`` $[batch \\times seqlen\\_q \\times heads \\times dim]$ (BSHD);
     K, V physical cache [seqlen_kv, heads, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
+
+    A causal call aligns the queries to the end of each request's cache: query ``i`` sees
+    the keys up to position ``i + real_seqlen_kv - seqlen_q``. A query that sees no key
+    outputs zeros.
     """
 
     compile_boundary = True
