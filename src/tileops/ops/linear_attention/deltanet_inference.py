@@ -35,16 +35,27 @@ class DeltaNetInferenceFwdOp(Op):
         self,
         scale: Optional[float] = None,
         use_qk_l2norm_in_kernel: bool = False,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
         *,
         target: Target = None,
+        kernel_map: Optional[Dict[str, Kernel]] = None,
+        tune: bool = False,
     ) -> None:
-        """Configure the attention scale, Q/K normalization, and target."""
+        """Configure the attention scale, Q/K normalization, and target.
+
+        Args:
+            scale: Query scale, or ``None`` for ``K**-0.5``.
+            use_qk_l2norm_in_kernel: Normalize Q and K internally.
+            target: Backend target, or ``None`` to resolve from the input
+                device.
+            kernel_map: Optional in-tree kernel overrides.
+            tune: Autotune a kernel when it is first built.
+        """
         if scale is not None and not math.isfinite(scale):
             raise ValueError(f"scale must be finite, got {scale}")
         self.scale = scale
         self.use_qk_l2norm_in_kernel = use_qk_l2norm_in_kernel
         self.target = target
+        self.tune = tune
         self.dispatch_kernel(kernel_map)
 
     @property
