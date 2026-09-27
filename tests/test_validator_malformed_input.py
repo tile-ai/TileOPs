@@ -116,6 +116,23 @@ MALFORMED: tuple[tuple[str, dict[str, Any]], ...] = (
         },
     ),
     (
+        "implemented_without_family",
+        {
+            "NoFamilyFwdOp": {
+                # Implemented and otherwise well formed, so the class parity check, which
+                # imports the class by family, runs too.
+                "status": "implemented",
+                "signature": {
+                    "forall": {"N": "Dim"},
+                    "inputs": {"x": {"dtype": "float16", "shape": "[N]"}},
+                    "outputs": {"y": {"dtype": "float16", "shape": "[N]"}},
+                },
+                "workloads": [{"N": 4, "label": "n4"}],
+                "roofline": {"flops": "1"},
+            }
+        },
+    ),
+    (
         "composite_with_a_malformed_stage",
         {
             "BadCompositeOp": {

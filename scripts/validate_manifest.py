@@ -343,6 +343,8 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
     stages, each in order.
     """
     where = f"[signature] {op_name}"
+    if not isinstance(entry.get("family"), str):
+        return []  # reported as a missing or mistyped field
     try:
         cls = op_class(op_name, entry)
     except (ImportError, AttributeError) as exc:
