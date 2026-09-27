@@ -406,9 +406,6 @@ def _gqa_decode_split_paged_kernel(
     return _func
 
 
-# Custom ops (torch.compile compatible wrappers)
-
-
 def _gqa_decode_paged_no_split_run(
     batch: int,
     heads: int,

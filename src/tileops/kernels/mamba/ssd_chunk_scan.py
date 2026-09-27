@@ -469,35 +469,6 @@ def _ssd_chunk_scan_fwd_kernel(
     return kernel_func
 
 
-def _(
-    batch: int,
-    num_chunks: int,
-    chunk_len: int,
-    n_heads: int,
-    d_head: int,
-    d_state: int,
-    n_groups: int,
-    dtype: str,
-    block_l: int,
-    block_p: int,
-    block_n: int,
-    block_s: int,
-    threads: int,
-    num_stages: int,
-    x: torch.Tensor,
-    cb: torch.Tensor,
-    dA_cumsum: torch.Tensor,
-    C: torch.Tensor,
-    prev_states: torch.Tensor,
-    dt: torch.Tensor,
-) -> torch.Tensor:
-    # output: [B, S, H, P]
-    return x.new_empty(
-        (batch, num_chunks * chunk_len, n_heads, d_head),
-        dtype=torch.float32,
-    )
-
-
 class SSDChunkScanFwdKernel(Kernel):
     """Mamba-2 SSD fused chunk output forward kernel.
 

@@ -1,6 +1,6 @@
 import functools
 import os
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -898,24 +898,6 @@ def _gqa_dense_fwd_fp8_run(
         False,
         grid_size,
     )()(q, k, v, q_descale, k_descale, v_descale)[0]
-
-
-def _(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    seq_len_q: int,
-    seq_len_kv: int,
-    dim: int,
-    out_dtype: str,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    *inputs: Tuple[torch.Tensor, ...],
-) -> torch.Tensor:
-    del heads_kv, seq_len_kv, is_causal, sm_scale, softcap
-    torch_dtype = torch.float16 if out_dtype == "float16" else torch.bfloat16
-    return torch.empty((batch, seq_len_q, heads, dim), dtype=torch_dtype, device=inputs[0].device)
 
 
 def _validate_fa3_gqa_descales(

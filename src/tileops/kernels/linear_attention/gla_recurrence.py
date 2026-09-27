@@ -135,55 +135,6 @@ def _gla_decode_tl(
     return _decode_func
 
 
-def _gla_decode_run(
-    batch: int,
-    head: int,
-    dim_k: int,
-    dim_v: int,
-    k_tile: int,
-    dtype: str,
-    scale: float,
-    num_stages: int,
-    threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    gk: torch.Tensor,
-    state: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    kernel_fn = _gla_decode_tl(
-        batch,
-        head,
-        dim_k,
-        dim_v,
-        k_tile,
-        dtype,
-        scale,
-    )(num_stages, threads)
-    return kernel_fn(q, k, v, gk, state)
-
-
-def _gla_decode_run_fake(
-    batch: int,
-    head: int,
-    dim_k: int,
-    dim_v: int,
-    k_tile: int,
-    dtype: str,
-    scale: float,
-    num_stages: int,
-    threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    gk: torch.Tensor,
-    state: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    o = torch.empty(batch, head, dim_v, dtype=q.dtype, device=q.device)
-    new_state = torch.empty(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
-    return o, new_state
-
-
 class GLADecodeKernel(Kernel):
     """GLA single-step decode kernel for low-precision inputs.
 
@@ -220,8 +171,7 @@ class GLADecodeKernel(Kernel):
             self.init_config(config, tune=False)
 
         # Cache the JIT-compiled kernel to avoid re-creation overhead
-        # on every forward call (_gla_decode_run is kept
-        # for torch.compile compatibility).
+        # on every forward call.
         self._kernel_fn = _gla_decode_tl(
             batch,
             head,
@@ -398,52 +348,6 @@ def _gla_decode_fp32_tl(
         return gla_decode_fp32
 
     return _decode_func
-
-
-def _gla_decode_fp32_run(
-    batch: int,
-    head: int,
-    dim_k: int,
-    dim_v: int,
-    k_tile: int,
-    scale: float,
-    num_stages: int,
-    threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    gk: torch.Tensor,
-    state: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    kernel_fn = _gla_decode_fp32_tl(
-        batch,
-        head,
-        dim_k,
-        dim_v,
-        k_tile,
-        scale,
-    )(num_stages, threads)
-    return kernel_fn(q, k, v, gk, state)
-
-
-def _gla_decode_fp32_run_fake(
-    batch: int,
-    head: int,
-    dim_k: int,
-    dim_v: int,
-    k_tile: int,
-    scale: float,
-    num_stages: int,
-    threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    gk: torch.Tensor,
-    state: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    o = torch.empty(batch, head, dim_v, dtype=q.dtype, device=q.device)
-    new_state = torch.empty(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
-    return o, new_state
 
 
 class GLADecodeFP32Kernel(Kernel):

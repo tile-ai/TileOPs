@@ -436,9 +436,6 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
     return _func
 
 
-# Custom ops (torch.compile compatible wrappers)
-
-
 def _gqa_decode_no_split_run(
     batch: int,
     heads: int,
@@ -458,25 +455,6 @@ def _gqa_decode_no_split_run(
     return _gqa_decode_no_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype)(
         block_H, block_N, num_stages, threads
     )(Q, K, V)
-
-
-def _(
-    batch: int,
-    heads: int,
-    groups: int,
-    dim: int,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_H: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-) -> torch.Tensor:
-    return torch.empty_like(Q)
 
 
 def _gqa_decode_no_split_rope_run(
@@ -515,30 +493,6 @@ def _gqa_decode_no_split_rope_run(
     )(block_H, block_N, num_stages, threads)(Q, K, V, rope_cos, rope_sin)
 
 
-def _(
-    batch: int,
-    heads: int,
-    groups: int,
-    dim: int,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    max_position: int,
-    rotary_dim: int,
-    rope_layout: str,
-    block_H: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    rope_cos: torch.Tensor,
-    rope_sin: torch.Tensor,
-) -> torch.Tensor:
-    return torch.empty_like(Q)
-
-
 def _gqa_decode_split_run(
     batch: int,
     heads: int,
@@ -561,28 +515,6 @@ def _gqa_decode_split_run(
     return _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype)(
         block_H, block_N, num_split, num_stages, threads
     )(Q, K, V, glse, Output_partial)
-
-
-def _(
-    batch: int,
-    heads: int,
-    groups: int,
-    dim: int,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_H: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    num_split: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor,
-) -> torch.Tensor:
-    return torch.empty_like(Q)
 
 
 class GQADecodeKernel(Kernel):

@@ -234,45 +234,6 @@ def _deltanet_decode_tl(
     return _decode_func
 
 
-def _deltanet_decode_run(
-    batch: int,
-    head: int,
-    dim_k: int,
-    dim_v: int,
-    k_tile: int,
-    dtype: str,
-    num_stages: int,
-    threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    beta: torch.Tensor,
-    state: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    kernel_fn = _deltanet_decode_tl(batch, head, dim_k, dim_v, k_tile, dtype)(num_stages, threads)
-    return kernel_fn(q, k, v, beta, state)
-
-
-def _deltanet_decode_run_fake(
-    batch: int,
-    head: int,
-    dim_k: int,
-    dim_v: int,
-    k_tile: int,
-    dtype: str,
-    num_stages: int,
-    threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    beta: torch.Tensor,
-    state: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    o = torch.empty(batch, head, dim_v, dtype=q.dtype, device=q.device)
-    new_state = torch.empty(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
-    return o, new_state
-
-
 def _decode_entry(cls: type, call: DeltaNetDecodeCall) -> Entry:
     """The entry for a decode kernel: the three take the same construction arguments.
 

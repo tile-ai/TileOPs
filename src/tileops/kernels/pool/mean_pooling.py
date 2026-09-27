@@ -1,5 +1,5 @@
 import functools
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -204,30 +204,6 @@ def _mean_pooling_run(
         accum_dtype=accum_dtype,
     )(bwidth, threads)(x.view(batch_size, seq_len, width), offsets, indices)
     return pooled.view(batch_size, chunks_per_batch, heads, dim)
-
-
-def _(
-    batch_size: int,
-    seq_len: int,
-    heads: int,
-    dim: int,
-    chunk_size: int,
-    chunks_per_batch: int,
-    seq_num: int,
-    use_offsets: int,
-    dtype: str,
-    accum_dtype: str,
-    bwidth: int,
-    threads: int,
-    *inputs: tuple[Any],
-) -> torch.Tensor:
-    _ = (seq_len, chunk_size, seq_num, bwidth, use_offsets, dtype, accum_dtype, threads)
-    x = inputs[0]
-    return torch.empty(
-        (batch_size, chunks_per_batch, heads, dim),
-        device=x.device,
-        dtype=x.dtype,
-    )
 
 
 class MeanPoolingFwdKernel(Kernel):

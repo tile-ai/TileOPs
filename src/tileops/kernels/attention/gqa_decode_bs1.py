@@ -505,33 +505,6 @@ def _gqa_decode_bs1_ctx_run(
     return kernel(Q, K, V, glse, Output_partial)
 
 
-def _(
-    batch: int,
-    heads: int,
-    groups: int,
-    dim: int,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    fuse_rope: bool,
-    max_position: int,
-    rotary_dim: int,
-    rope_layout: str,
-    block_M: int,
-    block_N: int,
-    ctx_splits: int,
-    threads: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    rope_cos: torch.Tensor,
-    rope_sin: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor,
-) -> torch.Tensor:
-    return torch.empty_like(Q)
-
-
 class GQADecodeBs1Kernel(Kernel):
     """SM90 warp-specialized batch=1 GQA decode kernel with a context-length switch.
 

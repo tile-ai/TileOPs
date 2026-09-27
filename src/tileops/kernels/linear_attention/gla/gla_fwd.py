@@ -1,5 +1,5 @@
 import functools
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import tilelang
 import torch
@@ -344,61 +344,6 @@ def _gla_fwd_o_kernel(
         return _main
 
     return _o_func
-
-
-# Custom op wrappers (kept for torch.compile compatibility)
-
-
-def _gla_fwd_run(
-    batch: int,
-    seq_len: int,
-    heads: int,
-    dim_k: int,
-    dim_v: int,
-    chunk_size: int,
-    scale: float,
-    dtype: str,
-    num_stages: int,
-    threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    g: torch.Tensor,
-    initial_state: torch.Tensor,
-    h_out: torch.Tensor,
-) -> torch.Tensor:
-    # Three-pass: precompute g_cumsum, then h, then o
-    g_fn = _gla_precompute_g_kernel(batch, seq_len, heads, dim_k, chunk_size, dtype)(
-        num_stages, threads
-    )
-    h_fn = _gla_fwd_h_kernel(batch, seq_len, heads, dim_k, dim_v, chunk_size, dtype)(
-        num_stages, threads
-    )
-    o_fn = _gla_fwd_o_kernel(batch, seq_len, heads, dim_k, dim_v, chunk_size, scale, dtype)(
-        num_stages, threads
-    )
-    g_cumsum = g_fn(g)
-    h_fn(k, v, g_cumsum, initial_state, h_out)
-    return o_fn(q, k, v, g_cumsum, h_out)
-
-
-def _(
-    batch: int,
-    seq_len: int,
-    heads: int,
-    dim_k: int,
-    dim_v: int,
-    chunk_size: int,
-    scale: float,
-    dtype: str,
-    num_stages: int,
-    threads: int,
-    *inputs: tuple[Any],
-) -> torch.Tensor:
-    _ = (dim_k, chunk_size, scale, dtype, num_stages, threads)
-    return torch.empty(
-        [batch, seq_len, heads, dim_v], dtype=inputs[0].dtype, device=inputs[0].device
-    )
 
 
 class GLAFwdKernel(Kernel):

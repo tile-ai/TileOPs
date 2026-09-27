@@ -266,35 +266,6 @@ def _deltanet_fwd_run(
     return o, S_buf, Aw, Au, w, u
 
 
-def _deltanet_fwd_run_fake(
-    batch: int,
-    head: int,
-    seq_len: int,
-    chunk_size: int,
-    dim_k: int,
-    dim_v: int,
-    dtype: str,
-    fused_num_stages: int,
-    fused_threads: int,
-    h_num_stages: int,
-    h_threads: int,
-    h_block_v: int,
-    o_threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    beta: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    num_chunks = seq_len // chunk_size
-    o = torch.empty(batch, head, seq_len, dim_v, dtype=q.dtype, device=q.device)
-    S = torch.empty(batch, head, num_chunks + 1, dim_k, dim_v, dtype=torch.float32, device=q.device)
-    Aw = torch.empty(batch, head, seq_len, chunk_size, dtype=q.dtype, device=q.device)
-    Au = torch.empty_like(Aw)
-    w = torch.empty(batch, head, seq_len, dim_k, dtype=q.dtype, device=q.device)
-    u = torch.empty(batch, head, seq_len, dim_v, dtype=q.dtype, device=q.device)
-    return o, S, Aw, Au, w, u
-
-
 class DeltaNetFwdKernel(Kernel):
     supported_archs: list[int] = [80, 89, 90]
 

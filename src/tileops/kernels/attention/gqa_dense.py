@@ -956,29 +956,6 @@ def _gqa_sw_fwd_wgmma_pipelined_run(
     )(block_m, block_n, num_stages, threads)(q, k, v)
 
 
-def _(
-    batch,
-    heads,
-    heads_kv,
-    seq_len,
-    dim,
-    is_causal,
-    window_size_left,
-    window_size_right,
-    sm_scale,
-    softcap,
-    dtype,
-    block_m,
-    block_n,
-    num_stages,
-    threads,
-    *inputs,
-):
-    fake_o = torch.empty_like(inputs[0])
-    fake_lse = fake_o.new_empty([batch, heads, seq_len])
-    return fake_o, fake_lse
-
-
 class GQADenseSlidingWindowKernel(Kernel):
     """SM90 Dense sliding-window kernel with a native BSHD ABI."""
 

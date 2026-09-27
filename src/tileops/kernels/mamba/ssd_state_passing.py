@@ -228,25 +228,6 @@ def _ssd_state_passing_fwd_kernel(
     return kernel_func
 
 
-def _(
-    batch: int,
-    num_chunks: int,
-    n_heads: int,
-    d_state: int,
-    has_initial_states: bool,
-    dtype: str,
-    block_d: int,
-    threads: int,
-    vectorize: bool,
-    states: torch.Tensor,
-    dA_chunk_cumsum: torch.Tensor,
-    initial_states: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    out = states.new_empty((batch, num_chunks, n_heads, d_state), dtype=torch.float32)
-    final = states.new_empty((batch, n_heads, d_state), dtype=torch.float32)
-    return out, final
-
-
 class SSDStatePassingFwdKernel(Kernel):
     """Mamba-2 SSD state passing forward kernel.
 

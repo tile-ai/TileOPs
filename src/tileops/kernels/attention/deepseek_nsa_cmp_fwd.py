@@ -1,5 +1,5 @@
 import functools
-from typing import Any, Callable, Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import tilelang
 import torch
@@ -174,29 +174,6 @@ def _nsa_cmp_fwd_varlen_run(
     return _nsa_cmp_fwd_varlen_kernel(
         seq_num, c_seq_len, heads, dim_k, dim_v, chunk_num, group, scale, bc, bs, dtype, accum_dtype
     )(threads)(q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
-
-
-def _(
-    seq_num: int,
-    c_seq_len: int,
-    heads: int,
-    dim_k: int,
-    dim_v: int,
-    chunk_num: int,
-    group: int,
-    scale: float,
-    bc: int,
-    bs: int,
-    dtype: str,
-    accum_dtype: str,
-    threads: int,
-    *inputs: Any,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    _ = (seq_num, dim_k, dim_v, chunk_num, group, scale, bc, bs, dtype, accum_dtype, threads)
-    return (
-        torch.empty([c_seq_len, heads, dim_v], dtype=inputs[0].dtype, device=inputs[0].device),
-        torch.empty([c_seq_len, heads], dtype=inputs[0].dtype, device=inputs[0].device),
-    )
 
 
 class NSACmpFwdVarlenKernel(Kernel):
