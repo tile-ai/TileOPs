@@ -155,7 +155,7 @@ class _ReduceOpBase(Op):
         return x.to(self._output_dtype(x), copy=True)
 
     def _empty_forward(self, x: torch.Tensor):
-        """An empty input: the identity over each empty reduced extent, or an empty output."""
+        """A non-empty output of an empty input: the identity over each empty reduced extent."""
         return torch.full(
             self._output_shape(x), self._identity, dtype=self._output_dtype(x), device=x.device
         )

@@ -88,8 +88,6 @@ class LayerNormFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
         """
-        if x.numel() == 0:
-            return torch.empty_like(x)
         ns = tuple(self.normalized_shape)
         weight = affine_or_constant(weight, ns, 1.0, x.dtype, x.device)
         bias = affine_or_constant(bias, ns, 0.0, x.dtype, x.device)

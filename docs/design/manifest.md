@@ -254,6 +254,7 @@ A call has two phases.
 - Available at construction: parameters, ADT fields, construction-time tensor presence, the indices unified from construction-time tensors' shapes and dtypes, and the `let`s these make evaluable. Available per call: call-time tensors, their presence and what unifies from them.
 - An obligation — an axis or spliced element non-negative, a refinement or invariant holding — is checked at construction when both what activates it (its tensor, type-family branch or guard) and its value are available there, otherwise in the call check.
 - **Call.** The checks generated from the signature wrap `forward`, in order: presence of call-time tensors, domain restrictions, type-family branches, inference and the remaining refinements, output-buffer preconditions, the implementation, and the output checks. Any failure raises and names the declaration.
+- A call in which every tensor it writes, each output and each written input, holds no elements runs no implementation, in-tree or target. Its new outputs take the checked shape and dtype on the call device; an `out` buffer or a written input is returned as passed. An empty input whose output holds elements runs as any other call.
 
 **Inference.** Indices are solved from the inputs by unification ([table 19](#t-unify)).
 

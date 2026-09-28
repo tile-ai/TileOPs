@@ -92,8 +92,6 @@ class FusedAddLayerNormFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
         """
-        if x.numel() == 0:
-            return torch.empty_like(x), x + residual
         n = x.shape[-1]
         # Handed over as the manifest declares it; the layout a kernel wants is its own business.
         x = x.contiguous()

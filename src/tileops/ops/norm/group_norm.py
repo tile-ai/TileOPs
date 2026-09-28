@@ -103,8 +103,6 @@ class GroupNormFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
         """
-        if x.numel() == 0:
-            return torch.empty_like(x)
         channels = x.shape[1]
         cpg = channels // self.num_groups
         d = cpg * math.prod(x.shape[2:])

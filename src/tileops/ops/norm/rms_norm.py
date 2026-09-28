@@ -82,8 +82,6 @@ class RMSNormFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder, which dynamo cannot follow.
         """
-        if x.numel() == 0:
-            return torch.empty_like(x)
         weight = None if weight is None else weight.contiguous()
         x = x.contiguous()
         kernel = self.kernel_for("rms_norm", (x, weight), x.dtype)
