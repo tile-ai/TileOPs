@@ -358,22 +358,12 @@ class ReduceKernel(Kernel):
             self.strategy in ("simple", "simple_tiled", "prod") and self.N % self._stream_vec() == 0
         )
 
-    def _stream_fold_applies(self, x: torch.Tensor) -> bool:
-        """Whether this call folds the rows into registers.
-
-        ``block_m > 1`` selects the shared-memory kernel; the product kernel
-        ignores ``block_m``, so an eligible product row always folds.
-        """
-        return (
-            self._stream_fold_eligible
-            and (self._is_prod or self.config["block_m"] == 1)
-            and x.is_contiguous()
-        )
-
     def _reduce_rows(self, x: torch.Tensor) -> object:
         """Reduce the trailing axis of an ``(M, N)`` buffer."""
         block_m, threads = self.config["block_m"], self.config["threads"]
-        if self._stream_fold_applies(x):
+        # ``block_m > 1`` selects the shared-memory kernel; the product kernel ignores
+        # ``block_m``, so an eligible product row always folds into registers.
+        if self._stream_fold_eligible and (self._is_prod or block_m == 1) and x.is_contiguous():
             program = fold_rows_kernel(
                 self.M, self.N, self.op_kind, self.dtype_str, self.out_dtype_str
             )
