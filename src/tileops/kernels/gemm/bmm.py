@@ -657,9 +657,12 @@ class BmmKernel(Kernel):
 
     @staticmethod
     def _region_refusal(call: BmmCall) -> Optional[str]:
-        if call.k % 16 != 0:
-            return f"requires k a multiple of 16, got k={call.k}"
-        return None
+        return BmmKernel._k_refusal(call.k)
+
+    @staticmethod
+    def _k_refusal(k: int) -> Optional[str]:
+        """The tile loop steps K by 16."""
+        return None if k % 16 == 0 else f"requires k a multiple of 16, got k={k}"
 
     @classmethod
     def entry_for(cls, call: BmmCall) -> Entry:
@@ -688,10 +691,9 @@ class BmmKernel(Kernel):
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
-        if k % 16 != 0:
-            raise ValueError(
-                f"BmmKernel requires contraction dim k to be a multiple of 16, got k={k}"
-            )
+        reason = self._k_refusal(k)
+        if reason is not None:
+            raise ValueError(f"BmmKernel {reason}")
         self.batch = batch
         self.m = m
         self.n = n

@@ -230,7 +230,8 @@ _GQA_DENSE_ROWS = [
         "decode-softcap",
     ),
     (("fp16", 2, 1, 32, 4, 128, 2048, (-1, -1), False, 0.0), "GQADecodeKernel", "decode-batch-2"),
-    (("fp16", 1, 1, 32, 4, 64, 2048, (-1, -1), False, 0.0), None, "decode-dim-64"),
+    (("fp16", 1, 1, 32, 4, 64, 2048, (-1, -1), False, 0.0), "GQADecodeKernel", "decode-dim-64"),
+    (("fp16", 1, 1, 32, 4, 144, 2048, (-1, -1), False, 0.0), None, "decode-dim-144"),
     (
         ("fp16", 1, 4, 32, 4, 128, 4, (64, 0), False, 0.0),
         "GQADenseSlidingWindowKernel",
@@ -243,8 +244,9 @@ _GQA_DENSE_ROWS = [
         "window-beats-decode",
     ),
     (("fp16", 1, 4, 32, 4, 128, 2048, (-1, -1), False, 0.0), "GQADenseWsKernel", "prefill"),
+    (("fp16", 1, 4, 32, 4, 72, 2048, (-1, -1), False, 0.0), None, "prefill-dim-72"),
     (
-        ("bf16", 2, 8, 8, 8, 128, 512, (-1, -1), True, 30.0),
+        ("bf16", 2, 8, 8, 8, 64, 512, (-1, -1), True, 30.0),
         "GQADenseWsKernel",
         "prefill-rope-softcap",
     ),

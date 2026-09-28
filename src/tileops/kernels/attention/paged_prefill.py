@@ -16,7 +16,14 @@ import torch
 from ..kernel_base import Entry, Kernel
 from .call_spec import AttentionCall
 
-__all__ = ["PagedPrefillKernel"]
+__all__ = ["PagedPrefillKernel", "page_size_refusal"]
+
+
+def page_size_refusal(page_size: int) -> Optional[str]:
+    """Why the paged kernels cannot index pages of *page_size* tokens by shift, or ``None``."""
+    if page_size <= 0 or page_size & (page_size - 1) != 0:
+        return "requires a power-of-two page_size"
+    return None
 
 
 class PagedPrefillKernel(Kernel):
@@ -37,9 +44,7 @@ class PagedPrefillKernel(Kernel):
         Every implementation indexes pages by shift. A subclass states its own region
         and asks this for the page-size limit.
         """
-        if call.page_size <= 0 or call.page_size & (call.page_size - 1) != 0:
-            return "requires a power-of-two page_size"
-        return None
+        return page_size_refusal(call.page_size)
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:

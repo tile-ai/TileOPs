@@ -10,7 +10,7 @@ from tileops.kernels.constants import LOG2E
 from tileops.utils import get_sm_count
 
 from ..kernel_base import Entry, Kernel
-from .call_spec import ATTENTION_DTYPES, dense_fp8_refusal
+from .call_spec import ATTENTION_DTYPES, dense_fp8_limit_refusal, dense_fp8_refusal
 from .dense_entry import dense_fp8_entry
 from .gqa_dense import make_dense_qk_rope_preprocessor
 from .online_softmax import (
@@ -80,8 +80,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
 ) -> Callable:
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
-    if dim != 128:
-        raise ValueError("native-FP8 BN224 GQA currently requires dim == 128.")
     if is_causal and seq_len_q > seq_len_kv:
         raise ValueError("causal attention requires seq_len_q <= seq_len_kv")
     block_m = 128
@@ -1008,20 +1006,21 @@ class GQADenseFP8Kernel(Kernel):
     def _validate_spec(self) -> None:
         if self.heads % self.heads_kv != 0:
             raise ValueError("heads must be divisible by heads_kv")
-        if self.dim != 128:
-            raise ValueError("native-FP8 Dense GQA currently requires dim == 128")
         if self.dtype not in ATTENTION_DTYPES:
             raise ValueError("native-FP8 Dense GQA outputs float16 or bfloat16")
         if self.is_causal and self.seq_len_q > self.seq_len_kv:
             raise ValueError("causal FP8 Dense GQA requires seq_len_q <= seq_len_kv")
-        if self.fuse_rope and self.seq_len_q == 1:
-            raise ValueError("FP8 Dense decode requires an in-kernel RoPE implementation")
-        if self.window_size_left != -1 or self.window_size_right != -1:
-            raise ValueError("native-FP8 Dense GQA does not support sliding windows")
-        if not self.is_causal and self.seq_len_q != self.seq_len_kv:
-            raise ValueError("non-causal native-FP8 Dense GQA requires Sq == Skv")
-        if not self.is_causal and self.softcap != 0.0:
-            raise ValueError("non-causal native-FP8 Dense GQA does not support softcap")
+        reason = dense_fp8_limit_refusal(
+            dim=self.dim,
+            seq_len_q=self.seq_len_q,
+            seq_len_kv=self.seq_len_kv,
+            is_causal=self.is_causal,
+            softcap=self.softcap,
+            window=(self.window_size_left, self.window_size_right),
+            fuse_rope=self.fuse_rope,
+        )
+        if reason is not None:
+            raise ValueError(f"native-FP8 Dense GQA {reason}")
 
     def forward(
         self,

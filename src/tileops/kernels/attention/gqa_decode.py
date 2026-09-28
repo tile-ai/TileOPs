@@ -9,7 +9,11 @@ import torch
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
-from .call_spec import dense_decode_refusal, dense_long_context_decode_refusal
+from .call_spec import (
+    dense_decode_limit_refusal,
+    dense_decode_refusal,
+    dense_long_context_decode_refusal,
+)
 from .dense_entry import dense_decode_entry
 from .online_softmax import (
     make_apply_softcap,
@@ -587,8 +591,9 @@ class GQADecodeKernel(Kernel):
             raise ValueError("heads_kv must be positive")
         if self.heads % self.groups != 0:
             raise ValueError("heads must be divisible by heads_kv")
-        if self.seqlen_kv <= 0:
-            raise ValueError("seq_len_kv must be positive")
+        reason = dense_decode_limit_refusal(dim=dim, seq_len_kv=seq_len_kv)
+        if reason is not None:
+            raise ValueError(f"{type(self).__name__} {reason}")
         self._use_batched_config = (
             self._is_sm90
             and self.batch > 1

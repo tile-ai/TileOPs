@@ -15,10 +15,12 @@ from ..call_spec import CallSpec
 __all__ = [
     "ATTENTION_DTYPES",
     "AttentionCall",
+    "dense_decode_limit_refusal",
     "dense_decode_refusal",
     "dense_decode_region",
     "dense_fp8_decode_refusal",
     "dense_long_context_decode_refusal",
+    "dense_fp8_limit_refusal",
     "dense_fp8_refusal",
     "dense_long_context_decode_region",
     "dense_fp8_decode_region",
@@ -151,16 +153,29 @@ def dense_ws_region(call: AttentionCall) -> bool:
 _OUTSIDE_REGION = "does not serve this call"
 
 
-def _dense_dim_refusal(call: AttentionCall) -> Optional[str]:
-    """Every contiguous kernel is written for one head dimension."""
-    return None if call.dim == 128 else "requires head dimension 128"
+def _tensor_core_dim_refusal(dim: int) -> Optional[str]:
+    """The prefill and windowed kernels step the head dimension by one MMA k-slice."""
+    return None if dim % 16 == 0 else "requires head dimension a multiple of 16"
+
+
+def dense_decode_limit_refusal(*, dim: int, seq_len_kv: int) -> Optional[str]:
+    """Why the contiguous decode kernel cannot build this shape, or ``None``.
+
+    Read by the kernel's region and by its constructor, which a caller can reach directly.
+    Past 128 the split-KV tile has no register layout.
+    """
+    if seq_len_kv <= 0:
+        return "requires a non-empty KV cache"
+    if dim % 16 != 0 or not 16 <= dim <= 128:
+        return "requires head dimension a multiple of 16 in [16, 128]"
+    return None
 
 
 def dense_ws_refusal(call: AttentionCall) -> Optional[str]:
     """Why the contiguous prefill kernel cannot serve *call*, or ``None``."""
     if not dense_ws_region(call):
         return _OUTSIDE_REGION
-    return _dense_dim_refusal(call)
+    return _tensor_core_dim_refusal(call.dim)
 
 
 def dense_sliding_window_refusal(call: AttentionCall) -> Optional[str]:
@@ -169,16 +184,14 @@ def dense_sliding_window_refusal(call: AttentionCall) -> Optional[str]:
         return _OUTSIDE_REGION
     if call.max_seqlen_q != call.seqlen_kv:
         return "a sliding window requires equal Q and KV lengths"
-    return _dense_dim_refusal(call)
+    return _tensor_core_dim_refusal(call.dim)
 
 
 def dense_decode_refusal(call: AttentionCall) -> Optional[str]:
     """Why the contiguous decode kernels cannot serve *call*, or ``None``."""
     if not dense_decode_region(call):
         return _OUTSIDE_REGION
-    if call.seqlen_kv <= 0:
-        return "requires a non-empty KV cache"
-    return _dense_dim_refusal(call)
+    return dense_decode_limit_refusal(dim=call.dim, seq_len_kv=call.seqlen_kv)
 
 
 def dense_long_context_decode_refusal(call: AttentionCall) -> Optional[str]:
@@ -190,22 +203,52 @@ def dense_fp8_decode_refusal(call: AttentionCall) -> Optional[str]:
     """Why the FP8 decode kernel cannot serve *call*, or ``None``."""
     if not dense_fp8_decode_region(call):
         return _OUTSIDE_REGION
-    return _dense_dim_refusal(call)
+    # Each of the four consumer warps takes a quarter of the head dimension in 8-wide tiles.
+    if call.dim % 32 != 0 or not 32 <= call.dim <= 128:
+        return "requires head dimension a multiple of 32 in [32, 128]"
+    return None
 
 
 def dense_fp8_refusal(call: AttentionCall) -> Optional[str]:
     """Why the FP8 main kernel cannot serve *call*, or ``None``."""
     if not call.is_fp8 or dense_fp8_decode_region(call):
         return _OUTSIDE_REGION
-    if uses_sliding_window(call):
+    return dense_fp8_limit_refusal(
+        dim=call.dim,
+        seq_len_q=call.max_seqlen_q,
+        seq_len_kv=call.seqlen_kv,
+        is_causal=call.is_causal,
+        softcap=call.softcap,
+        window=(call.window_size_left, call.window_size_right),
+        fuse_rope=call.fuse_rope,
+    )
+
+
+def dense_fp8_limit_refusal(
+    *,
+    dim: int,
+    seq_len_q: int,
+    seq_len_kv: int,
+    is_causal: bool,
+    softcap: float,
+    window: tuple[int, int],
+    fuse_rope: bool,
+) -> Optional[str]:
+    """Why the FP8 main kernel cannot build this shape, or ``None``.
+
+    Read by the kernel's region and by its constructor, which a caller can reach directly.
+    """
+    if window != (-1, -1):
         return "does not serve sliding windows"
-    if call.fuse_rope and call.max_seqlen_q == 1:
+    if fuse_rope and seq_len_q == 1:
         return "does not serve RoPE with one query position"
-    if not call.is_causal and call.max_seqlen_q != call.seqlen_kv:
+    if not is_causal and seq_len_q != seq_len_kv:
         return "non-causal attention requires equal Q and KV lengths"
-    if not call.is_causal and call.softcap != 0.0:
+    if not is_causal and softcap != 0.0:
         return "does not serve a softcap without the causal mask"
-    return _dense_dim_refusal(call)
+    if dim != 128:
+        return "requires head dimension 128"
+    return None
 
 
 def decode_bs1_region(call: AttentionCall) -> bool:
