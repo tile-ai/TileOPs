@@ -180,8 +180,12 @@ def _mha_decode_paged_ws_kernel(
                         m_new = T.alloc_local([1], accum)
                         resc = T.alloc_local([1], accum)
                         pj = T.alloc_local([1], accum)
+                        # The cross-split merge's own registers.
                         lse = T.alloc_local([num_split], accum)
+                        acc = T.alloc_local([vec], accum)
                         peak = T.alloc_local([1], accum)
+                        total = T.alloc_local([1], accum)
+                        weight = T.alloc_local([1], accum)
 
                         for i in T.serial(T.ceildiv(group * dim, _CONS)):
                             idx = i * _CONS + tx
@@ -323,23 +327,27 @@ def _mha_decode_paged_ws_kernel(
                             if arrived_before[0] == num_split - 1:
                                 for g in T.unroll(group):
                                     if warp == g % _CONS_WARPS:
+                                        # Every partial is read before any is used:
+                                        # folding into the read loop chains the loads.
                                         peak[0] = _EMPTY_LSE
-                                        for sp in T.serial(num_split):
-                                            lse[sp] = glse[bb, q0 + g, bh, sp]
-                                            peak[0] = T.max(peak[0], lse[sp])
-                                        l_run[g] = 0
+                                        for s in T.serial(num_split):
+                                            lse[s] = glse[bb, q0 + g, bh, s]
+                                        for s in T.serial(num_split):
+                                            peak[0] = T.max(peak[0], lse[s])
+                                        total[0] = 0
                                         for c in T.serial(vec):
-                                            acc_o[g, c] = 0
-                                        for sp in T.serial(num_split):
-                                            resc[0] = T.exp2(lse[sp] - peak[0])
-                                            l_run[g] += resc[0]
+                                            acc[c] = 0
+                                        for s in T.serial(num_split):
+                                            weight[0] = T.exp2(lse[s] - peak[0])
+                                            total[0] += weight[0]
                                             for c in T.serial(vec):
-                                                acc_o[g, c] += (
-                                                    O_partial[bb, q0 + g, bh, sp, d0 + c] * resc[0]
+                                                acc[c] += (
+                                                    O_partial[bb, q0 + g, bh, s, d0 + c] * weight[0]
                                                 )
+                                        total[0] = 1.0 / total[0]
                                         for c in T.serial(vec):
                                             Output[bb, q0 + g, bh, d0 + c] = T.cast(
-                                                acc_o[g, c] / l_run[g], dtype
+                                                acc[c] * total[0], dtype
                                             )
                                 # Leave the count zeroed for the next launch.
                                 if tx == 0:
