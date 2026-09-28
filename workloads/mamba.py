@@ -248,6 +248,20 @@ class SSDChunkStateFwdFixture(FixtureBase):
                         True,
                         marks=pytest.mark.full,
                     ),
+                    # A d_state that is not a whole number of 16-column GEMM steps.
+                    pytest.param(
+                        1,
+                        2,
+                        64,
+                        4,
+                        64,
+                        24,
+                        1,
+                        torch.float16,
+                        False,
+                        False,
+                        marks=pytest.mark.full,
+                    ),
                 ],
             ),
         ]

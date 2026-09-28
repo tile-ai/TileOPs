@@ -76,6 +76,8 @@ from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["SSDChunkStateFwdKernel"]
 
+_GEMM_N_STEP = 16
+
 
 @functools.lru_cache(maxsize=32)
 def _ssd_chunk_state_fwd_kernel(
@@ -360,8 +362,10 @@ class SSDChunkStateFwdKernel(Kernel):
                 "threads": 128,
                 "num_stages": 2,
             }
+        # The GEMM's N extent splits across warps in 16-column steps; a d_state
+        # that is not a whole number of them rounds up, and the tail is masked.
         return {
-            "block_n": min(128, self.d_state),
+            "block_n": min(128, -(-self.d_state // _GEMM_N_STEP) * _GEMM_N_STEP),
             "block_p": 64,
             "block_l": 32,
             "threads": 128,
