@@ -64,6 +64,19 @@ def _holds_row_in_registers(D: int, D_padded: int) -> bool:
     return D_padded == D or D_padded <= NARROW_ROW
 
 
+def _row_widths(D: int, D_padded: int) -> tuple:
+    """Block widths a row admits, narrowed while it is held in registers."""
+    widths = widths_for_row(D_padded)
+    if not _holds_row_in_registers(D, D_padded):
+        return widths
+    if D_padded != D:
+        low = high = _RowNormKernel._GUARDED_ELEMENTS_PER_THREAD
+    else:
+        low, high = _RowNormKernel._ELEMENTS_PER_THREAD_BAND
+    banded = tuple(t for t in widths if D_padded % t == 0 and low <= D_padded // t <= high)
+    return banded or widths
+
+
 class _RowNormKernel(Kernel):
     """What both kernels here share: the row's tiling and the config space for it.
 
@@ -109,17 +122,7 @@ class _RowNormKernel(Kernel):
     @property
     def _row_widths(self) -> tuple:
         """Block widths this row admits, narrowed while it is held in registers."""
-        widths = widths_for_row(self.D_padded)
-        if not _holds_row_in_registers(self.D, self.D_padded):
-            return widths
-        if self.D_padded != self.D:
-            low = high = self._GUARDED_ELEMENTS_PER_THREAD
-        else:
-            low, high = self._ELEMENTS_PER_THREAD_BAND
-        banded = tuple(
-            t for t in widths if self.D_padded % t == 0 and low <= self.D_padded // t <= high
-        )
-        return banded or widths
+        return _row_widths(self.D, self.D_padded)
 
     @property
     def default_config(self) -> dict:

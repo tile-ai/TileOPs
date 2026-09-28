@@ -21,10 +21,12 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import (
+    InstanceNormCall,
     InstanceNormFwdInferKernel,
     InstanceNormFwdTrainKernel,
+    InstanceNormFwdTrainSingleKernel,
     InstanceNormKernel,
     InstanceNormNoAffineKernel,
 )
@@ -61,8 +63,14 @@ class InstanceNormFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "instance_norm": InstanceNormKernel,
         "instance_norm_no_affine": InstanceNormNoAffineKernel,
+        "instance_norm_train_single": InstanceNormFwdTrainSingleKernel,
         "instance_norm_train": InstanceNormFwdTrainKernel,
         "instance_norm_infer": InstanceNormFwdInferKernel,
+    }
+    kernel_roles: ClassVar[Mapping[str, tuple[str, ...]]] = {
+        "instance_norm": ("instance_norm", "instance_norm_no_affine"),
+        "instance_norm_train": ("instance_norm_train_single", "instance_norm_train"),
+        "instance_norm_infer": ("instance_norm_infer",),
     }
 
     def __init__(
@@ -141,54 +149,42 @@ class InstanceNormFwdOp(Op):
                 running_var.fill_(math.nan)
             return torch.empty_like(x)
         x = x.contiguous()
+        call = InstanceNormCall(
+            device=x.device,
+            n=batch,
+            c=channels,
+            spatial=spatial,
+            dtype=x.dtype,
+            eps=self.eps,
+            momentum=self.momentum,
+            has_weight=weight is not None,
+            has_bias=bias is not None,
+            tune=self.tune,
+        )
         if not self.use_input_stats or tracks:
-            # The training kernel writes the running statistics in place, so a strided
-            # buffer is served through a contiguous copy that is written back.
-            role = "instance_norm_train" if self.use_input_stats else "instance_norm_infer"
+            if self.use_input_stats:
+                role, view = "instance_norm_train", x.view(batch, channels, spatial)
+            else:
+                role, view = "instance_norm_infer", x.view(batch * channels, spatial)
             weight = None if weight is None else weight.contiguous()
             bias = None if bias is None else bias.contiguous()
+            # The training kernel writes the running statistics in place, so a strided
+            # buffer is served through a contiguous copy that is written back.
             stats = tuple(stat.contiguous() for stat in (running_mean, running_var))
-            call = (batch, channels, spatial, x.dtype, weight is not None, bias is not None)
-            kernel = self.kernel_for(role, (x, *stats, weight, bias), call)
+            kernel = self.kernel_for(role, (view, *stats, weight, bias), call)
             self.kernel = kernel
-            y = kernel(x, *stats, weight, bias)
+            y = kernel(view, *stats, weight, bias)
             if self.use_input_stats:
                 for caller, used in zip((running_mean, running_var), stats, strict=True):
                     if used is not caller:
                         caller.copy_(used)
-            return y
-        affine = weight is not None or bias is not None
-        if affine:
+            return y.view(x.shape)
+        if weight is not None or bias is not None:
             weight = affine_or_constant(weight, (channels,), 1.0, x.dtype, x.device)
             bias = affine_or_constant(bias, (channels,), 0.0, x.dtype, x.device)
-        kernel = self.kernel_for(
-            "instance_norm", (x, weight, bias), (spatial, x.dtype, affine, channels)
-        )
-        self.kernel = kernel
         # Row m of the (N*C, spatial_size) view is channel m % C throughout, so the affine
         # kernel applies the per-channel affine itself.
-        return kernel(x, running_mean, running_var, weight, bias)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """Each role has one implementation; the affine form picks the normalizing one."""
-        if role in ("instance_norm_train", "instance_norm_infer"):
-            batch, channels, spatial, dtype, has_weight, has_bias = call
-            cls = self.kernel_map[role]
-            momentum = (self.momentum,) if role == "instance_norm_train" else ()
-            return call, lambda: cls(
-                batch,
-                channels,
-                spatial,
-                self.eps,
-                *momentum,
-                dtype,
-                has_weight,
-                has_bias,
-                tune=self.tune,
-            )
-        d, dtype, affine, channels = call
-        if affine:
-            cls = self.kernel_map["instance_norm"]
-            return call, lambda: cls(d, self.eps, dtype, channels, 1, tune=self.tune)
-        cls = self.kernel_map["instance_norm_no_affine"]
-        return call, lambda: cls(d, self.eps, dtype, tune=self.tune)
+        rows = x.view(batch * channels, spatial)
+        kernel = self.kernel_for("instance_norm", (rows, weight, bias), call)
+        self.kernel = kernel
+        return kernel(rows, running_mean, running_var, weight, bias).view(x.shape)

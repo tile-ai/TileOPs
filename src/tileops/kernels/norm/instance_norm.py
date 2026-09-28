@@ -9,10 +9,11 @@ bodies; these classes exist so that `tileops.ops.norm.instance_norm` and the
 manifest can name an InstanceNorm-specific kernel, and so that both take the five
 inputs ``InstanceNormFwdOp``'s signature declares.
 
-`InstanceNormFwdTrainKernel` and `InstanceNormFwdInferKernel`, which read the
-running statistics, have bodies of their own.
+`InstanceNormFwdTrainSingleKernel`, `InstanceNormFwdTrainKernel` and
+`InstanceNormFwdInferKernel`, which read the running statistics, have bodies of their own.
 """
 
+import dataclasses
 import functools
 from typing import Optional
 
@@ -20,31 +21,91 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
+from tileops.kernels.kernel_base import Entry
 
-from ._config import make_row_reduce, make_shifted_row_reduce, row_padding
+from ._config import (
+    make_row_reduce,
+    make_shifted_row_reduce,
+    row_padding,
+    select_row_config_by_width,
+)
 from .group_norm import (
     GroupNormKernel,
     GroupNormNoAffineKernel,
     _holds_row_in_registers,
+    _row_widths,
     _RowNormKernel,
 )
 
 __all__ = [
+    "InstanceNormCall",
     "InstanceNormFwdInferKernel",
     "InstanceNormFwdTrainKernel",
+    "InstanceNormFwdTrainSingleKernel",
     "InstanceNormKernel",
     "InstanceNormNoAffineKernel",
 ]
 
 
+@dataclasses.dataclass(frozen=True)
+class InstanceNormCall(CallSpec):
+    """An InstanceNorm call on ``x`` of shape ``(n, c, *L)``, with ``spatial = prod(L)``."""
+
+    n: int = 0
+    c: int = 0
+    spatial: int = 0
+    dtype: torch.dtype = torch.float16
+    eps: float = 1e-5
+    momentum: float = 0.1
+    has_weight: bool = False
+    has_bias: bool = False
+
+
+def _passes_affine(call: InstanceNormCall) -> bool:
+    """Whether the call passes ``weight`` or ``bias``."""
+    return call.has_weight or call.has_bias
+
+
 class InstanceNormKernel(GroupNormKernel):
     """InstanceNorm forward kernel with a per-channel affine.
 
-    GroupNorm's kernel with ``num_groups=C`` and ``channels_per_group=1``. The running
-    statistics are slots of the op's signature that this kernel does not read: it
-    normalizes by the statistics of this call's input.
+    GroupNorm's kernel with ``num_groups=C`` and ``channels_per_group=1``, serving a call
+    that passes ``weight`` or ``bias``; the op supplies the identity for the absent one.
+    The running statistics are slots of the op's signature that this kernel does not
+    read: it normalizes by the statistics of this call's input.
+
+    Args:
+        C: Number of channels.
+        spatial: Elements per instance, ``prod(L)``.
+        eps: Epsilon for numerical stability.
+        dtype: Data type (float32, float16, or bfloat16).
+        config: Optional tile config dict.
+        tune: If True, autotune tile config.
     """
+
+    @classmethod
+    def applies(cls, call: InstanceNormCall) -> bool:
+        return _passes_affine(call)
+
+    @classmethod
+    def entry_for(cls, call: InstanceNormCall) -> Entry:
+        identity = (call.c, call.spatial, call.eps, call.dtype)
+        return identity, lambda: cls(*identity, tune=call.tune)
+
+    def __init__(
+        self,
+        C: int,
+        spatial: int,
+        eps: float,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ):
+        super().__init__(
+            spatial, eps, dtype, num_groups=C, channels_per_group=1, config=config, tune=tune
+        )
 
     def forward(
         self,
@@ -60,9 +121,26 @@ class InstanceNormKernel(GroupNormKernel):
 class InstanceNormNoAffineKernel(GroupNormNoAffineKernel):
     """InstanceNorm forward kernel without affine scale/shift.
 
-    GroupNorm's no-affine kernel with ``G = C``. The running statistics and the affine
-    pair are slots of the op's signature that this kernel does not read.
+    GroupNorm's no-affine kernel with ``G = C``, serving a call that passes neither
+    ``weight`` nor ``bias``. The running statistics and the affine pair are slots of the
+    op's signature that this kernel does not read.
+
+    Args:
+        D: Elements per instance, ``prod(L)``.
+        eps: Epsilon for numerical stability.
+        dtype: Data type (float32, float16, or bfloat16).
+        config: Optional tile config dict.
+        tune: If True, autotune tile config.
     """
+
+    @classmethod
+    def applies(cls, call: InstanceNormCall) -> bool:
+        return not _passes_affine(call)
+
+    @classmethod
+    def entry_for(cls, call: InstanceNormCall) -> Entry:
+        identity = (call.spatial, call.eps, call.dtype)
+        return identity, lambda: cls(*identity, tune=call.tune)
 
     def forward(
         self,
@@ -76,7 +154,7 @@ class InstanceNormNoAffineKernel(GroupNormNoAffineKernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _instance_norm_train_kernel(N, C, D, eps, momentum, dtype, has_weight, has_bias):
+def _instance_norm_train_kernel(N, C, D, block_m, eps, momentum, dtype, has_weight, has_bias):
     """Build the kernel normalizing by instance statistics and updating the running ones.
 
     Block ``(c, s)`` normalizes rows ``(n, c)`` with ``n // block_m == s``. With one
@@ -87,6 +165,7 @@ def _instance_norm_train_kernel(N, C, D, eps, momentum, dtype, has_weight, has_b
         N: Batch size.
         C: Number of channels.
         D: Elements per instance, ``prod(spatial)``; above one.
+        block_m: Samples of one channel one block normalizes.
         eps: Epsilon for numerical stability.
         momentum: Weight of an instance's statistics in its update.
         dtype: TileLang dtype string of the input.
@@ -99,7 +178,7 @@ def _instance_norm_train_kernel(N, C, D, eps, momentum, dtype, has_weight, has_b
     unbiased = D / (D - 1)
 
     @tilelang.jit(out_idx=[6])
-    def _func(block_m, threads):
+    def _func(threads):
         splits = -(-N // block_m)
         # The last block's rows past the last sample read and write nothing.
         guarded = D_padded != D or N % block_m != 0
@@ -330,12 +409,6 @@ class _ChannelTableKernel(_RowNormKernel):
 
     def _affine(self, x: torch.Tensor, weight, bias) -> tuple:
         """The affine pair to launch with, a placeholder standing for an absent tensor."""
-        if (weight is not None) != self.has_weight or (bias is not None) != self.has_bias:
-            raise ValueError(
-                f"{type(self).__name__} was built for weight "
-                f"{'present' if self.has_weight else 'absent'} and bias "
-                f"{'present' if self.has_bias else 'absent'}"
-            )
         placeholder = None
         if weight is None or bias is None:
             placeholder = torch.empty(self.C, dtype=x.dtype, device=x.device)
@@ -352,15 +425,12 @@ class _ChannelTableKernel(_RowNormKernel):
         return self.kernel(**self.config)(*args)
 
 
-class InstanceNormFwdTrainKernel(_ChannelTableKernel):
+class _InstanceNormTrainKernel(_ChannelTableKernel):
     """InstanceNorm forward that also updates the running statistics in place.
 
-    Each block owns one channel and up to ``block_m`` of its samples, normalizes each
-    instance by its own statistics, and the channel's ``running_mean[c]`` and
-    ``running_var[c]`` move the way ``torch.nn.functional.instance_norm`` moves them: the
-    batch mean of each instance's ``momentum`` update, with the unbiased variance, each
-    rounded to the input's dtype. A batch that fits one block is one launch; a larger
-    one takes a second launch adding the blocks' sums up in a fixed order.
+    Each block owns one channel and ``block_m`` of its samples. ``running_mean[c]`` and
+    ``running_var[c]`` move as in ``torch.nn.functional.instance_norm``: the batch mean of
+    each instance's ``momentum`` update, unbiased variance, rounded to the input's dtype.
 
     Args:
         N: Batch size.
@@ -377,11 +447,43 @@ class InstanceNormFwdTrainKernel(_ChannelTableKernel):
 
     # Samples one block normalizes together, at most.
     _MAX_BLOCK_M = 8
-    # Threads a block of several rows may take. A 1024-thread block holding two fp32
-    # fragments of its rows fills a multiprocessor's register file alone.
+    # Threads a block of several rows may take.
     _MAX_THREADS = 256
-    # Block width of the launch adding up the blocks' sums, one thread per channel.
-    _STATS_THREADS = 128
+
+    @classmethod
+    def _block_m(cls, n: int, spatial: int, dtype: torch.dtype) -> int:
+        """Samples of one channel one block normalizes: a power of two, at most the batch.
+
+        One for a shared-staged row: a staged block of several rows collapses its layout.
+
+        Args:
+            n: Batch size.
+            spatial: Elements per instance.
+            dtype: Data type of the input.
+        """
+        padded = row_padding(spatial, dtype.itemsize)
+        if not _holds_row_in_registers(spatial, padded):
+            return 1
+        row_threads = select_row_config_by_width(padded, _row_widths(spatial, padded))["threads"]
+        cap = min(n, cls._MAX_BLOCK_M, cls._MAX_THREADS // row_threads)
+        block_m = 1
+        while block_m * 2 <= cap:
+            block_m *= 2
+        return block_m
+
+    @classmethod
+    def entry_for(cls, call: InstanceNormCall) -> Entry:
+        identity = (
+            call.n,
+            call.c,
+            call.spatial,
+            call.eps,
+            call.momentum,
+            call.dtype,
+            call.has_weight,
+            call.has_bias,
+        )
+        return identity, lambda: cls(*identity, tune=call.tune)
 
     def __init__(
         self,
@@ -397,40 +499,51 @@ class InstanceNormFwdTrainKernel(_ChannelTableKernel):
         tune: bool = False,
     ):
         self.momentum = momentum
+        self.block_m = self._block_m(N, D, dtype)
         super().__init__(N, C, D, eps, dtype, has_weight, has_bias, config=config, tune=tune)
 
     @property
-    def _block_m(self) -> int:
-        """Rows per block: the most samples, up to the batch, that fit in one block.
-
-        One row per block where a row alone takes more than ``_MAX_THREADS``.
-        """
-        row_threads = super().default_config["threads"]
-        if not _holds_row_in_registers(self.D, self.D_padded):
-            # A row staged through shared memory takes one block of its own: a staged
-            # block of several rows compiles to a collapsed layout.
-            return 1
-        cap = min(self.N, self._MAX_BLOCK_M, self._MAX_THREADS // row_threads)
-        block_m = 1
-        while block_m * 2 <= cap:
-            block_m *= 2
-        return block_m
-
-    @property
     def default_config(self) -> dict:
-        block_m = self._block_m
-        return {"block_m": block_m, "threads": block_m * super().default_config["threads"]}
+        return {"threads": self.block_m * super().default_config["threads"]}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # block_m stays fixed: it decides how the batch is cut across blocks, and with
-        # it the shape of the buffer the blocks' sums go through.
-        block_m = self._block_m
         return [
-            {"block_m": block_m, "threads": block_m * t}
+            {"threads": self.block_m * t}
             for t in self._row_widths
-            if self.D_padded % t == 0 and (block_m == 1 or block_m * t <= self._MAX_THREADS)
+            if self.D_padded % t == 0
+            and (self.block_m == 1 or self.block_m * t <= self._MAX_THREADS)
         ] or [self.default_config]
+
+    def _normalize(self, x, running_mean, running_var, weight, bias) -> tuple:
+        """Launch the normalizing program; return its output and the blocks' sums."""
+        self._require_cuda(
+            x=x, running_mean=running_mean, running_var=running_var, weight=weight, bias=bias
+        )
+        weight, bias = self._affine(x, weight, bias)
+        self.kernel = _instance_norm_train_kernel(
+            self.N,
+            self.C,
+            self.D,
+            self.block_m,
+            self.eps,
+            self.momentum,
+            self.dtype_str,
+            self.has_weight,
+            self.has_bias,
+        )
+        splits = -(-self.N // self.block_m)
+        partial = torch.empty((splits, 2, self.C), dtype=torch.float32, device=x.device)
+        y = self._launch(x, running_mean, running_var, weight, bias, partial)
+        return y, partial
+
+
+class InstanceNormFwdTrainSingleKernel(_InstanceNormTrainKernel):
+    """InstanceNorm training forward in one launch: one block per channel holds the batch."""
+
+    @classmethod
+    def applies(cls, call: InstanceNormCall) -> bool:
+        return cls._block_m(call.n, call.spatial, call.dtype) >= call.n
 
     def forward(
         self,
@@ -443,41 +556,84 @@ class InstanceNormFwdTrainKernel(_ChannelTableKernel):
         """Normalize *x* by its instance statistics and update the running ones in place.
 
         Args:
-            x: Input of shape ``(N, C, *spatial)``, contiguous, on a CUDA device.
+            x: Input of shape ``(N, C, D)``, contiguous, on a CUDA device.
             running_mean: ``float32`` running mean of shape $[C]$, contiguous; updated.
             running_var: ``float32`` running variance of shape $[C]$, contiguous; updated.
             weight: Affine scale of shape $[C]$, or ``None``, as built.
             bias: Affine shift of shape $[C]$, or ``None``, as built.
 
         Returns:
-            Tensor shaped like *x*.
+            Tensor of shape ``(N, C, D)``.
 
         Raises:
-            ValueError: An input is not on a CUDA device, or the affine presence differs
-                from the one this kernel was built for.
+            ValueError: An input is not on a CUDA device.
         """
-        self._require_cuda(
-            x=x, running_mean=running_mean, running_var=running_var, weight=weight, bias=bias
+        y, _ = self._normalize(x, running_mean, running_var, weight, bias)
+        return y
+
+
+class InstanceNormFwdTrainKernel(_InstanceNormTrainKernel):
+    """InstanceNorm training forward for a batch split across blocks of each channel.
+
+    A second launch adds the blocks' sums in block order into the running statistics.
+    """
+
+    general = True
+
+    # Block width of the launch adding up the blocks' sums, one thread per channel.
+    _STATS_THREADS = 128
+
+    @classmethod
+    def applies(cls, call: InstanceNormCall) -> bool:
+        return cls._block_m(call.n, call.spatial, call.dtype) < call.n
+
+    def __init__(
+        self,
+        N: int,
+        C: int,
+        D: int,
+        eps: float,
+        momentum: float,
+        dtype: torch.dtype,
+        has_weight: bool,
+        has_bias: bool,
+        config: Optional[dict] = None,
+        tune: bool = False,
+    ):
+        super().__init__(
+            N, C, D, eps, momentum, dtype, has_weight, has_bias, config=config, tune=tune
         )
-        weight, bias = self._affine(x, weight, bias)
-        self.kernel = _instance_norm_train_kernel(
-            self.N,
-            self.C,
-            self.D,
-            self.eps,
-            self.momentum,
-            self.dtype_str,
-            self.has_weight,
-            self.has_bias,
+        splits = -(-self.N // self.block_m)
+        self._stats = _instance_norm_stats_kernel(self.N, self.C, splits, self.dtype_str)(
+            self._STATS_THREADS
         )
-        splits = -(-self.N // self.config["block_m"])
-        partial = torch.empty((splits, 2, self.C), dtype=torch.float32, device=x.device)
-        rows = x.reshape(self.N, self.C, self.D)
-        y = self._launch(rows, running_mean, running_var, weight, bias, partial)
-        if splits > 1:
-            stats = _instance_norm_stats_kernel(self.N, self.C, splits, self.dtype_str)
-            stats(self._STATS_THREADS)(partial, running_mean, running_var)
-        return y.reshape(x.shape)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        running_mean: torch.Tensor,
+        running_var: torch.Tensor,
+        weight: Optional[torch.Tensor] = None,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Normalize *x* by its instance statistics and update the running ones in place.
+
+        Args:
+            x: Input of shape ``(N, C, D)``, contiguous, on a CUDA device.
+            running_mean: ``float32`` running mean of shape $[C]$, contiguous; updated.
+            running_var: ``float32`` running variance of shape $[C]$, contiguous; updated.
+            weight: Affine scale of shape $[C]$, or ``None``, as built.
+            bias: Affine shift of shape $[C]$, or ``None``, as built.
+
+        Returns:
+            Tensor of shape ``(N, C, D)``.
+
+        Raises:
+            ValueError: An input is not on a CUDA device.
+        """
+        y, partial = self._normalize(x, running_mean, running_var, weight, bias)
+        self._stats(partial, running_mean, running_var)
+        return y
 
 
 @functools.lru_cache(maxsize=32)
@@ -554,6 +710,21 @@ class InstanceNormFwdInferKernel(_ChannelTableKernel):
         tune: If True, autotune tile config.
     """
 
+    general = True
+
+    @classmethod
+    def entry_for(cls, call: InstanceNormCall) -> Entry:
+        identity = (
+            call.n,
+            call.c,
+            call.spatial,
+            call.eps,
+            call.dtype,
+            call.has_weight,
+            call.has_bias,
+        )
+        return identity, lambda: cls(*identity, tune=call.tune)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -565,18 +736,17 @@ class InstanceNormFwdInferKernel(_ChannelTableKernel):
         """Normalize *x* by the running statistics.
 
         Args:
-            x: Input of shape ``(N, C, *spatial)``, contiguous, on a CUDA device.
+            x: Input of shape ``(N * C, D)``, contiguous, on a CUDA device.
             running_mean: ``float32`` running mean of shape $[C]$, contiguous.
             running_var: ``float32`` running variance of shape $[C]$, contiguous.
             weight: Affine scale of shape $[C]$, or ``None``, as built.
             bias: Affine shift of shape $[C]$, or ``None``, as built.
 
         Returns:
-            Tensor shaped like *x*.
+            Tensor of shape ``(N * C, D)``.
 
         Raises:
-            ValueError: An input is not on a CUDA device, or the affine presence differs
-                from the one this kernel was built for.
+            ValueError: An input is not on a CUDA device.
         """
         self._require_cuda(
             x=x, running_mean=running_mean, running_var=running_var, weight=weight, bias=bias
@@ -591,6 +761,4 @@ class InstanceNormFwdInferKernel(_ChannelTableKernel):
             self.has_weight,
             self.has_bias,
         )
-        rows = x.reshape(-1, self.D)
-        y = self._launch(rows, running_mean, running_var, weight, bias)
-        return y.reshape(x.shape)
+        return self._launch(x, running_mean, running_var, weight, bias)
