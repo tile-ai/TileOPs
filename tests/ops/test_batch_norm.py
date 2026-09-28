@@ -10,7 +10,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.norm import BatchNormFwdTrainKernel
+from tileops.kernels.norm.call_spec import BatchNormCall
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.device import run_device, run_device_available
 from workloads.normalization import (
@@ -229,10 +229,6 @@ def test_training_rejects_one_value_per_channel() -> None:
     with pytest.raises(ValueError, match=re.escape("B * prod(L) != 1")):
         BatchNormFwdOp(training=True)(x, rm, rv, weight, bias)
 
-    # The kernel refuses on its own: it is exported, so a caller can reach it directly.
-    with pytest.raises(ValueError, match="more than one value per channel"):
-        BatchNormFwdTrainKernel(C, 1, torch.float32, S=1)
-
     # Inference applies no correction; torch normalizes the same shape.
     infer = BatchNormFwdOp(training=False)
     y = infer(x, rm, rv, weight, bias)
@@ -260,6 +256,27 @@ def test_a_channel_length_no_tile_divides_matches_torch(shape) -> None:
     got = BatchNormBwdOp()(grad_out, x, weight, mean, rstd)
     for a, b in zip(got, workload.ref_program(grad_out, x, weight, mean, rstd), strict=True):
         torch.testing.assert_close(a, b, atol=5e-3, rtol=5e-3)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls, role, n, c, spatial, dtype, key",
+    [
+        (BatchNormFwdOp, "batch_norm_fwd_train", 32, 64, 1, torch.float16, "fwd_train_whole"),
+        (BatchNormFwdOp, "batch_norm_fwd_train", 4, 256, 784, torch.float32, "fwd_train_wide"),
+        (BatchNormFwdOp, "batch_norm_fwd_train", 3, 5, 90300, torch.float16, "fwd_train_split"),
+        (BatchNormFwdOp, "batch_norm_fwd_train", 4096, 1024, 64, torch.float16, "fwd_train_kernel"),
+        (BatchNormBwdOp, "batch_norm_bwd", 4, 256, 784, torch.float32, "bwd_wide"),
+        (BatchNormBwdOp, "batch_norm_bwd", 3, 5, 90300, torch.bfloat16, "bwd_split"),
+        (BatchNormBwdOp, "batch_norm_bwd", 8192, 1024, 9, torch.float16, "bwd_kernel"),
+    ],
+)
+def test_each_region_selects_its_one_candidate(op_cls, role, n, c, spatial, dtype, key) -> None:
+    """Exactly one specialised candidate, or else the general one, serves each shape."""
+    op = op_cls()
+    call = BatchNormCall(arch=90, sm_count=132, n=n, c=c, spatial=spatial, dtype=dtype)
+    keys = op.kernel_roles.get(role, tuple(op.kernel_map))
+    assert op.select_kernel_key(keys, call) == key
 
 
 # Input validation and torch.compile.
@@ -343,24 +360,18 @@ def _from_cl(x_cl: torch.Tensor, orig_shape: torch.Size) -> torch.Tensor:
     return x_cl.reshape(c, n, *spatial).permute(1, 0, *range(2, len(orig_shape))).contiguous()
 
 
-class _FakeBatchNormFwdInferKernel(Kernel):
-    def __init__(
-        self,
-        C: int,
-        L: int,
-        dtype: torch.dtype,
-        eps: float,
-        tune: bool = False,
-        S: int | None = None,
-    ) -> None:
-        super().__init__()
-        self.C = C
-        self.L = L
-        self.dtype = dtype
-        self.eps = eps
-        self.tune = tune
-        self.S = L if S is None else S
+class _FakeKernel(Kernel):
+    general = True
 
+    def __init__(self, call: BatchNormCall) -> None:
+        super().__init__()
+        self.L = call.n * call.spatial
+        self.dtype = call.dtype
+        self.eps = call.eps
+        self.momentum = call.momentum
+
+
+class _FakeBatchNormFwdInferKernel(_FakeKernel):
     def forward(
         self,
         x: torch.Tensor,
@@ -375,21 +386,7 @@ class _FakeBatchNormFwdInferKernel(Kernel):
         return _from_cl(y.to(self.dtype), x.shape)
 
 
-class _FakeBatchNormFwdTrainKernel(_FakeBatchNormFwdInferKernel):
-    def __init__(
-        self,
-        C: int,
-        L: int,
-        dtype: torch.dtype,
-        eps: float,
-        momentum: float,
-        tune: bool = False,
-        S: int | None = None,
-        device_index: int | None = None,
-    ) -> None:
-        super().__init__(C, L, dtype, eps, tune=tune, S=S)
-        self.momentum = momentum
-
+class _FakeBatchNormFwdTrainKernel(_FakeKernel):
     def forward(
         self,
         x: torch.Tensor,
@@ -409,22 +406,7 @@ class _FakeBatchNormFwdTrainKernel(_FakeBatchNormFwdInferKernel):
         return _from_cl(y.to(self.dtype), x.shape), mean, rstd
 
 
-class _FakeBatchNormBwdKernel(Kernel):
-    def __init__(
-        self,
-        C: int,
-        L: int,
-        dtype: torch.dtype,
-        tune: bool = False,
-        S: int | None = None,
-        device_index: int | None = None,
-    ) -> None:
-        super().__init__()
-        self.C = C
-        self.L = L
-        self.dtype = dtype
-        self.tune = tune
-
+class _FakeBatchNormBwdKernel(_FakeKernel):
     def forward(
         self,
         grad_out: torch.Tensor,
@@ -446,6 +428,24 @@ class _FakeBatchNormBwdKernel(Kernel):
             / self.L
         )
         return _from_cl(grad_x.to(self.dtype), x.shape), grad_weight, grad_bias
+
+
+class _ServesNothing(Kernel):
+    @classmethod
+    def applies(cls, call: BatchNormCall) -> bool:
+        return False
+
+    def forward(self, *args):
+        raise AssertionError("never selected")
+
+
+_FAKE_TRAIN_MAP = {
+    "fwd_train_whole": _ServesNothing,
+    "fwd_train_wide": _ServesNothing,
+    "fwd_train_split": _ServesNothing,
+    "fwd_train_kernel": _FakeBatchNormFwdTrainKernel,
+    "fwd_infer_kernel": _FakeBatchNormFwdInferKernel,
+}
 
 
 def _batch_norm_infer_ref(
@@ -486,8 +486,9 @@ def _batch_norm_bwd_ref(
     mean: torch.Tensor,
     rstd: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    kernel = _FakeBatchNormBwdKernel(x.shape[1], grad_out.numel() // x.shape[1], x.dtype)
-    return kernel(grad_out, x, weight, mean, rstd)
+    n, c = x.shape[0], x.shape[1]
+    call = BatchNormCall(n=n, c=c, spatial=x.numel() // (n * c), dtype=x.dtype)
+    return _FakeBatchNormBwdKernel(call)(grad_out, x, weight, mean, rstd)
 
 
 @pytest.mark.cuda_only
@@ -499,10 +500,7 @@ def test_batch_norm_fwd_lazy_cache_reuse_and_respecialization() -> None:
 
     op = BatchNormFwdOp(
         training=False,
-        kernel_map={
-            "fwd_infer_kernel": _FakeBatchNormFwdInferKernel,
-            "fwd_train_kernel": _FakeBatchNormFwdTrainKernel,
-        },
+        kernel_map=_FAKE_TRAIN_MAP,
         target=BUILTIN,
     )
 
@@ -547,10 +545,7 @@ def test_batch_norm_training_fwd_lazy_cache_reuse_and_respecialization() -> None
 
     op = BatchNormFwdOp(
         training=True,
-        kernel_map={
-            "fwd_infer_kernel": _FakeBatchNormFwdInferKernel,
-            "fwd_train_kernel": _FakeBatchNormFwdTrainKernel,
-        },
+        kernel_map=_FAKE_TRAIN_MAP,
         target=BUILTIN,
     )
 
@@ -595,7 +590,14 @@ def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
         pytest.skip("CUDA required for backward call")
 
     eps = 1e-5
-    op = BatchNormBwdOp(kernel_map={"bwd_kernel": _FakeBatchNormBwdKernel}, target=BUILTIN)
+    op = BatchNormBwdOp(
+        kernel_map={
+            "bwd_wide": _ServesNothing,
+            "bwd_split": _ServesNothing,
+            "bwd_kernel": _FakeBatchNormBwdKernel,
+        },
+        target=BUILTIN,
+    )
 
     def run_case(N: int, C: int, spatial: tuple[int, ...], dtype: torch.dtype) -> None:
         x = torch.randn((N, C, *spatial), device="cuda", dtype=dtype)

@@ -2,13 +2,12 @@
 
 Reference: Ioffe & Szegedy (2015) https://arxiv.org/abs/1502.03167
 
-C is the channel count, L = N * prod(spatial) the reduction length of one
-channel, and S = prod(spatial) its contiguous run within one batch item.
-Every kernel indexes the caller's (N, C, *spatial) layout directly.
+Every kernel takes the ``(N, C, S)`` view of the ``(N, C, *spatial)`` input, with S the
+product of the spatial axes. C is the channel count and L = N * S the reduction length of
+one channel, whose element *l* sits at ``[l // S, c, l % S]``.
 """
 
 import functools
-import math
 from typing import Callable, Optional
 
 import tilelang
@@ -16,13 +15,19 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_count
+from tileops.kernels.kernel_base import Entry, Kernel
+
+from .call_spec import BatchNormCall
 
 __all__ = [
     "BatchNormBwdKernel",
+    "BatchNormBwdSplitKernel",
+    "BatchNormBwdWideKernel",
     "BatchNormFwdInferKernel",
     "BatchNormFwdTrainKernel",
+    "BatchNormFwdTrainSplitKernel",
+    "BatchNormFwdTrainWholeKernel",
+    "BatchNormFwdTrainWideKernel",
 ]
 
 
@@ -31,17 +36,22 @@ def _vector_elements(dtype: torch.dtype) -> int:
     return VECTOR_ACCESS_BYTES // dtype.itemsize
 
 
-def _require_spatial(S: int, x: torch.Tensor) -> None:
-    """Raise unless *x* runs *S* elements per channel per batch item, as the kernel was built for."""
-    if math.prod(x.shape[2:]) != S:
-        raise ValueError(
-            f"kernel built for {S} elements per channel per batch item, got shape {tuple(x.shape)}"
-        )
-
-
 def _widths_down_to_one(widest: int) -> tuple[int, ...]:
     """*widest* and every halving of it, down to one element."""
     return tuple(widest >> k for k in range(widest.bit_length()))
+
+
+def _device_index(call: BatchNormCall) -> Optional[int]:
+    """The CUDA device the call runs on, which the kernel checks its architecture against."""
+    return call.device.index if call.device is not None else None
+
+
+def _channel_buffers(C: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    """Two per-channel float32 buffers a kernel writes."""
+    return (
+        torch.empty(C, device=device, dtype=torch.float32),
+        torch.empty(C, device=device, dtype=torch.float32),
+    )
 
 
 class _TiledPath:
@@ -93,148 +103,83 @@ class _TiledPath:
         return [{"block_l": cls.MAX_BLOCK_L, "threads": cls.REDUCE_THREADS[0]}]
 
 
-class _WholePath:
-    """A channel per thread, held in its registers.
+# The longest channel of one element per batch item that one thread holds.
+_THREAD_MAX_L = 32
 
-    Chosen where a channel is one element per batch item: a block owning one
-    channel would then get one useful element per cache line, whatever the tile
-    size. The block is wider than the channels it covers when there are few, so
-    it still launches enough warps to cover load latency. Bounds are measured
-    crossovers, not derived.
+
+def _fits_one_thread(L: int, S: int) -> bool:
+    """Whether a channel is one element per batch item and short enough for one thread."""
+    return S <= 1 and L <= _THREAD_MAX_L
+
+
+# Elements one thread of a register-holding block keeps, over every tensor it holds.
+_BLOCK_MAX_HELD = 256
+_BLOCK_THREADS = 256
+_BLOCK_MAX_THREADS = 1024
+# The widest block once the grid alone covers every SM.
+_BLOCK_MAX_THREADS_FULL_GRID = 512
+
+
+def _block_launch(
+    C: int, L: int, S: int, dtype: torch.dtype, sm_count: int, held_tensors: int
+) -> Optional[tuple[int, int]]:
+    """The ``(threads, num_per_thread)`` of a block holding one channel in registers.
+
+    ``None`` where the channel does not fit. A thread holds *held_tensors* elements per
+    channel element, and its vector never straddles two batch items.
     """
-
-    MAX_S = 1
-    MAX_L = 32
-    BLOCK_THREADS = 256
-
-    @classmethod
-    def launch(cls, L: int, S: int) -> Optional[int]:
-        """The block width this path needs, or None where it does not serve."""
-        if S <= cls.MAX_S and L <= cls.MAX_L:
-            return cls.BLOCK_THREADS
-        return None
-
-
-class _WidePath:
-    """A channel per block, held in the block's registers across its steps.
-
-    Chosen where the channel fits those registers. Past MAX_HELD the spills cost
-    more than the second global read the other paths pay. Bounds are measured
-    crossovers, not derived.
-    """
-
-    BLOCK_THREADS = 256
-    MAX_HELD = 256
-    MAX_BLOCK_THREADS = 1024
-
-    # A grid that already covers the device stops at the narrower block: past it
-    # a block's warps compete for one SM instead of filling an idle one.
-    MAX_BLOCK_THREADS_FULL_GRID = 512
-
-    @classmethod
-    def launch(
-        cls,
-        C: int,
-        L: int,
-        S: int,
-        dtype: torch.dtype,
-        held_tensors: int = 1,
-        device_index: Optional[int] = None,
-    ) -> Optional[tuple[int, int]]:
-        """The ``(threads, num_per_thread)`` this path needs, or None.
-
-        The vector must not straddle two batch items, and the channel must fit
-        in the widest block *C* allows. *held_tensors* is how many tensors a
-        thread holds per element; MAX_HELD bounds the elements over all of them.
-        *device_index* names the device whose SM count the grid is compared to.
-        """
-        full_grid = get_sm_count(device_index) <= C
-        widest = cls.MAX_BLOCK_THREADS_FULL_GRID if full_grid else cls.MAX_BLOCK_THREADS
-        for num_per_thread in _widths_down_to_one(_vector_elements(dtype)):
-            if S % num_per_thread:
-                continue
-            # Halve the width while the channel would leave half the block empty;
-            # what the width does not cover becomes steps, which MAX_HELD caps.
-            threads = cls.BLOCK_THREADS
-            while threads > 32 and threads * num_per_thread >= L * 2:
-                threads //= 2
+    widest = _BLOCK_MAX_THREADS_FULL_GRID if sm_count <= C else _BLOCK_MAX_THREADS
+    for num_per_thread in _widths_down_to_one(_vector_elements(dtype)):
+        if S % num_per_thread:
+            continue
+        # Halve the block while the channel would leave half of it empty.
+        threads = _BLOCK_THREADS
+        while threads > 32 and threads * num_per_thread >= L * 2:
+            threads //= 2
+        steps = -(-L // (threads * num_per_thread))
+        # Widen while a step is left partly empty and a wider block takes fewer steps;
+        # a one-element thread stays, since a wider block only scatters more requests.
+        while (
+            num_per_thread > 1
+            and threads < widest
+            and steps > 1
+            and steps * threads * num_per_thread != L
+        ):
+            threads *= 2
             steps = -(-L // (threads * num_per_thread))
-            # A step the channel does not fill still costs a whole pass of the
-            # load loop and of the store loop. Widen while such a step is left
-            # and a wider block takes fewer of them. A thread reading one
-            # element at a time is left alone: a wider block then issues more
-            # scattered requests rather than more vectors in flight.
-            while (
-                num_per_thread > 1
-                and threads < widest
-                and steps > 1
-                and steps * threads * num_per_thread != L
-            ):
-                threads *= 2
-                steps = -(-L // (threads * num_per_thread))
-            if steps * num_per_thread * held_tensors <= cls.MAX_HELD:
-                return threads, num_per_thread
-        return None
+        if steps * num_per_thread * held_tensors <= _BLOCK_MAX_HELD:
+            return threads, num_per_thread
+    return None
 
 
-class _SplitPath:
-    """A channel across several blocks, summed and merged by three launches.
+def _fits_one_block(call: BatchNormCall, held_tensors: int) -> bool:
+    """Whether one block's registers hold a channel of *held_tensors* tensors."""
+    L = call.n * call.spatial
+    launch = _block_launch(call.c, L, call.spatial, call.dtype, call.sm_count, held_tensors)
+    return launch is not None
 
-    Chosen for a channel long enough that one block per channel is too narrow a
-    grid, whatever the tile size. Bounds are measured crossovers, not derived.
-    """
 
-    # Above MAX_C one block per channel already fills the device and the split
-    # has nothing to add.
-    MAX_C = 1024
-    MIN_L = 1 << 16
+# At or above this many channels one block per channel already fills the device.
+_SPLIT_MAX_C = 1024
+_SPLIT_MIN_L = 1 << 16
+# Blocks a split grid aims for before tuning.
+_SPLIT_TARGET_BLOCKS = 512
 
-    # Blocks the path aims for: a grid this size still covers the device several
-    # times over, and the longer piece each block walks reads faster.
-    TARGET_BLOCKS = 512
 
-    # How far either side of the seed the split count is offered to the tuner.
-    SEARCH_REACH = 4
+def _splittable(C: int, L: int) -> bool:
+    """Whether a channel is long enough, among few enough channels, to cut across blocks."""
+    return C < _SPLIT_MAX_C and L >= _SPLIT_MIN_L
 
-    # Spread within which two candidates are one answer: the tuner times the
-    # launches back to back while the benchmark clears L2 between them.
-    TIE_BAND = 0.02
 
-    # Block widths the sums are tuned over, powers of two only: T.reduce_sum
-    # lowers to an XOR butterfly.
-    SUM_THREADS = (128, 256, 512, 1024)
-
-    @classmethod
-    def admits(cls, C: int, L: int) -> bool:
-        """Whether this path serves the shape."""
-        return C < cls.MAX_C and L >= cls.MIN_L
-
-    @classmethod
-    def seed(cls, C: int, L: int) -> int:
-        """Pieces a channel is cut into before anything is measured."""
-        return max(1, min(L, -(-cls.TARGET_BLOCKS // C)))
-
-    @classmethod
-    def candidates(cls, C: int, L: int) -> list[int]:
-        """Split counts to offer the tuner: powers of two either side of the seed.
-
-        The seed is always a member, which is why tuning raises rather than
-        falling back when every candidate refuses: the count path selection
-        chose was among them, so nothing is left to fall back to.
-        """
-        widest = min(L, cls.seed(C, L) * cls.SEARCH_REACH)
-        counts, count = [], 1
-        while count <= widest:
-            counts.append(count)
-            count *= 2
-        counts.append(cls.seed(C, L))
-        return sorted({c for c in counts if c <= L})
+def _split_seed(C: int, L: int) -> int:
+    """Pieces a channel is cut into before anything is measured."""
+    return max(1, min(L, -(-_SPLIT_TARGET_BLOCKS // C)))
 
 
 @functools.lru_cache(maxsize=32)
 def _batch_norm_fwd_train_kernel(
+    N: int,
     C: int,
-    L: int,
     S: int,
     dtype: str = "float16",
     eps: float = 1e-5,
@@ -251,9 +196,8 @@ def _batch_norm_fwd_train_kernel(
 
     Saved mean and rstd are needed by the backward pass.
 
-    A channel is *S* elements contiguous at a time, once per batch item, so
-    element *l* of channel *c* lives at ``(l // S) * C * S + c * S + l % S``.
-    Reading through that index needs no transposed copy.
+    Element *l* of channel *c* is ``x[l // S, c, l % S]``, so the channel is read
+    in place with no transposed copy.
 
     Persistent path (block_l >= L): after pass 1 loads all L elements into
     x_shared, pass 2 normalizes directly from x_shared — no second global read.
@@ -263,7 +207,7 @@ def _batch_norm_fwd_train_kernel(
     A *block_l* that does not divide L masks the last tile; threads must divide block_l.
     """
     accum_dtype = "float32"
-    plane = C * S
+    L = N * S
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _bn_fwd_train_func(block_l: int, threads: int) -> Callable:
@@ -273,14 +217,14 @@ def _batch_norm_fwd_train_kernel(
 
         @T.prim_func
         def _bn_fwd_train(
-            x: T.Tensor([C * L], dtype),
+            x: T.Tensor([N, C, S], dtype),
             weight: T.Tensor([C], accum_dtype),
             bias: T.Tensor([C], accum_dtype),
             running_mean: T.Tensor([C], accum_dtype),
             running_var: T.Tensor([C], accum_dtype),
             mean_out: T.Tensor([C], accum_dtype),
             rstd_out: T.Tensor([C], accum_dtype),
-            y: T.Tensor([C * L], dtype),
+            y: T.Tensor([N, C, S], dtype),
         ):
             with T.Kernel(C, threads=threads) as (bc):
                 x_shared = T.alloc_shared([block_l], dtype)
@@ -298,11 +242,11 @@ def _batch_norm_fwd_train_kernel(
                     if ragged:
                         for _i, j in T.Parallel(1, block_l):
                             x_shared[j] = T.if_then_else(
-                                j < L, x[(j // S) * plane + bc * S + j % S], T.cast(0, dtype)
+                                j < L, x[j // S, bc, j % S], T.cast(0, dtype)
                             )
                     else:
                         for _i, j in T.Parallel(1, block_l):
-                            x_shared[j] = x[(j // S) * plane + bc * S + j % S]
+                            x_shared[j] = x[j // S, bc, j % S]
                     for _i, j in T.Parallel(1, block_l):
                         xval = T.cast(x_shared[j], accum_dtype)
                         xsum_frag[_i, j] += xval
@@ -313,7 +257,7 @@ def _batch_norm_fwd_train_kernel(
                             l = l_tile * block_l + j
                             xval = T.if_then_else(
                                 l < L,
-                                T.cast(x[(l // S) * plane + bc * S + l % S], accum_dtype),
+                                T.cast(x[l // S, bc, l % S], accum_dtype),
                                 T.cast(0, accum_dtype),
                             )
                             xsum_frag[_i, j] += xval
@@ -323,7 +267,7 @@ def _batch_norm_fwd_train_kernel(
                     for l_tile in T.Pipelined(tiles, num_stages=0):
                         for _i, j in T.Parallel(1, block_l):
                             l = l_tile * block_l + j
-                            xval = T.cast(x[(l // S) * plane + bc * S + l % S], accum_dtype)
+                            xval = T.cast(x[l // S, bc, l % S], accum_dtype)
                             xsum_frag[_i, j] += xval
                             xsq_frag[_i, j] += xval * xval
 
@@ -363,13 +307,13 @@ def _batch_norm_fwd_train_kernel(
                     for _i, j in T.Parallel(1, block_l):
                         if j < L:
                             xval = T.cast(x_shared[j], accum_dtype)
-                            y[(j // S) * plane + bc * S + j % S] = T.cast(
+                            y[j // S, bc, j % S] = T.cast(
                                 weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype
                             )
                 elif block_l >= L:
                     for _i, j in T.Parallel(1, block_l):
                         xval = T.cast(x_shared[j], accum_dtype)
-                        y[(j // S) * plane + bc * S + j % S] = T.cast(
+                        y[j // S, bc, j % S] = T.cast(
                             weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype
                         )
                 elif ragged:
@@ -377,9 +321,8 @@ def _batch_norm_fwd_train_kernel(
                         for _i, j in T.Parallel(1, block_l):
                             l = l_tile * block_l + j
                             if l < L:
-                                flat = (l // S) * plane + bc * S + l % S
-                                xval = T.cast(x[flat], accum_dtype)
-                                y[flat] = T.cast(
+                                xval = T.cast(x[l // S, bc, l % S], accum_dtype)
+                                y[l // S, bc, l % S] = T.cast(
                                     weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype
                                 )
                 else:
@@ -387,9 +330,8 @@ def _batch_norm_fwd_train_kernel(
                     for l_tile in T.Pipelined(tiles, num_stages=0):
                         for _i, j in T.Parallel(1, block_l):
                             l = l_tile * block_l + j
-                            flat = (l // S) * plane + bc * S + l % S
-                            xval = T.cast(x[flat], accum_dtype)
-                            y[flat] = T.cast(
+                            xval = T.cast(x[l // S, bc, l % S], accum_dtype)
+                            y[l // S, bc, l % S] = T.cast(
                                 weight[bc] * (xval - mean_val) * rstd_val + bias[bc], dtype
                             )
 
@@ -400,8 +342,8 @@ def _batch_norm_fwd_train_kernel(
 
 @functools.lru_cache(maxsize=32)
 def _batch_norm_fwd_train_split_kernel(
+    N: int,
     C: int,
-    L: int,
     S: int,
     dtype: str = "float16",
     eps: float = 1e-5,
@@ -418,7 +360,7 @@ def _batch_norm_fwd_train_split_kernel(
         A ``(stats, finalize, apply)`` triple of JIT factories.
     """
     accum_dtype = "float32"
-    plane = C * S
+    L = N * S
 
     @tilelang.jit
     def _stats_func(splits: int, threads: int, num_per_thread: int) -> Callable:
@@ -426,7 +368,7 @@ def _batch_norm_fwd_train_split_kernel(
 
         @T.prim_func
         def _bn_train_stats(
-            x: T.Tensor([C * L], dtype),
+            x: T.Tensor([N, C, S], dtype),
             partial_sum: T.Tensor([C, splits], accum_dtype),
             partial_sq: T.Tensor([C, splits], accum_dtype),
         ):
@@ -446,7 +388,7 @@ def _batch_norm_fwd_train_split_kernel(
                         for i in T.serial(num_per_thread):
                             l = start + (step * threads + j) * num_per_thread + i
                             if l < end:
-                                v = T.cast(x[(l // S) * plane + bc * S + l % S], accum_dtype)
+                                v = T.cast(x[l // S, bc, l % S], accum_dtype)
                                 sums[_i, j] += v
                                 sqs[_i, j] += v * v
                 sum_result = T.alloc_fragment([1], accum_dtype)
@@ -517,12 +459,14 @@ def _batch_norm_fwd_train_split_kernel(
 
         @T.prim_func
         def _bn_train_apply(
-            x: T.Tensor([total], dtype),
+            x_ncs: T.Tensor([N, C, S], dtype),
             scale: T.Tensor([C], accum_dtype),
             shift: T.Tensor([C], accum_dtype),
-            y: T.Tensor([total], dtype),
+            y_ncs: T.Tensor([N, C, S], dtype),
         ):
             with T.Kernel(blocks, threads=threads) as bx:
+                x = T.reshape(x_ncs, [total])
+                y = T.reshape(y_ncs, [total])
                 tx = T.get_thread_binding()
                 v = T.alloc_local([num_per_thread], dtype)
                 o = T.alloc_local([num_per_thread], dtype)
@@ -556,8 +500,8 @@ def _batch_norm_fwd_train_split_kernel(
 
 @functools.lru_cache(maxsize=32)
 def _batch_norm_fwd_train_wide_kernel(
+    N: int,
     C: int,
-    L: int,
     S: int,
     dtype: str = "float16",
     eps: float = 1e-5,
@@ -578,7 +522,7 @@ def _batch_norm_fwd_train_wide_kernel(
     multiple of the warp width.
     """
     accum_dtype = "float32"
-    plane = C * S
+    L = N * S
     lanes = 32
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -591,14 +535,14 @@ def _batch_norm_fwd_train_wide_kernel(
 
         @T.prim_func
         def _bn_fwd_train_wide(
-            x: T.Tensor([C * L], dtype),
+            x: T.Tensor([N, C, S], dtype),
             weight: T.Tensor([C], accum_dtype),
             bias: T.Tensor([C], accum_dtype),
             running_mean: T.Tensor([C], accum_dtype),
             running_var: T.Tensor([C], accum_dtype),
             mean_out: T.Tensor([C], accum_dtype),
             rstd_out: T.Tensor([C], accum_dtype),
-            y: T.Tensor([C * L], dtype),
+            y: T.Tensor([N, C, S], dtype),
         ):
             with T.Kernel(C, threads=threads) as bc:
                 tx = T.get_thread_binding()
@@ -618,9 +562,8 @@ def _batch_norm_fwd_train_wide_kernel(
                 for k in T.serial(steps):
                     head = (k * threads + tx) * num_per_thread
                     if exact or head + num_per_thread <= L:
-                        start = (head // S) * plane + bc * S + head % S
                         for i in T.vectorized(num_per_thread):
-                            held[k * num_per_thread + i] = x[start + i]
+                            held[k * num_per_thread + i] = x[head // S, bc, head % S + i]
                         for i in T.serial(num_per_thread):
                             v = T.cast(held[k * num_per_thread + i], accum_dtype)
                             acc[0] += v
@@ -629,7 +572,7 @@ def _batch_norm_fwd_train_wide_kernel(
                         for i in T.serial(num_per_thread):
                             l = head + i
                             if l < L:
-                                held[k * num_per_thread + i] = x[(l // S) * plane + bc * S + l % S]
+                                held[k * num_per_thread + i] = x[l // S, bc, l % S]
                                 v = T.cast(held[k * num_per_thread + i], accum_dtype)
                                 acc[0] += v
                                 sq[0] += v * v
@@ -671,7 +614,6 @@ def _batch_norm_fwd_train_wide_kernel(
                 for k in T.serial(steps):
                     head = (k * threads + tx) * num_per_thread
                     if exact or head + num_per_thread <= L:
-                        start = (head // S) * plane + bc * S + head % S
                         for i in T.serial(num_per_thread):
                             out[i] = T.cast(
                                 T.cast(held[k * num_per_thread + i], accum_dtype) * scale_val
@@ -679,12 +621,12 @@ def _batch_norm_fwd_train_wide_kernel(
                                 dtype,
                             )
                         for i in T.vectorized(num_per_thread):
-                            y[start + i] = out[i]
+                            y[head // S, bc, head % S + i] = out[i]
                     else:
                         for i in T.serial(num_per_thread):
                             l = head + i
                             if l < L:
-                                y[(l // S) * plane + bc * S + l % S] = T.cast(
+                                y[l // S, bc, l % S] = T.cast(
                                     T.cast(held[k * num_per_thread + i], accum_dtype) * scale_val
                                     + shift_val,
                                     dtype,
@@ -697,8 +639,8 @@ def _batch_norm_fwd_train_wide_kernel(
 
 @functools.lru_cache(maxsize=32)
 def _batch_norm_fwd_train_whole_kernel(
+    N: int,
     C: int,
-    L: int,
     S: int,
     dtype: str = "float16",
     eps: float = 1e-5,
@@ -714,7 +656,7 @@ def _batch_norm_fwd_train_whole_kernel(
     registers needs no cross-thread reduction, no shared memory and no barrier.
     """
     accum_dtype = "float32"
-    plane = C * S
+    L = N * S
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _bn_fwd_train_whole_func(threads: int) -> Callable:
@@ -722,14 +664,14 @@ def _batch_norm_fwd_train_whole_kernel(
 
         @T.prim_func
         def _bn_fwd_train_whole(
-            x: T.Tensor([C * L], dtype),
+            x: T.Tensor([N, C, S], dtype),
             weight: T.Tensor([C], accum_dtype),
             bias: T.Tensor([C], accum_dtype),
             running_mean: T.Tensor([C], accum_dtype),
             running_var: T.Tensor([C], accum_dtype),
             mean_out: T.Tensor([C], accum_dtype),
             rstd_out: T.Tensor([C], accum_dtype),
-            y: T.Tensor([C * L], dtype),
+            y: T.Tensor([N, C, S], dtype),
         ):
             with T.Kernel(blocks, threads=threads) as bx:
                 c = bx * threads + T.get_thread_binding()
@@ -748,7 +690,7 @@ def _batch_norm_fwd_train_whole_kernel(
                 sq[0] = T.cast(0, accum_dtype)
                 if c < C:
                     for l in T.serial(L):
-                        held[l] = x[(l // S) * plane + c * S + l % S]
+                        held[l] = x[l // S, c, l % S]
                         v = T.cast(held[l], accum_dtype)
                         acc[0] += v
                         sq[0] += v * v
@@ -770,7 +712,7 @@ def _batch_norm_fwd_train_whole_kernel(
                     running_var[c] = (one - mom) * params[3] + mom * (var_val * n / (n - one))
 
                     for l in T.serial(L):
-                        y[(l // S) * plane + c * S + l % S] = T.cast(
+                        y[l // S, c, l % S] = T.cast(
                             T.cast(held[l], accum_dtype) * scale_val + shift_val, dtype
                         )
 
@@ -779,116 +721,240 @@ def _batch_norm_fwd_train_whole_kernel(
     return _bn_fwd_train_whole_func
 
 
-class BatchNormFwdTrainKernel(Kernel):
-    """Training-mode batch normalization forward kernel.
+class BatchNormFwdTrainWholeKernel(Kernel):
+    """Training forward with one channel per thread, held in its registers.
+
+    Serves a channel one thread holds (``_fits_one_thread``).
 
     Args:
+        N: Batch size.
         C: Number of channels.
-        L: Total reduction length = N * H * W * ....
+        S: Elements per channel in one batch item, ``product(spatial)``.
         dtype: Input/output data type.
         eps: Numerical stability constant.
         momentum: Running-stat update momentum.
-        config: Optional tile config dict.
-        tune: If True, autotune tile config.
-        S: Elements per channel in one batch item, ``product(spatial)``.
-            Defaults to *L*, correct when the batch size is one.
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
 
     supported_archs: list[int] = [80, 89, 90]
 
+    # Wider than the channels it covers when there are few, so the block still has
+    # enough warps to cover load latency.
+    _BLOCK_THREADS = 256
+
+    @classmethod
+    def applies(cls, call: BatchNormCall) -> bool:
+        return _fits_one_thread(call.n * call.spatial, call.spatial)
+
+    @classmethod
+    def entry_for(cls, call: BatchNormCall) -> Entry:
+        args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum)
+        index = _device_index(call)
+        return (*args, index), lambda: cls(*args, device_index=index)
+
     def __init__(
         self,
+        N: int,
         C: int,
-        L: int,
+        S: int,
+        dtype: torch.dtype = torch.float16,
+        eps: float = 1e-5,
+        momentum: float = 0.1,
+        device_index: Optional[int] = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        self.C = C
+        self.dtype = dtype
+        self.kernel = _batch_norm_fwd_train_whole_kernel(N, C, S, self.dtype_str, eps, momentum)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        running_mean: torch.Tensor,
+        running_var: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ):
+        """Normalize an ``(N, C, S)`` input by its batch statistics.
+
+        Returns:
+            ``(y, mean, rstd)``: the ``(N, C, S)`` output and the per-channel batch
+            mean and reciprocal std the backward pass reads.
+        """
+        self._require_cuda(
+            x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
+        )
+        mean_out, rstd_out = _channel_buffers(self.C, x.device)
+        y = self.kernel(self._BLOCK_THREADS)(
+            x, weight, bias, running_mean, running_var, mean_out, rstd_out
+        )
+        return y, mean_out, rstd_out
+
+
+class BatchNormFwdTrainWideKernel(Kernel):
+    """Training forward with one channel per block, held in the block's registers.
+
+    Serves a channel one block holds (``_fits_one_block``) and one thread does not
+    (``_fits_one_thread``).
+
+    Args:
+        N: Batch size.
+        C: Number of channels.
+        S: Elements per channel in one batch item, ``product(spatial)``.
+        dtype: Input/output data type.
+        eps: Numerical stability constant.
+        momentum: Running-stat update momentum.
+        sm_count: SMs on the device, which the block width is chosen against.
+        device_index: CUDA device the kernel runs on; ``None`` is the current one.
+    """
+
+    supported_archs: list[int] = [80, 89, 90]
+
+    @classmethod
+    def applies(cls, call: BatchNormCall) -> bool:
+        one_thread = _fits_one_thread(call.n * call.spatial, call.spatial)
+        return _fits_one_block(call, 1) and not one_thread
+
+    @classmethod
+    def entry_for(cls, call: BatchNormCall) -> Entry:
+        args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum, call.sm_count)
+        index = _device_index(call)
+        return (*args, index), lambda: cls(*args, device_index=index)
+
+    def __init__(
+        self,
+        N: int,
+        C: int,
+        S: int,
+        dtype: torch.dtype,
+        eps: float,
+        momentum: float,
+        sm_count: int,
+        device_index: Optional[int] = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        self.C = C
+        self.dtype = dtype
+        self.launch = _block_launch(C, N * S, S, dtype, sm_count, 1)
+        self.kernel = _batch_norm_fwd_train_wide_kernel(N, C, S, self.dtype_str, eps, momentum)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        running_mean: torch.Tensor,
+        running_var: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ):
+        """Normalize an ``(N, C, S)`` input by its batch statistics.
+
+        Returns:
+            ``(y, mean, rstd)``: the ``(N, C, S)`` output and the per-channel batch
+            mean and reciprocal std the backward pass reads.
+        """
+        self._require_cuda(
+            x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
+        )
+        mean_out, rstd_out = _channel_buffers(self.C, x.device)
+        y = self.kernel(*self.launch)(
+            x, weight, bias, running_mean, running_var, mean_out, rstd_out
+        )
+        return y, mean_out, rstd_out
+
+
+class BatchNormFwdTrainSplitKernel(Kernel):
+    """Training forward with a channel across several blocks: sum, merge, then map.
+
+    Serves a channel one block does not hold (``_fits_one_block``) and that is long
+    enough, among few enough channels, to cut across blocks (``_splittable``).
+
+    Args:
+        N: Batch size.
+        C: Number of channels.
+        S: Elements per channel in one batch item, ``product(spatial)``.
+        dtype: Input/output data type.
+        eps: Numerical stability constant.
+        momentum: Running-stat update momentum.
+        config: Optional ``{"splits", "threads"}``.
+        tune: If True, time the split count and block width together.
+        device_index: CUDA device the kernel runs on; ``None`` is the current one.
+    """
+
+    supported_archs: list[int] = [80, 89, 90]
+
+    # How far either side of the seed the split count is offered to the tuner.
+    _SEARCH_REACH = 4
+    # Relative spread within which two timings tie.
+    _TIE_BAND = 0.02
+    # Powers of two only: T.reduce_sum lowers to an XOR butterfly.
+    _SUM_THREADS = (128, 256, 512, 1024)
+
+    @classmethod
+    def applies(cls, call: BatchNormCall) -> bool:
+        splittable = _splittable(call.c, call.n * call.spatial)
+        return splittable and not _fits_one_block(call, 1)
+
+    @classmethod
+    def entry_for(cls, call: BatchNormCall) -> Entry:
+        args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum)
+        index = _device_index(call)
+        return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
+
+    def __init__(
+        self,
+        N: int,
+        C: int,
+        S: int,
         dtype: torch.dtype = torch.float16,
         eps: float = 1e-5,
         momentum: float = 0.1,
         config: Optional[dict] = None,
         tune: bool = False,
-        S: Optional[int] = None,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
-        if L == 1:
-            # Every path folds Bessel's correction, whose divisor is L - 1.
-            raise ValueError(
-                "BatchNormFwdTrainKernel needs more than one value per channel, got L=1"
-            )
+        self.N = N
         self.C = C
-        self.L = L
-        self.S = L if S is None else S
+        self.S = S
+        self.L = N * S
         self.dtype = dtype
-        self.eps = eps
-        self.momentum = momentum
-        whole = _WholePath.launch(L, self.S)
-        wide = _WidePath.launch(C, L, self.S, dtype, device_index=device_index)
-        if whole is not None:
-            self.path, self.launch = "whole", whole
-        elif wide is not None:
-            self.path, self.launch = "wide", wide
-        elif _SplitPath.admits(C, L):
-            self.path, self.launch = "split", _SplitPath.seed(C, L)
-        else:
-            self.path, self.launch = "tiled", None
-        if self.path == "whole":
-            self.whole_kernel = _batch_norm_fwd_train_whole_kernel(
-                C, L, self.S, self.dtype_str, eps, momentum
-            )
-        elif self.path == "wide":
-            self.wide_kernel = _batch_norm_fwd_train_wide_kernel(
-                C, L, self.S, self.dtype_str, eps, momentum
-            )
-        elif self.path == "split":
-            self.stages = _batch_norm_fwd_train_split_kernel(
-                C, L, self.S, self.dtype_str, eps, momentum
-            )
-        self.kernel = _batch_norm_fwd_train_kernel(C, L, self.S, self.dtype_str, eps, momentum)
+        self.stages = _batch_norm_fwd_train_split_kernel(N, C, S, self.dtype_str, eps, momentum)
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
-        return _TiledPath.for_length(self.L)[0]
+        # The untuned block width is the tiled path's untuned one.
+        return {
+            "splits": _split_seed(self.C, self.L),
+            "threads": _TiledPath.for_length(self.L)[0]["threads"],
+        }
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return _TiledPath.for_length(self.L)
+        # Powers of two either side of the seed, and the seed itself, so tuning that
+        # builds no candidate has nothing to fall back to and raises.
+        seed = _split_seed(self.C, self.L)
+        widest = min(self.L, seed * self._SEARCH_REACH)
+        counts = {1 << k for k in range(widest.bit_length())} | {seed}
+        return [
+            {"splits": splits, "threads": threads}
+            for splits in sorted(c for c in counts if c <= self.L)
+            for threads in self._SUM_THREADS
+        ]
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        """Tune the kernel this shape's path actually launches.
+        """Time sum, merge and map together per ``(splits, threads)`` and keep the fastest.
 
-        The base class tunes ``self.kernel``, the tiled builder. The whole and
-        wide paths take their launch from the shape and read nothing off the
-        config. The split path reads both the split count and the block width,
-        and both decide three launches, so all three are timed together.
+        The three launches share the pair, so they are timed as one. Runs on tensors of
+        its own and settles ``config`` before returning.
         """
-        if self.path in ("whole", "wide"):
-            self.config = self.default_config
-            return
-        if self.path == "split":
-            self._tune_split(warmup=warmup, rep=rep)
-            return
-        super().autotune(warmup=warmup, rep=rep)
-
-    def _tune_split(self, warmup: int, rep: int) -> None:
-        """Pick the split count and block width by timing sum, merge and map.
-
-        All three read the same pair, and they do not want the same one: the
-        width that reads a channel fastest costs the map pass more than it saves,
-        because the map writes the tensor the sums only read. Timing one stage
-        settles the other two against it, so the three are timed together.
-
-        Runs on tensors of its own, so nothing a caller holds is touched, and
-        settles the config before returning -- a caller that asks for tuning and
-        then reads ``config`` sees what will run.
-        """
-        print(f"Start autotuning {type(self).__name__} (split, three launches)...")
+        print(f"Start autotuning {type(self).__name__} (three launches)...")
         device = torch.cuda.current_device()
         # A caller's next random number must not depend on whether its kernel
         # was tuned.
         seed = torch.Generator(device=device)
         seed.manual_seed(0)
-        flat = torch.randn(self.C * self.L, device=device, dtype=self.dtype, generator=seed)
+        x = torch.randn(self.N, self.C, self.S, device=device, dtype=self.dtype, generator=seed)
         weight = torch.ones(self.C, device=device, dtype=torch.float32)
         bias = torch.zeros(self.C, device=device, dtype=torch.float32)
         stat = functools.partial(torch.empty, self.C, device=device, dtype=torch.float32)
@@ -896,50 +962,49 @@ class BatchNormFwdTrainKernel(Kernel):
         refused: list[str] = []
         args: tuple = ()
         try:
-            for splits in _SplitPath.candidates(self.C, self.L):
-                for threads in _SplitPath.SUM_THREADS:
-                    args = (flat, stat(), stat(), weight, bias, stat(), stat(), splits, threads)
-                    try:
-                        for _ in range(warmup):
-                            self._run_split(*args)
-                        torch.cuda.synchronize()
-                        start = torch.cuda.Event(enable_timing=True)
-                        end = torch.cuda.Event(enable_timing=True)
-                        start.record()
-                        for _ in range(rep):
-                            self._run_split(*args)
-                        end.record()
-                        torch.cuda.synchronize()
-                    except Exception as exc:  # a pair this shape's layout refuses
-                        refused.append(f"splits={splits} threads={threads}: {exc}")
-                        continue
-                    timed.append((start.elapsed_time(end) / rep, splits, threads))
+            for candidate in self.autotune_configs:
+                splits, threads = candidate["splits"], candidate["threads"]
+                args = (x, stat(), stat(), weight, bias, stat(), stat(), splits, threads)
+                try:
+                    for _ in range(warmup):
+                        self._run(*args)
+                    torch.cuda.synchronize()
+                    start = torch.cuda.Event(enable_timing=True)
+                    end = torch.cuda.Event(enable_timing=True)
+                    start.record()
+                    for _ in range(rep):
+                        self._run(*args)
+                    end.record()
+                    torch.cuda.synchronize()
+                except Exception as exc:  # a pair this shape's layout refuses
+                    refused.append(f"splits={splits} threads={threads}: {exc}")
+                    continue
+                timed.append((start.elapsed_time(end) / rep, splits, threads))
         finally:
             # The argument tuple holds the input and the last candidate's
             # scratch, so it goes too or the cache reclaims neither.
-            del args, flat, weight, bias
+            del args, x, weight, bias
             torch.cuda.empty_cache()
         if not timed:
             raise RuntimeError(
-                f"{type(self).__name__} split tuning built no candidate for "
+                f"{type(self).__name__} tuning built no candidate for "
                 f"C={self.C} L={self.L}: " + "; ".join(refused)
             )
         # A tie inside the guard band breaks by distance from the seed, then
         # the narrower block, then the smaller count: a total order, so a seed
         # equidistant from two counts still resolves the same way.
         floor = min(timed)[0]
-        seed_splits = _SplitPath.seed(self.C, self.L)
+        seed_splits = _split_seed(self.C, self.L)
         best = min(
-            (c for c in timed if c[0] <= floor * (1.0 + _SplitPath.TIE_BAND)),
+            (c for c in timed if c[0] <= floor * (1.0 + self._TIE_BAND)),
             key=lambda c: (abs(c[1] - seed_splits), c[2], c[1]),
         )
-        self.launch = best[1]
-        self.config = dict(self.default_config, threads=best[2])
-        print(f"Best config: {self.config} splits={self.launch} ({best[0]:.4f} ms)")
+        self.config = {"splits": best[1], "threads": best[2]}
+        print(f"Best config: {self.config} ({best[0]:.4f} ms)")
 
-    def _run_split(
+    def _run(
         self,
-        flat: torch.Tensor,
+        x: torch.Tensor,
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
         weight: torch.Tensor,
@@ -952,10 +1017,10 @@ class BatchNormFwdTrainKernel(Kernel):
         """Sum, merge, then map -- three launches over an element-wide grid."""
         stats, finalize, apply_ = self.stages
         num_per_thread = _vector_elements(self.dtype)
-        empty = functools.partial(torch.empty, device=flat.device, dtype=torch.float32)
+        empty = functools.partial(torch.empty, device=x.device, dtype=torch.float32)
         partial_sum = empty((self.C, splits))
         partial_sq = empty((self.C, splits))
-        stats(splits, threads, num_per_thread)(flat, partial_sum, partial_sq)
+        stats(splits, threads, num_per_thread)(x, partial_sum, partial_sq)
         scale, shift = empty(self.C), empty(self.C)
         finalize(splits, min(256, self.C))(
             partial_sum,
@@ -970,8 +1035,8 @@ class BatchNormFwdTrainKernel(Kernel):
             shift,
         )
         span = threads * num_per_thread
-        blocks = (flat.numel() + span - 1) // span
-        return apply_(blocks, threads, num_per_thread)(flat, scale, shift)
+        blocks = (x.numel() + span - 1) // span
+        return apply_(blocks, threads, num_per_thread)(x, scale, shift)
 
     def forward(
         self,
@@ -981,64 +1046,105 @@ class BatchNormFwdTrainKernel(Kernel):
         weight: torch.Tensor,
         bias: torch.Tensor,
     ):
-        """Run training forward pass on an ``(N, C, *spatial)`` input.
+        """Normalize an ``(N, C, S)`` input by its batch statistics.
 
         Returns:
-            y: Normalized output, shaped like *x*.
-            mean_out: Per-channel batch mean (saved for backward).
-            rstd_out: Per-channel reciprocal std (saved for backward).
-
-        Raises:
-            ValueError: An input is not on a CUDA device, or its spatial extent is not
-                the ``S`` this kernel was built for.
+            ``(y, mean, rstd)``: the ``(N, C, S)`` output and the per-channel batch
+            mean and reciprocal std the backward pass reads.
         """
-        _require_spatial(self.S, x)
         self._require_cuda(
-            x=x,
-            weight=weight,
-            bias=bias,
-            running_mean=running_mean,
-            running_var=running_var,
+            x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
         )
-        mean_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
-        rstd_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
-        flat = x.contiguous().reshape(-1)
-        if self.path == "whole":
-            y = self.whole_kernel(self.launch)(
-                flat, weight, bias, running_mean, running_var, mean_out, rstd_out
-            )
-            return y.reshape(x.shape), mean_out, rstd_out
-        if self.path == "wide":
-            y = self.wide_kernel(*self.launch)(
-                flat, weight, bias, running_mean, running_var, mean_out, rstd_out
-            )
-            return y.reshape(x.shape), mean_out, rstd_out
-        if self.path == "split":
-            y = self._run_split(
-                flat,
-                running_mean,
-                running_var,
-                weight,
-                bias,
-                mean_out,
-                rstd_out,
-                self.launch,
-                self.config["threads"],
-            )
-            return y.reshape(x.shape), mean_out, rstd_out
-        y = self.kernel(
-            self.config["block_l"],
-            self.config["threads"],
-        )(
-            flat,
-            weight,
-            bias,
+        mean_out, rstd_out = _channel_buffers(self.C, x.device)
+        y = self._run(
+            x,
             running_mean,
             running_var,
+            weight,
+            bias,
             mean_out,
             rstd_out,
+            self.config["splits"],
+            self.config["threads"],
         )
-        return y.reshape(x.shape), mean_out, rstd_out
+        return y, mean_out, rstd_out
+
+
+class BatchNormFwdTrainKernel(Kernel):
+    """Training forward with one channel per block, streamed through shared memory.
+
+    The general implementation: it serves every shape the specialised ones do not.
+
+    Args:
+        N: Batch size.
+        C: Number of channels.
+        S: Elements per channel in one batch item, ``product(spatial)``.
+        dtype: Input/output data type.
+        eps: Numerical stability constant.
+        momentum: Running-stat update momentum.
+        config: Optional ``{"block_l", "threads"}``.
+        tune: If True, autotune the tile config.
+        device_index: CUDA device the kernel runs on; ``None`` is the current one.
+    """
+
+    supported_archs: list[int] = [80, 89, 90]
+    general: bool = True
+
+    @classmethod
+    def entry_for(cls, call: BatchNormCall) -> Entry:
+        args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum)
+        index = _device_index(call)
+        return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
+
+    def __init__(
+        self,
+        N: int,
+        C: int,
+        S: int,
+        dtype: torch.dtype = torch.float16,
+        eps: float = 1e-5,
+        momentum: float = 0.1,
+        config: Optional[dict] = None,
+        tune: bool = False,
+        device_index: Optional[int] = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        self.C = C
+        self.L = N * S
+        self.dtype = dtype
+        self.kernel = _batch_norm_fwd_train_kernel(N, C, S, self.dtype_str, eps, momentum)
+        self.init_config(config, tune)
+
+    @property
+    def default_config(self) -> dict:
+        return _TiledPath.for_length(self.L)[0]
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return _TiledPath.for_length(self.L)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        running_mean: torch.Tensor,
+        running_var: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ):
+        """Normalize an ``(N, C, S)`` input by its batch statistics.
+
+        Returns:
+            ``(y, mean, rstd)``: the ``(N, C, S)`` output and the per-channel batch
+            mean and reciprocal std the backward pass reads.
+        """
+        self._require_cuda(
+            x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
+        )
+        mean_out, rstd_out = _channel_buffers(self.C, x.device)
+        y = self.kernel(self.config["block_l"], self.config["threads"])(
+            x, weight, bias, running_mean, running_var, mean_out, rstd_out
+        )
+        return y, mean_out, rstd_out
 
 
 # Inference forward
@@ -1046,7 +1152,7 @@ class BatchNormFwdTrainKernel(Kernel):
 
 @functools.lru_cache(maxsize=32)
 def _batch_norm_fwd_infer_kernel(
-    total: int,
+    N: int,
     C: int,
     S: int,
     dtype: str = "float16",
@@ -1057,17 +1163,18 @@ def _batch_norm_fwd_infer_kernel(
     Inference reads no statistic off the input, so the whole op is one map:
     ``y = x * scale + shift`` with a scale and shift the channel picks. The
     grid is over elements, not channels, and the channel of element ``i`` is
-    ``(i // S) % C`` -- which holds for the ``(N, C, *spatial)`` the caller
-    already has, so nothing is transposed on the way in or out.
+    ``(i // S) % C`` of the flat ``(N, C, S)`` layout, so nothing is transposed
+    on the way in or out.
 
     Args:
-        total: Element count of the whole tensor.
+        N: Batch size.
         C: Number of channels.
         S: Elements per channel in one batch item, ``product(spatial)``.
         dtype: Input/output data type.
         eps: Numerical stability constant.
     """
     accum_dtype = "float32"
+    total = N * C * S
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _bn_fwd_infer_func(threads: int, num_per_thread: int, steps: int) -> Callable:
@@ -1081,14 +1188,16 @@ def _batch_norm_fwd_infer_kernel(
 
         @T.prim_func
         def _bn_fwd_infer(
-            x: T.Tensor([total], dtype),
+            x_ncs: T.Tensor([N, C, S], dtype),
             weight: T.Tensor([C], accum_dtype),
             bias: T.Tensor([C], accum_dtype),
             running_mean: T.Tensor([C], accum_dtype),
             running_var: T.Tensor([C], accum_dtype),
-            y: T.Tensor([total], dtype),
+            y_ncs: T.Tensor([N, C, S], dtype),
         ):
             with T.Kernel(blocks, threads=threads) as bx:
+                x = T.reshape(x_ncs, [total])
+                y = T.reshape(y_ncs, [total])
                 tx = T.get_thread_binding()
                 # One scale and shift per channel turns the body into a single
                 # multiply-add, and the block builds that table once rather than
@@ -1142,17 +1251,17 @@ class BatchNormFwdInferKernel(Kernel):
     """Inference-mode batch normalization forward kernel.
 
     Args:
+        N: Batch size.
         C: Number of channels.
-        L: Total reduction length = N * H * W * ... (kept for the op's signature).
+        S: Elements per channel in one batch item, ``product(spatial)``.
         dtype: Input/output data type.
         eps: Numerical stability constant.
         config: Optional tile config dict.
         tune: If True, autotune tile config.
-        S: Elements per channel in one batch item, ``product(spatial)``.
-            Defaults to *L*, correct when the batch size is one.
     """
 
     supported_archs: list[int] = [80, 89, 90]
+    general: bool = True
 
     # Elements one block covers, and its width. Each block pays the whole
     # per-channel table as a prologue, so the span fixes the block count and the
@@ -1165,24 +1274,25 @@ class BatchNormFwdInferKernel(Kernel):
     _TUNE_THREADS = (128, 256, 512, 1024)
     _TUNE_STEPS = (1, 2, 4)
 
+    @classmethod
+    def entry_for(cls, call: BatchNormCall) -> Entry:
+        identity = (call.n, call.c, call.spatial, call.dtype, call.eps)
+        return identity, lambda: cls(*identity, tune=call.tune)
+
     def __init__(
         self,
+        N: int,
         C: int,
-        L: int,
+        S: int,
         dtype: torch.dtype = torch.float16,
         eps: float = 1e-5,
         config: Optional[dict] = None,
         tune: bool = False,
-        S: Optional[int] = None,
     ) -> None:
         super().__init__()
-        self.C = C
-        self.L = L
-        self.S = L if S is None else S
-        self.total = C * L
+        self.total = N * C * S
         self.dtype = dtype
-        self.eps = eps
-        self.kernel = _batch_norm_fwd_infer_kernel(self.total, C, self.S, self.dtype_str, eps)
+        self.kernel = _batch_norm_fwd_infer_kernel(N, C, S, self.dtype_str, eps)
         self.init_config(config, tune)
 
     @property
@@ -1225,10 +1335,10 @@ class BatchNormFwdInferKernel(Kernel):
         weight: torch.Tensor,
         bias: torch.Tensor,
     ) -> torch.Tensor:
-        """Run inference forward pass on an ``(N, C, *spatial)`` input.
+        """Run inference forward pass on an ``(N, C, S)`` input.
 
         Returns:
-            Normalized output, shaped like *x*.
+            The ``(N, C, S)`` normalized output.
 
         Raises:
             ValueError: An input is not on a CUDA device.
@@ -1240,10 +1350,9 @@ class BatchNormFwdInferKernel(Kernel):
             running_mean=running_mean,
             running_var=running_var,
         )
-        y = self.kernel(
+        return self.kernel(
             self.config["threads"], self.config["num_per_thread"], self.config["steps"]
-        )(x.contiguous().reshape(-1), weight, bias, running_mean, running_var)
-        return y.reshape(x.shape)
+        )(x, weight, bias, running_mean, running_var)
 
 
 # Backward
@@ -1251,8 +1360,8 @@ class BatchNormFwdInferKernel(Kernel):
 
 @functools.lru_cache(maxsize=32)
 def _batch_norm_bwd_kernel(
+    N: int,
     C: int,
-    L: int,
     S: int,
     dtype: str = "float16",
 ) -> Callable:
@@ -1268,9 +1377,7 @@ def _batch_norm_bwd_kernel(
 
     where x_hat[c, i] = (x[c, i] - mean[c]) * rstd[c].
 
-    Element *l* of channel *c* lives at ``(l // S) * C * S + c * S + l % S``
-    of the caller's ``(N, C, *spatial)`` layout, which every tensor is read and
-    written through.
+    Element *l* of channel *c* is ``[l // S, c, l % S]`` of every tensor.
 
     Persistent path (block_l >= L): after pass 1 accumulates grad_bias /
     grad_weight while loading grad_out and x into shared memory, pass 2 computes
@@ -1281,7 +1388,7 @@ def _batch_norm_bwd_kernel(
     A *block_l* that does not divide L masks the last tile.
     """
     accum_dtype = "float32"
-    plane = C * S
+    L = N * S
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _bn_bwd_func(block_l: int, threads: int) -> Callable:
@@ -1291,14 +1398,14 @@ def _batch_norm_bwd_kernel(
 
         @T.prim_func
         def _bn_bwd(
-            grad_out: T.Tensor([C * L], dtype),
-            x: T.Tensor([C * L], dtype),
+            grad_out: T.Tensor([N, C, S], dtype),
+            x: T.Tensor([N, C, S], dtype),
             weight: T.Tensor([C], accum_dtype),
             mean: T.Tensor([C], accum_dtype),
             rstd: T.Tensor([C], accum_dtype),
             grad_weight: T.Tensor([C], accum_dtype),
             grad_bias: T.Tensor([C], accum_dtype),
-            grad_x: T.Tensor([C * L], dtype),
+            grad_x: T.Tensor([N, C, S], dtype),
         ):
             with T.Kernel(C, threads=threads) as (bc):
                 go_shared = T.alloc_shared([block_l], dtype)
@@ -1320,9 +1427,12 @@ def _batch_norm_bwd_kernel(
                     # One tile: a pipelined loop has nothing to overlap.
                     if ragged:
                         for _i, j in T.Parallel(1, block_l):
-                            flat = (j // S) * plane + bc * S + j % S
-                            go_shared[j] = T.if_then_else(j < L, grad_out[flat], T.cast(0, dtype))
-                            x_shared[j] = T.if_then_else(j < L, x[flat], T.cast(0, dtype))
+                            go_shared[j] = T.if_then_else(
+                                j < L, grad_out[j // S, bc, j % S], T.cast(0, dtype)
+                            )
+                            x_shared[j] = T.if_then_else(
+                                j < L, x[j // S, bc, j % S], T.cast(0, dtype)
+                            )
                         # A padded lane adds nothing, whatever its normalized value would be.
                         for _i, j in T.Parallel(1, block_l):
                             go_val = T.cast(go_shared[j], accum_dtype)
@@ -1332,9 +1442,8 @@ def _batch_norm_bwd_kernel(
                             do_xhat_frag[_i, j] += T.if_then_else(j < L, go_val * x_hat, zero)
                     else:
                         for _i, j in T.Parallel(1, block_l):
-                            flat = (j // S) * plane + bc * S + j % S
-                            go_shared[j] = grad_out[flat]
-                            x_shared[j] = x[flat]
+                            go_shared[j] = grad_out[j // S, bc, j % S]
+                            x_shared[j] = x[j // S, bc, j % S]
                         for _i, j in T.Parallel(1, block_l):
                             go_val = T.cast(go_shared[j], accum_dtype)
                             x_hat = (T.cast(x_shared[j], accum_dtype) - mean_val) * rstd_val
@@ -1345,19 +1454,18 @@ def _batch_norm_bwd_kernel(
                     for l_tile in T.Pipelined(tiles, num_stages=0):
                         for _i, j in T.Parallel(1, block_l):
                             l = l_tile * block_l + j
-                            flat = (l // S) * plane + bc * S + l % S
                             if ragged:
                                 go_val = T.if_then_else(
                                     l < L,
-                                    T.cast(grad_out[flat], accum_dtype),
+                                    T.cast(grad_out[l // S, bc, l % S], accum_dtype),
                                     T.cast(0, accum_dtype),
                                 )
                                 x_val = T.if_then_else(
-                                    l < L, T.cast(x[flat], accum_dtype), mean_val
+                                    l < L, T.cast(x[l // S, bc, l % S], accum_dtype), mean_val
                                 )
                             else:
-                                go_val = T.cast(grad_out[flat], accum_dtype)
-                                x_val = T.cast(x[flat], accum_dtype)
+                                go_val = T.cast(grad_out[l // S, bc, l % S], accum_dtype)
+                                x_val = T.cast(x[l // S, bc, l % S], accum_dtype)
                             x_hat = (x_val - mean_val) * rstd_val
                             do_frag[_i, j] += go_val
                             do_xhat_frag[_i, j] += go_val * x_hat
@@ -1384,34 +1492,37 @@ def _batch_norm_bwd_kernel(
                         )
                         if ragged:
                             if j < L:
-                                grad_x[(j // S) * plane + bc * S + j % S] = T.cast(gx, dtype)
+                                grad_x[j // S, bc, j % S] = T.cast(gx, dtype)
                         else:
-                            grad_x[(j // S) * plane + bc * S + j % S] = T.cast(gx, dtype)
+                            grad_x[j // S, bc, j % S] = T.cast(gx, dtype)
                 else:
                     # T.copy inside T.Pipelined races with the async copy.
                     for l_tile in T.Pipelined(tiles, num_stages=0):
                         for _i, j in T.Parallel(1, block_l):
                             l = l_tile * block_l + j
-                            flat = (l // S) * plane + bc * S + l % S
                             if ragged:
                                 if l < L:
-                                    go_val = T.cast(grad_out[flat], accum_dtype)
-                                    x_hat = (T.cast(x[flat], accum_dtype) - mean_val) * rstd_val
+                                    go_val = T.cast(grad_out[l // S, bc, l % S], accum_dtype)
+                                    x_hat = (
+                                        T.cast(x[l // S, bc, l % S], accum_dtype) - mean_val
+                                    ) * rstd_val
                                     gx = w_rstd_over_L * (
                                         T.cast(L, accum_dtype) * go_val
                                         - sum_do[0]
                                         - x_hat * sum_do_xhat[0]
                                     )
-                                    grad_x[flat] = T.cast(gx, dtype)
+                                    grad_x[l // S, bc, l % S] = T.cast(gx, dtype)
                             else:
-                                go_val = T.cast(grad_out[flat], accum_dtype)
-                                x_hat = (T.cast(x[flat], accum_dtype) - mean_val) * rstd_val
+                                go_val = T.cast(grad_out[l // S, bc, l % S], accum_dtype)
+                                x_hat = (
+                                    T.cast(x[l // S, bc, l % S], accum_dtype) - mean_val
+                                ) * rstd_val
                                 gx = w_rstd_over_L * (
                                     T.cast(L, accum_dtype) * go_val
                                     - sum_do[0]
                                     - x_hat * sum_do_xhat[0]
                                 )
-                                grad_x[flat] = T.cast(gx, dtype)
+                                grad_x[l // S, bc, l % S] = T.cast(gx, dtype)
 
         return _bn_bwd
 
@@ -1420,8 +1531,8 @@ def _batch_norm_bwd_kernel(
 
 @functools.lru_cache(maxsize=32)
 def _batch_norm_bwd_wide_kernel(
+    N: int,
     C: int,
-    L: int,
     S: int,
     dtype: str = "float16",
 ) -> Callable:
@@ -1432,7 +1543,7 @@ def _batch_norm_bwd_wide_kernel(
     never straddles two batch items; ``threads`` is a multiple of the warp width.
     """
     accum_dtype = "float32"
-    plane = C * S
+    L = N * S
     lanes = 32
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -1444,14 +1555,14 @@ def _batch_norm_bwd_wide_kernel(
 
         @T.prim_func
         def _bn_bwd_wide(
-            grad_out: T.Tensor([C * L], dtype),
-            x: T.Tensor([C * L], dtype),
+            grad_out: T.Tensor([N, C, S], dtype),
+            x: T.Tensor([N, C, S], dtype),
             weight: T.Tensor([C], accum_dtype),
             mean: T.Tensor([C], accum_dtype),
             rstd: T.Tensor([C], accum_dtype),
             grad_weight: T.Tensor([C], accum_dtype),
             grad_bias: T.Tensor([C], accum_dtype),
-            grad_x: T.Tensor([C * L], dtype),
+            grad_x: T.Tensor([N, C, S], dtype),
         ):
             with T.Kernel(C, threads=threads) as bc:
                 tx = T.get_thread_binding()
@@ -1471,11 +1582,10 @@ def _batch_norm_bwd_wide_kernel(
                 for k in T.serial(steps):
                     head = (k * threads + tx) * num_per_thread
                     if exact or head + num_per_thread <= L:
-                        start = (head // S) * plane + bc * S + head % S
                         for i in T.vectorized(num_per_thread):
-                            go_held[k * num_per_thread + i] = grad_out[start + i]
+                            go_held[k * num_per_thread + i] = grad_out[head // S, bc, head % S + i]
                         for i in T.vectorized(num_per_thread):
-                            x_held[k * num_per_thread + i] = x[start + i]
+                            x_held[k * num_per_thread + i] = x[head // S, bc, head % S + i]
                         for i in T.serial(num_per_thread):
                             g = T.cast(go_held[k * num_per_thread + i], accum_dtype)
                             x_hat = (
@@ -1487,9 +1597,8 @@ def _batch_norm_bwd_wide_kernel(
                         for i in T.serial(num_per_thread):
                             l = head + i
                             if l < L:
-                                flat = (l // S) * plane + bc * S + l % S
-                                go_held[k * num_per_thread + i] = grad_out[flat]
-                                x_held[k * num_per_thread + i] = x[flat]
+                                go_held[k * num_per_thread + i] = grad_out[l // S, bc, l % S]
+                                x_held[k * num_per_thread + i] = x[l // S, bc, l % S]
                                 g = T.cast(go_held[k * num_per_thread + i], accum_dtype)
                                 x_hat = (
                                     T.cast(x_held[k * num_per_thread + i], accum_dtype) - params[1]
@@ -1526,7 +1635,6 @@ def _batch_norm_bwd_wide_kernel(
                 for k in T.serial(steps):
                     head = (k * threads + tx) * num_per_thread
                     if exact or head + num_per_thread <= L:
-                        start = (head // S) * plane + bc * S + head % S
                         for i in T.serial(num_per_thread):
                             x_hat = (
                                 T.cast(x_held[k * num_per_thread + i], accum_dtype) - params[1]
@@ -1538,7 +1646,7 @@ def _batch_norm_bwd_wide_kernel(
                                 dtype,
                             )
                         for i in T.vectorized(num_per_thread):
-                            grad_x[start + i] = out[i]
+                            grad_x[head // S, bc, head % S + i] = out[i]
                     else:
                         for i in T.serial(num_per_thread):
                             l = head + i
@@ -1546,7 +1654,7 @@ def _batch_norm_bwd_wide_kernel(
                                 x_hat = (
                                     T.cast(x_held[k * num_per_thread + i], accum_dtype) - params[1]
                                 ) * params[2]
-                                grad_x[(l // S) * plane + bc * S + l % S] = T.cast(
+                                grad_x[l // S, bc, l % S] = T.cast(
                                     scale_val * T.cast(go_held[k * num_per_thread + i], accum_dtype)
                                     + shift_val
                                     - xhat_coef * x_hat,
@@ -1560,8 +1668,8 @@ def _batch_norm_bwd_wide_kernel(
 
 @functools.lru_cache(maxsize=32)
 def _batch_norm_bwd_split_kernel(
+    N: int,
     C: int,
-    L: int,
     S: int,
     dtype: str = "float16",
 ) -> Callable:
@@ -1574,7 +1682,7 @@ def _batch_norm_bwd_split_kernel(
         A ``(stats, finalize, apply)`` triple of JIT factories.
     """
     accum_dtype = "float32"
-    plane = C * S
+    L = N * S
 
     @tilelang.jit
     def _stats_func(splits: int, threads: int, num_per_thread: int) -> Callable:
@@ -1582,8 +1690,8 @@ def _batch_norm_bwd_split_kernel(
 
         @T.prim_func
         def _bn_bwd_stats(
-            grad_out: T.Tensor([C * L], dtype),
-            x: T.Tensor([C * L], dtype),
+            grad_out: T.Tensor([N, C, S], dtype),
+            x: T.Tensor([N, C, S], dtype),
             mean: T.Tensor([C], accum_dtype),
             rstd: T.Tensor([C], accum_dtype),
             partial_sum: T.Tensor([C, splits], accum_dtype),
@@ -1607,9 +1715,10 @@ def _batch_norm_bwd_split_kernel(
                         for i in T.serial(num_per_thread):
                             l = start + (step * threads + j) * num_per_thread + i
                             if l < end:
-                                flat = (l // S) * plane + bc * S + l % S
-                                g = T.cast(grad_out[flat], accum_dtype)
-                                x_hat = (T.cast(x[flat], accum_dtype) - mean_val) * rstd_val
+                                g = T.cast(grad_out[l // S, bc, l % S], accum_dtype)
+                                x_hat = (
+                                    T.cast(x[l // S, bc, l % S], accum_dtype) - mean_val
+                                ) * rstd_val
                                 sums[_i, j] += g
                                 sums_xhat[_i, j] += g * x_hat
                 sum_result = T.alloc_fragment([1], accum_dtype)
@@ -1668,15 +1777,18 @@ def _batch_norm_bwd_split_kernel(
 
         @T.prim_func
         def _bn_bwd_apply(
-            grad_out: T.Tensor([total], dtype),
-            x: T.Tensor([total], dtype),
+            grad_out_ncs: T.Tensor([N, C, S], dtype),
+            x_ncs: T.Tensor([N, C, S], dtype),
             mean: T.Tensor([C], accum_dtype),
             scale: T.Tensor([C], accum_dtype),
             shift: T.Tensor([C], accum_dtype),
             centered_coef: T.Tensor([C], accum_dtype),
-            grad_x: T.Tensor([total], dtype),
+            grad_x_ncs: T.Tensor([N, C, S], dtype),
         ):
             with T.Kernel(blocks, threads=threads) as bx:
+                grad_out = T.reshape(grad_out_ncs, [total])
+                x = T.reshape(x_ncs, [total])
+                grad_x = T.reshape(grad_x_ncs, [total])
                 tx = T.get_thread_binding()
                 g = T.alloc_local([num_per_thread], dtype)
                 v = T.alloc_local([num_per_thread], dtype)
@@ -1723,50 +1835,202 @@ def _batch_norm_bwd_split_kernel(
     return _stats_func, _finalize_func, _apply_func
 
 
-class BatchNormBwdKernel(Kernel):
-    """Batch normalization backward kernel.
+class BatchNormBwdWideKernel(Kernel):
+    """Backward with one channel per block, ``grad_out`` and ``x`` held in its registers.
+
+    Serves a channel whose two tensors one block holds (``_fits_one_block``).
 
     Args:
+        N: Batch size.
         C: Number of channels.
-        L: Total reduction length = N * H * W * ....
-        dtype: grad_out/x/grad_x data type.
-        config: Optional tile config dict.
-        tune: If True, autotune tile config.
         S: Elements per channel in one batch item, ``product(spatial)``.
-            Defaults to *L*, correct when the batch size is one.
+        dtype: grad_out/x/grad_x data type.
+        sm_count: SMs on the device, which the block width is chosen against.
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
 
     supported_archs: list[int] = [80, 89, 90]
 
+    @classmethod
+    def applies(cls, call: BatchNormCall) -> bool:
+        return _fits_one_block(call, 2)
+
+    @classmethod
+    def entry_for(cls, call: BatchNormCall) -> Entry:
+        args = (call.n, call.c, call.spatial, call.dtype, call.sm_count)
+        index = _device_index(call)
+        return (*args, index), lambda: cls(*args, device_index=index)
+
     def __init__(
         self,
+        N: int,
         C: int,
-        L: int,
-        dtype: torch.dtype = torch.float16,
-        config: Optional[dict] = None,
-        tune: bool = False,
-        S: Optional[int] = None,
+        S: int,
+        dtype: torch.dtype,
+        sm_count: int,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.C = C
-        self.L = L
-        self.S = L if S is None else S
         self.dtype = dtype
-        # A wide block holds two tensors per element, grad_out and x.
-        wide = _WidePath.launch(C, L, self.S, dtype, held_tensors=2, device_index=device_index)
-        if wide is not None:
-            self.path, self.launch = "wide", wide
-        elif _SplitPath.admits(C, L):
-            self.path, self.launch = "split", _SplitPath.seed(C, L)
-        else:
-            self.path, self.launch = "tiled", None
-        if self.path == "wide":
-            self.wide_kernel = _batch_norm_bwd_wide_kernel(C, L, self.S, self.dtype_str)
-        elif self.path == "split":
-            self.stages = _batch_norm_bwd_split_kernel(C, L, self.S, self.dtype_str)
-        self.kernel = _batch_norm_bwd_kernel(C, L, self.S, self.dtype_str)
+        self.launch = _block_launch(C, N * S, S, dtype, sm_count, 2)
+        self.kernel = _batch_norm_bwd_wide_kernel(N, C, S, self.dtype_str)
+
+    def forward(
+        self,
+        grad_out: torch.Tensor,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        mean: torch.Tensor,
+        rstd: torch.Tensor,
+    ):
+        """Run the backward pass on ``(N, C, S)`` inputs.
+
+        Returns:
+            ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
+        """
+        self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
+        grad_weight, grad_bias = _channel_buffers(self.C, x.device)
+        grad_x = self.kernel(*self.launch)(grad_out, x, weight, mean, rstd, grad_weight, grad_bias)
+        return grad_x, grad_weight, grad_bias
+
+
+class BatchNormBwdSplitKernel(Kernel):
+    """Backward with a channel across several blocks: sum, merge, then map.
+
+    Serves a channel whose two tensors one block does not hold (``_fits_one_block``) and
+    that is long enough, among few enough channels, to cut across blocks
+    (``_splittable``). The split count and block width follow from the shape.
+
+    Args:
+        N: Batch size.
+        C: Number of channels.
+        S: Elements per channel in one batch item, ``product(spatial)``.
+        dtype: grad_out/x/grad_x data type.
+        config: Optional ``{"splits", "threads"}``.
+        device_index: CUDA device the kernel runs on; ``None`` is the current one.
+    """
+
+    supported_archs: list[int] = [80, 89, 90]
+
+    @classmethod
+    def applies(cls, call: BatchNormCall) -> bool:
+        splittable = _splittable(call.c, call.n * call.spatial)
+        return splittable and not _fits_one_block(call, 2)
+
+    @classmethod
+    def entry_for(cls, call: BatchNormCall) -> Entry:
+        args = (call.n, call.c, call.spatial, call.dtype)
+        index = _device_index(call)
+        return (*args, index), lambda: cls(*args, device_index=index)
+
+    def __init__(
+        self,
+        N: int,
+        C: int,
+        S: int,
+        dtype: torch.dtype = torch.float16,
+        config: Optional[dict] = None,
+        device_index: Optional[int] = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        self.C = C
+        self.L = N * S
+        self.dtype = dtype
+        self.stages = _batch_norm_bwd_split_kernel(N, C, S, self.dtype_str)
+        self.init_config(config)
+
+    @property
+    def default_config(self) -> dict:
+        # The block width is the tiled path's untuned one.
+        return {
+            "splits": _split_seed(self.C, self.L),
+            "threads": _TiledPath.for_length(self.L)[0]["threads"],
+        }
+
+    def forward(
+        self,
+        grad_out: torch.Tensor,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        mean: torch.Tensor,
+        rstd: torch.Tensor,
+    ):
+        """Run the backward pass on ``(N, C, S)`` inputs.
+
+        Returns:
+            ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
+        """
+        self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
+        grad_weight, grad_bias = _channel_buffers(self.C, x.device)
+        stats, finalize, apply_ = self.stages
+        splits, threads = self.config["splits"], self.config["threads"]
+        num_per_thread = _vector_elements(self.dtype)
+        empty = functools.partial(torch.empty, device=x.device, dtype=torch.float32)
+        partial_sum = empty((self.C, splits))
+        partial_sum_xhat = empty((self.C, splits))
+        stats(splits, threads, num_per_thread)(
+            grad_out, x, mean, rstd, partial_sum, partial_sum_xhat
+        )
+        scale, shift, centered_coef = empty(self.C), empty(self.C), empty(self.C)
+        finalize(splits, min(256, self.C))(
+            partial_sum,
+            partial_sum_xhat,
+            weight,
+            rstd,
+            grad_weight,
+            grad_bias,
+            scale,
+            shift,
+            centered_coef,
+        )
+        span = threads * num_per_thread
+        blocks = (x.numel() + span - 1) // span
+        grad_x = apply_(blocks, threads, num_per_thread)(
+            grad_out, x, mean, scale, shift, centered_coef
+        )
+        return grad_x, grad_weight, grad_bias
+
+
+class BatchNormBwdKernel(Kernel):
+    """Backward with one channel per block, streamed through shared memory.
+
+    The general implementation: it serves every shape the specialised ones do not.
+
+    Args:
+        N: Batch size.
+        C: Number of channels.
+        S: Elements per channel in one batch item, ``product(spatial)``.
+        dtype: grad_out/x/grad_x data type.
+        config: Optional ``{"block_l", "threads"}``.
+        tune: If True, autotune the tile config.
+        device_index: CUDA device the kernel runs on; ``None`` is the current one.
+    """
+
+    supported_archs: list[int] = [80, 89, 90]
+    general: bool = True
+
+    @classmethod
+    def entry_for(cls, call: BatchNormCall) -> Entry:
+        args = (call.n, call.c, call.spatial, call.dtype)
+        index = _device_index(call)
+        return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
+
+    def __init__(
+        self,
+        N: int,
+        C: int,
+        S: int,
+        dtype: torch.dtype = torch.float16,
+        config: Optional[dict] = None,
+        tune: bool = False,
+        device_index: Optional[int] = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        self.C = C
+        self.L = N * S
+        self.dtype = dtype
+        self.kernel = _batch_norm_bwd_kernel(N, C, S, self.dtype_str)
         self.init_config(config, tune)
 
     @property
@@ -1777,13 +2041,6 @@ class BatchNormBwdKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return _TiledPath.for_length(self.L)
 
-    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        """Tune the tiled kernel; the wide and split paths take their launch from the shape."""
-        if self.path != "tiled":
-            self.config = self.default_config
-            return
-        super().autotune(warmup=warmup, rep=rep)
-
     def forward(
         self,
         grad_out: torch.Tensor,
@@ -1792,54 +2049,13 @@ class BatchNormBwdKernel(Kernel):
         mean: torch.Tensor,
         rstd: torch.Tensor,
     ):
-        """Run the backward pass on ``(N, C, *spatial)`` inputs.
+        """Run the backward pass on ``(N, C, S)`` inputs.
 
         Returns:
-            grad_x: Gradient w.r.t. the input, shaped like *x*.
-            grad_weight: Gradient w.r.t. affine scale (gamma).
-            grad_bias: Gradient w.r.t. affine shift (beta).
-
-        Raises:
-            ValueError: An input is not on a CUDA device, or its spatial extent is not
-                the ``S`` this kernel was built for.
+            ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
         """
-        _require_spatial(self.S, x)
         self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
-        grad_weight = torch.empty(self.C, device=grad_out.device, dtype=torch.float32)
-        grad_bias = torch.empty(self.C, device=grad_out.device, dtype=torch.float32)
-        flat_grad_out = grad_out.contiguous().reshape(-1)
-        flat_x = x.contiguous().reshape(-1)
-        if self.path == "split":
-            stats, finalize, apply_ = self.stages
-            splits, threads = self.launch, self.config["threads"]
-            num_per_thread = _vector_elements(self.dtype)
-            empty = functools.partial(torch.empty, device=grad_out.device, dtype=torch.float32)
-            partial_sum = empty((self.C, splits))
-            partial_sum_xhat = empty((self.C, splits))
-            stats(splits, threads, num_per_thread)(
-                flat_grad_out, flat_x, mean, rstd, partial_sum, partial_sum_xhat
-            )
-            scale, shift, centered_coef = empty(self.C), empty(self.C), empty(self.C)
-            finalize(splits, min(256, self.C))(
-                partial_sum,
-                partial_sum_xhat,
-                weight,
-                rstd,
-                grad_weight,
-                grad_bias,
-                scale,
-                shift,
-                centered_coef,
-            )
-            span = threads * num_per_thread
-            blocks = (flat_grad_out.numel() + span - 1) // span
-            grad_x = apply_(blocks, threads, num_per_thread)(
-                flat_grad_out, flat_x, mean, scale, shift, centered_coef
-            )
-            return grad_x.reshape(x.shape), grad_weight, grad_bias
-        if self.path == "wide":
-            program = self.wide_kernel(*self.launch)
-        else:
-            program = self.kernel(self.config["block_l"], self.config["threads"])
-        grad_x = program(flat_grad_out, flat_x, weight, mean, rstd, grad_weight, grad_bias)
-        return grad_x.reshape(x.shape), grad_weight, grad_bias
+        grad_weight, grad_bias = _channel_buffers(self.C, x.device)
+        program = self.kernel(self.config["block_l"], self.config["threads"])
+        grad_x = program(grad_out, x, weight, mean, rstd, grad_weight, grad_bias)
+        return grad_x, grad_weight, grad_bias

@@ -1,7 +1,7 @@
 """Batch Normalization Op.
 
-Wraps BatchNormFwdTrainKernel, BatchNormFwdInferKernel, and BatchNormBwdKernel
-in a standard TileOPs Op interface.
+Training forward, inference forward and backward are separate kernel slots, each
+selecting among its implementations by the call's ``BatchNormCall``.
 
 User-facing API follows `torch.nn.functional.batch_norm`:
 
@@ -15,8 +15,8 @@ Forward returns the normalized output only (manifest contract); ``mean`` and
 ``rstd`` from the training path stay internal. Callers needing them for the
 backward pass can recompute on the original input.
 
-Input tensors accept any shape ``(N, C, *spatial)``; the kernels read that layout directly
-or move it into their $[C \\times L]$ layout themselves.
+Input tensors accept any shape ``(N, C, *spatial)``; the kernels take its contiguous
+``(N, C, S)`` view, with S the product of the spatial axes.
 """
 
 import math
@@ -25,12 +25,18 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm.batch_norm import (
     BatchNormBwdKernel,
+    BatchNormBwdSplitKernel,
+    BatchNormBwdWideKernel,
     BatchNormFwdInferKernel,
     BatchNormFwdTrainKernel,
+    BatchNormFwdTrainSplitKernel,
+    BatchNormFwdTrainWholeKernel,
+    BatchNormFwdTrainWideKernel,
 )
+from tileops.kernels.norm.call_spec import BatchNormCall
 
 from ..op_base import Op
 from .norm_base import affine_or_constant
@@ -63,8 +69,20 @@ class BatchNormFwdOp(Op):
 
     compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "fwd_train_whole": BatchNormFwdTrainWholeKernel,
+        "fwd_train_wide": BatchNormFwdTrainWideKernel,
+        "fwd_train_split": BatchNormFwdTrainSplitKernel,
         "fwd_train_kernel": BatchNormFwdTrainKernel,
         "fwd_infer_kernel": BatchNormFwdInferKernel,
+    }
+    kernel_roles: ClassVar[Mapping[str, tuple[str, ...]]] = {
+        "batch_norm_fwd_train": (
+            "fwd_train_whole",
+            "fwd_train_wide",
+            "fwd_train_split",
+            "fwd_train_kernel",
+        ),
+        "batch_norm_fwd_infer": ("fwd_infer_kernel",),
     }
 
     def __init__(
@@ -112,11 +130,11 @@ class BatchNormFwdOp(Op):
         if x.numel() == 0:
             # torch leaves the running statistics as they are.
             return torch.empty_like(x)
-        channels = x.shape[1]
-        length = x.numel() // channels
+        batch, channels = x.shape[0], x.shape[1]
+        spatial = math.prod(x.shape[2:])
         weight = affine_or_constant(weight, (channels,), 1.0, torch.float32, x.device)
         bias = affine_or_constant(bias, (channels,), 0.0, torch.float32, x.device)
-        x = x.contiguous()
+        x_ncs = x.contiguous().view(batch, channels, spatial)
         # The running statistics are written, so normalizing them is not enough: whoever
         # serves this op writes the tensor it was handed, and a copy would swallow that
         # write. ``contiguous()`` returns the same object when it has nothing to do, so
@@ -130,50 +148,32 @@ class BatchNormFwdOp(Op):
             )
         else:
             handed = tuple(stat.contiguous() for stat in stats)
-        spatial = math.prod(x.shape[2:])
 
-        # ``training`` decides which implementation serves the call, so it belongs in the
-        # key; both are fetched under one name, which is what a target is asked to serve.
-        kernel = self.kernel_for(
-            "batch_norm_fwd",
-            (x, *handed, weight, bias),
-            (channels, length, x.dtype, self.training, spatial, x.device.index),
+        call = BatchNormCall(
+            device=x.device,
+            n=batch,
+            c=channels,
+            spatial=spatial,
+            dtype=x.dtype,
+            eps=self.eps,
+            momentum=self.momentum,
+            tune=self.tune,
         )
+        role = "batch_norm_fwd_train" if self.training else "batch_norm_fwd_infer"
+        kernel = self.kernel_for(role, (x_ncs, *handed, weight, bias), call)
         self.kernel = kernel
 
         # The training kernel also returns the batch statistics, which the manifest keeps
         # out of this op's outputs.
         if not self.training:
-            return kernel(x, *handed, weight, bias)
+            return kernel(x_ncs, *handed, weight, bias).view(x.shape)
 
-        y, _mean, _rstd = kernel(x, *handed, weight, bias)
+        y, _mean, _rstd = kernel(x_ncs, *handed, weight, bias)
         if running_mean is not None:
             for original, written in zip(stats, handed, strict=True):
                 if written is not original:
                     original.copy_(written)
-        return y
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """Training picks the implementation, so it is in the identity.
-
-        Both paths index the caller's layout, so the spatial extent is there too. The
-        training kernel sizes its launch by the device's SM count, so the device is as well.
-        """
-        channels, length, dtype, training, spatial, device_index = call
-        if training:
-            cls = self.kernel_map["fwd_train_kernel"]
-            return call, lambda: cls(
-                channels,
-                length,
-                dtype,
-                self.eps,
-                self.momentum,
-                tune=self.tune,
-                S=spatial,
-                device_index=device_index,
-            )
-        cls = self.kernel_map["fwd_infer_kernel"]
-        return call, lambda: cls(channels, length, dtype, self.eps, tune=self.tune, S=spatial)
+        return y.view(x.shape)
 
     def forward(
         self,
@@ -213,7 +213,11 @@ class BatchNormBwdOp(Op):
     """
 
     compile_boundary: ClassVar[bool] = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"bwd_kernel": BatchNormBwdKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "bwd_wide": BatchNormBwdWideKernel,
+        "bwd_split": BatchNormBwdSplitKernel,
+        "bwd_kernel": BatchNormBwdKernel,
+    }
 
     def __init__(
         self,
@@ -252,31 +256,20 @@ class BatchNormBwdOp(Op):
             # An empty channel sums to zero.
             zeros = torch.zeros(channels, dtype=torch.float32, device=grad_out.device)
             return torch.empty_like(x), zeros, zeros.clone()
-        length = grad_out.numel() // channels
-        grad_out = grad_out.contiguous()
-        x = x.contiguous()
+        batch = grad_out.shape[0]
+        spatial = math.prod(grad_out.shape[2:])
+        grad_out_ncs = grad_out.contiguous().view(batch, channels, spatial)
+        x_ncs = x.contiguous().view(batch, channels, spatial)
         weight = weight.contiguous()
         mean = mean.contiguous()
         rstd = rstd.contiguous()
-        spatial = math.prod(x.shape[2:])
-        kernel = self.kernel_for(
-            "batch_norm_bwd",
-            (grad_out, x, weight, mean, rstd),
-            (channels, length, x.dtype, spatial, x.device.index),
+        call = BatchNormCall(
+            device=x.device, n=batch, c=channels, spatial=spatial, dtype=x.dtype, tune=self.tune
         )
+        kernel = self.kernel_for("batch_norm_bwd", (grad_out_ncs, x_ncs, weight, mean, rstd), call)
         self.kernel = kernel
-        return kernel(grad_out, x, weight, mean, rstd)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per channel count, length, dtype, spatial extent and device.
-
-        The kernel indexes the caller's layout and sizes its launch by the device's SM count.
-        """
-        channels, length, dtype, spatial, device_index = call
-        cls = self.kernel_map["bwd_kernel"]
-        return call, lambda: cls(
-            channels, length, dtype, tune=self.tune, S=spatial, device_index=device_index
-        )
+        grad_x, grad_weight, grad_bias = kernel(grad_out_ncs, x_ncs, weight, mean, rstd)
+        return grad_x.view(x.shape), grad_weight, grad_bias
 
     def forward(
         self,

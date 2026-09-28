@@ -161,9 +161,10 @@ class InstanceNormFwdOp(Op):
         bias = affine_or_constant(bias, (channels,), 0.0, x.dtype, x.device).float()
         # torch reads the statistics in the input's dtype.
         stats = tuple(stat.to(x.dtype).float() for stat in (running_mean, running_var))
-        call = (channels, x.numel() // channels, x.dtype, math.prod(x.shape[2:]))
-        kernel = self.kernel_for("instance_norm_running_stats", (x, *stats, weight, bias), call)
-        return kernel(x, *stats, weight, bias)
+        x_ncs = x.view(x.shape[0], channels, math.prod(x.shape[2:]))
+        call = (*x_ncs.shape, x.dtype)
+        kernel = self.kernel_for("instance_norm_running_stats", (x_ncs, *stats, weight, bias), call)
+        return kernel(x_ncs, *stats, weight, bias).view(x.shape)
 
     def _update_running_stats(self, x, running_mean, running_var) -> None:
         """Move the running statistics toward the batch mean of the instance statistics.
@@ -195,9 +196,9 @@ class InstanceNormFwdOp(Op):
                 device_index=device_index,
             )
         if role == "instance_norm_running_stats":
-            channels, length, dtype, spatial = call
+            batch, channels, spatial, dtype = call
             cls = self.kernel_map["instance_norm_running_stats"]
-            return call, lambda: cls(channels, length, dtype, self.eps, tune=self.tune, S=spatial)
+            return call, lambda: cls(batch, channels, spatial, dtype, self.eps, tune=self.tune)
         d, dtype, affine, channels = call
         if affine:
             cls = self.kernel_map["instance_norm"]
