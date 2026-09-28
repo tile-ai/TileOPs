@@ -41,7 +41,8 @@ class _ContiguousPostPermuteKernel(Kernel):
 
     def __init__(self, call: PostPermuteCall) -> None:
         """Build the weighted no-pad inverse specialization selected by ``call``."""
-        super().__init__()
+        device_index = call.device.index if call.device is not None else None
+        super().__init__(device_index=device_index)
         self.inner = MoeUnpermuteKernel(
             call.num_tokens,
             call.top_k,
@@ -51,6 +52,7 @@ class _ContiguousPostPermuteKernel(Kernel):
             dtype=call.input_dtype,
             sm_count=call.sm_count,
             tune=call.tune,
+            device_index=device_index,
         )
 
     def forward(

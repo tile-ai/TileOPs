@@ -113,15 +113,17 @@ class MoeUnpermuteKernel(Kernel):
         config: Optional[dict] = None,
         tune: bool = False,
         sm_count: Optional[int] = None,
+        *,
+        device_index: Optional[int] = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.num_tokens = num_tokens
         self.top_k = top_k
         self.hidden_size = hidden_size
         self.materialized_rows = materialized_rows
         self.dtype = dtype
         self.numel = num_tokens * top_k
-        self.sm_count = get_sm_count() if sm_count is None else sm_count
+        self.sm_count = get_sm_count(device_index) if sm_count is None else sm_count
         if self.sm_count <= 0:
             raise ValueError("sm_count must be positive")
         self.init_config(config, tune)

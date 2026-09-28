@@ -203,8 +203,10 @@ class GroupedGemmKernel(Kernel):
         transpose_b: bool = True,
         config: Optional[dict] = None,
         tune=False,
+        *,
+        device_index: Optional[int] = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch_sum = batch_sum
         self.batch_count = batch_count
         self.N = N

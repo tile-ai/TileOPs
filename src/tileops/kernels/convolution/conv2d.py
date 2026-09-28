@@ -744,7 +744,7 @@ class Conv2dSymmetricKernel(Kernel):
             call.dtype,
         )
         return (*args, call.has_bias, index), lambda: cls(
-            *args, has_bias=call.has_bias, tune=call.tune
+            *args, has_bias=call.has_bias, tune=call.tune, device_index=index
         )
 
     def __init__(
@@ -762,8 +762,10 @@ class Conv2dSymmetricKernel(Kernel):
         has_bias: bool = False,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.c_in = c_in
         self.h = h
@@ -887,7 +889,11 @@ class Conv2dKernel(Kernel):
             call.dtype,
         )
         return (*args, call.has_bias, call.padding_end, index), lambda: cls(
-            *args, pad_end=call.padding_end, has_bias=call.has_bias, tune=call.tune
+            *args,
+            pad_end=call.padding_end,
+            has_bias=call.has_bias,
+            tune=call.tune,
+            device_index=index,
         )
 
     def __init__(
@@ -910,8 +916,10 @@ class Conv2dKernel(Kernel):
         pad_end: Optional[tuple[int, ...]] = None,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.c_in = c_in
         self.h = h
@@ -956,7 +964,7 @@ class Conv2dKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        sm_version = get_sm_version()
+        sm_version = get_sm_version(self.device_index)
         if sm_version in {90}:
             return {
                 "block_m": 64,
@@ -1036,6 +1044,7 @@ class GroupConv2dKernel(Kernel):
             c_in_g=group[1],
             c_out_g=group[2],
             tune=call.tune,
+            device_index=index,
         )
 
     def __init__(
@@ -1061,8 +1070,10 @@ class GroupConv2dKernel(Kernel):
         c_out_g: Optional[int] = None,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.c_in = c_in
         self.h = h
@@ -1156,7 +1167,7 @@ class GroupConv2dKernel(Kernel):
                 "threads": 128,
                 "enable_rasterization": True,
             }
-        sm_version = get_sm_version()
+        sm_version = get_sm_version(self.device_index)
         if sm_version in {90}:
             return {
                 "block_m": 64,
@@ -1217,7 +1228,7 @@ class Conv2d1x1Kernel(Kernel):
             call.dtype,
         )
         return (*args, call.has_bias, index), lambda: cls(
-            *args, has_bias=call.has_bias, tune=call.tune
+            *args, has_bias=call.has_bias, tune=call.tune, device_index=index
         )
 
     def __init__(
@@ -1235,8 +1246,10 @@ class Conv2d1x1Kernel(Kernel):
         has_bias: bool = False,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.c_in = c_in
         self.h = h
@@ -1266,7 +1279,7 @@ class Conv2d1x1Kernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        sm_version = get_sm_version()
+        sm_version = get_sm_version(self.device_index)
         if sm_version in {80}:
             return {
                 "block_m": 64,

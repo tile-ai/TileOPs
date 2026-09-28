@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import functools
 import inspect
@@ -423,8 +424,12 @@ class Op(ABC):
                 f"so it needs a target that registers one; known targets for this "
                 f"op: {registered_targets(type(self).__name__)}"
             )
+        # A build reads the device it is built on (its architecture, SM count, compile
+        # target), so it is built with the device of the tensors it is handed current.
+        device = next((t.device for t in inputs if t is not None and t.is_cuda), None)
         if key not in entries:
-            entry = build()
+            with torch.cuda.device(device) if device is not None else contextlib.nullcontext():
+                entry = build()
             if self.tune:
                 for kernel in self._entry_kernels(entry):
                     kernel.request_tune()

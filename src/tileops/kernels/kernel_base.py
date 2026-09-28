@@ -164,9 +164,8 @@ class Kernel(ABC):
         layer performs no architecture check of its own; a role served by several kernels
         filters candidates during selection instead.
 
-        ``device_index`` is ``None`` for a kernel whose op does not pass one yet, and the
-        current device answers instead. That is the pre-migration behaviour, kept so a
-        family that has not moved yet is unaffected; a migrated kernel states the device.
+        ``device_index`` ``None`` reads the current device. An op builds every kernel with
+        the call's device current (``Op.kernel_for``), so that is the call's device there.
 
         Raises:
             ValueError: The device's architecture is not among ``supported_archs``.

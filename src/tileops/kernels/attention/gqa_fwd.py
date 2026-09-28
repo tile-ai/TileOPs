@@ -1019,8 +1019,10 @@ class GQAPrefillPagedWithKVCacheRopeAppendKernel(Kernel):
         dtype: torch.dtype,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         reason = page_size_refusal(page_size)
         if reason is not None:
             raise ValueError(reason)
@@ -1453,6 +1455,7 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
             max_position=self.max_position,
             rotary_dim=self.rotary_dim,
             dtype=self.dtype,
+            device_index=self.device_index,
         )
 
     @property

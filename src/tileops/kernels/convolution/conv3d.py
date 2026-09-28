@@ -668,7 +668,9 @@ class Conv3dKernel(Kernel):
             dtype=call.dtype,
         )
         identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
+        return identity, lambda: cls(
+            **args, has_bias=call.has_bias, tune=call.tune, device_index=index
+        )
 
     def __init__(
         self,
@@ -695,8 +697,10 @@ class Conv3dKernel(Kernel):
         pad_end: Optional[tuple[int, ...]] = None,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.c_in = c_in
         self.d_in = d_in
@@ -765,7 +769,7 @@ class Conv3dKernel(Kernel):
             "block_m": 64,
             "block_n": 64,
             "block_k": 64,
-            "num_stages": conv_num_stages(),
+            "num_stages": conv_num_stages(self.device_index),
             "threads": 128,
             "enable_rasterization": True,
         }
@@ -823,7 +827,9 @@ class GroupConv3dKernel(Kernel):
             c_out_g=call.c_out // call.groups,
         )
         identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
+        return identity, lambda: cls(
+            **args, has_bias=call.has_bias, tune=call.tune, device_index=index
+        )
 
     def __init__(
         self,
@@ -853,8 +859,10 @@ class GroupConv3dKernel(Kernel):
         c_out_g: Optional[int] = None,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.c_in = c_in
         self.d_in = d_in
@@ -939,7 +947,7 @@ class GroupConv3dKernel(Kernel):
             "block_m": 64,
             "block_n": 64,
             "block_k": 64,
-            "num_stages": conv_num_stages(),
+            "num_stages": conv_num_stages(self.device_index),
             "threads": 128,
             "enable_rasterization": True,
         }
@@ -1018,7 +1026,9 @@ class Conv3dNdhwcKernel(Kernel):
             dtype=call.dtype,
         )
         identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
+        return identity, lambda: cls(
+            **args, has_bias=call.has_bias, tune=call.tune, device_index=index
+        )
 
     def __init__(
         self,
@@ -1045,8 +1055,10 @@ class Conv3dNdhwcKernel(Kernel):
         pad_end: Optional[tuple[int, ...]] = None,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.c_in = c_in
         self.d = d
