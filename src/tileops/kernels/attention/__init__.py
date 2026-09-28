@@ -1,5 +1,5 @@
 from .deepseek_dsa_decode import SparseMlaBasicKernel, SparseMlaCall, SparseMlaKernel
-from .deepseek_mla_decode import MLADecodeWsKernel
+from .deepseek_mla_decode import MlaDecodeCall, MLADecodeWsKernel
 from .deepseek_nsa_cmp_fwd import NSACmpFwdVarlenKernel
 from .deepseek_nsa_fwd import NSAFwdVarlenKernel
 from .deepseek_nsa_topk import NSATopkVarlenKernel
@@ -53,6 +53,7 @@ __all__ = [
     "MHABwdWsKernel",
     "MHADecodePagedWsKernel",
     "MLADecodeWsKernel",
+    "MlaDecodeCall",
     "NSACmpFwdVarlenKernel",
     "NSAFwdVarlenKernel",
     "NSATopkVarlenKernel",

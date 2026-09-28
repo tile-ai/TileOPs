@@ -22,9 +22,6 @@ class TopkSelectorFwdOp(Op):
       one input select the same positions and may place them in different slots.
     - A window holding fewer than ``topk`` positions fills the rest with ``seq_len_kv``,
       one past the last key, which selects nothing.
-
-    The in-tree kernel keeps at most 4096 candidates that share the score bucket the
-    ``topk``-th score falls in; a window with more such ties may select a lower score.
     """
 
     compile_boundary = True

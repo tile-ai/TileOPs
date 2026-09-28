@@ -19,6 +19,7 @@ from .fused_topk import FusedTopKFwdOp
 from .permute_align import MoePermuteAlignFwdOp
 from .prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from .routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
+from .shared_expert_mlp import SharedExpertMLPFwdOp
 from .staged import (
     MoeExpertMLPFwdOp,
     MoeGroupedGemmFwdOp,
@@ -46,6 +47,7 @@ __all__ = [
     "PrepareResult",
     "RoutingEpilogueSpec",
     "FusedMoeSharedExpertFwdOp",
+    "SharedExpertMLPFwdOp",
     "WeightedReduce",
     "WeightedReduceNoOp",
 ]

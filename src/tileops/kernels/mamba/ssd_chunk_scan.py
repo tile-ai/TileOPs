@@ -63,6 +63,8 @@ from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["SSDChunkScanFwdKernel"]
 
+_GEMM_K_STEP = 16
+
 
 @functools.lru_cache(maxsize=32)
 def _ssd_chunk_scan_fwd_kernel(
@@ -526,10 +528,13 @@ class SSDChunkScanFwdKernel(Kernel):
     def default_config(self) -> dict:
         # threads=128 (4 warps) balances parallelism with register pressure.
         # block_n=64 keeps occupancy high for typical d_state sizes (64-128).
+        # block_n is the history GEMM's K extent, which the tensor-core
+        # instruction takes in 16-element steps; a d_state that is not a whole
+        # number of them rounds up, and the loads mask the padded columns.
         return {
             "block_l": 64,
             "block_p": 64,
-            "block_n": min(64, self.d_state),
+            "block_n": min(64, -(-self.d_state // _GEMM_K_STEP) * _GEMM_K_STEP),
             "block_s": 64,
             "threads": 128,
             "num_stages": 3,
@@ -542,7 +547,7 @@ class SSDChunkScanFwdKernel(Kernel):
         # history-path loop count, num_stages the pipeline depth. block_s (causal
         # GEMM tile size and s-loop count) and threads (warps per block) are the
         # two the sweep varies.
-        block_n = min(128, self.d_state)
+        block_n = min(128, -(-self.d_state // _GEMM_K_STEP) * _GEMM_K_STEP)
         return (
             [
                 {

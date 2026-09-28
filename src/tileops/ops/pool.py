@@ -133,6 +133,8 @@ class MeanPoolingFwdOp(Op):
         ```
     """
 
+    compile_boundary: ClassVar[bool] = True
+
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "mean_pooling_fwd_kernel": MeanPoolingFwdKernel
     }
@@ -174,7 +176,7 @@ class MeanPoolingFwdOp(Op):
         return self._placeholders[key]
 
     def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per shape, chunking and offsets presence."""
+        """One implementation, built per shape, chunking, offsets presence and device."""
         (
             batch_size,
             seq_len,
@@ -184,6 +186,7 @@ class MeanPoolingFwdOp(Op):
             seq_num,
             use_offsets,
             dtype,
+            device_index,
         ) = call
         return call, lambda: self.kernel_map["mean_pooling_fwd_kernel"](
             batch_size=batch_size,
@@ -197,6 +200,7 @@ class MeanPoolingFwdOp(Op):
             dtype=dtype,
             accum_dtype=self.accum_dtype,
             tune=self.tune,
+            device_index=device_index,
         )
 
     def forward(
@@ -225,6 +229,15 @@ class MeanPoolingFwdOp(Op):
             ValueError: ``indices`` does not hold one row per chunk ``offsets`` implies, or
                 ``offsets`` does not partition ``x``'s sequence axis.
         """
+        return self._call_boundary(x, offsets, indices)
+
+    def _eager_forward(
+        self,
+        x: torch.Tensor,
+        offsets: Optional[torch.Tensor] = None,
+        indices: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Resolve the kernel and launch, inside the operator."""
         # Heads and dim are read as one width.
         x = x.contiguous()
         batch_size, seq_len, heads, dim = x.shape
@@ -246,7 +259,17 @@ class MeanPoolingFwdOp(Op):
         kernel = self.kernel_for(
             "mean_pooling_fwd_kernel",
             (x, offsets, indices),
-            (batch_size, seq_len, heads, dim, chunks, seq_num, int(ragged), x.dtype),
+            (
+                batch_size,
+                seq_len,
+                heads,
+                dim,
+                chunks,
+                seq_num,
+                int(ragged),
+                x.dtype,
+                x.device.index,
+            ),
         )
         return kernel(x, offsets_arg, indices=indices_arg)
 

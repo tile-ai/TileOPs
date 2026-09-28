@@ -600,7 +600,8 @@ class RopeLongRopeFwdOp(_RopeOpBase):
 
     Computes cos/sin tables at construction using per-dimension rescale
     factors (ext_factors) that multiply the divisor, plus a scale-dependent
-    amplitude factor applied to cos/sin output.
+    amplitude factor applied to cos/sin output. Construction rejects a zero or NaN
+    rescale factor, since the frequency divides by it.
 
     Reference: TVM ``rope_freq_longrope`` in position_embedding.py;
     Ding et al., "LongRoPE: Extending LLM Context Window Beyond 2M Tokens".
@@ -701,7 +702,15 @@ class RopeLongRopeFwdOp(_RopeOpBase):
                 for the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional kernel dispatch override.
             tune: Whether to autotune.
+
+        Raises:
+            ValueError: A rescale factor is zero or NaN; the frequency divides by it.
         """
+        # A meta tensor holds no values to check.
+        if rescale_factors is not None and not rescale_factors.is_meta:
+            defined = (rescale_factors != 0) & ~torch.isnan(rescale_factors)
+            if not bool(defined.all()):
+                raise ValueError("rescale_factors must be nonzero and not NaN")
         self.rescale_factors = rescale_factors
         self.max_position_embeddings = max_position_embeddings
         self.original_max_position_embeddings = original_max_position_embeddings

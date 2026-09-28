@@ -38,7 +38,8 @@ class MoeGroupedGemmKernel(Kernel):
         )
 
     def __init__(self, call) -> None:
-        super().__init__()
+        device_index = call.device.index if call.device is not None else None
+        super().__init__(device_index=device_index)
         self.call = call
         self.inner = GemmTemplate(
             self._TYPES[(call.kind, call.packing, call.metadata_kind)],
@@ -47,6 +48,7 @@ class MoeGroupedGemmKernel(Kernel):
             cd_dtype=None if call.cd_dtype is call.ab_dtype else call.cd_dtype,
             activation="none" if call.activation is None else call.activation,
             tune=call.tune,
+            device_index=device_index,
         )
 
     def forward(

@@ -38,6 +38,7 @@ def grouped_gemm_entry(cls: type, call: GroupedGemmCall) -> Entry:
         transpose_a=call.transpose_a,
         transpose_b=call.transpose_b,
         tune=call.tune,
+        device_index=index,
     )
 
 
@@ -84,9 +85,11 @@ class GroupedGemmPersistentKernel(Kernel):
         transpose_a: bool = False,
         transpose_b: bool = True,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
         """Bind the layout; shapes and the tile come from each call."""
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch_sum = batch_sum
         self.batch_count = batch_count
         self.n = n
@@ -95,7 +98,9 @@ class GroupedGemmPersistentKernel(Kernel):
         self.transpose_a = transpose_a
         self.transpose_b = transpose_b
         gemm_type = GemmType.K_GROUPED_CONTIGUOUS if transpose_a else GemmType.M_GROUPED_TIGHT_PSUM
-        self.inner = GemmTemplate(gemm_type, num_groups=batch_count, tune=tune)
+        self.inner = GemmTemplate(
+            gemm_type, num_groups=batch_count, tune=tune, device_index=device_index
+        )
 
     def forward(
         self,

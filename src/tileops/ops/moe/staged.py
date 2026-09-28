@@ -15,7 +15,6 @@ from tileops.kernels.moe import (
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
-from tileops.utils import device_calibration, get_sm_version
 
 from .contracts import MaskedLayoutSpec, MGroupedLayoutSpec, RoutingEpilogueSpec
 
@@ -42,7 +41,8 @@ class _ContiguousPostPermuteKernel(Kernel):
 
     def __init__(self, call: PostPermuteCall) -> None:
         """Build the weighted no-pad inverse specialization selected by ``call``."""
-        super().__init__()
+        device_index = call.device.index if call.device is not None else None
+        super().__init__(device_index=device_index)
         self.inner = MoeUnpermuteKernel(
             call.num_tokens,
             call.top_k,
@@ -52,6 +52,7 @@ class _ContiguousPostPermuteKernel(Kernel):
             dtype=call.input_dtype,
             sm_count=call.sm_count,
             tune=call.tune,
+            device_index=device_index,
         )
 
     def forward(
@@ -118,8 +119,7 @@ class MoePrePermuteFwdOp(Op):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         device = hidden_states.device
         call = PrePermuteCall(
-            arch=get_sm_version(device.index),
-            calibration=device_calibration(device.index),
+            device=device,
             layout=self.layout,
             device_type=device.type,
             input_dtype=hidden_states.dtype,
@@ -237,8 +237,7 @@ class MoeGroupedGemmFwdOp(Op):
         num_experts, n, k = b.shape
         device = a.device
         call = MGroupedGemmCall(
-            arch=get_sm_version(device.index),
-            calibration=device_calibration(device.index),
+            device=device,
             kind=layout.kind,
             packing=None if masked else layout.packing.value,
             metadata_kind=None if masked else layout.metadata_kind.value,
@@ -390,7 +389,7 @@ class MoePostPermuteFwdOp(Op):
         masked = isinstance(self.layout, MaskedLayoutSpec)
         device = expert_output.device
         call = PostPermuteCall(
-            arch=get_sm_version(device.index),
+            device=device,
             layout_key=self.layout.selection_key,
             max_m=self.layout.max_m,
             epilogue=RoutingEpilogueSpec() if self.epilogue is None else self.epilogue,

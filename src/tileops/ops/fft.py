@@ -29,6 +29,8 @@ class FFTC2CFwdOp(Op):
     at most 9.8e-07 (complex64) and 1.6e-15 (complex128), within 2.2x of cuFFT's.
     """
 
+    compile_boundary: ClassVar[bool] = True
+
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "fft_c2c_one_cta_kernel": FFTC2COneCTAKernel,
         "fft_c2c_decomposed_kernel": FFTC2CDecomposedKernel,
@@ -64,6 +66,10 @@ class FFTC2CFwdOp(Op):
             Output tensor of same shape as input with FFT applied along the
             last dimension.
         """
+        return self._call_boundary(input)
+
+    def _eager_forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Resolve the kernel and launch, inside the operator."""
         n = input.shape[-1]
         if n == 1:
             self.kernel = None

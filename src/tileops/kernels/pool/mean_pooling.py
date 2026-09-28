@@ -223,8 +223,10 @@ class MeanPoolingFwdKernel(Kernel):
         accum_dtype: torch.dtype,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch_size = batch_size
         self.seq_len = seq_len
         self.heads = heads
@@ -239,7 +241,7 @@ class MeanPoolingFwdKernel(Kernel):
         self._tiling = _BlockTiling(
             width=heads * dim,
             blocks=batch_size * chunks_per_batch,
-            sm_count=get_sm_count(),
+            sm_count=get_sm_count(device_index),
         )
 
         self.kernel = _mean_pooling_kernel(

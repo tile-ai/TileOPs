@@ -475,7 +475,9 @@ class Conv1dPointwiseKernel(Kernel):
         index = call.device.index if call.device is not None else None
         args = dict(n=call.n, c_in=call.c_in, l_in=call.l_in, c_out=call.c_out, dtype=call.dtype)
         identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
+        return identity, lambda: cls(
+            **args, has_bias=call.has_bias, tune=call.tune, device_index=index
+        )
 
     def __init__(
         self,
@@ -487,8 +489,10 @@ class Conv1dPointwiseKernel(Kernel):
         has_bias: bool = False,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.c_in = c_in
         self.l_in = l_in
@@ -513,7 +517,7 @@ class Conv1dPointwiseKernel(Kernel):
             "block_m": 64,
             "block_n": 128,
             "block_k": 128,
-            "num_stages": conv_num_stages(),
+            "num_stages": conv_num_stages(self.device_index),
             "threads": 128,
             "enable_rasterization": True,
         }
@@ -555,7 +559,9 @@ class Conv1dKernel(Kernel):
             dilation_l=call.dilation_l,
         )
         identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
+        return identity, lambda: cls(
+            **args, has_bias=call.has_bias, tune=call.tune, device_index=index
+        )
 
     def __init__(
         self,
@@ -571,8 +577,10 @@ class Conv1dKernel(Kernel):
         has_bias: bool = False,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.c_in = c_in
         self.l_in = l_in
@@ -611,7 +619,7 @@ class Conv1dKernel(Kernel):
             "block_m": 64,
             "block_n": 128,
             "block_k": 128,
-            "num_stages": conv_num_stages(),
+            "num_stages": conv_num_stages(self.device_index),
             "threads": 128,
             "enable_rasterization": True,
         }
@@ -680,7 +688,9 @@ class GroupConv1dKernel(Kernel):
             c_out_g=call.c_out // call.groups,
         )
         identity = (*args.values(), call.has_bias, index)
-        return identity, lambda: cls(**args, has_bias=call.has_bias, tune=call.tune)
+        return identity, lambda: cls(
+            **args, has_bias=call.has_bias, tune=call.tune, device_index=index
+        )
 
     def __init__(
         self,
@@ -699,8 +709,10 @@ class GroupConv1dKernel(Kernel):
         c_out_g: Optional[int] = None,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.c_in = c_in
         self.l_in = l_in
@@ -796,7 +808,7 @@ class GroupConv1dKernel(Kernel):
             "block_m": block_m,
             "block_n": 128,
             "block_k": 128,
-            "num_stages": conv_num_stages(),
+            "num_stages": conv_num_stages(self.device_index),
             "threads": 128,
             "enable_rasterization": True,
         }

@@ -2,8 +2,7 @@
 
 import functools
 import math
-import os
-from typing import Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import tilelang
 import torch
@@ -73,19 +72,11 @@ def _prefill_partition_metadata(
     )
 
 
-def _prefill_auto_cp_local_chunks(num_chunks: int, num_heads: int, device_index: int) -> int:
-    env_max_local_chunks = os.environ.get(
-        "TILEOPS_GDN_PREFILL_MAX_LOCAL_CHUNKS",
-        os.environ.get("TILEOPS_GDN_PREFILL_CP_MAX_LOCAL_CHUNKS"),
-    )
-    if env_max_local_chunks:
-        max_local_chunks = int(env_max_local_chunks)
-    else:
-        # Without an argument this reads the current device, not the tensors'.
-        sm_count = get_sm_count(device_index)
-        max_local_chunks = 2 ** round(math.log2(math.sqrt(num_heads * num_chunks / sm_count) * 3))
-        if num_heads >= 64 and num_chunks >= 512:
-            max_local_chunks = max(max_local_chunks, 256)
+def _prefill_auto_cp_local_chunks(num_chunks: int, num_heads: int, device_index: int | None) -> int:
+    sm_count = get_sm_count(device_index)
+    max_local_chunks = 2 ** round(math.log2(math.sqrt(num_heads * num_chunks / sm_count) * 3))
+    if num_heads >= 64 and num_chunks >= 512:
+        max_local_chunks = max(max_local_chunks, 256)
     return max(max_local_chunks, 4)
 
 
@@ -96,8 +87,8 @@ def _prefill_partitioned_initial_state_bthd(
     g: torch.Tensor,
     beta: torch.Tensor,
     chunk_size: int,
+    max_local_chunks: int,
     raw_sequence_lengths: tuple[int, ...] | None = None,
-    min_partition_chunks: int = 0,
 ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
     batch, num_tokens, num_heads, _ = k.shape
     assert batch == 1
@@ -108,23 +99,8 @@ def _prefill_partitioned_initial_state_bthd(
     if sum(raw_sequence_lengths) != num_tokens:
         raise ValueError("raw sequence lengths must sum to the flattened token count")
     num_chunks = tilelang.cdiv(num_tokens, chunk_size)
-    max_local_chunks = _prefill_auto_cp_local_chunks(num_chunks, num_heads, k.device.index)
-
-    has_partition = num_chunks > max_local_chunks
-    force_partition = (
-        os.environ.get(
-            "TILEOPS_GDN_PREFILL_FORCE_PARTITION",
-            os.environ.get("TILEOPS_GDN_PREFILL_CP_FORCE", "0"),
-        )
-        == "1"
-    )
-    partition_large_enough = (
-        force_partition or max(raw_sequence_lengths) // chunk_size >= min_partition_chunks
-    )
-    use_partition = (
-        has_partition
-        and partition_large_enough
-        and (force_partition or num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128))
+    use_partition = num_chunks > max_local_chunks and (
+        num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128)
     )
     (
         raw_cu_seqlens,
@@ -183,10 +159,10 @@ def _gated_deltanet_production_bthd(
     g: torch.Tensor,
     beta: torch.Tensor,
     chunk_size: int,
+    max_local_chunks: int,
     *,
     scale: float = 1.0,
     output_states: bool = False,
-    min_partition_chunks: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]:
     """Run the production recurrence shared by BTHD prefill and forward."""
     batch, seq_len, head = q.shape[:3]
@@ -207,8 +183,8 @@ def _gated_deltanet_production_bthd(
         g,
         beta,
         chunk_size,
+        max_local_chunks,
         raw_sequence_lengths=None if batch == 1 else (seq_len,) * batch,
-        min_partition_chunks=min_partition_chunks,
     )
     o, states, final_state = fused_gdr_fwd(
         q,
@@ -248,6 +224,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel):
         dim: int,
         scale: float,
         dtype: torch.dtype,
+        config: Optional[Dict[str, Any]] = None,
         *,
         device_index: int | None = None,
     ) -> None:
@@ -258,6 +235,21 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel):
         self.dim = dim
         self.scale = scale
         self.dtype = dtype
+        self.init_config(config)
+        if self.config["max_local_chunks"] < 4:
+            raise ValueError(
+                f"max_local_chunks must be at least 4, got {self.config['max_local_chunks']}"
+            )
+
+    @property
+    def default_config(self) -> Dict[str, Any]:
+        # A partition holds at most this many 64-token chunks; a longer sequence is split.
+        num_chunks = self.batch * self.seq_len // 64
+        return {
+            "max_local_chunks": _prefill_auto_cp_local_chunks(
+                num_chunks, self.heads, self.device_index
+            )
+        }
 
     def forward(
         self,
@@ -281,6 +273,7 @@ class GatedDeltaNetDensePrefillFwdKernel(Kernel):
             g,
             beta,
             chunk_size=64,
+            max_local_chunks=self.config["max_local_chunks"],
             scale=self.scale,
         )
         return o, final_state

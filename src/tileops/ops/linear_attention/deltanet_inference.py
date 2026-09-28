@@ -1,7 +1,6 @@
 """Inference-facing DeltaNet forward contract and dense-prefill dispatch."""
 
-import math
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
@@ -31,6 +30,8 @@ class DeltaNetInferenceFwdOp(Op):
     not apply a sigmoid or another beta transform.
     """
 
+    compile_boundary: ClassVar[bool] = True
+
     def __init__(
         self,
         scale: Optional[float] = None,
@@ -50,8 +51,6 @@ class DeltaNetInferenceFwdOp(Op):
             kernel_map: Optional in-tree kernel overrides.
             tune: Autotune a kernel when it is first built.
         """
-        if scale is not None and not math.isfinite(scale):
-            raise ValueError(f"scale must be finite, got {scale}")
         self.scale = scale
         self.use_qk_l2norm_in_kernel = use_qk_l2norm_in_kernel
         self.target = target
@@ -118,6 +117,19 @@ class DeltaNetInferenceFwdOp(Op):
         cu_seqlens_cpu: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run prefill or decode and return ``(o, final_state)``."""
+        return self._call_boundary(q, k, v, beta, initial_state, cu_seqlens, cu_seqlens_cpu)
+
+    def _eager_forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+        initial_state: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        cu_seqlens_cpu: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Resolve the kernel and launch, inside the operator."""
         inputs = tuple(
             tensor.contiguous() if tensor is not None else None
             for tensor in (q, k, v, beta, initial_state, cu_seqlens, cu_seqlens_cpu)

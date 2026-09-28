@@ -91,6 +91,34 @@ def test_accepted(tmp_path, source):
     assert result.returncode == 0, result.stdout
 
 
+SETENV = "def test_x(monkeypatch):\n    monkeypatch.setenv('N', '1')\n"
+
+
+@pytest.mark.parametrize(
+    "tree, source, expected",
+    [
+        ("src/tileops", "import os\nn = os.environ.get('N')\n", "reads the environment"),
+        ("workloads", "import os\nn = os.getenv('N')\n", "reads the environment"),
+        ("benchmarks", "from os import environ\nn = environ.get('N')\n", "reads the environment"),
+        ("src/tileops", "import os as process\nn = process.getenv('N')\n", "reads the environment"),
+        ("tests", SETENV, "monkeypatch.setenv"),
+        ("benchmarks", SETENV, "monkeypatch.setenv"),
+    ],
+)
+def test_environment_rule_follows_the_tree(tmp_path, tree, source, expected):
+    target = tmp_path / tree / "fixture.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(source)
+    result = subprocess.run(
+        [sys.executable, str(LINT_SCRIPT), str(target.relative_to(tmp_path))],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert result.returncode == 1
+    assert expected in result.stdout
+
+
 # One builder per fixture; the rule reads scopes, so the nesting is the fixture.
 CLOSES_OVER_A_LIST = """
 import tilelang

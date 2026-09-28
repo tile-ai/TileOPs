@@ -1,6 +1,6 @@
 """FusedMoeSharedExpertFwdOp — FusedMoE with shared expert support.
 
-Combines routed experts (via FusedMoe) with shared experts (SharedExpertMLPKernel).
+Combines routed experts (via FusedMoe) with the shared expert (SharedExpertMLPFwdOp).
 
 Usage (single GPU, tp_size=1):
     op = FusedMoeSharedExpertFwdOp(top_k=K)
@@ -28,10 +28,11 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.moe import SharedExpertMLPKernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.ops.moe.abc import FusedMoEExpertsModular, FusedMoEPrepareAndFinalize
 from tileops.ops.moe.fused_moe import FusedMoe
+from tileops.ops.moe.shared_expert_mlp import SharedExpertMLPFwdOp
+from tileops.ops.op_base import Op
 
 __all__ = ["FusedMoeSharedExpertFwdOp"]
 
@@ -40,8 +41,8 @@ class FusedMoeSharedExpertFwdOp(FusedMoe):
     """FusedMoE with shared expert support, optionally TP-aware.
 
     Extends FusedMoe to compute both shared and routed expert outputs. Passing the
-    shared expert's weights enables it; the shared expert is computed via
-    SharedExpertMLPKernel (TileLang), which applies ``silu_and_mul``.
+    shared expert's weights enables it; the shared expert is the SharedExpertMLPFwdOp
+    sub-op, which applies ``silu_and_mul``.
 
     TP support (shared expert only):
         When tp_size > 1, the op shards the shared expert weights internally:
@@ -56,8 +57,9 @@ class FusedMoeSharedExpertFwdOp(FusedMoe):
             shared_output is a partial sum when tp_size > 1.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "shared_expert_mlp": SharedExpertMLPKernel
+    delegate_types: ClassVar[Mapping[str, type[Op]]] = {
+        **FusedMoe.delegate_types,
+        "shared_expert": SharedExpertMLPFwdOp,
     }
 
     def __init__(
@@ -89,7 +91,7 @@ class FusedMoeSharedExpertFwdOp(FusedMoe):
                 supports ``silu_and_mul`` only.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Kernel overrides, for this op's kernel and its sub-ops.
+            kernel_map: Kernel overrides, handed to the sub-ops.
             tune: Whether the kernels tune themselves when built.
             prepare_finalize: Override the PrepareAndFinalize implementation.
             experts: Override the Experts implementation.
@@ -105,13 +107,7 @@ class FusedMoeSharedExpertFwdOp(FusedMoe):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
         self._build_pipeline(prepare_finalize, experts)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per token count, width, shard size and dtype."""
-        tokens, hidden, shard_ffn, dtype = call
-        return call, lambda: self.kernel_map[role](
-            num_tokens=tokens, hidden_size=hidden, ffn_size=shard_ffn, dtype=dtype, tune=self.tune
-        )
+        self._shared_expert = self.delegate_for("shared_expert", None)
 
     def forward(
         self,
@@ -155,12 +151,6 @@ class FusedMoeSharedExpertFwdOp(FusedMoe):
                 down = shared_w_down.narrow(1, lo, shard).contiguous()
             else:
                 gate_up, down = shared_w_gate_up, shared_w_down
-            tensors = (hidden_states, gate_up, down)
-            kernel = self.kernel_for(
-                "shared_expert_mlp",
-                tensors,
-                (hidden_states.shape[0], hidden_states.shape[1], shard, hidden_states.dtype),
-            )
-            shared_out = kernel(*tensors)
+            shared_out = self._shared_expert(hidden_states, gate_up, down)
         routed_out = self._routed(hidden_states, gating_output, w_gate_up, w_down, correction_bias)
         return shared_out, routed_out

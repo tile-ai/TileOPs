@@ -15,7 +15,6 @@ it to another thread (``Tensor.backward`` hands it to autograd's engine thread;
 import contextlib
 import ctypes
 import logging
-import os
 import statistics
 import sys
 import threading
@@ -374,8 +373,20 @@ def _kernel_busy_us(kernels: list[dict]) -> float:
     return (total + current_end - current_start) / 1000.0
 
 
-def _cuda_events_fallback_enabled() -> bool:
-    return os.getenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0") == "1"
+# Whether this run may time with CUDA events where CUPTI cannot attribute a phase.
+# The run sets it (``--tileops-allow-events-fallback`` in ``benchmarks/conftest.py``).
+_events_fallback_allowed = False
+
+
+def events_fallback_allowed() -> bool:
+    """Whether this run lets ``bench_kernel`` fall back to CUDA events; ``False`` unless set."""
+    return _events_fallback_allowed
+
+
+def set_events_fallback_allowed(allowed: bool) -> None:
+    """Let ``bench_kernel`` fall back to CUDA events from now on, or refuse to."""
+    global _events_fallback_allowed
+    _events_fallback_allowed = allowed
 
 
 def _attributed_samples(
@@ -589,6 +600,7 @@ def bench_kernel(
     max_iters: int = _MAX_ITERS,
     min_iters: int = _MIN_ITERS,
     count_copies: bool = False,
+    allow_events_fallback: Optional[bool] = None,
 ) -> list[Sample]:
     """Time *fn* through CUPTI, one :class:`Sample` per iteration.
 
@@ -598,8 +610,8 @@ def bench_kernel(
     is drained before the next begins. Each kernel is attributed to the iteration that
     launched it, so *fn* must launch its own work rather than hand it to another thread.
     A phase whose records CUPTI discarded is measured again; attribution otherwise
-    fails closed unless
-    ``TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1``.
+    fails closed unless ``allow_events_fallback`` is true. ``None`` takes the run's
+    setting, ``--tileops-allow-events-fallback``.
 
     ``count_copies`` adds device-to-device copies to what is attributed, for a row whose
     implementations compute part of the result with one. It is off by default because a
@@ -612,7 +624,9 @@ def bench_kernel(
             "Check that gen_inputs() returns a tuple."
         )
 
-    allow_fallback = _cuda_events_fallback_enabled()
+    allow_fallback = (
+        events_fallback_allowed() if allow_events_fallback is None else allow_events_fallback
+    )
     _bench_meta.timing = None
     _bench_meta.fallback_reason = None
     _bench_meta.attribution_retries = None
@@ -660,8 +674,8 @@ def bench_kernel(
         if not allow_fallback:
             raise RuntimeError(
                 f"CUPTI profiling failed: {exc}. CUDA-events fallback is disabled "
-                "(TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=0), which keeps the run from "
-                "silently mixing two timing methods."
+                "(pass --tileops-allow-events-fallback to allow it), which keeps the run "
+                "from silently mixing two timing methods."
             ) from exc
         _bench_meta.timing = "cuda-events"
         _bench_meta.fallback_reason = str(exc)

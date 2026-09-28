@@ -7,6 +7,7 @@ import torch
 # reaching torch's op registry before vllm. See benchmarks.baselines.
 import benchmarks.baselines  # noqa: F401
 from benchmarks.report import BenchmarkReport, _bench_results
+from benchmarks.timing import events_fallback_allowed, set_events_fallback_allowed
 
 # What a row carries besides its measurements.
 _NOT_A_MEASUREMENT = frozenset({"tag", "op", "op_module", "ops", "params", "run_config", "result"})
@@ -76,14 +77,39 @@ def setup() -> None:
         torch.cuda.manual_seed_all(1235)
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register whether a benchmark run may time with CUDA events where CUPTI fails."""
+    parser.addoption(
+        "--tileops-allow-events-fallback",
+        action="store_true",
+        help="Time a case with CUDA events when CUPTI cannot attribute it, instead of "
+        "failing it. Off by default: the report would mix two timing methods.",
+    )
+
+
+# The events-fallback setting in force before configure, put back at unconfigure.
+_OUTER_EVENTS_FALLBACK = pytest.StashKey[bool]()
+
+
 def pytest_configure(config):
-    """Refuse a run device other than CUDA: the timer is CUDA events and CUPTI."""
+    """Refuse a run device other than CUDA, and pin the events-fallback setting.
+
+    The timer is CUDA events and CUPTI, so only a CUDA device is accepted.
+    """
     device = torch.device(config.getoption("--tileops-device"))
     if device.type != "cuda":
         raise pytest.UsageError(
             f"--tileops-device={device}: benchmarks time with CUDA events and CUPTI, "
             "so they run on cuda only"
         )
+    config.stash[_OUTER_EVENTS_FALLBACK] = events_fallback_allowed()
+    set_events_fallback_allowed(config.getoption("--tileops-allow-events-fallback"))
+
+
+def pytest_unconfigure(config):
+    """Put back the events-fallback setting this file replaced."""
+    if _OUTER_EVENTS_FALLBACK in config.stash:
+        set_events_fallback_allowed(config.stash[_OUTER_EVENTS_FALLBACK])
 
 
 def pytest_sessionstart(session):

@@ -8,6 +8,7 @@ import torch
 from torch import Tensor
 
 from tileops.backend import Target
+from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe.indexed_expert_gemm import (
     IndexedExpertGemmTemplate,
@@ -15,7 +16,6 @@ from tileops.kernels.moe.indexed_expert_gemm import (
     IndexedWeightedReduceKernel,
 )
 from tileops.perf.profile import tensor_core_roof
-from tileops.utils import get_sm_version
 
 from ...op_base import Op
 from ..contracts import ContiguousLayoutSpec, RoutingEpilogueSpec
@@ -156,7 +156,7 @@ class IndexedExpertMLPFwdOp(Op):
         tokens, top_k = topk_ids.shape
         experts, ffn2, hidden = w_gate_up.shape
         ffn = ffn2 // 2
-        if get_sm_version(hidden_states.device.index) != 90:
+        if CallSpec(device=hidden_states.device).arch != 90:
             pre, mlp, post = self._staged(experts)
             expert_input, physical_ends, inverse_indices = pre(hidden_states, topk_ids)
             expert_output = mlp(expert_input, w_gate_up, w_down, physical_ends)

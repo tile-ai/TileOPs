@@ -13,7 +13,7 @@ from .online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-from .paged_prefill import PagedPrefillKernel
+from .paged_prefill import PagedPrefillKernel, page_size_refusal
 
 __all__ = [
     "GQAPrefillPagedWithFP8KVCacheFwdKernel",
@@ -80,8 +80,9 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(
     scale = LOG2E if use_softcap else score_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
-    if page_size <= 0 or page_size & (page_size - 1) != 0:
-        raise ValueError("page_size must be a positive power of two")
+    reason = page_size_refusal(page_size)
+    if reason is not None:
+        raise ValueError(reason)
     groups = heads // heads_kv
     accum_dtype = "float"
 
@@ -375,8 +376,12 @@ class GQAPrefillPagedWithKVCacheFwdKernel(PagedPrefillKernel):
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return not call.fuse_rope and call.cache_dtype == call.dtype
+    def _region_refusal(cls, call) -> Optional[str]:
+        if call.fuse_rope:
+            return "does not serve fused RoPE"
+        if call.cache_dtype != call.dtype:
+            return "requires a cache of the query's dtype"
+        return super()._region_refusal(call)
 
     @property
     def default_config(self) -> dict:
@@ -456,8 +461,9 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
     scale = LOG2E if use_softcap else score_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
-    if page_size <= 0 or page_size & (page_size - 1) != 0:
-        raise ValueError("page_size must be a positive power of two")
+    reason = page_size_refusal(page_size)
+    if reason is not None:
+        raise ValueError(reason)
     groups = heads // heads_kv
     accum_dtype = "float"
     cache_dtype = T.float8_e4m3fn
@@ -802,8 +808,12 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
     supported_archs: list[int] = [89, 90]
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return not call.fuse_rope and call.cache_dtype == torch.float8_e4m3fn
+    def _region_refusal(cls, call) -> Optional[str]:
+        if call.cache_dtype != torch.float8_e4m3fn:
+            return "requires an FP8 cache"
+        if call.fuse_rope:
+            return "does not serve fused RoPE"
+        return super()._region_refusal(call)
 
     @property
     def default_config(self) -> dict:
@@ -878,8 +888,9 @@ def _gqa_prefill_paged_with_kv_cache_rope_append_kernel(
     rotary_dim: int,
     dtype: str = "float16",
 ) -> Callable:
-    if page_size <= 0 or page_size & (page_size - 1) != 0:
-        raise ValueError("page_size must be a positive power of two")
+    reason = page_size_refusal(page_size)
+    if reason is not None:
+        raise ValueError(reason)
     if rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim:
         raise ValueError("rotary_dim must be positive, even, and <= dim")
     half = rotary_dim // 2
@@ -1008,10 +1019,13 @@ class GQAPrefillPagedWithKVCacheRopeAppendKernel(Kernel):
         dtype: torch.dtype,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
-        if page_size <= 0 or page_size & (page_size - 1) != 0:
-            raise ValueError("page_size must be a positive power of two")
+        super().__init__(device_index=device_index)
+        reason = page_size_refusal(page_size)
+        if reason is not None:
+            raise ValueError(reason)
         if rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim:
             raise ValueError("rotary_dim must be positive, even, and <= dim")
         self.batch = batch
@@ -1089,8 +1103,9 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
     scale = LOG2E if use_softcap else score_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
-    if page_size <= 0 or page_size & (page_size - 1) != 0:
-        raise ValueError("page_size must be a positive power of two")
+    reason = page_size_refusal(page_size)
+    if reason is not None:
+        raise ValueError(reason)
     if rotary_dim <= 0 or rotary_dim % 2 != 0 or rotary_dim > dim:
         raise ValueError("rotary_dim must be positive, even, and <= dim")
     groups = heads // heads_kv
@@ -1412,8 +1427,12 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return bool(call.fuse_rope) and call.cache_dtype == call.dtype
+    def _region_refusal(cls, call) -> Optional[str]:
+        if not call.fuse_rope:
+            return "does not serve this call"
+        if call.cache_dtype != call.dtype:
+            return "requires a cache of the query's dtype"
+        return super()._region_refusal(call)
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         """Tune both launches: the append pass is part of this implementation."""
@@ -1436,6 +1455,7 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
             max_position=self.max_position,
             rotary_dim=self.rotary_dim,
             dtype=self.dtype,
+            device_index=self.device_index,
         )
 
     @property

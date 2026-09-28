@@ -120,11 +120,21 @@ class Kernel(ABC):
         implementation was never written for, and whoever is selecting has no
         way to find out without reading the class it just rejected.
         """
+        reason = cls.arch_refusal(call)
+        if reason is None and not cls.applies(call):
+            return "does not serve this call"
+        return reason
+
+    @classmethod
+    def arch_refusal(cls, call: Any) -> Optional[str]:
+        """Why this class cannot run on *call*'s architecture, or ``None`` when it can.
+
+        The first question :meth:`refusal` asks. A class that names the shape limit
+        it refuses overrides ``refusal`` and asks this first.
+        """
         archs = cls.supported_archs
         if archs is not None and call.arch not in archs:
             return f"built for architectures {sorted(archs)}, device reports {call.arch}"
-        if not cls.applies(call):
-            return "does not serve this call"
         return None
 
     @classmethod
@@ -154,9 +164,8 @@ class Kernel(ABC):
         layer performs no architecture check of its own; a role served by several kernels
         filters candidates during selection instead.
 
-        ``device_index`` is ``None`` for a kernel whose op does not pass one yet, and the
-        current device answers instead. That is the pre-migration behaviour, kept so a
-        family that has not moved yet is unaffected; a migrated kernel states the device.
+        ``device_index`` ``None`` reads the current device. An op builds every kernel with
+        the call's device current (``Op.kernel_for``), so that is the call's device there.
 
         Raises:
             ValueError: The device's architecture is not among ``supported_archs``.

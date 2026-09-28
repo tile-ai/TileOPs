@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import functools
 import inspect
@@ -31,7 +32,6 @@ from tileops.backend import (
 from tileops.backend.dispatch import registered_kernel_builder, select_target
 from tileops.backend.registry import ensure_loaded
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.manifest import load_manifest
 
 from .compile_boundary import register_instance
 
@@ -424,8 +424,16 @@ class Op(ABC):
                 f"so it needs a target that registers one; known targets for this "
                 f"op: {registered_targets(type(self).__name__)}"
             )
+        # A build reads the device it is built on (its architecture, SM count, compile
+        # target), so it is built with the call's device current: its tensors' device, or
+        # for an op with no tensor input the device it declares.
+        device = next((t.device for t in inputs if t is not None and t.is_cuda), None)
+        if device is None:
+            declared = self._declared_device()
+            device = declared if declared is not None and declared.type == "cuda" else None
         if key not in entries:
-            entry = build()
+            with torch.cuda.device(device) if device is not None else contextlib.nullcontext():
+                entry = build()
             if self.tune:
                 for kernel in self._entry_kernels(entry):
                     kernel.request_tune()
@@ -476,7 +484,7 @@ class Op(ABC):
         Args:
             role: Which of this op's kernels is being asked for. One name per kernel
                 the op runs, never the name of an implementation it chose.
-            inputs: The tensors this kernel will be handed, for the empty-input guard.
+            inputs: The tensors this kernel will be handed, for the device check.
             call: What describes this call, handed to :meth:`entry_for`. An op with
                 nothing in tree states none.
 
@@ -485,7 +493,6 @@ class Op(ABC):
             OpNotAvailableError: No implementation this op holds runs on the call's device,
                 or what :meth:`_get_or_build_kernel` raises.
         """
-        self._refuse_empty_input(inputs)
         self._refuse_device(inputs, call)
         return self._get_or_build_kernel(role, inputs, lambda: self.entry_for(role, call))
 
@@ -643,9 +650,13 @@ class Op(ABC):
         settled_here = self._builder is _UNRESOLVED
         try:
             call = self._check_signature(inputs, writes)
-            if settled_here:
+            # An empty call runs no implementation, so none has to be available for it.
+            empty = self._writes_nothing(call)
+            if settled_here and not empty:
                 self._resolve_builder(inputs, writes, call.device)
-            if self._served_by_target():
+            if empty:
+                result = self._empty_result(call, inputs, writes)
+            elif self._served_by_target():
                 result = self._call_target(inputs, writes, _written, _execution)
             else:
                 result = self._eager_forward(*inputs, **writes, **(_execution or {}))
@@ -965,10 +976,12 @@ class Op(ABC):
             if not self.compile_op_names and not torch.compiler.is_compiling():
                 bound = self._bind_forward(args, kwargs)
                 call = self._check_signature(*bound)
-                if settled_here:
+                if settled_here and not self._writes_nothing(call):
                     # The generated checks decide the call device, `device: cpu` tensors aside.
                     self._resolve_builder(args, kwargs, call.device)
-            if self._served_by_target() and not self.compile_op_names:
+            if call is not None and self._writes_nothing(call):
+                result = self._empty_result(call, *bound)
+            elif self._served_by_target() and not self.compile_op_names:
                 bound = bound or self._bind_forward(args, kwargs)
                 written = call.written if call is not None else None
                 execution = self._execution_arguments(args, kwargs) if call is not None else None
@@ -984,46 +997,40 @@ class Op(ABC):
             raise
         return result
 
-    def _refuse_empty_input(self, inputs: "Sequence[torch.Tensor | None]") -> None:
-        """Raise for a call whose every declared output would hold no elements.
+    @staticmethod
+    def _writes_nothing(call: object) -> bool:
+        """Whether every tensor *call* writes, its outputs and written inputs, holds no elements.
 
-        Such a call leaves the launch a zero-sized grid, which reports itself as an
-        internal assertion saying nothing about what is unsupported.
-
-        The output decides, not the input: a zero-length axis on an input is legitimate
-        wherever the op still produces something.
-
-        Raises:
-            ValueError: The op cannot produce the empty output this call asks for.
+        Such a call has nothing to compute, so no implementation runs it. The written tensors
+        decide, not the inputs: an empty input whose output still holds elements, such as a
+        sum over an empty axis, runs as any other call does.
         """
-        if not any(t is not None and t.numel() == 0 for t in inputs):
-            return
+        written = [t for t, _, writes in call.traffic if writes]
+        return bool(written) and not any(math.prod(call.tensors[t][0]) for t in written)
 
-        entry = load_manifest().get(type(self).__name__)
-        if entry is None:
-            return
-        names = tuple(entry["signature"]["inputs"])
-        if len(names) != len(inputs):
-            return
-        try:
-            shapes = self._infer_output_shapes(
-                *(None if t is None else tuple(t.shape) for t in inputs)
-            )
-        except (TypeError, ValueError, KeyError):
-            return  # an op whose shape inference this order does not describe
-        declared = entry["signature"]["outputs"]
-        if any(name not in shapes for name in declared):
-            return
-        if any(math.prod(shapes[name]) for name in declared):
-            return
+    def _empty_result(
+        self, call: object, inputs: tuple, writes: "dict[str, torch.Tensor]"
+    ) -> object:
+        """What ``forward`` returns for a call that writes nothing, computed from the signature.
 
-        name, tensor = next(
-            (n, t) for n, t in zip(names, inputs, strict=True) if t is not None and t.numel() == 0
-        )
-        raise ValueError(
-            f"{type(self).__name__} does not support an empty tensor: input {name!r} has "
-            f"shape {tuple(tensor.shape)}, which holds no elements."
-        )
+        An absent output is ``None``, a buffered one is the ``out`` passed, one aliasing a
+        written input is that input, and every other one is a new tensor of the checked shape
+        and dtype on the call device.
+        """
+        sig = type(self)._signature.sig
+        named = dict(zip(sig.inputs, inputs, strict=True))
+        values = []
+        for name, decl in sig.outputs.items():
+            if name not in call.tensors:
+                values.append(None)
+            elif decl.alias in call.written:
+                values.append(named[decl.alias])
+            elif decl.buffer and call.out:
+                values.append(writes["out"])
+            else:
+                shape, dtype = call.tensors[name]
+                values.append(torch.empty(shape, dtype=getattr(torch, dtype), device=call.device))
+        return None if not values else values[0] if len(values) == 1 else tuple(values)
 
     def _unsettle(self) -> None:
         """Undo a settling whose call did not finish, dropping what it built.

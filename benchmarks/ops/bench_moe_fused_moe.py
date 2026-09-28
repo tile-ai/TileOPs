@@ -1,5 +1,5 @@
-"""Benchmarks for the routed MoE FFN with and without a shared expert, one case per manifest call, against vLLM
-and torch.
+"""Benchmarks for the routed MoE FFN with and without a shared expert, and for the shared
+expert alone, one case per manifest call, against vLLM and torch.
 """
 
 import warnings
@@ -10,8 +10,12 @@ import torch.nn.functional as F
 
 from benchmarks.baselines import VLLM_TAG
 from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
-from tileops.ops.moe import FusedMoeFwdOp, FusedMoeSharedExpertFwdOp
-from workloads.moe import FusedMoeSharedExpertWorkload, FusedMoeWorkload
+from tileops.ops.moe import FusedMoeFwdOp, FusedMoeSharedExpertFwdOp, SharedExpertMLPFwdOp
+from workloads.moe import (
+    FusedMoeSharedExpertWorkload,
+    FusedMoeWorkload,
+    SharedExpertMLPWorkload,
+)
 
 try:
     from vllm.model_executor.layers.fused_moe.fused_moe import (
@@ -139,3 +143,24 @@ def test_fused_moe_shared_expert_bench(call) -> None:
         )
 
     bm.compare(functors, *inputs)
+
+
+# SharedExpertMLP: the shared expert alone, against the two F.linear projections and the
+# gated activation torch runs for it.
+
+
+@pytest.mark.parametrize("call", manifest_calls(SharedExpertMLPFwdOp))
+def test_shared_expert_mlp_bench(call) -> None:
+    workload = SharedExpertMLPWorkload(call)
+    inputs = workload.gen_inputs()
+    op = SharedExpertMLPFwdOp(**call.arguments({}))
+    bm = ManifestBenchmark(op, workload)
+    torch.testing.assert_close(
+        op(*inputs).float(), workload.ref_program(*inputs).float(), rtol=3e-2, atol=3e-2
+    )
+
+    def _torch_fn(hidden, w_gate_up, w_down):
+        gate, up = F.linear(hidden, w_gate_up).chunk(2, dim=-1)
+        return F.linear(F.silu(gate) * up, w_down)
+
+    bm.compare({"tileops": op, "torch-cublas": _torch_fn}, *inputs)

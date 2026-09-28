@@ -496,6 +496,8 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
             torch.testing.assert_close(v_pages[row], v_pages_before[row])
 
 
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gqa_prefill_paged_with_kv_cache_requires_power_of_two_page_size() -> None:
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(page_size=24, max_seqlen_q=16)
@@ -508,7 +510,7 @@ def test_gqa_prefill_paged_with_kv_cache_requires_power_of_two_page_size() -> No
         torch.tensor([0], device=run_device(), dtype=torch.int32),
         torch.tensor([[0]], device=run_device(), dtype=torch.int32),
     )
-    with pytest.raises(ValueError, match="power of two"):
+    with pytest.raises(ValueError, match="requires a power-of-two page_size"):
         op(q, k_new, k_new.clone(), k_pages, k_pages.clone(), scale, scale.clone(), *metadata)
 
 

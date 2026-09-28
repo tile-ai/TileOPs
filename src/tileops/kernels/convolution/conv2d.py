@@ -139,10 +139,15 @@ def _conv2d_kernel(
     dilation_w: int,
     has_bias: bool,
     dtype: str = "float16",
+    pad_h_end: Optional[int] = None,
+    pad_w_end: Optional[int] = None,
 ):
+    # The end of each axis may pad more than the start; unset, it pads the same.
+    pad_h_end = pad_h if pad_h_end is None else pad_h_end
+    pad_w_end = pad_w if pad_w_end is None else pad_w_end
     accum_dtype = "float"
-    out_h = (h + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-    out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+    out_h = (h + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (w + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     k_total = kernel_h * kernel_w * c_in
 
     # Re-enable automatic async copy once TileLang lowers scalar cp.async
@@ -274,10 +279,15 @@ def _conv2d_group_kernel(
     groups: int = 1,
     c_in_g: int = 0,
     c_out_g: int = 0,
+    pad_h_end: Optional[int] = None,
+    pad_w_end: Optional[int] = None,
 ):
+    # The end of each axis may pad more than the start; unset, it pads the same.
+    pad_h_end = pad_h if pad_h_end is None else pad_h_end
+    pad_w_end = pad_w if pad_w_end is None else pad_w_end
     accum_dtype = "float"
-    out_h = (h + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-    out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+    out_h = (h + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (w + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     out_hw = out_h * out_w
     c_in_g = c_in_g if c_in_g > 0 else c_in // groups
     c_out_g = c_out_g if c_out_g > 0 else c_out // groups
@@ -425,6 +435,8 @@ def _conv2d_depthwise_kernel(
     dilation_w: int,
     has_bias: bool,
     dtype: str = "float16",
+    pad_h_end: Optional[int] = None,
+    pad_w_end: Optional[int] = None,
 ):
     """Build the depthwise Conv2d program: one input channel feeds one output channel.
 
@@ -432,9 +444,12 @@ def _conv2d_depthwise_kernel(
     channel, so a tile of ``block_m`` rows carries one useful row. This one multiplies and
     accumulates directly instead, the way the Conv1d depthwise path does.
     """
+    # The end of each axis may pad more than the start; unset, it pads the same.
+    pad_h_end = pad_h if pad_h_end is None else pad_h_end
+    pad_w_end = pad_w if pad_w_end is None else pad_w_end
     accum_dtype = "float"
-    out_h = (h + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-    out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+    out_h = (h + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (w + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     out_hw = out_h * out_w
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -729,7 +744,7 @@ class Conv2dSymmetricKernel(Kernel):
             call.dtype,
         )
         return (*args, call.has_bias, index), lambda: cls(
-            *args, has_bias=call.has_bias, tune=call.tune
+            *args, has_bias=call.has_bias, tune=call.tune, device_index=index
         )
 
     def __init__(
@@ -747,8 +762,10 @@ class Conv2dSymmetricKernel(Kernel):
         has_bias: bool = False,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.c_in = c_in
         self.h = h
@@ -871,8 +888,12 @@ class Conv2dKernel(Kernel):
             call.dilation[1],
             call.dtype,
         )
-        return (*args, call.has_bias, index), lambda: cls(
-            *args, has_bias=call.has_bias, tune=call.tune
+        return (*args, call.has_bias, call.padding_end, index), lambda: cls(
+            *args,
+            pad_end=call.padding_end,
+            has_bias=call.has_bias,
+            tune=call.tune,
+            device_index=index,
         )
 
     def __init__(
@@ -892,10 +913,13 @@ class Conv2dKernel(Kernel):
         dilation_w: int,
         dtype: torch.dtype,
         has_bias: bool = False,
+        pad_end: Optional[tuple[int, ...]] = None,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.c_in = c_in
         self.h = h
@@ -907,12 +931,13 @@ class Conv2dKernel(Kernel):
         self.stride_w = stride_w
         self.pad_h = pad_h
         self.pad_w = pad_w
+        self.pad_h_end, self.pad_w_end = pad_end if pad_end is not None else (pad_h, pad_w)
         self.dilation_h = dilation_h
         self.dilation_w = dilation_w
         self.dtype = dtype
         self.has_bias = has_bias
-        self.out_h = (h + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-        self.out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+        self.out_h = (h + pad_h + self.pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+        self.out_w = (w + pad_w + self.pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
         self.m = n * self.out_h * self.out_w
         self.k_total = c_in * kernel_h * kernel_w
 
@@ -932,12 +957,14 @@ class Conv2dKernel(Kernel):
             dilation_w,
             has_bias,
             self.dtype_str,
+            pad_h_end=self.pad_h_end,
+            pad_w_end=self.pad_w_end,
         )
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
-        sm_version = get_sm_version()
+        sm_version = get_sm_version(self.device_index)
         if sm_version in {90}:
             return {
                 "block_m": 64,
@@ -1009,13 +1036,15 @@ class GroupConv2dKernel(Kernel):
             call.dtype,
         )
         group = (call.groups, call.c_in_g, call.c_out // call.groups)
-        return (*args, call.has_bias, *group, index), lambda: cls(
+        return (*args, call.has_bias, *group, call.padding_end, index), lambda: cls(
             *args,
+            pad_end=call.padding_end,
             has_bias=call.has_bias,
             groups=group[0],
             c_in_g=group[1],
             c_out_g=group[2],
             tune=call.tune,
+            device_index=index,
         )
 
     def __init__(
@@ -1035,13 +1064,16 @@ class GroupConv2dKernel(Kernel):
         dilation_w: int,
         dtype: torch.dtype,
         has_bias: bool = False,
+        pad_end: Optional[tuple[int, ...]] = None,
         groups: int = 1,
         c_in_g: Optional[int] = None,
         c_out_g: Optional[int] = None,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.c_in = c_in
         self.h = h
@@ -1053,6 +1085,7 @@ class GroupConv2dKernel(Kernel):
         self.stride_w = stride_w
         self.pad_h = pad_h
         self.pad_w = pad_w
+        self.pad_h_end, self.pad_w_end = pad_end if pad_end is not None else (pad_h, pad_w)
         self.dilation_h = dilation_h
         self.dilation_w = dilation_w
         self.groups = groups
@@ -1060,8 +1093,8 @@ class GroupConv2dKernel(Kernel):
         self.c_out_g = c_out_g if c_out_g is not None else c_out // groups
         self.dtype = dtype
         self.has_bias = has_bias
-        self.out_h = (h + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-        self.out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+        self.out_h = (h + pad_h + self.pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+        self.out_w = (w + pad_w + self.pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
         self.m = n * self.groups * self.out_h * self.out_w
         self.k_total = self.c_in_g * kernel_h * kernel_w
         self.use_direct = self.c_in_g == 1 and self.c_out_g == 1
@@ -1084,6 +1117,8 @@ class GroupConv2dKernel(Kernel):
                 dilation_w,
                 has_bias,
                 self.dtype_str,
+                pad_h_end=self.pad_h_end,
+                pad_w_end=self.pad_w_end,
             )
         else:
             self.kernel = _conv2d_group_kernel(
@@ -1105,6 +1140,8 @@ class GroupConv2dKernel(Kernel):
                 groups,
                 self.c_in_g,
                 self.c_out_g,
+                pad_h_end=self.pad_h_end,
+                pad_w_end=self.pad_w_end,
             )
         self.init_config(config, tune)
 
@@ -1130,7 +1167,7 @@ class GroupConv2dKernel(Kernel):
                 "threads": 128,
                 "enable_rasterization": True,
             }
-        sm_version = get_sm_version()
+        sm_version = get_sm_version(self.device_index)
         if sm_version in {90}:
             return {
                 "block_m": 64,
@@ -1191,7 +1228,7 @@ class Conv2d1x1Kernel(Kernel):
             call.dtype,
         )
         return (*args, call.has_bias, index), lambda: cls(
-            *args, has_bias=call.has_bias, tune=call.tune
+            *args, has_bias=call.has_bias, tune=call.tune, device_index=index
         )
 
     def __init__(
@@ -1209,8 +1246,10 @@ class Conv2d1x1Kernel(Kernel):
         has_bias: bool = False,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.n = n
         self.c_in = c_in
         self.h = h
@@ -1240,7 +1279,7 @@ class Conv2d1x1Kernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        sm_version = get_sm_version()
+        sm_version = get_sm_version(self.device_index)
         if sm_version in {80}:
             return {
                 "block_m": 64,

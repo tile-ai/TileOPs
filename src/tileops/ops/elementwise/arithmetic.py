@@ -135,7 +135,7 @@ class PowFwdOp(BinaryOp):
 
 
 class FloorDivideFwdOp(BinaryOp):
-    """Element-wise floor division with broadcast: y = floor(a / b)."""
+    """Element-wise floor division with broadcast: y = a // b, as ``torch.floor_divide``."""
 
     kernel_types = {"floor_divide": FloorDivideFwdKernel}
 

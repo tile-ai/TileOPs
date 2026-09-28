@@ -5,6 +5,7 @@ import functools
 import tilelang
 import tilelang.language as T
 import torch
+import tvm.tirx as tirx
 
 from ._base import (
     _FLOAT_DTYPES,
@@ -13,7 +14,7 @@ from ._base import (
     _AlphaScaledBinaryKernel,
 )
 from ._dtype import _BINARY_FULL_DTYPES, _BINARY_NO_BOOL_DTYPES
-from ._nan import nan_max, nan_min
+from ._nan import _bound, nan_max, nan_min
 
 __all__ = [
     "AddFwdKernel",
@@ -99,47 +100,108 @@ class DivFwdKernel(BinaryKernel):
         return T.Cast(a.dtype, num / den)
 
 
-class DivTruncFwdKernel(BinaryKernel):
-    """Element-wise truncated division: y = trunc(a / b).
+def _ieee_fdiv(num, den):
+    """A float32 divide rounded to nearest, which fast math leaves alone."""
+    return T.call_extern("float32", "__fdiv_rn", num, den)
 
-    Matches ``torch.div(a, b, rounding_mode="trunc")`` semantics: rounds
-    the quotient toward zero. Division and ``trunc`` are computed in fp32
-    to avoid two sources of error: (1) ``htrunc`` is not available for
-    ``cutlass::half_t`` in CUDA, and (2) fp16 division rounds the
-    quotient before ``trunc`` sees it.
+
+class DivTruncFwdKernel(BinaryKernel):
+    """Element-wise truncated division: y = trunc(a / b), as torch computes it.
+
+    torch rounds the quotient to the input dtype before truncating it, so a
+    float16 ``299.9`` is ``300`` and truncates to ``300``. The divide is IEEE: fast
+    math's would leave an exact whole quotient one ulp short of it.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        a_f32 = T.cast(a, "float32")
-        b_f32 = T.cast(b, "float32")
-        return T.Cast(a.dtype, T.trunc(a_f32 / b_f32))
+        quotient = T.Cast(a.dtype, _ieee_fdiv(T.Cast("float32", a), T.Cast("float32", b)))
+        return T.Cast(a.dtype, T.trunc(T.Cast("float32", quotient)))
+
+
+# The divisors ``__fdividef`` is defined for.
+_FDIVIDEF_MIN, _FDIVIDEF_MAX = 2.0**-126, 2.0**126
+# Below this quotient a two-ulp divide lands within one of the whole quotient, and
+# the whole quotient is exact in float32.
+_FAST_QUOTIENT = float(1 << 22)
+
+
+def _floored_quotient(num, den, dtype, fast_body, slow, limit=_FAST_QUOTIENT):
+    """``fast_body(k, u)`` with ``k = floor(a / b)`` exactly, or ``slow()`` off its range.
+
+    ``u = a * sign(b)`` turns the tests on the residual ``a - t * b`` into signs of
+    ``u - t * |b|``. ``t = floor(a / b)`` from a fast divide is off ``k`` by at most
+    one: it overshoots where ``u - t * |b|`` is negative and falls short where
+    ``u - (t + 1) * |b|`` is not. Each is rounded once by ``fma``, which keeps a sign
+    and a zero, so both tests decide right. A quotient of *limit* or more, or a
+    divisor ``__fdividef`` does not cover, takes ``slow``; a float16 divisor is
+    always in range unless it is infinite.
+    """
+    zero = T.cast(0.0, "float32")
+    one = T.cast(1.0, "float32")
+    magnitude = T.abs(den)
+
+    def residue(u, t):
+        return T.call_extern("float32", "__fmaf_rn", -t, magnitude, u)
+
+    def floored(u, t):
+        over = residue(u, t) < zero
+        short = residue(u, t + one) >= zero
+        k = t + tirx.Select(over, -one, tirx.Select(short, one, zero))
+        return _bound(k, lambda k: fast_body(k, u))
+
+    def pick(quotient):
+        in_range = magnitude <= T.cast(_FDIVIDEF_MAX, "float32")
+        if str(dtype) != "float16":
+            in_range = T.And(in_range, magnitude >= T.cast(_FDIVIDEF_MIN, "float32"))
+        fast = T.And(T.abs(quotient) < T.cast(limit, "float32"), in_range)
+        u = num * T.copysign(one, den)
+        body = _bound(u, lambda u: _bound(T.floor(quotient), lambda t: floored(u, t)))
+        return T.if_then_else(fast, body, slow())
+
+    return _bound(_approx_fdiv(num, den), pick)
 
 
 class RemainderFwdKernel(BinaryKernel):
-    """Element-wise remainder: y = a - floor(a / b) * b.
+    """Element-wise remainder: y = a % b, with the sign of b.
 
-    Matches PyTorch remainder semantics for floating-point inputs.
-    Uses floor-based formula since T.FloorMod requires integer types.
-
-    Division and floor are computed in fp32 to avoid two sources of error:
-    (1) ``hfloor`` is not available for ``cutlass::half_t`` in CUDA, and
-    (2) fp16 division rounds the quotient before floor sees it (e.g.
-    2.999... rounds to 3.0 in fp16).  The floored quotient is then cast
-    back to native dtype so the final ``a - floored * b`` matches PyTorch
-    semantics for the multiply-subtract step.
+    torch's CUDA kernel takes ``fmod`` in fp32, which is exact, and adds b when the
+    result and b differ in sign: ``a - floor(a / b) * b`` rounded once. Here that is
+    one ``fma`` from the exact floored quotient; ``fmodf`` serves the rest.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
+    @property
+    def stage_broadcast(self) -> bool:
+        """The extern calls scalarise the copies, so keep them off their loop."""
+        return True
+
     @staticmethod
     def op_func(a, b):
-        a_f32 = T.cast(a, "float32")
-        b_f32 = T.cast(b, "float32")
-        floored = T.Cast(a.dtype, T.floor(a_f32 / b_f32))
-        return a - floored * b
+        zero = T.cast(0.0, "float32")
+
+        def body(num, den):
+            def fast(k, u):
+                r = T.call_extern("float32", "__fmaf_rn", -k, den, num)
+                # A zero remainder is fmod's, which keeps the dividend's sign.
+                return _bound(r, lambda r: tirx.Select(r == zero, T.copysign(zero, num), r))
+
+            def slow():
+                def signed(mod):
+                    flip = T.And(mod != zero, (den < zero) != (mod < zero))
+                    return tirx.Select(flip, mod + den, mod)
+
+                return _bound(T.fmod(num, den), signed)
+
+            return T.Cast(a.dtype, _floored_quotient(num, den, a.dtype, fast, slow))
+
+        return _bound(
+            T.Cast("float32", a),
+            lambda num: _bound(T.Cast("float32", b), lambda den: body(num, den)),
+        )
 
 
 class PowFwdKernel(BinaryKernel):
@@ -179,22 +241,80 @@ class PowFwdKernel(BinaryKernel):
         return T.Cast(a.dtype, T.if_then_else(expo == zero, one, out))
 
 
-class FloorDivideFwdKernel(BinaryKernel):
-    """Element-wise floor division: y = floor(a / b).
+# Below this quotient ``a - fmod(a, b)`` is a whole multiple of b exact in float32,
+# so torch's divide returns the whole quotient itself: its significand and b's fit
+# 24 bits together.
+_EXACT_MULTIPLE_QUOTIENT = {"float16": float(1 << 13), "bfloat16": float(1 << 16)}
+# The largest whole number below which every whole number is exact in the dtype.
+_EXACT_WHOLE = {"float16": float(1 << 11), "bfloat16": float(1 << 8)}
 
-    Division and floor are computed in fp32 to avoid two sources of error:
-    (1) ``hfloor`` is not available for ``cutlass::half_t`` in CUDA, and
-    (2) fp16 division rounds the quotient before floor sees it (e.g.
-    2.999... rounds to 3.0 in fp16, giving floor=3 instead of 2).
+
+def _floor_divide(num, den, dtype):
+    """torch's ``div_floor_floating`` on two float32 values, returning *dtype*.
+
+    torch divides ``a - fmod(a, b)``, a multiple of b, by b, floors the quotient into
+    *dtype* and rounds it up once where that dropped more than a half; a zero
+    quotient keeps the sign of ``a / b`` and a zero divisor returns ``a / b`` itself.
+    Where the multiple is exact the divide returns ``floor(a / b)``, and the dtype
+    rounding applies to that. Past it the result depends on how torch's divide
+    rounds, and it is computed as torch does.
+    """
+    zero = T.cast(0.0, "float32")
+    one = T.cast(1.0, "float32")
+    # The sign ``a / b`` gives a zero, without dividing.
+    signed_zero = T.copysign(zero, num) * T.copysign(one, den)
+
+    def rounded(div):
+        def bump(floored):
+            up = T.Cast("float32", T.Cast(dtype, floored + one))
+            return tirx.Select(div - floored > T.cast(0.5, "float32"), up, floored)
+
+        near = _bound(T.Cast("float32", T.Cast(dtype, T.floor(div))), bump)
+        return tirx.Select(div != zero, near, signed_zero)
+
+    def slow():
+        def from_mod(mod):
+            flip = T.And(mod != zero, (den < zero) != (mod < zero))
+            div = _ieee_fdiv(num - mod, den)
+            return _bound(tirx.Select(flip, div - one, div), rounded)
+
+        general = _bound(T.fmod(num, den), from_mod)
+        return T.if_then_else(den == zero, _ieee_fdiv(num, den), general)
+
+    exact_whole = T.cast(_EXACT_WHOLE.get(str(dtype), _FAST_QUOTIENT), "float32")
+
+    def whole(k, u):
+        # ``floor(a / b)`` has the sign of ``a / b``, which ``u`` carries, zero included.
+        exact = T.copysign(k, u)
+        # A quotient the dtype holds needs no rounding.
+        return T.if_then_else(T.abs(k) <= exact_whole, exact, rounded(k))
+
+    limit = _EXACT_MULTIPLE_QUOTIENT.get(str(dtype), _FAST_QUOTIENT)
+    return T.Cast(dtype, _floored_quotient(num, den, dtype, whole, slow, limit))
+
+
+class FloorDivideFwdKernel(BinaryKernel):
+    """Element-wise floor division: y = floor(a / b), as torch defines it.
+
+    Follows torch's CUDA kernel: ``(a - fmod(a, b)) / b`` in fp32, one less when the
+    remainder and b differ in sign, rounded to a whole number held in the input
+    dtype. ``floor(a / b)`` differs where ``a / b`` rounds up to a whole number
+    (``1.0 // 0.1`` is 9) and at an infinite b.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
+    @property
+    def stage_broadcast(self) -> bool:
+        """The extern calls scalarise the copies, so keep them off their loop."""
+        return True
+
     @staticmethod
     def op_func(a, b):
-        a_f32 = T.cast(a, "float32")
-        b_f32 = T.cast(b, "float32")
-        return T.Cast(a.dtype, T.floor(a_f32 / b_f32))
+        return _bound(
+            T.Cast("float32", a),
+            lambda num: _bound(T.Cast("float32", b), lambda den: _floor_divide(num, den, a.dtype)),
+        )
 
 
 class LerpFwdKernel(BinaryKernel):

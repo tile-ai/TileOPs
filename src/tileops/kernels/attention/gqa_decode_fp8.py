@@ -10,7 +10,7 @@ import torch
 from tileops.kernels.constants import LOG2E
 
 from ..kernel_base import Entry, Kernel
-from .call_spec import dense_fp8_decode_region
+from .call_spec import dense_fp8_decode_refusal
 from .dense_entry import dense_fp8_decode_entry
 from .gqa_decode_bs1_common import COMPILE_FLAGS
 from .gqa_fwd_fp8 import _validate_fa3_gqa_descales
@@ -279,7 +279,15 @@ class GQADenseFP8DecodeKernel(Kernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return dense_fp8_decode_region(call)
+        return cls._region_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call) -> Optional[str]:
+        return cls.arch_refusal(call) or cls._region_refusal(call)
+
+    @staticmethod
+    def _region_refusal(call) -> Optional[str]:
+        return dense_fp8_decode_refusal(call)
 
     @classmethod
     def entry_for(cls, call) -> Entry:
@@ -311,10 +319,6 @@ class GQADenseFP8DecodeKernel(Kernel):
         self.softcap = softcap
         if heads_kv <= 0 or heads % heads_kv != 0:
             raise ValueError("heads must be divisible by heads_kv")
-        if heads // heads_kv > 16:
-            raise ValueError("FP8 Dense decode supports at most 16 query heads per KV head")
-        if dim != 128:
-            raise ValueError("FP8 Dense decode requires dim == 128")
         self.init_config(config, tune)
         if heads // heads_kv > self.config["block_m"]:
             raise ValueError("block_m must cover every query head sharing one KV head")

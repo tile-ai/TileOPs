@@ -16,9 +16,9 @@ from tileops.utils import get_sm_version
 CONV_SWIZZLE_PANEL = 2
 
 
-def conv_num_stages() -> int:
+def conv_num_stages(device_index: Optional[int]) -> int:
     """Pipeline depth this target's shared memory holds: three on SM90, two before."""
-    return 3 if get_sm_version() == 90 else 2
+    return 3 if get_sm_version(device_index) == 90 else 2
 
 
 def conv_autotune_configs(

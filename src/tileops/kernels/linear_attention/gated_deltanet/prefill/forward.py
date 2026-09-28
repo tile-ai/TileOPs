@@ -4,7 +4,6 @@
 """Gated DeltaNet private fused forward stage."""
 
 import functools
-import os
 
 import tilelang
 import tilelang.language as T
@@ -13,7 +12,7 @@ import torch
 from tileops.kernels.constants import LOG2E
 from tileops.utils import get_sm_count
 
-from .common import _gemm_v1, prepare_chunk_offsets
+from .common import prepare_chunk_offsets
 
 
 @functools.lru_cache(maxsize=32)
@@ -202,7 +201,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_wait(bar_5, i_s % 2)
                     # S += K^T @ V'
-                    _gemm_v1(
+                    T.gemm(
                         k_shared[i_s % 2, :, :],
                         vn_shared,
                         h_fragment,
@@ -252,7 +251,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_wait(bar_1, i_s % 2)
                     # U = K @ S
-                    _gemm_v1(k_shared[i_s % 2, :, :], h_shared, u_fragment, clear_accum=True)
+                    T.gemm(k_shared[i_s % 2, :, :], h_shared, u_fragment, clear_accum=True)
 
                     # [STAGE 0] 2
                     # W = V - g * U
@@ -265,7 +264,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_wait(bar_3, i_s % 2)
                     # Vd = Ag @ W
-                    _gemm_v1(
+                    T.gemm(
                         a_shared[i_s % 2, :, :],
                         v_shared[i_s % 2, :, :],
                         v_fragment,
@@ -294,7 +293,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_wait(bar_0, i_s % 2)
                     # P = Q K^T
-                    _gemm_v1(
+                    T.gemm(
                         q_shared[i_s % 2, :, :],
                         k_shared[i_s % 2, :, :],
                         p_fragment,
@@ -323,7 +322,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_wait(bar_1, i_s % 2)
                     # O = Q @ S
-                    _gemm_v1(q_shared[i_s % 2, :, :], h_shared, o_fragment, clear_accum=True)
+                    T.gemm(q_shared[i_s % 2, :, :], h_shared, o_fragment, clear_accum=True)
 
                     # [STAGE 0] 3
                     # Pg = s * G * P
@@ -337,7 +336,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
 
                     T.barrier_wait(bar_4, i_s % 2)
                     # O += Pg @ Vd
-                    _gemm_v1(p_shared, vd_shared, o_fragment, clear_accum=False)
+                    T.gemm(p_shared, vd_shared, o_fragment, clear_accum=False)
                     T.barrier_arrive(bar_5)
 
                     T.barrier_wait(bar_5, i_s % 2)
@@ -606,17 +605,7 @@ def fused_gdr_fwd(
     # prefill benchmark to move it.
     sm_fill = 0.7
     target_num_ctas = int(get_sm_count(k.device.index) * sm_fill)
-    block_dv_override = os.environ.get(
-        "TILEOPS_GDN_PREFILL_BLOCK_DV",
-        os.environ.get("TILEOPS_GDN_PREFILL_CP_BLOCK_DV"),
-    )
-    if block_dv_override:
-        block_DV = int(block_dv_override)
-        if block_DV not in (8, 16, 32, 64, 128) or V % block_DV != 0:
-            raise ValueError(
-                "TILEOPS_GDN_PREFILL_BLOCK_DV must be one of 8, 16, 32, 64, 128 and divide DV"
-            )
-    elif V == 64 and not is_cp and chunks_per_sequence > 0:
+    if V == 64 and not is_cp and chunks_per_sequence > 0:
         block_DV = 8 if chunks_per_sequence <= 64 else 16
     elif grid_size >= target_num_ctas:
         block_DV = min(128, V)

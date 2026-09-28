@@ -97,15 +97,13 @@ class _SoftmaxBaseOp(Op):
         input as stored. Any other cast runs first, as in torch.
         """
         out_dtype = x.dtype if self.dtype is None else self.dtype
-        if x.ndim == 0 or x.numel() == 0 or out_dtype != torch.float32:
+        if x.ndim == 0 or out_dtype != torch.float32:
             x = x.to(out_dtype)
         axis = self._axis(x.ndim)
         if x.ndim == 0:
             # One element normalizes to probability one; NaN and inf propagate as in torch.
             shifted = x - x
             return shifted.exp() if self._op_kind == "softmax" else shifted
-        if x.numel() == 0:
-            return torch.empty_like(x)
         x = x.contiguous()
         call = SoftmaxCall(
             device=x.device,

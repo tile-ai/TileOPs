@@ -5,7 +5,7 @@ import dataclasses
 import pytest
 import torch
 
-import tileops.ops.moe.staged as staged_module
+import tileops.utils
 from tests.test_base import served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.grouped_gemm import GemmTemplate
@@ -261,11 +261,11 @@ def test_call_architecture_comes_from_the_input_device(monkeypatch: pytest.Monke
     device = torch.device("cuda", torch.cuda.current_device())
     observed_indices: list[int | None] = []
 
-    def fake_sm_version(index: int | None = None) -> int:
+    def fake_device_facts(index: int | None = None) -> tuple[int, str | None, int]:
         observed_indices.append(index)
-        return 90
+        return 90, None, 132
 
-    monkeypatch.setattr(staged_module, "get_sm_version", fake_sm_version)
+    monkeypatch.setattr(tileops.utils, "device_facts", fake_device_facts)
     op = MoeGroupedGemmFwdOp(_TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate})
     op(
         torch.empty(1, 4, dtype=torch.bfloat16, device=device),

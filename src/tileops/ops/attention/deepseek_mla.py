@@ -3,8 +3,8 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.attention import MLADecodeWsKernel
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.attention import MlaDecodeCall, MLADecodeWsKernel
+from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
 from ..op_base import Op
@@ -13,10 +13,7 @@ __all__ = ["MultiHeadLatentAttentionDecodeWithKVCacheFwdOp"]
 
 
 class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
-    """Multi-Head Latent Attention (MLA) decode against a per-request KV cache. Layout: BSHD.
-
-    The in-tree kernel serves a single KV head (``H_kv == 1``) and refuses others.
-    """
+    """Multi-Head Latent Attention (MLA) decode against a per-request KV cache. Layout: BSHD."""
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"mla_decode_kernel": MLADecodeWsKernel}
@@ -39,11 +36,6 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
         self.target = target
         self.tune = tune
         self.dispatch_kernel(kernel_map)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per ``(batch, heads, heads_kv, seqlen_kv, dim, pe_dim,
-        dtype)``."""
-        return call, lambda: self.kernel_map["mla_decode_kernel"](*call, tune=self.tune)
 
     def forward(
         self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor, k_pe: torch.Tensor
@@ -71,7 +63,17 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
         batch, heads, dim = q.shape
         _, seqlen_kv, heads_kv, _ = k.shape
         inputs = (q, q_pe, k, k_pe)
-        call = (batch, heads, heads_kv, seqlen_kv, dim, q_pe.shape[2], q.dtype)
+        call = MlaDecodeCall(
+            batch=batch,
+            heads=heads,
+            heads_kv=heads_kv,
+            seqlen_kv=seqlen_kv,
+            dim=dim,
+            pe_dim=q_pe.shape[2],
+            dtype=q.dtype,
+            device=q.device,
+            tune=self.tune,
+        )
         return self.kernel_for("mla_decode_kernel", inputs, call)(*inputs)
 
     def compute_roof(self) -> str:

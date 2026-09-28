@@ -1059,6 +1059,25 @@ def test_conv3d_no_bias_matches_torch() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls, conv, x_shape, w_shape",
+    [
+        pytest.param(Conv2dFwdOp, F.conv2d, (1, 16, 17, 20), (32, 16, 2, 3), id="conv2d"),
+        # Wide and large enough for the NDHWC path.
+        pytest.param(Conv3dFwdOp, F.conv3d, (1, 32, 8, 16, 16), (64, 32, 2, 3, 4), id="conv3d"),
+    ],
+)
+def test_same_padding_with_an_odd_total_matches_torch(op_cls, conv, x_shape, w_shape) -> None:
+    """torch puts the extra element of an odd ``'same'`` total after the axis."""
+    x = torch.randn(*x_shape, device=run_device(), dtype=torch.float16)
+    weight = torch.randn(*w_shape, device=run_device(), dtype=torch.float16)
+    bias = torch.randn(w_shape[0], device=run_device(), dtype=torch.float16)
+    out = op_cls(padding="same")(x, weight, bias)
+    ref = conv(x, weight, bias=bias, padding="same")
+    torch.testing.assert_close(out, ref, atol=2e-2, rtol=3e-3)
+
+
+@pytest.mark.smoke
 def test_conv3d_no_bias_grouped_matches_torch() -> None:
     groups = 4
     op = Conv3dFwdOp(

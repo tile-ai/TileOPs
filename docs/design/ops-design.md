@@ -42,7 +42,7 @@ The generated `_validate_dtypes` is the only dtype gate, and it runs on every `f
 
 **Each slot declares its candidates.** Why: an op can hold several slots, and an implementation of one must not answer another's call.
 
-**An implementation states the region it serves, positively.** Never by excluding a sibling, never by architecture — its declared support already answers that.
+**An implementation states the region it serves, positively.** Never by excluding a sibling, never by architecture — its declared support already answers that. The region is the implementation's alone: the signature holds only what the algorithm requires ([manifest.md § Refinements](manifest.md#refinements)), an implementation an op selects states its region in `applies`, a single implementation refuses in itself, and an op checks no implementation's limits itself.
 
 **Order decides nothing.** Selection takes the implementation that applies; the one declared general runs where no specialised one does. Nothing applicable is an error, and two specialised implementations claiming one call is an ambiguity error rather than a silent preference. A replacement the caller supplies answers the same question as the class it replaces, and replaces that implementation only; replacing a whole op is a target's job ([Target boundary](#target-boundary)).
 

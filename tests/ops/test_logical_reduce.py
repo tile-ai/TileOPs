@@ -423,6 +423,18 @@ def test_count_nonzero_1d(n: int, dtype: torch.dtype) -> None:
     assert torch.equal(y.view_as(ref), ref), "1D count_nonzero mismatch"
 
 
+@pytest.mark.smoke
+def test_count_nonzero_past_fp32_integer_range() -> None:
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
+
+    # 2^24 + 1 nonzeros: the first count fp32 cannot hold.
+    x = torch.zeros(1 << 25, dtype=torch.bool, device=run_device())
+    x[: 1 << 24] = True
+    x[-1] = True
+    y = CountNonzeroFwdOp(dim=None)(x)
+    assert torch.equal(y, torch.count_nonzero(x))
+
+
 @LogicalReduceDimFixture
 def test_count_nonzero_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp

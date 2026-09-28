@@ -116,7 +116,7 @@ EngramDecodeFwdOp:
       new_conv_state: {dtype: T, shape: "[batch, max_conv_len, d]"}
     shape_rules:
     - "conv_kernel_size > 0 and dilation > 0 and max_conv_len > 0 and max_conv_len >= dilation * (conv_kernel_size - 1)"
-    - "d > 0 and d % 256 == 0"
+    - "d > 0"
     - "L <= max_conv_len"
 
   workloads:

@@ -388,9 +388,32 @@ class GLAFwdKernel(Kernel):
         self.scale = scale if scale > 0 else dim_k**-0.5
         self.output_final_state = output_final_state
         self.dtype_name = str(dtype).split(".")[-1]
+        reason = self.region_refusal(dim_k, dim_v, chunk_size)
+        if reason:
+            raise ValueError(f"{type(self).__name__} does not serve this call: {reason}")
         self.init_config(config, tune)
         if not tune:
             self._build_kernels(self.config)
+
+    @staticmethod
+    def region_refusal(dim_k: int, dim_v: int, chunk_size: int) -> Optional[str]:
+        """Why the default tiling cannot build these extents, or ``None`` when it can.
+
+        Its three GEMMs run on two warps: the state update over
+        ``(dim_k / 2) x (dim_v / 4)`` and the two chunk outputs over
+        ``chunk_size x dim_v``. Each warp takes whole 16 x 8 tiles, so the chunk
+        either fills both warps' rows (a multiple of 32) or one warp's (16, the
+        warps then splitting the columns); the state update likewise needs
+        ``dim_k / 2`` a multiple of 32 or exactly 16.
+        """
+        if not (chunk_size == 16 or chunk_size % 32 == 0):
+            return f"chunk_size={chunk_size} must be 16 or a multiple of 32"
+        if not (dim_k % 64 == 0 and dim_v % 32 == 0 or dim_k == 32 and dim_v % 64 == 0):
+            return (
+                f"dim_k={dim_k}, dim_v={dim_v}: dim_k must be a multiple of 64 with dim_v a "
+                "multiple of 32, or 32 with dim_v a multiple of 64"
+            )
+        return None
 
     @property
     def default_config(self) -> dict:

@@ -14,10 +14,23 @@ import torch
 from tileops.kernels.gemm.dense import GemmTmaKernel
 from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.moe import SharedExpertMLPKernel
-from tileops.ops.moe import FusedMoeSharedExpertFwdOp
+from tileops.ops.moe import FusedMoeSharedExpertFwdOp, SharedExpertMLPFwdOp
 from tileops.ops.moe.fused_moe import FusedMoeFwdOp
 from tileops.utils import get_sm_version
 from workloads.device import run_device
+from workloads.moe import SharedExpertMLPWorkload, moe_call
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", ["bfloat16", "float16"])
+def test_the_shared_expert_matches_its_reference(dtype):
+    workload = SharedExpertMLPWorkload(
+        moe_call("SharedExpertMLPFwdOp", {"D": dtype}, T=32, H=256, S=128)
+    )
+    inputs = workload.gen_inputs()
+    torch.testing.assert_close(
+        SharedExpertMLPFwdOp()(*inputs), workload.ref_program(*inputs), rtol=1e-2, atol=1e-2
+    )
 
 
 @pytest.mark.in_tree_kernels
@@ -66,7 +79,7 @@ def test_fused_moe_shared_expert_basic(num_tokens):
     torch.testing.assert_close(shared_out, shared_ref, rtol=1e-2, atol=1e-2)
 
     if get_sm_version() == 90:
-        shared_kernel = next(iter(op.built_kernels("shared_expert_mlp").values()))
+        shared_kernel = next(iter(op._shared_expert.built_kernels("shared_expert_mlp").values()))
         assert isinstance(shared_kernel._gemm_gate_up, GemmTmaKernel)
         assert isinstance(shared_kernel._gemm_down, GemmTmaKernel)
         if T == 512:

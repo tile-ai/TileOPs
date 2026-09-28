@@ -36,6 +36,40 @@ class SparseMlaCall(CallSpec):
     cp0: bool = True
 
 
+def _shape_refusal(
+    dim: int, tail_dim: int, heads: int, kv_group: int, is_causal: bool
+) -> Optional[str]:
+    """Why neither implementation serves this shape, or ``None``."""
+    if not is_causal:
+        return "requires the causal mask"
+    pow2 = tilelang.math.next_power_of_2
+    if dim != pow2(dim) or tail_dim != pow2(tail_dim):
+        return "requires power-of-two dim and tail_dim"
+    group_heads = heads // kv_group
+    if group_heads > 64 and group_heads % 64 != 0:
+        return "requires at most 64 heads per KV group, or a multiple of 64"
+    if kv_group != 1 and max(pow2(group_heads), 16) != group_heads:
+        return "requires a power of two of at least 16 heads per KV group when kv_group > 1"
+    return None
+
+
+def _ws_gather_refusal(dim: int, tail_dim: int) -> Optional[str]:
+    """Why the warp-specialized KV gather cannot copy these widths, or ``None``."""
+    if dim % 128 != 0 or tail_dim != 64:
+        return "requires dim a multiple of 128 and tail_dim 64"
+    return None
+
+
+def _raise_on(reason: Optional[str]) -> None:
+    if reason is not None:
+        raise ValueError(reason)
+
+
+def _sparse_mla_refusal(call: SparseMlaCall) -> Optional[str]:
+    """Why *call* is outside the region both implementations serve, or ``None``."""
+    return _shape_refusal(call.dim, call.tail_dim, call.heads, call.kv_group, call.is_causal)
+
+
 def _sparse_mla_entry(cls: type, call: SparseMlaCall) -> Entry:
     """The entry for either implementation: the record is the identity, built on its device."""
     return call, lambda: cls(
@@ -114,12 +148,7 @@ def _sparse_mla_kernel(
 
 
     """
-    if dim != tilelang.math.next_power_of_2(dim):
-        raise ValueError(f"haven't check padding correctness yet, dim={dim}")
-    if tail_dim != tilelang.math.next_power_of_2(tail_dim):
-        raise ValueError(f"haven't check padding correctness yet, dim={tail_dim}")
-    if not is_causal:
-        raise ValueError("non-causal is not supported")
+    _raise_on(_shape_refusal(dim, tail_dim, heads, kv_group, is_causal))
     sm_scale = ((1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale) * LOG2E
 
     head_kv = heads // kv_group
@@ -160,15 +189,7 @@ def _sparse_mla_kernel(
         o_shape = (batch, seq_len, ori_heads, dim)
         indices_shape = (batch, seq_len, kv_group, topk)
 
-        heads = head_kv
         padded_h = max(tilelang.math.next_power_of_2(head_kv), 16)
-        if padded_h != heads and kv_group != 1:
-            raise ValueError(
-                "here we solve the heads padding automatically, "
-                "other wise you should handle q copy and output copy "
-                "with your mask (when kv_group == 1, use g_i * padded_h:(g_i+1) * "
-                "padded_h would be handled automatically)"
-            )
 
         if topk % block_i != 0:
             raise ValueError("otherwise will load some index=0 thus causing wrong kv to be loaded")
@@ -195,17 +216,9 @@ def _sparse_mla_kernel(
                 f"block_i={i_block} is not a multiple of the {producer_rows} rows one "
                 f"gather pass copies with threads={threads}"
             )
-        if d % 128 != 0:
-            raise ValueError(f"the KV gather walks dim in 128-column steps, dim={d}")
-        if d_tail != 64:
-            raise ValueError(f"the KV tail gather copies exactly 64 columns, tail_dim={d_tail}")
+        _raise_on(_ws_gather_refusal(d, d_tail))
 
-        if head_kv > 64:
-            if head_kv % 64 != 0:
-                raise ValueError("head_kv should be a multiple of 64")
-            replicate_h = head_kv // 64
-        else:
-            replicate_h = 1
+        replicate_h = head_kv // 64 if head_kv > 64 else 1
 
         h_per_block = padded_h if replicate_h == 1 else 64
 
@@ -613,12 +626,7 @@ def _sparse_mla_basic_kernel(
       buffering with mbarriers.
     - Per-row KV gather via ``T.copy`` with runtime row indices.
     """
-    if dim != tilelang.math.next_power_of_2(dim):
-        raise ValueError(f"haven't check padding correctness yet, dim={dim}")
-    if tail_dim != tilelang.math.next_power_of_2(tail_dim):
-        raise ValueError(f"haven't check padding correctness yet, dim={tail_dim}")
-    if not is_causal:
-        raise ValueError("non-causal is not supported")
+    _raise_on(_shape_refusal(dim, tail_dim, heads, kv_group, is_causal))
     sm_scale = ((1.0 / (dim + tail_dim)) ** 0.5 if sm_scale is None else sm_scale) * LOG2E
 
     head_kv = heads // kv_group
@@ -652,21 +660,9 @@ def _sparse_mla_basic_kernel(
         d_tail = tail_dim
         stride_kv = kv_stride
 
-        if head_kv > 64:
-            if head_kv % 64 != 0:
-                raise ValueError("head_kv should be a multiple of 64")
-            replicate_h = head_kv // 64
-        else:
-            replicate_h = 1
+        replicate_h = head_kv // 64 if head_kv > 64 else 1
 
         padded_h = max(tilelang.math.next_power_of_2(head_kv), 16)
-        if padded_h != head_kv and kv_group != 1:
-            raise ValueError(
-                "here we solve the heads padding automatically, "
-                "other wise you should handle q copy and output copy "
-                "with your mask (when kv_group == 1, use g_i * padded_h:(g_i+1) * "
-                "padded_h would be handled automatically)"
-            )
 
         h_per_block = padded_h if replicate_h == 1 else 64
 
@@ -865,6 +861,14 @@ class SparseMlaBasicKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
     general = True
+
+    @classmethod
+    def applies(cls, call: SparseMlaCall) -> bool:
+        return _sparse_mla_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: SparseMlaCall) -> Optional[str]:
+        return cls.arch_refusal(call) or _sparse_mla_refusal(call)
 
     @classmethod
     def entry_for(cls, call: SparseMlaCall) -> Entry:
@@ -1081,6 +1085,25 @@ class SparseMlaKernel(Kernel):
     """
 
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def applies(cls, call: SparseMlaCall) -> bool:
+        return cls._region_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: SparseMlaCall) -> Optional[str]:
+        return cls.arch_refusal(call) or cls._region_refusal(call)
+
+    @staticmethod
+    def _region_refusal(call: SparseMlaCall) -> Optional[str]:
+        """The shared region, narrowed to what the warp-specialized gather covers."""
+        reason = _sparse_mla_refusal(call) or _ws_gather_refusal(call.dim, call.tail_dim)
+        if reason is not None:
+            return reason
+        # The default block_i of 64, taken an even number of times.
+        if call.topk % 128 != 0:
+            return "requires topk a multiple of 128"
+        return None
 
     @classmethod
     def entry_for(cls, call: SparseMlaCall) -> Entry:

@@ -124,6 +124,7 @@ Each `shape_rules` item is a refinement: a predicate on index values, checked af
 - A refinement that reads only discriminants — every name and ADT field it reads is fixed by the discriminant values, judged over the whole expression regardless of operand order — is a **domain restriction**. It is checked before a type-family branch is chosen, and values it rejects need no type-family case.
 - Lists among construction parameters are available at run time and may appear anywhere. `forall` value lists appear only as generator arguments.
 - A scalar parameter whose admitted values depend on a dtype index states that dependence as a refinement with the primitives `category` and `representable`. The generated call check then holds in-tree and target-served calls to the same rule.
+- A refinement states what the operator's algorithm requires: a call outside it is undefined for every implementation. Which shapes an implementation serves is not a refinement; that implementation decides it ([ops-design.md § Kernel selection](ops-design.md#kernel-selection)).
 - Satisfiability of a refinement is the author's responsibility.
 - The validator rejects rules that declare, define or test presence: `x.shape == (...)`, `x is None`, `isinstance` ([table 12](#t-rejected)).
 
@@ -254,6 +255,7 @@ A call has two phases.
 - Available at construction: parameters, ADT fields, construction-time tensor presence, the indices unified from construction-time tensors' shapes and dtypes, and the `let`s these make evaluable. Available per call: call-time tensors, their presence and what unifies from them.
 - An obligation — an axis or spliced element non-negative, a refinement or invariant holding — is checked at construction when both what activates it (its tensor, type-family branch or guard) and its value are available there, otherwise in the call check.
 - **Call.** The checks generated from the signature wrap `forward`, in order: presence of call-time tensors, domain restrictions, type-family branches, inference and the remaining refinements, output-buffer preconditions, the implementation, and the output checks. Any failure raises and names the declaration.
+- A call in which every tensor it writes, each output and each written input, holds no elements runs no implementation, in-tree or target. Its new outputs take the checked shape and dtype on the call device; an `out` buffer or a written input is returned as passed. An empty input whose output holds elements runs as any other call.
 
 **Inference.** Indices are solved from the inputs by unification ([table 19](#t-unify)).
 

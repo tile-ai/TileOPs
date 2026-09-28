@@ -157,7 +157,7 @@ class GLABwdOp(Op):
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """One implementation, built per shape, dtype and device."""
-        batch, seq_len, heads, dim_k, dim_v, dtype, _device = call
+        batch, seq_len, heads, dim_k, dim_v, dtype, device_index = call
         return call, lambda: self.kernel_map["GLABwdKernel"](
             batch,
             seq_len,
@@ -168,6 +168,7 @@ class GLABwdOp(Op):
             scale=self.scale,
             dtype=dtype,
             tune=self.tune,
+            device_index=device_index,
         )
 
     def forward(

@@ -47,6 +47,7 @@ GroupedQueryAttentionDenseFwdOp:
     - "present(out_dtype) if T == 'float8_e4m3fn' else (not present(out_dtype) or out_dtype.value == T)"
     - "pos_encoding_mode == 'rope' or not present(rotary_dim)"
     - "not present(rotary_dim) or (rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D)"
+    - "not present(sm_scale) or -inf < sm_scale.value < inf"
   workloads:
   - {B: 32, S_q: 1, S_kv: 4096, H: 32, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-4k}
   - {B: 8, S_q: 1, S_kv: 32768, H: 32, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-32k}
@@ -106,6 +107,7 @@ GroupedQueryAttentionVarlenFwdOp:
     - "present(out_dtype) if T == 'float8_e4m3fn' else (not present(out_dtype) or out_dtype.value == T)"
     - "pos_encoding_mode == 'rope' or not present(rotary_dim)"
     - "not present(rotary_dim) or (rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D)"
+    - "not present(sm_scale) or -inf < sm_scale.value < inf"
   workloads:
   - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-uniform}
   - {T_q: 1024, T_kv: 3072, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 2)", kv_lens: [1024, 2048], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-q-lt-kv}
@@ -167,6 +169,7 @@ GroupedQueryAttentionPagedFwdOp:
     - "present(out_dtype) if T == 'float8_e4m3fn' else (not present(out_dtype) or out_dtype.value == T)"
     - "pos_encoding_mode == 'rope' or not present(rotary_dim)"
     - "not present(rotary_dim) or (rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D)"
+    - "not present(sm_scale) or -inf < sm_scale.value < inf"
   workloads:
   - {T_q: 4096, NP: 576, PS: 64, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4096, 8)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b}
   - {T_q: 32, NP: 64, PS: 64, W: 64, H: 32, H_kv: 8, D: 128, q_lens: "repeat(1, 32)", cache_lens: "repeat(4096, 32)", dtype_cases: [{T: float16, KV: float16}], label: llama-8b-p64}
@@ -211,8 +214,9 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
       k_scale: {dtype: float32, shape: "[1]"}
       v_scale: {dtype: float32, shape: "[1]"}
       cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)", requires: ["prefix_offsets(T_q)", "max_segment(max_seqlen_q)"]}
-      # Each request's cache length before the append.
-      cache_seqlens: {dtype: int32, shape: "[B]", values: "as_tensor(cache_lens)", requires: ["in_range(0, W * page_size + 1)", "attn.paged_fits(cu_seqlens_q, W * page_size)"]}
+      # Each request's cache length before the append. Fused RoPE indexes its table by
+      # the appended positions, so they also stay below max_position.
+      cache_seqlens: {dtype: int32, shape: "[B]", values: "as_tensor(cache_lens)", requires: ["in_range(0, W * page_size + 1)", "attn.paged_fits(cu_seqlens_q, W * page_size)", "attn.paged_fits(cu_seqlens_q, max_position.value if fuse_rope and present(max_position) else W * page_size)"]}
       block_table: {dtype: int32, shape: "[B, W]", values: "paged_block_table(B, W, NP)", requires: ["in_range(0, NP)"]}
     outputs:
       o: {dtype: T, shape: "[T_q, H, D]"}
@@ -226,6 +230,8 @@ GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp:
     - "not present(rotary_dim) or fuse_rope"
     - "not present(rotary_dim) or (rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D)"
     - "not fuse_rope or (present(max_position) and max_position.value > 0)"
+    - "not present(sm_scale) or -inf < sm_scale.value < inf"
+    - "not fuse_rope or rope_base > 0"
   workloads:
   - {T_q: 8192, PT: 270336, W: 528, H: 32, H_kv: 8, D: 256, q_lens: "repeat(1024, 8)", cache_lens: "repeat(32768, 8)", page_size: 64, max_seqlen_q: 1024, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtype_cases: [{T: float16}], label: qwen35-9b-rope}
   - {T_q: 4608, PT: 270336, W: 528, H: 32, H_kv: 8, D: 256, q_lens: [256, 512, 768, 1024, 384, 640, 896, 128], cache_lens: [4096, 8192, 16384, 32768, 12288, 24576, 30720, 2048], page_size: 64, max_seqlen_q: 1024, is_causal: true, fuse_rope: true, max_position: 33792, rotary_dim: 64, dtype_cases: [{T: float16}], label: qwen35-9b-mixed}
@@ -360,6 +366,7 @@ DeepSeekSparseAttentionDecodeWithKVCacheFwdOp:
     - "dim_tail >= 0 and stride_kv > 0"
     # The kernel's first stride_kv - 1 outputs are undefined when queries start at 0.
     - "q_start_index_s > stride_kv or (q_start_index_s == 0 and stride_kv == 1)"
+    - "not present(sm_scale) or -inf < sm_scale.value < inf"
   workloads:
   - {B: 1, S: 1024, S_kv: 2048, H: 128, H_kv: 1, D: 512, K: 2048, dim_tail: 64, stride_kv: 1, q_start_index_s: 1024, dtype_cases: [{T: float16}], label: ds-v32-kv2k}
   - {B: 1, S: 512, S_kv: 4096, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 64, stride_kv: 1, q_start_index_s: 512, dtype_cases: [{T: float16}], label: ds-v32-kv4k}
@@ -496,6 +503,7 @@ MultiHeadLatentAttentionPagedFwdOp:
     - "S_q > 0 and PS > 0"
     - "0 < kv_lora_rank < DK"
     - "(KV == 'float8_e4m3fn') == present(kv_scale)"
+    - "not present(sm_scale) or -inf < sm_scale.value < inf"
   workloads:
   - {S_q: 1, H: 128, DK: 576, NP: 4096, PS: 64, W: 64, kv_lora_rank: 512, cache_lens: "repeat(4096, 64)", dtype_cases: [{T: bfloat16, KV: bfloat16}, {T: float16, KV: float16}], label: ds-v3-4k}
   - {S_q: 1, H: 128, DK: 576, NP: 32768, PS: 64, W: 512, kv_lora_rank: 512, cache_lens: "repeat(32768, 64)", dtype_cases: [{T: bfloat16, KV: bfloat16}], label: ds-v3-32k}
@@ -527,6 +535,7 @@ MultiHeadLatentAttentionVarlenFwdOp:
       lse: {dtype: float32, shape: "[T_q, H]"}
     shape_rules:
     - "DN + PE > 0"
+    - "not present(sm_scale) or -inf < sm_scale.value < inf"
   workloads:
   - {T_q: 32768, H: 128, DN: 128, PE: 64, DV: 128, seq_lens: "repeat(4096, 8)", dtype_cases: [{T: bfloat16}, {T: float16}], label: ds-v3-8x4k}
   - {T_q: 32256, H: 128, DN: 128, PE: 64, DV: 128, seq_lens: [512, 1024, 2048, 4096, 8192, 16384], dtype_cases: [{T: bfloat16}], label: ds-v3-mixed}
@@ -659,6 +668,7 @@ DeepSeekSparseAttentionPagedFwdOp:
       lse: {dtype: float32, shape: "[B, S_q, H]"}
     shape_rules:
     - "S_q > 0 and PS > 0"
+    - "not present(sm_scale) or -inf < sm_scale.value < inf"
   workloads:
   - {S_q: 1, H: 128, K: 2048, NP: 32768, PS: 64, W: 512, cache_lens: "repeat(32768, 64)", label: ds-v32-32k}
   - {S_q: 2, H: 128, K: 2048, NP: 32768, PS: 64, W: 2048, cache_lens: "repeat(131072, 16)", label: ds-v32-mtp-128k}

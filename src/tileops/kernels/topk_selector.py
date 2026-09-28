@@ -58,6 +58,10 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                 s_histogram = T.alloc_shared([RADIX + 1], T.int32)
                 s_num_input = T.alloc_shared([2], T.int32)
                 s_input_idx = T.alloc_shared([2, SMEM_INPUT_SIZE], T.int32)
+                # The stage-1 threshold bucket, and the key bytes the refining rounds
+                # have settled. Held in shared memory: a register each would cost the
+                # block its second residency on an SM.
+                s_refine = T.alloc_shared([2], T.uint32)
 
                 l_threshold_bin_id = T.alloc_var(T.int32)
                 l_new_topk = T.alloc_var(T.int32)
@@ -70,6 +74,9 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                 l_out_pos = T.alloc_var(T.int32)
                 l_pos = T.alloc_var(T.int32)
                 l_score = T.alloc_var(T.float32)
+                l_key = T.alloc_var(T.uint32)
+                l_cand = T.alloc_var(T.int32)
+                l_span = T.alloc_var(T.int32)
 
                 l_new_topk = topk
                 l_start_idx = starts[bx, seq_row]
@@ -154,6 +161,10 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                             if l_pos < SMEM_INPUT_SIZE:
                                 s_input_idx[0, l_pos] = input_idx
 
+                if tx == 0:
+                    s_refine[0] = T.Cast(T.uint32, l_threshold_bin_id)
+                    s_refine[1] = T.Cast(T.uint32, 0)
+
                 # stage 2: tail pass
                 for round in T.serial(4):
                     if l_new_topk <= 0:
@@ -161,6 +172,7 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
 
                     r_idx = round % 2
                     l_start_pos = topk - l_new_topk
+                    shift = 24 - round * 8
 
                     T.sync_threads()
                     for j in T.serial(T.ceildiv(RADIX + 1, BLOCK_SIZE)):
@@ -168,24 +180,49 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                         if histogram_idx < RADIX + 1:
                             s_histogram[histogram_idx] = 0
                     if tx == 0:
+                        if round > 0:
+                            s_refine[1] = s_refine[1] | (
+                                T.Cast(T.uint32, s_threshold_bin_id[0]) << (shift + 8)
+                            )
                         s_num_input[r_idx ^ 1] = 0
                         s_threshold_bin_id[0] = -1
                     T.sync_threads()
 
+                    # More candidates than the staging buffer holds: the round reads the
+                    # window again instead, taking the keys whose bytes match every
+                    # threshold settled so far, and stages the next round's in case they
+                    # fit. A staged round's count never exceeds the buffer.
+                    rescan = s_num_input[r_idx] > SMEM_INPUT_SIZE
+                    mask = T.if_then_else(
+                        round == 0,
+                        T.Cast(T.uint32, 0),
+                        T.Cast(T.uint32, 0xFFFFFFFF) << (shift + 8),
+                    )
                     l_num_input = T.min(s_num_input[r_idx], SMEM_INPUT_SIZE)
-                    for s in T.serial(T.ceildiv(l_num_input, BLOCK_SIZE)):
-                        if s * BLOCK_SIZE + tx < l_num_input:
-                            l_score = index_score[
-                                bx,
-                                seq_row,
-                                s_input_idx[r_idx, s * BLOCK_SIZE + tx],
-                                g,
-                            ]
-                            l_bin_id32 = T.Cast(
-                                T.int32,
-                                ((convert_to_uint32(l_score) >> (24 - round * 8)) & 0xFF),
+                    l_span = T.if_then_else(rescan, seq_len_kv, l_num_input)
+                    for s in T.serial(T.ceildiv(l_span, BLOCK_SIZE)):
+                        slot = s * BLOCK_SIZE + tx
+                        # A rescan's slot is a window position; otherwise a staged entry.
+                        if T.if_then_else(
+                            rescan,
+                            slot < l_end_idx and slot >= l_start_idx and slot < seq_len_kv,
+                            slot < l_num_input,
+                        ):
+                            l_cand = T.if_then_else(
+                                rescan,
+                                slot,
+                                s_input_idx[r_idx, T.min(slot, SMEM_INPUT_SIZE - 1)],
                             )
-                            T.atomic_add(s_histogram[l_bin_id32], 1)
+                            l_score = index_score[bx, seq_row, l_cand, g]
+                            l_key = convert_to_uint32(l_score)
+                            # A rescan reads keys outside the stage-1 bucket and the
+                            # settled bytes; a staged key is always inside them.
+                            if not rescan or (
+                                T.Cast(T.uint32, convert_to_uint16(l_score)) == s_refine[0]
+                                and (l_key & mask) == s_refine[1]
+                            ):
+                                l_bin_id32 = T.Cast(T.int32, ((l_key >> shift) & 0xFF))
+                                T.atomic_add(s_histogram[l_bin_id32], 1)
                     T.sync_threads()
                     # cumsum
                     if tx < RADIX:
@@ -208,46 +245,52 @@ def _topk_selector_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, 
                     l_new_topk = l_new_topk - s_histogram[l_threshold_bin_id + 1]
                     T.sync_threads()
 
-                    for s in T.serial(T.ceildiv(l_num_input, BLOCK_SIZE)):
-                        if s * BLOCK_SIZE + tx < l_num_input:
-                            l_score = index_score[
-                                bx,
-                                seq_row,
-                                s_input_idx[r_idx, s * BLOCK_SIZE + tx],
-                                g,
-                            ]
-                            l_bin_id32 = T.Cast(
-                                T.int32,
-                                ((convert_to_uint32(l_score) >> (24 - round * 8)) & 0xFF),
+                    for s in T.serial(T.ceildiv(l_span, BLOCK_SIZE)):
+                        slot = s * BLOCK_SIZE + tx
+                        # A rescan's slot is a window position; otherwise a staged entry.
+                        if T.if_then_else(
+                            rescan,
+                            slot < l_end_idx and slot >= l_start_idx and slot < seq_len_kv,
+                            slot < l_num_input,
+                        ):
+                            l_cand = T.if_then_else(
+                                rescan,
+                                slot,
+                                s_input_idx[r_idx, T.min(slot, SMEM_INPUT_SIZE - 1)],
                             )
-                            if l_bin_id32 > l_threshold_bin_id:
-                                l_pos = (
-                                    T.atomic_add(s_histogram[l_bin_id32 + 1], 1, return_prev=True)
-                                    + l_start_pos
-                                )
-                                index[bx, seq_row, g, l_pos] = s_input_idx[
-                                    r_idx, s * BLOCK_SIZE + tx
-                                ]
-                            elif l_bin_id32 == l_threshold_bin_id and l_new_topk > 0:
-                                if round == 3:
-                                    l_out_pos = (
+                            l_score = index_score[bx, seq_row, l_cand, g]
+                            l_key = convert_to_uint32(l_score)
+                            # A rescan reads keys outside the stage-1 bucket and the
+                            # settled bytes; a staged key is always inside them.
+                            if not rescan or (
+                                T.Cast(T.uint32, convert_to_uint16(l_score)) == s_refine[0]
+                                and (l_key & mask) == s_refine[1]
+                            ):
+                                l_bin_id32 = T.Cast(T.int32, ((l_key >> shift) & 0xFF))
+                                if l_bin_id32 > l_threshold_bin_id:
+                                    l_pos = (
                                         T.atomic_add(
                                             s_histogram[l_bin_id32 + 1], 1, return_prev=True
                                         )
                                         + l_start_pos
                                     )
-                                    if l_out_pos < topk:
-                                        index[bx, seq_row, g, l_out_pos] = s_input_idx[
-                                            r_idx, s * BLOCK_SIZE + tx
-                                        ]
-                                else:
-                                    l_pos = T.atomic_add(
-                                        s_num_input[r_idx ^ 1], 1, return_prev=True
-                                    )
-                                    if l_pos < SMEM_INPUT_SIZE:
-                                        s_input_idx[r_idx ^ 1, l_pos] = s_input_idx[
-                                            r_idx, s * BLOCK_SIZE + tx
-                                        ]
+                                    index[bx, seq_row, g, l_pos] = l_cand
+                                elif l_bin_id32 == l_threshold_bin_id and l_new_topk > 0:
+                                    if round == 3:
+                                        l_out_pos = (
+                                            T.atomic_add(
+                                                s_histogram[l_bin_id32 + 1], 1, return_prev=True
+                                            )
+                                            + l_start_pos
+                                        )
+                                        if l_out_pos < topk:
+                                            index[bx, seq_row, g, l_out_pos] = l_cand
+                                    else:
+                                        l_pos = T.atomic_add(
+                                            s_num_input[r_idx ^ 1], 1, return_prev=True
+                                        )
+                                        if l_pos < SMEM_INPUT_SIZE:
+                                            s_input_idx[r_idx ^ 1, l_pos] = l_cand
 
         return _topk_selector_kernel_main
 

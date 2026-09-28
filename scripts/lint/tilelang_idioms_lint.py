@@ -20,6 +20,10 @@ Each rule below is a form the compiler accepts, so nothing downstream reports it
   annotations classify enclosing bindings.
 - A file-level lint suppression (``# ruff: noqa``, ``# flake8: noqa``). It hides
   every future finding in the file, not the one being waived.
+- An environment read (``os.environ``, ``os.getenv``, or either imported from ``os``) in
+  ``src/tileops/``, ``workloads/`` or ``benchmarks/``, and ``monkeypatch.setenv`` in
+  ``tests/`` or ``benchmarks/``. That code takes arguments; a value read from the
+  environment reaches no cache key and no caller can see it.
 
 Usage: ``tilelang_idioms_lint.py [FILE ...]``. With no arguments, scans the
 source trees that carry TileLang code (``src/tileops/``, ``tests/``,
@@ -46,6 +50,15 @@ _NARROW_FLOAT = re.compile(r"^(float16|bfloat16|float8[a-z0-9_]*)$")
 # Where the dtype sits: `T.reinterpret(value, dtype)` and `T.cast(value, dtype)`
 # take it second, `T.Cast(dtype, value)` first. The value takes the other slot.
 _DTYPE_POS = {"reinterpret": 1, "cast": 1, "Cast": 0}
+
+# Trees configured by their arguments, and the trees whose tests set arguments.
+_NO_ENV_READ_TREES = (("src", "tileops"), ("workloads",), ("benchmarks",))
+_NO_SETENV_TREES = (("tests",), ("benchmarks",))
+_ENV_READ = (
+    "reads the environment — code here is configured by its arguments; "
+    "the environment is invisible to cache keys and callers"
+)
+_SETENV = "monkeypatch.setenv configures code through the environment — pass the argument instead"
 
 _FILE_LEVEL_NOQA = re.compile(r"^#\s*(ruff|flake8)\s*:\s*noqa")
 _DTYPE_NAME = re.compile(r"^(u?int[0-9]+|b?float[0-9]+|float8[a-z0-9_]*|bool|handle)$")
@@ -352,6 +365,43 @@ def _nonscalar_closures(path: Path, text: str, tree: ast.Module) -> list[str]:
     return sorted(out)
 
 
+def _in_trees(path: Path, trees: tuple[tuple[str, ...], ...]) -> bool:
+    """Whether *path*, read relative to the repository, sits under one of *trees*."""
+    try:
+        parts = path.resolve().relative_to(REPO_ROOT).parts
+    except ValueError:
+        parts = path.parts
+    return any(parts[: len(tree)] == tree for tree in trees)
+
+
+def _environment_uses(path: Path, tree: ast.Module) -> list[str]:
+    """Environment reads, and ``monkeypatch.setenv`` calls, in the trees that refuse them."""
+    reads = _in_trees(path, _NO_ENV_READ_TREES)
+    setenv = _in_trees(path, _NO_SETENV_TREES)
+    # Every name this file binds to the `os` module, so an alias reads as `os` does.
+    modules = {"os"} | {
+        a.asname
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for a in node.names
+        if a.name == "os" and a.asname
+    }
+    env_paths = {f"{m}.{attr}" for m in modules for attr in ("environ", "getenv")}
+    out = []
+    for node in ast.walk(tree):
+        if reads and isinstance(node, ast.ImportFrom) and node.module == "os":
+            if any(a.name in ("environ", "getenv") for a in node.names):
+                out.append(f"{path}:{node.lineno}: {_ENV_READ}")
+        elif reads and isinstance(node, ast.Attribute):
+            if _attr_path(node) in env_paths:
+                out.append(f"{path}:{node.lineno}: {_ENV_READ}")
+        elif (
+            setenv and isinstance(node, ast.Call) and _attr_path(node.func) == "monkeypatch.setenv"
+        ):
+            out.append(f"{path}:{node.lineno}: {_SETENV}")
+    return out
+
+
 def check(path: Path) -> list[str]:
     """Violations in one file, each rendered as ``path:line: message``."""
     raw = path.read_bytes()
@@ -373,6 +423,7 @@ def check(path: Path) -> list[str]:
         return out  # check-ast reports it; nothing here to add
 
     out += _nonscalar_closures(path, text, tree)
+    out += _environment_uses(path, tree)
 
     aliases, bare = _tilelang_names(tree)
 

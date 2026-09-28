@@ -3,7 +3,7 @@
 Two execution paths selected at forward() time:
 
 Large batch (default, numel >= 1024 OR num_experts > 64):
-  K1 (1 block, 1024 threads) — count → warp-scan prefix-sum →
+  K1 (1 block, 1024 threads) — count → warp-scan prefix-sum, 1024 experts at a time →
       expert_ids fill (linear, no binary search) → sentinel fill → write cumsum
   K2 (N blocks, 256 threads) — scatter via global atomicAdd on cumsum buffer
       N = min(ceil(numel/256), 65535)
@@ -61,13 +61,15 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
             with T.Kernel(1, threads=threads) as (_,):
                 tx = T.get_thread_binding()
                 num_warps = threads // 32
+                num_chunks = T.ceildiv(num_experts, threads)
 
                 s_counts = T.alloc_shared([num_experts], "int32")
                 s_vals = T.alloc_shared([threads], "int32")
                 s_warp_sum = T.alloc_shared([num_warps], "int32")
                 s_warp_excl = T.alloc_shared([num_warps], "int32")
-                # s_total only feeds the inter-warp scan; the total comes from s_vals.
+                # A chunk's padded total, and the totals of the chunks before it.
                 s_total = T.alloc_shared([1], "int32")
+                s_carry = T.alloc_shared([1], "int32")
                 s_cumsum = T.alloc_shared([num_experts + 1], "int32")
 
                 for i in T.serial(T.ceildiv(num_experts, threads)):
@@ -85,60 +87,69 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
                 lane = tx % 32
                 warp_id = tx // 32
 
-                s_vals[tx] = (
-                    T.ceildiv(s_counts[tx], block_size) * block_size
-                    if tx < num_experts
-                    else T.int32(0)
-                )
-                T.sync_threads()
+                # One thread scans one expert, so the experts are scanned `threads` at a
+                # time; `s_carry` holds the padded total of the chunks before.
+                if tx == 0:
+                    s_carry[0] = T.int32(0)
+                for c in T.serial(num_chunks):
+                    expert = c * threads + tx
+                    own_padded = T.if_then_else(
+                        expert < num_experts,
+                        T.ceildiv(s_counts[expert], block_size) * block_size,
+                        T.int32(0),
+                    )
+                    s_vals[tx] = own_padded
+                    T.sync_threads()
 
-                # log2(32) rounds, each doubling the scan distance.
-                for d in T.serial(5):
-                    stride = 1 << d
-                    up_val = T.tvm_warp_shuffle_up(T.uint32(0xFFFFFFFF), s_vals[tx], stride, 32, 32)
-                    if lane >= stride:
-                        s_vals[tx] = s_vals[tx] + up_val
-                T.sync_threads()
+                    # log2(32) rounds, each doubling the scan distance.
+                    for d in T.serial(5):
+                        stride = 1 << d
+                        up_val = T.tvm_warp_shuffle_up(
+                            T.uint32(0xFFFFFFFF), s_vals[tx], stride, 32, 32
+                        )
+                        if lane >= stride:
+                            s_vals[tx] = s_vals[tx] + up_val
+                    T.sync_threads()
 
-                if lane == 31:
-                    s_warp_sum[warp_id] = s_vals[tx]
-                T.sync_threads()
+                    if lane == 31:
+                        s_warp_sum[warp_id] = s_vals[tx]
+                    T.sync_threads()
 
-                # Nesting is deliberate: the loop stays outside the tx == 0 guard.
-                for w in T.serial(num_warps):
+                    # Nesting is deliberate: the loop stays outside the tx == 0 guard.
+                    for w in T.serial(num_warps):
+                        if tx == 0:
+                            if w == 0:
+                                s_total[0] = T.int32(0)
+                            s_warp_excl[w] = s_total[0]
+                            s_total[0] = s_total[0] + s_warp_sum[w]
+                    T.sync_threads()
+
+                    excl = s_vals[tx] - own_padded + s_warp_excl[warp_id] + s_carry[0]
+                    if expert < num_experts:
+                        s_cumsum[expert] = excl
+                        cumsum[expert] = excl
+                    T.sync_threads()
                     if tx == 0:
-                        if w == 0:
-                            s_total[0] = T.int32(0)
-                        s_warp_excl[w] = s_total[0]
-                        s_total[0] = s_total[0] + s_warp_sum[w]
-                T.sync_threads()
+                        s_carry[0] = s_carry[0] + s_total[0]
+                    T.sync_threads()
 
-                own_padded = (
-                    T.ceildiv(s_counts[tx], block_size) * block_size
-                    if tx < num_experts
-                    else T.int32(0)
-                )
-                excl = s_vals[tx] - own_padded + s_warp_excl[warp_id]
-
-                if tx < num_experts:
-                    s_cumsum[tx] = excl
-                    cumsum[tx] = excl
-                if tx == num_experts - 1:
-                    total = s_vals[tx] + s_warp_excl[warp_id]
-                    s_cumsum[num_experts] = total
-                    cumsum[num_experts] = total
-                    num_tokens_post_pad[0] = total
+                if tx == 0:
+                    s_cumsum[num_experts] = s_carry[0]
+                    cumsum[num_experts] = s_carry[0]
+                    num_tokens_post_pad[0] = s_carry[0]
                 T.sync_threads()
 
                 # The bound covers all tokens on one expert; the guard picks the
                 # blocks this thread owns.
-                if tx < num_experts:
-                    e_start = s_cumsum[tx] // block_size
-                    e_end = s_cumsum[tx + 1] // block_size
-                    for b in T.serial(max_num_blocks):
-                        blk = e_start + b
-                        if blk < e_end:
-                            expert_ids[blk] = tx
+                for c in T.serial(num_chunks):
+                    expert = c * threads + tx
+                    if expert < num_experts:
+                        e_start = s_cumsum[expert] // block_size
+                        e_end = s_cumsum[expert + 1] // block_size
+                        for b in T.serial(max_num_blocks):
+                            blk = e_start + b
+                            if blk < e_end:
+                                expert_ids[blk] = expert
 
                 for i in T.serial(T.ceildiv(max_padded, threads)):
                     idx = i * threads + tx

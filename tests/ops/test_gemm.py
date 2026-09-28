@@ -717,13 +717,7 @@ def test_gemm_fp8_block128_default_config(
     assert (kernel.config["block_n"], kernel.config["num_stages"]) == expected
 
 
-def _skip_off_1d2d_arch() -> None:
-    from tileops.utils import get_sm_version
-
-    if get_sm_version() not in GemmFp81D2DFwdKernel.supported_archs:
-        pytest.skip("the 1D2D kernel does not run on this architecture")
-
-
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
@@ -741,7 +735,6 @@ def test_gemm_fp8_block_scale_selection(
     m: int, scale_b_rows: int, bias: bool, out_dtype: torch.dtype, expected: str
 ) -> None:
     """The 1D2D kernel serves its region; the general block kernel serves the rest."""
-    _skip_off_1d2d_arch()
     n, k = 256, 512
     call = GemmCall(
         m=m,
@@ -757,11 +750,11 @@ def test_gemm_fp8_block_scale_selection(
     assert GemmFp8FwdOp(out_dtype=out_dtype).select_kernel(call).__name__ == expected
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
     """The shared-memory epilogue publishes the whole tile."""
-    _skip_off_1d2d_arch()
     test = GemmFp8Test(128, 256, 512, torch.float8_e4m3fn, "block128x128")
     kernel = GemmFp81D2DFwdKernel(
         128, 256, 512, torch.float8_e4m3fn, torch.bfloat16, shared_epilogue=True
@@ -770,11 +763,11 @@ def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
     torch.testing.assert_close(kernel(*inputs), test.ref_program(*inputs), atol=2e-2, rtol=2e-2)
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_fp8_1d2d_refuses_a_block_n_that_splits_a_scale_block() -> None:
     """A ``block_n`` that does not divide 128 would leave STSM columns unwritten."""
-    _skip_off_1d2d_arch()
     kernel = GemmFp81D2DFwdKernel(
         128,
         256,
@@ -807,6 +800,7 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
     test.check(op, *test.gen_inputs(), **tolerances)
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_lhs_rows_band_dispatch() -> None:
@@ -818,11 +812,6 @@ def test_lhs_rows_band_dispatch() -> None:
     enough for the operand-swapped grid. Selection only — no kernel is built, so this
     stays smoke-fast.
     """
-    from tileops.utils import get_sm_version
-
-    if get_sm_version() not in (GemvKernel.supported_archs or []):
-        pytest.skip("the bandwidth-bound band is SM90-only")
-
     nt = GemmFwdOp(trans_a=False, trans_b=True)
     fp = torch.float16
     two_rows = nt._call_spec(2, 2112, 7168, fp)
@@ -837,6 +826,7 @@ def test_lhs_rows_band_dispatch() -> None:
     assert nn.select_kernel(nn._call_spec(2, 2112, 7168, fp)) is GemmTmaKernel
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemv_bands_build_their_own_body_and_config() -> None:
@@ -846,10 +836,7 @@ def test_gemv_bands_build_their_own_body_and_config() -> None:
     this asserts: how many rows the body contracts, which config rule picks its
     parameters, and that two bands never share a cache entry.
     """
-    from tileops.utils import get_sm_count, get_sm_version
-
-    if get_sm_version() not in (GemvKernel.supported_archs or []):
-        pytest.skip("the bandwidth-bound band is SM90-only")
+    from tileops.utils import get_sm_count
 
     fp = torch.float16
     nt = GemmFwdOp(trans_a=False, trans_b=True)
@@ -879,6 +866,7 @@ def test_gemv_bands_build_their_own_body_and_config() -> None:
         GemvKernel("m2", 2, 2112, 7168, fp)
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_explicit_structure_config_is_taken_verbatim() -> None:
@@ -889,11 +877,6 @@ def test_explicit_structure_config_is_taken_verbatim() -> None:
     values — asking for ``coop2s`` on a shape the selector serves with ``coop2``
     yielded ``coop2`` at ``coop2s``' ``block_n``, which no measurement covers.
     """
-    from tileops.utils import get_sm_version
-
-    if get_sm_version() != 90:
-        pytest.skip("the GEMM structures are SM90-only")
-
     assert GemmTmaKernel(1536, 2112, 256, torch.bfloat16, trans_b=True).config["block_n"] == 192
 
     requested = {"coop2s": True, "block_n": 64, "block_k": 128, "num_stages": 4}
@@ -905,6 +888,7 @@ def test_explicit_structure_config_is_taken_verbatim() -> None:
     assert "block_m" in merged and "panel_size" in merged
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_routes_tma_misaligned_shapes_to_the_pipelined_mainloop() -> None:
@@ -919,11 +903,6 @@ def test_gemm_routes_tma_misaligned_shapes_to_the_pipelined_mainloop() -> None:
 
     Routing only — the aligned shapes already run end to end in ``GemmFixture``.
     """
-    from tileops.utils import get_sm_version
-
-    if get_sm_version() != 90:
-        pytest.skip("the TMA alignment region is SM90-specific")
-
     nt, nn = GemmFwdOp(trans_a=False, trans_b=True), GemmFwdOp(trans_a=False, trans_b=False)
     fp = torch.bfloat16
 
@@ -983,6 +962,7 @@ def test_b_tile_eviction_hint_follows_the_m_tile_count() -> None:
     assert _b_eviction(4096, 128) is None
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_structure_routing_matches_test_ids() -> None:
@@ -997,11 +977,6 @@ def test_structure_routing_matches_test_ids() -> None:
 
     Routing only — construction builds no JIT, so this stays smoke-fast.
     """
-    from tileops.utils import get_sm_version
-
-    if get_sm_version() != 90:
-        pytest.skip("structure routing is SM90-specific")
-
     expected = [
         ("smoke-fp16-square", 1024, 1024, 1024, torch.float16, False, "coop2s"),
         ("smoke-bf16-square", 1024, 1024, 1024, torch.bfloat16, False, "coop2s"),

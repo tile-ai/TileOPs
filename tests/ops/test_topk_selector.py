@@ -89,3 +89,17 @@ def test_topk_selector_returns_a_short_window_whole(width: int) -> None:
     out = TopkSelectorFwdOp(topk=topk)(scores, starts, ends)
     expected = list(range(7, 7 + width)) + [seq_len_kv] * (topk - width)
     assert (out.sort(dim=-1).values == torch.tensor(expected, device=run_device())).all()
+
+
+@pytest.mark.smoke
+def test_topk_selector_threshold_bucket_past_staging() -> None:
+    """More keys share the topk-th score's bucket than the kernel stages; none is dropped."""
+    seq_len_kv, topk = 8192, 100
+    # Every score in [1, 1.03), one float16 bucket, and all distinct in float32.
+    perm = torch.randperm(seq_len_kv, device=run_device()).float()
+    scores = (1.0 + perm / (1 << 18)).reshape(1, 1, seq_len_kv, 1)
+    starts = torch.zeros(1, 1, dtype=torch.int32, device=run_device())
+    ends = torch.full((1, 1), seq_len_kv, dtype=torch.int32, device=run_device())
+    out = TopkSelectorFwdOp(topk=topk)(scores, starts, ends)
+    expected = torch.topk(scores.flatten(), topk).indices.sort().values
+    assert torch.equal(out.flatten().long().sort().values, expected)
