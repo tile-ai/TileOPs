@@ -11,8 +11,10 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.backend import BUILTIN
+from tileops.kernels.reduction.call_spec import LogicalReduceCall
 from tileops.kernels.reduction.logical_reduce import (
     LogicalReduceEdgeFusedKernel,
+    LogicalReduceEdgeTwoPassKernel,
     LogicalReduceKernel,
 )
 from workloads.device import run_device, run_device_available
@@ -755,6 +757,56 @@ def test_logical_reduce_edge_axes_fused_dispatch(
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_kind, shape, axes, calibration, expected",
+    [
+        pytest.param("any", (4, 24, 4096), (1,), "h200", LogicalReduceKernel, id="inner-axis"),
+        pytest.param(
+            "all", (4, 128, 4096), (0, 2), None, LogicalReduceEdgeTwoPassKernel, id="uncalibrated"
+        ),
+        pytest.param(
+            "any", (4, 31, 4096), (0, 2), "h200", LogicalReduceEdgeTwoPassKernel, id="few-kept"
+        ),
+        pytest.param(
+            "any", (4, 32, 4096), (0, 2), "h200", LogicalReduceEdgeFusedKernel, id="many-kept"
+        ),
+        pytest.param(
+            "count_nonzero",
+            (2, 4, 1 << 23),
+            (0, 2),
+            "h200",
+            LogicalReduceEdgeTwoPassKernel,
+            id="count-at-fp32-limit",
+        ),
+        pytest.param(
+            "count_nonzero",
+            (2, 4, (1 << 23) + 1),
+            (0, 2),
+            "h200",
+            LogicalReduceKernel,
+            id="count-past-fp32",
+        ),
+    ],
+)
+def test_logical_reduce_selection(
+    op_kind: str, shape: tuple, axes: tuple, calibration: "str | None", expected: type
+) -> None:
+    """Each edge candidate serves its side of the kept-column threshold; the row fold the rest."""
+    from tileops.ops.reduction.logical_reduce import AnyFwdOp
+
+    call = LogicalReduceCall(
+        arch=90,
+        calibration=calibration,
+        sm_count=132,
+        shape=shape,
+        axes=axes,
+        op_kind=op_kind,
+        dtype=torch.bool,
+    )
+    assert AnyFwdOp(dim=list(axes)).select_kernel(call) is expected
+
+
+@pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize(
     "dtype, value",
@@ -795,7 +847,7 @@ def test_count_nonzero_exact_past_fp32_integers() -> None:
 def test_logical_reduce_rejects_width_its_reduction_cannot_fold() -> None:
     """A block width that is not a power of two would drop warps from the reduction."""
     kernel = LogicalReduceKernel(
-        4, 4096, "count_nonzero", torch.float16, (1,), config={"threads": 96}
+        (4, 4096), (1,), "count_nonzero", torch.float16, config={"threads": 96}
     )
     with pytest.raises(ValueError, match="power of two"):
         kernel(torch.ones(4, 4096, dtype=torch.float16, device="cuda"))

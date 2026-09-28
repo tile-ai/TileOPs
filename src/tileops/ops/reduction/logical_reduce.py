@@ -1,16 +1,15 @@
 """Logical reduction operators (all, any, count_nonzero)."""
 
-from math import prod
 from typing import ClassVar, Dict, List, Mapping, Optional, Tuple, Union
 
 import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.reduction._primitives import edge_axis_split
 from tileops.kernels.reduction.call_spec import LogicalReduceCall
 from tileops.kernels.reduction.logical_reduce import (
     LogicalReduceEdgeFusedKernel,
+    LogicalReduceEdgeTwoPassKernel,
     LogicalReduceKernel,
 )
 
@@ -29,6 +28,7 @@ class _LogicalReduceOpBase(_ReduceOpBase):
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "logical_reduce_edge_fused": LogicalReduceEdgeFusedKernel,
+        "logical_reduce_edge_two_pass": LogicalReduceEdgeTwoPassKernel,
         "logical_reduce": LogicalReduceKernel,
     }
     _output: ClassVar[torch.dtype] = torch.bool
@@ -42,8 +42,6 @@ class _LogicalReduceOpBase(_ReduceOpBase):
 
     def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int) -> LogicalReduceCall:
         """The facts that pick a logical reduction implementation and build it."""
-        k, j = edge_axis_split(x.ndim, axes)
-        kept = prod(x.shape[k : x.ndim - j]) if k else 0
         return LogicalReduceCall(
             device=x.device,
             shape=tuple(x.shape),
@@ -51,14 +49,11 @@ class _LogicalReduceOpBase(_ReduceOpBase):
             op_kind=self._op_kind,
             dtype=x.dtype,
             keepdim=self.keepdim,
-            edge_axes=bool(k),
-            kept=kept,
-            m=m,
             tune=self.tune,
         )
 
     def entry_for(self, role: str, call: LogicalReduceCall) -> Entry:
-        """Two implementations, so the one that serves the call says how it is built."""
+        """The implementation whose region serves the call says how it is built."""
         return Op.entry_for(self, role, call)
 
 

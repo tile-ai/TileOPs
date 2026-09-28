@@ -19,7 +19,6 @@ import torch
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.reduction._primitives import (
-    FP32_EXACT_INT_LIMIT,
     ceildiv_int,
     edge_axis_split,
     reduce_down_rows,
@@ -30,6 +29,7 @@ from tileops.kernels.reduction._primitives import (
 from tileops.kernels.reduction.call_spec import (
     LogicalReduceCall,
     logical_edge_fused_region,
+    logical_edge_two_pass_region,
     logical_reduce_region,
 )
 from tileops.utils import WARP_LANES
@@ -38,10 +38,9 @@ _WARP_STAGES = WARP_LANES.bit_length() - 1
 
 __all__ = [
     "LogicalReduceEdgeFusedKernel",
+    "LogicalReduceEdgeTwoPassKernel",
     "LogicalReduceKernel",
 ]
-
-_LOGICAL_REDUCE_KINDS = {"any", "all", "count_nonzero"}
 
 # The scalar dtype the prim_func declares for each input dtype, and how many of those
 # scalars make one element. bool is one byte holding 0 or 1, so int8 reinterprets it; a
@@ -309,45 +308,25 @@ def _fold_reduce(
     return program(threads)(units)
 
 
-def _logical_entry(cls: type, call: LogicalReduceCall, *, tune: bool) -> Entry:
-    """The entry for a logical reduction kernel, which both implementations take."""
+def _logical_identity(call: LogicalReduceCall) -> tuple:
+    """What makes two logical reduction builds one entry: every construction fact but tune."""
     index = call.device.index if call.device is not None else None
-    identity = (
-        call.m,
-        call.shape,
-        call.axes,
-        call.op_kind,
-        call.dtype,
-        call.keepdim,
-        tune,
-        index,
-    )
-    return identity, lambda: cls(
-        call.m,
-        prod(call.shape[a] for a in call.axes),
-        call.op_kind,
-        call.dtype,
-        reduce_axes=call.axes,
-        keepdim=call.keepdim,
-        tune=tune,
-        device_index=index,
-    )
+    return (call.shape, call.axes, call.op_kind, call.dtype, call.keepdim, index)
 
 
 class LogicalReduceKernel(Kernel):
-    """Any / all / count_nonzero forward kernel.
+    """Any / all / count_nonzero forward kernel, general over which axes reduce.
 
-    Supports SM80+ architectures. ``forward`` takes the tensor the op declares and
-    reduces *reduce_axes* of it, each row in one pass without staging it in shared
-    memory. Output dtype is bool for any/all and int64 for count_nonzero.
+    Supports SM80+ architectures. ``forward`` moves *reduce_axes* last and folds each
+    resulting row in one pass without staging it in shared memory. Output dtype is bool
+    for any/all and int64 for count_nonzero.
 
     Args:
-        M: Rows the reduction leaves.
-        N: Elements each row reduces.
+        shape: Shape of the input.
+        reduce_axes: Non-negative axis indices, ascending, that the reduction runs over.
         op_kind: One of "any", "all", "count_nonzero".
         dtype: Input data type (float16, bfloat16, float32, bool, int32, int64,
                complex64, or complex128).
-        reduce_axes: Non-negative axis indices, ascending, that the reduction runs over.
         keepdim: Whether a reduced axis stays as a length-1 axis.
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
@@ -363,32 +342,36 @@ class LogicalReduceKernel(Kernel):
 
     @classmethod
     def entry_for(cls, call: LogicalReduceCall) -> Entry:
-        """Built from the kept rows, the reduced extent and the layout it permutes."""
-        return _logical_entry(cls, call, tune=call.tune)
+        identity = _logical_identity(call)
+        return identity, lambda: cls(
+            call.shape,
+            call.axes,
+            call.op_kind,
+            call.dtype,
+            keepdim=call.keepdim,
+            tune=call.tune,
+            device_index=identity[-1],
+        )
 
     def __init__(
         self,
-        M: int,
-        N: int,
+        shape: "tuple[int, ...]",
+        reduce_axes: "tuple[int, ...]",
         op_kind: str,
         dtype: torch.dtype,
-        reduce_axes: "tuple[int, ...]",
         keepdim: bool = False,
         config: Optional[dict] = None,
         tune: bool = False,
         device_index: "int | None" = None,
     ):
         super().__init__(device_index=device_index)
-        if op_kind not in _LOGICAL_REDUCE_KINDS:
-            raise ValueError(
-                f"Unsupported op_kind '{op_kind}'. Expected one of {sorted(_LOGICAL_REDUCE_KINDS)}."
-            )
-        self.M = M
-        self.N = N
+        self.shape = tuple(shape)
+        self.reduce_axes = tuple(reduce_axes)
         self.op_kind = op_kind
         self.dtype = dtype
-        self.reduce_axes = tuple(reduce_axes)
         self.keepdim = keepdim
+        self.N = prod(self.shape[a] for a in self.reduce_axes)
+        self.M = prod(self.shape) // self.N
         self._scalar_dtype, self._components = _scalar_view_for(dtype)
         self.init_config(config, tune)
 
@@ -421,47 +404,13 @@ class LogicalReduceKernel(Kernel):
         """Reduce *reduce_axes* of *x*.
 
         Args:
-            x: The tensor the op declares, contiguous, on a CUDA device.
+            x: The input, contiguous, of the constructed shape.
 
         Returns:
             The reduced tensor, dtype bool (any/all) or int64 (count_nonzero).
-
-        Raises:
-            ValueError: *x* is not on a CUDA device.
         """
-        self._require_cuda(x=x)
-        in_shape = tuple(x.shape)
-        k, j = edge_axis_split(x.ndim, self.reduce_axes)
-        # A count is carried in fp32 across the two passes: exact while the
-        # elements each output reduces stay within fp32's integer range.
-        reduced_count = x.numel() // prod(x.shape[k : x.ndim - j]) if k else 0
-        if k and (self.op_kind != "count_nonzero" or reduced_count <= FP32_EXACT_INT_LIMIT):
-            y = self._reduce_edge_axes(x, k, j)
-            return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
-        rows = rows_for_axes(x, self.reduce_axes)
-        y = self._reduce_rows(rows)
-        return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
-
-    def _reduce_edge_axes(self, x: torch.Tensor, k: int, j: int) -> torch.Tensor:
-        """Reduce a prefix and a suffix of the axes without permuting the tensor.
-
-        Two passes in the tensor's own layout: the trailing axes reduce as
-        contiguous rows into 0/1 int8 (or fp32 count) partials, then the
-        leading axes fold down the columns of those partials — or/and are max/
-        min over 0 and 1, a count is a sum.
-        """
-        lead = prod(x.shape[:k])
-        kept = prod(x.shape[k : x.ndim - j])
-        trail = prod(x.shape[x.ndim - j :])
-        partial_dtype = _logical_out_dtype(self.op_kind, partial=True)
-        partials = _fold_reduce(x, 1, lead * kept, trail, self.op_kind, partial_dtype)
-        partials = partials.reshape(lead, kept)
-        if self.op_kind == "count_nonzero":
-            # The columns pass writes int64 itself; leaving it in fp32 and casting
-            # after costs a third kernel launch.
-            return reduce_down_rows(partials, "sum", "float32", "int64", 0.0)
-        outer_kind = "amax" if self.op_kind == "any" else "amin"
-        return reduce_down_rows(partials, outer_kind, "int8", "int8", 0.0).view(torch.bool)
+        y = self._reduce_rows(rows_for_axes(x, self.reduce_axes))
+        return restore_reduced(y, self.shape, self.reduce_axes, self.keepdim)
 
     def _reduce_rows(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce the trailing axis of an ``(M, N)`` buffer of the declared dtype."""
@@ -473,12 +422,94 @@ class LogicalReduceKernel(Kernel):
         return counted if self.op_kind == "count_nonzero" else counted.view(torch.bool)
 
 
-class LogicalReduceEdgeFusedKernel(Kernel):
-    """Fused logical reduction for a prefix and suffix axis set.
+def _edge_extents(shape: "tuple[int, ...]", axes: "tuple[int, ...]") -> "tuple[int, int, int]":
+    """``(lead, kept, trail)``: a reduced prefix and suffix of *axes* around the kept axes."""
+    k, j = edge_axis_split(len(shape), axes)
+    return prod(shape[:k]), prod(shape[k : len(shape) - j]), prod(shape[len(shape) - j :])
 
-    ``applies`` states which devices reach it. One block reduces one kept column,
-    walking the leading axis serially while folding each contiguous trailing run.
-    The general logical reducer remains responsible for non-edge layouts.
+
+class LogicalReduceEdgeTwoPassKernel(Kernel):
+    """Logical reduction of a prefix and a suffix of the axes in two passes.
+
+    No permute: the trailing axes fold as contiguous rows into 0/1 int8 (or fp32 count)
+    partials, then the leading axes fold down the columns of those partials — or/and are
+    max/min over 0 and 1, a count is a sum. Each pass sizes itself from its extents.
+
+    Args:
+        shape: Shape of the input.
+        reduce_axes: A non-empty prefix and a non-empty suffix of the axes, ascending,
+            with at least one kept axis between them.
+        op_kind: One of "any", "all", "count_nonzero".
+        dtype: Input data type.
+        keepdim: Whether a reduced axis stays as a length-1 axis.
+        device_index: CUDA device the input lives on.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def applies(cls, call: LogicalReduceCall) -> bool:
+        return logical_edge_two_pass_region(call)
+
+    @classmethod
+    def entry_for(cls, call: LogicalReduceCall) -> Entry:
+        identity = _logical_identity(call)
+        return identity, lambda: cls(
+            call.shape,
+            call.axes,
+            call.op_kind,
+            call.dtype,
+            keepdim=call.keepdim,
+            device_index=identity[-1],
+        )
+
+    def __init__(
+        self,
+        shape: "tuple[int, ...]",
+        reduce_axes: "tuple[int, ...]",
+        op_kind: str,
+        dtype: torch.dtype,
+        keepdim: bool = False,
+        device_index: "int | None" = None,
+    ):
+        super().__init__(device_index=device_index)
+        self.shape = tuple(shape)
+        self.reduce_axes = tuple(reduce_axes)
+        self.op_kind = op_kind
+        self.dtype = dtype
+        self.keepdim = keepdim
+        self.lead, self.kept, self.trail = _edge_extents(self.shape, self.reduce_axes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        partial_dtype = _logical_out_dtype(self.op_kind, partial=True)
+        partials = _fold_reduce(
+            x, 1, self.lead * self.kept, self.trail, self.op_kind, partial_dtype
+        ).reshape(self.lead, self.kept)
+        if self.op_kind == "count_nonzero":
+            # The columns pass writes int64 itself; leaving it in fp32 and casting
+            # after costs a third kernel launch.
+            y = reduce_down_rows(partials, "sum", "float32", "int64", 0.0)
+        else:
+            outer_kind = "amax" if self.op_kind == "any" else "amin"
+            y = reduce_down_rows(partials, outer_kind, "int8", "int8", 0.0).view(torch.bool)
+        return restore_reduced(y, self.shape, self.reduce_axes, self.keepdim)
+
+
+class LogicalReduceEdgeFusedKernel(Kernel):
+    """Logical reduction of a prefix and a suffix of the axes in one pass.
+
+    One block reduces one kept column, walking the leading axes serially while folding
+    each contiguous trailing run.
+
+    Args:
+        shape: Shape of the input.
+        reduce_axes: A non-empty prefix and a non-empty suffix of the axes, ascending,
+            with at least one kept axis between them.
+        op_kind: One of "any", "all", "count_nonzero".
+        dtype: Input data type.
+        keepdim: Whether a reduced axis stays as a length-1 axis.
+        config: Optional ``{"threads": n}``; the default sizes the block by the trailing run.
+        device_index: CUDA device the input lives on.
     """
 
     supported_archs: list[int] = [90]
@@ -489,33 +520,34 @@ class LogicalReduceEdgeFusedKernel(Kernel):
 
     @classmethod
     def entry_for(cls, call: LogicalReduceCall) -> Entry:
-        """Built from the kept rows, the reduced extent and the layout it permutes."""
-        return _logical_entry(cls, call, tune=False)
+        identity = _logical_identity(call)
+        return identity, lambda: cls(
+            call.shape,
+            call.axes,
+            call.op_kind,
+            call.dtype,
+            keepdim=call.keepdim,
+            device_index=identity[-1],
+        )
 
     def __init__(
         self,
-        M: int,
-        N: int,
+        shape: "tuple[int, ...]",
+        reduce_axes: "tuple[int, ...]",
         op_kind: str,
         dtype: torch.dtype,
-        reduce_axes: "tuple[int, ...]",
         keepdim: bool = False,
         config: Optional[dict] = None,
-        tune: bool = False,
         device_index: "int | None" = None,
     ):
         super().__init__(device_index=device_index)
-        if op_kind not in _LOGICAL_REDUCE_KINDS:
-            raise ValueError(
-                f"Unsupported op_kind '{op_kind}'. Expected one of {sorted(_LOGICAL_REDUCE_KINDS)}."
-            )
-        self.M = M
-        self.N = N
+        self.shape = tuple(shape)
+        self.reduce_axes = tuple(reduce_axes)
         self.op_kind = op_kind
         self.dtype = dtype
-        self.reduce_axes = tuple(reduce_axes)
         self.keepdim = keepdim
-        self.init_config(config, tune)
+        self.lead, self.kept, self.trail = _edge_extents(self.shape, self.reduce_axes)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -523,17 +555,9 @@ class LogicalReduceEdgeFusedKernel(Kernel):
         return {"threads": None}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self._require_cuda(x=x)
-        in_shape = tuple(x.shape)
-        k, j = edge_axis_split(x.ndim, self.reduce_axes)
-        if not k:
-            raise ValueError("LogicalReduceEdgeFusedKernel requires edge reduction axes")
-        lead = prod(x.shape[:k])
-        kept = prod(x.shape[k : x.ndim - j])
-        trail = prod(x.shape[x.ndim - j :])
         out_dtype = _logical_out_dtype(self.op_kind, partial=False)
         counted = _fold_reduce(
-            x, lead, kept, trail, self.op_kind, out_dtype, self.config.get("threads")
+            x, self.lead, self.kept, self.trail, self.op_kind, out_dtype, self.config.get("threads")
         )
         y = counted if self.op_kind == "count_nonzero" else counted.view(torch.bool)
-        return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
+        return restore_reduced(y, self.shape, self.reduce_axes, self.keepdim)
