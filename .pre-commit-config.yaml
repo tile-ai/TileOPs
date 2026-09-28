@@ -60,7 +60,7 @@ repos:
         name: shipped-source reference lint
         entry: python scripts/lint/shipped_refs_lint.py
         language: python
-        files: ^(src/tileops|tests|benchmarks|scripts|workloads)/
+        files: ^(src/tileops|src/csrc|tests|benchmarks|scripts|workloads)/
         types: [text]
       - id: workload-names-lint
         name: benchmark case name lint
@@ -97,6 +97,12 @@ repos:
         entry: "manifest YAML goes directly in src/tileops/manifest/spec/ as .yaml, the only place the loader reads"
         language: fail
         files: ^src/tileops/manifest/(?!spec/[^/]+\.yaml$)(?:.*\.ya?ml|spec/.*)$
+
+      - id: native-sources-in-csrc
+        name: C++/CUDA sources belong in src/csrc
+        entry: C++/CUDA sources belong in src/csrc/<domain>/; reference them through tileops._csrc.csrc_path.
+        language: fail
+        files: ^src/tileops/.*\.(c|cc|cpp|cxx|cu|cuh|h|hpp|inl)$
 
   - repo: https://github.com/executablebooks/mdformat
     rev: 0.7.22

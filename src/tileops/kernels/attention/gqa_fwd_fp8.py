@@ -6,6 +6,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_path
+
 from ..kernel_base import Entry, Kernel
 from .call_spec import ATTENTION_DTYPES, dense_fp8_decode_region
 from .dense_entry import dense_fp8_entry
@@ -22,7 +24,7 @@ TMA_INTERLEAVE_NONE = 0
 TMA_SWIZZLE_128B = 3
 TMA_L2_PROMOTION_128B = 2
 TMA_OOB_FILL_NONE = 0
-_FP8_GQA_HELPER_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "_fp8_gqa_helper.h"))
+_FP8_GQA_HELPER_PATH = csrc_path("attention/fp8_gqa_helper.h")
 
 
 def _make_fa3_pv_acc_fragment(dim: int, thread_offset: int) -> tilelang.layout.Fragment:

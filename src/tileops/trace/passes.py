@@ -48,28 +48,22 @@ returned ``PrimFunc`` as the ``tl.trace_meta_id`` attr. The attr rides through
 compiled kernel back to its maps without relying on object identity.
 """
 
+from pathlib import Path
+
 # Importing tilelang first populates sys.path for the bundled tvm package.
 import tilelang  # noqa: F401  (loads tvm before the tvm imports below)
 import tilelang.language as T
 import tvm.tirx as tx
 from tvm.tirx.stmt_functor import ir_transform, post_order_visit
 
+from tileops._csrc import csrc_path
+
 from .record import MAX_EVENTS_DEFAULT, pack_w1_tir
 from .state import MARKER, begin_build_epoch, build_state
 
 __all__ = ["MAX_EVENTS_DEFAULT", "lookup_meta", "lower", "strip"]
 
-# clock64() is a CUDA builtin (no inline asm); the cast keeps the return type a
-# plain u64.
-_HELPER = r"""
-__device__ __forceinline__ unsigned long long __tl_now() {
-    return (unsigned long long)clock64();  // per-SM cycle counter (CUDA builtin)
-}
-
-__device__ __forceinline__ int __tl_thread_idx_x() {
-    return threadIdx.x;  // Writer-election fallback for implicit thread blocks
-}
-"""
+_HELPER = Path(csrc_path("trace/device_helper.h")).read_text()
 
 # Header words per slot: word[0] = count, word[1] = reserved. Events follow.
 HEADER_WORDS = 2

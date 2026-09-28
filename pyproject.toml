@@ -68,17 +68,13 @@ build-backend = "setuptools.build_meta"
 # commit count, and errors out rather than accept a pre-set one.
 fallback_version = "0.0.0"
 
-[tool.setuptools.packages.find]
-# src layout: a new top-level directory cannot reach the wheel by being forgotten
-# in an exclude list, and the repo root stays off sys.path, so tests import the
-# installed package rather than the source tree.
-where = ["src"]
-
 [tool.setuptools.package-data]
-# Kernel headers and YAML data are opened at run time by path relative to
-# __file__, so all of them must ship. Stated by extension, not by name, so a new
-# resource is covered on arrival. Enforced by scripts/ci/check_dist_contents.py.
-tileops = ["**/*.h", "**/*.yaml"]
+# Opened at run time by path, so every one must ship: YAML data relative to
+# __file__, native sources through tileops._csrc. Stated by extension, not by
+# name, so a new resource is covered on arrival. Package discovery is in
+# setup.py. Enforced by scripts/ci/check_dist_contents.py.
+tileops = ["**/*.yaml"]
+"tileops.csrc" = ["**/*.h"]
 
 [tool.codespell]
 ignore-words-list = "nd, te, ist, LOD, offen, NotIn, HSA"
