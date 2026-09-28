@@ -39,9 +39,13 @@ WS_ARCH = 90
 # divides the page size, so one tile never straddles two pages, and it splits
 # evenly across the four consumer warps.
 _WS_DECODE_TILES = (16, 32, 64, 128)
-# Head dims that map onto one warp: the score reduction is a shuffle chain over
-# 32 lanes, so a lane owns ``dim / 32`` elements of the head vector.
+# Head dims that map onto one warp: a lane accumulates ``dim / 32`` output elements.
 _WS_DECODE_LANES = 32
+# Multiply-adds up to which the warp-specialized kernel serves several query rows,
+# counted as ``batch * heads * seqlen_q * seqlen_kv * dim`` with the pool size bounding
+# every request. Fitted on H200: the CUDA-core contraction lost to the tensor-core
+# kernel from 2**28 up; re-measure both kernels near the bound to move it.
+_WS_DECODE_MAX_MULTI_QUERY_MACS = 2**27
 
 
 def fp8_dtype() -> Optional[torch.dtype]:
@@ -114,12 +118,14 @@ def paged_decode_ws_region(call: AttentionCall) -> bool:
     """The paged-decode region the warp-specialized MHA kernel serves.
 
     Stated positively, and only in terms the call already carries. What is left
-    to the general kernel: a query longer than one token (this kernel's whole
-    reason for skipping the tensor cores is that ``seqlen_q`` is 1), a head dim
-    that does not divide across a warp, a page size no tile height divides, a
-    softcap, and a causal request, whose mask this kernel does not apply.
+    to the general kernel: several query rows whose contraction may exceed
+    ``_WS_DECODE_MAX_MULTI_QUERY_MACS``, a head dim that does not divide across a
+    warp, a page size no tile height divides, and a softcap.
     """
-    if call.max_seqlen_q != 1 or call.is_causal or call.softcap != 0.0:
+    if call.max_seqlen_q < 1 or call.softcap != 0.0:
+        return False
+    macs = call.batch * call.heads * call.max_seqlen_q * call.seqlen_kv * call.dim
+    if call.max_seqlen_q > 1 and macs > _WS_DECODE_MAX_MULTI_QUERY_MACS:
         return False
     if call.dtype not in ATTENTION_DTYPES or call.is_fp8:
         return False

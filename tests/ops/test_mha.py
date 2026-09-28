@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.kernels.attention.call_spec import _WS_DECODE_MAX_MULTI_QUERY_MACS
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 from workloads.device import run_device
 from workloads.mha import MhaDecodePagedWorkload
@@ -160,15 +161,22 @@ def test_mha_decode_paged_cache_shorter_than_bound(
 
 
 @pytest.mark.smoke
-def test_mha_decode_paged_dispatch_declines_multi_token_query() -> None:
-    """A query longer than one token belongs to the general kernel.
+def test_mha_decode_paged_dispatch_bounds_multi_query_work() -> None:
+    """Several query rows run on the warp-specialized kernel only below the work bound.
 
-    The warp-specialized kernel exists because ``seqlen_q`` is 1; selection has
-    to hand a longer query back rather than serve it.
+    One query row always does; past ``_WS_DECODE_MAX_MULTI_QUERY_MACS`` the
+    tensor-core kernel serves several.
     """
-    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=256, is_causal=False)
-    q = torch.empty(1, 4, 8, 64, dtype=torch.float16, device=run_device())
-    k = torch.empty(1024, 8, 64, dtype=torch.float16, device=run_device())
-    block_table = torch.zeros(1, 4, dtype=torch.int32, device=run_device())
-    chosen = op.select_kernel(op._attention_call(q, k, block_table))
-    assert chosen.__name__ == "GQADecodePagedKernel"
+    op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=256, is_causal=True)
+    heads, dim = 32, 128
+    large = 2 * _WS_DECODE_MAX_MULTI_QUERY_MACS // (4 * heads * dim)
+
+    def chosen(seqlen_q: int, seqlen_kv: int) -> str:
+        q = torch.empty(1, seqlen_q, heads, dim, dtype=torch.float16, device=run_device())
+        k = torch.empty(seqlen_kv, heads, dim, dtype=torch.float16, device=run_device())
+        block_table = torch.zeros(1, seqlen_kv // 256, dtype=torch.int32, device=run_device())
+        return op.select_kernel(op._attention_call(q, k, block_table)).__name__
+
+    assert chosen(4, 1024) == "MHADecodePagedWsKernel"
+    assert chosen(1, large) == "MHADecodePagedWsKernel"
+    assert chosen(4, large) == "GQADecodePagedKernel"
