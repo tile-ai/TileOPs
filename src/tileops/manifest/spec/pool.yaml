@@ -536,6 +536,8 @@ MeanPoolingFwdOp:
     shape_rules:
     - "chunk_size > 0 and chunk_size % 32 == 0"
     - "D <= 128 or D % 128 == 0"
+    # A mean accumulated in an integer type truncates each partial sum.
+    - "category(accum_dtype) == 'float'"
 
   workloads:
   # Chunk 64 over an 8k sequence is the linear-attention chunking these come from.

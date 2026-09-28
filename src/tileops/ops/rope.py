@@ -701,7 +701,15 @@ class RopeLongRopeFwdOp(_RopeOpBase):
                 for the in-tree kernels, or ``None`` to decide from the input device.
             kernel_map: Optional kernel dispatch override.
             tune: Whether to autotune.
+
+        Raises:
+            ValueError: A rescale factor is zero or NaN; the frequency divides by it.
         """
+        # A meta tensor holds no values to check.
+        if rescale_factors is not None and not rescale_factors.is_meta:
+            defined = (rescale_factors != 0) & ~torch.isnan(rescale_factors)
+            if not bool(defined.all()):
+                raise ValueError("rescale_factors must be nonzero and not NaN")
         self.rescale_factors = rescale_factors
         self.max_position_embeddings = max_position_embeddings
         self.original_max_position_embeddings = original_max_position_embeddings

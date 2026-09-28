@@ -419,6 +419,15 @@ def test_rope_neox_position_ids_validates_range() -> None:
 
 
 @pytest.mark.smoke
+def test_rope_longrope_rejects_a_zero_rescale_factor() -> None:
+    from tileops.ops.rope import RopeLongRopeFwdOp
+
+    rescale = torch.tensor([1.0, 0.0, 2.0, 1.5], device=run_device())
+    with pytest.raises(ValueError, match="rescale_factors"):
+        RopeLongRopeFwdOp(rescale_factors=rescale)
+
+
+@pytest.mark.smoke
 def test_rope_neox_position_ids_none_rotary_dim_reinfers_head_dim() -> None:
     from tileops.ops.rope import RopeNeoxPositionIdsFwdOp
 
