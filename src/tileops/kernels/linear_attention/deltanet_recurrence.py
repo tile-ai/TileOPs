@@ -34,6 +34,18 @@ __all__ = [
 _DEFAULT_K_TILE = 16
 
 
+def _raw_cuda_shape_refusal(dtype: str, dim_k: int, dim_v: int) -> Optional[str]:
+    """Why the raw-CUDA decode kernel cannot serve this shape, or ``None``.
+
+    *dtype* is the TileLang name the builder takes; the region converts the call's dtype.
+    """
+    if dtype not in ("float16", "bfloat16"):
+        return "requires float16 or bfloat16"
+    if dim_k != 128 or dim_v != 128:
+        return "requires dim_k == dim_v == 128"
+    return None
+
+
 @functools.lru_cache(maxsize=32)
 def _deltanet_decode_raw_cuda_flastyle_tl(
     batch: int,
@@ -45,10 +57,9 @@ def _deltanet_decode_raw_cuda_flastyle_tl(
     raw_maxrregcount: int = 146,
     dtype: str = "bfloat16",
 ):
-    if dtype not in ("float16", "bfloat16"):
-        raise ValueError("Raw CUDA DeltaNet decode currently supports float16/bfloat16 only.")
-    if dim_k != 128 or dim_v != 128:
-        raise ValueError("Raw CUDA DeltaNet decode currently requires DK=DV=128.")
+    reason = _raw_cuda_shape_refusal(dtype, dim_k, dim_v)
+    if reason is not None:
+        raise ValueError(f"Raw CUDA DeltaNet decode {reason}")
     if dim_v % v_tile != 0:
         raise ValueError(f"dim_v={dim_v} must be divisible by v_tile={v_tile}")
     if raw_group_size != 2:
@@ -391,12 +402,16 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return (
-            call.dtype in (torch.float16, torch.bfloat16)
-            and call.dim_k == 128
-            and call.dim_v == 128
-        )
+    def applies(cls, call: DeltaNetDecodeCall) -> bool:
+        return cls._region_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: DeltaNetDecodeCall) -> Optional[str]:
+        return cls.arch_refusal(call) or cls._region_refusal(call)
+
+    @staticmethod
+    def _region_refusal(call: DeltaNetDecodeCall) -> Optional[str]:
+        return _raw_cuda_shape_refusal(Kernel.dtype_to_str(call.dtype), call.dim_k, call.dim_v)
 
     @classmethod
     def entry_for(cls, call: DeltaNetDecodeCall) -> Entry:
