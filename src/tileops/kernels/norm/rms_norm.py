@@ -35,13 +35,7 @@ _SHARED_BLOCK_ELEMENTS = 2048
 
 
 def _padded_width(n: int) -> int:
-    """Columns of the fragment holding a row of *n*.
-
-    A row that shares its block takes the next power of two, so whole rows tile the
-    block; blocking several rows of any other width to a CTA gets a replicated layout
-    (see ``_config``). A longer row is padded to :data:`ALIGNMENT`, which the
-    128-thread default divides.
-    """
+    """Fragment width: a power of two for a row sharing a block, so whole rows tile it."""
     if n <= _SHARED_ROW_MAX:
         return 1 << (n - 1).bit_length()
     return align_up(n, ALIGNMENT)
@@ -50,7 +44,6 @@ def _padded_width(n: int) -> int:
 @functools.lru_cache(maxsize=32)
 def _rms_norm_kernel(M, N, eps, dtype, has_weight, partial_min_elements, sm_count):
     N_padded = _padded_width(N)
-    # The fragment spans N_padded columns; the tensors hold N.
     col_guard = N_padded != N
 
     @tilelang.jit(out_idx=[2])
@@ -98,8 +91,6 @@ def _rms_norm_kernel(M, N, eps, dtype, has_weight, partial_min_elements, sm_coun
 
                     T.copy(shared_buf, x_local)
                 else:
-                    # A column or row past the tensor loads zero, which adds nothing
-                    # to the sum of squares.
                     for i, j in T.Parallel(block_m, N_padded):
                         if row_guard and col_guard:
                             x_local[i, j] = T.if_then_else(
@@ -133,8 +124,7 @@ def _rms_norm_kernel(M, N, eps, dtype, has_weight, partial_min_elements, sm_coun
 
                 # y = x * rrms * weight, written from the fragment holding the row.
                 for i, j in T.Parallel(block_m, N_padded):
-                    # Nested, not joined: a Python bool joined to a TIR comparison by
-                    # `and` is not a TIR conjunction.
+                    # Nested: `and` between a Python bool and a TIR comparison is not TIR.
                     if (not row_guard) or pid_m * block_m + i < M:  # noqa: SIM102
                         if (not col_guard) or j < N:
                             if has_weight:
@@ -198,11 +188,7 @@ class RMSNormKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        """The width-derived default alone when short rows share a block.
-
-        The autotuner times a candidate back to back with the rows resident in L2, which
-        cannot rank kernels of a few microseconds as a cold call runs them.
-        """
+        """The width-derived default alone for shared-block rows; L2-warm tuning misranks them."""
         if self.default_config["block_m"] > 1:
             return [self.default_config]
         return select_row_configs(self.N_padded, self.dtype)
@@ -254,7 +240,6 @@ class RMSNormKernel(Kernel):
 
         block_m = self.config["block_m"]
         if self.N_padded <= _SHARED_ROW_MAX:
-            # Rows sharing a block: no more of them than the power of two covering the call.
             block_m = min(block_m, 1 << (m - 1).bit_length())
         y = self.kernel(block_m, self.config["threads"])(rows, weight)
         return y.reshape(original_shape)
