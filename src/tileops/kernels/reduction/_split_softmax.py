@@ -11,7 +11,6 @@ from math import prod
 
 import tilelang
 import tilelang.language as T
-import torch
 
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
@@ -29,11 +28,7 @@ __all__ = [
     "make_block_split_fold",
     "softmax_split_partials_kernel",
     "split_seg_n",
-    "split_target_blocks",
 ]
-
-# Blocks per SM a split aims for; under this the grid runs the device empty.
-_OCCUPANCY_FACTOR = 2
 
 # Rows shorter than this cannot amortize the fold pass. Measured threshold,
 # not derived: below it the second launch outweighs the extra blocks.
@@ -41,24 +36,6 @@ _SPLIT_MIN_AMORTIZED_COLS = 16384
 
 # Widest segment a partials block holds in its fragment.
 _SPLIT_MAX_SEG_COLS = FRAGMENT_ELEMS_PER_THREAD * DEFAULT_THREADS
-
-
-def split_target_blocks(device_index: "int | None" = None) -> int:
-    """The block count a split aims for: ``_OCCUPANCY_FACTOR`` per SM.
-
-    ``None`` reads the current device; without CUDA it falls back to 132 SMs,
-    mirroring ``device_smem_budget``'s auto-detect fallback.
-    """
-    try:
-        if not torch.cuda.is_available():
-            return _OCCUPANCY_FACTOR * 132
-        if device_index is None:
-            device_index = torch.cuda.current_device()
-        return (
-            _OCCUPANCY_FACTOR * torch.cuda.get_device_properties(device_index).multi_processor_count
-        )
-    except (RuntimeError, AssertionError):
-        return _OCCUPANCY_FACTOR * 132
 
 
 def split_seg_n(M: int, N: int, block_m: int, target_blocks: int) -> int:
@@ -189,20 +166,20 @@ def make_block_split_fold(num_segs: int, threads: int, keep_inf: bool = False):
     return fold
 
 
-def fused_split_plan(M: int, N: int, seg_n: int) -> "int | None":
+def fused_split_plan(M: int, N: int, seg_n: int, target_blocks: int) -> "int | None":
     """The thread width a one-kernel split runs at, or None when it cannot.
 
     A fused split keeps its segment in registers across a grid barrier, so it
     reads the row once where the two-kernel pair reads it twice. Two conditions
     bound it. The grid must be co-resident, since a cooperative launch wider
     than the device holds is refused outright; ``split_seg_n`` already aims at
-    ``split_target_blocks``, and this rejects the shapes where the segment cap
-    pushed it past that. The two fp32 fragments must also fit the same
+    *target_blocks*, and this rejects the shapes where the segment cap pushed it
+    past that. The two fp32 fragments must also fit the same
     per-thread budget one fragment gets elsewhere, which is what picks the
     width: the narrowest power of two from ``WARP_LANES`` up that holds them.
     """
     num_segs = ceildiv_int(N, seg_n)
-    if num_segs * M > split_target_blocks():
+    if num_segs * M > target_blocks:
         return None
     threads = WARP_LANES
     while threads <= DEFAULT_THREADS:

@@ -13,9 +13,20 @@ from .logical_reduce import (
     LogicalReduceEdgeTwoPassKernel,
     LogicalReduceKernel,
 )
-from .logsumexp import LogSumExpKernel
+from .logsumexp import (
+    LogSumExpEdgeSplitKernel,
+    LogSumExpKernel,
+    LogSumExpSingleTileKernel,
+    LogSumExpSplitKernel,
+    LogSumExpStreamingKernel,
+)
 from .reduce import ReduceKernel
-from .softmax import SoftmaxKernel
+from .softmax import (
+    SoftmaxFusedSplitKernel,
+    SoftmaxKernel,
+    SoftmaxSingleTileKernel,
+    SoftmaxSplitKernel,
+)
 from .vector_norm import VectorNormKernel
 
 __all__: list[str] = [
@@ -23,12 +34,19 @@ __all__: list[str] = [
     "SHARED_MEMORY_BUDGET_BYTES",
     "ArgreduceKernel",
     "CumulativeKernel",
+    "LogSumExpEdgeSplitKernel",
     "LogSumExpKernel",
+    "LogSumExpSingleTileKernel",
+    "LogSumExpSplitKernel",
+    "LogSumExpStreamingKernel",
     "LogicalReduceEdgeFusedKernel",
     "LogicalReduceEdgeTwoPassKernel",
     "LogicalReduceKernel",
     "ReduceKernel",
+    "SoftmaxFusedSplitKernel",
     "SoftmaxKernel",
+    "SoftmaxSingleTileKernel",
+    "SoftmaxSplitKernel",
     "VectorNormKernel",
     "align_up",
 ]

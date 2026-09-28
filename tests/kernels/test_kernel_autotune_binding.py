@@ -189,15 +189,5 @@ class _RowTiled(RowTiledAutotuneMixin):
 
 
 def test_row_that_fits_untiled_at_every_thread_count_offers_no_tile():
-    """A cheap fragment does not pay for the extra compilation."""
+    """A row one tile holds tunes block_m and threads only: a tiled width is another kernel."""
     assert _RowTiled(4096, 2, 227 * 1024)._tile_n_candidates() == [0]
-
-
-def test_row_that_fits_untiled_only_at_the_most_threads_offers_tiles():
-    """tile_n is baked in and reused across every thread count the sweep tries.
-
-    A 32768-column bf16 row holds 64 elements per thread at 512 threads and 256 at
-    128, so admitting it untiled leaves the sweep free to run it over budget with no
-    tiled candidate to fall to.
-    """
-    assert _RowTiled(32768, 2, 227 * 1024)._tile_n_candidates() == [0, 32768, 16384]

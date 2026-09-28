@@ -23,7 +23,6 @@ import torch
 
 from tileops.kernels.constants import SHARED_BANK_SPAN_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.tiling import ALIGNMENT, align_up
-from tileops.utils import device_busy_of
 
 __all__ = [
     "AUTOTUNE_THREADS",
@@ -631,18 +630,11 @@ class RowTiledAutotuneMixin:
 
     A subclass must set, before autotuning: ``_planner`` (a
     `BlockConfigPlanner`), ``_smem_budget``, ``N_padded``, ``_elem_bytes``,
-    ``_MAX_TILE_N_CANDIDATES``, ``_tile_n`` and ``_split_target``, and implement
-    ``_build_row_kernel`` and ``_row_forward``.
+    ``_MAX_TILE_N_CANDIDATES`` and ``_tile_n``, and implement ``_build_row_kernel``.
     """
 
     def _build_row_kernel(self, tile_n: int):
         raise NotImplementedError
-
-    def _row_forward(self, x):
-        raise NotImplementedError
-
-    def _sweep_applies(self) -> bool:
-        return True
 
     def _tile_n_for_block_m(self, block_m: int) -> int:
         """Return tile_n for a given block_m (0 means no tiling needed).
@@ -653,27 +645,6 @@ class RowTiledAutotuneMixin:
         satisfy all of them.
         """
         return self._planner.tile_n_for(block_m, max(AUTOTUNE_THREADS))
-
-    def _untiled_tile_alternative(self) -> list[int]:
-        """Return the tiles to time beside an untiled row, widest first.
-
-        tile_n is baked in at build time and reused across every ``threads`` the
-        sweep tries, and the register budget binds at the fewest of them, where each
-        thread holds the most of the row. A row admitted untiled at the most threads
-        can still be run at the fewest, over that budget; offering it a tile leaves
-        the choice to measurement. Empty when the row fits untiled at every candidate
-        thread count, which is where the fragment is cheap enough not to ask.
-        """
-        if self._planner.frag_fits(1, self.N_padded, min(AUTOTUNE_THREADS)):
-            return []
-        try:
-            widest = self._planner.tiled_tile_n(1, max(AUTOTUNE_THREADS))
-        except ValueError:
-            return []
-        if widest <= 0:
-            return []
-        half = widest // 2 // DEFAULT_ALIGNMENT * DEFAULT_ALIGNMENT
-        return [widest] if half in (0, widest) else [widest, half]
 
     def _tile_n_candidates(self) -> list[int]:
         """Return candidate tile_n values for autotune exploration.
@@ -693,14 +664,15 @@ class RowTiledAutotuneMixin:
         (currently 3).
 
         - When the heuristic default tile_n is 0 (single-tile / small N),
-          return ``[0]`` -- the autotuner varies only block_m and threads.
+          return ``[0]`` -- the autotuner varies only block_m and threads. A
+          tiled program is another implementation, which tuning never picks.
         - Otherwise collect distinct tile_n values from block_m=1..4 and
           return up to ``_MAX_TILE_N_CANDIDATES`` candidates (always
           including the heuristic default).
         """
         default_tn = self._tile_n_for_block_m(1)
         if default_tn == 0:
-            return [0, *self._untiled_tile_alternative()]
+            return [0]
 
         candidates: set[int] = {default_tn}
         # Explore tile_n values implied by small block_m values.
@@ -725,23 +697,10 @@ class RowTiledAutotuneMixin:
         return sorted_candidates[: self._MAX_TILE_N_CANDIDATES]
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """Sweep the candidates, rebuilding per tile_n, then judge the split pair.
-
-        The split pair is timed on device kernel time: paths launching different
-        kernel counts cannot be compared on wall time, which carries the
-        host-launch gaps.
-        """
+        """Sweep the candidates, rebuilding per tile_n."""
         from tilelang.autotuner import autotune as tl_autotune
 
-        from ._split_softmax import split_seg_n
-
-        if not self._sweep_applies():
-            self.config = self.default_config
-            return
-
         default = self.default_config
-        split_eligible = bool(split_seg_n(self.M, self.N, default["block_m"], self._split_target))
-
         configs = self.autotune_configs
         if not configs:
             self.config = default
@@ -774,20 +733,6 @@ class RowTiledAutotuneMixin:
             if best_config["tile_n"] != self._tile_n:
                 self._tile_n = best_config["tile_n"]
                 self.kernel = self._build_row_kernel(self._tile_n)
-
-        if split_eligible and best_config is not None:
-            device = torch.device(
-                "cuda",
-                self.device_index if self.device_index is not None else torch.cuda.current_device(),
-            )
-            probe = torch.randn(self.M, self.N, dtype=self.dtype, device=device)
-            swept_config = dict(self.config, split=False)
-            self.config = swept_config
-            swept_ms = device_busy_of(lambda: self._row_forward(probe), device)
-            self.config = default
-            split_ms = device_busy_of(lambda: self._row_forward(probe), device)
-            if split_ms > swept_ms:
-                self.config = swept_config
 
     @property
     def autotune_configs(self) -> list[dict]:
