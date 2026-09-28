@@ -17,8 +17,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import LOG2E
-from tileops.utils import get_sm_version
+from tileops.kernels.constants import LOG2E, WARPGROUP_THREADS, WGMMA_ROWS
+from tileops.utils import get_shared_memory_optin
 
 from ..grouped_tiling import GroupTiling
 from .call_spec import uses_sliding_window
@@ -30,6 +30,20 @@ from .online_softmax import (
 from .varlen import VarlenKernel, varlen_entry
 
 __all__ = ["GQAPrefillVarlenFwdKernel"]
+
+# The granule TileLang aligns each shared buffer to.
+_SHARED_ALIGN = 1024
+
+
+def _stages_score_tile(block_m: int, threads: int) -> bool:
+    """Whether the score tile goes through shared memory for the second gemm.
+
+    Split across warpgroups, a row block under the WGMMA tile cannot take it as a
+    register operand: TileLang's layout inference finds no layout for the cast that
+    feeds it.
+    """
+    warpgroups = threads // WARPGROUP_THREADS
+    return warpgroups > 1 and block_m // warpgroups < WGMMA_ROWS
 
 
 @functools.lru_cache(maxsize=32)
@@ -72,10 +86,7 @@ def _gqa_prefill_varlen_fwd_kernel(
             else None
         )
         rescale = make_rescale(block_m, dim)
-        # Two warpgroups cannot take the score tile as a register operand of the
-        # second gemm: TileLang's layout inference finds no layout for the cast
-        # that feeds it, so that config stages the tile through shared memory.
-        p_via_shared = threads > 128
+        p_via_shared = _stages_score_tile(block_m, threads)
         q_tiling = GroupTiling(batch, block_m)
         num_q_tiles = q_tiling.tile_upper_bound(total_q)
 
@@ -276,17 +287,34 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
 
     @property
     def default_config(self) -> dict:
-        if 256 < self.dim <= 512 and get_sm_version(self.device_index) >= 90:
-            # The fp32 output accumulator is block_m x dim, so block_m stays at
-            # 64; two warpgroups then carry the 64 x 64 tile. Its shared memory
-            # is over every pre-SM90 per-block cap.
-            return {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 256}
+        # The fp32 output accumulator is block_m x dim, so block_m stays at 64; two
+        # warpgroups then carry the 64 x 64 tile where the device's shared memory holds it.
+        wide = {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 256}
+        if 256 < self.dim <= 512 and self._shared_bytes(wide) <= get_shared_memory_optin(
+            self.device_index
+        ):
+            return wide
         return {
             "block_m": 64,
             "block_n": 64 if self.dim <= 128 else 32,
             "num_stages": 1,
             "threads": 128,
         }
+
+    def _shared_bytes(self, config: dict) -> int:
+        """Shared memory a one-stage *config* allocates, each buffer aligned to 1 KiB.
+
+        Q, K and V tiles and the request prefix; where rows split across warpgroups, the
+        staged score tile and one fp32 per thread for each of the cross-warpgroup row max
+        and sum.
+        """
+        elem = self.dtype.itemsize
+        block_m, block_n = config["block_m"], config["block_n"]
+        tile = block_n * self.dim * elem
+        buffers = [block_m * self.dim * elem, tile, tile, 4 * (self.batch + 1)]
+        if _stages_score_tile(block_m, config["threads"]):
+            buffers += [block_m * block_n * elem, 4 * config["threads"], 4 * config["threads"]]
+        return sum(-(-b // _SHARED_ALIGN) * _SHARED_ALIGN for b in buffers)
 
     @property
     def autotune_configs(self) -> list[dict]:

@@ -6,6 +6,12 @@ VECTOR_ACCESS_BYTES: int = 16
 # Address range the shared-memory banks cover before repeating: 32 banks of 4 bytes.
 SHARED_BANK_SPAN_BYTES: int = 128
 
+# Threads in an SM90 warpgroup, the four warps a WGMMA instruction issues across.
+WARPGROUP_THREADS: int = 128
+
+# Rows one WGMMA instruction computes: its M extent.
+WGMMA_ROWS: int = 64
+
 # Shared memory one block may take without opting in to the dynamic allocation.
 STATIC_SHARED_BYTES: int = 48 * 1024
 
