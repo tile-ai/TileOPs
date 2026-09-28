@@ -355,21 +355,21 @@ def test_fork_fast_path_accepts_the_same_op_tests() -> None:
 
 
 def test_every_native_source_forces_gpu_smoke() -> None:
-    """Kernels compile `src/csrc` in at build time; a file the arm misses reads as
-    a non-Python change and skips GPU smoke."""
+    """Kernels compile `src/tileops/csrc` in at build time; a file the arm misses
+    reads as a non-Python change and skips GPU smoke."""
     import re
 
-    arms = re.findall(r"^\s*(src/csrc[^)\n]*)\)\s*$", _policy_script(), re.M)
-    assert len(arms) == 1, f"expected one src/csrc case arm, found {arms}"
+    arms = re.findall(r"^\s*(src/tileops/csrc[^)\n]*)\)\s*$", _policy_script(), re.M)
+    assert len(arms) == 1, f"expected one src/tileops/csrc case arm, found {arms}"
 
     tracked = subprocess.run(
-        ["git", "ls-files", "src/csrc"],
+        ["git", "ls-files", "src/tileops/csrc"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         check=True,
     ).stdout.split()
-    assert tracked, "expected tracked files under src/csrc"
+    assert tracked, "expected tracked files under src/tileops/csrc"
 
     ungated = [f for f in tracked if not _case_matches(arms[0], f)]
     assert not ungated, f"case arm '{arms[0]}' misses these native sources: {ungated}"

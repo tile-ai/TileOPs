@@ -279,7 +279,7 @@ jobs:
                   has_contract="true"
                   ;;
                 # Kernels compile these in at build time.
-                src/csrc/*)
+                src/tileops/csrc/*)
                   has_native="true"
                   ;;
               esac

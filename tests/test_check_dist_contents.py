@@ -3,7 +3,7 @@
 Each case assembles a synthetic repo root plus wheel/sdist archives in a tmp
 directory, then runs the checker against them — never against the live repo
 or a real build. The fixture repo carries one resource of each kind the
-package ships at runtime: a native kernel source, a hardware perf profile,
+package ships at runtime: a nested-package header, a hardware perf profile,
 and manifest YAMLs.
 """
 
@@ -23,13 +23,11 @@ CHECK_SCRIPT = REPO_ROOT / "scripts" / "ci" / "check_dist_contents.py"
 
 # As they appear in the wheel; `_in_src` gives the repo and sdist form.
 MANIFEST_YAMLS = ["tileops/manifest/spec/attention.yaml", "tileops/manifest/spec/gemm.yaml"]
+NESTED_HEADER = "tileops/csrc/attention/fp8_gqa_helper.h"
 PERF_PROFILE = "tileops/perf/profiles/h200.yaml"
-# Native sources sit beside the package and install inside it.
-NATIVE_SOURCE_IN_REPO = "src/csrc/attention/fp8_gqa_helper.h"
-NATIVE_SOURCE = "tileops/csrc/attention/fp8_gqa_helper.h"
 
-# Every tracked non-.py file under src/tileops the fixture package ships.
-RESOURCES = [*MANIFEST_YAMLS, PERF_PROFILE]
+# Every tracked non-.py file the fixture package ships.
+RESOURCES = [*MANIFEST_YAMLS, NESTED_HEADER, PERF_PROFILE]
 SOURCES = ["tileops/__init__.py", "tileops/perf/profile.py"]
 
 
@@ -37,10 +35,10 @@ def _in_src(entries: list[str]) -> list[str]:
     return [f"src/{entry}" for entry in entries]
 
 
-REPO_FILES = [*_in_src(RESOURCES + SOURCES), NATIVE_SOURCE_IN_REPO]
-WHEEL_OK = [*RESOURCES, NATIVE_SOURCE, *SOURCES]
+WHEEL_OK = [*RESOURCES, *SOURCES]
 SDIST_OK = [
-    *REPO_FILES,
+    *_in_src(RESOURCES),
+    *_in_src(SOURCES),
     "LICENSE",
     "README.md",
     "CONTRIBUTING.md",
@@ -51,7 +49,7 @@ SDIST_OK = [
 def make_repo(tmp_path: Path) -> Path:
     """Write a source tree holding every fixture resource. Not a git repo."""
     repo = tmp_path / "repo"
-    for rel in REPO_FILES:
+    for rel in _in_src(RESOURCES + SOURCES):
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("content\n")
@@ -112,8 +110,8 @@ def test_complete_dist_passes(tmp_path):
 
 @pytest.mark.parametrize(
     "dropped",
-    [NATIVE_SOURCE, PERF_PROFILE, MANIFEST_YAMLS[1]],
-    ids=["native-source", "perf-profile", "manifest-yaml"],
+    [NESTED_HEADER, PERF_PROFILE, MANIFEST_YAMLS[1]],
+    ids=["nested-package-header", "perf-profile", "manifest-yaml"],
 )
 def test_wheel_missing_any_resource_fails(tmp_path, dropped):
     """Every tracked non-.py resource is required, whatever its subpackage."""
@@ -125,7 +123,7 @@ def test_wheel_missing_any_resource_fails(tmp_path, dropped):
 
 def test_all_missing_resources_are_reported(tmp_path):
     """A wheel short several resources names each one, not just the first."""
-    dropped = [NATIVE_SOURCE, PERF_PROFILE]
+    dropped = [NESTED_HEADER, PERF_PROFILE]
     repo, dist = build_dist(tmp_path, [e for e in WHEEL_OK if e not in dropped], SDIST_OK)
     result = run_check(repo, dist)
     assert result.returncode == 1
@@ -137,7 +135,7 @@ def test_expected_set_comes_from_git_when_available(tmp_path):
     """With git present the expectation follows the index, not the working tree."""
     repo, dist = build_dist(tmp_path, WHEEL_OK, SDIST_OK)
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "add", *REPO_FILES], cwd=repo, check=True)
+    subprocess.run(["git", "add", *_in_src(RESOURCES), *_in_src(SOURCES)], cwd=repo, check=True)
     # Untracked, so it is not part of the shipped resource set.
     scratch = repo / "src" / "tileops" / "perf" / "profiles" / "scratch.yaml"
     scratch.write_text("draft\n")
@@ -147,12 +145,11 @@ def test_expected_set_comes_from_git_when_available(tmp_path):
     assert "git" in result.stdout
 
 
-@pytest.mark.parametrize("dropped", ["LICENSE", NATIVE_SOURCE_IN_REPO])
-def test_sdist_missing_required_file_fails(tmp_path, dropped):
-    repo, dist = build_dist(tmp_path, WHEEL_OK, [e for e in SDIST_OK if e != dropped])
+def test_sdist_missing_license_fails(tmp_path):
+    repo, dist = build_dist(tmp_path, WHEEL_OK, [e for e in SDIST_OK if e != "LICENSE"])
     result = run_check(repo, dist)
     assert result.returncode == 1
-    assert dropped in result.stdout
+    assert "LICENSE" in result.stdout
 
 
 def test_sdist_without_contributing_passes(tmp_path):

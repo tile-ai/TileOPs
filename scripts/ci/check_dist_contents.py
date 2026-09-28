@@ -3,12 +3,10 @@
 
 Both directions are checked, because each fails silently on its own.
 
-Nothing missing. Every tracked non-``.py`` file under ``src/tileops/`` and
-every tracked file under ``src/csrc/`` must be in the wheel, the latter as
-``tileops/csrc/``. Those files — YAML data and native kernel sources — are
-opened at run time by path, so one missing from the wheel is an install that
-imports cleanly and then fails on first use. The native sources must also be in
-the sdist, which a wheel is built from. The expected set is
+Nothing missing. Every tracked non-``.py`` file under ``src/tileops/`` must be
+in the wheel. Those files — kernel headers and YAML data — are opened at run
+time by path relative to ``__file__``, so one missing from the wheel is an
+install that imports cleanly and then fails on first use. The expected set is
 derived from ``git ls-files`` at run time rather than listed here, so a
 resource added later is covered the day it lands.
 
@@ -33,9 +31,6 @@ from pathlib import Path
 # Import name, and the wheel's only permitted top-level entry.
 PACKAGE_DIR = "tileops"
 SOURCE_PACKAGE_DIR = f"src/{PACKAGE_DIR}"
-# Native sources live beside the package and install inside it (see setup.py).
-SOURCE_NATIVE_DIR = "src/csrc"
-WHEEL_NATIVE_DIR = f"{PACKAGE_DIR}/csrc"
 SDIST_EXTRA_REQUIRED = ("LICENSE", "README.md")
 SDIST_ALLOWED_DIRS = frozenset({"src"})
 # `PKG-INFO` and `setup.cfg` are written by the build; the rest a build reads.
@@ -46,7 +41,6 @@ SDIST_ALLOWED_FILES = frozenset(
         "CONTRIBUTING.md",
         "MANIFEST.in",
         "pyproject.toml",
-        "setup.py",
         "PKG-INFO",
         "setup.cfg",
     }
@@ -55,15 +49,11 @@ SDIST_ALLOWED_FILES = frozenset(
 _IGNORED_DIRS = frozenset({"__pycache__", ".egg-info"})
 
 
-def _is_resource(path: str) -> bool:
-    return path.startswith(f"{SOURCE_NATIVE_DIR}/") or not path.endswith(".py")
-
-
 def _tracked_resources_from_git(repo_root: Path) -> list[str] | None:
-    """Return tracked resource paths, or None without git."""
+    """Return tracked non-``.py`` paths under the package, or None without git."""
     try:
         completed = subprocess.run(
-            ["git", "-C", str(repo_root), "ls-files", "--", SOURCE_PACKAGE_DIR, SOURCE_NATIVE_DIR],
+            ["git", "-C", str(repo_root), "ls-files", "--", SOURCE_PACKAGE_DIR],
             capture_output=True,
             text=True,
             check=False,
@@ -72,21 +62,21 @@ def _tracked_resources_from_git(repo_root: Path) -> list[str] | None:
         return None
     if completed.returncode != 0:
         return None
-    paths = [line for line in completed.stdout.splitlines() if line and _is_resource(line)]
+    paths = [line for line in completed.stdout.splitlines() if line and not line.endswith(".py")]
     return sorted(paths) if paths else None
 
 
 def _resources_from_source_tree(repo_root: Path) -> list[str]:
-    """Return resource paths by walking the source tree."""
+    """Return non-``.py`` paths under the package by walking the source tree."""
+    package = repo_root / SOURCE_PACKAGE_DIR
     paths = []
-    for tree in (SOURCE_PACKAGE_DIR, SOURCE_NATIVE_DIR):
-        for path in (repo_root / tree).rglob("*"):
-            rel = path.relative_to(repo_root)
-            if not path.is_file() or not _is_resource(rel.as_posix()):
-                continue
-            if any(part in _IGNORED_DIRS or part.endswith(".egg-info") for part in rel.parts):
-                continue
-            paths.append(rel.as_posix())
+    for path in package.rglob("*"):
+        if not path.is_file() or path.suffix == ".py":
+            continue
+        rel = path.relative_to(repo_root)
+        if any(part in _IGNORED_DIRS or part.endswith(".egg-info") for part in rel.parts):
+            continue
+        paths.append(rel.as_posix())
     return sorted(paths)
 
 
@@ -105,7 +95,7 @@ def check_wheel(wheel_path: Path, required: list[str]) -> list[str]:
     # A wheel is unpacked into site-packages, so its paths carry no `src/`.
     errors = [
         f"wheel {wheel_path.name}: missing {wheel_entry}"
-        for wheel_entry in (_wheel_path(entry) for entry in required)
+        for wheel_entry in (_strip_src(entry) for entry in required)
         if wheel_entry not in names
     ]
     tops = {name.split("/", 1)[0] for name in names if name}
@@ -144,15 +134,10 @@ def check_sdist(sdist_path: Path, required: list[str]) -> list[str]:
     return errors
 
 
-def _wheel_path(path: str) -> str:
-    """Map a repo-relative resource path to its position inside the wheel."""
-    for source, installed in (
-        (SOURCE_NATIVE_DIR, WHEEL_NATIVE_DIR),
-        (SOURCE_PACKAGE_DIR, PACKAGE_DIR),
-    ):
-        if path.startswith(f"{source}/"):
-            return f"{installed}{path[len(source) :]}"
-    return path
+def _strip_src(path: str) -> str:
+    """Map a repo-relative package path to its position inside the wheel."""
+    prefix = f"{SOURCE_PACKAGE_DIR.split('/', 1)[0]}/"
+    return path[len(prefix) :] if path.startswith(prefix) else path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -172,18 +157,17 @@ def main(argv: list[str] | None = None) -> int:
 
     resources, source = expected_resources(args.repo_root)
     print(
-        f"expected {len(resources)} shipped resources under {SOURCE_PACKAGE_DIR}/ and "
-        f"{SOURCE_NATIVE_DIR}/ (from {source})"
+        f"expected {len(resources)} shipped resources under {SOURCE_PACKAGE_DIR}/ (from {source})"
     )
     if not resources:
-        errors.append(f"no resources found under {args.repo_root}/{SOURCE_PACKAGE_DIR}")
+        errors.append(f"no non-.py resources found under {args.repo_root}/{SOURCE_PACKAGE_DIR}")
 
-    sdist_required = [
+    manifest_yamls = [
         r
         for r in resources
-        if r.startswith(f"{SOURCE_NATIVE_DIR}/")
-        or (r.startswith(f"{SOURCE_PACKAGE_DIR}/manifest/") and r.endswith(".yaml"))
-    ] + list(SDIST_EXTRA_REQUIRED)
+        if r.startswith(f"{SOURCE_PACKAGE_DIR}/manifest/") and r.endswith(".yaml")
+    ]
+    sdist_required = manifest_yamls + list(SDIST_EXTRA_REQUIRED)
     for wheel in wheels:
         errors.extend(check_wheel(wheel, resources))
     for sdist in sdists:
