@@ -22,6 +22,7 @@ from tileops.kernels.attention import (
     GQAPrefillVarlenFwdKernel,
     GQAPrefillVarlenWSFwdKernel,
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
+    MHABwdWsKernel,
 )
 from tileops.kernels.attention.call_spec import AttentionCall, fp8_dtype
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -1085,7 +1086,9 @@ class GroupedQueryAttentionBwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_bwd_preprocess_kernel": FlashAttnBwdPreprocessKernel,
         "gqa_bwd_kernel": GQABwdWgmmaPipelinedKernel,
+        "gqa_bwd_ws_kernel": MHABwdWsKernel,
     }
+    _BACKWARD_KEYS = ("gqa_bwd_kernel", "gqa_bwd_ws_kernel")
 
     def __init__(
         self,
@@ -1110,40 +1113,32 @@ class GroupedQueryAttentionBwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _get_kernels(
-        self, inputs: "tuple[torch.Tensor | None, ...]", call: tuple
-    ) -> tuple[Kernel, Kernel]:
-        """Return (preprocess, backward) kernels for *call*, building once each."""
-        return self.kernel_for("gqa_bwd", inputs, call)
+    def _attention_call(self, q: torch.Tensor, k: torch.Tensor) -> AttentionCall:
+        """State what one backward call is, for selection to filter against."""
+        batch, seq_len, heads, dim = q.shape
+        return AttentionCall(
+            dtype=q.dtype,
+            batch=batch,
+            heads=heads,
+            heads_kv=k.shape[2],
+            dim=dim,
+            max_seqlen_q=seq_len,
+            seqlen_kv=seq_len,
+            is_causal=self.is_causal,
+            tune=self.tune,
+            device=q.device,
+        )
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """Both passes run on every call, so they are built together as one entry, per
-        ``(batch, heads, heads_kv, seq_len, dim, dtype)``."""
-        batch, heads, heads_kv, seq_len, dim, dtype = call
-
-        def build() -> tuple[Kernel, Kernel]:
-            return (
-                self.kernel_map["gqa_bwd_preprocess_kernel"](
-                    batch,
-                    heads,
-                    seq_len,
-                    dim,
-                    dtype,
-                    tune=self.tune,
-                ),
-                self.kernel_map["gqa_bwd_kernel"](
-                    batch,
-                    heads,
-                    heads_kv,
-                    seq_len,
-                    dim,
-                    self.is_causal,
-                    dtype,
-                    tune=self.tune,
-                ),
-            )
-
-        return call, build
+    def entry_for(self, role: str, call: AttentionCall) -> Entry:
+        """The preprocess pass has one implementation, built per ``(batch, heads,
+        seq_len, dim, dtype)``; the backward pass is chosen among its candidates."""
+        if role == "gqa_bwd_preprocess":
+            args = (call.batch, call.heads, call.max_seqlen_q, call.dim, call.dtype)
+            cls = self.kernel_map["gqa_bwd_preprocess_kernel"]
+            return (cls, args), lambda: cls(*args, tune=self.tune)
+        cls = self.select_kernel(call, self._BACKWARD_KEYS)
+        identity, build = cls.entry_for(call)
+        return (cls, identity), build
 
     def forward(
         self,
@@ -1183,18 +1178,12 @@ class GroupedQueryAttentionBwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         do = do.contiguous()
-        batch, seq_len, heads, dim = q.shape
-        prep_kernel, kernel = self._get_kernels(
-            (q, k, v, o, do, lse), (batch, heads, k.shape[2], seq_len, dim, q.dtype)
-        )
-        delta = prep_kernel(o, do)
-        dq = torch.zeros_like(q, dtype=torch.float32)
-        dk = torch.zeros_like(k, dtype=torch.float32)
-        dv = torch.zeros_like(v, dtype=torch.float32)
-        kernel(q, k, v, do, lse, delta, dq, dk, dv)
-        dq = dq.to(q.dtype)
-        dk, dv = dk.to(q.dtype), dv.to(q.dtype)
-        return dq, dk, dv
+        inputs = (q, k, v, o, do, lse)
+        call = self._attention_call(q, k)
+        prep_kernel = self.kernel_for("gqa_bwd_preprocess", inputs, call)
+        kernel = self.kernel_for("gqa_bwd", inputs, call)
+        delta, dq_accum = prep_kernel(o, do)
+        return kernel(q, k, v, do, lse, delta, dq_accum)
 
     def compute_roof(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

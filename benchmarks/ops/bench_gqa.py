@@ -1,5 +1,6 @@
 """Benchmark the TileOPs grouped-query attention ops, one case per manifest call, against FA3, FlashInfer and torch."""
 
+import math
 from itertools import accumulate
 
 import pytest
@@ -39,33 +40,34 @@ from workloads.gqa import (
 )
 
 
-def _fa3_gqa_bwd(workload: GroupedQueryAttentionBwdCall):
-    """Return FA3 backward baseline callable, or None if not installed."""
+def _fa3_gqa_bwd(workload: GroupedQueryAttentionBwdCall, lse: torch.Tensor):
+    """Return FA3's backward alone as a callable, or None if FA3 is not installed.
+
+    ``flash_attn_func`` would run FA3's forward inside the timed call; its backward
+    entry takes the forward's output and LSE directly, so only the backward is timed.
+    """
     try:
-        from flash_attn_interface import flash_attn_func
+        from flash_attn_interface import _flash_attn_backward
     except ImportError:
         return None
 
-    @torch.enable_grad()
+    # The workload's LSE is base 2; FA3 takes the natural logarithm.
+    lse_natural = lse * math.log(2.0)
+
     def baseline_fn(q, k, v, o, grad_output, lse):
-        q = q.detach().requires_grad_(True)
-        k = k.detach().requires_grad_(True)
-        v = v.detach().requires_grad_(True)
-        raw = flash_attn_func(q, k, v, causal=workload.is_causal)
-        outputs = raw if isinstance(raw, tuple) else (raw,)
-        return backward_of(outputs[0])(grad_output, *(None,) * (len(outputs) - 1))
+        dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
+        _flash_attn_backward(
+            grad_output, q, k, v, o, lse_natural, dq=dq, dk=dk, dv=dv, is_causal=workload.is_causal
+        )
+        return dq, dk, dv
 
     return baseline_fn
 
 
-def _torch_gqa_bwd(workload):
-    """Torch SDPA backward baseline (includes forward recompute)."""
-
-    @torch.enable_grad()
-    def fn(q, k, v, o, grad_output, lse):
-        q = q.detach().requires_grad_(True)
-        k = k.detach().requires_grad_(True)
-        v = v.detach().requires_grad_(True)
+def _torch_gqa_bwd(workload, q, k, v):
+    """Torch SDPA's backward alone: the forward runs once here, outside the timed call."""
+    with torch.enable_grad():
+        q, k, v = (t.detach().requires_grad_(True) for t in (q, k, v))
         out = F.scaled_dot_product_attention(
             q.transpose(1, 2),
             k.transpose(1, 2),
@@ -73,9 +75,11 @@ def _torch_gqa_bwd(workload):
             is_causal=workload.is_causal,
             enable_gqa=True,
         )
-        # Transposing grad_output into SDPA's layout is a view, so the baseline
-        # measures SDPA's backward alone.
-        return backward_of(out)(grad_output.transpose(1, 2))
+    node = backward_of(out)
+
+    def fn(q, k, v, o, grad_output, lse):
+        # Transposing grad_output into SDPA's layout is a view.
+        return node(grad_output.transpose(1, 2))
 
     return fn
 
@@ -90,11 +94,11 @@ def test_gqa_bwd_bench(call) -> None:
     bm = ManifestBenchmark(op, workload)
     functors = {"tileops": op}
 
-    fa3_fn = _fa3_gqa_bwd(workload)
+    fa3_fn = _fa3_gqa_bwd(workload, inputs[5])
     if fa3_fn is not None:
         functors["fa3"] = fa3_fn
     else:
-        functors["torch-sdpa"] = _torch_gqa_bwd(workload)
+        functors["torch-sdpa"] = _torch_gqa_bwd(workload, *inputs[:3])
 
     bm.compare(functors, *inputs)
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)

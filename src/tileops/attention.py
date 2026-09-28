@@ -7,7 +7,6 @@ from .ops.attention import (
     GroupedQueryAttentionPagedFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionVarlenFwdOp,
-    MultiHeadAttentionBwdOp,
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
     MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,
     NSACmpVarlenFwdOp,
@@ -18,7 +17,6 @@ from .ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
 from .ops.topk_selector import TopkSelectorFwdOp
 
 __all__ = [
-    "MultiHeadAttentionBwdOp",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
     "GroupedQueryAttentionBwdOp",
     "GroupedQueryAttentionDenseFwdOp",

@@ -13,7 +13,6 @@ from .gqa import (
     GroupedQueryAttentionVarlenFwdOp,
 )
 from .mha import (
-    MultiHeadAttentionBwdOp,
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
 )
 
@@ -24,7 +23,6 @@ __all__ = [
     "GroupedQueryAttentionPagedFwdOp",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp",
     "GroupedQueryAttentionVarlenFwdOp",
-    "MultiHeadAttentionBwdOp",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
     "MultiHeadLatentAttentionDecodeWithKVCacheFwdOp",
     "NSACmpVarlenFwdOp",

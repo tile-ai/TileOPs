@@ -8,7 +8,6 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GroupedQueryAttentionPagedFwdOp,
         GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
         GroupedQueryAttentionVarlenFwdOp,
-        MultiHeadAttentionBwdOp,
         MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
         MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,
         NSACmpVarlenFwdOp,
@@ -215,7 +214,6 @@ _LAZY = {
     "RopeYarnFwdOp": ".rope",
     "RopeLongRopeFwdOp": ".rope",
     # Attention
-    "MultiHeadAttentionBwdOp": ".attention",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp": ".attention",
     "GroupedQueryAttentionBwdOp": ".attention",
     "GroupedQueryAttentionDenseFwdOp": ".attention",

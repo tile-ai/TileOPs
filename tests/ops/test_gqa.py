@@ -592,6 +592,8 @@ def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(
 
 
 class GroupedQueryAttentionBwdFixture(FixtureBase):
+    # heads_kv == heads cases reach the pipelined kernel's one-group path and, at head
+    # dim 128, the warp-specialized kernel.
     PARAMS = [
         (
             "batch, seq_len, heads, heads_kv, dim, causal, dtype, tune",
@@ -603,10 +605,25 @@ class GroupedQueryAttentionBwdFixture(FixtureBase):
                     1, 1024, 8, 4, 64, False, torch.bfloat16, False, marks=pytest.mark.smoke
                 ),
                 pytest.param(
+                    1, 1024, 8, 8, 64, False, torch.float16, False, marks=pytest.mark.smoke
+                ),
+                pytest.param(
+                    1, 1024, 8, 8, 64, False, torch.bfloat16, False, marks=pytest.mark.smoke
+                ),
+                pytest.param(
+                    1, 256, 4, 4, 128, True, torch.float16, False, marks=pytest.mark.smoke
+                ),
+                pytest.param(
                     4, 2048, 64, 4, 128, False, torch.float16, False, marks=pytest.mark.full
                 ),
                 pytest.param(
                     4, 2048, 64, 4, 128, False, torch.bfloat16, False, marks=pytest.mark.full
+                ),
+                pytest.param(
+                    16, 2048, 16, 16, 128, False, torch.float16, False, marks=pytest.mark.full
+                ),
+                pytest.param(
+                    4, 4096, 16, 16, 128, False, torch.bfloat16, True, marks=pytest.mark.full
                 ),
             ],
         ),

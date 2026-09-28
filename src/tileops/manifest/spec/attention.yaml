@@ -7,39 +7,6 @@
 # Causal attention over rectangular calls is bottom-right aligned: query i sits at
 # position i + S_kv - S_q.
 
-MultiHeadAttentionBwdOp:
-  family: attention
-  status: implemented
-  signature:
-    forall: {B: Dim, S: Dim, H: Dim, D: Dim, T: "DType[float16 | bfloat16]"}
-    params:
-      is_causal: {type: bool, default: true}
-    inputs:
-      q: {dtype: T, shape: "[B, S, H, D]"}
-      k: {dtype: T, shape: "[B, S, H, D]"}
-      v: {dtype: T, shape: "[B, S, H, D]"}
-      o: {dtype: T, shape: "[B, S, H, D]"}
-      do: {dtype: T, shape: "[B, S, H, D]"}
-      lse: {dtype: float32, shape: "[B, H, S]"}
-    outputs:
-      dq: {dtype: T, shape: "[B, S, H, D]"}
-      dk: {dtype: T, shape: "[B, S, H, D]"}
-      dv: {dtype: T, shape: "[B, S, H, D]"}
-  workloads:
-  - {B: 4, S: 512, H: 32, D: 128, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-short}
-  - {B: 2, S: 2048, H: 32, D: 128, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-long}
-  - {B: 2, S: 512, H: 64, D: 128, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-short}
-  - {B: 1, S: 2048, H: 64, D: 128, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-long}
-  roofline:
-    # Five contractions per score; causal halves the scores.
-    flops: "10 * B * H * S * S * D // 2 if is_causal else 10 * B * H * S * S * D"
-  composition:
-    kind: composite
-    stages:
-    # MHA is GQA with one KV head per query head: every kernel this op runs is
-    # built by the GQA backward op it delegates to.
-    - {name: gqa_backward, op: GroupedQueryAttentionBwdOp}
-
 GroupedQueryAttentionDenseFwdOp:
   family: attention
   status: implemented
@@ -296,6 +263,10 @@ GroupedQueryAttentionBwdOp:
   - {B: 2, S: 2048, H: 32, D: 128, H_kv: 8, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-long}
   - {B: 2, S: 512, H: 64, D: 128, H_kv: 8, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-short}
   - {B: 1, S: 2048, H: 64, D: 128, H_kv: 8, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-long}
+  - {B: 4, S: 512, H: 32, D: 128, H_kv: 32, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-short-mha}
+  - {B: 2, S: 2048, H: 32, D: 128, H_kv: 32, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-long-mha}
+  - {B: 2, S: 512, H: 64, D: 128, H_kv: 64, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-short-mha}
+  - {B: 1, S: 2048, H: 64, D: 128, H_kv: 64, is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-long-mha}
   roofline:
     # Five contractions per score; causal halves the scores.
     flops: "10 * B * H * S * S * D // 2 if is_causal else 10 * B * H * S * S * D"
