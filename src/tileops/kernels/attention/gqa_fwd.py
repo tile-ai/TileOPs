@@ -6,12 +6,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import FP8_E4M3_MAX
+from tileops.kernels.constants import FP8_E4M3_MAX, LOG2E
 from tileops.kernels.kernel_base import Kernel
 
-from .call_spec import fp8_dtype
 from .online_softmax import (
-    LOG2E,
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
@@ -805,7 +803,7 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return not call.fuse_rope and call.cache_dtype == fp8_dtype()
+        return not call.fuse_rope and call.cache_dtype == torch.float8_e4m3fn
 
     @property
     def default_config(self) -> dict:

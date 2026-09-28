@@ -6,12 +6,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
 from .call_spec import dense_decode_region, dense_long_context_decode_region
 from .dense_entry import dense_decode_entry
 from .online_softmax import (
-    LOG2E,
     make_apply_softcap,
     make_online_softmax,
     make_rescale,

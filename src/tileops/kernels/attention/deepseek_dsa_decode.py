@@ -9,10 +9,9 @@ import torch
 from tilelang.autotuner import autotune
 
 from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_version
-
-from .online_softmax import LOG2E
 
 __all__ = ["SparseMlaBasicKernel", "SparseMlaCall", "SparseMlaKernel"]
 

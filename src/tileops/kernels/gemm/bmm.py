@@ -13,7 +13,7 @@ import torch
 from tileops.kernels.grouped_gemm.heuristics import GemmType
 from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.utils import device_calibration, get_sm_count
+from tileops.utils import device_calibration, get_sm_count, get_sm_version
 
 from .call_spec import BmmCall
 
@@ -834,15 +834,14 @@ class BmmFp8Kernel(Kernel):
         tune: bool = False,
     ) -> None:
         super().__init__()
-        if device is None:
-            device = torch.device(torch.cuda.current_device())
-        cc = torch.cuda.get_device_capability(device)
-        if cc[0] < 9 and cc != (8, 9):
+        index = device.index if device is not None else None
+        arch = get_sm_version(index)
+        if arch < 89:
             # Fail fast with a clear message instead of a downstream
             # nvcc / PTX error at JIT time.
             raise NotImplementedError(
                 f"BmmFp8Kernel requires FP8 tensor cores (sm89+); "
-                f"got sm{cc[0]}{cc[1]} on the current device"
+                f"got sm{arch} on the current device"
             )
         if k % 32 != 0:
             raise ValueError(
@@ -863,8 +862,8 @@ class BmmFp8Kernel(Kernel):
         #      unvalidated there);
         #   3) classic 3D grid (handles arbitrary M/N tails; plain T.gemm,
         #      runs on any FP8 tensor-core target, sm89+).
-        self._sm_count = torch.cuda.get_device_properties(device).multi_processor_count
-        self._is_sm90 = cc[0] == 9
+        self._sm_count = get_sm_count(index)
+        self._is_sm90 = arch // 10 == 9
         self._use_ws = self._is_sm90 and self._ws_eligible(batch, m, n, k, self._sm_count)
         self._use_persistent = self._is_sm90 and (
             self._use_ws or self._persistent_eligible(m, n, k, self._use_ws)

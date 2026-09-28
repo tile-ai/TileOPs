@@ -22,6 +22,7 @@ four warp partials merge through shared memory, and the last split block to
 finish for an output merges the per-split partials.
 """
 
+import functools
 from typing import Optional
 
 import tilelang
@@ -29,32 +30,21 @@ import tilelang.language as T
 import torch
 from tilelang.layout import make_swizzled_layout
 
-from tileops.kernels.attention.call_spec import AttentionCall
-from tileops.kernels.constants import LOG2E
+from tileops.kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import WARP_LANES
 
-from .call_spec import paged_decode_ws_region
+from .call_spec import ATTENTION_DTYPES, AttentionCall, uses_sliding_window
 
 __all__ = ["MHADecodePagedWsKernel"]
 
-WARP = 32
 # Warps in the consumer group. One warp group of each role, 256 threads: two
 # consumer groups deadlock the block-wide sync the layout pass inserts.
-CONS_WARPS = 4
-CONS = CONS_WARPS * WARP
-PROD = 128
+_CONS_WARPS = 4
+_CONS = _CONS_WARPS * WARP_LANES
+_PROD = 128
 # Named barrier the consumer group uses on its own, never block-wide.
 _MERGE_BARRIER = 1
-# Splits per output, and the grid size past which fewer are taken. Fitted on H200: 8
-# splits measured fastest on every manifest row.
-_SPLITS = 8
-_MAX_BLOCKS = 1024
-# Positions of the int32 arguments of the kernel.
-_LENGTHS_ARG, _TABLE_ARG, _ARRIVED_ARG = 3, 4, 7
-# Key elements a lane reads per shared-memory load: 16 bytes of a 16-bit key row.
-_KCHUNK = 8
-# Per-lane registers the per-row state of a block's query rows may take.
-_ROW_STATE_REGS = 128
 # Finite stand-in for -inf in the running max, so a fully masked tile rescales
 # by exactly one instead of evaluating exp2(-inf - -inf).
 _NEG_FLOOR = -1.0e38
@@ -64,18 +54,7 @@ _NEG_FLOOR = -1.0e38
 _EMPTY_LSE = -1.0e30
 
 
-def _log2(n: int) -> int:
-    return n.bit_length() - 1
-
-
-def _jit_kwargs() -> dict:
-    return dict(
-        out_idx=[-1],
-        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
-    )
-
-
+@functools.lru_cache(maxsize=32)
 def _mha_decode_paged_ws_kernel(
     batch: int,
     heads: int,
@@ -91,45 +70,26 @@ def _mha_decode_paged_ws_kernel(
     accum = "float"
     num_pages = (seqlen_kv + page_size - 1) // page_size
     # Output elements a lane accumulates: the warp spans the head dim once.
-    vec = dim // WARP
+    vec = dim // WARP_LANES
+    # Key elements a lane reads per shared-memory load, for 16-bit keys.
+    kchunk = VECTOR_ACCESS_BYTES // 2
 
-    @tilelang.jit(**_jit_kwargs())
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
     def _func(block_N: int, num_split: int, stages: int, group: int):
-        rows_per_warp = block_N // CONS_WARPS
+        rows_per_warp = block_N // _CONS_WARPS
         # Lanes that share one key row's score, so every lane works at any tile height.
-        lanes_per_row = WARP // rows_per_warp
+        lanes_per_row = WARP_LANES // rows_per_warp
         span = dim // lanes_per_row
-        chunk = min(_KCHUNK, span)
-        threads = CONS + PROD
+        chunk = min(kchunk, span)
+        threads = _CONS + _PROD
         n_groups = seqlen_q // group
 
-        @T.macro
-        def merge_splits(glse, O_partial, Output, bb, qi, bh, d0):
-            lse = T.alloc_local([num_split], accum)
-            acc = T.alloc_local([vec], accum)
-            peak = T.alloc_local([1], accum)
-            total = T.alloc_local([1], accum)
-            weight = T.alloc_local([1], accum)
-
-            peak[0] = _EMPTY_LSE
-            for s in T.serial(num_split):
-                lse[s] = glse[bb, qi, bh, s]
-            for s in T.serial(num_split):
-                peak[0] = T.max(peak[0], lse[s])
-            total[0] = 0
-            for c in T.serial(vec):
-                acc[c] = 0
-            for s in T.serial(num_split):
-                weight[0] = T.exp2(lse[s] - peak[0])
-                total[0] += weight[0]
-                for c in T.serial(vec):
-                    acc[c] += O_partial[bb, qi, bh, s, d0 + c] * weight[0]
-            total[0] = 1.0 / total[0]
-            for c in T.serial(vec):
-                Output[bb, qi, bh, d0 + c] = T.cast(acc[c] * total[0], dtype)
-
-        @T.macro
-        def split(
+        @T.prim_func
+        def mha_decode_paged_ws(
             Q: T.Tensor([batch, seqlen_q, heads, dim], dtype),
             K: T.Tensor([seqlen_kv, heads, dim], dtype),
             V: T.Tensor([seqlen_kv, heads, dim], dtype),
@@ -149,9 +109,9 @@ def _mha_decode_paged_ws_kernel(
                 # the other arm.
                 Ks = T.alloc_shared([stages, block_N, dim], dtype)
                 Vs = T.alloc_shared([stages, block_N, dim], dtype)
-                warp_m = T.alloc_shared([group, CONS_WARPS], accum, scope="shared")
-                warp_l = T.alloc_shared([group, CONS_WARPS], accum, scope="shared")
-                warp_o = T.alloc_shared([group, CONS_WARPS, dim], accum, scope="shared")
+                warp_m = T.alloc_shared([group, _CONS_WARPS], accum, scope="shared")
+                warp_l = T.alloc_shared([group, _CONS_WARPS], accum, scope="shared")
+                warp_o = T.alloc_shared([group, _CONS_WARPS, dim], accum, scope="shared")
                 q_s = T.alloc_shared([group, dim], accum, scope="shared")
                 arrived_before = T.alloc_shared([1], "int32", scope="shared")
                 T.annotate_layout(
@@ -165,10 +125,10 @@ def _mha_decode_paged_ws_kernel(
                 # empty barrier by every consumer thread that finished reading
                 # it. The counts are the two group sizes; getting them wrong
                 # hangs the block and takes the context with it.
-                k_ready = T.alloc_barrier([PROD] * stages)
-                k_free = T.alloc_barrier([CONS] * stages)
-                v_ready = T.alloc_barrier([PROD] * stages)
-                v_free = T.alloc_barrier([CONS] * stages)
+                k_ready = T.alloc_barrier([_PROD] * stages)
+                k_free = T.alloc_barrier([_CONS] * stages)
+                v_ready = T.alloc_barrier([_PROD] * stages)
+                v_free = T.alloc_barrier([_CONS] * stages)
 
                 tx = T.get_thread_binding()
                 kv_len = real_seqlen_kv[bb]
@@ -183,7 +143,7 @@ def _mha_decode_paged_ws_kernel(
                 tile_begin = bs * tiles_per_split
                 n_tiles = T.max(T.min(tile_begin + tiles_per_split, tiles_total) - tile_begin, 0)
 
-                if tx >= CONS:
+                if tx >= _CONS:
                     with T.ws(1):
                         for t in T.serial(n_tiles):
                             st = t % stages
@@ -202,8 +162,8 @@ def _mha_decode_paged_ws_kernel(
                             T.mbarrier_arrive(v_ready[st])
                 else:
                     with T.ws(0):
-                        warp = tx // WARP
-                        lane = tx % WARP
+                        warp = tx // WARP_LANES
+                        lane = tx % WARP_LANES
                         d0 = lane * vec
                         # The key row this lane scores, and where its span of it starts.
                         j_own = warp * rows_per_warp + lane // lanes_per_row
@@ -220,9 +180,11 @@ def _mha_decode_paged_ws_kernel(
                         m_new = T.alloc_local([1], accum)
                         resc = T.alloc_local([1], accum)
                         pj = T.alloc_local([1], accum)
+                        lse = T.alloc_local([num_split], accum)
+                        peak = T.alloc_local([1], accum)
 
-                        for i in T.serial(T.ceildiv(group * dim, CONS)):
-                            idx = i * CONS + tx
+                        for i in T.serial(T.ceildiv(group * dim, _CONS)):
+                            idx = i * _CONS + tx
                             if idx < group * dim:
                                 q_s[idx // dim, idx % dim] = T.cast(
                                     Q[bb, q0 + idx // dim, bh, idx % dim], accum
@@ -241,7 +203,7 @@ def _mha_decode_paged_ws_kernel(
                             m_run[g] = _NEG_FLOOR
                             # This lane's share of the row sum.
                             l_run[g] = 0
-                        T.sync_threads(barrier_id=_MERGE_BARRIER, arrive_count=CONS)
+                        T.sync_threads(barrier_id=_MERGE_BARRIER, arrive_count=_CONS)
 
                         for t in T.serial(n_tiles):
                             st = t % stages
@@ -263,7 +225,7 @@ def _mha_decode_paged_ws_kernel(
 
                             # One max per query row and tile, across the warp's rows.
                             for g in T.unroll(group):
-                                for r in T.unroll(_log2(lanes_per_row)):
+                                for r in T.unroll(lanes_per_row.bit_length() - 1):
                                     dot[g] += T.shfl_xor(
                                         dot[g], T.shift_right(lanes_per_row // 2, r)
                                     )
@@ -310,18 +272,18 @@ def _mha_decode_paged_ws_kernel(
                             if lane == 0:
                                 warp_m[g, warp] = m_run[g]
                                 warp_l[g, warp] = l_run[g]
-                        T.sync_threads(barrier_id=_MERGE_BARRIER, arrive_count=CONS)
+                        T.sync_threads(barrier_id=_MERGE_BARRIER, arrive_count=_CONS)
 
-                        # Warp w merges rows w, w + CONS_WARPS, ...
+                        # Warp w merges rows w, w + _CONS_WARPS, ...
                         for g in T.unroll(group):
-                            if warp == g % CONS_WARPS:
+                            if warp == g % _CONS_WARPS:
                                 m_new[0] = _NEG_FLOOR
-                                for u in T.serial(CONS_WARPS):
+                                for u in T.serial(_CONS_WARPS):
                                     m_new[0] = T.max(m_new[0], warp_m[g, u])
                                 l_run[g] = 0
                                 for c in T.serial(vec):
                                     acc_o[g, c] = 0
-                                for u in T.serial(CONS_WARPS):
+                                for u in T.serial(_CONS_WARPS):
                                     resc[0] = T.exp2(warp_m[g, u] - m_new[0])
                                     l_run[g] += warp_l[g, u] * resc[0]
                                     for c in T.serial(vec):
@@ -349,7 +311,7 @@ def _mha_decode_paged_ws_kernel(
                             # The last split to arrive merges every split. The release on
                             # the count publishes this block's partials, which the barrier
                             # orders before it; the acquire makes the others' visible.
-                            T.sync_threads(barrier_id=_MERGE_BARRIER, arrive_count=CONS)
+                            T.sync_threads(barrier_id=_MERGE_BARRIER, arrive_count=_CONS)
                             if tx == 0:
                                 arrived_before[0] = T.atomic_add(
                                     Arrived[bg * heads + bh],
@@ -357,72 +319,77 @@ def _mha_decode_paged_ws_kernel(
                                     memory_order="acq_rel",
                                     return_prev=True,
                                 )
-                            T.sync_threads(barrier_id=_MERGE_BARRIER, arrive_count=CONS)
+                            T.sync_threads(barrier_id=_MERGE_BARRIER, arrive_count=_CONS)
                             if arrived_before[0] == num_split - 1:
                                 for g in T.unroll(group):
-                                    if warp == g % CONS_WARPS:
-                                        merge_splits(glse, O_partial, Output, bb, q0 + g, bh, d0)
+                                    if warp == g % _CONS_WARPS:
+                                        peak[0] = _EMPTY_LSE
+                                        for sp in T.serial(num_split):
+                                            lse[sp] = glse[bb, q0 + g, bh, sp]
+                                            peak[0] = T.max(peak[0], lse[sp])
+                                        l_run[g] = 0
+                                        for c in T.serial(vec):
+                                            acc_o[g, c] = 0
+                                        for sp in T.serial(num_split):
+                                            resc[0] = T.exp2(lse[sp] - peak[0])
+                                            l_run[g] += resc[0]
+                                            for c in T.serial(vec):
+                                                acc_o[g, c] += (
+                                                    O_partial[bb, q0 + g, bh, sp, d0 + c] * resc[0]
+                                                )
+                                        for c in T.serial(vec):
+                                            Output[bb, q0 + g, bh, d0 + c] = T.cast(
+                                                acc_o[g, c] / l_run[g], dtype
+                                            )
                                 # Leave the count zeroed for the next launch.
                                 if tx == 0:
                                     Arrived[bg * heads + bh] = 0
-
-        @T.prim_func
-        def mha_decode_paged_ws(
-            Q: T.Tensor([batch, seqlen_q, heads, dim], dtype),
-            K: T.Tensor([seqlen_kv, heads, dim], dtype),
-            V: T.Tensor([seqlen_kv, heads, dim], dtype),
-            real_seqlen_kv: T.Tensor([batch], "int32"),
-            block_table: T.Tensor([batch, num_pages], "int32"),
-            glse: T.Tensor([batch, seqlen_q, heads, num_split], accum),
-            O_partial: T.Tensor([batch, seqlen_q, heads, num_split, dim], accum),
-            Arrived: T.Tensor([batch * seqlen_q * heads], "int32"),
-            Output: T.Tensor([batch, seqlen_q, heads, dim], dtype),
-        ):
-            split(Q, K, V, real_seqlen_kv, block_table, glse, O_partial, Arrived, Output)
 
         return mha_decode_paged_ws
 
     return _func
 
 
-def _mha_decode_paged_ws_run(
-    batch: int,
-    heads: int,
-    seqlen_q: int,
-    seqlen_kv: int,
-    dim: int,
-    page_size: int,
-    is_causal: bool,
-    dtype: str,
-    block_N: int,
-    num_split: int,
-    stages: int,
-    group: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    real_seqlen_kv: torch.Tensor,
-    block_table: torch.Tensor,
-    glse: torch.Tensor,
-    O_partial: torch.Tensor,
-    arrived: torch.Tensor,
-) -> torch.Tensor:
-    kernel = _mha_decode_paged_ws_kernel(
-        batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype
-    )
-    return kernel(block_N, num_split, stages, group)(
-        Q, K, V, real_seqlen_kv, block_table, glse, O_partial, arrived
-    )
-
-
 class MHADecodePagedWsKernel(Kernel):
     """SM90 paged MHA decode: hand-written warp specialization, no MMA."""
 
     supported_archs: list[int] = [90]
+    # Tile heights the kernel picks from.
+    _TILE_HEIGHTS = (16, 32, 64, 128)
+    # Head dims up to which a lane's output slice, dim / 32 registers per row, fits.
+    _MAX_DIM = 256
+    # Per-lane registers the per-row state of a block's query rows may take, and the
+    # scalars of that state beside the output slice: score, weight, max, sum, length.
+    _ROW_STATE_REGS = 128
+    _ROW_SCALARS = 5
+    # Pipeline depths of the K/V ring autotune weighs; the default takes the shallowest.
+    _STAGE_CHOICES = (2, 3)
+    # Splits per output, and the grid size past which fewer are taken. Fitted on H200:
+    # 8 splits measured fastest on every manifest row; re-measure the rows to move it.
+    _SPLITS = 8
+    _MAX_BLOCKS = 1024
+    # Multiply-adds up to which the kernel serves several query rows, counted as
+    # ``batch * heads * seqlen_q * seqlen_kv * dim`` with the pool size bounding every
+    # request. Fitted on H200: the CUDA-core contraction lost to the tensor-core kernel
+    # from 2**28 up; re-measure both kernels near the bound to move it.
+    _MAX_MULTI_QUERY_MACS = 2**27
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return paged_decode_ws_region(call)
+    def applies(cls, call: AttentionCall) -> bool:
+        """A 16-bit call without softcap or window, a head dim a warp spans, a page some
+        tile height divides, and several query rows only below the work bound."""
+        macs = call.batch * call.heads * call.max_seqlen_q * call.seqlen_kv * call.dim
+        return (
+            call.max_seqlen_q >= 1
+            and (call.max_seqlen_q == 1 or macs <= cls._MAX_MULTI_QUERY_MACS)
+            and call.softcap == 0.0
+            and call.dtype in ATTENTION_DTYPES
+            and not call.is_fp8
+            and not uses_sliding_window(call)
+            and call.dim % WARP_LANES == 0
+            and 0 < call.dim <= cls._MAX_DIM
+            and bool(cls._tile_heights(call.page_size, call.seqlen_kv))
+        )
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
@@ -480,32 +447,23 @@ class MHADecodePagedWsKernel(Kernel):
 
     # -- configuration ----------------------------------------------------
 
-    def _block_n_choices(self) -> list[int]:
-        """Tile heights that keep one tile inside one page.
-
-        A tile that straddles a page boundary would need a second block-table
-        read and a second TMA base, so the tile height divides the page size.
-        It also splits evenly across the consumer warps.
-        """
+    @classmethod
+    def _tile_heights(cls, page_size: int, seqlen_kv: int) -> list[int]:
+        """Tile heights that divide the page size, so a tile reads one block-table entry."""
         return [
-            n
-            for n in (16, 32, 64, 128)
-            if n % CONS_WARPS == 0
-            and n <= self.page_size
-            and self.page_size % n == 0
-            and n <= self.seqlen_kv
+            n for n in cls._TILE_HEIGHTS if n <= page_size and page_size % n == 0 and n <= seqlen_kv
         ]
 
     def _group_choices(self) -> list[int]:
         """Query rows per block: divisors of ``seqlen_q`` whose per-lane state fits.
 
-        Per row a lane holds its output slice plus a score, weight, max, sum and length.
+        Per row a lane holds its output slice plus ``_ROW_SCALARS`` scalars.
         """
-        per_row = self.dim // WARP + 5
+        per_row = self.dim // WARP_LANES + self._ROW_SCALARS
         return [
             g
             for g in range(1, self.seqlen_q + 1)
-            if self.seqlen_q % g == 0 and g * per_row <= _ROW_STATE_REGS
+            if self.seqlen_q % g == 0 and g * per_row <= self._ROW_STATE_REGS
         ]
 
     def _num_split(self, group: int) -> int:
@@ -516,9 +474,9 @@ class MHADecodePagedWsKernel(Kernel):
         weighs one split, which wins once the grid fills the device without splitting.
         """
         work_items = self.batch * (self.seqlen_q // group) * self.heads
-        num_split = _SPLITS
+        num_split = self._SPLITS
         while num_split > 1 and (
-            num_split * work_items > _MAX_BLOCKS or num_split > self.seqlen_kv
+            num_split * work_items > self._MAX_BLOCKS or num_split > self.seqlen_kv
         ):
             num_split //= 2
         return num_split
@@ -530,19 +488,24 @@ class MHADecodePagedWsKernel(Kernel):
         num_split = self._num_split(group)
         rows_per_split = -(-self.seqlen_kv // num_split)
         block_N = max(
-            (n for n in self._block_n_choices() if n <= rows_per_split),
-            default=min(self._block_n_choices()),
+            (n for n in self._tile_heights(self.page_size, self.seqlen_kv) if n <= rows_per_split),
+            default=min(self._tile_heights(self.page_size, self.seqlen_kv)),
         )
-        return {"block_N": block_N, "num_split": num_split, "stages": 2, "group": group}
+        return {
+            "block_N": block_N,
+            "num_split": num_split,
+            "stages": min(self._STAGE_CHOICES),
+            "group": group,
+        }
 
     @property
     def autotune_configs(self) -> list[dict]:
         return [
             {"block_N": block_N, "num_split": num_split, "stages": stages, "group": group}
-            for block_N in self._block_n_choices()
+            for block_N in self._tile_heights(self.page_size, self.seqlen_kv)
             for group in self._group_choices()
             for num_split in sorted({1, self._num_split(group)})
-            for stages in (2, 3)
+            for stages in self._STAGE_CHOICES
         ]
 
     # -- autotuning inputs ------------------------------------------------
@@ -561,13 +524,15 @@ class MHADecodePagedWsKernel(Kernel):
         batch, seqlen_kv, page_size = self.batch, self.seqlen_kv, self.page_size
         num_pages = (seqlen_kv + page_size - 1) // page_size
         counts = self.batch * self.seqlen_q * self.heads
+        # Positions of real_seqlen_kv, block_table and Arrived in the kernel signature.
+        lengths_arg, table_arg, arrived_arg = 3, 4, 7
 
         def supply_prog(params):
             table = torch.arange(num_pages, dtype=torch.int32, device="cuda")
             given = {
-                _LENGTHS_ARG: torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda"),
-                _TABLE_ARG: table.unsqueeze(0).expand(batch, -1).contiguous(),
-                _ARRIVED_ARG: torch.zeros(counts, dtype=torch.int32, device="cuda"),
+                lengths_arg: torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda"),
+                table_arg: table.unsqueeze(0).expand(batch, -1).contiguous(),
+                arrived_arg: torch.zeros(counts, dtype=torch.int32, device="cuda"),
             }
             return [given[i] if i in given else default_supply(p) for i, p in enumerate(params)]
 
@@ -599,28 +564,9 @@ class MHADecodePagedWsKernel(Kernel):
             dtype=torch.float32,
             device=Q.device,
         )
-        return _mha_decode_paged_ws_run(
-            self.batch,
-            self.heads,
-            self.seqlen_q,
-            self.seqlen_kv,
-            self.dim,
-            self.page_size,
-            self.is_causal,
-            self.dtype_str,
-            self.config["block_N"],
-            num_split,
-            self.config["stages"],
-            self.config["group"],
-            Q,
-            K,
-            V,
-            real_seqlen_kv,
-            block_table,
-            glse,
-            O_partial,
-            self._arrival_counts(Q.device),
-        )
+        return self.kernel(
+            self.config["block_N"], num_split, self.config["stages"], self.config["group"]
+        )(Q, K, V, real_seqlen_kv, block_table, glse, O_partial, self._arrival_counts(Q.device))
 
     def _arrival_counts(self, device: torch.device) -> torch.Tensor:
         """The zeroed per-output split counts; the kernel leaves them zeroed again.

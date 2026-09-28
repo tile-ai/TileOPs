@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.attention.call_spec import _WS_DECODE_MAX_MULTI_QUERY_MACS
+from tileops.kernels.attention import MHADecodePagedWsKernel
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 from workloads.device import run_device
 from workloads.mha import MhaDecodePagedWorkload
@@ -164,12 +164,12 @@ def test_mha_decode_paged_cache_shorter_than_bound(
 def test_mha_decode_paged_dispatch_bounds_multi_query_work() -> None:
     """Several query rows run on the warp-specialized kernel only below the work bound.
 
-    One query row always does; past ``_WS_DECODE_MAX_MULTI_QUERY_MACS`` the
+    One query row always does; past ``MHADecodePagedWsKernel._MAX_MULTI_QUERY_MACS`` the
     tensor-core kernel serves several.
     """
     op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=256, is_causal=True)
     heads, dim = 32, 128
-    large = 2 * _WS_DECODE_MAX_MULTI_QUERY_MACS // (4 * heads * dim)
+    large = 2 * MHADecodePagedWsKernel._MAX_MULTI_QUERY_MACS // (4 * heads * dim)
 
     def chosen(seqlen_q: int, seqlen_kv: int) -> str:
         q = torch.empty(1, seqlen_q, heads, dim, dtype=torch.float16, device=run_device())

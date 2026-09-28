@@ -7,12 +7,13 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
+
 from ..kernel_base import Entry, Kernel
 from .call_spec import dense_fp8_decode_region
 from .dense_entry import dense_fp8_decode_entry
 from .gqa_decode_bs1_common import COMPILE_FLAGS
 from .gqa_fwd_fp8 import _validate_fa3_gqa_descales
-from .online_softmax import LOG2E
 
 __all__ = ["GQADenseFP8DecodeKernel"]
 

@@ -7,13 +7,13 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_path
+from tileops.kernels.constants import LOG2E
 
 from ..kernel_base import Entry, Kernel
 from .call_spec import ATTENTION_DTYPES, dense_fp8_decode_region
 from .dense_entry import dense_fp8_entry
 from .gqa_dense import make_dense_qk_rope_preprocessor
 from .online_softmax import (
-    LOG2E,
     make_online_softmax_with_score_scale,
 )
 

@@ -20,6 +20,7 @@ from tileops.kernels.attention.gqa_decode_paged import (
     _gqa_decode_paged_no_split_run,
     gqa_decode_paged_block_n,
 )
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
 from .call_spec import decode_bs1_region
@@ -30,7 +31,6 @@ from .gqa_decode_bs1_common import (
     make_gqa_decode_bs1_combine,
     make_gqa_decode_bs1_split,
 )
-from .online_softmax import LOG2E
 
 __all__ = ["GQADecodePagedBs1Kernel"]
 

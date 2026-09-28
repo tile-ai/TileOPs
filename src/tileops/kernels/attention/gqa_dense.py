@@ -12,7 +12,7 @@ from tilelang.layout import make_swizzled_layout
 from tileops.kernels.constants import LOG2E
 
 from ..kernel_base import Entry, Kernel
-from .call_spec import WS_ARCH, dense_sliding_window_region, dense_ws_region
+from .call_spec import dense_sliding_window_region, dense_ws_region
 from .dense_entry import dense_sliding_window_entry, dense_ws_entry
 from .online_softmax import make_apply_softcap
 
@@ -653,7 +653,7 @@ def _gqa_dense_ws_kernel(
 class GQADenseWsKernel(Kernel):
     """Dense attention using the FA3 two-consumer pipeline."""
 
-    supported_archs: list[int] = [WS_ARCH]
+    supported_archs: list[int] = [90]
 
     @classmethod
     def applies(cls, call) -> bool:
