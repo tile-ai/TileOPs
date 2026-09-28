@@ -5,7 +5,7 @@ import torch
 
 from tests.test_base import _check_result
 from tileops.backend import BUILTIN, default_target
-from workloads.device import run_device
+from workloads.device import run_device_is_cuda
 
 
 def _under_repo_tests(item: pytest.Item) -> bool:
@@ -65,25 +65,6 @@ def isolated_dynamo():
     torch._dynamo.reset()
     yield
     torch._dynamo.reset()
-
-
-NON_RUNTIME_OPS_TIER_FILES = {
-    "tests/ops/test_elementwise_caching_autotune.py",
-    "tests/ops/test_elementwise_compile.py",
-    "tests/ops/test_elementwise_config_dtype.py",
-}
-
-TILELANG_019_SKIP_REASON = (
-    "Skipped under TileLang 0.1.9: known regressions in autodiff/codegen "
-    "lowering produce incorrect numerics or compile failures; re-enable "
-    "when these tests pass against the current tilelang."
-)
-
-TILELANG_019_KNOWN_FAILING_PATH_SUFFIXES = ()
-
-TILELANG_019_KNOWN_FAILING_NODEIDS = set()
-
-TILELANG_019_KNOWN_FAILING_PREFIXES = ()
 
 
 def _get_callspec_params(item: pytest.Item) -> dict | None:
@@ -146,21 +127,12 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Validate explicit test tier assignments, then drop the tests this run cannot serve."""
     tier_errors: list[str] = []
     tier_names = ("smoke", "full", "nightly")
-    tilelang_019_skip = pytest.mark.skip(reason=TILELANG_019_SKIP_REASON)
     non_sm90_skip = pytest.mark.skip(reason="needs compute capability 9.x")
     on_sm90 = _is_sm90()
 
     for item in items:
-        path = str(item.path)
         if not _under_repo_tests(item):
             continue
-        if (
-            item.nodeid in TILELANG_019_KNOWN_FAILING_NODEIDS
-            or any(path.endswith(suffix) for suffix in TILELANG_019_KNOWN_FAILING_PATH_SUFFIXES)
-            or any(item.nodeid.startswith(prefix) for prefix in TILELANG_019_KNOWN_FAILING_PREFIXES)
-        ):
-            item.add_marker(tilelang_019_skip)
-
         if item.get_closest_marker("sm90") is not None and not on_sm90:
             item.add_marker(non_sm90_skip)
 
@@ -179,9 +151,6 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         ops_groups[(path, test_name)].append(item)
 
     for (_path, _test_name), group in ops_groups.items():
-        if any(_path.endswith(path) for path in NON_RUNTIME_OPS_TIER_FILES):
-            continue
-
         non_xfail_items = [item for item in group if item.get_closest_marker("xfail") is None]
         smoke_items = [item for item in group if item.get_closest_marker("smoke") is not None]
 
@@ -285,7 +254,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     # A run on another device drops what needs CUDA; a run on another target drops what
     # reads the in-tree kernels.
     marks = []
-    if torch.device(run_device()).type != "cuda":
+    if not run_device_is_cuda():
         marks.append("cuda_only")
     if default_target() is not BUILTIN:
         marks.append("in_tree_kernels")

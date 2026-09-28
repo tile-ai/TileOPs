@@ -98,7 +98,6 @@ class NSATopkVarlenFwdOp(Op):
         self,
         q: torch.Tensor,
         k_cmp: torch.Tensor,
-        lse_in: torch.Tensor,
         offsets: torch.Tensor,
         chunk_offsets: torch.Tensor,
         token_indices: torch.Tensor,
@@ -108,7 +107,6 @@ class NSATopkVarlenFwdOp(Op):
         Args:
             q: Queries, packed over the batch [c_seq_len, heads, dim].
             k_cmp: Compressed keys [chunk_num, head_kv, dim].
-            lse_in: Log-sum-exp from the compression forward [c_seq_len, heads].
             offsets: Request boundaries into the packed sequence [seq_num + 1].
             chunk_offsets: Per-request chunk boundaries [seq_num + 1].
             token_indices: Request id and in-request position per token [c_seq_len, 2].
@@ -116,13 +114,12 @@ class NSATopkVarlenFwdOp(Op):
         Returns:
             Selected block ids [c_seq_len, head_kv, selected_block_num].
         """
-        return self._call_boundary(q, k_cmp, lse_in, offsets, chunk_offsets, token_indices)
+        return self._call_boundary(q, k_cmp, offsets, chunk_offsets, token_indices)
 
     def _eager_forward(
         self,
         q: torch.Tensor,
         k_cmp: torch.Tensor,
-        lse_in: torch.Tensor,
         offsets: torch.Tensor,
         chunk_offsets: torch.Tensor,
         token_indices: torch.Tensor,
@@ -131,7 +128,7 @@ class NSATopkVarlenFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        tensors = (q, k_cmp, lse_in, offsets, chunk_offsets, token_indices)
+        tensors = (q, k_cmp, offsets, chunk_offsets, token_indices)
         c_seq_len, heads, dim = q.shape
         chunk_num, head_kv = k_cmp.shape[0], k_cmp.shape[1]
         call = (

@@ -194,8 +194,6 @@ GroupedGemmFwdOp:
       b: {dtype: T, shape: "B[transpose_a, transpose_b, M, G, N, K]"}
       batch_sizes: {dtype: int32, shape: "[G]", values: "as_tensor(balanced_sizes(M, G))", requires: ["in_range(0, M + 1)", "sums_to(M)"]}
       batch_offsets: {dtype: int32, shape: "[G]", values: "exclusive_prefix_sum(balanced_sizes(M, G))", requires: ["exclusive_prefix_of(batch_sizes)"]}
-      # The start of each group padded to 128 rows. No kernel reads it.
-      batch_padded_offsets: {dtype: int32, shape: "[G]", values: "padded_exclusive_prefix_sum(balanced_sizes(M, G), 128)"}
     outputs:
       output: {dtype: T, shape: "Out[transpose_a, M, G, N, K]"}
     shape_rules:
@@ -211,5 +209,3 @@ GroupedGemmFwdOp:
 
   roofline:
     flops: "2 * M * N * K"
-    # batch_padded_offsets is passed and never read.
-    bytes: "bytes(a) + bytes(b) + bytes(batch_sizes) + bytes(batch_offsets) + bytes(output)"

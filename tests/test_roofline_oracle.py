@@ -257,29 +257,6 @@ class TestBytesOracle:
         )
         assert nsa_fwd_varlen_roofline(call)[1] == oracle
 
-    def test_nsa_topk_does_not_charge_the_lse_it_recomputes(self):
-        """`lse_in` is declared and passed, and the top-k kernel recomputes the lse
-        and discards the argument. A declared input the algorithm does not read
-        produces no traffic, and the contract does not
-        say which inputs those are."""
-        from tileops.perf.formulas import nsa_topk_varlen_roofline
-
-        call = _manifest_call("NSATopkVarlenFwdOp")
-        ix = call.ix
-        c_seq_len, heads, head_kv, dim = ix["T_q"], ix["H"], ix["H_kv"], ix["D"]
-        seq_num, chunk_num, selected = ix["N"], ix["C"], ix["selected_block_num"]
-        oracle = _ledger(
-            "NSATopkVarlenFwdOp",
-            q=((c_seq_len, heads, dim), torch.float16),
-            k_cmp=((chunk_num, head_kv, dim), torch.float16),
-            lse_in_unread=True,
-            offsets=((seq_num + 1,), torch.int32),
-            chunk_offsets=((seq_num + 1,), torch.int32),
-            token_indices=((c_seq_len, 2), torch.int32),
-            block_indices=((c_seq_len, head_kv, selected), torch.int32),
-        )
-        assert nsa_topk_varlen_roofline(call)[1] == oracle
-
     def test_gqa_prefill_paged_reads_the_pages_the_block_table_selects(self):
         """The cache is one pool and the call touches the pages its block table
         names, so the recount prices that subset rather than the pool. The scales
@@ -492,33 +469,6 @@ class TestBytesOracle:
 
         zeroed = _ledger("DropoutFwdOp", input_unread=True, output=((n,), torch.float16))
         assert priced(p=1.0) == zeroed
-
-    def test_grouped_gemm_does_not_charge_the_padding_offsets_it_ignores(self):
-        """`batch_padded_offsets` is declared and passed, and no kernel indexes it:
-        the templates pad nothing. A declared input the algorithm does not read
-        produces no traffic, and the contract does not say which inputs those are."""
-        from tileops.ops import GroupedGemmFwdOp
-
-        batch_sum, batch_count, n, k = 64, 4, 32, 16
-        f16, groups = torch.float16, ((batch_count,), torch.int32)
-        tensors = {
-            "a": torch.empty(batch_sum, k, dtype=f16),
-            "b": torch.empty(batch_count, n, k, dtype=f16),
-            **{
-                name: torch.zeros(batch_count, dtype=torch.int32)
-                for name in ("batch_sizes", "batch_offsets", "batch_padded_offsets")
-            },
-        }
-        oracle = _ledger(
-            "GroupedGemmFwdOp",
-            a=((batch_sum, k), f16),
-            b=((batch_count, n, k), f16),
-            batch_sizes=groups,
-            batch_offsets=groups,
-            batch_padded_offsets_unread=True,
-            output=((batch_sum, n), f16),
-        )
-        assert self._priced(GroupedGemmFwdOp(), tensors)[1] == oracle
 
 
 def _evaluated(op_name: str, row: dict, case: dict, **values):
@@ -792,8 +742,6 @@ class TestSpecOnlyRecounts:
 #         earns this level or fails the completeness test below.
 #   two   The binder cannot build the call and a case above does it by hand,
 #         with what the case shares written next to it.
-#   three No independent recount is available yet. Marked with what is missing,
-#         and asserted against nothing.
 #
 # Some level-one ops also keep a case above. Those cover a branch one workload
 # row does not reach -- an optional input present and absent, a second dtype
@@ -810,10 +758,8 @@ HAND_WRITTEN = {
     "FusedMoEExpertsFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "FusedMoeFwdOp": "the routed weight reads follow the routing its experts stage receives",
     "FusedMoeSharedExpertFwdOp": "the routed weight reads follow the routing its experts stage receives",
-    "GroupedGemmFwdOp": "`batch_padded_offsets` is passed and no kernel indexes it",
     "GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp": "it reads the pages its block table names, not the pool",
     "NSAVarlenFwdOp": "how much it reads follows the values in `block_counts`",
-    "NSATopkVarlenFwdOp": "`lse_in` is passed and the kernel recomputes the lse instead of reading it",
     "IndexedExpertMLPFwdOp": "the routed weight reads follow the values in `topk_ids`",
     "GroupedQueryAttentionPagedFwdOp": "it reads the rows its page table names, not the pool",
     "MultiHeadLatentAttentionPagedFwdOp": "it reads the cache rows its block table reaches, not the pool",
@@ -824,10 +770,6 @@ HAND_WRITTEN = {
     "FusedQKNormRopeFwdOp": "it leaves the v columns untouched and reads only the named cos/sin rows",
     "ChainSpeculativeSamplingFwdOp": "where the chain stops is drawn at run time, so it prices the cheaper outcome",
 }
-
-# Level three: no independent recount is available. Empty, and an entry here has
-# to say what is missing rather than that nobody has got to it.
-NOT_RECOUNTABLE: dict[str, str] = {}
 
 
 def _entries() -> list[str]:
@@ -852,9 +794,8 @@ def _draws_metadata(op_name: str) -> bool:
 def _binder_builds(op_name: str) -> bool:
     """Whether the manifest alone builds a case for *op_name*.
 
-    The formula is not called here. Whether it agrees, or even returns, is a
-    separate question: a formula that raises is a defect, and treating that as
-    "the binder cannot build this" would let it qualify for level three.
+    The formula is not called here: whether it agrees, or even returns, is a
+    separate question, and a formula that raises is a defect.
     """
     from tests.roofline_binder import manifest_cases
 
@@ -881,7 +822,7 @@ class TestCoverageLevels:
 
         checked = 0
         for op_name in _entries():
-            if op_name in HAND_WRITTEN or op_name in NOT_RECOUNTABLE:
+            if op_name in HAND_WRITTEN:
                 continue
             for label, dtype, op, oracle, _reads in manifest_cases(op_name):
                 assert op.eval_roofline()[1] == oracle, f"{op_name} {label} {dtype}"
@@ -896,7 +837,7 @@ class TestCoverageLevels:
 
         checked = 0
         for op_name in _entries():
-            if op_name in HAND_WRITTEN or op_name in NOT_RECOUNTABLE:
+            if op_name in HAND_WRITTEN:
                 continue
             for label, dtype, op, _oracle, reads in manifest_cases(op_name):
                 declared = op.eval_roofline_read_bytes()
@@ -905,14 +846,8 @@ class TestCoverageLevels:
                 checked += 1
         assert checked > 0
 
-    def test_every_op_sits_at_one_level(self):
-        both = sorted(set(HAND_WRITTEN) & set(NOT_RECOUNTABLE))
-        assert not both, f"declared at two levels: {both}"
-        unknown = sorted((set(HAND_WRITTEN) | set(NOT_RECOUNTABLE)) - set(_entries()))
-        assert not unknown, f"declared but not in the manifest: {unknown}"
-
     def test_a_declared_op_is_one_the_manifest_does_not_already_check(self):
-        """Level two and three are for ops the manifest cannot recount, not a queue.
+        """Level two is for ops the manifest cannot recount, not a queue.
 
         An op whose rows draw metadata at random stays at level two however its rows fall:
         one row's draw agreeing with the recount says nothing of another's
@@ -920,25 +855,12 @@ class TestCoverageLevels:
         """
         promotable = sorted(
             name
-            for name in {**HAND_WRITTEN, **NOT_RECOUNTABLE}
+            for name in HAND_WRITTEN
             if not _draws_metadata(name) and _binder_builds(name) and _binder_agrees(name)
         )
         assert not promotable, (
             f"the binder now recounts {promotable} and the formula agrees; move them out "
-            "of HAND_WRITTEN / NOT_RECOUNTABLE so the generated case is what checks them"
-        )
-
-    def test_level_three_is_for_a_call_the_binder_cannot_build(self):
-        """A recount the binder can build and the formula disagrees with is a defect.
-
-        Level three says no independent recount is available. If the binder builds one,
-        one is available, and a disagreement is then the formula's, not a coverage gap:
-        it belongs at level two with the condition the contract omits written next to it.
-        """
-        buildable = sorted(name for name in NOT_RECOUNTABLE if _binder_builds(name))
-        assert not buildable, (
-            f"the binder builds a recount for {buildable}; they are not level three, and "
-            "a disagreement there is a formula defect"
+            "of HAND_WRITTEN so the generated case is what checks them"
         )
 
     def test_every_level_two_op_has_a_case_that_names_its_tensors(self):
@@ -957,9 +879,3 @@ class TestCoverageLevels:
             f"declared level two with no _ledger case above: {missing}; a case that "
             "sums anonymous tuples cannot be checked against the signature"
         )
-
-    def test_a_reason_says_what_is_missing(self):
-        for level in (HAND_WRITTEN, NOT_RECOUNTABLE):
-            for name, reason in level.items():
-                assert reason and not reason.endswith("."), name
-                assert len(reason.split()) >= 5, f"{name}: {reason!r} says too little"

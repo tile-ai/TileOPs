@@ -294,7 +294,6 @@ class GroupedGemmKernel(Kernel):
         B: torch.Tensor,
         batch_sizes: torch.Tensor,
         batch_offsets: torch.Tensor,
-        batch_padded_offsets: torch.Tensor,
     ) -> torch.Tensor:
         kernel = _grouped_gemm_kernel(
             self.batch_sum,
@@ -311,5 +310,4 @@ class GroupedGemmKernel(Kernel):
             self.config["num_stages"],
             self.config["threads"],
         )
-        # batch_padded_offsets is the op's third table; no pattern here reads it.
         return kernel(A, B, batch_sizes, batch_offsets)

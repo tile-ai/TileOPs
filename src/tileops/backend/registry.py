@@ -137,7 +137,7 @@ def _load_all() -> list[str]:
         checkpoint = snapshot()
         try:
             ep.load()
-        except Exception as exc:  # noqa: BLE001 - one bad plugin must not win
+        except Exception as exc:  # one bad plugin must not win
             restore(checkpoint)
             reason = "".join(traceback.format_exception_only(type(exc), exc)).strip()
             failure = f"{ep.name} ({ep.value}): {reason}"

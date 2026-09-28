@@ -96,7 +96,7 @@ def _load_cupti():
         return _CUPTI
     try:
         from cupti import cupti
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise CUPTIError(
             "cupti-python is unavailable. Install it with "
             "`pip install --no-deps cupti-python==13.2.0`; --no-deps is required "
@@ -119,7 +119,7 @@ def _read_dropped() -> Optional[int]:
         # Kernel records land on the global queue, which is context 0, and the binding
         # takes the out-parameter as an address rather than returning it.
         cupti.activity_get_num_dropped_records(0, 0, ctypes.addressof(dropped))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         if not _DROPPED_COUNT_UNREADABLE:
             _DROPPED_COUNT_UNREADABLE = True
             _logger.warning(
@@ -215,7 +215,7 @@ def _trace_launches_only(cupti) -> None:
                 continue
             try:
                 toggle(int(cbid), 1 if any(word in name for word in issuers) else 0)
-            except Exception:  # noqa: BLE001, S112
+            except Exception:
                 # The enums carry sentinels (INVALID, SIZE) that CUPTI refuses.
                 continue
 
@@ -250,7 +250,7 @@ def _phase_session(buffer_bytes: int = _BUFFER_BYTES):
         for kind in kinds:
             cupti.activity_enable(kind)
         _trace_launches_only(cupti)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _buffer_bytes = previous_bytes
         raise CUPTIError(f"CUPTI collector failed to start: {exc}") from exc
     _COLLECTOR_ACTIVE = True
@@ -262,7 +262,7 @@ def _phase_session(buffer_bytes: int = _BUFFER_BYTES):
         try:
             for kind in reversed(kinds):
                 cupti.activity_disable(kind)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise CUPTIError(f"CUPTI collector failed to stop: {exc}") from exc
 
 
@@ -272,7 +272,7 @@ def _flush() -> tuple[list[dict[str, Any]], dict[int, int]]:
     torch.cuda.synchronize()
     try:
         cupti.activity_flush_all(1)  # CUPTI_ACTIVITY_FLAG_FLUSH_FORCED
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise CUPTIError(f"CUPTI flush failed: {exc}") from exc
     kernels, iteration_of = list(_KERNELS), dict(_ITERATION_OF)
     _KERNELS.clear()

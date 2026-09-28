@@ -353,10 +353,10 @@ MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
     outputs:
       o: {dtype: T, shape: "[B, H, D]"}
   workloads:
-  - {B: 32, H: 128, H_kv: 1, N_kv: 4096, D: 128, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v2-4k}
-  - {B: 8, H: 128, H_kv: 1, N_kv: 32768, D: 128, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v2-32k}
-  - {B: 16, H: 128, H_kv: 1, N_kv: 4096, D: 128, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-4k}
-  - {B: 4, H: 128, H_kv: 1, N_kv: 32768, D: 128, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-32k}
+  - {B: 32, H: 128, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v2-4k}
+  - {B: 8, H: 128, H_kv: 1, N_kv: 32768, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v2-32k}
+  - {B: 16, H: 128, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-4k}
+  - {B: 4, H: 128, H_kv: 1, N_kv: 32768, D: 512, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-32k}
   roofline:
     # Per key and query head, QK over D + PE, PV over D and the softmax (5); per output
     # element, the softmax's divide.
@@ -439,13 +439,6 @@ NSATopkVarlenFwdOp:
     inputs:
       q: {dtype: T, shape: "[T_q, H, D]"}
       k_cmp: {dtype: T, shape: "[C, H_kv, D]"}
-      # FIXME(staged-rollout): declared and passed, but the kernel discards it.
-      #
-      # Broken invariant: a manifest input is read by the kernel, and this one is not.
-      # Why: the top-k pass recomputes the lse itself; dropping the argument is an op
-      #   signature change the NSA pipeline's callers have to move with.
-      # Cleanup: drop `lse_in` here and from the kernel, or make the kernel read it.
-      lse_in: {dtype: T, shape: "[T_q, H]"}
       offsets: {dtype: int32, shape: "[N + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)"]}
       chunk_offsets: {dtype: int32, shape: "[N + 1]", values: "chunk_offsets(seq_lens, bs)", requires: ["prefix_offsets(C)", "chunk_offsets_of(offsets, bs)"]}
       token_indices: {dtype: int32, shape: "[T_q, 2]", values: "token_indices(seq_lens)", requires: ["indices_within(offsets)"]}
@@ -459,7 +452,7 @@ NSATopkVarlenFwdOp:
   - {C: 256, H: 32, H_kv: 2, D: 128, scale: 1.0, selected_block_num: 16, bs: 32, seq_lens: "repeat(1024, 8)", dtype_cases: [{T: float16}], label: prefill-8x1k}
   - {C: 128, H: 32, H_kv: 2, D: 128, scale: 1.0, selected_block_num: 16, bs: 32, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: float16}], label: prefill-4x1k}
   roofline:
-    # Two score passes over the closed chunks; the unread lse_in moves no bytes.
+    # Two score passes over the closed chunks.
     func: "tileops.perf.formulas.nsa_topk_varlen_roofline"
 
 NSAVarlenFwdOp:

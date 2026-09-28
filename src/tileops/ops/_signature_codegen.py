@@ -355,7 +355,7 @@ def _code(sig: Signature, node: ast.expr, present=None) -> str:
 
 def _compiled(name: str, source: str, where: str, extra: dict | None = None):
     scope = {**_GLOBALS, **(extra or {})}
-    exec(compile(source, f"<{where}>", "exec"), scope)  # noqa: S102
+    exec(compile(source, f"<{where}>", "exec"), scope)
     return scope[name]
 
 
@@ -656,7 +656,7 @@ class _CallCheck:
         self.plan, self.point, self.key, self.built, self.env = plan, point, key, built, env
         self.shapes_only = shapes_only
 
-    def source(self) -> str:  # noqa: C901 - one pass per stage of the check
+    def source(self) -> str:
         plan, point, built, shapes_only = self.plan, self.point, self.built, self.shapes_only
         sig = plan.sig
         e = _Emitter(sig)
@@ -1233,7 +1233,7 @@ class _Boundary:
             f"    return _boundary.call(self, ({inputs}), {writes}, {{{execution}}})"
         )
         scope = {**defaults, "_boundary": self}
-        exec(compile(source, f"<{cls.__name__} boundary>", "exec"), scope)  # noqa: S102
+        exec(compile(source, f"<{cls.__name__} boundary>", "exec"), scope)
         return scope["_call_boundary"]
 
 
@@ -1266,7 +1266,7 @@ def _input_binder(sig: Signature, name: str, body, dtypes: bool = False):
     tail = ", dtypes or {}" if dtypes else ""
     source = f"def {name}({', '.join(formal)}):\n    return _body(self, {{{tensors}}}{tail})"
     scope = {"_body": body}
-    exec(compile(source, f"<{sig.name} {name}>", "exec"), scope)  # noqa: S102
+    exec(compile(source, f"<{sig.name} {name}>", "exec"), scope)
     return scope[name]
 
 

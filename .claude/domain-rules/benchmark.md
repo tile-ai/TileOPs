@@ -3,7 +3,6 @@
 - A benchmark asserts only what it needs to trust its own numbers: that an implementation it is about to time matches the reference, or that a comparison which decides something came out the way the code assumes. It never becomes the place an op's behaviour is established.
 - A library a row *selects* raises when it is missing — a degraded environment fails the row rather than reporting torch under a library's tag. One a row merely *prefers* keeps its guarded import and drops the tag.
 - Where a library cannot express the case at all, drop its tag and say why.
-- A subclass that overrides `ref_program` because the baseline is deliberately not the reference says so in the subclass docstring, not only in the PR.
 - A baseline that overwrites its inputs gets private copies. Sharing them silently feeds every later tag something the reference never read.
 - A timed callable launches its own work. Gradients come from `backward_of`, never `Tensor.backward`: autograd's engine thread carries no iteration id, so the timer cannot attribute what it launches.
 - A `label` names the scenario, not the parameters, as [manifest.md § Rows](../../docs/design/manifest.md#rows) states; the case id appends the dtype.

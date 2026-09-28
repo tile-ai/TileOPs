@@ -9,8 +9,7 @@ CUDA without saying so.
 Flags the string ``"cuda"`` or ``"cuda:<n>"``, an f-string starting with ``cuda:`` and an
 argument-less ``.cuda()`` call, unless it sits inside a function or class decorated with
 ``pytest.mark.cuda_only``, a ``pytest.param(..., marks=...)`` carrying it, or a module whose
-``pytestmark`` carries it. ``workloads/device.py`` holds the default and ``tests/conftest.py``
-compares the run device with it, so both are exempt.
+``pytestmark`` carries it. ``workloads/device.py`` holds the default and is exempt.
 
 Usage: ``device_literal_lint.py [FILE ...]``. With no arguments, scans ``tests/`` and
 ``workloads/``. Exits 1 on a finding.
@@ -22,7 +21,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCANNED = ("tests", "workloads")
-EXEMPT = {"workloads/device.py", "tests/conftest.py"}
+EXEMPT = {"workloads/device.py"}
 
 
 def _carries_mark(node: ast.AST) -> bool:

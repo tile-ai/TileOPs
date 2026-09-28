@@ -5,30 +5,12 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.kernels.kernel_base import Kernel
 from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 from workloads.device import run_device
 from workloads.mha import (
     MhaBwdWorkload,
     MhaDecodePagedWorkload,
 )
-
-
-class _FakeLegacyMhaBwdKernel(Kernel):
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        seq_len: int,
-        dim: int,
-        is_causal: bool,
-        dtype: torch.dtype,
-        tune: bool = False,
-    ) -> None:
-        super().__init__()
-
-    def forward(self, *args: object, **kwargs: object) -> object:
-        return None
 
 
 class MhaBwdTest(MhaBwdWorkload, TestBase):
@@ -87,15 +69,6 @@ class MhaBwdFixture(FixtureBase):
             ],
         ),
     ]
-
-
-@pytest.mark.smoke
-def test_mha_bwd_rejects_legacy_kernel_map_keys() -> None:
-    with pytest.raises(ValueError, match="legacy MHA backward kernel_map keys"):
-        MultiHeadAttentionBwdOp(
-            is_causal=False,
-            kernel_map={"mha_bwd_kernel": _FakeLegacyMhaBwdKernel},
-        )
 
 
 @MhaBwdFixture

@@ -1,9 +1,7 @@
 """Verdict logic of scripts/validate_roofline_bytes.py (roofline.md §4.5)."""
 
 import importlib.util
-import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -15,9 +13,6 @@ _SPEC = importlib.util.spec_from_file_location(
 )
 audit = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(audit)
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from benchmarks.benchmark_base import BenchmarkBase  # noqa: E402
 
 # Measured: SiluFwdOp, x_shape=[2048, 14336] fp16, H200. Reads match the
 # formula's read half; the same run's writes read 37,068,800 of 58,720,256
@@ -141,23 +136,3 @@ class TestExitCode:
         """Green is an allowlist: a run whose rows carry a spelling this file does
         not know has not been judged, whatever that spelling was meant to say."""
         assert audit.exit_code({"PASS": 2, "EXEMPTED": 1}) == 1
-
-
-class TestRooflineInputsRecording:
-    """What decided a call's bytes travels with the reading."""
-
-    @staticmethod
-    def _reported(reader):
-        """What a benchmark over an op with this `roofline_inputs` records."""
-        return BenchmarkBase._roofline_inputs(
-            SimpleNamespace(op=SimpleNamespace(roofline_inputs=reader))
-        )
-
-    def test_a_reading_carries_what_the_op_reports(self):
-        assert self._reported(lambda: {"active_experts": 96}) == {"active_experts": 96}
-
-    def test_a_diagnostic_that_raises_does_not_fail_the_measurement(self):
-        def explode():
-            raise RuntimeError("routing was never bound")
-
-        assert self._reported(explode) == {}

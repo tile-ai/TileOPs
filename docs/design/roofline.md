@@ -231,15 +231,14 @@ A CI test recomputes each audited `bytes` value from an independent path — the
 
 Traffic that depends on tensor *content* is recounted the same way: the case constructs the selecting tensor itself, exactly as it constructs shapes, so content dependence is no reason to exempt an op. Coverage is golden workloads per op, not randomized sweeps.
 
-Coverage is three levels and an op sits at exactly one:
+Coverage is two levels and an implemented op sits at exactly one:
 
 | Level | Case                                                                                                                                                            | Shares with the formula                                                                                                                           |
 | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | One   | A binder builds it from the signature, one workload row, the dtypes and the mutation marks. An op reaches this level by being recountable, not by being listed. | The minimum-traffic definition, the op's statement of its output extents, and the manifest's output-dtype resolution. Never the `roofline` block. |
 | Two   | Hand-written, for a call the contract does not settle.                                                                                                          | Written beside the case.                                                                                                                          |
-| Three | None: marked with what is missing, asserted against nothing.                                                                                                    | —                                                                                                                                                 |
 
-A completeness test keeps the three total: an op added to the manifest is recounted by the binder or fails until it is placed.
+A completeness test keeps the two total: an op added to the manifest is recounted by the binder or fails until a hand-written case recounts it.
 
 ### 4.7 Value-Determined Traffic
 

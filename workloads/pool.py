@@ -128,6 +128,104 @@ class AdaptivePool2dWorkload(WorkloadBase):
         return (x,)
 
 
+class AdaptiveAvgPool2dWorkload(AdaptivePool2dWorkload):
+    """AdaptiveAvgPool2dFwdOp's input and reference."""
+
+    def ref_program(self, input: torch.Tensor) -> torch.Tensor:
+        # torch rejects a scalar None here; (None, None) means the same.
+        size = (None, None) if self.output_size is None else self.output_size
+        return F.adaptive_avg_pool2d(input, size)
+
+
+class AdaptiveMaxPool2dWorkload(AdaptivePool2dWorkload):
+    """AdaptiveMaxPool2dFwdOp's input and reference, or its ``Indices`` variant's."""
+
+    def __init__(self, *args: Any, return_indices: bool = False, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.return_indices = return_indices
+
+    def ref_program(self, input: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        # torch rejects a scalar None here; (None, None) means the same.
+        size = (None, None) if self.output_size is None else self.output_size
+        return F.adaptive_max_pool2d(input, size, return_indices=self.return_indices)
+
+
+def _input_spec(call: Any) -> tuple[tuple[int, ...], torch.dtype]:
+    shape, dtype = call.tensors["input"]
+    return tuple(shape), getattr(torch, dtype)
+
+
+class AvgPoolCall(CallWorkload, AvgPoolWorkload):
+    """A manifest call of an ``AvgPool{1,2,3}dFwdOp``; the rank is the input's."""
+
+    def __init__(self, call: Any) -> None:
+        CallWorkload.__init__(self, call)
+        shape, dtype = _input_spec(call)
+        params = call.params
+        AvgPoolWorkload.__init__(
+            self,
+            ndim=len(shape) - 2,
+            kernel_size=params["kernel_size"],
+            stride=params["stride"],
+            padding=params["padding"],
+            ceil_mode=params["ceil_mode"],
+            count_include_pad=params["count_include_pad"],
+            divisor_override=params.get("divisor_override"),
+            dtype=dtype,
+        )
+
+    gen_inputs = CallWorkload.gen_inputs
+
+
+class MaxPoolCall(CallWorkload, MaxPoolWorkload):
+    """A manifest call of a ``MaxPool{1,2,3}d[Indices]FwdOp``; the rank is the input's."""
+
+    def __init__(self, call: Any, return_indices: bool = False) -> None:
+        CallWorkload.__init__(self, call)
+        shape, dtype = _input_spec(call)
+        params = call.params
+        MaxPoolWorkload.__init__(
+            self,
+            ndim=len(shape) - 2,
+            kernel_size=params["kernel_size"],
+            stride=params["stride"],
+            padding=params["padding"],
+            dilation=params["dilation"],
+            ceil_mode=params["ceil_mode"],
+            dtype=dtype,
+            return_indices=return_indices,
+        )
+
+    gen_inputs = CallWorkload.gen_inputs
+
+
+class AdaptiveAvgPool2dCall(CallWorkload, AdaptiveAvgPool2dWorkload):
+    """A manifest call of AdaptiveAvgPool2dFwdOp.
+
+    The input, batched or not, comes from the call, so only what the reference reads is set.
+    """
+
+    def __init__(self, call: Any) -> None:
+        CallWorkload.__init__(self, call)
+        self.output_size = call.params["output_size"]
+
+    gen_inputs = CallWorkload.gen_inputs
+
+
+class AdaptiveMaxPool2dCall(CallWorkload, AdaptiveMaxPool2dWorkload):
+    """A manifest call of AdaptiveMaxPool2dFwdOp or its ``Indices`` variant.
+
+    The input, batched or not, comes from the call, so only what the reference reads is set.
+    """
+
+    def __init__(self, call: Any, return_indices: bool = False) -> None:
+        CallWorkload.__init__(self, call)
+        self.output_size = call.params["output_size"]
+        self.return_indices = return_indices
+
+    gen_inputs = CallWorkload.gen_inputs
+
+
 def mean_pooling_chunk_index(
     seq_lens: Sequence[int], chunk_size: int
 ) -> tuple[torch.Tensor, torch.Tensor]:

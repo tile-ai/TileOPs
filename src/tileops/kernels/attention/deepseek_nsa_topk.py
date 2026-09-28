@@ -71,13 +71,11 @@ def _nsa_topk_varlen_kernel(
         def _parallel_nsa_topk_varlen_main(
             q: T.Tensor((c_seq_len, heads, dim), dtype),
             k_cmp: T.Tensor((chunk_num, head_kv, dim), dtype),
-            lse_in: T.Tensor((c_seq_len, heads), dtype),  # todo: lse_in is none.
             offsets: T.Tensor((seq_num + 1,), T.int32),
             chunk_offsets: T.Tensor((seq_num + 1,), T.int32),
             token_indices: T.Tensor((c_seq_len, 2), T.int32),
             block_indices: T.Tensor((c_seq_len, head_kv, selected_block_num), T.int32),
         ):
-            _ = lse_in
             with T.Kernel(c_seq_len, head_kv, threads=threads) as (bx, by):
                 q_shared = T.alloc_shared([group, bk], dtype)
                 k_shared = T.alloc_shared([bc, bk], dtype)
@@ -233,7 +231,6 @@ def _nsa_topk_varlen_run(
     threads: int,
     q: torch.Tensor,
     k_cmp: torch.Tensor,
-    lse_in: torch.Tensor,
     offsets: torch.Tensor,
     chunk_offsets: torch.Tensor,
     token_indices: torch.Tensor,
@@ -251,7 +248,7 @@ def _nsa_topk_varlen_run(
         bs,
         dtype,
         accum_dtype,
-    )(threads)(q, k_cmp, lse_in, offsets, chunk_offsets, token_indices)
+    )(threads)(q, k_cmp, offsets, chunk_offsets, token_indices)
 
 
 class NSATopkVarlenKernel(Kernel):
@@ -305,7 +302,6 @@ class NSATopkVarlenKernel(Kernel):
         self,
         q: torch.Tensor,
         k_cmp: torch.Tensor,
-        lse_in: torch.Tensor,
         offsets: torch.Tensor,
         chunk_offsets: torch.Tensor,
         token_indices: torch.Tensor,
@@ -326,7 +322,6 @@ class NSATopkVarlenKernel(Kernel):
             self.config["threads"],
             q.to(self.dtype),
             k_cmp.to(self.dtype),
-            lse_in.to(self.dtype),
             offsets.to(torch.int32),
             chunk_offsets.to(torch.int32),
             token_indices.to(torch.int32),

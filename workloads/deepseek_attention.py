@@ -318,13 +318,10 @@ class NsaTopkWorkload(WorkloadBase):
         q.requires_grad_(True)
         k.requires_grad_(True)
 
-        lse = torch.zeros((self.c_seq_len, self.heads), dtype=self.dtype, device=run_device())
-
         self.chunk_num = chunk_offsets[-1].item()
         return (
             q,
             k,
-            lse,
             offsets.to(torch.int32),
             chunk_offsets.to(torch.int32),
             token_indices.to(torch.int32),
@@ -334,7 +331,6 @@ class NsaTopkWorkload(WorkloadBase):
         self,
         q: torch.Tensor,
         k_cmp: torch.Tensor,
-        lse: torch.Tensor,
         offsets: torch.LongTensor,
         chunk_offsets: torch.LongTensor,
         token_indices: torch.LongTensor,
@@ -343,7 +339,6 @@ class NsaTopkWorkload(WorkloadBase):
             self,
             q,
             k_cmp,
-            lse,
             self.selected_block_num,
             self.bs,
             self.scale,
@@ -619,10 +614,10 @@ def _parallel_nsa_compression_fwd_pytorch(test, q, k_cmp, v_cmp, block_size, sca
 
 
 def _nsa_topk_torch(
-    test, q, k_cmp, lse, block_counts, block_size, scale, offsets, token_indices, chunk_offsets
+    test, q, k_cmp, block_counts, block_size, scale, offsets, token_indices, chunk_offsets
 ):
     """PyTorch reference for NSA top-k block selection."""
-    _ = lse, token_indices
+    _ = token_indices
     q = q.squeeze(0) if q.dim() == 4 else q
     k_cmp = k_cmp.squeeze(0) if k_cmp.dim() == 4 else k_cmp
     c_seq_len, heads, dim = q.shape

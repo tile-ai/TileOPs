@@ -114,8 +114,8 @@ class ReluCompileFixture(FixtureBase):
         (
             "n_total, dtype",
             [
-                pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
-                pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
+                pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -146,7 +146,7 @@ class AddCompileFixture(FixtureBase):
         (
             "a_shape, b_shape, dtype",
             [
-                pytest.param((1024, 1024), (1024, 1024), torch.float16, marks=pytest.mark.full),
+                pytest.param((1024, 1024), (1024, 1024), torch.float16, marks=pytest.mark.smoke),
                 pytest.param((1024, 1024), (1, 1024), torch.float16, marks=pytest.mark.full),
             ],
         ),
@@ -177,7 +177,7 @@ class EqCompileFixture(FixtureBase):
         (
             "a_shape, b_shape, dtype",
             [
-                pytest.param((1024, 1024), (1024, 1024), torch.float16, marks=pytest.mark.full),
+                pytest.param((1024, 1024), (1024, 1024), torch.float16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -207,7 +207,7 @@ class SiluAndMulCompileFixture(FixtureBase):
         (
             "M, N, dtype",
             [
-                pytest.param(512, 1024, torch.float16, marks=pytest.mark.full),
+                pytest.param(512, 1024, torch.float16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -237,7 +237,7 @@ class AbsCompileFixture(FixtureBase):
         (
             "n_total, dtype",
             [
-                pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
+                pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -265,7 +265,7 @@ class SignCompileFixture(FixtureBase):
         (
             "n_total, dtype",
             [
-                pytest.param(1_048_576, torch.float16, marks=pytest.mark.full),
+                pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -296,7 +296,7 @@ class FakeUnaryFixture(FixtureBase):
         (
             "n_total, dtype",
             [
-                pytest.param(1024, torch.float16, marks=pytest.mark.full),
+                pytest.param(1024, torch.float16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -318,7 +318,7 @@ class FakeComparisonFixture(FixtureBase):
         (
             "shape, dtype",
             [
-                pytest.param((256, 256), torch.float16, marks=pytest.mark.full),
+                pytest.param((256, 256), torch.float16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -340,7 +340,7 @@ class FakeFusedGatedFixture(FixtureBase):
         (
             "M, N, dtype",
             [
-                pytest.param(64, 128, torch.float16, marks=pytest.mark.full),
+                pytest.param(64, 128, torch.float16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -377,7 +377,7 @@ def _positive_input(n, dtype):
 
 
 _UNARY_FLOAT_OPS = [
-    pytest.param(ExpFwdOp, torch.exp, None, "exp", marks=pytest.mark.full),
+    pytest.param(ExpFwdOp, torch.exp, None, "exp", marks=pytest.mark.smoke),
     pytest.param(
         LogFwdOp,
         lambda x: torch.log(x.float()).to(x.dtype),
@@ -532,7 +532,7 @@ def test_unary_float_compile(op_cls, ref_fn, input_fn, name):
 
 _UNARY_BOOL_OPS = [
     pytest.param(
-        LogicalNotFwdOp, lambda x: ~(x != 0), torch.float16, "logical_not", marks=pytest.mark.full
+        LogicalNotFwdOp, lambda x: ~(x != 0), torch.float16, "logical_not", marks=pytest.mark.smoke
     ),
     pytest.param(
         LogicalNotFwdOp, torch.logical_not, torch.bool, "logical_not_bool", marks=pytest.mark.smoke
@@ -567,7 +567,7 @@ def test_unary_bool_compile(op_cls, ref_fn, dtype, name):
 register_compile_contract(BitwiseNotFwdOp)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_bitwise_not_compile():
     """Compile-smoke for BitwiseNotFwdOp."""
     n = _N
@@ -583,7 +583,7 @@ def test_bitwise_not_compile():
 
 _BINARY_ARITH_OPS = [
     pytest.param(
-        SubFwdOp, lambda a, b: (a.float() - b.float()).half(), "sub", marks=pytest.mark.full
+        SubFwdOp, lambda a, b: (a.float() - b.float()).half(), "sub", marks=pytest.mark.smoke
     ),
     pytest.param(
         MulFwdOp, lambda a, b: (a.float() * b.float()).half(), "mul", marks=pytest.mark.full
@@ -637,7 +637,7 @@ def test_binary_arith_compile(op_cls, ref_fn, name):
 register_compile_contract(PowFwdOp)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_pow_compile():
     """Compile-smoke for PowFwdOp with positive inputs to avoid NaN domain issues."""
     shape = _SMALL
@@ -656,7 +656,7 @@ def test_pow_compile():
 register_compile_contract(LerpFwdOp)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_lerp_compile():
     """Compile-smoke for LerpFwdOp."""
     shape = _SMALL
@@ -672,7 +672,7 @@ def test_lerp_compile():
 register_compile_contract(LerpTensorFwdOp)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_lerp_tensor_compile():
     """Compile-smoke for LerpTensorFwdOp (Tensor-weight overload)."""
     shape = _SMALL
@@ -689,7 +689,7 @@ def test_lerp_tensor_compile():
 # --- Remaining comparison ops ---
 
 _COMPARISON_OPS = [
-    pytest.param(NeFwdOp, lambda a, b: a != b, "ne", marks=pytest.mark.full),
+    pytest.param(NeFwdOp, lambda a, b: a != b, "ne", marks=pytest.mark.smoke),
     pytest.param(GtFwdOp, lambda a, b: a > b, "gt", marks=pytest.mark.full),
     pytest.param(LtFwdOp, lambda a, b: a < b, "lt", marks=pytest.mark.full),
     pytest.param(GeFwdOp, lambda a, b: a >= b, "ge", marks=pytest.mark.full),
@@ -718,7 +718,7 @@ def test_comparison_compile(op_cls, ref_fn, name):
 
 _LOGICAL_OPS = [
     pytest.param(
-        LogicalAndFwdOp, lambda a, b: (a != 0) & (b != 0), "logical_and", marks=pytest.mark.full
+        LogicalAndFwdOp, lambda a, b: (a != 0) & (b != 0), "logical_and", marks=pytest.mark.smoke
     ),
     pytest.param(
         LogicalOrFwdOp, lambda a, b: (a != 0) | (b != 0), "logical_or", marks=pytest.mark.full
@@ -746,7 +746,7 @@ def test_logical_binary_compile(op_cls, ref_fn, name):
 # --- Bitwise binary ops ---
 
 _BITWISE_BINARY_OPS = [
-    pytest.param(BitwiseAndFwdOp, lambda a, b: a & b, "bitwise_and", marks=pytest.mark.full),
+    pytest.param(BitwiseAndFwdOp, lambda a, b: a & b, "bitwise_and", marks=pytest.mark.smoke),
     pytest.param(BitwiseOrFwdOp, lambda a, b: a | b, "bitwise_or", marks=pytest.mark.full),
     pytest.param(BitwiseXorFwdOp, lambda a, b: a ^ b, "bitwise_xor", marks=pytest.mark.full),
 ]
@@ -785,7 +785,7 @@ def test_bool_bitwise_binary_compile(op_cls, ref_fn, name):
 # --- Remaining fused gated ops ---
 
 _FUSED_GATED_OPS = [
-    pytest.param(GeluAndMulFwdOp, "gelu_and_mul", marks=pytest.mark.full),
+    pytest.param(GeluAndMulFwdOp, "gelu_and_mul", marks=pytest.mark.smoke),
     pytest.param(GeluTanhAndMulFwdOp, "gelu_tanh_and_mul", marks=pytest.mark.full),
 ]
 
@@ -810,7 +810,7 @@ def test_fused_gated_compile(op_cls, name):
 register_compile_contract(WhereFwdOp)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_where_compile_same_shape():
     """Compile-smoke for WhereFwdOp with all three inputs same-shape.
 
@@ -830,7 +830,7 @@ def test_where_compile_same_shape():
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_where_compile_broadcast():
     """Compile-smoke for WhereFwdOp with broadcasting inputs."""
     cond_shape = (4, 1)
@@ -852,7 +852,7 @@ def test_where_compile_broadcast():
 register_compile_contract(ClampScalarFwdOp)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_clamp_scalar_compile():
     """Compile-smoke for ClampScalarFwdOp (Number min/max baked into __init__)."""
     shape = (1024, 1024)
@@ -869,7 +869,7 @@ def test_clamp_scalar_compile():
 register_compile_contract(ClampFwdOp)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_clamp_tensor_compile_same_shape():
     """Compile-smoke for ClampFwdOp with both Tensor bounds at same shape.
 
@@ -888,7 +888,7 @@ def test_clamp_tensor_compile_same_shape():
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_clamp_tensor_compile_broadcast():
     """Compile-smoke for ClampFwdOp with broadcasting Tensor bounds."""
     input_shape = (4, 8)
@@ -908,7 +908,7 @@ def test_clamp_tensor_compile_broadcast():
 # --- One bound withheld ---
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_clamp_min_only_compile_same_shape():
     """Compile-smoke for ClampFwdOp with max withheld, at same shape."""
     shape = (16, 16)
@@ -921,7 +921,7 @@ def test_clamp_min_only_compile_same_shape():
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_clamp_min_only_compile_broadcast():
     """Compile-smoke for ClampFwdOp with max withheld and broadcasting min."""
     input_shape = (4, 8)
@@ -936,7 +936,7 @@ def test_clamp_min_only_compile_broadcast():
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_clamp_max_only_compile_same_shape():
     """Compile-smoke for ClampFwdOp with min withheld, at same shape."""
     shape = (16, 16)
@@ -949,7 +949,7 @@ def test_clamp_max_only_compile_same_shape():
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_clamp_max_only_compile_broadcast():
     """Compile-smoke for ClampFwdOp with min withheld and broadcasting max."""
     input_shape = (4, 8)
@@ -969,7 +969,7 @@ def test_clamp_max_only_compile_broadcast():
 register_compile_contract(MaskedFillFwdOp)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_masked_fill_tensor_compile_same_shape():
     """Compile-smoke for MaskedFillFwdOp (0-dim Tensor value) at same shape.
 
@@ -988,7 +988,7 @@ def test_masked_fill_tensor_compile_same_shape():
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_masked_fill_tensor_compile_broadcast():
     """Compile-smoke for MaskedFillFwdOp with broadcasting input/mask."""
     input_shape = (4, 8)
@@ -1013,7 +1013,7 @@ def test_masked_fill_tensor_compile_broadcast():
 register_compile_contract(MaskedFillScalarFwdOp)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_masked_fill_scalar_compile_same_shape():
     """Compile-smoke for MaskedFillScalarFwdOp at same shape."""
     shape = (16, 16)
@@ -1026,7 +1026,7 @@ def test_masked_fill_scalar_compile_same_shape():
     torch.testing.assert_close(out, ref, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.full
+@pytest.mark.smoke
 def test_masked_fill_scalar_compile_broadcast():
     """Compile-smoke for MaskedFillScalarFwdOp with broadcasting input/mask.
 

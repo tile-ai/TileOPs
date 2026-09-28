@@ -197,9 +197,10 @@ class Kernel(ABC):
         if tune and self.autotune_configs is None:
             import warnings
 
-            warnings.warn(  # noqa: B028
+            warnings.warn(
                 f"{self.__class__.__name__} does not define autotune_configs; "
-                "falling back to the provided config or default_config."
+                "falling back to the provided config or default_config.",
+                stacklevel=2,
             )
             tune = False
 
@@ -207,9 +208,10 @@ class Kernel(ABC):
             if config is not None:
                 import warnings
 
-                warnings.warn(  # noqa: B028
+                warnings.warn(
                     "Both 'config' and 'tune' are set. "
-                    "'config' will be ignored in favor of autotuning."
+                    "'config' will be ignored in favor of autotuning.",
+                    stacklevel=2,
                 )
             self._tune_requested = True
             self.autotune()

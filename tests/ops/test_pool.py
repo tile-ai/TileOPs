@@ -38,7 +38,8 @@ from tileops.ops import (
 )
 from workloads.device import run_device, run_device_available
 from workloads.pool import (
-    AdaptivePool2dWorkload,
+    AdaptiveAvgPool2dWorkload,
+    AdaptiveMaxPool2dWorkload,
     AvgPoolWorkload,
     MaxPoolWorkload,
     max_pool_ref,
@@ -1860,22 +1861,12 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
     ]
 
 
-class AdaptiveAvgPool2dTest(AdaptivePool2dWorkload, TestBase):
-    def ref_program(self, input: torch.Tensor) -> torch.Tensor:
-        # torch rejects a scalar None here; (None, None) means the same.
-        size = (None, None) if self.output_size is None else self.output_size
-        return F.adaptive_avg_pool2d(input, size)
+class AdaptiveAvgPool2dTest(AdaptiveAvgPool2dWorkload, TestBase):
+    """Adaptive avg-pool reference test."""
 
 
-class AdaptiveMaxPool2dTest(AdaptivePool2dWorkload, TestBase):
-    def __init__(self, *args, return_indices: bool, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.return_indices = return_indices
-
-    def ref_program(self, input: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        # torch rejects a scalar None here; (None, None) means the same.
-        size = (None, None) if self.output_size is None else self.output_size
-        return F.adaptive_max_pool2d(input, size, return_indices=self.return_indices)
+class AdaptiveMaxPool2dTest(AdaptiveMaxPool2dWorkload, TestBase):
+    """Adaptive max-pool reference test, with or without indices."""
 
 
 @AdaptiveAvgPool2dFixture

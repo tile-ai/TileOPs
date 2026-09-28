@@ -72,7 +72,7 @@ def convert(value, type_text: object, adts: dict):
     raise ValueError(f"{value!r} is not a {type_text}{why}")
 
 
-def _member(member: str, value, adts: dict):  # noqa: C901 - one case per type form
+def _member(member: str, value, adts: dict):
     number = isinstance(value, (int, float)) and not isinstance(value, bool)
     simple = {
         "None": value is None,

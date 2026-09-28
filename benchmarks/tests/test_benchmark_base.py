@@ -1,10 +1,11 @@
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 
-from benchmarks.benchmark_base import ManifestBenchmark
+from benchmarks.benchmark_base import BenchmarkBase, ManifestBenchmark
 from benchmarks.timing import (
     Trace,
     _attributed_samples,
@@ -244,3 +245,23 @@ def test_manifest_benchmark_refuses_an_op_the_manifest_does_not_declare():
     """A wrapper or a subclass would report numbers under a name no spec knows."""
     with pytest.raises(KeyError, match="NotAManifestOp"):
         ManifestBenchmark(NotAManifestOp(), object())
+
+
+class TestRooflineInputsRecording:
+    """What decided a call's bytes travels with the reading."""
+
+    @staticmethod
+    def _reported(reader):
+        """What a benchmark over an op with this `roofline_inputs` records."""
+        return BenchmarkBase._roofline_inputs(
+            SimpleNamespace(op=SimpleNamespace(roofline_inputs=reader))
+        )
+
+    def test_a_reading_carries_what_the_op_reports(self):
+        assert self._reported(lambda: {"active_experts": 96}) == {"active_experts": 96}
+
+    def test_a_diagnostic_that_raises_does_not_fail_the_measurement(self):
+        def explode():
+            raise RuntimeError("routing was never bound")
+
+        assert self._reported(explode) == {}

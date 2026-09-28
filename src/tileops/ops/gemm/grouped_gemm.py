@@ -75,7 +75,6 @@ class GroupedGemmFwdOp(Op):
         b: torch.Tensor,
         batch_sizes: torch.Tensor,
         batch_offsets: torch.Tensor,
-        batch_padded_offsets: torch.Tensor,
     ) -> torch.Tensor:
         """Run one GEMM per group, with the groups packed along a single axis.
 
@@ -88,8 +87,6 @@ class GroupedGemmFwdOp(Op):
                 $[\\mathit{batch\\_sum} \\times K]$.
             batch_sizes: Rows per group, 1D ``torch.int32``.
             batch_offsets: Start row of each group in ``a``, 1D ``torch.int32``.
-            batch_padded_offsets: Start row of each group padded to 128 rows, 1D
-                ``torch.int32``; no kernel reads it.
 
         Returns:
             The per-group products in the dtype of the inputs:
@@ -99,10 +96,10 @@ class GroupedGemmFwdOp(Op):
         Example:
             ```python linenums="1"
             op = GroupedGemmFwdOp()               # NT by default
-            d = op(a, b, batch_sizes, batch_offsets, batch_padded_offsets)
+            d = op(a, b, batch_sizes, batch_offsets)
             ```
         """
-        return self._call_boundary(a, b, batch_sizes, batch_offsets, batch_padded_offsets)
+        return self._call_boundary(a, b, batch_sizes, batch_offsets)
 
     def _eager_forward(
         self,
@@ -110,15 +107,12 @@ class GroupedGemmFwdOp(Op):
         b: torch.Tensor,
         batch_sizes: torch.Tensor,
         batch_offsets: torch.Tensor,
-        batch_padded_offsets: torch.Tensor,
     ) -> torch.Tensor:
         """Resolve the kernel and launch, inside the operator.
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        inputs = tuple(
-            t.contiguous() for t in (a, b, batch_sizes, batch_offsets, batch_padded_offsets)
-        )
+        inputs = tuple(t.contiguous() for t in (a, b, batch_sizes, batch_offsets))
         batch_sum, width = a.shape
         if self.transpose_a:
             n, k = width, b.shape[0 if self.transpose_b else 1]

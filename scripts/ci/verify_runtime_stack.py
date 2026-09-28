@@ -80,7 +80,7 @@ try:
     import flash_attn_interface
 
     assert flash_attn_interface.flash_attn_func is not None
-except Exception as exc:  # noqa: BLE001 - a half-built FA3 raises several ways
+except Exception as exc:
     sys.exit(
         f"FAIL: flash_attn_interface does not import ({exc}). Eleven attention "
         "benchmarks name `fa3` and would silently drop the column."

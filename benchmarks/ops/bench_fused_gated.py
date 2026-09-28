@@ -5,8 +5,6 @@ kernel, which takes the concatenated input the reference splits. A second test c
 that each kernel's default strategy is the fast one.
 """
 
-from typing import Optional
-
 import pytest
 import torch
 
@@ -18,7 +16,8 @@ from benchmarks.baselines import (
     flashinfer_op,
     reference_tolerance,
 )
-from benchmarks.benchmark_base import BenchmarkBase, ManifestBenchmark, manifest_calls
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from benchmarks.timing import bench_kernel, median_busy_ms
 from tileops.kernels.elementwise import (
     GeluAndMulFwdKernel,
     GeluTanhAndMulFwdKernel,
@@ -50,16 +49,6 @@ _STRATEGY_KERNELS = [
 # How far behind the fastest strategy the default may sit before the choice is
 # stale. Wide enough to clear run-to-run spread, narrow enough to flag a flip.
 _STRATEGY_MARGIN = 1.25
-
-
-class FusedGatedBenchmark(BenchmarkBase[FusedGatedBenchCase]):
-    """Times the strategy decision; it records no row, so both metrics are ``None``."""
-
-    def calculate_flops(self) -> Optional[float]:
-        return None
-
-    def calculate_memory(self) -> Optional[float]:
-        return None
 
 
 # flashinfer names its fused gated kernels after the same three activations and
@@ -143,14 +132,13 @@ def test_fused_gated_default_strategy_is_the_fast_one(
     rows are ops and a forced strategy is not one — the Op layer has no way to
     ask for it.
     """
-    workload = FusedGatedBenchCase(M, N, dtype)
-    bm = FusedGatedBenchmark(workload)
-    inputs = workload.gen_inputs()
+    inputs = FusedGatedBenchCase(M, N, dtype).gen_inputs()
 
     timings = {}
     for strategy in ("direct", "explicit_parallel"):
         kernel = kernel_cls(M=M, N=N, dtype=dtype, config={"strategy": strategy})
-        timings[strategy] = bm.profile(kernel, *inputs)["device_busy_ms"]
+        with torch.no_grad():
+            timings[strategy] = median_busy_ms(bench_kernel(kernel, args=inputs))
 
     default = kernel_cls.DEFAULT_STRATEGY
     fastest = min(timings, key=timings.get)

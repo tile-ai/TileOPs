@@ -175,9 +175,10 @@ def _tune_sub_kernel(
         # A tuned config with no latency is not the skip path; it means the
         # attribute this comparison rests on has gone, and every width would
         # silently tie.
-        warnings.warn(  # noqa: B028
+        warnings.warn(
             f"{label} tuned to {config} but reported no latency, "
-            "so this sweep's result cannot be compared against any other"
+            "so this sweep's result cannot be compared against any other",
+            stacklevel=3,
         )
     print(f"  Best: {config}")
     return config, latency
@@ -279,12 +280,13 @@ def tune_delta_rule_fwd(
             config, latency = _tune_sub_kernel(
                 kernel, label, h_builder(*shape, block_v=block_v), PIPELINE_CONFIGS, warmup, rep
             )
-        except Exception as exc:  # noqa: BLE001 - one width must not sink the rest
+        except Exception as exc:  # one width must not sink the rest
             # The builder only wraps the kernel; the compile is inside the
             # autotuner, which raises when no candidate of this width survives.
             failures.append((label, exc))
-            warnings.warn(  # noqa: B028
-                f"{label} unavailable, dropping it from the sweep: {_summarize(exc)}"
+            warnings.warn(
+                f"{label} unavailable, dropping it from the sweep: {_summarize(exc)}",
+                stacklevel=2,
             )
             continue
         compiled.append(block_v)

@@ -123,6 +123,8 @@ select = [
     "TID251",
     # docs/design/layer-boundaries.md §Test: a test does not import from benchmarks/.
     "TID253",
+    # A `noqa` that suppresses nothing, or names a rule this config does not select.
+    "RUF100",
     # flake8-annotations (type hints) — enable when codebase has sufficient coverage
     # "ANN",
 ]
@@ -167,7 +169,7 @@ banned-module-level-imports = ["benchmarks"]
 "tilelang.language.Buffer".msg = "deprecated; use T.Tensor(shape, dtype)"
 
 [tool.ruff.lint.per-file-ignores]
-"!tests/{ops,kernels}/**" = ["TID253"]
+"!tests/**" = ["TID253"]
 "__init__.py" = ["F401"]
 
 [tool.pytest.ini_options]

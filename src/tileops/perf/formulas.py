@@ -627,11 +627,10 @@ def nsa_topk_scored_pairs(call: "CallView") -> int:
 
 
 def nsa_topk_varlen_roofline(call: "CallView") -> tuple[int, int]:
-    """NSA block selection: one QK contraction per scored pair, no PV. ``lse_in`` is passed
-    and discarded, so it moves no bytes."""
+    """NSA block selection: one QK contraction per scored pair, no PV."""
     ix = call.ix
     flops = 2 * nsa_topk_scored_pairs(call) * ix["H"] * ix["D"]
-    return flops, _derived_bytes(call) - call.bytes("lse_in")
+    return flops, _derived_bytes(call)
 
 
 def _nsa_selection(call: "CallView") -> "tuple[int, int, int]":
