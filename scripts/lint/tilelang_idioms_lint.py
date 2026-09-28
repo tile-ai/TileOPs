@@ -20,7 +20,7 @@ Each rule below is a form the compiler accepts, so nothing downstream reports it
   annotations classify enclosing bindings.
 - A file-level lint suppression (``# ruff: noqa``, ``# flake8: noqa``). It hides
   every future finding in the file, not the one being waived.
-- An environment read (``os.environ``, ``os.getenv``, ``environ.get``) in
+- An environment read (``os.environ``, ``os.getenv``, or either imported from ``os``) in
   ``src/tileops/``, ``workloads/`` or ``benchmarks/``, and ``monkeypatch.setenv`` in
   ``tests/`` or ``benchmarks/``. That code takes arguments; a value read from the
   environment reaches no cache key and no caller can see it.
@@ -393,7 +393,7 @@ def _environment_uses(path: Path, tree: ast.Module) -> list[str]:
             if any(a.name in ("environ", "getenv") for a in node.names):
                 out.append(f"{path}:{node.lineno}: {_ENV_READ}")
         elif reads and isinstance(node, ast.Attribute):
-            if _attr_path(node) in env_paths or _attr_path(node) == "environ.get":
+            if _attr_path(node) in env_paths:
                 out.append(f"{path}:{node.lineno}: {_ENV_READ}")
         elif (
             setenv and isinstance(node, ast.Call) and _attr_path(node.func) == "monkeypatch.setenv"

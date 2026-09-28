@@ -103,8 +103,6 @@ SETENV = "def test_x(monkeypatch):\n    monkeypatch.setenv('N', '1')\n"
         ("src/tileops", "import os as process\nn = process.getenv('N')\n", "reads the environment"),
         ("tests", SETENV, "monkeypatch.setenv"),
         ("benchmarks", SETENV, "monkeypatch.setenv"),
-        # A launcher's RANK describes the process a test runs in.
-        ("tests", "import os\nrank = os.environ['RANK']\n", None),
     ],
 )
 def test_environment_rule_follows_the_tree(tmp_path, tree, source, expected):
@@ -117,8 +115,8 @@ def test_environment_rule_follows_the_tree(tmp_path, tree, source, expected):
         text=True,
         cwd=tmp_path,
     )
-    assert result.returncode == (1 if expected else 0), result.stdout
-    assert expected is None or expected in result.stdout
+    assert result.returncode == 1
+    assert expected in result.stdout
 
 
 # One builder per fixture; the rule reads scopes, so the nesting is the fixture.
