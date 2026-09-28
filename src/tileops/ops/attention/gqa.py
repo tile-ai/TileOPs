@@ -1,4 +1,3 @@
-import math
 from typing import Callable, ClassVar, Dict, Mapping, Optional
 
 import torch
@@ -257,10 +256,8 @@ class GroupedQueryAttentionDenseFwdOp(Op):
             tune: Whether to autotune, applied when a kernel is first built.
 
         Raises:
-            ValueError: ``sm_scale`` is not finite or ``softcap`` is negative.
+            ValueError: ``softcap`` is negative.
         """
-        if sm_scale is not None and not math.isfinite(sm_scale):
-            raise ValueError(f"sm_scale must be finite, got {sm_scale}")
         self.is_causal = is_causal
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
@@ -443,9 +440,6 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
             kernel_map: Optional in-tree kernel overrides.
             tune: Autotune a kernel when it is first built.
         """
-        if sm_scale is not None and not math.isfinite(sm_scale):
-            raise ValueError(f"sm_scale must be finite, got {sm_scale}")
-
         self.is_causal = is_causal
         self.sm_scale = sm_scale
         self.softcap = _score_softcap(softcap)
@@ -644,9 +638,6 @@ class GroupedQueryAttentionPagedFwdOp(Op):
             kernel_map: Optional in-tree kernel overrides.
             tune: Autotune a kernel when it is first built.
         """
-        if sm_scale is not None and not math.isfinite(sm_scale):
-            raise ValueError(f"sm_scale must be finite, got {sm_scale}")
-
         self.is_causal = is_causal
         self.sm_scale = sm_scale
         self.softcap = _score_softcap(softcap)

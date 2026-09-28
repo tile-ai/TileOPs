@@ -36,6 +36,7 @@ DeltaNetInferenceFwdOp:
     - "K > 0 and V > 0"
     - "not present(cu_seqlens_cpu) or present(cu_seqlens)"
     - "not present(cu_seqlens) or B == 1"
+    - "not present(scale) or -inf < scale.value < inf"
   workloads:
   - {B: 2, S: 2048, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-2k}
   - {B: 2, S: 8192, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-8k}
@@ -90,6 +91,7 @@ GatedDeltaNetFwdOp:
     - "not present(cu_seqlens_cpu) or present(cu_seqlens)"
     - "not present(cu_seqlens) or B == 1"
     - "not allow_neg_eigval or use_beta_sigmoid_in_kernel"
+    - "not present(scale) or -inf < scale.value < inf"
   workloads:
   - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-4k}
   - {B: 1, S: 12288, H: 16, HV: 16, K: 128, V: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-12k}

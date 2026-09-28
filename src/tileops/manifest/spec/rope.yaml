@@ -22,6 +22,7 @@ RopeNeoxFwdOp:
       output: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
     shape_rules:
     - "D > 0 and D % 2 == 0"
+    - "base > 0"
 
   workloads:
   - {layout: 1d, S: 2048, D: 64, dtype_cases: [{T: float16}, {T: float32}], label: 1d-2k}
@@ -54,6 +55,7 @@ RopeNonNeoxFwdOp:
       output: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
     shape_rules:
     - "D > 0 and D % 2 == 0"
+    - "base > 0"
 
   workloads:
   - {layout: 1d, S: 2048, D: 64, dtype_cases: [{T: float16}], label: 1d-2k}
@@ -90,6 +92,10 @@ RopeLlama31FwdOp:
       output: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
     shape_rules:
     - "D > 0 and D % 2 == 0"
+    - "base > 0"
+    # The frequency table divides by each factor and, in the smoothing band, by their difference.
+    - "all(-inf <= f <= inf and f != 0 for f in (scale_factor, low_freq_factor, high_freq_factor))"
+    - "low_freq_factor != high_freq_factor"
 
   workloads:
   - {layout: 1d, S: 8192, D: 128, dtype_cases: [{T: bfloat16}], label: 1d-8k}
@@ -127,6 +133,9 @@ RopeYarnFwdOp:
       output: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
     shape_rules:
     - "D > 0 and D % 2 == 0"
+    # The correction range divides by log(base) and takes log(original_max_position / beta).
+    - "base > 0 and base != 1 and scale > 0"
+    - "original_max_position > 0 and 0 < beta_fast < inf and 0 < beta_slow < inf"
 
   workloads:
   - {layout: 1d, S: 8192, D: 128, dtype_cases: [{T: bfloat16}], label: 1d-8k}
@@ -162,6 +171,10 @@ RopeLongRopeFwdOp:
       output: {dtype: T, shape: "RopeX[layout, B, S, H, D]"}
     shape_rules:
     - "D > 0 and D % 2 == 0"
+    - "base > 0"
+    # An extended context scales the amplitude by log(scale) / log(original_max_position_embeddings).
+    - "max_position_embeddings > 0 and original_max_position_embeddings > 0"
+    - "max_position_embeddings <= original_max_position_embeddings or original_max_position_embeddings > 1"
 
   workloads:
   - {layout: 1d, S: 8192, D: 128, dtype_cases: [{T: bfloat16}], label: 1d-8k}
@@ -193,6 +206,7 @@ RopeNeoxPositionIdsFwdOp:
     shape_rules:
     - "0 < max_position <= 2147483648"
     - "rotary_dim.value > 0 and rotary_dim.value % 2 == 0 and rotary_dim.value <= D if present(rotary_dim) else D > 0 and D % 2 == 0"
+    - "base > 0"
 
   workloads:
   - {seq_lens: [2048], H: 32, D: 128, max_position: 4096, dtype_cases: [{T: float16, P: int32}], label: prefill-2k}

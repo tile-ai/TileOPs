@@ -1,4 +1,3 @@
-import math
 from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
@@ -82,9 +81,6 @@ class GatedDeltaNetFwdOp(Op):
             kernel_map: Optional in-tree kernel overrides.
             tune: Autotune a kernel when it is first built.
         """
-        if scale is not None and not math.isfinite(scale):
-            raise ValueError(f"scale must be finite, got {scale}")
-
         self.scale = scale
         self.use_qk_l2norm_in_kernel = use_qk_l2norm_in_kernel
         self.use_beta_sigmoid_in_kernel = use_beta_sigmoid_in_kernel
