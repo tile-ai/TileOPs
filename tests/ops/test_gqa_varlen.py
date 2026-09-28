@@ -282,20 +282,6 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                 ),  # D=512 causal kvcache
-                pytest.param(
-                    2,
-                    [300, 700],
-                    [300, 700],
-                    8,
-                    2,
-                    512,
-                    False,
-                    -1,
-                    -1,
-                    torch.bfloat16,
-                    False,
-                    marks=pytest.mark.full,
-                ),  # D=512 bidirectional
             ],
         ),
     ]

@@ -75,7 +75,6 @@ def _gqa_prefill_varlen_fwd_kernel(
         # Two warpgroups cannot take the score tile as a register operand of the
         # second gemm: TileLang's layout inference finds no layout for the cast
         # that feeds it, so that config stages the tile through shared memory.
-        # One warpgroup keeps it in registers, which is faster there.
         p_via_shared = threads > 128
         q_tiling = GroupTiling(batch, block_m)
         num_q_tiles = q_tiling.tile_upper_bound(total_q)
@@ -280,8 +279,7 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
         if 256 < self.dim <= 512 and get_sm_version(self.device_index) >= 90:
             # The fp32 output accumulator is block_m x dim, so block_m stays at
             # 64; two warpgroups then carry the 64 x 64 tile. Its shared memory
-            # (157KB at dim 384, 207KB at 512) is over every pre-SM90 per-block
-            # cap, which the 128-thread tile below fits on SM80.
+            # is over every pre-SM90 per-block cap.
             return {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 256}
         return {
             "block_m": 64,
