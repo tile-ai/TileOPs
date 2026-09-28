@@ -1,8 +1,11 @@
-"""Softmax / log-softmax forward kernel using TileLang.
+"""Softmax / log-softmax forward kernels using TileLang.
 
 Implements a 2-pass online softmax algorithm for two operations:
   - softmax:     y[i,j] = exp(x[i,j] - max_i) / sum_i(exp(x[i,j] - max_i))
   - log_softmax: y[i,j] = x[i,j] - max_i - log(sum_i(exp(x[i,j] - max_i)))
+
+Two implementations, each stating the calls it serves over a :class:`SoftmaxCall`: a
+split across blocks for a handful of long rows, and the general row kernel.
 
 Supports arbitrarily large N dimensions by tiling over N when the full
 N_padded does not fit in shared memory.  Uses the online softmax recurrence
@@ -17,7 +20,6 @@ vectorized T.copy path since their columns are fully in-bounds.
 """
 
 import functools
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -25,29 +27,30 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
+    AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
+    DEFAULT_THREADS,
+    FRAGMENT_ELEMS_PER_THREAD,
     BlockConfigPlanner,
     RowTiledAutotuneMixin,
     align_up,
     ceildiv_int,
-    device_smem_budget,
     restore_same_shape,
     rows_for_axes,
-    torch_dtype_nbytes,
 )
 from tileops.kernels.reduction._split_softmax import (
-    fused_split_plan,
+    SPLIT_BLOCKS_PER_SM,
     make_block_split_fold,
     softmax_split_partials_kernel,
     split_seg_n,
-    split_target_blocks,
 )
+from tileops.kernels.reduction.call_spec import SoftmaxCall
+from tileops.utils import WARP_LANES
 
-# These two kernels bake tile_n in at build time and default to the wider
-# thread block; AUTOTUNE_THREADS still bounds what the sweep explores.
-_DEFAULT_TUNE_THREADS = 256
-
-__all__ = ["SoftmaxKernel"]
+__all__ = [
+    "SoftmaxKernel",
+    "SoftmaxSplitKernel",
+]
 
 
 # Single-tile kernel (N fits in shared memory) -- original fast path
@@ -442,21 +445,6 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, out_dtype: s
     return _func
 
 
-# Dispatch: choose single-tile or multi-tile kernel based on tile_n
-
-
-@functools.lru_cache(maxsize=64)
-def _softmax_kernel(M: int, N: int, op_kind: str, dtype: str, out_dtype: str, tile_n: int = 0):
-    """Build the appropriate softmax kernel.
-
-    If tile_n == 0, the full N fits in shared memory and the single-tile
-    kernel is used. Otherwise, the multi-tile kernel is used.
-    """
-    if tile_n == 0:
-        return _softmax_kernel_single(M, N, op_kind, dtype, out_dtype)
-    return _softmax_kernel_tiled(M, N, op_kind, dtype, out_dtype, tile_n)
-
-
 @functools.lru_cache(maxsize=64)
 def _softmax_split_finalize_kernel(
     M: int, N: int, op_kind: str, dtype: str, out_dtype: str, seg_n: int, threads: int
@@ -534,8 +522,8 @@ def _softmax_fused_split_kernel(
     exp(x - seg_max) * exp(seg_max - row_max)``, which is why the segment's
     exponentials survive the fold. A segment of only ``-inf`` holds zeros
     rather than the NaN ``exp(-inf - -inf)`` would leave, so it contributes
-    nothing; an all--inf row still reads NaN for softmax and -inf for
-    log_softmax, as torch does.
+    nothing; an all--inf row still reads NaN for softmax and log_softmax, as
+    torch does.
     """
     num_segs = ceildiv_int(N, seg_n)
     fold = make_block_split_fold(num_segs, threads)
@@ -612,258 +600,197 @@ def _softmax_fused_split_kernel(
     return _func
 
 
-class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
-    """Softmax / log-softmax forward kernel.
-
-    Supports SM80+ architectures. Uses 256-element alignment for shared
-    memory copies. Implements a 2-pass online softmax algorithm.
-
-    For large N that does not fit in shared memory, tiles over N using
-    the online softmax recurrence (running max + rescaled sum).
-
-    Boundary handling for non-aligned N is performed inside the kernel
-    via masked loads and ``-inf`` fills, so no host-side ``F.pad`` is
-    needed.
-
-    ``forward`` takes the tensor the op declares and normalizes over *norm_axis*; moving
-    that axis to the end, flattening to rows and putting the result back are this kernel's
-    business, so both sides of the op/backend boundary speak the declared shape.
-
-    Args:
-        M: Rows the normalization runs over — the product of every axis but *norm_axis*.
-        N: Length of the normalized axis.
-        op_kind: One of "softmax", "log_softmax".
-        dtype: Input data type (float32, float16, or bfloat16).
-        norm_axis: Non-negative index of the axis the normalization runs over.
-        config: Optional kernel configuration dict.
-        tune: Whether to autotune (default False).
-        device_index: CUDA device index for shared memory budget query.
-            When ``None``, ``torch.cuda.current_device()`` is used.
-        out_dtype: Output data type; ``None`` is *dtype*.
-    """
+class _SoftmaxKernelBase(Kernel):
+    """The softmax family: the policy every candidate's region and plan reads."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    def __init__(
-        self,
-        M: int,
-        N: int,
-        op_kind: str,
-        dtype: torch.dtype,
-        norm_axis: int,
-        config: Optional[dict] = None,
-        tune: bool = False,
-        device_index: int | None = None,
-        out_dtype: Optional[torch.dtype] = None,
-    ):
-        super().__init__(device_index=device_index)
-        if op_kind not in ("softmax", "log_softmax"):
-            raise ValueError(
-                f"Unsupported op_kind '{op_kind}'. Expected one of 'softmax', 'log_softmax'."
+    @classmethod
+    def num_buffers(cls, call: SoftmaxCall) -> int:
+        """Row-sized shared buffers the tiled kernel holds.
+
+        Two, one per pass, since TileLang's allocator aliases one buffer across the
+        passes; an output of another dtype adds its stage.
+        """
+        in_bytes = call.dtype.itemsize
+        out_stage = 0 if call.out_dtype == call.dtype else -(-call.out_dtype.itemsize // in_bytes)
+        return 2 + out_stage
+
+    @classmethod
+    def row_plan(cls, call: SoftmaxCall) -> "tuple[int, int]":
+        """The row kernel's untuned ``(block_m, tile_n)``; ``tile_n == 0`` is one tile."""
+        return cls._plan_rows(
+            align_up(call.n, DEFAULT_ALIGNMENT),
+            call.dtype.itemsize,
+            call.smem_budget,
+            cls.num_buffers(call),
+        )
+
+    @classmethod
+    def split_seg_n(cls, call: SoftmaxCall) -> int:
+        """The segment width a split of the rows takes, or 0 when the untuned row grid fills."""
+        return split_seg_n(call.m, call.n, cls.row_plan(call)[0], call.sm_count)
+
+    @classmethod
+    def fused_split_threads(cls, call: SoftmaxCall) -> "int | None":
+        """The thread width a one-kernel split of *call* runs at, or None when it cannot.
+
+        A fused split keeps its segment in registers across a grid barrier, so it
+        reads the row once where the two-kernel pair reads it twice. Two conditions
+        bound it. The grid must be co-resident, since a cooperative launch wider
+        than the device holds is refused outright; ``split_seg_n`` already aims at
+        ``SPLIT_BLOCKS_PER_SM`` blocks per SM, and this rejects the shapes where the
+        segment cap pushed it past that. The two fp32 fragments must also fit the same
+        per-thread budget one fragment gets elsewhere, which is what picks the width:
+        the narrowest power of two from ``WARP_LANES`` up that holds them.
+        """
+        seg_n = cls.split_seg_n(call)
+        if ceildiv_int(call.n, seg_n) * call.m > SPLIT_BLOCKS_PER_SM * call.sm_count:
+            return None
+        threads = WARP_LANES
+        while threads <= DEFAULT_THREADS:
+            if 2 * seg_n <= FRAGMENT_ELEMS_PER_THREAD * threads:
+                return threads
+            threads *= 2
+        return None
+
+    @staticmethod
+    @functools.lru_cache(maxsize=256)
+    def _plan_rows(
+        n_padded: int, elem_bytes: int, smem_budget: int, num_buffers: int
+    ) -> "tuple[int, int]":
+        """One tile keeps the *smallest* block_m: each extra row hands every thread
+        another ``N_padded / threads`` registers until the fragment spills. Tiled rows
+        take the block_m with strictly the fewest tiles, since fewer tiles means fewer
+        global passes, and the smallest one on a tie, for occupancy."""
+        planner = BlockConfigPlanner(n_padded, elem_bytes, smem_budget, num_buffers=num_buffers)
+        threads = max(AUTOTUNE_THREADS)
+        best_bm = 1
+        best_tile_n = planner.tile_n_for(1, threads)
+        for bm in [2, 4, 8, 16]:
+            if not planner.layout_ok(bm, n_padded, DEFAULT_THREADS):
+                continue
+            try:
+                tn = planner.tile_n_for(bm, threads)
+            except ValueError:
+                continue
+            if tn == 0 and not planner.frag_fits(bm, n_padded, DEFAULT_THREADS):
+                continue
+            if best_tile_n == 0:
+                continue
+            if tn == 0 or ceildiv_int(n_padded, tn) < ceildiv_int(n_padded, best_tile_n):
+                best_bm = bm
+                best_tile_n = tn
+        return best_bm, best_tile_n
+
+
+class SoftmaxSplitKernel(_SoftmaxKernelBase):
+    """Softmax / log-softmax of a handful of long rows, split into segments across blocks.
+
+    Where the grid is co-resident and a segment fits twice in registers, one kernel
+    keeps each segment in registers across a grid barrier and reads the row once;
+    otherwise one launch writes each segment's fp32 ``(max, sum)``, shared with
+    logsumexp, and a second folds them and normalizes one segment per block. Serves the
+    calls with a :meth:`split_seg_n`.
+    """
+
+    @classmethod
+    def applies(cls, call: SoftmaxCall) -> bool:
+        return cls.split_seg_n(call) > 0
+
+    def __init__(self, call: SoftmaxCall):
+        super().__init__(device_index=call.device.index)
+        self.call = call
+        self.dtype = call.dtype
+        seg_n = self.split_seg_n(call)
+        self.num_segs = ceildiv_int(call.n, seg_n)
+        out_dtype = self.dtype_to_str(call.out_dtype)
+        fused_threads = self.fused_split_threads(call)
+        if fused_threads is not None:
+            self.fused = _softmax_fused_split_kernel(
+                call.m, call.n, call.op_kind, self.dtype_str, out_dtype, seg_n, fused_threads
+            )()
+            return
+        self.fused = None
+        # split_seg_n's fragment cap assumes the default width.
+        self.partials = softmax_split_partials_kernel(
+            call.m, call.n, seg_n, self.dtype_str, DEFAULT_THREADS
+        )()
+        self.finalize = _softmax_split_finalize_kernel(
+            call.m, call.n, call.op_kind, self.dtype_str, out_dtype, seg_n, DEFAULT_THREADS
+        )()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Normalize ``call.axis`` of the contiguous input *x*."""
+        rows = rows_for_axes(x, (self.call.axis,))
+        if self.fused is not None:
+            stats = torch.empty(
+                2, self.call.m * self.num_segs, dtype=torch.float32, device=x.device
             )
-        self.M = M
-        self.N = N
-        self.op_kind = op_kind
-        self.dtype = dtype
-        out_dtype = out_dtype or dtype
-        self.out_dtype_str = self.dtype_to_str(out_dtype)
-        self.norm_axis = norm_axis
-        self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        self._elem_bytes = torch_dtype_nbytes(dtype)
-        # The tiled kernel's output stage, counted in input-sized buffers.
-        out_stage = (
-            0 if out_dtype == dtype else -(-torch_dtype_nbytes(out_dtype) // self._elem_bytes)
-        )
-        self._smem_budget = device_smem_budget(device_index)
-        self._split_target = split_target_blocks(device_index)
-        self._planner = BlockConfigPlanner(
-            self.N_padded,
-            self._elem_bytes,
-            self._smem_budget,
-            num_buffers=self._NUM_SHARED_BUFFERS + out_stage,
-        )
+            y = self.fused(rows, stats[0], stats[1])
+        else:
+            seg_max, seg_sum = self.partials(rows)
+            y = self.finalize(rows, seg_max, seg_sum)
+        return restore_same_shape(y, self.call.shape, (self.call.axis,))
 
-        # Build self.kernel BEFORE init_config: when tune=True, init_config
-        # delegates to autotune() which requires self.kernel to exist.
-        #
-        # tile_n is baked into the kernel at build time, so pre-compute it from
-        # default_config; autotune() rebuilds once per candidate width.
-        self._tile_n = self.default_config["tile_n"]
-        self.kernel = _softmax_kernel(
-            self.M,
-            self.N,
-            self.op_kind,
-            self.dtype_str,
-            self.out_dtype_str,
-            self._tile_n,
-        )
 
-        self.init_config(config, tune)
+class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
+    """Softmax / log-softmax of rows, ``block_m`` rows a block.
 
-        # When tune=True, autotune() already set self._tile_n and
-        # self.config["tile_n"], and rebuilt the kernel.  Only apply
-        # the post-init tile_n fixup for user-provided configs.
-        if not tune:
-            # If the caller supplied an explicit tile_n (e.g. from a
-            # previous autotuner result), honour it.  Only fall back to
-            # the heuristic when tile_n was not provided.
-            caller_tile_n = config.get("tile_n") if config is not None else None
-            if caller_tile_n == 0:
-                caller_tile_n = None
-            if caller_tile_n is not None:
-                reason = self._planner.reject_tile_n(
-                    self.config["block_m"],
-                    caller_tile_n,
-                    self.config.get("threads", _DEFAULT_TUNE_THREADS),
-                )
-                if reason:
-                    raise ValueError(reason)
-                target_tile_n = caller_tile_n
-            else:
-                target_tile_n = self._tile_n_for_block_m(self.config["block_m"])
-            if target_tile_n != self._tile_n:
-                self._tile_n = target_tile_n
-                self.kernel = _softmax_kernel(
-                    self.M,
-                    self.N,
-                    self.op_kind,
-                    self.dtype_str,
-                    self.out_dtype_str,
-                    self._tile_n,
-                )
-            self.config["tile_n"] = self._tile_n
+    The general implementation: it serves any call, and runs where no specialised one
+    applies. A row one shared-memory tile holds is normalized from that tile; a longer
+    row takes two passes over N-tiles with the online softmax recurrence (running max
+    and rescaled sum). Non-aligned N is masked inside the kernel. Tunes ``tile_n``,
+    ``block_m`` and ``threads``.
 
-        # A config from before the split choice was recorded falls back to
-        # the gate; a round-tripped tuned config keeps its recorded choice.
-        self.config.setdefault(
-            "split",
-            bool(split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)),
-        )
+    ``forward`` takes the tensor the op declares and normalizes over ``call.axis``;
+    moving that axis to the end, flattening to rows and putting the result back are
+    this kernel's business.
+    """
 
-    # Tiled softmax/log_softmax allocates 2 shared buffers (one per pass)
-    # due to TileLang allocator aliasing -- see _softmax_kernel_tiled docstring.
-    _NUM_SHARED_BUFFERS = 2
+    general: bool = True
     _MAX_TILE_N_CANDIDATES = 3
+
+    @classmethod
+    def applies(cls, call: SoftmaxCall) -> bool:
+        return True
+
+    def __init__(self, call: SoftmaxCall):
+        super().__init__(device_index=call.device.index)
+        self.call = call
+        self.M = call.m
+        self.N = call.n
+        self.dtype = call.dtype
+        self.out_dtype_str = self.dtype_to_str(call.out_dtype)
+        self.N_padded = align_up(self.N, DEFAULT_ALIGNMENT)
+        self._elem_bytes = call.dtype.itemsize
+        self._smem_budget = call.smem_budget
+        self._planner = BlockConfigPlanner(
+            self.N_padded, self._elem_bytes, self._smem_budget, num_buffers=self.num_buffers(call)
+        )
+        self._block_m, self._tile_n = self.row_plan(call)
+        self.kernel = self._build_row_kernel(self._tile_n)
+        self.init_config(None, call.tune)
 
     @property
     def default_config(self) -> dict:
-        """Select default block_m based on shared memory budget.
-
-        For the single-tile path (tile_n == 0), prefer the *smallest* block_m.
-        Bandwidth falls as rows are added to a block: each extra row hands every
-        thread another ``N_padded / threads`` registers until the fragment spills,
-        and the kernel then re-reads its own row through L2 on every pass.
-
-        For the tiled path, prefer the block_m that **minimises the
-        number of N-tiles** (i.e. maximises tile_n).  Fewer tiles means
-        fewer global memory passes in the 2-pass algorithm, which
-        dominates latency on bandwidth-bound workloads.  Among configs
-        with equal tile count, prefer *smaller* block_m: the tiled
-        kernel is bandwidth-bound, and smaller shared-memory footprint
-        per block improves occupancy.
-        """
-        best_bm = 1
-        best_tile_n = self._tile_n_for_block_m(1)
-
-        for bm in [2, 4, 8, 16]:
-            if not self._planner.layout_ok(bm, self.N_padded, _DEFAULT_TUNE_THREADS):
-                continue
-            try:
-                tn = self._tile_n_for_block_m(bm)
-            except ValueError:
-                continue
-            if tn == 0 and not self._planner.frag_fits(bm, self.N_padded, _DEFAULT_TUNE_THREADS):
-                continue
-            if tn == 0 and best_tile_n == 0:
-                # Both single-tile, and block_m=1 is where the loop starts: keep it.
-                pass
-            elif tn == 0 and best_tile_n != 0:
-                # Switching from tiled to single-tile is always better
-                best_bm = bm
-                best_tile_n = tn
-            elif tn != 0 and best_tile_n == 0:
-                # Don't give up single-tile for tiled
-                pass
-            else:
-                # Both tiled: prefer strictly fewer tiles only.
-                best_num = (self.N_padded + best_tile_n - 1) // best_tile_n
-                curr_num = (self.N_padded + tn - 1) // tn
-                if curr_num < best_num:
-                    best_bm = bm
-                    best_tile_n = tn
-
-        return {
-            "block_m": best_bm,
-            "threads": _DEFAULT_TUNE_THREADS,
-            "tile_n": best_tile_n,
-            "split": bool(split_seg_n(self.M, self.N, best_bm, self._split_target)),
-        }
+        return {"block_m": self._block_m, "threads": DEFAULT_THREADS, "tile_n": self._tile_n}
 
     def _build_row_kernel(self, tile_n: int):
-        return _softmax_kernel(
-            self.M, self.N, self.op_kind, self.dtype_str, self.out_dtype_str, tile_n
+        if tile_n == 0:
+            return _softmax_kernel_single(
+                self.M, self.N, self.call.op_kind, self.dtype_str, self.out_dtype_str
+            )
+        return _softmax_kernel_tiled(
+            self.M, self.N, self.call.op_kind, self.dtype_str, self.out_dtype_str, tile_n
         )
-
-    def _row_forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self._normalize_rows(x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalize *x* over *norm_axis*.
+        """Normalize ``call.axis`` of the contiguous input *x*.
 
-        Args:
-            x: The tensor the op declares, contiguous, on a CUDA device. Boundary
-                handling for non-aligned ``N`` happens inside the GPU kernel (masked
-                loads + ``-inf`` fill), so no host-side ``F.pad`` is needed.
-
-        Returns:
-            A tensor shaped like *x*, in the output dtype.
-
-        Raises:
-            ValueError: *x* is not on a CUDA device.
+        The prim_func writes an alignment-padded row; the surplus columns are trimmed.
         """
-        self._require_cuda(x=x)
-        in_shape = tuple(x.shape)
-        axes = (self.norm_axis,)
-        y = self._normalize_rows(rows_for_axes(x, axes))
-        return restore_same_shape(y, in_shape, axes)
-
-    def _normalize_rows(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalize the trailing axis of an ``(M, N)`` buffer.
-
-        The prim_func writes an alignment-padded row; the surplus columns are
-        trimmed here. A handful of long rows goes to a split instead, which
-        writes exact columns: one fused kernel where the grid can hold a
-        barrier, and the two-kernel pair where it cannot.
-        """
-        seg_n = (
-            split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)
-            if self.config["split"]
-            else 0
-        )
-        if seg_n:
-            fused_threads = fused_split_plan(self.M, self.N, seg_n)
-            if fused_threads is not None:
-                num_segs = ceildiv_int(self.N, seg_n)
-                stats = torch.empty(2, self.M * num_segs, dtype=torch.float32, device=x.device)
-                return _softmax_fused_split_kernel(
-                    self.M,
-                    self.N,
-                    self.op_kind,
-                    self.dtype_str,
-                    self.out_dtype_str,
-                    seg_n,
-                    fused_threads,
-                )()(x, stats[0], stats[1])
-            # split_seg_n's fragment cap assumes the default width.
-            threads = _DEFAULT_TUNE_THREADS
-            seg_max, seg_sum = softmax_split_partials_kernel(
-                self.M, self.N, seg_n, self.dtype_str, threads
-            )()(x)
-            return _softmax_split_finalize_kernel(
-                self.M, self.N, self.op_kind, self.dtype_str, self.out_dtype_str, seg_n, threads
-            )()(x, seg_max, seg_sum)
-        program = _softmax_kernel(
-            self.M, self.N, self.op_kind, self.dtype_str, self.out_dtype_str, self._tile_n
-        )
-        y = program(self.config["block_m"], self.config["threads"])(x)
-        return y[:, : self.N] if y.shape[1] > self.N else y
+        program = self.kernel(self.config["block_m"], self.config["threads"])
+        y = program(rows_for_axes(x, (self.call.axis,)))
+        y = y[:, : self.N] if y.shape[1] > self.N else y
+        return restore_same_shape(y, self.call.shape, (self.call.axis,))

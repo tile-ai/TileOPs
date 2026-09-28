@@ -18,11 +18,8 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase, standard_tolerance
-from tileops.kernels.reduction._split_softmax import (
-    fused_split_plan,
-    split_seg_n,
-    split_target_blocks,
-)
+from tileops.kernels.reduction.call_spec import LogSumExpCall, SoftmaxCall
+from tileops.kernels.reduction.softmax import SoftmaxSplitKernel
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
 from workloads.device import run_device, run_device_available
 from workloads.reduction import LogSoftmaxWorkload, LogSumExpWorkload, SoftmaxWorkload
@@ -384,24 +381,48 @@ def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_logsumexp_streaming_special_values() -> None:
-    """Streaming logsumexp preserves -inf, +inf, and NaN row semantics."""
-    x = torch.randn(256, 16384, dtype=torch.bfloat16, device=run_device())
-    x[0] = float("-inf")
-    x[1] = float("-inf")
-    x[1, 7] = 2.0
-    x[2, ::2] = float("-inf")
-    x[3, 100] = float("nan")
-    x[4, 200] = float("inf")
-    op = LogSumExpFwdOp(dim=-1)
+@pytest.mark.parametrize(
+    "shape, dim, dtype",
+    [
+        pytest.param((256, 16384), -1, torch.bfloat16, id="streaming"),
+        pytest.param((64, 4096), -1, torch.float16, id="single-tile"),
+        pytest.param((300, 100000), -1, torch.float32, id="tiled"),
+        pytest.param((8, 102400), -1, torch.float32, id="split"),
+        pytest.param((4, 128, 4096), [0, 2], torch.float16, id="edge-axes"),
+    ],
+)
+def test_logsumexp_special_values(shape: tuple, dim, dtype: torch.dtype) -> None:
+    """Every kernel path keeps torch's -inf, +inf, and NaN row semantics."""
+    x = torch.randn(*shape, dtype=dtype, device=run_device())
+    # Row r of the reduced output is x[r] for a trailing dim, x[:, r] for edge axes.
+    rows = x if dim == -1 else x.transpose(0, 1)
+    rows[0] = float("-inf")
+    rows[1] = float("-inf")
+    rows[1][..., 7] = 2.0
+    rows[2][..., ::2] = float("-inf")
+    rows[3][..., 100] = float("nan")
+    rows[4][..., 200] = float("inf")
+    rows[5][..., 200] = float("inf")
+    rows[5][..., 300] = float("nan")
+    # A NaN in a run of -inf, far from the row's one finite or +inf value.
+    first, final = (0,) * rows[6].dim(), (-1,) * rows[6].dim()
+    rows[6] = float("-inf")
+    rows[6][first] = float("nan")
+    rows[6][final] = -10.0
+    rows[7] = float("-inf")
+    rows[7][first] = float("nan")
+    rows[7][final] = float("inf")
 
-    y = op(x).float()
-    y_ref = torch.logsumexp(x.float(), dim=-1)
+    y = LogSumExpFwdOp(dim=dim)(x).float()
+    y_ref = torch.logsumexp(x.float(), dim=dim)
     assert y[0].item() == float("-inf")
     assert torch.isnan(y[3])
     assert y[4].item() == float("inf")
+    assert torch.isnan(y[5])
+    assert torch.isnan(y[6])
+    assert torch.isnan(y[7])
     finite = torch.isfinite(y_ref)
-    assert torch.allclose(y[finite], y_ref[finite], **standard_tolerance(torch.bfloat16)), (
+    assert torch.allclose(y[finite], y_ref[finite], **standard_tolerance(dtype)), (
         f"special-value logsumexp failed, max err: {(y[finite] - y_ref[finite]).abs().max()}"
     )
 
@@ -751,18 +772,54 @@ def test_split_rows_survive_fully_masked_segments() -> None:
     torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1))
 
 
+_H200 = {"arch": 90, "sm_count": 132, "smem_budget": 232448}
+
+
 @pytest.mark.smoke
 def test_split_shape_runs_as_one_fused_kernel() -> None:
     """The manifest's split shape reads its row once, under a grid barrier.
 
     A fused split is what keeps the row in registers across the fold; without
     it the pair reads the row a second time. The two shapes below are what
-    ``fused_split_plan`` refuses: a grid wider than a cooperative launch holds,
-    and a segment too wide for two fp32 fragments.
+    ``fused_split_threads`` refuses: a grid wider than a cooperative launch
+    holds, and a segment too wide for two fp32 fragments.
     """
-    seg_n = split_seg_n(4, 102400, 1, split_target_blocks())
-    assert seg_n
-    assert fused_split_plan(4, 102400, seg_n) is not None
+    fused = SoftmaxSplitKernel.fused_split_threads
+    assert fused(SoftmaxCall(shape=(4, 102400), axis=1, **_H200)) is not None
 
-    assert fused_split_plan(1, 10_000_000, 16384) is None
-    assert fused_split_plan(1, 100_000, 16384) is None
+    assert fused(SoftmaxCall(shape=(1, 10_000_000), axis=1, **_H200)) is None
+    assert fused(SoftmaxCall(shape=(1, 4_300_000), axis=1, **_H200)) is None
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "shape, axes, dtype, expected",
+    [
+        pytest.param((4, 128, 4096), (0, 2), torch.float16, "LogSumExpEdgeSplitKernel", id="edge"),
+        pytest.param((256, 16384), (1,), torch.bfloat16, "LogSumExpStreamingKernel", id="stream"),
+        pytest.param(
+            (260, 16384), (1,), torch.bfloat16, "LogSumExpStreamingKernel", id="stream-few"
+        ),
+        pytest.param((8, 102400), (1,), torch.float32, "LogSumExpSplitKernel", id="split"),
+        pytest.param((64, 4096), (1,), torch.float16, "LogSumExpKernel", id="single-tile"),
+        pytest.param((300, 100000), (1,), torch.float32, "LogSumExpKernel", id="tiled"),
+    ],
+)
+def test_logsumexp_regions(shape: tuple, axes: tuple, dtype: torch.dtype, expected: str) -> None:
+    """Exactly one logsumexp implementation serves each call, whatever the key order."""
+    call = LogSumExpCall(shape=shape, axes=axes, dtype=dtype, **_H200)
+    assert LogSumExpFwdOp(dim=-1).select_kernel(call).__name__ == expected
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "shape, dtype, expected",
+    [
+        pytest.param((4, 102400), torch.float16, "SoftmaxSplitKernel", id="split"),
+        pytest.param((300, 100000), torch.float32, "SoftmaxKernel", id="tiled"),
+    ],
+)
+def test_softmax_regions(shape: tuple, dtype: torch.dtype, expected: str) -> None:
+    """Exactly one softmax implementation serves each call, whatever the key order."""
+    call = SoftmaxCall(shape=shape, axis=1, dtype=dtype, out_dtype=dtype, **_H200)
+    assert SoftmaxFwdOp(dim=-1).select_kernel(call).__name__ == expected

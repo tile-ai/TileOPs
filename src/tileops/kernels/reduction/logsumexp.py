@@ -1,14 +1,11 @@
-"""LogSumExp forward kernel using TileLang.
+"""LogSumExp forward kernels using TileLang.
 
-Implements a 2-pass online algorithm for:
   - logsumexp: y[i] = max_i + log(sum_i(exp(x[i,j] - max_i)))
 
-Supports arbitrarily large N dimensions by tiling over N when the full
-N_padded does not fit in shared memory.  Uses the online softmax recurrence
-(track running max and rescaled running sum) across N-tiles.
-
-Long fp16/bf16 rows on a filled grid take a streaming kernel instead
-(see ``_logsumexp_kernel_streaming`` and ``StreamingLogSumExpPolicy``).
+Four implementations, each stating the calls it serves over a :class:`LogSumExpCall`:
+an edge-axis split read in the tensor's own layout, a streaming kernel for long
+fp16/bf16 rows on a filled grid, a split across blocks for a handful of long rows, and
+the general row kernel.
 
 256-element alignment (512 bytes for fp16/bf16) required by T.copy() shared
 memory instructions.  Boundary handling for non-aligned N is performed
@@ -20,7 +17,6 @@ vectorized T.copy path since their columns are fully in-bounds.
 
 import functools
 from dataclasses import dataclass
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
@@ -29,13 +25,14 @@ import torch
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
+    AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
+    DEFAULT_THREADS,
     VECTOR_ACCESS_BYTES,
     BlockConfigPlanner,
     RowTiledAutotuneMixin,
     align_up,
     ceildiv_int,
-    device_smem_budget,
     edge_axis_split,
     restore_reduced,
     rows_for_axes,
@@ -44,26 +41,27 @@ from tileops.kernels.reduction._primitives import (
 from tileops.kernels.reduction._split_softmax import (
     edge_split_partials_kernel,
     edge_split_view,
-    make_split_fold,
+    make_block_split_fold,
     softmax_split_partials_kernel,
     split_seg_n,
-    split_target_blocks,
 )
+from tileops.kernels.reduction.call_spec import LogSumExpCall
 from tileops.utils import WARP_LANES
 
-__all__ = ["LogSumExpKernel"]
-
-# These two kernels bake tile_n in at build time and default to the wider
-# thread block; AUTOTUNE_THREADS still bounds what the sweep explores.
-_DEFAULT_TUNE_THREADS = 256
+__all__ = [
+    "LogSumExpEdgeSplitKernel",
+    "LogSumExpKernel",
+    "LogSumExpSplitKernel",
+    "LogSumExpStreamingKernel",
+]
 
 
 @dataclass(frozen=True)
 class StreamingLogSumExpPolicy:
     """Launch shape and eligibility gate of the streaming kernel.
 
-    The launch pair is fixed rather than tuned, and ``eligible`` keeps the
-    kernel on the shapes that pair suits.
+    The launch pair is fixed rather than tuned, and ``LogSumExpKernel.streams`` keeps
+    the kernel on the shapes that pair suits.
     """
 
     threads: int = 128
@@ -81,43 +79,24 @@ class StreamingLogSumExpPolicy:
     # max_floor + log(0) = -inf, matching torch.
     max_floor: float = -3.4e38
 
-    @property
-    def max_ceil(self) -> float:
-        """Clamp for exponent arguments: above every finite fp16/bf16 value.
 
-        Subtracting ``min(max, max_ceil)`` instead of the true max keeps
-        (+inf) - (+inf) = NaN out of exp2: a +inf element contributes
-        exp2(+inf) = +inf and its row folds to +inf, matching torch. A NaN
-        element propagates through exp2, and a finite max is never clamped.
-        """
-        return -self.max_floor
-
-    @property
-    def chunk(self) -> int:
-        return self.threads * self.cols_per_thread
-
-    def eligible(self, M: int, N: int, dtype: torch.dtype) -> bool:
-        return (
-            dtype in (torch.float16, torch.bfloat16)
-            and self.min_rows <= M
-            and self.min_cols <= N
-            and N % self.chunk == 0
-        )
-
-
-_STREAM_POLICY = StreamingLogSumExpPolicy()
+STREAMING_LOGSUMEXP = StreamingLogSumExpPolicy()
 
 
 @functools.lru_cache(maxsize=64)
 def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
     """Fold per-segment ``(max, sum)`` into one logsumexp per row.
 
-    The fold is over a few hundred fp32 pairs, so one warp per row is enough;
-    unlike softmax there is no second pass over the input. An all--inf row
-    reads ``-inf + log(0)``, which is torch's ``-inf``.
+    One block per row folds the row's pairs lane-parallel. The block is the
+    narrowest power of two that holds ``num_segs``, since an idle lane still
+    pays the block reduction; past a warp it stays one warp and each lane
+    folds several pairs. Unlike softmax there is no second pass over the
+    input. An all--inf row reads ``-inf + log(0)`` and a row holding +inf
+    reads ``inf + log(inf)``, which are torch's ``-inf`` and ``+inf``.
     """
     num_segs = ceildiv_int(N, seg_n)
-    fold = make_split_fold(num_segs)
+    lanes = min(WARP_LANES, 1 << (num_segs - 1).bit_length())
+    fold = make_block_split_fold(num_segs, lanes, keep_inf=True)
 
     @tilelang.jit(out_idx=[2])
     def _func():
@@ -127,15 +106,14 @@ def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
             seg_sum: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
             y: T.Tensor[(M,), dtype],
         ):
-            with T.Kernel(M, threads=WARP_LANES) as pid_m:
-                tx = T.get_thread_binding()
-                row_max = T.alloc_local((1,), "float32")
-                row_sum = T.alloc_local((1,), "float32")
-                held = T.alloc_local((1,), "float32")
+            with T.Kernel(M, threads=lanes) as pid_m:
+                part_max = T.alloc_fragment((1, lanes), "float32")
+                part_sum = T.alloc_fragment((1, lanes), "float32")
+                row_max = T.alloc_fragment((1,), "float32")
+                row_sum = T.alloc_fragment((1,), "float32")
 
-                if tx == 0:
-                    fold(seg_max, seg_sum, pid_m * num_segs, row_max, row_sum, held)
-                    y[pid_m] = T.cast(row_max[0] + T.log(row_sum[0]), dtype)
+                fold(seg_max, seg_sum, pid_m * num_segs, part_max, part_sum, row_max, row_sum)
+                y[pid_m] = T.cast(row_max[0] + T.log(row_sum[0]), dtype)
 
         return main
 
@@ -171,6 +149,7 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
                 x_local = T.alloc_fragment((block_m, N_padded), dtype)
                 x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
                 row_max = T.alloc_fragment((block_m,), "float32")
+                row_shift = T.alloc_fragment((block_m,), "float32")
                 row_sum = T.alloc_fragment((block_m,), "float32")
 
                 if _needs_pad:
@@ -193,15 +172,23 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
 
                 T.fill(row_max, -T.infinity("float32"))
                 T.reduce_max(x_f32, row_max, dim=1, clear=False)
+                # torch.logsumexp's shift: zero where the max is infinite, so an all -inf
+                # row sums to 0 and a row holding +inf to +inf instead of NaN.
+                for i in T.Parallel(block_m):
+                    row_shift[i] = T.if_then_else(
+                        T.abs(row_max[i]) == T.infinity("float32"),
+                        T.cast(0.0, "float32"),
+                        row_max[i],
+                    )
 
                 for i in T.serial(block_m):
                     for j in T.Parallel(N_padded):
-                        x_f32[i, j] = T.exp(x_f32[i, j] - row_max[i])
+                        x_f32[i, j] = T.exp(x_f32[i, j] - row_shift[i])
                 T.reduce_sum(x_f32, row_sum, dim=1)
 
                 out_local = T.alloc_fragment((block_m,), dtype)
                 for i in T.Parallel(block_m):
-                    out_local[i] = row_max[i] + T.log(row_sum[i])
+                    out_local[i] = row_shift[i] + T.log(row_sum[i])
 
                 T.copy(out_local, y[pid_m * block_m])
 
@@ -245,10 +232,12 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
                 row_max = T.alloc_fragment((block_m,), "float32")
                 row_sum = T.alloc_fragment((block_m,), "float32")
                 prev_max = T.alloc_fragment((block_m,), "float32")
+                row_shift = T.alloc_fragment((block_m,), "float32")
                 tile_max = T.alloc_fragment((block_m,), "float32")
                 tile_sum = T.alloc_fragment((block_m,), "float32")
 
                 T.fill(row_max, -T.infinity("float32"))
+                T.fill(row_shift, 0.0)
                 T.fill(row_sum, 0.0)
 
                 for t in T.Serial(num_tiles):
@@ -286,19 +275,36 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
                     for i in T.Parallel(block_m):
                         prev_max[i] = row_max[i]
                         row_max[i] = T.max(row_max[i], tile_max[i])
+                        row_shift[i] = T.if_then_else(
+                            T.abs(row_max[i]) == T.infinity("float32"),
+                            T.cast(0.0, "float32"),
+                            row_max[i],
+                        )
 
                     for i in T.serial(block_m):
                         for j in T.Parallel(tile_n):
-                            tile_f32[i, j] = T.exp(tile_f32[i, j] - row_max[i])
+                            tile_f32[i, j] = T.exp(tile_f32[i, j] - row_shift[i])
                     T.reduce_sum(tile_f32, tile_sum, dim=1)
 
+                    # Rescaled by the maxima, not the shifts: exp(0 - shift) of a
+                    # row that has seen only -inf can overflow. An unchanged max
+                    # scales by one, where exp(inf - inf) would be NaN.
                     for i in T.Parallel(block_m):
-                        row_sum[i] = row_sum[i] * T.exp(prev_max[i] - row_max[i]) + tile_sum[i]
+                        row_sum[i] = (
+                            row_sum[i]
+                            * T.exp(
+                                T.if_then_else(
+                                    prev_max[i] == row_max[i],
+                                    T.cast(0.0, "float32"),
+                                    prev_max[i] - row_max[i],
+                                )
+                            )
+                            + tile_sum[i]
+                        )
 
-                # logsumexp = max + log(sum)
                 out_local = T.alloc_fragment((block_m,), dtype)
                 for i in T.Parallel(block_m):
-                    out_local[i] = row_max[i] + T.log(row_sum[i])
+                    out_local[i] = row_shift[i] + T.log(row_sum[i])
 
                 T.copy(out_local, y[pid_m * block_m])
 
@@ -329,15 +335,17 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
     vec_elems = min(cols_per_thread, VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype))
     vec_groups = cols_per_thread // vec_elems
     warp_stages = WARP_LANES.bit_length() - 1
-    floor = _STREAM_POLICY.max_floor
-    ceil = _STREAM_POLICY.max_ceil
+    floor = STREAMING_LOGSUMEXP.max_floor
+    # Clamp for exponent arguments, above every finite fp16/bf16 value: a +inf element
+    # contributes exp2(+inf) = +inf and its row folds to +inf, matching torch.
+    ceil = -floor
 
     @tilelang.jit(out_idx=[1])
     def _func():
         @T.macro
         def merge_pair(dst_m, dst_s, src_m, src_s, m_new, m_safe):
             # Exponents subtract the ceiling-clamped max, never the true one,
-            # so (+inf) - (+inf) = NaN cannot form; see _STREAM_POLICY.max_ceil.
+            # so (+inf) - (+inf) = NaN cannot form.
             m_new[0] = T.max(dst_m[0], src_m)
             m_safe[0] = T.min(m_new[0], ceil)
             dst_s[0] = dst_s[0] * T.exp2(
@@ -415,263 +423,213 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
     return _func
 
 
-# Dispatch
-
-
-@functools.lru_cache(maxsize=64)
-def _logsumexp_kernel(M: int, N: int, dtype: str, tile_n: int = 0):
-    """Build the appropriate logsumexp kernel."""
-    if tile_n == 0:
-        return _logsumexp_kernel_single(M, N, dtype)
-    return _logsumexp_kernel_tiled(M, N, dtype, tile_n)
-
-
-class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
-    """LogSumExp forward kernel.
-
-    Supports SM80+ architectures. Uses 256-element alignment for shared
-    memory copies. Implements a 2-pass online algorithm.
-
-    For large N that does not fit in shared memory, tiles over N using
-    the online softmax recurrence (running max + rescaled sum).
-
-    Boundary handling for non-aligned N is performed inside the kernel
-    via masked loads and ``-inf`` fills, so no host-side ``F.pad`` is
-    needed.
-
-    ``forward`` takes the tensor the op declares and reduces *reduce_axes* of it; moving
-    those axes to the end, flattening to rows and shaping the result back are this
-    kernel's business, so both sides of the op/backend boundary speak the declared shape.
-
-    Args:
-        M: Rows the reduction leaves.
-        N: Elements each row reduces.
-        op_kind: Must be "logsumexp" (kept for API consistency with SoftmaxKernel).
-        dtype: Data type (float32, float16, or bfloat16).
-        reduce_axes: Non-negative axis indices, ascending, that the reduction runs over.
-        keepdim: Whether a reduced axis stays as a length-1 axis.
-        config: Optional kernel configuration dict.
-        tune: Whether to autotune (default False).
-        device_index: CUDA device index for shared memory budget query.
-            When ``None``, ``torch.cuda.current_device()`` is used.
-    """
+class _LogSumExpKernelBase(Kernel):
+    """The logsumexp family: the policy every candidate's region and plan reads."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def edge_view(cls, call: LogSumExpCall) -> "tuple[int, int, int] | None":
+        """The ``(outer, kept, inner)`` view an edge-axis reduction reads in place, or None."""
+        k, j = edge_axis_split(len(call.shape), call.axes)
+        return edge_split_view(call.shape, k, j, DEFAULT_THREADS) if k else None
+
+    @classmethod
+    def streams(cls, call: LogSumExpCall) -> bool:
+        """Permuted rows long and many enough for the streaming launch shape.
+
+        A reduction :meth:`edge_view` reads in place is not a row reduction.
+        """
+        policy = STREAMING_LOGSUMEXP
+        return (
+            cls.edge_view(call) is None
+            and call.dtype in (torch.float16, torch.bfloat16)
+            and policy.min_rows <= call.m
+            and policy.min_cols <= call.n
+            and call.n % (policy.threads * policy.cols_per_thread) == 0
+        )
+
+    @classmethod
+    def row_plan(cls, call: LogSumExpCall) -> "tuple[int, int]":
+        """The row kernel's untuned ``(block_m, tile_n)``; ``tile_n == 0`` is one tile."""
+        return cls._plan_rows(
+            align_up(call.n, DEFAULT_ALIGNMENT), call.dtype.itemsize, call.smem_budget
+        )
+
+    @classmethod
+    def split_seg_n(cls, call: LogSumExpCall) -> int:
+        """The segment width a split of the permuted rows takes, or 0 when none does.
+
+        None for a reduction read in place, for rows that :meth:`streams`, and where the
+        untuned row grid fills the device.
+        """
+        if cls.edge_view(call) is not None or cls.streams(call):
+            return 0
+        return split_seg_n(call.m, call.n, cls.row_plan(call)[0], call.sm_count)
+
+    @staticmethod
+    @functools.lru_cache(maxsize=256)
+    def _plan_rows(n_padded: int, elem_bytes: int, smem_budget: int) -> "tuple[int, int]":
+        """One tile takes the largest block_m that holds the row; tiled rows take the
+        block_m with strictly the fewest tiles, the smallest one on a tie."""
+        planner = BlockConfigPlanner(n_padded, elem_bytes, smem_budget)
+        threads = max(AUTOTUNE_THREADS)
+        best_bm = 1
+        best_tile_n = planner.tile_n_for(1, threads)
+        for bm in [2, 4, 8, 16]:
+            if not planner.layout_ok(bm, n_padded, DEFAULT_THREADS):
+                continue
+            try:
+                tn = planner.tile_n_for(bm, threads)
+            except ValueError:
+                continue
+            if (
+                tn == 0
+                or best_tile_n != 0
+                and ceildiv_int(n_padded, tn) < ceildiv_int(n_padded, best_tile_n)
+            ):
+                best_bm = bm
+                best_tile_n = tn
+        return best_bm, best_tile_n
+
+
+class LogSumExpEdgeSplitKernel(_LogSumExpKernelBase):
+    """LogSumExp over a leading plus a trailing axis set, read in the tensor's own layout.
+
+    Each kept row is ``outer`` contiguous runs of ``inner`` elements. One launch writes
+    per-run ``(max, sum)`` partials, a second folds each row's partials, and no permute
+    runs. Serves the calls that have an :meth:`edge_view`.
+    """
+
+    @classmethod
+    def applies(cls, call: LogSumExpCall) -> bool:
+        return cls.edge_view(call) is not None
+
+    def __init__(self, call: LogSumExpCall):
+        super().__init__(device_index=call.device.index)
+        self.call = call
+        self.dtype = call.dtype
+        self.view = self.edge_view(call)
+        outer, kept, inner = self.view
+        self.partials = edge_split_partials_kernel(
+            outer, kept, inner, self.dtype_str, DEFAULT_THREADS
+        )()
+        self.fold = _logsumexp_split_fold_kernel(kept, outer * inner, self.dtype_str, inner)()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Reduce ``call.axes`` of the contiguous input *x*."""
+        seg_max, seg_sum = self.partials(x.reshape(self.view))
+        return restore_reduced(
+            self.fold(seg_max, seg_sum), self.call.shape, self.call.axes, self.call.keepdim
+        )
+
+
+class LogSumExpStreamingKernel(_LogSumExpKernelBase):
+    """LogSumExp of long fp16/bf16 rows on a filled grid, one block per row.
+
+    Rows stream straight to registers with the online recurrence at a fixed launch
+    shape (``STREAMING_LOGSUMEXP``), so there is nothing to tune. Serves the calls whose
+    rows :meth:`streams`.
+    """
+
+    @classmethod
+    def applies(cls, call: LogSumExpCall) -> bool:
+        return cls.streams(call)
+
+    def __init__(self, call: LogSumExpCall):
+        super().__init__(device_index=call.device.index)
+        self.call = call
+        self.dtype = call.dtype
+        self.kernel = _logsumexp_kernel_streaming(
+            call.m,
+            call.n,
+            self.dtype_str,
+            STREAMING_LOGSUMEXP.threads,
+            STREAMING_LOGSUMEXP.cols_per_thread,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Reduce ``call.axes`` of the contiguous input *x*."""
+        y = self.kernel()(rows_for_axes(x, self.call.axes))
+        return restore_reduced(y, self.call.shape, self.call.axes, self.call.keepdim)
+
+
+class LogSumExpSplitKernel(_LogSumExpKernelBase):
+    """LogSumExp of a handful of long rows, split into segments across blocks.
+
+    One launch writes each segment's fp32 ``(max, sum)``, shared with softmax; a
+    second folds each row's segments. Serves the calls with a :meth:`split_seg_n`.
+    """
+
+    @classmethod
+    def applies(cls, call: LogSumExpCall) -> bool:
+        return cls.split_seg_n(call) > 0
+
+    def __init__(self, call: LogSumExpCall):
+        super().__init__(device_index=call.device.index)
+        self.call = call
+        self.dtype = call.dtype
+        seg_n = self.split_seg_n(call)
+        # split_seg_n's fragment cap assumes the default width.
+        self.partials = softmax_split_partials_kernel(
+            call.m, call.n, seg_n, self.dtype_str, DEFAULT_THREADS
+        )()
+        self.fold = _logsumexp_split_fold_kernel(call.m, call.n, self.dtype_str, seg_n)()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Reduce ``call.axes`` of the contiguous input *x*."""
+        seg_max, seg_sum = self.partials(rows_for_axes(x, self.call.axes))
+        return restore_reduced(
+            self.fold(seg_max, seg_sum), self.call.shape, self.call.axes, self.call.keepdim
+        )
+
+
+class LogSumExpKernel(RowTiledAutotuneMixin, _LogSumExpKernelBase):
+    """LogSumExp of rows, one block per ``block_m`` rows.
+
+    The general implementation: it serves any call, and runs where no specialised one
+    applies. A row one shared-memory tile holds is reduced in one pass; a longer row
+    tiles over N with the online softmax recurrence (running max and rescaled sum).
+    Non-aligned N is masked inside the kernel. Tunes ``tile_n``, ``block_m`` and
+    ``threads``.
+
+    ``forward`` takes the tensor the op declares and reduces ``call.axes`` of it;
+    moving those axes to the end, flattening to rows and shaping the result back are
+    this kernel's business.
+    """
+
+    general: bool = True
     _MAX_TILE_N_CANDIDATES = 3
 
-    def __init__(
-        self,
-        M: int,
-        N: int,
-        op_kind: str,
-        dtype: torch.dtype,
-        reduce_axes: "tuple[int, ...]",
-        keepdim: bool = False,
-        config: Optional[dict] = None,
-        tune: bool = False,
-        device_index: int | None = None,
-    ):
-        super().__init__(device_index=device_index)
-        if op_kind != "logsumexp":
-            raise ValueError(f"Unsupported op_kind '{op_kind}'. Expected 'logsumexp'.")
-        self.M = M
-        self.N = N
-        self.op_kind = op_kind
-        self.dtype = dtype
-        self.reduce_axes = tuple(reduce_axes)
-        self.keepdim = keepdim
-        self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        self._split_target = split_target_blocks(device_index)
-        self._elem_bytes = torch_dtype_nbytes(dtype)
-        self._smem_budget = device_smem_budget(device_index)
-        self._planner = BlockConfigPlanner(
-            self.N_padded,
-            self._elem_bytes,
-            self._smem_budget,
-        )
+    @classmethod
+    def applies(cls, call: LogSumExpCall) -> bool:
+        return True
 
-        # Build self.kernel BEFORE init_config: when tune=True, init_config
-        # delegates to autotune() which requires self.kernel to exist.
-        #
-        # tile_n is baked into the kernel at build time, so pre-compute it from
-        # default_config; autotune() rebuilds once per candidate width.
-        self._streaming = _STREAM_POLICY.eligible(M, N, dtype)
-        self._tile_n = self.default_config["tile_n"]
-        if self._streaming:
-            self.kernel = _logsumexp_kernel_streaming(
-                self.M,
-                self.N,
-                self.dtype_str,
-                _STREAM_POLICY.threads,
-                _STREAM_POLICY.cols_per_thread,
-            )
-        else:
-            self.kernel = _logsumexp_kernel(
-                self.M,
-                self.N,
-                self.dtype_str,
-                self._tile_n,
-            )
-
-        self.init_config(config, tune)
-
-        # When tune=True, autotune() already set self._tile_n and
-        # self.config["tile_n"], and rebuilt the kernel.  Only apply
-        # the post-init tile_n fixup for user-provided configs.
-        if not tune and not self._streaming:
-            # If the caller supplied an explicit tile_n (e.g. from a
-            # previous autotuner result), honour it.  Only fall back to
-            # the heuristic when tile_n was not provided.
-            caller_tile_n = config.get("tile_n") if config is not None else None
-            if caller_tile_n == 0:
-                caller_tile_n = None
-            if caller_tile_n is not None:
-                reason = self._planner.reject_tile_n(
-                    self.config["block_m"],
-                    caller_tile_n,
-                    self.config.get("threads", _DEFAULT_TUNE_THREADS),
-                )
-                if reason:
-                    raise ValueError(reason)
-                target_tile_n = caller_tile_n
-            else:
-                target_tile_n = self._tile_n_for_block_m(self.config["block_m"])
-            if target_tile_n != self._tile_n:
-                self._tile_n = target_tile_n
-                self.kernel = _logsumexp_kernel(
-                    self.M,
-                    self.N,
-                    self.dtype_str,
-                    self._tile_n,
-                )
-            self.config["tile_n"] = self._tile_n
-
-        # A config from before the split choice was recorded falls back to
-        # the gate; a round-tripped tuned config keeps its recorded choice.
-        self.config.setdefault(
-            "split",
-            bool(split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)),
-        )
+    def __init__(self, call: LogSumExpCall):
+        super().__init__(device_index=call.device.index)
+        self.call = call
+        self.M = call.m
+        self.N = call.n
+        self.dtype = call.dtype
+        self.N_padded = align_up(self.N, DEFAULT_ALIGNMENT)
+        self._elem_bytes = call.dtype.itemsize
+        self._smem_budget = call.smem_budget
+        self._planner = BlockConfigPlanner(self.N_padded, self._elem_bytes, self._smem_budget)
+        self._block_m, self._tile_n = self.row_plan(call)
+        self.kernel = self._build_row_kernel(self._tile_n)
+        self.init_config(None, call.tune)
 
     @property
     def default_config(self) -> dict:
-        """Select default block_m based on shared memory budget.
-
-        For the single-tile path (tile_n == 0), prefer the largest
-        block_m that fits in shared memory.
-
-        For the tiled path, prefer the block_m that minimises the
-        number of N-tiles (maximises tile_n) to reduce global memory
-        passes.  Among configs with equal tile count, prefer smaller
-        block_m for better occupancy.
-        """
-        best_bm = 1
-        best_tile_n = self._tile_n_for_block_m(1)
-
-        for bm in [2, 4, 8, 16]:
-            if not self._planner.layout_ok(bm, self.N_padded, _DEFAULT_TUNE_THREADS):
-                continue
-            try:
-                tn = self._tile_n_for_block_m(bm)
-            except ValueError:
-                continue
-            if tn == 0:
-                # Single-tile is always better: prefer larger block_m
-                best_bm = bm
-                best_tile_n = tn
-            elif best_tile_n == 0:
-                pass
-            else:
-                best_num = (self.N_padded + best_tile_n - 1) // best_tile_n
-                curr_num = (self.N_padded + tn - 1) // tn
-                if curr_num < best_num:
-                    best_bm = bm
-                    best_tile_n = tn
-
-        return {
-            "block_m": best_bm,
-            "threads": _DEFAULT_TUNE_THREADS,
-            "tile_n": best_tile_n,
-            "split": bool(split_seg_n(self.M, self.N, best_bm, self._split_target)),
-        }
+        return {"block_m": self._block_m, "threads": DEFAULT_THREADS, "tile_n": self._tile_n}
 
     def _build_row_kernel(self, tile_n: int):
-        return _logsumexp_kernel(self.M, self.N, self.dtype_str, tile_n)
-
-    def _row_forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self._reduce_rows(x)
-
-    def _sweep_applies(self) -> bool:
-        """The streaming kernel bakes its launch shape in; nothing to vary."""
-        return not self._streaming
+        if tile_n == 0:
+            return _logsumexp_kernel_single(self.M, self.N, self.dtype_str)
+        return _logsumexp_kernel_tiled(self.M, self.N, self.dtype_str, tile_n)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Reduce *reduce_axes* of *x*.
-
-        Args:
-            x: The tensor the op declares, contiguous, on a CUDA device. Boundary
-                handling for non-aligned ``N`` is performed inside the GPU kernel
-                (masked loads + ``-inf`` fill), so no host-side ``F.pad`` is needed.
-
-        Returns:
-            The reduced tensor.
-
-        Raises:
-            ValueError: *x* is not on a CUDA device.
-        """
-        self._require_cuda(x=x)
-        in_shape = tuple(x.shape)
-        k, j = edge_axis_split(x.ndim, self.reduce_axes)
-        view = edge_split_view(in_shape, k, j, _DEFAULT_TUNE_THREADS) if k else None
-        if view is not None:
-            y = self._reduce_edge_axes(x, view)
-        else:
-            y = self._reduce_rows(rows_for_axes(x, self.reduce_axes))
-        return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
-
-    def _reduce_edge_axes(self, x: torch.Tensor, view: "tuple[int, int, int]") -> torch.Tensor:
-        """Reduce edge axes in the tensor's own layout.
-
-        Each kept row is ``outer`` contiguous runs of ``inner`` elements, so
-        the split pair reads them directly -- per-run ``(max, sum)`` partials,
-        then the per-row fold -- skipping the permute ``rows_for_axes`` pays.
-
-        A layout dispatch decided from the shape alone, like the vector-norm
-        edge path: the alternative pays the permute and then the same
-        reduction, so there is no trade for the tuner to referee.
-        ``config["split"]`` governs only the long-row split in
-        ``_reduce_rows``.
-        """
-        outer, kept, inner = view
-        seg_max, seg_sum = edge_split_partials_kernel(
-            outer, kept, inner, self.dtype_str, _DEFAULT_TUNE_THREADS
-        )()(x.reshape(view))
-        return _logsumexp_split_fold_kernel(kept, outer * inner, self.dtype_str, inner)()(
-            seg_max, seg_sum
-        )
-
-    def _reduce_rows(self, x: torch.Tensor) -> torch.Tensor:
-        """Reduce the trailing axis of an ``(M, N)`` buffer.
-
-        Long rows on a filled grid stream straight to registers; a handful of
-        long rows goes to the split pair: softmax's per-segment statistics,
-        then a per-row fold.
-        """
-        if self._streaming:
-            return self.kernel()(x)
-        seg_n = (
-            split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)
-            if self.config["split"]
-            else 0
-        )
-        if seg_n:
-            # split_seg_n's fragment cap assumes the default width.
-            threads = _DEFAULT_TUNE_THREADS
-            seg_max, seg_sum = softmax_split_partials_kernel(
-                self.M, self.N, seg_n, self.dtype_str, threads
-            )()(x)
-            return _logsumexp_split_fold_kernel(self.M, self.N, self.dtype_str, seg_n)()(
-                seg_max, seg_sum
-            )
-        program = _logsumexp_kernel(self.M, self.N, self.dtype_str, self._tile_n)
-        return program(self.config["block_m"], self.config["threads"])(x)
+        """Reduce ``call.axes`` of the contiguous input *x*."""
+        program = self.kernel(self.config["block_m"], self.config["threads"])
+        y = program(rows_for_axes(x, self.call.axes))
+        return restore_reduced(y, self.call.shape, self.call.axes, self.call.keepdim)

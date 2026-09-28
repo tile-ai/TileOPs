@@ -8,8 +8,17 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.reduction.logsumexp import LogSumExpKernel
-from tileops.kernels.reduction.softmax import SoftmaxKernel
+from tileops.kernels.reduction.call_spec import LogSumExpCall, SoftmaxCall
+from tileops.kernels.reduction.logsumexp import (
+    LogSumExpEdgeSplitKernel,
+    LogSumExpKernel,
+    LogSumExpSplitKernel,
+    LogSumExpStreamingKernel,
+)
+from tileops.kernels.reduction.softmax import (
+    SoftmaxKernel,
+    SoftmaxSplitKernel,
+)
 from tileops.manifest.primitives import normalize_axis
 
 from ..op_base import Op
@@ -26,7 +35,10 @@ class _SoftmaxBaseOp(Op):
     """
 
     compile_boundary: ClassVar[bool] = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"softmax_fwd": SoftmaxKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "softmax_split": SoftmaxSplitKernel,
+        "softmax_fwd": SoftmaxKernel,
+    }
     _op_kind: ClassVar[str]
 
     def __init__(
@@ -95,28 +107,20 @@ class _SoftmaxBaseOp(Op):
         if x.numel() == 0:
             return torch.empty_like(x)
         x = x.contiguous()
-        n = x.shape[axis]
-        m = x.numel() // n
-        call = (tuple(x.shape), axis, x.dtype, out_dtype, x.device.index, m, n)
+        call = SoftmaxCall(
+            device=x.device,
+            shape=tuple(x.shape),
+            axis=axis,
+            op_kind=self._op_kind,
+            dtype=x.dtype,
+            out_dtype=out_dtype,
+            tune=self.tune,
+        )
         return self.kernel_for("softmax", (x,), call)(x)
 
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built from the whole shape and the axis it normalizes.
-
-        The kernel owns the permute, so the whole shape decides which kernel it is.
-        """
-        _shape, axis, dtype, out_dtype, device_index, m, n = call
-        cls = self.kernel_map["softmax_fwd"]
-        return call, lambda: cls(
-            m,
-            n,
-            self._op_kind,
-            dtype,
-            norm_axis=axis,
-            tune=self.tune,
-            device_index=device_index,
-            out_dtype=out_dtype,
-        )
+    def entry_for(self, role: str, call: SoftmaxCall) -> Entry:
+        """Two implementations, so the one that serves the call says how it is built."""
+        return Op.entry_for(self, role, call)
 
 
 class SoftmaxFwdOp(_SoftmaxBaseOp):
@@ -134,9 +138,13 @@ class LogSoftmaxFwdOp(_SoftmaxBaseOp):
 class LogSumExpFwdOp(_ReduceOpBase):
     """LogSumExp over ``dim``, following ``torch.logsumexp``; an empty reduction is ``-inf``."""
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"logsumexp_fwd": LogSumExpKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "logsumexp_edge_split": LogSumExpEdgeSplitKernel,
+        "logsumexp_streaming": LogSumExpStreamingKernel,
+        "logsumexp_split": LogSumExpSplitKernel,
+        "logsumexp_fwd": LogSumExpKernel,
+    }
     _op_kind = "logsumexp"
-    _kernel_key = "logsumexp_fwd"
     _empty = "reject"
     _identity = -math.inf
 
@@ -160,3 +168,18 @@ class LogSumExpFwdOp(_ReduceOpBase):
             tune: Whether to autotune (default False).
         """
         super().__init__(dim, keepdim, target=target, kernel_map=kernel_map, tune=tune)
+
+    def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int) -> LogSumExpCall:
+        """The input as the manifest declares it, and the device it runs on."""
+        return LogSumExpCall(
+            device=x.device,
+            shape=tuple(x.shape),
+            axes=axes,
+            keepdim=self.keepdim,
+            dtype=x.dtype,
+            tune=self.tune,
+        )
+
+    def entry_for(self, role: str, call: LogSumExpCall) -> Entry:
+        """Four implementations, so the one that serves the call says how it is built."""
+        return Op.entry_for(self, role, call)
