@@ -18,8 +18,8 @@ import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase, standard_tolerance
-from tileops.kernels.reduction._split_softmax import fused_split_plan
 from tileops.kernels.reduction.call_spec import LogSumExpCall, SoftmaxCall
+from tileops.kernels.reduction.softmax import SoftmaxSplitKernel
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
 from workloads.device import run_device, run_device_available
 from workloads.reduction import LogSoftmaxWorkload, LogSumExpWorkload, SoftmaxWorkload
@@ -781,15 +781,15 @@ def test_split_shape_runs_as_one_fused_kernel() -> None:
 
     A fused split is what keeps the row in registers across the fold; without
     it the pair reads the row a second time. The two shapes below are what
-    ``fused_split_plan`` refuses: a grid wider than a cooperative launch holds,
+    ``fused_threads`` refuses: a grid wider than a cooperative launch holds,
     and a segment too wide for two fp32 fragments.
     """
-    call = SoftmaxCall(shape=(4, 102400), axis=1, **_H200)
-    assert call.split_seg_n
-    assert call.fused_split_threads is not None
+    seg_n = SoftmaxSplitKernel.split_seg_n(SoftmaxCall(shape=(4, 102400), axis=1, **_H200))
+    assert seg_n
+    assert SoftmaxSplitKernel.fused_threads(4, 102400, seg_n, _H200["sm_count"]) is not None
 
-    assert fused_split_plan(1, 10_000_000, 16384, call.split_target) is None
-    assert fused_split_plan(1, 100_000, 16384, call.split_target) is None
+    assert SoftmaxSplitKernel.fused_threads(1, 10_000_000, 16384, _H200["sm_count"]) is None
+    assert SoftmaxSplitKernel.fused_threads(1, 100_000, 16384, _H200["sm_count"]) is None
 
 
 @pytest.mark.smoke
@@ -802,7 +802,7 @@ def test_split_shape_runs_as_one_fused_kernel() -> None:
             (260, 16384), (1,), torch.bfloat16, "LogSumExpStreamingKernel", id="stream-few"
         ),
         pytest.param((8, 102400), (1,), torch.float32, "LogSumExpSplitKernel", id="split"),
-        pytest.param((64, 4096), (1,), torch.float16, "LogSumExpSingleTileKernel", id="single"),
+        pytest.param((64, 4096), (1,), torch.float16, "LogSumExpKernel", id="single-tile"),
         pytest.param((300, 100000), (1,), torch.float32, "LogSumExpKernel", id="tiled"),
     ],
 )
@@ -816,9 +816,7 @@ def test_logsumexp_regions(shape: tuple, axes: tuple, dtype: torch.dtype, expect
 @pytest.mark.parametrize(
     "shape, dtype, expected",
     [
-        pytest.param((4, 102400), torch.float16, "SoftmaxFusedSplitKernel", id="fused-split"),
-        pytest.param((1, 10_000_000), torch.float32, "SoftmaxSplitKernel", id="split"),
-        pytest.param((64, 4096), torch.float16, "SoftmaxSingleTileKernel", id="single"),
+        pytest.param((4, 102400), torch.float16, "SoftmaxSplitKernel", id="split"),
         pytest.param((300, 100000), torch.float32, "SoftmaxKernel", id="tiled"),
     ],
 )

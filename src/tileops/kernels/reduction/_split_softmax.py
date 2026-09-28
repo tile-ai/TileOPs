@@ -19,16 +19,18 @@ from tileops.kernels.reduction._primitives import (
     align_up,
     ceildiv_int,
 )
-from tileops.utils import WARP_LANES
 
 __all__ = [
+    "SPLIT_BLOCKS_PER_SM",
     "edge_split_partials_kernel",
     "edge_split_view",
-    "fused_split_plan",
     "make_block_split_fold",
     "softmax_split_partials_kernel",
     "split_seg_n",
 ]
+
+# Blocks per SM a split aims for; under this the grid runs the device empty.
+SPLIT_BLOCKS_PER_SM = 2
 
 # Rows shorter than this cannot amortize the fold pass. Measured threshold,
 # not derived: below it the second launch outweighs the extra blocks.
@@ -38,13 +40,15 @@ _SPLIT_MIN_AMORTIZED_COLS = 16384
 _SPLIT_MAX_SEG_COLS = FRAGMENT_ELEMS_PER_THREAD * DEFAULT_THREADS
 
 
-def split_seg_n(M: int, N: int, block_m: int, target_blocks: int) -> int:
+def split_seg_n(M: int, N: int, block_m: int, sm_count: int) -> int:
     """The split-row segment width, or 0 when one block per row is enough.
 
-    Applies when the row grid leaves the device under-filled and a row is
-    long enough to amortize the fold pass; the segment count targets
-    *target_blocks* and the width stays aligned and within the fragment cap.
+    Applies when the row grid of *block_m* rows a block leaves a device of *sm_count*
+    SMs under-filled and a row is long enough to amortize the fold pass; the segment
+    count targets ``SPLIT_BLOCKS_PER_SM`` blocks per SM and the width stays aligned and
+    within the fragment cap.
     """
+    target_blocks = SPLIT_BLOCKS_PER_SM * sm_count
     if align_up(N, DEFAULT_ALIGNMENT) < _SPLIT_MIN_AMORTIZED_COLS:
         return 0
     if ceildiv_int(M, block_m) >= target_blocks:
@@ -164,29 +168,6 @@ def make_block_split_fold(num_segs: int, threads: int, keep_inf: bool = False):
         T.reduce_sum(part_sum, row_sum, dim=1)
 
     return fold
-
-
-def fused_split_plan(M: int, N: int, seg_n: int, target_blocks: int) -> "int | None":
-    """The thread width a one-kernel split runs at, or None when it cannot.
-
-    A fused split keeps its segment in registers across a grid barrier, so it
-    reads the row once where the two-kernel pair reads it twice. Two conditions
-    bound it. The grid must be co-resident, since a cooperative launch wider
-    than the device holds is refused outright; ``split_seg_n`` already aims at
-    *target_blocks*, and this rejects the shapes where the segment cap pushed it
-    past that. The two fp32 fragments must also fit the same
-    per-thread budget one fragment gets elsewhere, which is what picks the
-    width: the narrowest power of two from ``WARP_LANES`` up that holds them.
-    """
-    num_segs = ceildiv_int(N, seg_n)
-    if num_segs * M > target_blocks:
-        return None
-    threads = WARP_LANES
-    while threads <= DEFAULT_THREADS:
-        if 2 * seg_n <= FRAGMENT_ELEMS_PER_THREAD * threads:
-            return threads
-        threads *= 2
-    return None
 
 
 def edge_split_view(

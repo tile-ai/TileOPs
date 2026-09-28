@@ -12,14 +12,11 @@ from tileops.kernels.reduction.call_spec import LogSumExpCall, SoftmaxCall
 from tileops.kernels.reduction.logsumexp import (
     LogSumExpEdgeSplitKernel,
     LogSumExpKernel,
-    LogSumExpSingleTileKernel,
     LogSumExpSplitKernel,
     LogSumExpStreamingKernel,
 )
 from tileops.kernels.reduction.softmax import (
-    SoftmaxFusedSplitKernel,
     SoftmaxKernel,
-    SoftmaxSingleTileKernel,
     SoftmaxSplitKernel,
 )
 from tileops.manifest.primitives import normalize_axis
@@ -39,9 +36,7 @@ class _SoftmaxBaseOp(Op):
 
     compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "softmax_fused_split": SoftmaxFusedSplitKernel,
         "softmax_split": SoftmaxSplitKernel,
-        "softmax_single": SoftmaxSingleTileKernel,
         "softmax_fwd": SoftmaxKernel,
     }
     _op_kind: ClassVar[str]
@@ -124,7 +119,7 @@ class _SoftmaxBaseOp(Op):
         return self.kernel_for("softmax", (x,), call)(x)
 
     def entry_for(self, role: str, call: SoftmaxCall) -> Entry:
-        """Four implementations, so the one that serves the call says how it is built."""
+        """Two implementations, so the one that serves the call says how it is built."""
         return Op.entry_for(self, role, call)
 
 
@@ -147,7 +142,6 @@ class LogSumExpFwdOp(_ReduceOpBase):
         "logsumexp_edge_split": LogSumExpEdgeSplitKernel,
         "logsumexp_streaming": LogSumExpStreamingKernel,
         "logsumexp_split": LogSumExpSplitKernel,
-        "logsumexp_single": LogSumExpSingleTileKernel,
         "logsumexp_fwd": LogSumExpKernel,
     }
     _op_kind = "logsumexp"
@@ -187,5 +181,5 @@ class LogSumExpFwdOp(_ReduceOpBase):
         )
 
     def entry_for(self, role: str, call: LogSumExpCall) -> Entry:
-        """Five implementations, so the one that serves the call says how it is built."""
+        """Four implementations, so the one that serves the call says how it is built."""
         return Op.entry_for(self, role, call)

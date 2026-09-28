@@ -4,9 +4,8 @@ Implements a 2-pass online softmax algorithm for two operations:
   - softmax:     y[i,j] = exp(x[i,j] - max_i) / sum_i(exp(x[i,j] - max_i))
   - log_softmax: y[i,j] = x[i,j] - max_i - log(sum_i(exp(x[i,j] - max_i)))
 
-Four implementations of one dispatch key, each stating the calls it serves over a
-:class:`SoftmaxCall`: a one-kernel split and a two-launch split for a handful of long
-rows, a single-tile row kernel, and the general tiled row kernel.
+Two implementations, each stating the calls it serves over a :class:`SoftmaxCall`: a
+split across blocks for a handful of long rows, and the general row kernel.
 
 Supports arbitrarily large N dimensions by tiling over N when the full
 N_padded does not fit in shared memory.  Uses the online softmax recurrence
@@ -31,6 +30,7 @@ from tileops.kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
+    FRAGMENT_ELEMS_PER_THREAD,
     BlockConfigPlanner,
     RowTiledAutotuneMixin,
     align_up,
@@ -39,15 +39,16 @@ from tileops.kernels.reduction._primitives import (
     rows_for_axes,
 )
 from tileops.kernels.reduction._split_softmax import (
+    SPLIT_BLOCKS_PER_SM,
     make_block_split_fold,
     softmax_split_partials_kernel,
+    split_seg_n,
 )
 from tileops.kernels.reduction.call_spec import SoftmaxCall
+from tileops.utils import WARP_LANES
 
 __all__ = [
-    "SoftmaxFusedSplitKernel",
     "SoftmaxKernel",
-    "SoftmaxSingleTileKernel",
     "SoftmaxSplitKernel",
 ]
 
@@ -599,98 +600,154 @@ def _softmax_fused_split_kernel(
     return _func
 
 
-class SoftmaxFusedSplitKernel(Kernel):
-    """Softmax / log-softmax of a handful of long rows in one kernel, reading each row once.
-
-    One block per segment keeps its segment in registers across a grid barrier.
-    Serves the calls with a ``split_seg_n`` and ``fused_split_threads``.
-    """
+class _SoftmaxKernelBase(Kernel):
+    """The softmax family: the policy every candidate's region and plan reads."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
+    def num_buffers(cls, call: SoftmaxCall) -> int:
+        """Row-sized shared buffers the tiled kernel holds.
+
+        Two, one per pass, since TileLang's allocator aliases one buffer across the
+        passes; an output of another dtype adds its stage.
+        """
+        in_bytes = call.dtype.itemsize
+        out_stage = 0 if call.out_dtype == call.dtype else -(-call.out_dtype.itemsize // in_bytes)
+        return 2 + out_stage
+
+    @classmethod
+    def row_plan(cls, call: SoftmaxCall) -> "tuple[int, int]":
+        """The row kernel's untuned ``(block_m, tile_n)``; ``tile_n == 0`` is one tile."""
+        return cls._plan_rows(
+            align_up(call.n, DEFAULT_ALIGNMENT),
+            call.dtype.itemsize,
+            call.smem_budget,
+            cls.num_buffers(call),
+        )
+
+    @classmethod
+    def split_seg_n(cls, call: SoftmaxCall) -> int:
+        """The segment width a split of the rows takes, or 0 when the untuned row grid fills."""
+        return split_seg_n(call.m, call.n, cls.row_plan(call)[0], call.sm_count)
+
+    @staticmethod
+    @functools.lru_cache(maxsize=256)
+    def _plan_rows(
+        n_padded: int, elem_bytes: int, smem_budget: int, num_buffers: int
+    ) -> "tuple[int, int]":
+        """One tile keeps the *smallest* block_m: each extra row hands every thread
+        another ``N_padded / threads`` registers until the fragment spills. Tiled rows
+        take the block_m with strictly the fewest tiles, since fewer tiles means fewer
+        global passes, and the smallest one on a tie, for occupancy."""
+        planner = BlockConfigPlanner(n_padded, elem_bytes, smem_budget, num_buffers=num_buffers)
+        threads = max(AUTOTUNE_THREADS)
+        best_bm = 1
+        best_tile_n = planner.tile_n_for(1, threads)
+        for bm in [2, 4, 8, 16]:
+            if not planner.layout_ok(bm, n_padded, DEFAULT_THREADS):
+                continue
+            try:
+                tn = planner.tile_n_for(bm, threads)
+            except ValueError:
+                continue
+            if tn == 0 and not planner.frag_fits(bm, n_padded, DEFAULT_THREADS):
+                continue
+            if best_tile_n == 0:
+                continue
+            if tn == 0 or ceildiv_int(n_padded, tn) < ceildiv_int(n_padded, best_tile_n):
+                best_bm = bm
+                best_tile_n = tn
+        return best_bm, best_tile_n
+
+
+class SoftmaxSplitKernel(_SoftmaxKernelBase):
+    """Softmax / log-softmax of a handful of long rows, split into segments across blocks.
+
+    Where the grid is co-resident and a segment fits twice in registers, one kernel
+    keeps each segment in registers across a grid barrier and reads the row once;
+    otherwise one launch writes each segment's fp32 ``(max, sum)``, shared with
+    logsumexp, and a second folds them and normalizes one segment per block. Serves the
+    calls with a :meth:`split_seg_n`.
+    """
+
+    @classmethod
     def applies(cls, call: SoftmaxCall) -> bool:
-        return call.split_seg_n > 0 and call.fused_split_threads is not None
+        return cls.split_seg_n(call) > 0
 
     def __init__(self, call: SoftmaxCall):
         super().__init__(device_index=call.device.index)
         self.call = call
         self.dtype = call.dtype
-        seg_n = call.split_seg_n
+        seg_n = self.split_seg_n(call)
         self.num_segs = ceildiv_int(call.n, seg_n)
-        self.kernel = _softmax_fused_split_kernel(
-            call.m,
-            call.n,
-            call.op_kind,
-            self.dtype_str,
-            self.dtype_to_str(call.out_dtype),
-            seg_n,
-            call.fused_split_threads,
-        )()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalize ``call.axis`` of the contiguous input *x*."""
-        stats = torch.empty(2, self.call.m * self.num_segs, dtype=torch.float32, device=x.device)
-        y = self.kernel(rows_for_axes(x, (self.call.axis,)), stats[0], stats[1])
-        return restore_same_shape(y, self.call.shape, (self.call.axis,))
-
-
-class SoftmaxSplitKernel(Kernel):
-    """Softmax / log-softmax of a handful of long rows, as two launches over segments.
-
-    One launch writes each segment's fp32 ``(max, sum)``, shared with logsumexp; a
-    second folds each row's segments and normalizes one segment per block. Serves
-    the calls with a ``split_seg_n`` and no ``fused_split_threads``.
-    """
-
-    supported_archs: list[int] = [80, 86, 89, 90]
-
-    @classmethod
-    def applies(cls, call: SoftmaxCall) -> bool:
-        return call.split_seg_n > 0 and call.fused_split_threads is None
-
-    def __init__(self, call: SoftmaxCall):
-        super().__init__(device_index=call.device.index)
-        self.call = call
-        self.dtype = call.dtype
-        seg_n = call.split_seg_n
+        out_dtype = self.dtype_to_str(call.out_dtype)
+        fused_threads = self.fused_threads(call.m, call.n, seg_n, call.sm_count)
+        if fused_threads is not None:
+            self.fused = _softmax_fused_split_kernel(
+                call.m, call.n, call.op_kind, self.dtype_str, out_dtype, seg_n, fused_threads
+            )()
+            return
+        self.fused = None
         # split_seg_n's fragment cap assumes the default width.
-        threads = DEFAULT_THREADS
         self.partials = softmax_split_partials_kernel(
-            call.m, call.n, seg_n, self.dtype_str, threads
+            call.m, call.n, seg_n, self.dtype_str, DEFAULT_THREADS
         )()
         self.finalize = _softmax_split_finalize_kernel(
-            call.m,
-            call.n,
-            call.op_kind,
-            self.dtype_str,
-            self.dtype_to_str(call.out_dtype),
-            seg_n,
-            threads,
+            call.m, call.n, call.op_kind, self.dtype_str, out_dtype, seg_n, DEFAULT_THREADS
         )()
+
+    @staticmethod
+    def fused_threads(M: int, N: int, seg_n: int, sm_count: int) -> "int | None":
+        """The thread width a one-kernel split runs at, or None when it cannot.
+
+        A fused split keeps its segment in registers across a grid barrier, so it
+        reads the row once where the two-kernel pair reads it twice. Two conditions
+        bound it. The grid must be co-resident, since a cooperative launch wider
+        than the device holds is refused outright; ``split_seg_n`` already aims at
+        ``SPLIT_BLOCKS_PER_SM`` blocks per SM, and this rejects the shapes where the
+        segment cap pushed it past that. The two fp32 fragments must also fit the same
+        per-thread budget one fragment gets elsewhere, which is what picks the width:
+        the narrowest power of two from ``WARP_LANES`` up that holds them.
+        """
+        num_segs = ceildiv_int(N, seg_n)
+        if num_segs * M > SPLIT_BLOCKS_PER_SM * sm_count:
+            return None
+        threads = WARP_LANES
+        while threads <= DEFAULT_THREADS:
+            if 2 * seg_n <= FRAGMENT_ELEMS_PER_THREAD * threads:
+                return threads
+            threads *= 2
+        return None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``call.axis`` of the contiguous input *x*."""
         rows = rows_for_axes(x, (self.call.axis,))
-        seg_max, seg_sum = self.partials(rows)
-        y = self.finalize(rows, seg_max, seg_sum)
+        if self.fused is not None:
+            stats = torch.empty(
+                2, self.call.m * self.num_segs, dtype=torch.float32, device=x.device
+            )
+            y = self.fused(rows, stats[0], stats[1])
+        else:
+            seg_max, seg_sum = self.partials(rows)
+            y = self.finalize(rows, seg_max, seg_sum)
         return restore_same_shape(y, self.call.shape, (self.call.axis,))
 
 
-class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
-    """Softmax / log-softmax of rows tiled over shared memory, ``block_m`` rows a block.
+class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
+    """Softmax / log-softmax of rows, ``block_m`` rows a block.
 
     The general implementation: it serves any call, and runs where no specialised one
-    applies. Two passes over N-tiles with the online softmax recurrence (running max
-    and rescaled sum), then the normalization; non-aligned N is masked inside the
-    kernel. Tunes ``tile_n``, ``block_m`` and ``threads``.
+    applies. A row one shared-memory tile holds is normalized from that tile; a longer
+    row takes two passes over N-tiles with the online softmax recurrence (running max
+    and rescaled sum). Non-aligned N is masked inside the kernel. Tunes ``tile_n``,
+    ``block_m`` and ``threads``.
 
     ``forward`` takes the tensor the op declares and normalizes over ``call.axis``;
     moving that axis to the end, flattening to rows and putting the result back are
     this kernel's business.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
     general: bool = True
     _MAX_TILE_N_CANDIDATES = 3
 
@@ -709,26 +766,21 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         self._elem_bytes = call.dtype.itemsize
         self._smem_budget = call.smem_budget
         self._planner = BlockConfigPlanner(
-            self.N_padded, self._elem_bytes, self._smem_budget, num_buffers=call.num_buffers
+            self.N_padded, self._elem_bytes, self._smem_budget, num_buffers=self.num_buffers(call)
         )
-        self._block_m, self._tile_n = self._untuned_rows(call, self._planner)
+        self._block_m, self._tile_n = self.row_plan(call)
         self.kernel = self._build_row_kernel(self._tile_n)
         self.init_config(None, call.tune)
-
-    @staticmethod
-    def _untuned_rows(call: SoftmaxCall, planner: BlockConfigPlanner) -> "tuple[int, int]":
-        """``(block_m, tile_n)`` untuned; a row ``row_plan`` holds whole still tiles here."""
-        block_m, tile_n = call.row_plan
-        return block_m, tile_n or planner.tiled_tile_n(block_m, max(AUTOTUNE_THREADS))
 
     @property
     def default_config(self) -> dict:
         return {"block_m": self._block_m, "threads": DEFAULT_THREADS, "tile_n": self._tile_n}
 
-    def _tile_n_candidates(self) -> list[int]:
-        return [tn for tn in super()._tile_n_candidates() if tn] or [self._tile_n]
-
     def _build_row_kernel(self, tile_n: int):
+        if tile_n == 0:
+            return _softmax_kernel_single(
+                self.M, self.N, self.call.op_kind, self.dtype_str, self.out_dtype_str
+            )
         return _softmax_kernel_tiled(
             self.M, self.N, self.call.op_kind, self.dtype_str, self.out_dtype_str, tile_n
         )
@@ -742,26 +794,3 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         y = program(rows_for_axes(x, (self.call.axis,)))
         y = y[:, : self.N] if y.shape[1] > self.N else y
         return restore_same_shape(y, self.call.shape, (self.call.axis,))
-
-
-class SoftmaxSingleTileKernel(SoftmaxKernel):
-    """Softmax / log-softmax of rows that fit one shared-memory tile, ``block_m`` rows a block.
-
-    Serves the calls with no ``split_seg_n`` whose rows fit one tile in ``row_plan``.
-    Tunes ``block_m`` and ``threads``.
-    """
-
-    general: bool = False
-
-    @classmethod
-    def applies(cls, call: SoftmaxCall) -> bool:
-        return call.split_seg_n == 0 and call.row_plan[1] == 0
-
-    @staticmethod
-    def _untuned_rows(call: SoftmaxCall, planner: BlockConfigPlanner) -> "tuple[int, int]":
-        return call.row_plan
-
-    def _build_row_kernel(self, tile_n: int):
-        return _softmax_kernel_single(
-            self.M, self.N, self.call.op_kind, self.dtype_str, self.out_dtype_str
-        )
