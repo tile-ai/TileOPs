@@ -200,7 +200,7 @@ _ARITH_BROADCAST_OPS = [
     (
         "remainder",
         RemainderFwdOp,
-        lambda a, b: a - torch.floor(a.float() / b.float()).to(a.dtype) * b,
+        torch.remainder,
         lambda s, d: torch.rand(*s, dtype=d, device=run_device()) + 0.1,
         lambda s, d: torch.rand(*s, dtype=d, device=run_device()) + 0.1,
     ),
@@ -214,7 +214,7 @@ _ARITH_BROADCAST_OPS = [
     (
         "floor_divide",
         FloorDivideFwdOp,
-        lambda a, b: torch.floor(a.float() / b.float()).to(a.dtype),
+        torch.floor_divide,
         lambda s, d: torch.rand(*s, dtype=d, device=run_device()) + 0.1,
         lambda s, d: torch.rand(*s, dtype=d, device=run_device()) + 0.1,
     ),
@@ -281,10 +281,7 @@ def test_binary_arith_broadcast(
     ref = ref_fn(a, b)
     with torch.no_grad():
         out = op(a, b)
-    tolerance = standard_tolerance(dtype)
-    if op_name == "floor_divide":
-        tolerance["atol"] = 1.0  # floor rounding tolerance
-    torch.testing.assert_close(out, ref, **tolerance)
+    torch.testing.assert_close(out, ref, **standard_tolerance(dtype))
 
 
 class AddStrategyFixture(FixtureBase):
@@ -344,12 +341,8 @@ class BinaryPositiveTest(PositivePairWorkload, TestBase):
 
 
 class RemainderTest(PositivePairWorkload, TestBase):
-    """Remainder reference matches the kernel: fp32 division+floor, native multiply-subtract."""
-
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        # fp32 division+floor, cast back, native multiply-subtract
-        floored = torch.floor(a.float() / b.float()).to(a.dtype)
-        return a - floored * b
+        return torch.remainder(a, b)
 
 
 class PowPositiveTest(PowPositiveWorkload, TestBase):
@@ -416,20 +409,35 @@ class FloorDivideFixture(FixtureBase):
 
 
 class FloorDivideTest(PositivePairWorkload, TestBase):
-    """Floor divide reference matches the kernel: fp32 division+floor, cast back."""
-
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        # fp32 division+floor, cast back to native dtype
-        return torch.floor(a.float() / b.float()).to(a.dtype)
+        return torch.floor_divide(a, b)
 
 
 @FloorDivideFixture
 def test_floor_divide_op(n_total: int, dtype: torch.dtype) -> None:
     test = FloorDivideTest(n_total, dtype)
     op = FloorDivideFwdOp()
-    # Floor divide in reduced precision can differ by 1; use atol=1.0
-    atol = 1.0 if dtype != torch.float32 else 1e-5
-    test.check(op, *test.gen_inputs(), atol=atol, rtol=0.0)
+    test.check(op, *test.gen_inputs(), atol=0.0, rtol=0.0)
+
+
+@pytest.mark.smoke
+def test_floor_ops_match_torch_on_special_values() -> None:
+    """``1.0 // 0.1`` is 9, an infinite divisor floors a mixed-sign quotient to -1,
+    and a zero result keeps its sign."""
+    values = [0.0, -0.0, 1.0, -1.0, 0.1, -2.5, 7.0, float("inf"), float("-inf"), float("nan")]
+    grid = torch.tensor(values, device=run_device())
+    pairs = torch.cartesian_prod(grid, grid)
+    a, b = pairs[:, 0].contiguous(), pairs[:, 1].contiguous()
+    cases = [
+        (FloorDivideFwdOp(), torch.floor_divide),
+        (DivFwdOp(rounding_mode="floor"), lambda x, y: torch.div(x, y, rounding_mode="floor")),
+        (RemainderFwdOp(), torch.remainder),
+    ]
+    for op, ref_fn in cases:
+        out, ref = op(a, b), ref_fn(a, b)
+        torch.testing.assert_close(out, ref, atol=0.0, rtol=0.0, equal_nan=True)
+        number = ~ref.isnan()
+        assert torch.equal(torch.signbit(out[number]), torch.signbit(ref[number]))
 
 
 # Lerp op (ternary in PyTorch; compile-time weight=0.5)
@@ -673,7 +681,7 @@ class EdgeCaseFixture(FixtureBase):
                 # floor_divide: positive inputs
                 pytest.param(
                     FloorDivideFwdOp,
-                    lambda a, b: torch.floor(a / b),
+                    torch.floor_divide,
                     lambda n, d: (
                         torch.rand(n, dtype=d, device=run_device()) + 0.1,
                         torch.rand(n, dtype=d, device=run_device()) + 0.1,
