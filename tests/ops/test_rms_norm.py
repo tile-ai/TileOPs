@@ -46,6 +46,8 @@ class RMSNormFixture(FixtureBase):
                 # Tail-M: M not divisible by block_m (proves T.copy partial block safety)
                 pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+                # A short unaligned row: several share a block, with a tail block.
+                pytest.param(17, 96, torch.bfloat16, False, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -209,6 +211,13 @@ def test_a_non_contiguous_input_compiles_to_the_shape_the_fake_promised() -> Non
 
     assert output.is_contiguous()
     torch.testing.assert_close(output, op(x, weight))
+
+
+@pytest.mark.smoke
+def test_an_unaligned_row_comes_back_contiguous() -> None:
+    """The output is contiguous at every width, as the fake the compiled call reads promises."""
+    x = torch.randn(3, 96, dtype=torch.float16, device=run_device())
+    assert RMSNormFwdOp(normalized_shape=(96,))(x).is_contiguous()
 
 
 @pytest.mark.smoke
