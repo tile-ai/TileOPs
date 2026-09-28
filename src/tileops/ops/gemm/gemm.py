@@ -311,8 +311,10 @@ class GemmW4A16FwdOp(Op):
                 f"repack needs K/2={packed_k} to be a multiple of {_LAYOUT.mma_step_k // 2}, the"
                 " packed width of one MMA K step"
             )
-        kernel = W4A16RepackKernel(n, packed_k, device_index=packed_weight.device.index)
-        return kernel(packed_weight)
+        # Built with the weight's device current, as Op.kernel_for builds every kernel.
+        with torch.cuda.device(packed_weight.device):
+            kernel = W4A16RepackKernel(n, packed_k, device_index=packed_weight.device.index)
+            return kernel(packed_weight)
 
     def forward(
         self,
