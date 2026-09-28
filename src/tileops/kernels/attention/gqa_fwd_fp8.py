@@ -54,6 +54,17 @@ def _make_fa3_qk_acc_fragment(block_n: int, thread_offset: int) -> tilelang.layo
     return tilelang.layout.Fragment([64, block_n], forward_fn=forward_fn)
 
 
+def _qk_acc_column(j):
+    """The key column fragment index *j* of ``_make_fa3_qk_acc_fragment`` holds.
+
+    The fragment orders a row's registers lane first, then 8-column group, then
+    pair, which a row reduction does not see; a column-dependent mask does. The
+    WGMMA accumulator puts lane ``j % 4`` of group ``(j // 4) % 28`` on columns
+    ``8 * group + 2 * lane``, and the pair ``j // 112`` on the next one.
+    """
+    return 8 * ((j // 4) % 28) + 2 * (j % 4) + j // 112
+
+
 def _make_fa3_qk_row_fragment(thread_offset: int) -> tilelang.layout.Fragment:
     def forward_fn(i, rep):
         thread = thread_offset + (i // 16) * 32 + (i % 8) * 4 + rep
@@ -222,6 +233,11 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
         elif is_causal:
             online_softmax_1 = online_softmax_with_causal_partial_sum
             online_softmax_2 = online_softmax_with_causal_partial_sum
+            # The row sum is reduced across the quad once, at finalization, so
+            # every tile must add lane partials: a tile below the diagonal adding
+            # the reduced sum would be counted four times.
+            online_softmax_fast_1 = online_softmax_with_partial_sum
+            online_softmax_fast_2 = online_softmax_with_partial_sum
         elif not defer_row_sum:
             online_softmax_1 = online_softmax_fast_1
             online_softmax_2 = online_softmax_fast_2
@@ -572,15 +588,18 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     seq_len_kv - n_idx * 224,
                                     -T.infinity(accum_dtype),
                                 )
-                            if is_causal and (n_idx + 1) * 224 > causal_offset + row_base + half_m:
+                            # A tile needs the mask when its last key lies past the first
+                            # row this warpgroup owns.
+                            if is_causal and (n_idx + 1) * 224 > causal_offset + row_base + 1:
                                 for i, j in T.Parallel(half_m, 224):
                                     acc_s_1[i, j] = T.if_then_else(
-                                        n_idx * 224 + j <= causal_offset + row_base + i,
+                                        n_idx * 224 + _qk_acc_column(j)
+                                        <= causal_offset + row_base + i,
                                         acc_s_1[i, j],
                                         -T.infinity(accum_dtype),
                                     )
                             if is_causal:
-                                if (n_idx + 1) * 224 > causal_offset + row_base + half_m:
+                                if (n_idx + 1) * 224 > causal_offset + row_base + 1:
                                     online_softmax_1(
                                         acc_s_1,
                                         sm_1,
@@ -754,15 +773,19 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     seq_len_kv - n_idx * 224,
                                     -T.infinity(accum_dtype),
                                 )
-                            if is_causal and (n_idx + 1) * 224 > causal_offset + row_base + block_m:
+                            if (
+                                is_causal
+                                and (n_idx + 1) * 224 > causal_offset + row_base + half_m + 1
+                            ):
                                 for i, j in T.Parallel(half_m, 224):
                                     acc_s_2[i, j] = T.if_then_else(
-                                        n_idx * 224 + j <= causal_offset + row_base + half_m + i,
+                                        n_idx * 224 + _qk_acc_column(j)
+                                        <= causal_offset + row_base + half_m + i,
                                         acc_s_2[i, j],
                                         -T.infinity(accum_dtype),
                                     )
                             if is_causal:
-                                if (n_idx + 1) * 224 > causal_offset + row_base + block_m:
+                                if (n_idx + 1) * 224 > causal_offset + row_base + half_m + 1:
                                     online_softmax_2(
                                         acc_s_2,
                                         sm_2,

@@ -50,10 +50,11 @@ def _run_fp8_prefill_kernel(
     q_scale: torch.Tensor,
     k_scale: torch.Tensor,
     v_scale: torch.Tensor,
+    is_causal: bool = False,
 ) -> torch.Tensor:
     op = GroupedQueryAttentionDenseFwdOp(
         out_dtype=out_dtype,
-        is_causal=False,
+        is_causal=is_causal,
     )
     return op(
         q_fp8.contiguous(),
@@ -152,7 +153,8 @@ def test_gqa_prefill_fp8_tensor_core_handles_tail_tiles(seq_len: int) -> None:
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
 @pytest.mark.sm90
 @pytest.mark.smoke
-def test_gqa_prefill_fp8_tensor_core_matches_dequantized_reference() -> None:
+@pytest.mark.parametrize("is_causal", [False, True], ids=["full", "causal"])
+def test_gqa_prefill_fp8_tensor_core_matches_dequantized_reference(is_causal: bool) -> None:
     batch, seq_len, heads, heads_kv, dim = 1, 897, 8, 2, 128
     group_size = heads // heads_kv
     torch.manual_seed(123)
@@ -177,6 +179,7 @@ def test_gqa_prefill_fp8_tensor_core_matches_dequantized_reference() -> None:
         q_scale=q_descale,
         k_scale=k_descale,
         v_scale=v_descale,
+        is_causal=is_causal,
     )
 
     q_deq = q_fp8.float().reshape(batch, seq_len, heads_kv, group_size, dim)
@@ -195,6 +198,9 @@ def test_gqa_prefill_fp8_tensor_core_matches_dequantized_reference() -> None:
             )
             * scale
         )
+        if is_causal:
+            future = torch.ones_like(scores, dtype=torch.bool).triu(1)
+            scores = scores.masked_fill(future, float("-inf"))
         probs = torch.softmax(scores, dim=-1)
         ref_heads.append(torch.matmul(probs, v_deq[0, :, head_kv, :]))
     ref = torch.stack(ref_heads, dim=1).unsqueeze(0)
