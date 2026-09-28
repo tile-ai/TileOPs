@@ -548,8 +548,10 @@ class GLABwdKernel(Kernel):
         dtype: torch.dtype = torch.float32,
         config: Optional[dict] = None,
         tune: bool = False,
+        *,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.seq_len = seq_len
         self.heads = heads
