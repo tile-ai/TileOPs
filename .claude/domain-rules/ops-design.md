@@ -12,7 +12,7 @@
 
 - Declare `slots` on every op that holds kernels: slot name → the `Slot` interface its candidates implement. Open a new slot only where semantic control flow or the kernel call contract changes, never per shape, dtype, architecture or performance. See [ops-design.md § Kernel selection](../../docs/design/ops-design.md#kernel-selection).
 
-- Define a slot interface in the family's `kernels/<family>/call_spec.py`: `request` names the frozen `CallSpec` request key, and an abstract `forward` states each tensor's shape, dtype, layout, device, in-place writes and aliasing, and the return value.
+- Define a slot interface in the family's `kernels/<family>/call_spec.py`: `request` names the frozen `CallSpec` request key; an abstract `forward` states the tensors handed and the value returned.
 
 - Make each candidate a `Kernel` subclass that inherits its slot interface, takes the interface's `forward` arguments by the same names and positions, and is built only through its classmethod `entry_for(call)`, which returns a hashable build identity and a builder.
 
@@ -20,7 +20,7 @@
 
 - Give a shape-selected change of decomposition or data flow its own candidate class. Keep tile sizes, split counts (one included) and fusion among one fixed set of stages inside one candidate's plan.
 
-- Put call facts only in the request key: shapes, dtypes, the relevant layout, semantic params and flags (the op's fixed params included) and `device=`. Never put `tune`, a backend choice, a priority or a device fact (`arch`, `sm_count`, `calibration`) there; the dispatcher resolves device facts on a miss.
+- Put only call facts in the request key, the op's fixed semantic params and `device=` included; never `tune`, a priority or a device fact (`arch`, `sm_count`, `calibration`), which the dispatcher resolves on a miss.
 
 - Add a candidate for part of a slot from a backend with `tileops.backend.register_candidate(op, slot, key, cls)`, declaring `refines` where its region nests in an in-tree candidate's.
 
