@@ -353,12 +353,7 @@ class ReduceKernel(Kernel):
 
     @property
     def _stream_fold_eligible(self) -> bool:
-        """Whether some config folds the rows straight into registers.
-
-        The shared-memory kernels copy the row into shared memory and widen it to
-        fp32 across a fragment as wide as the tile before reducing that. A fold
-        needs neither, and needs only a row of whole vectors owned by one block.
-        """
+        """Whether some config folds the rows into registers: rows of whole vectors."""
         return (
             self.strategy in ("simple", "simple_tiled", "prod") and self.N % self._stream_vec() == 0
         )
@@ -366,9 +361,8 @@ class ReduceKernel(Kernel):
     def _stream_fold_applies(self, x: torch.Tensor) -> bool:
         """Whether this call folds the rows into registers.
 
-        ``block_m > 1`` asks for the shared-memory kernel, which packs that many
-        rows per block; the product kernel takes one row per block whatever the
-        config says, so a product row of whole vectors always folds.
+        ``block_m > 1`` selects the shared-memory kernel; the product kernel
+        ignores ``block_m``, so an eligible product row always folds.
         """
         return (
             self._stream_fold_eligible
@@ -619,9 +613,8 @@ class ReduceKernel(Kernel):
     def _prod_reduce_kernel(M: int, N: int, dtype: str, out_dtype: str, threads: int):
         """Build a product reduce: one block per row, multiplying in fp32.
 
-        Serves the rows the register fold does not take, those that are not a
-        whole number of vectors: each tile of the row is staged through shared
-        memory, and a guarded load fills the columns past the row end with 1.
+        Serves rows that are not whole vectors, staging each tile through shared
+        memory and filling the columns past the row end with 1.
         """
         chunk = threads * _PROD_POLICY.cols_per_thread
         tiles = ceildiv_int(N, chunk)

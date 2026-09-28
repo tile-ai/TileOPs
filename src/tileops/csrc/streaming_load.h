@@ -4,10 +4,8 @@
 
 namespace tl {
 
-// Copies 16 bytes of global memory that the kernel reads exactly once into dst,
-// marked first for eviction from L1 and L2 so the stream does not displace the
-// lines other data holds. The asm is not volatile: the source is read-only for
-// the kernel's lifetime, and the compiler may issue several loads ahead.
+// Loads 16 bytes of read-once global memory into dst, evict-first in L1 and L2.
+// Not volatile: the source is read-only for the kernel, so loads may issue ahead.
 __device__ __forceinline__ void tileops_load16_evict_first(void* dst, const void* src) {
   uint64_t policy;
   asm("createpolicy.fractional.L2::evict_first.b64 %0, 1.0;" : "=l"(policy));

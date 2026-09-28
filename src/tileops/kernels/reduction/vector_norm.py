@@ -338,11 +338,7 @@ class VectorNormKernel(Kernel):
 
     @property
     def _fold_eligible(self) -> bool:
-        """Whether a one-row-per-block config folds the rows straight into registers.
-
-        The fold needs a row of whole vectors; ``block_m > 1`` asks for the
-        fragment kernel, which packs that many rows per block.
-        """
+        """Whether a ``block_m == 1`` config folds the rows into registers: rows of whole vectors."""
         return self.N % (VECTOR_ACCESS_BYTES // self._elem_bytes) == 0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

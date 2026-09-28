@@ -1074,8 +1074,7 @@ def reduce_down_rows(
 
 _STREAMING_LOAD_HELPER_PATH = csrc_path("streaming_load.h")
 
-# Fold steps unrolled together, so a thread keeps this many vector loads in
-# flight; a grid of few rows is bound by how many loads each thread issues ahead.
+# Vector loads each thread keeps in flight; a grid of few rows is bound by it.
 _FOLD_UNROLL = 16
 
 # Stride-halving shuffle steps that reduce one warp.
@@ -1083,11 +1082,7 @@ _WARP_STAGES = WARP_LANES.bit_length() - 1
 
 
 def vector_aligned(x: torch.Tensor) -> torch.Tensor:
-    """*x*, copied when its storage does not start on a vector boundary.
-
-    The row kernels load whole vectors from the start of the buffer; a view with a
-    storage offset need not start on one, and a fresh allocation always does.
-    """
+    """Return *x*, copied if its storage does not start on a vector boundary."""
     return x.clone() if x.data_ptr() % VECTOR_ACCESS_BYTES else x
 
 
@@ -1095,20 +1090,15 @@ def vector_aligned(x: torch.Tensor) -> torch.Tensor:
 def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str):
     """Build a reduce of each row of an ``(m, n)`` buffer, folded into registers as it reads.
 
-    One block per row. Each thread reads one 16-byte vector of ``vec`` elements per
-    step and folds it into ``vec`` slots, so the slots are independent chains and
-    the row is reduced as ``threads * vec`` strided subsequences, then a tree over
-    those. Every element is read once, so the loads are marked first for eviction
-    and leave the lines other data holds in cache alone. The caller guarantees a
-    row of whole vectors and a buffer that starts on a vector boundary.
+    One block per row; each thread folds one 16-byte vector per step into ``vec``
+    independent slots. Every element is read once, so the loads are evict-first.
+    The caller guarantees rows of whole vectors and a vector-aligned buffer start.
 
     Args:
         m: Rows.
         n: Elements each row reduces, a multiple of one vector.
-        op_kind: ``sum`` / ``mean`` / ``amax`` / ``amin`` / ``prod``, or a vector norm:
-            ``l1`` (sum of magnitudes), ``l2`` (root of the sum of squares) or ``inf``
-            (largest magnitude, reduced over IEEE bit patterns as int32 so that a
-            NaN outranks every number).
+        op_kind: ``sum`` / ``mean`` / ``amax`` / ``amin`` / ``prod`` / ``l1`` / ``l2``
+            / ``inf``; ``inf`` reduces int32 bit patterns so a NaN outranks every number.
         dtype: TileLang dtype string of the input.
         out_dtype: TileLang dtype string of the output.
     """
