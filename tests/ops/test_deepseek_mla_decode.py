@@ -31,6 +31,19 @@ class MlaDecodeFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="dim-128",
                 ),
+                # 96 heads leave the second 64-row head block half full.
+                pytest.param(
+                    2,
+                    96,
+                    1,
+                    256,
+                    512,
+                    64,
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="tail-heads",
+                ),
             ],
         ),
     ]
@@ -60,6 +73,8 @@ def test_mla_decode(
         pytest.param(300, id="ragged-tail"),
         # The first split's first tile holds one key; the second split holds none.
         pytest.param(1, id="empty-split"),
+        # No keys at all: the output is the empty sum.
+        pytest.param(0, id="no-keys"),
     ],
 )
 def test_mla_decode_masks_keys_past_the_cache_end(seq_len_kv: int) -> None:

@@ -1,3 +1,4 @@
+import dataclasses
 import functools
 import itertools
 from typing import Optional
@@ -6,10 +7,24 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 
-__all__ = ["MLADecodeWsKernel"]
+__all__ = ["MLADecodeWsKernel", "MlaDecodeCall"]
+
+
+@dataclasses.dataclass(frozen=True)
+class MlaDecodeCall(CallSpec):
+    """One MLA decode call: the construction arguments the kernel takes."""
+
+    batch: int = 0
+    heads: int = 0
+    heads_kv: int = 0
+    seqlen_kv: int = 0
+    dim: int = 0
+    pe_dim: int = 0
+    dtype: Optional[torch.dtype] = None
 
 
 @functools.lru_cache(maxsize=32)
@@ -17,12 +32,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
     sm_scale = (1.0 / (dim + pe_dim)) ** 0.5 * LOG2E
     accum_dtype = "float"
     kv_group_num = heads // kv_head_num
-    if kv_head_num != 1:
-        raise ValueError("kv_head_num must be 1")
-    if dim % 128 != 0:
-        raise ValueError(f"the KV gather walks dim in 128-column steps, dim={dim}")
-    if pe_dim != 64:
-        raise ValueError(f"the KV tail gather copies exactly 64 columns, pe_dim={pe_dim}")
 
     @tilelang.jit(
         out_idx=[6],
@@ -43,6 +52,8 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
         ],
     )
     def _mla_decode_ws_func(block_H, block_N, num_split, num_stages, threads=384):
+        # A head count block_H does not divide leaves the last block partly filled; its
+        # loads past the heads read zero and its stores there are dropped.
         VALID_BLOCK_H = min(block_H, kv_group_num)
         # Two 128-thread consumer warpgroups and one producer warpgroup, which gathers
         # KV 8 threads to a row, 16 rows a pass.
@@ -110,7 +121,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
             K_pe: T.Tensor([batch, seqlen_kv, kv_head_num, pe_dim], dtype),
             Output: T.Tensor([batch, heads, dim], dtype),
         ):
-            with T.Kernel(heads // min(block_H, kv_group_num), batch, threads=threads) as (
+            with T.Kernel(T.ceildiv(heads, VALID_BLOCK_H), batch, threads=threads) as (
                 hid,
                 bid,
             ):
@@ -146,7 +157,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                 bar_sScale_and_sS_ready = T.alloc_barrier(arrive_count=256)
                 bar_sScale_and_sS_free = T.alloc_barrier(arrive_count=256)
 
-                cur_kv_head = hid // (kv_group_num // block_H)
+                cur_kv_head = hid * VALID_BLOCK_H // kv_group_num
                 kv_start = 0
                 kv_end = seqlen_kv
                 NI = T.ceildiv(seqlen_kv, block_N)
@@ -329,9 +340,11 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
             glse: T.Tensor([batch, heads, num_split], dtype),
             Output_partial: T.Tensor([batch, heads, num_split, dim], dtype),
         ):
-            with T.Kernel(
-                batch, heads // min(block_H, kv_group_num), num_split, threads=threads
-            ) as (bid, hid, bz):
+            with T.Kernel(batch, T.ceildiv(heads, VALID_BLOCK_H), num_split, threads=threads) as (
+                bid,
+                hid,
+                bz,
+            ):
                 Q_shared_l = T.alloc_shared([block_H, dim // 2], dtype)
                 Q_shared_r = T.alloc_shared([block_H, dim // 2], dtype)
                 Q_tail_shared = T.alloc_shared([block_H, pe_dim], dtype)
@@ -364,7 +377,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                 bar_sScale_and_sS_ready = T.alloc_barrier(arrive_count=256)
                 bar_sScale_and_sS_free = T.alloc_barrier(arrive_count=256)
 
-                cur_kv_head = hid // (kv_group_num // block_H)
+                cur_kv_head = hid * VALID_BLOCK_H // kv_group_num
                 kv_start = kv_per_split * bz
                 kv_end = T.min(kv_start + kv_per_split, seqlen_kv)
                 NI = T.ceildiv(kv_per_split, block_N)
@@ -659,6 +672,44 @@ def _mla_decode_ws_run(
 class MLADecodeWsKernel(Kernel):
     supported_archs: list[int] = [90]
 
+    @classmethod
+    def applies(cls, call: MlaDecodeCall) -> bool:
+        return cls._region_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: MlaDecodeCall) -> Optional[str]:
+        archs = cls.supported_archs
+        if archs is not None and call.arch not in archs:
+            return f"built for architectures {sorted(archs)}, device reports {call.arch}"
+        return cls._region_refusal(call)
+
+    @staticmethod
+    def _region_refusal(call: MlaDecodeCall) -> Optional[str]:
+        """Why *call* is outside the shapes the warp-specialized schedule serves."""
+        if call.heads_kv != 1:
+            return f"serves one KV head, got {call.heads_kv}"
+        if call.heads < 64:
+            return f"query heads fill at least one 64-row WGMMA tile, got {call.heads}"
+        if call.dim % 128 != 0:
+            return f"the KV gather walks dim in 128-column steps, got {call.dim}"
+        if call.pe_dim != 64:
+            return f"the KV tail gather copies exactly 64 columns, got {call.pe_dim}"
+        return None
+
+    @classmethod
+    def entry_for(cls, call: MlaDecodeCall) -> Entry:
+        return call, lambda: cls(
+            call.batch,
+            call.heads,
+            call.heads_kv,
+            call.seqlen_kv,
+            call.dim,
+            call.pe_dim,
+            call.dtype,
+            tune=call.tune,
+            device_index=call.device.index if call.device is not None else None,
+        )
+
     def __init__(
         self,
         batch,
@@ -670,8 +721,10 @@ class MLADecodeWsKernel(Kernel):
         dtype,
         config: Optional[dict] = None,
         tune=False,
+        *,
+        device_index: Optional[int] = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.heads = heads
         self.kv_head_num = kv_head_num
@@ -724,6 +777,12 @@ class MLADecodeWsKernel(Kernel):
         return configs
 
     def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor, k_pe: torch.Tensor):
+        if self.seqlen_kv == 0:
+            # No keys: the softmax normalizer is zero, so the program would divide 0 by 0.
+            # Attention over no keys is the empty sum, as torch's reference returns.
+            return torch.zeros(
+                (self.batch, self.heads, self.dim), dtype=self.dtype, device=q.device
+            )
         glse = torch.empty(
             (self.batch, self.heads, self.config["num_split"]), dtype=self.dtype, device=q.device
         )

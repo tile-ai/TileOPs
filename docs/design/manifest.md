@@ -124,6 +124,7 @@ Each `shape_rules` item is a refinement: a predicate on index values, checked af
 - A refinement that reads only discriminants — every name and ADT field it reads is fixed by the discriminant values, judged over the whole expression regardless of operand order — is a **domain restriction**. It is checked before a type-family branch is chosen, and values it rejects need no type-family case.
 - Lists among construction parameters are available at run time and may appear anywhere. `forall` value lists appear only as generator arguments.
 - A scalar parameter whose admitted values depend on a dtype index states that dependence as a refinement with the primitives `category` and `representable`. The generated call check then holds in-tree and target-served calls to the same rule.
+- A refinement states what the operator's algorithm requires: a call outside it is undefined for every implementation. Which shapes an implementation serves is not a refinement; that implementation decides it ([ops-design.md § Kernel selection](ops-design.md#kernel-selection)).
 - Satisfiability of a refinement is the author's responsibility.
 - The validator rejects rules that declare, define or test presence: `x.shape == (...)`, `x is None`, `isinstance` ([table 12](#t-rejected)).
 
