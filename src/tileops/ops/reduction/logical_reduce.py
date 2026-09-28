@@ -23,8 +23,8 @@ __all__ = ["AllFwdOp", "AnyFwdOp", "CountNonzeroFwdOp"]
 class _LogicalReduceOpBase(_ReduceOpBase):
     """Shared dispatch for logical reductions.
 
-    Every numeric dtype is accepted, bool, int32, int64 and complex included; the op hands
-    over the tensor its manifest declares and the kernel reads it at its own bytes.
+    Every numeric dtype is accepted, bool, int32, int64 and complex included; the op passes
+    the tensor its manifest declares and the kernel reads it at its own bytes.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

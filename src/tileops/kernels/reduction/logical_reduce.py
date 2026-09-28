@@ -4,9 +4,8 @@ Each row is folded into registers as it is read, one vector access of at most 16
 per lane per step. A count sums the nonzero elements; any and all or together a flag that is
 set on an element that decides them, a nonzero one for any and a zero one for all.
 
-The input is read at its own bytes, never converted first: bool as int8 (four to a
-32-bit word where the row allows), a complex element as its two real parts, every
-other dtype as declared. Output is bool for any/all, int64 for count_nonzero.
+The input is read at its own bytes: bool as int8 (four to a 32-bit word where the row
+allows), a complex element as its two real parts, every other dtype as declared.
 """
 
 import functools
@@ -187,11 +186,8 @@ def _logical_fold_kernel(
 ):
     """Build an any/all/count_nonzero kernel that folds each row into registers.
 
-    One block per row. Row ``r`` is the ``lead`` contiguous runs ``x[l, r, :]`` of
-    ``cols`` elements; each lane reads one vector access of ``vec`` units per step.
-    A count sums the nonzero elements. any and all need only whether an element
-    that decides them exists, a nonzero one or a zero one, so a lane ors together a
-    flag that is set when it meets one.
+    One block per row; row ``r`` is the ``lead`` contiguous runs ``x[l, r, :]`` of
+    ``cols`` elements.
 
     Args:
         lead: Runs each row is made of, walked serially by its block.
@@ -377,15 +373,9 @@ def _logical_entry(cls: type, call: LogicalReduceCall, *, tune: bool) -> Entry:
 class LogicalReduceKernel(Kernel):
     """Any / all / count_nonzero forward kernel.
 
-    Supports SM80+ architectures. Each row is folded into registers as it is read,
-    one vector access per lane per step, so a row of any length runs in one pass
-    without staging it in shared memory. Output dtype is bool for any/all and int64
-    for count_nonzero.
-
-    ``forward`` takes the tensor the op declares and reduces *reduce_axes* of it; the
-    permute to rows and the shape of the result are this kernel's business. The input
-    is read at its own bytes: bool as int8, a complex element as its two real parts,
-    every other dtype as declared. No element is converted before the kernel runs.
+    Supports SM80+ architectures. ``forward`` takes the tensor the op declares and
+    reduces *reduce_axes* of it, each row in one pass without staging it in shared
+    memory. Output dtype is bool for any/all and int64 for count_nonzero.
 
     Args:
         M: Rows the reduction leaves.
@@ -453,7 +443,6 @@ class LogicalReduceKernel(Kernel):
         if self._scalar_dtype.is_floating_point:
             x = torch.randn(shape, dtype=self._scalar_dtype, device=device)
         else:
-            # An integer has no normal distribution; a mix of zero and non-zero will do.
             x = torch.randint(0, 2, shape, dtype=self._scalar_dtype, device=device)
         if self.dtype.is_complex:
             x = torch.view_as_complex(x.view(self.M, self.N, 2).contiguous())
@@ -563,11 +552,7 @@ class LogicalReduceEdgeFusedKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        """No width: it follows the trailing run, which only the call's shape carries.
-
-        ``forward`` reads the run and fills the width in; a caller that states one
-        keeps it.
-        """
+        """No width: ``forward`` sizes it from the trailing run unless the caller states one."""
         return {"threads": None}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
