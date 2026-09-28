@@ -296,6 +296,21 @@ def test_gla_bwd(
             assert cos > 0.99, f"TileOPs vs FLA {name} cosine too low: {cos:.6f}"
 
 
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gla_refuses_extents_its_gemms_do_not_tile() -> None:
+    """dim_v=72 splits into 18-column state tiles, which no 8-column MMA tile covers."""
+    B, T, H, K, V = 1, 64, 2, 64, 72
+    q, k, g = (torch.randn(B, T, H, K, device="cuda", dtype=torch.float16) for _ in range(3))
+    v, do = (torch.randn(B, T, H, V, device="cuda", dtype=torch.float16) for _ in range(2))
+    with pytest.raises(ValueError, match="dim_v=72"):
+        GLAFwdOp(chunk_size=64).forward(q, k, v, g)
+    h = torch.zeros(B, 2, H, K, V, device="cuda")
+    dht = torch.zeros(B, H, K, V, device="cuda")
+    with pytest.raises(ValueError, match="dim_v=72"):
+        GLABwdOp(chunk_size=64).forward(q, k, v, g, h, do, dht)
+
+
 def _skip_unless_kernel_serves(kernel_cls: type, test: GLAInferenceWorkload) -> None:
     """Skip when *kernel_cls* declares that it does not serve *test*'s call on the run device."""
     call = GLAInferenceCallSpec(

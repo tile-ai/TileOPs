@@ -21,6 +21,7 @@ from tilelang.profiler import do_bench
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_sm_version
 
 from ..v_tile import GEMM_MIN_N
 from .gla_fwd import _gla_precompute_g_kernel
@@ -558,9 +559,55 @@ class GLABwdKernel(Kernel):
         self.scale = scale if scale > 0 else dim_k**-0.5
         self.dtype = dtype
         self.dtype_name = str(dtype).split(".")[-1]
+        reason = self.region_refusal(
+            dim_k, dim_v, chunk_size, dtype, get_sm_version(self.device_index)
+        )
+        if reason:
+            raise ValueError(f"{type(self).__name__} does not serve this call: {reason}")
         self.init_config(config, tune)
         if not tune:
             self._build_kernels(self.config)
+
+    @staticmethod
+    def region_refusal(
+        dim_k: int, dim_v: int, chunk_size: int, dtype: torch.dtype, arch: int
+    ) -> Optional[str]:
+        """Why the default tiling cannot build these extents, or ``None`` when it can.
+
+        The fused pass runs its chunk GEMMs on four warps, which take whole 16-row
+        tiles of ``chunk_size`` rows: 32 splits two by two, and otherwise all four
+        split the rows, which takes a multiple of 64. The state gradient runs over
+        ``dim_k x (dim_v / 4)`` on eight warps, and the output GEMMs put ``dim_k`` on
+        the columns. On SM90 a 16-bit ``dim_k`` of at least 64 takes the warp-group
+        instruction, which splits four warps over it and admits ``dim_k`` 64 past
+        a multiple of 128; the per-warp instruction does not.
+        """
+        if not (chunk_size == 32 or chunk_size % 64 == 0):
+            return f"chunk_size={chunk_size} must be 32 or a multiple of 64"
+        warp_group = arch == 90 and torch.finfo(dtype).bits == 16
+        served = (
+            dim_k == 32
+            and dim_v % 128 == 0
+            or dim_k == 64
+            and dim_v % 64 == 0
+            or dim_k % 128 == 0
+            and dim_v % 32 == 0
+            or warp_group
+            and dim_k % 128 == 64
+            and dim_v % 64 == 0
+        )
+        if not served:
+            return (
+                f"dim_k={dim_k}, dim_v={dim_v}: dim_k must be 32 with dim_v a multiple of "
+                "128, 64 with dim_v a multiple of 64, or a multiple of 128 with dim_v a "
+                "multiple of 32"
+                + (
+                    "; or 64 past a multiple of 128 with dim_v a multiple of 64"
+                    if warp_group
+                    else ""
+                )
+            )
+        return None
 
     @property
     def default_config(self) -> dict:
