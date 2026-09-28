@@ -57,6 +57,7 @@ class GroupedQueryAttentionBwdTest(GroupedQueryAttentionBwdWorkload, TestBase):
         return q.grad, k.grad, v.grad
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "is_causal, rope_layout, rotary_dim, dtype",
@@ -76,8 +77,6 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
     rotary_dim: Optional[int],
     dtype: torch.dtype,
 ) -> None:
-    if not torch.cuda.is_available() or get_sm_version() != 90:
-        pytest.skip("Dense warp-specialized prefill requires SM90")
     batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 160, 270, 8, 2, 128
     q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=dtype)
     k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
@@ -134,6 +133,7 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
     assert isinstance(next(iter(op.iter_kernels())), GQADenseWsKernel)
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
@@ -163,9 +163,7 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
     rotary_dim: Optional[int],
     out_dtype: torch.dtype,
 ) -> None:
-    fp8 = getattr(torch, "float8_e4m3fn", None)
-    if fp8 is None or not torch.cuda.is_available() or get_sm_version() != 90:
-        pytest.skip("native FP8 Dense GQA requires SM90 and float8_e4m3fn")
+    fp8 = torch.float8_e4m3fn
     batch = 1
     heads, heads_kv, dim = 8, 2, 128
     q = (torch.randn(batch, seq_len_q, heads, dim, device="cuda") * 0.2).to(fp8)
@@ -235,12 +233,11 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
     assert isinstance(next(iter(op.iter_kernels())), expected_kernel)
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("batch", [1, 2])
 def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None:
-    if not torch.cuda.is_available() or get_sm_version() != 90:
-        pytest.skip("Dense warp-specialized prefill requires SM90")
     heads, heads_kv, dim = 8, 2, 128
     op = GroupedQueryAttentionDenseFwdOp(target=BUILTIN)
 
@@ -265,6 +262,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
     assert len(list(op.iter_kernels())) == 1
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "batch, head_shape, dtype, seq_lens_kv, rope_layout, rotary_dim, kernel_type",
@@ -361,8 +359,6 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
     rotary_dim: Optional[int],
     kernel_type: type[Kernel],
 ) -> None:
-    if not torch.cuda.is_available() or get_sm_version() != 90:
-        pytest.skip("Dense decode requires SM90")
     heads, heads_kv = head_shape
     dim = 128
     op = GroupedQueryAttentionDenseFwdOp(
@@ -431,12 +427,11 @@ def test_gqa_dense_decode_effective_num_split(
     assert _effective_dense_num_split(num_split, block_N, real_seqlen_kv) == expected
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
     """A reused op crosses the tile-size boundary in both directions, including KV tails."""
-    if not torch.cuda.is_available() or get_sm_version() != 90:
-        pytest.skip("Long-context decode defaults are measured on SM90")
     op = GroupedQueryAttentionDenseFwdOp(target=BUILTIN)
     q = torch.randn(1, 1, 32, 128, device="cuda", dtype=torch.float16)
     for seq_len in (131072, 131073, 262145, 131071):
@@ -517,6 +512,7 @@ def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> No
         assert calls[-1] == expected
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "is_causal,use_rope",
@@ -531,8 +527,6 @@ def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> No
 def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(
     is_causal: bool, use_rope: bool
 ) -> None:
-    if not torch.cuda.is_available() or get_sm_version() != 90:
-        pytest.skip("Dense sliding-window prefill requires SM90")
     batch, seq_len, heads, heads_kv, dim = 1, 270, 8, 2, 128
     window_size_left = 64
     window_size_right = 0 if is_causal else 32

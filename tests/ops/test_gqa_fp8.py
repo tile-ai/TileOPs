@@ -36,10 +36,6 @@ def _quantize_q_fa3_gqa_descale(
     return x_fp8.reshape(batch, seq_len, heads, dim).contiguous(), descale.float().contiguous()
 
 
-def _has_sm90() -> bool:
-    return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9
-
-
 def _run_fp8_prefill_kernel(
     *,
     batch: int,
@@ -70,7 +66,7 @@ def _run_fp8_prefill_kernel(
 
 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
-@pytest.mark.skipif(not _has_sm90(), reason="requires SM90 FP8 WGMMA")
+@pytest.mark.sm90
 @pytest.mark.parametrize(
     ("seq_len", "out_dtype", "input_scale"),
     [
@@ -124,7 +120,7 @@ def test_gqa_prefill_fp8_kernel_accepts_fa3_descale_contract(
 
 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
-@pytest.mark.skipif(not _has_sm90(), reason="requires SM90 FP8 WGMMA")
+@pytest.mark.sm90
 @pytest.mark.parametrize("seq_len", [225, 897])
 @pytest.mark.smoke
 def test_gqa_prefill_fp8_tensor_core_handles_tail_tiles(seq_len: int) -> None:
@@ -154,7 +150,7 @@ def test_gqa_prefill_fp8_tensor_core_handles_tail_tiles(seq_len: int) -> None:
 
 
 @pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="torch fp8 is unavailable")
-@pytest.mark.skipif(not _has_sm90(), reason="requires SM90 FP8 WGMMA")
+@pytest.mark.sm90
 @pytest.mark.smoke
 def test_gqa_prefill_fp8_tensor_core_matches_dequantized_reference() -> None:
     batch, seq_len, heads, heads_kv, dim = 1, 897, 8, 2, 128

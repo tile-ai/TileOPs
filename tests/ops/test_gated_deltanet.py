@@ -26,10 +26,7 @@ def isolated_registry():
     registry.restore(state)
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
-    reason="the migrated dense-prefill specialization requires SM90",
-)
+@pytest.mark.sm90
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 def test_gated_deltanet_dense_prefill_matches_reference(dtype: torch.dtype) -> None:
     torch.manual_seed(42)
@@ -44,10 +41,7 @@ def test_gated_deltanet_dense_prefill_matches_reference(dtype: torch.dtype) -> N
         op(*inputs, initial_state=initial_state)
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
-    reason="the migrated dense-prefill specialization requires SM90",
-)
+@pytest.mark.sm90
 def test_gated_deltanet_partitioned_dense_prefill_matches_reference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -58,10 +52,7 @@ def test_gated_deltanet_partitioned_dense_prefill_matches_reference(
     test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
-    reason="the dense-decode specialization requires SM90",
-)
+@pytest.mark.sm90
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @pytest.mark.parametrize("batch", [1, 8], ids=["b1", "b8"])
 def test_gated_deltanet_dense_decode_matches_reference(
@@ -74,10 +65,7 @@ def test_gated_deltanet_dense_decode_matches_reference(
     test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=atol, rtol=rtol)
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
-    reason="the dense-decode specialization requires SM90",
-)
+@pytest.mark.sm90
 def test_gated_deltanet_dense_decode_propagates_fp32_state() -> None:
     torch.manual_seed(42)
     workload = GatedDeltaNetFwdWorkload(

@@ -5,7 +5,6 @@ from functools import partial
 import pytest
 import torch
 
-import tileops.ops.linear_attention.deltanet_recurrence as deltanet_ops
 from tests.test_base import FixtureBase, TestBase, allclose_compare, served_in_tree
 from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
@@ -336,10 +335,7 @@ def test_deltanet_inference_reaches_target_with_optional_inputs() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
-    reason="the in-tree dense prefill requires SM90",
-)
+@pytest.mark.sm90
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
     torch.manual_seed(2163)
@@ -362,10 +358,7 @@ def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
-    reason="the in-tree dense prefill requires SM90",
-)
+@pytest.mark.sm90
 def test_deltanet_partitioned_prefill_matches_fla(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TILEOPS_DELTANET_PREFILL_MAX_LOCAL_CHUNKS", "4")
     torch.manual_seed(2163)
@@ -375,10 +368,7 @@ def test_deltanet_partitioned_prefill_matches_fla(monkeypatch: pytest.MonkeyPatc
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
-    reason="the in-tree dense prefill requires SM90",
-)
+@pytest.mark.sm90
 def test_deltanet_wide_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(1, 256, 4, 128, torch.bfloat16)
@@ -470,23 +460,12 @@ def test_deltanet_decode_multi_step(
         torch.testing.assert_close(state_op, state_ref, **tols)
 
 
-def _skip_unless_raw_cuda_decode_supported() -> None:
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required for raw DeltaNet decode smoke coverage")
-    try:
-        sm_version = deltanet_ops.get_sm_version()
-    except Exception as exc:
-        pytest.skip(f"could not query CUDA architecture: {exc}")
-    if sm_version not in DeltaNetDecodeRawCudaFlaStyleKernel.supported_archs:
-        pytest.skip(f"raw DeltaNet decode requires SM90, got SM{sm_version}")
-
-
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None:
     """PR smoke must compile and execute the real raw CUDA 128x128 fast path."""
-    _skip_unless_raw_cuda_decode_supported()
 
     torch.manual_seed(42)
     test = DeltaNetDecodeTest(2, 4, 128, 128, dtype)
@@ -498,6 +477,7 @@ def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None
     test.check(op, *inputs, **_get_tolerances_deltanet_recurrence(dtype))
 
 
+@pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -505,7 +485,6 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
     dtype: torch.dtype,
 ) -> None:
     """PR smoke must exercise raw CUDA state propagation across decode steps."""
-    _skip_unless_raw_cuda_decode_supported()
 
     torch.manual_seed(42)
     num_steps = 8
