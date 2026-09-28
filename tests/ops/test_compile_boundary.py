@@ -188,9 +188,7 @@ def _attention_cases():
         ("nsa-fwd", nsa_fwd),
         ("nsa-cmp-fwd", nsa_cmp_fwd),
         ("nsa-topk", nsa_topk),
-        # Sparse MLA reads storage it was not handed, which a NaN-filled caching allocator
-        # turns its whole output into.
-        ("dsa-decode", dsa_decode, False),
+        ("dsa-decode", dsa_decode),
         ("fp8-lightning-indexer", fp8_lightning_indexer),
         # Picks the same set every time, but the atomic increments that claim the slots
         # decide which index lands where.

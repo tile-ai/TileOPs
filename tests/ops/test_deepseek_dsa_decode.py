@@ -143,5 +143,7 @@ def test_sparse_mla_decode_ignores_padded_topk_slots() -> None:
         padded[padded == seq_len_kv] = pad
         assert torch.equal(op(q, kv, padded), expected), f"padding with {pad} changed the output"
 
-    # Masked rows carry no state from one launch into the next.
+    # Masked rows carry no state from one launch into the next: a launch that stages
+    # NaN rows in every slot must not change the output.
+    op(q, torch.full_like(kv, float("nan")), torch.zeros_like(in_range_pad))
     assert torch.equal(op(q, kv, in_range_pad), expected)
