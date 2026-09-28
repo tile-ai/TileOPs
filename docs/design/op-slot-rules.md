@@ -58,25 +58,21 @@ design, calling conventions — live in
 
 ### Slot S7: <a id="slot-s7"></a> Class docstring
 
-- **Rule.** One-sentence summary, then an `Args:` block covering every S12 kwarg with type and
-  short description. Optional `Example:` block. Derive `Args` from manifest `signature.params` and
-  the execution-policy parameters of S12.
+- **Rule.** One-sentence summary, then what a caller acts on: the semantics and any deviation
+  from the reference. Optional `Example:` block. No `Args:` block: the S12 kwargs are documented
+  in the `__init__` docstring, derived from manifest `signature.params` and the execution-policy
+  parameters of S12.
 - **Example.**
   ```python
   class ExampleCumsumFwdOp(Op):
       """Cumulative sum operator: y = cumsum(x, dim=-1).
 
       Output has the same shape and dtype as input.
-
-      Args:
-          dim: Reduction dimension (default -1).
-          target: Backend target to serve this op, or None to decide from the input device.
-          kernel_map: Optional override for kernel dispatch.
-          tune: Whether to autotune (default False).
       """
   ```
-- **Common mistakes.** `Args` out of sync with `__init__`; listing tensor inputs (they belong to
-  `forward`); documenting a `dtype` kwarg — there is none, dtype comes from the input at `forward`.
+- **Common mistakes.** An `Args:` block here, which `scripts/lint/op_docstrings_lint.py` rejects;
+  listing tensor inputs (they belong to `forward`); documenting a `dtype` kwarg — there is none,
+  dtype comes from the input at `forward`.
 
 ### Slot S12: <a id="slot-s12"></a> `__init__` signature
 

@@ -1,16 +1,13 @@
-"""The quantization ops, at the public path ``tileops.quantization``."""
+"""Quantization and dequantization operators."""
 
-from .ops.fp8_quant import (
-    FP8QuantFwdOp,
-)
-from .ops.quantization import (
+# --- INT8 dequantize ops ---
+from .int8_dequant import (
     INT8DequantPerBlockFwdOp,
     INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
 )
 
 __all__ = [
-    "FP8QuantFwdOp",
     "INT8DequantPerBlockFwdOp",
     "INT8DequantPerChannelFwdOp",
     "INT8DequantPerTensorFwdOp",

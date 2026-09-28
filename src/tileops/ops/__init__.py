@@ -91,6 +91,11 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         MaxPool3dIndicesFwdOp,
         MeanPoolingFwdOp,
     )
+    from .quantization import (
+        INT8DequantPerBlockFwdOp,
+        INT8DequantPerChannelFwdOp,
+        INT8DequantPerTensorFwdOp,
+    )
     from .reduction import (
         AllFwdOp,
         AmaxFwdOp,
@@ -173,6 +178,9 @@ _LAZY = {
     "InstanceNormFwdOp": ".norm",
     # Quantization
     "FP8QuantFwdOp": ".fp8_quant",
+    "INT8DequantPerTensorFwdOp": ".quantization",
+    "INT8DequantPerChannelFwdOp": ".quantization",
+    "INT8DequantPerBlockFwdOp": ".quantization",
     # GEMM
     "GemmFwdOp": ".gemm",
     "GemmFp8FwdOp": ".gemm",

@@ -22,6 +22,7 @@ from tests.roofline_binder import signature_class
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.workload import instantiate
+from workloads import int8_dequant
 
 pytestmark = pytest.mark.smoke
 
@@ -95,13 +96,11 @@ def _smooth_quant(p, t):
     return {"q": torch.round(xs / scale[:, None]).clamp(-127, 127).to(torch.int8), "scale": scale}
 
 
-def _dequant(expand):
-    def reference(p, t):
-        q, scale = t["q"], t["scale"]
-        m, k = q.shape
-        return {"x": (q.float() * expand(scale, m, k)).to(p["out_dtype"])}
+def _dequant(reference):
+    def run(p, t):
+        return {"x": reference(t["q"], t["scale"], p["out_dtype"])}
 
-    return reference
+    return run
 
 
 def _fp8_per_block(p, t):
@@ -426,10 +425,13 @@ REFERENCES = {
     "INT8QuantPerBlockFwdOp": (_int8_per_block, _unsqueeze("x")),
     "INT4QuantPerGroupFwdOp": (_int4_per_group, _narrow("w")),
     "SmoothQuantFwdOp": (_smooth_quant, _narrow("smooth")),
-    "INT8DequantPerTensorFwdOp": (_dequant(lambda s, m, k: s), _unsqueeze("q")),
-    "INT8DequantPerChannelFwdOp": (_dequant(lambda s, m, k: s[:, None]), _narrow("scale")),
+    "INT8DequantPerTensorFwdOp": (_dequant(int8_dequant.int8_dequant_per_tensor), _unsqueeze("q")),
+    "INT8DequantPerChannelFwdOp": (
+        _dequant(int8_dequant.int8_dequant_per_channel),
+        _narrow("scale"),
+    ),
     "INT8DequantPerBlockFwdOp": (
-        _dequant(lambda s, m, k: s.repeat_interleave(128, 1)[:, :k]),
+        _dequant(int8_dequant.int8_dequant_per_block),
         _narrow("scale", 0),
     ),
     "FP8QuantPerBlockFwdOp": (_fp8_per_block, _unsqueeze("w")),
