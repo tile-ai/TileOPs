@@ -184,11 +184,10 @@ def test_a_call_that_launched_nothing_does_not_spend_the_retries(monkeypatch):
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_native_cupti_failure_fails_closed_by_default(monkeypatch):
+def test_native_cupti_failure_fails_closed_by_default():
     """A callable launching no CUDA kernel cannot be attributed by CUPTI."""
-    monkeypatch.setenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0")
     with pytest.raises(RuntimeError, match="CUDA-events fallback is disabled"):
-        bench_kernel(lambda: sum(range(64)))
+        bench_kernel(lambda: sum(range(64)), allow_events_fallback=False)
 
 
 @pytest.mark.smoke

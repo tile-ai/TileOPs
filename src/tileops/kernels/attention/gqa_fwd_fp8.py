@@ -1,5 +1,4 @@
 import functools
-import os
 from typing import Callable, Optional
 
 import tilelang
@@ -8,6 +7,7 @@ import torch
 
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import LOG2E
+from tileops.utils import get_sm_count
 
 from ..kernel_base import Entry, Kernel
 from .call_spec import ATTENTION_DTYPES, dense_fp8_decode_region
@@ -18,7 +18,6 @@ from .online_softmax import (
 )
 
 __all__ = ["GQADenseFP8Kernel"]
-NUM_SMS = int(os.environ.get("V2P_NUM_SMS", "132"))
 TMA_DTYPE_UINT8 = 0
 TMA_INTERLEAVE_NONE = 0
 TMA_SWIZZLE_128B = 3
@@ -882,9 +881,10 @@ def _gqa_dense_fwd_fp8_run(
     q_descale: torch.Tensor,
     k_descale: torch.Tensor,
     v_descale: torch.Tensor,
+    sm_count: int,
 ) -> torch.Tensor:
     num_tasks = batch * heads * ((seq_len_q + 127) // 128)
-    num_waves = (num_tasks + NUM_SMS - 1) // NUM_SMS
+    num_waves = (num_tasks + sm_count - 1) // sm_count
     grid_size = (num_tasks + num_waves - 1) // num_waves
     return _gqa_fwd_fp8_bn224_tma_v_kernel(
         batch,
@@ -980,6 +980,7 @@ class GQADenseFP8Kernel(Kernel):
         self.softcap = softcap
         self.fuse_rope = fuse_rope
         self._validate_spec()
+        self.sm_count = get_sm_count(self.device_index)
         self.rope = make_dense_qk_rope_preprocessor(
             fuse_rope=fuse_rope,
             batch=batch,
@@ -1070,4 +1071,5 @@ class GQADenseFP8Kernel(Kernel):
             q_scale,
             k_scale,
             v_scale,
+            self.sm_count,
         )

@@ -3,6 +3,7 @@ import torch
 
 from tests.test_base import TestBase
 from tileops.backend import TensorSpec, registry
+from tileops.kernels.linear_attention import GatedDeltaNetDensePrefillFwdKernel
 from tileops.ops import GatedDeltaNetFwdOp
 from workloads.device import run_device
 from workloads.linear_attention import GatedDeltaNetFwdWorkload
@@ -42,14 +43,18 @@ def test_gated_deltanet_dense_prefill_matches_reference(dtype: torch.dtype) -> N
 
 
 @pytest.mark.sm90
-def test_gated_deltanet_partitioned_dense_prefill_matches_reference(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.cuda_only
+def test_gated_deltanet_partitioned_dense_prefill_matches_reference() -> None:
     """Exercise warmup, state correction, and partitioned forward together."""
-    monkeypatch.setenv("TILEOPS_GDN_PREFILL_MAX_LOCAL_CHUNKS", "4")
     torch.manual_seed(42)
     test = GatedDeltaNetFwdTest(1, 512, 2, 128, torch.bfloat16)
-    test.check(GatedDeltaNetFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+    # 8 chunks split into partitions of 4.
+    kernel = GatedDeltaNetDensePrefillFwdKernel(
+        1, 2, 512, 128, 128**-0.5, torch.bfloat16, config={"max_local_chunks": 4}
+    )
+    q, k, v, g, beta = (tensor.to("cuda") for tensor in test.gen_inputs())
+    # A gentle decay, so the state carried across partitions still reaches the output.
+    test.check(kernel, q, k, v, g * 0.01, beta, atol=1.6e-2, rtol=1.6e-2)
 
 
 @pytest.mark.sm90

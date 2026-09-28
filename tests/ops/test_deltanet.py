@@ -7,6 +7,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase, allclose_compare, served_in_tree
 from tileops.backend import BUILTIN, TensorSpec, registry
+from tileops.kernels.linear_attention import DeltaNetDensePrefillFwdKernel
 from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
 from tileops.kernels.linear_attention.deltanet_recurrence import (
     DeltaNetDecodeFP32Kernel,
@@ -357,13 +358,17 @@ def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.usefixtures("isolated_registry")
 @pytest.mark.sm90
-def test_deltanet_partitioned_prefill_matches_fla(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TILEOPS_DELTANET_PREFILL_MAX_LOCAL_CHUNKS", "4")
+@pytest.mark.cuda_only
+def test_deltanet_partitioned_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(2, 512, 4, 64, torch.bfloat16)
-    test.check(DeltaNetInferenceFwdOp(), *test.gen_inputs(), atol=1.6e-2, rtol=1.6e-2)
+    # 16 chunks split into partitions of 4.
+    kernel = DeltaNetDensePrefillFwdKernel(
+        2, 4, 512, 64, 64**-0.5, torch.bfloat16, config={"max_local_chunks": 4}
+    )
+    inputs = [tensor.to("cuda") for tensor in test.gen_inputs()]
+    test.check(kernel, *inputs, atol=1.6e-2, rtol=1.6e-2)
 
 
 @pytest.mark.smoke

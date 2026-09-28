@@ -60,11 +60,6 @@ def main():
     )
     args = parser.parse_args()
 
-    # Communicate settings to worker processes via environment variables.
-    # The conftest plugin (conftest_warmup) reads these in each worker.
-    os.environ["TILEOPS_WARMUP_MODE"] = "1"
-    os.environ["TILEOPS_WARMUP_MAX_WORKERS"] = str(args.max_workers)
-
     print(
         f"Compilation parallelism: {args.num_pytest_workers} pytest workers "
         f"x {args.max_workers} compile threads each"
@@ -103,6 +98,8 @@ def main():
         "no:cacheprovider",
         "-p",
         "conftest_warmup",
+        "--tileops-warmup=compile",
+        f"--tileops-warmup-max-workers={args.max_workers}",
         "--override-ini=continue_on_collection_errors=true",
     ]
 
@@ -133,9 +130,6 @@ def main():
     print("Phase 2: Serial autotune validation")
     print("=" * 60)
 
-    os.environ.pop("TILEOPS_WARMUP_MODE", None)
-    os.environ["TILEOPS_WARMUP_VALIDATE"] = "1"
-
     validate_args = [
         *shard_files,
         "-v",
@@ -144,6 +138,7 @@ def main():
         "no:cacheprovider",
         "-p",
         "conftest_warmup",
+        "--tileops-warmup=validate",
         "--override-ini=continue_on_collection_errors=true",
     ]
     # No -n flag: serial execution for accurate GPU profiling

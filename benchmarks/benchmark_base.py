@@ -278,7 +278,7 @@ class OpBenchmark(BenchmarkBase[W]):
                     f"{tag}: the two passes timed with different methods "
                     f"({previous['timing']} then {pass_meta['timing']}); pooling "
                     "them would report one median over two kinds of measurement. "
-                    "Only reachable with TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1."
+                    "Only reachable with --tileops-allow-events-fallback."
                 )
             meta[tag] = pass_meta
         results = {tag: self._build_result(samples[tag], meta[tag]) for tag in tags}

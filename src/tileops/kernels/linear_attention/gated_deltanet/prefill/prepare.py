@@ -11,7 +11,7 @@ import torch
 
 from tileops.kernels.constants import LOG2E
 
-from .common import _gemm_v1, prepare_chunk_offsets
+from .common import prepare_chunk_offsets
 
 
 @functools.lru_cache(maxsize=32)
@@ -951,7 +951,7 @@ def _build_prepare_h_kernel(
 
                     T.barrier_wait(bar_2, i_s % 2)
                     # S += X^T @ Y
-                    _gemm_v1(
+                    T.gemm(
                         x_shared,
                         y_shared,
                         h_fragment,
@@ -982,7 +982,7 @@ def _build_prepare_h_kernel(
 
                     T.barrier_wait(bar_0, i_s % 2)
                     # X = A^T @ K
-                    _gemm_v1(
+                    T.gemm(
                         a_shared[i_s % num_stages, :, :],
                         k_shared[i_s % num_stages, :, :],
                         x_fragment,
@@ -1003,7 +1003,7 @@ def _build_prepare_h_kernel(
 
                         T.barrier_wait(bar_3, i_s % 2)
                         # Z = K @ M
-                        _gemm_v1(
+                        T.gemm(
                             k_shared[i_s % num_stages, :, :],
                             m_shared_R,
                             z_fragment_R,
@@ -1011,7 +1011,7 @@ def _build_prepare_h_kernel(
                         )
                         T.copy(z_fragment_R, z_shared_R)
                         # M += X^T @ Z
-                        _gemm_v1(
+                        T.gemm(
                             x_shared,
                             z_shared_R,
                             m_fragment_R,
@@ -1054,7 +1054,7 @@ def _build_prepare_h_kernel(
 
                     T.barrier_wait(bar_1, i_s % 2)
                     # U = K @ S
-                    _gemm_v1(
+                    T.gemm(
                         k_shared[i_s % num_stages, :, :],
                         h_shared,
                         y_fragment,
@@ -1076,7 +1076,7 @@ def _build_prepare_h_kernel(
 
                         T.barrier_wait(bar_3, i_s % 2)
                         # Z = K @ M
-                        _gemm_v1(
+                        T.gemm(
                             k_shared[i_s % num_stages, :, :],
                             m_shared_L,
                             z_fragment_L,
@@ -1084,7 +1084,7 @@ def _build_prepare_h_kernel(
                         )
                         T.copy(z_fragment_L, z_shared_L)
                         # M += X^T @ Z
-                        _gemm_v1(
+                        T.gemm(
                             x_shared,
                             z_shared_L,
                             m_fragment_L,

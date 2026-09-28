@@ -2,8 +2,7 @@
 
 import functools
 import math
-import os
-from typing import Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 
@@ -67,9 +66,6 @@ def _dense_partition_metadata(
 
 
 def _dense_local_chunks(num_chunks: int, heads: int, device_index: int | None) -> int:
-    override = os.environ.get("TILEOPS_DELTANET_PREFILL_MAX_LOCAL_CHUNKS")
-    if override is not None:
-        return max(int(override), 4)
     sm_count = get_sm_count(device_index)
     local_chunks = 2 ** round(math.log2(math.sqrt(heads * num_chunks / sm_count) * 3))
     if heads >= 64 and num_chunks >= 512:
@@ -86,11 +82,11 @@ def _dense_partition_initial_state(
     batch: int,
     seq_len: int,
     initial_state: torch.Tensor | None,
+    max_local_chunks: int,
 ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor | None, torch.Tensor]:
     """Prepare the correct start state for every independent prefill partition."""
     heads = k.shape[2]
     num_chunks = batch * seq_len // 64
-    max_local_chunks = _dense_local_chunks(num_chunks, heads, k.device.index)
     use_partition = num_chunks > max_local_chunks and (
         heads <= 40 or (heads <= 64 and num_chunks >= 128)
     )
@@ -146,6 +142,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel):
         dim: int,
         scale: float,
         dtype: torch.dtype,
+        config: Optional[Dict[str, Any]] = None,
         *,
         device_index: int | None = None,
     ) -> None:
@@ -155,12 +152,23 @@ class DeltaNetDensePrefillFwdKernel(Kernel):
         self.seq_len = seq_len
         self.dim = dim
         self.scale = scale
+        self.init_config(config)
+        if self.config["max_local_chunks"] < 4:
+            raise ValueError(
+                f"max_local_chunks must be at least 4, got {self.config['max_local_chunks']}"
+            )
         # A zero gate is the ungated delta rule. Keep it across calls so the
         # measured path does not include an extra GPU memset per invocation.
         device = (
             torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
         )
         self.zero_gate = torch.zeros((batch, seq_len, heads), dtype=dtype, device=device)
+
+    @property
+    def default_config(self) -> Dict[str, Any]:
+        # A partition holds at most this many 64-token chunks; a longer sequence is split.
+        num_chunks = self.batch * self.seq_len // 64
+        return {"max_local_chunks": _dense_local_chunks(num_chunks, self.heads, self.device_index)}
 
     def forward(
         self,
@@ -190,6 +198,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel):
             batch,
             seq_len,
             initial_state,
+            self.config["max_local_chunks"],
         )
         o, _, final_state = fused_gdr_fwd(
             q_flat,
