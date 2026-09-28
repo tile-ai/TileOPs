@@ -50,7 +50,12 @@ class AvgPoolWorkload(WorkloadBase):
         }
         if self.ndim > 1:
             kwargs["divisor_override"] = self.divisor_override
-        return getattr(F, f"avg_pool{self.ndim}d")(input, **kwargs)
+        pool = getattr(F, f"avg_pool{self.ndim}d")
+        half = input.dtype in (torch.float16, torch.bfloat16)
+        if self.ndim == 3 and half and input.device.type == "cpu":
+            # torch has no CPU avg_pool3d for fp16/bf16; its CUDA kernel accumulates in fp32 too.
+            return pool(input.float(), **kwargs).to(input.dtype)
+        return pool(input, **kwargs)
 
 
 class MaxPoolWorkload(WorkloadBase):

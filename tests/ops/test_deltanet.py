@@ -337,6 +337,7 @@ def test_deltanet_inference_reaches_target_with_optional_inputs() -> None:
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
 @pytest.mark.sm90
+@pytest.mark.cuda_only
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 def test_deltanet_dense_prefill_matches_fla(dtype: torch.dtype) -> None:
     torch.manual_seed(2163)
@@ -374,6 +375,7 @@ def test_deltanet_partitioned_prefill_matches_fla() -> None:
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
 @pytest.mark.sm90
+@pytest.mark.cuda_only
 def test_deltanet_wide_prefill_matches_fla() -> None:
     torch.manual_seed(2163)
     test = DeltaNetInferenceTest(1, 256, 4, 128, torch.bfloat16)
