@@ -46,11 +46,6 @@ class BatchNormCall(CallSpec):
     _SPLIT_TARGET_BLOCKS: ClassVar[int] = 512
 
     @property
-    def device_index(self) -> Optional[int]:
-        """The CUDA device the call runs on, which a kernel checks its architecture against."""
-        return self.device.index if self.device is not None else None
-
-    @property
     def fits_one_thread(self) -> bool:
         """Whether a channel is one element per batch item and short enough for one thread."""
         return self.spatial <= 1 and self.n * self.spatial <= self._THREAD_MAX_L

@@ -162,7 +162,7 @@ class InstanceNormFwdOp(Op):
         # torch reads the statistics in the input's dtype.
         stats = tuple(stat.to(x.dtype).float() for stat in (running_mean, running_var))
         x_ncs = x.view(x.shape[0], channels, math.prod(x.shape[2:]))
-        call = (*x_ncs.shape, x.dtype)
+        call = (*x_ncs.shape, x.dtype, x.device.index)
         kernel = self.kernel_for("instance_norm_running_stats", (x_ncs, *stats, weight, bias), call)
         return kernel(x_ncs, *stats, weight, bias).view(x.shape)
 
@@ -196,9 +196,11 @@ class InstanceNormFwdOp(Op):
                 device_index=device_index,
             )
         if role == "instance_norm_running_stats":
-            batch, channels, spatial, dtype = call
+            batch, channels, spatial, dtype, device_index = call
             cls = self.kernel_map["instance_norm_running_stats"]
-            return call, lambda: cls(batch, channels, spatial, dtype, self.eps, tune=self.tune)
+            return call, lambda: cls(
+                batch, channels, spatial, dtype, self.eps, tune=self.tune, device_index=device_index
+            )
         d, dtype, affine, channels = call
         if affine:
             cls = self.kernel_map["instance_norm"]

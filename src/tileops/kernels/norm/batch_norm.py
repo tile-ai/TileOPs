@@ -374,7 +374,7 @@ def _batch_norm_fwd_train_split_kernel(
             y_ncs: T.Tensor([N, C, S], dtype),
         ):
             with T.Kernel(blocks, threads=threads) as bx:
-                # A flat view of the same data; T.reshape's size check overflows int32.
+                # T.reshape's size check multiplies in int32 and overflows on large tensors.
                 x = T.Tensor([total], dtype, x_ncs.data)
                 y = T.Tensor([total], dtype, y_ncs.data)
                 tx = T.get_thread_binding()
@@ -659,7 +659,7 @@ class BatchNormFwdTrainWholeKernel(Kernel):
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
         args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum)
-        index = call.device_index
+        index = call.device.index if call.device is not None else None
         return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
@@ -736,7 +736,7 @@ class BatchNormFwdTrainWideKernel(Kernel):
             call.momentum,
             call.block_launch(1),
         )
-        index = call.device_index
+        index = call.device.index if call.device is not None else None
         return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
@@ -816,7 +816,7 @@ class BatchNormFwdTrainSplitKernel(Kernel):
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
         args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum, call.split_seed)
-        index = call.device_index
+        index = call.device.index if call.device is not None else None
         return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
 
     def __init__(
@@ -1013,7 +1013,7 @@ class BatchNormFwdTrainKernel(Kernel):
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
         args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum)
-        index = call.device_index
+        index = call.device.index if call.device is not None else None
         return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
 
     def __init__(
@@ -1117,7 +1117,7 @@ def _batch_norm_fwd_infer_kernel(
             y_ncs: T.Tensor([N, C, S], dtype),
         ):
             with T.Kernel(blocks, threads=threads) as bx:
-                # A flat view of the same data; T.reshape's size check overflows int32.
+                # T.reshape's size check multiplies in int32 and overflows on large tensors.
                 x = T.Tensor([total], dtype, x_ncs.data)
                 y = T.Tensor([total], dtype, y_ncs.data)
                 tx = T.get_thread_binding()
@@ -1180,6 +1180,7 @@ class BatchNormFwdInferKernel(Kernel):
         eps: Numerical stability constant.
         config: Optional tile config dict.
         tune: If True, autotune tile config.
+        device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
 
     supported_archs: list[int] = [80, 89, 90]
@@ -1198,8 +1199,9 @@ class BatchNormFwdInferKernel(Kernel):
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
-        identity = (call.n, call.c, call.spatial, call.dtype, call.eps)
-        return identity, lambda: cls(*identity, tune=call.tune)
+        args = (call.n, call.c, call.spatial, call.dtype, call.eps)
+        index = call.device.index if call.device is not None else None
+        return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
 
     def __init__(
         self,
@@ -1210,8 +1212,9 @@ class BatchNormFwdInferKernel(Kernel):
         eps: float = 1e-5,
         config: Optional[dict] = None,
         tune: bool = False,
+        device_index: Optional[int] = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.total = N * C * S
         self.dtype = dtype
         self.kernel = _batch_norm_fwd_infer_kernel(N, C, S, self.dtype_str, eps)
@@ -1710,7 +1713,7 @@ def _batch_norm_bwd_split_kernel(
             grad_x_ncs: T.Tensor([N, C, S], dtype),
         ):
             with T.Kernel(blocks, threads=threads) as bx:
-                # A flat view of the same data; T.reshape's size check overflows int32.
+                # T.reshape's size check multiplies in int32 and overflows on large tensors.
                 grad_out = T.Tensor([total], dtype, grad_out_ncs.data)
                 x = T.Tensor([total], dtype, x_ncs.data)
                 grad_x = T.Tensor([total], dtype, grad_x_ncs.data)
@@ -1783,7 +1786,7 @@ class BatchNormBwdWideKernel(Kernel):
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
         args = (call.n, call.c, call.spatial, call.dtype, call.block_launch(2))
-        index = call.device_index
+        index = call.device.index if call.device is not None else None
         return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
@@ -1847,7 +1850,7 @@ class BatchNormBwdSplitKernel(Kernel):
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
         args = (call.n, call.c, call.spatial, call.dtype, call.split_seed)
-        index = call.device_index
+        index = call.device.index if call.device is not None else None
         return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
@@ -1942,7 +1945,7 @@ class BatchNormBwdKernel(Kernel):
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
         args = (call.n, call.c, call.spatial, call.dtype)
-        index = call.device_index
+        index = call.device.index if call.device is not None else None
         return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
 
     def __init__(
