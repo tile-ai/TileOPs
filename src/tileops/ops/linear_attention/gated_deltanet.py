@@ -1,5 +1,5 @@
 import math
-from typing import Dict, Optional, Tuple
+from typing import ClassVar, Dict, Optional, Tuple
 
 import torch
 
@@ -46,6 +46,8 @@ class GatedDeltaNetFwdOp(Op):
     and precomputed gate and beta values. Other regions still require an
     external target implementation while their retained kernels are migrated.
     """
+
+    compile_boundary: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -179,6 +181,24 @@ class GatedDeltaNetFwdOp(Op):
         dt_bias: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run prefill or decode and return ``(o, final_state)``."""
+        return self._call_boundary(
+            q, k, v, g, beta, initial_state, cu_seqlens, cu_seqlens_cpu, A_log, dt_bias
+        )
+
+    def _eager_forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+        initial_state: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        cu_seqlens_cpu: Optional[torch.Tensor] = None,
+        A_log: Optional[torch.Tensor] = None,
+        dt_bias: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Resolve the kernel and launch, inside the operator."""
         inputs = self._canonicalize_inputs(
             q,
             k,

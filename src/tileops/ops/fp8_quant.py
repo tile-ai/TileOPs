@@ -23,6 +23,8 @@ class FP8QuantFwdOp(Op):
     quantized against the maximum of its finite values.
     """
 
+    compile_boundary: ClassVar[bool] = True
+
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fp8_quant_kernel": FP8QuantKernel}
 
     def __init__(
@@ -63,6 +65,10 @@ class FP8QuantFwdOp(Op):
             ``scale_tensor`` $[B \\times S \\times G]$ in ``float32`` and ``output_tensor``
             $[B \\times S \\times G \\times D]$ in ``float8_e4m3fn``.
         """
+        return self._call_boundary(input_tensor)
+
+    def _eager_forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Resolve the kernel and launch, inside the operator."""
         input_tensor = input_tensor.contiguous()
         call = (*input_tensor.shape, input_tensor.dtype, input_tensor.device.index)
         self.kernel = self.kernel_for("fp8_quant_kernel", (input_tensor,), call)

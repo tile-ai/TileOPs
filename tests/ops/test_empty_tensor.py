@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 from tileops.ops import FP8QuantFwdOp, FusedAddRMSNormFwdOp, InstanceNormFwdOp
 from tileops.ops.elementwise import AddFwdOp, ReluFwdOp
-from tileops.ops.moe import ContiguousLayoutSpec, MoePostPermuteFwdOp
+from tileops.ops.moe import ContiguousLayoutSpec, MoeExpertMLPFwdOp, MoePostPermuteFwdOp
 from tileops.ops.reduction import SumFwdOp
 from workloads.device import run_device, run_device_available
 
@@ -66,7 +66,7 @@ def _post_permute(out: "torch.Tensor | None" = None) -> torch.Tensor:
                 torch.empty(0, 4, 1, device=x.device),
                 torch.empty(0, 4, 1, 2, device=x.device, dtype=torch.float8_e4m3fn),
             ),
-            id="no-compile-boundary",
+            id="output-dtype",
         ),
         pytest.param(
             lambda x: SumFwdOp(dim=0)(x), lambda x: torch.sum(x, dim=0), id="non-empty-output"
@@ -88,6 +88,20 @@ def test_an_empty_call_returns_what_torch_returns(call, reference):
 def test_a_written_empty_tensor_is_returned_as_passed(call):
     written = _tensor(0, 64)
     assert call(written) is written
+
+
+def test_an_empty_composite_call_runs_no_sub_op():
+    """An op without a compile boundary decides in its own call, before its sub-ops."""
+    op = MoeExpertMLPFwdOp(ContiguousLayoutSpec.tight_physical_psum())
+    experts, ffn, hidden = 4, 64, 64
+    result = op(
+        _tensor(0, hidden),
+        _tensor(experts, 2 * ffn, hidden),
+        _tensor(experts, hidden, ffn),
+        torch.zeros(experts, dtype=torch.int32, device=run_device()),
+    )
+    _assert_same(result, _tensor(0, hidden))
+    assert not any(op.last_call.stages.values())
 
 
 def test_a_written_input_with_elements_still_runs():

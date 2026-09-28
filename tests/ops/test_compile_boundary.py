@@ -34,13 +34,18 @@ from tileops.ops.attention.gqa import (
 from tileops.ops.attention.mha import (
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
 )
+from tileops.ops.fft import FFTC2CFwdOp
 from tileops.ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
+from tileops.ops.fp8_quant import FP8QuantFwdOp
 from tileops.ops.gemm.bmm import BmmFp8FwdOp, BmmFwdOp
 from tileops.ops.gemm.gemm import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
 from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
 from tileops.ops.linear_attention.deltanet import DeltaNetBwdOp, DeltaNetFwdOp
+from tileops.ops.linear_attention.deltanet_inference import DeltaNetInferenceFwdOp
 from tileops.ops.linear_attention.deltanet_recurrence import DeltaNetDecodeFwdOp
+from tileops.ops.linear_attention.gated_deltanet import GatedDeltaNetFwdOp
 from tileops.ops.linear_attention.gla import GLABwdOp, GLAFwdOp
+from tileops.ops.linear_attention.gla_inference import GLAInferenceFwdOp
 from tileops.ops.linear_attention.gla_recurrence import GLADecodeFwdOp
 from tileops.ops.mamba.cb_producer import CBProducerFwdOp
 from tileops.ops.mamba.da_cumsum import DaCumsumFwdOp
@@ -48,6 +53,7 @@ from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
 from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.mamba.ssd_decode import SSDDecodeFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
+from tileops.ops.pool import MeanPoolingFwdOp
 from tileops.ops.rope import (
     RopeLlama31FwdOp,
     RopeLongRopeFwdOp,
@@ -409,6 +415,34 @@ def _linear_attention_cases():
             _x(_B, _H, _D, _D),
         )
 
+    def gla_inference():
+        return GLAInferenceFwdOp(scale=_SCALE), (
+            _x(_B, _S, _H, _D) * 0.1,
+            _x(_B, _S, _H, _D) * 0.1,
+            _x(_B, _S, _H, _D) * 0.1,
+            -_x(_B, _S, _H, _D).abs() * 0.1,
+        )
+
+    def deltanet_inference():
+        k = torch.nn.functional.normalize(_x(_B, _S, _H, _D, dtype=torch.float32), dim=-1)
+        return DeltaNetInferenceFwdOp(), (
+            _x(_B, _S, _H, _D) * 0.1,
+            k.to(_DTYPE),
+            _x(_B, _S, _H, _D) * 0.1,
+            _x(_B, _S, _H).sigmoid() * 0.5,
+        )
+
+    def gated_deltanet():
+        # The in-tree kernel serves a 128-wide head only.
+        k = torch.nn.functional.normalize(_x(_B, _S, _H, 128, dtype=torch.float32), dim=-1)
+        return GatedDeltaNetFwdOp(), (
+            _x(_B, _S, _H, 128) * 0.1,
+            k.to(_DTYPE),
+            _x(_B, _S, _H, 128) * 0.1,
+            -_x(_B, _S, _H).abs() * 0.1,
+            _x(_B, _S, _H).sigmoid(),
+        )
+
     return (
         ("gla-fwd", gla_fwd),
         ("gla-bwd", gla_bwd),
@@ -416,6 +450,31 @@ def _linear_attention_cases():
         ("deltanet-fwd", deltanet_fwd),
         ("deltanet-bwd", deltanet_bwd),
         ("deltanet-decode", deltanet_decode),
+        ("gla-inference", gla_inference),
+        ("deltanet-inference", deltanet_inference),
+        ("gated-deltanet", gated_deltanet),
+    )
+
+
+def _other_cases():
+    """The FFT, FP8 quantization and mean pooling ops, with the inputs they are built for."""
+
+    def fft_c2c():
+        x = torch.randn(2, 64, dtype=torch.complex64, device=run_device())
+        return FFTC2CFwdOp(), (x,)
+
+    def fp8_quant():
+        x = torch.randn(1, 64, 1, 64, dtype=torch.float16, device=run_device())
+        return FP8QuantFwdOp(), (x,)
+
+    def mean_pooling():
+        x = torch.randn(1, 64, 2, 64, dtype=torch.float16, device=run_device())
+        return MeanPoolingFwdOp(32, torch.float32), (x,)
+
+    return (
+        ("fft-c2c", fft_c2c),
+        ("fp8-quant", fp8_quant),
+        ("mean-pooling", mean_pooling),
     )
 
 
@@ -540,6 +599,7 @@ _FAMILIES = (
     _linear_attention_cases,
     _sequence_modeling_cases,
     _rope_cases,
+    _other_cases,
 )
 
 
@@ -564,6 +624,8 @@ def _cases():
     return [pytest.param(case, id=case.name) for case in cases]
 
 
+# A spec-only entry's case runs but is not registered: only an implemented entry's
+# declaration is contract evidence.
 for _op_cls in (
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionBwdOp,
@@ -594,6 +656,9 @@ for _op_cls in (
     DeltaNetFwdOp,
     DeltaNetBwdOp,
     DeltaNetDecodeFwdOp,
+    FFTC2CFwdOp,
+    FP8QuantFwdOp,
+    MeanPoolingFwdOp,
     EngramGateConvFwdOp,
     EngramGateConvBwdOp,
     EngramDecodeFwdOp,

@@ -133,6 +133,8 @@ class MeanPoolingFwdOp(Op):
         ```
     """
 
+    compile_boundary: ClassVar[bool] = True
+
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "mean_pooling_fwd_kernel": MeanPoolingFwdKernel
     }
@@ -225,6 +227,15 @@ class MeanPoolingFwdOp(Op):
             ValueError: ``indices`` does not hold one row per chunk ``offsets`` implies, or
                 ``offsets`` does not partition ``x``'s sequence axis.
         """
+        return self._call_boundary(x, offsets, indices)
+
+    def _eager_forward(
+        self,
+        x: torch.Tensor,
+        offsets: Optional[torch.Tensor] = None,
+        indices: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Resolve the kernel and launch, inside the operator."""
         # Heads and dim are read as one width.
         x = x.contiguous()
         batch_size, seq_len, heads, dim = x.shape
