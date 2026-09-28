@@ -10,7 +10,12 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.norm.call_spec import BatchNormCall
+from tileops.kernels.norm.call_spec import (
+    BatchNormBwdSlot,
+    BatchNormCall,
+    BatchNormFwdInferSlot,
+    BatchNormFwdTrainSlot,
+)
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.device import run_device, run_device_available
 from workloads.normalization import (
@@ -272,11 +277,10 @@ def test_a_channel_length_no_tile_divides_matches_torch(shape) -> None:
     ],
 )
 def test_each_region_selects_its_one_candidate(op_cls, role, n, c, spatial, dtype, key) -> None:
-    """Exactly one specialised candidate, or else the general one, serves each shape."""
+    """Exactly one specialised candidate, or else the general one, serves each sampled shape."""
     op = op_cls()
     call = BatchNormCall(arch=90, sm_count=132, n=n, c=c, spatial=spatial, dtype=dtype)
-    keys = op.kernel_roles.get(role, tuple(op.kernel_map))
-    assert op.select_kernel_key(keys, call) == key
+    assert op.select_candidate(role, call) == key
 
 
 # Input validation and torch.compile.
@@ -371,7 +375,7 @@ class _FakeKernel(Kernel):
         self.momentum = call.momentum
 
 
-class _FakeBatchNormFwdInferKernel(_FakeKernel):
+class _FakeBatchNormFwdInferKernel(_FakeKernel, BatchNormFwdInferSlot):
     def forward(
         self,
         x: torch.Tensor,
@@ -386,7 +390,7 @@ class _FakeBatchNormFwdInferKernel(_FakeKernel):
         return _from_cl(y.to(self.dtype), x.shape)
 
 
-class _FakeBatchNormFwdTrainKernel(_FakeKernel):
+class _FakeBatchNormFwdTrainKernel(_FakeKernel, BatchNormFwdTrainSlot):
     def forward(
         self,
         x: torch.Tensor,
@@ -406,7 +410,7 @@ class _FakeBatchNormFwdTrainKernel(_FakeKernel):
         return _from_cl(y.to(self.dtype), x.shape), mean, rstd
 
 
-class _FakeBatchNormBwdKernel(_FakeKernel):
+class _FakeBatchNormBwdKernel(_FakeKernel, BatchNormBwdSlot):
     def forward(
         self,
         grad_out: torch.Tensor,
@@ -439,10 +443,18 @@ class _ServesNothing(Kernel):
         raise AssertionError("never selected")
 
 
+class _TrainsNothing(_ServesNothing, BatchNormFwdTrainSlot):
+    pass
+
+
+class _DifferentiatesNothing(_ServesNothing, BatchNormBwdSlot):
+    pass
+
+
 _FAKE_TRAIN_MAP = {
-    "fwd_train_whole": _ServesNothing,
-    "fwd_train_wide": _ServesNothing,
-    "fwd_train_split": _ServesNothing,
+    "fwd_train_whole": _TrainsNothing,
+    "fwd_train_wide": _TrainsNothing,
+    "fwd_train_split": _TrainsNothing,
     "fwd_train_kernel": _FakeBatchNormFwdTrainKernel,
     "fwd_infer_kernel": _FakeBatchNormFwdInferKernel,
 }
@@ -592,8 +604,8 @@ def test_batch_norm_bwd_lazy_cache_reuse_and_respecialization() -> None:
     eps = 1e-5
     op = BatchNormBwdOp(
         kernel_map={
-            "bwd_wide": _ServesNothing,
-            "bwd_split": _ServesNothing,
+            "bwd_wide": _DifferentiatesNothing,
+            "bwd_split": _DifferentiatesNothing,
             "bwd_kernel": _FakeBatchNormBwdKernel,
         },
         target=BUILTIN,

@@ -29,6 +29,10 @@ Choosing among its own kernels, constructing, caching and compiling all happen i
 nothing here names a kernel class, a specialization axis, a priority or a fallback: this layer
 picks a target, the target picks a kernel.
 
+A backend that serves part of one slot instead registers a candidate for it with
+``register_candidate``. The candidate implements the slot's interface and joins the in-tree
+candidates of every instance of the op; a call it does not serve stays with them.
+
 Depends on torch only — importing this does not import tilelang.
 
 `tileops.backend.protocol` is what crosses the boundary,
@@ -52,7 +56,7 @@ from .errors import (
     UnknownTargetError,
 )
 from .protocol import BUILTIN, BuildKernel, KernelResult, Target, TensorSpec
-from .registry import register_detector, register_kernel_builder
+from .registry import register_candidate, register_detector, register_kernel_builder
 
 __all__ = [
     "BUILTIN",
@@ -66,6 +70,7 @@ __all__ = [
     "UnknownTargetError",
     "default_target",
     "load_failures",
+    "register_candidate",
     "register_detector",
     "register_kernel_builder",
     "registered_targets",

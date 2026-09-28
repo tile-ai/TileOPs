@@ -135,7 +135,6 @@ class _GQASlidingWindowVarlenFwdKernelBase(VarlenKernel):
             and not call.fuse_rope
             and call.sm_scale is None
             and call.softcap == 0.0
-            and call.backend in ("auto", "sliding_window")
         )
 
     @classmethod

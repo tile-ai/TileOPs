@@ -10,6 +10,7 @@ from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
 from .call_spec import (
+    GQADenseFwdSlot,
     dense_decode_limit_refusal,
     dense_decode_refusal,
     dense_long_context_decode_refusal,
@@ -521,7 +522,7 @@ def _gqa_decode_split_run(
     )(Q, K, V, glse, Output_partial)
 
 
-class GQADecodeKernel(Kernel):
+class GQADecodeKernel(Kernel, GQADenseFwdSlot):
     supported_archs: list[int] = [80, 89, 90]
     # The implementation behind the specialised ones for this key.
     general: bool = True
@@ -835,6 +836,7 @@ class GQADecodeLongContextKernel(GQADecodeKernel):
     """Dense decode specialization with the measured long-context defaults."""
 
     general: bool = False
+    refines = frozenset({"gqa_dense_decode_bs1"})
 
     @staticmethod
     def _region_refusal(call) -> Optional[str]:

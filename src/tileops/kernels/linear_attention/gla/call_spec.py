@@ -1,14 +1,16 @@
-"""The facts of one GLAInferenceFwdOp call that its in-tree kernels select and build on."""
+"""The facts of one GLAInferenceFwdOp call that its in-tree kernels select and build on,
+and the contract its slot's candidates implement."""
 
 import dataclasses
+from abc import abstractmethod
 from typing import Optional
 
 import torch
 
 from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Entry
+from tileops.kernels.kernel_base import Entry, Slot
 
-__all__ = ["GLAInferenceCallSpec", "dense_entry", "serves_dense"]
+__all__ = ["GLAInferenceCallSpec", "GLAInferenceFwdSlot", "dense_entry", "serves_dense"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -23,6 +25,42 @@ class GLAInferenceCallSpec(CallSpec):
     dtype: Optional[torch.dtype] = None
     scale: float = 0.0
     varlen: bool = False
+
+
+class GLAInferenceFwdSlot(Slot):
+    """Gated linear attention for inference: one prefill or decode step over caller-owned state."""
+
+    request = GLAInferenceCallSpec
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        initial_state: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        cu_seqlens_cpu: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run the recurrence from *initial_state* over the call's sequence.
+
+        Every tensor is contiguous on ``call.device`` but ``cu_seqlens_cpu``, and nothing
+        is written in place.
+
+        Args:
+            q: ``(batch, seq_len, heads, dim_k)`` in ``call.dtype``.
+            k: ``(batch, seq_len, heads, dim_k)`` in ``call.dtype``.
+            v: ``(batch, seq_len, heads, dim_v)`` in ``call.dtype``.
+            g: ``(batch, seq_len, heads, dim_k)`` log-space gate in ``call.dtype``.
+            initial_state: ``float32`` ``(batch, heads, dim_k, dim_v)``, or ``None`` for zero.
+            cu_seqlens: ``int32`` packed sequence offsets, passed exactly when ``call.varlen``.
+            cu_seqlens_cpu: The same offsets on the CPU, or ``None``.
+
+        Returns:
+            New ``(o, final_state)``: ``o`` shaped like *v* in ``call.dtype``, and the
+            ``float32`` ``(batch, heads, dim_k, dim_v)`` state after the last step.
+        """
 
 
 def serves_dense(call: GLAInferenceCallSpec) -> bool:

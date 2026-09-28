@@ -25,7 +25,7 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, Slot
 from tileops.kernels.norm.batch_norm import (
     BatchNormBwdKernel,
     BatchNormBwdSplitKernel,
@@ -36,7 +36,12 @@ from tileops.kernels.norm.batch_norm import (
     BatchNormFwdTrainWholeKernel,
     BatchNormFwdTrainWideKernel,
 )
-from tileops.kernels.norm.call_spec import BatchNormCall
+from tileops.kernels.norm.call_spec import (
+    BatchNormBwdSlot,
+    BatchNormCall,
+    BatchNormFwdInferSlot,
+    BatchNormFwdTrainSlot,
+)
 
 from ..op_base import Op
 from .norm_base import affine_or_constant
@@ -75,14 +80,9 @@ class BatchNormFwdOp(Op):
         "fwd_train_kernel": BatchNormFwdTrainKernel,
         "fwd_infer_kernel": BatchNormFwdInferKernel,
     }
-    kernel_roles: ClassVar[Mapping[str, tuple[str, ...]]] = {
-        "batch_norm_fwd_train": (
-            "fwd_train_whole",
-            "fwd_train_wide",
-            "fwd_train_split",
-            "fwd_train_kernel",
-        ),
-        "batch_norm_fwd_infer": ("fwd_infer_kernel",),
+    slots: ClassVar[Mapping[str, type[Slot]]] = {
+        "batch_norm_fwd_train": BatchNormFwdTrainSlot,
+        "batch_norm_fwd_infer": BatchNormFwdInferSlot,
     }
 
     def __init__(
@@ -157,7 +157,6 @@ class BatchNormFwdOp(Op):
             dtype=x.dtype,
             eps=self.eps,
             momentum=self.momentum,
-            tune=self.tune,
         )
         role = "batch_norm_fwd_train" if self.training else "batch_norm_fwd_infer"
         kernel = self.kernel_for(role, (x_ncs, *handed, weight, bias), call)
@@ -218,6 +217,7 @@ class BatchNormBwdOp(Op):
         "bwd_split": BatchNormBwdSplitKernel,
         "bwd_kernel": BatchNormBwdKernel,
     }
+    slots: ClassVar[Mapping[str, type[Slot]]] = {"batch_norm_bwd": BatchNormBwdSlot}
 
     def __init__(
         self,
@@ -263,9 +263,7 @@ class BatchNormBwdOp(Op):
         weight = weight.contiguous()
         mean = mean.contiguous()
         rstd = rstd.contiguous()
-        call = BatchNormCall(
-            device=x.device, n=batch, c=channels, spatial=spatial, dtype=x.dtype, tune=self.tune
-        )
+        call = BatchNormCall(device=x.device, n=batch, c=channels, spatial=spatial, dtype=x.dtype)
         kernel = self.kernel_for("batch_norm_bwd", (grad_out_ncs, x_ncs, weight, mean, rstd), call)
         self.kernel = kernel
         grad_x, grad_weight, grad_bias = kernel(grad_out_ncs, x_ncs, weight, mean, rstd)

@@ -446,7 +446,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             and not uses_sliding_window(call)
             and not call.empty_kv
             and call.batch <= cls._MAX_BATCH
-            and (call.backend == "varlen" or (call.backend == "auto" and not call.is_uniform))
+            and not call.is_uniform
         )
 
     @classmethod

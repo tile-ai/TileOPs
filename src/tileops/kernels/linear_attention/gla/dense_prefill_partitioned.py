@@ -10,7 +10,7 @@ from tilelang import language as T
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry
 
-from .call_spec import GLAInferenceCallSpec, dense_entry, serves_dense
+from .call_spec import GLAInferenceCallSpec, GLAInferenceFwdSlot, dense_entry, serves_dense
 from .dense_prefill_subchunk import _gla_fwd_a_kernel
 from .gla_fwd import GLAFwdKernel, _gla_precompute_g_kernel
 
@@ -381,7 +381,7 @@ class _PartitionFit(NamedTuple):
 _PARTITION_FITS = {"h200": _PartitionFit(dim=64, min_seq_len=16384, min_ctas=128)}
 
 
-class GLADensePrefillPartitionedKernel(GLAFwdKernel):
+class GLADensePrefillPartitionedKernel(GLAFwdKernel, GLAInferenceFwdSlot):
     """GLA prefill with parallel partition summaries and fused output replay."""
 
     supported_archs = [90]

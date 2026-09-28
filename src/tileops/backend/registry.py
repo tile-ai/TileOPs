@@ -1,4 +1,4 @@
-"""The two tables, and how they get filled.
+"""The tables, and how they get filled.
 
 Module-level state, because registration happens as mutually unaware distributions get
 imported: one process-wide place is the only place they can meet.
@@ -20,6 +20,8 @@ ENTRY_POINT_GROUP = "tileops.backends"
 
 DETECTORS: dict[str, DetectFn] = {}
 BUILDERS: dict[tuple[str, str], BuildKernel] = {}
+# Candidates added to a declared slot, ``{(op, slot): {key: candidate}}``.
+CANDIDATES: dict[tuple[str, str], dict[str, type]] = {}
 
 # One line per backend that failed to import. Strings, not records: they are read to be
 # printed.
@@ -82,6 +84,34 @@ def register_kernel_builder(op: str, target: str, build_kernel: BuildKernel) -> 
                 f"distribution; two packages claiming it is a misinstall."
             )
         BUILDERS[(op, target)] = build_kernel
+
+
+def register_candidate(op: str, slot: str, key: str, candidate: type) -> None:
+    """Add *candidate* to *op*'s *slot* under *key*, beside the in-tree candidates.
+
+    It joins every instance of the op constructed afterwards and is selected by the same
+    rule as the in-tree candidates: its ``applies`` / ``refusal`` region, ``general`` and
+    ``refines``. A call it does not serve stays with the in-tree candidates. The op checks
+    it against the slot's interface when an instance is constructed.
+
+    Args:
+        op: The op's manifest key, e.g. ``"LayerNormFwdOp"``.
+        slot: A slot the op declares.
+        key: The candidate's dispatch key, which ``kernel_map=`` and ``refines`` name it by.
+        candidate: A ``Kernel`` subclass implementing the slot's interface.
+
+    Raises:
+        BackendError: *key* is already registered for ``(op, slot)``.
+    """
+    with LOCK:
+        added = CANDIDATES.setdefault((op, slot), {})
+        existing = added.get(key)
+        if existing is not None:
+            raise BackendError(
+                f"{(op, slot)} already has candidate {key!r} ({describe(existing)}); "
+                f"{describe(candidate)} cannot take it."
+            )
+        added[key] = candidate
 
 
 def describe(fn: Callable) -> str:
@@ -161,6 +191,7 @@ class RegistryState(NamedTuple):
 
     detectors: dict[str, DetectFn]
     builders: dict[tuple[str, str], BuildKernel]
+    candidates: dict[tuple[str, str], dict[str, type]]
     load_failures: list[str]
     default_target: Target
     loaded: bool
@@ -175,6 +206,7 @@ def snapshot() -> RegistryState:
         return RegistryState(
             detectors=dict(DETECTORS),
             builders=dict(BUILDERS),
+            candidates={where: dict(added) for where, added in CANDIDATES.items()},
             load_failures=list(LOAD_FAILURES),
             default_target=default_target,
             loaded=_loaded,
@@ -189,6 +221,8 @@ def restore(state: RegistryState) -> None:
         DETECTORS.update(state.detectors)
         BUILDERS.clear()
         BUILDERS.update(state.builders)
+        CANDIDATES.clear()
+        CANDIDATES.update(state.candidates)
         LOAD_FAILURES[:] = state.load_failures
         default_target = state.default_target
         _loaded = state.loaded

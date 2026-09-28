@@ -476,7 +476,7 @@ def test_gla_long_prefill_uses_partitioned_kernel(
     )
     assert any(
         isinstance(kernel, GLADensePrefillPartitionedKernel)
-        for kernel in op.built_kernels("gla_dense_prefill").values()
+        for kernel in op.built_kernels("gla_inference").values()
     )
 
 
@@ -502,7 +502,7 @@ def test_gla_dense_decode_matches_fla(
     test.check(op, *inputs, **standard_tolerance(dtype))
     assert any(
         isinstance(kernel, GLADenseDecodeFwdKernel)
-        for kernel in op.built_kernels("gla_dense_decode").values()
+        for kernel in op.built_kernels("gla_inference").values()
     )
 
 

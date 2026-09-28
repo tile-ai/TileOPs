@@ -109,13 +109,14 @@ def test_family_call_specs_are_frozen_and_keep_selection_axes_separate() -> None
     assert aligned_pre != pre
     assert len({pre, aligned_pre}) == 2
     assert post.layout_key == "tight_physical_psum"
-    # ``m`` selects but does not build, so it is outside this record's identity;
-    # every other field is inside it.
+    # ``m`` selects but does not build, and the device facts follow from ``device``, so
+    # they are outside this record's identity; every other field is inside it.
     taller = dataclasses.replace(gemm, m=4096)
     assert taller == gemm
     assert len({gemm, taller}) == 1
     assert dataclasses.replace(gemm, n=8) != gemm
-    assert dataclasses.replace(gemm, arch=100) != gemm
+    assert dataclasses.replace(gemm, device=torch.device("meta")) != gemm
+    assert dataclasses.replace(gemm, arch=100) == gemm
     # The flattened layout fields admit only what a layout spec can express.
     with pytest.raises(ValueError, match="no max_m"):
         dataclasses.replace(gemm, max_m=4)

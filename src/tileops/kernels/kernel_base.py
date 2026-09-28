@@ -1,10 +1,13 @@
+import dataclasses
+import functools
+import inspect
 import warnings
 from abc import ABC, abstractmethod
 from typing import Any, Callable, ClassVar, Dict, Hashable, Optional, Union
 
 import torch
 
-__all__ = ["Entry", "Kernel"]
+__all__ = ["Entry", "Kernel", "Slot"]
 
 # What ``Op.kernel_for`` stores for one specialization: the identity two
 # builds share to be the same entry, and the thunk that produces it.
@@ -75,13 +78,13 @@ class Kernel(ABC):
     # is refused before anything is built; a replacement kernel may declare others.
     devices: ClassVar[frozenset[str]] = frozenset({"cuda"})
 
-    # Whether this implementation is the one behind the specialised ones.
-    # A dispatch key may have at most one general implementation applying to a
-    # call; it runs when no specialised implementation of that key serves it.
-    # Stating it here rather than as an exclusion in every specialised sibling
-    # is what lets a specialisation appear, or be replaced, without the general
-    # implementation naming it.
+    # Whether this implementation is the least specific candidate of its slot, below every
+    # other one. A slot has at most one; it runs where no other candidate serves the call.
     general: bool = False
+
+    # The keys of candidates in the same slot whose region strictly contains this one's.
+    # Where both apply, this one is the more specific and serves the call.
+    refines: ClassVar[frozenset[str]] = frozenset()
 
     # Set when tuning was requested before the program existed; the next launch tunes it.
     _tune_pending: bool = False
@@ -93,12 +96,11 @@ class Kernel(ABC):
         """Whether this implementation serves the call *call* describes.
 
         States a region positively — what this class serves, never what a
-        sibling serves.
+        sibling serves. A region nested in a sibling's is declared through
+        ``refines``, not by the sibling excluding it.
 
         ``supported_archs`` says where this class can run, and one the device
-        cannot run does not apply. A class that runs where a sibling supersedes it
-        states that exclusion here instead, since ``supported_archs`` also gates
-        direct construction.
+        cannot run does not apply.
 
         Answered by the class that would run, so a ``kernel_map`` override is
         asked about its own region rather than the region of the class it
@@ -455,3 +457,84 @@ class Kernel(ABC):
             for key, value in tuned_kernel.config.items()
         }
         print(f"Best config: {self.config}")
+
+
+class Slot(ABC):
+    """The public contract of one kernel slot, which every candidate of the slot implements.
+
+    A family declares one subclass per slot. ``request`` names the request-key type the op
+    passes (a frozen ``CallSpec``), and ``forward`` states the call the op makes on the
+    built entry: each tensor's shape, dtype, layout and device, which ones it writes in
+    place or may alias, and what it returns. A candidate is a ``Kernel`` that inherits the
+    interface; its constructor is its own. Besides ``forward`` it answers, from the call:
+
+    - ``refusal(call)``: why it cannot serve the call, from its ``devices``,
+      ``supported_archs`` and the positive region ``applies`` states;
+    - ``general``: whether it is the slot's least specific candidate, at most one per slot;
+    - ``refines``: the keys of candidates of the same slot whose region strictly contains
+      its own;
+    - ``entry_for(call)``: a hashable build identity holding every fact that changes what
+      is built, and a builder that runs on a miss only and returns an entry meeting
+      ``forward``.
+
+    A replacement and an added candidate are checked against this contract, never against
+    the class they replace.
+    """
+
+    request: ClassVar[type]
+
+    @abstractmethod
+    def forward(self, *args: Any, **kwargs: Any) -> Any:
+        """The call the op makes on a candidate's entry."""
+        raise NotImplementedError
+
+    @classmethod
+    @functools.cache
+    def mismatch(cls, candidate: type) -> Optional[str]:
+        """Why *candidate* does not implement this slot, or ``None`` when it does.
+
+        Nominal: a class implements the slot by inheriting the interface. Its ``forward``
+        takes the interface's arguments by the same names and positions, anything it adds
+        has a default, and a return annotation it states is the interface's. Its
+        ``entry_for`` is a classmethod.
+        """
+        from tileops.kernels.call_spec import CallSpec
+
+        request = cls.request
+        if not (
+            issubclass(request, CallSpec)
+            and dataclasses.is_dataclass(request)
+            and request.__dataclass_params__.frozen
+        ):
+            return f"{cls.__name__}.request {request.__name__} is not a frozen CallSpec"
+        if not (isinstance(candidate, type) and issubclass(candidate, Kernel)):
+            return f"{candidate!r} is not a Kernel subclass"
+        if not issubclass(candidate, cls):
+            return f"{candidate.__name__} does not implement {cls.__name__}"
+        if not isinstance(inspect.getattr_static(candidate, "entry_for"), classmethod):
+            return f"{candidate.__name__}.entry_for is not a classmethod"
+        declared = inspect.signature(cls.forward, eval_str=True)
+        expected = list(declared.parameters)[1:]
+        signature = inspect.signature(candidate.forward, eval_str=True)
+        returned = signature.return_annotation
+        if returned is not signature.empty and returned != declared.return_annotation:
+            return (
+                f"{candidate.__name__}.forward returns {returned}, where {cls.__name__} "
+                f"returns {declared.return_annotation}"
+            )
+        positional = [
+            p.name
+            for p in signature.parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        ][1 : len(expected) + 1]
+        try:
+            signature.bind(None, *expected)
+        except TypeError as exc:
+            return f"{candidate.__name__}.forward does not take {cls.__name__}'s arguments: {exc}"
+        takes_rest = any(p.kind is p.VAR_POSITIONAL for p in signature.parameters.values())
+        if positional != expected and not takes_rest:
+            return (
+                f"{candidate.__name__}.forward takes {positional}, where {cls.__name__} "
+                f"passes {expected}"
+            )
+        return None

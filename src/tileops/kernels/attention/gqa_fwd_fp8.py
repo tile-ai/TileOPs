@@ -10,7 +10,7 @@ from tileops.kernels.constants import LOG2E
 from tileops.utils import get_sm_count
 
 from ..kernel_base import Entry, Kernel
-from .call_spec import ATTENTION_DTYPES, dense_fp8_limit_refusal, dense_fp8_refusal
+from .call_spec import ATTENTION_DTYPES, GQADenseFwdSlot, dense_fp8_limit_refusal, dense_fp8_refusal
 from .dense_entry import dense_fp8_entry
 from .gqa_dense import make_dense_qk_rope_preprocessor
 from .online_softmax import (
@@ -950,7 +950,7 @@ def _validate_fa3_gqa_descales(
             raise ValueError(f"{name} must be contiguous.")
 
 
-class GQADenseFP8Kernel(Kernel):
+class GQADenseFP8Kernel(Kernel, GQADenseFwdSlot):
     """Native-FP8 Dense GQA main kernel using the BN224 schedule."""
 
     supported_archs: list[int] = [90]
