@@ -1,58 +1,48 @@
-"""Call records and implementation regions for reduction kernels."""
+"""Call records for reduction kernels."""
 
 from __future__ import annotations
 
 import dataclasses
+import math
+from typing import ClassVar, Mapping
 
 import torch
 
 from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.reduction._primitives import edge_axis_split
 
-__all__ = [
-    "LogicalReduceCall",
-    "logical_edge_fused_region",
-    "logical_reduce_region",
-]
-
-
-# The fused pass runs one block per kept column and has no other parallelism, so
-# it takes over only where that alone is enough: the fewest kept columns that fill the
-# device, per calibrated board. A board without an entry uses the general implementation.
-_EDGE_FUSED_MIN_KEPT = {"h200": 32}
+__all__ = ["LogicalReduceCall"]
 
 
 @dataclasses.dataclass(frozen=True)
 class LogicalReduceCall(CallSpec):
-    """Semantic and shape facts used to select a logical reduction implementation."""
+    """A logical reduction call: the input's shape and dtype, the axes it reduces."""
+
+    # The fused edge pass runs one block per kept column and has no other parallelism:
+    # the fewest kept columns that fill the device, per calibrated board.
+    _EDGE_FUSED_MIN_KEPT: ClassVar[Mapping[str, int]] = {"h200": 32}
 
     shape: tuple[int, ...] = ()
+    # Non-negative and ascending.
     axes: tuple[int, ...] = ()
     op_kind: str = ""
     dtype: torch.dtype = torch.float16
     keepdim: bool = False
-    m: int = 0
-    edge_axes: bool = False
-    kept: int = 0
-    trail_needs_tiling: bool = False
-    reduced_count: int = 0
 
+    @property
+    def device_index(self) -> "int | None":
+        return self.device.index if self.device is not None else None
 
-def logical_reduce_region(call: LogicalReduceCall) -> bool:
-    """The general logical reduction region."""
+    @property
+    def edge_kept(self) -> int:
+        """The kept extent between a reduced prefix and suffix of axes, or 0 for other layouts."""
+        k, j = edge_axis_split(len(self.shape), self.axes)
+        return math.prod(self.shape[k : len(self.shape) - j]) if k else 0
 
-    return call.op_kind in {"any", "all", "count_nonzero"}
+    @property
+    def edge_fused_min_kept(self) -> float:
+        """The fewest kept columns at which the fused edge pass fills this call's board.
 
-
-def logical_edge_fused_region(call: LogicalReduceCall) -> bool:
-    """The edge-axis logical reduction region a calibrated board serves with the fused pass."""
-
-    if not logical_reduce_region(call):
-        return False
-    min_kept = _EDGE_FUSED_MIN_KEPT.get(call.calibration)
-    if min_kept is None:
-        return False
-    if not call.edge_axes or call.trail_needs_tiling:
-        return False
-    if call.kept < min_kept:
-        return False
-    return call.op_kind != "count_nonzero" or call.reduced_count <= 1 << 24
+        Infinite on a board with no calibrated entry.
+        """
+        return self._EDGE_FUSED_MIN_KEPT.get(self.calibration, math.inf)

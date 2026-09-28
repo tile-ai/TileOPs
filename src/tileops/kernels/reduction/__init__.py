@@ -8,7 +8,11 @@ from ._primitives import (
 )
 from .argreduce import ArgreduceKernel
 from .cumulative import CumulativeKernel
-from .logical_reduce import LogicalReduceEdgeFusedKernel, LogicalReduceKernel
+from .logical_reduce import (
+    LogicalReduceEdgeFusedKernel,
+    LogicalReduceEdgeTwoPassKernel,
+    LogicalReduceKernel,
+)
 from .logsumexp import LogSumExpKernel
 from .reduce import ReduceKernel
 from .softmax import SoftmaxKernel
@@ -21,6 +25,7 @@ __all__: list[str] = [
     "CumulativeKernel",
     "LogSumExpKernel",
     "LogicalReduceEdgeFusedKernel",
+    "LogicalReduceEdgeTwoPassKernel",
     "LogicalReduceKernel",
     "ReduceKernel",
     "SoftmaxKernel",

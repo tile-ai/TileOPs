@@ -1,5 +1,6 @@
 from .utils import (
     WARP_LANES,
+    WARP_SHUFFLE_STAGES,
     calibration_key,
     device_busy_of,
     device_calibration,
@@ -12,6 +13,7 @@ from .utils import (
 
 __all__ = [
     "WARP_LANES",
+    "WARP_SHUFFLE_STAGES",
     "calibration_key",
     "device_busy_of",
     "device_calibration",

@@ -6,16 +6,11 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.reduction._primitives import (
-    device_smem_budget,
-    edge_axis_plan,
-    edge_axis_split,
-)
 from tileops.kernels.reduction.call_spec import LogicalReduceCall
 from tileops.kernels.reduction.logical_reduce import (
     LogicalReduceEdgeFusedKernel,
+    LogicalReduceEdgeTwoPassKernel,
     LogicalReduceKernel,
-    storage_dtype_for,
 )
 
 from ..op_base import Op
@@ -27,13 +22,13 @@ __all__ = ["AllFwdOp", "AnyFwdOp", "CountNonzeroFwdOp"]
 class _LogicalReduceOpBase(_ReduceOpBase):
     """Shared dispatch for logical reductions.
 
-    Every numeric dtype is accepted, bool, int32, int64 and complex included. A dtype
-    TileLang cannot store as shared memory is converted inside the kernel, so the op hands
-    over the tensor its manifest declares.
+    Every numeric dtype is accepted, bool, int32, int64 and complex included; the op passes
+    the tensor its manifest declares and the kernel reads it at its own bytes.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "logical_reduce_edge_fused": LogicalReduceEdgeFusedKernel,
+        "logical_reduce_edge_two_pass": LogicalReduceEdgeTwoPassKernel,
         "logical_reduce": LogicalReduceKernel,
     }
     _output: ClassVar[torch.dtype] = torch.bool
@@ -47,16 +42,6 @@ class _LogicalReduceOpBase(_ReduceOpBase):
 
     def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int) -> LogicalReduceCall:
         """The facts that pick a logical reduction implementation and build it."""
-        device_index = x.device.index
-        k, j = edge_axis_split(x.ndim, axes)
-        kept = 0
-        trail_needs_tiling = False
-        if k:
-            kernel_dtype = storage_dtype_for(x.dtype)
-            elem_bytes = torch.tensor([], dtype=kernel_dtype).element_size()
-            smem_budget = device_smem_budget(device_index)
-            _, kept, _, planner, _ = edge_axis_plan(tuple(x.shape), k, j, elem_bytes, smem_budget)
-            trail_needs_tiling = planner.needs_tiling
         return LogicalReduceCall(
             device=x.device,
             shape=tuple(x.shape),
@@ -64,16 +49,11 @@ class _LogicalReduceOpBase(_ReduceOpBase):
             op_kind=self._op_kind,
             dtype=x.dtype,
             keepdim=self.keepdim,
-            edge_axes=bool(k),
-            kept=kept,
-            trail_needs_tiling=trail_needs_tiling,
-            reduced_count=n,
-            m=m,
             tune=self.tune,
         )
 
     def entry_for(self, role: str, call: LogicalReduceCall) -> Entry:
-        """Two implementations, so the one that serves the call says how it is built."""
+        """The implementation whose region serves the call says how it is built."""
         return Op.entry_for(self, role, call)
 
 
