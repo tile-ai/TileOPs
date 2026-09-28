@@ -19,6 +19,7 @@ from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
 from benchmarks.timing import bench_kernel, median_busy_ms
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
+from tileops.utils import get_sm_version
 from workloads.gemm import (
     GemmFp8Workload,
     GemmW4A16Workload,
@@ -277,11 +278,11 @@ def _prepare_flashinfer_fp8_per_tensor(
 
 
 def _flashinfer_fp8_per_tensor_unsupported_reason(device: torch.device) -> Optional[str]:
-    major, minor = torch.cuda.get_device_capability(device)
-    if major < 10:
+    arch = get_sm_version(device.index)
+    if arch < 100:
         return (
             "TRTLLM low-latency GEMM requires Blackwell (sm100+), "
-            f"but the current device is sm{major}{minor}"
+            f"but the current device is sm{arch}"
         )
     return None
 
