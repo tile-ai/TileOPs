@@ -2,7 +2,6 @@
 
 import functools
 import operator
-import os
 import warnings
 from dataclasses import dataclass
 from typing import Any, Callable, NamedTuple, Optional
@@ -11,6 +10,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_path
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import device_calibration, get_sm_count
 
@@ -19,9 +19,7 @@ from .dense import _splitk_reduce_kernel
 
 GROUP_SIZE = 128
 
-_DECODE_HELPER_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "_w4a16_decode_helper.h")
-)
+_DECODE_HELPER_PATH = csrc_path("w4a16_decode_helper.h")
 
 
 # What identifies a tile shape, as opposed to how its K loop is sliced.

@@ -6,13 +6,13 @@ tile's 128 rows and folds every K-step's partial in under its two scales.
 """
 
 import functools
-import os
 from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_path
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import device_calibration, get_sm_count
 
@@ -20,9 +20,7 @@ from .call_spec import GemmCall
 
 __all__ = ["GemmFp81D2DFwdKernel"]
 
-_FP8_1D2D_HELPER_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "_fp8_1d2d_helper.h")
-)
+_FP8_1D2D_HELPER_PATH = csrc_path("fp8_1d2d_helper.h")
 
 # K-steps one A-scale staging covers, the most that divides ``ceil(K/128)``: eight fp32
 # of a row-major ``scale_a`` row fill one 32-byte sector, four are TMA's 16-byte unit.

@@ -5,6 +5,8 @@ that file states why each one is wrong.
 
 - Every `src/tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from .module import Symbol` re-exports.
 
+- Reach a C++/CUDA source under `src/tileops/csrc/` through `tileops._csrc.csrc_path("<file>")`.
+
 - Intra-package imports: relative (`from .op import Op`). Cross-package: absolute (`tileops.foo.bar`).
 
 - Each TileLang kernel is one `@T.prim_func` whose body opens `with T.Kernel(...)`; sub-routines use `@T.macro`, never nested `prim_func`.

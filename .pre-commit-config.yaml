@@ -98,6 +98,12 @@ repos:
         language: fail
         files: ^src/tileops/manifest/(?!spec/[^/]+\.yaml$)(?:.*\.ya?ml|spec/.*)$
 
+      - id: native-sources-in-csrc
+        name: C++/CUDA sources belong in src/tileops/csrc
+        entry: C++/CUDA sources belong in src/tileops/csrc/; reference them through tileops._csrc.csrc_path.
+        language: fail
+        files: ^src/tileops/(?!csrc/).*\.(c|cc|cpp|cxx|cu|cuh|h|hpp|inl)$
+
   - repo: https://github.com/executablebooks/mdformat
     rev: 0.7.22
     hooks:
