@@ -34,8 +34,6 @@ from ._config import (
 from .group_norm import (
     GroupNormKernel,
     GroupNormNoAffineKernel,
-    _holds_row_in_registers,
-    _row_widths,
     _RowNormKernel,
 )
 
@@ -62,10 +60,10 @@ class InstanceNormCall(CallSpec):
     has_weight: bool = False
     has_bias: bool = False
 
-
-def _passes_affine(call: InstanceNormCall) -> bool:
-    """Whether the call passes ``weight`` or ``bias``."""
-    return call.has_weight or call.has_bias
+    @property
+    def passes_affine(self) -> bool:
+        """Whether the call passes ``weight`` or ``bias``."""
+        return self.has_weight or self.has_bias
 
 
 class InstanceNormKernel(GroupNormKernel):
@@ -87,7 +85,7 @@ class InstanceNormKernel(GroupNormKernel):
 
     @classmethod
     def applies(cls, call: InstanceNormCall) -> bool:
-        return _passes_affine(call)
+        return call.passes_affine
 
     @classmethod
     def entry_for(cls, call: InstanceNormCall) -> Entry:
@@ -135,7 +133,7 @@ class InstanceNormNoAffineKernel(GroupNormNoAffineKernel):
 
     @classmethod
     def applies(cls, call: InstanceNormCall) -> bool:
-        return not _passes_affine(call)
+        return not call.passes_affine
 
     @classmethod
     def entry_for(cls, call: InstanceNormCall) -> Entry:
@@ -154,7 +152,9 @@ class InstanceNormNoAffineKernel(GroupNormNoAffineKernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _instance_norm_train_kernel(N, C, D, block_m, eps, momentum, dtype, has_weight, has_bias):
+def _instance_norm_train_kernel(
+    N, C, D, block_m, register_direct, eps, momentum, dtype, has_weight, has_bias
+):
     """Build the kernel normalizing by instance statistics and updating the running ones.
 
     Block ``(c, s)`` normalizes rows ``(n, c)`` with ``n // block_m == s``. With one
@@ -166,6 +166,7 @@ def _instance_norm_train_kernel(N, C, D, block_m, eps, momentum, dtype, has_weig
         C: Number of channels.
         D: Elements per instance, ``prod(spatial)``; above one.
         block_m: Samples of one channel one block normalizes.
+        register_direct: Whether a row is read from global memory into fragments.
         eps: Epsilon for numerical stability.
         momentum: Weight of an instance's statistics in its update.
         dtype: TileLang dtype string of the input.
@@ -174,7 +175,6 @@ def _instance_norm_train_kernel(N, C, D, block_m, eps, momentum, dtype, has_weig
     """
     accum_dtype = "float32"
     D_padded = row_padding(D, 4 if dtype == "float32" else 2)
-    register_direct = _holds_row_in_registers(D, D_padded)
     unbiased = D / (D - 1)
 
     @tilelang.jit(out_idx=[6])
@@ -462,9 +462,11 @@ class _InstanceNormTrainKernel(_ChannelTableKernel):
             dtype: Data type of the input.
         """
         padded = row_padding(spatial, dtype.itemsize)
-        if not _holds_row_in_registers(spatial, padded):
+        if not cls._holds_row_in_registers(spatial, padded):
             return 1
-        row_threads = select_row_config_by_width(padded, _row_widths(spatial, padded))["threads"]
+        row_threads = select_row_config_by_width(padded, cls._row_widths_for(spatial, padded))[
+            "threads"
+        ]
         cap = min(n, cls._MAX_BLOCK_M, cls._MAX_THREADS // row_threads)
         block_m = 1
         while block_m * 2 <= cap:
@@ -526,6 +528,7 @@ class _InstanceNormTrainKernel(_ChannelTableKernel):
             self.C,
             self.D,
             self.block_m,
+            self._holds_row_in_registers(self.D, self.D_padded),
             self.eps,
             self.momentum,
             self.dtype_str,
