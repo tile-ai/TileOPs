@@ -23,15 +23,18 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
+    VECTOR_ACCESS_BYTES,
     BlockConfigPlanner,
     align_up,
     device_smem_budget,
     edge_axis_plan,
     edge_axis_split,
+    fold_rows_kernel,
     reduce_down_rows,
     restore_reduced,
     rows_for_axes,
     tune_by_forward,
+    vector_aligned,
 )
 
 __all__ = ["VectorNormKernel"]
@@ -328,10 +331,19 @@ class VectorNormKernel(Kernel):
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Autotune vector norm, benchmarking tiled configs directly."""
-        if not self._needs_tiling:
+        if not (self._needs_tiling or self._fold_eligible):
             return super().autotune(warmup=warmup, rep=rep)
         x = torch.randn(self.M, self.N, dtype=self.dtype, device=torch.cuda.current_device())
         tune_by_forward(self, x, warmup=warmup, rep=rep, forward=self._norm_rows)
+
+    @property
+    def _fold_eligible(self) -> bool:
+        """Whether a one-row-per-block config folds the rows straight into registers.
+
+        The fold needs a row of whole vectors; ``block_m > 1`` asks for the
+        fragment kernel, which packs that many rows per block.
+        """
+        return self.N % (VECTOR_ACCESS_BYTES // self._elem_bytes) == 0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Norm *reduce_axes* of *x*.
@@ -346,6 +358,7 @@ class VectorNormKernel(Kernel):
             ValueError: *x* is not on a CUDA device.
         """
         self._require_cuda(x=x)
+        x = vector_aligned(x)
         in_shape = tuple(x.shape)
         k, j = edge_axis_split(x.ndim, self.reduce_axes)
         if k:
@@ -385,6 +398,9 @@ class VectorNormKernel(Kernel):
     def _norm_rows(self, x: torch.Tensor) -> torch.Tensor:
         """Norm the trailing axis of an ``(M, N)`` buffer."""
         dtype_str = self.dtype_to_str(self.dtype)
+        if self._fold_eligible and self.config["block_m"] == 1 and x.is_contiguous():
+            program = fold_rows_kernel(self.M, self.N, self.op_kind, dtype_str, self.out_dtype_str)
+            return program(self.config["threads"])(x)
         if self._needs_tiling:
             program = _vector_norm_kernel_tiled(
                 self.M, self.N, self.op_kind, dtype_str, self.out_dtype_str, self.config["tile_n"]

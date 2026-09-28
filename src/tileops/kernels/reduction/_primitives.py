@@ -21,8 +21,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_path
 from tileops.kernels.constants import SHARED_BANK_SPAN_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.tiling import ALIGNMENT, align_up
+from tileops.utils import WARP_LANES
 
 __all__ = [
     "AUTOTUNE_THREADS",
@@ -42,6 +44,7 @@ __all__ = [
     "device_smem_budget",
     "edge_axis_plan",
     "edge_axis_split",
+    "fold_rows_kernel",
     "identity_for",
     "reduce_down_rows",
     "restore_reduced",
@@ -49,6 +52,7 @@ __all__ = [
     "rows_for_axes",
     "torch_dtype_nbytes",
     "tune_by_forward",
+    "vector_aligned",
 ]
 
 # 256-element alignment (512 bytes for fp16/bf16) required by T.copy()
@@ -1063,3 +1067,136 @@ def reduce_down_rows(
         epilogue,
     )
     return finish()(partials.reshape(splits, kept))
+
+
+# The row fold: one block per row, folded into registers as it is read
+
+
+_STREAMING_LOAD_HELPER_PATH = csrc_path("streaming_load.h")
+
+# Fold steps unrolled together, so a thread keeps this many vector loads in
+# flight; a grid of few rows is bound by how many loads each thread issues ahead.
+_FOLD_UNROLL = 16
+
+# Stride-halving shuffle steps that reduce one warp.
+_WARP_STAGES = WARP_LANES.bit_length() - 1
+
+
+def vector_aligned(x: torch.Tensor) -> torch.Tensor:
+    """*x*, copied when its storage does not start on a vector boundary.
+
+    The row kernels load whole vectors from the start of the buffer; a view with a
+    storage offset need not start on one, and a fresh allocation always does.
+    """
+    return x.clone() if x.data_ptr() % VECTOR_ACCESS_BYTES else x
+
+
+@functools.lru_cache(maxsize=32)
+def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str):
+    """Build a reduce of each row of an ``(m, n)`` buffer, folded into registers as it reads.
+
+    One block per row. Each thread reads one 16-byte vector of ``vec`` elements per
+    step and folds it into ``vec`` slots, so the slots are independent chains and
+    the row is reduced as ``threads * vec`` strided subsequences, then a tree over
+    those. Every element is read once, so the loads are marked first for eviction
+    and leave the lines other data holds in cache alone. The caller guarantees a
+    row of whole vectors and a buffer that starts on a vector boundary.
+
+    Args:
+        m: Rows.
+        n: Elements each row reduces, a multiple of one vector.
+        op_kind: ``sum`` / ``mean`` / ``amax`` / ``amin`` / ``prod``, or a vector norm:
+            ``l1`` (sum of magnitudes), ``l2`` (root of the sum of squares) or ``inf``
+            (largest magnitude, reduced over IEEE bit patterns as int32 so that a
+            NaN outranks every number).
+        dtype: TileLang dtype string of the input.
+        out_dtype: TileLang dtype string of the output.
+    """
+    vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
+    slot_dtype = "int32" if op_kind == "inf" else "float32"
+    identity = identity_for(op_kind)
+
+    @tilelang.jit(out_idx=[1], compile_flags=["-include", _STREAMING_LOAD_HELPER_PATH])
+    def _func(threads: int):
+        step = threads * vec
+        steps = n // step
+        num_warps = threads // WARP_LANES
+
+        def prepared(value):
+            value = T.cast(value, "float32")
+            if op_kind == "l1":
+                return T.abs(value)
+            if op_kind == "l2":
+                return value * value
+            if op_kind == "inf":
+                return T.reinterpret(T.abs(value), "int32")
+            return value
+
+        def combine(a, b):
+            if op_kind in ("amax", "inf"):
+                return T.max(a, b)
+            if op_kind == "amin":
+                return T.min(a, b)
+            if op_kind == "prod":
+                return a * b
+            return a + b
+
+        def finished(total):
+            if op_kind == "mean":
+                return T.cast(total / float(n), out_dtype)
+            if op_kind == "l2":
+                return T.cast(T.sqrt(total), out_dtype)
+            if op_kind == "inf":
+                return T.cast(T.reinterpret(total, "float32"), out_dtype)
+            return T.cast(total, out_dtype)
+
+        @T.prim_func
+        def main(x: T.Tensor((m, n), dtype), out: T.Tensor((m,), out_dtype)):
+            with T.Kernel(m, threads=threads) as row:
+                tx = T.get_thread_binding()
+                held = T.alloc_local((vec,), dtype)
+                slots = T.alloc_local((vec,), slot_dtype)
+                total = T.alloc_local((1,), slot_dtype)
+                warp_total = T.alloc_shared((num_warps,), slot_dtype)
+
+                for c in T.serial(vec):
+                    slots[c] = T.cast(identity, slot_dtype)
+                for k in T.unroll(steps, unroll_factor=_FOLD_UNROLL):
+                    T.call_extern(
+                        "handle",
+                        "tl::tileops_load16_evict_first",
+                        T.address_of(held[0]),
+                        T.address_of(x[row, (k * threads + tx) * vec]),
+                    )
+                    for c in T.serial(vec):
+                        slots[c] = combine(slots[c], prepared(held[c]))
+                # The row holds whole vectors, so the tail is guarded per vector.
+                if steps * step + tx * vec < n:
+                    T.call_extern(
+                        "handle",
+                        "tl::tileops_load16_evict_first",
+                        T.address_of(held[0]),
+                        T.address_of(x[row, steps * step + tx * vec]),
+                    )
+                    for c in T.serial(vec):
+                        slots[c] = combine(slots[c], prepared(held[c]))
+
+                total[0] = slots[0]
+                for c in T.serial(1, vec):
+                    total[0] = combine(total[0], slots[c])
+                for stage in T.serial(_WARP_STAGES):
+                    total[0] = combine(
+                        total[0],
+                        T.shfl_xor(total[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES),
+                    )
+                if tx % WARP_LANES == 0:
+                    warp_total[tx // WARP_LANES] = total[0]
+                T.sync_threads()
+                if tx == 0:
+                    for w in T.serial(1, num_warps):
+                        warp_total[0] = combine(warp_total[0], warp_total[w])
+                    out[row] = finished(warp_total[0])
+
+        return main
+
+    return _func
