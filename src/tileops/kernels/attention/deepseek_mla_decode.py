@@ -20,6 +20,10 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
     kv_group_num = heads // kv_head_num
     if kv_head_num != 1:
         raise ValueError("kv_head_num must be 1")
+    if dim % 128 != 0:
+        raise ValueError(f"the KV gather walks dim in 128-column steps, dim={dim}")
+    if pe_dim != 64:
+        raise ValueError(f"the KV tail gather copies exactly 64 columns, pe_dim={pe_dim}")
 
     @tilelang.jit(
         out_idx=[6],
@@ -39,8 +43,65 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
             "-DNDEBUG",
         ],
     )
-    def _mla_decode_ws_func(block_H, block_N, num_split, num_stages, threads=128):
+    def _mla_decode_ws_func(block_H, block_N, num_split, num_stages, threads=384):
         VALID_BLOCK_H = min(block_H, kv_group_num)
+        # Two 128-thread consumer warpgroups and one producer warpgroup, which gathers
+        # KV 8 threads to a row, 16 rows a pass.
+        if threads != 384:
+            raise ValueError(f"the warp-specialized schedule runs 384 threads, threads={threads}")
+        if block_N % 16 != 0:
+            raise ValueError(f"the KV gather copies 16 rows a pass, block_N={block_N}")
+        # Each split owns kv_per_split keys and a loop step consumes two tiles. A
+        # length that does not fill every step masks the keys past its split's end.
+        kv_per_split = tilelang.cdiv(seqlen_kv, num_split)
+        ragged = seqlen_kv % (num_split * 2 * block_N) != 0
+        may_leave_a_split_empty = (num_split - 1) * kv_per_split >= seqlen_kv
+
+        @T.macro
+        def load_row(KV, K_pe, kv_l, kv_r, k_tail, bid, cur_kv_head, r, kv_index, tx):
+            with T.attr("default", "async_scope", 1):
+                for u in T.serial(dim // 128):
+                    for v in T.vectorized(8):
+                        kv_l[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 + v] = KV[
+                            bid, kv_index, cur_kv_head, 64 * u + (tx - 256) % 8 * 8 + v
+                        ]
+                        kv_r[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 + v] = KV[
+                            bid, kv_index, cur_kv_head, dim // 2 + 64 * u + (tx - 256) % 8 * 8 + v
+                        ]
+            with T.attr("default", "async_scope", 1):
+                for v in T.vectorized(8):
+                    k_tail[r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 + v] = K_pe[
+                        bid, kv_index, cur_kv_head, (tx - 256) % 8 * 8 + v
+                    ]
+
+        @T.macro
+        def gather_tile(KV, K_pe, kv_l, kv_r, k_tail, bid, cur_kv_head, tile_start, kv_end, tx):
+            for r in T.serial(block_N // 16):
+                kv_index = tile_start + r * 16 + (tx - 256) // 8
+                if ragged:
+                    # Zero, not stale: the row's softmax weight is zero, and zero
+                    # times a NaN an earlier kernel left in shared memory is NaN.
+                    if kv_index < kv_end:
+                        load_row(KV, K_pe, kv_l, kv_r, k_tail, bid, cur_kv_head, r, kv_index, tx)
+                    else:
+                        for u in T.serial(dim // 128):
+                            for v in T.vectorized(8):
+                                kv_l[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 + v] = 0
+                                kv_r[r * 16 + (tx - 256) // 8, 64 * u + (tx - 256) % 8 * 8 + v] = 0
+                        for v in T.vectorized(8):
+                            k_tail[r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 + v] = 0
+                else:
+                    load_row(KV, K_pe, kv_l, kv_r, k_tail, bid, cur_kv_head, r, kv_index, tx)
+
+        @T.macro
+        def init_scores(acc_s, tile_start, kv_end):
+            if ragged:
+                for h_i, bi_i in T.Parallel(block_H, block_N):
+                    acc_s[h_i, bi_i] = T.if_then_else(
+                        tile_start + bi_i < kv_end, 0, -T.infinity(accum_dtype)
+                    )
+            else:
+                T.clear(acc_s)
 
         @T.macro
         def flash_attn(
@@ -87,7 +148,9 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                 bar_sScale_and_sS_free = T.alloc_barrier(arrive_count=256)
 
                 cur_kv_head = hid // (kv_group_num // block_H)
-                NI = T.ceildiv((seqlen_kv // num_split), block_N)
+                kv_start = 0
+                kv_end = seqlen_kv
+                NI = T.ceildiv(seqlen_kv, block_N)
 
                 tx = T.get_thread_binding()
 
@@ -116,7 +179,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                     for i_i in T.serial(T.ceildiv(NI, 2)):
                         T.barrier_wait(bar_k_0_ready[0], (i_i & 1))
 
-                        T.clear(acc_s)
+                        init_scores(acc_s, kv_start + (i_i * 2) * block_N, kv_end)
                         T.wgmma_gemm(Q_shared_l, KV_shared_0_l, acc_s, transpose_B=True)
                         T.wgmma_gemm(Q_shared_r, KV_shared_0_r, acc_s, transpose_B=True)
                         T.wgmma_gemm(Q_tail_shared, K_tail_shared_0, acc_s, transpose_B=True)
@@ -150,7 +213,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
 
                         T.barrier_wait(bar_k_1_ready[0], (i_i & 1))
 
-                        T.clear(acc_s)
+                        init_scores(acc_s, kv_start + (i_i * 2 + 1) * block_N, kv_end)
                         T.wgmma_gemm(Q_shared_l, KV_shared_1_l, acc_s, transpose_B=True)
                         T.wgmma_gemm(Q_shared_r, KV_shared_1_r, acc_s, transpose_B=True)
                         T.wgmma_gemm(Q_tail_shared, K_tail_shared_1, acc_s, transpose_B=True)
@@ -229,65 +292,33 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                     T.set_max_nreg(80, 0)
                     for i_i in T.serial(T.ceildiv(NI, 2)):
                         T.barrier_wait(bar_k_0_free[0], ((i_i & 1) ^ 1))
-                        for r in T.serial(4):
-                            kv_indices = (i_i * 2) * block_N + r * 16 + (tx - 256) // 8
-                            with T.attr("default", "async_scope", 1):
-                                for u in T.serial(4):
-                                    for v in T.vectorized(8):
-                                        KV_shared_0_l[
-                                            r * 16 + (tx - 256) // 8,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ] = KV[
-                                            bid,
-                                            kv_indices,
-                                            cur_kv_head,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ]
-                                        KV_shared_0_r[
-                                            r * 16 + (tx - 256) // 8,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ] = KV[
-                                            bid,
-                                            kv_indices,
-                                            cur_kv_head,
-                                            dim // 2 + 64 * u + (tx - 256) % 8 * 8 + v,
-                                        ]
-                            with T.attr("default", "async_scope", 1):
-                                for v in T.vectorized(8):
-                                    K_tail_shared_0[
-                                        r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 + v
-                                    ] = K_pe[bid, kv_indices, cur_kv_head, (tx - 256) % 8 * 8 + v]
+                        gather_tile(
+                            KV,
+                            K_pe,
+                            KV_shared_0_l,
+                            KV_shared_0_r,
+                            K_tail_shared_0,
+                            bid,
+                            cur_kv_head,
+                            kv_start + (i_i * 2) * block_N,
+                            kv_end,
+                            tx,
+                        )
                         T.cp_async_barrier_noinc(bar_k_0_ready[0])
 
                         T.barrier_wait(bar_k_1_free[0], ((i_i & 1) ^ 1))
-                        for r in T.serial(4):
-                            kv_indices = (i_i * 2 + 1) * block_N + r * 16 + (tx - 256) // 8
-                            with T.attr("default", "async_scope", 1):
-                                for u in T.serial(4):
-                                    for v in T.vectorized(8):
-                                        KV_shared_1_l[
-                                            r * 16 + (tx - 256) // 8,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ] = KV[
-                                            bid,
-                                            kv_indices,
-                                            cur_kv_head,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ]
-                                        KV_shared_1_r[
-                                            r * 16 + (tx - 256) // 8,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ] = KV[
-                                            bid,
-                                            kv_indices,
-                                            cur_kv_head,
-                                            dim // 2 + 64 * u + (tx - 256) % 8 * 8 + v,
-                                        ]
-                            with T.attr("default", "async_scope", 1):
-                                for v in T.vectorized(8):
-                                    K_tail_shared_1[
-                                        r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 + v
-                                    ] = K_pe[bid, kv_indices, cur_kv_head, (tx - 256) % 8 * 8 + v]
+                        gather_tile(
+                            KV,
+                            K_pe,
+                            KV_shared_1_l,
+                            KV_shared_1_r,
+                            K_tail_shared_1,
+                            bid,
+                            cur_kv_head,
+                            kv_start + (i_i * 2 + 1) * block_N,
+                            kv_end,
+                            tx,
+                        )
                         T.cp_async_barrier_noinc(bar_k_1_ready[0])
 
         @T.macro
@@ -335,7 +366,9 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                 bar_sScale_and_sS_free = T.alloc_barrier(arrive_count=256)
 
                 cur_kv_head = hid // (kv_group_num // block_H)
-                NI = T.ceildiv((seqlen_kv // num_split), block_N)
+                kv_start = kv_per_split * bz
+                kv_end = T.min(kv_start + kv_per_split, seqlen_kv)
+                NI = T.ceildiv(kv_per_split, block_N)
 
                 tx = T.get_thread_binding()
 
@@ -364,7 +397,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                     for i_i in T.serial(T.ceildiv(NI, 2)):
                         T.barrier_wait(bar_k_0_ready[0], (i_i & 1))
 
-                        T.clear(acc_s)
+                        init_scores(acc_s, kv_start + (i_i * 2) * block_N, kv_end)
                         T.wgmma_gemm(Q_shared_l, KV_shared_0_l, acc_s, transpose_B=True)
                         T.wgmma_gemm(Q_shared_r, KV_shared_0_r, acc_s, transpose_B=True)
                         T.wgmma_gemm(Q_tail_shared, K_tail_shared_0, acc_s, transpose_B=True)
@@ -398,7 +431,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
 
                         T.barrier_wait(bar_k_1_ready[0], (i_i & 1))
 
-                        T.clear(acc_s)
+                        init_scores(acc_s, kv_start + (i_i * 2 + 1) * block_N, kv_end)
                         T.wgmma_gemm(Q_shared_l, KV_shared_1_l, acc_s, transpose_B=True)
                         T.wgmma_gemm(Q_shared_r, KV_shared_1_r, acc_s, transpose_B=True)
                         T.wgmma_gemm(Q_tail_shared, K_tail_shared_1, acc_s, transpose_B=True)
@@ -431,8 +464,16 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
 
                     for h_i in T.Parallel(block_H):
                         sum_exp_shared[h_i] = sumexp[h_i]
-                    for h_i, d_i in T.Parallel(block_H, dim // 2):
-                        acc_o_l[h_i, d_i] /= sumexp[h_i]
+                    if may_leave_a_split_empty:
+                        # An empty split has no key to divide by; its zero weight in the combine
+                        # needs a finite partial.
+                        for h_i, d_i in T.Parallel(block_H, dim // 2):
+                            acc_o_l[h_i, d_i] = T.if_then_else(
+                                sumexp[h_i] > 0, acc_o_l[h_i, d_i] / sumexp[h_i], 0
+                            )
+                    else:
+                        for h_i, d_i in T.Parallel(block_H, dim // 2):
+                            acc_o_l[h_i, d_i] /= sumexp[h_i]
                     for h_i in T.Parallel(block_H):
                         sumexp[h_i] = T.log2(sumexp[h_i]) + m_i[h_i] * sm_scale
                     T.copy(acc_o_l, O_shared_l)
@@ -465,8 +506,16 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                         if i_i != T.ceildiv(NI, 2) - 1:
                             T.barrier_arrive(bar_sScale_and_sS_free)
 
-                    for h_i, d_i in T.Parallel(block_H, dim // 2):
-                        acc_o_r[h_i, d_i] /= sum_exp_shared[h_i]
+                    if may_leave_a_split_empty:
+                        # An empty split has no key to divide by; its zero weight in the combine
+                        # needs a finite partial.
+                        for h_i, d_i in T.Parallel(block_H, dim // 2):
+                            acc_o_r[h_i, d_i] = T.if_then_else(
+                                sum_exp_shared[h_i] > 0, acc_o_r[h_i, d_i] / sum_exp_shared[h_i], 0
+                            )
+                    else:
+                        for h_i, d_i in T.Parallel(block_H, dim // 2):
+                            acc_o_r[h_i, d_i] /= sum_exp_shared[h_i]
 
                     T.copy(acc_o_r, O_shared_r)
                     T.copy(
@@ -480,75 +529,33 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                     T.set_max_nreg(80, 0)
                     for i_i in T.serial(T.ceildiv(NI, 2)):
                         T.barrier_wait(bar_k_0_free[0], ((i_i & 1) ^ 1))
-                        for r in T.serial(4):
-                            kv_indices = (
-                                (seqlen_kv // num_split) * bz
-                                + (i_i * 2) * block_N
-                                + r * 16
-                                + (tx - 256) // 8
-                            )
-                            with T.attr("default", "async_scope", 1):
-                                for u in T.serial(4):
-                                    for v in T.vectorized(8):
-                                        KV_shared_0_l[
-                                            r * 16 + (tx - 256) // 8,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ] = KV[
-                                            bid,
-                                            kv_indices,
-                                            cur_kv_head,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ]
-                                        KV_shared_0_r[
-                                            r * 16 + (tx - 256) // 8,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ] = KV[
-                                            bid,
-                                            kv_indices,
-                                            cur_kv_head,
-                                            dim // 2 + 64 * u + (tx - 256) % 8 * 8 + v,
-                                        ]
-                            with T.attr("default", "async_scope", 1):
-                                for v in T.vectorized(8):
-                                    K_tail_shared_0[
-                                        r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 + v
-                                    ] = K_pe[bid, kv_indices, cur_kv_head, (tx - 256) % 8 * 8 + v]
+                        gather_tile(
+                            KV,
+                            K_pe,
+                            KV_shared_0_l,
+                            KV_shared_0_r,
+                            K_tail_shared_0,
+                            bid,
+                            cur_kv_head,
+                            kv_start + (i_i * 2) * block_N,
+                            kv_end,
+                            tx,
+                        )
                         T.cp_async_barrier_noinc(bar_k_0_ready[0])
 
                         T.barrier_wait(bar_k_1_free[0], ((i_i & 1) ^ 1))
-                        for r in T.serial(4):
-                            kv_indices = (
-                                (seqlen_kv // num_split) * bz
-                                + (i_i * 2 + 1) * block_N
-                                + r * 16
-                                + (tx - 256) // 8
-                            )
-                            with T.attr("default", "async_scope", 1):
-                                for u in T.serial(4):
-                                    for v in T.vectorized(8):
-                                        KV_shared_1_l[
-                                            r * 16 + (tx - 256) // 8,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ] = KV[
-                                            bid,
-                                            kv_indices,
-                                            cur_kv_head,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ]
-                                        KV_shared_1_r[
-                                            r * 16 + (tx - 256) // 8,
-                                            64 * u + (tx - 256) % 8 * 8 + v,
-                                        ] = KV[
-                                            bid,
-                                            kv_indices,
-                                            cur_kv_head,
-                                            dim // 2 + 64 * u + (tx - 256) % 8 * 8 + v,
-                                        ]
-                            with T.attr("default", "async_scope", 1):
-                                for v in T.vectorized(8):
-                                    K_tail_shared_1[
-                                        r * 16 + (tx - 256) // 8, (tx - 256) % 8 * 8 + v
-                                    ] = K_pe[bid, kv_indices, cur_kv_head, (tx - 256) % 8 * 8 + v]
+                        gather_tile(
+                            KV,
+                            K_pe,
+                            KV_shared_1_l,
+                            KV_shared_1_r,
+                            K_tail_shared_1,
+                            bid,
+                            cur_kv_head,
+                            kv_start + (i_i * 2 + 1) * block_N,
+                            kv_end,
+                            tx,
+                        )
                         T.cp_async_barrier_noinc(bar_k_1_ready[0])
 
         @T.macro
