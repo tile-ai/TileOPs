@@ -330,9 +330,8 @@ def test_instance_norm_matches_torch_on_every_presence_branch(use_input_stats, a
 @pytest.mark.smoke
 @pytest.mark.parametrize("n, spatial", [(20, (33,)), (3, (5000,))])
 def test_instance_norm_updates_running_statistics_across_blocks(n, spatial) -> None:
-    """A batch normalized by several blocks per channel still updates the running
-    statistics as ``torch.nn.functional.instance_norm`` does, for a row held in
-    registers and one staged through shared memory."""
+    """Several blocks per channel update the running statistics as torch does, for a
+    register-held row and a shared-memory-staged one."""
     c, dtype = 3, torch.float16
     x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device()) * 3 + 1
     stats = (torch.randn(c, device=run_device()), torch.rand(c, device=run_device()) + 0.5)

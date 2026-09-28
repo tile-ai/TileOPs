@@ -141,11 +141,8 @@ class InstanceNormFwdOp(Op):
                 running_var.fill_(math.nan)
             return torch.empty_like(x)
         x = x.contiguous()
-        if not self.use_input_stats:
-            role = "instance_norm_infer"
-            return self._run_by_channel(role, x, running_mean, running_var, weight, bias)
-        if tracks:
-            role = "instance_norm_train"
+        if not self.use_input_stats or tracks:
+            role = "instance_norm_train" if self.use_input_stats else "instance_norm_infer"
             return self._run_by_channel(role, x, running_mean, running_var, weight, bias)
         affine = weight is not None or bias is not None
         if affine:
@@ -168,15 +165,8 @@ class InstanceNormFwdOp(Op):
         weight = None if weight is None else weight.contiguous()
         bias = None if bias is None else bias.contiguous()
         stats = tuple(stat.contiguous() for stat in (running_mean, running_var))
-        batch, channels = x.shape[0], x.shape[1]
-        call = (
-            batch,
-            channels,
-            math.prod(x.shape[2:]),
-            x.dtype,
-            weight is not None,
-            bias is not None,
-        )
+        has_affine = (weight is not None, bias is not None)
+        call = (x.shape[0], x.shape[1], math.prod(x.shape[2:]), x.dtype, *has_affine)
         kernel = self.kernel_for(role, (x, *stats, weight, bias), call)
         self.kernel = kernel
         y = kernel(x, *stats, weight, bias)
@@ -191,20 +181,17 @@ class InstanceNormFwdOp(Op):
         if role in ("instance_norm_train", "instance_norm_infer"):
             batch, channels, spatial, dtype, has_weight, has_bias = call
             cls = self.kernel_map[role]
-            if role == "instance_norm_train":
-                return call, lambda: cls(
-                    batch,
-                    channels,
-                    spatial,
-                    self.eps,
-                    self.momentum,
-                    dtype,
-                    has_weight,
-                    has_bias,
-                    tune=self.tune,
-                )
+            momentum = (self.momentum,) if role == "instance_norm_train" else ()
             return call, lambda: cls(
-                batch, channels, spatial, self.eps, dtype, has_weight, has_bias, tune=self.tune
+                batch,
+                channels,
+                spatial,
+                self.eps,
+                *momentum,
+                dtype,
+                has_weight,
+                has_bias,
+                tune=self.tune,
             )
         d, dtype, affine, channels = call
         if affine:

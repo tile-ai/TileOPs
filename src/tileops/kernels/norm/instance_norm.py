@@ -9,16 +9,8 @@ bodies; these classes exist so that `tileops.ops.norm.instance_norm` and the
 manifest can name an InstanceNorm-specific kernel, and so that both take the five
 inputs ``InstanceNormFwdOp``'s signature declares.
 
-The two kernels that read or write the running statistics have bodies of their own:
-
-- `InstanceNormFwdTrainKernel` gives each block one channel and several of its
-  samples, so the batch mean of the instance updates that moves the running
-  statistics is formed by the blocks that normalize them.
-- `InstanceNormFwdInferKernel` normalizes each ``(n, c)`` row by channel ``c``'s
-  running statistics: one read and one write per element.
-
-Both read an absent affine tensor as the identity inside the program, so an absent
-tensor costs no launch.
+`InstanceNormFwdTrainKernel` and `InstanceNormFwdInferKernel`, which read the
+running statistics, have bodies of their own.
 """
 
 import functools
@@ -88,8 +80,7 @@ def _row_per_thread_group(block_m: int, D_padded: int, threads: int, dtype: str)
 
     Row ``i`` lives on threads ``[i * t, (i + 1) * t)`` for ``t = threads // block_m``,
     each holding runs of one vector width, so the row reduction stays inside one
-    thread group. Left to layout inference, a block of several rows can come back with
-    a replicated layout that is correct and more than ten times slower.
+    thread group. Layout inference can otherwise pick a far slower replicated layout.
     """
     row_threads = threads // block_m
     per_thread = D_padded // row_threads
@@ -107,14 +98,9 @@ def _row_per_thread_group(block_m: int, D_padded: int, threads: int, dtype: str)
 def _instance_norm_train_kernel(N, C, D, eps, momentum, dtype, has_weight, has_bias):
     """Build the kernel normalizing by instance statistics and updating the running ones.
 
-    Block ``(c, s)`` normalizes the ``block_m`` rows ``(n, c)`` with
-    ``n // block_m == s``. Each instance moves the running value by ``momentum`` in *dtype*,
-    and the channel keeps the mean of those over the batch, rounded to *dtype*:
-    ``torch.nn.functional.instance_norm`` updates one repeated copy of the running
-    statistics per instance and then averages them. The variance an instance
-    contributes is unbiased. With the batch in one block the block writes the running
-    statistics itself; otherwise each block writes the sums of its rows' updates to
-    ``partial`` and `_instance_norm_stats_kernel` finishes them.
+    Block ``(c, s)`` normalizes rows ``(n, c)`` with ``n // block_m == s``. With one
+    block per channel it writes the running statistics itself; otherwise it writes its
+    rows' update sums to ``partial`` for `_instance_norm_stats_kernel`.
 
     Args:
         N: Batch size.
@@ -134,9 +120,8 @@ def _instance_norm_train_kernel(N, C, D, eps, momentum, dtype, has_weight, has_b
     @tilelang.jit(out_idx=[6])
     def _func(block_m, threads):
         splits = -(-N // block_m)
-        masked = D_padded != D
         # The last block's rows past the last sample read and write nothing.
-        guarded = masked or N % block_m != 0
+        guarded = D_padded != D or N % block_m != 0
         row_layout = _row_per_thread_group(block_m, D_padded, threads, dtype)
         if register_direct:
             row_reduce = make_shifted_row_reduce(block_m, D, eps)
@@ -235,7 +220,6 @@ def _instance_norm_train_kernel(N, C, D, eps, momentum, dtype, has_weight, has_b
                         var_i = (acc[i] - float(D_padded - D) * mean_val[i] * mean_val[i]) / float(
                             D
                         )
-                    # A row past the last sample contributes nothing.
                     valid = s * block_m + i < N
                     mean_update[i] = T.if_then_else(
                         valid,
@@ -507,9 +491,8 @@ class InstanceNormFwdTrainKernel(_ChannelTableKernel):
 def _instance_norm_infer_kernel(M, C, D, eps, dtype, has_weight, has_bias):
     """Build the kernel normalizing each ``(n, c)`` row by channel ``c``'s running statistics.
 
-    Row ``m`` of the ``(N*C, D)`` view is channel ``m % C``. Its statistics are read in
-    *dtype*, as torch reads them, and the row takes
-    ``(x - mean) * rsqrt(var + eps) * weight + bias`` in fp32.
+    Row ``m`` of the ``(N*C, D)`` view is channel ``m % C``; torch reads the statistics
+    in *dtype*.
 
     Args:
         M: Number of rows, ``N * C``.
