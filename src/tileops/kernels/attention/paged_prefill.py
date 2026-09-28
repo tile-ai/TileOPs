@@ -44,9 +44,8 @@ class PagedPrefillKernel(Kernel):
             softcap=call.softcap,
             max_position=call.max_position,
             rotary_dim=call.rotary_dim,
-            tune=call.tune,
         )
-        return (*args.values(), index), lambda: cls(**args, device_index=index)
+        return (*args.values(), index), lambda: cls(**args, tune=call.tune, device_index=index)
 
     def __init__(
         self,

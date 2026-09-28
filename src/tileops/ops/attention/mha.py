@@ -4,7 +4,7 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.attention import (
-    MHADecodePagedKernel,
+    GQADecodePagedKernel,
     MHADecodePagedWsKernel,
 )
 from tileops.kernels.attention.call_spec import AttentionCall
@@ -29,7 +29,7 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
 
     compile_boundary = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "mha_decode_paged_kernel": MHADecodePagedKernel,
+        "mha_decode_paged_kernel": GQADecodePagedKernel,
         "mha_decode_paged_ws_kernel": MHADecodePagedWsKernel,
     }
 
@@ -69,7 +69,9 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         self.tune = tune
         self.dispatch_kernel(kernel_map)
 
-    def _attention_call(self, q: torch.Tensor, k: torch.Tensor) -> AttentionCall:
+    def _attention_call(
+        self, q: torch.Tensor, k: torch.Tensor, block_table: torch.Tensor
+    ) -> AttentionCall:
         """State what one paged decode call is, for selection to filter against.
 
         Every extent and the element type arrive with the inputs, so one instance serves
@@ -85,7 +87,9 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
             max_seqlen_q=seqlen_q,
             seqlen_kv=k.shape[0],
             page_size=self.page_size,
+            max_pages_per_req=block_table.shape[1],
             is_causal=self.is_causal,
+            cache_dtype=k.dtype,
             tune=self.tune,
             device=q.device,
         )
@@ -125,7 +129,9 @@ class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         inputs = (q, k, v, real_seqlen_kv, block_table)
-        kernel = self.kernel_for("mha_decode_paged", inputs, self._attention_call(q, k))
+        kernel = self.kernel_for(
+            "mha_decode_paged", inputs, self._attention_call(q, k, block_table)
+        )
         return kernel(*inputs)
 
     def compute_roof(self) -> str:

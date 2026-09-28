@@ -590,9 +590,9 @@ class GroupedQueryAttentionPagedFwdOp(Op):
     ``page_table`` maps logical pages to physical entries in ``k_pages`` and
     ``v_pages``. This Op reads the cache only: allocation, append, and mutation
     remain runtime responsibilities. The in-tree kernels serve a call in which
-    every request carries exactly one query token, Q and KV share a float16 or
-    bfloat16 dtype, and no window, RoPE or FP8 is requested; they refuse any
-    other call.
+    every request carries the same number of query tokens, Q and KV share a
+    float16 or bfloat16 dtype, and no window, RoPE or FP8 is requested; they
+    refuse any other call.
     """
 
     compile_boundary = True

@@ -33,7 +33,6 @@ import torch
 from tilelang.layout import make_swizzled_layout
 
 from tileops.kernels.attention.call_spec import AttentionCall
-from tileops.kernels.attention.mha_decode_paged import paged_decode_entry
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
@@ -344,7 +343,19 @@ class MHADecodePagedWsKernel(Kernel):
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
-        return paged_decode_entry(cls, call)
+        # The device index is in the identity: the kernel is compiled for its architecture.
+        index = call.device.index if call.device is not None else None
+        args = (
+            call.batch,
+            call.heads,
+            call.max_seqlen_q,
+            call.seqlen_kv,
+            call.dim,
+            call.page_size,
+            call.is_causal,
+            call.dtype,
+        )
+        return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
 
     def __init__(
         self,

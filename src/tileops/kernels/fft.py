@@ -1517,7 +1517,7 @@ class FFTC2COneCTAKernel(Kernel):
     def entry_for(cls, call: FFTC2CCall):
         """Identity without the batch extent, which every kernel takes symbolically."""
         index = call.device.index if call.device is not None else None
-        identity = (call.n, call.dtype, index, call.tune)
+        identity = (call.n, call.dtype, index)
         return identity, lambda: cls(call.n, call.dtype, tune=call.tune, device_index=index)
 
     def __init__(
@@ -1644,7 +1644,7 @@ class FFTC2CDecomposedKernel(Kernel):
     def entry_for(cls, call: FFTC2CCall):
         """Identity without the batch extent, which every kernel takes symbolically."""
         index = call.device.index if call.device is not None else None
-        identity = (call.n, call.dtype, index, call.tune)
+        identity = (call.n, call.dtype, index)
         return identity, lambda: cls(call.n, call.dtype, tune=call.tune, device_index=index)
 
     def __init__(

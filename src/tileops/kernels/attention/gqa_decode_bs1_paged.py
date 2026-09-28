@@ -19,7 +19,6 @@ from tileops.kernels.attention.call_spec import AttentionCall, paged_decode_regi
 from tileops.kernels.attention.gqa_decode_paged import (
     _gqa_decode_paged_no_split_run,
     gqa_decode_paged_block_n,
-    paged_decode_entry,
 )
 from tileops.kernels.kernel_base import Entry, Kernel
 
@@ -182,7 +181,8 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
         # The page-tile question is asked of this class, so a kernel_map
         # override answers for its own tiling rather than for the shipped one.
         return (
-            paged_decode_region(call)
+            call.max_seqlen_q == 1
+            and paged_decode_region(call)
             and decode_bs1_region(call)
             and cls.block_n_for_page_size(call.page_size) is not None
         )
@@ -200,7 +200,21 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
-        return paged_decode_entry(cls, call)
+        # The device index is in the identity: the kernel is compiled for its architecture.
+        index = call.device.index if call.device is not None else None
+        args = (
+            call.batch,
+            call.heads,
+            call.heads_kv,
+            call.seqlen_kv,
+            call.dim,
+            call.page_size,
+            call.max_pages_per_req,
+            call.dtype,
+        )
+        extra = dict(sm_scale=call.sm_scale, softcap=call.softcap)
+        identity = (*args, *extra.values(), index)
+        return identity, lambda: cls(*args, **extra, tune=call.tune, device_index=index)
 
     def __init__(
         self,
@@ -263,10 +277,12 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
                 self.batch,
                 self.heads,
                 self.groups,
+                1,
                 self.seqlen_kv,
                 self.dim,
                 self.page_size,
                 self.max_pages_per_req,
+                False,
                 self.sm_scale,
                 self.softcap,
                 self.dtype_str,
