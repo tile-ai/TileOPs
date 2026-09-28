@@ -36,6 +36,10 @@ class CallSpec:
     def __post_init__(self) -> None:
         if self.arch >= 0 and self.sm_count > 0:
             return
+        # Facts are the call device's own. Another device type has no CUDA facts, and the
+        # current CUDA device, if there is one, is not where the call runs.
+        if self.device is not None and self.device.type != "cuda":
+            return
         from tileops.utils import device_facts
 
         index = self.device.index if self.device is not None else None

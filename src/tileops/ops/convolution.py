@@ -326,9 +326,11 @@ def _can_use_conv3d_ndhwc(
     dense, 16-bit, non-pointwise calls large enough to amortize that fixed
     layout-transform cost.
     """
+    # The region reads shape facts only, so the record states device facts instead of probing.
     return conv3d_ndhwc_region(
         Conv3dCall(
             arch=0,
+            sm_count=1,
             n=n,
             c_in=c_in,
             c_out=c_out,

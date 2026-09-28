@@ -34,7 +34,14 @@ def test_every_manifest_call_completes_on_meta(name):
     cls = op_class(name, _MANIFEST[name])
     for call in _calls(name):
         tensors = call.materialize("meta")
-        op = cls(**call.arguments(tensors))
+        arguments = call.arguments(tensors)
+        if (
+            "device" in _MANIFEST[name]["signature"].get("params", {})
+            and arguments.get("device") is None
+        ):
+            # An op with no tensor input runs where its device param says.
+            arguments["device"] = "meta"
+        op = cls(**arguments)
         try:
             op(*(tensors[t] for t in call.signature.inputs))
         except OpNotAvailableError:

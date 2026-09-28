@@ -161,6 +161,8 @@ def test_mha_decode_paged_cache_shorter_than_bound(
 
 
 @pytest.mark.smoke
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 def test_mha_decode_paged_dispatch_bounds_multi_query_work() -> None:
     """Several query rows run on the warp-specialized kernel only below the work bound.
 
