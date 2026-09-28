@@ -648,6 +648,20 @@ class BmmKernel(Kernel):
     general = True
 
     @classmethod
+    def applies(cls, call: BmmCall) -> bool:
+        return cls._region_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: BmmCall) -> Optional[str]:
+        return cls.arch_refusal(call) or cls._region_refusal(call)
+
+    @staticmethod
+    def _region_refusal(call: BmmCall) -> Optional[str]:
+        if call.k % 16 != 0:
+            return f"requires k a multiple of 16, got k={call.k}"
+        return None
+
+    @classmethod
     def entry_for(cls, call: BmmCall) -> Entry:
         """Build the shape-specialized classic BMM fallback."""
         index = call.device.index if call.device is not None else None
@@ -752,12 +766,24 @@ class BmmPersistentKernel(Kernel):
 
     @classmethod
     def applies(cls, call: BmmCall) -> bool:
+        return cls._region_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: BmmCall) -> Optional[str]:
+        return cls.arch_refusal(call) or cls._region_refusal(call)
+
+    @classmethod
+    def _region_refusal(cls, call: BmmCall) -> Optional[str]:
         band = _PERSISTENT_BANDS.get(call.calibration)
         if band is None:
-            return False
+            return "has no persistent band for this board"
+        # TMA addresses the K-contiguous operands and the output row in 16-byte steps.
         step = 16 // call.dtype.itemsize
-        tiles = cls._tiles(band, call.batch, call.m, call.n)
-        return call.n % step == 0 and tiles * band.min_wave_denom > call.sm_count
+        if call.n % step != 0 or call.k % step != 0:
+            return f"requires n and k multiples of {step}, got n={call.n}, k={call.k}"
+        if cls._tiles(band, call.batch, call.m, call.n) * band.min_wave_denom <= call.sm_count:
+            return "does not fill a persistent wave"
+        return None
 
     @classmethod
     def _persistent_grid(

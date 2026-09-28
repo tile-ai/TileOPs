@@ -23,7 +23,7 @@ from tileops.kernels.attention.gqa_decode import (
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
-from .call_spec import decode_bs1_region, dense_decode_region, dense_long_context_decode_region
+from .call_spec import decode_bs1_region, dense_decode_refusal, dense_long_context_decode_region
 from .dense_entry import dense_decode_entry
 from .gqa_decode_bs1_common import (
     COMPILE_FLAGS,
@@ -560,13 +560,19 @@ class GQADecodeBs1Kernel(Kernel):
 
     @classmethod
     def applies(cls, call) -> bool:
+        return cls._region_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call) -> Optional[str]:
+        return cls.arch_refusal(call) or cls._region_refusal(call)
+
+    @staticmethod
+    def _region_refusal(call) -> Optional[str]:
         # ``decode_bs1_region`` is the shape, shared with the paged sibling; this
         # class serves it in the contiguous decode region only.
-        return (
-            dense_decode_region(call)
-            and decode_bs1_region(call)
-            and not dense_long_context_decode_region(call)
-        )
+        if not decode_bs1_region(call) or dense_long_context_decode_region(call):
+            return "does not serve this call"
+        return dense_decode_refusal(call)
 
     @classmethod
     def split_tier(cls, call) -> tuple:
@@ -613,8 +619,6 @@ class GQADecodeBs1Kernel(Kernel):
             raise ValueError("heads_kv must be positive")
         if self.heads % self.groups != 0:
             raise ValueError("heads must be divisible by heads_kv")
-        if self.seqlen_kv <= 0:
-            raise ValueError("seq_len_kv must be positive")
         self.init_config(config, tune)
 
     @property

@@ -158,7 +158,7 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
     op = BmmFwdOp()
     a = torch.randn(4, 16, 24, device=run_device(), dtype=torch.float16)
     b = torch.randn(4, 24, 16, device=run_device(), dtype=torch.float16)
-    with pytest.raises(ValueError, match="multiple of 16"):
+    with pytest.raises(ValueError, match="requires k a multiple of 16"):
         op(a, b)
 
 

@@ -277,14 +277,6 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         """Dense attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
-    def _validate_builtin_call(self, q: torch.Tensor, k: torch.Tensor) -> None:
-        """Reject features not implemented by the in-tree Dense kernels."""
-        if q.shape[-1] != 128:
-            raise ValueError("Dense GQA currently requires head dimension 128")
-        uses_window = self.window_size_left != -1 or self.window_size_right != -1
-        if uses_window and q.shape[1] != k.shape[1]:
-            raise ValueError("Dense sliding-window GQA currently requires equal Q and KV lengths")
-
     def dense_call(self, inputs: tuple[Optional[torch.Tensor], ...]) -> AttentionCall:
         """State what one contiguous call is, for selection to filter against."""
         q, k, _v, _q_scale, _k_scale, _v_scale, rope_cos, _rope_sin = inputs
@@ -364,9 +356,8 @@ class GroupedQueryAttentionDenseFwdOp(Op):
 
         Raises:
             ValueError: Shapes, dtypes, devices, or optional-input
-                combinations violate the contract above, or the in-tree kernels do
-                not implement the call (head dimension other than 128, or a window
-                over unequal Q and KV lengths).
+                combinations violate the contract above, or no in-tree kernel
+                serves the call; the message names the limit each kernel refused.
         """
         return self._call_boundary(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
 
@@ -385,7 +376,6 @@ class GroupedQueryAttentionDenseFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        self._validate_builtin_call(q, k)
         inputs = tuple(
             tensor.contiguous() if tensor is not None else None
             for tensor in (q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin)
@@ -920,17 +910,11 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         cu_seqlens_q: torch.Tensor,
         cache_seqlens: torch.Tensor,
     ) -> None:
-        """Refuse the calls the in-tree kernels cannot serve.
+        """Refuse tensor contents the call is undefined for.
 
-        The kernels index pages by shift, so ``page_size`` is a power of two; the RoPE
-        kernel appends a 16-bit cache only. An FP8 cache dequantizes by the scales, which
-        must be finite and positive; fused RoPE indexes its table by position, which must
-        stay below ``max_position``.
+        An FP8 cache dequantizes by the scales, which must be finite and positive; fused
+        RoPE indexes its table by position, which must stay below ``max_position``.
         """
-        if self.page_size & (self.page_size - 1) != 0:
-            raise ValueError("page_size must be a power of two")
-        if self.fuse_rope and k_pages.dtype == torch.float8_e4m3fn:
-            raise ValueError("fuse_rope is not supported with FP8 paged KV cache yet")
         if k_pages.dtype == torch.float8_e4m3fn:
             for name, tensor in (("k_scale", k_scale), ("v_scale", v_scale)):
                 if not torch.all(torch.isfinite(tensor) & (tensor > 0)).item():
@@ -996,8 +980,8 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             The attention output [total_q, heads, dim].
 
         Raises:
-            ValueError: An FP8 pool's scales are not finite and positive, or a fused-RoPE
-                call reaches past ``max_position``.
+            ValueError: An FP8 pool's scales are not finite and positive, a fused-RoPE
+                call reaches past ``max_position``, or no in-tree kernel serves the call.
         """
         return self._call_boundary(
             q,

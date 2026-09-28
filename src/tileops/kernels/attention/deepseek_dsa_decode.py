@@ -36,6 +36,21 @@ class SparseMlaCall(CallSpec):
     cp0: bool = True
 
 
+def _sparse_mla_refusal(call: SparseMlaCall) -> Optional[str]:
+    """Why *call* is outside the region both implementations serve, or ``None``."""
+    if not call.is_causal:
+        return "requires the causal mask"
+    pow2 = tilelang.math.next_power_of_2
+    if call.dim != pow2(call.dim) or call.tail_dim != pow2(call.tail_dim):
+        return "requires power-of-two dim and tail_dim"
+    group_heads = call.heads // call.kv_group
+    if group_heads > 64 and group_heads % 64 != 0:
+        return "requires at most 64 heads per KV group, or a multiple of 64"
+    if call.kv_group != 1 and max(pow2(group_heads), 16) != group_heads:
+        return "requires a power of two of at least 16 heads per KV group when kv_group > 1"
+    return None
+
+
 def _sparse_mla_entry(cls: type, call: SparseMlaCall) -> Entry:
     """The entry for either implementation: the record is the identity, built on its device."""
     return call, lambda: cls(
@@ -867,6 +882,14 @@ class SparseMlaBasicKernel(Kernel):
     general = True
 
     @classmethod
+    def applies(cls, call: SparseMlaCall) -> bool:
+        return _sparse_mla_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: SparseMlaCall) -> Optional[str]:
+        return cls.arch_refusal(call) or _sparse_mla_refusal(call)
+
+    @classmethod
     def entry_for(cls, call: SparseMlaCall) -> Entry:
         return _sparse_mla_entry(cls, call)
 
@@ -1081,6 +1104,27 @@ class SparseMlaKernel(Kernel):
     """
 
     supported_archs: list[int] = [90]
+
+    @classmethod
+    def applies(cls, call: SparseMlaCall) -> bool:
+        return cls._region_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: SparseMlaCall) -> Optional[str]:
+        return cls.arch_refusal(call) or cls._region_refusal(call)
+
+    @staticmethod
+    def _region_refusal(call: SparseMlaCall) -> Optional[str]:
+        """The shared region, narrowed to what the warp-specialized gather covers."""
+        reason = _sparse_mla_refusal(call)
+        if reason is not None:
+            return reason
+        if call.dim % 128 != 0 or call.tail_dim != 64:
+            return "requires dim a multiple of 128 and tail_dim 64"
+        # The default block_i of 64, taken an even number of times.
+        if call.topk % 128 != 0:
+            return "requires topk a multiple of 128"
+        return None
 
     @classmethod
     def entry_for(cls, call: SparseMlaCall) -> Entry:

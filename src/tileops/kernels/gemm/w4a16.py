@@ -277,6 +277,12 @@ class _TileBuffers(NamedTuple):
     out_shared: Any
 
 
+@functools.lru_cache(maxsize=32)
+def _has_whole_k_tile(m: int, n: int, k: int, group_size: int) -> bool:
+    """Whether :func:`_select_config` finds a whole-K tile for this shape on any device."""
+    return any(cfg["split_k"] == 1 for cfg in _legal_configs(m, n, k, group_size))
+
+
 def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
     """Choose a tile shape, then its lowest-cost whole-K, split-K, or stream-K variant."""
     legal = list(_legal_configs(m, n, k, group_size, sms))
@@ -855,14 +861,25 @@ class GemmW4A16Kernel(Kernel):
 
     @classmethod
     def applies(cls, call: GemmCall) -> bool:
-        """Every call, at any token count.
+        """Every call with 128-wide groups that some whole-K tile covers.
 
         `GemmW4A16FwdOp` declares the repacked weight order, so a call that
         reaches this kernel is already in it, and the tile is chosen from the
         token count inside :attr:`default_config` rather than by dispatch.
         """
-        del call
-        return True
+        return cls._region_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: GemmCall) -> Optional[str]:
+        return cls.arch_refusal(call) or cls._region_refusal(call)
+
+    @staticmethod
+    def _region_refusal(call: GemmCall) -> Optional[str]:
+        if call.group_size != GROUP_SIZE:
+            return f"requires group_size {GROUP_SIZE}"
+        if not _has_whole_k_tile(call.m, call.n, call.k, call.group_size):
+            return f"no tile covers m={call.m}, n={call.n}, k={call.k}"
+        return None
 
     @classmethod
     def entry_for(cls, call: GemmCall) -> tuple:
@@ -890,8 +907,6 @@ class GemmW4A16Kernel(Kernel):
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
-        if group_size != GROUP_SIZE:
-            raise ValueError(f"only group_size={GROUP_SIZE} is supported")
         self.m = m
         self.n = n
         self.k = k

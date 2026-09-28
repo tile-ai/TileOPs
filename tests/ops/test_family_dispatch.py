@@ -213,8 +213,8 @@ _GQA_DENSE_ROWS = [
     (("fp8", 2, 1, 32, 4, 128, 2048, (-1, -1), False, 0.0), "GQADenseFP8Kernel", "fp8-batch-2"),
     (("fp8", 1, 1, 32, 4, 128, 512, (-1, -1), False, 0.0), "GQADenseFP8Kernel", "fp8-short-cache"),
     (("fp8", 1, 1, 32, 1, 128, 2048, (-1, -1), False, 0.0), "GQADenseFP8Kernel", "fp8-wide-group"),
-    (("fp8", 1, 1, 32, 4, 128, 2048, (64, 0), False, 0.0), "GQADenseFP8Kernel", "fp8-window"),
-    (("fp8", 1, 1, 32, 4, 128, 2048, (-1, -1), True, 0.0), "GQADenseFP8Kernel", "fp8-rope"),
+    (("fp8", 1, 1, 32, 4, 128, 2048, (64, 0), False, 0.0), None, "fp8-window"),
+    (("fp8", 1, 1, 32, 4, 128, 2048, (-1, -1), True, 0.0), None, "fp8-rope"),
     (
         ("fp16", 1, 1, 32, 4, 128, 2048, (-1, -1), False, 0.0),
         "GQADecodeLongContextKernel",
@@ -230,20 +230,21 @@ _GQA_DENSE_ROWS = [
         "decode-softcap",
     ),
     (("fp16", 2, 1, 32, 4, 128, 2048, (-1, -1), False, 0.0), "GQADecodeKernel", "decode-batch-2"),
-    (("fp16", 1, 1, 32, 4, 64, 2048, (-1, -1), False, 0.0), "GQADecodeKernel", "decode-dim-64"),
+    (("fp16", 1, 1, 32, 4, 64, 2048, (-1, -1), False, 0.0), None, "decode-dim-64"),
     (
-        ("fp16", 1, 4, 32, 4, 128, 2048, (64, 0), False, 0.0),
+        ("fp16", 1, 4, 32, 4, 128, 4, (64, 0), False, 0.0),
         "GQADenseSlidingWindowKernel",
         "window",
     ),
+    (("fp16", 1, 4, 32, 4, 128, 2048, (64, 0), False, 0.0), None, "window-unequal-lengths"),
     (
-        ("fp16", 1, 1, 32, 4, 128, 2048, (64, 0), False, 0.0),
+        ("fp16", 1, 1, 32, 4, 128, 1, (64, 0), False, 0.0),
         "GQADenseSlidingWindowKernel",
         "window-beats-decode",
     ),
     (("fp16", 1, 4, 32, 4, 128, 2048, (-1, -1), False, 0.0), "GQADenseWsKernel", "prefill"),
     (
-        ("bf16", 2, 8, 8, 8, 64, 512, (-1, -1), True, 30.0),
+        ("bf16", 2, 8, 8, 8, 128, 512, (-1, -1), True, 30.0),
         "GQADenseWsKernel",
         "prefill-rope-softcap",
     ),
@@ -256,7 +257,7 @@ _GQA_DENSE_ROWS = [
     ("row", "expected"),
     [pytest.param(row, expected, id=name) for row, expected, name in _GQA_DENSE_ROWS],
 )
-def test_gqa_dense_dispatch(row: tuple, expected: str) -> None:
+def test_gqa_dense_dispatch(row: tuple, expected: "str | None") -> None:
     """Each region, and the boundary that separates it from the next."""
     from tileops.kernels.attention.call_spec import AttentionCall
     from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
@@ -280,6 +281,7 @@ def test_gqa_dense_dispatch(row: tuple, expected: str) -> None:
         dim=dim,
         max_seqlen_q=seq_q,
         seqlen_kv=seq_kv,
+        is_causal=True,
         softcap=softcap,
         window_size_left=window[0],
         window_size_right=window[1],
@@ -287,4 +289,8 @@ def test_gqa_dense_dispatch(row: tuple, expected: str) -> None:
         fuse_rope=rope,
     )
 
-    assert op.select_kernel(call).__name__ == expected
+    if expected is None:
+        with pytest.raises(ValueError, match="no implementation serves"):
+            op.select_kernel(call)
+    else:
+        assert op.select_kernel(call).__name__ == expected

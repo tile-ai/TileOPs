@@ -9,7 +9,7 @@ import torch
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
-from .call_spec import dense_decode_region, dense_long_context_decode_region
+from .call_spec import dense_decode_refusal, dense_long_context_decode_refusal
 from .dense_entry import dense_decode_entry
 from .online_softmax import (
     make_apply_softcap,
@@ -524,7 +524,15 @@ class GQADecodeKernel(Kernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return dense_decode_region(call)
+        return cls._region_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call) -> Optional[str]:
+        return cls.arch_refusal(call) or cls._region_refusal(call)
+
+    @staticmethod
+    def _region_refusal(call) -> Optional[str]:
+        return dense_decode_refusal(call)
 
     @classmethod
     def split_tier(cls, call) -> tuple:
@@ -823,9 +831,9 @@ class GQADecodeLongContextKernel(GQADecodeKernel):
 
     general: bool = False
 
-    @classmethod
-    def applies(cls, call) -> bool:
-        return dense_long_context_decode_region(call)
+    @staticmethod
+    def _region_refusal(call) -> Optional[str]:
+        return dense_long_context_decode_refusal(call)
 
     @classmethod
     def split_tier(cls, call) -> tuple:

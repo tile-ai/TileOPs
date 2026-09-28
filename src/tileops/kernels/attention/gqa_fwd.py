@@ -375,8 +375,12 @@ class GQAPrefillPagedWithKVCacheFwdKernel(PagedPrefillKernel):
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return not call.fuse_rope and call.cache_dtype == call.dtype
+    def _region_refusal(cls, call) -> Optional[str]:
+        if call.fuse_rope:
+            return "does not serve fused RoPE"
+        if call.cache_dtype != call.dtype:
+            return "requires a cache of the query's dtype"
+        return super()._region_refusal(call)
 
     @property
     def default_config(self) -> dict:
@@ -802,8 +806,12 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
     supported_archs: list[int] = [89, 90]
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return not call.fuse_rope and call.cache_dtype == torch.float8_e4m3fn
+    def _region_refusal(cls, call) -> Optional[str]:
+        if call.cache_dtype != torch.float8_e4m3fn:
+            return "requires an FP8 cache"
+        if call.fuse_rope:
+            return "does not serve fused RoPE"
+        return super()._region_refusal(call)
 
     @property
     def default_config(self) -> dict:
@@ -1412,8 +1420,12 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
-    def applies(cls, call) -> bool:
-        return bool(call.fuse_rope) and call.cache_dtype == call.dtype
+    def _region_refusal(cls, call) -> Optional[str]:
+        if not call.fuse_rope:
+            return "does not serve this call"
+        if call.cache_dtype != call.dtype:
+            return "requires a cache of the query's dtype"
+        return super()._region_refusal(call)
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         """Tune both launches: the append pass is part of this implementation."""

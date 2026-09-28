@@ -23,6 +23,25 @@ class PagedPrefillKernel(Kernel):
     """Base for every implementation of the paged GQA prefill slot."""
 
     @classmethod
+    def applies(cls, call: AttentionCall) -> bool:
+        return cls._region_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call: AttentionCall) -> Optional[str]:
+        return cls.arch_refusal(call) or cls._region_refusal(call)
+
+    @classmethod
+    def _region_refusal(cls, call: AttentionCall) -> Optional[str]:
+        """Why *call* is outside this implementation's region, or ``None``.
+
+        Every implementation indexes pages by shift. A subclass states its own region
+        and asks this for the page-size limit.
+        """
+        if call.page_size <= 0 or call.page_size & (call.page_size - 1) != 0:
+            return "requires a power-of-two page_size"
+        return None
+
+    @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
         """The cache identity and the thunk that builds this class for *call*.
 

@@ -120,11 +120,21 @@ class Kernel(ABC):
         implementation was never written for, and whoever is selecting has no
         way to find out without reading the class it just rejected.
         """
+        reason = cls.arch_refusal(call)
+        if reason is None and not cls.applies(call):
+            return "does not serve this call"
+        return reason
+
+    @classmethod
+    def arch_refusal(cls, call: Any) -> Optional[str]:
+        """Why this class cannot run on *call*'s architecture, or ``None`` when it can.
+
+        The first question :meth:`refusal` asks. A class that names the shape limit
+        it refuses overrides ``refusal`` and asks this first.
+        """
         archs = cls.supported_archs
         if archs is not None and call.arch not in archs:
             return f"built for architectures {sorted(archs)}, device reports {call.arch}"
-        if not cls.applies(call):
-            return "does not serve this call"
         return None
 
     @classmethod

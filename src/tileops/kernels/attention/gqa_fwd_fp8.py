@@ -10,7 +10,7 @@ from tileops.kernels.constants import LOG2E
 from tileops.utils import get_sm_count
 
 from ..kernel_base import Entry, Kernel
-from .call_spec import ATTENTION_DTYPES, dense_fp8_decode_region
+from .call_spec import ATTENTION_DTYPES, dense_fp8_refusal
 from .dense_entry import dense_fp8_entry
 from .gqa_dense import make_dense_qk_rope_preprocessor
 from .online_softmax import (
@@ -936,7 +936,15 @@ class GQADenseFP8Kernel(Kernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return call.is_fp8 and not dense_fp8_decode_region(call)
+        return cls._region_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call) -> Optional[str]:
+        return cls.arch_refusal(call) or cls._region_refusal(call)
+
+    @staticmethod
+    def _region_refusal(call) -> Optional[str]:
+        return dense_fp8_refusal(call)
 
     @classmethod
     def entry_for(cls, call) -> Entry:

@@ -640,12 +640,7 @@ class GQADecodePagedKernel(Kernel):
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        archs = cls.supported_archs
-        if archs is not None and call.arch not in archs:
-            return f"built for architectures {sorted(archs)}, device reports {call.arch}"
-        if not cls.applies(call):
-            return cls._region_refusal(call) or "does not serve this call"
-        return None
+        return cls.arch_refusal(call) or cls._region_refusal(call)
 
     @staticmethod
     def _region_refusal(call: AttentionCall) -> Optional[str]:

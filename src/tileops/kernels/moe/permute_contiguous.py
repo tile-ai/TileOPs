@@ -353,8 +353,6 @@ class MoePrePermuteContiguousKernel(Kernel):
         super().__init__()
         layout = call.layout
         self.layout_key = getattr(layout, "selection_key", "")
-        if self.layout_key not in self._SUPPORTED_LAYOUT_KEYS:
-            raise ValueError(f"unsupported contiguous PrePermute layout: {self.layout_key!r}")
         self.num_tokens = call.num_tokens
         self.top_k = call.top_k
         self.num_experts = call.num_experts

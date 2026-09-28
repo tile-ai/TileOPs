@@ -12,7 +12,7 @@ from tilelang.layout import make_swizzled_layout
 from tileops.kernels.constants import LOG2E
 
 from ..kernel_base import Entry, Kernel
-from .call_spec import dense_sliding_window_region, dense_ws_region
+from .call_spec import dense_sliding_window_refusal, dense_ws_refusal
 from .dense_entry import dense_sliding_window_entry, dense_ws_entry
 from .online_softmax import make_apply_softcap
 
@@ -657,7 +657,15 @@ class GQADenseWsKernel(Kernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return dense_ws_region(call)
+        return cls._region_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call) -> Optional[str]:
+        return cls.arch_refusal(call) or cls._region_refusal(call)
+
+    @staticmethod
+    def _region_refusal(call) -> Optional[str]:
+        return dense_ws_refusal(call)
 
     @classmethod
     def entry_for(cls, call) -> Entry:
@@ -962,7 +970,15 @@ class GQADenseSlidingWindowKernel(Kernel):
 
     @classmethod
     def applies(cls, call) -> bool:
-        return dense_sliding_window_region(call)
+        return cls._region_refusal(call) is None
+
+    @classmethod
+    def refusal(cls, call) -> Optional[str]:
+        return cls.arch_refusal(call) or cls._region_refusal(call)
+
+    @staticmethod
+    def _region_refusal(call) -> Optional[str]:
+        return dense_sliding_window_refusal(call)
 
     @classmethod
     def entry_for(cls, call) -> Entry:

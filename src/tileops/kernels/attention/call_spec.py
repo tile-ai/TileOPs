@@ -15,10 +15,16 @@ from ..call_spec import CallSpec
 __all__ = [
     "ATTENTION_DTYPES",
     "AttentionCall",
+    "dense_decode_refusal",
     "dense_decode_region",
+    "dense_fp8_decode_refusal",
+    "dense_long_context_decode_refusal",
+    "dense_fp8_refusal",
     "dense_long_context_decode_region",
     "dense_fp8_decode_region",
+    "dense_sliding_window_refusal",
     "dense_sliding_window_region",
+    "dense_ws_refusal",
     "dense_ws_region",
     "decode_bs1_region",
     "paged_decode_region",
@@ -138,6 +144,68 @@ def dense_sliding_window_region(call: AttentionCall) -> bool:
 def dense_ws_region(call: AttentionCall) -> bool:
     """The contiguous prefill region: more than one query position, no window."""
     return not call.is_fp8 and call.max_seqlen_q != 1 and not uses_sliding_window(call)
+
+
+# What the contiguous kernels refuse inside their regions. Each returns the limit a
+# call fails, or ``None``; outside the region it answers "does not serve this call".
+_OUTSIDE_REGION = "does not serve this call"
+
+
+def _dense_dim_refusal(call: AttentionCall) -> Optional[str]:
+    """Every contiguous kernel is written for one head dimension."""
+    return None if call.dim == 128 else "requires head dimension 128"
+
+
+def dense_ws_refusal(call: AttentionCall) -> Optional[str]:
+    """Why the contiguous prefill kernel cannot serve *call*, or ``None``."""
+    if not dense_ws_region(call):
+        return _OUTSIDE_REGION
+    return _dense_dim_refusal(call)
+
+
+def dense_sliding_window_refusal(call: AttentionCall) -> Optional[str]:
+    """Why the contiguous windowed kernel cannot serve *call*, or ``None``."""
+    if not dense_sliding_window_region(call):
+        return _OUTSIDE_REGION
+    if call.max_seqlen_q != call.seqlen_kv:
+        return "a sliding window requires equal Q and KV lengths"
+    return _dense_dim_refusal(call)
+
+
+def dense_decode_refusal(call: AttentionCall) -> Optional[str]:
+    """Why the contiguous decode kernels cannot serve *call*, or ``None``."""
+    if not dense_decode_region(call):
+        return _OUTSIDE_REGION
+    if call.seqlen_kv <= 0:
+        return "requires a non-empty KV cache"
+    return _dense_dim_refusal(call)
+
+
+def dense_long_context_decode_refusal(call: AttentionCall) -> Optional[str]:
+    """Why the long-context decode kernel cannot serve *call*, or ``None``."""
+    return None if dense_long_context_decode_region(call) else _OUTSIDE_REGION
+
+
+def dense_fp8_decode_refusal(call: AttentionCall) -> Optional[str]:
+    """Why the FP8 decode kernel cannot serve *call*, or ``None``."""
+    if not dense_fp8_decode_region(call):
+        return _OUTSIDE_REGION
+    return _dense_dim_refusal(call)
+
+
+def dense_fp8_refusal(call: AttentionCall) -> Optional[str]:
+    """Why the FP8 main kernel cannot serve *call*, or ``None``."""
+    if not call.is_fp8 or dense_fp8_decode_region(call):
+        return _OUTSIDE_REGION
+    if uses_sliding_window(call):
+        return "does not serve sliding windows"
+    if call.fuse_rope and call.max_seqlen_q == 1:
+        return "does not serve RoPE with one query position"
+    if not call.is_causal and call.max_seqlen_q != call.seqlen_kv:
+        return "non-causal attention requires equal Q and KV lengths"
+    if not call.is_causal and call.softcap != 0.0:
+        return "does not serve a softcap without the causal mask"
+    return _dense_dim_refusal(call)
 
 
 def decode_bs1_region(call: AttentionCall) -> bool:
