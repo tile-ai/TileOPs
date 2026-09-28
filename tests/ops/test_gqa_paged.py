@@ -19,15 +19,16 @@ def _decode(
     dtype: torch.dtype = torch.float16,
     *,
     pool_pages: int | None = None,
+    q_len: int = 1,
     **semantics,
 ) -> GroupedQueryAttentionPagedFwdWorkload:
-    """A decode call: one query token per request, tables as wide as the longest cache."""
+    """A decode call: ``q_len`` query tokens per request, tables as wide as the longest cache."""
     width = -(-max(cache_lens) // page_size)
     return GroupedQueryAttentionPagedFwdWorkload(
         heads,
         heads_kv,
         dim,
-        [1] * batch,
+        [q_len] * batch,
         cache_lens,
         page_size,
         width,
@@ -90,18 +91,22 @@ def test_gqa_paged_decode_op(
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "sm_scale, softcap, cache_lens",
+    "sm_scale, softcap, cache_lens, q_len",
     [
-        pytest.param(0.25, None, [512, 300], id="custom-sm-scale"),
-        pytest.param(None, 2.0, [512, 300], id="softcap"),
+        pytest.param(0.25, None, [512, 300], 1, id="custom-sm-scale"),
+        pytest.param(None, 2.0, [512, 300], 1, id="softcap"),
         # Unequal lengths on the split path leave the short request with empty splits.
-        pytest.param(0.0, None, [4096, 128], id="zero-scale-split"),
+        pytest.param(0.0, None, [4096, 128], 1, id="zero-scale-split"),
+        # Masked keys stay masked when every score is zero.
+        pytest.param(0.0, None, [700, 300], 4, id="zero-scale-causal"),
     ],
 )
 def test_gqa_paged_decode_score_controls(
-    sm_scale: float | None, softcap: float | None, cache_lens: list[int]
+    sm_scale: float | None, softcap: float | None, cache_lens: list[int], q_len: int
 ) -> None:
-    workload = _decode(2, 16, 8, cache_lens, 128, 128, sm_scale=sm_scale, softcap=softcap)
+    workload = _decode(
+        2, 16, 8, cache_lens, 128, 128, q_len=q_len, sm_scale=sm_scale, softcap=softcap
+    )
     op = GroupedQueryAttentionPagedFwdOp(sm_scale=sm_scale, softcap=softcap)
     _check(op, workload, workload.gen_inputs())
 
@@ -116,26 +121,27 @@ def test_gqa_paged_decode_pool_is_independent_of_table_width(batch: int) -> None
 
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-def test_gqa_paged_decode_non_divisible_128_page_split() -> None:
-    """page_size=192 uses 64-token tiles without skipping page tails."""
-    workload = _decode(1, 16, 4, [3072], 128, 192)
+@pytest.mark.parametrize("page_size", [192, 96, 48])
+def test_gqa_paged_decode_non_divisible_128_page_split(page_size: int) -> None:
+    """A page no 128-token tile divides uses a narrower tile without skipping page tails."""
+    workload = _decode(1, 16, 4, [page_size * 16], 128, page_size)
     inputs = list(workload.gen_inputs())
     inputs[3] = inputs[3].flip(-1).contiguous()
     op = GroupedQueryAttentionPagedFwdOp()
     kernel = _built_kernel(op, inputs)
-    assert 192 % kernel.config["block_N"] == 0
-    assert {config["block_N"] for config in kernel.autotune_configs} == {64}
+    assert all(page_size % config["block_N"] == 0 for config in kernel.autotune_configs)
     _check(op, workload, inputs)
 
 
 @pytest.mark.smoke
-@pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("page_size", [96, 160, 224])
-def test_gqa_paged_decode_rejects_unsupported_page_tile(page_size: int) -> None:
-    """A page layout no supported key tile covers exactly is refused at selection."""
-    workload = _decode(1, 16, 4, [page_size * 16], 128, page_size)
-    with pytest.raises(ValueError, match="matches no supported block_N"):
-        _built_kernel(GroupedQueryAttentionPagedFwdOp(), workload.gen_inputs())
+@pytest.mark.parametrize(
+    "cache_lens",
+    [pytest.param([700, 130], id="no-split"), pytest.param([2048, 1500], id="split")],
+)
+def test_gqa_paged_multi_token_causal(cache_lens: list[int]) -> None:
+    """Several query tokens per request, with a head group's rows spanning two row blocks."""
+    workload = _decode(2, 32, 2, cache_lens, 64, 64, q_len=5)
+    _check(GroupedQueryAttentionPagedFwdOp(), workload, workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -180,8 +186,7 @@ def test_gqa_paged_decode_bs1_dispatch() -> None:
 @pytest.mark.parametrize(
     ("cu_seqlens_q", "op_kwargs", "reason"),
     [
-        pytest.param([0, 0, 2], {}, "one query token per request", id="uneven-requests"),
-        pytest.param([0, 2, 4], {}, "one query token per request", id="prefill"),
+        pytest.param([0, 0, 2], {}, "same query length", id="uneven-requests"),
         pytest.param([0, 1, 2], {"window_size_left": 128}, "sliding windows", id="window"),
     ],
 )

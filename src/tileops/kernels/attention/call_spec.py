@@ -143,11 +143,11 @@ def dense_decode_region(call: AttentionCall) -> bool:
 def paged_decode_refusal(call: AttentionCall) -> Optional[str]:
     """Why the paged-decode kernels cannot serve *call*, or ``None`` when they can.
 
-    They serve one query token per request against a 16-bit cache of the query's
-    dtype, with no window, RoPE or FP8.
+    They serve one query length shared by every request against a 16-bit cache of
+    the query's dtype, with no window, RoPE or FP8.
     """
-    if call.max_seqlen_q != 1 or not call.is_uniform:
-        return "requires one query token per request"
+    if call.max_seqlen_q < 1 or not call.is_uniform:
+        return "requires the same query length for every request"
     if call.dtype not in ATTENTION_DTYPES:
         return "requires float16 or bfloat16 Q"
     if call.cache_dtype != call.dtype:

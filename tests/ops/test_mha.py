@@ -137,7 +137,7 @@ def test_mha_decode_paged_cache_shorter_than_bound(
     """Splits, warps and query rows that see no key keep the output finite and exact.
 
     A cache far shorter than the static bound, or shorter than the causal queries,
-    leaves them with no live score.
+    leaves them with no live score. Pool rows no request reads hold NaN.
     """
     batch, heads, seqlen_kv, dim, page_size = len(real_lengths), 8, 1024, 64, 256
     test = MhaDecodePagedTest(
@@ -145,6 +145,12 @@ def test_mha_decode_paged_cache_shorter_than_bound(
     )
     q, k, v, _full, block_table = test.gen_inputs()
     real_seqlen_kv = torch.tensor(real_lengths, dtype=torch.int32, device=q.device)
+    pos = torch.arange(block_table.shape[1] * page_size, device=q.device)
+    rows = block_table[:, pos // page_size] * page_size + pos % page_size
+    read = torch.zeros(seqlen_kv, dtype=torch.bool, device=q.device)
+    read[rows[pos < real_seqlen_kv[:, None]]] = True
+    k[~read] = float("nan")
+    v[~read] = float("nan")
 
     op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=page_size, is_causal=is_causal)
     output = op(q, k, v, real_seqlen_kv, block_table)
@@ -163,5 +169,6 @@ def test_mha_decode_paged_dispatch_declines_multi_token_query() -> None:
     op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(page_size=256, is_causal=False)
     q = torch.empty(1, 4, 8, 64, dtype=torch.float16, device=run_device())
     k = torch.empty(1024, 8, 64, dtype=torch.float16, device=run_device())
-    chosen = op.select_kernel(op._attention_call(q, k))
-    assert chosen.__name__ == "MHADecodePagedKernel"
+    block_table = torch.zeros(1, 4, dtype=torch.int32, device=run_device())
+    chosen = op.select_kernel(op._attention_call(q, k, block_table))
+    assert chosen.__name__ == "GQADecodePagedKernel"

@@ -36,7 +36,8 @@ def varlen_entry(cls: type, call: AttentionCall) -> Entry:
         device_index=_device_index(call),
         tune=call.tune,
     )
-    return tuple(args.values()), lambda: cls(**args)
+    identity = tuple(v for k, v in args.items() if k != "tune")
+    return identity, lambda: cls(**args)
 
 
 class VarlenKernel(Kernel):

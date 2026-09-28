@@ -32,6 +32,11 @@ def _index(call: AttentionCall) -> Optional[int]:
     return call.device.index if call.device is not None else None
 
 
+def _identity(args: dict, *runtime: str) -> tuple:
+    """The construction arguments but ``tune`` and those the program takes at runtime."""
+    return tuple(v for k, v in args.items() if k not in ("tune", *runtime))
+
+
 def dense_fp8_decode_entry(cls: type, call: AttentionCall) -> Entry:
     """Skv is dynamic in this program, so one object serves every cache length."""
     args = dict(
@@ -45,7 +50,7 @@ def dense_fp8_decode_entry(cls: type, call: AttentionCall) -> Entry:
         device_index=_index(call),
         tune=call.tune,
     )
-    return tuple(args.values()), lambda: cls(**args)
+    return _identity(args), lambda: cls(**args)
 
 
 def dense_fp8_entry(cls: type, call: AttentionCall) -> Entry:
@@ -67,7 +72,7 @@ def dense_fp8_entry(cls: type, call: AttentionCall) -> Entry:
         device_index=_index(call),
         tune=call.tune,
     )
-    return tuple(args.values()), lambda: cls(**args)
+    return _identity(args), lambda: cls(**args)
 
 
 def dense_decode_entry(cls: type, call: AttentionCall) -> Entry:
@@ -85,9 +90,8 @@ def dense_decode_entry(cls: type, call: AttentionCall) -> Entry:
         device_index=_index(call),
         tune=call.tune,
     )
-    # Every construction argument but the cache length, which this program takes at
-    # runtime: what it compiles for is the split tier the length falls in.
-    identity = (*(v for k, v in args.items() if k != "seq_len_kv"), *cls.split_tier(call))
+    # The cache length is taken at runtime: what it compiles for is its split tier.
+    identity = (*_identity(args, "seq_len_kv"), *cls.split_tier(call))
     return identity, lambda: cls(**args)
 
 
@@ -109,7 +113,7 @@ def dense_sliding_window_entry(cls: type, call: AttentionCall) -> Entry:
         device_index=_index(call),
         tune=call.tune,
     )
-    return tuple(args.values()), lambda: cls(**args)
+    return _identity(args), lambda: cls(**args)
 
 
 def dense_ws_entry(cls: type, call: AttentionCall) -> Entry:
@@ -130,7 +134,6 @@ def dense_ws_entry(cls: type, call: AttentionCall) -> Entry:
         tune=call.tune,
     )
     if call.fuse_rope:
-        return tuple(args.values()), lambda: cls(**args)
+        return _identity(args), lambda: cls(**args)
     # Without RoPE this program takes its sequence extents at runtime.
-    dynamic = ("seq_len_q", "seq_len_kv")
-    return tuple(v for k, v in args.items() if k not in dynamic), lambda: cls(**args)
+    return _identity(args, "seq_len_q", "seq_len_kv"), lambda: cls(**args)

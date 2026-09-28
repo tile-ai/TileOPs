@@ -419,9 +419,11 @@ def _fa3_gqa_paged_decode(workload):
     except ImportError:
         return None
 
+    batch, seqlen_q = len(workload.q_lens), max(workload.q_lens)
+
     def baseline_fn(q, k_pages, v_pages, page_table, cache_seqlens, *_unused):
         out = flash_attn_with_kvcache(
-            q.unsqueeze(1),
+            q.view(batch, seqlen_q, *q.shape[1:]),
             k_pages,
             v_pages,
             cache_seqlens=cache_seqlens,
@@ -431,15 +433,16 @@ def _fa3_gqa_paged_decode(workload):
             softcap=float(workload.softcap or 0.0),
         )
         out = out[0] if isinstance(out, tuple) else out
-        return out.squeeze(1)
+        return out.view(q.shape)
 
     return baseline_fn
 
 
 def _flashinfer_gqa_paged_decode(workload, inputs):
     """FlashInfer paged decode planned with the row's scale and softcap, or None where it
-    cannot serve the row: its decode kernel takes a query-to-KV head ratio up to 8."""
-    if workload.heads // workload.heads_kv > 8:
+    cannot serve the row: its decode kernel takes one query token per request and a
+    query-to-KV head ratio up to 8."""
+    if workload.heads // workload.heads_kv > 8 or max(workload.q_lens) != 1:
         return None
     q, k_pages, v_pages, page_table, cache_seqlens = inputs[:5]
     page_size = workload.page_size
@@ -477,8 +480,8 @@ def test_gqa_paged_fwd_bench(call) -> None:
         # FIXME(staged-rollout): a row outside the paged-decode region is not run.
         #
         # Broken invariant: every manifest workload row records a result.
-        # Why: the in-tree kernels serve one query token per request only; packed
-        #   prefill and windows of the 16-bit contract have no kernel yet.
+        # Why: the in-tree kernels serve one query length shared by every request;
+        #   uneven packed prefill and windows of the 16-bit contract have no kernel yet.
         # Cleanup: an in-tree kernel serves every 16-bit row.
         pytest.skip("outside the in-tree paged-decode region")
     bm = ManifestBenchmark(op, workload)
