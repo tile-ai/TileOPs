@@ -1017,13 +1017,9 @@ def test_div_rounding_mode_eager(rounding_mode: str, dtype: torch.dtype) -> None
     op = DivFwdOp(rounding_mode=rounding_mode)
     with torch.no_grad():
         out = op(a, b)
-    ref = torch.div(a.float(), b.float(), rounding_mode=rounding_mode).to(dtype)
-    tolerance = standard_tolerance(dtype)
-    # rounding-mode divergence in reduced precision can flip by 1 unit at
-    # quotient boundaries; mirror the floor_divide convention.
-    if dtype != torch.float32:
-        tolerance = {"atol": 1.0, "rtol": 0.0}
-    torch.testing.assert_close(out, ref, **tolerance)
+    # torch rounds the quotient to ``dtype`` before rounding it to a whole number.
+    ref = torch.div(a, b, rounding_mode=rounding_mode)
+    torch.testing.assert_close(out, ref, atol=0.0, rtol=0.0)
 
 
 @pytest.mark.smoke

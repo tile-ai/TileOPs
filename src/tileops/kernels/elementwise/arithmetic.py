@@ -106,22 +106,19 @@ def _ieee_fdiv(num, den):
 
 
 class DivTruncFwdKernel(BinaryKernel):
-    """Element-wise truncated division: y = trunc(a / b).
+    """Element-wise truncated division: y = trunc(a / b), as torch computes it.
 
-    Matches ``torch.div(a, b, rounding_mode="trunc")`` semantics: rounds
-    the quotient toward zero. Division and ``trunc`` are computed in fp32
-    to avoid two sources of error: (1) ``htrunc`` is not available for
-    ``cutlass::half_t`` in CUDA, and (2) fp16 division rounds the
-    quotient before ``trunc`` sees it.
+    torch rounds the quotient to the input dtype before truncating it, so a
+    float16 ``299.9`` is ``300`` and truncates to ``300``. The divide is IEEE: fast
+    math's would leave an exact whole quotient one ulp short of it.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     @staticmethod
     def op_func(a, b):
-        a_f32 = T.cast(a, "float32")
-        b_f32 = T.cast(b, "float32")
-        return T.Cast(a.dtype, T.trunc(a_f32 / b_f32))
+        quotient = T.Cast(a.dtype, _ieee_fdiv(T.Cast("float32", a), T.Cast("float32", b)))
+        return T.Cast(a.dtype, T.trunc(T.Cast("float32", quotient)))
 
 
 # The divisors ``__fdividef`` is defined for.
