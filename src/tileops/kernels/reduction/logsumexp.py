@@ -44,7 +44,6 @@ from tileops.kernels.reduction._primitives import (
 from tileops.kernels.reduction._split_softmax import (
     edge_split_partials_kernel,
     edge_split_view,
-    finite_shift,
     make_block_split_fold,
     softmax_split_partials_kernel,
     split_seg_n,
@@ -198,8 +197,14 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
 
                 T.fill(row_max, -T.infinity("float32"))
                 T.reduce_max(x_f32, row_max, dim=1, clear=False)
+                # torch.logsumexp's shift: zero where the max is infinite, so an all -inf
+                # row sums to 0 and a row holding +inf to +inf instead of NaN.
                 for i in T.Parallel(block_m):
-                    row_shift[i] = finite_shift(row_max[i])
+                    row_shift[i] = T.if_then_else(
+                        T.abs(row_max[i]) == T.infinity("float32"),
+                        T.cast(0.0, "float32"),
+                        row_max[i],
+                    )
 
                 for i in T.serial(block_m):
                     for j in T.Parallel(N_padded):
@@ -295,7 +300,11 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
                     for i in T.Parallel(block_m):
                         prev_max[i] = row_max[i]
                         row_max[i] = T.max(row_max[i], tile_max[i])
-                        row_shift[i] = finite_shift(row_max[i])
+                        row_shift[i] = T.if_then_else(
+                            T.abs(row_max[i]) == T.infinity("float32"),
+                            T.cast(0.0, "float32"),
+                            row_max[i],
+                        )
 
                     for i in T.serial(block_m):
                         for j in T.Parallel(tile_n):

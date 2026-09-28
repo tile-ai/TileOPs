@@ -25,7 +25,6 @@ from tileops.utils import WARP_LANES
 __all__ = [
     "edge_split_partials_kernel",
     "edge_split_view",
-    "finite_shift",
     "fused_split_plan",
     "make_block_split_fold",
     "softmax_split_partials_kernel",
@@ -80,16 +79,6 @@ def split_seg_n(M: int, N: int, block_m: int, target_blocks: int) -> int:
     return seg_n
 
 
-def finite_shift(m):
-    """The shift an exponential sum subtracts: *m*, or zero when *m* is infinite.
-
-    torch.logsumexp's rule. A finite max keeps every exponent at or below zero;
-    an infinite one would turn ``exp(inf - inf)`` into NaN, where the true sum
-    is 0 for an all--inf run and +inf for a run holding +inf.
-    """
-    return T.if_then_else(T.abs(m) == T.infinity("float32"), T.cast(0.0, "float32"), m)
-
-
 @functools.lru_cache(maxsize=64)
 def softmax_split_partials_kernel(M: int, N: int, seg_n: int, dtype: str, threads: int):
     """Per-segment softmax statistics: fp32 ``(max, sum)`` for a later fold.
@@ -125,7 +114,9 @@ def softmax_split_partials_kernel(M: int, N: int, seg_n: int, dtype: str, thread
                     )
                 T.fill(m_s, -T.infinity("float32"))
                 T.reduce_max(x_f32, m_s, dim=1, clear=False)
-                shift[0] = finite_shift(m_s[0])
+                shift[0] = T.if_then_else(
+                    T.abs(m_s[0]) == T.infinity("float32"), T.cast(0.0, "float32"), m_s[0]
+                )
                 for _, j in T.Parallel(1, seg_n):
                     x_f32[0, j] = T.exp(x_f32[0, j] - shift[0])
                 T.reduce_sum(x_f32, s_s, dim=1)
@@ -164,20 +155,14 @@ def make_block_split_fold(num_segs: int, threads: int, keep_inf: bool = False):
     rounds = ceildiv_int(num_segs, threads)
     last = num_segs - 1
 
-    def owned(r, t):
-        """The segment lane *t* folds in round *r*, and whether it has one.
-
-        A lane past the last segment reads the last one instead of running off
-        the array; the flag is what keeps its value out of both reductions.
-        """
-        return T.min(r * threads + t, last), r * threads + t <= last
-
     @T.macro
     def fold(seg_max, seg_sum, base, part_max, part_sum, row_max, row_sum):
         for _, t in T.Parallel(1, threads):
             part_max[0, t] = -T.infinity("float32")
             for r in T.serial(rounds):
-                s, mine = owned(r, t)
+                # A lane past the last segment reads the last one; ``mine`` keeps it out.
+                s = T.min(r * threads + t, last)
+                mine = r * threads + t <= last
                 part_max[0, t] = T.max(
                     part_max[0, t],
                     T.if_then_else(mine, seg_max[base + s], -T.infinity("float32")),
@@ -188,7 +173,8 @@ def make_block_split_fold(num_segs: int, threads: int, keep_inf: bool = False):
         for _, t in T.Parallel(1, threads):
             part_sum[0, t] = 0.0
             for r in T.serial(rounds):
-                s, mine = owned(r, t)
+                s = T.min(r * threads + t, last)
+                mine = r * threads + t <= last
                 raw_gap = seg_max[base + s] - row_max[0]
                 gap = (
                     T.if_then_else(seg_max[base + s] == row_max[0], T.cast(0.0, "float32"), raw_gap)
@@ -274,7 +260,9 @@ def edge_split_partials_kernel(outer: int, kept: int, inner: int, dtype: str, th
                     x_f32[0, i] = T.cast(x[pid_s, pid_m, i], "float32")
                 T.fill(m_s, -T.infinity("float32"))
                 T.reduce_max(x_f32, m_s, dim=1, clear=False)
-                shift[0] = finite_shift(m_s[0])
+                shift[0] = T.if_then_else(
+                    T.abs(m_s[0]) == T.infinity("float32"), T.cast(0.0, "float32"), m_s[0]
+                )
                 for _, i in T.Parallel(1, inner):
                     x_f32[0, i] = T.exp(x_f32[0, i] - shift[0])
                 T.reduce_sum(x_f32, s_s, dim=1)
