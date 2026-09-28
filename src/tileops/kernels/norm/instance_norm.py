@@ -75,25 +75,6 @@ class InstanceNormNoAffineKernel(GroupNormNoAffineKernel):
         return super().forward(x, weight, bias)
 
 
-def _row_per_thread_group(block_m: int, D_padded: int, threads: int, dtype: str):
-    """The layout giving row ``i`` of a ``(block_m, D_padded)`` fragment its own threads.
-
-    Row ``i`` lives on threads ``[i * t, (i + 1) * t)`` for ``t = threads // block_m``,
-    each holding runs of one vector width, so the row reduction stays inside one
-    thread group. Layout inference can otherwise pick a far slower replicated layout.
-    """
-    row_threads = threads // block_m
-    per_thread = D_padded // row_threads
-    vector = VECTOR_ACCESS_BYTES // (4 if dtype == "float32" else 2)
-    while per_thread % vector:
-        vector //= 2
-    return T.Fragment(
-        [block_m, D_padded],
-        forward_thread_fn=lambda i, j: i * row_threads + (j // vector) % row_threads,
-        forward_index_fn=lambda i, j: (j // (vector * row_threads)) * vector + j % vector,
-    )
-
-
 @functools.lru_cache(maxsize=32)
 def _instance_norm_train_kernel(N, C, D, eps, momentum, dtype, has_weight, has_bias):
     """Build the kernel normalizing by instance statistics and updating the running ones.
@@ -122,7 +103,19 @@ def _instance_norm_train_kernel(N, C, D, eps, momentum, dtype, has_weight, has_b
         splits = -(-N // block_m)
         # The last block's rows past the last sample read and write nothing.
         guarded = D_padded != D or N % block_m != 0
-        row_layout = _row_per_thread_group(block_m, D_padded, threads, dtype)
+        # Row i of the (block_m, D_padded) fragment lives on its own group of
+        # row_threads threads, each holding runs of one vector width, so the row
+        # reduction stays inside the group; layout inference can otherwise pick a far
+        # slower replicated layout.
+        row_threads = threads // block_m
+        vector = VECTOR_ACCESS_BYTES // (4 if dtype == "float32" else 2)
+        while (D_padded // row_threads) % vector:
+            vector //= 2
+        row_layout = T.Fragment(
+            [block_m, D_padded],
+            forward_thread_fn=lambda i, j: i * row_threads + (j // vector) % row_threads,
+            forward_index_fn=lambda i, j: (j // (vector * row_threads)) * vector + j % vector,
+        )
         if register_direct:
             row_reduce = make_shifted_row_reduce(block_m, D, eps)
         else:

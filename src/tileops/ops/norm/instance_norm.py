@@ -142,8 +142,21 @@ class InstanceNormFwdOp(Op):
             return torch.empty_like(x)
         x = x.contiguous()
         if not self.use_input_stats or tracks:
+            # The training kernel writes the running statistics in place, so a strided
+            # buffer is served through a contiguous copy that is written back.
             role = "instance_norm_train" if self.use_input_stats else "instance_norm_infer"
-            return self._run_by_channel(role, x, running_mean, running_var, weight, bias)
+            weight = None if weight is None else weight.contiguous()
+            bias = None if bias is None else bias.contiguous()
+            stats = tuple(stat.contiguous() for stat in (running_mean, running_var))
+            call = (batch, channels, spatial, x.dtype, weight is not None, bias is not None)
+            kernel = self.kernel_for(role, (x, *stats, weight, bias), call)
+            self.kernel = kernel
+            y = kernel(x, *stats, weight, bias)
+            if self.use_input_stats:
+                for caller, used in zip((running_mean, running_var), stats, strict=True):
+                    if used is not caller:
+                        caller.copy_(used)
+            return y
         affine = weight is not None or bias is not None
         if affine:
             weight = affine_or_constant(weight, (channels,), 1.0, x.dtype, x.device)
@@ -155,26 +168,6 @@ class InstanceNormFwdOp(Op):
         # Row m of the (N*C, spatial_size) view is channel m % C throughout, so the affine
         # kernel applies the per-channel affine itself.
         return kernel(x, running_mean, running_var, weight, bias)
-
-    def _run_by_channel(self, role, x, running_mean, running_var, weight, bias):
-        """Launch a kernel that reads, and in training updates, the running statistics.
-
-        The training kernel writes the statistics in place, so a strided buffer is
-        served through a contiguous copy that is written back.
-        """
-        weight = None if weight is None else weight.contiguous()
-        bias = None if bias is None else bias.contiguous()
-        stats = tuple(stat.contiguous() for stat in (running_mean, running_var))
-        has_affine = (weight is not None, bias is not None)
-        call = (x.shape[0], x.shape[1], math.prod(x.shape[2:]), x.dtype, *has_affine)
-        kernel = self.kernel_for(role, (x, *stats, weight, bias), call)
-        self.kernel = kernel
-        y = kernel(x, *stats, weight, bias)
-        if role == "instance_norm_train":
-            for caller, used in zip((running_mean, running_var), stats, strict=True):
-                if used is not caller:
-                    caller.copy_(used)
-        return y
 
     def entry_for(self, role: str, call: tuple) -> Entry:
         """Each role has one implementation; the affine form picks the normalizing one."""
