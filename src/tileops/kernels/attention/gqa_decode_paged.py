@@ -18,10 +18,10 @@ from tileops.kernels.attention.call_spec import (
     AttentionCall,
     paged_decode_refusal,
 )
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
 from .online_softmax import (
-    LOG2E,
     make_apply_softcap,
     make_online_softmax,
     make_online_softmax_with_mask_guard,

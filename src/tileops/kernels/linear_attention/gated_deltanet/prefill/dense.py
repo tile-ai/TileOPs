@@ -9,6 +9,7 @@ import tilelang
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_sm_count
 
 from .forward import fused_gdr_fwd
 from .prepare import (
@@ -81,7 +82,7 @@ def _prefill_auto_cp_local_chunks(num_chunks: int, num_heads: int, device_index:
         max_local_chunks = int(env_max_local_chunks)
     else:
         # Without an argument this reads the current device, not the tensors'.
-        sm_count = torch.cuda.get_device_properties(device_index).multi_processor_count
+        sm_count = get_sm_count(device_index)
         max_local_chunks = 2 ** round(math.log2(math.sqrt(num_heads * num_chunks / sm_count) * 3))
         if num_heads >= 64 and num_chunks >= 512:
             max_local_chunks = max(max_local_chunks, 256)

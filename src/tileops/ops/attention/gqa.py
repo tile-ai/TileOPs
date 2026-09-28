@@ -24,7 +24,7 @@ from tileops.kernels.attention import (
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
     MHABwdWsKernel,
 )
-from tileops.kernels.attention.call_spec import AttentionCall, fp8_dtype
+from tileops.kernels.attention.call_spec import AttentionCall
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.perf.profile import tensor_core_roof
 
@@ -295,7 +295,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         batch, seq_len_q, heads, dim = q.shape
         _, seq_len_kv, heads_kv, _ = k.shape
         rope_on = self.pos_encoding_mode == "rope"
-        is_fp8 = q.dtype == fp8_dtype()
+        is_fp8 = q.dtype == torch.float8_e4m3fn
         return AttentionCall(
             # The element type an implementation is compiled for. FP8 inputs are
             # computed in the type the op was constructed with.
@@ -489,7 +489,7 @@ class GroupedQueryAttentionVarlenFwdOp(Op):
             softcap=self.softcap,
             window_size_left=self.window_size_left,
             window_size_right=self.window_size_right,
-            is_fp8=q.dtype == fp8_dtype(),
+            is_fp8=q.dtype == torch.float8_e4m3fn,
             is_uniform=False,
             empty_kv=k.shape[0] == 0,
             fuse_rope=self.pos_encoding_mode == "rope",
@@ -695,7 +695,7 @@ class GroupedQueryAttentionPagedFwdOp(Op):
             softcap=self.softcap,
             window_size_left=self.window_size_left,
             window_size_right=self.window_size_right,
-            is_fp8=fp8_dtype() in (q.dtype, k_pages.dtype),
+            is_fp8=torch.float8_e4m3fn in (q.dtype, k_pages.dtype),
             is_uniform=len(set(q_lens)) <= 1,
             cache_dtype=k_pages.dtype,
             fuse_rope=self.pos_encoding_mode == "rope",
@@ -938,9 +938,9 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
         """
         if self.page_size & (self.page_size - 1) != 0:
             raise ValueError("page_size must be a power of two")
-        if self.fuse_rope and k_pages.dtype == fp8_dtype():
+        if self.fuse_rope and k_pages.dtype == torch.float8_e4m3fn:
             raise ValueError("fuse_rope is not supported with FP8 paged KV cache yet")
-        if k_pages.dtype == fp8_dtype():
+        if k_pages.dtype == torch.float8_e4m3fn:
             for name, tensor in (("k_scale", k_scale), ("v_scale", v_scale)):
                 if not torch.all(torch.isfinite(tensor) & (tensor > 0)).item():
                     raise ValueError(f"{name} must contain finite positive values")

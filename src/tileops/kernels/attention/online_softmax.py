@@ -12,7 +12,6 @@ import tilelang.language as T
 from tileops.kernels.constants import LOG2E
 
 __all__ = [
-    "LOG2E",
     "make_apply_softcap",
     "make_log2e_scale",
     "make_online_softmax",

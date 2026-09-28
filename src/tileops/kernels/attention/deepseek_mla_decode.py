@@ -6,9 +6,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
-
-from .online_softmax import LOG2E
 
 __all__ = ["MLADecodeWsKernel"]
 

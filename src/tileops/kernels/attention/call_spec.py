@@ -14,7 +14,6 @@ from ..call_spec import CallSpec
 
 __all__ = [
     "ATTENTION_DTYPES",
-    "WS_ARCH",
     "AttentionCall",
     "dense_decode_region",
     "dense_long_context_decode_region",
@@ -22,31 +21,12 @@ __all__ = [
     "dense_sliding_window_region",
     "dense_ws_region",
     "decode_bs1_region",
-    "fp8_dtype",
     "paged_decode_region",
     "paged_decode_refusal",
-    "paged_decode_ws_region",
     "uses_sliding_window",
 ]
 
 ATTENTION_DTYPES = (torch.float16, torch.bfloat16)
-
-# Architecture the warp-specialized kernels are written for.
-WS_ARCH = 90
-
-
-# Tile heights the warp-specialized paged decode kernel can pick from. A tile
-# divides the page size, so one tile never straddles two pages, and it splits
-# evenly across the four consumer warps.
-_WS_DECODE_TILES = (16, 32, 64, 128)
-# Head dims that map onto one warp: the score reduction is a shuffle chain over
-# 32 lanes, so a lane owns ``dim / 32`` elements of the head vector.
-_WS_DECODE_LANES = 32
-
-
-def fp8_dtype() -> Optional[torch.dtype]:
-    """Return ``torch.float8_e4m3fn`` when the torch build carries it."""
-    return getattr(torch, "float8_e4m3fn", None)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -88,51 +68,6 @@ class AttentionCall(CallSpec):
 def uses_sliding_window(call: AttentionCall) -> bool:
     """Whether either window bound is set, which restricts what may serve the call."""
     return call.window_size_left != -1 or call.window_size_right != -1
-
-
-def mha_bwd_ws_region(call: AttentionCall) -> bool:
-    """The backward region the warp-specialized MHA kernel serves.
-
-    One query head per key/value head, head dim 128, a sequence that splits into
-    128-row key blocks, and 16-bit inputs with the default softmax scale. Grouped
-    heads, other head dims and ragged lengths stay with the general kernel.
-    """
-    return (
-        call.heads == call.heads_kv
-        and call.dim == 128
-        and call.max_seqlen_q > 0
-        and call.max_seqlen_q % 128 == 0
-        and call.dtype in ATTENTION_DTYPES
-        and not call.is_fp8
-        and call.softcap == 0.0
-        and call.sm_scale is None
-        and not uses_sliding_window(call)
-    )
-
-
-def paged_decode_ws_region(call: AttentionCall) -> bool:
-    """The paged-decode region the warp-specialized MHA kernel serves.
-
-    Stated positively, and only in terms the call already carries. What is left
-    to the general kernel: a query longer than one token (this kernel's whole
-    reason for skipping the tensor cores is that ``seqlen_q`` is 1), a head dim
-    that does not divide across a warp, a page size no tile height divides, a
-    softcap, and a causal request, whose mask this kernel does not apply.
-    """
-    if call.max_seqlen_q != 1 or call.is_causal or call.softcap != 0.0:
-        return False
-    if call.dtype not in ATTENTION_DTYPES or call.is_fp8:
-        return False
-    if uses_sliding_window(call):
-        return False
-    if call.dim % _WS_DECODE_LANES != 0 or not 0 < call.dim <= 256:
-        return False
-    if call.page_size <= 0 or call.seqlen_kv <= 0:
-        return False
-    return any(
-        tile <= call.page_size and call.page_size % tile == 0 and tile <= call.seqlen_kv
-        for tile in _WS_DECODE_TILES
-    )
 
 
 def dense_decode_region(call: AttentionCall) -> bool:

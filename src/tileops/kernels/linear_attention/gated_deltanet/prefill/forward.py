@@ -11,6 +11,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import LOG2E
+from tileops.utils import get_sm_count
 
 from .common import _gemm_v1, prepare_chunk_offsets
 
@@ -601,9 +602,10 @@ def fused_gdr_fwd(
     o = torch.empty_like(v)
 
     grid_size = real_batch_size * H
-    target_num_ctas = int(
-        torch.cuda.get_device_properties(k.device.index).multi_processor_count * 0.7
-    )
+    # Fraction of the SMs the grid aims to fill. Fitted; re-run the gated DeltaNet
+    # prefill benchmark to move it.
+    sm_fill = 0.7
+    target_num_ctas = int(get_sm_count(k.device.index) * sm_fill)
     block_dv_override = os.environ.get(
         "TILEOPS_GDN_PREFILL_BLOCK_DV",
         os.environ.get("TILEOPS_GDN_PREFILL_CP_BLOCK_DV"),

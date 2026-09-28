@@ -20,6 +20,7 @@ from tileops.kernels.attention.gqa_decode import (
     _gqa_decode_no_split_rope_run,
     _gqa_decode_no_split_run,
 )
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
 from .call_spec import decode_bs1_region, dense_decode_region, dense_long_context_decode_region
@@ -29,7 +30,6 @@ from .gqa_decode_bs1_common import (
     RING_DEPTH,
     make_gqa_decode_bs1_combine,
 )
-from .online_softmax import LOG2E
 
 __all__ = ["GQADecodeBs1Kernel"]
 

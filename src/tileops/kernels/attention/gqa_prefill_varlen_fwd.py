@@ -17,10 +17,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
+
 from ..grouped_tiling import GroupTiling
 from .call_spec import uses_sliding_window
 from .online_softmax import (
-    LOG2E,
     make_apply_softcap,
     make_online_softmax_with_mask_guard,
     make_rescale,

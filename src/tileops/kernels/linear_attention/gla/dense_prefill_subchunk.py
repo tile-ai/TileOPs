@@ -6,11 +6,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry
 
 from .call_spec import GLAInferenceCallSpec, dense_entry, serves_dense
 from .gla_fwd import (
-    LOG2E,
     GLAFwdKernel,
     _gla_fwd_h_kernel,
     _gla_precompute_g_kernel,

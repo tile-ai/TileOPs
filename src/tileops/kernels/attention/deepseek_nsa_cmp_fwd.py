@@ -5,9 +5,8 @@ import tilelang
 import torch
 from tilelang import language as T
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
-
-from .online_softmax import LOG2E
 
 
 @functools.lru_cache(maxsize=32)

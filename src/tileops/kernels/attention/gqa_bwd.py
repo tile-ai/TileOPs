@@ -6,10 +6,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
 from .call_spec import AttentionCall
-from .online_softmax import LOG2E
 
 __all__ = ["FlashAttnBwdPreprocessKernel", "GQABwdWgmmaPipelinedKernel"]
 

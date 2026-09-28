@@ -258,11 +258,11 @@ _GQA_DENSE_ROWS = [
 )
 def test_gqa_dense_dispatch(row: tuple, expected: str) -> None:
     """Each region, and the boundary that separates it from the next."""
-    from tileops.kernels.attention.call_spec import AttentionCall, fp8_dtype
+    from tileops.kernels.attention.call_spec import AttentionCall
     from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
 
     dtype_name, batch, seq_q, heads, heads_kv, dim, seq_kv, window, rope, softcap = row
-    dtypes = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp8": fp8_dtype()}
+    dtypes = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp8": torch.float8_e4m3fn}
     is_fp8 = dtype_name == "fp8"
     op = GroupedQueryAttentionDenseFwdOp(
         window_size_left=window[0],

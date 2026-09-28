@@ -15,6 +15,7 @@ from tileops.kernels.linear_attention.gated_deltanet.prefill.prepare import (
     fused_gdr_h,
     get_warmup_chunks,
 )
+from tileops.utils import get_sm_count
 
 __all__ = ["DeltaNetDensePrefillFwdKernel"]
 
@@ -69,7 +70,7 @@ def _dense_local_chunks(num_chunks: int, heads: int, device_index: int | None) -
     override = os.environ.get("TILEOPS_DELTANET_PREFILL_MAX_LOCAL_CHUNKS")
     if override is not None:
         return max(int(override), 4)
-    sm_count = torch.cuda.get_device_properties(device_index).multi_processor_count
+    sm_count = get_sm_count(device_index)
     local_chunks = 2 ** round(math.log2(math.sqrt(heads * num_chunks / sm_count) * 3))
     if heads >= 64 and num_chunks >= 512:
         local_chunks = max(local_chunks, 256)

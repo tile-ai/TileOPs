@@ -5,10 +5,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_sm_count
 
-from .call_spec import AttentionCall, mha_bwd_ws_region
-from .online_softmax import LOG2E
+from .call_spec import ATTENTION_DTYPES, AttentionCall, uses_sliding_window
 
 __all__ = ["MHABwdWsKernel"]
 
@@ -464,10 +465,24 @@ class MHABwdWsKernel(Kernel):
     """
 
     supported_archs: list[int] = [90]
+    # The head dim the WGMMA tiles and the dQ layout are written for.
+    _HEAD_DIM = 128
 
     @classmethod
     def applies(cls, call: AttentionCall) -> bool:
-        return mha_bwd_ws_region(call)
+        """One query head per KV head, 16-bit inputs with the default softmax scale, and a
+        sequence of whole ``_BLOCK_M``-row key blocks."""
+        return (
+            call.heads == call.heads_kv
+            and call.dim == cls._HEAD_DIM
+            and call.max_seqlen_q > 0
+            and call.max_seqlen_q % _BLOCK_M == 0
+            and call.dtype in ATTENTION_DTYPES
+            and not call.is_fp8
+            and call.softcap == 0.0
+            and call.sm_scale is None
+            and not uses_sliding_window(call)
+        )
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
@@ -495,9 +510,7 @@ class MHABwdWsKernel(Kernel):
         self.is_causal = is_causal
         self.dtype = dtype
 
-        num_sms = torch.cuda.get_device_properties(
-            device_index if device_index is not None else torch.cuda.current_device()
-        ).multi_processor_count
+        num_sms = get_sm_count(device_index)
         group = _launch_group(batch * heads, seq_len // _BLOCK_M, num_sms)
         self.kernel = _mha_bwd_ws_kernel(
             batch, heads, seq_len, dim, is_causal, group, num_sms, self.dtype_str
