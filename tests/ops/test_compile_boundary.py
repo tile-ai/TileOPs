@@ -32,7 +32,6 @@ from tileops.ops.attention.gqa import (
     GroupedQueryAttentionVarlenFwdOp,
 )
 from tileops.ops.attention.mha import (
-    MultiHeadAttentionBwdOp,
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
 )
 from tileops.ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
@@ -129,9 +128,10 @@ def _attention_cases():
         )
         return GroupedQueryAttentionPagedFwdOp(), case.gen_inputs()
 
-    def mha_bwd():
+    def gqa_bwd_mha_heads():
+        # One KV head per query head: the call the warp-specialized kernel serves.
         case = GroupedQueryAttentionBwdWorkload(1, _HEADS, _HEADS, 256, _DIM, True, _DTYPE)
-        op = MultiHeadAttentionBwdOp(is_causal=True)
+        op = GroupedQueryAttentionBwdOp(is_causal=True)
         return op, case.gen_inputs()
 
     def mha_decode_paged():
@@ -182,7 +182,7 @@ def _attention_cases():
         ("gqa-sliding-window-varlen", gqa_sliding_window_varlen),
         ("gqa-prefill-paged", gqa_prefill_paged),
         ("gqa-paged-decode", gqa_paged_decode),
-        ("mha-bwd", mha_bwd),
+        ("gqa-bwd-mha-heads", gqa_bwd_mha_heads),
         ("mha-decode-paged", mha_decode_paged),
         ("mla-decode", mla_decode),
         ("nsa-fwd", nsa_fwd),
@@ -568,7 +568,6 @@ for _op_cls in (
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
-    MultiHeadAttentionBwdOp,
     MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
     MultiHeadLatentAttentionDecodeWithKVCacheFwdOp,
     NSAVarlenFwdOp,

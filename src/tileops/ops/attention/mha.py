@@ -12,96 +12,10 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
 
 from ..op_base import Op
-from .gqa import GroupedQueryAttentionBwdOp
 
 __all__ = [
-    "MultiHeadAttentionBwdOp",
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",
 ]
-
-
-class MultiHeadAttentionBwdOp(Op):
-    """Layout: BSHD.
-
-    MHA backward is the ``heads_kv == heads`` specialization of GQA backward,
-    matching the forward path's dispatch through GQA.
-    """
-
-    compile_boundary = True
-    # Every kernel this op runs is built by GQA backward.
-    delegate_types: ClassVar[Mapping[str, type[Op]]] = {"gqa_backward": GroupedQueryAttentionBwdOp}
-
-    def __init__(
-        self,
-        is_causal: bool = True,
-        *,
-        target: Target = None,
-        kernel_map: Optional[Dict[str, Kernel]] = None,
-        tune: bool = False,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from each call.
-
-        Args:
-            is_causal: Manifest ``params.is_causal``, ``bool``, default ``True``.
-            target: Which set of kernels serves this op — a target name, ``BUILTIN``
-                for the in-tree kernels, or ``None`` to decide from the input device.
-            kernel_map: Optional kernel override dict.
-            tune: Whether to autotune, applied when a kernel is first built.
-        """
-        self.target = target
-        self.is_causal = is_causal
-
-        self.tune = tune
-        self.dispatch_kernel(kernel_map)
-        self._gqa_op = self.delegate_for(
-            "gqa_backward",
-            None,
-            is_causal=is_causal,
-        )
-        self.kernel_map = self._gqa_op.kernel_map
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        o: torch.Tensor,
-        do: torch.Tensor,
-        lse: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Run the op on the inputs the manifest declares.
-
-        Args:
-            q: Input tensor, dtype ``float16 | bfloat16``.
-            k: Input tensor, same dtype as ``q``.
-            v: Input tensor, same dtype as ``q``.
-            o: Input tensor, same dtype as ``q``.
-            do: Input tensor, same dtype as ``q``.
-            lse: Input tensor, dtype ``float32``.
-
-        Returns:
-            ``dq``, ``dk``, ``dv``, as the manifest declares. Shape rules: ``dq.shape == (B, S, H, D)``; ``dk.shape == (B, S, H, D)``; ``dv.shape == (B, S, H, D)``.
-        """
-        return self._call_boundary(q, k, v, o, do, lse)
-
-    def _eager_forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        o: torch.Tensor,
-        do: torch.Tensor,
-        lse: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Validate, resolve the kernel and launch, inside the operator.
-
-        Never traced: kernel construction enters a TileLang builder.
-        """
-        return self._gqa_op(q, k, v, o, do, lse)
-
-    def compute_roof(self) -> str:
-        """FLOPs are matmul contractions; priced on tensor cores."""
-        return tensor_core_roof(self.last_call.tensors["q"][1])
 
 
 class MultiHeadAttentionDecodePagedWithKVCacheFwdOp(Op):

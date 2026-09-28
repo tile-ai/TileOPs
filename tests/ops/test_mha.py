@@ -1,94 +1,13 @@
-"""Tests for multi-head attention backward and paged decode."""
+"""Tests for multi-head attention paged decode."""
 
 import pytest
 import torch
 import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
-from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionDecodePagedWithKVCacheFwdOp
+from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 from workloads.device import run_device
-from workloads.mha import (
-    MhaBwdWorkload,
-    MhaDecodePagedWorkload,
-)
-
-
-class MhaBwdTest(MhaBwdWorkload, TestBase):
-    pass
-
-
-class MhaBwdFixture(FixtureBase):
-    PARAMS = [
-        (
-            "batch, seq_len, heads, dim, causal, dtype, tune",
-            [
-                pytest.param(
-                    1,
-                    1024,
-                    8,
-                    64,
-                    False,
-                    torch.float16,
-                    False,
-                    marks=pytest.mark.smoke,
-                    id="smoke-bwd-fp16",
-                ),
-                pytest.param(
-                    1,
-                    1024,
-                    8,
-                    64,
-                    False,
-                    torch.bfloat16,
-                    False,
-                    marks=pytest.mark.smoke,
-                    id="smoke-bwd-bf16",
-                ),
-                pytest.param(
-                    1,
-                    256,
-                    4,
-                    128,
-                    True,
-                    torch.float16,
-                    False,
-                    marks=pytest.mark.smoke,
-                    id="smoke-bwd-ws-causal",
-                ),
-                pytest.param(
-                    16,
-                    2048,
-                    16,
-                    128,
-                    False,
-                    torch.float16,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bwd-fp16-large",
-                ),
-                pytest.param(
-                    4,
-                    4096,
-                    16,
-                    128,
-                    False,
-                    torch.bfloat16,
-                    True,
-                    marks=pytest.mark.full,
-                    id="full-bwd-bf16-tuned",
-                ),
-            ],
-        ),
-    ]
-
-
-@MhaBwdFixture
-def test_mha_bwd(
-    batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype, tune: bool
-) -> None:
-    test = MhaBwdTest(batch, heads, seq_len, dim, causal, dtype)
-    op = MultiHeadAttentionBwdOp(causal, tune=tune)
-    test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)
+from workloads.mha import MhaDecodePagedWorkload
 
 
 class MhaDecodePagedTest(MhaDecodePagedWorkload, TestBase):

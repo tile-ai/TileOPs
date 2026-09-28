@@ -1,74 +1,12 @@
-"""Benchmarks for multi-head attention backward and paged decode, one case per manifest call, against FA3, FlashInfer and torch."""
-
-import math
+"""Benchmarks for multi-head attention paged decode, one case per manifest call, against FA3 and FlashInfer."""
 
 import pytest
 import torch
-from torch.nn import functional as F
 
 from benchmarks.baselines import FLASHINFER_TAG
-from benchmarks.benchmark_base import ManifestBenchmark, backward_of, manifest_calls
-from tileops.ops import MultiHeadAttentionBwdOp, MultiHeadAttentionDecodePagedWithKVCacheFwdOp
-from workloads.mha import MhaBwdCall, MhaDecodePagedCall
-
-
-def _fa3_mha_bwd(workload: MhaBwdCall, lse: torch.Tensor):
-    """Return FA3's backward alone as a callable, or None if FA3 is not installed.
-
-    ``flash_attn_func`` would run FA3's forward inside the timed call; its backward
-    entry takes the forward's output and LSE directly, so only the backward is timed.
-    """
-    try:
-        from flash_attn_interface import _flash_attn_backward
-    except ImportError:
-        return None
-
-    # The workload's LSE is base 2; FA3 takes the natural logarithm.
-    lse_natural = lse * math.log(2.0)
-
-    def baseline_fn(q, k, v, o, grad_output, lse):
-        dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
-        _flash_attn_backward(
-            grad_output, q, k, v, o, lse_natural, dq=dq, dk=dk, dv=dv, is_causal=workload.is_causal
-        )
-        return dq, dk, dv
-
-    return baseline_fn
-
-
-def _torch_mha_bwd(workload, q, k, v):
-    """Torch SDPA's backward alone: the forward runs once here, outside the timed call."""
-    with torch.enable_grad():
-        q, k, v = (t.detach().requires_grad_(True) for t in (q, k, v))
-        out = F.scaled_dot_product_attention(
-            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=workload.is_causal
-        )
-    node = backward_of(out)
-
-    def fn(q, k, v, o, grad_output, lse):
-        # Transposing grad_output into SDPA's layout is a view.
-        return node(grad_output.transpose(1, 2))
-
-    return fn
-
-
-@pytest.mark.parametrize("call", manifest_calls(MultiHeadAttentionBwdOp))
-def test_mha_bwd_bench(call) -> None:
-    """Backward is timed in training, so the kernels tune."""
-    workload = MhaBwdCall(call)
-    inputs = workload.gen_inputs()
-
-    op = MultiHeadAttentionBwdOp(**workload.arguments(), tune=True)
-    bm = ManifestBenchmark(op, workload)
-    functors = {"tileops": op}
-
-    fa3_fn = _fa3_mha_bwd(workload, inputs[5])
-    if fa3_fn is not None:
-        functors["fa3"] = fa3_fn
-    else:
-        functors["torch-sdpa"] = _torch_mha_bwd(workload, *inputs[:3])
-
-    bm.compare(functors, *inputs)
+from benchmarks.benchmark_base import ManifestBenchmark, manifest_calls
+from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
+from workloads.mha import MhaDecodePagedCall
 
 
 def _fa3_mha_decode_paged(workload, k, v):
