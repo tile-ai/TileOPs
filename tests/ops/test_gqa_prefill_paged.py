@@ -496,6 +496,8 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
             torch.testing.assert_close(v_pages[row], v_pages_before[row])
 
 
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gqa_prefill_paged_with_kv_cache_requires_power_of_two_page_size() -> None:
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(page_size=24, max_seqlen_q=16)
