@@ -36,6 +36,8 @@ class MoePermuteAlignFixture(FixtureBase):
                 # dispatch boundary: numel=1023 (last small-batch) vs numel=1024 (first large-batch)
                 pytest.param(511, 2, 8, 16, marks=pytest.mark.full, id="sb-boundary-1022"),
                 pytest.param(512, 2, 8, 16, marks=pytest.mark.full, id="lb-boundary-1024"),
+                # More experts than the alignment block has threads.
+                pytest.param(64, 8, 1100, 64, marks=pytest.mark.full, id="experts-past-threads"),
             ],
         ),
     ]
