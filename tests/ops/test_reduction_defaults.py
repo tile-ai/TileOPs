@@ -212,16 +212,17 @@ def test_the_arch_check_asks_about_the_input_s_device(monkeypatch) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
     asked: list = []
-    real = utils.get_sm_version
+    real = utils.device_facts
 
     def recording(index=None):
         asked.append(index)
         return real(index)
 
-    monkeypatch.setattr(utils, "get_sm_version", recording)
+    # The call record carries the architecture the kernel is checked against.
+    monkeypatch.setattr(utils, "device_facts", recording)
 
     x = torch.randn(4, 8, dtype=torch.float16, device="cuda")
     SumFwdOp(dim=-1)(x)
 
-    assert asked, "the kernel declares supported_archs, so it must have probed"
+    assert asked, "the kernel declares supported_archs, so the call record must have probed"
     assert all(i == x.device.index for i in asked), asked

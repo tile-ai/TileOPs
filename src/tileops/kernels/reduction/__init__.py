@@ -19,12 +19,23 @@ from .logsumexp import (
     LogSumExpSplitKernel,
     LogSumExpStreamingKernel,
 )
-from .reduce import ReduceKernel
+from .reduce import (
+    ReduceEdgeKernel,
+    ReduceFoldKernel,
+    ReduceKernel,
+    ReduceLeadingKernel,
+    ReduceProdKernel,
+    WelfordEdgeKernel,
+    WelfordReduceKernel,
+)
 from .softmax import (
     SoftmaxKernel,
     SoftmaxSplitKernel,
 )
-from .vector_norm import VectorNormKernel
+from .vector_norm import (
+    VectorNormEdgeKernel,
+    VectorNormKernel,
+)
 
 __all__: list[str] = [
     "DEFAULT_ALIGNMENT",
@@ -38,9 +49,16 @@ __all__: list[str] = [
     "LogicalReduceEdgeFusedKernel",
     "LogicalReduceEdgeTwoPassKernel",
     "LogicalReduceKernel",
+    "ReduceEdgeKernel",
+    "ReduceFoldKernel",
     "ReduceKernel",
+    "ReduceLeadingKernel",
+    "ReduceProdKernel",
     "SoftmaxKernel",
     "SoftmaxSplitKernel",
+    "VectorNormEdgeKernel",
     "VectorNormKernel",
+    "WelfordEdgeKernel",
+    "WelfordReduceKernel",
     "align_up",
 ]

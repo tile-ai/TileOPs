@@ -9,8 +9,9 @@ allows), a complex element as its two real parts, every other dtype as declared.
 """
 
 import functools
+import math
 from math import prod
-from typing import Optional
+from typing import ClassVar, Mapping, Optional
 
 import tilelang
 import tilelang.language as T
@@ -21,8 +22,10 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.reduction._primitives import (
     FP32_EXACT_INT_LIMIT,
     ceildiv_int,
+    down_rows_once,
+    down_rows_split,
+    down_rows_splits,
     edge_axis_split,
-    reduce_down_rows,
     restore_reduced,
     rows_for_axes,
     tune_by_forward,
@@ -409,7 +412,23 @@ class LogicalReduceKernel(Kernel):
         return counted if counts else counted.view(torch.bool)
 
 
-class LogicalReduceEdgeTwoPassKernel(Kernel):
+class LogicalReduceEdgeKernelBase(Kernel):
+    """What the two edge-axis logical reductions share: the kept width that divides them."""
+
+    # The fused edge pass runs one block per kept column and has no other parallelism:
+    # the fewest kept columns that fill the device, per calibrated board.
+    _FUSED_MIN_KEPT: ClassVar[Mapping[str, int]] = {"h200": 32}
+
+    @classmethod
+    def fused_min_kept(cls, call: LogicalReduceCall) -> float:
+        """The fewest kept columns at which the fused pass fills the call's board.
+
+        Infinite on a board with no calibrated entry.
+        """
+        return cls._FUSED_MIN_KEPT.get(call.calibration, math.inf)
+
+
+class LogicalReduceEdgeTwoPassKernel(LogicalReduceEdgeKernelBase):
     """Logical reduction of a prefix and a suffix of the axes in two passes.
 
     No permute: the trailing axes fold as contiguous rows into 0/1 int8 (or fp32 count)
@@ -431,7 +450,7 @@ class LogicalReduceEdgeTwoPassKernel(Kernel):
     @classmethod
     def applies(cls, call: LogicalReduceCall) -> bool:
         kept = call.edge_kept
-        if not (call.op_kind in _LOGICAL_REDUCE_KINDS and 0 < kept < call.edge_fused_min_kept):
+        if not (call.op_kind in _LOGICAL_REDUCE_KINDS and 0 < kept < cls.fused_min_kept(call)):
             return False
         # A count crosses between the passes in fp32, exact up to FP32_EXACT_INT_LIMIT.
         reduced = prod(call.shape) // kept
@@ -482,18 +501,22 @@ class LogicalReduceEdgeTwoPassKernel(Kernel):
             # Partial counts are fp32, exact below 2^24, so the columns pass sums them
             # without an int accumulator and writes int64 itself.
             partials = _fold_reduce(x, 1, rows, self.trail, self.op_kind, "float32")
-            y = reduce_down_rows(
-                partials.reshape(self.lead, self.kept), "sum", "float32", "int64", 0.0
-            )
+            outer = ("sum", "float32", "int64")
         else:
             partials = _fold_reduce(x, 1, rows, self.trail, self.op_kind, "int8")
-            partials = partials.reshape(self.lead, self.kept)
-            outer_kind = "amax" if self.op_kind == "any" else "amin"
-            y = reduce_down_rows(partials, outer_kind, "int8", "int8", 0.0).view(torch.bool)
+            outer = ("amax" if self.op_kind == "any" else "amin", "int8", "int8")
+        partials = partials.reshape(self.lead, self.kept)
+        splits = down_rows_splits(self.lead, self.kept)
+        if splits == 1:
+            y = down_rows_once(partials, *outer, 0.0)
+        else:
+            y = down_rows_split(partials, *outer, 0.0, splits)
+        if self.op_kind != "count_nonzero":
+            y = y.view(torch.bool)
         return restore_reduced(y, self.shape, self.reduce_axes, self.keepdim)
 
 
-class LogicalReduceEdgeFusedKernel(Kernel):
+class LogicalReduceEdgeFusedKernel(LogicalReduceEdgeKernelBase):
     """Logical reduction of a prefix and a suffix of the axes in one pass.
 
     One block reduces one kept column, walking the leading axes serially while folding
@@ -516,7 +539,7 @@ class LogicalReduceEdgeFusedKernel(Kernel):
     def applies(cls, call: LogicalReduceCall) -> bool:
         kept = call.edge_kept
         return (
-            call.op_kind in _LOGICAL_REDUCE_KINDS and kept > 0 and kept >= call.edge_fused_min_kept
+            call.op_kind in _LOGICAL_REDUCE_KINDS and kept > 0 and kept >= cls.fused_min_kept(call)
         )
 
     @classmethod

@@ -21,8 +21,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_path
 from tileops.kernels.constants import SHARED_BANK_SPAN_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.tiling import ALIGNMENT, align_up
+from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = [
     "AUTOTUNE_THREADS",
@@ -40,10 +42,12 @@ __all__ = [
     "ceildiv_int",
     "compute_tile_n",
     "device_smem_budget",
-    "edge_axis_plan",
+    "down_rows_once",
+    "down_rows_split",
+    "down_rows_splits",
     "edge_axis_split",
+    "fold_rows_kernel",
     "identity_for",
-    "reduce_down_rows",
     "restore_reduced",
     "restore_same_shape",
     "rows_for_axes",
@@ -237,14 +241,13 @@ class BlockConfigPlanner:
 
         The widest is regularly beaten by a narrower tile trading one global
         pass for a better shared-memory stride, so the next tile counts follow
-        it.  Empty when the pair can build no tile at all.
+        it.  Only widths `reject_tile_n` accepts: the widest tile that fits shared memory
+        need not divide across the block.  Empty when the pair can build no tile at all.
         """
         try:
-            default = self.tile_n_for(block_m, threads)
+            default = self.tiled_tile_n(block_m, threads)
         except ValueError:
             return []
-        if default == 0:
-            return [0]
 
         align = self._column_alignment(block_m, threads)
         out = [default]
@@ -255,7 +258,7 @@ class BlockConfigPlanner:
             tile_n = align_up((self.N_padded + n_tiles - 1) // n_tiles, align)
             if 0 < tile_n <= default and tile_n not in out:
                 out.append(tile_n)
-        return out
+        return [t for t in out if not self.reject_tile_n(block_m, t, threads)]
 
     def layout_ok(self, block_m: int, cols: int, threads: int) -> bool:
         """Whether a ``(block_m, cols)`` fragment is known to be reducible.
@@ -806,33 +809,6 @@ class _LeadingAxisReducePolicy:
 _LEADING_POLICY = _LeadingAxisReducePolicy()
 
 
-def edge_axis_plan(
-    shape: "tuple[int, ...]",
-    k: int,
-    j: int,
-    elem_bytes: int,
-    smem_budget: int,
-    **planner_kwargs,
-):
-    """Split *shape* for an edge-axis reduction and plan its rows pass.
-
-    Returns ``(lead, kept, trail, planner, cfg)``: the leading and trailing
-    reduced element counts, the kept middle, and the ``BlockConfigPlanner``
-    with its default config for rows of ``trail`` elements.
-    """
-    ndim = len(shape)
-    lead = prod(shape[:k])
-    kept = prod(shape[k : ndim - j])
-    trail = prod(shape[ndim - j :])
-    planner = BlockConfigPlanner(
-        align_up(trail, DEFAULT_ALIGNMENT),
-        elem_bytes,
-        smem_budget,
-        **planner_kwargs,
-    )
-    return lead, kept, trail, planner, planner.default_config()
-
-
 def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
     """Split *axes* into ``(leading, trailing)`` counts when they hug both edges.
 
@@ -853,13 +829,6 @@ def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
     return (k, j)
 
 
-def _leading_row_splits(reduced: int, kept: int, threads: int) -> int:
-    """How many ways to split the reduced axis so the grid fills the device."""
-    block_b = threads * _LEADING_POLICY.cols_per_thread
-    column_blocks = ceildiv_int(kept, block_b)
-    return max(1, min(reduced, ceildiv_int(_LEADING_POLICY.target_blocks, column_blocks)))
-
-
 def _make_down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: str):
     """Create the per-op macros used by the down-rows reduction."""
 
@@ -869,6 +838,8 @@ def _make_down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: 
             T.fill(acc, -T.infinity("float32"))
         elif op_kind == "amin":
             T.fill(acc, T.infinity("float32"))
+        elif op_kind == "prod":
+            T.fill(acc, 1.0)
         else:
             T.fill(acc, 0.0)
 
@@ -878,6 +849,8 @@ def _make_down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: 
             acc[slot] = T.max(acc[slot], value)
         elif op_kind == "amin":
             acc[slot] = T.min(acc[slot], value)
+        elif op_kind == "prod":
+            acc[slot] = acc[slot] * value
         else:
             acc[slot] = acc[slot] + value
 
@@ -920,7 +893,7 @@ def _down_rows_kernel(
     Args:
         A: Elements the reduction consumes per output column.
         B: Output columns.
-        op_kind: One of ``sum`` / ``mean`` / ``amax`` / ``amin``.
+        op_kind: One of ``sum`` / ``mean`` / ``amax`` / ``amin`` / ``prod``.
         in_dtype: TileLang dtype string of the input.
         out_dtype: TileLang dtype string of the output. A split pass writes fp32
             partials whatever it read; the pass that finishes writes the declared dtype.
@@ -996,7 +969,23 @@ def _down_rows_kernel(
     return _func
 
 
-def reduce_down_rows(
+def down_rows_splits(reduced: int, kept: int) -> int:
+    """Row slices a down-rows reduction of ``(reduced, kept)`` runs as; 1 is one launch.
+
+    Splitting the reduced axis is what fills the grid, at the cost of a second launch over
+    the fp32 partial rows. An input smaller than one grid's worth of work cannot amortize
+    that launch.
+    """
+    grid_work = (
+        _LEADING_POLICY.threads * _LEADING_POLICY.cols_per_thread * _LEADING_POLICY.target_blocks
+    )
+    if reduced * kept <= grid_work:
+        return 1
+    column_blocks = ceildiv_int(kept, _LEADING_POLICY.threads * _LEADING_POLICY.cols_per_thread)
+    return max(1, min(reduced, ceildiv_int(_LEADING_POLICY.target_blocks, column_blocks)))
+
+
+def down_rows_once(
     flat: torch.Tensor,
     op_kind: str,
     in_dtype: str,
@@ -1004,37 +993,38 @@ def reduce_down_rows(
     divisor: float,
     epilogue: str = "",
 ) -> torch.Tensor:
-    """Reduce an ``(A, B)`` buffer down its rows, writing one *out_dtype* row.
+    """Reduce an ``(A, B)`` buffer down its rows in one launch, writing one *out_dtype* row."""
+    reduced, kept = flat.shape
+    single = _down_rows_kernel(
+        reduced,
+        kept,
+        op_kind,
+        in_dtype,
+        out_dtype,
+        _LEADING_POLICY.threads,
+        1,
+        divisor,
+        epilogue,
+    )
+    return single()(flat)
 
-    Splitting the reduced axis is what fills the grid, and each slice leaves an
-    fp32 partial row; a second call over those rows finishes the op. The partials
-    are a few thousand values against the millions the first pass reads, so the
-    second call costs about nothing. ``divisor`` and ``epilogue`` apply only at
-    the finishing call.
+
+def down_rows_split(
+    flat: torch.Tensor,
+    op_kind: str,
+    in_dtype: str,
+    out_dtype: str,
+    divisor: float,
+    splits: int,
+    epilogue: str = "",
+) -> torch.Tensor:
+    """Reduce an ``(A, B)`` buffer down its rows as *splits* slices, then finish the partials.
+
+    Each slice leaves an fp32 partial row; the second launch reduces those rows and is the
+    only one ``divisor`` and ``epilogue`` apply to. The partials are a few thousand values
+    against the millions the first launch reads.
     """
     reduced, kept = flat.shape
-    # An input smaller than one grid's worth of work cannot amortize the
-    # extra pass a split costs; reduce it in a single call.
-    grid_work = (
-        _LEADING_POLICY.threads * _LEADING_POLICY.cols_per_thread * _LEADING_POLICY.target_blocks
-    )
-    if reduced * kept <= grid_work:
-        splits = 1
-    else:
-        splits = _leading_row_splits(reduced, kept, _LEADING_POLICY.threads)
-    if splits == 1:
-        single = _down_rows_kernel(
-            reduced,
-            kept,
-            op_kind,
-            in_dtype,
-            out_dtype,
-            _LEADING_POLICY.threads,
-            1,
-            divisor,
-            epilogue,
-        )
-        return single()(flat)
     partials = _down_rows_kernel(
         reduced,
         kept,
@@ -1059,3 +1049,116 @@ def reduce_down_rows(
         epilogue,
     )
     return finish()(partials.reshape(splits, kept))
+
+
+# The row fold: one block per row, folded into registers as it is read
+
+
+_STREAMING_LOAD_HELPER_PATH = csrc_path("streaming_load.h")
+
+
+@functools.lru_cache(maxsize=32)
+def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str, unroll: int):
+    """Build a reduce of each row of an ``(m, n)`` buffer, folded into registers as it reads.
+
+    One block per row; each thread folds one 16-byte vector per step into ``vec``
+    independent slots. Every element is read once, so the loads are evict-first.
+    The caller guarantees rows of whole vectors and a vector-aligned buffer start.
+
+    Args:
+        m: Rows.
+        n: Elements each row reduces, a multiple of one vector.
+        op_kind: ``sum`` / ``mean`` / ``amax`` / ``amin`` / ``prod`` / ``l1`` / ``l2``
+            / ``inf``; ``inf`` reduces int32 bit patterns so a NaN outranks every number.
+        dtype: TileLang dtype string of the input.
+        out_dtype: TileLang dtype string of the output.
+        unroll: Vector loads each thread keeps in flight.
+    """
+    vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
+    slot_dtype = "int32" if op_kind == "inf" else "float32"
+    identity = identity_for(op_kind)
+
+    @tilelang.jit(out_idx=[1], compile_flags=["-include", _STREAMING_LOAD_HELPER_PATH])
+    def _func(threads: int):
+        step = threads * vec
+        steps = n // step
+        num_warps = threads // WARP_LANES
+
+        def prepared(value):
+            value = T.cast(value, "float32")
+            if op_kind == "l1":
+                return T.abs(value)
+            if op_kind == "l2":
+                return value * value
+            if op_kind == "inf":
+                return T.reinterpret(T.abs(value), "int32")
+            return value
+
+        def combine(a, b):
+            if op_kind in ("amax", "inf"):
+                return T.max(a, b)
+            if op_kind == "amin":
+                return T.min(a, b)
+            if op_kind == "prod":
+                return a * b
+            return a + b
+
+        def finished(total):
+            if op_kind == "mean":
+                return T.cast(total / float(n), out_dtype)
+            if op_kind == "l2":
+                return T.cast(T.sqrt(total), out_dtype)
+            if op_kind == "inf":
+                return T.cast(T.reinterpret(total, "float32"), out_dtype)
+            return T.cast(total, out_dtype)
+
+        @T.prim_func
+        def main(x: T.Tensor((m, n), dtype), out: T.Tensor((m,), out_dtype)):
+            with T.Kernel(m, threads=threads) as row:
+                tx = T.get_thread_binding()
+                held = T.alloc_local((vec,), dtype)
+                slots = T.alloc_local((vec,), slot_dtype)
+                total = T.alloc_local((1,), slot_dtype)
+                warp_total = T.alloc_shared((num_warps,), slot_dtype)
+
+                for c in T.serial(vec):
+                    slots[c] = T.cast(identity, slot_dtype)
+                for k in T.unroll(steps, unroll_factor=unroll):
+                    T.call_extern(
+                        "handle",
+                        "tl::tileops_load16_evict_first",
+                        T.address_of(held[0]),
+                        T.address_of(x[row, (k * threads + tx) * vec]),
+                    )
+                    for c in T.serial(vec):
+                        slots[c] = combine(slots[c], prepared(held[c]))
+                # The row holds whole vectors, so the tail is guarded per vector.
+                if steps * step + tx * vec < n:
+                    T.call_extern(
+                        "handle",
+                        "tl::tileops_load16_evict_first",
+                        T.address_of(held[0]),
+                        T.address_of(x[row, steps * step + tx * vec]),
+                    )
+                    for c in T.serial(vec):
+                        slots[c] = combine(slots[c], prepared(held[c]))
+
+                total[0] = slots[0]
+                for c in T.serial(1, vec):
+                    total[0] = combine(total[0], slots[c])
+                for stage in T.serial(WARP_SHUFFLE_STAGES):
+                    total[0] = combine(
+                        total[0],
+                        T.shfl_xor(total[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES),
+                    )
+                if tx % WARP_LANES == 0:
+                    warp_total[tx // WARP_LANES] = total[0]
+                T.sync_threads()
+                if tx == 0:
+                    for w in T.serial(1, num_warps):
+                        warp_total[0] = combine(warp_total[0], warp_total[w])
+                    out[row] = finished(warp_total[0])
+
+        return main
+
+    return _func

@@ -223,21 +223,15 @@ def test_reduce_caller_tile_n_validated() -> None:
     fp16 is a 1024-column thread-block pass; a width must divide it or be a
     multiple of it.
     """
+    from tileops.kernels.reduction.call_spec import ReduceCall
     from tileops.kernels.reduction.reduce import ReduceKernel
 
     m, n, dtype = 8, 102400, torch.float16
     x = torch.randn(m, n, dtype=dtype, device="cuda")
+    call = ReduceCall(device=x.device, shape=(m, n), axes=(1,), op_kind="sum", dtype=dtype)
 
     def run(tile_n: int, block_m: int = 2) -> None:
-        kernel = ReduceKernel(
-            M=m,
-            N=n,
-            op_kind="sum",
-            dtype=dtype,
-            reduce_axes=(1,),
-            tune=False,
-            config={"block_m": block_m, "threads": 128, "tile_n": tile_n},
-        )
+        kernel = ReduceKernel(call, config={"block_m": block_m, "threads": 128, "tile_n": tile_n})
         kernel.forward(x)  # construction defers the build; forward triggers it
 
     for accepted in (512, 1024, 2048):  # divides the pass, or a multiple of it
@@ -268,7 +262,7 @@ def test_reduce_untiled_autotune_unaligned_n() -> None:
     """
     from tileops.ops.reduction.reduce import SumFwdOp
 
-    m, n, dtype = 8, 7936, torch.float16
+    m, n, dtype = 8, 7935, torch.float16
     test = ReduceTest(m, n, dtype, "sum")
     op = SumFwdOp(dim=-1, tune=True)
     test.check(op, *test.gen_inputs(), **reduction_tolerance(dtype))
@@ -295,7 +289,7 @@ def test_reduce_tiled_autotune(op_kind: str) -> None:
     """
     from tileops.ops.reduction.reduce import SumFwdOp, VarFwdOp
 
-    m, n, dtype = 4, 40000, torch.float16
+    m, n, dtype = 4, 39999, torch.float16
     if op_kind == "sum":
         test = ReduceTest(m, n, dtype, "sum")
         op = SumFwdOp(dim=-1, tune=True)
@@ -524,6 +518,52 @@ def test_std_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     y = op(x)
     tol = reduction_tolerance(dtype)
     assert torch.allclose(y, ref, **tol), f"non-contig std max err: {(y - ref).abs().max()}"
+
+
+@pytest.mark.smoke
+def test_reduce_candidate_regions() -> None:
+    """Each call is served by the one implementation whose region names it."""
+    from tileops.kernels.reduction.call_spec import ReduceCall
+    from tileops.ops.reduction.reduce import ProdFwdOp, SumFwdOp, VarFwdOp
+
+    f16 = torch.float16
+    cases = [
+        (SumFwdOp, (8, 4096), (1,), "reduce_fold"),
+        (SumFwdOp, (8, 4095), (1,), "reduce"),
+        (ProdFwdOp, (8, 4095), (1,), "reduce_prod"),
+        (VarFwdOp, (8, 4096), (1,), "reduce_welford"),
+        (SumFwdOp, (64, 1000), (0,), "reduce_leading"),
+        (SumFwdOp, (4, 128, 4096), (0, 2), "reduce_edge"),
+        (VarFwdOp, (4, 128, 4096), (0, 2), "reduce_welford_edge"),
+        # Past fp32's exact integer range the Welford merge drifts, so the rows take it.
+        (VarFwdOp, (1024, 4, 32768), (0, 2), "reduce_welford"),
+    ]
+    for op_cls, shape, axes, key in cases:
+        op = op_cls(dim=0)
+        call = ReduceCall(
+            arch=90,
+            sm_count=132,
+            smem_budget=232448,
+            shape=shape,
+            axes=axes,
+            op_kind=op._op_kind,
+            dtype=f16,
+        )
+        assert op.select_kernel_key(tuple(op.kernel_map), call) == key, (op_cls, shape, axes)
+
+
+@pytest.mark.smoke
+def test_reduce_view_off_vector_boundary() -> None:
+    """A contiguous view whose storage starts off a 16-byte boundary reduces correctly."""
+    from tileops.ops.reduction.reduce import ProdFwdOp, SumFwdOp
+
+    flat = torch.rand(4 * 4096 + 1, dtype=torch.float16, device=run_device()) * 0.001 + 1
+    x = flat[1:].view(4, 4096)
+    assert x.is_contiguous() and x.data_ptr() % 16
+    tol = reduction_tolerance(torch.float16)
+    for op, ref in ((SumFwdOp(dim=-1), torch.sum), (ProdFwdOp(dim=-1), torch.prod)):
+        y = op(x)
+        assert torch.allclose(y, ref(x.float(), dim=-1).half(), **tol)
 
 
 # Spec-conformant tests (dim + keepdim interface)

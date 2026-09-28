@@ -566,7 +566,7 @@ def test_empty_dim_full_reduction_3d_dtypes(
 def test_vector_norm_long_sequence_tiled(op_kind: str) -> None:
     """Exercise the N-tiled path with a tail-M block."""
     dtype = torch.bfloat16
-    test = VectorNormTest(3, 33024, dtype, op_kind)
+    test = VectorNormTest(3, 33023, dtype, op_kind)
     op = _make_op(
         op_kind,
         kernel_map={"vector_norm": _TailBlockVectorNormKernel},
@@ -586,7 +586,7 @@ def test_vector_norm_tiled_autotune() -> None:
     N is not a power of two: a power-of-two N_padded lets ``compute_tile_n``
     fall back on an exact divisor, which hides a mis-derived tile_n.
     """
-    m, n, dtype = 4, 40000, torch.float16
+    m, n, dtype = 4, 39999, torch.float16
     test = VectorNormTest(m, n, dtype, "l2")
     op = _make_op("l2", tune=True)
     atol, rtol = _get_tolerances(dtype)
@@ -596,6 +596,30 @@ def test_vector_norm_tiled_autotune() -> None:
         (kernel,) = op.built_kernels("reduce").values()
         assert kernel._needs_tiling
         assert kernel.config in kernel.autotune_configs
+
+
+@pytest.mark.smoke
+def test_vector_norm_candidate_regions() -> None:
+    """Each call is served by the one implementation whose region names it."""
+    from tileops.kernels.reduction.call_spec import ReduceCall
+
+    cases = [
+        ("l2", (8, 4096), (1,), "vector_norm_fold"),
+        ("l1", (8, 4095), (1,), "vector_norm"),
+        ("inf", (4, 128, 4096), (0, 2), "vector_norm_edge"),
+    ]
+    for op_kind, shape, axes, key in cases:
+        op = _make_op(op_kind)
+        call = ReduceCall(
+            arch=90,
+            sm_count=132,
+            smem_budget=232448,
+            shape=shape,
+            axes=axes,
+            op_kind=op_kind,
+            dtype=torch.float16,
+        )
+        assert op.select_kernel_key(tuple(op.kernel_map), call) == key, (op_kind, shape, axes)
 
 
 @pytest.mark.smoke

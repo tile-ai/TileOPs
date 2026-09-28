@@ -7,21 +7,28 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.reduction.vector_norm import VectorNormKernel
+from tileops.kernels.reduction.reduce import ReduceFoldKernel
+from tileops.kernels.reduction.vector_norm import (
+    VectorNormEdgeKernel,
+    VectorNormKernel,
+)
 
-from .reduce import _ReduceOpBase
+from .reduce import ReduceCallOp
 
 __all__ = ["InfNormFwdOp", "L1NormFwdOp", "L2NormFwdOp"]
 
 
-class _VectorNormOp(_ReduceOpBase):
+class _VectorNormOp(ReduceCallOp):
     """``torch.linalg.vector_norm`` at the one ``ord`` the subclass computes.
 
     ``ord`` is taken to mirror torch, and the signature accepts only that value.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"vector_norm": VectorNormKernel}
-    _kernel_key = "vector_norm"
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "vector_norm_fold": ReduceFoldKernel,
+        "vector_norm": VectorNormKernel,
+        "vector_norm_edge": VectorNormEdgeKernel,
+    }
 
     def __init__(
         self,

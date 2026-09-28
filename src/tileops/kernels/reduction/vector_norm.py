@@ -6,37 +6,36 @@ Computes vector norms along the last dimension:
   - inf: max(|x|), reduced over IEEE bit patterns as int32 so a row holding NaN
     norms to NaN without a second look at the input
 
-Operates on raw 2D (M, N) tensors; the kernel handles 256-element alignment
-padding internally via masked loads with zero identity values.
+Rows of whole 16-byte vectors fold in `ReduceFoldKernel`. The row programs here handle
+256-element alignment padding internally via masked loads with zero identity values.
 
 Output dtype matches input dtype unless one is given; l1 and l2 compute in fp32.
 """
 
 import functools
-from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
-    BlockConfigPlanner,
     align_up,
-    device_smem_budget,
-    edge_axis_plan,
-    edge_axis_split,
-    reduce_down_rows,
-    restore_reduced,
-    rows_for_axes,
-    tune_by_forward,
+    down_rows_once,
+    down_rows_split,
+    down_rows_splits,
+)
+from tileops.kernels.reduction.call_spec import NORM_KINDS, ReduceCall
+from tileops.kernels.reduction.reduce import (
+    ReduceKernelBase,
+    RowReduceKernelBase,
 )
 
-__all__ = ["VectorNormKernel"]
-
-_VECTOR_NORM_KINDS = {"l1", "l2", "inf"}
+__all__ = [
+    "VectorNormEdgeKernel",
+    "VectorNormKernel",
+]
 
 
 # Vector norm kernel
@@ -232,165 +231,71 @@ def _inf_merge_kernel(A: int, B: int, out_dtype: str, threads: int):
     return _func
 
 
-class VectorNormKernel(Kernel):
-    """L1 / L2 / Inf norm forward kernel.
+class VectorNormKernel(RowReduceKernelBase):
+    """L1 / L2 / Inf norm of rows that are not whole vectors, through shared memory.
 
-    Supports SM80+ architectures. Handles 256-element alignment padding inside
-    the kernel. Computes norms via abs+sum (l1), square+sum+sqrt (l2), or
-    abs+max (inf). Uses an N-tiled fallback for long rows that exceed
-    TileLang's single-fragment column limit.
-
-    Output dtype matches input dtype unless *out_dtype* is given. l1 and l2 accumulate
-    in fp32; ``inf`` reduces int32 bit patterns, which is what carries NaN.
-
-    ``forward`` takes the tensor the op declares and reduces *reduce_axes* of it; the
-    permute to rows and the shape of the result are this kernel's business.
-
-    A row holding a NaN norms to NaN, matching ``torch.linalg.vector_norm``. The ``inf``
-    kind gets that from its reducer, so no pass over the input beyond the reduction
-    itself decides it.
-
-    Args:
-        M: Rows the reduction leaves.
-        N: Elements each row reduces.
-        op_kind: One of "l1", "l2", "inf".
-        dtype: Input data type (float32, float16, bfloat16).
-        reduce_axes: Non-negative axis indices, ascending, that the reduction runs over.
-        keepdim: Whether a reduced axis stays as a length-1 axis.
-        config: Optional kernel configuration dict.
-        tune: Whether to autotune (default False).
-        device_index: CUDA device the input lives on, for the shared-memory budget.
-        out_dtype: Output data type; ``None`` is *dtype*.
+    l1 and l2 accumulate in fp32; ``inf`` reduces int32 bit patterns, which is what carries
+    NaN, so a row holding a NaN norms to NaN as in ``torch.linalg.vector_norm``.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    general = True
 
-    def __init__(
-        self,
-        M: int,
-        N: int,
-        op_kind: str,
-        dtype: torch.dtype,
-        reduce_axes: "tuple[int, ...]",
-        keepdim: bool = False,
-        config: Optional[dict] = None,
-        tune: bool = False,
-        device_index: "int | None" = None,
-        out_dtype: Optional[torch.dtype] = None,
-    ):
-        super().__init__(device_index=device_index)
-        if op_kind not in _VECTOR_NORM_KINDS:
-            raise ValueError(
-                f"Unsupported op_kind '{op_kind}'. Expected one of {sorted(_VECTOR_NORM_KINDS)}."
-            )
-        self.M = M
-        self.N = N
-        self.op_kind = op_kind
-        self.dtype = dtype
-        self.out_dtype_str = self.dtype_to_str(out_dtype or dtype)
-        self.reduce_axes = tuple(reduce_axes)
-        self.keepdim = keepdim
-        self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        self._elem_bytes = torch.tensor([], dtype=dtype).element_size()
-        self._smem_budget = device_smem_budget(device_index)
-        self._planner = BlockConfigPlanner(
-            self.N_padded,
-            self._elem_bytes,
-            self._smem_budget,
+    @classmethod
+    def applies(cls, call: ReduceCall) -> bool:
+        return call.op_kind in NORM_KINDS and not cls.whole_vector_rows(call)
+
+    def _untiled(self) -> object:
+        return _vector_norm_kernel(self.M, self.N, self.op_kind, self.dtype_str, self.out_dtype_str)
+
+    def _tiled(self, tile_n: int) -> object:
+        return _vector_norm_kernel_tiled(
+            self.M, self.N, self.op_kind, self.dtype_str, self.out_dtype_str, tile_n
         )
-        self._needs_tiling = self._planner.needs_tiling
-        self.kernel = None
-        if not self._needs_tiling:
-            self.kernel = _vector_norm_kernel(
-                self.M,
-                self.N,
-                self.op_kind,
-                self.dtype_to_str(self.dtype),
-                self.out_dtype_str,
-            )
-        self.init_config(config, tune)
-        if self._needs_tiling and not tune:
-            bm = self.config.get("block_m", 1)
-            threads = self.config.get("threads", DEFAULT_THREADS)
-            if "tile_n" not in self.config or self.config["tile_n"] == 0:
-                self.config["tile_n"] = self._planner.tile_n_for(bm, threads)
-            reason = self._planner.reject_tile_n(bm, self.config["tile_n"], threads)
-            if reason:
-                raise ValueError(reason)
 
-    @property
-    def default_config(self) -> dict:
-        return self._planner.default_config()
 
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return self._planner.autotune_configs()
+class VectorNormEdgeKernel(ReduceKernelBase):
+    """Norm a prefix and a suffix of the axes without permuting the tensor.
 
-    def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """Autotune vector norm, benchmarking tiled configs directly."""
-        if not self._needs_tiling:
-            return super().autotune(warmup=warmup, rep=rep)
-        x = torch.randn(self.M, self.N, dtype=self.dtype, device=torch.cuda.current_device())
-        tune_by_forward(self, x, warmup=warmup, rep=rep, forward=self._norm_rows)
+    The trailing axes reduce as contiguous rows into fp32 partials, tiled where a row
+    exceeds one block pass, then the leading axes fold down the columns of those
+    partials. ``l2`` takes its square root at the fold, split into row slices where one
+    launch would leave the grid short; ``inf`` takes its NaN-carrying bit-pattern max in
+    one merge launch.
+    """
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Norm *reduce_axes* of *x*.
+    @classmethod
+    def applies(cls, call: ReduceCall) -> bool:
+        return call.op_kind in NORM_KINDS and cls.reduces_edge_axes(call)
 
-        Args:
-            x: The tensor the op declares, contiguous, on a CUDA device.
-
-        Returns:
-            The normed tensor, in the output dtype.
-
-        Raises:
-            ValueError: *x* is not on a CUDA device.
-        """
-        self._require_cuda(x=x)
-        in_shape = tuple(x.shape)
-        k, j = edge_axis_split(x.ndim, self.reduce_axes)
-        if k:
-            y = self._norm_edge_axes(x, k, j)
-            return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
-        rows = rows_for_axes(x, self.reduce_axes)
-        y = self._norm_rows(rows)
-        return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
-
-    def _norm_edge_axes(self, x: torch.Tensor, k: int, j: int) -> torch.Tensor:
-        """Norm a prefix and a suffix of the axes without permuting the tensor.
-
-        Two passes in the tensor's own layout: the trailing axes reduce as
-        contiguous rows into fp32 partials, then the leading axes fold down the
-        columns of those partials. ``l2`` takes its square root and ``inf`` its
-        NaN-carrying bit-pattern max at the fold.
-        """
-        lead, kept, trail, planner, cfg = edge_axis_plan(
-            tuple(x.shape), k, j, self._elem_bytes, self._smem_budget
-        )
-        dtype_str = self.dtype_to_str(self.dtype)
+    def __init__(self, call: ReduceCall):
+        super().__init__(call)
+        self._lead, self._kept, self._trail, planner, cfg = self.edge_plan(call)
+        rows = self._lead * self._kept
         if planner.needs_tiling:
-            stage = _vector_norm_kernel_tiled(
-                lead * kept, trail, self.op_kind, dtype_str, "float32", cfg["tile_n"], partial=True
+            builder = _vector_norm_kernel_tiled(
+                rows,
+                self._trail,
+                self.op_kind,
+                self.dtype_str,
+                "float32",
+                cfg["tile_n"],
+                partial=True,
             )
         else:
-            stage = _vector_norm_kernel(
-                lead * kept, trail, self.op_kind, dtype_str, "float32", partial=True
+            builder = _vector_norm_kernel(
+                rows, self._trail, self.op_kind, self.dtype_str, "float32", partial=True
             )
-        partials = stage(cfg["block_m"], cfg["threads"])(x.reshape(lead * kept, trail))
-        partials = partials.reshape(lead, kept)
+        self._rows_pass = builder(cfg["block_m"], cfg["threads"])
+        self._splits = down_rows_splits(self._lead, self._kept)
+
+    def _reduce(self, x: torch.Tensor) -> torch.Tensor:
+        lead, kept = self._lead, self._kept
+        partials = self._rows_pass(x.reshape(lead * kept, self._trail)).reshape(lead, kept)
         if self.op_kind == "inf":
             return _inf_merge_kernel(lead, kept, self.out_dtype_str, DEFAULT_THREADS)()(partials)
         epilogue = "sqrt" if self.op_kind == "l2" else ""
-        return reduce_down_rows(partials, "sum", "float32", self.out_dtype_str, 0.0, epilogue)
-
-    def _norm_rows(self, x: torch.Tensor) -> torch.Tensor:
-        """Norm the trailing axis of an ``(M, N)`` buffer."""
-        dtype_str = self.dtype_to_str(self.dtype)
-        if self._needs_tiling:
-            program = _vector_norm_kernel_tiled(
-                self.M, self.N, self.op_kind, dtype_str, self.out_dtype_str, self.config["tile_n"]
-            )
-        else:
-            program = _vector_norm_kernel(
-                self.M, self.N, self.op_kind, dtype_str, self.out_dtype_str
-            )
-        return program(self.config["block_m"], self.config["threads"])(x)
+        if self._splits == 1:
+            return down_rows_once(partials, "sum", "float32", self.out_dtype_str, 0.0, epilogue)
+        return down_rows_split(
+            partials, "sum", "float32", self.out_dtype_str, 0.0, self._splits, epilogue
+        )
