@@ -278,11 +278,12 @@ def _fold_reduce(
     """
     # Views only: a conjugated complex tensor is read unconjugated, which negates only
     # imaginary parts and so no element's truth.
+    scalars = x
     if x.dtype == torch.bool:
-        x = x.view(torch.int8)
+        scalars = x.view(torch.int8)
     elif x.is_complex():
-        x = torch.view_as_real(x.conj() if x.is_conj() else x).flatten(-2)
-    scalars = x.reshape(lead, rows, -1)
+        scalars = torch.view_as_real(x.conj() if x.is_conj() else x).flatten(-2)
+    scalars = scalars.reshape(lead, rows, -1)
     unit_dtype, components, pack = _fold_units(x.dtype, cols, scalars.data_ptr())
     units = scalars.view(unit_dtype)
     row_units = units.shape[-1]
