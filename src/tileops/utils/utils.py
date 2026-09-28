@@ -6,6 +6,8 @@ import torch
 # and baked into TIR at build time (loop bounds, shuffle widths), so it is a
 # constant rather than a per-device query like the properties below.
 WARP_LANES: int = 32
+# Butterfly shuffle steps that reduce one warp: log2(WARP_LANES).
+WARP_SHUFFLE_STAGES: int = WARP_LANES.bit_length() - 1
 
 str2dtype = {
     "float16": torch.float16,

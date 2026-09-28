@@ -46,7 +46,7 @@ def logical_reduce_region(call: LogicalReduceCall) -> bool:
 def edge_fused_min_kept(call: LogicalReduceCall) -> float:
     """The fewest kept columns at which the fused edge pass fills the call's board.
 
-    Infinite on a board with no calibrated entry, where no column count is known to.
+    Infinite on a board with no calibrated entry.
     """
 
     return _EDGE_FUSED_MIN_KEPT.get(call.calibration, math.inf)

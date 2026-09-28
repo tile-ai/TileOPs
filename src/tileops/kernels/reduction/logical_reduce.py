@@ -32,9 +32,7 @@ from tileops.kernels.reduction.call_spec import (
     logical_edge_two_pass_region,
     logical_reduce_region,
 )
-from tileops.utils import WARP_LANES
-
-_WARP_STAGES = WARP_LANES.bit_length() - 1
+from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = [
     "LogicalReduceEdgeFusedKernel",
@@ -218,7 +216,7 @@ def _logical_fold_kernel(
                             )
                         fold_held(held, acc)
 
-                for stage in T.serial(_WARP_STAGES):
+                for stage in T.serial(WARP_SHUFFLE_STAGES):
                     acc[0] = _fold_combine(
                         op_kind, acc[0], T.shfl_xor(acc[0], T.int32(WARP_LANES // 2) >> stage)
                     )
@@ -486,8 +484,7 @@ class LogicalReduceEdgeTwoPassKernel(Kernel):
             x, 1, self.lead * self.kept, self.trail, self.op_kind, partial_dtype
         ).reshape(self.lead, self.kept)
         if self.op_kind == "count_nonzero":
-            # The columns pass writes int64 itself; leaving it in fp32 and casting
-            # after costs a third kernel launch.
+            # The columns pass writes int64 itself.
             y = reduce_down_rows(partials, "sum", "float32", "int64", 0.0)
         else:
             outer_kind = "amax" if self.op_kind == "any" else "amin"
