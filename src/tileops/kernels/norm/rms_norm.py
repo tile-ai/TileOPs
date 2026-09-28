@@ -6,9 +6,8 @@ The normalized row goes from the register fragment straight to global memory. On
 partial reduction reads shared memory, because a thread walking a strided run of the row
 can reach it there and cannot reach another thread's registers.
 
-The fragment is wider than the row when the row is not already a width the block
-divides; the columns past the row load zero, which adds nothing to the sum of squares,
-and are never stored. The mean divides by the row's own width.
+The fragment may be wider than the row: columns past the row load zero and are never
+stored, and the mean divides by N.
 """
 
 import functools
@@ -27,23 +26,8 @@ from ._config import select_row_config, select_row_configs
 __all__ = ["RMSNormKernel"]
 
 
-# Rows at most this wide share a block of the default 128 threads: one of them gives
-# each thread less than one 16-byte access of a 16-bit dtype.
-_SHARED_ROW_MAX = 512
-# Elements such a block then holds: two 16-byte accesses per thread.
-_SHARED_BLOCK_ELEMENTS = 2048
-
-
-def _padded_width(n: int) -> int:
-    """Fragment width: a power of two for a row sharing a block, so whole rows tile it."""
-    if n <= _SHARED_ROW_MAX:
-        return 1 << (n - 1).bit_length()
-    return align_up(n, ALIGNMENT)
-
-
 @functools.lru_cache(maxsize=32)
-def _rms_norm_kernel(M, N, eps, dtype, has_weight, partial_min_elements, sm_count):
-    N_padded = _padded_width(N)
+def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, partial_min_elements, sm_count):
     col_guard = N_padded != N
 
     @tilelang.jit(out_idx=[2])
@@ -148,8 +132,7 @@ class RMSNormKernel(Kernel):
     """RMS Norm kernel.
 
     Supports SM80+ architectures. The row is held in a register fragment from the load
-    through the store. A short row shares its block with others, enough of them to give
-    every thread of the default width the same share a longer row gives it.
+    through the store; rows of at most ``_SHARED_ROW_MAX`` elements share a block.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -157,6 +140,11 @@ class RMSNormKernel(Kernel):
     # Row elements a thread must own before the walk pays. One reduction here,
     # so one walk.
     PARTIAL_MIN_ELEMENTS_PER_THREAD = 32
+    # Rows at most this wide share a block of the default 128 threads: one of them gives
+    # each thread less than one 16-byte access of a 16-bit dtype.
+    _SHARED_ROW_MAX = 512
+    # Elements such a block then holds: two 16-byte accesses per thread.
+    _SHARED_BLOCK_ELEMENTS = 2048
 
     def __init__(
         self,
@@ -175,15 +163,18 @@ class RMSNormKernel(Kernel):
         self.N = N
         self.eps = eps
         self.dtype = dtype
-        self.N_padded = _padded_width(N)
+        # A row sharing a block is held at a power of two, so whole rows tile the fragment.
+        self.N_padded = (
+            1 << (N - 1).bit_length() if N <= self._SHARED_ROW_MAX else align_up(N, ALIGNMENT)
+        )
         self._tune_pending = tune  # tuning needs a program, so it waits for the first call
         self.init_config(config, tune=False)
 
     @property
     def default_config(self) -> dict:
         config = select_row_config()
-        if self.N_padded <= _SHARED_ROW_MAX:
-            config["block_m"] = _SHARED_BLOCK_ELEMENTS // self.N_padded
+        if self.N_padded <= self._SHARED_ROW_MAX:
+            config["block_m"] = self._SHARED_BLOCK_ELEMENTS // self.N_padded
         return config
 
     @property
@@ -195,8 +186,6 @@ class RMSNormKernel(Kernel):
 
     def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
         """Normalize ``x`` over its trailing ``N`` elements.
-
-        Flattening to 2-D rows and a flat weight happens here.
 
         Args:
             x: Input whose trailing axes multiply to ``N``, contiguous, on a CUDA device.
@@ -227,6 +216,7 @@ class RMSNormKernel(Kernel):
         self.kernel = _rms_norm_kernel(
             m,
             self.N,
+            self.N_padded,
             self.eps,
             self.dtype_str,
             has_weight,
@@ -239,7 +229,7 @@ class RMSNormKernel(Kernel):
             self.autotune()
 
         block_m = self.config["block_m"]
-        if self.N_padded <= _SHARED_ROW_MAX:
+        if self.N_padded <= self._SHARED_ROW_MAX:
             block_m = min(block_m, 1 << (m - 1).bit_length())
         y = self.kernel(block_m, self.config["threads"])(rows, weight)
         return y.reshape(original_shape)

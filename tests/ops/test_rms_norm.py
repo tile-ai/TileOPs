@@ -215,7 +215,7 @@ def test_a_non_contiguous_input_compiles_to_the_shape_the_fake_promised() -> Non
 
 @pytest.mark.smoke
 def test_an_unaligned_row_comes_back_contiguous() -> None:
-    """The output is contiguous at every width, as the fake the compiled call reads promises."""
+    """A row width that is not a multiple of the alignment still returns a contiguous output."""
     x = torch.randn(3, 96, dtype=torch.float16, device=run_device())
     assert RMSNormFwdOp(normalized_shape=(96,))(x).is_contiguous()
 
