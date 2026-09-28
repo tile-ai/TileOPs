@@ -11,7 +11,12 @@ from .batch_norm import (
 )
 from .fused_add_norm import FusedAddLayerNormKernel, FusedAddRMSNormKernel
 from .group_norm import GroupNormKernel, GroupNormNoAffineKernel
-from .instance_norm import InstanceNormKernel, InstanceNormNoAffineKernel
+from .instance_norm import (
+    InstanceNormFwdTrainKernel,
+    InstanceNormFwdTrainSingleKernel,
+    InstanceNormKernel,
+    InstanceNormNoAffineKernel,
+)
 from .layer_norm import LayerNormKernel
 from .rms_norm import RMSNormKernel
 
@@ -29,6 +34,8 @@ __all__: list[str] = [
     "FusedAddRMSNormKernel",
     "GroupNormKernel",
     "GroupNormNoAffineKernel",
+    "InstanceNormFwdTrainKernel",
+    "InstanceNormFwdTrainSingleKernel",
     "InstanceNormKernel",
     "InstanceNormNoAffineKernel",
     "LayerNormKernel",

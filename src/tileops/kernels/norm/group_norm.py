@@ -50,20 +50,6 @@ from ._config import (
 __all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
 
 
-def _holds_row_in_registers(D: int, D_padded: int) -> bool:
-    """Whether a row of this width is read from global memory into fragments.
-
-    A row whose width the block divides is. A padded one loses the vectorized
-    copy to a per-element guard, so it only stays in registers while it is narrow
-    enough that staging through shared memory would cost more.
-
-    Args:
-        D: Row length.
-        D_padded: *D* rounded up to a width the block divides.
-    """
-    return D_padded == D or D_padded <= NARROW_ROW
-
-
 class _RowNormKernel(Kernel):
     """What both kernels here share: the row's tiling and the config space for it.
 
@@ -106,20 +92,37 @@ class _RowNormKernel(Kernel):
         self._tune_pending = tune  # tuning needs a program, so it waits for the first call
         self.init_config(config, tune=False)
 
+    @classmethod
+    def _holds_row_in_registers(cls, D: int, D_padded: int) -> bool:
+        """Whether a row of this width is read from global memory into fragments.
+
+        A row whose width the block divides is. A padded one loses the vectorized
+        copy to a per-element guard, so it only stays in registers while it is narrow
+        enough that staging through shared memory would cost more.
+
+        Args:
+            D: Row length.
+            D_padded: *D* rounded up to a width the block divides.
+        """
+        return D_padded == D or D_padded <= NARROW_ROW
+
+    @classmethod
+    def _row_widths_for(cls, D: int, D_padded: int) -> tuple:
+        """Block widths a row admits, narrowed while it is held in registers."""
+        widths = widths_for_row(D_padded)
+        if not cls._holds_row_in_registers(D, D_padded):
+            return widths
+        if D_padded != D:
+            low = high = cls._GUARDED_ELEMENTS_PER_THREAD
+        else:
+            low, high = cls._ELEMENTS_PER_THREAD_BAND
+        banded = tuple(t for t in widths if D_padded % t == 0 and low <= D_padded // t <= high)
+        return banded or widths
+
     @property
     def _row_widths(self) -> tuple:
         """Block widths this row admits, narrowed while it is held in registers."""
-        widths = widths_for_row(self.D_padded)
-        if not _holds_row_in_registers(self.D, self.D_padded):
-            return widths
-        if self.D_padded != self.D:
-            low = high = self._GUARDED_ELEMENTS_PER_THREAD
-        else:
-            low, high = self._ELEMENTS_PER_THREAD_BAND
-        banded = tuple(
-            t for t in widths if self.D_padded % t == 0 and low <= self.D_padded // t <= high
-        )
-        return banded or widths
+        return self._row_widths_for(self.D, self.D_padded)
 
     @property
     def default_config(self) -> dict:
@@ -127,7 +130,7 @@ class _RowNormKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        if _holds_row_in_registers(self.D, self.D_padded):
+        if self._holds_row_in_registers(self.D, self.D_padded):
             # One row per block, pinned rather than swept: a row this narrow runs
             # in under three microseconds, which the autotuner cannot rank, and
             # more rows per block only measure slower.
@@ -158,7 +161,7 @@ def _channel_of(row, col, num_groups: int, channels_per_group: int, spatial_size
 
 
 @functools.lru_cache(maxsize=32)
-def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
+def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, register_direct):
     """Build a row-wise normalization kernel with a per-channel affine.
 
     This is the core computation shared by GroupNorm and InstanceNorm. The
@@ -174,6 +177,7 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
         num_groups: Number of groups G.
         channels_per_group: C / G. Row ``m`` covers channels
             ``(m % G) * channels_per_group`` onwards.
+        register_direct: Whether a row is read from global memory into fragments.
     """
     D_padded = row_padding(D, 4 if dtype == "float32" else 2)
     spatial_size = D // channels_per_group
@@ -185,7 +189,6 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
         masked = D_padded != D
         # One channel owns the whole row exactly when a group holds one channel.
         row_constant_affine = channels_per_group == 1
-        register_direct = _holds_row_in_registers(D, D_padded)
         # A tail row block runs past the end unless every index is guarded.
         guarded = masked or M % block_m != 0
         if register_direct:
@@ -395,6 +398,7 @@ class GroupNormKernel(_RowNormKernel):
             self.dtype_str,
             self.num_groups,
             self.channels_per_group,
+            self._holds_row_in_registers(self.D, self.D_padded),
         )
         if self._tune_pending:
             self._tune_pending = False
@@ -405,7 +409,7 @@ class GroupNormKernel(_RowNormKernel):
 
 
 @functools.lru_cache(maxsize=32)
-def _group_norm_no_affine_kernel(M, D, eps, dtype):
+def _group_norm_no_affine_kernel(M, D, eps, dtype, register_direct):
     """Build a row-wise normalization kernel for shape (M, D) without affine.
 
     Same numerics and same boundary handling as `_group_norm_kernel`,
@@ -418,6 +422,7 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
         D: Row length = (C / G) * spatial_size.
         eps: Epsilon for numerical stability.
         dtype: TileLang dtype string.
+        register_direct: Whether a row is read from global memory into fragments.
     """
     D_padded = row_padding(D, 4 if dtype == "float32" else 2)
 
@@ -425,7 +430,6 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
     def _func(block_m, threads):
         # A non-aligned D would read and write columns >= D unless masked.
         masked = D_padded != D
-        register_direct = _holds_row_in_registers(D, D_padded)
         # A tail row block runs past the end unless every index is guarded.
         guarded = masked or M % block_m != 0
         if register_direct:
@@ -559,7 +563,13 @@ class GroupNormNoAffineKernel(_RowNormKernel):
         rows = x.reshape(-1, self.D)
 
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _group_norm_no_affine_kernel(rows.shape[0], self.D, self.eps, self.dtype_str)
+        self.kernel = _group_norm_no_affine_kernel(
+            rows.shape[0],
+            self.D,
+            self.eps,
+            self.dtype_str,
+            self._holds_row_in_registers(self.D, self.D_padded),
+        )
         if self._tune_pending:
             self._tune_pending = False
             self.autotune()
