@@ -781,15 +781,14 @@ def test_split_shape_runs_as_one_fused_kernel() -> None:
 
     A fused split is what keeps the row in registers across the fold; without
     it the pair reads the row a second time. The two shapes below are what
-    ``fused_threads`` refuses: a grid wider than a cooperative launch holds,
-    and a segment too wide for two fp32 fragments.
+    ``fused_split_threads`` refuses: a grid wider than a cooperative launch
+    holds, and a segment too wide for two fp32 fragments.
     """
-    seg_n = SoftmaxSplitKernel.split_seg_n(SoftmaxCall(shape=(4, 102400), axis=1, **_H200))
-    assert seg_n
-    assert SoftmaxSplitKernel.fused_threads(4, 102400, seg_n, _H200["sm_count"]) is not None
+    fused = SoftmaxSplitKernel.fused_split_threads
+    assert fused(SoftmaxCall(shape=(4, 102400), axis=1, **_H200)) is not None
 
-    assert SoftmaxSplitKernel.fused_threads(1, 10_000_000, 16384, _H200["sm_count"]) is None
-    assert SoftmaxSplitKernel.fused_threads(1, 100_000, 16384, _H200["sm_count"]) is None
+    assert fused(SoftmaxCall(shape=(1, 10_000_000), axis=1, **_H200)) is None
+    assert fused(SoftmaxCall(shape=(1, 4_300_000), axis=1, **_H200)) is None
 
 
 @pytest.mark.smoke

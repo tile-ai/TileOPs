@@ -631,6 +631,29 @@ class _SoftmaxKernelBase(Kernel):
         """The segment width a split of the rows takes, or 0 when the untuned row grid fills."""
         return split_seg_n(call.m, call.n, cls.row_plan(call)[0], call.sm_count)
 
+    @classmethod
+    def fused_split_threads(cls, call: SoftmaxCall) -> "int | None":
+        """The thread width a one-kernel split of *call* runs at, or None when it cannot.
+
+        A fused split keeps its segment in registers across a grid barrier, so it
+        reads the row once where the two-kernel pair reads it twice. Two conditions
+        bound it. The grid must be co-resident, since a cooperative launch wider
+        than the device holds is refused outright; ``split_seg_n`` already aims at
+        ``SPLIT_BLOCKS_PER_SM`` blocks per SM, and this rejects the shapes where the
+        segment cap pushed it past that. The two fp32 fragments must also fit the same
+        per-thread budget one fragment gets elsewhere, which is what picks the width:
+        the narrowest power of two from ``WARP_LANES`` up that holds them.
+        """
+        seg_n = cls.split_seg_n(call)
+        if ceildiv_int(call.n, seg_n) * call.m > SPLIT_BLOCKS_PER_SM * call.sm_count:
+            return None
+        threads = WARP_LANES
+        while threads <= DEFAULT_THREADS:
+            if 2 * seg_n <= FRAGMENT_ELEMS_PER_THREAD * threads:
+                return threads
+            threads *= 2
+        return None
+
     @staticmethod
     @functools.lru_cache(maxsize=256)
     def _plan_rows(
@@ -682,7 +705,7 @@ class SoftmaxSplitKernel(_SoftmaxKernelBase):
         seg_n = self.split_seg_n(call)
         self.num_segs = ceildiv_int(call.n, seg_n)
         out_dtype = self.dtype_to_str(call.out_dtype)
-        fused_threads = self.fused_threads(call.m, call.n, seg_n, call.sm_count)
+        fused_threads = self.fused_split_threads(call)
         if fused_threads is not None:
             self.fused = _softmax_fused_split_kernel(
                 call.m, call.n, call.op_kind, self.dtype_str, out_dtype, seg_n, fused_threads
@@ -696,29 +719,6 @@ class SoftmaxSplitKernel(_SoftmaxKernelBase):
         self.finalize = _softmax_split_finalize_kernel(
             call.m, call.n, call.op_kind, self.dtype_str, out_dtype, seg_n, DEFAULT_THREADS
         )()
-
-    @staticmethod
-    def fused_threads(M: int, N: int, seg_n: int, sm_count: int) -> "int | None":
-        """The thread width a one-kernel split runs at, or None when it cannot.
-
-        A fused split keeps its segment in registers across a grid barrier, so it
-        reads the row once where the two-kernel pair reads it twice. Two conditions
-        bound it. The grid must be co-resident, since a cooperative launch wider
-        than the device holds is refused outright; ``split_seg_n`` already aims at
-        ``SPLIT_BLOCKS_PER_SM`` blocks per SM, and this rejects the shapes where the
-        segment cap pushed it past that. The two fp32 fragments must also fit the same
-        per-thread budget one fragment gets elsewhere, which is what picks the width:
-        the narrowest power of two from ``WARP_LANES`` up that holds them.
-        """
-        num_segs = ceildiv_int(N, seg_n)
-        if num_segs * M > SPLIT_BLOCKS_PER_SM * sm_count:
-            return None
-        threads = WARP_LANES
-        while threads <= DEFAULT_THREADS:
-            if 2 * seg_n <= FRAGMENT_ELEMS_PER_THREAD * threads:
-                return threads
-            threads *= 2
-        return None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``call.axis`` of the contiguous input *x*."""
