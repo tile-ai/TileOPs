@@ -123,7 +123,8 @@ GemmW4A16FwdOp:
       output: {dtype: T, shape: "[M, N]"}
     shape_rules:
     - "group_size > 0"
-    - "K % 2 == 0 and K % group_size == 0"
+    # The packing order is defined per 128-element K step.
+    - "K % 128 == 0 and K % group_size == 0"
 
   workloads:
   # Decode-oriented coverage. The small non-decode shapes are compile/smoke checks only; they are

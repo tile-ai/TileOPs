@@ -92,9 +92,15 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         MeanPoolingFwdOp,
     )
     from .quantization import (
+        FP8QuantPerBlockFwdOp,
+        INT4QuantPerGroupFwdOp,
         INT8DequantPerBlockFwdOp,
         INT8DequantPerChannelFwdOp,
         INT8DequantPerTensorFwdOp,
+        INT8QuantPerBlockFwdOp,
+        INT8QuantPerChannelFwdOp,
+        INT8QuantPerTensorFwdOp,
+        SmoothQuantFwdOp,
     )
     from .reduction import (
         AllFwdOp,
@@ -181,6 +187,12 @@ _LAZY = {
     "INT8DequantPerTensorFwdOp": ".quantization",
     "INT8DequantPerChannelFwdOp": ".quantization",
     "INT8DequantPerBlockFwdOp": ".quantization",
+    "INT8QuantPerTensorFwdOp": ".quantization",
+    "INT8QuantPerChannelFwdOp": ".quantization",
+    "INT8QuantPerBlockFwdOp": ".quantization",
+    "FP8QuantPerBlockFwdOp": ".quantization",
+    "INT4QuantPerGroupFwdOp": ".quantization",
+    "SmoothQuantFwdOp": ".quantization",
     # GEMM
     "GemmFwdOp": ".gemm",
     "GemmFp8FwdOp": ".gemm",
