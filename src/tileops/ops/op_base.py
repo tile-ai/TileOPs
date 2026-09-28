@@ -641,9 +641,11 @@ class Op(ABC):
         settled_here = self._builder is _UNRESOLVED
         try:
             call = self._check_signature(inputs, writes)
-            if settled_here:
+            # An empty call runs no implementation, so none has to be available for it.
+            empty = self._writes_nothing(call)
+            if settled_here and not empty:
                 self._resolve_builder(inputs, writes, call.device)
-            if self._writes_nothing(call):
+            if empty:
                 result = self._empty_result(call, inputs, writes)
             elif self._served_by_target():
                 result = self._call_target(inputs, writes, _written, _execution)
@@ -965,7 +967,7 @@ class Op(ABC):
             if not self.compile_op_names and not torch.compiler.is_compiling():
                 bound = self._bind_forward(args, kwargs)
                 call = self._check_signature(*bound)
-                if settled_here:
+                if settled_here and not self._writes_nothing(call):
                     # The generated checks decide the call device, `device: cpu` tensors aside.
                     self._resolve_builder(args, kwargs, call.device)
             if call is not None and self._writes_nothing(call):

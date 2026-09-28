@@ -51,10 +51,15 @@ class SharedExpertMLPFwdOp(Op):
         return tensor_core_roof(self.last_call.ix["D"])
 
     def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built per token count, width, expert width and dtype."""
-        tokens, hidden, ffn, dtype = call
+        """One implementation, built per token count, width, expert width, dtype and device."""
+        tokens, hidden, ffn, dtype, device_index = call
         return call, lambda: self.kernel_map[role](
-            num_tokens=tokens, hidden_size=hidden, ffn_size=ffn, dtype=dtype, tune=self.tune
+            num_tokens=tokens,
+            hidden_size=hidden,
+            ffn_size=ffn,
+            dtype=dtype,
+            tune=self.tune,
+            device_index=device_index,
         )
 
     def forward(
@@ -78,5 +83,5 @@ class SharedExpertMLPFwdOp(Op):
         """Resolve the kernel and launch, inside the operator."""
         tokens, hidden = hidden_states.shape
         tensors = (hidden_states, w_gate_up, w_down)
-        call = (tokens, hidden, w_down.shape[1], hidden_states.dtype)
+        call = (tokens, hidden, w_down.shape[1], hidden_states.dtype, hidden_states.device.index)
         return self.kernel_for("shared_expert_mlp", tensors, call)(*tensors)

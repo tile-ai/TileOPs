@@ -60,7 +60,7 @@ def _silu_mul_fused_kernel(M: int, N: int, dtype_str: str):
     return _func
 
 
-def _dense_gemm(call: GemmCall, config: "dict | None") -> Kernel:
+def _dense_gemm(call: GemmCall, config: "dict | None", device_index: "int | None") -> Kernel:
     """Build the SM90 dense GEMM kernel whose region holds *call*.
 
     Raises:
@@ -69,7 +69,15 @@ def _dense_gemm(call: GemmCall, config: "dict | None") -> Kernel:
     candidates = (GemmTmaKernel, GemmCpAsyncKernel)
     for cls in candidates:
         if cls.refusal(call) is None:
-            return cls(m=call.m, n=call.n, k=call.k, dtype=call.dtype, trans_b=True, config=config)
+            return cls(
+                m=call.m,
+                n=call.n,
+                k=call.k,
+                dtype=call.dtype,
+                trans_b=True,
+                config=config,
+                device_index=device_index,
+            )
     reasons = "; ".join(f"{cls.__name__}: {cls.refusal(call)}" for cls in candidates)
     raise ValueError(f"no dense GEMM serves {call.m}x{call.n}x{call.k}: {reasons}")
 
@@ -92,15 +100,19 @@ class SharedExpertMLPKernel(Kernel):
         dtype: torch.dtype = torch.bfloat16,
         config=None,
         tune: bool = False,
+        *,
+        device_index: "int | None" = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.num_tokens = num_tokens
         self.hidden_size = hidden_size
         self.ffn_size = ffn_size
         self.dtype = dtype
         self.init_config(config, tune)
 
-        sm_version = get_sm_version()
+        sm_version = get_sm_version(device_index)
+        sm_count = get_sm_count(device_index)
+        device = torch.device("cuda", device_index) if device_index is not None else None
         self._fused_gate_up = None
         self._gate_up_is_activated = False
         # Each GEMM runs on the dense kernel whose region holds its shape.
@@ -112,7 +124,8 @@ class SharedExpertMLPKernel(Kernel):
                 dtype=dtype,
                 trans_b=True,
                 arch=sm_version,
-                sm_count=get_sm_count(),
+                sm_count=sm_count,
+                device=device,
             )
             for n, k in ((ffn_size * 2, hidden_size), (hidden_size, ffn_size))
         )
@@ -133,23 +146,25 @@ class SharedExpertMLPKernel(Kernel):
                 activation="silu_and_mul" if fuse_gate_up else "none",
                 static_dims="mnk",
                 config=template_config if config is not None or not fuse_gate_up else None,
+                device_index=device_index,
             )
             self._gate_up_is_activated = fuse_gate_up
             self._gemm_down = GemmTemplate(
                 GemmType.DENSE,
                 static_dims="mnk",
                 config=template_config,
+                device_index=device_index,
             )
         elif sm_version == 90:
             gemm_config = self.config if config is not None else None
-            self._gemm_gate_up = _dense_gemm(gate_up_call, gemm_config)
+            self._gemm_gate_up = _dense_gemm(gate_up_call, gemm_config, device_index)
             small_m_config = (
                 small_m_splitk_config(
                     num_tokens,
                     hidden_size,
                     ffn_size,
-                    get_sm_count(),
-                    torch.cuda.get_device_name(),
+                    sm_count,
+                    torch.cuda.get_device_name(device_index),
                 )
                 if dtype is torch.bfloat16 and config is None
                 else None
@@ -162,9 +177,10 @@ class SharedExpertMLPKernel(Kernel):
                     dtype=dtype,
                     trans_b=True,
                     config=small_m_config,
+                    device_index=device_index,
                 )
             else:
-                self._gemm_down = _dense_gemm(down_call, gemm_config)
+                self._gemm_down = _dense_gemm(down_call, gemm_config, device_index)
             gate_config = self._gemm_gate_up.config
             if (
                 isinstance(self._gemm_gate_up, GemmTmaKernel)
@@ -179,6 +195,7 @@ class SharedExpertMLPKernel(Kernel):
                     trans_b=True,
                     activation="silu_and_mul",
                     config=gate_config,
+                    device_index=device_index,
                 )
         else:
             self._gemm_gate_up = GemmCpAsyncKernel(
@@ -188,6 +205,7 @@ class SharedExpertMLPKernel(Kernel):
                 dtype=dtype,
                 trans_b=True,
                 config=self.config,
+                device_index=device_index,
             )
             self._gemm_down = GemmCpAsyncKernel(
                 m=num_tokens,
@@ -196,6 +214,7 @@ class SharedExpertMLPKernel(Kernel):
                 dtype=dtype,
                 trans_b=True,
                 config=self.config,
+                device_index=device_index,
             )
 
     @property
