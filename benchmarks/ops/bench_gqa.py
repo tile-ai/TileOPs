@@ -268,7 +268,9 @@ def _fa3_gqa_varlen(
     window_size_left: int,
     window_size_right: int,
 ):
-    """FlashAttention-3 over the same packed-varlen layout."""
+    """FlashAttention-3 over the same packed-varlen layout; it has no kernel above head dim 256."""
+    if workload.dim > 256:
+        return None
     try:
         from flash_attn_interface import flash_attn_varlen_func
     except ImportError:

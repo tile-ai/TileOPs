@@ -18,6 +18,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import LOG2E
+from tileops.utils import get_sm_version
 
 from ..grouped_tiling import GroupTiling
 from .call_spec import uses_sliding_window
@@ -71,6 +72,10 @@ def _gqa_prefill_varlen_fwd_kernel(
             else None
         )
         rescale = make_rescale(block_m, dim)
+        # Two warpgroups cannot take the score tile as a register operand of the
+        # second gemm: TileLang's layout inference finds no layout for the cast
+        # that feeds it, so that config stages the tile through shared memory.
+        p_via_shared = threads > 128
         q_tiling = GroupTiling(batch, block_m)
         num_q_tiles = q_tiling.tile_upper_bound(total_q)
 
@@ -89,7 +94,10 @@ def _gqa_prefill_varlen_fwd_kernel(
                 v_shared = T.alloc_shared([block_n, dim], dtype)
                 tile_cum = T.alloc_shared([batch + 1], "int32")
                 acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
-                acc_s_cast = T.alloc_fragment([block_m, block_n], dtype)
+                if p_via_shared:
+                    acc_s_cast = T.alloc_shared([block_m, block_n], dtype)
+                else:
+                    acc_s_cast = T.alloc_fragment([block_m, block_n], dtype)
                 acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_m], accum_dtype)
                 scores_max_prev = T.alloc_fragment([block_m], accum_dtype)
@@ -268,6 +276,11 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
 
     @property
     def default_config(self) -> dict:
+        if 256 < self.dim <= 512 and get_sm_version(self.device_index) >= 90:
+            # The fp32 output accumulator is block_m x dim, so block_m stays at
+            # 64; two warpgroups then carry the 64 x 64 tile. Its shared memory
+            # is over every pre-SM90 per-block cap.
+            return {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 256}
         return {
             "block_m": 64,
             "block_n": 64 if self.dim <= 128 else 32,

@@ -118,6 +118,9 @@ GroupedQueryAttentionVarlenFwdOp:
   - {T_q: 8192, T_kv: 8192, H: 32, H_kv: 8, D: 128, q_lens: "repeat(2048, 4)", kv_lens: "repeat(2048, 4)", is_causal: true, window_size_left: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-long-w1024}
   - {T_q: 2048, T_kv: 2048, H: 64, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", is_causal: true, window_size_left: 256, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-short-w256}
   - {T_q: 8192, T_kv: 8192, H: 64, H_kv: 8, D: 128, q_lens: "repeat(2048, 4)", kv_lens: "repeat(2048, 4)", is_causal: true, window_size_left: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-long-w1024}
+  - {T_q: 4096, T_kv: 4096, H: 32, H_kv: 4, D: 512, q_lens: "repeat(2048, 2)", kv_lens: "repeat(2048, 2)", is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: gemma4-31b-uniform}
+  - {T_q: 1024, T_kv: 3072, H: 32, H_kv: 4, D: 512, q_lens: "repeat(512, 2)", kv_lens: [1024, 2048], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: gemma4-31b-q-lt-kv}
+  - {T_q: 6048, T_kv: 6048, H: 16, H_kv: 2, D: 512, q_lens: [1000, 2048, 3000], kv_lens: [1000, 2048, 3000], is_causal: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: gemma4-26b-ragged}
   roofline:
     func: "tileops.perf.formulas.gqa_varlen_fwd_roofline"
 
