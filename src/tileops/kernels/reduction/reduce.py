@@ -15,7 +15,9 @@ import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.reduction._primitives import (
+from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
+
+from ._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
     FP32_EXACT_INT_LIMIT,
@@ -33,13 +35,12 @@ from tileops.kernels.reduction._primitives import (
     torch_dtype_nbytes,
     tune_by_forward,
 )
-from tileops.kernels.reduction.call_spec import (
+from .call_spec import (
     FOLD_KINDS,
     SIMPLE_KINDS,
     WELFORD_KINDS,
     ReduceCall,
 )
-from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = [
     "ReduceEdgeKernel",

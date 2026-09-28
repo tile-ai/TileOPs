@@ -17,14 +17,15 @@ from tileops.kernels.constants import (
     VECTOR_ACCESS_BYTES,
 )
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.reduction._primitives import (
+from tileops.utils import WARP_LANES, get_shared_memory_optin
+
+from ._primitives import (
     DEFAULT_ALIGNMENT,
     align_up,
     restore_same_shape,
     rows_for_axes,
     torch_dtype_nbytes,
 )
-from tileops.utils import WARP_LANES, get_shared_memory_optin
 
 __all__ = ["CumulativeKernel"]
 
