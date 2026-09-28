@@ -10,7 +10,7 @@
 
 - Update `docs/design/` when a change alters a top-level decision (an intermediate base class, the kernel-dispatch pattern, a contract between modules); a class attribute or other mechanism that implements a documented decision is read from the code.
 
-- A shape-selected choice between different programs or launch sequences is one candidate Kernel class per program, each stating its region in `applies`/`refusal` over a `CallSpec` record; never a path branch inside one class. An op with more than one kernel slot declares each slot's keys in `kernel_roles`. See [ops-design.md § Kernel selection](../../docs/design/ops-design.md#kernel-selection).
+- Each program or launch sequence the shape selects is its own candidate Kernel class with its region in `applies`/`refusal`, never a branch inside one class; an op with several slots declares each slot's keys in `kernel_roles`. See [ops-design.md § Kernel selection](../../docs/design/ops-design.md#kernel-selection).
 
 - Every kernel an op builds after construction goes through `Op.kernel_for(role, inputs, call)`, with `inputs` the tensors the kernel will be handed. The in-tree identity and builder come from `Op.entry_for(role, call)`, whose default selects among the op's candidates and asks the chosen class; an op with one implementation overrides it. An op MUST NOT declare a kernel cache dict, guard a kernel build on an attribute being unset, or carry any other get-or-build of its own — including for an auxiliary kernel. Assigning what `kernel_for` returned to `self.kernel` is not one. See [ops-design.md § Kernel caching and enumeration](../../docs/design/ops-design.md#kernel-caching-and-enumeration).
 

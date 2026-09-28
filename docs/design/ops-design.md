@@ -36,21 +36,21 @@ The generated `_validate_dtypes` is the only dtype gate, and it runs on every `f
 
 **Construction reads no device property.** An op constructs where it is imported. The tensors arrive later, perhaps on a device the process has not touched, perhaps on hardware where the probe does not exist at all. Installing the kernel map resolves classes and nothing more; a target that cannot run the op is refused when a kernel is first selected, built or called — by the implementation, which owns the architectures it was written for.
 
-**Choosing a slot is the op's; choosing among a slot's implementations is not.** Which slot serves a call follows from the call's user-visible semantics. Which implementation of that slot runs belongs with the implementations. The model is multiple dispatch: the call record is the signature, each implementation a method, and its region the method's signature.
+**Choosing a slot is the op's; choosing among a slot's implementations is not.** Which slot serves a call follows from the call's user-visible semantics. Which implementation of that slot runs belongs with the implementations.
 
-**A different program is a different implementation.** Where the shape selects a different program or launch sequence, each is its own implementation class with its own region; tile parameters of one program stay inside it. Why: the dispatch key is the handle a backend replaces and the region is what selection reads, so a program chosen inside a class can be neither replaced nor selected on its own.
+**A different program is a different implementation.** A program or launch sequence the shape selects is its own implementation with its own region; tile parameters of one program stay inside it. Why: an implementation is what a backend replaces and what selection chooses, and a program hidden inside another is neither.
 
-**An op declares each slot's candidates** in `kernel_roles`; a slot it does not declare selects among every key. Why: one op can hold several slots, and a candidate of one must not answer another's call.
+**Each slot declares its candidates.** Why: an op can hold several slots, and an implementation of one must not answer another's call.
 
 **An implementation states the region it serves, positively.** Never by excluding a sibling, never by architecture — its declared support already answers that.
 
-**Order decides nothing.** Selection takes the implementation that applies; the one declared general runs where no specialised one does. Nothing applicable is an error, and two specialised implementations claiming one call is an ambiguity error rather than a silent preference. A replacement the caller supplies answers the same question as the class it replaces, and replaces that implementation only; replacing every implementation of an op is a target's job ([Target boundary](#target-boundary)).
+**Order decides nothing.** Selection takes the implementation that applies; the one declared general runs where no specialised one does. Nothing applicable is an error, and two specialised implementations claiming one call is an ambiguity error rather than a silent preference. A replacement the caller supplies answers the same question as the class it replaces, and replaces that implementation only; replacing a whole op is a target's job ([Target boundary](#target-boundary)).
 
 **An implementation states how it is built.** `entry_for(call)` returns the identity two builds must share to be one entry, and the thunk that produces it. The identity is the construction arguments other than `tune`, which changes how fast a kernel runs but not what it computes, plus the device where the constructor could produce a different object on another one. An op names no candidate's constructor.
 
 Three records, each with one owner: the **call** (a `CallSpec` subclass) is what the caller asked for plus the device it runs on, and carries every fact the family's `applies` / `refusal` / `entry_for` read; the **build identity** is the selected class's projection of it; the **role** is the memoization bucket, one per slot and never the dispatch key.
 
-`kernel_for` is the only way an op's in-tree implementation reaches a kernel. It asks `Op.entry_for(role, call)` for the identity and the builder, and supplies both to get-or-build. The default `entry_for` selects among the slot's candidates and asks the chosen class, once per call record: a repeated call is a lookup. An op with one implementation and no call record overrides `entry_for` and states its own identity and builder there, rather than opening a second path to the cache.
+`kernel_for` is the only way an op's in-tree implementation reaches a kernel. It asks `Op.entry_for(role, call)` for the identity and the builder, and supplies both to get-or-build. The default `entry_for` selects among the slot's candidates and asks the chosen class. An op with one implementation and no call record overrides `entry_for` and states its own identity and builder there, rather than opening a second path to the cache.
 
 The rule is implementation choice within one slot. Choosing the slot sits above it, dtype specialization beside it; neither goes through it. See [S13](op-slot-rules.md#slot-s13).
 
