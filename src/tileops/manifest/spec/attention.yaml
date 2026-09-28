@@ -353,10 +353,10 @@ MultiHeadLatentAttentionDecodeWithKVCacheFwdOp:
     outputs:
       o: {dtype: T, shape: "[B, H, D]"}
   workloads:
-  - {B: 32, H: 128, H_kv: 1, N_kv: 4096, D: 128, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v2-4k}
-  - {B: 8, H: 128, H_kv: 1, N_kv: 32768, D: 128, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v2-32k}
-  - {B: 16, H: 128, H_kv: 1, N_kv: 4096, D: 128, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-4k}
-  - {B: 4, H: 128, H_kv: 1, N_kv: 32768, D: 128, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-32k}
+  - {B: 32, H: 128, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v2-4k}
+  - {B: 8, H: 128, H_kv: 1, N_kv: 32768, D: 512, PE: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v2-32k}
+  - {B: 16, H: 128, H_kv: 1, N_kv: 4096, D: 512, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-4k}
+  - {B: 4, H: 128, H_kv: 1, N_kv: 32768, D: 512, PE: 64, dtype_cases: [{T: bfloat16}], label: ds-v3-32k}
   roofline:
     # Per key and query head, QK over D + PE, PV over D and the softmax (5); per output
     # element, the softmax's divide.

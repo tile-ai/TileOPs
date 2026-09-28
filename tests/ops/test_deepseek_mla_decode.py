@@ -18,7 +18,7 @@ class MlaDecodeFixture(FixtureBase):
                 pytest.param(
                     32, 128, 1, 8192, 512, 64, torch.float16, False, marks=pytest.mark.smoke
                 ),
-                # The KV gather walks dim in 128-column steps; the manifest rows take one.
+                # The KV gather walks dim in 128-column steps; D = 128 takes one.
                 pytest.param(
                     2,
                     128,
