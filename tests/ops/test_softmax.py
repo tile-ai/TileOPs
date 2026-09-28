@@ -384,24 +384,48 @@ def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_logsumexp_streaming_special_values() -> None:
-    """Streaming logsumexp preserves -inf, +inf, and NaN row semantics."""
-    x = torch.randn(256, 16384, dtype=torch.bfloat16, device=run_device())
-    x[0] = float("-inf")
-    x[1] = float("-inf")
-    x[1, 7] = 2.0
-    x[2, ::2] = float("-inf")
-    x[3, 100] = float("nan")
-    x[4, 200] = float("inf")
-    op = LogSumExpFwdOp(dim=-1)
+@pytest.mark.parametrize(
+    "shape, dim, dtype",
+    [
+        pytest.param((256, 16384), -1, torch.bfloat16, id="streaming"),
+        pytest.param((64, 4096), -1, torch.float16, id="single-tile"),
+        pytest.param((300, 100000), -1, torch.float32, id="tiled"),
+        pytest.param((8, 102400), -1, torch.float32, id="split"),
+        pytest.param((4, 128, 4096), [0, 2], torch.float16, id="edge-axes"),
+    ],
+)
+def test_logsumexp_special_values(shape: tuple, dim, dtype: torch.dtype) -> None:
+    """Every kernel path keeps torch's -inf, +inf, and NaN row semantics."""
+    x = torch.randn(*shape, dtype=dtype, device=run_device())
+    # Row r of the reduced output is x[r] for a trailing dim, x[:, r] for edge axes.
+    rows = x if dim == -1 else x.transpose(0, 1)
+    rows[0] = float("-inf")
+    rows[1] = float("-inf")
+    rows[1][..., 7] = 2.0
+    rows[2][..., ::2] = float("-inf")
+    rows[3][..., 100] = float("nan")
+    rows[4][..., 200] = float("inf")
+    rows[5][..., 200] = float("inf")
+    rows[5][..., 300] = float("nan")
+    # A NaN in a run of -inf, far from the row's one finite or +inf value.
+    first, final = (0,) * rows[6].dim(), (-1,) * rows[6].dim()
+    rows[6] = float("-inf")
+    rows[6][first] = float("nan")
+    rows[6][final] = -10.0
+    rows[7] = float("-inf")
+    rows[7][first] = float("nan")
+    rows[7][final] = float("inf")
 
-    y = op(x).float()
-    y_ref = torch.logsumexp(x.float(), dim=-1)
+    y = LogSumExpFwdOp(dim=dim)(x).float()
+    y_ref = torch.logsumexp(x.float(), dim=dim)
     assert y[0].item() == float("-inf")
     assert torch.isnan(y[3])
     assert y[4].item() == float("inf")
+    assert torch.isnan(y[5])
+    assert torch.isnan(y[6])
+    assert torch.isnan(y[7])
     finite = torch.isfinite(y_ref)
-    assert torch.allclose(y[finite], y_ref[finite], **standard_tolerance(torch.bfloat16)), (
+    assert torch.allclose(y[finite], y_ref[finite], **standard_tolerance(dtype)), (
         f"special-value logsumexp failed, max err: {(y[finite] - y_ref[finite]).abs().max()}"
     )
 

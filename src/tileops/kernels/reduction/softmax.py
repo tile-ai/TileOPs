@@ -534,8 +534,8 @@ def _softmax_fused_split_kernel(
     exp(x - seg_max) * exp(seg_max - row_max)``, which is why the segment's
     exponentials survive the fold. A segment of only ``-inf`` holds zeros
     rather than the NaN ``exp(-inf - -inf)`` would leave, so it contributes
-    nothing; an all--inf row still reads NaN for softmax and -inf for
-    log_softmax, as torch does.
+    nothing; an all--inf row still reads NaN for softmax and log_softmax, as
+    torch does.
     """
     num_segs = ceildiv_int(N, seg_n)
     fold = make_block_split_fold(num_segs, threads)

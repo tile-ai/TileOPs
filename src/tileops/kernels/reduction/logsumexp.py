@@ -44,7 +44,8 @@ from tileops.kernels.reduction._primitives import (
 from tileops.kernels.reduction._split_softmax import (
     edge_split_partials_kernel,
     edge_split_view,
-    make_split_fold,
+    finite_shift,
+    make_block_split_fold,
     softmax_split_partials_kernel,
     split_seg_n,
     split_target_blocks,
@@ -112,12 +113,16 @@ _STREAM_POLICY = StreamingLogSumExpPolicy()
 def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
     """Fold per-segment ``(max, sum)`` into one logsumexp per row.
 
-    The fold is over a few hundred fp32 pairs, so one warp per row is enough;
-    unlike softmax there is no second pass over the input. An all--inf row
-    reads ``-inf + log(0)``, which is torch's ``-inf``.
+    One block per row folds the row's pairs lane-parallel. The block is the
+    narrowest power of two that holds ``num_segs``, since an idle lane still
+    pays the block reduction; past a warp it stays one warp and each lane
+    folds several pairs. Unlike softmax there is no second pass over the
+    input. An all--inf row reads ``-inf + log(0)`` and a row holding +inf
+    reads ``inf + log(inf)``, which are torch's ``-inf`` and ``+inf``.
     """
     num_segs = ceildiv_int(N, seg_n)
-    fold = make_split_fold(num_segs)
+    lanes = min(WARP_LANES, 1 << (num_segs - 1).bit_length())
+    fold = make_block_split_fold(num_segs, lanes, keep_inf=True)
 
     @tilelang.jit(out_idx=[2])
     def _func():
@@ -127,15 +132,14 @@ def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
             seg_sum: T.Tensor[(M * num_segs,), "float32"],  # noqa: F821
             y: T.Tensor[(M,), dtype],
         ):
-            with T.Kernel(M, threads=WARP_LANES) as pid_m:
-                tx = T.get_thread_binding()
-                row_max = T.alloc_local((1,), "float32")
-                row_sum = T.alloc_local((1,), "float32")
-                held = T.alloc_local((1,), "float32")
+            with T.Kernel(M, threads=lanes) as pid_m:
+                part_max = T.alloc_fragment((1, lanes), "float32")
+                part_sum = T.alloc_fragment((1, lanes), "float32")
+                row_max = T.alloc_fragment((1,), "float32")
+                row_sum = T.alloc_fragment((1,), "float32")
 
-                if tx == 0:
-                    fold(seg_max, seg_sum, pid_m * num_segs, row_max, row_sum, held)
-                    y[pid_m] = T.cast(row_max[0] + T.log(row_sum[0]), dtype)
+                fold(seg_max, seg_sum, pid_m * num_segs, part_max, part_sum, row_max, row_sum)
+                y[pid_m] = T.cast(row_max[0] + T.log(row_sum[0]), dtype)
 
         return main
 
@@ -171,6 +175,7 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
                 x_local = T.alloc_fragment((block_m, N_padded), dtype)
                 x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
                 row_max = T.alloc_fragment((block_m,), "float32")
+                row_shift = T.alloc_fragment((block_m,), "float32")
                 row_sum = T.alloc_fragment((block_m,), "float32")
 
                 if _needs_pad:
@@ -193,15 +198,17 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
 
                 T.fill(row_max, -T.infinity("float32"))
                 T.reduce_max(x_f32, row_max, dim=1, clear=False)
+                for i in T.Parallel(block_m):
+                    row_shift[i] = finite_shift(row_max[i])
 
                 for i in T.serial(block_m):
                     for j in T.Parallel(N_padded):
-                        x_f32[i, j] = T.exp(x_f32[i, j] - row_max[i])
+                        x_f32[i, j] = T.exp(x_f32[i, j] - row_shift[i])
                 T.reduce_sum(x_f32, row_sum, dim=1)
 
                 out_local = T.alloc_fragment((block_m,), dtype)
                 for i in T.Parallel(block_m):
-                    out_local[i] = row_max[i] + T.log(row_sum[i])
+                    out_local[i] = row_shift[i] + T.log(row_sum[i])
 
                 T.copy(out_local, y[pid_m * block_m])
 
@@ -245,10 +252,12 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
                 row_max = T.alloc_fragment((block_m,), "float32")
                 row_sum = T.alloc_fragment((block_m,), "float32")
                 prev_max = T.alloc_fragment((block_m,), "float32")
+                row_shift = T.alloc_fragment((block_m,), "float32")
                 tile_max = T.alloc_fragment((block_m,), "float32")
                 tile_sum = T.alloc_fragment((block_m,), "float32")
 
                 T.fill(row_max, -T.infinity("float32"))
+                T.fill(row_shift, 0.0)
                 T.fill(row_sum, 0.0)
 
                 for t in T.Serial(num_tiles):
@@ -286,19 +295,33 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
                     for i in T.Parallel(block_m):
                         prev_max[i] = row_max[i]
                         row_max[i] = T.max(row_max[i], tile_max[i])
+                        row_shift[i] = finite_shift(row_max[i])
 
                     for i in T.serial(block_m):
                         for j in T.Parallel(tile_n):
-                            tile_f32[i, j] = T.exp(tile_f32[i, j] - row_max[i])
+                            tile_f32[i, j] = T.exp(tile_f32[i, j] - row_shift[i])
                     T.reduce_sum(tile_f32, tile_sum, dim=1)
 
+                    # Rescaled by the maxima, not the shifts: exp(0 - shift) of a
+                    # row that has seen only -inf can overflow. An unchanged max
+                    # scales by one, where exp(inf - inf) would be NaN.
                     for i in T.Parallel(block_m):
-                        row_sum[i] = row_sum[i] * T.exp(prev_max[i] - row_max[i]) + tile_sum[i]
+                        row_sum[i] = (
+                            row_sum[i]
+                            * T.exp(
+                                T.if_then_else(
+                                    prev_max[i] == row_max[i],
+                                    T.cast(0.0, "float32"),
+                                    prev_max[i] - row_max[i],
+                                )
+                            )
+                            + tile_sum[i]
+                        )
 
-                # logsumexp = max + log(sum)
+                # logsumexp = shift + log(sum)
                 out_local = T.alloc_fragment((block_m,), dtype)
                 for i in T.Parallel(block_m):
-                    out_local[i] = row_max[i] + T.log(row_sum[i])
+                    out_local[i] = row_shift[i] + T.log(row_sum[i])
 
                 T.copy(out_local, y[pid_m * block_m])
 
