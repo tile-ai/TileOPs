@@ -331,6 +331,22 @@ class FusedMoeSharedExpertWorkload(FusedMoeWorkload):
         return shared.to(hidden_states.dtype), routed
 
 
+class SharedExpertMLPWorkload(CallWorkload):
+    """Tokens and the stacked gate/up and down weights of one ``SharedExpertMLPFwdOp`` call."""
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        hidden, w_gate_up, w_down = super().gen_inputs()
+        # Small scales keep fp16 accumulation over H = 7168 finite.
+        return hidden.mul_(0.1), w_gate_up.mul_(0.02), w_down.mul_(0.02)
+
+    def ref_program(
+        self, hidden_states: torch.Tensor, w_gate_up: torch.Tensor, w_down: torch.Tensor
+    ) -> torch.Tensor:
+        """``down(silu(gate) * up)`` in fp32, cast to the hidden dtype."""
+        act = gated_activation(hidden_states.float() @ w_gate_up.float().T, "silu_and_mul")
+        return (act @ w_down.float().T).to(hidden_states.dtype)
+
+
 def ref_permute_align(
     topk_ids: torch.Tensor, block_size: int, num_experts: int
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

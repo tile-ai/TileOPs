@@ -391,6 +391,35 @@ MoePostPermuteFwdOp:
     # The epilogue's scale is a float field of an object the language does not read.
     func: "tileops.perf.formulas.moe_post_permute_roofline"
 
+SharedExpertMLPFwdOp:
+  # The dense gated MLP of an MoE layer's shared expert: down(silu(gate) * up) over one
+  # stacked gate/up weight.
+  family: moe
+  status: implemented
+  signature:
+    forall: {T: Dim, H: Dim, S: Dim, D: "DType[float16 | bfloat16]"}
+    inputs:
+      hidden_states: {dtype: D, shape: "[T, H]", contiguous: true}
+      # The gate rows, then the up rows.
+      w_gate_up: {dtype: D, shape: "[2 * S, H]", contiguous: true}
+      w_down: {dtype: D, shape: "[H, S]", contiguous: true}
+    outputs:
+      output: {dtype: D, shape: "[T, H]"}
+    shape_rules:
+    - "H > 0"
+    - "S > 0"
+  workloads:
+  # The shared experts of Kimi K2 (S=18432), DeepSeek-V3 (S=2048) and GLM-4.5 (S=1536) at
+  # decode and prefill token counts.
+  - {T: 1, H: 7168, S: 18432, dtype_cases: [{D: bfloat16}], label: "kimi-k2-t1"}
+  - {T: 512, H: 7168, S: 18432, dtype_cases: [{D: bfloat16}], label: "kimi-k2-t512"}
+  - {T: 32, H: 7168, S: 2048, dtype_cases: [{D: bfloat16}, {D: float16}], label: "ds-v3-t32"}
+  - {T: 4096, H: 7168, S: 2048, dtype_cases: [{D: bfloat16}], label: "ds-v3-t4096"}
+  - {T: 32, H: 5120, S: 1536, dtype_cases: [{D: bfloat16}], label: "glm45-t32"}
+  roofline:
+    # The gate/up and down GEMMs (2 * T * 3 * S * H), then 6 FLOPs per gated element.
+    flops: "6 * T * S * H + 6 * T * S"
+
 FusedMoeSharedExpertFwdOp:
   family: moe
   status: implemented
@@ -463,4 +492,4 @@ FusedMoeSharedExpertFwdOp:
     stages:
     - {name: route_select, op: FusedTopKFwdOp}
     - {name: routed_experts, op: FusedMoEExpertsFwdOp}
-    - {name: shared_expert, kernel: shared_expert_mlp, optional: true}
+    - {name: shared_expert, op: SharedExpertMLPFwdOp, optional: true}

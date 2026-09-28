@@ -11,6 +11,7 @@ from .ops.moe import (
     MoePermuteAlignFwdOp,
     MoePostPermuteFwdOp,
     MoePrePermuteFwdOp,
+    SharedExpertMLPFwdOp,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "IndexedExpertMLPFwdOp",
     "FusedMoeFwdOp",
     "FusedMoeSharedExpertFwdOp",
+    "SharedExpertMLPFwdOp",
 ]

@@ -33,7 +33,9 @@ from tileops.ops.moe import (
     MoePermuteAlignFwdOp,
     MoePostPermuteFwdOp,
     MoePrePermuteFwdOp,
+    SharedExpertMLPFwdOp,
 )
+from tileops.ops.moe.fused_moe_shared_expert import FusedMoeSharedExpertFwdOp
 from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 from workloads.device import run_device
 
@@ -141,6 +143,14 @@ def _fused_topk_case(with_bias: bool = False):
     return make, (gating, bias) if with_bias else (gating,), "all"
 
 
+def _shared_expert_case(tokens: int = _TOKENS):
+    hidden, ffn = 128, 128
+    x = torch.randn(tokens, hidden, dtype=torch.bfloat16, device=run_device()) * 0.1
+    w_gate_up = torch.randn(2 * ffn, hidden, dtype=torch.bfloat16, device=run_device()) * 0.02
+    w_down = torch.randn(hidden, ffn, dtype=torch.bfloat16, device=run_device()) * 0.02
+    return SharedExpertMLPFwdOp, (x, w_gate_up, w_down), "all"
+
+
 _LEAF_CASES = {
     "fused_topk": _fused_topk_case,
     "fused_topk_bias": lambda: _fused_topk_case(with_bias=True),
@@ -152,6 +162,8 @@ _LEAF_CASES = {
     "pre_permute": _pre_permute_case,
     "pre_permute_fp16": lambda: _pre_permute_case(torch.float16),
     "pre_permute_aligned": _aligned_pre_permute_case,
+    "shared_expert_mlp": _shared_expert_case,
+    "shared_expert_mlp_empty": lambda: _shared_expert_case(tokens=0),
 }
 
 
@@ -241,6 +253,31 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_dynamo")
+def test_the_shared_expert_composite_compiles_cold_to_its_leaves() -> None:
+    """The shared expert is a sub-op, so a cold small-route call traces to the router, the
+    indexed experts and the shared expert, and matches eager."""
+    hidden, ffn, experts, shared = 128, 256, 8, 128
+    args = (
+        torch.randn(_TOKENS, hidden, dtype=torch.bfloat16, device=run_device()) * 0.1,
+        torch.randn(_TOKENS, experts, dtype=torch.float32, device=run_device()),
+        torch.randn(experts, 2 * ffn, hidden, dtype=torch.bfloat16, device=run_device()) * 0.02,
+        torch.randn(experts, hidden, ffn, dtype=torch.bfloat16, device=run_device()) * 0.02,
+        None,
+        torch.randn(2 * shared, hidden, dtype=torch.bfloat16, device=run_device()) * 0.02,
+        torch.randn(hidden, shared, dtype=torch.bfloat16, device=run_device()) * 0.02,
+    )
+    calls = traced_call_targets(FusedMoeSharedExpertFwdOp(_TOP_K), *args)
+    leaves = (FusedTopKFwdOp, IndexedExpertMLPFwdOp, SharedExpertMLPFwdOp)
+    owners = {operator_overload(n): cls for cls in leaves for n in cls.compile_op_names}
+    assert calls <= set(owners), sorted(str(c) for c in calls - set(owners))
+    assert {owners[c] for c in calls} == set(leaves)
+    compiled = _compile_cold(FusedMoeSharedExpertFwdOp(_TOP_K), *args)
+    for got, want in zip(compiled, FusedMoeSharedExpertFwdOp(_TOP_K)(*args), strict=True):
+        torch.testing.assert_close(got, want)
+
+
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_dynamo")
 def test_small_route_experts_compile_to_the_indexed_leaf() -> None:
     args = _experts_args(tokens=4, experts_count=8, top_k=2, hidden=128, ffn=256)
     assert traced_call_targets(FusedMoEExpertsFwdOp(), *args) == {
@@ -266,5 +303,6 @@ for _op_cls in (
     MoePrePermuteFwdOp,
     MoePostPermuteFwdOp,
     MoeGroupedGemmFwdOp,
+    SharedExpertMLPFwdOp,
 ):
     register_compile_contract(_op_cls)
