@@ -22,7 +22,7 @@ from tests.roofline_binder import signature_class
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.workload import instantiate
-from workloads import int8_dequant
+from workloads import int8_dequant, quantization
 
 pytestmark = pytest.mark.smoke
 
@@ -32,70 +32,6 @@ _INF = float("inf")
 # ---------------------------------------------------------------- quantization
 
 
-def _int8_scale(amax):
-    """``amax / 127``, and 1.0 for an all-zero group."""
-    return torch.where(amax > 0, amax / 127, torch.ones_like(amax))
-
-
-def _int8_per_tensor(p, t):
-    x = t["x"]
-    _m, _k = x.shape
-    xf = x.float()
-    scale = _int8_scale(xf.abs().amax()).reshape(1)
-    q = torch.round(xf / scale).clamp(-127, 127).to(torch.int8)
-    return {"q": q, "scale": scale}
-
-
-def _int8_per_channel(p, t):
-    w = t["w"]
-    _n, _k = w.shape
-    wf = w.float()
-    scale = _int8_scale(wf.abs().amax(dim=1))
-    return {"q": torch.round(wf / scale[:, None]).clamp(-127, 127).to(torch.int8), "scale": scale}
-
-
-def _blocks(xf, block=128):
-    m, k = xf.shape
-    nb = -(-k // block)
-    return F.pad(xf, (0, nb * block - k)).view(m, nb, block), nb
-
-
-def _int8_per_block(p, t):
-    xf = t["x"].float()
-    m, k = xf.shape
-    blocks, _nb = _blocks(xf)
-    scale = _int8_scale(blocks.abs().amax(-1))
-    q = torch.round(xf / scale.repeat_interleave(128, 1)[:, :k]).clamp(-127, 127)
-    return {"q": q.to(torch.int8), "scale": scale}
-
-
-def _int4_per_group(p, t):
-    w, g = t["w"], p["group_size"]
-    n, k = w.shape
-    wg = w.float().view(n, k // g, g)
-    lo, hi = wg.amin(-1), wg.amax(-1)
-    scale = torch.where(hi > lo, (hi - lo) / 15, torch.ones_like(hi))
-    zero = torch.round(-lo / scale).clamp(0, 15)
-    q = torch.round(wg / scale[..., None] + zero[..., None]).clamp(0, 15).to(torch.uint8)
-    # Two values per byte in row order; the byte order GemmW4A16FwdOp consumes is a permutation
-    # of these bytes that only its repack kernel states, accepted by the GEMM round trip.
-    q = q.view(n, k // 2, 2)
-    packed = q[..., 0] | (q[..., 1] << 4)
-    return {
-        "packed_weight": packed,
-        "weight_scale": scale.to(w.dtype),
-        "weight_zero": zero.to(torch.uint8),
-    }
-
-
-def _smooth_quant(p, t):
-    x, smooth = t["x"], t["smooth"]
-    _m, _k = x.shape
-    xs = x.float() / smooth
-    scale = _int8_scale(xs.abs().amax(dim=1))
-    return {"q": torch.round(xs / scale[:, None]).clamp(-127, 127).to(torch.int8), "scale": scale}
-
-
 def _dequant(reference):
     def run(p, t):
         return {"x": reference(t["q"], t["scale"], p["out_dtype"])}
@@ -103,15 +39,27 @@ def _dequant(reference):
     return run
 
 
-def _fp8_per_block(p, t):
-    w = t["w"]
-    n, k = w.shape
-    nn, nk = -(-n // 128), -(-k // 128)
-    wf = F.pad(w.float(), (0, nk * 128 - k, 0, nn * 128 - n)).view(nn, 128, nk, 128)
-    amax = wf.abs().amax(dim=(1, 3))
-    scale = torch.where(amax > 0, amax / 448, torch.ones_like(amax))
-    full = scale.repeat_interleave(128, 0).repeat_interleave(128, 1)[:n, :k]
-    return {"q": (w.float() / full).clamp(-448, 448).to(torch.float8_e4m3fn), "scale": scale}
+def _outputs(names, reference, *inputs, **params):
+    """A spec reference that runs a workload reference and names its outputs."""
+
+    def run(p, t):
+        values = reference(*(t[n] for n in inputs), **{k: p[v] for k, v in params.items()})
+        return dict(zip(names, values, strict=True))
+
+    return run
+
+
+_int8_per_tensor = _outputs(("q", "scale"), quantization.int8_quant_per_tensor, "x")
+_int8_per_channel = _outputs(("q", "scale"), quantization.int8_quant_per_channel, "w")
+_int8_per_block = _outputs(("q", "scale"), quantization.int8_quant_per_block, "x")
+_fp8_per_block = _outputs(("q", "scale"), quantization.fp8_quant_per_block, "w")
+_int4_per_group = _outputs(
+    ("packed_weight", "weight_scale", "weight_zero"),
+    quantization.int4_quant_per_group,
+    "w",
+    group_size="group_size",
+)
+_smooth_quant = _outputs(("q", "scale"), quantization.smooth_quant, "x", "smooth")
 
 
 # ---------------------------------------------------------------- sampling
