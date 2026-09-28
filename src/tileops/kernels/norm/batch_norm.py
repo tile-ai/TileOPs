@@ -821,7 +821,16 @@ class BatchNormFwdTrainKernel(Kernel):
         self.dtype = dtype
         self.eps = eps
         self.momentum = momentum
-        self.path, self.launch = self._select_path(C, L, self.S, dtype, device_index)
+        whole = _WholePath.launch(L, self.S)
+        wide = _WidePath.launch(C, L, self.S, dtype, device_index=device_index)
+        if whole is not None:
+            self.path, self.launch = "whole", whole
+        elif wide is not None:
+            self.path, self.launch = "wide", wide
+        elif _SplitPath.admits(C, L):
+            self.path, self.launch = "split", _SplitPath.seed(C, L)
+        else:
+            self.path, self.launch = "tiled", None
         if self.path == "whole":
             self.whole_kernel = _batch_norm_fwd_train_whole_kernel(
                 C, L, self.S, self.dtype_str, eps, momentum
@@ -836,24 +845,6 @@ class BatchNormFwdTrainKernel(Kernel):
             )
         self.kernel = _batch_norm_fwd_train_kernel(C, L, self.S, self.dtype_str, eps, momentum)
         self.init_config(config, tune)
-
-    @staticmethod
-    def _select_path(
-        C: int, L: int, S: int, dtype: torch.dtype, device_index: Optional[int]
-    ) -> tuple[str, object]:
-        """Which launch serves this shape, and the sizing it needs.
-
-        Each path class states what owns a channel there and when it is chosen.
-        """
-        whole = _WholePath.launch(L, S)
-        if whole is not None:
-            return "whole", whole
-        wide = _WidePath.launch(C, L, S, dtype, device_index=device_index)
-        if wide is not None:
-            return "wide", wide
-        if _SplitPath.admits(C, L):
-            return "split", _SplitPath.seed(C, L)
-        return "tiled", None
 
     @property
     def default_config(self) -> dict:
@@ -946,29 +937,6 @@ class BatchNormFwdTrainKernel(Kernel):
         self.config = dict(self.default_config, threads=best[2])
         print(f"Best config: {self.config} splits={self.launch} ({best[0]:.4f} ms)")
 
-    def _forward_split(
-        self,
-        flat: torch.Tensor,
-        running_mean: torch.Tensor,
-        running_var: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
-        mean_out: torch.Tensor,
-        rstd_out: torch.Tensor,
-    ) -> torch.Tensor:
-        """Sum, merge, then map, at the split count and width tuning settled."""
-        return self._run_split(
-            flat,
-            running_mean,
-            running_var,
-            weight,
-            bias,
-            mean_out,
-            rstd_out,
-            self.launch,
-            self.config["threads"],
-        )
-
     def _run_split(
         self,
         flat: torch.Tensor,
@@ -1046,8 +1014,16 @@ class BatchNormFwdTrainKernel(Kernel):
             )
             return y.reshape(x.shape), mean_out, rstd_out
         if self.path == "split":
-            y = self._forward_split(
-                flat, running_mean, running_var, weight, bias, mean_out, rstd_out
+            y = self._run_split(
+                flat,
+                running_mean,
+                running_var,
+                weight,
+                bias,
+                mean_out,
+                rstd_out,
+                self.launch,
+                self.config["threads"],
             )
             return y.reshape(x.shape), mean_out, rstd_out
         y = self.kernel(
@@ -1778,28 +1754,20 @@ class BatchNormBwdKernel(Kernel):
         self.L = L
         self.S = L if S is None else S
         self.dtype = dtype
-        self.path, self.launch = self._select_path(C, L, self.S, dtype, device_index)
+        # A wide block holds two tensors per element, grad_out and x.
+        wide = _WidePath.launch(C, L, self.S, dtype, held_tensors=2, device_index=device_index)
+        if wide is not None:
+            self.path, self.launch = "wide", wide
+        elif _SplitPath.admits(C, L):
+            self.path, self.launch = "split", _SplitPath.seed(C, L)
+        else:
+            self.path, self.launch = "tiled", None
         if self.path == "wide":
             self.wide_kernel = _batch_norm_bwd_wide_kernel(C, L, self.S, self.dtype_str)
         elif self.path == "split":
             self.stages = _batch_norm_bwd_split_kernel(C, L, self.S, self.dtype_str)
         self.kernel = _batch_norm_bwd_kernel(C, L, self.S, self.dtype_str)
         self.init_config(config, tune)
-
-    @staticmethod
-    def _select_path(
-        C: int, L: int, S: int, dtype: torch.dtype, device_index: Optional[int]
-    ) -> tuple[str, object]:
-        """Which launch serves this shape, and the sizing it needs.
-
-        A wide block holds two tensors per element, grad_out and x.
-        """
-        wide = _WidePath.launch(C, L, S, dtype, held_tensors=2, device_index=device_index)
-        if wide is not None:
-            return "wide", wide
-        if _SplitPath.admits(C, L):
-            return "split", _SplitPath.seed(C, L)
-        return "tiled", None
 
     @property
     def default_config(self) -> dict:
@@ -1815,44 +1783,6 @@ class BatchNormBwdKernel(Kernel):
             self.config = self.default_config
             return
         super().autotune(warmup=warmup, rep=rep)
-
-    def _forward_split(
-        self,
-        grad_out: torch.Tensor,
-        x: torch.Tensor,
-        weight: torch.Tensor,
-        mean: torch.Tensor,
-        rstd: torch.Tensor,
-        grad_weight: torch.Tensor,
-        grad_bias: torch.Tensor,
-    ) -> torch.Tensor:
-        """Sum, merge, then map -- three launches over an element-wide grid."""
-        stats, finalize, apply_ = self.stages
-        splits, threads = self.launch, self.config["threads"]
-        num_per_thread = _vector_elements(self.dtype)
-        empty = functools.partial(torch.empty, device=grad_out.device, dtype=torch.float32)
-        partial_sum = empty((self.C, splits))
-        partial_sum_xhat = empty((self.C, splits))
-        stats(splits, threads, num_per_thread)(
-            grad_out, x, mean, rstd, partial_sum, partial_sum_xhat
-        )
-        scale, shift, centered_coef = empty(self.C), empty(self.C), empty(self.C)
-        finalize(splits, min(256, self.C))(
-            partial_sum,
-            partial_sum_xhat,
-            weight,
-            rstd,
-            grad_weight,
-            grad_bias,
-            scale,
-            shift,
-            centered_coef,
-        )
-        span = threads * num_per_thread
-        blocks = (grad_out.numel() + span - 1) // span
-        return apply_(blocks, threads, num_per_thread)(
-            grad_out, x, mean, scale, shift, centered_coef
-        )
 
     def forward(
         self,
@@ -1880,8 +1810,31 @@ class BatchNormBwdKernel(Kernel):
         flat_grad_out = grad_out.contiguous().reshape(-1)
         flat_x = x.contiguous().reshape(-1)
         if self.path == "split":
-            grad_x = self._forward_split(
-                flat_grad_out, flat_x, weight, mean, rstd, grad_weight, grad_bias
+            stats, finalize, apply_ = self.stages
+            splits, threads = self.launch, self.config["threads"]
+            num_per_thread = _vector_elements(self.dtype)
+            empty = functools.partial(torch.empty, device=grad_out.device, dtype=torch.float32)
+            partial_sum = empty((self.C, splits))
+            partial_sum_xhat = empty((self.C, splits))
+            stats(splits, threads, num_per_thread)(
+                flat_grad_out, flat_x, mean, rstd, partial_sum, partial_sum_xhat
+            )
+            scale, shift, centered_coef = empty(self.C), empty(self.C), empty(self.C)
+            finalize(splits, min(256, self.C))(
+                partial_sum,
+                partial_sum_xhat,
+                weight,
+                rstd,
+                grad_weight,
+                grad_bias,
+                scale,
+                shift,
+                centered_coef,
+            )
+            span = threads * num_per_thread
+            blocks = (flat_grad_out.numel() + span - 1) // span
+            grad_x = apply_(blocks, threads, num_per_thread)(
+                flat_grad_out, flat_x, mean, scale, shift, centered_coef
             )
             return grad_x.reshape(x.shape), grad_weight, grad_bias
         if self.path == "wide":
