@@ -600,7 +600,8 @@ class RopeLongRopeFwdOp(_RopeOpBase):
 
     Computes cos/sin tables at construction using per-dimension rescale
     factors (ext_factors) that multiply the divisor, plus a scale-dependent
-    amplitude factor applied to cos/sin output.
+    amplitude factor applied to cos/sin output. Construction rejects a zero or NaN
+    rescale factor, since the frequency divides by it.
 
     Reference: TVM ``rope_freq_longrope`` in position_embedding.py;
     Ding et al., "LongRoPE: Extending LLM Context Window Beyond 2M Tokens".
