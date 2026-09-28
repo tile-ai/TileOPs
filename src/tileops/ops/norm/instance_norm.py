@@ -23,13 +23,13 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import (
-    InstanceNormCall,
-    InstanceNormFwdInferKernel,
+    BatchNormFwdInferKernel,
     InstanceNormFwdTrainKernel,
     InstanceNormFwdTrainSingleKernel,
     InstanceNormKernel,
     InstanceNormNoAffineKernel,
 )
+from tileops.kernels.norm.call_spec import BatchNormCall
 
 from ..op_base import Op
 from .norm_base import affine_or_constant
@@ -65,12 +65,12 @@ class InstanceNormFwdOp(Op):
         "instance_norm_no_affine": InstanceNormNoAffineKernel,
         "instance_norm_train_single": InstanceNormFwdTrainSingleKernel,
         "instance_norm_train": InstanceNormFwdTrainKernel,
-        "instance_norm_infer": InstanceNormFwdInferKernel,
+        "instance_norm_running_stats": BatchNormFwdInferKernel,
     }
     kernel_roles: ClassVar[Mapping[str, tuple[str, ...]]] = {
         "instance_norm": ("instance_norm", "instance_norm_no_affine"),
         "instance_norm_train": ("instance_norm_train_single", "instance_norm_train"),
-        "instance_norm_infer": ("instance_norm_infer",),
+        "instance_norm_infer": ("instance_norm_running_stats",),
     }
 
     def __init__(
@@ -149,7 +149,7 @@ class InstanceNormFwdOp(Op):
                 running_var.fill_(math.nan)
             return torch.empty_like(x)
         x = x.contiguous()
-        call = InstanceNormCall(
+        call = BatchNormCall(
             device=x.device,
             n=batch,
             c=channels,
@@ -157,15 +157,14 @@ class InstanceNormFwdOp(Op):
             dtype=x.dtype,
             eps=self.eps,
             momentum=self.momentum,
+            input_dtype_params=True,
             has_weight=weight is not None,
             has_bias=bias is not None,
             tune=self.tune,
         )
         if not self.use_input_stats or tracks:
-            if self.use_input_stats:
-                role, view = "instance_norm_train", x.view(batch, channels, spatial)
-            else:
-                role, view = "instance_norm_infer", x.view(batch * channels, spatial)
+            role = "instance_norm_train" if self.use_input_stats else "instance_norm_infer"
+            view = x.view(batch, channels, spatial)
             weight = None if weight is None else weight.contiguous()
             bias = None if bias is None else bias.contiguous()
             # The training kernel writes the running statistics in place, so a strided

@@ -1078,6 +1078,9 @@ def _batch_norm_fwd_infer_kernel(
     S: int,
     dtype: str = "float16",
     eps: float = 1e-5,
+    input_dtype_params: bool = False,
+    has_weight: bool = True,
+    has_bias: bool = True,
 ) -> Callable:
     """Return the JIT-compiled inference-forward kernel factory.
 
@@ -1093,8 +1096,13 @@ def _batch_norm_fwd_infer_kernel(
         S: Elements per channel in one batch item, ``product(spatial)``.
         dtype: Input/output data type.
         eps: Numerical stability constant.
+        input_dtype_params: Whether ``weight`` and ``bias`` are in *dtype* and the running
+            statistics are read rounded to it, as ``instance_norm`` reads them.
+        has_weight: With *input_dtype_params*, whether ``weight`` is read; else the scale is one.
+        has_bias: With *input_dtype_params*, whether ``bias`` is read; else the shift is zero.
     """
     accum_dtype = "float32"
+    affine_dtype = dtype if input_dtype_params else accum_dtype
     total = N * C * S
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -1110,8 +1118,8 @@ def _batch_norm_fwd_infer_kernel(
         @T.prim_func
         def _bn_fwd_infer(
             x_ncs: T.Tensor([N, C, S], dtype),
-            weight: T.Tensor([C], accum_dtype),
-            bias: T.Tensor([C], accum_dtype),
+            weight: T.Tensor([C], affine_dtype),
+            bias: T.Tensor([C], affine_dtype),
             running_mean: T.Tensor([C], accum_dtype),
             running_var: T.Tensor([C], accum_dtype),
             y_ncs: T.Tensor([N, C, S], dtype),
@@ -1129,9 +1137,20 @@ def _batch_norm_fwd_infer_kernel(
                 for c in T.serial(T.ceildiv(C, threads)):
                     ch = c * threads + tx
                     if ch < C:
-                        sc = weight[ch] / T.sqrt(running_var[ch] + T.cast(eps, accum_dtype))
-                        scale[ch] = sc
-                        shift[ch] = bias[ch] - running_mean[ch] * sc
+                        if input_dtype_params:
+                            mean_c = T.cast(T.cast(running_mean[ch], dtype), accum_dtype)
+                            var_c = T.cast(T.cast(running_var[ch], dtype), accum_dtype)
+                            weight_c = (
+                                T.cast(weight[ch], accum_dtype) if has_weight else T.float32(1.0)
+                            )
+                            bias_c = T.cast(bias[ch], accum_dtype) if has_bias else T.float32(0.0)
+                            sc = T.rsqrt(var_c + T.cast(eps, accum_dtype)) * weight_c
+                            scale[ch] = sc
+                            shift[ch] = bias_c - mean_c * sc
+                        else:
+                            sc = weight[ch] / T.sqrt(running_var[ch] + T.cast(eps, accum_dtype))
+                            scale[ch] = sc
+                            shift[ch] = bias[ch] - running_mean[ch] * sc
                 T.sync_threads()
 
                 v = T.alloc_local([num_per_thread], dtype)
@@ -1178,6 +1197,9 @@ class BatchNormFwdInferKernel(Kernel):
         S: Elements per channel in one batch item, ``product(spatial)``.
         dtype: Input/output data type.
         eps: Numerical stability constant.
+        input_dtype_params: See `_batch_norm_fwd_infer_kernel`.
+        has_weight: See `_batch_norm_fwd_infer_kernel`.
+        has_bias: See `_batch_norm_fwd_infer_kernel`.
         config: Optional tile config dict.
         tune: If True, autotune tile config.
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
@@ -1199,7 +1221,16 @@ class BatchNormFwdInferKernel(Kernel):
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
-        args = (call.n, call.c, call.spatial, call.dtype, call.eps)
+        args = (
+            call.n,
+            call.c,
+            call.spatial,
+            call.dtype,
+            call.eps,
+            call.input_dtype_params,
+            call.has_weight,
+            call.has_bias,
+        )
         index = call.device.index if call.device is not None else None
         return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
 
@@ -1210,6 +1241,9 @@ class BatchNormFwdInferKernel(Kernel):
         S: int,
         dtype: torch.dtype = torch.float16,
         eps: float = 1e-5,
+        input_dtype_params: bool = False,
+        has_weight: bool = True,
+        has_bias: bool = True,
         config: Optional[dict] = None,
         tune: bool = False,
         device_index: Optional[int] = None,
@@ -1217,7 +1251,9 @@ class BatchNormFwdInferKernel(Kernel):
         super().__init__(device_index=device_index)
         self.total = N * C * S
         self.dtype = dtype
-        self.kernel = _batch_norm_fwd_infer_kernel(N, C, S, self.dtype_str, eps)
+        self.kernel = _batch_norm_fwd_infer_kernel(
+            N, C, S, self.dtype_str, eps, input_dtype_params, has_weight, has_bias
+        )
         self.init_config(config, tune)
 
     @property
@@ -1259,10 +1295,12 @@ class BatchNormFwdInferKernel(Kernel):
         x: torch.Tensor,
         running_mean: torch.Tensor,
         running_var: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
+        weight: Optional[torch.Tensor],
+        bias: Optional[torch.Tensor],
     ) -> torch.Tensor:
         """Run inference forward pass on an ``(N, C, S)`` input.
+
+        An absent ``weight`` or ``bias`` is handed as a placeholder the program never reads.
 
         Returns:
             The ``(N, C, S)`` normalized output.
@@ -1277,6 +1315,10 @@ class BatchNormFwdInferKernel(Kernel):
             running_mean=running_mean,
             running_var=running_var,
         )
+        if weight is None or bias is None:
+            placeholder = torch.empty(x.shape[1], dtype=x.dtype, device=x.device)
+            weight = placeholder if weight is None else weight
+            bias = placeholder if bias is None else bias
         return self.kernel(
             self.config["threads"], self.config["num_per_thread"], self.config["steps"]
         )(x, weight, bias, running_mean, running_var)
