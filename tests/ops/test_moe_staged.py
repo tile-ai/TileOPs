@@ -266,8 +266,13 @@ def test_call_architecture_comes_from_the_input_device(monkeypatch: pytest.Monke
         observed_indices.append(index)
         return 90, None, 132
 
+    class ReadsArch(_ExecutableGroupedCandidate):
+        @classmethod
+        def applies(cls, call: MGroupedGemmCall) -> bool:
+            return call.arch == 90
+
     monkeypatch.setattr(tileops.utils, "device_facts", fake_device_facts)
-    op = MoeGroupedGemmFwdOp(_TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate})
+    op = MoeGroupedGemmFwdOp(_TIGHT, kernel_map={"grouped_gemm": ReadsArch})
     op(
         torch.empty(1, 4, dtype=torch.bfloat16, device=device),
         torch.empty(1, 2, 4, dtype=torch.bfloat16, device=device),
