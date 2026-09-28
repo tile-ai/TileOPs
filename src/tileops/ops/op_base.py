@@ -425,8 +425,12 @@ class Op(ABC):
                 f"op: {registered_targets(type(self).__name__)}"
             )
         # A build reads the device it is built on (its architecture, SM count, compile
-        # target), so it is built with the device of the tensors it is handed current.
+        # target), so it is built with the call's device current: its tensors' device, or
+        # for an op with no tensor input the device it declares.
         device = next((t.device for t in inputs if t is not None and t.is_cuda), None)
+        if device is None:
+            declared = self._declared_device()
+            device = declared if declared is not None and declared.type == "cuda" else None
         if key not in entries:
             with torch.cuda.device(device) if device is not None else contextlib.nullcontext():
                 entry = build()
