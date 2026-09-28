@@ -526,6 +526,20 @@ def test_std_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     assert torch.allclose(y, ref, **tol), f"non-contig std max err: {(y - ref).abs().max()}"
 
 
+@pytest.mark.smoke
+def test_reduce_view_off_vector_boundary() -> None:
+    """A contiguous view whose storage starts off a 16-byte boundary reduces correctly."""
+    from tileops.ops.reduction.reduce import ProdFwdOp, SumFwdOp
+
+    flat = torch.rand(4 * 4096 + 1, dtype=torch.float16, device=run_device()) * 0.001 + 1
+    x = flat[1:].view(4, 4096)
+    assert x.is_contiguous() and x.data_ptr() % 16
+    tol = reduction_tolerance(torch.float16)
+    for op, ref in ((SumFwdOp(dim=-1), torch.sum), (ProdFwdOp(dim=-1), torch.prod)):
+        y = op(x)
+        assert torch.allclose(y, ref(x.float(), dim=-1).half(), **tol)
+
+
 # Spec-conformant tests (dim + keepdim interface)
 
 

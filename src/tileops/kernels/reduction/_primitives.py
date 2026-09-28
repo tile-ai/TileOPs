@@ -869,6 +869,8 @@ def _make_down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: 
             T.fill(acc, -T.infinity("float32"))
         elif op_kind == "amin":
             T.fill(acc, T.infinity("float32"))
+        elif op_kind == "prod":
+            T.fill(acc, 1.0)
         else:
             T.fill(acc, 0.0)
 
@@ -878,6 +880,8 @@ def _make_down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: 
             acc[slot] = T.max(acc[slot], value)
         elif op_kind == "amin":
             acc[slot] = T.min(acc[slot], value)
+        elif op_kind == "prod":
+            acc[slot] = acc[slot] * value
         else:
             acc[slot] = acc[slot] + value
 
@@ -920,7 +924,7 @@ def _down_rows_kernel(
     Args:
         A: Elements the reduction consumes per output column.
         B: Output columns.
-        op_kind: One of ``sum`` / ``mean`` / ``amax`` / ``amin``.
+        op_kind: One of ``sum`` / ``mean`` / ``amax`` / ``amin`` / ``prod``.
         in_dtype: TileLang dtype string of the input.
         out_dtype: TileLang dtype string of the output. A split pass writes fp32
             partials whatever it read; the pass that finishes writes the declared dtype.

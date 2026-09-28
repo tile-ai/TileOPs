@@ -9,6 +9,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_path
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
@@ -32,6 +33,8 @@ from tileops.utils import WARP_LANES
 
 __all__ = ["ReduceKernel"]
 
+_STREAMING_LOAD_HELPER_PATH = csrc_path("streaming_load.h")
+
 _WELFORD_KINDS = {"std", "var", "var_mean"}
 
 
@@ -45,7 +48,10 @@ _FRAG_SLOTS = {
 }
 
 
-_LEADING_AXIS_KINDS = frozenset({"sum", "mean", "amax", "amin"})
+# Kinds the down-rows engine reduces, and the subset the edge-axis rows pass
+# also serves.
+_EDGE_AXIS_KINDS = frozenset({"sum", "mean", "amax", "amin"})
+_LEADING_AXIS_KINDS = _EDGE_AXIS_KINDS | {"prod"}
 
 
 @dataclass(frozen=True)
@@ -54,12 +60,12 @@ class ProductReducePolicy:
 
     cols_per_thread: int = 8
 
-    # Rows below this leave the grid too small to hide the vectorized path's
-    # per-thread latency; the shared staging keeps more loads in flight there.
-    min_rows_for_vectorized: int = 256
-
 
 _PROD_POLICY = ProductReducePolicy()
+
+# Row-fold steps unrolled together, so a thread keeps this many vector loads in
+# flight; a grid of few rows is bound by how many loads each thread issues ahead.
+_FOLD_UNROLL = 16
 
 
 # Simple reduce kernel
@@ -132,7 +138,7 @@ class ReduceKernel(Kernel):
         # Axes hugging both edges also run in the tensor's own layout; the rank
         # check again waits for forward. Welford kinds merge fp32 (mean, M2)
         # partials instead of fp32 scalars.
-        self._edge_axis_kind = op_kind in _LEADING_AXIS_KINDS or self._is_welford
+        self._edge_axis_kind = op_kind in _EDGE_AXIS_KINDS or self._is_welford
         self._elem_bytes = torch_dtype_nbytes(dtype)
         self._smem_budget = device_smem_budget(device_index)
         self._planner = BlockConfigPlanner(
@@ -199,7 +205,7 @@ class ReduceKernel(Kernel):
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Autotune the reduce kernel by benchmarking candidate configs."""
-        if not self._needs_tiling:
+        if not (self._needs_tiling or self._stream_fold_eligible):
             return super().autotune(warmup=warmup, rep=rep)
         x = torch.randn(self.M, self.N, dtype=self.dtype, device=torch.cuda.current_device())
         tune_by_forward(self, x, warmup=warmup, rep=rep, forward=self._reduce_rows)
@@ -217,6 +223,10 @@ class ReduceKernel(Kernel):
             ValueError: *x* is not on a CUDA device.
         """
         self._require_cuda(x=x)
+        if x.data_ptr() % VECTOR_ACCESS_BYTES:
+            # The kernels load whole vectors from the start of the buffer; a view
+            # with a storage offset need not start on a vector boundary.
+            x = x.clone()
         in_shape = tuple(x.shape)
         if self._leading_axis_kind and self.reduces_leading_axes(x.ndim, self.reduce_axes):
             columns = self._reduce_leading_axes(x)
@@ -349,58 +359,114 @@ class ReduceKernel(Kernel):
         """Elements a thread folds at once: one vector access of them."""
         return VECTOR_ACCESS_BYTES // self._elem_bytes
 
-    def _stream_fold_applies(self, x: torch.Tensor) -> bool:
-        """Whether the rows can be folded straight into registers.
+    @property
+    def _stream_fold_eligible(self) -> bool:
+        """Whether some config folds the rows straight into registers.
 
-        The tiled path copies the row into shared memory and widens it to fp32
-        across a fragment as wide as the tile before reducing that. A fold needs
-        neither, and needs only a contiguous row of whole vectors owned by one
-        block.
+        The shared-memory kernels copy the row into shared memory and widen it to
+        fp32 across a fragment as wide as the tile before reducing that. A fold
+        needs neither, and needs only a row of whole vectors owned by one block.
         """
         return (
-            self.strategy == "simple_tiled"
-            and self.op_kind in ("sum", "mean")
-            and self.config["block_m"] == 1
+            self.strategy in ("simple", "simple_tiled", "prod") and self.N % self._stream_vec() == 0
+        )
+
+    def _stream_fold_applies(self, x: torch.Tensor) -> bool:
+        """Whether this call folds the rows into registers.
+
+        ``block_m > 1`` asks for the shared-memory kernel, which packs that many
+        rows per block; the product kernel takes one row per block whatever the
+        config says, so a product row of whole vectors always folds.
+        """
+        return (
+            self._stream_fold_eligible
+            and (self._is_prod or self.config["block_m"] == 1)
             and x.is_contiguous()
-            and self.N % self._stream_vec() == 0
         )
 
     @staticmethod
     @functools.lru_cache(maxsize=32)
-    def _stream_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str, vec: int):
-        """Build a sum/mean kernel that folds the row into registers as it reads.
+    def _stream_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str):
+        """Build a sum/mean/amax/amin/prod kernel that folds the row into registers as it reads.
 
-        The row is summed in a different order from the tiled path: ``threads *
-        vec`` partial sums, each over a strided subsequence, then a tree over
-        those. A different order, not a stricter one.
+        One block per row. Each thread reads one 16-byte vector of ``vec`` elements
+        per step and folds it into ``vec`` fp32 slots, so the slots are independent
+        chains and the row is reduced as ``threads * vec`` strided subsequences,
+        then a tree over those. Every element is read once, so the loads are marked
+        first for eviction and leave the lines other data holds in cache alone.
         """
+        vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
+        identity = identity_for(op_kind)
 
-        @tilelang.jit(out_idx=[1])
+        @tilelang.jit(
+            out_idx=[1],
+            compile_flags=["-include", _STREAMING_LOAD_HELPER_PATH],
+        )
         def _func(threads: int):
             step = threads * vec
             steps = n // step
-            exact = steps * step == n
+            num_warps = threads // WARP_LANES
+
+            def combine(a, b):
+                if op_kind == "amax":
+                    return T.max(a, b)
+                if op_kind == "amin":
+                    return T.min(a, b)
+                if op_kind == "prod":
+                    return a * b
+                return a + b
 
             @T.prim_func
             def main(x: T.Tensor((m, n), dtype), out: T.Tensor((m,), out_dtype)):
-                with T.Kernel(m, threads=threads) as bm:
-                    acc = T.alloc_fragment((threads, vec), "float32")
-                    lane = T.alloc_fragment((threads,), "float32")
-                    red = T.alloc_fragment((1,), "float32")
-                    T.clear(acc)
-                    for k in T.serial(steps):
-                        for i, j in T.Parallel(threads, vec):
-                            acc[i, j] += T.Cast("float32", x[bm, (k * threads + i) * vec + j])
-                    if not exact:
-                        for i, j in T.Parallel(threads, vec):
-                            col = steps * step + i * vec + j
-                            with T.If(col < n):  # noqa: SIM117
-                                with T.Then():
-                                    acc[i, j] += T.Cast("float32", x[bm, col])
-                    T.reduce_sum(acc, lane, dim=1)
-                    T.reduce_sum(lane, red, dim=0)
-                    total = red[0] / float(n) if op_kind == "mean" else red[0]
-                    out[bm] = T.Cast(out_dtype, total)
+                with T.Kernel(m, threads=threads) as row:
+                    tx = T.get_thread_binding()
+                    held = T.alloc_local((vec,), dtype)
+                    slots = T.alloc_local((vec,), "float32")
+                    total = T.alloc_local((1,), "float32")
+                    warp_total = T.alloc_shared((num_warps,), "float32")
+
+                    for c in T.serial(vec):
+                        slots[c] = T.cast(identity, "float32")
+                    for k in T.unroll(steps, unroll_factor=_FOLD_UNROLL):
+                        T.call_extern(
+                            "handle",
+                            "tl::tileops_load16_evict_first",
+                            T.address_of(held[0]),
+                            T.address_of(x[row, (k * threads + tx) * vec]),
+                        )
+                        for c in T.serial(vec):
+                            slots[c] = combine(slots[c], T.cast(held[c], "float32"))
+                    # The row holds whole vectors, so the tail is guarded per vector.
+                    if steps * step + tx * vec < n:
+                        T.call_extern(
+                            "handle",
+                            "tl::tileops_load16_evict_first",
+                            T.address_of(held[0]),
+                            T.address_of(x[row, steps * step + tx * vec]),
+                        )
+                        for c in T.serial(vec):
+                            slots[c] = combine(slots[c], T.cast(held[c], "float32"))
+
+                    total[0] = slots[0]
+                    for c in T.serial(1, vec):
+                        total[0] = combine(total[0], slots[c])
+                    for stage in T.serial(_WARP_STAGES):
+                        total[0] = combine(
+                            total[0],
+                            T.shfl_xor(
+                                total[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
+                            ),
+                        )
+                    if tx % WARP_LANES == 0:
+                        warp_total[tx // WARP_LANES] = total[0]
+                    T.sync_threads()
+                    if tx == 0:
+                        for w in T.serial(1, num_warps):
+                            warp_total[0] = combine(warp_total[0], warp_total[w])
+                        if op_kind == "mean":
+                            out[row] = T.cast(warp_total[0] / float(n), out_dtype)
+                        else:
+                            out[row] = T.cast(warp_total[0], out_dtype)
 
             return main
 
@@ -408,9 +474,18 @@ class ReduceKernel(Kernel):
 
     def _reduce_rows(self, x: torch.Tensor) -> object:
         """Reduce the trailing axis of an ``(M, N)`` buffer."""
+        block_m, threads = self.config["block_m"], self.config["threads"]
+        if self._stream_fold_applies(x):
+            program = self._stream_kernel(
+                self.M,
+                self.N,
+                self.op_kind,
+                self.dtype_str,
+                self.out_dtype_str,
+            )
+            return program(threads)(x)
         if self.strategy == "prod":
             return self.kernel()(x)
-        block_m, threads = self.config["block_m"], self.config["threads"]
         if self.strategy in {"welford", "welford_tiled"}:
             if self.strategy == "welford_tiled":
                 program = self._welford_reduce_kernel_tiled(
@@ -427,16 +502,6 @@ class ReduceKernel(Kernel):
             if self.op_kind == "var_mean":
                 return results[0], results[1]
             return results
-        if self._stream_fold_applies(x):
-            program = self._stream_kernel(
-                self.M,
-                self.N,
-                self.op_kind,
-                self.dtype_str,
-                self.out_dtype_str,
-                self._stream_vec(),
-            )
-            return program(threads)(x)
         if self.strategy == "simple_tiled":
             program = self._simple_reduce_kernel_tiled(
                 self.M,
@@ -654,26 +719,13 @@ class ReduceKernel(Kernel):
     def _prod_reduce_kernel(M: int, N: int, dtype: str, out_dtype: str, threads: int):
         """Build a product reduce: one block per row, multiplying in fp32.
 
-        With enough rows to fill the device, each thread reads its
-        ``cols_per_thread`` consecutive elements per tile with vectorized accesses
-        straight into registers. Below ``min_rows_for_vectorized`` rows, or when
-        the tile does not divide the row, the row is staged through shared memory
-        instead. The two bodies cannot be merged: TileLang rejects a
-        ``T.vectorized`` loop and a guarded tail load of the same buffer in one
-        kernel.
+        Serves the rows the register fold does not take, those that are not a
+        whole number of vectors: each tile of the row is staged through shared
+        memory, and a guarded load fills the columns past the row end with 1.
         """
         chunk = threads * _PROD_POLICY.cols_per_thread
-        vectorized = N % chunk == 0 and _PROD_POLICY.min_rows_for_vectorized <= M
-        full_tiles = N // chunk if vectorized else 0
         tiles = ceildiv_int(N, chunk)
-        exact = tiles * chunk == N
         num_warps = threads // WARP_LANES
-        # One vector access is at most 16 bytes; wider per-thread spans split into
-        # several back-to-back vector loads.
-        vec_elems = min(
-            _PROD_POLICY.cols_per_thread, VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
-        )
-        vec_groups = _PROD_POLICY.cols_per_thread // vec_elems
 
         @tilelang.jit(out_idx=[1])
         def _func():
@@ -686,42 +738,24 @@ class ReduceKernel(Kernel):
                     tx = T.get_thread_binding()
                     running = T.alloc_local((1,), "float32")
                     warp_prod = T.alloc_shared((num_warps,), "float32")
-                    held = T.alloc_local((_PROD_POLICY.cols_per_thread,), dtype)
-                    staged = T.alloc_shared((1 if vectorized else chunk,), dtype)
+                    staged = T.alloc_shared((chunk,), dtype)
                     # One independent fp32 chain per slot; a single running product
                     # would serialize every multiply behind the previous one.
                     slots = T.alloc_local((_PROD_POLICY.cols_per_thread,), "float32")
 
                     for c in T.serial(_PROD_POLICY.cols_per_thread):
                         slots[c] = T.cast(1.0, "float32")
-                    if vectorized:
-                        for t in T.serial(full_tiles):
-                            for g in T.serial(vec_groups):
-                                for c in T.vectorized(vec_elems):
-                                    held[g * vec_elems + c] = x[
-                                        row,
-                                        t * chunk
-                                        + tx * _PROD_POLICY.cols_per_thread
-                                        + g * vec_elems
-                                        + c,
-                                    ]
-                            for c in T.serial(_PROD_POLICY.cols_per_thread):
-                                slots[c] = slots[c] * T.cast(held[c], "float32")
-                    else:
-                        for t in T.serial(tiles):
-                            for i in T.Parallel(chunk):
-                                staged[i] = x[row, t * chunk + i]
-                            T.sync_threads()
-                            for c in T.serial(_PROD_POLICY.cols_per_thread):
-                                kept = staged[tx * _PROD_POLICY.cols_per_thread + c]
-                                if exact:
-                                    slots[c] = slots[c] * T.cast(kept, "float32")
-                                else:
-                                    col = (t * threads + tx) * _PROD_POLICY.cols_per_thread + c
-                                    slots[c] = slots[c] * T.if_then_else(
-                                        col < N, T.cast(kept, "float32"), T.cast(1.0, "float32")
-                                    )
-                            T.sync_threads()
+                    for t in T.serial(tiles):
+                        for i in T.Parallel(chunk):
+                            staged[i] = x[row, t * chunk + i]
+                        T.sync_threads()
+                        for c in T.serial(_PROD_POLICY.cols_per_thread):
+                            kept = staged[tx * _PROD_POLICY.cols_per_thread + c]
+                            col = (t * threads + tx) * _PROD_POLICY.cols_per_thread + c
+                            slots[c] = slots[c] * T.if_then_else(
+                                col < N, T.cast(kept, "float32"), T.cast(1.0, "float32")
+                            )
+                        T.sync_threads()
 
                     running[0] = slots[0]
                     for c in T.serial(1, _PROD_POLICY.cols_per_thread):
