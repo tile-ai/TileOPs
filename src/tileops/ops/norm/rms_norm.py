@@ -10,7 +10,6 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm import RMSNormKernel
 
 from ..op_base import Op
-from .norm_base import affine_or_constant
 
 __all__ = ["RMSNormFwdOp"]
 
@@ -85,7 +84,7 @@ class RMSNormFwdOp(Op):
         """
         if x.numel() == 0:
             return torch.empty_like(x)
-        weight = affine_or_constant(weight, tuple(self.normalized_shape), 1.0, x.dtype, x.device)
+        weight = None if weight is None else weight.contiguous()
         x = x.contiguous()
         kernel = self.kernel_for("rms_norm", (x, weight), x.dtype)
         return kernel(x, weight)

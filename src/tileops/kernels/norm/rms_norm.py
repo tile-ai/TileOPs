@@ -6,9 +6,9 @@ The normalized row goes from the register fragment straight to global memory. On
 partial reduction reads shared memory, because a thread walking a strided run of the row
 can reach it there and cannot reach another thread's registers.
 
-256-element alignment (512 bytes for fp16/bf16) required by the T.copy() that fills that
-shared buffer. Padding zeros don't affect sum of squares; division uses original N for
-correct mean computation.
+The fragment is wider than the row when the row is not already a width the block
+divides; the columns past the row load zero, which adds nothing to the sum of squares,
+and are never stored. The mean divides by the row's own width.
 """
 
 import functools
@@ -17,7 +17,6 @@ from typing import Optional
 import tilelang
 import tilelang.language as T
 import torch
-import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
@@ -28,9 +27,31 @@ from ._config import select_row_config, select_row_configs
 __all__ = ["RMSNormKernel"]
 
 
+# Rows at most this wide share a block of the default 128 threads: one of them gives
+# each thread less than one 16-byte access of a 16-bit dtype.
+_SHARED_ROW_MAX = 512
+# Elements such a block then holds: two 16-byte accesses per thread.
+_SHARED_BLOCK_ELEMENTS = 2048
+
+
+def _padded_width(n: int) -> int:
+    """Columns of the fragment holding a row of *n*.
+
+    A row that shares its block takes the next power of two, so whole rows tile the
+    block; blocking several rows of any other width to a CTA gets a replicated layout
+    (see ``_config``). A longer row is padded to :data:`ALIGNMENT`, which the
+    128-thread default divides.
+    """
+    if n <= _SHARED_ROW_MAX:
+        return 1 << (n - 1).bit_length()
+    return align_up(n, ALIGNMENT)
+
+
 @functools.lru_cache(maxsize=32)
-def _rms_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
-    N_padded = align_up(N, ALIGNMENT)
+def _rms_norm_kernel(M, N, eps, dtype, has_weight, partial_min_elements, sm_count):
+    N_padded = _padded_width(N)
+    # The fragment spans N_padded columns; the tensors hold N.
+    col_guard = N_padded != N
 
     @tilelang.jit(out_idx=[2])
     def _func(block_m, threads):
@@ -40,7 +61,8 @@ def _rms_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
         # A tail row block runs past the end unless every index is guarded.
         row_guard = M % block_m != 0
         per_thread_partial = (
-            -(-M // block_m) > sm_count
+            not col_guard
+            and -(-M // block_m) > sm_count
             # A thread count that does not divide the row truncates the walk.
             and N_padded % threads == 0
             and N_padded // threads >= partial_min_elements
@@ -48,9 +70,9 @@ def _rms_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
 
         @T.prim_func
         def main(
-            x: T.Tensor[(M, N_padded), dtype],
-            weight: T.Tensor[(N_padded,), dtype],
-            y: T.Tensor[(M, N_padded), dtype],
+            x: T.Tensor[(M, N), dtype],
+            weight: T.Tensor[(N if has_weight else 1,), dtype],
+            y: T.Tensor[(M, N), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 x_local = T.alloc_fragment((block_m, N_padded), dtype)
@@ -76,15 +98,26 @@ def _rms_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
 
                     T.copy(shared_buf, x_local)
                 else:
-                    if row_guard:
-                        for i, j in T.Parallel(block_m, N_padded):
+                    # A column or row past the tensor loads zero, which adds nothing
+                    # to the sum of squares.
+                    for i, j in T.Parallel(block_m, N_padded):
+                        if row_guard and col_guard:
+                            x_local[i, j] = T.if_then_else(
+                                (pid_m * block_m + i < M) & (j < N),
+                                x[pid_m * block_m + i, j],
+                                T.cast(0.0, dtype),
+                            )
+                        elif row_guard:
                             x_local[i, j] = T.if_then_else(
                                 pid_m * block_m + i < M,
                                 x[pid_m * block_m + i, j],
                                 T.cast(0.0, dtype),
                             )
-                    else:
-                        for i, j in T.Parallel(block_m, N_padded):
+                        elif col_guard:
+                            x_local[i, j] = T.if_then_else(
+                                j < N, x[pid_m * block_m + i, j], T.cast(0.0, dtype)
+                            )
+                        else:
                             x_local[i, j] = x[pid_m * block_m + i, j]
 
                     for i, j in T.Parallel(block_m, N_padded):
@@ -100,13 +133,21 @@ def _rms_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
 
                 # y = x * rrms * weight, written from the fragment holding the row.
                 for i, j in T.Parallel(block_m, N_padded):
-                    if (not row_guard) or pid_m * block_m + i < M:
-                        y[pid_m * block_m + i, j] = T.cast(
-                            T.cast(x_local[i, j], "float32")
-                            * rrms[i]
-                            * T.cast(weight[j], "float32"),
-                            dtype,
-                        )
+                    # Nested, not joined: a Python bool joined to a TIR comparison by
+                    # `and` is not a TIR conjunction.
+                    if (not row_guard) or pid_m * block_m + i < M:  # noqa: SIM102
+                        if (not col_guard) or j < N:
+                            if has_weight:
+                                y[pid_m * block_m + i, j] = T.cast(
+                                    T.cast(x_local[i, j], "float32")
+                                    * rrms[i]
+                                    * T.cast(weight[j], "float32"),
+                                    dtype,
+                                )
+                            else:
+                                y[pid_m * block_m + i, j] = T.cast(
+                                    T.cast(x_local[i, j], "float32") * rrms[i], dtype
+                                )
 
         return main
 
@@ -116,9 +157,9 @@ def _rms_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
 class RMSNormKernel(Kernel):
     """RMS Norm kernel.
 
-    Supports SM80+ architectures. Uses 256-element alignment (512 bytes for
-    fp16/bf16) for the shared buffer the partial reduction walks; the row itself
-    is held in a register fragment from the load through the store.
+    Supports SM80+ architectures. The row is held in a register fragment from the load
+    through the store. A short row shares its block with others, enough of them to give
+    every thread of the default width the same share a longer row gives it.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -144,27 +185,37 @@ class RMSNormKernel(Kernel):
         self.N = N
         self.eps = eps
         self.dtype = dtype
-        self.N_padded = align_up(N, ALIGNMENT)
+        self.N_padded = _padded_width(N)
         self._tune_pending = tune  # tuning needs a program, so it waits for the first call
         self.init_config(config, tune=False)
 
     @property
     def default_config(self) -> dict:
-        return select_row_config()
+        config = select_row_config()
+        if self.N_padded <= _SHARED_ROW_MAX:
+            config["block_m"] = _SHARED_BLOCK_ELEMENTS // self.N_padded
+        return config
 
     @property
     def autotune_configs(self) -> list[dict]:
+        """The width-derived default alone when short rows share a block.
+
+        The autotuner times a candidate back to back with the rows resident in L2, which
+        cannot rank kernels of a few microseconds as a cold call runs them.
+        """
+        if self.default_config["block_m"] > 1:
+            return [self.default_config]
         return select_row_configs(self.N_padded, self.dtype)
 
-    def forward(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
         """Normalize ``x`` over its trailing ``N`` elements.
 
-        Flattening to 2-D rows and a flat weight happens here, as does the alignment
-        padding the prim_func requires.
+        Flattening to 2-D rows and a flat weight happens here.
 
         Args:
             x: Input whose trailing axes multiply to ``N``, contiguous, on a CUDA device.
-            weight: Affine scale holding ``N`` elements, contiguous, on the same device.
+            weight: Affine scale holding ``N`` elements, contiguous, on the same device,
+                or ``None`` to scale by one.
 
         Returns:
             Tensor shaped like *x*.
@@ -172,15 +223,18 @@ class RMSNormKernel(Kernel):
         Raises:
             ValueError: Either input is not on a CUDA device.
         """
-        if not (x.is_cuda and weight.is_cuda):
+        if not (x.is_cuda and (weight is None or weight.is_cuda)):
+            weight_device = None if weight is None else weight.device
             raise ValueError(
                 f"{type(self).__name__} is a CUDA kernel; got x on {x.device} and weight on "
-                f"{weight.device}. Another target's backend serves other devices."
+                f"{weight_device}. Another target's backend serves other devices."
             )
 
         original_shape = x.shape
         rows = x.reshape(-1, self.N)
-        weight = weight.reshape(self.N)
+        has_weight = weight is not None
+        # The prim_func keeps its weight parameter without one; it reads nothing from it.
+        weight = weight.reshape(self.N) if has_weight else rows.new_empty(1)
         m = rows.shape[0]
 
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
@@ -189,6 +243,7 @@ class RMSNormKernel(Kernel):
             self.N,
             self.eps,
             self.dtype_str,
+            has_weight,
             self.PARTIAL_MIN_ELEMENTS_PER_THREAD,
             # The device the input is on, not whichever is current.
             get_sm_count(x.device.index),
@@ -197,11 +252,9 @@ class RMSNormKernel(Kernel):
             self._tune_pending = False
             self.autotune()
 
-        pad = self.N_padded - self.N
-        if pad:
-            rows = F.pad(rows, (0, pad))
-            weight = F.pad(weight, (0, pad))
-        y = self.kernel(self.config["block_m"], self.config["threads"])(rows, weight)
-        if pad:
-            y = y[:, : self.N]
+        block_m = self.config["block_m"]
+        if self.N_padded <= _SHARED_ROW_MAX:
+            # Rows sharing a block: no more of them than the power of two covering the call.
+            block_m = min(block_m, 1 << (m - 1).bit_length())
+        y = self.kernel(block_m, self.config["threads"])(rows, weight)
         return y.reshape(original_shape)
