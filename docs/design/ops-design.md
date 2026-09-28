@@ -122,7 +122,7 @@ from ..op_base import Op
 
 ### Step 2: Class declaration + docstring + `__all__`
 
-**Input.** Manifest entry key (= class name); `signature.inputs`, `signature.params` (Args block content).
+**Input.** Manifest entry key (= class name); what the op computes.
 
 **Output.**
 
@@ -134,16 +134,10 @@ class ExampleCumsumFwdOp(Op):
     """Cumulative sum operator: y = cumsum(x, dim=-1).
 
     Output has the same shape and dtype as input.
-
-    Args:
-        dim: Reduction dimension (default -1).
-        target: Backend target to serve this op, or None to decide from the input device.
-        kernel_map: Optional override for kernel dispatch.
-        tune: Whether to autotune (default False).
     """
 ```
 
-**Validation.** Class name ≡ manifest entry key, byte-exact (`ExampleCumsumFwdOp`). Every `Args:` entry appears as an `__init__` kwarg in Step 3; no extras.
+**Validation.** Class name ≡ manifest entry key, byte-exact (`ExampleCumsumFwdOp`). The class docstring has no `Args:` block: construction parameters are documented on `__init__` (Step 3).
 
 **Reference.** [Slot S5](op-slot-rules.md#slot-s5), [S6](op-slot-rules.md#slot-s6), [S7](op-slot-rules.md#slot-s7).
 
@@ -162,13 +156,21 @@ def __init__(
     kernel_map: Optional[Dict[str, Kernel]] = None,
     tune: bool = False,
 ):
+    """Build the op.
+
+    Args:
+        dim: Reduction dimension (default -1).
+        target: Backend target to serve this op, or None to decide from the input device.
+        kernel_map: Optional override for kernel dispatch.
+        tune: Whether to autotune (default False).
+    """
     self.dim = dim
     self.target = target
     self.tune = tune
     self.dispatch_kernel(kernel_map)
 ```
 
-**Validation.** `__init__` matches `signature.params` item by item ([manifest.md](manifest.md#parameters)), followed by the table-7 execution-policy parameters it takes. `dtype` is not a kwarg — it is read from the input in `forward()`. A param declaring `kw_only: true` goes after `*`.
+**Validation.** Every `__init__` kwarg has an `Args:` entry in its docstring; no extras. `__init__` matches `signature.params` item by item ([manifest.md](manifest.md#parameters)), followed by the table-7 execution-policy parameters it takes. `dtype` is not a kwarg — it is read from the input in `forward()`. A param declaring `kw_only: true` goes after `*`.
 
 **Reference.** [Slot S12](op-slot-rules.md#slot-s12), [S13](op-slot-rules.md#slot-s13).
 
