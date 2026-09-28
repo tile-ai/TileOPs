@@ -39,7 +39,7 @@ class LogicalReduceBasicFixture(FixtureBase):
                 pytest.param(128, 300, torch.float16, marks=pytest.mark.full),
                 pytest.param(128, 300, torch.bool, marks=pytest.mark.full),
                 pytest.param(128, 300, torch.complex64, marks=pytest.mark.full),
-                # Tail-M: M not divisible by block_m
+                # Row count that is not a power of two
                 pytest.param(129, 512, torch.float16, marks=pytest.mark.full),
             ],
         ),
@@ -148,22 +148,6 @@ class LogicalReduceTest(AnyWorkload, TestBase):
         elif self.op_kind == "count_nonzero":
             return torch.count_nonzero(x, dim=-1).to(torch.int64)
         raise ValueError(f"Unknown op_kind: {self.op_kind}")
-
-
-class _TailBlockLogicalReduceKernel(LogicalReduceKernel):
-    """Force tiled tests to cover tail-M masking with block_m > M."""
-
-    _TAIL_BLOCK_M = 4
-    _TAIL_TILE_N = 8192
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        assert self._needs_tiling, "tail-M regression test must use the tiled kernel"
-        self.config = {
-            "block_m": self._TAIL_BLOCK_M,
-            "threads": 128,
-            "tile_n": self._TAIL_TILE_N,
-        }
 
 
 def _exact_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
@@ -627,8 +611,8 @@ def test_count_nonzero_smoke_bool(m: int, n: int, dtype: torch.dtype) -> None:
         ("count_nonzero", torch.float16),
     ],
 )
-def test_logical_reduce_long_sequence_tiled(op_kind: str, dtype: torch.dtype) -> None:
-    """Exercise the N-tiled path with a tail-M block."""
+def test_logical_reduce_long_sequence(op_kind: str, dtype: torch.dtype) -> None:
+    """A long row whose last step only part of the block reaches."""
     from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 
     op_map = {
@@ -637,25 +621,14 @@ def test_logical_reduce_long_sequence_tiled(op_kind: str, dtype: torch.dtype) ->
         "count_nonzero": CountNonzeroFwdOp,
     }
     test = LogicalReduceTest(3, 33024, dtype, op_kind)
-    op = op_map[op_kind](
-        dim=-1,
-        kernel_map={"logical_reduce": _TailBlockLogicalReduceKernel},
-        target=BUILTIN,
-    )
+    op = op_map[op_kind](dim=-1)
     compare = _exact_compare_int64 if op_kind == "count_nonzero" else _exact_compare
     test.check(op, *test.gen_inputs(), compare=compare)
-    (kernel,) = op.built_kernels("reduce").values()
-    assert kernel.config["block_m"] > test.shape[0]
-    assert kernel.config["tile_n"] > 0
 
 
 @pytest.mark.smoke
-def test_logical_reduce_tiled_autotune() -> None:
-    """``tune=True`` must build and time every tiled candidate.
-
-    N is not a power of two: a power-of-two N_padded lets ``compute_tile_n``
-    fall back on an exact divisor, which hides a mis-derived tile_n.
-    """
+def test_logical_reduce_autotune() -> None:
+    """``tune=True`` must build and time every candidate width."""
     from tileops.ops.reduction.logical_reduce import AnyFwdOp
 
     m, n, dtype = 4, 40000, torch.bool
@@ -665,7 +638,6 @@ def test_logical_reduce_tiled_autotune() -> None:
 
     if served_in_tree(op):
         (kernel,) = op.built_kernels("reduce").values()
-        assert kernel._needs_tiling
         assert kernel.config in kernel.autotune_configs
 
 
@@ -780,3 +752,50 @@ def test_logical_reduce_edge_axes_fused_dispatch(
     # is the entry that was built under it.
     (built,) = op.built_kernels("reduce").values()
     assert isinstance(built, LogicalReduceEdgeFusedKernel)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+@pytest.mark.parametrize(
+    "dtype, value",
+    [
+        pytest.param(torch.float32, -0.0, id="negative-zero"),
+        pytest.param(torch.complex128, 1e-300j, id="float64-only-imag"),
+    ],
+)
+def test_logical_reduce_truth_at_own_width(dtype: torch.dtype, value: complex) -> None:
+    """Truth is decided in the input's own dtype, and a conjugated input reads the same."""
+    from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
+
+    x = torch.ones(4, 1000, dtype=dtype, device=run_device())
+    x[1, 3] = value
+    x[2] = 0
+    x[2, 999] = value
+    inputs = [x, x.conj()] if dtype.is_complex else [x]
+    for t in inputs:
+        assert torch.equal(AnyFwdOp(dim=-1)(t), t.any(-1))
+        assert torch.equal(AllFwdOp(dim=-1)(t), t.all(-1))
+        assert torch.equal(CountNonzeroFwdOp(dim=-1)(t), torch.count_nonzero(t, dim=-1))
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+def test_count_nonzero_exact_past_fp32_integers() -> None:
+    """A row counting past 2^24 stays exact: fp32 cannot hold 2^24 + 1."""
+    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
+
+    x = torch.ones(2, (1 << 24) + 4, dtype=torch.bool, device=run_device())
+    x[1, 7] = False
+    assert torch.equal(CountNonzeroFwdOp(dim=-1)(x), torch.count_nonzero(x, dim=-1))
+
+
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_logical_reduce_rejects_width_its_reduction_cannot_fold() -> None:
+    """A block width that is not a power of two would drop warps from the reduction."""
+    kernel = LogicalReduceKernel(
+        4, 4096, "count_nonzero", torch.float16, (1,), config={"threads": 96}
+    )
+    with pytest.raises(ValueError, match="power of two"):
+        kernel(torch.ones(4, 4096, dtype=torch.float16, device="cuda"))

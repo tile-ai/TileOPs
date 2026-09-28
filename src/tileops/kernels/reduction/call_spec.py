@@ -33,8 +33,6 @@ class LogicalReduceCall(CallSpec):
     m: int = 0
     edge_axes: bool = False
     kept: int = 0
-    trail_needs_tiling: bool = False
-    reduced_count: int = 0
 
 
 def logical_reduce_region(call: LogicalReduceCall) -> bool:
@@ -51,8 +49,6 @@ def logical_edge_fused_region(call: LogicalReduceCall) -> bool:
     min_kept = _EDGE_FUSED_MIN_KEPT.get(call.calibration)
     if min_kept is None:
         return False
-    if not call.edge_axes or call.trail_needs_tiling:
+    if not call.edge_axes:
         return False
-    if call.kept < min_kept:
-        return False
-    return call.op_kind != "count_nonzero" or call.reduced_count <= 1 << 24
+    return call.kept >= min_kept

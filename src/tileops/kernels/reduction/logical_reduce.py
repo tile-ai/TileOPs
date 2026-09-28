@@ -1,16 +1,12 @@
 """Logical reduce kernels (any, all, count_nonzero) using TileLang.
 
-Truthiness is decided as each element is loaded, then reduced:
-  - any: reduce_max (1 if any element is non-zero)
-  - all: reduce_min (1 if all elements are non-zero)
-  - count_nonzero: reduce_sum (count of non-zero elements per row)
+Each row is folded into registers as it is read, one vector access of at most 16 bytes
+per lane per step. A count sums the nonzero elements; any and all or together a flag that is
+set on an element that decides them, a nonzero one for any and a zero one for all.
 
-Operates on raw 2D (M, N) tensors; the kernel handles 256-element alignment
-padding internally via masked loads with the appropriate identity value.
-
-A bool input is read at its own width: the prim_func declares int8, which the tensor
-is reinterpreted into, and writes its int8 result back the same way. Output is bool for
-any/all, int64 for count_nonzero.
+The input is read at its own bytes, never converted first: bool as int8 (four to a
+32-bit word where the row allows), a complex element as its two real parts, every
+other dtype as declared. Output is bool for any/all, int64 for count_nonzero.
 """
 
 import functools
@@ -21,18 +17,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.reduction._primitives import (
-    DEFAULT_ALIGNMENT,
-    DEFAULT_THREADS,
     FP32_EXACT_INT_LIMIT,
-    BlockConfigPlanner,
-    align_up,
     ceildiv_int,
-    device_smem_budget,
-    edge_axis_plan,
     edge_axis_split,
-    identity_for,
     reduce_down_rows,
     restore_reduced,
     rows_for_axes,
@@ -45,65 +35,58 @@ from tileops.kernels.reduction.call_spec import (
 )
 from tileops.utils import WARP_LANES
 
+_WARP_STAGES = WARP_LANES.bit_length() - 1
+
 __all__ = [
     "LogicalReduceEdgeFusedKernel",
     "LogicalReduceKernel",
-    "storage_dtype_for",
-    "to_logical_storage",
 ]
 
 _LOGICAL_REDUCE_KINDS = {"any", "all", "count_nonzero"}
 
-# Dtypes the prim_func cannot take, mapped to one it can. bool is one byte holding 0
-# or 1, so int8 reinterprets it free.
-_FLOAT32_STORAGE_DTYPE = torch.float32
-_INT8_STORAGE_DTYPE = torch.int8
-_BYTE_REINTERPRETED_DTYPES = frozenset({torch.bool})
-_WIDENED_STORAGE_DTYPES = frozenset(
-    {
-        torch.complex64,
-        torch.complex128,
-        torch.int32,
-        torch.int64,
-    }
-)
-_UNSUPPORTED_STORAGE_DTYPES = _BYTE_REINTERPRETED_DTYPES | _WIDENED_STORAGE_DTYPES
+# The scalar dtype the prim_func declares for each input dtype, and how many of those
+# scalars make one element. bool is one byte holding 0 or 1, so int8 reinterprets it; a
+# complex element is its real and imaginary parts. Every other dtype is declared as is.
+_SCALAR_VIEWS = {
+    torch.bool: (torch.int8, 1),
+    torch.complex64: (torch.float32, 2),
+    torch.complex128: (torch.float64, 2),
+}
 
 
-# Elements a lane folds in the edge-fused pass. One block holds a `trail`-wide
-# fp32 fragment, so this is what fixes its register footprint per lane rather
-# than letting it grow with the row. Eight is the flat optimum at every width
-# the manifest asks for.
-_FUSED_EDGE_ELEMS_PER_LANE = 8
-_FUSED_EDGE_MIN_THREADS = 64
-_FUSED_EDGE_MAX_THREADS = 1024
+def _scalar_view_for(dtype: torch.dtype) -> "tuple[torch.dtype, int]":
+    """The scalar dtype the prim_func declares for *dtype*, and scalars per element."""
+    return _SCALAR_VIEWS.get(dtype, (dtype, 1))
 
 
-def storage_dtype_for(dtype: torch.dtype) -> torch.dtype:
-    """The dtype the prim_func declares for an input of *dtype*."""
-    if dtype in _BYTE_REINTERPRETED_DTYPES:
-        return _INT8_STORAGE_DTYPE
-    if dtype in _WIDENED_STORAGE_DTYPES:
-        return _FLOAT32_STORAGE_DTYPE
-    return dtype
+def _as_scalars(x: torch.Tensor) -> torch.Tensor:
+    """View *x* as the scalars the prim_func reads, its last axis widened by the count.
 
-
-def to_logical_storage(x: torch.Tensor) -> torch.Tensor:
-    """Present *x* to the kernel in a storage dtype the prim_func declares.
-
-    - bool:        reinterpreted as int8, which copies nothing.
-    - int32/int64: cast to float32.
-    - complex:     nonzero (either real or imaginary part != 0) -> 1.0, else 0.0.
+    Every case is a view: no element is copied or converted. A conjugated complex
+    tensor is read unconjugated, which negates only imaginary parts and so no
+    element's truth.
     """
-    if x.dtype in _BYTE_REINTERPRETED_DTYPES:
-        return x.view(_INT8_STORAGE_DTYPE)
-    if x.dtype in (torch.int32, torch.int64):
-        return x.to(torch.float32)
-    # complex: element is "truthy" if real != 0 OR imag != 0
-    return ((x.real != 0) | (x.imag != 0)).to(torch.float32)
+    if x.dtype == torch.bool:
+        return x.view(torch.int8)
+    if x.is_complex():
+        x = x.conj() if x.is_conj() else x
+        return torch.view_as_real(x).flatten(-2)
+    return x
 
 
-# Logical reduce kernel
+def _nonzero(buf, col, components: int):
+    """Whether element *col* of the 1-D buffer *buf* is nonzero, as a PrimExpr.
+
+    The element is its *components* scalars from ``col * components``; it is nonzero
+    when any of them compares unequal to zero in its own dtype, so -0.0 is zero and
+    NaN is not, as in torch.
+    """
+    zero = T.cast(0, buf.dtype)
+    terms = [buf[col * components + q] != zero for q in range(components)]
+    expr = terms[0]
+    for term in terms[1:]:
+        expr = T.Or(expr, term)
+    return expr
 
 
 def _logical_out_dtype(op_kind: str, partial: bool) -> str:
@@ -117,293 +100,257 @@ def _logical_out_dtype(op_kind: str, partial: bool) -> str:
     return "float32" if partial else "int64"
 
 
-def fused_edge_threads(trail: int) -> int:
-    """The thread width the edge-fused pass runs a ``trail``-wide row at."""
-    lanes = ceildiv_int(trail, _FUSED_EDGE_ELEMS_PER_LANE)
-    lanes = 1 << max(lanes - 1, 0).bit_length()
-    return max(_FUSED_EDGE_MIN_THREADS, min(lanes, _FUSED_EDGE_MAX_THREADS))
+# A lane folds one vector access per step, and a block is sized so each lane folds at
+# least this many of them across a row: fewer leaves lanes that load nothing while the
+# block still pays for its reduction.
+_FOLD_VECTORS_PER_LANE = 2
+_FOLD_MIN_THREADS = WARP_LANES
+_FOLD_MAX_THREADS = 1024
+# Bytes a 32-bit word packs, and the per-byte masks its byte tests use.
+_WORD_BYTES = 4
+_BYTE_ONES = 0x01010101
+_BYTE_LOW = 0x7F7F7F7F
+_BYTE_HIGH = 0x80808080
+
+
+def _fold_vector(unit_bytes: int, row_units: int, components: int, address: int = 0) -> int:
+    """Units one vector access of the fold reads, for rows of *row_units* units.
+
+    The widest power of two within one 16-byte access that holds whole elements and
+    keeps every access aligned: it divides the row, and the data at *address* starts
+    on its boundary. One element is always possible.
+    """
+    vec = VECTOR_ACCESS_BYTES // unit_bytes
+    while vec > components and (row_units % vec or address % (vec * unit_bytes)):
+        vec //= 2
+    return max(vec, components)
+
+
+def _fold_threads(row_units: int, vec: int) -> int:
+    """The block width the fold runs a row of *row_units* units at."""
+    lanes = max(ceildiv_int(row_units, vec) // _FOLD_VECTORS_PER_LANE, 1)
+    lanes = 1 << (lanes.bit_length() - 1)
+    return max(_FOLD_MIN_THREADS, min(lanes, _FOLD_MAX_THREADS))
+
+
+def _nonzero_bytes(word):
+    """How many bytes of a 32-bit *word* are nonzero, as a PrimExpr.
+
+    ``(b & 0x7F) + 0x7F`` sets bit 7 exactly when the low seven bits are not all
+    clear, never carrying into the next byte; or-ing in ``b`` adds bit 7 itself.
+    """
+    low = T.Cast("uint32", _BYTE_LOW)
+    high = T.Cast("uint32", _BYTE_HIGH)
+    return T.popcount((((word & low) + low) | word) & high)
+
+
+def _zero_bytes(word):
+    """Nonzero exactly when some byte of a 32-bit *word* is zero, as a PrimExpr.
+
+    ``(w - 0x01010101) & ~w & 0x80808080``: a zero byte borrows into its own bit 7.
+    ``w ^ ~0`` stands for ``~w``, which CUDA's vector types do not define.
+    """
+    ones = T.Cast("uint32", _BYTE_ONES)
+    high = T.Cast("uint32", _BYTE_HIGH)
+    return (word - ones) & (word ^ T.Cast("uint32", 0xFFFFFFFF)) & high
+
+
+def _fold_term(op_kind: str, held, e, components: int, pack: int):
+    """What element (or word) *e* of a lane's vector adds to its accumulator."""
+    if pack > 1:
+        if op_kind == "count_nonzero":
+            return _nonzero_bytes(held[e])
+        return held[e] if op_kind == "any" else _zero_bytes(held[e])
+    nonzero = _nonzero(held, e, components)
+    if op_kind == "all":
+        nonzero = T.Not(nonzero)
+    return nonzero
+
+
+def _fold_combine(op_kind: str, acc, term):
+    """Fold *term* into the accumulator value *acc*: a sum for a count, else an or."""
+    term = T.cast(term, acc.dtype)
+    return acc + term if op_kind == "count_nonzero" else acc | term
 
 
 @functools.lru_cache(maxsize=32)
-def _logical_reduce_edge_fused(lead: int, kept: int, trail: int, op_kind: str, dtype: str):
-    """Build an any/all/count_nonzero kernel reducing a leading and a trailing axis.
+def _logical_fold_kernel(
+    lead: int,
+    rows: int,
+    cols: int,
+    op_kind: str,
+    unit_dtype: str,
+    components: int,
+    pack: int,
+    vec: int,
+    out_dtype: str,
+):
+    """Build an any/all/count_nonzero kernel that folds each row into registers.
 
-    One block per kept column, walking the leading axis in serial and reducing
-    each of its contiguous rows. The two-pass form writes ``lead * kept``
-    partials and launches again to fold them; at these sizes that launch is most
-    of the time.
+    One block per row. Row ``r`` is the ``lead`` contiguous runs ``x[l, r, :]`` of
+    ``cols`` elements; each lane reads one vector access of ``vec`` units per step.
+    A count sums the nonzero elements. any and all need only whether an element
+    that decides them exists, a nonzero one or a zero one, so a lane ors together a
+    flag that is set when it meets one.
 
     Args:
-        lead: Extent of the leading axes, already folded into one.
-        kept: Extent of the axis that survives.
-        trail: Extent of the trailing axes, already folded into one.
+        lead: Runs each row is made of, walked serially by its block.
+        rows: Output rows.
+        cols: Elements in each run.
         op_kind: One of "any", "all", "count_nonzero".
-        dtype: TileLang dtype string of the input.
+        unit_dtype: TileLang dtype string of the units the input is read as.
+        components: Units per element: 2 for a complex element's parts, else 1.
+        pack: Elements per unit: 4 for bytes read as a 32-bit word, else 1.
+        vec: Units per vector access, a multiple of ``components`` dividing the run.
+        out_dtype: TileLang dtype string of the output.
 
     Returns:
         A TileLang JIT-compiled kernel factory accepting (threads).
     """
-    trail_padded = align_up(trail, DEFAULT_ALIGNMENT)
-    needs_pad = trail_padded != trail
-    pad_val = identity_for(op_kind)
-    out_dtype = _logical_out_dtype(op_kind, partial=False)
-    # any is a max and all is a min over 0/1, so each starts from its identity;
-    # a count sums from zero. The column-wise fold starts from the same value a
-    # padding column carries, since both are that op's identity.
-    init_val = {"any": 0.0, "all": 1.0, "count_nonzero": 0.0}[op_kind]
+    run_units = cols * components // pack
+    counts = op_kind == "count_nonzero"
+    count_dtype = "int32" if lead * cols < 1 << 31 else "int64"
+    acc_dtype = count_dtype if counts else "uint32"
+    # What a vector past the end of the run holds: nothing any or a count takes, and
+    # no zero for all.
+    pad = (_BYTE_ONES if pack > 1 else 1) if op_kind == "all" else 0
 
     @tilelang.jit(out_idx=[1])
     def _func(threads):
+        step = threads * vec
+        full_steps = run_units // step
+        tail = full_steps * step != run_units
+        num_warps = threads // WARP_LANES
+
+        @T.macro
+        def fold_held(held, acc):
+            for e in T.unroll(vec // components):
+                acc[0] = _fold_combine(
+                    op_kind, acc[0], _fold_term(op_kind, held, e, components, pack)
+                )
+
         @T.prim_func
         def main(
-            x: T.Tensor[(lead, kept, trail), dtype],
-            out: T.Tensor[(kept,), out_dtype],
+            x: T.Tensor[(lead, rows, run_units), unit_dtype],
+            out: T.Tensor[(rows,), out_dtype],
         ):
-            with T.Kernel(kept, threads=threads) as pid_k:
-                vals = T.alloc_fragment((1, trail_padded), "float32")
-                acc = T.alloc_fragment((1,), "float32")
+            with T.Kernel(rows, threads=threads) as row:
+                tx = T.get_thread_binding()
+                held = T.alloc_local((vec,), unit_dtype)
+                acc = T.alloc_local((1,), acc_dtype)
+                warp_acc = T.alloc_shared((num_warps,), acc_dtype)
 
-                # The leading axis folds into the fragment column by column, so
-                # the block reduces once at the end rather than once per leading
-                # index: the reduction is a barrier and a tree, and `lead` of
-                # them cost more than the column-wise fold they replace.
-                for j in T.Parallel(trail_padded):
-                    vals[0, j] = init_val
+                acc[0] = T.cast(0, acc_dtype)
                 for lead_idx in T.serial(lead):
-                    for j in T.Parallel(trail_padded):
-                        if needs_pad:
-                            val = T.if_then_else(
-                                j < trail,
-                                T.cast(x[lead_idx, pid_k, j], "float32"),
-                                T.cast(pad_val, "float32"),
+                    for k in T.serial(full_steps):
+                        for v in T.vectorized(vec):
+                            held[v] = x[lead_idx, row, k * step + tx * vec + v]
+                        fold_held(held, acc)
+                    if tail:
+                        # ``vec`` divides the run, so a lane's vector is wholly inside it
+                        # or wholly past it; a select, since a guarded vector load and the
+                        # vectorized loop above cannot share a kernel.
+                        start = full_steps * step + tx * vec
+                        for v in T.serial(vec):
+                            held[v] = T.if_then_else(
+                                start < run_units,
+                                x[lead_idx, row, start + v],
+                                T.cast(pad, unit_dtype),
                             )
-                        else:
-                            val = T.cast(x[lead_idx, pid_k, j], "float32")
-                        one = T.if_then_else(val != 0.0, 1.0, 0.0)
-                        if op_kind == "any":
-                            vals[0, j] = T.max(vals[0, j], one)
-                        elif op_kind == "all":
-                            vals[0, j] = T.min(vals[0, j], one)
-                        else:
-                            vals[0, j] = vals[0, j] + one
-                if op_kind == "any":
-                    T.reduce_max(vals, acc, dim=1)
-                elif op_kind == "all":
-                    T.reduce_min(vals, acc, dim=1)
-                else:
-                    T.reduce_sum(vals, acc, dim=1)
+                        fold_held(held, acc)
 
-                if op_kind == "count_nonzero":
-                    out[pid_k] = T.cast(acc[0], out_dtype)
-                else:
-                    out[pid_k] = T.cast(acc[0] > 0.5, out_dtype)
-
-        return main
-
-    return _func
-
-
-@functools.lru_cache(maxsize=32)
-def _logical_reduce_kernel(M: int, N: int, op_kind: str, dtype: str, partial: bool = False):
-    """Build a TileLang any/all/count_nonzero kernel.
-
-    Cast input to bool (0.0 or 1.0 in float32), then:
-      - any: reduce_max over the row (1.0 if any element is non-zero)
-      - all: reduce_min over the row (1.0 if all elements are non-zero)
-      - count_nonzero: reduce_sum over the row (count of non-zero elements)
-
-    Args:
-        M: Number of rows (product of all leading dimensions).
-        N: Original hidden dimension (last dim, before padding).
-        op_kind: One of "any", "all", "count_nonzero".
-        dtype: TileLang dtype string (e.g. "float16", "bfloat16", "float32").
-        partial: Write partials for an outer pass; only the count changes,
-            staying fp32 instead of widening to int64.
-
-    Returns:
-        A TileLang JIT-compiled kernel factory accepting (block_m, threads).
-    """
-    N_padded = align_up(N, DEFAULT_ALIGNMENT)
-    _needs_pad = N_padded != N
-    _pad_val = identity_for(op_kind)
-    out_dtype = _logical_out_dtype(op_kind, partial)
-
-    @tilelang.jit(out_idx=[1])
-    def _func(block_m, threads):
-        @T.macro
-        def compute(
-            x: T.Tensor[(M, N), dtype],
-            out: T.Tensor[(M,), out_dtype],
-        ):
-            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                shared_buf = T.alloc_shared((block_m, N_padded), dtype)
-                bool_vals = T.alloc_fragment((block_m, N_padded), "float32")
-                result = T.alloc_fragment((block_m,), "float32")
-                out_local = T.alloc_fragment((block_m,), out_dtype)
-
-                # Truthiness is decided at the load, so a tile costs one fragment.
-                if _needs_pad:
-                    for i in T.serial(block_m):
-                        for j in T.Parallel(N_padded):
-                            val = T.if_then_else(
-                                T.And(pid_m * block_m + i < M, j < N),
-                                T.cast(x[pid_m * block_m + i, j], "float32"),
-                                T.cast(_pad_val, "float32"),
+                for stage in T.serial(_WARP_STAGES):
+                    acc[0] = _fold_combine(
+                        op_kind, acc[0], T.shfl_xor(acc[0], T.int32(WARP_LANES // 2) >> stage)
+                    )
+                if num_warps > 1:
+                    if tx % WARP_LANES == 0:
+                        warp_acc[tx // WARP_LANES] = acc[0]
+                    T.sync_threads()
+                    # The whole first warp shuffles; lanes past the warp count hold the
+                    # identity, and xor offsets below the warp count never reach them.
+                    if tx < WARP_LANES:
+                        acc[0] = T.if_then_else(
+                            tx < num_warps, warp_acc[tx % num_warps], T.cast(0, acc_dtype)
+                        )
+                        for stage in T.serial(num_warps.bit_length() - 1):
+                            acc[0] = _fold_combine(
+                                op_kind,
+                                acc[0],
+                                T.shfl_xor(acc[0], T.int32(num_warps // 2) >> stage),
                             )
-                            bool_vals[i, j] = T.if_then_else(val != 0.0, 1.0, 0.0)
-                else:
-                    # Load via shared memory
-                    T.copy(x[pid_m * block_m, 0], shared_buf)
-
-                    for i in T.serial(block_m):
-                        for j in T.Parallel(N_padded):
-                            bool_vals[i, j] = T.if_then_else(
-                                T.cast(shared_buf[i, j], "float32") != 0.0, 1.0, 0.0
-                            )
-
-                if op_kind == "any":
-                    # any: result is 1 if max(bool_vals) == 1
-                    T.reduce_max(bool_vals, result, dim=1)
-                elif op_kind == "all":
-                    # all: result is 1 if min(bool_vals) == 1
-                    T.reduce_min(bool_vals, result, dim=1)
-                else:
-                    # count_nonzero: sum of bool values per row
-                    T.reduce_sum(bool_vals, result, dim=1)
-
-                if op_kind == "count_nonzero":
-                    for i in T.Parallel(block_m):
-                        out_local[i] = T.cast(result[i], out_dtype)
-                else:
-                    # Cast result to int8 (bool representation: 0 or 1)
-                    for i in T.Parallel(block_m):
-                        out_local[i] = T.cast(result[i] > 0.5, "int8")
-
-                T.copy(out_local, out[pid_m * block_m])
-
-        @T.prim_func
-        def main(
-            x: T.Tensor[(M, N), dtype],
-            out: T.Tensor[(M,), out_dtype],
-        ):
-            compute(x, out)
-
-        return main
-
-    return _func
-
-
-@functools.lru_cache(maxsize=32)
-def _logical_reduce_kernel_tiled(
-    M: int, N: int, op_kind: str, dtype: str, tile_n: int, partial: bool = False
-):
-    """Build a tiled TileLang any/all/count_nonzero kernel.
-
-    Iterates over the reduction dimension in chunks of ``tile_n`` columns, for the
-    rows a single pass cannot hold. ``partial`` as in ``_logical_reduce_kernel``.
-    """
-    N_padded = align_up(N, DEFAULT_ALIGNMENT)
-    num_tiles = (N_padded + tile_n - 1) // tile_n
-    _pad_val = identity_for(op_kind)
-    _past_n = num_tiles * tile_n > N
-    out_dtype = _logical_out_dtype(op_kind, partial)
-
-    @tilelang.jit(out_idx=[1])
-    def _func(block_m, threads):
-        # Only the last tile can run past N, and only the last block past the row tail.
-        needs_mask = _past_n or M % block_m != 0
-
-        @T.macro
-        def compute(
-            x: T.Tensor[(M, N), dtype],
-            out: T.Tensor[(M,), out_dtype],
-        ):
-            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                shared_buf = T.alloc_shared((block_m, tile_n), dtype)
-                bool_vals = T.alloc_fragment((block_m, tile_n), "float32")
-                acc = T.alloc_fragment((block_m,), "float32")
-                tile_acc = T.alloc_fragment((block_m,), "float32")
-                out_local = T.alloc_fragment((block_m,), out_dtype)
-
-                if op_kind == "all":
-                    T.fill(acc, 1.0)
-                else:
-                    T.fill(acc, 0.0)
-
-                for t in T.Serial(num_tiles):
-                    # Truthiness is decided at the load, so a tile costs one fragment.
-                    # In-bounds tiles arrive by T.copy.
-                    if needs_mask:
-                        with T.If(t < num_tiles - 1):
-                            with T.Then():
-                                T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                                for i in T.serial(block_m):
-                                    for j in T.Parallel(tile_n):
-                                        bool_vals[i, j] = T.if_then_else(
-                                            T.cast(shared_buf[i, j], "float32") != 0.0, 1.0, 0.0
-                                        )
-                            with T.Else():
-                                for i in T.serial(block_m):
-                                    for j in T.Parallel(tile_n):
-                                        val = T.if_then_else(
-                                            T.And(
-                                                pid_m * block_m + i < M,
-                                                t * tile_n + j < N,
-                                            ),
-                                            T.cast(
-                                                x[pid_m * block_m + i, t * tile_n + j],
-                                                "float32",
-                                            ),
-                                            T.cast(_pad_val, "float32"),
-                                        )
-                                        bool_vals[i, j] = T.if_then_else(val != 0.0, 1.0, 0.0)
+                if tx == 0:
+                    if counts:
+                        out[row] = T.cast(acc[0], out_dtype)
+                    elif op_kind == "any":
+                        out[row] = T.cast(acc[0] != T.cast(0, acc_dtype), out_dtype)
                     else:
-                        T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                        for i in T.serial(block_m):
-                            for j in T.Parallel(tile_n):
-                                bool_vals[i, j] = T.if_then_else(
-                                    T.cast(shared_buf[i, j], "float32") != 0.0, 1.0, 0.0
-                                )
-
-                    if op_kind == "any":
-                        T.reduce_max(bool_vals, tile_acc, dim=1)
-                        for i in T.Parallel(block_m):
-                            acc[i] = T.max(acc[i], tile_acc[i])
-                    elif op_kind == "all":
-                        T.reduce_min(bool_vals, tile_acc, dim=1)
-                        for i in T.Parallel(block_m):
-                            acc[i] = T.min(acc[i], tile_acc[i])
-                    else:
-                        T.reduce_sum(bool_vals, tile_acc, dim=1)
-                        for i in T.Parallel(block_m):
-                            acc[i] = acc[i] + tile_acc[i]
-
-                if op_kind == "count_nonzero":
-                    for i in T.Parallel(block_m):
-                        out_local[i] = T.cast(acc[i], out_dtype)
-                else:
-                    for i in T.Parallel(block_m):
-                        out_local[i] = T.cast(acc[i] > 0.5, "int8")
-
-                T.copy(out_local, out[pid_m * block_m])
-
-        @T.prim_func
-        def main(
-            x: T.Tensor[(M, N), dtype],
-            out: T.Tensor[(M,), out_dtype],
-        ):
-            compute(x, out)
+                        out[row] = T.cast(acc[0] == T.cast(0, acc_dtype), out_dtype)
 
         return main
 
     return _func
+
+
+def _fold_units(dtype: torch.dtype, cols: int, address: int) -> "tuple[torch.dtype, int, int]":
+    """What the fold reads runs of *cols* elements of *dtype* at *address* as.
+
+    Returns the unit dtype, units per element and elements per unit. Bytes go four to a
+    32-bit word where a run is whole words and starts on one, so a lane counts a word's
+    nonzero bytes at once.
+    """
+    scalar_dtype, components = _scalar_view_for(dtype)
+    if scalar_dtype.itemsize == 1 and cols % _WORD_BYTES == 0 and address % _WORD_BYTES == 0:
+        return torch.uint32, 1, _WORD_BYTES
+    return scalar_dtype, components, 1
+
+
+def _fold_default_threads(dtype: torch.dtype, cols: int) -> int:
+    """The block width for runs of *cols* elements of *dtype* on a 16-byte boundary."""
+    unit_dtype, components, pack = _fold_units(dtype, cols, 0)
+    row_units = cols * components // pack
+    return _fold_threads(row_units, _fold_vector(unit_dtype.itemsize, row_units, components))
+
+
+def _fold_reduce(
+    x: torch.Tensor, lead: int, rows: int, cols: int, op_kind: str, out_dtype: str, threads=None
+) -> torch.Tensor:
+    """Reduce each row of *x*, viewed as ``(lead, rows, cols)``, to one *out_dtype* value.
+
+    Row ``r`` is the elements ``x[:, r, :]``. ``threads=None`` sizes the block by the run.
+
+    Raises:
+        ValueError: *threads* is not a power of two from one warp to
+            ``_FOLD_MAX_THREADS``, which the block's shuffle reduction needs.
+    """
+    scalars = _as_scalars(x).reshape(lead, rows, -1)
+    unit_dtype, components, pack = _fold_units(x.dtype, cols, scalars.data_ptr())
+    units = scalars.view(unit_dtype)
+    row_units = units.shape[-1]
+    vec = _fold_vector(units.element_size(), row_units, components, units.data_ptr())
+    if threads is None:
+        threads = _fold_threads(row_units, vec)
+    if not (_FOLD_MIN_THREADS <= threads <= _FOLD_MAX_THREADS and threads & (threads - 1) == 0):
+        raise ValueError(
+            f"threads={threads}: the fold needs a power of two from "
+            f"{_FOLD_MIN_THREADS} to {_FOLD_MAX_THREADS}"
+        )
+    program = _logical_fold_kernel(
+        lead,
+        rows,
+        cols,
+        op_kind,
+        Kernel.dtype_to_str(unit_dtype),
+        components,
+        pack,
+        vec,
+        out_dtype,
+    )
+    return program(threads)(units)
 
 
 def _logical_entry(cls: type, call: LogicalReduceCall, *, tune: bool) -> Entry:
-    """The entry for a logical reduction kernel, which both implementations take.
-
-    The device is in the identity: its shared-memory budget decides the plan.
-    """
+    """The entry for a logical reduction kernel, which both implementations take."""
     index = call.device.index if call.device is not None else None
     identity = (
         call.m,
@@ -430,133 +377,28 @@ def _logical_entry(cls: type, call: LogicalReduceCall, *, tune: bool) -> Entry:
 class LogicalReduceKernel(Kernel):
     """Any / all / count_nonzero forward kernel.
 
-    Supports SM80+ architectures. Handles 256-element alignment padding inside
-    the kernel. Casts input to bool (0/1) and reduces via max (any), min (all),
-    or sum (count_nonzero). Uses an N-tiled fallback for long rows that exceed
-    TileLang's single-fragment column limit.
-
-    Output dtype is bool for any/all and int64 for count_nonzero.
+    Supports SM80+ architectures. Each row is folded into registers as it is read,
+    one vector access per lane per step, so a row of any length runs in one pass
+    without staging it in shared memory. Output dtype is bool for any/all and int64
+    for count_nonzero.
 
     ``forward`` takes the tensor the op declares and reduces *reduce_axes* of it; the
-    permute to rows and the shape of the result are this kernel's business.
-
-    TileLang does not support bool, integer, or complex dtypes as a shared-memory storage
-    dtype. When *dtype* is one of these the kernel is compiled for float32 and ``forward``
-    converts the input, so an op hands over the tensor its manifest declares and this
-    restriction stays inside the implementation that has it.
+    permute to rows and the shape of the result are this kernel's business. The input
+    is read at its own bytes: bool as int8, a complex element as its two real parts,
+    every other dtype as declared. No element is converted before the kernel runs.
 
     Args:
         M: Rows the reduction leaves.
         N: Elements each row reduces.
         op_kind: One of "any", "all", "count_nonzero".
-        dtype: Input data type (float32, float16, bfloat16, bool, complex64,
-               or complex128).
+        dtype: Input data type (float16, bfloat16, float32, bool, int32, int64,
+               complex64, or complex128).
         reduce_axes: Non-negative axis indices, ascending, that the reduction runs over.
         keepdim: Whether a reduced axis stays as a length-1 axis.
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
-        device_index: CUDA device the input lives on, for the shared-memory budget.
+        device_index: CUDA device the input lives on.
     """
-
-    #: A word holds this many bool bytes, and a thread folds a whole vector of
-    #: them at once.
-    _WORD_BYTES = 4
-    _VECTOR_BYTES = 16
-    #: Widest block the packed fold takes. One block owns one row, so a wider
-    #: one only adds lanes with no words left to fold.
-    _PACKED_MAX_THREADS = 128
-
-    def _packed_fold_applies(self, x: torch.Tensor) -> bool:
-        """Whether the rows of *x* can be folded a word at a time.
-
-        Reading four bytes as one word needs them contiguous, a whole number of
-        words to a row, and a storage offset on a word boundary -- ``view``
-        refuses an unaligned one. One block a row keeps a block's words adjacent.
-        """
-        return (
-            self.op_kind in ("any", "all")
-            and self.dtype_to_str(self._kernel_dtype) == "int8"
-            and self.config["block_m"] == 1
-            and x.is_contiguous()
-            and x.storage_offset() % self._WORD_BYTES == 0
-            and x.shape[-1] % self._WORD_BYTES == 0
-        )
-
-    def _packed_fold_launch(self) -> tuple[int, int]:
-        """Threads, and words each folds, for one row of this kernel's shape.
-
-        The block covers the row in one step where it can.
-        """
-        vec = self._VECTOR_BYTES // self._WORD_BYTES
-        words = self.N // self._WORD_BYTES
-        threads = min(
-            self._PACKED_MAX_THREADS,
-            max(WARP_LANES, align_up(ceildiv_int(words, vec), WARP_LANES)),
-        )
-        return threads, vec
-
-    @staticmethod
-    def _packed_word_term(op_kind: str, w):
-        """What one word contributes: nonzero where the row's answer turns.
-
-        ``any`` asks whether a byte is set, which the word itself answers.
-        ``all`` asks whether one is clear, and ``(w - 0x01010101) & ~w &
-        0x80808080`` is nonzero exactly when some byte of *w* is zero. Both then
-        fold with ``or``.
-
-        Set means nonzero, not one: a bool tensor may hold any other byte, and
-        both the general path and ``torch.all`` read it as true.
-        """
-        if op_kind == "any":
-            return w
-        ones = T.Cast("uint32", 0x01010101)
-        high = T.Cast("uint32", 0x80808080)
-        # ``w ^ ~0`` rather than ``~w``: CUDA gives the vector types no operator~.
-        flip = T.Cast("uint32", 0xFFFFFFFF)
-        return (w - ones) & (w ^ flip) & high
-
-    @staticmethod
-    @functools.lru_cache(maxsize=32)
-    def _packed_kernel(m: int, words: int, op_kind: str):
-        """Build an any/all kernel that folds four bools per word.
-
-        One block a row, folding into registers, where the general path stages
-        the row through shared memory and widens every byte to fp32 first.
-        """
-        term = LogicalReduceKernel._packed_word_term
-
-        @tilelang.jit(out_idx=[1])
-        def _func(threads: int, vec: int):
-            step = threads * vec
-            steps = words // step
-            exact = steps * step == words
-
-            @T.prim_func
-            def main(x: T.Tensor((m, words), "uint32"), out: T.Tensor((m,), "int8")):
-                with T.Kernel(m, threads=threads) as bm:
-                    acc = T.alloc_fragment((threads, vec), "uint32")
-                    lane = T.alloc_fragment((threads,), "uint32")
-                    red = T.alloc_fragment((1,), "uint32")
-                    T.clear(acc)
-                    for k in T.serial(steps):
-                        for i, j in T.Parallel(threads, vec):
-                            acc[i, j] = acc[i, j] | term(
-                                op_kind, x[bm, (k * threads + i) * vec + j]
-                            )
-                    if not exact:
-                        for i, j in T.Parallel(threads, vec):
-                            idx = steps * step + i * vec + j
-                            with T.If(idx < words):  # noqa: SIM117
-                                with T.Then():
-                                    acc[i, j] = acc[i, j] | term(op_kind, x[bm, idx])
-                    T.reduce_max(acc, lane, dim=1)
-                    T.reduce_max(lane, red, dim=0)
-                    found = red[0] != T.Cast("uint32", 0)
-                    out[bm] = T.Cast("int8", T.Not(found) if op_kind == "all" else found)
-
-            return main
-
-        return _func
 
     supported_archs: list[int] = [80, 86, 89, 90]
     general: bool = True
@@ -593,61 +435,37 @@ class LogicalReduceKernel(Kernel):
         self.dtype = dtype
         self.reduce_axes = tuple(reduce_axes)
         self.keepdim = keepdim
-        # TileLang stores neither bool nor integer, so each maps to a declared dtype.
-        self._kernel_dtype = storage_dtype_for(dtype)
-        self.N_padded = align_up(N, DEFAULT_ALIGNMENT)
-        self._elem_bytes = torch.tensor([], dtype=self._kernel_dtype).element_size()
-        self._smem_budget = device_smem_budget(device_index)
-        self._planner = BlockConfigPlanner(
-            self.N_padded,
-            self._elem_bytes,
-            self._smem_budget,
-        )
-        self._needs_tiling = self._planner.needs_tiling
-        self.kernel = None
-        if not self._needs_tiling:
-            self.kernel = _logical_reduce_kernel(
-                self.M,
-                self.N,
-                self.op_kind,
-                self.dtype_to_str(self._kernel_dtype),
-            )
+        self._scalar_dtype, self._components = _scalar_view_for(dtype)
         self.init_config(config, tune)
-        if self._needs_tiling and not tune:
-            bm = self.config.get("block_m", 1)
-            threads = self.config.get("threads", DEFAULT_THREADS)
-            if "tile_n" not in self.config or self.config["tile_n"] == 0:
-                self.config["tile_n"] = self._planner.tile_n_for(bm, threads)
-            reason = self._planner.reject_tile_n(bm, self.config["tile_n"], threads)
-            if reason:
-                raise ValueError(reason)
 
     @property
     def default_config(self) -> dict:
-        return self._planner.default_config()
+        return {"threads": _fold_default_threads(self.dtype, self.N)}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return self._planner.autotune_configs()
+        return [{"threads": t} for t in (128, 256, 512, 1024)]
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """Autotune logical reduce, benchmarking tiled configs directly."""
-        if not self._needs_tiling:
-            return super().autotune(warmup=warmup, rep=rep)
+        """Pick the block width by timing one call per candidate."""
         device = torch.cuda.current_device()
-        if self._kernel_dtype.is_floating_point:
-            x = torch.randn(self.M, self.N, dtype=self._kernel_dtype, device=device)
+        shape = (self.M, self.N * self._components)
+        if self._scalar_dtype.is_floating_point:
+            x = torch.randn(shape, dtype=self._scalar_dtype, device=device)
         else:
-            # int8 storage has no normal distribution; a mix of zero and non-zero will do.
-            x = torch.randint(0, 2, (self.M, self.N), dtype=self._kernel_dtype, device=device)
+            # An integer has no normal distribution; a mix of zero and non-zero will do.
+            x = torch.randint(0, 2, shape, dtype=self._scalar_dtype, device=device)
+        if self.dtype.is_complex:
+            x = torch.view_as_complex(x.view(self.M, self.N, 2).contiguous())
+        elif self.dtype == torch.bool:
+            x = x.bool()
         tune_by_forward(self, x, warmup=warmup, rep=rep, forward=self._reduce_rows)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce *reduce_axes* of *x*.
 
         Args:
-            x: The tensor the op declares, contiguous, on a CUDA device. A dtype TileLang
-                cannot store is converted here.
+            x: The tensor the op declares, contiguous, on a CUDA device.
 
         Returns:
             The reduced tensor, dtype bool (any/all) or int64 (count_nonzero).
@@ -657,8 +475,6 @@ class LogicalReduceKernel(Kernel):
         """
         self._require_cuda(x=x)
         in_shape = tuple(x.shape)
-        if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
-            x = to_logical_storage(x)
         k, j = edge_axis_split(x.ndim, self.reduce_axes)
         # A count is carried in fp32 across the two passes: exact while the
         # elements each output reduces stay within fp32's integer range.
@@ -678,19 +494,11 @@ class LogicalReduceKernel(Kernel):
         leading axes fold down the columns of those partials — or/and are max/
         min over 0 and 1, a count is a sum.
         """
-        lead, kept, trail, planner, cfg = edge_axis_plan(
-            tuple(x.shape), k, j, self._elem_bytes, self._smem_budget
-        )
-        dtype_str = self.dtype_to_str(self._kernel_dtype)
-        if planner.needs_tiling:
-            stage = _logical_reduce_kernel_tiled(
-                lead * kept, trail, self.op_kind, dtype_str, cfg["tile_n"], partial=True
-            )
-        else:
-            stage = _logical_reduce_kernel(
-                lead * kept, trail, self.op_kind, dtype_str, partial=True
-            )
-        partials = stage(cfg["block_m"], cfg["threads"])(x.reshape(lead * kept, trail))
+        lead = prod(x.shape[:k])
+        kept = prod(x.shape[k : x.ndim - j])
+        trail = prod(x.shape[x.ndim - j :])
+        partial_dtype = _logical_out_dtype(self.op_kind, partial=True)
+        partials = _fold_reduce(x, 1, lead * kept, trail, self.op_kind, partial_dtype)
         partials = partials.reshape(lead, kept)
         if self.op_kind == "count_nonzero":
             # The columns pass writes int64 itself; leaving it in fp32 and casting
@@ -700,38 +508,21 @@ class LogicalReduceKernel(Kernel):
         return reduce_down_rows(partials, outer_kind, "int8", "int8", 0.0).view(torch.bool)
 
     def _reduce_rows(self, x: torch.Tensor) -> torch.Tensor:
-        """Reduce the trailing axis of an ``(M, N)`` buffer.
-
-        The prim_func counts in the storage dtype; the declared output dtype is applied
-        here.
-        """
-        dtype_str = self.dtype_to_str(self._kernel_dtype)
-        if self._packed_fold_applies(x):
-            words = self.N // self._WORD_BYTES
-            threads, vec = self._packed_fold_launch()
-            program = self._packed_kernel(self.M, words, self.op_kind)
-            counted = program(threads, vec)(x.view(torch.uint32).view(self.M, words))
-            return counted.view(torch.bool)
-        if self._needs_tiling:
-            program = _logical_reduce_kernel_tiled(
-                self.M, self.N, self.op_kind, dtype_str, self.config["tile_n"]
-            )
-        else:
-            program = _logical_reduce_kernel(self.M, self.N, self.op_kind, dtype_str)
-        counted = program(self.config["block_m"], self.config["threads"])(x)
-        if self.op_kind == "count_nonzero":
-            return counted.to(torch.int64)
+        """Reduce the trailing axis of an ``(M, N)`` buffer of the declared dtype."""
+        out_dtype = _logical_out_dtype(self.op_kind, partial=False)
+        counted = _fold_reduce(
+            x, 1, self.M, self.N, self.op_kind, out_dtype, self.config["threads"]
+        )
         # 0 or 1 in int8 is bool's own representation, so this is a reinterpretation.
-        return counted.view(torch.bool)
+        return counted if self.op_kind == "count_nonzero" else counted.view(torch.bool)
 
 
 class LogicalReduceEdgeFusedKernel(Kernel):
     """Fused logical reduction for a prefix and suffix axis set.
 
     ``applies`` states which devices reach it. One block reduces one kept column,
-    walking the leading axis serially while reducing each contiguous trailing
-    row. The general logical reducer remains responsible for non-edge layouts
-    and for rows that require N-tiling.
+    walking the leading axis serially while folding each contiguous trailing run.
+    The general logical reducer remains responsible for non-edge layouts.
     """
 
     supported_archs: list[int] = [90]
@@ -768,38 +559,29 @@ class LogicalReduceEdgeFusedKernel(Kernel):
         self.dtype = dtype
         self.reduce_axes = tuple(reduce_axes)
         self.keepdim = keepdim
-        self._kernel_dtype = storage_dtype_for(dtype)
-        self._elem_bytes = torch.tensor([], dtype=self._kernel_dtype).element_size()
-        self._smem_budget = device_smem_budget(device_index)
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
-        """No width: it follows ``trail``, which only the call's shape carries.
+        """No width: it follows the trailing run, which only the call's shape carries.
 
-        One block holds a ``trail``-wide fp32 fragment, so a fixed width hands
-        every lane ``trail / threads`` registers and the occupancy falls as the
-        row grows. ``forward`` reads the row and fills the width in; a caller
-        that states one keeps it.
+        ``forward`` reads the run and fills the width in; a caller that states one
+        keeps it.
         """
         return {"threads": None}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_cuda(x=x)
         in_shape = tuple(x.shape)
-        if x.dtype in _UNSUPPORTED_STORAGE_DTYPES:
-            x = to_logical_storage(x)
         k, j = edge_axis_split(x.ndim, self.reduce_axes)
         if not k:
             raise ValueError("LogicalReduceEdgeFusedKernel requires edge reduction axes")
-        lead, kept, trail, planner, cfg = edge_axis_plan(
-            tuple(x.shape), k, j, self._elem_bytes, self._smem_budget
+        lead = prod(x.shape[:k])
+        kept = prod(x.shape[k : x.ndim - j])
+        trail = prod(x.shape[x.ndim - j :])
+        out_dtype = _logical_out_dtype(self.op_kind, partial=False)
+        counted = _fold_reduce(
+            x, lead, kept, trail, self.op_kind, out_dtype, self.config.get("threads")
         )
-        if planner.needs_tiling:
-            raise ValueError("LogicalReduceEdgeFusedKernel requires an untiled trailing pass")
-        threads = self.config.get("threads") or fused_edge_threads(trail)
-        dtype_str = self.dtype_to_str(self._kernel_dtype)
-        fused = _logical_reduce_edge_fused(lead, kept, trail, self.op_kind, dtype_str)
-        counted = fused(threads)(x.reshape(lead, kept, trail))
         y = counted if self.op_kind == "count_nonzero" else counted.view(torch.bool)
         return restore_reduced(y, in_shape, self.reduce_axes, self.keepdim)
