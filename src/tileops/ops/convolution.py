@@ -46,33 +46,28 @@ def _axes(value: int | Tuple[int, ...], dims: int) -> Tuple[int, ...]:
     return (value,) * dims if isinstance(value, int) else tuple(value)
 
 
-def _symmetric_padding(
+def _padding(
     padding: int | Tuple[int, ...] | str,
     kernel: Tuple[int, ...],
     dilation: Tuple[int, ...],
-    op_name: str,
-) -> Tuple[int, ...]:
-    """The padding each side of every spatial axis, which the 2D and 3D kernels take.
+) -> Tuple[Tuple[int, ...], Tuple[int, ...]]:
+    """The padding before and after every spatial axis.
 
-    Raises:
-        ValueError: ``padding='same'`` with an even effective kernel, which pads one side more
-            than the other; no in-tree kernel serves asymmetric padding.
+    ``padding='same'`` with an odd total puts the extra element after, as torch does.
     """
     if padding == "valid":
-        return (0,) * len(kernel)
+        zeros = (0,) * len(kernel)
+        return zeros, zeros
     if padding == "same":
         total = tuple(d * (k - 1) for k, d in zip(kernel, dilation, strict=True))
-        if any(t % 2 for t in total):
-            raise ValueError(
-                f"{op_name} padding='same' with an even effective kernel pads asymmetrically, "
-                "which no in-tree kernel serves"
-            )
-        return tuple(t // 2 for t in total)
-    return _axes(padding, len(kernel))
+        before = tuple(t // 2 for t in total)
+        return before, tuple(t - b for t, b in zip(total, before, strict=True))
+    before = _axes(padding, len(kernel))
+    return before, before
 
 
-def _out_dim(size: int, kernel: int, stride: int, padding: int, dilation: int) -> int:
-    return (size + 2 * padding - dilation * (kernel - 1) - 1) // stride + 1
+def _out_dim(size: int, kernel: int, stride: int, before: int, after: int, dilation: int) -> int:
+    return (size + before + after - dilation * (kernel - 1) - 1) // stride + 1
 
 
 class Conv1dFwdOp(Op):
@@ -156,7 +151,7 @@ class Conv1dFwdOp(Op):
         else:
             (pad,) = (0,) if self.padding == "valid" else _axes(self.padding, 1)
             pad_left = pad_right = pad
-            out_l = _out_dim(l_in, kernel_l, stride, pad, dilation)
+            out_l = _out_dim(l_in, kernel_l, stride, pad, pad, dilation)
         # A kernel is handed contiguous tensors, in the manifest's ``signature.inputs`` order;
         # a bias this call did not pass is ``None`` there.
         input = input.contiguous()
@@ -192,9 +187,7 @@ class Conv1dFwdOp(Op):
 class Conv2dFwdOp(Op):
     """2D convolution over an NCHW input, as ``torch.nn.functional.conv2d``.
 
-    The in-tree kernels pad each axis symmetrically, so ``padding='same'`` with an even
-    effective kernel is refused. They multiply float32 operands in TF32, as cuDNN does by
-    default.
+    They multiply float32 operands in TF32, as cuDNN does by default.
     """
 
     compile_boundary: ClassVar[bool] = True
@@ -222,7 +215,7 @@ class Conv2dFwdOp(Op):
         Args:
             stride: Stride, an int or a 2-tuple (default 1).
             padding: Padding each side, an int or a 2-tuple, or ``'valid'`` / ``'same'``
-                (default 0).
+                (default 0). ``'same'`` puts the extra element of an odd total after.
             dilation: Dilation, an int or a 2-tuple (default 1).
             groups: Number of channel groups (default 1).
             target: Backend target to serve this op, or ``None`` to decide from the input device.
@@ -252,9 +245,6 @@ class Conv2dFwdOp(Op):
 
         Returns:
             The convolution result, $[N \\times C_{out} \\times H_{out} \\times W_{out}]$.
-
-        Raises:
-            ValueError: ``padding='same'`` with an even effective kernel.
         """
         return self._call_boundary(input, weight, bias)
 
@@ -273,7 +263,7 @@ class Conv2dFwdOp(Op):
         c_out, c_in_g, kernel_h, kernel_w = weight.shape
         stride = _axes(self.stride, 2)
         dilation = _axes(self.dilation, 2)
-        padding = _symmetric_padding(self.padding, (kernel_h, kernel_w), dilation, "Conv2d")
+        padding, padding_end = _padding(self.padding, (kernel_h, kernel_w), dilation)
         input = input.contiguous()
         weight = weight.contiguous()
         if bias is not None:
@@ -289,10 +279,11 @@ class Conv2dFwdOp(Op):
             kernel_w=kernel_w,
             stride=stride,
             padding=padding,
+            padding_end=None if padding_end == padding else padding_end,
             dilation=dilation,
             groups=self.groups,
-            out_h=_out_dim(h, kernel_h, stride[0], padding[0], dilation[0]),
-            out_w=_out_dim(w, kernel_w, stride[1], padding[1], dilation[1]),
+            out_h=_out_dim(h, kernel_h, stride[0], padding[0], padding_end[0], dilation[0]),
+            out_w=_out_dim(w, kernel_w, stride[1], padding[1], padding_end[1], dilation[1]),
             dtype=input.dtype,
             has_bias=bias is not None,
             tune=self.tune,
@@ -356,9 +347,7 @@ def _can_use_conv3d_ndhwc(
 class Conv3dFwdOp(Op):
     """3D convolution over an NCDHW input, as ``torch.nn.functional.conv3d``.
 
-    The in-tree kernels pad each axis symmetrically, so ``padding='same'`` with an even
-    effective kernel is refused. They multiply float32 operands in TF32, as cuDNN does by
-    default.
+    They multiply float32 operands in TF32, as cuDNN does by default.
     """
 
     compile_boundary: ClassVar[bool] = True
@@ -385,7 +374,7 @@ class Conv3dFwdOp(Op):
         Args:
             stride: Stride, an int or a 3-tuple (default 1).
             padding: Padding each side, an int or a 3-tuple, or ``'valid'`` / ``'same'``
-                (default 0).
+                (default 0). ``'same'`` puts the extra element of an odd total after.
             dilation: Dilation, an int or a 3-tuple (default 1).
             groups: Number of channel groups (default 1).
             target: Backend target to serve this op, or ``None`` to decide from the input device.
@@ -417,9 +406,6 @@ class Conv3dFwdOp(Op):
         Returns:
             The convolution result, $[N \\times C_{out} \\times D_{out} \\times H_{out}
             \\times W_{out}]$.
-
-        Raises:
-            ValueError: ``padding='same'`` with an even effective kernel.
         """
         return self._call_boundary(input, weight, bias)
 
@@ -439,10 +425,10 @@ class Conv3dFwdOp(Op):
         kernel = (kernel_d, kernel_h, kernel_w)
         stride = _axes(self.stride, 3)
         dilation = _axes(self.dilation, 3)
-        padding = _symmetric_padding(self.padding, kernel, dilation, "Conv3d")
+        padding, padding_end = _padding(self.padding, kernel, dilation)
         out_d, out_h, out_w = (
-            _out_dim(size, k, s, p, dl)
-            for size, k, s, p, dl in zip((d, h, w), kernel, stride, padding, dilation, strict=True)
+            _out_dim(*axis)
+            for axis in zip((d, h, w), kernel, stride, padding, padding_end, dilation, strict=True)
         )
         input = input.contiguous()
         weight = weight.contiguous()
@@ -461,6 +447,7 @@ class Conv3dFwdOp(Op):
             kernel_w=kernel_w,
             stride=stride,
             padding=padding,
+            padding_end=None if padding_end == padding else padding_end,
             dilation=dilation,
             groups=self.groups,
             out_d=out_d,

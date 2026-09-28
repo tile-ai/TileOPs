@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from typing import Optional
 
 import torch
 
@@ -64,7 +65,7 @@ class Conv2dCall(CallSpec):
     is OIHW, and the output dimensions are positive. For each spatial axis the
     output size is::
 
-        out_axis = floor((in_axis + 2 * pad_axis
+        out_axis = floor((in_axis + pad_axis + pad_end_axis
                           - dilation_axis * (kernel_axis - 1) - 1)
                          / stride_axis) + 1
 
@@ -83,6 +84,9 @@ class Conv2dCall(CallSpec):
     kernel_w: int = 1
     stride: tuple[int, int] = (1, 1)
     padding: tuple[int, int] = (0, 0)
+    # The padding after each axis where it differs from ``padding``, the padding before;
+    # ``padding='same'`` with an odd total puts the extra element here, as torch does.
+    padding_end: Optional[tuple[int, int]] = None
     dilation: tuple[int, int] = (1, 1)
     groups: int = 1
     out_h: int = 1
@@ -99,7 +103,7 @@ class Conv3dCall(CallSpec):
     weight is OIDHW, and the output dimensions are positive. For each spatial
     axis the output size is::
 
-        out_axis = floor((in_axis + 2 * pad_axis
+        out_axis = floor((in_axis + pad_axis + pad_end_axis
                           - dilation_axis * (kernel_axis - 1) - 1)
                          / stride_axis) + 1
 
@@ -120,6 +124,9 @@ class Conv3dCall(CallSpec):
     kernel_w: int = 1
     stride: tuple[int, int, int] = (1, 1, 1)
     padding: tuple[int, int, int] = (0, 0, 0)
+    # The padding after each axis where it differs from ``padding``, the padding before;
+    # ``padding='same'`` with an odd total puts the extra element here, as torch does.
+    padding_end: Optional[tuple[int, int, int]] = None
     dilation: tuple[int, int, int] = (1, 1, 1)
     groups: int = 1
     out_d: int = 1
@@ -183,6 +190,7 @@ def conv2d_pointwise_region(call: Conv2dCall) -> bool:
         and call.kernel_w == 1
         and call.stride == (1, 1)
         and call.padding == (0, 0)
+        and call.padding_end in (None, (0, 0))
         and call.dilation == (1, 1)
     )
 
@@ -196,6 +204,7 @@ def conv2d_symmetric_region(call: Conv2dCall) -> bool:
         and call.kernel_h == call.kernel_w
         and call.stride[0] == call.stride[1]
         and call.padding[0] == call.padding[1]
+        and call.padding_end in (None, call.padding)
         and call.dilation[0] == call.dilation[1]
         and call.c_in % 32 == 0
     )

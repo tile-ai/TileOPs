@@ -41,11 +41,18 @@ def _conv3d_kernel(
     dilation_w: int,
     has_bias: bool,
     dtype: str = "float16",
+    pad_d_end: Optional[int] = None,
+    pad_h_end: Optional[int] = None,
+    pad_w_end: Optional[int] = None,
 ):
+    # The end of each axis may pad more than the start; unset, it pads the same.
+    pad_d_end = pad_d if pad_d_end is None else pad_d_end
+    pad_h_end = pad_h if pad_h_end is None else pad_h_end
+    pad_w_end = pad_w if pad_w_end is None else pad_w_end
     accum_dtype = "float"
-    out_d = (d_in + 2 * pad_d - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
-    out_h = (h_in + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-    out_w = (w_in + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+    out_d = (d_in + pad_d + pad_d_end - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
+    out_h = (h_in + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (w_in + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     k_total = kernel_d * kernel_h * kernel_w * c_in
 
     # Re-enable automatic async copy once TileLang lowers scalar cp.async
@@ -186,11 +193,18 @@ def _conv3d_group_kernel(
     groups: int = 1,
     c_in_g: int = 0,
     c_out_g: int = 0,
+    pad_d_end: Optional[int] = None,
+    pad_h_end: Optional[int] = None,
+    pad_w_end: Optional[int] = None,
 ):
+    # The end of each axis may pad more than the start; unset, it pads the same.
+    pad_d_end = pad_d if pad_d_end is None else pad_d_end
+    pad_h_end = pad_h if pad_h_end is None else pad_h_end
+    pad_w_end = pad_w if pad_w_end is None else pad_w_end
     accum_dtype = "float"
-    out_d = (d_in + 2 * pad_d - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
-    out_h = (h_in + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-    out_w = (w_in + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+    out_d = (d_in + pad_d + pad_d_end - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
+    out_h = (h_in + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (w_in + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     out_dhw = out_d * out_h * out_w
     c_in_g = c_in_g if c_in_g > 0 else c_in // groups
     c_out_g = c_out_g if c_out_g > 0 else c_out // groups
@@ -349,6 +363,9 @@ def _conv3d_ndhwc_kernel(
     dilation_w: int,
     has_bias: bool,
     dtype: str = "float16",
+    pad_d_end: Optional[int] = None,
+    pad_h_end: Optional[int] = None,
+    pad_w_end: Optional[int] = None,
 ):
     """Build the NDHWC-staged dense Conv3d forward kernel.
 
@@ -379,10 +396,14 @@ def _conv3d_ndhwc_kernel(
     and dilation are per-axis trace-time constants, so this path supports
     non-symmetric 3D parameters.
     """
+    # The end of each axis may pad more than the start; unset, it pads the same.
+    pad_d_end = pad_d if pad_d_end is None else pad_d_end
+    pad_h_end = pad_h if pad_h_end is None else pad_h_end
+    pad_w_end = pad_w if pad_w_end is None else pad_w_end
     accum_dtype = "float"
-    out_d = (d + 2 * pad_d - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
-    out_h = (h + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-    out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+    out_d = (d + pad_d + pad_d_end - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
+    out_h = (h + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (w + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     out_dhw = out_d * out_h * out_w
     k_total = c_in * kernel_d * kernel_h * kernel_w
 
@@ -643,6 +664,7 @@ class Conv3dKernel(Kernel):
             dilation_d=call.dilation[0],
             dilation_h=call.dilation[1],
             dilation_w=call.dilation[2],
+            pad_end=call.padding_end,
             dtype=call.dtype,
         )
         identity = (*args.values(), call.has_bias, index)
@@ -670,6 +692,7 @@ class Conv3dKernel(Kernel):
         dilation_w: int,
         dtype: torch.dtype,
         has_bias: bool = False,
+        pad_end: Optional[tuple[int, ...]] = None,
         config: Optional[dict] = None,
         tune: bool = False,
     ) -> None:
@@ -689,14 +712,23 @@ class Conv3dKernel(Kernel):
         self.pad_d = pad_d
         self.pad_h = pad_h
         self.pad_w = pad_w
+        self.pad_d_end, self.pad_h_end, self.pad_w_end = (
+            pad_end if pad_end is not None else (pad_d, pad_h, pad_w)
+        )
         self.dilation_d = dilation_d
         self.dilation_h = dilation_h
         self.dilation_w = dilation_w
         self.dtype = dtype
         self.has_bias = has_bias
-        self.out_d = (d_in + 2 * pad_d - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
-        self.out_h = (h_in + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-        self.out_w = (w_in + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+        self.out_d = (
+            d_in + pad_d + self.pad_d_end - dilation_d * (kernel_d - 1) - 1
+        ) // stride_d + 1
+        self.out_h = (
+            h_in + pad_h + self.pad_h_end - dilation_h * (kernel_h - 1) - 1
+        ) // stride_h + 1
+        self.out_w = (
+            w_in + pad_w + self.pad_w_end - dilation_w * (kernel_w - 1) - 1
+        ) // stride_w + 1
         self.m = n * self.out_d * self.out_h * self.out_w
         self.k_total = c_in * kernel_d * kernel_h * kernel_w
 
@@ -721,6 +753,9 @@ class Conv3dKernel(Kernel):
             dilation_w,
             has_bias,
             self.dtype_str,
+            pad_d_end=self.pad_d_end,
+            pad_h_end=self.pad_h_end,
+            pad_w_end=self.pad_w_end,
         )
         self.init_config(config, tune)
 
@@ -781,6 +816,7 @@ class GroupConv3dKernel(Kernel):
             dilation_d=call.dilation[0],
             dilation_h=call.dilation[1],
             dilation_w=call.dilation[2],
+            pad_end=call.padding_end,
             dtype=call.dtype,
             groups=call.groups,
             c_in_g=call.c_in_g,
@@ -811,6 +847,7 @@ class GroupConv3dKernel(Kernel):
         dilation_w: int,
         dtype: torch.dtype,
         has_bias: bool = False,
+        pad_end: Optional[tuple[int, ...]] = None,
         groups: int = 1,
         c_in_g: Optional[int] = None,
         c_out_g: Optional[int] = None,
@@ -833,6 +870,9 @@ class GroupConv3dKernel(Kernel):
         self.pad_d = pad_d
         self.pad_h = pad_h
         self.pad_w = pad_w
+        self.pad_d_end, self.pad_h_end, self.pad_w_end = (
+            pad_end if pad_end is not None else (pad_d, pad_h, pad_w)
+        )
         self.dilation_d = dilation_d
         self.dilation_h = dilation_h
         self.dilation_w = dilation_w
@@ -841,9 +881,15 @@ class GroupConv3dKernel(Kernel):
         self.c_out_g = c_out_g if c_out_g is not None else c_out // groups
         self.dtype = dtype
         self.has_bias = has_bias
-        self.out_d = (d_in + 2 * pad_d - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
-        self.out_h = (h_in + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-        self.out_w = (w_in + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+        self.out_d = (
+            d_in + pad_d + self.pad_d_end - dilation_d * (kernel_d - 1) - 1
+        ) // stride_d + 1
+        self.out_h = (
+            h_in + pad_h + self.pad_h_end - dilation_h * (kernel_h - 1) - 1
+        ) // stride_h + 1
+        self.out_w = (
+            w_in + pad_w + self.pad_w_end - dilation_w * (kernel_w - 1) - 1
+        ) // stride_w + 1
         self.m = n * self.groups * self.out_d * self.out_h * self.out_w
         self.k_total = self.c_in_g * kernel_d * kernel_h * kernel_w
         self._validate_group_shape()
@@ -872,6 +918,9 @@ class GroupConv3dKernel(Kernel):
             groups,
             self.c_in_g,
             self.c_out_g,
+            pad_d_end=self.pad_d_end,
+            pad_h_end=self.pad_h_end,
+            pad_w_end=self.pad_w_end,
         )
         self.init_config(config, tune)
 
@@ -965,6 +1014,7 @@ class Conv3dNdhwcKernel(Kernel):
             dilation_d=call.dilation[0],
             dilation_h=call.dilation[1],
             dilation_w=call.dilation[2],
+            pad_end=call.padding_end,
             dtype=call.dtype,
         )
         identity = (*args.values(), call.has_bias, index)
@@ -992,6 +1042,7 @@ class Conv3dNdhwcKernel(Kernel):
         dilation_w: int,
         dtype: torch.dtype,
         has_bias: bool = False,
+        pad_end: Optional[tuple[int, ...]] = None,
         config: Optional[dict] = None,
         tune: bool = False,
     ) -> None:
@@ -1011,14 +1062,17 @@ class Conv3dNdhwcKernel(Kernel):
         self.pad_d = pad_d
         self.pad_h = pad_h
         self.pad_w = pad_w
+        self.pad_d_end, self.pad_h_end, self.pad_w_end = (
+            pad_end if pad_end is not None else (pad_d, pad_h, pad_w)
+        )
         self.dilation_d = dilation_d
         self.dilation_h = dilation_h
         self.dilation_w = dilation_w
         self.dtype = dtype
         self.has_bias = has_bias
-        self.out_d = (d + 2 * pad_d - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
-        self.out_h = (h + 2 * pad_h - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-        self.out_w = (w + 2 * pad_w - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+        self.out_d = (d + pad_d + self.pad_d_end - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
+        self.out_h = (h + pad_h + self.pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+        self.out_w = (w + pad_w + self.pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
         self.m = n * self.out_d * self.out_h * self.out_w
         self.k_total = c_in * kernel_d * kernel_h * kernel_w
 
@@ -1043,6 +1097,9 @@ class Conv3dNdhwcKernel(Kernel):
             dilation_w,
             has_bias,
             self.dtype_str,
+            pad_d_end=self.pad_d_end,
+            pad_h_end=self.pad_h_end,
+            pad_w_end=self.pad_w_end,
         )
         self.init_config(config, tune)
 
