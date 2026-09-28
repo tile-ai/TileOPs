@@ -1451,17 +1451,9 @@ def _batch_norm_bwd_wide_kernel(
 ) -> Callable:
     """Return the JIT-compiled backward factory for a register-held channel.
 
-    Computes what the tiled backward does, holding the channel's ``grad_out``
-    and ``x`` in registers between the sums and the ``grad_x`` map: global
-    traffic is one read of each input and one write of ``grad_x``.
-
-    The two sums are merged by a shuffle tree within each warp, then by one
-    serial pass over the per-warp totals, so ``grad_weight`` and ``grad_bias``
-    are the same on every run.
-
-    Requirements: ``num_per_thread`` divides *S*, so a thread's vector never
-    straddles two batch items and its address stays affine; ``threads`` is a
-    multiple of the warp width.
+    The sums merge by a fixed shuffle tree, so ``grad_weight`` and ``grad_bias``
+    are the same on every run. ``num_per_thread`` must divide *S*, so a vector
+    never straddles two batch items; ``threads`` is a multiple of the warp width.
     """
     accum_dtype = "float32"
     plane = C * S
@@ -1472,7 +1464,6 @@ def _batch_norm_bwd_wide_kernel(
         steps = (L + threads * num_per_thread - 1) // (threads * num_per_thread)
         exact = steps * threads * num_per_thread == L
         n_warps = max(threads // lanes, 1)
-        # One XOR step per bit of the lane index.
         butterfly_depth = lanes.bit_length() - 1
 
         @T.prim_func
@@ -1600,11 +1591,8 @@ def _batch_norm_bwd_split_kernel(
 ) -> Callable:
     """Return the three-stage backward factories for a long channel.
 
-    The grid is over elements, not channels: *splits* blocks sum each channel's
-    ``grad_out`` and ``grad_out * x_hat``, one block merges the partial sums
-    into ``grad_bias``, ``grad_weight`` and the per-channel coefficients of
-    ``grad_x``, and a flat map applies them. A shape with fewer channels than
-    SMs still fills the device.
+    *splits* blocks per channel sum, one block merges the partial sums into the
+    channel gradients and ``grad_x`` coefficients, and a flat map applies them.
 
     Returns:
         A ``(stats, finalize, apply)`` triple of JIT factories.
@@ -1804,8 +1792,7 @@ class BatchNormBwdKernel(Kernel):
     ) -> tuple[str, object]:
         """Which launch serves this shape, and the sizing it needs.
 
-        The path classes are the training forward's: both reduce a channel and
-        then map it. A wide block holds two tensors per element, grad_out and x.
+        A wide block holds two tensors per element, grad_out and x.
         """
         wide = _WidePath.launch(C, L, S, dtype, held_tensors=2, device_index=device_index)
         if wide is not None:
