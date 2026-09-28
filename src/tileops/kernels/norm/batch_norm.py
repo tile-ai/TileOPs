@@ -36,24 +36,6 @@ def _vector_elements(dtype: torch.dtype) -> int:
     return VECTOR_ACCESS_BYTES // dtype.itemsize
 
 
-def _widths_down_to_one(widest: int) -> tuple[int, ...]:
-    """*widest* and every halving of it, down to one element."""
-    return tuple(widest >> k for k in range(widest.bit_length()))
-
-
-def _device_index(call: BatchNormCall) -> Optional[int]:
-    """The CUDA device the call runs on, which the kernel checks its architecture against."""
-    return call.device.index if call.device is not None else None
-
-
-def _channel_buffers(C: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-    """Two per-channel float32 buffers a kernel writes."""
-    return (
-        torch.empty(C, device=device, dtype=torch.float32),
-        torch.empty(C, device=device, dtype=torch.float32),
-    )
-
-
 class _TiledPath:
     """A channel per block, streamed through shared memory.
 
@@ -101,79 +83,6 @@ class _TiledPath:
         if block_l <= cls.PERSISTENT_MAX_L:
             return [{"block_l": block_l, "threads": threads}]
         return [{"block_l": cls.MAX_BLOCK_L, "threads": cls.REDUCE_THREADS[0]}]
-
-
-# The longest channel of one element per batch item that one thread holds.
-_THREAD_MAX_L = 32
-
-
-def _fits_one_thread(L: int, S: int) -> bool:
-    """Whether a channel is one element per batch item and short enough for one thread."""
-    return S <= 1 and L <= _THREAD_MAX_L
-
-
-# Elements one thread of a register-holding block keeps, over every tensor it holds.
-_BLOCK_MAX_HELD = 256
-_BLOCK_THREADS = 256
-_BLOCK_MAX_THREADS = 1024
-# The widest block once the grid alone covers every SM.
-_BLOCK_MAX_THREADS_FULL_GRID = 512
-
-
-def _block_launch(
-    C: int, L: int, S: int, dtype: torch.dtype, sm_count: int, held_tensors: int
-) -> Optional[tuple[int, int]]:
-    """The ``(threads, num_per_thread)`` of a block holding one channel in registers.
-
-    ``None`` where the channel does not fit. A thread holds *held_tensors* elements per
-    channel element, and its vector never straddles two batch items.
-    """
-    widest = _BLOCK_MAX_THREADS_FULL_GRID if sm_count <= C else _BLOCK_MAX_THREADS
-    for num_per_thread in _widths_down_to_one(_vector_elements(dtype)):
-        if S % num_per_thread:
-            continue
-        # Halve the block while the channel would leave half of it empty.
-        threads = _BLOCK_THREADS
-        while threads > 32 and threads * num_per_thread >= L * 2:
-            threads //= 2
-        steps = -(-L // (threads * num_per_thread))
-        # Widen while a step is left partly empty and a wider block takes fewer steps;
-        # a one-element thread stays, since a wider block only scatters more requests.
-        while (
-            num_per_thread > 1
-            and threads < widest
-            and steps > 1
-            and steps * threads * num_per_thread != L
-        ):
-            threads *= 2
-            steps = -(-L // (threads * num_per_thread))
-        if steps * num_per_thread * held_tensors <= _BLOCK_MAX_HELD:
-            return threads, num_per_thread
-    return None
-
-
-def _fits_one_block(call: BatchNormCall, held_tensors: int) -> bool:
-    """Whether one block's registers hold a channel of *held_tensors* tensors."""
-    L = call.n * call.spatial
-    launch = _block_launch(call.c, L, call.spatial, call.dtype, call.sm_count, held_tensors)
-    return launch is not None
-
-
-# At or above this many channels one block per channel already fills the device.
-_SPLIT_MAX_C = 1024
-_SPLIT_MIN_L = 1 << 16
-# Blocks a split grid aims for before tuning.
-_SPLIT_TARGET_BLOCKS = 512
-
-
-def _splittable(C: int, L: int) -> bool:
-    """Whether a channel is long enough, among few enough channels, to cut across blocks."""
-    return C < _SPLIT_MAX_C and L >= _SPLIT_MIN_L
-
-
-def _split_seed(C: int, L: int) -> int:
-    """Pieces a channel is cut into before anything is measured."""
-    return max(1, min(L, -(-_SPLIT_TARGET_BLOCKS // C)))
 
 
 @functools.lru_cache(maxsize=32)
@@ -465,8 +374,9 @@ def _batch_norm_fwd_train_split_kernel(
             y_ncs: T.Tensor([N, C, S], dtype),
         ):
             with T.Kernel(blocks, threads=threads) as bx:
-                x = T.reshape(x_ncs, [total])
-                y = T.reshape(y_ncs, [total])
+                # A flat view of the same data; T.reshape's size check overflows int32.
+                x = T.Tensor([total], dtype, x_ncs.data)
+                y = T.Tensor([total], dtype, y_ncs.data)
                 tx = T.get_thread_binding()
                 v = T.alloc_local([num_per_thread], dtype)
                 o = T.alloc_local([num_per_thread], dtype)
@@ -724,7 +634,7 @@ def _batch_norm_fwd_train_whole_kernel(
 class BatchNormFwdTrainWholeKernel(Kernel):
     """Training forward with one channel per thread, held in its registers.
 
-    Serves a channel one thread holds (``_fits_one_thread``).
+    Serves a channel one thread holds (``BatchNormCall.fits_one_thread``).
 
     Args:
         N: Batch size.
@@ -744,12 +654,12 @@ class BatchNormFwdTrainWholeKernel(Kernel):
 
     @classmethod
     def applies(cls, call: BatchNormCall) -> bool:
-        return _fits_one_thread(call.n * call.spatial, call.spatial)
+        return call.fits_one_thread
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
         args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum)
-        index = _device_index(call)
+        index = call.device_index
         return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
@@ -784,7 +694,8 @@ class BatchNormFwdTrainWholeKernel(Kernel):
         self._require_cuda(
             x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
         )
-        mean_out, rstd_out = _channel_buffers(self.C, x.device)
+        mean_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
+        rstd_out = torch.empty_like(mean_out)
         y = self.kernel(self._BLOCK_THREADS)(
             x, weight, bias, running_mean, running_var, mean_out, rstd_out
         )
@@ -794,8 +705,8 @@ class BatchNormFwdTrainWholeKernel(Kernel):
 class BatchNormFwdTrainWideKernel(Kernel):
     """Training forward with one channel per block, held in the block's registers.
 
-    Serves a channel one block holds (``_fits_one_block``) and one thread does not
-    (``_fits_one_thread``).
+    Serves a channel one block holds (``BatchNormCall.fits_one_block``) and one thread does not
+    (``BatchNormCall.fits_one_thread``).
 
     Args:
         N: Batch size.
@@ -804,7 +715,7 @@ class BatchNormFwdTrainWideKernel(Kernel):
         dtype: Input/output data type.
         eps: Numerical stability constant.
         momentum: Running-stat update momentum.
-        sm_count: SMs on the device, which the block width is chosen against.
+        launch: ``(threads, num_per_thread)`` of the block, ``BatchNormCall.block_launch``.
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
 
@@ -812,13 +723,20 @@ class BatchNormFwdTrainWideKernel(Kernel):
 
     @classmethod
     def applies(cls, call: BatchNormCall) -> bool:
-        one_thread = _fits_one_thread(call.n * call.spatial, call.spatial)
-        return _fits_one_block(call, 1) and not one_thread
+        return call.fits_one_block(1) and not call.fits_one_thread
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
-        args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum, call.sm_count)
-        index = _device_index(call)
+        args = (
+            call.n,
+            call.c,
+            call.spatial,
+            call.dtype,
+            call.eps,
+            call.momentum,
+            call.block_launch(1),
+        )
+        index = call.device_index
         return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
@@ -829,13 +747,13 @@ class BatchNormFwdTrainWideKernel(Kernel):
         dtype: torch.dtype,
         eps: float,
         momentum: float,
-        sm_count: int,
+        launch: tuple[int, int],
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.C = C
         self.dtype = dtype
-        self.launch = _block_launch(C, N * S, S, dtype, sm_count, 1)
+        self.launch = launch
         self.kernel = _batch_norm_fwd_train_wide_kernel(N, C, S, self.dtype_str, eps, momentum)
 
     def forward(
@@ -855,7 +773,8 @@ class BatchNormFwdTrainWideKernel(Kernel):
         self._require_cuda(
             x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
         )
-        mean_out, rstd_out = _channel_buffers(self.C, x.device)
+        mean_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
+        rstd_out = torch.empty_like(mean_out)
         y = self.kernel(*self.launch)(
             x, weight, bias, running_mean, running_var, mean_out, rstd_out
         )
@@ -865,8 +784,8 @@ class BatchNormFwdTrainWideKernel(Kernel):
 class BatchNormFwdTrainSplitKernel(Kernel):
     """Training forward with a channel across several blocks: sum, merge, then map.
 
-    Serves a channel one block does not hold (``_fits_one_block``) and that is long
-    enough, among few enough channels, to cut across blocks (``_splittable``).
+    Serves a channel one block does not hold (``BatchNormCall.fits_one_block``) and that is long
+    enough, among few enough channels, to cut across blocks (``BatchNormCall.splittable``).
 
     Args:
         N: Batch size.
@@ -875,6 +794,7 @@ class BatchNormFwdTrainSplitKernel(Kernel):
         dtype: Input/output data type.
         eps: Numerical stability constant.
         momentum: Running-stat update momentum.
+        splits: Untuned pieces a channel is cut into, ``BatchNormCall.split_seed``.
         config: Optional ``{"splits", "threads"}``.
         tune: If True, time the split count and block width together.
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
@@ -891,13 +811,12 @@ class BatchNormFwdTrainSplitKernel(Kernel):
 
     @classmethod
     def applies(cls, call: BatchNormCall) -> bool:
-        splittable = _splittable(call.c, call.n * call.spatial)
-        return splittable and not _fits_one_block(call, 1)
+        return call.splittable and not call.fits_one_block(1)
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
-        args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum)
-        index = _device_index(call)
+        args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum, call.split_seed)
+        index = call.device_index
         return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
 
     def __init__(
@@ -905,9 +824,10 @@ class BatchNormFwdTrainSplitKernel(Kernel):
         N: int,
         C: int,
         S: int,
-        dtype: torch.dtype = torch.float16,
-        eps: float = 1e-5,
-        momentum: float = 0.1,
+        dtype: torch.dtype,
+        eps: float,
+        momentum: float,
+        splits: int,
         config: Optional[dict] = None,
         tune: bool = False,
         device_index: Optional[int] = None,
@@ -917,6 +837,7 @@ class BatchNormFwdTrainSplitKernel(Kernel):
         self.C = C
         self.S = S
         self.L = N * S
+        self.splits = splits
         self.dtype = dtype
         self.stages = _batch_norm_fwd_train_split_kernel(N, C, S, self.dtype_str, eps, momentum)
         self.init_config(config, tune)
@@ -925,7 +846,7 @@ class BatchNormFwdTrainSplitKernel(Kernel):
     def default_config(self) -> dict:
         # The untuned block width is the tiled path's untuned one.
         return {
-            "splits": _split_seed(self.C, self.L),
+            "splits": self.splits,
             "threads": _TiledPath.for_length(self.L)[0]["threads"],
         }
 
@@ -933,9 +854,8 @@ class BatchNormFwdTrainSplitKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         # Powers of two either side of the seed, and the seed itself, so tuning that
         # builds no candidate has nothing to fall back to and raises.
-        seed = _split_seed(self.C, self.L)
-        widest = min(self.L, seed * self._SEARCH_REACH)
-        counts = {1 << k for k in range(widest.bit_length())} | {seed}
+        widest = min(self.L, self.splits * self._SEARCH_REACH)
+        counts = {1 << k for k in range(widest.bit_length())} | {self.splits}
         return [
             {"splits": splits, "threads": threads}
             for splits in sorted(c for c in counts if c <= self.L)
@@ -994,10 +914,9 @@ class BatchNormFwdTrainSplitKernel(Kernel):
         # the narrower block, then the smaller count: a total order, so a seed
         # equidistant from two counts still resolves the same way.
         floor = min(timed)[0]
-        seed_splits = _split_seed(self.C, self.L)
         best = min(
             (c for c in timed if c[0] <= floor * (1.0 + self._TIE_BAND)),
-            key=lambda c: (abs(c[1] - seed_splits), c[2], c[1]),
+            key=lambda c: (abs(c[1] - self.splits), c[2], c[1]),
         )
         self.config = {"splits": best[1], "threads": best[2]}
         print(f"Best config: {self.config} ({best[0]:.4f} ms)")
@@ -1055,7 +974,8 @@ class BatchNormFwdTrainSplitKernel(Kernel):
         self._require_cuda(
             x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
         )
-        mean_out, rstd_out = _channel_buffers(self.C, x.device)
+        mean_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
+        rstd_out = torch.empty_like(mean_out)
         y = self._run(
             x,
             running_mean,
@@ -1093,7 +1013,7 @@ class BatchNormFwdTrainKernel(Kernel):
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
         args = (call.n, call.c, call.spatial, call.dtype, call.eps, call.momentum)
-        index = _device_index(call)
+        index = call.device_index
         return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
 
     def __init__(
@@ -1140,7 +1060,8 @@ class BatchNormFwdTrainKernel(Kernel):
         self._require_cuda(
             x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
         )
-        mean_out, rstd_out = _channel_buffers(self.C, x.device)
+        mean_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
+        rstd_out = torch.empty_like(mean_out)
         y = self.kernel(self.config["block_l"], self.config["threads"])(
             x, weight, bias, running_mean, running_var, mean_out, rstd_out
         )
@@ -1196,8 +1117,9 @@ def _batch_norm_fwd_infer_kernel(
             y_ncs: T.Tensor([N, C, S], dtype),
         ):
             with T.Kernel(blocks, threads=threads) as bx:
-                x = T.reshape(x_ncs, [total])
-                y = T.reshape(y_ncs, [total])
+                # A flat view of the same data; T.reshape's size check overflows int32.
+                x = T.Tensor([total], dtype, x_ncs.data)
+                y = T.Tensor([total], dtype, y_ncs.data)
                 tx = T.get_thread_binding()
                 # One scale and shift per channel turns the body into a single
                 # multiply-add, and the block builds that table once rather than
@@ -1300,7 +1222,8 @@ class BatchNormFwdInferKernel(Kernel):
         # The widest vector the element count divides, with steps keeping the
         # block span at _BLOCK_SPAN.
         threads = self._BLOCK_THREADS
-        for num_per_thread in _widths_down_to_one(_vector_elements(self.dtype)):
+        vector = _vector_elements(self.dtype)
+        for num_per_thread in (vector >> k for k in range(vector.bit_length())):
             if self.total % num_per_thread == 0:
                 steps = max(1, self._BLOCK_SPAN // (threads * num_per_thread))
                 return {
@@ -1313,8 +1236,9 @@ class BatchNormFwdInferKernel(Kernel):
     @property
     def autotune_configs(self) -> list[dict]:
         configs = []
+        vector = _vector_elements(self.dtype)
         for threads in self._TUNE_THREADS:
-            for num_per_thread in _widths_down_to_one(_vector_elements(self.dtype)):
+            for num_per_thread in (vector >> k for k in range(vector.bit_length())):
                 if self.total % num_per_thread:
                     continue
                 for steps in self._TUNE_STEPS:
@@ -1786,9 +1710,10 @@ def _batch_norm_bwd_split_kernel(
             grad_x_ncs: T.Tensor([N, C, S], dtype),
         ):
             with T.Kernel(blocks, threads=threads) as bx:
-                grad_out = T.reshape(grad_out_ncs, [total])
-                x = T.reshape(x_ncs, [total])
-                grad_x = T.reshape(grad_x_ncs, [total])
+                # A flat view of the same data; T.reshape's size check overflows int32.
+                grad_out = T.Tensor([total], dtype, grad_out_ncs.data)
+                x = T.Tensor([total], dtype, x_ncs.data)
+                grad_x = T.Tensor([total], dtype, grad_x_ncs.data)
                 tx = T.get_thread_binding()
                 g = T.alloc_local([num_per_thread], dtype)
                 v = T.alloc_local([num_per_thread], dtype)
@@ -1838,14 +1763,14 @@ def _batch_norm_bwd_split_kernel(
 class BatchNormBwdWideKernel(Kernel):
     """Backward with one channel per block, ``grad_out`` and ``x`` held in its registers.
 
-    Serves a channel whose two tensors one block holds (``_fits_one_block``).
+    Serves a channel whose two tensors one block holds (``BatchNormCall.fits_one_block``).
 
     Args:
         N: Batch size.
         C: Number of channels.
         S: Elements per channel in one batch item, ``product(spatial)``.
         dtype: grad_out/x/grad_x data type.
-        sm_count: SMs on the device, which the block width is chosen against.
+        launch: ``(threads, num_per_thread)`` of the block, ``BatchNormCall.block_launch``.
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
 
@@ -1853,12 +1778,12 @@ class BatchNormBwdWideKernel(Kernel):
 
     @classmethod
     def applies(cls, call: BatchNormCall) -> bool:
-        return _fits_one_block(call, 2)
+        return call.fits_one_block(2)
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
-        args = (call.n, call.c, call.spatial, call.dtype, call.sm_count)
-        index = _device_index(call)
+        args = (call.n, call.c, call.spatial, call.dtype, call.block_launch(2))
+        index = call.device_index
         return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
@@ -1867,13 +1792,13 @@ class BatchNormBwdWideKernel(Kernel):
         C: int,
         S: int,
         dtype: torch.dtype,
-        sm_count: int,
+        launch: tuple[int, int],
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.C = C
         self.dtype = dtype
-        self.launch = _block_launch(C, N * S, S, dtype, sm_count, 2)
+        self.launch = launch
         self.kernel = _batch_norm_bwd_wide_kernel(N, C, S, self.dtype_str)
 
     def forward(
@@ -1890,7 +1815,8 @@ class BatchNormBwdWideKernel(Kernel):
             ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
         """
         self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
-        grad_weight, grad_bias = _channel_buffers(self.C, x.device)
+        grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
+        grad_bias = torch.empty_like(grad_weight)
         grad_x = self.kernel(*self.launch)(grad_out, x, weight, mean, rstd, grad_weight, grad_bias)
         return grad_x, grad_weight, grad_bias
 
@@ -1898,15 +1824,16 @@ class BatchNormBwdWideKernel(Kernel):
 class BatchNormBwdSplitKernel(Kernel):
     """Backward with a channel across several blocks: sum, merge, then map.
 
-    Serves a channel whose two tensors one block does not hold (``_fits_one_block``) and
+    Serves a channel whose two tensors one block does not hold (``BatchNormCall.fits_one_block``) and
     that is long enough, among few enough channels, to cut across blocks
-    (``_splittable``). The split count and block width follow from the shape.
+    (``BatchNormCall.splittable``). The split count and block width follow from the shape.
 
     Args:
         N: Batch size.
         C: Number of channels.
         S: Elements per channel in one batch item, ``product(spatial)``.
         dtype: grad_out/x/grad_x data type.
+        splits: Pieces a channel is cut into, ``BatchNormCall.split_seed``.
         config: Optional ``{"splits", "threads"}``.
         device_index: CUDA device the kernel runs on; ``None`` is the current one.
     """
@@ -1915,13 +1842,12 @@ class BatchNormBwdSplitKernel(Kernel):
 
     @classmethod
     def applies(cls, call: BatchNormCall) -> bool:
-        splittable = _splittable(call.c, call.n * call.spatial)
-        return splittable and not _fits_one_block(call, 2)
+        return call.splittable and not call.fits_one_block(2)
 
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
-        args = (call.n, call.c, call.spatial, call.dtype)
-        index = _device_index(call)
+        args = (call.n, call.c, call.spatial, call.dtype, call.split_seed)
+        index = call.device_index
         return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
@@ -1929,13 +1855,15 @@ class BatchNormBwdSplitKernel(Kernel):
         N: int,
         C: int,
         S: int,
-        dtype: torch.dtype = torch.float16,
+        dtype: torch.dtype,
+        splits: int,
         config: Optional[dict] = None,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.C = C
         self.L = N * S
+        self.splits = splits
         self.dtype = dtype
         self.stages = _batch_norm_bwd_split_kernel(N, C, S, self.dtype_str)
         self.init_config(config)
@@ -1944,7 +1872,7 @@ class BatchNormBwdSplitKernel(Kernel):
     def default_config(self) -> dict:
         # The block width is the tiled path's untuned one.
         return {
-            "splits": _split_seed(self.C, self.L),
+            "splits": self.splits,
             "threads": _TiledPath.for_length(self.L)[0]["threads"],
         }
 
@@ -1962,7 +1890,8 @@ class BatchNormBwdSplitKernel(Kernel):
             ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
         """
         self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
-        grad_weight, grad_bias = _channel_buffers(self.C, x.device)
+        grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
+        grad_bias = torch.empty_like(grad_weight)
         stats, finalize, apply_ = self.stages
         splits, threads = self.config["splits"], self.config["threads"]
         num_per_thread = _vector_elements(self.dtype)
@@ -2013,7 +1942,7 @@ class BatchNormBwdKernel(Kernel):
     @classmethod
     def entry_for(cls, call: BatchNormCall) -> Entry:
         args = (call.n, call.c, call.spatial, call.dtype)
-        index = _device_index(call)
+        index = call.device_index
         return (*args, index), lambda: cls(*args, tune=call.tune, device_index=index)
 
     def __init__(
@@ -2055,7 +1984,8 @@ class BatchNormBwdKernel(Kernel):
             ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
         """
         self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
-        grad_weight, grad_bias = _channel_buffers(self.C, x.device)
+        grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
+        grad_bias = torch.empty_like(grad_weight)
         program = self.kernel(self.config["block_l"], self.config["threads"])
         grad_x = program(grad_out, x, weight, mean, rstd, grad_weight, grad_bias)
         return grad_x, grad_weight, grad_bias
