@@ -7,6 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.gemm.call_spec import GemmCall
 from tileops.kernels.gemm.dense import GemmCpAsyncKernel, GemmTmaKernel
 from tileops.kernels.gemm.heuristics import small_m_splitk_config
 from tileops.kernels.grouped_gemm.heuristics import GemmType
@@ -59,6 +60,20 @@ def _silu_mul_fused_kernel(M: int, N: int, dtype_str: str):
     return _func
 
 
+def _dense_gemm(call: GemmCall, config: "dict | None") -> Kernel:
+    """Build the SM90 dense GEMM kernel whose region holds *call*.
+
+    Raises:
+        ValueError: Neither kernel serves the shape; the message names both refusals.
+    """
+    candidates = (GemmTmaKernel, GemmCpAsyncKernel)
+    for cls in candidates:
+        if cls.refusal(call) is None:
+            return cls(m=call.m, n=call.n, k=call.k, dtype=call.dtype, trans_b=True, config=config)
+    reasons = "; ".join(f"{cls.__name__}: {cls.refusal(call)}" for cls in candidates)
+    raise ValueError(f"no dense GEMM serves {call.m}x{call.n}x{call.k}: {reasons}")
+
+
 class SharedExpertMLPKernel(Kernel):
     """Shared expert MLP producing ``[T, H]``.
 
@@ -88,10 +103,25 @@ class SharedExpertMLPKernel(Kernel):
         sm_version = get_sm_version()
         self._fused_gate_up = None
         self._gate_up_is_activated = False
+        # Each GEMM runs on the dense kernel whose region holds its shape.
+        gate_up_call, down_call = (
+            GemmCall(
+                m=num_tokens,
+                n=n,
+                k=k,
+                dtype=dtype,
+                trans_b=True,
+                arch=sm_version,
+                sm_count=get_sm_count(),
+            )
+            for n, k in ((ffn_size * 2, hidden_size), (hidden_size, ffn_size))
+        )
         if (
             sm_version == 90
             and num_tokens >= self.config["template_min_m"]
             and ffn_size >= hidden_size
+            and GemmTmaKernel.applies(gate_up_call)
+            and GemmTmaKernel.applies(down_call)
         ):
             fuse_gate_up = 512 <= num_tokens <= 2048
             template_config = {
@@ -112,14 +142,7 @@ class SharedExpertMLPKernel(Kernel):
             )
         elif sm_version == 90:
             gemm_config = self.config if config is not None else None
-            self._gemm_gate_up = GemmTmaKernel(
-                m=num_tokens,
-                n=ffn_size * 2,
-                k=hidden_size,
-                dtype=dtype,
-                trans_b=True,
-                config=gemm_config,
-            )
+            self._gemm_gate_up = _dense_gemm(gate_up_call, gemm_config)
             small_m_config = (
                 small_m_splitk_config(
                     num_tokens,
@@ -141,16 +164,13 @@ class SharedExpertMLPKernel(Kernel):
                     config=small_m_config,
                 )
             else:
-                self._gemm_down = GemmTmaKernel(
-                    m=num_tokens,
-                    n=hidden_size,
-                    k=ffn_size,
-                    dtype=dtype,
-                    trans_b=True,
-                    config=gemm_config,
-                )
+                self._gemm_down = _dense_gemm(down_call, gemm_config)
             gate_config = self._gemm_gate_up.config
-            if num_tokens == 32 and gate_config.get("split_k", 1) > 1:
+            if (
+                isinstance(self._gemm_gate_up, GemmTmaKernel)
+                and num_tokens == 32
+                and gate_config.get("split_k", 1) > 1
+            ):
                 self._fused_gate_up = GemmTmaKernel(
                     m=num_tokens,
                     n=ffn_size * 2,
