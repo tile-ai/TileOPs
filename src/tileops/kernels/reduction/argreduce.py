@@ -12,10 +12,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import STATIC_SHARED_BYTES
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     FRAGMENT_ELEMS_PER_THREAD,
-    SHARED_MEMORY_BUDGET_BYTES,
     ceildiv_int,
     restore_reduced,
     rows_for_axes,
@@ -295,7 +295,7 @@ def _argreduce_output_kernel(
             span == block_m
             and M % span == 0
             and inner_stride % span == 0
-            and N * span * elem_bytes <= SHARED_MEMORY_BUDGET_BYTES
+            and N * span * elem_bytes <= STATIC_SHARED_BYTES
         )
 
         @T.prim_func

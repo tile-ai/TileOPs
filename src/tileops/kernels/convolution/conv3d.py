@@ -778,6 +778,7 @@ class Conv3dKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return conv_autotune_configs(
             self.dtype,
+            self.device_index,
             block_n=[32, 64, 128],
             threads=[128],
         )
@@ -956,6 +957,7 @@ class GroupConv3dKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return conv_autotune_configs(
             self.dtype,
+            self.device_index,
             block_n=[32, 64, 128],
             threads=[128],
         )
@@ -1130,6 +1132,7 @@ class Conv3dNdhwcKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         configs = conv_autotune_configs(
             self.dtype,
+            self.device_index,
             block_m=[64, 128],
             block_k=[16, 32, 64, 128, 256],
             threads=[128],

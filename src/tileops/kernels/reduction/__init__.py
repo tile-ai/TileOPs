@@ -3,7 +3,6 @@
 
 from ._primitives import (
     DEFAULT_ALIGNMENT,
-    SHARED_MEMORY_BUDGET_BYTES,
     align_up,
 )
 from .argreduce import ArgreduceKernel
@@ -39,7 +38,6 @@ from .vector_norm import (
 
 __all__: list[str] = [
     "DEFAULT_ALIGNMENT",
-    "SHARED_MEMORY_BUDGET_BYTES",
     "ArgreduceKernel",
     "CumulativeKernel",
     "LogSumExpEdgeSplitKernel",

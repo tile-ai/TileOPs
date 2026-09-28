@@ -22,13 +22,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import LOG2E
+from tileops.kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
-    VECTOR_ACCESS_BYTES,
     BlockConfigPlanner,
     RowTiledAutotuneMixin,
     align_up,

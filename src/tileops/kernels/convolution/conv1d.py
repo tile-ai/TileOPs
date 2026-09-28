@@ -524,7 +524,7 @@ class Conv1dPointwiseKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return conv_autotune_configs(self.dtype)
+        return conv_autotune_configs(self.dtype, self.device_index)
 
     def forward(
         self,
@@ -626,7 +626,7 @@ class Conv1dKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return conv_autotune_configs(self.dtype, block_n=[64, 128])
+        return conv_autotune_configs(self.dtype, self.device_index, block_n=[64, 128])
 
     def _get_weight_flat(self, weight: torch.Tensor) -> torch.Tensor:
         """Return the weight laid out as the prim_func's ``(c_out, k_total)``.
@@ -819,6 +819,7 @@ class GroupConv1dKernel(Kernel):
             return [self.default_config]
         return conv_autotune_configs(
             self.dtype,
+            self.device_index,
             block_m=self._block_m_choices,
         )
 

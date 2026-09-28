@@ -831,6 +831,7 @@ class Conv2dSymmetricKernel(Kernel):
         # so a 32-wide k tile always divides it.
         configs = conv_autotune_configs(
             self.dtype,
+            self.device_index,
             block_m=list(self.block_m_candidates),
             block_k=[32, 64],
         )
@@ -996,6 +997,7 @@ class Conv2dKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         return conv_autotune_configs(
             self.dtype,
+            self.device_index,
             block_m=[64, 128],
             block_k=[64, 128],
         )
@@ -1194,7 +1196,7 @@ class GroupConv2dKernel(Kernel):
             return [
                 {**self.default_config, "enable_rasterization": value} for value in (False, True)
             ]
-        return conv_autotune_configs(self.dtype, threads=[128])
+        return conv_autotune_configs(self.dtype, self.device_index, threads=[128])
 
     def forward(
         self,
@@ -1314,6 +1316,7 @@ class Conv2d1x1Kernel(Kernel):
         # small map has no other way to fill the device.
         return conv_autotune_configs(
             self.dtype,
+            self.device_index,
             block_m=[64, 128],
             block_n=[32, 64, 128, 256],
             threads=[128],

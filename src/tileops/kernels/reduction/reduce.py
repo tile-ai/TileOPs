@@ -13,12 +13,12 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
     FP32_EXACT_INT_LIMIT,
-    VECTOR_ACCESS_BYTES,
     BlockConfigPlanner,
     align_up,
     ceildiv_int,
