@@ -5,7 +5,7 @@ that file states why each one is wrong.
 
 - Every `src/tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from .module import Symbol` re-exports.
 
-- Reach a C++/CUDA source under `src/tileops/csrc/` through `tileops._csrc.csrc_path("<domain>/<file>")`.
+- Reach a C++/CUDA source under `src/tileops/csrc/` through `tileops._csrc.csrc_path("<file>")`.
 
 - Intra-package imports: relative (`from .op import Op`). Cross-package: absolute (`tileops.foo.bar`).
 

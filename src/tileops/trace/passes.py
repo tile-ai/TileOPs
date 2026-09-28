@@ -63,7 +63,7 @@ from .state import MARKER, begin_build_epoch, build_state
 
 __all__ = ["MAX_EVENTS_DEFAULT", "lookup_meta", "lower", "strip"]
 
-_HELPER = Path(csrc_path("trace/device_helper.h")).read_text()
+_HELPER = Path(csrc_path("trace_helper.h")).read_text()
 
 # Header words per slot: word[0] = count, word[1] = reserved. Events follow.
 HEADER_WORDS = 2

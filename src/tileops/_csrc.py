@@ -7,6 +7,6 @@ __all__ = ["csrc_path"]
 _CSRC = Path(__file__).resolve().parent / "csrc"
 
 
-def csrc_path(rel: str) -> str:
-    """Return the absolute path of ``rel``, a path relative to ``tileops/csrc``."""
-    return str(_CSRC / rel)
+def csrc_path(name: str) -> str:
+    """Return the absolute path of ``name`` under ``tileops/csrc``."""
+    return str(_CSRC / name)

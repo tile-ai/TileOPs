@@ -19,7 +19,7 @@ from .dense import _splitk_reduce_kernel
 
 GROUP_SIZE = 128
 
-_DECODE_HELPER_PATH = csrc_path("gemm/w4a16_decode_helper.h")
+_DECODE_HELPER_PATH = csrc_path("w4a16_decode_helper.h")
 
 
 # What identifies a tile shape, as opposed to how its K loop is sliced.
