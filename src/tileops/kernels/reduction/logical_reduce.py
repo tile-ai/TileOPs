@@ -58,36 +58,6 @@ def _scalar_view_for(dtype: torch.dtype) -> "tuple[torch.dtype, int]":
     return _SCALAR_VIEWS.get(dtype, (dtype, 1))
 
 
-def _as_scalars(x: torch.Tensor) -> torch.Tensor:
-    """View *x* as the scalars the prim_func reads, its last axis widened by the count.
-
-    Every case is a view: no element is copied or converted. A conjugated complex
-    tensor is read unconjugated, which negates only imaginary parts and so no
-    element's truth.
-    """
-    if x.dtype == torch.bool:
-        return x.view(torch.int8)
-    if x.is_complex():
-        x = x.conj() if x.is_conj() else x
-        return torch.view_as_real(x).flatten(-2)
-    return x
-
-
-def _nonzero(buf, col, components: int):
-    """Whether element *col* of the 1-D buffer *buf* is nonzero, as a PrimExpr.
-
-    The element is its *components* scalars from ``col * components``; it is nonzero
-    when any of them compares unequal to zero in its own dtype, so -0.0 is zero and
-    NaN is not, as in torch.
-    """
-    zero = T.cast(0, buf.dtype)
-    terms = [buf[col * components + q] != zero for q in range(components)]
-    expr = terms[0]
-    for term in terms[1:]:
-        expr = T.Or(expr, term)
-    return expr
-
-
 def _logical_out_dtype(op_kind: str, partial: bool) -> str:
     """The dtype a logical reduce writes: 0/1 stays int8, a count widens.
 
@@ -132,35 +102,29 @@ def _fold_threads(row_units: int, vec: int) -> int:
     return max(_FOLD_MIN_THREADS, min(lanes, _FOLD_MAX_THREADS))
 
 
-def _nonzero_bytes(word):
-    """How many bytes of a 32-bit *word* are nonzero, as a PrimExpr.
-
-    ``(b & 0x7F) + 0x7F`` sets bit 7 exactly when the low seven bits are not all
-    clear, never carrying into the next byte; or-ing in ``b`` adds bit 7 itself.
-    """
-    low = T.Cast("uint32", _BYTE_LOW)
-    high = T.Cast("uint32", _BYTE_HIGH)
-    return T.popcount((((word & low) + low) | word) & high)
-
-
-def _zero_bytes(word):
-    """Nonzero exactly when some byte of a 32-bit *word* is zero, as a PrimExpr.
-
-    ``(w - 0x01010101) & ~w & 0x80808080``: a zero byte borrows into its own bit 7.
-    ``w ^ ~0`` stands for ``~w``, which CUDA's vector types do not define.
-    """
-    ones = T.Cast("uint32", _BYTE_ONES)
-    high = T.Cast("uint32", _BYTE_HIGH)
-    return (word - ones) & (word ^ T.Cast("uint32", 0xFFFFFFFF)) & high
-
-
 def _fold_term(op_kind: str, held, e, components: int, pack: int):
     """What element (or word) *e* of a lane's vector adds to its accumulator."""
     if pack > 1:
+        word = held[e]
+        high = T.Cast("uint32", _BYTE_HIGH)
         if op_kind == "count_nonzero":
-            return _nonzero_bytes(held[e])
-        return held[e] if op_kind == "any" else _zero_bytes(held[e])
-    nonzero = _nonzero(held, e, components)
+            # Nonzero bytes: ``(b & 0x7F) + 0x7F`` sets bit 7 exactly when the low seven
+            # bits are not all clear, never carrying into the next byte; or-ing in ``b``
+            # adds bit 7 itself.
+            low = T.Cast("uint32", _BYTE_LOW)
+            return T.popcount((((word & low) + low) | word) & high)
+        if op_kind == "any":
+            return word
+        # Nonzero exactly when some byte is zero: ``(w - 0x01010101) & ~w & 0x80808080``,
+        # a zero byte borrows into its own bit 7. ``w ^ ~0`` stands for ``~w``, which
+        # CUDA's vector types do not define.
+        return (word - T.Cast("uint32", _BYTE_ONES)) & (word ^ T.Cast("uint32", 0xFFFFFFFF)) & high
+    # An element is nonzero when any of its scalars compares unequal to zero in its own
+    # dtype, so -0.0 is zero and NaN is not, as in torch.
+    zero = T.cast(0, held.dtype)
+    nonzero = held[e * components] != zero
+    for q in range(1, components):
+        nonzero = T.Or(nonzero, held[e * components + q] != zero)
     if op_kind == "all":
         nonzero = T.Not(nonzero)
     return nonzero
@@ -301,13 +265,6 @@ def _fold_units(dtype: torch.dtype, cols: int, address: int) -> "tuple[torch.dty
     return scalar_dtype, components, 1
 
 
-def _fold_default_threads(dtype: torch.dtype, cols: int) -> int:
-    """The block width for runs of *cols* elements of *dtype* on a 16-byte boundary."""
-    unit_dtype, components, pack = _fold_units(dtype, cols, 0)
-    row_units = cols * components // pack
-    return _fold_threads(row_units, _fold_vector(unit_dtype.itemsize, row_units, components))
-
-
 def _fold_reduce(
     x: torch.Tensor, lead: int, rows: int, cols: int, op_kind: str, out_dtype: str, threads=None
 ) -> torch.Tensor:
@@ -319,7 +276,13 @@ def _fold_reduce(
         ValueError: *threads* is not a power of two from one warp to
             ``_FOLD_MAX_THREADS``, which the block's shuffle reduction needs.
     """
-    scalars = _as_scalars(x).reshape(lead, rows, -1)
+    # Views only: a conjugated complex tensor is read unconjugated, which negates only
+    # imaginary parts and so no element's truth.
+    if x.dtype == torch.bool:
+        x = x.view(torch.int8)
+    elif x.is_complex():
+        x = torch.view_as_real(x.conj() if x.is_conj() else x).flatten(-2)
+    scalars = x.reshape(lead, rows, -1)
     unit_dtype, components, pack = _fold_units(x.dtype, cols, scalars.data_ptr())
     units = scalars.view(unit_dtype)
     row_units = units.shape[-1]
@@ -430,7 +393,10 @@ class LogicalReduceKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {"threads": _fold_default_threads(self.dtype, self.N)}
+        unit_dtype, components, pack = _fold_units(self.dtype, self.N, 0)
+        row_units = self.N * components // pack
+        vec = _fold_vector(unit_dtype.itemsize, row_units, components)
+        return {"threads": _fold_threads(row_units, vec)}
 
     @property
     def autotune_configs(self) -> list[dict]:
