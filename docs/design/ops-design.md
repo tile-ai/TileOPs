@@ -38,15 +38,19 @@ The generated `_validate_dtypes` is the only dtype gate, and it runs on every `f
 
 **Choosing a slot is the op's; choosing among a slot's implementations is not.** Which slot serves a call follows from the call's user-visible semantics. Which implementation of that slot runs belongs with the implementations.
 
+**A different program is a different implementation.** A program or launch sequence the shape selects is its own implementation with its own region; tile parameters of one program stay inside it. Why: an implementation is what a backend replaces and what selection chooses, and a program hidden inside another is neither.
+
+**Each slot declares its candidates.** Why: an op can hold several slots, and an implementation of one must not answer another's call.
+
 **An implementation states the region it serves, positively.** Never by excluding a sibling, never by architecture — its declared support already answers that.
 
-**Order decides nothing.** Selection takes the implementation that applies; the one declared general runs where no specialised one does. Nothing applicable is an error, and two specialised implementations claiming one call is an ambiguity error rather than a silent preference. A replacement the caller supplies answers the same question as the class it replaces.
+**Order decides nothing.** Selection takes the implementation that applies; the one declared general runs where no specialised one does. Nothing applicable is an error, and two specialised implementations claiming one call is an ambiguity error rather than a silent preference. A replacement the caller supplies answers the same question as the class it replaces, and replaces that implementation only; replacing a whole op is a target's job ([Target boundary](#target-boundary)).
 
 **An implementation states how it is built.** `entry_for(call)` returns the identity two builds must share to be one entry, and the thunk that produces it. The identity is the construction arguments other than `tune`, which changes how fast a kernel runs but not what it computes, plus the device where the constructor could produce a different object on another one. An op names no candidate's constructor.
 
-Three records, each with one owner: the **call** (a `CallSpec` subclass) is what the caller asked for plus the device it runs on, and carries every fact the family's `applies` / `refusal` / `entry_for` read; the **build identity** is the selected class's projection of it; the **role** is the memoization bucket, one per op and never the dispatch key.
+Three records, each with one owner: the **call** (a `CallSpec` subclass) is what the caller asked for plus the device it runs on, and carries every fact the family's `applies` / `refusal` / `entry_for` read; the **build identity** is the selected class's projection of it; the **role** is the memoization bucket, one per slot and never the dispatch key.
 
-`kernel_for` is the only way an op's in-tree implementation reaches a kernel. It asks `Op.entry_for(role, call)` for the identity and the builder, and supplies both to get-or-build. The default `entry_for` selects among the op's candidates and asks the chosen class. An op with one implementation and no call record overrides `entry_for` and states its own identity and builder there, rather than opening a second path to the cache.
+`kernel_for` is the only way an op's in-tree implementation reaches a kernel. It asks `Op.entry_for(role, call)` for the identity and the builder, and supplies both to get-or-build. The default `entry_for` selects among the slot's candidates and asks the chosen class. An op with one implementation and no call record overrides `entry_for` and states its own identity and builder there, rather than opening a second path to the cache.
 
 The rule is implementation choice within one slot. Choosing the slot sits above it, dtype specialization beside it; neither goes through it. See [S13](op-slot-rules.md#slot-s13).
 

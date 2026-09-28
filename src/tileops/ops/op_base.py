@@ -134,6 +134,9 @@ class Op(ABC):
     # (a composite) declares none.
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = MappingProxyType({})
 
+    # The dispatch keys each role selects among. A role not listed selects among every key.
+    kernel_roles: ClassVar[Mapping[str, tuple[str, ...]]] = MappingProxyType({})
+
     # The ops this op holds as sub-ops, by stage name in stage order: the sub-op counterpart of
     # ``kernel_types``. Every sub-op is held through ``delegate_for``.
     delegate_types: ClassVar[Mapping[str, type["Op"]]] = MappingProxyType({})
@@ -432,7 +435,7 @@ class Op(ABC):
     def entry_for(self, role: str, call: object) -> Entry:
         """How to build what serves *call* for *role*, and what keys the result.
 
-        The default asks the implementation this op's candidates select for *call*,
+        The default asks the implementation *role*'s candidates (``kernel_roles``) select for *call*,
         which is where an op with more than one implementation stops. An op with one
         implementation and no call record overrides this and states its own identity
         and builder, so that every op reaches the cache through one path.
@@ -444,9 +447,19 @@ class Op(ABC):
         """
         if not self.kernel_map:
             return None, None
-        cls = self.select_kernel(call)
-        identity, build = cls.entry_for(call)
-        return (cls, identity), build
+        # A repeated call record is a lookup: selection and the identity depend on
+        # nothing else.
+        selected = getattr(self, "_selected_entries", None)
+        if selected is None:
+            selected = {}
+            self._selected_entries = selected
+        entry = selected.get((role, call))
+        if entry is None:
+            cls = self.select_kernel(call, self.kernel_roles.get(role))
+            identity, build = cls.entry_for(call)
+            entry = ((cls, identity), build)
+            selected[(role, call)] = entry
+        return entry
 
     def kernel_for(
         self,
@@ -1029,6 +1042,7 @@ class Op(ABC):
         self._builder = _UNRESOLVED
         self._settled_target = None
         self._kernel_roles = {}
+        self._selected_entries = {}
         self._target_kernels = {}
         self._target_checked = set()
 
