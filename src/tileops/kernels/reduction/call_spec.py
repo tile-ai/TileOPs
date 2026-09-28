@@ -4,23 +4,27 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import ClassVar, Mapping
 
 import torch
 
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.reduction._primitives import device_smem_budget, edge_axis_split
 
-__all__ = ["LogSumExpCall", "LogicalReduceCall", "SoftmaxCall"]
+__all__ = [
+    "FOLD_KINDS",
+    "NORM_KINDS",
+    "SIMPLE_KINDS",
+    "WELFORD_KINDS",
+    "LogSumExpCall",
+    "LogicalReduceCall",
+    "ReduceCall",
+    "SoftmaxCall",
+]
 
 
 @dataclasses.dataclass(frozen=True)
 class LogicalReduceCall(CallSpec):
     """A logical reduction call: the input's shape and dtype, the axes it reduces."""
-
-    # The fused edge pass runs one block per kept column and has no other parallelism:
-    # the fewest kept columns that fill the device, per calibrated board.
-    _EDGE_FUSED_MIN_KEPT: ClassVar[Mapping[str, int]] = {"h200": 32}
 
     shape: tuple[int, ...] = ()
     # Non-negative and ascending.
@@ -38,14 +42,6 @@ class LogicalReduceCall(CallSpec):
         """The kept extent between a reduced prefix and suffix of axes, or 0 for other layouts."""
         k, j = edge_axis_split(len(self.shape), self.axes)
         return math.prod(self.shape[k : len(self.shape) - j]) if k else 0
-
-    @property
-    def edge_fused_min_kept(self) -> float:
-        """The fewest kept columns at which the fused edge pass fills this call's board.
-
-        Infinite on a board with no calibrated entry.
-        """
-        return self._EDGE_FUSED_MIN_KEPT.get(self.calibration, math.inf)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -110,4 +106,36 @@ class SoftmaxCall(_SharedMemoryCall):
     @property
     def m(self) -> int:
         """Rows: the product of every other axis."""
+        return math.prod(self.shape) // self.n
+
+
+SIMPLE_KINDS = frozenset({"sum", "mean", "amax", "amin"})
+WELFORD_KINDS = frozenset({"std", "var", "var_mean"})
+NORM_KINDS = frozenset({"l1", "l2", "inf"})
+# Kinds the register fold serves.
+FOLD_KINDS = SIMPLE_KINDS | {"prod"} | NORM_KINDS
+
+
+@dataclasses.dataclass(frozen=True)
+class ReduceCall(_SharedMemoryCall):
+    """A reduction or vector-norm call: the manifest's input, ``dim`` and parameters."""
+
+    shape: tuple[int, ...] = ()
+    axes: tuple[int, ...] = ()
+    keepdim: bool = False
+    op_kind: str = ""
+    dtype: torch.dtype = torch.float16
+    # The ``dtype`` parameter; ``None`` keeps the input's.
+    out_dtype: "torch.dtype | None" = None
+    # The Welford kinds' correction; 0 where the op divides by zero degrees of freedom itself.
+    correction: float = 0
+
+    @property
+    def n(self) -> int:
+        """Elements each output reduces."""
+        return math.prod(self.shape[a] for a in self.axes)
+
+    @property
+    def m(self) -> int:
+        """Outputs: the elements of the axes the reduction keeps."""
         return math.prod(self.shape) // self.n

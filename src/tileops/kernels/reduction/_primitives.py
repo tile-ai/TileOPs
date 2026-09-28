@@ -24,7 +24,7 @@ import torch
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import SHARED_BANK_SPAN_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.tiling import ALIGNMENT, align_up
-from tileops.utils import WARP_LANES
+from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = [
     "AUTOTUNE_THREADS",
@@ -42,17 +42,17 @@ __all__ = [
     "ceildiv_int",
     "compute_tile_n",
     "device_smem_budget",
-    "edge_axis_plan",
+    "down_rows_once",
+    "down_rows_split",
+    "down_rows_splits",
     "edge_axis_split",
     "fold_rows_kernel",
     "identity_for",
-    "reduce_down_rows",
     "restore_reduced",
     "restore_same_shape",
     "rows_for_axes",
     "torch_dtype_nbytes",
     "tune_by_forward",
-    "vector_aligned",
 ]
 
 # 256-element alignment (512 bytes for fp16/bf16) required by T.copy()
@@ -241,14 +241,13 @@ class BlockConfigPlanner:
 
         The widest is regularly beaten by a narrower tile trading one global
         pass for a better shared-memory stride, so the next tile counts follow
-        it.  Empty when the pair can build no tile at all.
+        it.  Only widths `reject_tile_n` accepts: the widest tile that fits shared memory
+        need not divide across the block.  Empty when the pair can build no tile at all.
         """
         try:
-            default = self.tile_n_for(block_m, threads)
+            default = self.tiled_tile_n(block_m, threads)
         except ValueError:
             return []
-        if default == 0:
-            return [0]
 
         align = self._column_alignment(block_m, threads)
         out = [default]
@@ -259,7 +258,7 @@ class BlockConfigPlanner:
             tile_n = align_up((self.N_padded + n_tiles - 1) // n_tiles, align)
             if 0 < tile_n <= default and tile_n not in out:
                 out.append(tile_n)
-        return out
+        return [t for t in out if not self.reject_tile_n(block_m, t, threads)]
 
     def layout_ok(self, block_m: int, cols: int, threads: int) -> bool:
         """Whether a ``(block_m, cols)`` fragment is known to be reducible.
@@ -810,33 +809,6 @@ class _LeadingAxisReducePolicy:
 _LEADING_POLICY = _LeadingAxisReducePolicy()
 
 
-def edge_axis_plan(
-    shape: "tuple[int, ...]",
-    k: int,
-    j: int,
-    elem_bytes: int,
-    smem_budget: int,
-    **planner_kwargs,
-):
-    """Split *shape* for an edge-axis reduction and plan its rows pass.
-
-    Returns ``(lead, kept, trail, planner, cfg)``: the leading and trailing
-    reduced element counts, the kept middle, and the ``BlockConfigPlanner``
-    with its default config for rows of ``trail`` elements.
-    """
-    ndim = len(shape)
-    lead = prod(shape[:k])
-    kept = prod(shape[k : ndim - j])
-    trail = prod(shape[ndim - j :])
-    planner = BlockConfigPlanner(
-        align_up(trail, DEFAULT_ALIGNMENT),
-        elem_bytes,
-        smem_budget,
-        **planner_kwargs,
-    )
-    return lead, kept, trail, planner, planner.default_config()
-
-
 def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
     """Split *axes* into ``(leading, trailing)`` counts when they hug both edges.
 
@@ -855,13 +827,6 @@ def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
     if k + j >= ndim:
         return (0, 0)
     return (k, j)
-
-
-def _leading_row_splits(reduced: int, kept: int, threads: int) -> int:
-    """How many ways to split the reduced axis so the grid fills the device."""
-    block_b = threads * _LEADING_POLICY.cols_per_thread
-    column_blocks = ceildiv_int(kept, block_b)
-    return max(1, min(reduced, ceildiv_int(_LEADING_POLICY.target_blocks, column_blocks)))
 
 
 def _make_down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: str):
@@ -1004,7 +969,23 @@ def _down_rows_kernel(
     return _func
 
 
-def reduce_down_rows(
+def down_rows_splits(reduced: int, kept: int) -> int:
+    """Row slices a down-rows reduction of ``(reduced, kept)`` runs as; 1 is one launch.
+
+    Splitting the reduced axis is what fills the grid, at the cost of a second launch over
+    the fp32 partial rows. An input smaller than one grid's worth of work cannot amortize
+    that launch.
+    """
+    grid_work = (
+        _LEADING_POLICY.threads * _LEADING_POLICY.cols_per_thread * _LEADING_POLICY.target_blocks
+    )
+    if reduced * kept <= grid_work:
+        return 1
+    column_blocks = ceildiv_int(kept, _LEADING_POLICY.threads * _LEADING_POLICY.cols_per_thread)
+    return max(1, min(reduced, ceildiv_int(_LEADING_POLICY.target_blocks, column_blocks)))
+
+
+def down_rows_once(
     flat: torch.Tensor,
     op_kind: str,
     in_dtype: str,
@@ -1012,37 +993,38 @@ def reduce_down_rows(
     divisor: float,
     epilogue: str = "",
 ) -> torch.Tensor:
-    """Reduce an ``(A, B)`` buffer down its rows, writing one *out_dtype* row.
+    """Reduce an ``(A, B)`` buffer down its rows in one launch, writing one *out_dtype* row."""
+    reduced, kept = flat.shape
+    single = _down_rows_kernel(
+        reduced,
+        kept,
+        op_kind,
+        in_dtype,
+        out_dtype,
+        _LEADING_POLICY.threads,
+        1,
+        divisor,
+        epilogue,
+    )
+    return single()(flat)
 
-    Splitting the reduced axis is what fills the grid, and each slice leaves an
-    fp32 partial row; a second call over those rows finishes the op. The partials
-    are a few thousand values against the millions the first pass reads, so the
-    second call costs about nothing. ``divisor`` and ``epilogue`` apply only at
-    the finishing call.
+
+def down_rows_split(
+    flat: torch.Tensor,
+    op_kind: str,
+    in_dtype: str,
+    out_dtype: str,
+    divisor: float,
+    splits: int,
+    epilogue: str = "",
+) -> torch.Tensor:
+    """Reduce an ``(A, B)`` buffer down its rows as *splits* slices, then finish the partials.
+
+    Each slice leaves an fp32 partial row; the second launch reduces those rows and is the
+    only one ``divisor`` and ``epilogue`` apply to. The partials are a few thousand values
+    against the millions the first launch reads.
     """
     reduced, kept = flat.shape
-    # An input smaller than one grid's worth of work cannot amortize the
-    # extra pass a split costs; reduce it in a single call.
-    grid_work = (
-        _LEADING_POLICY.threads * _LEADING_POLICY.cols_per_thread * _LEADING_POLICY.target_blocks
-    )
-    if reduced * kept <= grid_work:
-        splits = 1
-    else:
-        splits = _leading_row_splits(reduced, kept, _LEADING_POLICY.threads)
-    if splits == 1:
-        single = _down_rows_kernel(
-            reduced,
-            kept,
-            op_kind,
-            in_dtype,
-            out_dtype,
-            _LEADING_POLICY.threads,
-            1,
-            divisor,
-            epilogue,
-        )
-        return single()(flat)
     partials = _down_rows_kernel(
         reduced,
         kept,
@@ -1074,20 +1056,9 @@ def reduce_down_rows(
 
 _STREAMING_LOAD_HELPER_PATH = csrc_path("streaming_load.h")
 
-# Vector loads each thread keeps in flight; a grid of few rows is bound by it.
-_FOLD_UNROLL = 16
-
-# Stride-halving shuffle steps that reduce one warp.
-_WARP_STAGES = WARP_LANES.bit_length() - 1
-
-
-def vector_aligned(x: torch.Tensor) -> torch.Tensor:
-    """Return *x*, copied if its storage does not start on a vector boundary."""
-    return x.clone() if x.data_ptr() % VECTOR_ACCESS_BYTES else x
-
 
 @functools.lru_cache(maxsize=32)
-def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str):
+def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str, unroll: int):
     """Build a reduce of each row of an ``(m, n)`` buffer, folded into registers as it reads.
 
     One block per row; each thread folds one 16-byte vector per step into ``vec``
@@ -1101,6 +1072,7 @@ def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str):
             / ``inf``; ``inf`` reduces int32 bit patterns so a NaN outranks every number.
         dtype: TileLang dtype string of the input.
         out_dtype: TileLang dtype string of the output.
+        unroll: Vector loads each thread keeps in flight.
     """
     vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
     slot_dtype = "int32" if op_kind == "inf" else "float32"
@@ -1151,7 +1123,7 @@ def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str):
 
                 for c in T.serial(vec):
                     slots[c] = T.cast(identity, slot_dtype)
-                for k in T.unroll(steps, unroll_factor=_FOLD_UNROLL):
+                for k in T.unroll(steps, unroll_factor=unroll):
                     T.call_extern(
                         "handle",
                         "tl::tileops_load16_evict_first",
@@ -1174,7 +1146,7 @@ def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str):
                 total[0] = slots[0]
                 for c in T.serial(1, vec):
                     total[0] = combine(total[0], slots[c])
-                for stage in T.serial(_WARP_STAGES):
+                for stage in T.serial(WARP_SHUFFLE_STAGES):
                     total[0] = combine(
                         total[0],
                         T.shfl_xor(total[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES),

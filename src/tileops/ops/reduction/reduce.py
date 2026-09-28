@@ -15,7 +15,16 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.reduction.reduce import ReduceKernel
+from tileops.kernels.reduction.call_spec import ReduceCall
+from tileops.kernels.reduction.reduce import (
+    ReduceEdgeKernel,
+    ReduceFoldKernel,
+    ReduceKernel,
+    ReduceLeadingKernel,
+    ReduceProdKernel,
+    WelfordEdgeKernel,
+    WelfordReduceKernel,
+)
 from tileops.manifest.primitives import normalize_axis, reduced
 
 from ..op_base import Op
@@ -63,7 +72,6 @@ class _ReduceOpBase(Op):
     """
 
     compile_boundary: ClassVar[bool] = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"reduce": ReduceKernel}
 
     _op_kind: str = ""
     _kernel_key: str = "reduce"
@@ -203,7 +211,37 @@ class _ReduceOpBase(Op):
         )
 
 
-class _CastReduceOp(_ReduceOpBase):
+class ReduceCallOp(_ReduceOpBase):
+    """A reduction whose implementations each state the calls they serve over a `ReduceCall`."""
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "reduce_fold": ReduceFoldKernel,
+        "reduce": ReduceKernel,
+        "reduce_prod": ReduceProdKernel,
+        "reduce_welford": WelfordReduceKernel,
+        "reduce_leading": ReduceLeadingKernel,
+        "reduce_edge": ReduceEdgeKernel,
+        "reduce_welford_edge": WelfordEdgeKernel,
+    }
+
+    def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int) -> ReduceCall:
+        return ReduceCall(
+            device=x.device,
+            shape=tuple(x.shape),
+            axes=axes,
+            keepdim=self.keepdim,
+            op_kind=self._op_kind,
+            dtype=x.dtype,
+            tune=self.tune,
+            **dict(self._call_kwargs(n)),
+        )
+
+    def entry_for(self, role: str, call: ReduceCall) -> Entry:
+        """Several implementations, so the one that serves the call says how it is built."""
+        return Op.entry_for(self, role, call)
+
+
+class _CastReduceOp(ReduceCallOp):
     """A reduction taking torch's keyword-only ``dtype``: the input is cast to it first."""
 
     def __init__(
@@ -245,13 +283,13 @@ class MeanFwdOp(_CastReduceOp):
     _identity = math.nan
 
 
-class AminFwdOp(_ReduceOpBase):
+class AminFwdOp(ReduceCallOp):
     """Minimum over ``dim``, following ``torch.amin``."""
 
     _op_kind = "amin"
 
 
-class AmaxFwdOp(_ReduceOpBase):
+class AmaxFwdOp(ReduceCallOp):
     """Maximum over ``dim``, following ``torch.amax``."""
 
     _op_kind = "amax"
@@ -288,7 +326,7 @@ class ProdFwdOp(_CastReduceOp):
         super().__init__(dim, keepdim, dtype=dtype, target=target, kernel_map=kernel_map, tune=tune)
 
 
-class _WelfordReduceOp(_ReduceOpBase):
+class _WelfordReduceOp(ReduceCallOp):
     """Base for the variance family: ``op(dim=None, *, correction=1, keepdim=False)``."""
 
     _identity = math.nan
@@ -383,6 +421,6 @@ class VarMeanFwdOp(_WelfordReduceOp):
 
     def _launch(self, x, axes, m, n):
         if self._dof_correction < n:
-            return _ReduceOpBase._launch(self, x, axes, m, n)
-        var, mean = _ReduceOpBase._launch(self, x.float(), axes, m, n)
+            return ReduceCallOp._launch(self, x, axes, m, n)
+        var, mean = ReduceCallOp._launch(self, x.float(), axes, m, n)
         return self._no_dof(var, n, x.dtype), mean.to(x.dtype)
