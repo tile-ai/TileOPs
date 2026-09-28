@@ -30,7 +30,8 @@ def _flashattn_bwd_preprocess_kernel(
         o: T.Tensor(shape, dtype),  # type: ignore
         do: T.Tensor(shape, dtype),  # type: ignore
         delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
-        dq_accum: T.Tensor(shape, accum_dtype),  # type: ignore
+        # Zeroed in head-major order, so each block clears one contiguous span.
+        dq_accum: T.Tensor([batch, heads, seq_len, dim], accum_dtype),  # type: ignore
     ) -> None:
         with T.Kernel(heads, T.ceildiv(seq_len, blk), batch, threads=128) as (bx, by, bz):
             o_frag = T.alloc_fragment([blk, dim], dtype)
@@ -44,7 +45,7 @@ def _flashattn_bwd_preprocess_kernel(
             T.reduce_sum(acc, delta_frag, 1)
             T.copy(delta_frag, delta[bz, bx, by * blk : (by + 1) * blk])
             T.clear(acc)
-            T.copy(acc, dq_accum[bz, by * blk : (by + 1) * blk, bx, :])
+            T.copy(acc, dq_accum[bz, bx, by * blk : (by + 1) * blk, :])
 
     return flash_bwd_prep
 
@@ -100,9 +101,9 @@ class FlashAttnBwdPreprocessKernel(Kernel):
         delta = torch.empty(
             (self.batch, self.heads, self.seq_len), dtype=torch.float32, device=o.device
         )
-        dq_accum = torch.empty(o.shape, dtype=torch.float32, device=o.device)
-        self.kernel(o, do, delta, dq_accum)
-        return delta, dq_accum
+        dq_accum = torch.empty(o.numel(), dtype=torch.float32, device=o.device)
+        self.kernel(o, do, delta, dq_accum.view(self.batch, self.heads, self.seq_len, self.dim))
+        return delta, dq_accum.view(o.shape)
 
 
 @functools.lru_cache(maxsize=32)
