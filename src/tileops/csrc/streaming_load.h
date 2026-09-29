@@ -24,4 +24,10 @@ __device__ __forceinline__ float tileops_load_f32_evict_last(const float* src) {
   return v;
 }
 
+// Loads 16 bytes of global memory into dst with the default cache policy.
+__device__ __forceinline__ void tileops_load16(void* dst, const void* src) {
+  uint4 v = *reinterpret_cast<const uint4*>(src);
+  __builtin_memcpy(dst, &v, 16);
+}
+
 }  // namespace tl
