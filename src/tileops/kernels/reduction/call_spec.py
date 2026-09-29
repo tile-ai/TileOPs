@@ -15,7 +15,6 @@ import torch
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import KernelInterface
 from tileops.kernels.reduction._primitives import edge_axis_split
-from tileops.utils import get_shared_memory_optin
 
 __all__ = [
     "WELFORD_KINDS",
@@ -63,25 +62,7 @@ class LogicalReduceCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class _SharedMemoryCall(CallSpec):
-    """A call whose kernels plan against the device's shared memory.
-
-    ``smem_budget`` is a device fact like ``sm_count``: a record that states none reads
-    it when it is built.
-    """
-
-    smem_budget: int = 0
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if self.smem_budget > 0 or (self.device is not None and self.device.type != "cuda"):
-            return
-        index = self.device.index if self.device is not None else None
-        object.__setattr__(self, "smem_budget", get_shared_memory_optin(index))
-
-
-@dataclasses.dataclass(frozen=True)
-class LogSumExpCall(_SharedMemoryCall):
+class LogSumExpCall(CallSpec):
     """A logsumexp call: the input as the manifest declares it.
 
     ``axes`` are the reduced axes, ascending and non-negative.
@@ -104,7 +85,7 @@ class LogSumExpCall(_SharedMemoryCall):
 
 
 @dataclasses.dataclass(frozen=True)
-class SoftmaxCall(_SharedMemoryCall):
+class SoftmaxCall(CallSpec):
     """A softmax or log_softmax call: the input as the manifest declares it.
 
     ``axis`` is the normalized axis, non-negative; ``dtype`` is the input's as the kernel
@@ -132,7 +113,7 @@ WELFORD_KINDS = frozenset({"std", "var", "var_mean"})
 
 
 @dataclasses.dataclass(frozen=True)
-class ReduceCall(_SharedMemoryCall):
+class ReduceCall(CallSpec):
     """A reduction or vector-norm call: the manifest's input, ``dim`` and parameters."""
 
     shape: tuple[int, ...] = ()
@@ -186,7 +167,7 @@ class ArgreduceCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class CumulativeCall(_SharedMemoryCall):
+class CumulativeCall(CallSpec):
     """A cumsum or cumprod call: the input's shape and dtype, and the axis it scans."""
 
     shape: tuple[int, ...] = ()

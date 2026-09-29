@@ -20,9 +20,9 @@
 
 - Give a shape-selected change of decomposition or data flow its own implementation class. Keep tile sizes, split counts (one included) and fusion among one fixed set of stages inside one implementation's plan.
 
-- Put only call facts in the call spec, the op's fixed semantic params and `device=` included; never `tune`, a priority or a device fact (`arch`, `sm_count`, `calibration`), which the dispatcher resolves on a miss.
+- Put only call facts in the call spec, the op's fixed semantic params and `device=` included; never `tune`, a priority or a device fact (`arch`, `sm_count`, `calibration`, `smem_budget`), which the dispatcher resolves on a miss.
 
-- Add an implementation from a backend with `tileops.backend.register_implementation(op, key, cls)`; its interface is the one `cls` inherits. Use `kernel_map=` only to replace what runs under an existing key: the key keeps its registered implementation's `applies`, `general` and `preferred_over`.
+- Add an implementation from a backend with `tileops.backend.register_implementation(op, key, cls)`; its interface is the one `cls` inherits. Use `kernel_map=` only to replace what runs under an existing key: the key keeps its registered implementation's `applies`, `general` and `preferred_over`. A replacement, like a registered implementation, inherits the key's interface and is built through its own classmethod `entry_for(call)`; there is no other form.
 
 - Declare `interfaces` on a new op; `tests/test_kernel_dispatch.py` lists the ops still without them, and a migration PR removes the names it migrates.
 

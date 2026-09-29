@@ -357,7 +357,9 @@ class Op(ABC):
                 if not (issubclass(runs, Kernel) and issubclass(runs, interface)):
                     raise TypeError(
                         f"{name}.{where} {key!r}: {runs.__name__} does not implement "
-                        f"{interface.__name__}"
+                        f"{interface.__name__}; an implementation, a kernel_map= replacement "
+                        f"included, is a Kernel that inherits {interface.__name__} and is "
+                        f"built through its classmethod entry_for(call)"
                     )
                 if not isinstance(inspect.getattr_static(runs, "entry_for"), classmethod):
                     raise TypeError(
@@ -632,7 +634,8 @@ class Op(ABC):
                 # The miss path's checks name what makes the call spec unusable.
                 self._resolve_entry(interface, call)
                 raise
-            if entry is None:
+            # A stated device fact takes no part in equality, so a hit would accept it.
+            if entry is None or call.stated_device_facts:
                 entry = self._resolve_entry(interface, call)
                 dispatched[(interface, call)] = entry
             return entry
