@@ -11,6 +11,14 @@ from tileops._csrc import csrc_path
 from tileops.kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.quantization.call_spec import INT8QuantPerChannelFwdInterface, QuantizeCall
+from tileops.kernels.quantization.int8_codes import (
+    INV_QMAX,
+    SCALE_UP,
+    SMALL_SCALE,
+    abs_bits,
+    quantize,
+    widen,
+)
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["INT8QuantPerChannelFwdKernel"]
@@ -36,17 +44,6 @@ def _int8_quant_per_channel_kernel(rows: int, k: int, dtype: str):
     words = dtype == "bfloat16"
     held = "uint32" if words else dtype
     width = vec // 2 if words else vec
-    # torch's ``amax / 127`` multiplies by this float32 reciprocal, since the divisor is a
-    # CPU scalar; the scale is that product so that ``q`` divides by the reference's scale.
-    inv_qmax = float(torch.tensor(1.0, dtype=torch.float32) / torch.tensor(127.0))
-    # Adding 1.5 * 2**23 to a float of magnitude below 2**22 rounds it half to even to an
-    # integer, which the low byte of the sum's bit pattern then holds in two's complement.
-    round_magic = 12582912.0
-    # The quotient is correctly rounded while its residual stays normal, which holds for a
-    # scale of at least 2**-100. A scale below 2**-60 is multiplied, with every element, by
-    # 2**64 first, which is exact and lifts any nonzero float32 scale to at least 2**-85.
-    small_scale = 2.0**-60
-    scale_up = 2.0**64
 
     @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
     def _int8_quant_per_channel_func(
@@ -65,21 +62,6 @@ def _int8_quant_per_channel_kernel(rows: int, k: int, dtype: str):
         def slot(j, tx):
             return ((j // group) * threads + tx) * group + j % group
 
-        def quantize(value, num):
-            """``value / scale`` of a float32, rounded half to even, as int8.
-
-            ``num`` holds the pre-scale factor (1 or ``scale_up``), then the scale and its
-            reciprocal after that factor.
-            """
-            x = value * num[0]
-            q0 = x * num[2]
-            residual = T.ieee_fmaf(-q0, num[1], x)
-            quotient = T.ieee_fmaf(residual, num[2], q0)
-            return T.cast(T.reinterpret(quotient + T.float32(round_magic), "int32"), "int8")
-
-        # The bit pattern of ``|value|`` as int32 orders as the magnitude does and puts a
-        # NaN above every number; a bfloat16 widens to float32 by moving its bits into the
-        # high half of a word.
         @T.macro
         def fold_one(acc, e, value, v, lo, hi, masked: bool):
             if masked:
@@ -87,12 +69,12 @@ def _int8_quant_per_channel_kernel(rows: int, k: int, dtype: str):
                     acc[0],
                     T.if_then_else(
                         (v * vec + e >= lo) & (v * vec + e < hi),
-                        T.reinterpret(T.abs(value), "int32"),
+                        abs_bits(value),
                         0,
                     ),
                 )
             else:
-                acc[0] = T.max(acc[0], T.reinterpret(T.abs(value), "int32"))
+                acc[0] = T.max(acc[0], abs_bits(value))
 
         @T.macro
         def fold(acc, values, j, v, lo, hi, masked: bool):
@@ -101,7 +83,7 @@ def _int8_quant_per_channel_kernel(rows: int, k: int, dtype: str):
                     fold_one(
                         acc,
                         2 * c,
-                        T.reinterpret(values[j, c] << T.uint32(16), "float32"),
+                        widen(values[j, c], 0, dtype),
                         v,
                         lo,
                         hi,
@@ -110,7 +92,7 @@ def _int8_quant_per_channel_kernel(rows: int, k: int, dtype: str):
                     fold_one(
                         acc,
                         2 * c + 1,
-                        T.reinterpret(values[j, c] & T.uint32(0xFFFF0000), "float32"),
+                        widen(values[j, c], 1, dtype),
                         v,
                         lo,
                         hi,
@@ -120,24 +102,44 @@ def _int8_quant_per_channel_kernel(rows: int, k: int, dtype: str):
                     fold_one(acc, c, T.cast(values[j, c], "float32"), v, lo, hi, masked)
 
         @T.macro
-        def codes(out, values, j, at, num):
+        def codes(out, values, j, at, num, clamp: bool):
             for c in T.unroll(width):
                 if words:
                     out[at + 2 * c] = quantize(
-                        T.reinterpret(values[j, c] << T.uint32(16), "float32"), num
+                        widen(values[j, c], 0, dtype) * num[0], num[1], num[2], clamp
                     )
                     out[at + 2 * c + 1] = quantize(
-                        T.reinterpret(values[j, c] & T.uint32(0xFFFF0000), "float32"), num
+                        widen(values[j, c], 1, dtype) * num[0], num[1], num[2], clamp
                     )
                 else:
-                    out[at + c] = quantize(T.cast(values[j, c], "float32"), num)
+                    out[at + c] = quantize(
+                        T.cast(values[j, c], "float32") * num[0], num[1], num[2], clamp
+                    )
 
         @T.macro
-        def store_group(q, out, values, g, v, num):
+        def store_group(q, out, values, g, v, num, clamp: bool):
             for i in T.unroll(group):
-                codes(out, values, g * group + i, i * vec, num)
+                codes(out, values, g * group + i, i * vec, num, clamp)
             for c in T.vectorized(group * vec):
                 q[v * vec + c] = out[c]
+
+        @T.macro
+        def store_row(q, out, values, v0, count, lo, hi, tx, num, clamp: bool):
+            for g in T.unroll(vpt // group):
+                if exact:
+                    store_group(q, out, values, g, v0 + slot(g * group, tx), num, clamp)
+                elif slot(g, tx) < count:
+                    if aligned:
+                        store_group(q, out, values, g, v0 + slot(g, tx), num, clamp)
+                    elif (slot(g, tx) == 0) | (slot(g, tx) == count - 1):
+                        codes(out, values, g, 0, num, clamp)
+                        for c in T.unroll(vec):
+                            if ((v0 + slot(g, tx)) * vec + c >= lo) & (
+                                (v0 + slot(g, tx)) * vec + c < hi
+                            ):
+                                q[(v0 + slot(g, tx)) * vec + c] = out[c]
+                    else:
+                        store_group(q, out, values, g, v0 + slot(g, tx), num, clamp)
 
         @T.prim_func
         def _int8_quant_per_channel_main(
@@ -215,29 +217,20 @@ def _int8_quant_per_channel_kernel(rows: int, k: int, dtype: str):
                     acc[0] = T.max(acc[0], warp_max[i])
 
                 amax = T.reinterpret(acc[0], "float32")
-                num[1] = T.if_then_else(amax > 0, amax * T.float32(inv_qmax), T.float32(1.0))
+                num[1] = T.if_then_else(amax > 0, amax * T.float32(INV_QMAX), T.float32(1.0))
                 if tx == 0:
                     scale[bx] = num[1]
                 num[0] = T.if_then_else(
-                    num[1] < T.float32(small_scale), T.float32(scale_up), T.float32(1.0)
+                    num[1] < T.float32(SMALL_SCALE), T.float32(SCALE_UP), T.float32(1.0)
                 )
                 num[1] = num[1] * num[0]
                 num[2] = T.ieee_frcp(num[1])
-                for g in T.unroll(vpt // group):
-                    if exact:
-                        store_group(q, out, values, g, v0 + slot(g * group, tx), num)
-                    elif slot(g, tx) < count:
-                        if aligned:
-                            store_group(q, out, values, g, v0 + slot(g, tx), num)
-                        elif (slot(g, tx) == 0) | (slot(g, tx) == count - 1):
-                            codes(out, values, g, 0, num)
-                            for c in T.unroll(vec):
-                                if ((v0 + slot(g, tx)) * vec + c >= lo) & (
-                                    (v0 + slot(g, tx)) * vec + c < hi
-                                ):
-                                    q[(v0 + slot(g, tx)) * vec + c] = out[c]
-                        else:
-                            store_group(q, out, values, g, v0 + slot(g, tx), num)
+                # A scale scaled up out of the subnormals may still leave a quotient past 127,
+                # which the clamp bounds; a normal scale cannot.
+                if num[0] > T.float32(1.0):
+                    store_row(q, out, values, v0, count, lo, hi, tx, num, True)
+                else:
+                    store_row(q, out, values, v0, count, lo, hi, tx, num, False)
 
         return _int8_quant_per_channel_main
 

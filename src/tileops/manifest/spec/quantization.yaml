@@ -77,7 +77,7 @@ INT8QuantPerChannelFwdOp:
 
 INT8QuantPerBlockFwdOp:
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {M: Dim, K: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -90,6 +90,9 @@ INT8QuantPerBlockFwdOp:
   - {M: 4096, K: 7168, dtype_cases: [{T: float16}, {T: bfloat16}], label: ds-v3-prefill}
   - {M: 64, K: 7168, dtype_cases: [{T: bfloat16}], label: ds-v3-decode}
   - {M: 4096, K: 4096, dtype_cases: [{T: bfloat16}, {T: float32}], label: qwen3-235b-prefill}
+  - {M: 17, K: 7168, dtype_cases: [{T: bfloat16}], label: ds-v3-decode-few-tokens}
+  - {M: 3000, K: 2880, dtype_cases: [{T: bfloat16}], label: gpt-oss-20b-prefill}
+  - {M: 1000, K: 4099, dtype_cases: [{T: float16}], label: ragged-k}
   roofline:
     # Per element: abs, the max, the scaling, round and clamp; per block: the scale and its zero guard.
     flops: "5 * M * K + 2 * M * ceil_div(K, 128)"
