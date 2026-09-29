@@ -17,8 +17,13 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import LOG2E
-from tileops.utils import get_sm_version
+from tileops.kernels.constants import (
+    LOG2E,
+    SHARED_BUFFER_ALIGN_BYTES,
+    WARPGROUP_THREADS,
+    WGMMA_ROWS,
+)
+from tileops.utils import get_shared_memory_optin
 
 from ..grouped_tiling import GroupTiling
 from .call_spec import uses_sliding_window
@@ -30,6 +35,13 @@ from .online_softmax import (
 from .varlen import VarlenKernel, varlen_entry
 
 __all__ = ["GQAPrefillVarlenFwdKernel"]
+
+
+def _stages_score_tile(block_m: int, threads: int) -> bool:
+    """Whether the score tile goes through shared memory: TileLang finds no register
+    layout for it when a warpgroup holds fewer than ``WGMMA_ROWS`` rows."""
+    warpgroups = threads // WARPGROUP_THREADS
+    return warpgroups > 1 and block_m // warpgroups < WGMMA_ROWS
 
 
 @functools.lru_cache(maxsize=32)
@@ -72,10 +84,7 @@ def _gqa_prefill_varlen_fwd_kernel(
             else None
         )
         rescale = make_rescale(block_m, dim)
-        # Two warpgroups cannot take the score tile as a register operand of the
-        # second gemm: TileLang's layout inference finds no layout for the cast
-        # that feeds it, so that config stages the tile through shared memory.
-        p_via_shared = threads > 128
+        p_via_shared = _stages_score_tile(block_m, threads)
         q_tiling = GroupTiling(batch, block_m)
         num_q_tiles = q_tiling.tile_upper_bound(total_q)
 
@@ -276,17 +285,29 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
 
     @property
     def default_config(self) -> dict:
-        if 256 < self.dim <= 512 and get_sm_version(self.device_index) >= 90:
-            # The fp32 output accumulator is block_m x dim, so block_m stays at
-            # 64; two warpgroups then carry the 64 x 64 tile. Its shared memory
-            # is over every pre-SM90 per-block cap.
-            return {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 256}
-        return {
+        """The first candidate the device's shared memory holds."""
+        narrow = {
             "block_m": 64,
             "block_n": 64 if self.dim <= 128 else 32,
             "num_stages": 1,
             "threads": 128,
         }
+        candidates = [narrow, {**narrow, "block_m": 32}]
+        if 256 < self.dim <= 512:
+            candidates.insert(0, {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 256})
+        cap = get_shared_memory_optin(self.device_index)
+        return next((c for c in candidates if self._shared_bytes(c) <= cap), narrow)
+
+    def _shared_bytes(self, config: dict) -> int:
+        """Shared memory a one-stage *config* allocates, buffer by buffer as TileLang does."""
+        elem = self.dtype.itemsize
+        block_m, block_n = config["block_m"], config["block_n"]
+        tile = block_n * self.dim * elem
+        buffers = [block_m * self.dim * elem, tile, tile, 4 * (self.batch + 1)]
+        if _stages_score_tile(block_m, config["threads"]):
+            buffers += [block_m * block_n * elem, 4 * config["threads"], 4 * config["threads"]]
+        align = SHARED_BUFFER_ALIGN_BYTES
+        return sum(-(-b // align) * align for b in buffers)
 
     @property
     def autotune_configs(self) -> list[dict]:

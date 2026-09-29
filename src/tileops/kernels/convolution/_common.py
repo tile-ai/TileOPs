@@ -6,7 +6,7 @@ from typing import Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_version
+from tileops.utils import get_shared_memory_optin, get_sm_version
 
 # Panel width handed to ``T.use_swizzle``: the number of blocks along the grid's fast
 # axis reordered together so their tiles share L2. A power of two, because the block
@@ -23,6 +23,7 @@ def conv_num_stages(device_index: Optional[int]) -> int:
 
 def conv_autotune_configs(
     dtype,
+    device_index: Optional[int],
     *,
     block_m=(32, 64, 128),
     block_n=(64, 128, 256),
@@ -38,7 +39,7 @@ def conv_autotune_configs(
     produces, and both ways win on some shapes. Callers narrow the other axes to keep
     the search the size it was before this one joined it.
     """
-    limit = get_shared_memory_limit_bytes()
+    limit = get_shared_memory_optin(device_index)
     valid = []
     for bm, bn, bk, ns, th, rast in itertools.product(
         block_m,
@@ -61,12 +62,6 @@ def conv_autotune_configs(
             }
         )
     return valid
-
-
-def get_shared_memory_limit_bytes() -> int:
-    return torch.cuda.get_device_properties(
-        torch.cuda.current_device()
-    ).shared_memory_per_block_optin
 
 
 def conv_shared_memory_bytes(

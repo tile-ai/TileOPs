@@ -266,7 +266,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     -1,
                     torch.bfloat16,
                     False,
-                    marks=pytest.mark.full,
+                    marks=[pytest.mark.full, pytest.mark.sm90],
                 ),  # D=512 causal, partial tiles
                 pytest.param(
                     2,
@@ -280,7 +280,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     -1,
                     torch.float16,
                     False,
-                    marks=pytest.mark.full,
+                    marks=[pytest.mark.full, pytest.mark.sm90],
                 ),  # D=512 causal kvcache
             ],
         ),

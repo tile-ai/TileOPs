@@ -8,7 +8,9 @@ import math
 import torch
 
 from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.reduction._primitives import device_smem_budget, edge_axis_split
+from tileops.utils import get_shared_memory_optin
+
+from ._primitives import edge_axis_split
 
 __all__ = [
     "FOLD_KINDS",
@@ -56,9 +58,10 @@ class _SharedMemoryCall(CallSpec):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.smem_budget <= 0:
-            index = self.device.index if self.device is not None else None
-            object.__setattr__(self, "smem_budget", device_smem_budget(index))
+        if self.smem_budget > 0 or (self.device is not None and self.device.type != "cuda"):
+            return
+        index = self.device.index if self.device is not None else None
+        object.__setattr__(self, "smem_budget", get_shared_memory_optin(index))
 
 
 @dataclasses.dataclass(frozen=True)

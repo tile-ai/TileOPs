@@ -80,6 +80,15 @@ def get_sm_count(index: "int | None" = None) -> int:
     return torch.cuda.get_device_properties(device).multi_processor_count
 
 
+def get_shared_memory_optin(index: "int | None" = None) -> int:
+    """Shared memory one block of the device may take after opting in; defaults to current.
+
+    Uncached and raising without a device, like :func:`get_sm_count`.
+    """
+    device = torch.cuda.current_device() if index is None else index
+    return torch.cuda.get_device_properties(device).shared_memory_per_block_optin
+
+
 @functools.lru_cache(maxsize=16)
 def _device_facts(index: int) -> "tuple[int, str | None, int]":
     props = torch.cuda.get_device_properties(index)

@@ -133,6 +133,14 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         RopeNonNeoxFwdOp,
         RopeYarnFwdOp,
     )
+    from .sampling import (
+        ChainSpeculativeSamplingFwdOp,
+        MinPMaskFwdOp,
+        SamplingFromProbsFwdOp,
+        TopKMaskFwdOp,
+        TopKTopPMaskFwdOp,
+        TopPMaskFwdOp,
+    )
     from .sequence_modeling import (
         MHCPostFwdOp,
         MHCPreFwdOp,
@@ -226,6 +234,13 @@ _LAZY = {
     "MoeGroupedGemmFwdOp": ".moe",
     "MoeExpertMLPFwdOp": ".moe",
     "MoePostPermuteFwdOp": ".moe",
+    # Sampling
+    "TopKMaskFwdOp": ".sampling",
+    "MinPMaskFwdOp": ".sampling",
+    "TopPMaskFwdOp": ".sampling",
+    "TopKTopPMaskFwdOp": ".sampling",
+    "SamplingFromProbsFwdOp": ".sampling",
+    "ChainSpeculativeSamplingFwdOp": ".sampling",
     # Rotary position embedding
     "RopeNeoxFwdOp": ".rope",
     "RopeNeoxPositionIdsFwdOp": ".rope",

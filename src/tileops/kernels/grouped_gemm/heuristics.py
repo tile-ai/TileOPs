@@ -9,6 +9,7 @@ import enum
 import functools
 import math
 
+from tileops.kernels.constants import SHARED_BUFFER_ALIGN_BYTES
 from tileops.utils import calibration_key
 
 __all__ = [
@@ -357,7 +358,7 @@ def _align(x: int, a: int) -> int:
 def _num_stages(desc: GemmDesc, layout: _Layout, epilogue_stage_n: int = 0) -> int:
     cd_bytes = 4 if desc.cd_dtype == "float32" else 2
     c_width = epilogue_stage_n or (layout.block_n // 2 if desc.fused else layout.block_n)
-    smem_cd = _align(layout.block_m * c_width * cd_bytes, 1024)
+    smem_cd = _align(layout.block_m * c_width * cd_bytes, SHARED_BUFFER_ALIGN_BYTES)
     prefix_ints = desc.num_groups + 2
     if desc.gemm_type is GemmType.M_GROUPED_TIGHT_PER_ROW:
         prefix_ints += desc.num_groups

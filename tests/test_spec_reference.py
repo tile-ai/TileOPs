@@ -1,9 +1,10 @@
 """Reference conformance of spec-only entries that have no implementation yet.
 
 Each entry's reference is the torch expression its issue names, or the library reference
-where one exists. Every workload row is instantiated; data tensors live on ``meta`` and
-metadata tensors on the CPU with the row's generated values, so the reference runs as
-written at the row's full size and costs nothing. Checked against the signature: the
+where one exists; an entry whose workload module holds its reference calls that one.
+Every workload row is instantiated; data tensors live on ``meta`` and metadata tensors on
+the CPU with the row's generated values, so the reference runs as written at the row's
+full size and costs nothing. Checked against the signature: the
 reference's outputs have the inferred names, shapes and dtypes, and it writes exactly the
 inputs the call's effects mark written. One call the signature rejects is rejected by the
 reference too.
@@ -22,7 +23,7 @@ from tests.roofline_binder import signature_class
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.workload import instantiate
-from workloads import int8_dequant, quantization
+from workloads import int8_dequant, quantization, sampling
 
 pytestmark = pytest.mark.smoke
 
@@ -65,67 +66,31 @@ _smooth_quant = _outputs(("q", "scale"), quantization.smooth_quant, "x", "smooth
 # ---------------------------------------------------------------- sampling
 
 
-def _top_k(logits, k):
-    batch, vocab = logits.shape
-    k = k.view(batch)
-    kth = (
-        logits.float().sort(-1, descending=True).values.gather(1, (k.clamp(max=vocab) - 1)[:, None])
-    )
-    kept = (logits.float() >= kth) | (k >= vocab).to(logits.device)[:, None]
-    return logits.masked_fill(~kept, -_INF)
-
-
-def _top_p(logits, p):
-    probs = logits.float().softmax(-1)
-    p = p.view(logits.shape[0])
-    sorted_probs, order = probs.sort(-1, descending=True)
-    exclusive = sorted_probs.cumsum(-1) - sorted_probs
-    removed = torch.zeros_like(probs, dtype=torch.bool).scatter(
-        1, order, exclusive >= p.view(-1, 1)
-    )
-    return logits.masked_fill(removed, -_INF)
-
-
 def _top_k_mask(p, t):
-    return {"masked_logits": _top_k(t["logits"], t["k"])}
+    return {"masked_logits": sampling.top_k_mask(t["logits"], t["k"])}
 
 
 def _min_p_mask(p, t):
-    logits, min_p = t["logits"], t["min_p"]
-    probs = logits.float().softmax(-1)
-    removed = probs < min_p.view(logits.shape[0], 1) * probs.amax(-1, keepdim=True)
-    return {"masked_logits": logits.masked_fill(removed, -_INF)}
+    return {"masked_logits": sampling.min_p_mask(t["logits"], t["min_p"])}
 
 
 def _top_p_mask(p, t):
-    return {"masked_logits": _top_p(t["logits"], t["p"])}
+    return {"masked_logits": sampling.top_p_mask(t["logits"], t["p"])}
 
 
 def _top_k_top_p_mask(p, t):
-    return {"masked_logits": _top_p(_top_k(t["logits"], t["k"]), t["p"])}
+    masked = sampling.top_p_mask(sampling.top_k_mask(t["logits"], t["k"]), t["p"])
+    return {"masked_logits": masked}
 
 
 def _sampling_from_probs(p, t):
-    return {"samples": torch.multinomial(t["probs"], 1).squeeze(1).to(torch.int32)}
+    return {"samples": sampling.sampling_from_probs(t["probs"], t["seed"], t["offset"])}
 
 
 def _chain_speculative_sampling(p, t):
-    draft, target, ids = t["draft_probs"], t["target_probs"], t["draft_token_ids"].long()
-    batch, n, vocab = draft.shape
-    d = draft.gather(2, ids[..., None]).squeeze(-1)
-    q = target[:, :n].gather(2, ids[..., None]).squeeze(-1)
-    accepted = torch.rand(batch, n, device=draft.device) * d < q
-    num = accepted.int().cumprod(1).sum(1)
-    padded_draft = torch.cat([draft, torch.zeros_like(draft[:, :1])], 1)
-    pick = num[:, None, None].expand(batch, 1, vocab)
-    residual = (target.gather(1, pick) - padded_draft.gather(1, pick)).squeeze(1).clamp_min(0)
-    resampled = torch.multinomial(residual, 1)
-    position = torch.arange(n + 1, device=draft.device)[None]
-    drafts = torch.cat([ids.to(draft.device), torch.full_like(resampled, -1)], 1)
-    tokens = torch.where(
-        position < num[:, None], drafts, torch.where(position == num[:, None], resampled, -1)
-    )
-    return {"output_token_ids": tokens.to(torch.int32), "num_accepted": num.to(torch.int32)}
+    names = ("draft_probs", "draft_token_ids", "target_probs", "seed", "offset")
+    tokens, num = sampling.chain_speculative_sampling(*(t[n] for n in names))
+    return {"output_token_ids": tokens, "num_accepted": num}
 
 
 # ---------------------------------------------------------------- attention and caches

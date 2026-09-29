@@ -22,7 +22,10 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_path
-from tileops.kernels.constants import SHARED_BANK_SPAN_BYTES, VECTOR_ACCESS_BYTES
+from tileops.kernels.constants import (
+    STATIC_SHARED_BYTES,
+    VECTOR_ACCESS_BYTES,
+)
 from tileops.kernels.tiling import ALIGNMENT, align_up
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
@@ -33,15 +36,11 @@ __all__ = [
     "FP32_EXACT_INT_LIMIT",
     "FRAGMENT_ELEMS_PER_THREAD",
     "MAX_SINGLE_TILE_COLS",
-    "SHARED_BANK_SPAN_BYTES",
-    "SHARED_MEMORY_BUDGET_BYTES",
-    "VECTOR_ACCESS_BYTES",
     "BlockConfigPlanner",
     "RowTiledAutotuneMixin",
     "align_up",
     "ceildiv_int",
     "compute_tile_n",
-    "device_smem_budget",
     "down_rows_once",
     "down_rows_split",
     "down_rows_splits",
@@ -62,10 +61,6 @@ DEFAULT_ALIGNMENT: int = ALIGNMENT
 # Widest single fragment/shared-memory tile the reduction kernels plan; shared memory
 # and the register file are checked separately.
 MAX_SINGLE_TILE_COLS: int = 32768
-
-# Default shared memory budget per SM (48 KiB) used to compute the maximum
-# block_m that fits within a single thread block's shared memory allocation.
-SHARED_MEMORY_BUDGET_BYTES: int = 48 * 1024
 
 
 # Thread counts offered by the reduction autotune candidate lists.
@@ -321,7 +316,7 @@ class BlockConfigPlanner:
     def _untiled_block_ms(self, threads: int, budget: int | None = None) -> list[int]:
         """Row counts an untiled kernel can build within *budget*, ascending.
 
-        ``default_config`` passes the conservative ``SHARED_MEMORY_BUDGET_BYTES``
+        ``default_config`` passes the conservative ``STATIC_SHARED_BYTES``
         and the sweep passes the device budget.  Capacity only, not a ranking:
         which of these to run untuned is ``default_config``'s call.
         """
@@ -342,7 +337,7 @@ class BlockConfigPlanner:
         if not self.needs_tiling:
             block_ms = self._untiled_block_ms(
                 DEFAULT_THREADS,
-                budget=SHARED_MEMORY_BUDGET_BYTES,
+                budget=STATIC_SHARED_BYTES,
             )
             # The fewest rows a block can take, not the most it can hold.
             return {
@@ -380,57 +375,12 @@ class BlockConfigPlanner:
         ]
 
 
-def device_smem_budget(device_index: int | None = None) -> int:
-    """Return the opt-in shared memory budget for a CUDA device.
-
-    If ``device_index`` is ``None``, the current CUDA device is used.
-
-    Modern GPUs (SM80+) support shared memory well beyond the 48 KiB
-    default.  TileLang automatically configures
-    ``cudaFuncSetAttribute`` when a kernel allocates more than 48 KiB,
-    so it is safe to use the full opt-in budget.
-
-    Falls back to ``SHARED_MEMORY_BUDGET_BYTES`` (48 KiB) only if
-    CUDA/device properties are unavailable.  Invalid explicit device
-    indices are not silently masked -- only the ``None`` (auto-detect)
-    case falls back gracefully.
-    """
-    explicit = device_index is not None
-    try:
-        import torch
-    except Exception:
-        if explicit:
-            raise
-        return SHARED_MEMORY_BUDGET_BYTES
-
-    try:
-        if not torch.cuda.is_available():
-            if explicit:
-                raise RuntimeError(
-                    f"CUDA is not available but explicit device_index={device_index} was requested"
-                )
-            return SHARED_MEMORY_BUDGET_BYTES
-
-        if device_index is None:
-            device_index = torch.cuda.current_device()
-
-        props = torch.cuda.get_device_properties(device_index)
-        smem_optin = getattr(props, "shared_memory_per_block_optin", 0)
-        if smem_optin > 0:
-            return smem_optin
-        return getattr(props, "shared_memory_per_block", SHARED_MEMORY_BUDGET_BYTES)
-    except (RuntimeError, AssertionError):
-        if explicit:
-            raise
-        return SHARED_MEMORY_BUDGET_BYTES
-
-
 def compute_tile_n(
     block_m: int,
     elem_bytes: int,
     N_padded: int,
     alignment: int = DEFAULT_ALIGNMENT,
-    budget: int = SHARED_MEMORY_BUDGET_BYTES,
+    budget: int = STATIC_SHARED_BYTES,
     num_buffers: int = 1,
 ) -> int:
     """Compute the tile_n (column chunk) for shared memory, preferring divisibility.

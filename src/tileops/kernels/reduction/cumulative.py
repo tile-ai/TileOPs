@@ -11,19 +11,21 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.reduction._primitives import (
-    DEFAULT_ALIGNMENT,
+from tileops.kernels.constants import (
     SHARED_BANK_SPAN_BYTES,
-    SHARED_MEMORY_BUDGET_BYTES,
+    STATIC_SHARED_BYTES,
     VECTOR_ACCESS_BYTES,
+)
+from tileops.kernels.kernel_base import Kernel
+from tileops.utils import WARP_LANES, get_shared_memory_optin
+
+from ._primitives import (
+    DEFAULT_ALIGNMENT,
     align_up,
-    device_smem_budget,
     restore_same_shape,
     rows_for_axes,
     torch_dtype_nbytes,
 )
-from tileops.utils import WARP_LANES
 
 __all__ = ["CumulativeKernel"]
 
@@ -445,7 +447,7 @@ class CumulativeKernel(Kernel):
 
         # The row scan wherever it builds; the parallel scan for what it cannot serve.
         can_row_scan = self.N_padded == N and row_scan_fits(
-            self.N_padded, self._elem_bytes, device_smem_budget(device_index)
+            self.N_padded, self._elem_bytes, get_shared_memory_optin(device_index)
         )
         can_parallel = M < 128 and N > 8192 and op_kind == "sum"
         self._row_scan_threads = (
@@ -481,14 +483,14 @@ class CumulativeKernel(Kernel):
         if self.strategy == "parallel_scan":
             block_n = 256 if self.N > 16384 else 128
             smem_per_row = (block_n + _SCAN_POLICY.smem_pad) * 4  # fp32 intermediate
-            max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
+            max_block_m = STATIC_SHARED_BYTES // smem_per_row
             block_m = max(1, min(16, self.M, max_block_m))
             return {"block_m": block_m, "block_n": block_n, "threads": 256}
         else:
             block_n = _SCAN_POLICY.default_block_n
             elem_size = torch_dtype_nbytes(self.dtype)
             smem_per_row = 2 * (block_n + _SCAN_POLICY.smem_pad) * elem_size
-            max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
+            max_block_m = STATIC_SHARED_BYTES // smem_per_row
 
             if self.M < 128:
                 block_m = max(1, min(self.M, min(2, max_block_m)))
@@ -512,7 +514,7 @@ class CumulativeKernel(Kernel):
                 continue
             # Account for padding in shared memory budget calculation
             smem_per_row = 2 * (block_n + _SCAN_POLICY.smem_pad) * elem_size
-            max_block_m = SHARED_MEMORY_BUDGET_BYTES // smem_per_row
+            max_block_m = STATIC_SHARED_BYTES // smem_per_row
             block_ms = [bm for bm in [1, 2, 4, 8, 16] if bm <= max_block_m]
             threads_list = [128, 256]
             for bm, t in itertools.product(block_ms, threads_list):
