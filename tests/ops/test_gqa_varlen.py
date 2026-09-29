@@ -63,7 +63,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     -1,
                     torch.float16,
                     False,
-                    marks=pytest.mark.smoke,
+                    marks=[pytest.mark.smoke, pytest.mark.sm90],
                 ),  # causal + wl
                 pytest.param(
                     1,
@@ -77,7 +77,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     -1,
                     torch.float16,
                     False,
-                    marks=pytest.mark.smoke,
+                    marks=[pytest.mark.smoke, pytest.mark.sm90],
                 ),  # D=128 uses the two-stage sliding pipeline
                 pytest.param(
                     1,
@@ -119,7 +119,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     64,
                     torch.float16,
                     False,
-                    marks=pytest.mark.full,
+                    marks=[pytest.mark.full, pytest.mark.sm90],
                 ),  # window
                 # KV-cache: seqlen_k > seqlen_q (offset > 0)
                 pytest.param(
@@ -148,7 +148,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     -1,
                     torch.float16,
                     False,
-                    marks=pytest.mark.full,
+                    marks=[pytest.mark.full, pytest.mark.sm90],
                 ),  # causal+wl kvcache
                 pytest.param(
                     2,
@@ -162,7 +162,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     64,
                     torch.float16,
                     False,
-                    marks=pytest.mark.full,
+                    marks=[pytest.mark.full, pytest.mark.sm90],
                 ),  # window kvcache
                 # bfloat16
                 pytest.param(
@@ -177,7 +177,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     64,
                     torch.bfloat16,
                     False,
-                    marks=pytest.mark.full,
+                    marks=[pytest.mark.full, pytest.mark.sm90],
                 ),  # window bf16
                 # GQA ratios
                 pytest.param(
@@ -236,7 +236,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     64,
                     torch.float16,
                     False,
-                    marks=pytest.mark.full,
+                    marks=[pytest.mark.full, pytest.mark.sm90],
                 ),  # right window
                 # wl=0 boundary
                 pytest.param(
@@ -251,7 +251,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     -1,
                     torch.float16,
                     False,
-                    marks=pytest.mark.full,
+                    marks=[pytest.mark.full, pytest.mark.sm90],
                 ),  # wl=0
                 # D=512 runs two warpgroups with the score tile staged through shared memory
                 pytest.param(
