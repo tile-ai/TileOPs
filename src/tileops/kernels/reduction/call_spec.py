@@ -58,8 +58,6 @@ class _SharedMemoryCall(CallSpec):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        # Read from the call's device, as ``CallSpec`` reads ``sm_count``; another device
-        # type has none.
         if self.smem_budget > 0 or (self.device is not None and self.device.type != "cuda"):
             return
         index = self.device.index if self.device is not None else None
