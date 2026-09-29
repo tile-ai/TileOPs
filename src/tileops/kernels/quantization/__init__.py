@@ -2,7 +2,9 @@
 
 from tileops.kernels.quantization.call_spec import (
     INT4QuantPerGroupFwdInterface,
-    INT8DequantFwdInterface,
+    INT8DequantPerBlockFwdInterface,
+    INT8DequantPerChannelFwdInterface,
+    INT8DequantPerTensorFwdInterface,
     INT8QuantPerChannelFwdInterface,
     INT8QuantPerTensorFwdInterface,
     QuantizeCall,
@@ -13,6 +15,8 @@ from tileops.kernels.quantization.int4_quant_per_group import (
     INT4QuantPerGroupRowFwdKernel,
 )
 from tileops.kernels.quantization.int8_dequant import (
+    INT8DequantPerBlockFwdKernel,
+    INT8DequantPerBlockSmallFwdKernel,
     INT8DequantPerChannelFwdKernel,
     INT8DequantPerTensorFwdKernel,
     INT8DequantPerTensorSmallFwdKernel,
@@ -25,8 +29,12 @@ __all__ = [
     "INT4QuantPerGroupFwdInterface",
     "INT4QuantPerGroupFwdKernel",
     "INT4QuantPerGroupRowFwdKernel",
-    "INT8DequantFwdInterface",
+    "INT8DequantPerBlockFwdInterface",
+    "INT8DequantPerBlockFwdKernel",
+    "INT8DequantPerBlockSmallFwdKernel",
+    "INT8DequantPerChannelFwdInterface",
     "INT8DequantPerChannelFwdKernel",
+    "INT8DequantPerTensorFwdInterface",
     "INT8DequantPerTensorFwdKernel",
     "INT8DequantPerTensorSmallFwdKernel",
     "INT8QuantPerChannelFwdInterface",

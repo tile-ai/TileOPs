@@ -1,7 +1,7 @@
 """The facts of one INT8 dequantize call."""
 
 import dataclasses
-from typing import Literal, Optional
+from typing import Optional
 
 import torch
 
@@ -16,6 +16,4 @@ class DequantizeCall(CallSpec):
 
     m: int = 0
     k: int = 0
-    # What one scale covers: the whole tensor, one row, or 128 contiguous elements of a row.
-    granularity: Literal["tensor", "channel", "block"] = "tensor"
     out_dtype: Optional[torch.dtype] = None

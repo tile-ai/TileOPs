@@ -56,6 +56,7 @@ from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from tileops.ops.pool import MeanPoolingFwdOp
 from tileops.ops.quantization import (
     INT4QuantPerGroupFwdOp,
+    INT8DequantPerBlockFwdOp,
     INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
     INT8QuantPerChannelFwdOp,
@@ -90,7 +91,11 @@ from workloads.gqa import (
     GroupedQueryAttentionPagedFwdWorkload,
     GroupedQueryAttentionSlidingWindowVarlenFwdWorkload,
 )
-from workloads.int8_dequant import INT8DequantPerChannelWorkload, INT8DequantPerTensorWorkload
+from workloads.int8_dequant import (
+    INT8DequantPerBlockWorkload,
+    INT8DequantPerChannelWorkload,
+    INT8DequantPerTensorWorkload,
+)
 from workloads.mha import MhaDecodePagedWorkload
 from workloads.paged_kv_cache import make_unit_cache_scales
 from workloads.quantization import (
@@ -484,6 +489,10 @@ def _other_cases():
         case = INT8DequantPerChannelWorkload(64, 64, torch.bfloat16)
         return INT8DequantPerChannelFwdOp(torch.bfloat16), case.gen_inputs()
 
+    def int8_dequant_per_block():
+        case = INT8DequantPerBlockWorkload(64, 64, torch.bfloat16)
+        return INT8DequantPerBlockFwdOp(torch.bfloat16), case.gen_inputs()
+
     def int8_dequant_per_tensor():
         case = INT8DequantPerTensorWorkload(64, 64, torch.bfloat16)
         return INT8DequantPerTensorFwdOp(torch.bfloat16), case.gen_inputs()
@@ -511,6 +520,7 @@ def _other_cases():
         ("fft-c2c", fft_c2c),
         ("fp8-quant", fp8_quant),
         ("int4-quant-per-group", int4_quant_per_group),
+        ("int8-dequant-per-block", int8_dequant_per_block),
         ("int8-dequant-per-channel", int8_dequant_per_channel),
         ("int8-dequant-per-tensor", int8_dequant_per_tensor),
         ("int8-quant-per-channel", int8_quant_per_channel),
@@ -700,6 +710,7 @@ for _op_cls in (
     FFTC2CFwdOp,
     FP8QuantFwdOp,
     INT4QuantPerGroupFwdOp,
+    INT8DequantPerBlockFwdOp,
     INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
     INT8QuantPerChannelFwdOp,
