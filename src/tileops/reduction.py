@@ -1,6 +1,6 @@
 """The reduction ops, at the public path ``tileops.reduction``."""
 
-from .ops.reduction import (
+from tileops.ops.reduction import (
     AllFwdOp,
     AmaxFwdOp,
     AminFwdOp,

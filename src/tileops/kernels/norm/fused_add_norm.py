@@ -26,10 +26,9 @@ import torch.nn.functional as F
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.norm._config import select_row_config, select_row_configs
 from tileops.kernels.tiling import ALIGNMENT, align_up
 from tileops.utils import WARP_LANES
-
-from ._config import select_row_config, select_row_configs
 
 __all__ = ["FusedAddLayerNormKernel", "FusedAddRMSNormKernel"]
 

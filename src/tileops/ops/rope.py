@@ -34,8 +34,7 @@ from tileops.kernels.rope import (
     RopeNonNeoxKernel,
     RopeYarnKernel,
 )
-
-from .op_base import Op
+from tileops.ops.op_base import Op
 
 __all__ = [
     "RopeLlama31FwdOp",

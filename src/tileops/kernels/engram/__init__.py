@@ -1,5 +1,5 @@
-from .engram_bwd import EngramGateConvBwdKernel
-from .engram_decode import EngramDecodeKernel
-from .engram_fwd import EngramGateConvFwdKernel
+from tileops.kernels.engram.engram_bwd import EngramGateConvBwdKernel
+from tileops.kernels.engram.engram_decode import EngramDecodeKernel
+from tileops.kernels.engram.engram_fwd import EngramGateConvFwdKernel
 
 __all__ = ["EngramDecodeKernel", "EngramGateConvBwdKernel", "EngramGateConvFwdKernel"]

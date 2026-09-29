@@ -1,6 +1,6 @@
 """The sampling ops, at the public path ``tileops.sampling``."""
 
-from .ops.sampling import (
+from tileops.ops.sampling import (
     ChainSpeculativeSamplingFwdOp,
     MinPMaskFwdOp,
     SamplingFromProbsFwdOp,

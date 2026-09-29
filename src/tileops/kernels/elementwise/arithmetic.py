@@ -7,14 +7,14 @@ import tilelang.language as T
 import torch
 import tvm.tirx as tirx
 
-from ._base import (
+from tileops.kernels.elementwise._base import (
     _FLOAT_DTYPES,
     BinaryKernel,
     MultiInputElementwiseKernel,
     _AlphaScaledBinaryKernel,
 )
-from ._dtype import _BINARY_FULL_DTYPES, _BINARY_NO_BOOL_DTYPES
-from ._nan import _bound, nan_max, nan_min
+from tileops.kernels.elementwise._dtype import _BINARY_FULL_DTYPES, _BINARY_NO_BOOL_DTYPES
+from tileops.kernels.elementwise._nan import _bound, nan_max, nan_min
 
 __all__ = [
     "AddFwdKernel",

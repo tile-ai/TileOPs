@@ -113,7 +113,7 @@ def types_document() -> object:
 @functools.lru_cache(maxsize=1)
 def load_adts() -> dict[str, Any]:
     """Return the ADTs of ``types.yaml`` that ``check_adts`` accepts; empty when the file is absent."""
-    from .plan import check_adts
+    from tileops.manifest.plan import check_adts
 
     data = types_document()
     return check_adts(data.get("adts", {}) if isinstance(data, dict) else {})[0]

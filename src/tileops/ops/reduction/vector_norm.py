@@ -12,8 +12,7 @@ from tileops.kernels.reduction.vector_norm import (
     VectorNormEdgeKernel,
     VectorNormKernel,
 )
-
-from .reduce import ReduceCallOp
+from tileops.ops.reduction.reduce import ReduceCallOp
 
 __all__ = ["InfNormFwdOp", "L1NormFwdOp", "L2NormFwdOp"]
 

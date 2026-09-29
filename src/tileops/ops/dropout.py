@@ -16,8 +16,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.dropout import DropoutKernel
 from tileops.kernels.kernel_base import Entry, Kernel
-
-from .op_base import Op
+from tileops.ops.op_base import Op
 
 __all__ = ["DropoutFwdOp"]
 

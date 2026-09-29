@@ -25,11 +25,7 @@ from tileops.kernels.elementwise import (
     TruncFwdKernel,
 )
 from tileops.kernels.kernel_base import Kernel
-
-from ._base import (
-    UnaryOp,
-    _IntIdentityUnaryOp,
-)
+from tileops.ops.elementwise._base import UnaryOp, _IntIdentityUnaryOp
 
 
 class ExpFwdOp(UnaryOp):

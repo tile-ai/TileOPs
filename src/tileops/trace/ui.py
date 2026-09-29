@@ -37,7 +37,7 @@ fixed, scroll-zoom only stretches x and pan only moves x.
 
 import json
 
-from .decode import Instant, Slice, compute_flows
+from tileops.trace.decode import Instant, Slice, compute_flows
 
 __all__ = ["export_timeline_html"]
 

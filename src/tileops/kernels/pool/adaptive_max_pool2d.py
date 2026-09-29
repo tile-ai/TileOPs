@@ -5,7 +5,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from .common import (
+from tileops.kernels.pool.common import (
     AdaptivePool2dKernelBase,
     adaptive_bin,
     fits_static_shared,

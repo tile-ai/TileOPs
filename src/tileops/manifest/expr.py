@@ -13,7 +13,7 @@ import functools
 import math
 from dataclasses import dataclass, field
 
-from .kinds import (
+from tileops.manifest.kinds import (
     BOOL,
     INT,
     NONE,
@@ -31,7 +31,7 @@ from .kinds import (
     seq,
     union,
 )
-from .primitives import PRIMITIVE_KINDS, namespace
+from tileops.manifest.primitives import PRIMITIVE_KINDS, namespace
 
 __all__ = [
     "OPEN",

@@ -5,14 +5,14 @@ import functools
 import tilelang
 import tilelang.language as T
 
-from ._broadcast import (
+from tileops.kernels.elementwise._broadcast import (
     _compute_broadcast_offsets,
     _is_contiguous_same_shape,
     broadcast_plan_for,
     row_broadcast_split,
     row_tile_leaves_tail,
 )
-from ._op_body import GuardedOpFunc, op_func_for
+from tileops.kernels.elementwise._op_body import GuardedOpFunc, op_func_for
 
 # Packing the leftover T columns of a W-wide block saves rows * (W - T) idle lane
 # slots and spends rows * T index chains, so it pays while T / (W - T) stays under

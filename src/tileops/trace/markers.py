@@ -7,8 +7,8 @@ import ``tileops.trace.trace``, never this module.
 
 import tilelang.language as T
 
-from .record import EventKind
-from .state import MARKER, build_state
+from tileops.trace.record import EventKind
+from tileops.trace.state import MARKER, build_state
 
 # Default render sub-lane for records that do not name one.
 DEFAULT_LANE = "main"

@@ -11,12 +11,11 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
+from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.kernels.grouped_gemm.heuristics import GemmType
 from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import device_calibration, get_sm_count, get_sm_version
-
-from .call_spec import BmmCall
 
 __all__ = [
     "BmmFp8Kernel",

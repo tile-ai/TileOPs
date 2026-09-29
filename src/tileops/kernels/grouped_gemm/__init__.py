@@ -1,7 +1,7 @@
-from .call import GroupedGemmCall
-from .grouped_gemm import GroupedGemmKernel
-from .grouped_gemm_persistent import GroupedGemmPersistentKernel
-from .template import GemmTemplate, GroupedGemmTemplate
+from tileops.kernels.grouped_gemm.call import GroupedGemmCall
+from tileops.kernels.grouped_gemm.grouped_gemm import GroupedGemmKernel
+from tileops.kernels.grouped_gemm.grouped_gemm_persistent import GroupedGemmPersistentKernel
+from tileops.kernels.grouped_gemm.template import GemmTemplate, GroupedGemmTemplate
 
 __all__ = [
     "GroupedGemmCall",

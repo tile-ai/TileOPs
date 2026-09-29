@@ -24,9 +24,7 @@ import torch
 
 from tileops.kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import WARP_LANES
-
-from ._primitives import (
+from tileops.kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
@@ -39,14 +37,15 @@ from ._primitives import (
     rows_for_axes,
     torch_dtype_nbytes,
 )
-from ._split_softmax import (
+from tileops.kernels.reduction._split_softmax import (
     edge_split_partials_kernel,
     edge_split_view,
     make_block_split_fold,
     softmax_split_partials_kernel,
     split_seg_n,
 )
-from .call_spec import LogSumExpCall
+from tileops.kernels.reduction.call_spec import LogSumExpCall
+from tileops.utils import WARP_LANES
 
 __all__ = [
     "LogSumExpEdgeSplitKernel",

@@ -36,8 +36,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-
-from ._config import (
+from tileops.kernels.norm._config import (
     NARROW_ROW,
     make_row_reduce,
     make_shifted_row_reduce,

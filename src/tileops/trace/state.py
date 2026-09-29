@@ -19,7 +19,7 @@ This is process-global, single-threaded build state: TileLang kernels are built
 eagerly on the calling thread, so one build epoch brackets exactly one build.
 """
 
-from .record import MAX_LANES
+from tileops.trace.record import MAX_LANES
 
 __all__ = [
     "MARKER",

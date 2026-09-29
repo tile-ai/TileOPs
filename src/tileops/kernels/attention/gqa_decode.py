@@ -6,21 +6,20 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Entry, Kernel
-
-from .call_spec import (
+from tileops.kernels.attention.call_spec import (
     GQADenseFwdInterface,
     dense_decode_limit_refusal,
     dense_decode_refusal,
     dense_long_context_decode_refusal,
 )
-from .dense_entry import dense_decode_entry
-from .online_softmax import (
+from tileops.kernels.attention.dense_entry import dense_decode_entry
+from tileops.kernels.attention.online_softmax import (
     make_apply_softcap,
     make_online_softmax,
     make_rescale,
 )
+from tileops.kernels.constants import LOG2E
+from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = ["GQADecodeKernel"]
 
@@ -768,7 +767,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             # The SM90 producer/consumer kernel supports arbitrary batch
             # sizes; use it here so RoPE stays fused without replacing TMA and
             # WGMMA with scalar global-memory loads.
-            from .gqa_decode_bs1 import _gqa_decode_bs1_ctx_run
+            from tileops.kernels.attention.gqa_decode_bs1 import _gqa_decode_bs1_ctx_run
 
             glse = torch.empty(
                 (self.batch, self.heads, num_split), dtype=torch.float32, device=Q.device

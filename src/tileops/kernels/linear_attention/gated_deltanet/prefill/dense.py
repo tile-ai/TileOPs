@@ -8,16 +8,15 @@ import tilelang
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_count
-
-from .forward import fused_gdr_fwd
-from .prepare import (
+from tileops.kernels.linear_attention.gated_deltanet.prefill.forward import fused_gdr_fwd
+from tileops.kernels.linear_attention.gated_deltanet.prefill.prepare import (
     _prefill_blocksolve_A_bthd,
     _prefill_chunk_local_cumsum_bthd_tl,
     correct_initial_states,
     fused_gdr_h,
     get_warmup_chunks,
 )
+from tileops.utils import get_sm_count
 
 __all__ = ["GatedDeltaNetDensePrefillFwdKernel"]
 

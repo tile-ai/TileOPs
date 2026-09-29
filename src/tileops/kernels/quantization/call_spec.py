@@ -9,8 +9,7 @@ import torch
 
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import KernelInterface
-
-from .dequant_call import DequantizeCall
+from tileops.kernels.quantization.dequant_call import DequantizeCall
 
 __all__ = ["INT8DequantFwdInterface", "QuantizeCall"]
 

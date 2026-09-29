@@ -2,7 +2,7 @@
 
 import tilelang.language as T
 
-from ._nan import keep_nan
+from tileops.kernels.elementwise._nan import keep_nan
 
 __all__ = ["erf"]
 

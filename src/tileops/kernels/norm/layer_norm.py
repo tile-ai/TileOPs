@@ -21,11 +21,10 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.norm._config import select_row_config, select_row_configs
+from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops.kernels.tiling import ALIGNMENT, align_up
 from tileops.utils import get_sm_count
-
-from ._config import select_row_config, select_row_configs
-from .call_spec import LayerNormCall, LayerNormFwdInterface
 
 __all__ = ["LayerNormKernel"]
 

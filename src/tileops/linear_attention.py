@@ -1,6 +1,6 @@
 """The linear attention ops, at the public path ``tileops.linear_attention``."""
 
-from .ops.linear_attention import (
+from tileops.ops.linear_attention import (
     DeltaNetAutogradFwdOp,
     DeltaNetBwdOp,
     DeltaNetDecodeFwdOp,

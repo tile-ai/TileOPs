@@ -1,6 +1,6 @@
 """The pooling ops, at the public path ``tileops.pool``."""
 
-from .ops.pool import (
+from tileops.ops.pool import (
     AdaptiveAvgPool2dFwdOp,
     AdaptiveMaxPool2dFwdOp,
     AdaptiveMaxPool2dIndicesFwdOp,

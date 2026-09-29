@@ -11,10 +11,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.elementwise._erf import erf
-from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_count
-
-from .heuristics import (
+from tileops.kernels.grouped_gemm.heuristics import (
     ACTIVATIONS,
     PER_GROUP_TYPES,
     PER_ROW_TYPES,
@@ -25,6 +22,8 @@ from .heuristics import (
     get_best_config,
     spec_from_config,
 )
+from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_sm_count
 
 __all__ = [
     "GemmDesc",

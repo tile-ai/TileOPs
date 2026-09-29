@@ -5,8 +5,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.fft import FFTC2CCall, FFTC2CDecomposedKernel, FFTC2COneCTAKernel
 from tileops.kernels.kernel_base import Kernel
-
-from .op_base import Op
+from tileops.ops.op_base import Op
 
 __all__ = ["FFTC2CFwdOp"]
 

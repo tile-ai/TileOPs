@@ -5,11 +5,8 @@ import functools
 import tilelang
 import tilelang.language as T
 
-from ._base import (
-    MultiInputElementwiseKernel,
-    ScalarParamUnaryKernel,
-)
-from ._nan import nan_max, nan_min
+from tileops.kernels.elementwise._base import MultiInputElementwiseKernel, ScalarParamUnaryKernel
+from tileops.kernels.elementwise._nan import nan_max, nan_min
 
 __all__ = [
     "ClampFwdKernel",

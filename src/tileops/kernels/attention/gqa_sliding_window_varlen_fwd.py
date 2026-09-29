@@ -18,15 +18,14 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.grouped_tiling import GroupTiling
-
-from .call_spec import uses_sliding_window
-from .online_softmax import (
+from tileops.kernels.attention.call_spec import uses_sliding_window
+from tileops.kernels.attention.online_softmax import (
     make_log2e_scale,
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-from .varlen import VarlenKernel, varlen_entry
+from tileops.kernels.attention.varlen import VarlenKernel, varlen_entry
+from tileops.kernels.grouped_tiling import GroupTiling
 
 __all__ = [
     "GQASlidingWindowVarlenFwdWgmmaPipelinedKernel",

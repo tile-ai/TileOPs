@@ -9,9 +9,8 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.norm import LayerNormKernel
 from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
+from tileops.ops.norm.norm_base import affine_or_constant
 from tileops.ops.op_base import Op
-
-from .norm_base import affine_or_constant
 
 __all__ = ["LayerNormFwdOp"]
 

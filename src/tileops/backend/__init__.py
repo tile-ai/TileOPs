@@ -4,7 +4,7 @@ A *target* is the name a backend gives its own set of kernels. A backend joins T
 four names and one entry point::
 
     from tileops.backend import TensorSpec, register_detector, register_kernel_builder
-    from .kernels import AcmeRMSNorm
+    from acme_tileops.kernels import AcmeRMSNorm
 
     register_detector(target="acme", detect=lambda device: device.type == "acme")
 
@@ -43,20 +43,24 @@ exported: only the op layer reads the tables, and a second public path to them i
 thing to keep consistent.
 """
 
-from .dispatch import (
+from tileops.backend.dispatch import (
     default_target,
     load_failures,
     registered_targets,
     set_default_target,
 )
-from .errors import (
+from tileops.backend.errors import (
     AmbiguousTargetError,
     BackendError,
     OpNotAvailableError,
     UnknownTargetError,
 )
-from .protocol import BUILTIN, BuildKernel, KernelResult, Target, TensorSpec
-from .registry import register_detector, register_implementation, register_kernel_builder
+from tileops.backend.protocol import BUILTIN, BuildKernel, KernelResult, Target, TensorSpec
+from tileops.backend.registry import (
+    register_detector,
+    register_implementation,
+    register_kernel_builder,
+)
 
 __all__ = [
     "BUILTIN",

@@ -337,7 +337,7 @@ def _deltanet_bwd_run(
     w: torch.Tensor,
     u: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    from .compute_w_u_bwd import compute_w_u_bwd_tl
+    from tileops.kernels.linear_attention.deltanet.compute_w_u_bwd import compute_w_u_bwd_tl
 
     bwd_parallel_fn = _bwd_parallel_tl(
         batch,
@@ -439,7 +439,7 @@ class DeltaNetBwdKernel(Kernel):
         """Autotune each sub-kernel independently and merge best configs."""
         from tilelang.autotuner import autotune as tl_autotune
 
-        from .compute_w_u_bwd import compute_w_u_bwd_tl
+        from tileops.kernels.linear_attention.deltanet.compute_w_u_bwd import compute_w_u_bwd_tl
 
         B, H, S, BC = self.batch, self.head, self.seq_len, self.chunk_size
         DK, DV, dt = self.dim_k, self.dim_v, self.dtype_str

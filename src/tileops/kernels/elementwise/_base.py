@@ -5,9 +5,7 @@ import math
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
-
-from ._broadcast import (
+from tileops.kernels.elementwise._broadcast import (
     BroadcastPlan,
     _broadcast_target,
     _expand_flat,
@@ -17,7 +15,7 @@ from ._broadcast import (
     register_broadcast_plan,
     row_broadcast_split,
 )
-from ._builders import (
+from tileops.kernels.elementwise._builders import (
     _make_binary_direct,
     _make_binary_explicit,
     _make_binary_register_copy,
@@ -27,20 +25,21 @@ from ._builders import (
     _make_unary_explicit,
     _make_unary_regcopy,
 )
-from ._dtype import _BITWISE_DTYPES, _FLOAT_DTYPES, _LOGICAL_DTYPES
-from ._op_body import (
+from tileops.kernels.elementwise._dtype import _BITWISE_DTYPES, _FLOAT_DTYPES, _LOGICAL_DTYPES
+from tileops.kernels.elementwise._op_body import (
     GuardedOpFunc,
     _store_binary_bool_as_int8,
     _store_unary_bool_as_int8,
     register_op_func,
 )
-from ._policy import (
+from tileops.kernels.elementwise._policy import (
     choose_binary_strategy,
     choose_unary_strategy,
     default_launch_config,
     elementwise_autotune_configs,
     elementwise_output_plan,
 )
+from tileops.kernels.kernel_base import Kernel
 
 __all__ = [
     "BinaryKernel",

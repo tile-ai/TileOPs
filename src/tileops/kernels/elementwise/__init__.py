@@ -7,9 +7,9 @@ they share are in ``_dtype``.
 
 import torch
 
-from ._base import BinaryKernel, FusedGatedKernel, UnaryKernel
-from ._broadcast import coalesce_broadcast_dims
-from .activations import (
+from tileops.kernels.elementwise._base import BinaryKernel, FusedGatedKernel, UnaryKernel
+from tileops.kernels.elementwise._broadcast import coalesce_broadcast_dims
+from tileops.kernels.elementwise.activations import (
     EluFwdKernel,
     GeluAndMulFwdKernel,
     GeluFwdKernel,
@@ -28,8 +28,8 @@ from .activations import (
     SoftplusFwdKernel,
     TanhFwdKernel,
 )
-from .alibi import AlibiFwdKernel
-from .arithmetic import (
+from tileops.kernels.elementwise.alibi import AlibiFwdKernel
+from tileops.kernels.elementwise.arithmetic import (
     AddFwdKernel,
     DivFwdKernel,
     DivTruncFwdKernel,
@@ -43,7 +43,7 @@ from .arithmetic import (
     RemainderFwdKernel,
     SubFwdKernel,
 )
-from .bitwise import (
+from tileops.kernels.elementwise.bitwise import (
     BitwiseAndBoolStorageFwdKernel,
     BitwiseAndFwdKernel,
     BitwiseNotFwdKernel,
@@ -52,11 +52,8 @@ from .bitwise import (
     BitwiseXorBoolStorageFwdKernel,
     BitwiseXorFwdKernel,
 )
-from .clamp import (
-    ClampFwdKernel,
-    ClampTensorFwdKernel,
-)
-from .comparison import (
+from tileops.kernels.elementwise.clamp import ClampFwdKernel, ClampTensorFwdKernel
+from tileops.kernels.elementwise.comparison import (
     EqBoolStorageFwdKernel,
     EqFwdKernel,
     GeBoolStorageFwdKernel,
@@ -73,7 +70,7 @@ from .comparison import (
     NeBoolStorageFwdKernel,
     NeFwdKernel,
 )
-from .logical import (
+from tileops.kernels.elementwise.logical import (
     LogicalAndBoolStorageFwdKernel,
     LogicalAndFwdKernel,
     LogicalNotBoolStorageFwdKernel,
@@ -81,11 +78,11 @@ from .logical import (
     LogicalOrBoolStorageFwdKernel,
     LogicalOrFwdKernel,
 )
-from .masked_fill import (
+from tileops.kernels.elementwise.masked_fill import (
     MaskedFillFwdKernel,
     MaskedFillTensorValueFwdKernel,
 )
-from .math_unary import (
+from tileops.kernels.elementwise.math_unary import (
     AbsFwdKernel,
     CeilFwdKernel,
     CosFwdKernel,
@@ -104,10 +101,10 @@ from .math_unary import (
     SqrtFwdKernel,
     TruncFwdKernel,
 )
-from .nan_to_num import NanToNumFwdKernel
-from .prelu import PreluFwdKernel
-from .sinusoidal import SinusoidalFwdKernel
-from .where import WhereFwdKernel
+from tileops.kernels.elementwise.nan_to_num import NanToNumFwdKernel
+from tileops.kernels.elementwise.prelu import PreluFwdKernel
+from tileops.kernels.elementwise.sinusoidal import SinusoidalFwdKernel
+from tileops.kernels.elementwise.where import WhereFwdKernel
 
 # Bool operands are served by the uint8-backed siblings imported above. Declaring
 # the pairing here — rather than having the op pick a second kernel_map slot and

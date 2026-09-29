@@ -8,9 +8,8 @@ import math
 import torch
 
 from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.reduction._primitives import edge_axis_split
 from tileops.utils import get_shared_memory_optin
-
-from ._primitives import edge_axis_split
 
 __all__ = [
     "FOLD_KINDS",

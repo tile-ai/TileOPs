@@ -26,9 +26,10 @@ from tileops.kernels.linear_attention.autotune import (
     delta_rule_fwd_autotune_configs,
     tune_delta_rule_fwd,
 )
+from tileops.kernels.linear_attention.deltanet.fused_prepare_compute_w_u import (
+    fused_prepare_compute_w_u_tl,
+)
 from tileops.kernels.linear_attention.v_tile import resolve_block_v
-
-from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
 
 __all__ = ["DeltaNetFwdKernel"]
 

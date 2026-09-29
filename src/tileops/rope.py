@@ -1,6 +1,6 @@
 """The rotary position embedding ops, at the public path ``tileops.rope``."""
 
-from .ops.rope import (
+from tileops.ops.rope import (
     RopeLlama31FwdOp,
     RopeLongRopeFwdOp,
     RopeNeoxFwdOp,

@@ -6,9 +6,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.elementwise._dtype import _FLOAT_DTYPES
 from tileops.kernels.kernel_base import Kernel
-
-from ._dtype import _FLOAT_DTYPES
 
 __all__ = [
     "SinusoidalFwdKernel",

@@ -57,9 +57,8 @@ import tvm.tirx as tx
 from tvm.tirx.stmt_functor import ir_transform, post_order_visit
 
 from tileops._csrc import csrc_path
-
-from .record import MAX_EVENTS_DEFAULT, pack_w1_tir
-from .state import MARKER, begin_build_epoch, build_state
+from tileops.trace.record import MAX_EVENTS_DEFAULT, pack_w1_tir
+from tileops.trace.state import MARKER, begin_build_epoch, build_state
 
 __all__ = ["MAX_EVENTS_DEFAULT", "lookup_meta", "lower", "strip"]
 

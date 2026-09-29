@@ -10,11 +10,10 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops.moe.abc import FusedMoEExpertsModular, WeightedReduce, WeightedReduceNoOp
 from tileops.ops.moe.contracts import ContiguousLayoutSpec, RoutingEpilogueSpec
+from tileops.ops.moe.routed_expert.indexed_routed_expert import IndexedExpertMLPFwdOp
 from tileops.ops.moe.staged import MoeExpertMLPFwdOp, MoePostPermuteFwdOp, MoePrePermuteFwdOp
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
-
-from .indexed_routed_expert import IndexedExpertMLPFwdOp
 
 __all__ = ["FusedMoEExpertsFwdOp"]
 

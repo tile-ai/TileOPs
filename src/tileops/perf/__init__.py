@@ -1,6 +1,6 @@
 """Performance evaluation — roofline analysis and GPU hardware profiles."""
 
-from .profile import (
+from tileops.perf.profile import (
     find_profile,
     get_profile_path,
     load_profile,

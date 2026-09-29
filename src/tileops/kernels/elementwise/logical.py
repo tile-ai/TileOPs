@@ -3,7 +3,7 @@
 import tilelang.language as T
 import torch
 
-from ._base import (
+from tileops.kernels.elementwise._base import (
     _LOGICAL_DTYPES,
     BinaryKernel,
     LogicalUnaryKernel,

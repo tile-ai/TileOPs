@@ -3,8 +3,8 @@
 import tilelang.language as T
 import torch
 
-from ._base import ScalarParamUnaryKernel
-from ._dtype import _clamp_to_dtype_range
+from tileops.kernels.elementwise._base import ScalarParamUnaryKernel
+from tileops.kernels.elementwise._dtype import _clamp_to_dtype_range
 
 __all__ = [
     "NanToNumFwdKernel",

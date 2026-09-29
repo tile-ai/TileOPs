@@ -1,4 +1,4 @@
-from .utils import (
+from tileops.utils.utils import (
     WARP_LANES,
     WARP_SHUFFLE_STAGES,
     calibration_key,

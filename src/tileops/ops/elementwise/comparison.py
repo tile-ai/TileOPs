@@ -13,12 +13,7 @@ from tileops.kernels.elementwise import (
     LtFwdKernel,
     NeFwdKernel,
 )
-
-from ._base import (
-    _PREDICATE_FALLBACK_DTYPES,
-    BinaryOp,
-    _IntIdentityUnaryOp,
-)
+from tileops.ops.elementwise._base import _PREDICATE_FALLBACK_DTYPES, BinaryOp, _IntIdentityUnaryOp
 
 
 class EqFwdOp(BinaryOp):

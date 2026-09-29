@@ -3,11 +3,9 @@
 import tilelang.language as T
 import torch
 
-from ._base import (
-    FloatUnaryKernel,
-)
-from ._dtype import log_for_output_precision
-from ._erf import erf
+from tileops.kernels.elementwise._base import FloatUnaryKernel
+from tileops.kernels.elementwise._dtype import log_for_output_precision
+from tileops.kernels.elementwise._erf import erf
 
 __all__ = [
     "AbsFwdKernel",

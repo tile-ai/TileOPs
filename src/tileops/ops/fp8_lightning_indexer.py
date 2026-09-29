@@ -6,8 +6,7 @@ from tileops.backend import Target
 from tileops.kernels.constants import FP8_E4M3_MAX
 from tileops.kernels.fp8_lightning_indexer import FP8LightningIndexerKernel
 from tileops.kernels.kernel_base import Entry, Kernel
-
-from .op_base import Op
+from tileops.ops.op_base import Op
 
 __all__ = ["FP8LightningIndexerFwdOp"]
 

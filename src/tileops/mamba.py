@@ -1,6 +1,6 @@
 """The Mamba ops, at the public path ``tileops.mamba``."""
 
-from .ops.mamba import (
+from tileops.ops.mamba import (
     CBProducerFwdOp,
     DaCumsumFwdOp,
     Mamba2FwdOp,

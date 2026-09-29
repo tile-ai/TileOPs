@@ -3,12 +3,12 @@
 import tilelang.language as T
 import torch
 
-from ._base import (
+from tileops.kernels.elementwise._base import (
     BinaryKernel,
     FloatPredicateKernel,
     _Uint8StorageBinaryKernel,
 )
-from ._dtype import _BINARY_FULL_DTYPES
+from tileops.kernels.elementwise._dtype import _BINARY_FULL_DTYPES
 
 __all__ = [
     "EqBoolStorageFwdKernel",

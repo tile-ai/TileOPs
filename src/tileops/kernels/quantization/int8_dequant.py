@@ -10,10 +10,9 @@ import torch
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import SM_RESIDENT_BLOCKS, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.quantization.call_spec import INT8DequantFwdInterface
+from tileops.kernels.quantization.dequant_call import DequantizeCall
 from tileops.utils import get_sm_version
-
-from .call_spec import INT8DequantFwdInterface
-from .dequant_call import DequantizeCall
 
 __all__ = [
     "INT8DequantPerChannelFwdKernel",

@@ -17,6 +17,13 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.attention.call_spec import uses_sliding_window
+from tileops.kernels.attention.online_softmax import (
+    make_apply_softcap,
+    make_online_softmax_with_mask_guard,
+    make_rescale,
+)
+from tileops.kernels.attention.varlen import VarlenKernel, varlen_entry
 from tileops.kernels.constants import (
     LOG2E,
     SHARED_BUFFER_ALIGN_BYTES,
@@ -25,14 +32,6 @@ from tileops.kernels.constants import (
 )
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.utils import get_shared_memory_optin
-
-from .call_spec import uses_sliding_window
-from .online_softmax import (
-    make_apply_softcap,
-    make_online_softmax_with_mask_guard,
-    make_rescale,
-)
-from .varlen import VarlenKernel, varlen_entry
 
 __all__ = ["GQAPrefillVarlenFwdKernel"]
 

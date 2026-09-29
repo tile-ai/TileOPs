@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .dtype_rules import DTYPE_BITS
+from tileops.manifest.dtype_rules import DTYPE_BITS
 
 __all__ = [
     "BOOL",

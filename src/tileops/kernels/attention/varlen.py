@@ -4,9 +4,8 @@ from typing import Callable, Optional
 
 import torch
 
+from tileops.kernels.attention.call_spec import AttentionCall
 from tileops.kernels.kernel_base import Entry, Kernel
-
-from .call_spec import AttentionCall
 
 __all__ = ["VarlenKernel", "varlen_entry"]
 

@@ -9,10 +9,14 @@ from tilelang import language as T
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry
-
-from .call_spec import GLAInferenceCallSpec, GLAInferenceFwdInterface, dense_entry, serves_dense
-from .dense_prefill_subchunk import _gla_fwd_a_kernel
-from .gla_fwd import GLAFwdKernel, _gla_precompute_g_kernel
+from tileops.kernels.linear_attention.gla.call_spec import (
+    GLAInferenceCallSpec,
+    GLAInferenceFwdInterface,
+    dense_entry,
+    serves_dense,
+)
+from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import _gla_fwd_a_kernel
+from tileops.kernels.linear_attention.gla.gla_fwd import GLAFwdKernel, _gla_precompute_g_kernel
 
 
 @functools.lru_cache(maxsize=32)

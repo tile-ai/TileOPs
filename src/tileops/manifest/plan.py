@@ -15,8 +15,8 @@ import copy
 import importlib
 from dataclasses import dataclass
 
-from .dtype_rules import DTYPE_BITS
-from .expr import (
+from tileops.manifest.dtype_rules import DTYPE_BITS
+from tileops.manifest.expr import (
     KindEnv,
     SignatureError,
     Unpresent,
@@ -28,8 +28,8 @@ from .expr import (
     names,
     parse,
 )
-from .kinds import BOOL, INT, NONE, VALUE, Kind, parse_spec, parse_type, seq
-from .signature import (
+from tileops.manifest.kinds import BOOL, INT, NONE, VALUE, Kind, parse_spec, parse_type, seq
+from tileops.manifest.signature import (
     Signature,
     SignatureBranch,
     adt_fields,
