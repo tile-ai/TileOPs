@@ -650,18 +650,26 @@ class _CallCheck:
     """
 
     def __init__(
-        self, plan: EntryPlan, point: dict, key: tuple, built: _Construction, env, shapes_only: bool
+        self,
+        plan: EntryPlan,
+        point: dict,
+        key: tuple,
+        built: _Construction,
+        env,
+        shapes_only: bool,
+        branch: PlanBranch,
     ):
-        """The check of *plan* at *point*, keyed *key*, continuing from construction *built*."""
+        """The check of *plan* at *point*, keyed *key*, continuing from construction *built*;
+        *branch* is ``plan.branch(point)``."""
         self.plan, self.point, self.key, self.built, self.env = plan, point, key, built, env
-        self.shapes_only = shapes_only
+        self.shapes_only, self.branch = shapes_only, branch
 
     def source(self) -> str:
         plan, point, built, shapes_only = self.plan, self.point, self.built, self.shapes_only
         sig = plan.sig
         e = _Emitter(sig)
         name = "shapes" if shapes_only else "check"
-        b = plan.branch(point)
+        b = self.branch
         present = set(b.shapes)
         buffer = point.get("present(out)", False)
         e.emit("_k = self._construction_ix")
@@ -874,8 +882,11 @@ class _Plan:
                     point.get("present(out)", False),
                     emitted,
                 )
+                b = plan.branch(point)
                 for table, shapes_only in ((self.checks, False), (self.shapes, True)):
-                    source = _CallCheck(plan, point, key, construction, env, shapes_only).source()
+                    source = _CallCheck(
+                        plan, point, key, construction, env, shapes_only, b
+                    ).source()
                     table[key] = _compiled(
                         "shapes" if shapes_only else "check",
                         source,
@@ -889,7 +900,7 @@ class _Plan:
                 ):
                     self.roofs[key] = _compiled(
                         "roofline",
-                        _roofline_source(sig, plan.branch(point)),
+                        _roofline_source(sig, b),
                         f"{sig.name} roofline",
                     )
             except SignatureError as exc:

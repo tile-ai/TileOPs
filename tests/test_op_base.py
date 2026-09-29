@@ -475,7 +475,7 @@ class TestDelegateFor:
 class TestInstanceKeys:
     def test_a_collected_instances_key_is_never_handed_out_again(self):
         """An op reaching a used key inherits that op's compiled shapes."""
-        import gc
+        import weakref
 
         class _Dummy:
             pass
@@ -484,8 +484,9 @@ class TestInstanceKeys:
         for _ in range(50):
             op = _Dummy()
             keys.add(op_base.register_instance(op))
+            ref = weakref.ref(op)
             del op
-            gc.collect()
+            assert ref() is None
 
         assert len(keys) == 50
 
