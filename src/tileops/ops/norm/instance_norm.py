@@ -21,7 +21,7 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel, Slot
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.norm import (
     BatchNormFwdInferKernel,
     InstanceNormFwdTrainKernel,
@@ -31,9 +31,9 @@ from tileops.kernels.norm import (
 )
 from tileops.kernels.norm.call_spec import (
     BatchNormCall,
-    InstanceNormFwdInferSlot,
-    InstanceNormFwdSlot,
-    InstanceNormFwdTrainSlot,
+    InstanceNormFwdInferInterface,
+    InstanceNormFwdInterface,
+    InstanceNormFwdTrainInterface,
 )
 
 from ..op_base import Op
@@ -72,10 +72,10 @@ class InstanceNormFwdOp(Op):
         "instance_norm_train": InstanceNormFwdTrainKernel,
         "instance_norm_running_stats": BatchNormFwdInferKernel,
     }
-    slots: ClassVar[Mapping[str, type[Slot]]] = {
-        "instance_norm": InstanceNormFwdSlot,
-        "instance_norm_train": InstanceNormFwdTrainSlot,
-        "instance_norm_infer": InstanceNormFwdInferSlot,
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "instance_norm": InstanceNormFwdInterface,
+        "instance_norm_train": InstanceNormFwdTrainInterface,
+        "instance_norm_infer": InstanceNormFwdInferInterface,
     }
 
     def __init__(

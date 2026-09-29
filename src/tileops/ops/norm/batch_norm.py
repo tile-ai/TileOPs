@@ -25,7 +25,7 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel, Slot
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.norm.batch_norm import (
     BatchNormBwdKernel,
     BatchNormBwdSplitKernel,
@@ -37,10 +37,10 @@ from tileops.kernels.norm.batch_norm import (
     BatchNormFwdTrainWideKernel,
 )
 from tileops.kernels.norm.call_spec import (
-    BatchNormBwdSlot,
+    BatchNormBwdInterface,
     BatchNormCall,
-    BatchNormFwdInferSlot,
-    BatchNormFwdTrainSlot,
+    BatchNormFwdInferInterface,
+    BatchNormFwdTrainInterface,
 )
 
 from ..op_base import Op
@@ -80,9 +80,9 @@ class BatchNormFwdOp(Op):
         "fwd_train_kernel": BatchNormFwdTrainKernel,
         "fwd_infer_kernel": BatchNormFwdInferKernel,
     }
-    slots: ClassVar[Mapping[str, type[Slot]]] = {
-        "batch_norm_fwd_train": BatchNormFwdTrainSlot,
-        "batch_norm_fwd_infer": BatchNormFwdInferSlot,
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "batch_norm_fwd_train": BatchNormFwdTrainInterface,
+        "batch_norm_fwd_infer": BatchNormFwdInferInterface,
     }
 
     def __init__(
@@ -217,7 +217,9 @@ class BatchNormBwdOp(Op):
         "bwd_split": BatchNormBwdSplitKernel,
         "bwd_kernel": BatchNormBwdKernel,
     }
-    slots: ClassVar[Mapping[str, type[Slot]]] = {"batch_norm_bwd": BatchNormBwdSlot}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "batch_norm_bwd": BatchNormBwdInterface
+    }
 
     def __init__(
         self,

@@ -20,8 +20,8 @@ ENTRY_POINT_GROUP = "tileops.backends"
 
 DETECTORS: dict[str, DetectFn] = {}
 BUILDERS: dict[tuple[str, str], BuildKernel] = {}
-# Candidates added to a declared slot, ``{(op, slot): {key: candidate}}``.
-CANDIDATES: dict[tuple[str, str], dict[str, type]] = {}
+# Kernel implementations a backend added to an op, ``{op: {key: implementation}}``.
+IMPLEMENTATIONS: dict[str, dict[str, type]] = {}
 
 # One line per backend that failed to import. Strings, not records: they are read to be
 # printed.
@@ -86,32 +86,33 @@ def register_kernel_builder(op: str, target: str, build_kernel: BuildKernel) -> 
         BUILDERS[(op, target)] = build_kernel
 
 
-def register_candidate(op: str, slot: str, key: str, candidate: type) -> None:
-    """Add *candidate* to *op*'s *slot* under *key*, beside the in-tree candidates.
+def register_implementation(op: str, key: str, implementation: type) -> None:
+    """Add *implementation* to *op* under *key*, beside the in-tree implementations.
 
-    It joins every instance of the op constructed afterwards and is selected by the same
-    rule as the in-tree candidates: its ``applies`` / ``refusal`` region, ``general`` and
-    ``refines``. A call it does not serve stays with the in-tree candidates. The op checks
-    it against the slot's interface when an instance is constructed.
+    It joins every instance of the op constructed afterwards, under each kernel interface it
+    inherits, and is selected by the same rule as the in-tree ones: its ``applies`` /
+    ``refusal``, ``general`` and ``preferred_over``. A call it does not serve stays with the
+    in-tree implementations. The op checks it against the interface when an instance is
+    constructed.
 
     Args:
         op: The op's manifest key, e.g. ``"LayerNormFwdOp"``.
-        slot: A slot the op declares.
-        key: The candidate's dispatch key, which ``kernel_map=`` and ``refines`` name it by.
-        candidate: A ``Kernel`` subclass implementing the slot's interface.
+        key: The implementation's dispatch key, which ``kernel_map=`` and ``preferred_over``
+            name it by.
+        implementation: A ``Kernel`` subclass inheriting one of the op's kernel interfaces.
 
     Raises:
-        BackendError: *key* is already registered for ``(op, slot)``.
+        BackendError: *key* is already registered for *op*.
     """
     with LOCK:
-        added = CANDIDATES.setdefault((op, slot), {})
+        added = IMPLEMENTATIONS.setdefault(op, {})
         existing = added.get(key)
         if existing is not None:
             raise BackendError(
-                f"{(op, slot)} already has candidate {key!r} ({describe(existing)}); "
-                f"{describe(candidate)} cannot take it."
+                f"{op} already has implementation {key!r} ({describe(existing)}); "
+                f"{describe(implementation)} cannot take it."
             )
-        added[key] = candidate
+        added[key] = implementation
 
 
 def describe(fn: Callable) -> str:
@@ -191,7 +192,7 @@ class RegistryState(NamedTuple):
 
     detectors: dict[str, DetectFn]
     builders: dict[tuple[str, str], BuildKernel]
-    candidates: dict[tuple[str, str], dict[str, type]]
+    implementations: dict[str, dict[str, type]]
     load_failures: list[str]
     default_target: Target
     loaded: bool
@@ -206,7 +207,7 @@ def snapshot() -> RegistryState:
         return RegistryState(
             detectors=dict(DETECTORS),
             builders=dict(BUILDERS),
-            candidates={where: dict(added) for where, added in CANDIDATES.items()},
+            implementations={op: dict(added) for op, added in IMPLEMENTATIONS.items()},
             load_failures=list(LOAD_FAILURES),
             default_target=default_target,
             loaded=_loaded,
@@ -221,8 +222,8 @@ def restore(state: RegistryState) -> None:
         DETECTORS.update(state.detectors)
         BUILDERS.clear()
         BUILDERS.update(state.builders)
-        CANDIDATES.clear()
-        CANDIDATES.update(state.candidates)
+        IMPLEMENTATIONS.clear()
+        IMPLEMENTATIONS.update(state.implementations)
         LOAD_FAILURES[:] = state.load_failures
         default_target = state.default_target
         _loaded = state.loaded

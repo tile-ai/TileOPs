@@ -1,4 +1,4 @@
-"""The normalization slots' contracts: their request keys and the interfaces candidates implement."""
+"""The normalization kernel interfaces and the call specs they take."""
 
 from __future__ import annotations
 
@@ -9,18 +9,18 @@ from typing import Optional
 import torch
 
 from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Slot
+from tileops.kernels.kernel_base import KernelInterface
 
 __all__ = [
-    "BatchNormBwdSlot",
+    "BatchNormBwdInterface",
     "BatchNormCall",
-    "BatchNormFwdInferSlot",
-    "BatchNormFwdTrainSlot",
-    "InstanceNormFwdInferSlot",
-    "InstanceNormFwdSlot",
-    "InstanceNormFwdTrainSlot",
+    "BatchNormFwdInferInterface",
+    "BatchNormFwdTrainInterface",
+    "InstanceNormFwdInferInterface",
+    "InstanceNormFwdInterface",
+    "InstanceNormFwdTrainInterface",
     "LayerNormCall",
-    "LayerNormFwdSlot",
+    "LayerNormFwdInterface",
 ]
 
 
@@ -63,7 +63,7 @@ class LayerNormCall(CallSpec):
     dtype: torch.dtype = torch.float16
 
 
-class BatchNormFwdTrainSlot(Slot):
+class BatchNormFwdTrainInterface(KernelInterface):
     """Batch normalization by the batch statistics, updating the running ones."""
 
     request = BatchNormCall
@@ -94,7 +94,7 @@ class BatchNormFwdTrainSlot(Slot):
         """
 
 
-class BatchNormFwdInferSlot(Slot):
+class BatchNormFwdInferInterface(KernelInterface):
     """Batch normalization by the running statistics."""
 
     request = BatchNormCall
@@ -124,7 +124,7 @@ class BatchNormFwdInferSlot(Slot):
         """
 
 
-class BatchNormBwdSlot(Slot):
+class BatchNormBwdInterface(KernelInterface):
     """The gradients of batch normalization's training forward."""
 
     request = BatchNormCall
@@ -155,7 +155,7 @@ class BatchNormBwdSlot(Slot):
         """
 
 
-class InstanceNormFwdSlot(Slot):
+class InstanceNormFwdInterface(KernelInterface):
     """Instance normalization by each instance's own statistics, with no running statistics."""
 
     request = BatchNormCall
@@ -175,7 +175,7 @@ class InstanceNormFwdSlot(Slot):
 
         Args:
             x: ``(n * c, spatial)`` in ``call.dtype``; row ``m`` is channel ``m % c``.
-            running_mean: ``None``; the slot reads no running statistics.
+            running_mean: ``None``; the interface reads no running statistics.
             running_var: ``None``.
             weight: ``(c,)`` scale in ``call.dtype``, passed exactly when
                 ``call.passes_affine``.
@@ -186,7 +186,7 @@ class InstanceNormFwdSlot(Slot):
         """
 
 
-class InstanceNormFwdTrainSlot(Slot):
+class InstanceNormFwdTrainInterface(KernelInterface):
     """Instance normalization by each instance's statistics, updating the running ones."""
 
     request = BatchNormCall
@@ -217,7 +217,7 @@ class InstanceNormFwdTrainSlot(Slot):
         """
 
 
-class InstanceNormFwdInferSlot(Slot):
+class InstanceNormFwdInferInterface(KernelInterface):
     """Instance normalization by the running statistics."""
 
     request = BatchNormCall
@@ -247,7 +247,7 @@ class InstanceNormFwdInferSlot(Slot):
         """
 
 
-class LayerNormFwdSlot(Slot):
+class LayerNormFwdInterface(KernelInterface):
     """Layer normalization over the trailing ``call.n`` elements."""
 
     request = LayerNormCall

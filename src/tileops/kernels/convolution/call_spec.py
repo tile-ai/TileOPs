@@ -109,7 +109,7 @@ class Conv3dCall(CallSpec):
 
     Implementations state positive regions over these fields. Architecture is
     inherited from :class:`tileops.kernels.call_spec.CallSpec` and checked by
-    ``Kernel.refusal()`` before an implementation's region is evaluated.
+    ``Kernel.unavailable()`` before an implementation's region is evaluated.
     """
 
     n: int = 1

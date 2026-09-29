@@ -18,11 +18,11 @@ from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
 
 from .call_spec import (
-    BatchNormBwdSlot,
+    BatchNormBwdInterface,
     BatchNormCall,
-    BatchNormFwdInferSlot,
-    BatchNormFwdTrainSlot,
-    InstanceNormFwdInferSlot,
+    BatchNormFwdInferInterface,
+    BatchNormFwdTrainInterface,
+    InstanceNormFwdInferInterface,
 )
 
 __all__ = [
@@ -709,7 +709,7 @@ class _BatchNormKernel(Kernel):
         return max(1, min(call.n * call.spatial, -(-cls._SPLIT_TARGET_BLOCKS // call.c)))
 
 
-class _BatchNormFwdTrainHeldKernel(_BatchNormKernel, BatchNormFwdTrainSlot):
+class _BatchNormFwdTrainHeldKernel(_BatchNormKernel, BatchNormFwdTrainInterface):
     """Training forward with a channel held in registers, launched with ``self.launch``."""
 
     def forward(
@@ -836,7 +836,7 @@ class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
         self.kernel = _batch_norm_fwd_train_wide_kernel(N, C, S, self.dtype_str, eps, momentum)
 
 
-class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormFwdTrainSlot):
+class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormFwdTrainInterface):
     """Training forward with a channel across several blocks: sum, merge, then map.
 
     Serves a channel one block does not hold and that is long enough, among few enough
@@ -1051,7 +1051,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormFwdTrainSlot):
         return y, mean_out, rstd_out
 
 
-class BatchNormFwdTrainKernel(Kernel, BatchNormFwdTrainSlot):
+class BatchNormFwdTrainKernel(Kernel, BatchNormFwdTrainInterface):
     """Training forward with one channel per block, streamed through shared memory.
 
     The general implementation: it serves every shape the specialised ones do not.
@@ -1249,7 +1249,7 @@ def _batch_norm_fwd_infer_kernel(
     return _bn_fwd_infer_func
 
 
-class BatchNormFwdInferKernel(Kernel, BatchNormFwdInferSlot, InstanceNormFwdInferSlot):
+class BatchNormFwdInferKernel(Kernel, BatchNormFwdInferInterface, InstanceNormFwdInferInterface):
     """Inference-mode batch normalization forward kernel.
 
     Args:
@@ -1866,7 +1866,7 @@ def _batch_norm_bwd_split_kernel(
     return _stats_func, _finalize_func, _apply_func
 
 
-class BatchNormBwdWideKernel(_BatchNormKernel, BatchNormBwdSlot):
+class BatchNormBwdWideKernel(_BatchNormKernel, BatchNormBwdInterface):
     """Backward with one channel per block, ``grad_out`` and ``x`` held in its registers.
 
     Serves a channel whose two tensors one block holds, a thread-held one included.
@@ -1925,7 +1925,7 @@ class BatchNormBwdWideKernel(_BatchNormKernel, BatchNormBwdSlot):
         return grad_x, grad_weight, grad_bias
 
 
-class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdSlot):
+class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdInterface):
     """Backward with a channel across several blocks: sum, merge, then map.
 
     Serves a channel whose two tensors one block does not hold and that is long enough,
@@ -2023,7 +2023,7 @@ class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdSlot):
         return grad_x, grad_weight, grad_bias
 
 
-class BatchNormBwdKernel(Kernel, BatchNormBwdSlot):
+class BatchNormBwdKernel(Kernel, BatchNormBwdInterface):
     """Backward with one channel per block, streamed through shared memory.
 
     The general implementation: it serves every shape the specialised ones do not.

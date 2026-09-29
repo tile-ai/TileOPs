@@ -653,7 +653,7 @@ class BmmKernel(Kernel):
 
     @classmethod
     def refusal(cls, call: BmmCall) -> Optional[str]:
-        return cls.arch_refusal(call) or cls._region_refusal(call)
+        return cls._region_refusal(call)
 
     @staticmethod
     def _region_refusal(call: BmmCall) -> Optional[str]:
@@ -772,7 +772,7 @@ class BmmPersistentKernel(Kernel):
 
     @classmethod
     def refusal(cls, call: BmmCall) -> Optional[str]:
-        return cls.arch_refusal(call) or cls._region_refusal(call)
+        return cls._region_refusal(call)
 
     @classmethod
     def _region_refusal(cls, call: BmmCall) -> Optional[str]:

@@ -1,5 +1,5 @@
 """The facts of one GLAInferenceFwdOp call that its in-tree kernels select and build on,
-and the contract its slot's candidates implement."""
+and the kernel interface its implementations inherit."""
 
 import dataclasses
 from abc import abstractmethod
@@ -8,9 +8,9 @@ from typing import Optional
 import torch
 
 from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Entry, Slot
+from tileops.kernels.kernel_base import Entry, KernelInterface
 
-__all__ = ["GLAInferenceCallSpec", "GLAInferenceFwdSlot", "dense_entry", "serves_dense"]
+__all__ = ["GLAInferenceCallSpec", "GLAInferenceFwdInterface", "dense_entry", "serves_dense"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -27,7 +27,7 @@ class GLAInferenceCallSpec(CallSpec):
     varlen: bool = False
 
 
-class GLAInferenceFwdSlot(Slot):
+class GLAInferenceFwdInterface(KernelInterface):
     """Gated linear attention for inference: one prefill or decode step over caller-owned state."""
 
     request = GLAInferenceCallSpec

@@ -260,11 +260,7 @@ _GQA_DENSE_ROWS = [
     [pytest.param(row, expected, id=name) for row, expected, name in _GQA_DENSE_ROWS],
 )
 def test_gqa_dense_dispatch(row: tuple, expected: "str | None") -> None:
-    """Each region, and the boundary that separates it from the next.
-
-    Sampled calls: evidence for the declared refinements at their boundaries, not a proof
-    that one region contains another.
-    """
+    """Each region, and the boundary that separates it from the next."""
     from tileops.kernels.attention.call_spec import AttentionCall
     from tileops.ops.attention.gqa import GroupedQueryAttentionDenseFwdOp
 
@@ -297,6 +293,6 @@ def test_gqa_dense_dispatch(row: tuple, expected: "str | None") -> None:
 
     if expected is None:
         with pytest.raises(ValueError, match="no implementation serves"):
-            op.select_candidate("gqa_dense", call)
+            op.select_implementation("gqa_dense", call)
     else:
-        assert op.kernel_map[op.select_candidate("gqa_dense", call)].__name__ == expected
+        assert op.kernel_map[op.select_implementation("gqa_dense", call)].__name__ == expected

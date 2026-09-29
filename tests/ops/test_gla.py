@@ -323,7 +323,7 @@ def _skip_unless_kernel_serves(kernel_cls: type, test: GLAInferenceWorkload) -> 
         dtype=test.dtype,
         device=torch.device(run_device()),
     )
-    reason = kernel_cls.refusal(call)
+    reason = kernel_cls.unavailable(call) or kernel_cls.refusal(call)
     if reason is not None:
         pytest.skip(f"{kernel_cls.__name__}: {reason}")
 

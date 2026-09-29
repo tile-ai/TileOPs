@@ -30,9 +30,9 @@ from tileops.backend import (
     registered_targets,
 )
 from tileops.backend.dispatch import registered_kernel_builder, select_target
-from tileops.backend.registry import CANDIDATES, ensure_loaded
+from tileops.backend.registry import IMPLEMENTATIONS, ensure_loaded
 from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Entry, Kernel, Slot
+from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
 
 from .compile_boundary import register_instance
 
@@ -99,18 +99,23 @@ class Op(ABC):
     # An entry the op keeps bound directly, if it keeps one: a ``Kernel`` in-tree, whatever a
     # target's builder returned otherwise. Specializations are held per role.
     kernel: Optional[Callable[..., object]]
-    # Every candidate this instance holds, by key: read-only once installed.
+    # The implementation that runs under each key, ``kernel_map=`` included: read-only once
+    # installed.
     kernel_map: Optional[Mapping[str, Kernel]] = None
+    # The implementation registered under each key, in-tree or by a backend. Its applicability
+    # and precedence select the key, whatever ``kernel_map=`` put there to run.
+    _registered: Mapping[str, type[Kernel]] = MappingProxyType({})
+    # Each key mapped to the keys its registered implementation is preferred over, transitively.
+    _preferred: Mapping[str, frozenset[str]] = MappingProxyType({})
     # Built entries, ``{role: {key: entry}}``. Annotation only: the instance
     # attribute appears on the first ``kernel_for`` call, so an op that
     # has built nothing carries no dict, and no constructor declares one.
     _kernel_roles: dict[str, dict[Hashable, object]]
-    # The candidates of each declared slot, by key, as installed.
-    _slot_keys: Mapping[str, tuple[str, ...]] = MappingProxyType({})
-    # Resolved entries, ``{(slot, request key): entry}``. Annotation only, like ``_kernel_roles``.
+    # The keys of each kernel interface's implementations, as installed.
+    _interface_keys: Mapping[str, tuple[str, ...]] = MappingProxyType({})
+    # Resolved entries, ``{(interface, call spec): entry}``. Annotation only, like
+    # ``_kernel_roles``.
     _dispatched: dict[tuple[str, Hashable], object]
-    # Dispatch keys the caller replaced through ``kernel_map=``.
-    _overridden_keys: frozenset = frozenset()
     # The ``kernel_map=`` the caller passed, as given; what every sub-op this op builds is handed.
     _given_kernel_map: Optional[dict[str, Kernel]] = None
     # Held sub-ops, ``{stage: {key: op}}``. Annotation only, like ``_kernel_roles``.
@@ -140,10 +145,10 @@ class Op(ABC):
     # (a composite) declares none.
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = MappingProxyType({})
 
-    # The op's kernel slots, each mapped to the interface its candidates implement. A slot's
-    # candidates are the keys whose in-tree class implements that interface, plus those a
-    # backend registers for it (``tileops.backend.register_candidate``).
-    slots: ClassVar[Mapping[str, type[Slot]]] = MappingProxyType({})
+    # The places this op calls a kernel, each named and mapped to its kernel interface. An
+    # interface's implementations are the keys whose registered class inherits it, in-tree or
+    # added by a backend (``tileops.backend.register_implementation``).
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = MappingProxyType({})
 
     # The ops this op holds as sub-ops, by stage name in stage order: the sub-op counterpart of
     # ``kernel_types``. Every sub-op is held through ``delegate_for``.
@@ -280,28 +285,22 @@ class Op(ABC):
     def _install_kernel_map(self, candidate_map: Optional[dict[str, Kernel]] = None) -> None:
         """Install the resolved kernel map onto ``self.kernel_map``, read-only.
 
-        An entry of ``default_kernel_map``, or a candidate registered for one of this op's
-        slots, is replaced by *candidate_map*'s under the same name. A name no op in the
-        library declares is refused; a name this op does not have but another does is kept
-        out of the resolved map and ignored, because that is how a composite's sub-ops see
-        each other's keys. Resolving a kernel *class* needs no device, so construction does
-        not probe one: an op constructs wherever it is imported, and a target that cannot
-        run it surfaces when a kernel is first selected, built or called. Installing again
-        drops everything the previous installation built.
+        Each key's registered implementation, from ``default_kernel_map`` or a backend, is
+        replaced by *candidate_map*'s under the same name; only what runs changes, not what
+        selects the key. A name no op in the library declares is refused; a name this op does
+        not have but another does is kept out of the resolved map and ignored, because that
+        is how a composite's sub-ops see each other's keys. Resolving a kernel *class* needs
+        no device, so construction does not probe one: an op constructs wherever it is
+        imported, and a target that cannot run it surfaces when a kernel is first selected,
+        built or called. Installing again drops everything the previous installation built.
 
         Raises:
-            ValueError: A candidate is registered for a slot this op does not declare, or
-                what :meth:`_refuse_unknown_keys` or :meth:`_install_slots` raises.
-            TypeError: What :meth:`_install_slots` raises.
+            ValueError: A backend registered a key this op already has, or what
+                :meth:`_refuse_unknown_keys` or :meth:`_install_interfaces` raises.
+            TypeError: What :meth:`_install_interfaces` raises.
         """
         for built in ("_kernel_roles", "_selected_entries", "_dispatched"):
             self.__dict__.pop(built, None)
-        name = type(self).__name__
-        stray = sorted(slot for op, slot in CANDIDATES if op == name and slot not in self.slots)
-        if stray:
-            raise ValueError(
-                f"candidates are registered for {name} slots it does not declare: {stray}"
-            )
         default_map = self.default_kernel_map
         override = dict(candidate_map) if candidate_map else {}
         self._given_kernel_map = override or None
@@ -309,178 +308,180 @@ class Op(ABC):
             # Composite op: store override verbatim. Its keys belong to the sub-ops it
             # builds, which is where a name nothing declares is refused.
             self.kernel_map = MappingProxyType(override)
-            self._overridden_keys = frozenset(override)
             return
-        added = {
-            key: cls for slot in self.slots for key, cls in CANDIDATES.get((name, slot), {}).items()
-        }
-        own = {**default_map, **added}
-        if override:
-            self._refuse_unknown_keys(override, own)
-        resolved = {key: override.get(key, cls) for key, cls in own.items()}
-        self.kernel_map = MappingProxyType(resolved)
-        # Read by select_kernel_key: a replacement is never skipped silently.
-        self._overridden_keys = frozenset(override) & frozenset(resolved)
-        if self.slots:
-            self._slot_keys = self._install_slots(default_map)
-
-    def _install_slots(
-        self, default_map: Mapping[str, type[Kernel]]
-    ) -> Mapping[str, tuple[str, ...]]:
-        """Return each declared slot's candidate keys, each candidate checked against the slot.
-
-        A key belongs to every slot whose interface its in-tree class implements, and a
-        registered key to the slot it was registered for; whatever ``kernel_map=`` put under
-        the key must implement the same interfaces.
-
-        Raises:
-            TypeError: A candidate does not implement its slot's interface.
-            ValueError: An in-tree key belongs to no slot, a registered key is one the op
-                already has, a slot has two general candidates, or a refinement names no
-                other candidate of its slot or is cyclic.
-        """
         name = type(self).__name__
-        slot_keys = {}
-        for slot, interface in self.slots.items():
-            added = tuple(sorted(CANDIDATES.get((name, slot), {})))
-            taken = sorted(
-                k for k in added if k in default_map or any(k in ks for ks in slot_keys.values())
-            )
-            if taken:
-                raise ValueError(
-                    f"candidates registered for {name}.{slot} reuse keys it has: {taken}"
-                )
-            keys = tuple(k for k, cls in default_map.items() if issubclass(cls, interface)) + added
-            for key in keys:
-                mismatch = interface.mismatch(self.kernel_map[key])
-                if mismatch is not None:
-                    raise TypeError(f"{name}.{slot} candidate {key!r}: {mismatch}")
-            general = [k for k in keys if self.kernel_map[k].general]
-            if len(general) > 1:
-                raise ValueError(f"{name}.{slot} has more than one general candidate: {general}")
-            refined = self._refined(keys)
-            for key in keys:
-                refines = self.kernel_map[key].refines
-                if not refines <= set(keys) - {key} or (refines and key in general):
-                    raise ValueError(
-                        f"{name}.{slot} candidate {key!r} refines {sorted(refines)}; a candidate "
-                        f"refines other candidates of its slot, and the general one refines none"
-                    )
-                if key in refined[key]:
-                    raise ValueError(f"{name}.{slot} refinements form a cycle through {key!r}")
-            slot_keys[slot] = keys
-        unslotted = sorted(set(default_map) - {k for keys in slot_keys.values() for k in keys})
-        if unslotted:
-            raise ValueError(f"{name} keys implement none of its slots' interfaces: {unslotted}")
-        return MappingProxyType(slot_keys)
-
-    def _refined(self, keys: "tuple[str, ...]") -> "dict[str, frozenset[str]]":
-        """Each of *keys* mapped to the keys among them it refines, directly or through others."""
-        direct = {
-            key: getattr(self.kernel_map[key], "refines", frozenset()) & set(keys) for key in keys
-        }
-        closure = {}
-        for key in keys:
+        added = IMPLEMENTATIONS.get(name, {})
+        taken = sorted(set(added) & set(default_map))
+        if taken:
+            raise ValueError(f"implementations registered for {name} reuse keys it has: {taken}")
+        registered = {**default_map, **added}
+        if override:
+            self._refuse_unknown_keys(override, registered)
+        self._registered = MappingProxyType(registered)
+        self.kernel_map = MappingProxyType(
+            {key: override.get(key, cls) for key, cls in registered.items()}
+        )
+        preferred = {}
+        for key in registered:
             seen: set[str] = set()
-            pending = list(direct[key])
+            pending = list(getattr(registered[key], "preferred_over", ()))
             while pending:
                 above = pending.pop()
-                if above not in seen:
+                if above not in seen and above in registered:
                     seen.add(above)
-                    pending.extend(direct[above])
-            closure[key] = frozenset(seen)
-        return closure
+                    pending.extend(getattr(registered[above], "preferred_over", ()))
+            preferred[key] = frozenset(seen)
+        self._preferred = MappingProxyType(preferred)
+        if self.interfaces:
+            self._interface_keys = self._install_interfaces()
+
+    def _install_interfaces(self) -> Mapping[str, tuple[str, ...]]:
+        """Return each kernel interface's keys, each implementation checked against it.
+
+        A key belongs to every interface its registered implementation inherits. What runs
+        under the key, ``kernel_map=`` included, must inherit the same interface, take its
+        ``forward`` arguments, and state ``entry_for`` as a classmethod.
+
+        Raises:
+            TypeError: An implementation breaks its interface's contract.
+            ValueError: A key belongs to no interface, an interface has two general
+                implementations, or a ``preferred_over`` names no other implementation of
+                its interface, is stated by the general one, or is cyclic.
+        """
+        name = type(self).__name__
+        interface_keys = {}
+        for where, interface in self.interfaces.items():
+            keys = tuple(k for k, cls in self._registered.items() if issubclass(cls, interface))
+            arguments = list(inspect.signature(interface.forward).parameters)[1:]
+            for key in keys:
+                runs = self.kernel_map[key]
+                if not (issubclass(runs, Kernel) and issubclass(runs, interface)):
+                    raise TypeError(
+                        f"{name}.{where} {key!r}: {runs.__name__} does not implement "
+                        f"{interface.__name__}"
+                    )
+                if not isinstance(inspect.getattr_static(runs, "entry_for"), classmethod):
+                    raise TypeError(
+                        f"{name}.{where} {key!r}: {runs.__name__}.entry_for is not a classmethod"
+                    )
+                try:
+                    inspect.signature(runs.forward).bind(None, *arguments)
+                except TypeError as exc:
+                    raise TypeError(
+                        f"{name}.{where} {key!r}: {runs.__name__}.forward does not take "
+                        f"{interface.__name__}'s arguments: {exc}"
+                    ) from None
+            general = [k for k in keys if self._registered[k].general]
+            if len(general) > 1:
+                raise ValueError(
+                    f"{name}.{where} has more than one general implementation: {general}"
+                )
+            for key in keys:
+                preferred = self._registered[key].preferred_over
+                if not preferred <= set(keys) - {key} or (preferred and key in general):
+                    raise ValueError(
+                        f"{name}.{where} {key!r} is preferred over {sorted(preferred)}; it names "
+                        f"other implementations of its interface, and the general one names none"
+                    )
+                if key in self._preferred[key]:
+                    raise ValueError(f"{name}.{where} preferences form a cycle through {key!r}")
+            interface_keys[where] = keys
+        unassigned = sorted(
+            set(self._registered) - {k for ks in interface_keys.values() for k in ks}
+        )
+        if unassigned:
+            raise ValueError(f"{name} keys implement none of its kernel interfaces: {unassigned}")
+        return MappingProxyType(interface_keys)
 
     def select_kernel_key(self, keys: "tuple[str, ...]", call: object) -> str:
         """Return the one key among *keys* whose implementation serves *call*.
 
-        Each candidate answers for itself, from its ``devices`` and ``refusal``. Among the
-        ones that apply, the answer is the unique most specific: a candidate that refines
-        another, directly or through others, is more specific than it, and the general
-        candidate is less specific than every other one. Neither the order of *keys* nor
-        any numeric priority decides it.
+        A key is available where its registered implementation or the one ``kernel_map=``
+        put there can run, and it applies where the registered one's ``refusal`` accepts the
+        call. Among the available keys that apply, the answer is the unique one no other is
+        preferred over: ``preferred_over`` orders them, transitively, and the general one is
+        below every other. Neither the order of *keys* nor any numeric priority decides it.
 
-        A replacement installed through ``kernel_map=`` is asked the same question as
-        the class it replaced. A replacement that cannot serve the call is an error
-        rather than a reason to fall back to the shipped implementation.
+        A key selected with a ``kernel_map=`` replacement is served by the replacement, and
+        a replacement that cannot run or does not serve the call is an error rather than
+        the registered implementation standing in for it.
 
         Raises:
-            ValueError: When no implementation serves the call, when a
-                replacement cannot and a shipped one would stand in for it, or
-                when two implementations are both most specific.
+            OpNotAvailableError: No key runs on the call's device type.
+            ValueError: When no implementation serves the call, when the replacement
+                behind the selected key cannot, or when several are preferred over none.
         """
         device = getattr(call, "device", None)
-        installed = tuple(key for key in keys if key in (self.kernel_map or {}))
-        applicable: list[str] = []
+        on_device = device is None
+        rules: dict[str, type[Kernel]] = {}
         rejected: list[str] = []
-        refused_overrides: list[str] = []
-        for key in installed:
-            kernel_cls = self.kernel_map[key]
-            devices = getattr(kernel_cls, "devices", Kernel.devices)
-            if device is not None and device.type not in devices:
-                reason = f"runs on {sorted(devices)}, not {device.type}"
-            else:
-                reason = kernel_cls.refusal(call)
-            if reason is None:
-                applicable.append(key)
+        for key in keys:
+            runs = (self.kernel_map or {}).get(key)
+            if runs is None:
                 continue
-            rejected.append(f"{key} ({kernel_cls.__name__}: {reason})")
-            if key in self._overridden_keys:
-                refused_overrides.append(f"{key} ({kernel_cls.__name__}: {reason})")
-
-        refined = self._refined(installed)
-        general = {key: self.kernel_map[key].general for key in applicable}
+            rule = self._registered.get(key, runs)
+            on_device = on_device or device.type in rule.devices or device.type in runs.devices
+            reason = rule.unavailable(call)
+            if reason is not None and runs is not rule and runs.unavailable(call) is None:
+                reason = None
+            reason = reason or rule.refusal(call)
+            if reason is None:
+                rules[key] = rule
+            else:
+                rejected.append(f"{key} ({rule.__name__}: {reason})")
         chosen = [
             key
-            for key in applicable
+            for key, rule in rules.items()
             if not any(
-                key in refined[other] or (general[key] and not general[other])
-                for other in applicable
+                key in self._preferred.get(other, ()) or (rule.general and not rules[other].general)
+                for other in rules
                 if other != key
             )
         ]
-
         if len(chosen) == 1:
-            if refused_overrides and chosen[0] not in self._overridden_keys:
+            (key,) = chosen
+            runs = self.kernel_map[key]
+            reason = None if runs is rules[key] else runs.unavailable(call) or runs.refusal(call)
+            if reason is not None:
                 raise ValueError(
-                    "the kernel supplied for "
-                    + "; ".join(refused_overrides)
-                    + f" — selection does not fall back to the shipped '{chosen[0]}' "
-                    f"when a replacement is in force. Call: {call}"
+                    f"the kernel supplied for {key} through kernel_map= ({runs.__name__}) "
+                    f"cannot serve this call: {reason}. Call: {call}"
                 )
-            return chosen[0]
-        if not chosen:
-            lead = (
-                "the kernel supplied for " + "; ".join(refused_overrides) + ", and "
-                if refused_overrides
-                else ""
+            return key
+        if not on_device and rejected:
+            raise OpNotAvailableError(
+                f"{type(self).__name__}'s in-tree kernels do not run on {device}; known "
+                f"targets for this op: {registered_targets(type(self).__name__)}"
             )
+        if not chosen:
             raise ValueError(
-                lead
-                + "no implementation serves this call: "
+                "no implementation serves this call: "
                 + "; ".join(rejected or ["no implementation is installed"])
                 + f". Call: {call}"
             )
         raise ValueError(
-            f"dispatch is ambiguous: {', '.join(chosen)} all serve this call, and none "
-            f"refines the others. Overlapping regions state which one is nested through "
-            f"``refines``, and a slot has at most one general candidate. Call: {call}"
+            f"dispatch is ambiguous: {', '.join(chosen)} all serve this call, and none is "
+            f"preferred over the others. Overlapping implementations state which one wins "
+            f"through ``preferred_over``, and an interface has at most one general one. "
+            f"Call: {call}"
         )
 
-    def select_candidate(self, slot: str, call: CallSpec) -> str:
-        """Return the key of the candidate of *slot* that serves *call*.
+    def select_implementation(self, interface: str, call: CallSpec) -> str:
+        """Return the key of the implementation of *interface* that serves *call*.
 
         Raises:
+            OpNotAvailableError: What :meth:`select_kernel_key` raises.
             ValueError: What :meth:`select_kernel_key` raises.
         """
-        return self.select_kernel_key(self._slot_keys[slot], call)
+        return self.select_kernel_key(self._interface_keys[interface], call)
 
-    # FIXME(staged-rollout): selection among every installed key, across slots.
+    # FIXME(staged-rollout): selection among every installed key, across kernel interfaces.
     #
-    # Broken invariant: a slot's candidates are the ones its interface names (ops-design.md
-    #     § Kernel selection).
-    # Why: unmigrated ops and their tests select through this without declaring slots.
-    # Cleanup: when every op declares ``slots``, delete this and select through ``select_candidate``.
+    # Broken invariant: an interface's implementations are the keys that inherit it
+    #     (ops-design.md § Kernel selection).
+    # Why: unmigrated ops and their tests select through this without declaring interfaces.
+    # Cleanup: when every op declares ``interfaces``, delete this and select through
+    #     ``select_implementation``.
     def select_kernel(self, call: object, keys: "tuple[str, ...] | None" = None) -> type[Kernel]:
         """Return the implementation that serves *call*.
 
@@ -559,13 +560,13 @@ class Op(ABC):
             entries[key] = entry
         return entries[key]
 
-    # FIXME(staged-rollout): the memoization an op outside the slot path reaches the cache by.
+    # FIXME(staged-rollout): the memoization an op without kernel interfaces reaches the cache by.
     #
-    # Broken invariant: every kernel is reached through a declared slot, one lookup per hit
+    # Broken invariant: every kernel is reached through a kernel interface, one lookup per hit
     #     (ops-design.md § Kernel selection).
     # Why: unmigrated ops override this, or select among every key through it, per call.
-    # Cleanup: when every op declares ``slots``, delete this, ``_get_or_build_kernel`` and
-    #     the unslotted branch of ``kernel_for``.
+    # Cleanup: when every op declares ``interfaces``, delete this, ``_get_or_build_kernel``
+    #     and the branch of ``kernel_for`` for a role that is no interface.
     def entry_for(self, role: str, call: object) -> Entry:
         """How to build what serves *call* for *role*, and what keys the result.
 
@@ -603,24 +604,24 @@ class Op(ABC):
 
         The one way an op's in-tree implementation reaches a kernel. It runs only when the
         in-tree kernels serve the op: a target serves the whole op instead
-        (:meth:`_call_target`). For a declared slot a hit is one lookup of ``(role, call)``;
-        a miss checks the call, selects the slot's candidate and builds or reuses the entry
+        (:meth:`_call_target`). For a kernel interface a hit is one lookup of
+        ``(role, call)``; a miss selects the implementation and builds or reuses the entry
         its build identity names (:meth:`_resolve_entry`).
 
         Args:
-            role: The slot, one of ``slots``. An op that declares none names the
-                memoization bucket of one kernel it runs, never the name of an
+            role: The kernel interface, one of ``interfaces``. An op that declares none
+                names the memoization bucket of one kernel it runs, never the name of an
                 implementation it chose.
             inputs: The tensors this kernel will be handed, for the device check.
-            call: The request key: for a slot, an instance of its interface's ``request``.
+            call: The call spec: for an interface, an instance of its ``request``.
 
         Raises:
             ValueError: What :meth:`_resolve_entry` or :meth:`entry_for` raises.
             TypeError: What :meth:`_resolve_entry` raises.
-            OpNotAvailableError: No candidate runs on the call's device, or what
+            OpNotAvailableError: No implementation runs on the call's device, or what
                 :meth:`_get_or_build_kernel` raises.
         """
-        if role in self.slots:
+        if role in self.interfaces:
             dispatched = getattr(self, "_dispatched", None)
             if dispatched is None:
                 dispatched = {}
@@ -628,47 +629,44 @@ class Op(ABC):
             try:
                 entry = dispatched.get((role, call))
             except TypeError:
-                # The miss path's checks name what makes the key unusable.
-                self._resolve_entry(role, inputs, call)
+                # The miss path's checks name what makes the call spec unusable.
+                self._resolve_entry(role, call)
                 raise
             if entry is None:
-                entry = self._resolve_entry(role, inputs, call)
+                entry = self._resolve_entry(role, call)
                 dispatched[(role, call)] = entry
             return entry
-        self._refuse_device(inputs, call, (self.kernel_map or {}).values())
+        self._refuse_device(inputs, call)
         return self._get_or_build_kernel(role, inputs, lambda: self.entry_for(role, call))
 
-    def _resolve_entry(
-        self, slot: str, inputs: "Sequence[torch.Tensor | None]", call: CallSpec
-    ) -> object:
-        """Resolve the entry serving *call* for *slot*, on a miss of the dispatch cache.
+    def _resolve_entry(self, interface: str, call: CallSpec) -> object:
+        """Resolve the entry serving *call* for *interface*, on a miss of the dispatch cache.
 
-        The device facts are read from the call's device here, by the selected candidate's
-        region and builder, and the builder runs with that device current. Two request keys
-        whose candidate names one build identity share one entry. Tuning acts on the
+        The device facts are read from the call's device here, by selection and the
+        builder, and the builder runs with that device current. Two call specs whose
+        implementation names one build identity share one entry. Tuning acts on the
         resolved entry, never through the builder.
 
         Raises:
-            TypeError: *call* is not the slot's request type, or holds a field that cannot
-                key the cache.
-            ValueError: What :meth:`select_candidate` raises.
-            OpNotAvailableError: No candidate of the slot runs on the call's device.
+            TypeError: *call* is not the interface's ``request`` type, or holds a field that
+                cannot key the cache.
+            ValueError: What :meth:`select_implementation` raises.
+            OpNotAvailableError: What :meth:`select_implementation` raises.
         """
-        request = self.slots[slot].request
+        request = self.interfaces[interface].request
         if not isinstance(call, request):
             raise TypeError(
-                f"{type(self).__name__}.{slot} takes a {request.__name__} request key, "
+                f"{type(self).__name__}.{interface} takes a {request.__name__} call spec, "
                 f"not {type(call).__name__}"
             )
         call.refuse_unkeyable()
-        self._refuse_device(inputs, call, [self.kernel_map[k] for k in self._slot_keys[slot]])
-        cls = self.kernel_map[self.select_candidate(slot, call)]
+        cls = self.kernel_map[self.select_implementation(interface, call)]
         identity, build = cls.entry_for(call)
         roles = getattr(self, "_kernel_roles", None)
         if roles is None:
             roles = {}
             self._kernel_roles = roles
-        entries = roles.setdefault(slot, {})
+        entries = roles.setdefault(interface, {})
         entry = entries.get((cls, identity))
         if entry is None:
             on_cuda = call.device is not None and call.device.type == "cuda"
@@ -680,13 +678,8 @@ class Op(ABC):
                 kernel.request_tune()
         return entry
 
-    def _refuse_device(
-        self,
-        inputs: "Sequence[torch.Tensor | None]",
-        call: object,
-        classes: "Iterable[type[Kernel]]",
-    ) -> None:
-        """Raise when none of *classes* declares the call's device type.
+    def _refuse_device(self, inputs: "Sequence[torch.Tensor | None]", call: object) -> None:
+        """Raise when no implementation in the kernel map declares the call's device type.
 
         Each implementation states the devices it runs on (``Kernel.devices``), so a replacement
         that runs elsewhere is asked about its own. The call's device is the call record's, else
@@ -695,7 +688,7 @@ class Op(ABC):
         tensors = sorted((t for t in inputs if t is not None), key=lambda t: t.device.type == "cpu")
         device = getattr(call, "device", None) or (tensors[0].device if tensors else None)
         device = torch.device(device) if device is not None else self._declared_device()
-        classes = list(classes)
+        classes = (self.kernel_map or {}).values()
         if device is None or not classes:
             return
         if not any(device.type in getattr(c, "devices", Kernel.devices) for c in classes):

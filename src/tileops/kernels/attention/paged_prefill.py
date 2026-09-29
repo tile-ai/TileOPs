@@ -35,7 +35,7 @@ class PagedPrefillKernel(Kernel):
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        return cls.arch_refusal(call) or cls._region_refusal(call)
+        return cls._region_refusal(call)
 
     @classmethod
     def _region_refusal(cls, call: AttentionCall) -> Optional[str]:

@@ -6,9 +6,9 @@ from typing import ClassVar, Dict, Mapping, Optional, Sequence
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel, Slot
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.norm import LayerNormKernel
-from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdSlot
+from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 
 from ..op_base import Op
 from .norm_base import affine_or_constant
@@ -35,7 +35,9 @@ class LayerNormFwdOp(Op):
 
     compile_boundary: ClassVar[bool] = True
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"layer_norm": LayerNormKernel}
-    slots: ClassVar[Mapping[str, type[Slot]]] = {"layer_norm": LayerNormFwdSlot}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "layer_norm": LayerNormFwdInterface
+    }
 
     def __init__(
         self,

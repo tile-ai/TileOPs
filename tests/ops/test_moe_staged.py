@@ -250,7 +250,7 @@ def test_grouped_gemm_ambiguous_and_incompatible_override_fail_explicitly() -> N
             return {"special": _PhysicalPsumCandidate, "general": _GeneralCandidate}
 
     overridden = OverrideableOp(_TIGHT, kernel_map={"special": _NeverCandidate})
-    with pytest.raises(ValueError, match="does not fall back"):
+    with pytest.raises(ValueError, match="the kernel supplied for special"):
         overridden.select_kernel_key(("special", "general"), call)
 
 
@@ -274,8 +274,8 @@ def test_call_architecture_comes_from_the_input_device(monkeypatch: pytest.Monke
     monkeypatch.setattr(tileops.utils, "device_facts", fake_device_facts)
     op = MoeGroupedGemmFwdOp(_TIGHT, kernel_map={"grouped_gemm": ReadsArch})
     op(
-        torch.empty(1, 4, dtype=torch.bfloat16, device=device),
-        torch.empty(1, 2, 4, dtype=torch.bfloat16, device=device),
+        torch.empty(1, 8, dtype=torch.bfloat16, device=device),
+        torch.empty(1, 8, 8, dtype=torch.bfloat16, device=device),
         torch.tensor([1], dtype=torch.int32, device=device),
     )
 
@@ -288,8 +288,9 @@ def test_call_architecture_comes_from_the_input_device(monkeypatch: pytest.Monke
 def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
     device = torch.device("cuda")
     ends = torch.tensor([1], dtype=torch.int32, device=device)
-    a = torch.ones(1, 4, dtype=torch.bfloat16, device=device)
-    b = torch.ones(1, 2, 4, dtype=torch.bfloat16, device=device)
+    # A shape the in-tree kernel serves: the replacement runs under the key it selects.
+    a = torch.ones(1, 8, dtype=torch.bfloat16, device=device)
+    b = torch.ones(1, 8, 8, dtype=torch.bfloat16, device=device)
     _ExecutableGroupedCandidate.builds = 0
     op = MoeGroupedGemmFwdOp(
         _TIGHT, kernel_map={"grouped_gemm": _ExecutableGroupedCandidate}, target=BUILTIN, tune=True
@@ -298,20 +299,20 @@ def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
     first = op(a, b, ends)
     second = op(a, b, ends)
     # More rows for the same experts is the same specialization.
-    taller = op(torch.ones(3, 4, dtype=torch.bfloat16, device=device), b, ends * 3)
+    taller = op(torch.ones(3, 8, dtype=torch.bfloat16, device=device), b, ends * 3)
 
-    assert first.shape == second.shape == (1, 2)
-    assert taller.shape == (3, 2)
+    assert first.shape == second.shape == (1, 8)
+    assert taller.shape == (3, 8)
     assert _ExecutableGroupedCandidate.builds == 1
     # The build is told to tune: the op's flag travels in the call record.
     assert next(iter(op.built_kernels("grouped_gemm").values())).call.tune
     assert len(op.built_kernels("grouped_gemm")) == 1
-    assert op.eval_roofline() == (2 * 3 * 2 * 4, (3 * 4 + 1 * 2 * 4 + 3 * 2) * 2 + 4)
+    assert op.eval_roofline() == (2 * 3 * 8 * 8, (3 * 8 + 1 * 8 * 8 + 3 * 8) * 2 + 4)
 
-    out = torch.empty(1, 2, dtype=torch.bfloat16, device=device)
+    out = torch.empty(1, 8, dtype=torch.bfloat16, device=device)
     assert op(a, b, ends, out=out) is out
     with pytest.raises(ValueError, match="out does not have the dtype of output"):
-        op(a, b, ends, out=torch.empty(1, 2, dtype=torch.float32, device=device))
+        op(a, b, ends, out=torch.empty(1, 8, dtype=torch.float32, device=device))
 
 
 @pytest.mark.smoke

@@ -871,7 +871,7 @@ class GemmW4A16Kernel(Kernel):
 
     @classmethod
     def refusal(cls, call: GemmCall) -> Optional[str]:
-        return cls.arch_refusal(call) or cls._region_refusal(call)
+        return cls._region_refusal(call)
 
     @staticmethod
     def _region_refusal(call: GemmCall) -> Optional[str]:

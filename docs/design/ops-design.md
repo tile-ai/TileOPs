@@ -34,29 +34,31 @@ The generated `_validate_dtypes` is the only dtype gate, and it runs on every `f
 
 ### Kernel selection
 
-**Construction reads no device property.** An op constructs where it is imported. The tensors arrive later, perhaps on a device the process has not touched, perhaps on hardware where the probe does not exist at all. Installing the kernel map resolves classes and nothing more; a target that cannot run the op is refused when a kernel is first selected, built or called — by the implementation, which owns the architectures it was written for.
+**Construction reads no device property.** Installing the kernel map resolves classes only; a device that cannot run the op is refused when a kernel is first selected, built or called. Why: the tensors arrive later, perhaps on a device the process has not touched.
 
-**A slot is a generic function; its candidates are the methods.** An op declares one interface type per slot, and the classes implementing it, in-tree or registered by a backend, are its candidates. Why: a slot's candidate set, and what each candidate owes, is checkable before any call.
+**A kernel interface is a place an op calls a kernel.** Its class publishes the call contract: the call spec, the tensors handed, what returns, and what `entry_for(call)` owes. An op opens one only where semantics or that contract changes. Why: a backend implements an interface from the contract alone.
 
-**An op opens a slot only where semantics or the kernel call contract changes.** Shape, dtype, architecture and performance choose among one slot's candidates.
+**An implementation is a kernel class that inherits an interface, registered under a key.** It is one complete algorithm; tile sizes, split counts and fusion among fixed stages are its plan. Why: it is the unit a backend replaces and selection chooses.
 
-**The slot interface is a candidate's whole public contract.** It fixes the request key, the tensors a candidate is handed and what it returns, and what `entry_for(call)` owes: a build identity covering every fact that changes what is built, and a builder that runs only on a miss. The constructor is the candidate's own. Why: a backend replaces or adds a candidate from the contract alone.
+**A call spec holds the immutable facts of one call.** Device facts derive from its device on a miss. Why: equal call specs denote one call, so one resolved entry serves every recurrence.
 
-**A candidate is one complete algorithm, replaceable on its own.** Tile sizes, split counts and fusion among one fixed set of stages are its plan; a shape-selected change of decomposition or data flow is another candidate. Why: the candidate is the unit a backend replaces and selection chooses.
+**Availability filters before selection.** An implementation is available where its `devices` and `supported_archs` allow. Why: where a kernel runs is a fact of the implementation, not of the calls it serves.
 
-**Selection follows declared regions, never order.** A candidate states its region positively and its limits itself; an op checks no candidate's limits, and the signature holds only what the algorithm requires ([manifest.md § Refinements](manifest.md#refinements)). "A refines B" asserts that A's region is a strict subset of B's within the slot. Selection takes the unique maximal applicable candidate under refinement, with the slot's single general candidate as the least specific; none applicable is an error and several incomparable ones an ambiguity. Installation checks that refinements stay in the slot and form no cycle; tests give evidence for each subset claim, which no check can prove. Why: specificity is a declared relation, so a candidate's standing follows from declarations, not from position.
+**Applicability states the calls an implementation serves, positively.** An op checks no implementation's limits, and the signature holds only what the algorithm requires ([manifest.md § Refinements](manifest.md#refinements)). Why: each implementation answers for itself.
 
-**A call is a hashable request key; device facts resolve on a miss.** The key holds every stable fact that affects selection or building, the device included; architecture and device capacity are derived from that device when first read. Tuning policy and priorities are not call facts, and policy several candidates share sits on the family's kernel base. Why: equal keys denote one call, so a resolved entry is valid wherever its key recurs.
+**Precedence picks among the available implementations that apply.** `general` is below every other, and `preferred_over` names the implementations one wins over, transitively and acyclically; no winner is an error, several an ambiguity. Why: a declared relation composes implementations unaware of each other, where order or numeric priority cannot.
 
-**Every slot dispatches through one path.** The candidate set is a snapshot taken at installation; a hit is one lookup by slot and request key, and a miss selects a candidate and builds or reuses its entry. Tuning acts on the resolved entry. Why: a hit costs one lookup, and every candidate is asked the same question in the same place.
+**An entry is what `entry_for` builds, shared by build identity.** A hit is one lookup by interface and call spec; a miss selects, then builds or reuses. Tuning acts on the entry. Why: a hit costs one lookup.
 
-The rule is implementation choice within one slot. Choosing the slot sits above it, dtype specialization beside it; neither goes through it. See [S13](op-slot-rules.md#slot-s13).
+**Adding a kernel takes two hooks.** Register the implementation, then state `applies`, adding `preferred_over` only where it overlaps another non-general implementation. Undeclared, an implementation is available wherever its architectures allow, applies to every call and has no precedence. Why: a single-implementation op only inherits its interface.
+
+Choosing the interface sits above selection, dtype specialization beside it. See [S13](op-slot-rules.md#slot-s13).
 
 ### Target boundary
 
 **A target replaces the whole op.** A target that registers a builder for an op serves every call of it, and its kernel is called with the tensors its builder was described with. The op's own body is the in-tree implementation and does not run for a target.
 
-**Extension has three granularities.** `kernel_map=` replaces one candidate of one op instance; a backend registers an added candidate for a declared slot, under the slot's rules, and the in-tree candidates keep serving the calls it does not; a target replaces the whole op. Why: a backend takes over exactly the calls it serves.
+**`kernel_map=` replaces what runs under a key, not the key's rule.** The key keeps its registered implementation's applicability and precedence, and it is an error only when the key is selected and the replacement is unavailable or refuses. Why: a replacement cannot open an ambiguity or a gap; changing which calls a kernel serves is registration.
 
 **The op layer guarantees a target the manifest, and nothing more.** The generated checks run before the target is called. Every tensor is on the call device except those declaring `device: cpu`, every tensor declaring `contiguous: true` is contiguous, and the call, a caller-supplied output buffer included, meets the signature.
 
@@ -68,11 +70,11 @@ The rule is implementation choice within one slot. Choosing the slot sits above 
 
 ### Kernel caching and enumeration
 
-L1 owns get-or-build. An op names the **slot** a kernel serves, and the selected candidate's `entry_for` names the **identity** of the specialization and the factory that builds it. The factory runs on the first miss for that identity and never again. An op MUST NOT carry a get-or-build of its own — no cache dict, no build guarded on a kernel attribute being unset. Holding what L1 returned in `self.kernel` is not one.
+L1 owns get-or-build. An op names the **kernel interface** a kernel serves, and the selected implementation's `entry_for` names the **identity** of the specialization and the factory that builds it. The factory runs on the first miss for that identity and never again. An op MUST NOT carry a get-or-build of its own — no cache dict, no build guarded on a kernel attribute being unset. Holding what L1 returned in `self.kernel` is not one.
 
-The identity is opaque to L1 and must carry every input that can change what gets built. The selected candidate names those axes in its own `entry_for`, because only it knows what its constructor reads.
+The identity is opaque to L1 and must carry every input that can change what gets built. The selected implementation names those axes in its own `entry_for`, because only it knows what its constructor reads.
 
-The entry, not the kernel, is the unit built once. A specialization that must build several kernels together returns them as one immutable entry from one factory; kernels keyed independently of each other are separate slots.
+The entry, not the kernel, is the unit built once. A specialization that must build several kernels together returns them as one immutable entry from one factory; kernels keyed independently of each other are separate interfaces.
 
 `iter_kernels()` enumerates entries and delegates explicitly, never by reflecting over attributes. Reflection could only guess: a kernel nested deeper than the traversal went, or held in an attribute of an unrecognised type, was silently invisible. Declaring turns that silent omission into a missing declaration.
 
@@ -84,7 +86,7 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 
 `delegate_for` is eager, like `kernel_for`: a sub-op that depends on the call is built in `_eager_forward`, never on a traced path.
 
-`built_kernels(slot)` is the backend-neutral view: one entry per identity, whoever built it. `iter_kernels()`, and through it `autotune()` and `run_config()`, act on the TileOPs `Kernel` instances the entries hold. A target's builder is not passed `tune`, so a tuning request that cannot reach it warns instead of being dropped.
+`built_kernels(interface)` is the backend-neutral view: one entry per identity, whoever built it. `iter_kernels()`, and through it `autotune()` and `run_config()`, act on the TileOPs `Kernel` instances the entries hold. A target's builder is not passed `tune`, so a tuning request that cannot reach it warns instead of being dropped.
 
 ## Scaffolding an Op from a Manifest Entry
 
@@ -92,7 +94,7 @@ The scaffold emits a T2 (L1-direct) op file from one manifest entry. The call ch
 
 ### Step 1: File header + imports
 
-**Input.** The Kernel classes the op dispatches to, and the family's slot contracts. The kernel map is owned by the code, not the manifest.
+**Input.** The Kernel classes the op dispatches to, and the family's kernel interfaces. The kernel map is owned by the code, not the manifest.
 
 **Output.**
 
@@ -108,15 +110,18 @@ from typing import ClassVar, Dict, Mapping, Optional
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel, Slot
-from tileops.kernels.reduction.call_spec import ExampleCumsumCall, ExampleCumsumFwdSlot
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.reduction.call_spec import (
+    ExampleCumsumCall,
+    ExampleCumsumFwdInterface,
+)
 from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel
 from tileops.manifest.primitives import normalize_axis
 
 from ..op_base import Op
 ```
 
-**Validation.** Every concrete-Kernel import matches one `kernel_types` value verbatim, and every slot interface one `slots` value. The `Kernel` and `Slot` base imports and the `..op_base` relative import are fixed.
+**Validation.** Every concrete-Kernel import matches one `kernel_types` value verbatim, and every kernel interface one `interfaces` value. The `Kernel` and `KernelInterface` base imports and the `..op_base` relative import are fixed.
 
 **Reference.** [Slot S1](op-slot-rules.md#slot-s1), [S2](op-slot-rules.md#slot-s2), [S3](op-slot-rules.md#slot-s3), [S4](op-slot-rules.md#slot-s4).
 
@@ -174,9 +179,9 @@ def __init__(
 
 **Reference.** [Slot S12](op-slot-rules.md#slot-s12), [S13](op-slot-rules.md#slot-s13).
 
-### Step 4: `kernel_types` + `slots` + `forward`
+### Step 4: `kernel_types` + `interfaces` + `forward`
 
-**Input.** `signature.inputs`; the kernels and slot contracts of Step 1.
+**Input.** `signature.inputs`; the kernels and kernel interfaces of Step 1.
 
 **Optional inputs.** An `optional: true` input takes a `None` default in `forward`, and presence is read from the call rather than settled at construction, so one instance serves both ways of calling the op. Where the presence changes what gets built, it belongs in the kernel cache key alongside the shapes.
 
@@ -184,13 +189,15 @@ def __init__(
 
 ```python
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"example_cumsum_fwd": ExampleCumsumKernel}
-    slots: ClassVar[Mapping[str, type[Slot]]] = {"example_cumsum_fwd": ExampleCumsumFwdSlot}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "example_cumsum_fwd": ExampleCumsumFwdInterface
+    }
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # The generated signature checks have run: dtype, shape, dim range.
         dim = normalize_axis(self.dim, x.ndim)
         x = x.contiguous()          # handed over as the manifest declares it
-        # The tensors the kernel will be handed, then the request key.
+        # The tensors the kernel will be handed, then the call spec.
         call = ExampleCumsumCall(device=x.device, shape=tuple(x.shape), dim=dim, dtype=x.dtype)
         return self.kernel_for("example_cumsum_fwd", (x,), call)(x)
 ```
@@ -199,7 +206,7 @@ def __init__(
 
 - `forward` repeats no check the signature states. It checks no device kind: a kernel states which devices it runs on.
 - The kernel comes from `self.kernel_for`, never a cache dict the op owns:
-  - The request key carries `x.dtype`, so a call with another dtype resolves a second entry rather than reusing the first. The candidate's own `entry_for` names what it is built from; the op defines none.
+  - The call spec carries `x.dtype`, so a call with another dtype resolves a second entry rather than reusing the first. The implementation's own `entry_for` names what it is built from; the op defines none.
 - The op never trims kernel output, and never reshapes its input for the kernel: a kernel that pads or permutes internally takes and returns the shapes the manifest declares.
 
 **Reference.** [Slot S14](op-slot-rules.md#slot-s14), [S15](op-slot-rules.md#slot-s15), [S16](op-slot-rules.md#slot-s16).
@@ -262,7 +269,7 @@ This playbook emits exactly the 16 slots above. The following are **not** produc
 
 ## Implementing a Kernel
 
-Kernel implementation is not covered by this playbook. The device-side interface a scaffolded Op depends on — the slot interface's `forward` and the classmethod `entry_for`, required `kernel`, optional `default_config` / `autotune_configs` / `supported_archs` — is specified in [Kernel base class attributes](ops-design-reference.md#base-class-protocol).
+Kernel implementation is not covered by this playbook. The device-side interface a scaffolded Op depends on — the kernel interface's `forward` and the classmethod `entry_for`, required `kernel`, optional `default_config` / `autotune_configs` / `supported_archs` — is specified in [Kernel base class attributes](ops-design-reference.md#base-class-protocol).
 
 ## Compile Dispatch Boundary
 

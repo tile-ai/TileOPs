@@ -17,32 +17,32 @@ class _DeviceFact:
     """
 
     def __init__(self, name: str) -> None:
-        self.slot = f"_{name}"
+        self.stored = f"_{name}"
 
     def __get__(self, record: "CallSpec | None", owner: type) -> object:
         if record is None:
             return self
         facts = record.__dict__
-        if self.slot not in facts:
+        if self.stored not in facts:
             record._read_device_facts()
-        return facts[self.slot]
+        return facts[self.stored]
 
     def __set__(self, record: "CallSpec", value: object) -> None:
         if value is not self:
-            record.__dict__[self.slot] = value
+            record.__dict__[self.stored] = value
 
 
 @dataclasses.dataclass(frozen=True)
 class CallSpec:
-    """A call's request key: what the caller asked for and the device it runs on.
+    """A call spec: the immutable facts of one call and the device it runs on.
 
-    A family subclasses this and adds every fact its candidates read in ``applies`` /
+    A family subclasses this and adds every fact its implementations read in ``applies`` /
     ``refusal`` / ``entry_for``, and nothing a tensor's contents decide. Equality and the
     hash cover those facts and ``device``, normalized to an explicit type and index.
 
     The device facts (``arch``, ``calibration``, ``sm_count``) are derived from ``device``
     and take no part in equality. A caller that states one gets what it stated; one left
-    unstated is read from ``device`` when a region or builder first reads it, which the
+    unstated is read from ``device`` when selection or a builder first reads it, which the
     dispatcher does only on a miss.
     """
 
@@ -55,9 +55,9 @@ class CallSpec:
     device: "torch.device | None" = None
     # FIXME(staged-rollout): tuning policy travels on the record of an unmigrated call.
     #
-    # Broken invariant: a request key carries call facts only (ops-design.md § Kernel selection).
-    # Why: unmigrated ops and their candidates still pass ``tune`` through the record.
-    # Cleanup: when no op reaches ``Op.kernel_for`` outside a declared slot, delete this field.
+    # Broken invariant: a call spec carries call facts only (ops-design.md § Kernel selection).
+    # Why: unmigrated ops and their kernels still pass ``tune`` through the record.
+    # Cleanup: when every op declares ``interfaces``, delete this field.
     tune: bool = dataclasses.field(default=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -111,7 +111,7 @@ class CallSpec:
             elif not isinstance(value, keyable):
                 raise TypeError(
                     f"{type(self).__name__}.{name} holds a {type(value).__name__}, which "
-                    f"cannot key a dispatch cache; a request key holds immutable values only"
+                    f"cannot key a dispatch cache; a call spec holds immutable values only"
                 )
 
     def __str__(self) -> str:

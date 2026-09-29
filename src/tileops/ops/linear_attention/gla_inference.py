@@ -6,10 +6,10 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel, Slot
+from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLAInferenceCallSpec,
-    GLAInferenceFwdSlot,
+    GLAInferenceFwdInterface,
 )
 from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeFwdKernel
 from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
@@ -41,7 +41,9 @@ class GLAInferenceFwdOp(Op):
         "gla_dense_prefill_partitioned": GLADensePrefillPartitionedKernel,
         "gla_dense_prefill_subchunk": GLADensePrefillSubchunkKernel,
     }
-    slots: ClassVar[Mapping[str, type[Slot]]] = {"gla_inference": GLAInferenceFwdSlot}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "gla_inference": GLAInferenceFwdInterface
+    }
 
     def __init__(
         self,

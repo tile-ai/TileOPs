@@ -1,13 +1,10 @@
-import dataclasses
-import functools
-import inspect
 import warnings
 from abc import ABC, abstractmethod
 from typing import Any, Callable, ClassVar, Dict, Hashable, Optional, Union
 
 import torch
 
-__all__ = ["Entry", "Kernel", "Slot"]
+__all__ = ["Entry", "Kernel", "KernelInterface"]
 
 # What ``Op.kernel_for`` stores for one specialization: the identity two
 # builds share to be the same entry, and the thunk that produces it.
@@ -74,17 +71,17 @@ class Kernel(ABC):
     # ``autotune_supply_prog`` instead; left False, autotuning refuses.
     autotune_accepts_random_int_inputs: bool = False
 
-    # The device types this implementation runs on. A call on any other device, meta included,
-    # is refused before anything is built; a replacement kernel may declare others.
+    # The device types this implementation runs on. With ``supported_archs`` it states where
+    # the implementation is available; selection filters on it before asking ``refusal``.
     devices: ClassVar[frozenset[str]] = frozenset({"cuda"})
 
-    # Whether this implementation is the least specific candidate of its slot, below every
-    # other one. A slot has at most one; it runs where no other candidate serves the call.
+    # Whether this implementation is below every other implementation of its interface.
+    # An interface has at most one; it runs where no other implementation serves the call.
     general: bool = False
 
-    # The keys of candidates in the same slot whose region strictly contains this one's.
-    # Where both apply, this one is the more specific and serves the call.
-    refines: ClassVar[frozenset[str]] = frozenset()
+    # The keys of implementations of the same interface this one wins over where both are
+    # available and apply. Transitive.
+    preferred_over: ClassVar[frozenset[str]] = frozenset()
 
     # Set when tuning was requested before the program existed; the next launch tunes it.
     _tune_pending: bool = False
@@ -95,45 +92,32 @@ class Kernel(ABC):
     def applies(cls, call: Any) -> bool:
         """Whether this implementation serves the call *call* describes.
 
-        States a region positively — what this class serves, never what a
-        sibling serves. A region nested in a sibling's is declared through
-        ``refines``, not by the sibling excluding it.
+        States the calls it serves positively, never what a sibling serves. Where two
+        non-general implementations both apply, ``preferred_over`` says which one wins.
+        Where it is available is ``devices`` and ``supported_archs``, not this.
 
-        ``supported_archs`` says where this class can run, and one the device
-        cannot run does not apply.
-
-        Answered by the class that would run, so a ``kernel_map`` override is
-        asked about its own region rather than the region of the class it
-        replaced.
-
-        The default serves anything the architecture allows. A specialised
-        implementation that leaves it unset therefore claims every call, which
-        collides with its siblings and is reported rather than silently
-        preferred.
+        The default serves every call.
         """
         return True
 
     @classmethod
     def refusal(cls, call: Any) -> Optional[str]:
-        """Why this class cannot serve *call*, or ``None`` when it can.
+        """Why this class does not serve *call*, or ``None`` when it does.
 
-        The class that declines says why. A caller told only that nothing served
-        the call cannot tell an architecture it does not have from a shape the
-        implementation was never written for, and whoever is selecting has no
-        way to find out without reading the class it just rejected.
+        ``applies`` with a reason. A class that names the limit it refuses overrides this,
+        so a caller told that nothing served the call learns why each class declined.
         """
-        reason = cls.arch_refusal(call)
-        if reason is None and not cls.applies(call):
-            return "does not serve this call"
-        return reason
+        return None if cls.applies(call) else "does not serve this call"
 
     @classmethod
-    def arch_refusal(cls, call: Any) -> Optional[str]:
-        """Why this class cannot run on *call*'s architecture, or ``None`` when it can.
+    def unavailable(cls, call: Any) -> Optional[str]:
+        """Why this class cannot run on *call*'s device, or ``None`` when it can.
 
-        The first question :meth:`refusal` asks. A class that names the shape limit
-        it refuses overrides ``refusal`` and asks this first.
+        From ``devices`` and ``supported_archs``. Selection asks this before ``refusal``.
         """
+        device = getattr(call, "device", None)
+        if device is not None and device.type not in cls.devices:
+            return f"runs on {sorted(cls.devices)}, not {device.type}"
         archs = cls.supported_archs
         if archs is not None and call.arch not in archs:
             return f"built for architectures {sorted(archs)}, device reports {call.arch}"
@@ -459,82 +443,19 @@ class Kernel(ABC):
         print(f"Best config: {self.config}")
 
 
-class Slot(ABC):
-    """The public contract of one kernel slot, which every candidate of the slot implements.
+class KernelInterface(ABC):
+    """The call contract of one kernel interface, which each of its implementations inherits.
 
-    A family declares one subclass per slot. ``request`` names the request-key type the op
-    passes (a frozen ``CallSpec``), and ``forward`` states the call the op makes on the
-    built entry: each tensor's shape, dtype, layout and device, which ones it writes in
-    place or may alias, and what it returns. A candidate is a ``Kernel`` that inherits the
-    interface; its constructor is its own. Besides ``forward`` it answers, from the call:
-
-    - ``refusal(call)``: why it cannot serve the call, from its ``devices``,
-      ``supported_archs`` and the positive region ``applies`` states;
-    - ``general``: whether it is the slot's least specific candidate, at most one per slot;
-    - ``refines``: the keys of candidates of the same slot whose region strictly contains
-      its own;
-    - ``entry_for(call)``: a hashable build identity holding every fact that changes what
-      is built, and a builder that runs on a miss only and returns an entry meeting
-      ``forward``.
-
-    A replacement and an added candidate are checked against this contract, never against
-    the class they replace.
+    ``request`` names the ``CallSpec`` subclass the op passes as the call spec. ``forward``
+    states the call the op makes on the built entry: each tensor's shape, dtype, layout and
+    device, which ones it writes in place or may alias, and what it returns. An
+    implementation is a ``Kernel`` that inherits the interface, with a classmethod
+    ``entry_for`` and a constructor of its own.
     """
 
     request: ClassVar[type]
 
     @abstractmethod
     def forward(self, *args: Any, **kwargs: Any) -> Any:
-        """The call the op makes on a candidate's entry."""
+        """The call the op makes on an implementation's entry."""
         raise NotImplementedError
-
-    @classmethod
-    @functools.cache
-    def mismatch(cls, candidate: type) -> Optional[str]:
-        """Why *candidate* does not implement this slot, or ``None`` when it does.
-
-        Nominal: a class implements the slot by inheriting the interface. Its ``forward``
-        takes the interface's arguments by the same names and positions, anything it adds
-        has a default, and a return annotation it states is the interface's. Its
-        ``entry_for`` is a classmethod.
-        """
-        from tileops.kernels.call_spec import CallSpec
-
-        request = cls.request
-        if not (
-            issubclass(request, CallSpec)
-            and dataclasses.is_dataclass(request)
-            and request.__dataclass_params__.frozen
-        ):
-            return f"{cls.__name__}.request {request.__name__} is not a frozen CallSpec"
-        if not (isinstance(candidate, type) and issubclass(candidate, Kernel)):
-            return f"{candidate!r} is not a Kernel subclass"
-        if not issubclass(candidate, cls):
-            return f"{candidate.__name__} does not implement {cls.__name__}"
-        if not isinstance(inspect.getattr_static(candidate, "entry_for"), classmethod):
-            return f"{candidate.__name__}.entry_for is not a classmethod"
-        declared = inspect.signature(cls.forward, eval_str=True)
-        expected = list(declared.parameters)[1:]
-        signature = inspect.signature(candidate.forward, eval_str=True)
-        returned = signature.return_annotation
-        if returned is not signature.empty and returned != declared.return_annotation:
-            return (
-                f"{candidate.__name__}.forward returns {returned}, where {cls.__name__} "
-                f"returns {declared.return_annotation}"
-            )
-        positional = [
-            p.name
-            for p in signature.parameters.values()
-            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
-        ][1 : len(expected) + 1]
-        try:
-            signature.bind(None, *expected)
-        except TypeError as exc:
-            return f"{candidate.__name__}.forward does not take {cls.__name__}'s arguments: {exc}"
-        takes_rest = any(p.kind is p.VAR_POSITIONAL for p in signature.parameters.values())
-        if positional != expected and not takes_rest:
-            return (
-                f"{candidate.__name__}.forward takes {positional}, where {cls.__name__} "
-                f"passes {expected}"
-            )
-        return None

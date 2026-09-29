@@ -23,8 +23,8 @@ from tileops.kernels.attention import (
     GQASlidingWindowVarlenFwdWgmmaPipelinedKernel,
     MHABwdWsKernel,
 )
-from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdSlot
-from tileops.kernels.kernel_base import Entry, Kernel, Slot
+from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
+from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
 from tileops.perf.profile import tensor_core_roof
 
 from ..op_base import Op
@@ -210,7 +210,7 @@ class GroupedQueryAttentionDenseFwdOp(Op):
         "gqa_dense_decode_long_context": GQADecodeLongContextKernel,
         "gqa_dense_sliding_window": GQADenseSlidingWindowKernel,
     }
-    slots: ClassVar[Mapping[str, type[Slot]]] = {"gqa_dense": GQADenseFwdSlot}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gqa_dense": GQADenseFwdInterface}
 
     def __init__(
         self,

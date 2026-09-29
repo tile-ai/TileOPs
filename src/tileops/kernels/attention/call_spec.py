@@ -1,4 +1,4 @@
-"""The facts of one attention call, the regions kernels answer for, and the slot contracts.
+"""The facts of one attention call, the regions kernels answer for, and the kernel interface.
 
 ``AttentionCall`` is what an op states about a call; the region helpers are the
 predicates kernel classes answer ``applies`` with, kept here because more than
@@ -12,12 +12,12 @@ from typing import Optional
 import torch
 
 from ..call_spec import CallSpec
-from ..kernel_base import Slot
+from ..kernel_base import KernelInterface
 
 __all__ = [
     "ATTENTION_DTYPES",
     "AttentionCall",
-    "GQADenseFwdSlot",
+    "GQADenseFwdInterface",
     "dense_decode_limit_refusal",
     "dense_decode_refusal",
     "dense_decode_region",
@@ -75,7 +75,7 @@ class AttentionCall(CallSpec):
     accum_dtype: torch.dtype = torch.float32
 
 
-class GQADenseFwdSlot(Slot):
+class GQADenseFwdInterface(KernelInterface):
     """Grouped-query attention over dense Q, K and V."""
 
     request = AttentionCall

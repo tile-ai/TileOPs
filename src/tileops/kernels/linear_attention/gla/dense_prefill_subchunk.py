@@ -9,7 +9,7 @@ import torch
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry
 
-from .call_spec import GLAInferenceCallSpec, GLAInferenceFwdSlot, dense_entry, serves_dense
+from .call_spec import GLAInferenceCallSpec, GLAInferenceFwdInterface, dense_entry, serves_dense
 from .gla_fwd import (
     GLAFwdKernel,
     _gla_fwd_h_kernel,
@@ -208,7 +208,7 @@ def _gla_fwd_o_from_a_kernel(
     return _o_func
 
 
-class GLADensePrefillSubchunkKernel(GLAFwdKernel, GLAInferenceFwdSlot):
+class GLADensePrefillSubchunkKernel(GLAFwdKernel, GLAInferenceFwdInterface):
     """Retain the proven state pass while replacing the costly output pass."""
 
     supported_archs = [90]

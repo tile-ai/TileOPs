@@ -1,8 +1,8 @@
-"""The slot dispatch contract: selection, the dispatch cache, and the three extension points.
+"""The kernel dispatch contract: selection, the dispatch cache, and the three extension points.
 
-The mechanism is driven through a fake family whose candidates run on the CPU, so selection,
-caching and installation checks need no device. The contract tests use a shipped slot and
-write their candidates against its published interface only.
+The mechanism is driven through a fake family whose implementations run on the CPU, so
+selection, caching and installation checks need no device. The contract tests use a shipped
+kernel interface and write their implementations against it only.
 """
 
 import dataclasses
@@ -16,10 +16,10 @@ import torch
 import torch.nn.functional as F
 
 import tileops.ops
-from tileops.backend import BUILTIN, register_candidate, registry
+from tileops.backend import BUILTIN, register_implementation, registry
 from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Kernel, Slot
-from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdSlot
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops.ops import LayerNormFwdOp
 from tileops.ops.op_base import Op
 from workloads.device import run_device
@@ -32,7 +32,7 @@ class _Call(CallSpec):
     n: int = 0
 
 
-class _Scaling(Slot):
+class _Scaling(KernelInterface):
     """Scale *x*."""
 
     request = _Call
@@ -42,8 +42,8 @@ class _Scaling(Slot):
         """Return a new tensor."""
 
 
-class _Candidate(Kernel, _Scaling):
-    """Built per decade of ``n``, so two request keys can share one build identity."""
+class _Implementation(Kernel, _Scaling):
+    """Built per decade of ``n``, so two call specs can share one build identity."""
 
     devices = frozenset({"cpu"})
 
@@ -62,17 +62,18 @@ class _Candidate(Kernel, _Scaling):
         self.config = {"tuned": True}
 
 
-def _candidate(name: str, region=lambda call: True, **attrs) -> type:
-    """A candidate class whose region is *region*."""
-    namespace = {"applies": classmethod(lambda cls, call: region(call)), **attrs}
-    return type(name, (_Candidate,), namespace)
+def _implementation(name: str, applies=lambda call: True, **attrs) -> type:
+    """An implementation of ``_Scaling`` that serves the calls *applies* accepts."""
+    namespace = {"applies": classmethod(lambda cls, call: applies(call)), **attrs}
+    return type(name, (_Implementation,), namespace)
 
 
-_GENERAL = _candidate("General", general=True)
-_POSITIVE = _candidate("Positive", lambda c: c.n > 0)
-_BAND = _candidate("Band", lambda c: 10 < c.n <= 50, refines=frozenset({"positive"}))
-_HUNDREDS = _candidate("Hundreds", lambda c: c.n > 100, refines=frozenset({"band"}))
-_NEGATIVE = _candidate("Negative", lambda c: c.n < 0)
+_GENERAL = _implementation("General", general=True)
+_POSITIVE = _implementation("Positive", lambda c: c.n > 0)
+_BAND = _implementation("Band", lambda c: 10 < c.n <= 50, preferred_over=frozenset({"positive"}))
+# Never applies with the band; it wins over the positive through it.
+_HUNDREDS = _implementation("Hundreds", lambda c: c.n > 100, preferred_over=frozenset({"band"}))
+_NEGATIVE = _implementation("Negative", lambda c: c.n < 0)
 
 
 class _ScaleOp(Op):
@@ -83,7 +84,7 @@ class _ScaleOp(Op):
         "hundreds": _HUNDREDS,
         "negative": _NEGATIVE,
     }
-    slots = {"scale": _Scaling}
+    interfaces = {"scale": _Scaling}
 
     def __init__(self, kernel_map=None, tune: bool = False) -> None:
         self.tune = tune
@@ -105,6 +106,17 @@ class _ScaleOp(Op):
         return self.kernel_for("scale", (), _Call(device=torch.device("cpu"), n=n))
 
 
+def _selected(op: Op, *ns: int) -> dict:
+    """The key selected for each ``n``, or the error it raises."""
+    selected = {}
+    for n in ns:
+        try:
+            selected[n] = op.select_implementation("scale", _Call(device=torch.device("cpu"), n=n))
+        except ValueError as exc:
+            selected[n] = str(exc).split(":")[0]
+    return selected
+
+
 @pytest.fixture(autouse=True)
 def isolated_registry():
     """Registrations made by a test do not outlive it."""
@@ -113,26 +125,62 @@ def isolated_registry():
     registry.restore(state)
 
 
-def test_selection_takes_the_most_specific_applicable_candidate() -> None:
-    """The general one is below every other; ``refines`` orders the rest, transitively.
-
-    At 200 the band does not apply, and the hundreds still beat the positive through it.
-    """
-    op = _ScaleOp()
-    selected = {
-        n: op.select_candidate("scale", _Call(device=torch.device("cpu"), n=n))
-        for n in (0, 5, 20, 200, -1)
+def test_selection_takes_the_implementation_no_other_is_preferred_over() -> None:
+    """The general one is below every other; ``preferred_over`` orders the rest, transitively."""
+    assert _selected(_ScaleOp(), 0, 5, 20, 200, -1) == {
+        0: "general",
+        5: "positive",
+        20: "band",
+        200: "hundreds",
+        -1: "negative",
     }
-    assert selected == {0: "general", 5: "positive", 20: "band", 200: "hundreds", -1: "negative"}
 
 
-def test_overlap_without_refinement_and_an_uncovered_call_are_errors() -> None:
-    also_positive = _candidate("AlsoPositive", lambda c: c.n > 0)
-    with pytest.raises(ValueError, match="ambiguous"):
-        _ScaleOp(kernel_map={"negative": also_positive}).entry(5)
-    not_general = _candidate("NotGeneral", lambda c: c.n > 0)
-    with pytest.raises(ValueError, match="no implementation serves"):
-        _ScaleOp(kernel_map={"general": not_general}).entry(0)
+def test_availability_filters_before_precedence() -> None:
+    """An implementation that cannot run on the call's device takes nothing it is preferred over."""
+    register_implementation(
+        "_ScaleOp",
+        "meta_positive",
+        _implementation(
+            "MetaPositive",
+            lambda c: c.n > 0,
+            devices=frozenset({"meta"}),
+            preferred_over=frozenset({"positive"}),
+        ),
+    )
+    assert _selected(_ScaleOp(), 5) == {5: "positive"}
+
+
+def test_undeclared_overlap_and_an_uncovered_call_are_errors() -> None:
+    register_implementation(
+        "_ScaleOp", "also_positive", _implementation("AlsoPositive", lambda c: c.n > 0)
+    )
+    assert _selected(_ScaleOp(), 5) == {5: "dispatch is ambiguous"}
+
+    class _NoGeneralOp(_ScaleOp):
+        kernel_types = {k: v for k, v in _ScaleOp.kernel_types.items() if k != "general"}
+
+    assert _selected(_NoGeneralOp(), 0) == {0: "no implementation serves this call"}
+
+
+def test_a_replacement_keeps_the_rule_of_the_key_it_replaces() -> None:
+    """``kernel_map=`` changes what runs under a key, never which calls select the key.
+
+    The replacement serves every call the key is selected for, and one it does not serve is
+    an error; a call selecting another key never asks it.
+    """
+    narrow = _implementation("NarrowBand", lambda c: 10 < c.n <= 30)
+    op = _ScaleOp(kernel_map={"band": narrow})
+    assert _selected(op, 0, 5, 20, 200, -1) == {
+        0: "general",
+        5: "positive",
+        20: "band",
+        200: "hundreds",
+        -1: "negative",
+    }
+    assert type(op.entry(20)).__name__ == "NarrowBand"
+    with pytest.raises(ValueError, match="the kernel supplied for band"):
+        op.entry(40)
 
 
 def test_a_hit_is_one_lookup_and_reads_no_device_fact(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -148,7 +196,7 @@ def test_a_hit_is_one_lookup_and_reads_no_device_fact(monkeypatch: pytest.Monkey
     assert "_arch" not in vars(call) and "_sm_count" not in vars(call)
 
 
-def test_request_keys_sharing_a_build_identity_share_one_entry() -> None:
+def test_call_specs_sharing_a_build_identity_share_one_entry() -> None:
     op = _ScaleOp()
     assert op.entry(1) is op.entry(9)
     assert op.entry(1) is not op.entry(20)
@@ -156,7 +204,7 @@ def test_request_keys_sharing_a_build_identity_share_one_entry() -> None:
 
 
 def test_tuning_acts_on_the_resolved_entry_not_the_builder() -> None:
-    """An equal request key after ``autotune`` serves the tuned entry; builders take no tune."""
+    """An equal call spec after ``autotune`` serves the tuned entry; builders take no tune."""
     op = _ScaleOp()
     entry = op.entry(5)
     assert entry.config == {}
@@ -164,7 +212,7 @@ def test_tuning_acts_on_the_resolved_entry_not_the_builder() -> None:
     assert op.entry(5) is entry and entry.config == {"tuned": True}
     assert op.entry(7) is entry
     assert op.entry(25).config == {"tuned": True}
-    assert "tune" not in inspect.signature(_Candidate.__init__).parameters
+    assert "tune" not in inspect.signature(_Implementation.__init__).parameters
 
 
 class _NotScaling(Kernel):
@@ -177,39 +225,47 @@ class _NotScaling(Kernel):
     [
         ({"positive": _NotScaling}, TypeError, "does not implement _Scaling"),
         (
-            {"positive": _candidate("TwoArgs", forward=lambda self, x, y: x)},
+            {"positive": _implementation("TwoArgs", forward=lambda self, x, y: x)},
             TypeError,
             "does not take _Scaling's arguments",
         ),
-        (
-            {"positive": _candidate("Renamed", forward=lambda self, y: y)},
-            TypeError,
-            "takes \\['y'\\]",
-        ),
-        ({"positive": _candidate("AlsoGeneral", general=True)}, ValueError, "more than one"),
-        (
-            {"positive": _candidate("Stray", refines=frozenset({"elsewhere"}))},
-            ValueError,
-            "refines \\['elsewhere'\\]",
-        ),
-        (
-            {"positive": _candidate("Cycle", refines=frozenset({"hundreds"}))},
-            ValueError,
-            "cycle",
-        ),
     ],
 )
-def test_installation_checks_each_candidate_against_its_slot(kernel_map, error, match) -> None:
+def test_what_runs_under_a_key_implements_its_interface(kernel_map, error, match) -> None:
     with pytest.raises(error, match=match):
         _ScaleOp(kernel_map=kernel_map)
 
 
-def test_an_installed_candidate_set_cannot_change() -> None:
+@pytest.mark.parametrize(
+    ("added", "match"),
+    [
+        ({"also_general": _implementation("AlsoGeneral", general=True)}, "more than one"),
+        (
+            {"stray": _implementation("Stray", preferred_over=frozenset({"elsewhere"}))},
+            "preferred over \\['elsewhere'\\]",
+        ),
+        (
+            {
+                "ping": _implementation("Ping", preferred_over=frozenset({"pong"})),
+                "pong": _implementation("Pong", preferred_over=frozenset({"ping"})),
+            },
+            "cycle",
+        ),
+    ],
+)
+def test_installation_checks_the_declared_precedence(added, match) -> None:
+    for key, cls in added.items():
+        register_implementation("_ScaleOp", key, cls)
+    with pytest.raises(ValueError, match=match):
+        _ScaleOp()
+
+
+def test_an_installed_implementation_set_cannot_change() -> None:
     op = _ScaleOp()
     op.entry(5)
     with pytest.raises(TypeError):
         op.kernel_map["positive"] = _NEGATIVE
-    op.dispatch_kernel({"positive": _candidate("Reinstalled", lambda c: c.n > 0)})
+    op.dispatch_kernel({"positive": _implementation("Reinstalled")})
     assert type(op.entry(5)).__name__ == "Reinstalled"
 
 
@@ -233,7 +289,7 @@ def test_device_facts_come_from_the_calls_device(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(tileops.utils, "device_facts", recording)
     seen = []
-    cuda = _candidate(
+    cuda = _implementation(
         "OnCuda",
         lambda c: seen.append((c.device, c.sm_count)) or True,
         devices=frozenset({"cuda"}),
@@ -252,8 +308,8 @@ def test_device_facts_come_from_the_calls_device(monkeypatch: pytest.MonkeyPatch
     assert seen[0][1] == torch.cuda.get_device_properties(1).multi_processor_count
 
 
-class _TorchLayerNorm(Kernel, LayerNormFwdSlot):
-    """A replacement written against ``LayerNormFwdSlot`` alone."""
+class _TorchLayerNorm(Kernel, LayerNormFwdInterface):
+    """A replacement written against ``LayerNormFwdInterface`` alone."""
 
     devices = frozenset({torch.device(run_device()).type})
 
@@ -272,9 +328,9 @@ class _TorchLayerNorm(Kernel, LayerNormFwdSlot):
 
 
 class _NarrowTorchLayerNorm(_TorchLayerNorm):
-    """An added candidate for short rows, nested in the in-tree one's region."""
+    """An added implementation for short rows, which wins over the in-tree one there."""
 
-    refines = frozenset({"layer_norm"})
+    preferred_over = frozenset({"layer_norm"})
 
     @classmethod
     def applies(cls, call: LayerNormCall) -> bool:
@@ -295,15 +351,15 @@ def test_a_replacement_needs_only_the_published_contract() -> None:
 
 
 @pytest.mark.cuda_only
-def test_an_added_candidate_serves_its_region_and_the_in_tree_one_the_rest() -> None:
-    register_candidate("LayerNormFwdOp", "layer_norm", "torch_short_rows", _NarrowTorchLayerNorm)
+def test_an_added_implementation_serves_its_calls_and_the_in_tree_one_the_rest() -> None:
+    register_implementation("LayerNormFwdOp", "torch_short_rows", _NarrowTorchLayerNorm)
     assert _layer_norm(LayerNormFwdOp((32,)), 32) == ["_NarrowTorchLayerNorm"]
     assert _layer_norm(LayerNormFwdOp((1024,)), 1024) == ["LayerNormKernel"]
 
 
-# FIXME(staged-rollout): the ops that still reach kernels outside a declared slot.
+# FIXME(staged-rollout): the ops that still reach kernels outside a kernel interface.
 #
-# Broken invariant: every op declares ``slots`` (ops-design.md § Kernel selection).
+# Broken invariant: every op declares ``interfaces`` (ops-design.md § Kernel selection).
 # Why: ops migrate one family per PR.
 # Cleanup: a migration PR deletes the names it migrates; delete this list with the last one.
 _LEGACY_OPS = frozenset(
@@ -477,7 +533,7 @@ _LEGACY_OPS = frozenset(
 )
 
 
-def test_no_op_reaches_kernels_outside_a_slot_unless_listed() -> None:
+def test_no_op_reaches_kernels_outside_an_interface_unless_listed() -> None:
     for module in pkgutil.walk_packages(tileops.ops.__path__, "tileops.ops."):
         importlib.import_module(module.name)
     ops, pending = set(), [Op]
@@ -491,12 +547,12 @@ def test_no_op_reaches_kernels_outside_a_slot_unless_listed() -> None:
         if cls.__module__.startswith("tileops.ops")
         and not cls.__name__.startswith("_")
         and not inspect.isabstract(cls)
-        and not cls.slots
+        and not cls.interfaces
         and (
             cls.kernel_types
             or cls.default_kernel_map is not Op.default_kernel_map
             or cls.entry_for is not Op.entry_for
         )
     }
-    assert sorted(legacy - _LEGACY_OPS) == [], "declare slots instead"
+    assert sorted(legacy - _LEGACY_OPS) == [], "declare interfaces instead"
     assert sorted(_LEGACY_OPS - legacy) == [], "migrated: remove these from the list"

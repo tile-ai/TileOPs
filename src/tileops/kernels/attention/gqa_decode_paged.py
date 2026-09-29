@@ -640,7 +640,7 @@ class GQADecodePagedKernel(Kernel):
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        return cls.arch_refusal(call) or cls._region_refusal(call)
+        return cls._region_refusal(call)
 
     @staticmethod
     def _region_refusal(call: AttentionCall) -> Optional[str]:

@@ -25,7 +25,7 @@ from tileops.kernels.tiling import ALIGNMENT, align_up
 from tileops.utils import get_sm_count
 
 from ._config import select_row_config, select_row_configs
-from .call_spec import LayerNormCall, LayerNormFwdSlot
+from .call_spec import LayerNormCall, LayerNormFwdInterface
 
 __all__ = ["LayerNormKernel"]
 
@@ -175,7 +175,7 @@ def _layer_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
     return _func
 
 
-class LayerNormKernel(Kernel, LayerNormFwdSlot):
+class LayerNormKernel(Kernel, LayerNormFwdInterface):
     """LayerNorm kernel.
 
     Supports SM80+ architectures. Uses 256-element alignment (512 bytes for
