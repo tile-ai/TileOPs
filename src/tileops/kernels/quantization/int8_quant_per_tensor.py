@@ -15,6 +15,14 @@ from tileops.kernels.constants import (
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.quantization.call_spec import INT8QuantPerTensorFwdInterface, QuantizeCall
+from tileops.kernels.quantization.int8_codes import (
+    INV_QMAX,
+    SCALE_UP,
+    SMALL_SCALE,
+    abs_bits,
+    quantize,
+    widen,
+)
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["INT8QuantPerTensorFwdKernel"]
@@ -41,18 +49,6 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
     words = dtype == "bfloat16"
     held = "uint32" if words else dtype
     width = vec // 2 if words else vec
-    # torch's ``amax / 127`` multiplies by this float32 reciprocal, since the divisor is a
-    # CPU scalar; the scale is that product so that ``q`` divides by the reference's scale.
-    inv_qmax = float(torch.tensor(1.0, dtype=torch.float32) / torch.tensor(127.0))
-    # Adding 1.5 * 2**23 to a float of magnitude below 2**22 rounds it half to even to an
-    # integer, which the low byte of the sum's bit pattern then holds in two's complement.
-    round_magic = 12582912.0
-    # The quotient below is correctly rounded while its residual stays normal, which holds
-    # for a scale of at least 2**-100. A scale below 2**-60 is multiplied, with every
-    # element, by 2**64 first, which is exact and lifts any nonzero float32 scale to at
-    # least 2**-85.
-    small_scale = 2.0**-60
-    scale_up = 2.0**64
 
     @tilelang.jit(compile_flags=["-include", csrc_path("streaming_load.h")])
     def _int8_quant_per_tensor_func(reg_tiles: int, smem_tiles: int, batch: int):
@@ -62,19 +58,10 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
         rounds = streamed // batch
         rest = streamed - rounds * batch
 
-        def abs_bits(value):
-            # |value| of a float32 as its int32 bit pattern, which orders as the magnitude does
-            # and puts a NaN above every number.
-            return T.reinterpret(T.abs(value), "int32")
-
-        def quantize(value, num, prescale: bool):
-            # value / scale of a float32, rounded half to even, as int8. ``num`` holds the
-            # pre-scale factor, then the scale and its reciprocal after that factor.
-            x = value * num[0] if prescale else value
-            q0 = x * num[2]
-            residual = T.ieee_fmaf(-q0, num[1], x)
-            quotient = T.ieee_fmaf(residual, num[2], q0)
-            rounded = T.cast(T.reinterpret(quotient + T.float32(round_magic), "int32"), "int8")
+        def code(value, num, prescale: bool):
+            # ``num`` holds the pre-scale factor, then the scale and its reciprocal after
+            # that factor.
+            rounded = quantize(value * num[0] if prescale else value, num[1], num[2])
             if not prescale:
                 return rounded
             # A scale that underflowed to zero: torch divides by it, so a nonzero value
@@ -83,12 +70,6 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
                 value > 0, T.int8(127), T.if_then_else(value < 0, T.int8(-127), T.int8(0))
             )
             return T.if_then_else(num[1] == T.float32(0), signed, rounded)
-
-        def low_half(word):
-            return T.reinterpret(word << T.uint32(16), "float32")
-
-        def high_half(word):
-            return T.reinterpret(word & T.uint32(0xFFFF0000), "float32")
 
         @T.macro
         def load_vector(dst, row, src, offset, evict_first: bool):
@@ -127,8 +108,10 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
         def fold(acc, values, row):
             for c in T.serial(width):
                 if words:
-                    acc[2 * c] = T.max(acc[2 * c], abs_bits(low_half(values[row, c])))
-                    acc[2 * c + 1] = T.max(acc[2 * c + 1], abs_bits(high_half(values[row, c])))
+                    acc[2 * c] = T.max(acc[2 * c], abs_bits(widen(values[row, c], 0, dtype)))
+                    acc[2 * c + 1] = T.max(
+                        acc[2 * c + 1], abs_bits(widen(values[row, c], 1, dtype))
+                    )
                 else:
                     acc[c] = T.max(acc[c], abs_bits(T.cast(values[row, c], "float32")))
 
@@ -136,10 +119,10 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
         def store(q, out, num, offset, values, row, prescale: bool):
             for c in T.serial(width):
                 if words:
-                    out[2 * c] = quantize(low_half(values[row, c]), num, prescale)
-                    out[2 * c + 1] = quantize(high_half(values[row, c]), num, prescale)
+                    out[2 * c] = code(widen(values[row, c], 0, dtype), num, prescale)
+                    out[2 * c + 1] = code(widen(values[row, c], 1, dtype), num, prescale)
                 else:
-                    out[c] = quantize(T.cast(values[row, c], "float32"), num, prescale)
+                    out[c] = code(T.cast(values[row, c], "float32"), num, prescale)
             for c in T.vectorized(vec):
                 q[offset + c] = out[c]
 
@@ -158,11 +141,15 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
                     for c in T.unroll(tail % vec):
                         if words:
                             if c % 2 == 0:
-                                q[offset + c] = quantize(low_half(extra[0, c // 2]), num, prescale)
+                                q[offset + c] = code(
+                                    widen(extra[0, c // 2], 0, dtype), num, prescale
+                                )
                             else:
-                                q[offset + c] = quantize(high_half(extra[0, c // 2]), num, prescale)
+                                q[offset + c] = code(
+                                    widen(extra[0, c // 2], 1, dtype), num, prescale
+                                )
                         else:
-                            q[offset + c] = quantize(T.cast(extra[0, c], "float32"), num, prescale)
+                            q[offset + c] = code(T.cast(extra[0, c], "float32"), num, prescale)
             first = reg + smem + rounds * batch
             for i in T.unroll(rest):
                 load_vector(cur, i, x, ((first + i) * grid + bx) * tile + tx * vec, True)
@@ -300,14 +287,14 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
                         val[0] = T.max(val[0], partial[i * threads + tx])
                 T.sync_threads()
                 block_max(val, warp_max)
-                num[1] = T.reinterpret(val[0], "float32") * T.float32(inv_qmax)
+                num[1] = T.reinterpret(val[0], "float32") * T.float32(INV_QMAX)
                 num[1] = T.if_then_else(
                     T.reinterpret(val[0], "float32") > 0, num[1], T.float32(1.0)
                 )
                 if bx == 0 and tx == 0:
                     scale[0] = num[1]
-                if num[1] < T.float32(small_scale):
-                    num[0] = T.float32(scale_up)
+                if num[1] < T.float32(SMALL_SCALE):
+                    num[0] = T.float32(SCALE_UP)
                     num[1] = num[1] * num[0]
                     num[2] = T.ieee_frcp(num[1])
                     quantize_all(x, q, cur, out, in_regs, in_smem, extra, num, bx, tx, True)

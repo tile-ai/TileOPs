@@ -8,11 +8,13 @@ from tileops.backend import OpNotAvailableError
 from tileops.kernels.quantization import (
     INT8QuantPerChannelFwdKernel,
     INT8QuantPerTensorFwdKernel,
+    QuantizeCall,
 )
 from tileops.ops import GemmW4A16FwdOp
 from tileops.quantization import (
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,
+    INT8DequantPerBlockFwdOp,
     INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
     INT8QuantPerBlockFwdOp,
@@ -50,6 +52,7 @@ def _fp8_compare(output: torch.Tensor, output_ref: torch.Tensor) -> None:
 
 
 _COMPARE = {
+    INT8QuantPerBlockFwdOp: [exact_compare, exact_compare],
     FP8QuantPerBlockFwdOp: [_fp8_compare, _scale_compare],
     INT4QuantPerGroupFwdOp: [exact_compare, exact_compare, exact_compare],
 }
@@ -231,6 +234,123 @@ def test_int8_per_tensor_round_trip() -> None:
     assert ((restored - x.float()).abs() <= scale * (0.5 + 2.0**-16)).all()
 
 
+def _zero_even_blocks(x: torch.Tensor) -> torch.Tensor:
+    """*x* with every other 128-element block of each row set to zero."""
+    x = x.clone()
+    x.view(x.shape[0], -1, 128)[:, ::2] = 0
+    return x
+
+
+def _zero_even_rows(x: torch.Tensor) -> torch.Tensor:
+    """*x* with every other row set to zero, for a K that is not a whole number of blocks."""
+    x = x.clone()
+    x[::2] = 0
+    return x
+
+
+def _subnormal(x: torch.Tensor) -> torch.Tensor:
+    """float32 blocks of subnormal elements whose amax is 190 units of the last place.
+
+    The scale rounds to one unit, so the quotient of the amax is 190 before the clamp.
+    """
+    x = (x * 2.0**-145).clone()
+    unit = torch.finfo(torch.float32).smallest_normal * 2.0**-23
+    x[:, 0::128] = 190 * unit
+    x[:, 1::128] = -190 * unit
+    return x
+
+
+def _ties(x: torch.Tensor) -> torch.Tensor:
+    """Blocks whose amax is 127, so the scale is exactly 1, and whose other elements are
+    halves from -126.5 to 126.5: every quotient is a rounding tie."""
+    halves = torch.arange(x.numel(), device=x.device) % 254 - 126.5
+    x = halves.view(x.shape).to(x.dtype)
+    x.view(x.shape[0], -1, 128)[:, :, 0] = 127
+    return x
+
+
+def _misaligned(x: torch.Tensor) -> torch.Tensor:
+    """*x* copied into a contiguous view that starts one element into its storage."""
+    flat = torch.empty(x.numel() + 1, dtype=x.dtype, device=x.device)
+    view = flat[1:].view(x.shape)
+    view.copy_(x)
+    return view
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "rows, cols, dtype, make",
+    [
+        # The manifest's convention for an all-zero block: scale 1.0, q all zero.
+        pytest.param(64, 1024, torch.float16, _zero_even_blocks, id="zero-blocks"),
+        # Round half to even, on exact ties.
+        pytest.param(64, 1024, torch.float16, _ties, id="rounding-ties"),
+        # A storage start off the 16-byte vector boundary.
+        pytest.param(64, 1024, torch.bfloat16, _misaligned, id="misaligned-start"),
+        # Blocks on the vector boundary, a partial last block of an odd number of vectors,
+        # and a partial last CTA.
+        pytest.param(17, 1000, torch.bfloat16, lambda x: x, id="partial-last-block"),
+        # Blocks that start inside a vector, all-zero rows, and a storage end inside the
+        # last vector.
+        pytest.param(37, 999, torch.float16, _zero_even_rows, id="odd-k"),
+        # Subnormal scales, which the quotient is scaled out of and clamped, in both
+        # kernels: blocks on the vector boundary and blocks inside a vector.
+        pytest.param(64, 1024, torch.float32, _subnormal, id="subnormal-scale"),
+        pytest.param(37, 999, torch.float32, _subnormal, id="subnormal-scale-odd-k"),
+    ],
+)
+def test_int8_quant_per_block_edge_inputs(rows, cols, dtype, make) -> None:
+    test = type("QuantizeTest", (INT8QuantPerBlockWorkload, TestBase), {})(rows, cols, dtype)
+    (x,) = test.gen_inputs()
+    test.check(INT8QuantPerBlockFwdOp(), make(x), compare=[exact_compare, exact_compare])
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "cols, dtype, key",
+    [
+        (7168, torch.bfloat16, "int8_quant_per_block_fwd"),
+        (2880, torch.bfloat16, "int8_quant_per_block_fwd"),
+        (4100, torch.float32, "int8_quant_per_block_fwd"),
+        (4099, torch.float16, "int8_quant_per_block_shifted_fwd"),
+        (4098, torch.float32, "int8_quant_per_block_shifted_fwd"),
+    ],
+)
+def test_int8_quant_per_block_each_region_selects_its_one_implementation(
+    cols: int, dtype: torch.dtype, key: str
+) -> None:
+    """Blocks that start on a 16-byte vector take the register program, any other the
+    shifted one."""
+    call = QuantizeCall(arch=90, sm_count=132, rows=64, cols=cols, dtype=dtype)
+    assert INT8QuantPerBlockFwdOp().select_implementation("int8_quant_per_block_fwd", call) == key
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_int8_per_block_round_trip(dtype: torch.dtype) -> None:
+    """Quantizing then dequantizing moves ``x`` by at most half a step of its block's grid.
+
+    ``|x[m, k]| <= amax[m, b] = 127 * scale[m, b]`` for the block ``b`` holding ``k``, so each
+    element rounds to its nearest code without clamping and lands within ``scale[m, b] / 2``.
+    The float32 divide and multiply add ``2^-24`` each: ``2^-23 * |x| <= eps(dtype) * |x|``
+    and ``2^-25 * scale[m, b]``, which the ``2^-20 * scale[m, b]`` slack covers. The cast to
+    ``dtype`` adds half an ulp of ``|x| + scale[m, b] / 2``; a nonzero code has
+    ``|x| >= scale[m, b] / 2``, so ``eps(dtype) * |x|`` covers it, and a zero code
+    dequantizes exactly to 0.
+    """
+    # Blocks of different magnitude, so each block has its own grid; a partial last block.
+    rows, cols = 64, 1000
+    magnitude = torch.logspace(-2, 2, rows * 8, device=run_device()).view(rows, 8)
+    magnitude = magnitude.repeat_interleave(128, 1)[:, :cols]
+    x = (torch.randn(rows, cols, device=run_device()) * magnitude).to(dtype)
+    q, scale = INT8QuantPerBlockFwdOp()(x)
+    x_hat = INT8DequantPerBlockFwdOp(dtype)(q, scale)
+    step = scale.repeat_interleave(128, 1)[:, :cols]
+    bound = step * (0.5 + 2**-20) + torch.finfo(dtype).eps * x.float().abs()
+    err = (x_hat.float() - x.float()).abs()
+    assert (err <= bound).all(), f"max excess {(err - bound).max().item()}"
+
+
 @pytest.mark.smoke
 @pytest.mark.parametrize("op_cls", list(_WORKLOADS), ids=lambda c: c.__name__)
 def test_generated_checks_reject_an_invalid_call(op_cls) -> None:
@@ -269,14 +389,6 @@ def _int4_special_groups(w: torch.Tensor) -> torch.Tensor:
     # The scale rounds down to 0.11761474609375, so hi / scale + zero rounds to 16.
     groups[5] = torch.linspace(-0.7646484375, 1.0, 128)
     return w
-
-
-def _misaligned(w: torch.Tensor) -> torch.Tensor:
-    """*w* copied into a contiguous view that starts one element into its storage."""
-    flat = torch.empty(w.numel() + 1, dtype=w.dtype, device=w.device)
-    view = flat[1:].view(w.shape)
-    view.copy_(w)
-    return view
 
 
 @pytest.mark.smoke

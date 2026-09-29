@@ -16,6 +16,7 @@ __all__ = [
     "INT8DequantPerBlockFwdInterface",
     "INT8DequantPerChannelFwdInterface",
     "INT8DequantPerTensorFwdInterface",
+    "INT8QuantPerBlockFwdInterface",
     "INT8QuantPerChannelFwdInterface",
     "INT8QuantPerTensorFwdInterface",
     "QuantizeCall",
@@ -151,4 +152,22 @@ class INT4QuantPerGroupFwdInterface(KernelInterface):
             A new ``packed_weight`` ``[call.rows, call.cols // 2]`` in ``uint8``, in the order
             ``GemmW4A16FwdOp.repack`` produces, and a new ``weight_scale`` in ``float16`` and
             ``weight_zero`` in ``uint8``, both ``[call.rows, call.cols // call.group_size]``.
+        """
+
+
+class INT8QuantPerBlockFwdInterface(KernelInterface):
+    """Symmetric INT8 quantization of each 128-element block of a row against its own amax."""
+
+    request = QuantizeCall
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Quantize each block of the ``call.rows`` rows of ``x``; nothing is written in place.
+
+        Args:
+            x: ``[call.rows, call.cols]``, contiguous, in ``call.dtype`` on ``call.device``.
+
+        Returns:
+            A new ``q`` shaped like *x* in ``int8`` and a new ``scale``
+            ``[call.rows, ceil(call.cols / 128)]`` in ``float32``.
         """
