@@ -102,7 +102,7 @@ INT4QuantPerGroupFwdOp:
   # 1.0 for an all-zero group; it is rounded to T, and the values are quantized against the
   # rounded scale: zero = round(-lo / scale), q = clamp(round(w / scale) + zero, 0, 15).
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {N: Dim, K: Dim, T: "DType[float16]"}
     params:
@@ -123,6 +123,8 @@ INT4QuantPerGroupFwdOp:
   - {N: 14336, K: 4096, group_size: 4096, dtype_cases: [{T: float16}], label: llama-8b-mlp-up-chan}
   - {N: 8192, K: 28672, dtype_cases: [{T: float16}], label: llama-70b-mlp-down}
   - {N: 5120, K: 8192, dtype_cases: [{T: float16}], label: qwen3-32b-o-proj}
+  - {N: 18944, K: 3584, dtype_cases: [{T: float16}], label: qwen2-7b-mlp-up}
+  - {N: 3584, K: 18944, group_size: 18944, dtype_cases: [{T: float16}], label: qwen2-7b-mlp-down-chan}
   roofline:
     # Per element: the min, the max, the scaling, round, the zero-point add and clamp; per
     # group: widening the range to 0 (2), the range, its divide, the floor and zero guard, and

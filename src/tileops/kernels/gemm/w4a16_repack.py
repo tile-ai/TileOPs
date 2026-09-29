@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.gemm.w4a16 import _LAYOUT
+from tileops.kernels.gemm.w4a16 import W4A16_LAYOUT
 from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["W4A16RepackKernel"]
@@ -15,15 +15,15 @@ __all__ = ["W4A16RepackKernel"]
 
 @functools.lru_cache(maxsize=32)
 def _w4a16_repack_kernel(n: int, packed_k: int) -> Callable:
-    step_k = _LAYOUT.mma_step_k
+    step_k = W4A16_LAYOUT.mma_step_k
     step = step_k // 2
-    if packed_k % step or step % (4 * _LAYOUT.lanes):
+    if packed_k % step or step % (4 * W4A16_LAYOUT.lanes):
         raise ValueError(
             f"K/2={packed_k} must be a multiple of step_k/2={step}, which must itself"
-            f" be a multiple of {4 * _LAYOUT.lanes}"
+            f" be a multiple of {4 * W4A16_LAYOUT.lanes}"
         )
     words_per_step = step // 4
-    words_per_lane = words_per_step // _LAYOUT.lanes
+    words_per_lane = words_per_step // W4A16_LAYOUT.lanes
     n_steps = packed_k // step
 
     @tilelang.jit(

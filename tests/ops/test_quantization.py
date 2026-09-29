@@ -9,6 +9,7 @@ from tileops.kernels.quantization import (
     INT8QuantPerChannelFwdKernel,
     INT8QuantPerTensorFwdKernel,
 )
+from tileops.ops import GemmW4A16FwdOp
 from tileops.quantization import (
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,
@@ -251,3 +252,86 @@ def test_int4_reference_round_trips_a_group_of_one_sign() -> None:
     restored = (q - zero.to(torch.int32)) * step
     assert (step > 0).all()
     assert ((restored - w.float()).abs() <= step / 2 + 1e-6).all()
+
+
+def _int4_special_groups(w: torch.Tensor) -> torch.Tensor:
+    """128-element groups on the edges of the grid: all zero (scale 1), constant (the range
+    widened to 0), one sign, below the scale floor, rounding ties, and a clamp at 15."""
+    w = w.clone()
+    groups = w.view(-1, 128)
+    groups[0] = 0
+    groups[1] = 0.75
+    groups[2] = groups[2].abs()
+    groups[3] = torch.linspace(0.0, 1e-4, 128)
+    # Scale 1.5 and zero point 8 from a tie; every other element is a tie w / 1.5 = n + 1/2.
+    groups[4] = (torch.arange(128, device=w.device) % 15 - 7.5) * 1.5
+    groups[4, :2] = torch.tensor([-11.25, 11.25])
+    # The scale rounds down to 0.11761474609375, so hi / scale + zero rounds to 16.
+    groups[5] = torch.linspace(-0.7646484375, 1.0, 128)
+    return w
+
+
+def _misaligned(w: torch.Tensor) -> torch.Tensor:
+    """*w* copied into a contiguous view that starts one element into its storage."""
+    flat = torch.empty(w.numel() + 1, dtype=w.dtype, device=w.device)
+    view = flat[1:].view(w.shape)
+    view.copy_(w)
+    return view
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "rows, cols, group_size, make",
+    [
+        pytest.param(64, 1024, 128, _int4_special_groups, id="special-groups"),
+        # Two lanes to a group, and a partial last CTA.
+        pytest.param(37, 1024, 64, lambda w: w, id="group-64"),
+        # One CTA of two warps to a row, whose 68 chunks leave most slots of the second empty.
+        pytest.param(19, 2176, 2176, _int4_special_groups, id="per-channel-uneven"),
+        pytest.param(64, 1024, 128, _misaligned, id="misaligned-start"),
+    ],
+)
+def test_int4_quant_per_group_edge_inputs(rows, cols, group_size, make) -> None:
+    test = type("QuantizeTest", (INT4QuantPerGroupWorkload, TestBase), {})(
+        rows, cols, torch.float16, group_size
+    )
+    (w,) = test.gen_inputs()
+    test.check(INT4QuantPerGroupFwdOp(group_size), make(w), compare=[exact_compare] * 3)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("group_size", [128, 1024])
+def test_int4_per_group_round_trip(group_size: int) -> None:
+    """``GemmW4A16FwdOp`` with the op's outputs reproduces ``w`` within the grid's error.
+
+    The activation is the identity, so output ``(k, n)`` is the dequantized ``w[n, k]``
+    rounded to float16 once, and the reference ``torch.matmul`` in float32 is ``w[n, k]``.
+    Rounding to the nearest code moves ``w`` by at most half a step ``s`` of its group. The
+    float16 scale may round below the range by 2^-11 of itself, which lets the largest
+    element round to code 16 and clamp to 15: at most ``15 * 2^-11 * s`` more. The float32
+    roundings of the range, its product by 1/15 and the quotients add less than
+    ``2^-20 * s``, and the float16 output adds ``2^-11`` of its magnitude.
+    """
+    rows, cols = 256, 1024
+    groups = rows * cols // group_size
+    magnitude = torch.logspace(-2, 2, groups, device=run_device())
+    offset = torch.rand(groups, device=run_device()) - 0.5
+    w = (torch.randn(groups, group_size, device=run_device()) + offset[:, None]) * magnitude[
+        :, None
+    ]
+    w = w.view(rows, cols).half()
+    packed, scale, zero = INT4QuantPerGroupFwdOp(group_size)(w)
+    # The GEMM reads 128-element groups; a wider group is the same scale and zero repeated.
+    repeat = group_size // 128
+    eye = torch.eye(cols, dtype=torch.float16, device=run_device())
+    out = GemmW4A16FwdOp()(
+        eye,
+        packed,
+        scale.repeat_interleave(repeat, 1).contiguous(),
+        zero.repeat_interleave(repeat, 1).contiguous(),
+    )
+    ref = torch.matmul(eye.float(), w.float().T)
+    step = scale.float().repeat_interleave(group_size, 1).T
+    bound = step * (0.5 + 15 * 2**-11 + 2**-20) + 2**-11 * out.float().abs()
+    err = (out.float() - ref).abs()
+    assert (err <= bound).all(), f"max excess {(err - bound).max().item()}"

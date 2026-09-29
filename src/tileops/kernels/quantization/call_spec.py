@@ -12,6 +12,7 @@ from tileops.kernels.kernel_base import KernelInterface
 from tileops.kernels.quantization.dequant_call import DequantizeCall
 
 __all__ = [
+    "INT4QuantPerGroupFwdInterface",
     "INT8DequantFwdInterface",
     "INT8QuantPerChannelFwdInterface",
     "INT8QuantPerTensorFwdInterface",
@@ -89,4 +90,23 @@ class INT8QuantPerChannelFwdInterface(KernelInterface):
         Returns:
             A new ``q`` shaped like *w* in ``int8`` and a new ``scale`` ``[call.rows]`` in
             ``float32``.
+        """
+
+
+class INT4QuantPerGroupFwdInterface(KernelInterface):
+    """Asymmetric INT4 quantization of each group of a row into ``GemmW4A16FwdOp``'s operands."""
+
+    request = QuantizeCall
+
+    @abstractmethod
+    def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Quantize and pack the ``call.rows`` rows of ``w``; nothing is written in place.
+
+        Args:
+            w: ``[call.rows, call.cols]``, contiguous, ``float16`` on ``call.device``.
+
+        Returns:
+            A new ``packed_weight`` ``[call.rows, call.cols // 2]`` in ``uint8``, in the order
+            ``GemmW4A16FwdOp.repack`` produces, and a new ``weight_scale`` in ``float16`` and
+            ``weight_zero`` in ``uint8``, both ``[call.rows, call.cols // call.group_size]``.
         """
