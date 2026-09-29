@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase, served_in_tree
+from tileops.kernels.attention import GQAPrefillVarlenFwdKernel
 from tileops.ops import GroupedQueryAttentionVarlenFwdOp
 from tileops.perf.formulas import visible_scores
 from workloads.gqa import (
@@ -63,7 +64,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     -1,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.sm90],
+                    marks=pytest.mark.smoke,
                 ),  # causal + wl
                 pytest.param(
                     1,
@@ -77,7 +78,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     -1,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.smoke, pytest.mark.sm90],
+                    marks=pytest.mark.smoke,
                 ),  # D=128 uses the two-stage sliding pipeline
                 pytest.param(
                     1,
@@ -119,7 +120,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     64,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.full, pytest.mark.sm90],
+                    marks=pytest.mark.full,
                 ),  # window
                 # KV-cache: seqlen_k > seqlen_q (offset > 0)
                 pytest.param(
@@ -148,7 +149,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     -1,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.full, pytest.mark.sm90],
+                    marks=pytest.mark.full,
                 ),  # causal+wl kvcache
                 pytest.param(
                     2,
@@ -162,7 +163,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     64,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.full, pytest.mark.sm90],
+                    marks=pytest.mark.full,
                 ),  # window kvcache
                 # bfloat16
                 pytest.param(
@@ -177,7 +178,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     64,
                     torch.bfloat16,
                     False,
-                    marks=[pytest.mark.full, pytest.mark.sm90],
+                    marks=pytest.mark.full,
                 ),  # window bf16
                 # GQA ratios
                 pytest.param(
@@ -236,7 +237,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     64,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.full, pytest.mark.sm90],
+                    marks=pytest.mark.full,
                 ),  # right window
                 # wl=0 boundary
                 pytest.param(
@@ -251,7 +252,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     -1,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.full, pytest.mark.sm90],
+                    marks=pytest.mark.full,
                 ),  # wl=0
                 # D=512 stages the score tile through shared memory: two warpgroups where
                 # shared memory allows it, a 32-row tile on one warpgroup where it does not
@@ -360,6 +361,39 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
     )
     op = GroupedQueryAttentionVarlenFwdOp(is_causal=True)
     test.check(op, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "q_lens, kv_lens, is_causal, wl, wr",
+    [
+        pytest.param([256, 512], [256, 512], True, 128, -1, id="causal-left"),
+        pytest.param([300, 700], [300, 700], True, 100, -1, id="causal-left-partial-tiles"),
+        pytest.param([64, 128], [256, 512], True, 128, -1, id="causal-left-kvcache"),
+        pytest.param([128, 256], [128, 256], True, 0, -1, id="causal-left-zero"),
+        pytest.param([256, 512], [256, 512], False, 64, 64, id="both"),
+        pytest.param([64, 128], [256, 512], False, -1, 64, id="right-kvcache"),
+    ],
+)
+def test_general_kernel_serves_sliding_windows(
+    q_lens: list[int], kv_lens: list[int], is_causal: bool, wl: int, wr: int
+) -> None:
+    """The general kernel's window bounds on every GPU. SM90 hands windowed calls to the
+    sliding-window kernel, so the op-level window cases reach this path only elsewhere."""
+    test = GroupedQueryAttentionVarlenFwdTest(
+        len(q_lens), q_lens, kv_lens, 8, 2, 64, is_causal, wl, wr, torch.float16
+    )
+    kernel = GQAPrefillVarlenFwdKernel(
+        len(q_lens),
+        8,
+        2,
+        64,
+        is_causal,
+        torch.float16,
+        window_size_left=wl,
+        window_size_right=wr,
+    )
+    test.check(kernel, *test.gen_inputs(), atol=1e-3, rtol=1e-3)
 
 
 @pytest.mark.smoke
