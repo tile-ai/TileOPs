@@ -158,8 +158,8 @@ class BatchNormFwdOp(Op):
             eps=self.eps,
             momentum=self.momentum,
         )
-        role = "batch_norm_fwd_train" if self.training else "batch_norm_fwd_infer"
-        kernel = self.kernel_for(role, (x_ncs, *handed, weight, bias), call)
+        interface = "batch_norm_fwd_train" if self.training else "batch_norm_fwd_infer"
+        kernel = self.kernel_for(interface, (x_ncs, *handed, weight, bias), call)
         self.kernel = kernel
 
         # The training kernel also returns the batch statistics, which the manifest keeps

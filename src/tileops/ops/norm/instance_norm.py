@@ -167,14 +167,14 @@ class InstanceNormFwdOp(Op):
             has_bias=bias is not None,
         )
         if not self.use_input_stats or tracks:
-            role = "instance_norm_train" if self.use_input_stats else "instance_norm_infer"
+            interface = "instance_norm_train" if self.use_input_stats else "instance_norm_infer"
             view = x.view(batch, channels, spatial)
             weight = None if weight is None else weight.contiguous()
             bias = None if bias is None else bias.contiguous()
             # The training kernel writes the running statistics in place, so a strided
             # buffer is served through a contiguous copy that is written back.
             stats = tuple(stat.contiguous() for stat in (running_mean, running_var))
-            kernel = self.kernel_for(role, (view, *stats, weight, bias), call)
+            kernel = self.kernel_for(interface, (view, *stats, weight, bias), call)
             self.kernel = kernel
             y = kernel(view, *stats, weight, bias)
             if self.use_input_stats:
