@@ -253,7 +253,8 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                 ),  # wl=0
-                # D=512 runs two warpgroups with the score tile staged through shared memory
+                # D=512 stages the score tile through shared memory: two warpgroups where
+                # shared memory allows it, a 32-row tile on one warpgroup where it does not
                 pytest.param(
                     2,
                     [300, 700],
@@ -266,7 +267,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     -1,
                     torch.bfloat16,
                     False,
-                    marks=[pytest.mark.full, pytest.mark.sm90],
+                    marks=pytest.mark.full,
                 ),  # D=512 causal, partial tiles
                 pytest.param(
                     2,
@@ -280,7 +281,7 @@ class GroupedQueryAttentionVarlenFwdFixture(FixtureBase):
                     -1,
                     torch.float16,
                     False,
-                    marks=[pytest.mark.full, pytest.mark.sm90],
+                    marks=pytest.mark.full,
                 ),  # D=512 causal kvcache
             ],
         ),

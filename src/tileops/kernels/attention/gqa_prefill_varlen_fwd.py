@@ -41,7 +41,7 @@ def _stages_score_tile(block_m: int, threads: int) -> bool:
     """Whether the score tile goes through shared memory: TileLang finds no register
     layout for it when a warpgroup holds fewer than ``WGMMA_ROWS`` rows."""
     warpgroups = threads // WARPGROUP_THREADS
-    return warpgroups > 1 and block_m // warpgroups < WGMMA_ROWS
+    return block_m // warpgroups < WGMMA_ROWS
 
 
 @functools.lru_cache(maxsize=32)
@@ -289,7 +289,7 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
             "num_stages": 1,
             "threads": 128,
         }
-        candidates = [narrow, {**narrow, "block_m": 32}]
+        candidates = [narrow, {**narrow, "block_m": 32}, {**narrow, "block_m": 32, "block_n": 16}]
         if 256 < self.dim <= 512:
             candidates.insert(0, {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 256})
         cap = get_shared_memory_optin(self.device_index)
