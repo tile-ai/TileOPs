@@ -374,7 +374,7 @@ def test_axes_nothing_reads_emit_no_checks():
     }
     cls = type("ProbeUnusedFwdOp", (), {})
     install(cls, {"signature": signature}, {})
-    assert len(cls._signature.checks) == 1
+    assert len(cls._signature.effects) == 1
 
 
 def test_an_output_present_with_out_has_its_own_operator():

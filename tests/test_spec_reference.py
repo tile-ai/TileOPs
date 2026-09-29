@@ -4,7 +4,9 @@ Each entry's reference is the torch expression its issue names, or the library r
 where one exists; an entry whose workload module holds its reference calls that one.
 Every workload row is instantiated; data tensors live on ``meta`` and metadata tensors on
 the CPU with the row's generated values, so the reference runs as written at the row's
-full size and costs nothing. Checked against the signature: the
+full size. What is checked depends on the row only through its discriminant point, so each
+point and dtype case runs its row with the fewest input elements: a recurrent reference
+steps once per token even on ``meta``. Checked against the signature: the
 reference's outputs have the inferred names, shapes and dtypes, and it writes exactly the
 inputs the call's effects mark written. One call the signature rejects is rejected by the
 reference too.
@@ -404,14 +406,27 @@ def _calls(name):
             yield row["label"], case, plan, call, meta, host
 
 
+def _smallest_calls(name, cls):
+    """`_calls` narrowed to the call with the fewest input elements per discriminant point and
+    dtype case, each with its constructed op."""
+    smallest = {}
+    for label, case, plan, call, meta, host in _calls(name):
+        op = cls(**call.arguments(meta))
+        inputs = {n: meta[n] for n in plan.sig.inputs}
+        key = (cls._signature.key(cls._signature.point(op, inputs)), sorted(case.items()))
+        size = sum(t.numel() for t in inputs.values() if t is not None)
+        if repr(key) not in smallest or size < smallest[repr(key)][0]:
+            smallest[repr(key)] = (size, (label, case, plan, call, meta, host, op))
+    return [c for _, c in smallest.values()]
+
+
 @pytest.mark.parametrize("name", sorted(REFERENCES))
 def test_reference_agrees_with_the_signature(name):
     entry = load_manifest()[name]
     reference, _reject = REFERENCES[name]
     cls = signature_class(name, entry)
-    for label, case, plan, call, meta, host in _calls(name):
+    for label, case, plan, call, meta, host, op in _smallest_calls(name, cls):
         where = f"{name} {label} {case}"
-        op = cls(**call.arguments(meta))
         checked = cls._signature.check(op, {n: meta[n] for n in plan.sig.inputs})
         inputs = {n: host[n] for n in plan.sig.inputs}
         with _Writes() as writes:
@@ -430,9 +445,11 @@ def test_reference_agrees_with_the_signature(name):
 @pytest.mark.parametrize("name", sorted(REFERENCES))
 def test_a_call_the_signature_rejects_the_reference_rejects(name):
     reference, reject = REFERENCES[name]
-    label, case, plan, call, meta, host = next(_calls(name))
     cls = signature_class(name, load_manifest()[name])
-    op = cls(**call.arguments(meta))
+    label, case, plan, call, meta, host, op = min(
+        _smallest_calls(name, cls),
+        key=lambda c: sum(t.numel() for n in c[2].sig.inputs if (t := c[4][n]) is not None),
+    )
     bad_meta = {n: meta[n] for n in plan.sig.inputs}
     bad_host = {n: host[n] for n in plan.sig.inputs}
     reject(bad_meta)
