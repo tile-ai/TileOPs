@@ -7,9 +7,11 @@ import pytest
 import torch
 import yaml
 
+from tileops.manifest import load_adts, load_manifest
+from tileops.manifest.expr import SignatureError
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.workload import instantiate
-from tileops.ops._signature_codegen import install, operator_name
+from tileops.ops._signature_codegen import _Plan, install, operator_name
 
 pytestmark = pytest.mark.smoke
 
@@ -366,6 +368,20 @@ def test_an_adt_parameter_must_be_its_declared_class():
         op._check_construction()
 
 
+def test_every_manifest_construction_point_emits():
+    """A point's checks are emitted on the first construction there; emitting every point of
+    every manifest entry keeps one that no other test constructs compiling."""
+    adts = load_adts()
+    for name, entry in load_manifest().items():
+        try:
+            plan = _Plan(entry_plan(name, entry, adts))
+        except SignatureError:
+            continue
+        for key in list(plan._pending):
+            plan._emit(key)
+        assert not plan._pending, name
+
+
 def test_axes_nothing_reads_emit_no_checks():
     signature = {
         **_VEC,
@@ -374,7 +390,7 @@ def test_axes_nothing_reads_emit_no_checks():
     }
     cls = type("ProbeUnusedFwdOp", (), {})
     install(cls, {"signature": signature}, {})
-    assert len(cls._signature.checks) == 1
+    assert len(cls._signature.effects) == 1
 
 
 def test_an_output_present_with_out_has_its_own_operator():

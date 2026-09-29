@@ -26,10 +26,20 @@ from tileops.ops.op_base import Op
 
 __all__ = ["manifest_cases", "signature_class"]
 
+# Keyed by the entry object: a caller may pass an edited copy of a manifest entry. The entry is
+# held so its id is not reused.
+_SIGNATURE_CLASSES: dict[tuple[str, int], tuple[dict, type]] = {}
+
 
 def signature_class(op_name: str, entry: dict) -> type:
     """An `Op` subclass with *entry*'s generated methods and no kernel."""
+    key = (op_name, id(entry))
+    if key not in _SIGNATURE_CLASSES:
+        _SIGNATURE_CLASSES[key] = (entry, _build_signature_class(op_name, entry))
+    return _SIGNATURE_CLASSES[key][1]
 
+
+def _build_signature_class(op_name: str, entry: dict) -> type:
     def construct(self, **params):
         vars(self).update(params)
         self.dispatch_kernel(None)
