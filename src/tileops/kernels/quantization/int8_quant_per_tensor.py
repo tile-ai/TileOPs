@@ -61,7 +61,7 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
         def code(value, num, prescale: bool):
             # ``num`` holds the pre-scale factor, then the scale and its reciprocal after
             # that factor.
-            rounded = quantize(value * num[0] if prescale else value, num[1], num[2])
+            rounded = quantize(value * num[0] if prescale else value, num[1], num[2], prescale)
             if not prescale:
                 return rounded
             # A scale that underflowed to zero: torch divides by it, so a nonzero value

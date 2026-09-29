@@ -58,6 +58,19 @@ _COMPARE = {
 }
 
 
+def _subnormal(x: torch.Tensor) -> torch.Tensor:
+    """float32 subnormal elements, and an amax of 190 units of the last place in every
+    128-element block.
+
+    The scale rounds to one unit, so the quotient of the amax is 190 before the clamp.
+    """
+    x = (x * 2.0**-145).clone()
+    unit = torch.finfo(torch.float32).smallest_normal * 2.0**-23
+    x[:, 0::128] = 190 * unit
+    x[:, 1::128] = -190 * unit
+    return x
+
+
 def _case(op_cls, rows, cols, dtype):
     return pytest.param(op_cls, rows, cols, dtype, id=f"{op_cls.__name__}-{dtype}")
 
@@ -133,8 +146,8 @@ class _DefaultPolicyLoads(INT8QuantPerChannelFwdKernel):
         pytest.param(37, 3, torch.float16, lambda w: w, None, id="k-below-vector"),
         # Whole vectors that do not split evenly over the threads: the last ones idle.
         pytest.param(37, 264, torch.bfloat16, lambda w: w, None, id="aligned-inexact"),
-        # Subnormal rows and scales, which the quotient is scaled out of before dividing.
-        pytest.param(64, 1024, torch.float32, lambda w: w * 1e-40, None, id="subnormal-scale"),
+        # Subnormal rows and scales, which the quotient is scaled out of and clamped.
+        pytest.param(64, 1024, torch.float32, _subnormal, None, id="subnormal-scale"),
         pytest.param(
             64, 1024, torch.bfloat16, lambda w: w, _DefaultPolicyLoads, id="default-policy-loads"
         ),
@@ -207,8 +220,8 @@ def test_int8_quant_per_tensor_reaches_every_residency(dtype) -> None:
             ),
             id="misaligned-start",
         ),
-        # Subnormal inputs and scale, which the quotient is scaled out of before dividing.
-        pytest.param(torch.float32, lambda x: x * 1e-40, id="subnormal-scale"),
+        # Subnormal inputs and scale, which the quotient is scaled out of and clamped.
+        pytest.param(torch.float32, _subnormal, id="subnormal-scale"),
         # A scale that underflows to zero, which torch divides by.
         pytest.param(torch.float32, lambda x: x * 1e-45, id="zero-scale"),
     ],
@@ -245,18 +258,6 @@ def _zero_even_rows(x: torch.Tensor) -> torch.Tensor:
     """*x* with every other row set to zero, for a K that is not a whole number of blocks."""
     x = x.clone()
     x[::2] = 0
-    return x
-
-
-def _subnormal(x: torch.Tensor) -> torch.Tensor:
-    """float32 blocks of subnormal elements whose amax is 190 units of the last place.
-
-    The scale rounds to one unit, so the quotient of the amax is 190 before the clamp.
-    """
-    x = (x * 2.0**-145).clone()
-    unit = torch.finfo(torch.float32).smallest_normal * 2.0**-23
-    x[:, 0::128] = 190 * unit
-    x[:, 1::128] = -190 * unit
     return x
 
 

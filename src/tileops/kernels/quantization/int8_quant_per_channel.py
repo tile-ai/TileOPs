@@ -102,24 +102,44 @@ def _int8_quant_per_channel_kernel(rows: int, k: int, dtype: str):
                     fold_one(acc, c, T.cast(values[j, c], "float32"), v, lo, hi, masked)
 
         @T.macro
-        def codes(out, values, j, at, num):
+        def codes(out, values, j, at, num, clamp: bool):
             for c in T.unroll(width):
                 if words:
                     out[at + 2 * c] = quantize(
-                        widen(values[j, c], 0, dtype) * num[0], num[1], num[2]
+                        widen(values[j, c], 0, dtype) * num[0], num[1], num[2], clamp
                     )
                     out[at + 2 * c + 1] = quantize(
-                        widen(values[j, c], 1, dtype) * num[0], num[1], num[2]
+                        widen(values[j, c], 1, dtype) * num[0], num[1], num[2], clamp
                     )
                 else:
-                    out[at + c] = quantize(T.cast(values[j, c], "float32") * num[0], num[1], num[2])
+                    out[at + c] = quantize(
+                        T.cast(values[j, c], "float32") * num[0], num[1], num[2], clamp
+                    )
 
         @T.macro
-        def store_group(q, out, values, g, v, num):
+        def store_group(q, out, values, g, v, num, clamp: bool):
             for i in T.unroll(group):
-                codes(out, values, g * group + i, i * vec, num)
+                codes(out, values, g * group + i, i * vec, num, clamp)
             for c in T.vectorized(group * vec):
                 q[v * vec + c] = out[c]
+
+        @T.macro
+        def store_row(q, out, values, v0, count, lo, hi, tx, num, clamp: bool):
+            for g in T.unroll(vpt // group):
+                if exact:
+                    store_group(q, out, values, g, v0 + slot(g * group, tx), num, clamp)
+                elif slot(g, tx) < count:
+                    if aligned:
+                        store_group(q, out, values, g, v0 + slot(g, tx), num, clamp)
+                    elif (slot(g, tx) == 0) | (slot(g, tx) == count - 1):
+                        codes(out, values, g, 0, num, clamp)
+                        for c in T.unroll(vec):
+                            if ((v0 + slot(g, tx)) * vec + c >= lo) & (
+                                (v0 + slot(g, tx)) * vec + c < hi
+                            ):
+                                q[(v0 + slot(g, tx)) * vec + c] = out[c]
+                    else:
+                        store_group(q, out, values, g, v0 + slot(g, tx), num, clamp)
 
         @T.prim_func
         def _int8_quant_per_channel_main(
@@ -205,21 +225,12 @@ def _int8_quant_per_channel_kernel(rows: int, k: int, dtype: str):
                 )
                 num[1] = num[1] * num[0]
                 num[2] = T.ieee_frcp(num[1])
-                for g in T.unroll(vpt // group):
-                    if exact:
-                        store_group(q, out, values, g, v0 + slot(g * group, tx), num)
-                    elif slot(g, tx) < count:
-                        if aligned:
-                            store_group(q, out, values, g, v0 + slot(g, tx), num)
-                        elif (slot(g, tx) == 0) | (slot(g, tx) == count - 1):
-                            codes(out, values, g, 0, num)
-                            for c in T.unroll(vec):
-                                if ((v0 + slot(g, tx)) * vec + c >= lo) & (
-                                    (v0 + slot(g, tx)) * vec + c < hi
-                                ):
-                                    q[(v0 + slot(g, tx)) * vec + c] = out[c]
-                        else:
-                            store_group(q, out, values, g, v0 + slot(g, tx), num)
+                # A scale scaled up out of the subnormals may still leave a quotient past 127,
+                # which the clamp bounds; a normal scale cannot.
+                if num[0] > T.float32(1.0):
+                    store_row(q, out, values, v0, count, lo, hi, tx, num, True)
+                else:
+                    store_row(q, out, values, v0, count, lo, hi, tx, num, False)
 
         return _int8_quant_per_channel_main
 
