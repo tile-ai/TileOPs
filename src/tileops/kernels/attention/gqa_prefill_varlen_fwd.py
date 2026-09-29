@@ -5,12 +5,8 @@ Inputs use THD layout:
   k/v: [T_kv, H_kv, D]
 
 ``cu_seqlens_q`` and ``cu_seqlens_kv`` describe per-request packed ranges.
-Causal masking uses bottom-right alignment per request, matching the dense
-prefill contract when q_len may be smaller than kv_len. The sliding window
-follows the same alignment, as the SM90 sliding-window kernel does: with
-``offset = kv_len - q_len``, key ``k`` is outside the window of query ``q`` when
-``k < q + offset - window_size_left`` or ``k > q + offset + window_size_right``
-(a bound of -1 is unlimited).
+Causal masking and the sliding window use bottom-right alignment per request,
+matching the dense prefill contract when q_len may be smaller than kv_len.
 """
 
 import functools
@@ -285,8 +281,7 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
     """Ragged packed prefill: per-request ranges of unequal length.
 
     Serves the requests the dense implementations cannot: packed ranges that are
-    not uniform, and sliding windows on GPUs the SM90 sliding-window kernel does
-    not run on.
+    not uniform, with or without a sliding window.
     """
 
     supported_archs: list[int] = [80, 89, 90]
