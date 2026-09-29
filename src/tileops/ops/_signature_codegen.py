@@ -19,6 +19,7 @@ import inspect
 import itertools
 import re
 import string
+import threading
 from dataclasses import dataclass
 
 import torch
@@ -859,8 +860,10 @@ class _Plan:
         }
         self.keys, self.built_keys = self._keys(self.axes), self._keys(self.built_axes)
         self.constructions, self.checks, self.shapes, self.effects, self.roofs = {}, {}, {}, {}, {}
-        # Per construction key not yet emitted: its construction and its call points.
+        # Per construction key not yet emitted: its construction and its call points. A key
+        # leaves it only once its tables are filled, under the lock.
         self._pending = {}
+        self._emitting = threading.Lock()
         for base in self._points(self.built_axes):
             key = self.built_key(base)
             try:
@@ -887,8 +890,13 @@ class _Plan:
                 self.checks[key] = self.shapes[key] = _rejecting(sig, str(exc))
 
     def _emit(self, built_key: tuple) -> None:
-        """Emit the construction check at *built_key* and the checks of its call points."""
-        construction, calls = self._pending.pop(built_key)
+        """Emit the construction check at *built_key* and the checks of its call points, once."""
+        with self._emitting:
+            if built_key in self._pending:
+                self._emit_locked(built_key)
+
+    def _emit_locked(self, built_key: tuple) -> None:
+        construction, calls = self._pending[built_key]
         sig, plan = self.sig, self.entry
         try:
             self.constructions[built_key] = _compiled(
@@ -917,6 +925,7 @@ class _Plan:
                     )
             except SignatureError as exc:
                 self.checks[key] = self.shapes[key] = _rejecting(sig, str(exc))
+        del self._pending[built_key]
 
     @staticmethod
     def _keys(axes: dict) -> list:
