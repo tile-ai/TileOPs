@@ -30,16 +30,19 @@ from tileops.kernels.reduction._primitives import (
     rows_for_axes,
     tune_by_forward,
 )
-from tileops.kernels.reduction.call_spec import LogicalReduceCall
+from tileops.kernels.reduction.call_spec import (
+    CountNonzeroFwdInterface,
+    LogicalReduceCall,
+    LogicalReduceFwdInterface,
+)
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = [
+    "CountNonzeroEdgeTwoPassKernel",
     "LogicalReduceEdgeFusedKernel",
     "LogicalReduceEdgeTwoPassKernel",
     "LogicalReduceKernel",
 ]
-
-_LOGICAL_REDUCE_KINDS = frozenset({"any", "all", "count_nonzero"})
 
 # The scalar dtype the prim_func declares for each input dtype, and how many of those
 # scalars make one element. bool is one byte holding 0 or 1, so int8 reinterprets it; a
@@ -291,7 +294,7 @@ def _fold_reduce(
     return program(threads)(units)
 
 
-class LogicalReduceKernel(Kernel):
+class LogicalReduceKernel(Kernel, LogicalReduceFwdInterface, CountNonzeroFwdInterface):
     """Any / all / count_nonzero forward kernel, general over which axes reduce.
 
     Supports SM80+ architectures. ``forward`` moves *reduce_axes* last and folds each
@@ -314,10 +317,6 @@ class LogicalReduceKernel(Kernel):
     general: bool = True
 
     @classmethod
-    def applies(cls, call: LogicalReduceCall) -> bool:
-        return call.op_kind in _LOGICAL_REDUCE_KINDS
-
-    @classmethod
     def entry_for(cls, call: LogicalReduceCall) -> Entry:
         identity = (
             call.shape,
@@ -333,7 +332,6 @@ class LogicalReduceKernel(Kernel):
             call.op_kind,
             call.dtype,
             keepdim=call.keepdim,
-            tune=call.tune,
             device_index=call.device_index,
         )
 
@@ -412,23 +410,7 @@ class LogicalReduceKernel(Kernel):
         return counted if counts else counted.view(torch.bool)
 
 
-class LogicalReduceEdgeKernelBase(Kernel):
-    """What the two edge-axis logical reductions share: the kept width that divides them."""
-
-    # The fused edge pass runs one block per kept column and has no other parallelism:
-    # the fewest kept columns that fill the device, per calibrated board.
-    _FUSED_MIN_KEPT: ClassVar[Mapping[str, int]] = {"h200": 32}
-
-    @classmethod
-    def fused_min_kept(cls, call: LogicalReduceCall) -> float:
-        """The fewest kept columns at which the fused pass fills the call's board.
-
-        Infinite on a board with no calibrated entry.
-        """
-        return cls._FUSED_MIN_KEPT.get(call.calibration, math.inf)
-
-
-class LogicalReduceEdgeTwoPassKernel(LogicalReduceEdgeKernelBase):
+class LogicalReduceEdgeTwoPassKernel(Kernel, LogicalReduceFwdInterface):
     """Logical reduction of a prefix and a suffix of the axes in two passes.
 
     No permute: the trailing axes fold as contiguous rows into 0/1 int8 (or fp32 count)
@@ -449,12 +431,7 @@ class LogicalReduceEdgeTwoPassKernel(LogicalReduceEdgeKernelBase):
 
     @classmethod
     def applies(cls, call: LogicalReduceCall) -> bool:
-        kept = call.edge_kept
-        if not (call.op_kind in _LOGICAL_REDUCE_KINDS and 0 < kept < cls.fused_min_kept(call)):
-            return False
-        # A count crosses between the passes in fp32, exact up to FP32_EXACT_INT_LIMIT.
-        reduced = prod(call.shape) // kept
-        return call.op_kind != "count_nonzero" or reduced <= FP32_EXACT_INT_LIMIT
+        return call.edge_kept > 0
 
     @classmethod
     def entry_for(cls, call: LogicalReduceCall) -> Entry:
@@ -516,7 +493,17 @@ class LogicalReduceEdgeTwoPassKernel(LogicalReduceEdgeKernelBase):
         return restore_reduced(y, self.shape, self.reduce_axes, self.keepdim)
 
 
-class LogicalReduceEdgeFusedKernel(LogicalReduceEdgeKernelBase):
+class CountNonzeroEdgeTwoPassKernel(LogicalReduceEdgeTwoPassKernel, CountNonzeroFwdInterface):
+    """The two-pass edge-axis count: partial counts cross between the passes in fp32."""
+
+    @classmethod
+    def applies(cls, call: LogicalReduceCall) -> bool:
+        # fp32 is exact up to FP32_EXACT_INT_LIMIT.
+        kept = call.edge_kept
+        return kept > 0 and prod(call.shape) // kept <= FP32_EXACT_INT_LIMIT
+
+
+class LogicalReduceEdgeFusedKernel(Kernel, LogicalReduceFwdInterface, CountNonzeroFwdInterface):
     """Logical reduction of a prefix and a suffix of the axes in one pass.
 
     One block reduces one kept column, walking the leading axes serially while folding
@@ -534,13 +521,16 @@ class LogicalReduceEdgeFusedKernel(LogicalReduceEdgeKernelBase):
     """
 
     supported_archs: list[int] = [90]
+    preferred_over = frozenset({"logical_reduce_edge_two_pass"})
+
+    # The pass runs one block per kept column and has no other parallelism: the fewest
+    # kept columns that fill the device, per calibrated board; none elsewhere.
+    _FUSED_MIN_KEPT: ClassVar[Mapping[str, int]] = {"h200": 32}
 
     @classmethod
     def applies(cls, call: LogicalReduceCall) -> bool:
         kept = call.edge_kept
-        return (
-            call.op_kind in _LOGICAL_REDUCE_KINDS and kept > 0 and kept >= cls.fused_min_kept(call)
-        )
+        return kept > 0 and kept >= cls._FUSED_MIN_KEPT.get(call.calibration, math.inf)
 
     @classmethod
     def entry_for(cls, call: LogicalReduceCall) -> Entry:

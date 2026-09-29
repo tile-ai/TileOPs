@@ -326,12 +326,14 @@ def test_builtin_keeps_the_in_tree_kernels_even_when_a_target_claims_the_device(
 def test_a_replacement_kernel_runs_on_the_devices_it_declares():
     """Device support is the kernel class's statement, so a CPU replacement is not refused."""
     from tileops.kernels.kernel_base import Kernel
+    from tileops.kernels.norm.call_spec import RMSNormFwdInterface
 
-    class CpuRMSNorm(Kernel):
+    class CpuRMSNorm(Kernel, RMSNormFwdInterface):
         devices = frozenset({"cpu"})
 
-        def __init__(self, n, eps, dtype, tune=False):
-            super().__init__()
+        @classmethod
+        def entry_for(cls, call):
+            return call, cls
 
         def forward(self, x, weight):
             return torch.full_like(x, 7)

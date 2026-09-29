@@ -5,14 +5,18 @@ from typing import ClassVar, Dict, List, Mapping, Optional, Tuple, Union
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.reduction.call_spec import LogicalReduceCall
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.reduction.call_spec import (
+    CountNonzeroFwdInterface,
+    LogicalReduceCall,
+    LogicalReduceFwdInterface,
+)
 from tileops.kernels.reduction.logical_reduce import (
+    CountNonzeroEdgeTwoPassKernel,
     LogicalReduceEdgeFusedKernel,
     LogicalReduceEdgeTwoPassKernel,
     LogicalReduceKernel,
 )
-from tileops.ops.op_base import Op
 from tileops.ops.reduction.reduce import _ReduceOpBase
 
 __all__ = ["AllFwdOp", "AnyFwdOp", "CountNonzeroFwdOp"]
@@ -30,6 +34,9 @@ class _LogicalReduceOpBase(_ReduceOpBase):
         "logical_reduce_edge_two_pass": LogicalReduceEdgeTwoPassKernel,
         "logical_reduce": LogicalReduceKernel,
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "reduce": LogicalReduceFwdInterface
+    }
     _output: ClassVar[torch.dtype] = torch.bool
 
     def _output_dtype(self, x: torch.Tensor) -> torch.dtype:
@@ -39,7 +46,7 @@ class _LogicalReduceOpBase(_ReduceOpBase):
         """One element: whether it is nonzero."""
         return (x != 0).to(self._output)
 
-    def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int) -> LogicalReduceCall:
+    def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", n: int) -> LogicalReduceCall:
         """The facts that pick a logical reduction implementation and build it."""
         return LogicalReduceCall(
             device=x.device,
@@ -48,12 +55,7 @@ class _LogicalReduceOpBase(_ReduceOpBase):
             op_kind=self._op_kind,
             dtype=x.dtype,
             keepdim=self.keepdim,
-            tune=self.tune,
         )
-
-    def entry_for(self, role: str, call: LogicalReduceCall) -> Entry:
-        """The implementation whose region serves the call says how it is built."""
-        return Op.entry_for(self, role, call)
 
 
 class AllFwdOp(_LogicalReduceOpBase):
@@ -86,6 +88,12 @@ class CountNonzeroFwdOp(_LogicalReduceOpBase):
 
     _op_kind = "count_nonzero"
     _output = torch.int64
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "logical_reduce_edge_fused": LogicalReduceEdgeFusedKernel,
+        "logical_reduce_edge_two_pass": CountNonzeroEdgeTwoPassKernel,
+        "logical_reduce": LogicalReduceKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"reduce": CountNonzeroFwdInterface}
 
     def __init__(
         self,

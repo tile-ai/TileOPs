@@ -13,6 +13,7 @@ from tests.test_base import FixtureBase, TestBase, served_in_tree
 from tileops.backend import BUILTIN
 from tileops.kernels.reduction.call_spec import LogicalReduceCall
 from tileops.kernels.reduction.logical_reduce import (
+    CountNonzeroEdgeTwoPassKernel,
     LogicalReduceEdgeFusedKernel,
     LogicalReduceEdgeTwoPassKernel,
     LogicalReduceKernel,
@@ -787,7 +788,7 @@ def test_logical_reduce_edge_axes_fused_dispatch(
             (2, 4, 1 << 23),
             (0, 2),
             "h200",
-            LogicalReduceEdgeTwoPassKernel,
+            CountNonzeroEdgeTwoPassKernel,
             id="count-at-fp32-limit",
         ),
         pytest.param(
@@ -798,13 +799,22 @@ def test_logical_reduce_edge_axes_fused_dispatch(
             LogicalReduceKernel,
             id="count-past-fp32",
         ),
+        pytest.param(
+            "count_nonzero",
+            (2, 32, (1 << 23) + 1),
+            (0, 2),
+            "h200",
+            LogicalReduceEdgeFusedKernel,
+            id="count-many-kept-past-fp32",
+        ),
     ],
 )
 def test_logical_reduce_selection(
     op_kind: str, shape: tuple, axes: tuple, calibration: "str | None", expected: type
 ) -> None:
-    """Each edge candidate serves its side of the kept-column threshold; the row fold the rest."""
-    from tileops.ops.reduction.logical_reduce import AnyFwdOp
+    """The fused edge pass wins where the kept columns fill the board, the two-pass one
+    serves other edge calls, and the row fold the rest."""
+    from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 
     call = LogicalReduceCall(
         arch=90,
@@ -815,7 +825,9 @@ def test_logical_reduce_selection(
         op_kind=op_kind,
         dtype=torch.bool,
     )
-    assert AnyFwdOp(dim=list(axes)).select_kernel(call) is expected
+    op_cls = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}[op_kind]
+    op = op_cls(dim=list(axes))
+    assert op.kernel_map[op.select_implementation("reduce", call)] is expected
 
 
 @pytest.mark.smoke

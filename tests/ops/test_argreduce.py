@@ -658,44 +658,63 @@ def test_argreduce_strided_axis_crossover(shape, dim, expect_strided) -> None:
     op = ArgmaxFwdOp(dim=dim)
     torch.testing.assert_close(_call(op, x), torch.argmax(x, dim=dim))
     if served_in_tree(op):
-        strategies = {k.strategy for k in op.iter_kernels()}
-        assert ("output" in strategies) is expect_strided, strategies
+        from tileops.kernels.reduction.argreduce import ArgreduceStridedKernel
+
+        strided = [isinstance(k, ArgreduceStridedKernel) for k in op.iter_kernels()]
+        assert any(strided) is expect_strided, strided
 
 
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "m, n, inner_stride, strategy",
+    "shape, axes, key",
     [
-        (4, 1024, 1, "warp"),
-        (4, 8192, 1, "cta"),
-        (4, 65536, 1, "multi_cta"),
-        (4096, 4, 4096, "output"),
+        ((4, 1024), (1,), "argreduce"),
+        ((4, 8192), (1,), "argreduce"),
+        ((4, 65536), (1,), "argreduce_split"),
+        ((4, 4, 4096), (1,), "argreduce_strided"),
     ],
 )
-def test_argreduce_tuning_space_matches_its_kernel(
-    m: int,
-    n: int,
-    inner_stride: int,
-    strategy: str,
-) -> None:
-    """A strategy may only offer knobs its own kernel takes.
+def test_argreduce_tuning_space_matches_its_kernel(shape: tuple, axes: tuple, key: str) -> None:
+    """A program may only offer knobs its own kernel takes.
 
-    The four layouts are built from different JIT signatures, so one shared
+    The four programs are built from different JIT signatures, so one shared
     config space hands at least one of them a parameter it would reject.
     """
-    from tileops.kernels.reduction.argreduce import ArgreduceKernel
+    from tileops.kernels.reduction.call_spec import ArgreduceCall
+    from tileops.ops.reduction.argreduce import ArgmaxFwdOp
 
-    kernel = ArgreduceKernel(
-        m, n, "argmax", torch.float16, reduce_axes=(1,), inner_stride=inner_stride
-    )
-    assert kernel.strategy == strategy
+    op = ArgmaxFwdOp(dim=axes[0])
+    call = ArgreduceCall(device=torch.device("cuda"), shape=shape, axes=axes, dtype=torch.float16)
+    assert op.select_implementation("reduce", call) == key
+    kernel = op.kernel_for("reduce", (), call)
     accepted = set(kernel.kernel.signature.parameters)
     assert set(kernel.default_config) <= accepted
     for candidate in kernel.autotune_configs:
         assert set(candidate) <= accepted, (
-            f"{strategy}: candidate {candidate} names a knob outside {accepted}"
+            f"{key}: candidate {candidate} names a knob outside {accepted}"
         )
     assert kernel.default_config in kernel.autotune_configs, (
         "tuning cannot be worse than not tuning: the default must be a candidate"
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "shape, axes, key",
+    [
+        ((4, 16, 128), (1,), "argreduce_strided"),
+        ((4, 17, 128), (1,), "argreduce"),
+        ((511, 32768), (1,), "argreduce_split"),
+        ((512, 32768), (1,), "argreduce"),
+        ((4, 32767), (1,), "argreduce"),
+        ((4, 16, 128), (0, 1, 2), "argreduce"),
+    ],
+)
+def test_each_region_selects_its_one_implementation(shape: tuple, axes: tuple, key: str) -> None:
+    """A short strided axis, a few long rows, or else the row program serves each call."""
+    from tileops.kernels.reduction.call_spec import ArgreduceCall
+    from tileops.ops.reduction.argreduce import ArgmaxFwdOp
+
+    call = ArgreduceCall(arch=90, sm_count=132, shape=shape, axes=axes, dtype=torch.float16)
+    assert ArgmaxFwdOp().select_implementation("reduce", call) == key

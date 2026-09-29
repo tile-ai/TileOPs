@@ -6,7 +6,8 @@ from typing import ClassVar, Dict, List, Mapping, Optional, Tuple, Union
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.reduction.call_spec import VectorNormFwdInterface
 from tileops.kernels.reduction.reduce import ReduceFoldKernel
 from tileops.kernels.reduction.vector_norm import (
     VectorNormEdgeKernel,
@@ -28,6 +29,7 @@ class _VectorNormOp(ReduceCallOp):
         "vector_norm": VectorNormKernel,
         "vector_norm_edge": VectorNormEdgeKernel,
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"reduce": VectorNormFwdInterface}
 
     def __init__(
         self,

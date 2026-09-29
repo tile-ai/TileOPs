@@ -17,8 +17,9 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.norm._config import select_row_config, select_row_configs
+from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops.kernels.tiling import ALIGNMENT, align_up
 from tileops.utils import get_sm_count
 
@@ -127,7 +128,7 @@ def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, partial_min_element
     return _func
 
 
-class RMSNormKernel(Kernel):
+class RMSNormKernel(Kernel, RMSNormFwdInterface):
     """RMS Norm kernel.
 
     Supports SM80+ architectures. The row is held in a register fragment from the load
@@ -135,6 +136,11 @@ class RMSNormKernel(Kernel):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: LayerNormCall) -> Entry:
+        identity = (call.n, call.eps, call.dtype)
+        return identity, lambda: cls(*identity)
 
     # Row elements a thread must own before the walk pays. One reduction here,
     # so one walk.

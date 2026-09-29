@@ -44,7 +44,7 @@ from tileops.kernels.reduction._split_softmax import (
     softmax_split_partials_kernel,
     split_seg_n,
 )
-from tileops.kernels.reduction.call_spec import LogSumExpCall
+from tileops.kernels.reduction.call_spec import LogSumExpCall, LogSumExpFwdInterface
 from tileops.utils import WARP_LANES
 
 __all__ = [
@@ -59,8 +59,8 @@ __all__ = [
 class StreamingLogSumExpPolicy:
     """Launch shape and eligibility gate of the streaming kernel.
 
-    The launch pair is fixed rather than tuned, and ``LogSumExpKernel.streams`` keeps
-    the kernel on the shapes that pair suits.
+    The launch pair is fixed rather than tuned, and ``LogSumExpStreamingKernel.applies``
+    keeps the kernel on the shapes that pair suits.
     """
 
     threads: int = 128
@@ -422,31 +422,10 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
     return _func
 
 
-class _LogSumExpKernelBase(Kernel):
-    """The logsumexp family: the policy every candidate's region and plan reads."""
+class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
+    """The logsumexp family: the policy the row candidates' regions and plans read."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
-
-    @classmethod
-    def edge_view(cls, call: LogSumExpCall) -> "tuple[int, int, int] | None":
-        """The ``(outer, kept, inner)`` view an edge-axis reduction reads in place, or None."""
-        k, j = edge_axis_split(len(call.shape), call.axes)
-        return edge_split_view(call.shape, k, j, DEFAULT_THREADS) if k else None
-
-    @classmethod
-    def streams(cls, call: LogSumExpCall) -> bool:
-        """Permuted rows long and many enough for the streaming launch shape.
-
-        A reduction :meth:`edge_view` reads in place is not a row reduction.
-        """
-        policy = STREAMING_LOGSUMEXP
-        return (
-            cls.edge_view(call) is None
-            and call.dtype in (torch.float16, torch.bfloat16)
-            and policy.min_rows <= call.m
-            and policy.min_cols <= call.n
-            and call.n % (policy.threads * policy.cols_per_thread) == 0
-        )
 
     @classmethod
     def row_plan(cls, call: LogSumExpCall) -> "tuple[int, int]":
@@ -457,13 +436,8 @@ class _LogSumExpKernelBase(Kernel):
 
     @classmethod
     def split_seg_n(cls, call: LogSumExpCall) -> int:
-        """The segment width a split of the permuted rows takes, or 0 when none does.
-
-        None for a reduction read in place, for rows that :meth:`streams`, and where the
-        untuned row grid fills the device.
-        """
-        if cls.edge_view(call) is not None or cls.streams(call):
-            return 0
+        """The segment width a split of the permuted rows takes, or 0 where the untuned
+        row grid fills the device."""
         return split_seg_n(call.m, call.n, cls.row_plan(call)[0], call.sm_count)
 
     @staticmethod
@@ -500,6 +474,14 @@ class LogSumExpEdgeSplitKernel(_LogSumExpKernelBase):
     runs. Serves the calls that have an :meth:`edge_view`.
     """
 
+    preferred_over = frozenset({"logsumexp_streaming", "logsumexp_split"})
+
+    @classmethod
+    def edge_view(cls, call: LogSumExpCall) -> "tuple[int, int, int] | None":
+        """The ``(outer, kept, inner)`` view an edge-axis reduction reads in place, or None."""
+        k, j = edge_axis_split(len(call.shape), call.axes)
+        return edge_split_view(call.shape, k, j, DEFAULT_THREADS) if k else None
+
     @classmethod
     def applies(cls, call: LogSumExpCall) -> bool:
         return cls.edge_view(call) is not None
@@ -527,13 +509,21 @@ class LogSumExpStreamingKernel(_LogSumExpKernelBase):
     """LogSumExp of long fp16/bf16 rows on a filled grid, one block per row.
 
     Rows stream straight to registers with the online recurrence at a fixed launch
-    shape (``STREAMING_LOGSUMEXP``), so there is nothing to tune. Serves the calls whose
-    rows :meth:`streams`.
+    shape (``STREAMING_LOGSUMEXP``), so there is nothing to tune. Serves fp16/bf16 rows
+    long and many enough for that launch shape.
     """
+
+    preferred_over = frozenset({"logsumexp_split"})
 
     @classmethod
     def applies(cls, call: LogSumExpCall) -> bool:
-        return cls.streams(call)
+        policy = STREAMING_LOGSUMEXP
+        return (
+            call.dtype in (torch.float16, torch.bfloat16)
+            and policy.min_rows <= call.m
+            and policy.min_cols <= call.n
+            and call.n % (policy.threads * policy.cols_per_thread) == 0
+        )
 
     def __init__(self, call: LogSumExpCall):
         super().__init__(device_index=call.device.index)
@@ -616,7 +606,7 @@ class LogSumExpKernel(RowTiledAutotuneMixin, _LogSumExpKernelBase):
         self._planner = BlockConfigPlanner(self.N_padded, self._elem_bytes, self._smem_budget)
         self._block_m, self._tile_n = self.row_plan(call)
         self.kernel = self._build_row_kernel(self._tile_n)
-        self.init_config(None, call.tune)
+        self.init_config(None)
 
     @property
     def default_config(self) -> dict:

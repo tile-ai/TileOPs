@@ -1,13 +1,21 @@
 """Cumulative scan operators (cumsum, cumprod)."""
 
-from math import prod
 from typing import ClassVar, Dict, Mapping, Optional
 
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.reduction.cumulative import CumulativeKernel
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.reduction.call_spec import (
+    CumprodFwdInterface,
+    CumsumFwdInterface,
+    CumulativeCall,
+)
+from tileops.kernels.reduction.cumulative import (
+    CumsumParallelScanKernel,
+    CumulativeKernel,
+    CumulativeRowScanKernel,
+)
 from tileops.manifest.primitives import normalize_axis
 from tileops.ops.op_base import Op
 
@@ -25,7 +33,6 @@ class CumulativeOp(Op):
     _op_kind: str
 
     compile_boundary = True
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"cumulative_fwd": CumulativeKernel}
 
     def __init__(
         self,
@@ -62,31 +69,15 @@ class CumulativeOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        axis = normalize_axis(self.dim, x.ndim)
         x = x.contiguous()  # handed over as the manifest declares it
-        n = x.shape[axis]
-        # From the shape, not from ``numel``: an empty scanned axis makes ``n`` zero.
-        m = prod(d for i, d in enumerate(x.shape) if i != axis)
-        kernel = self.kernel_for(
-            "cumulative_fwd", (x,), (tuple(x.shape), axis, x.dtype, x.device.index, m, n)
+        call = CumulativeCall(
+            device=x.device,
+            shape=tuple(x.shape),
+            axis=normalize_axis(self.dim, x.ndim),
+            op_kind=self._op_kind,
+            dtype=x.dtype,
         )
-        return kernel(x)
-
-    def entry_for(self, role: str, call: tuple) -> Entry:
-        """One implementation, built from the whole shape and the axis it scans.
-
-        The kernel owns the permute, so the whole shape decides which kernel it is.
-        """
-        _shape, axis, dtype, device_index, m, n = call
-        return call, lambda: self.kernel_map["cumulative_fwd"](
-            m,
-            n,
-            self._op_kind,
-            dtype,
-            scan_axis=axis,
-            tune=self.tune,
-            device_index=device_index,
-        )
+        return self.kernel_for("cumulative_fwd", (x,), call)(x)
 
 
 class CumsumFwdOp(CumulativeOp):
@@ -95,9 +86,9 @@ class CumsumFwdOp(CumulativeOp):
     Output has the same shape and dtype as ``x``. Alignment padding is
     handled inside the kernel via masked loads.
 
-    A row one thread block can stage in shared memory takes the whole-row scan.
-    Of what is left, shapes with ``M < 128 and N > 8192`` take a three-pass
-    parallel scan for SM utilization; every other shape takes the tiled scan.
+    A row one thread block can stage in shared memory takes the whole-row scan;
+    other rows with ``M < 128 and N > 8192`` take a three-pass parallel scan for SM
+    utilization; every other shape takes the tiled scan.
 
     Args:
         dim: Reduction axis (default -1). Negative values are normalized
@@ -116,6 +107,14 @@ class CumsumFwdOp(CumulativeOp):
     """
 
     _op_kind = "sum"
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "cumulative_row_scan": CumulativeRowScanKernel,
+        "cumulative_parallel_scan": CumsumParallelScanKernel,
+        "cumulative_fwd": CumulativeKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "cumulative_fwd": CumsumFwdInterface
+    }
 
 
 class CumprodFwdOp(CumulativeOp):
@@ -141,3 +140,10 @@ class CumprodFwdOp(CumulativeOp):
     """
 
     _op_kind = "prod"
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "cumulative_row_scan": CumulativeRowScanKernel,
+        "cumulative_fwd": CumulativeKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "cumulative_fwd": CumprodFwdInterface
+    }

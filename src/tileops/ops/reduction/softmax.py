@@ -7,8 +7,13 @@ from typing import ClassVar, Dict, List, Mapping, Optional, Tuple, Union
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.reduction.call_spec import LogSumExpCall, SoftmaxCall
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.reduction.call_spec import (
+    LogSumExpCall,
+    LogSumExpFwdInterface,
+    SoftmaxCall,
+    SoftmaxFwdInterface,
+)
 from tileops.kernels.reduction.logsumexp import (
     LogSumExpEdgeSplitKernel,
     LogSumExpKernel,
@@ -38,6 +43,7 @@ class _SoftmaxBaseOp(Op):
         "softmax_split": SoftmaxSplitKernel,
         "softmax_fwd": SoftmaxKernel,
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"softmax": SoftmaxFwdInterface}
     _op_kind: ClassVar[str]
 
     def __init__(
@@ -111,13 +117,8 @@ class _SoftmaxBaseOp(Op):
             op_kind=self._op_kind,
             dtype=x.dtype,
             out_dtype=out_dtype,
-            tune=self.tune,
         )
         return self.kernel_for("softmax", (x,), call)(x)
-
-    def entry_for(self, role: str, call: SoftmaxCall) -> Entry:
-        """Two implementations, so the one that serves the call says how it is built."""
-        return Op.entry_for(self, role, call)
 
 
 class SoftmaxFwdOp(_SoftmaxBaseOp):
@@ -141,6 +142,7 @@ class LogSumExpFwdOp(_ReduceOpBase):
         "logsumexp_split": LogSumExpSplitKernel,
         "logsumexp_fwd": LogSumExpKernel,
     }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"reduce": LogSumExpFwdInterface}
     _op_kind = "logsumexp"
     _empty = "reject"
     _identity = -math.inf
@@ -166,7 +168,7 @@ class LogSumExpFwdOp(_ReduceOpBase):
         """
         super().__init__(dim, keepdim, target=target, kernel_map=kernel_map, tune=tune)
 
-    def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", m: int, n: int) -> LogSumExpCall:
+    def _call(self, x: torch.Tensor, axes: "tuple[int, ...]", n: int) -> LogSumExpCall:
         """The input as the manifest declares it, and the device it runs on."""
         return LogSumExpCall(
             device=x.device,
@@ -174,9 +176,4 @@ class LogSumExpFwdOp(_ReduceOpBase):
             axes=axes,
             keepdim=self.keepdim,
             dtype=x.dtype,
-            tune=self.tune,
         )
-
-    def entry_for(self, role: str, call: LogSumExpCall) -> Entry:
-        """Four implementations, so the one that serves the call says how it is built."""
-        return Op.entry_for(self, role, call)

@@ -44,7 +44,7 @@ from tileops.kernels.reduction._split_softmax import (
     softmax_split_partials_kernel,
     split_seg_n,
 )
-from tileops.kernels.reduction.call_spec import SoftmaxCall
+from tileops.kernels.reduction.call_spec import SoftmaxCall, SoftmaxFwdInterface
 from tileops.utils import WARP_LANES
 
 __all__ = [
@@ -600,7 +600,7 @@ def _softmax_fused_split_kernel(
     return _func
 
 
-class _SoftmaxKernelBase(Kernel):
+class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
     """The softmax family: the policy every candidate's region and plan reads."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -770,7 +770,7 @@ class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
         )
         self._block_m, self._tile_n = self.row_plan(call)
         self.kernel = self._build_row_kernel(self._tile_n)
-        self.init_config(None, call.tune)
+        self.init_config(None)
 
     @property
     def default_config(self) -> dict:

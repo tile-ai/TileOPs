@@ -606,6 +606,7 @@ def test_vector_norm_candidate_regions() -> None:
     cases = [
         ("l2", (8, 4096), (1,), "vector_norm_fold"),
         ("l1", (8, 4095), (1,), "vector_norm"),
+        # Edge axes read in place win over the fold where both apply.
         ("inf", (4, 128, 4096), (0, 2), "vector_norm_edge"),
     ]
     for op_kind, shape, axes, key in cases:
@@ -619,7 +620,7 @@ def test_vector_norm_candidate_regions() -> None:
             op_kind=op_kind,
             dtype=torch.float16,
         )
-        assert op.select_kernel_key(tuple(op.kernel_map), call) == key, (op_kind, shape, axes)
+        assert op.select_implementation("reduce", call) == key, (op_kind, shape, axes)
 
 
 @pytest.mark.smoke
