@@ -462,6 +462,7 @@ _LEGACY_OPS = frozenset(
         "HardsigmoidFwdOp",
         "HardswishFwdOp",
         "HardtanhFwdOp",
+        "INT8DequantPerChannelFwdOp",
         "IndexedExpertMLPFwdOp",
         "InfNormFwdOp",
         "IsfiniteFwdOp",
