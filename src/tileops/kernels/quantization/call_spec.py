@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import dataclasses
+from abc import abstractmethod
 
 import torch
 
 from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.kernel_base import KernelInterface
 
-__all__ = ["QuantizeCall"]
+from .dequant_call import DequantizeCall
+
+__all__ = ["INT8DequantFwdInterface", "QuantizeCall"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -26,3 +30,23 @@ class QuantizeCall(CallSpec):
     dtype: torch.dtype = torch.float16
     # ``INT4QuantPerGroupFwdOp``'s ``group_size``; ``None`` for an op without one.
     group_size: "int | None" = None
+
+
+class INT8DequantFwdInterface(KernelInterface):
+    """INT8 dequantize: ``x = (q.float() * scale).to(out_dtype)``, a scale per group of codes."""
+
+    request = DequantizeCall
+
+    @abstractmethod
+    def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+        """Dequantize *q*; nothing is written in place.
+
+        Both tensors are contiguous on ``call.device``.
+
+        Args:
+            q: ``int8`` ``(call.m, call.k)``.
+            scale: ``float32``, one value per group ``call.granularity`` names.
+
+        Returns:
+            A new ``(call.m, call.k)`` tensor in ``call.out_dtype``.
+        """

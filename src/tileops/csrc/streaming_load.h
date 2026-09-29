@@ -16,4 +16,12 @@ __device__ __forceinline__ void tileops_load16_evict_first(void* dst, const void
   __builtin_memcpy(dst, &v, 16);
 }
 
+// Loads one float that every block of a kernel reads, evict-last in L1 so that later
+// blocks on the same SM find it there rather than queueing on the one L2 line.
+__device__ __forceinline__ float tileops_load_f32_evict_last(const float* src) {
+  float v;
+  asm volatile("ld.global.nc.L1::evict_last.f32 %0, [%1];" : "=f"(v) : "l"(src));
+  return v;
+}
+
 }  // namespace tl
