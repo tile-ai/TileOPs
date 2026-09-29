@@ -13,6 +13,8 @@ from tileops.kernels.quantization.int4_quant_per_group import (
     INT4QuantPerGroupRowFwdKernel,
 )
 from tileops.kernels.quantization.int8_dequant import (
+    INT8DequantPerBlockFwdKernel,
+    INT8DequantPerBlockSmallFwdKernel,
     INT8DequantPerChannelFwdKernel,
     INT8DequantPerTensorFwdKernel,
     INT8DequantPerTensorSmallFwdKernel,
@@ -26,6 +28,8 @@ __all__ = [
     "INT4QuantPerGroupFwdKernel",
     "INT4QuantPerGroupRowFwdKernel",
     "INT8DequantFwdInterface",
+    "INT8DequantPerBlockFwdKernel",
+    "INT8DequantPerBlockSmallFwdKernel",
     "INT8DequantPerChannelFwdKernel",
     "INT8DequantPerTensorFwdKernel",
     "INT8DequantPerTensorSmallFwdKernel",

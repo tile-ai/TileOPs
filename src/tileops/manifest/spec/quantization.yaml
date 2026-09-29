@@ -203,7 +203,7 @@ INT8DequantPerChannelFwdOp:
 
 INT8DequantPerBlockFwdOp:
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {M: Dim, K: Dim}
     params:
@@ -218,6 +218,9 @@ INT8DequantPerBlockFwdOp:
   - {M: 4096, K: 7168, out_dtype: bfloat16, label: ds-v3-prefill}
   - {M: 64, K: 7168, out_dtype: bfloat16, label: ds-v3-decode}
   - {M: 4096, K: 4096, out_dtype: float16, label: qwen3-235b-prefill}
+  - {M: 3000, K: 2880, out_dtype: bfloat16, label: gpt-oss-prefill}
+  - {M: 1000, K: 4099, out_dtype: float32, label: ragged-k}
+  - {M: 17, K: 4099, out_dtype: float16, label: ragged-k-few-rows}
   roofline:
     flops: "M * K"
 
