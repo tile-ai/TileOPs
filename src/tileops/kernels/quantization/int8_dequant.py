@@ -10,7 +10,11 @@ import torch
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import SM_RESIDENT_BLOCKS, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.quantization.call_spec import INT8DequantFwdInterface
+from tileops.kernels.quantization.call_spec import (
+    INT8DequantPerBlockFwdInterface,
+    INT8DequantPerChannelFwdInterface,
+    INT8DequantPerTensorFwdInterface,
+)
 from tileops.kernels.quantization.dequant_call import DequantizeCall
 from tileops.utils import get_sm_version
 
@@ -88,7 +92,7 @@ def _int8_dequant_per_channel_kernel(m: int, k: int, out_dtype: str, npt: int):
     return _int8_dequant_per_channel_func
 
 
-class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantFwdInterface):
+class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
     """``x = (q.float() * scale[:, None]).to(out_dtype)`` for one scale per row of ``q``.
 
     The matrix is read as one flat run of ``m * k`` codes. A thread converts ``npt``
@@ -107,6 +111,8 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+
+    general: bool = True
 
     # ``q`` is data: random codes run the same instructions as real ones.
     autotune_accepts_random_int_inputs: bool = True
@@ -127,10 +133,6 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantFwdInterface):
     _SMALL_N: ClassVar[int] = 1 << 17
     _TUNE_THREADS: ClassVar[tuple[int, ...]] = (128, 256, 512)
     _TUNE_STEPS: ClassVar[tuple[int, ...]] = (1, 2, 4)
-
-    @classmethod
-    def applies(cls, call: DequantizeCall) -> bool:
-        return call.granularity == "channel"
 
     @classmethod
     def refusal(cls, call: DequantizeCall) -> Optional[str]:
@@ -268,7 +270,7 @@ def _int8_dequant_per_tensor_kernel(
     return _int8_dequant_per_tensor_func
 
 
-class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantFwdInterface):
+class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
     """``x = (q.float() * scale).to(out_dtype)`` for one scale over a whole INT8 matrix.
 
     The matrix is read as one flat run of ``n`` codes. A thread converts one 16-byte
@@ -301,10 +303,6 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantFwdInterface):
     _STEPS: ClassVar[int] = 4
     _TUNE_THREADS: ClassVar[tuple[int, ...]] = (32, 64, 128)
     _TUNE_STEPS: ClassVar[tuple[int, ...]] = (2, 4, 8)
-
-    @classmethod
-    def applies(cls, call: DequantizeCall) -> bool:
-        return call.granularity == "tensor"
 
     @classmethod
     def refusal(cls, call: DequantizeCall) -> Optional[str]:
@@ -379,7 +377,7 @@ class INT8DequantPerTensorSmallFwdKernel(INT8DequantPerTensorFwdKernel):
 
     @classmethod
     def applies(cls, call: DequantizeCall) -> bool:
-        return super().applies(call) and call.m * call.k < cls._SMALL_N
+        return call.m * call.k < cls._SMALL_N
 
 
 @functools.lru_cache(maxsize=32)
@@ -557,7 +555,7 @@ def _int8_dequant_per_block_kernel(
     return _int8_dequant_per_block_func
 
 
-class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantFwdInterface):
+class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
     """``x[m, k] = (q[m, k].float() * scale[m, k // 128]).to(out_dtype)``.
 
     The matrix is read as one flat run of ``m * k`` codes, with the per-tensor kernel's
@@ -594,10 +592,6 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantFwdInterface):
     _STEPS: ClassVar[int] = 4
     _TUNE_THREADS: ClassVar[tuple[int, ...]] = (32, 64, 128)
     _TUNE_STEPS: ClassVar[tuple[int, ...]] = (2, 4, 8)
-
-    @classmethod
-    def applies(cls, call: DequantizeCall) -> bool:
-        return call.granularity == "block"
 
     @classmethod
     def refusal(cls, call: DequantizeCall) -> Optional[str]:
@@ -674,4 +668,4 @@ class INT8DequantPerBlockSmallFwdKernel(INT8DequantPerBlockFwdKernel):
 
     @classmethod
     def applies(cls, call: DequantizeCall) -> bool:
-        return super().applies(call) and call.m * call.k < cls._SMALL_N
+        return call.m * call.k < cls._SMALL_N

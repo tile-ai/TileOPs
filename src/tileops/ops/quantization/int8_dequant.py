@@ -8,10 +8,12 @@ from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.quantization import (
     DequantizeCall,
-    INT8DequantFwdInterface,
+    INT8DequantPerBlockFwdInterface,
     INT8DequantPerBlockFwdKernel,
     INT8DequantPerBlockSmallFwdKernel,
+    INT8DequantPerChannelFwdInterface,
     INT8DequantPerChannelFwdKernel,
+    INT8DequantPerTensorFwdInterface,
     INT8DequantPerTensorFwdKernel,
     INT8DequantPerTensorSmallFwdKernel,
 )
@@ -37,7 +39,9 @@ class INT8DequantPerTensorFwdOp(Op):
         "int8_dequant_per_tensor": INT8DequantPerTensorFwdKernel,
         "int8_dequant_per_tensor_small": INT8DequantPerTensorSmallFwdKernel,
     }
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"dequant": INT8DequantFwdInterface}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "dequant": INT8DequantPerTensorFwdInterface
+    }
 
     def __init__(
         self,
@@ -80,7 +84,6 @@ class INT8DequantPerTensorFwdOp(Op):
         call = DequantizeCall(
             m=q.shape[0],
             k=q.shape[1],
-            granularity="tensor",
             out_dtype=self.out_dtype,
             device=q.device,
         )
@@ -99,7 +102,9 @@ class INT8DequantPerChannelFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "int8_dequant_per_channel": INT8DequantPerChannelFwdKernel
     }
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"dequant": INT8DequantFwdInterface}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "dequant": INT8DequantPerChannelFwdInterface
+    }
 
     def __init__(
         self,
@@ -142,7 +147,6 @@ class INT8DequantPerChannelFwdOp(Op):
         call = DequantizeCall(
             m=q.shape[0],
             k=q.shape[1],
-            granularity="channel",
             out_dtype=self.out_dtype,
             device=q.device,
         )
@@ -163,7 +167,9 @@ class INT8DequantPerBlockFwdOp(Op):
         "int8_dequant_per_block": INT8DequantPerBlockFwdKernel,
         "int8_dequant_per_block_small": INT8DequantPerBlockSmallFwdKernel,
     }
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"dequant": INT8DequantFwdInterface}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "dequant": INT8DequantPerBlockFwdInterface
+    }
 
     def __init__(
         self,
@@ -206,7 +212,6 @@ class INT8DequantPerBlockFwdOp(Op):
         call = DequantizeCall(
             m=q.shape[0],
             k=q.shape[1],
-            granularity="block",
             out_dtype=self.out_dtype,
             device=q.device,
         )

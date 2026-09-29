@@ -126,16 +126,27 @@ def test_int8_dequant_misaligned_input(op_cls: type) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "kernel_cls, granularity",
+    "kernel_cls",
+    [INT8DequantPerChannelFwdKernel, INT8DequantPerTensorFwdKernel, INT8DequantPerBlockFwdKernel],
+)
+def test_int8_dequant_refuses_a_last_block_past_int32(kernel_cls: type) -> None:
+    """The last block indexes up to one block past ``M * K``, so ``M * K = 2^31 - 1`` is refused."""
+    call = DequantizeCall(m=1, k=2**31 - 1, out_dtype=torch.bfloat16, device=run_device())
+    assert "int32" in (kernel_cls.refusal(call) or "")
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls, m, key",
     [
-        (INT8DequantPerChannelFwdKernel, "channel"),
-        (INT8DequantPerTensorFwdKernel, "tensor"),
-        (INT8DequantPerBlockFwdKernel, "block"),
+        (INT8DequantPerTensorFwdOp, 127, "int8_dequant_per_tensor_small"),
+        (INT8DequantPerTensorFwdOp, 128, "int8_dequant_per_tensor"),
+        (INT8DequantPerChannelFwdOp, 1, "int8_dequant_per_channel"),
+        (INT8DequantPerBlockFwdOp, 127, "int8_dequant_per_block_small"),
+        (INT8DequantPerBlockFwdOp, 128, "int8_dequant_per_block"),
     ],
 )
-def test_int8_dequant_refuses_a_last_block_past_int32(kernel_cls: type, granularity: str) -> None:
-    """The last block indexes up to one block past ``M * K``, so ``M * K = 2^31 - 1`` is refused."""
-    call = DequantizeCall(
-        m=1, k=2**31 - 1, granularity=granularity, out_dtype=torch.bfloat16, device=run_device()
-    )
-    assert "int32" in (kernel_cls.refusal(call) or "")
+def test_each_region_selects_its_one_implementation(op_cls: type, m: int, key: str) -> None:
+    """Below 2^19 codes the small-matrix kernel serves a call, the general one from there."""
+    call = DequantizeCall(arch=90, sm_count=132, m=m, k=4096, out_dtype=torch.bfloat16)
+    assert op_cls(torch.bfloat16).select_implementation("dequant", call) == key

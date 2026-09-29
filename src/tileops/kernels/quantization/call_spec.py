@@ -13,7 +13,9 @@ from tileops.kernels.quantization.dequant_call import DequantizeCall
 
 __all__ = [
     "INT4QuantPerGroupFwdInterface",
-    "INT8DequantFwdInterface",
+    "INT8DequantPerBlockFwdInterface",
+    "INT8DequantPerChannelFwdInterface",
+    "INT8DequantPerTensorFwdInterface",
     "INT8QuantPerChannelFwdInterface",
     "INT8QuantPerTensorFwdInterface",
     "QuantizeCall",
@@ -37,8 +39,8 @@ class QuantizeCall(CallSpec):
     group_size: "int | None" = None
 
 
-class INT8DequantFwdInterface(KernelInterface):
-    """INT8 dequantize: ``x = (q.float() * scale).to(out_dtype)``, a scale per group of codes."""
+class INT8DequantPerTensorFwdInterface(KernelInterface):
+    """INT8 dequantize with one scale for the matrix: ``x = (q.float() * scale).to(out_dtype)``."""
 
     request = DequantizeCall
 
@@ -50,7 +52,47 @@ class INT8DequantFwdInterface(KernelInterface):
 
         Args:
             q: ``int8`` ``(call.m, call.k)``.
-            scale: ``float32``, one value per group ``call.granularity`` names.
+            scale: ``float32`` ``(1,)``.
+
+        Returns:
+            A new ``(call.m, call.k)`` tensor in ``call.out_dtype``.
+        """
+
+
+class INT8DequantPerChannelFwdInterface(KernelInterface):
+    """INT8 dequantize with one scale per row: ``x = (q.float() * scale[:, None]).to(out_dtype)``."""
+
+    request = DequantizeCall
+
+    @abstractmethod
+    def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+        """Dequantize *q*; nothing is written in place.
+
+        Both tensors are contiguous on ``call.device``.
+
+        Args:
+            q: ``int8`` ``(call.m, call.k)``.
+            scale: ``float32`` ``(call.m,)``.
+
+        Returns:
+            A new ``(call.m, call.k)`` tensor in ``call.out_dtype``.
+        """
+
+
+class INT8DequantPerBlockFwdInterface(KernelInterface):
+    """INT8 dequantize with one scale per 128 codes of a row: ``x = (q.float() * scale[m, k // 128]).to(out_dtype)``."""
+
+    request = DequantizeCall
+
+    @abstractmethod
+    def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+        """Dequantize *q*; nothing is written in place.
+
+        Both tensors are contiguous on ``call.device``.
+
+        Args:
+            q: ``int8`` ``(call.m, call.k)``.
+            scale: ``float32`` ``(call.m, ceil(call.k / 128))``.
 
         Returns:
             A new ``(call.m, call.k)`` tensor in ``call.out_dtype``.
