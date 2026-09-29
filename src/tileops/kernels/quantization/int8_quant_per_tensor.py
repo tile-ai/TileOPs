@@ -325,8 +325,7 @@ class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
 
     A grid-wide amax has to finish before any value is quantized, so the launch holds as
     much of ``x`` on chip as shared memory and registers take across a grid barrier and
-    reads only the rest a second time; a ``[4096, 4096]`` half-precision input is held
-    whole. ``q`` is bit-equal to the torch reference: the scale is the product torch
+    reads only the rest a second time. ``q`` is bit-equal to the torch reference: the scale is the product torch
     computes, and the quotient is correctly rounded.
 
     Args:
