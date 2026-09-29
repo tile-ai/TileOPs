@@ -237,6 +237,7 @@ class RemainderFwdKernel(BinaryKernel):
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
+    REGISTER_COPY_NUM_PER_THREAD = 4
 
     @property
     def stage_broadcast(self) -> bool:
@@ -267,6 +268,7 @@ class PowFwdKernel(BinaryKernel):
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
+    REGISTER_COPY_NUM_PER_THREAD = 4
 
     @staticmethod
     def op_func(a, b):
@@ -354,6 +356,7 @@ class FloorDivideFwdKernel(BinaryKernel):
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
+    REGISTER_COPY_NUM_PER_THREAD = 4
 
     @property
     def stage_broadcast(self) -> bool:
