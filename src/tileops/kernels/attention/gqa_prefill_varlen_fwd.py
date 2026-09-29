@@ -222,10 +222,12 @@ def _gqa_prefill_varlen_fwd_kernel(
                                 T.cast(1, accum_dtype) / logsum[i],
                                 T.cast(0, accum_dtype),
                             )
+                        # The query tile is dead after the last key tile, so the output
+                        # goes through its shared buffer and leaves as whole rows.
                         for i, j in T.Parallel(block_m, dim):
-                            acc_o[i, j] *= inv_logsum[i]
+                            q_shared[i, j] = acc_o[i, j] * inv_logsum[i]
                         T.copy(
-                            acc_o,
+                            q_shared,
                             output[q_start + q_row[0] : q_start + q_row[0] + block_m, by, :],
                             disable_tma=True,
                         )
