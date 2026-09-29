@@ -5,11 +5,10 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.attention.call_spec import ATTENTION_DTYPES, AttentionCall, uses_sliding_window
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_count
-
-from .call_spec import ATTENTION_DTYPES, AttentionCall, uses_sliding_window
 
 __all__ = ["MHABwdWsKernel"]
 

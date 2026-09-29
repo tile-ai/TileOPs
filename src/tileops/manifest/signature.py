@@ -13,8 +13,8 @@ import functools
 import itertools
 from dataclasses import dataclass, field
 
-from .dtype_rules import DTYPE_BITS
-from .expr import (
+from tileops.manifest.dtype_rules import DTYPE_BITS
+from tileops.manifest.expr import (
     OPEN,
     KindEnv,
     SignatureError,
@@ -27,8 +27,19 @@ from .expr import (
     parse,
     value_at,
 )
-from .kinds import BOOL, DTYPE, NONE, VALUE, Kind, dtypes, fits, parse_spec, parse_type, union
-from .primitives import PRIMITIVE_KINDS, PRIMITIVES
+from tileops.manifest.kinds import (
+    BOOL,
+    DTYPE,
+    NONE,
+    VALUE,
+    Kind,
+    dtypes,
+    fits,
+    parse_spec,
+    parse_type,
+    union,
+)
+from tileops.manifest.primitives import PRIMITIVE_KINDS, PRIMITIVES
 
 __all__ = [
     "Signature",

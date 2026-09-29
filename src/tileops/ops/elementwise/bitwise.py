@@ -6,8 +6,7 @@ from tileops.kernels.elementwise import (
     BitwiseOrFwdKernel,
     BitwiseXorFwdKernel,
 )
-
-from ._base import BinaryOp, UnaryOp
+from tileops.ops.elementwise._base import BinaryOp, UnaryOp
 
 
 class BitwiseAndFwdOp(BinaryOp):

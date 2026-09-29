@@ -17,8 +17,8 @@ import re
 from dataclasses import dataclass
 from zlib import crc32
 
-from .dtype_rules import DTYPE_BITS
-from .expr import (
+from tileops.manifest.dtype_rules import DTYPE_BITS
+from tileops.manifest.expr import (
     EvaluationError,
     SignatureError,
     call_errors,
@@ -30,9 +30,9 @@ from .expr import (
     names,
     parse,
 )
-from .kinds import INT, seq, split_union
-from .plan import EntryPlan, PlanBranch, entry_plan
-from .primitives import (
+from tileops.manifest.kinds import INT, seq, split_union
+from tileops.manifest.plan import EntryPlan, PlanBranch, entry_plan
+from tileops.manifest.primitives import (
     GENERATOR_KINDS,
     GENERATOR_RANKS,
     GENERATOR_SHAPES,
@@ -45,7 +45,7 @@ from .primitives import (
     RANDOM_GENERATORS,
     WORKLOAD_SEED,
 )
-from .signature import (
+from tileops.manifest.signature import (
     Signature,
     complete_point,
     discriminant_axes,
@@ -56,7 +56,7 @@ from .signature import (
     rejecting_rule,
     unification,
 )
-from .values import ADTValue, convert, is_integer, python_class
+from tileops.manifest.values import ADTValue, convert, is_integer, python_class
 
 __all__ = ["Call", "CallView", "RowError", "TensorSpec", "check_workloads", "instantiate"]
 

@@ -13,9 +13,9 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from .call_spec import CallSpec
-from .constants import BLOCK_SHARED_BYTES_OPT_IN, MAX_BLOCK_THREADS
-from .kernel_base import Kernel
+from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, MAX_BLOCK_THREADS
+from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["FFTC2CCall", "FFTC2CDecomposedKernel", "FFTC2COneCTAKernel"]
 

@@ -30,11 +30,10 @@ import tilelang.language as T
 import torch
 from tilelang.layout import make_swizzled_layout
 
+from tileops.kernels.attention.call_spec import ATTENTION_DTYPES, AttentionCall, uses_sliding_window
 from tileops.kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import WARP_LANES
-
-from .call_spec import ATTENTION_DTYPES, AttentionCall, uses_sliding_window
 
 __all__ = ["MHADecodePagedWsKernel"]
 

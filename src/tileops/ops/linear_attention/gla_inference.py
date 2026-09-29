@@ -18,9 +18,8 @@ from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
 from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import (
     GLADensePrefillSubchunkKernel,
 )
+from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
-
-from ..op_base import Op
 
 __all__ = ["GLAInferenceFwdOp"]
 

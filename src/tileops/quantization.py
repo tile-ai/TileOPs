@@ -1,9 +1,7 @@
 """The quantization ops, at the public path ``tileops.quantization``."""
 
-from .ops.fp8_quant import (
-    FP8QuantFwdOp,
-)
-from .ops.quantization import (
+from tileops.ops.fp8_quant import FP8QuantFwdOp
+from tileops.ops.quantization import (
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,
     INT8DequantPerBlockFwdOp,

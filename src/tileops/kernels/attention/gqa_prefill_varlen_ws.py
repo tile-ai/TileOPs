@@ -8,12 +8,11 @@ import tilelang.language as T
 import torch
 from tilelang.layout import make_swizzled_layout
 
+from tileops.kernels.attention.call_spec import ATTENTION_DTYPES, uses_sliding_window
+from tileops.kernels.attention.varlen import VarlenKernel, varlen_entry
 from tileops.kernels.constants import LOG2E
+from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.utils import get_sm_count
-
-from ..grouped_tiling import GroupTiling
-from .call_spec import ATTENTION_DTYPES, uses_sliding_window
-from .varlen import VarlenKernel, varlen_entry
 
 __all__ = ["GQAPrefillVarlenWSFwdKernel"]
 

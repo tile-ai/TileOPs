@@ -9,12 +9,15 @@ import tilelang.language as T
 import torch
 from tilelang.layout import make_swizzled_layout
 
+from tileops.kernels.attention.call_spec import (
+    GQADenseFwdInterface,
+    dense_sliding_window_refusal,
+    dense_ws_refusal,
+)
+from tileops.kernels.attention.dense_entry import dense_sliding_window_entry, dense_ws_entry
+from tileops.kernels.attention.online_softmax import make_apply_softcap
 from tileops.kernels.constants import LOG2E
-
-from ..kernel_base import Entry, Kernel
-from .call_spec import GQADenseFwdInterface, dense_sliding_window_refusal, dense_ws_refusal
-from .dense_entry import dense_sliding_window_entry, dense_ws_entry
-from .online_softmax import make_apply_softcap
+from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = [
     "GQADenseWsKernel",

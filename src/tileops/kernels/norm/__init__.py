@@ -1,5 +1,5 @@
-from .ada_layer_norm import AdaLayerNormKernel
-from .batch_norm import (
+from tileops.kernels.norm.ada_layer_norm import AdaLayerNormKernel
+from tileops.kernels.norm.batch_norm import (
     BatchNormBwdKernel,
     BatchNormBwdSplitKernel,
     BatchNormBwdWideKernel,
@@ -9,16 +9,16 @@ from .batch_norm import (
     BatchNormFwdTrainWholeKernel,
     BatchNormFwdTrainWideKernel,
 )
-from .fused_add_norm import FusedAddLayerNormKernel, FusedAddRMSNormKernel
-from .group_norm import GroupNormKernel, GroupNormNoAffineKernel
-from .instance_norm import (
+from tileops.kernels.norm.fused_add_norm import FusedAddLayerNormKernel, FusedAddRMSNormKernel
+from tileops.kernels.norm.group_norm import GroupNormKernel, GroupNormNoAffineKernel
+from tileops.kernels.norm.instance_norm import (
     InstanceNormFwdTrainKernel,
     InstanceNormFwdTrainSingleKernel,
     InstanceNormKernel,
     InstanceNormNoAffineKernel,
 )
-from .layer_norm import LayerNormKernel
-from .rms_norm import RMSNormKernel
+from tileops.kernels.norm.layer_norm import LayerNormKernel
+from tileops.kernels.norm.rms_norm import RMSNormKernel
 
 __all__: list[str] = [
     "AdaLayerNormKernel",

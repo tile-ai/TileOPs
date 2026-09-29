@@ -16,8 +16,7 @@ import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
-
-from .call_spec import (
+from tileops.kernels.norm.call_spec import (
     BatchNormBwdInterface,
     BatchNormCall,
     BatchNormFwdInferInterface,

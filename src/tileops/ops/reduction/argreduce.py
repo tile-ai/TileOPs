@@ -8,8 +8,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction.argreduce import ArgreduceKernel
-
-from .reduce import _ReduceOpBase
+from tileops.ops.reduction.reduce import _ReduceOpBase
 
 __all__ = ["ArgmaxFwdOp", "ArgminFwdOp"]
 

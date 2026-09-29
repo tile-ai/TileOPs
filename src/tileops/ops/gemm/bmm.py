@@ -18,9 +18,8 @@ from tileops.kernels.gemm.bmm import (
 )
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
-
-from ..op_base import Op
 
 __all__ = ["BmmFp8FwdOp", "BmmFwdOp"]
 

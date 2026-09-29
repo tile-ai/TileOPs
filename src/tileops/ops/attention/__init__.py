@@ -1,20 +1,14 @@
-from .deepseek_dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
-from .deepseek_mla import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
-from .deepseek_nsa import (
-    NSACmpVarlenFwdOp,
-    NSATopkVarlenFwdOp,
-    NSAVarlenFwdOp,
-)
-from .gqa import (
+from tileops.ops.attention.deepseek_dsa import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
+from tileops.ops.attention.deepseek_mla import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
+from tileops.ops.attention.deepseek_nsa import NSACmpVarlenFwdOp, NSATopkVarlenFwdOp, NSAVarlenFwdOp
+from tileops.ops.attention.gqa import (
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPagedFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
     GroupedQueryAttentionVarlenFwdOp,
 )
-from .mha import (
-    MultiHeadAttentionDecodePagedWithKVCacheFwdOp,
-)
+from tileops.ops.attention.mha import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
 
 __all__ = [
     "DeepSeekSparseAttentionDecodeWithKVCacheFwdOp",

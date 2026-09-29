@@ -12,11 +12,10 @@ import torch
 
 from tileops._csrc import csrc_path
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
+from tileops.kernels.gemm.call_spec import GemmCall
+from tileops.kernels.gemm.dense import _splitk_reduce_kernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.utils import device_calibration, get_sm_count
-
-from .call_spec import GemmCall
-from .dense import _splitk_reduce_kernel
 
 GROUP_SIZE = 128
 

@@ -4,7 +4,7 @@ from typing import Optional
 
 import torch
 
-from .gla_fwd import GLAFwdKernel
+from tileops.kernels.linear_attention.gla.gla_fwd import GLAFwdKernel
 
 __all__ = ["GLADensePrefillFwdKernel"]
 

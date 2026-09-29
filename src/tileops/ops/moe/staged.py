@@ -13,10 +13,9 @@ from tileops.kernels.moe import (
     MoeUnpermuteKernel,
 )
 from tileops.kernels.moe.call_spec import MGroupedGemmCall, PostPermuteCall, PrePermuteCall
+from tileops.ops.moe.contracts import MaskedLayoutSpec, MGroupedLayoutSpec, RoutingEpilogueSpec
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
-
-from .contracts import MaskedLayoutSpec, MGroupedLayoutSpec, RoutingEpilogueSpec
 
 __all__ = [
     "MoeExpertMLPFwdOp",

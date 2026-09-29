@@ -6,18 +6,27 @@ per-variant subpackages; the DeltaNet and GLA single-token decode kernels are th
 ``*_recurrence`` modules.
 """
 
-from .deltanet import DeltaNetBwdKernel, DeltaNetDensePrefillFwdKernel, DeltaNetFwdKernel
-from .deltanet_recurrence import (
+from tileops.kernels.linear_attention.deltanet import (
+    DeltaNetBwdKernel,
+    DeltaNetDensePrefillFwdKernel,
+    DeltaNetFwdKernel,
+)
+from tileops.kernels.linear_attention.deltanet_recurrence import (
     DeltaNetDecodeFP32Kernel,
     DeltaNetDecodeKernel,
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
-from .gated_deltanet import (
+from tileops.kernels.linear_attention.gated_deltanet import (
     GatedDeltaNetDenseDecodeFwdKernel,
     GatedDeltaNetDensePrefillFwdKernel,
 )
-from .gla import GLABwdKernel, GLADensePrefillFwdKernel, GLADensePrefillSubchunkKernel, GLAFwdKernel
-from .gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
+from tileops.kernels.linear_attention.gla import (
+    GLABwdKernel,
+    GLADensePrefillFwdKernel,
+    GLADensePrefillSubchunkKernel,
+    GLAFwdKernel,
+)
+from tileops.kernels.linear_attention.gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
 
 __all__ = [
     "DeltaNetBwdKernel",

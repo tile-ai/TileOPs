@@ -1,12 +1,15 @@
-from .adaptive_avg_pool2d import AdaptiveAvgPool2dKernel
-from .adaptive_max_pool2d import AdaptiveMaxPool2dKernel, AdaptiveMaxPool2dWithIndicesKernel
-from .avg_pool1d import AvgPool1dKernel, AvgPool1dSpatialKernel
-from .avg_pool2d import AvgPool2dKernel, AvgPool2dSpatialKernel
-from .avg_pool3d import AvgPool3dKernel, AvgPool3dSpatialKernel
-from .max_pool1d import MaxPool1dKernel, MaxPool1dWithIndicesKernel
-from .max_pool2d import MaxPool2dKernel, MaxPool2dWithIndicesKernel
-from .max_pool3d import MaxPool3dKernel, MaxPool3dWithIndicesKernel
-from .mean_pooling import MeanPoolingFwdKernel
+from tileops.kernels.pool.adaptive_avg_pool2d import AdaptiveAvgPool2dKernel
+from tileops.kernels.pool.adaptive_max_pool2d import (
+    AdaptiveMaxPool2dKernel,
+    AdaptiveMaxPool2dWithIndicesKernel,
+)
+from tileops.kernels.pool.avg_pool1d import AvgPool1dKernel, AvgPool1dSpatialKernel
+from tileops.kernels.pool.avg_pool2d import AvgPool2dKernel, AvgPool2dSpatialKernel
+from tileops.kernels.pool.avg_pool3d import AvgPool3dKernel, AvgPool3dSpatialKernel
+from tileops.kernels.pool.max_pool1d import MaxPool1dKernel, MaxPool1dWithIndicesKernel
+from tileops.kernels.pool.max_pool2d import MaxPool2dKernel, MaxPool2dWithIndicesKernel
+from tileops.kernels.pool.max_pool3d import MaxPool3dKernel, MaxPool3dWithIndicesKernel
+from tileops.kernels.pool.mean_pooling import MeanPoolingFwdKernel
 
 __all__ = [
     "AdaptiveAvgPool2dKernel",

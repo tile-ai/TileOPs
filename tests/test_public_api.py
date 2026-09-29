@@ -43,7 +43,7 @@ def _imported_names(path: Path) -> set[str]:
     return {
         alias.asname or alias.name
         for node in body + guarded
-        if isinstance(node, ast.ImportFrom) and node.level > 0
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("tileops.")
         for alias in node.names
     }
 

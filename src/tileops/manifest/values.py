@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import importlib
 
-from .dtype_rules import DTYPE_BITS
-from .expr import evaluate, parse
-from .kinds import split_union
+from tileops.manifest.dtype_rules import DTYPE_BITS
+from tileops.manifest.expr import evaluate, parse
+from tileops.manifest.kinds import split_union
 
 __all__ = ["ADTValue", "convert", "is_integer", "python_class"]
 

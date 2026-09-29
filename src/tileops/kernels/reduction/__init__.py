@@ -1,24 +1,21 @@
 # Copyright (c) Tile-AI. All rights reserved.
 """Reduction kernels, one module per sub-category."""
 
-from ._primitives import (
-    DEFAULT_ALIGNMENT,
-    align_up,
-)
-from .argreduce import ArgreduceKernel
-from .cumulative import CumulativeKernel
-from .logical_reduce import (
+from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
+from tileops.kernels.reduction.argreduce import ArgreduceKernel
+from tileops.kernels.reduction.cumulative import CumulativeKernel
+from tileops.kernels.reduction.logical_reduce import (
     LogicalReduceEdgeFusedKernel,
     LogicalReduceEdgeTwoPassKernel,
     LogicalReduceKernel,
 )
-from .logsumexp import (
+from tileops.kernels.reduction.logsumexp import (
     LogSumExpEdgeSplitKernel,
     LogSumExpKernel,
     LogSumExpSplitKernel,
     LogSumExpStreamingKernel,
 )
-from .reduce import (
+from tileops.kernels.reduction.reduce import (
     ReduceEdgeKernel,
     ReduceFoldKernel,
     ReduceKernel,
@@ -27,14 +24,8 @@ from .reduce import (
     WelfordEdgeKernel,
     WelfordReduceKernel,
 )
-from .softmax import (
-    SoftmaxKernel,
-    SoftmaxSplitKernel,
-)
-from .vector_norm import (
-    VectorNormEdgeKernel,
-    VectorNormKernel,
-)
+from tileops.kernels.reduction.softmax import SoftmaxKernel, SoftmaxSplitKernel
+from tileops.kernels.reduction.vector_norm import VectorNormEdgeKernel, VectorNormKernel
 
 __all__: list[str] = [
     "DEFAULT_ALIGNMENT",

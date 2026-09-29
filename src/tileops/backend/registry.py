@@ -12,8 +12,8 @@ import warnings
 from importlib.metadata import entry_points
 from typing import Callable, NamedTuple
 
-from .errors import BackendError
-from .protocol import BuildKernel, DetectFn, Target
+from tileops.backend.errors import BackendError
+from tileops.backend.protocol import BuildKernel, DetectFn, Target
 
 # The value names a *module*; importing it must perform the registration.
 ENTRY_POINT_GROUP = "tileops.backends"

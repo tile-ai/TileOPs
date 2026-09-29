@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import torch
 
-from . import registry
-from .errors import AmbiguousTargetError, BackendError, UnknownTargetError
-from .protocol import BUILTIN, BuildKernel, DetectFn, Target
+from tileops.backend import registry
+from tileops.backend.errors import AmbiguousTargetError, BackendError, UnknownTargetError
+from tileops.backend.protocol import BUILTIN, BuildKernel, DetectFn, Target
 
 
 def detect_target(device: torch.device) -> str | None:

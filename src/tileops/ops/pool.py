@@ -25,8 +25,7 @@ from tileops.kernels.pool import (
     MaxPool3dWithIndicesKernel,
     MeanPoolingFwdKernel,
 )
-
-from .op_base import Op
+from tileops.ops.op_base import Op
 
 __all__ = [
     "AdaptiveAvgPool2dFwdOp",

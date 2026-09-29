@@ -20,15 +20,18 @@ import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry
-
-from ._config import (
+from tileops.kernels.norm._config import (
     make_row_reduce,
     make_shifted_row_reduce,
     row_padding,
     select_row_config_by_width,
 )
-from .call_spec import BatchNormCall, InstanceNormFwdInterface, InstanceNormFwdTrainInterface
-from .group_norm import GroupNormKernel, GroupNormNoAffineKernel
+from tileops.kernels.norm.call_spec import (
+    BatchNormCall,
+    InstanceNormFwdInterface,
+    InstanceNormFwdTrainInterface,
+)
+from tileops.kernels.norm.group_norm import GroupNormKernel, GroupNormNoAffineKernel
 
 __all__ = [
     "InstanceNormFwdTrainKernel",

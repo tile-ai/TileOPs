@@ -8,28 +8,28 @@ kernels are implemented.
 
 # --- LogicalReduceKernel ops ---
 # --- ArgreduceKernel ops ---
-from .argreduce import ArgmaxFwdOp, ArgminFwdOp
+from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
 
 # --- CumulativeKernel ops ---
-from .cumulative import CumprodFwdOp, CumsumFwdOp
-from .logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
+from tileops.ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
+from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 
 # --- ReduceKernel ops ---
 # --- SoftmaxKernel ops ---
-from .reduce import (
-    AmaxFwdOp,  # ReduceMaxOp
-    AminFwdOp,  # ReduceMinOp
-    MeanFwdOp,  # ReduceMeanOp
-    ProdFwdOp,  # ReduceProdOp
+from tileops.ops.reduction.reduce import (
+    AmaxFwdOp,
+    AminFwdOp,
+    MeanFwdOp,
+    ProdFwdOp,
     StdFwdOp,
-    SumFwdOp,  # ReduceSumOp
+    SumFwdOp,
     VarFwdOp,
     VarMeanFwdOp,
 )
-from .softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
+from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
 
 # --- VectorNormKernel ops ---
-from .vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
+from tileops.ops.reduction.vector_norm import InfNormFwdOp, L1NormFwdOp, L2NormFwdOp
 
 __all__: list[str] = [
     # --- LogicalReduceKernel ops ---

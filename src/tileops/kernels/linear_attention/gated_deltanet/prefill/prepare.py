@@ -10,8 +10,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import LOG2E
-
-from .common import prepare_chunk_offsets
+from tileops.kernels.linear_attention.gated_deltanet.prefill.common import prepare_chunk_offsets
 
 
 @functools.lru_cache(maxsize=32)

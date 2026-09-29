@@ -11,8 +11,8 @@ from typing import Optional
 
 import torch
 
-from ..call_spec import CallSpec
-from ..kernel_base import KernelInterface
+from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.kernel_base import KernelInterface
 
 __all__ = [
     "ATTENTION_DTYPES",

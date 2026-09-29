@@ -20,9 +20,8 @@ from tileops.kernels.elementwise import (
     SubFwdKernel,
 )
 from tileops.kernels.kernel_base import Kernel
-
-from ..op_base import Op
-from ._base import BinaryOp, _AlphaScaledBinaryOp, _PerDtypeKernels
+from tileops.ops.elementwise._base import BinaryOp, _AlphaScaledBinaryOp, _PerDtypeKernels
+from tileops.ops.op_base import Op
 
 _DIV_KEY_BY_ROUNDING_MODE = {None: "div", "trunc": "div_trunc", "floor": "floor_divide"}
 

@@ -118,9 +118,10 @@ select = [
     "N",
     # pydoclint: a documented parameter the signature does not have
     "DOC102",
-    # flake8-tidy-imports: banned APIs only. Selected as the exact rule, not the
-    # whole TID family, because TID252 (relative imports) has standing violations.
+    # flake8-tidy-imports: banned APIs.
     "TID251",
+    # Every import is absolute (`from tileops.x import y`); no relative imports.
+    "TID252",
     # docs/design/layer-boundaries.md §Test: a test does not import from benchmarks/.
     "TID253",
     # A `noqa` that suppresses nothing, or names a rule this config does not select.
@@ -162,6 +163,7 @@ known-first-party = ["tileops"]
 [tool.ruff.lint.flake8-tidy-imports]
 # Module level only: TID251 cannot be scoped to tests/ without lifting its bans elsewhere.
 banned-module-level-imports = ["benchmarks"]
+ban-relative-imports = "all"
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 # Resolved through the import graph, so an alias other than the usual `T` is

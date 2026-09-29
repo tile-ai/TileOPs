@@ -5,7 +5,7 @@ import functools
 import tilelang
 import tilelang.language as T
 
-from ._base import MultiInputElementwiseKernel, _flat
+from tileops.kernels.elementwise._base import MultiInputElementwiseKernel, _flat
 
 __all__ = [
     "PreluFwdKernel",

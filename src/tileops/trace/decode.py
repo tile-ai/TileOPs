@@ -35,7 +35,7 @@ Per-CTA timestamp zeroing:
 
 from dataclasses import dataclass
 
-from .record import EventKind, unpack_w1
+from tileops.trace.record import EventKind, unpack_w1
 
 __all__ = ["FlowEdge", "Instant", "Slice", "compute_flows", "cycles_to_us", "decode"]
 

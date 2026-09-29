@@ -8,8 +8,7 @@ from tilelang.profiler import do_bench
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
-
-from ..v_tile import GEMM_MIN_N
+from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N
 
 # Pre-compute: g_cumsum per chunk (parallel, B*H*NC thread blocks)
 

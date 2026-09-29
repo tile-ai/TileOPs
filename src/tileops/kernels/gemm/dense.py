@@ -5,12 +5,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.trace import trace
-from tileops.utils import get_sm_count, str2dtype
-
-from .call_spec import GemmCall
-from .heuristics import (
+from tileops.kernels.gemm.call_spec import GemmCall
+from tileops.kernels.gemm.heuristics import (
     SWAP_AB_MPAD,
     best_config,
     fp8_ws_config,
@@ -18,6 +14,9 @@ from .heuristics import (
     small_batch_config,
     swap_ab_grid_underfills,
 )
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.trace import trace
+from tileops.utils import get_sm_count, str2dtype
 
 __all__ = [
     "GemmCpAsyncKernel",

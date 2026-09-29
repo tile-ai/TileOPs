@@ -7,9 +7,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.gemm.w4a16 import _LAYOUT
 from tileops.kernels.kernel_base import Kernel
-
-from .w4a16 import _LAYOUT
 
 __all__ = ["W4A16RepackKernel"]
 

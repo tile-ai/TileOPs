@@ -23,8 +23,7 @@ from tileops.kernels.elementwise import (
     TanhFwdKernel,
 )
 from tileops.kernels.kernel_base import Kernel
-
-from ._base import (
+from tileops.ops.elementwise._base import (
     FusedGatedOp,
     UnaryOp,
     _ParametricActivationOp,

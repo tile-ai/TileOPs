@@ -5,8 +5,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.engram import EngramGateConvBwdKernel, EngramGateConvFwdKernel
 from tileops.kernels.kernel_base import Entry, Kernel
-
-from ..op_base import Op
+from tileops.ops.op_base import Op
 
 __all__ = ["EngramGateConvBwdOp", "EngramGateConvFwdOp"]
 

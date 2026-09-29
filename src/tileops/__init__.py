@@ -16,19 +16,7 @@ neither is installed. Reaching into a family is what imports torch.
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
-    from tileops.backend import (
-        BUILTIN,
-        AmbiguousTargetError,
-        BackendError,
-        OpNotAvailableError,
-        UnknownTargetError,
-        default_target,
-        load_failures,
-        registered_targets,
-        set_default_target,
-    )
-
-    from . import (
+    from tileops import (
         attention,
         convolution,
         elementwise,
@@ -45,7 +33,18 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         sampling,
         sequence_modeling,
     )
-    from .ops.op_base import Op
+    from tileops.backend import (
+        BUILTIN,
+        AmbiguousTargetError,
+        BackendError,
+        OpNotAvailableError,
+        UnknownTargetError,
+        default_target,
+        load_failures,
+        registered_targets,
+        set_default_target,
+    )
+    from tileops.ops.op_base import Op
 
 # One entry per op family, ordered as `tileops.ops.__all__` groups them.
 _FAMILIES = (

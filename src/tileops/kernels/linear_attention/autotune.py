@@ -10,7 +10,7 @@ import itertools
 import warnings
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from .v_tile import resolve_block_v
+from tileops.kernels.linear_attention.v_tile import resolve_block_v
 
 __all__ = [
     "H_BLOCK_V_WIDTHS",

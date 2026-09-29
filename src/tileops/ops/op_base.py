@@ -33,8 +33,7 @@ from tileops.backend.dispatch import registered_kernel_builder, select_target
 from tileops.backend.registry import IMPLEMENTATIONS, ensure_loaded
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
-
-from .compile_boundary import register_instance
+from tileops.ops.compile_boundary import register_instance
 
 _Entry = TypeVar("_Entry")
 

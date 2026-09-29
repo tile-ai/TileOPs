@@ -4,7 +4,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from .common import AdaptivePool2dKernelBase, adaptive_bin, max_adaptive_bin_extent
+from tileops.kernels.pool.common import (
+    AdaptivePool2dKernelBase,
+    adaptive_bin,
+    max_adaptive_bin_extent,
+)
 
 __all__ = ["AdaptiveAvgPool2dKernel"]
 

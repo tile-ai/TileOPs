@@ -14,15 +14,14 @@ import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import WARP_LANES
-
-from ._primitives import (
+from tileops.kernels.reduction._primitives import (
     FRAGMENT_ELEMS_PER_THREAD,
     ceildiv_int,
     restore_reduced,
     rows_for_axes,
     torch_dtype_nbytes,
 )
+from tileops.utils import WARP_LANES
 
 __all__ = ["ArgreduceKernel"]
 

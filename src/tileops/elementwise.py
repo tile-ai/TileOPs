@@ -1,7 +1,7 @@
 """The elementwise ops, at the public path ``tileops.elementwise``."""
 
-from .ops.dropout import DropoutFwdOp
-from .ops.elementwise import (
+from tileops.ops.dropout import DropoutFwdOp
+from tileops.ops.elementwise import (
     AbsFwdOp,
     AddFwdOp,
     AlibiFwdOp,

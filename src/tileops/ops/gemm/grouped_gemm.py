@@ -9,9 +9,8 @@ from tileops.kernels.grouped_gemm import (
     GroupedGemmPersistentKernel,
 )
 from tileops.kernels.kernel_base import Kernel
+from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
-
-from ..op_base import Op
 
 __all__ = ["GroupedGemmFwdOp"]
 

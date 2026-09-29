@@ -1,6 +1,6 @@
 """The attention ops, at the public path ``tileops.attention``."""
 
-from .ops.attention import (
+from tileops.ops.attention import (
     DeepSeekSparseAttentionDecodeWithKVCacheFwdOp,
     GroupedQueryAttentionBwdOp,
     GroupedQueryAttentionDenseFwdOp,
@@ -13,8 +13,8 @@ from .ops.attention import (
     NSATopkVarlenFwdOp,
     NSAVarlenFwdOp,
 )
-from .ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-from .ops.topk_selector import TopkSelectorFwdOp
+from tileops.ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
+from tileops.ops.topk_selector import TopkSelectorFwdOp
 
 __all__ = [
     "MultiHeadAttentionDecodePagedWithKVCacheFwdOp",

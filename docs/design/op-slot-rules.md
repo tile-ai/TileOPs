@@ -36,12 +36,11 @@ design, calling conventions — live in
 - **Rule.** One absolute `from tileops.kernels.* import <KernelClass>` per `kernel_types`
   value. Import nothing that `kernel_types` does not list.
 - **Example.** `from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel`
-- **Common mistakes.** Relative cross-package import.
+- **Common mistakes.** A relative import.
 
 ### Slot S4: <a id="slot-s4"></a> Import — `Op` base class
 
-- **Rule.** `from ..op_base import Op`, or `from .op_base import Op` for ops directly under
-  `src/tileops/ops/`. Absolute `tileops.ops.op_base` violates the relative-import rule in
+- **Rule.** `from tileops.ops.op_base import Op`. Every import is absolute, per
   [`code-style.md`](../../.claude/rules/code-style.md).
 
 ### Slot S5: <a id="slot-s5"></a> `__all__`
@@ -207,17 +206,17 @@ design, calling conventions — live in
 ### Slot S20: <a id="slot-s20"></a> Package `__init__.py` registration
 
 - **Rule.** Two imports, each with a matching `__all__` entry: one
-  `from .<module> import <ClassName>` in `src/tileops/ops/{family}/__init__.py`, under the
-  family's grouping comment, and one `from .ops.{family} import <ClassName>` in
+  `from tileops.ops.{family}.<module> import <ClassName>` in `src/tileops/ops/{family}/__init__.py`, under the
+  family's grouping comment, and one `from tileops.ops.{family} import <ClassName>` in
   `src/tileops/{family}.py`, which is the public path.
 - **Example.**
   ```python
   # src/tileops/ops/reduction/__init__.py
   # --- ExampleCumsumKernel ops ---
-  from .example_cumsum import ExampleCumsumFwdOp
+  from tileops.ops.reduction.example_cumsum import ExampleCumsumFwdOp
 
   # src/tileops/reduction.py
-  from .ops.reduction import ExampleCumsumFwdOp
+  from tileops.ops.reduction import ExampleCumsumFwdOp
   ```
 - **Common mistakes.** Import placed outside its grouping comment; missing `__all__` entry, which
   silently breaks `import *`; registering only the implementation package, which leaves the op

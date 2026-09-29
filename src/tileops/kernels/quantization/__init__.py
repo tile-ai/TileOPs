@@ -1,8 +1,8 @@
 """Quantization and dequantization kernels and their call records."""
 
-from .call_spec import INT8DequantFwdInterface, QuantizeCall
-from .dequant_call import DequantizeCall
-from .int8_dequant import (
+from tileops.kernels.quantization.call_spec import INT8DequantFwdInterface, QuantizeCall
+from tileops.kernels.quantization.dequant_call import DequantizeCall
+from tileops.kernels.quantization.int8_dequant import (
     INT8DequantPerChannelFwdKernel,
     INT8DequantPerTensorFwdKernel,
     INT8DequantPerTensorSmallFwdKernel,

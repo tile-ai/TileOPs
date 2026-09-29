@@ -22,14 +22,13 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
+from tileops.ops.mamba.cb_producer import CBProducerFwdOp
+from tileops.ops.mamba.da_cumsum import DaCumsumFwdOp
+from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
+from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
+from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
+from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
-
-from ..op_base import Op
-from .cb_producer import CBProducerFwdOp
-from .da_cumsum import DaCumsumFwdOp
-from .ssd_chunk_scan import SSDChunkScanFwdOp
-from .ssd_chunk_state import SSDChunkStateFwdOp
-from .ssd_state_passing import SSDStatePassingFwdOp
 
 __all__ = ["Mamba2FwdOp"]
 

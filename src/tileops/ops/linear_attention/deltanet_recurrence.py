@@ -10,8 +10,7 @@ from tileops.kernels.linear_attention.deltanet_recurrence import (
     DeltaNetDecodeKernel,
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
-
-from ..op_base import Op
+from tileops.ops.op_base import Op
 
 __all__ = ["DeltaNetDecodeFwdOp"]
 

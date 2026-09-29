@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
-    from .attention import (
+    from tileops.ops.attention import (
         DeepSeekSparseAttentionDecodeWithKVCacheFwdOp,
         GroupedQueryAttentionBwdOp,
         GroupedQueryAttentionDenseFwdOp,
@@ -14,21 +14,13 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         NSATopkVarlenFwdOp,
         NSAVarlenFwdOp,
     )
-    from .convolution import (
-        Conv1dFwdOp,
-        Conv2dFwdOp,
-        Conv3dFwdOp,
-    )
-    from .dropout import DropoutFwdOp
-    from .elementwise import (
-        BinaryOp,
-        FusedGatedOp,
-        UnaryOp,
-    )
-    from .fft import FFTC2CFwdOp
-    from .fp8_lightning_indexer import FP8LightningIndexerFwdOp
-    from .fp8_quant import FP8QuantFwdOp
-    from .gemm import (
+    from tileops.ops.convolution import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
+    from tileops.ops.dropout import DropoutFwdOp
+    from tileops.ops.elementwise import BinaryOp, FusedGatedOp, UnaryOp
+    from tileops.ops.fft import FFTC2CFwdOp
+    from tileops.ops.fp8_lightning_indexer import FP8LightningIndexerFwdOp
+    from tileops.ops.fp8_quant import FP8QuantFwdOp
+    from tileops.ops.gemm import (
         BmmFp8FwdOp,
         BmmFwdOp,
         GemmFp8FwdOp,
@@ -36,7 +28,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GemmW4A16FwdOp,
         GroupedGemmFwdOp,
     )
-    from .linear_attention import (
+    from tileops.ops.linear_attention import (
         DeltaNetAutogradFwdOp,
         DeltaNetBwdOp,
         DeltaNetDecodeFwdOp,
@@ -48,7 +40,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GLAFwdOp,
         GLAInferenceFwdOp,
     )
-    from .mamba import (
+    from tileops.ops.mamba import (
         DaCumsumFwdOp,
         Mamba2FwdOp,
         SSDChunkScanFwdOp,
@@ -56,14 +48,14 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         SSDDecodeFwdOp,
         SSDStatePassingFwdOp,
     )
-    from .moe import (
+    from tileops.ops.moe import (
         MoeExpertMLPFwdOp,
         MoeGroupedGemmFwdOp,
         MoePermuteAlignFwdOp,
         MoePostPermuteFwdOp,
         MoePrePermuteFwdOp,
     )
-    from .norm import (
+    from tileops.ops.norm import (
         AdaLayerNormFwdOp,
         AdaLayerNormZeroFwdOp,
         BatchNormBwdOp,
@@ -75,8 +67,8 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         LayerNormFwdOp,
         RMSNormFwdOp,
     )
-    from .op_base import Op
-    from .pool import (
+    from tileops.ops.op_base import Op
+    from tileops.ops.pool import (
         AdaptiveAvgPool2dFwdOp,
         AdaptiveMaxPool2dFwdOp,
         AdaptiveMaxPool2dIndicesFwdOp,
@@ -91,7 +83,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         MaxPool3dIndicesFwdOp,
         MeanPoolingFwdOp,
     )
-    from .quantization import (
+    from tileops.ops.quantization import (
         FP8QuantPerBlockFwdOp,
         INT4QuantPerGroupFwdOp,
         INT8DequantPerBlockFwdOp,
@@ -102,7 +94,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         INT8QuantPerTensorFwdOp,
         SmoothQuantFwdOp,
     )
-    from .reduction import (
+    from tileops.ops.reduction import (
         AllFwdOp,
         AmaxFwdOp,
         AminFwdOp,
@@ -125,7 +117,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         VarFwdOp,
         VarMeanFwdOp,
     )
-    from .rope import (
+    from tileops.ops.rope import (
         RopeLlama31FwdOp,
         RopeLongRopeFwdOp,
         RopeNeoxFwdOp,
@@ -133,7 +125,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         RopeNonNeoxFwdOp,
         RopeYarnFwdOp,
     )
-    from .sampling import (
+    from tileops.ops.sampling import (
         ChainSpeculativeSamplingFwdOp,
         MinPMaskFwdOp,
         SamplingFromProbsFwdOp,
@@ -141,11 +133,8 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         TopKTopPMaskFwdOp,
         TopPMaskFwdOp,
     )
-    from .sequence_modeling import (
-        MHCPostFwdOp,
-        MHCPreFwdOp,
-    )
-    from .topk_selector import TopkSelectorFwdOp
+    from tileops.ops.sequence_modeling import MHCPostFwdOp, MHCPreFwdOp
+    from tileops.ops.topk_selector import TopkSelectorFwdOp
 
 # Public name -> the submodule that defines it; `__all__` follows this order.
 # Grouped by op family, simple to composite; within a group, base case before variants.

@@ -117,11 +117,10 @@ from tileops.kernels.reduction.call_spec import (
 )
 from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel
 from tileops.manifest.primitives import normalize_axis
-
-from ..op_base import Op
+from tileops.ops.op_base import Op
 ```
 
-**Validation.** Every concrete-Kernel import matches one `kernel_types` value verbatim, and every kernel interface one `interfaces` value. The `Kernel` and `KernelInterface` base imports and the `..op_base` relative import are fixed.
+**Validation.** Every concrete-Kernel import matches one `kernel_types` value verbatim, and every kernel interface one `interfaces` value. The `Kernel` and `KernelInterface` base imports and the `tileops.ops.op_base` import are fixed.
 
 **Reference.** [Slot S1](op-slot-rules.md#slot-s1), [S2](op-slot-rules.md#slot-s2), [S3](op-slot-rules.md#slot-s3), [S4](op-slot-rules.md#slot-s4).
 
@@ -233,13 +232,13 @@ Implementation package, `src/tileops/ops/reduction/__init__.py`:
 
 ```python
 # --- ExampleCumsumKernel ops ---
-from .example_cumsum import ExampleCumsumFwdOp
+from tileops.ops.reduction.example_cumsum import ExampleCumsumFwdOp
 ```
 
 Public path, `src/tileops/reduction.py` — this is the one callers import from:
 
 ```python
-from .ops.reduction import ExampleCumsumFwdOp
+from tileops.ops.reduction import ExampleCumsumFwdOp
 ```
 
 **Validation.** The implementation import sits under its family's grouping comment block, and both files carry a matching `__all__` entry — miss the second and the op is unreachable from `tileops.reduction`.

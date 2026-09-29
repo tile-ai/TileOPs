@@ -28,9 +28,8 @@ import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES
 from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.norm._config import make_row_reduce, select_row_config, select_row_configs
 from tileops.kernels.tiling import ALIGNMENT, align_up
-
-from ._config import make_row_reduce, select_row_config, select_row_configs
 
 __all__ = ["AdaLayerNormKernel"]
 

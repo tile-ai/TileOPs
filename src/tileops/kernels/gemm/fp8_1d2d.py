@@ -13,10 +13,9 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_path
+from tileops.kernels.gemm.call_spec import GemmCall
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import device_calibration, get_sm_count
-
-from .call_spec import GemmCall
 
 __all__ = ["GemmFp81D2DFwdKernel"]
 

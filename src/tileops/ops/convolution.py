@@ -30,9 +30,8 @@ from tileops.kernels.convolution.call_spec import (
     conv3d_ndhwc_region,
 )
 from tileops.kernels.kernel_base import Kernel
+from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
-
-from .op_base import Op
 
 __all__ = [
     "Conv1dFwdOp",

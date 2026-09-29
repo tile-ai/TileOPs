@@ -5,8 +5,8 @@ import functools
 import tilelang
 import tilelang.language as T
 
-from ._base import MultiInputElementwiseKernel
-from ._dtype import _BITWISE_DTYPES, _FLOAT_DTYPES, _clamp_to_dtype_range
+from tileops.kernels.elementwise._base import MultiInputElementwiseKernel
+from tileops.kernels.elementwise._dtype import _BITWISE_DTYPES, _FLOAT_DTYPES, _clamp_to_dtype_range
 
 __all__ = [
     "MaskedFillFwdKernel",

@@ -5,10 +5,9 @@ from dataclasses import dataclass
 
 import torch
 
+from tileops.kernels.elementwise._broadcast import row_tile_leaves_tail
+from tileops.kernels.elementwise._dtype import BOOL_STORAGE_DTYPE, _torch_dtype_nbytes
 from tileops.kernels.kernel_base import Kernel
-
-from ._broadcast import row_tile_leaves_tail
-from ._dtype import BOOL_STORAGE_DTYPE, _torch_dtype_nbytes
 
 _AUTOTUNE_THREADS = (128, 256, 512)
 _DEFAULT_THREADS = 128

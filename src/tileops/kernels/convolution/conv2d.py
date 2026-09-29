@@ -7,17 +7,16 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.utils import get_sm_version
-
-from ._common import CONV_SWIZZLE_PANEL, _launch, conv_autotune_configs
-from .call_spec import (
+from tileops.kernels.convolution._common import CONV_SWIZZLE_PANEL, _launch, conv_autotune_configs
+from tileops.kernels.convolution.call_spec import (
     Conv2dCall,
     conv2d_dense_region,
     conv2d_group_region,
     conv2d_pointwise_region,
     conv2d_symmetric_region,
 )
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_sm_version
 
 __all__ = [
     "Conv2d1x1Kernel",

@@ -10,9 +10,8 @@ from tileops.kernels.elementwise import (
     MaskedFillTensorValueFwdKernel,
 )
 from tileops.kernels.kernel_base import Kernel
-
-from ..op_base import Op
-from ._base import _PerDtypeKernels
+from tileops.ops.elementwise._base import _PerDtypeKernels
+from tileops.ops.op_base import Op
 
 
 class MaskedFillFwdOp(_PerDtypeKernels, Op):

@@ -9,7 +9,7 @@ from typing import Callable
 
 import tilelang.language as T
 
-from ._dtype import BOOL_STORAGE_DTYPE
+from tileops.kernels.elementwise._dtype import BOOL_STORAGE_DTYPE
 
 __all__ = ["GuardedOpFunc", "op_func_for", "register_op_func"]
 

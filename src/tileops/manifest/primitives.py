@@ -10,7 +10,7 @@ import math
 import numbers
 from types import SimpleNamespace
 
-from .dtype_rules import DTYPE_BITS, DTYPE_CATEGORY
+from tileops.manifest.dtype_rules import DTYPE_BITS, DTYPE_CATEGORY
 
 # The seed both conftests give the global RNG; every private workload RNG derives from it.
 WORKLOAD_SEED = 1235

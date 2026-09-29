@@ -6,14 +6,13 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import FP8_E4M3_MAX, LOG2E
-from tileops.kernels.kernel_base import Kernel
-
-from .online_softmax import (
+from tileops.kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
-from .paged_prefill import PagedPrefillKernel, page_size_refusal
+from tileops.kernels.attention.paged_prefill import PagedPrefillKernel, page_size_refusal
+from tileops.kernels.constants import FP8_E4M3_MAX, LOG2E
+from tileops.kernels.kernel_base import Kernel
 
 __all__ = [
     "GQAPrefillPagedWithFP8KVCacheFwdKernel",

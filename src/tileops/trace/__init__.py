@@ -15,10 +15,10 @@ Importing this package does **not** touch ``tilelang``: there is no monkeypatch,
 and ``tilelang.compile`` / ``tilelang.jit.compile`` stay the originals.
 """
 
-from .api import trace
-from .decode import FlowEdge, Instant, Slice, compute_flows, decode
-from .record import MAX_EVENTS_DEFAULT, EventKind, pack_w1, unpack_w1
-from .ui import export_timeline_html
+from tileops.trace.api import trace
+from tileops.trace.decode import FlowEdge, Instant, Slice, compute_flows, decode
+from tileops.trace.record import MAX_EVENTS_DEFAULT, EventKind, pack_w1, unpack_w1
+from tileops.trace.ui import export_timeline_html
 
 __all__ = [
     "MAX_EVENTS_DEFAULT",

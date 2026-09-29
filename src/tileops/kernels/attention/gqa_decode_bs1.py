@@ -16,20 +16,23 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.attention.call_spec import (
+    GQADenseFwdInterface,
+    decode_bs1_region,
+    dense_decode_refusal,
+)
+from tileops.kernels.attention.dense_entry import dense_decode_entry
 from tileops.kernels.attention.gqa_decode import (
     _gqa_decode_no_split_rope_run,
     _gqa_decode_no_split_run,
 )
-from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Entry, Kernel
-
-from .call_spec import GQADenseFwdInterface, decode_bs1_region, dense_decode_refusal
-from .dense_entry import dense_decode_entry
-from .gqa_decode_bs1_common import (
+from tileops.kernels.attention.gqa_decode_bs1_common import (
     COMPILE_FLAGS,
     RING_DEPTH,
     make_gqa_decode_bs1_combine,
 )
+from tileops.kernels.constants import LOG2E
+from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = ["GQADecodeBs1Kernel"]
 

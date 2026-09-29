@@ -6,21 +6,18 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_path
-from tileops.kernels.constants import LOG2E
-from tileops.utils import get_sm_count
-
-from ..kernel_base import Entry, Kernel
-from .call_spec import (
+from tileops.kernels.attention.call_spec import (
     ATTENTION_DTYPES,
     GQADenseFwdInterface,
     dense_fp8_limit_refusal,
     dense_fp8_refusal,
 )
-from .dense_entry import dense_fp8_entry
-from .gqa_dense import make_dense_qk_rope_preprocessor
-from .online_softmax import (
-    make_online_softmax_with_score_scale,
-)
+from tileops.kernels.attention.dense_entry import dense_fp8_entry
+from tileops.kernels.attention.gqa_dense import make_dense_qk_rope_preprocessor
+from tileops.kernels.attention.online_softmax import make_online_softmax_with_score_scale
+from tileops.kernels.constants import LOG2E
+from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_sm_count
 
 __all__ = ["GQADenseFP8Kernel"]
 TMA_DTYPE_UINT8 = 0

@@ -6,17 +6,16 @@ import tilelang
 import tilelang.language as T
 
 from tileops.kernels.constants import GELU_TANH_COEFF, INV_SQRT2, LOG2E, SQRT_2_OVER_PI
-
-from ._base import (
+from tileops.kernels.elementwise._base import (
     _FLOAT_DTYPES,
     FloatUnaryKernel,
     FusedGatedKernel,
     MultiInputElementwiseKernel,
     ScalarParamUnaryKernel,
 )
-from ._dtype import log_for_output_precision
-from ._erf import erf
-from ._nan import nan_max, nan_min
+from tileops.kernels.elementwise._dtype import log_for_output_precision
+from tileops.kernels.elementwise._erf import erf
+from tileops.kernels.elementwise._nan import nan_max, nan_min
 
 __all__ = [
     "EluFwdKernel",

@@ -7,9 +7,8 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.elementwise import NanToNumFwdKernel
 from tileops.kernels.kernel_base import Kernel
-
-from ..op_base import Op
-from ._base import _PerDtypeKernels
+from tileops.ops.elementwise._base import _PerDtypeKernels
+from tileops.ops.op_base import Op
 
 
 class NanToNumFwdOp(_PerDtypeKernels, Op):

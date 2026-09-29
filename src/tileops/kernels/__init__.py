@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
-    from .attention import (
+    from tileops.kernels.attention import (
         FlashAttnBwdPreprocessKernel,
         GQABwdWgmmaPipelinedKernel,
         GQADecodeKernel,
@@ -21,7 +21,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         SparseMlaBasicKernel,
         SparseMlaKernel,
     )
-    from .convolution import (
+    from tileops.kernels.convolution import (
         Conv1dKernel,
         Conv1dPointwiseKernel,
         Conv2d1x1Kernel,
@@ -31,21 +31,17 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GroupConv2dKernel,
         GroupConv3dKernel,
     )
-    from .dropout import DropoutKernel
-    from .elementwise import (
-        BinaryKernel,
-        FusedGatedKernel,
-        UnaryKernel,
-    )
-    from .engram import (
+    from tileops.kernels.dropout import DropoutKernel
+    from tileops.kernels.elementwise import BinaryKernel, FusedGatedKernel, UnaryKernel
+    from tileops.kernels.engram import (
         EngramDecodeKernel,
         EngramGateConvBwdKernel,
         EngramGateConvFwdKernel,
     )
-    from .fft import FFTC2CDecomposedKernel, FFTC2COneCTAKernel
-    from .fp8_lightning_indexer import FP8LightningIndexerKernel
-    from .fp8_quant import FP8QuantKernel
-    from .gemm import (
+    from tileops.kernels.fft import FFTC2CDecomposedKernel, FFTC2COneCTAKernel
+    from tileops.kernels.fp8_lightning_indexer import FP8LightningIndexerKernel
+    from tileops.kernels.fp8_quant import FP8QuantKernel
+    from tileops.kernels.gemm import (
         BmmFp8Kernel,
         BmmFp8TransposeKernel,
         BmmKernel,
@@ -57,12 +53,9 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GemmTmaKernel,
         GemvKernel,
     )
-    from .grouped_gemm import (
-        GroupedGemmKernel,
-        GroupedGemmPersistentKernel,
-    )
-    from .kernel_base import Kernel
-    from .linear_attention import (
+    from tileops.kernels.grouped_gemm import GroupedGemmKernel, GroupedGemmPersistentKernel
+    from tileops.kernels.kernel_base import Kernel
+    from tileops.kernels.linear_attention import (
         DeltaNetBwdKernel,
         DeltaNetDecodeFP32Kernel,
         DeltaNetDecodeKernel,
@@ -77,12 +70,9 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GLADensePrefillFwdKernel,
         GLAFwdKernel,
     )
-    from .mhc import (
-        MHCPostKernel,
-        MHCPreKernel,
-    )
-    from .moe import MoePermuteAlignKernel
-    from .norm import (
+    from tileops.kernels.mhc import MHCPostKernel, MHCPreKernel
+    from tileops.kernels.moe import MoePermuteAlignKernel
+    from tileops.kernels.norm import (
         BatchNormBwdKernel,
         BatchNormFwdInferKernel,
         BatchNormFwdTrainKernel,
@@ -90,7 +80,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         LayerNormKernel,
         RMSNormKernel,
     )
-    from .pool import (
+    from tileops.kernels.pool import (
         AdaptiveAvgPool2dKernel,
         AdaptiveMaxPool2dKernel,
         AdaptiveMaxPool2dWithIndicesKernel,
@@ -108,7 +98,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         MaxPool3dWithIndicesKernel,
         MeanPoolingFwdKernel,
     )
-    from .rope import (
+    from tileops.kernels.rope import (
         RopeLlama31Kernel,
         RopeLongRopeKernel,
         RopeNeoxKernel,
@@ -116,7 +106,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         RopeNonNeoxKernel,
         RopeYarnKernel,
     )
-    from .topk_selector import TopkSelectorKernel
+    from tileops.kernels.topk_selector import TopkSelectorKernel
 
 # Public name -> the submodule that defines it; `__all__` follows this order.
 _LAZY = {

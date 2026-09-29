@@ -5,8 +5,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.engram import EngramDecodeKernel
 from tileops.kernels.kernel_base import Entry, Kernel
-
-from ..op_base import Op
+from tileops.ops.op_base import Op
 
 __all__ = ["EngramDecodeFwdOp"]
 

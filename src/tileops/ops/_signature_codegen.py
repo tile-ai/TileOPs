@@ -45,8 +45,7 @@ from tileops.manifest.signature import (
 )
 from tileops.manifest.values import convert
 from tileops.manifest.workload import CallView
-
-from .compile_boundary import get_instance
+from tileops.ops.compile_boundary import get_instance
 
 __all__ = ["CheckError", "SignatureCall", "install", "maybe_install_signature"]
 

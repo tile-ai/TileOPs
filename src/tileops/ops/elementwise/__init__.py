@@ -10,8 +10,8 @@ template classes (``UnaryOp`` / ``BinaryOp`` / ``FusedGatedOp``) live in
 manifest signature when the class is created.
 """
 
-from ._base import BinaryOp, FusedGatedOp, UnaryOp
-from .activations import (
+from tileops.ops.elementwise._base import BinaryOp, FusedGatedOp, UnaryOp
+from tileops.ops.elementwise.activations import (
     EluFwdOp,
     GeluAndMulFwdOp,
     GeluFwdOp,
@@ -29,8 +29,8 @@ from .activations import (
     SoftplusFwdOp,
     TanhFwdOp,
 )
-from .alibi import AlibiFwdOp
-from .arithmetic import (
+from tileops.ops.elementwise.alibi import AlibiFwdOp
+from tileops.ops.elementwise.arithmetic import (
     AddFwdOp,
     DivFwdOp,
     FloorDivideFwdOp,
@@ -43,14 +43,14 @@ from .arithmetic import (
     RemainderFwdOp,
     SubFwdOp,
 )
-from .bitwise import (
+from tileops.ops.elementwise.bitwise import (
     BitwiseAndFwdOp,
     BitwiseNotFwdOp,
     BitwiseOrFwdOp,
     BitwiseXorFwdOp,
 )
-from .clamp import ClampFwdOp, ClampScalarFwdOp
-from .comparison import (
+from tileops.ops.elementwise.clamp import ClampFwdOp, ClampScalarFwdOp
+from tileops.ops.elementwise.comparison import (
     EqFwdOp,
     GeFwdOp,
     GtFwdOp,
@@ -61,9 +61,9 @@ from .comparison import (
     LtFwdOp,
     NeFwdOp,
 )
-from .logical import LogicalAndFwdOp, LogicalNotFwdOp, LogicalOrFwdOp
-from .masked_fill import MaskedFillFwdOp, MaskedFillScalarFwdOp
-from .math_unary import (
+from tileops.ops.elementwise.logical import LogicalAndFwdOp, LogicalNotFwdOp, LogicalOrFwdOp
+from tileops.ops.elementwise.masked_fill import MaskedFillFwdOp, MaskedFillScalarFwdOp
+from tileops.ops.elementwise.math_unary import (
     AbsFwdOp,
     CeilFwdOp,
     CosFwdOp,
@@ -82,10 +82,10 @@ from .math_unary import (
     SqrtFwdOp,
     TruncFwdOp,
 )
-from .nan_to_num import NanToNumFwdOp
-from .prelu import PreluFwdOp
-from .sinusoidal import SinusoidalFwdOp
-from .where import WhereFwdOp
+from tileops.ops.elementwise.nan_to_num import NanToNumFwdOp
+from tileops.ops.elementwise.prelu import PreluFwdOp
+from tileops.ops.elementwise.sinusoidal import SinusoidalFwdOp
+from tileops.ops.elementwise.where import WhereFwdOp
 
 __all__ = [
     "AbsFwdOp",

@@ -2,7 +2,7 @@
 
 import tilelang.language as T
 
-from ._base import (
+from tileops.kernels.elementwise._base import (
     _BITWISE_DTYPES,
     BinaryKernel,
     UnaryKernel,

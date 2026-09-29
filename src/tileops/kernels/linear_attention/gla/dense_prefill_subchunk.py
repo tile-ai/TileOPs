@@ -8,9 +8,13 @@ import torch
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry
-
-from .call_spec import GLAInferenceCallSpec, GLAInferenceFwdInterface, dense_entry, serves_dense
-from .gla_fwd import (
+from tileops.kernels.linear_attention.gla.call_spec import (
+    GLAInferenceCallSpec,
+    GLAInferenceFwdInterface,
+    dense_entry,
+    serves_dense,
+)
+from tileops.kernels.linear_attention.gla.gla_fwd import (
     GLAFwdKernel,
     _gla_fwd_h_kernel,
     _gla_precompute_g_kernel,

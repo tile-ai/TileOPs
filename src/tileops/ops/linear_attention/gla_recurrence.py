@@ -5,8 +5,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
-
-from ..op_base import Op
+from tileops.ops.op_base import Op
 
 __all__ = ["GLADecodeFwdOp"]
 
