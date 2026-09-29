@@ -8,8 +8,8 @@ import tilelang
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.linear_attention.gated_deltanet.prefill.forward import fused_gdr_fwd
-from tileops.kernels.linear_attention.gated_deltanet.prefill.prepare import (
+from tileops.kernels.linear_attention.gated_deltanet.prefill_forward import fused_gdr_fwd
+from tileops.kernels.linear_attention.gated_deltanet.prefill_prepare import (
     _prefill_blocksolve_A_bthd,
     _prefill_chunk_local_cumsum_bthd_tl,
     correct_initial_states,
