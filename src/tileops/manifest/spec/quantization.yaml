@@ -169,7 +169,7 @@ INT8DequantPerTensorFwdOp:
 
 INT8DequantPerChannelFwdOp:
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {M: Dim, K: Dim}
     params:
@@ -183,6 +183,10 @@ INT8DequantPerChannelFwdOp:
   - {M: 14336, K: 4096, out_dtype: bfloat16, label: llama-8b-mlp-up}
   - {M: 14336, K: 4096, out_dtype: float16, label: llama-8b-mlp-up}
   - {M: 8192, K: 28672, out_dtype: bfloat16, label: llama-70b-mlp-down}
+  - {M: 4096, K: 14336, out_dtype: float32, label: llama-8b-mlp-down}
+  - {M: 5760, K: 2880, out_dtype: bfloat16, label: gpt-oss-20b-mlp-up}
+  - {M: 3000, K: 4099, out_dtype: float16, label: ragged-k}
+  - {M: 17, K: 4099, out_dtype: bfloat16, label: ragged-k-few-rows}
   roofline:
     flops: "M * K"
 

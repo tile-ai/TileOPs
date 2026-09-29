@@ -6,7 +6,7 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.quantization import DequantizeCall
+from tileops.kernels.quantization import DequantizeCall, INT8DequantPerChannelKernel
 
 from ..op_base import Op
 
@@ -74,11 +74,15 @@ class INT8DequantPerTensorFwdOp(Op):
 class INT8DequantPerChannelFwdOp(Op):
     """Dequantize an INT8 matrix with one scale per row: ``x[m, k] = q[m, k] * scale[m]``.
 
-    The multiply is in float32 and its result is cast once to ``out_dtype``. The op has
-    no in-tree kernel yet, so a call needs a target that registers one.
+    The multiply is in float32 and its result is cast once to ``out_dtype``, so ``x`` is
+    bit-identical to ``(q.float() * scale[:, None]).to(out_dtype)``.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {}
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "int8_dequant_per_channel": INT8DequantPerChannelKernel
+    }
 
     def __init__(
         self,
@@ -113,6 +117,10 @@ class INT8DequantPerChannelFwdOp(Op):
         Returns:
             ``x`` $[M \\times K]$ in ``out_dtype``.
         """
+        return self._call_boundary(q, scale)
+
+    def _eager_forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+        """Resolve the kernel and launch, inside the operator."""
         q, scale = q.contiguous(), scale.contiguous()
         call = DequantizeCall(
             m=q.shape[0],
