@@ -5,8 +5,12 @@ from typing import ClassVar, Dict, Mapping, Optional, Tuple
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.quantization import QuantizeCall
+from tileops.kernels.kernel_base import Kernel, KernelInterface
+from tileops.kernels.quantization import (
+    INT8QuantPerTensorFwdInterface,
+    INT8QuantPerTensorFwdKernel,
+    QuantizeCall,
+)
 from tileops.ops.op_base import Op
 
 __all__ = ["INT8QuantPerTensorFwdOp"]
@@ -17,13 +21,20 @@ class INT8QuantPerTensorFwdOp(Op):
 
     ``scale`` is ``amax(|x|) / 127`` in float32, or 1.0 when ``x`` is all zero, and is the
     dequantization multiplier: ``x ~= q * scale``. ``q`` is ``x / scale`` rounded half to
-    even and clamped to ``[-127, 127]``.
+    even and clamped to ``[-127, 127]``. Both are bit-equal to the torch expression.
 
-    The op has no in-tree kernel yet: a call raises ``OpNotAvailableError`` unless a
-    target serves it.
+    A NaN or an infinity in ``x`` reaches ``scale`` as it does in torch; ``q`` is then
+    unspecified.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {}
+    compile_boundary: ClassVar[bool] = True
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "int8_quant_per_tensor_fwd": INT8QuantPerTensorFwdKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "int8_quant_per_tensor_fwd": INT8QuantPerTensorFwdInterface
+    }
 
     def __init__(
         self,
@@ -53,13 +64,16 @@ class INT8QuantPerTensorFwdOp(Op):
         Returns:
             ``q`` $[M \\times K]$ in ``int8`` and ``scale`` $[1]$ in ``float32``.
         """
+        return self._call_boundary(x)
+
+    def _eager_forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Resolve the kernel and launch, inside the operator."""
         x = x.contiguous()
         call = QuantizeCall(
             device=x.device,
             rows=x.shape[0],
             cols=x.shape[1],
             dtype=x.dtype,
-            tune=self.tune,
         )
         kernel = self.kernel_for("int8_quant_per_tensor_fwd", (x,), call)
         return kernel(x)

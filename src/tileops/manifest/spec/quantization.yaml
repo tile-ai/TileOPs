@@ -29,7 +29,7 @@ FP8QuantFwdOp:
 
 INT8QuantPerTensorFwdOp:
   family: quantization
-  status: spec-only
+  status: implemented
   signature:
     forall: {M: Dim, K: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
@@ -44,6 +44,9 @@ INT8QuantPerTensorFwdOp:
   - {M: 4096, K: 4096, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-prefill}
   - {M: 32, K: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-decode}
   - {M: 8192, K: 5120, dtype_cases: [{T: bfloat16}, {T: float32}], label: qwen3-32b-prefill}
+  - {M: 17, K: 2880, dtype_cases: [{T: bfloat16}], label: gpt-oss-20b-decode}
+  - {M: 3000, K: 2880, dtype_cases: [{T: bfloat16}], label: gpt-oss-20b-prefill}
+  - {M: 1000, K: 4099, dtype_cases: [{T: float16}], label: odd-hidden-prefill}
   roofline:
     # Per element: abs, the max, the scaling, round and clamp; once: the scale and its zero guard.
     flops: "5 * M * K + 2"

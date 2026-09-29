@@ -54,7 +54,11 @@ from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.mamba.ssd_decode import SSDDecodeFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from tileops.ops.pool import MeanPoolingFwdOp
-from tileops.ops.quantization import INT8DequantPerChannelFwdOp, INT8DequantPerTensorFwdOp
+from tileops.ops.quantization import (
+    INT8DequantPerChannelFwdOp,
+    INT8DequantPerTensorFwdOp,
+    INT8QuantPerTensorFwdOp,
+)
 from tileops.ops.rope import (
     RopeLlama31FwdOp,
     RopeLongRopeFwdOp,
@@ -87,6 +91,7 @@ from workloads.gqa import (
 from workloads.int8_dequant import INT8DequantPerChannelWorkload, INT8DequantPerTensorWorkload
 from workloads.mha import MhaDecodePagedWorkload
 from workloads.paged_kv_cache import make_unit_cache_scales
+from workloads.quantization import INT8QuantPerTensorWorkload
 
 
 def _attention_cases():
@@ -477,6 +482,11 @@ def _other_cases():
         case = INT8DequantPerTensorWorkload(64, 64, torch.bfloat16)
         return INT8DequantPerTensorFwdOp(torch.bfloat16), case.gen_inputs()
 
+    def int8_quant_per_tensor():
+        return INT8QuantPerTensorFwdOp(), INT8QuantPerTensorWorkload(
+            64, 64, torch.bfloat16
+        ).gen_inputs()
+
     def mean_pooling():
         x = torch.randn(1, 64, 2, 64, dtype=torch.float16, device=run_device())
         return MeanPoolingFwdOp(32, torch.float32), (x,)
@@ -486,6 +496,7 @@ def _other_cases():
         ("fp8-quant", fp8_quant),
         ("int8-dequant-per-channel", int8_dequant_per_channel),
         ("int8-dequant-per-tensor", int8_dequant_per_tensor),
+        ("int8-quant-per-tensor", int8_quant_per_tensor),
         ("mean-pooling", mean_pooling),
     )
 
@@ -672,6 +683,7 @@ for _op_cls in (
     FP8QuantFwdOp,
     INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
+    INT8QuantPerTensorFwdOp,
     MeanPoolingFwdOp,
     EngramGateConvFwdOp,
     EngramGateConvBwdOp,
