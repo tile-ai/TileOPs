@@ -17,9 +17,8 @@ from tileops.kernels.attention import (
     GQADenseWsKernel,
 )
 from tileops.kernels.attention.gqa_decode import (
-    _effective_dense_num_split,
-    _gqa_decode_no_split_run,
-    _gqa_decode_split_run,
+    gqa_decode_no_split_run,
+    gqa_decode_split_run,
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
@@ -424,7 +423,7 @@ def test_gqa_dense_decode_effective_num_split(
     num_split: int, block_N: int, real_seqlen_kv: int, expected: int
 ) -> None:
     """The tuned num_split is a ceiling shrunk to the runtime KV extent."""
-    assert _effective_dense_num_split(num_split, block_N, real_seqlen_kv) == expected
+    assert GQADecodeKernel.effective_num_split(num_split, block_N, real_seqlen_kv) == expected
 
 
 @pytest.mark.sm90
@@ -467,7 +466,7 @@ def test_gqa_decode_autotune_configs_keep_full_tiles_per_split(seqlen_kv: int) -
 @pytest.mark.smoke
 def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> None:
     """A tuned num_split the sequence cannot fill shrinks instead of pushing
-    dispatch into the never-tuned no-split kernel (the reported issue)."""
+    dispatch into the never-tuned no-split kernel."""
     if not torch.cuda.is_available() or get_sm_version() not in (80, 89, 90):
         pytest.skip("GQA decode requires SM80/89/90")
     batch, heads, heads_kv, dim = 2, 32, 4, 128
@@ -484,17 +483,17 @@ def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> No
     calls: list[tuple[str, int]] = []
 
     def split_spy(*args, **kwargs):
-        # num_split is the 12th positional argument of _gqa_decode_split_run
+        # num_split is the 12th positional argument of gqa_decode_split_run
         calls.append(("split", args[11]))
-        return _gqa_decode_split_run(*args, **kwargs)
+        return gqa_decode_split_run(*args, **kwargs)
 
     def no_split_spy(*args, **kwargs):
         calls.append(("no_split", 0))
-        return _gqa_decode_no_split_run(*args, **kwargs)
+        return gqa_decode_no_split_run(*args, **kwargs)
 
-    monkeypatch.setattr("tileops.kernels.attention.gqa_decode._gqa_decode_split_run", split_spy)
+    monkeypatch.setattr("tileops.kernels.attention.gqa_decode.gqa_decode_split_run", split_spy)
     monkeypatch.setattr(
-        "tileops.kernels.attention.gqa_decode._gqa_decode_no_split_run", no_split_spy
+        "tileops.kernels.attention.gqa_decode.gqa_decode_no_split_run", no_split_spy
     )
 
     # 1024 tokens fill 16 of the tuned 32 splits; 100 cannot fill two

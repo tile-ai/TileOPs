@@ -529,46 +529,6 @@ def _sparse_mla_kernel(
     return _sparse_mla_fwd_func
 
 
-def _sparse_mla_run(
-    batch: int,
-    seq_len: int,
-    seq_len_kv: int,
-    heads: int,
-    dim: int,
-    tail_dim: int,
-    topk: int,
-    kv_stride: int,
-    q_start_index_s: int,
-    kv_group: int,
-    sm_scale: Optional[float],
-    is_causal: bool,
-    cp0: bool,
-    dtype: str,
-    block_i: int,
-    threads: int,
-    q: torch.Tensor,
-    kv: torch.Tensor,
-    indices: torch.Tensor,
-) -> torch.Tensor:
-    """Wrapper for sparse multi-head attention kernel execution."""
-    return _sparse_mla_kernel(
-        batch,
-        seq_len,
-        seq_len_kv,
-        heads,
-        dim,
-        tail_dim,
-        topk,
-        kv_stride,
-        q_start_index_s,
-        kv_group,
-        sm_scale,
-        is_causal,
-        cp0,
-        dtype,
-    )(block_i, threads)(q, kv, indices)
-
-
 @functools.lru_cache(maxsize=32)
 def _sparse_mla_basic_kernel(
     batch: int,
@@ -764,47 +724,6 @@ def _sparse_mla_basic_kernel(
     return _sparse_mla_basic_fwd_func
 
 
-def _sparse_mla_basic_run(
-    batch: int,
-    seq_len: int,
-    seq_len_kv: int,
-    heads: int,
-    dim: int,
-    tail_dim: int,
-    topk: int,
-    kv_stride: int,
-    q_start_index_s: int,
-    kv_group: int,
-    sm_scale: Optional[float],
-    is_causal: bool,
-    cp0: bool,
-    dtype: str,
-    block_i: int,
-    threads: int,
-    num_stages: int,
-    q: torch.Tensor,
-    kv: torch.Tensor,
-    indices: torch.Tensor,
-) -> torch.Tensor:
-    """Wrapper for the architecture-agnostic sparse MLA kernel execution."""
-    return _sparse_mla_basic_kernel(
-        batch,
-        seq_len,
-        seq_len_kv,
-        heads,
-        dim,
-        tail_dim,
-        topk,
-        kv_stride,
-        q_start_index_s,
-        kv_group,
-        sm_scale,
-        is_causal,
-        cp0,
-        dtype,
-    )(block_i, threads, num_stages)(q, kv, indices)
-
-
 class SparseMlaBasicKernel(SparseMlaKernelBase):
     """
     Architecture-agnostic sparse MLA kernel (sm80+).
@@ -988,7 +907,7 @@ class SparseMlaBasicKernel(SparseMlaKernelBase):
         Returns:
            torch.Tensor: Result of the sparse multi-head attention.
         """
-        return _sparse_mla_basic_run(
+        return _sparse_mla_basic_kernel(
             self.batch,
             self.seq_len,
             self.seq_len_kv,
@@ -1003,13 +922,7 @@ class SparseMlaBasicKernel(SparseMlaKernelBase):
             self.is_causal,
             self.cp0,
             self.dtype_str,
-            self.config["block_i"],
-            self.config["threads"],
-            self.config["num_stages"],
-            q,
-            kv,
-            indices,
-        )
+        )(self.config["block_i"], self.config["threads"], self.config["num_stages"])(q, kv, indices)
 
     @property
     def autotune_supply_prog(self) -> Optional[Callable]:
@@ -1211,7 +1124,7 @@ class SparseMlaKernel(SparseMlaKernelBase):
         Returns:
            torch.Tensor: Result of the sparse multi-head attention.
         """
-        return _sparse_mla_run(
+        return _sparse_mla_kernel(
             self.batch,
             self.seq_len,
             self.seq_len_kv,
@@ -1226,12 +1139,7 @@ class SparseMlaKernel(SparseMlaKernelBase):
             self.is_causal,
             self.cp0,
             self.dtype_str,
-            self.config["block_i"],
-            self.config["threads"],
-            q,
-            kv,
-            indices,
-        )
+        )(self.config["block_i"], self.config["threads"])(q, kv, indices)
 
     def supply_prog(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """

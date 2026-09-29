@@ -444,13 +444,6 @@ def _mha_bwd_ws_post_kernel(batch: int, heads: int, seq_len: int, dim: int, dtyp
     return _mha_bwd_ws_post_func
 
 
-def _launch_group(batch_heads: int, kv_blocks: int, num_sms: int) -> int:
-    """How many heads launch together: the largest divisor of ``batch * heads`` whose key
-    blocks fit in one wave of ``num_sms`` CTAs."""
-    fit = max(1, num_sms // kv_blocks)
-    return max(g for g in range(1, min(fit, batch_heads) + 1) if batch_heads % g == 0)
-
-
 class MHABwdWsKernel(Kernel, GQABwdInterface):
     """Warp-specialized causal or full MHA backward for head dim 128 on SM90.
 
@@ -514,7 +507,10 @@ class MHABwdWsKernel(Kernel, GQABwdInterface):
         self.dtype = dtype
 
         num_sms = get_sm_count(device_index)
-        group = _launch_group(batch * heads, seq_len // _BLOCK_M, num_sms)
+        # Heads launched together: the largest divisor of ``batch * heads`` whose key blocks
+        # fit in one wave of ``num_sms`` CTAs.
+        fit = max(1, num_sms // (seq_len // _BLOCK_M))
+        group = max(g for g in range(1, min(fit, batch * heads) + 1) if batch * heads % g == 0)
         self.kernel = _mha_bwd_ws_kernel(
             batch, heads, seq_len, dim, is_causal, group, num_sms, self.dtype_str
         )

@@ -161,42 +161,6 @@ def _nsa_fwd_varlen_kernel(
     return _nsa_fwd_varlen_func
 
 
-def _nsa_fwd_varlen_run(
-    batch: int,
-    heads: int,
-    c_seq_len: int,
-    dim: int,
-    is_causal: bool,
-    scale: float,
-    block_size: int,
-    groups: int,
-    selected_blocks: int,
-    dtype: str,
-    accum_dtype: str,
-    threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    block_indices: torch.Tensor,
-    block_counts: torch.Tensor,
-    offsets: torch.Tensor,
-    token_indices: torch.Tensor,
-) -> torch.Tensor:
-    return _nsa_fwd_varlen_kernel(
-        batch,
-        heads,
-        c_seq_len,
-        dim,
-        is_causal,
-        scale,
-        block_size,
-        groups,
-        selected_blocks,
-        dtype,
-        accum_dtype,
-    )(threads)(q, k, v, block_indices, block_counts, offsets, token_indices)
-
-
 class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
     supported_archs: list[int] = [90]
 
@@ -271,7 +235,7 @@ class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
         offsets: torch.Tensor,
         token_indices: torch.Tensor,
     ) -> torch.Tensor:
-        return _nsa_fwd_varlen_run(
+        return _nsa_fwd_varlen_kernel(
             self.batch,
             self.heads,
             self.c_seq_len,
@@ -283,12 +247,4 @@ class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
             self.selected_blocks,
             self.dtype_str,
             self.accum_dtype_str,
-            self.config["threads"],
-            q,
-            k,
-            v,
-            block_indices,
-            block_counts,
-            offsets,
-            token_indices,
-        )
+        )(self.config["threads"])(q, k, v, block_indices, block_counts, offsets, token_indices)

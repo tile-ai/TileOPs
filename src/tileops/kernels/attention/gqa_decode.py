@@ -7,7 +7,6 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
-from tileops.kernels.attention.dense_entry import dense_decode_entry
 from tileops.kernels.attention.online_softmax import (
     make_apply_softcap,
     make_online_softmax,
@@ -19,33 +18,11 @@ from tileops.kernels.kernel_base import Entry, Kernel
 __all__ = ["GQADecodeKernel"]
 
 
-_SPLIT_CANDIDATES = (1, 2, 4, 8, 16, 32)
-
-
-def _effective_num_split(num_split: int, block_N: int, real_seqlen_kv: int) -> int:
-    """Split count the runtime can use for a KV extent of *real_seqlen_kv*.
-
-    The tuned or default ``num_split`` is only a ceiling: shrink it until every
-    split keeps at least one full KV tile. ``1`` means the sequence is too
-    short to split and the no-split kernel should run. Gating dispatch on the
-    tuned value itself (the old ``real_seqlen_kv < num_split * block_N`` test)
-    let a large tuned ``num_split`` push execution into the never-tuned
-    no-split kernel.
-    """
-    return max(1, min(num_split, real_seqlen_kv // block_N))
-
-
-def _effective_dense_num_split(num_split: int, block_N: int, real_seqlen_kv: int) -> int:
-    """Map Dense decode to one of its finite autotune split candidates."""
-    limit = _effective_num_split(num_split, block_N, real_seqlen_kv)
-    return max(candidate for candidate in _SPLIT_CANDIDATES if candidate <= limit)
-
-
 # JIT kernel: no-split variant
 
 
 @functools.lru_cache(maxsize=32)
-def _gqa_decode_no_split_kernel(
+def gqa_decode_no_split_kernel(
     batch,
     heads,
     groups,
@@ -435,7 +412,7 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
     return _func
 
 
-def _gqa_decode_no_split_run(
+def gqa_decode_no_split_run(
     batch: int,
     heads: int,
     groups: int,
@@ -451,48 +428,12 @@ def _gqa_decode_no_split_run(
     K: torch.Tensor,
     V: torch.Tensor,
 ) -> torch.Tensor:
-    return _gqa_decode_no_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype)(
+    return gqa_decode_no_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype)(
         block_H, block_N, num_stages, threads
     )(Q, K, V)
 
 
-def _gqa_decode_no_split_rope_run(
-    batch: int,
-    heads: int,
-    groups: int,
-    dim: int,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    max_position: int,
-    rotary_dim: int,
-    rope_layout: str,
-    block_H: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    rope_cos: torch.Tensor,
-    rope_sin: torch.Tensor,
-) -> torch.Tensor:
-    return _gqa_decode_no_split_kernel(
-        batch,
-        heads,
-        groups,
-        dim,
-        sm_scale,
-        softcap,
-        dtype,
-        True,
-        max_position,
-        rotary_dim,
-        rope_layout,
-    )(block_H, block_N, num_stages, threads)(Q, K, V, rope_cos, rope_sin)
-
-
-def _gqa_decode_split_run(
+def gqa_decode_split_run(
     batch: int,
     heads: int,
     groups: int,
@@ -520,6 +461,19 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
     supported_archs: list[int] = [80, 89, 90]
     # The implementation behind the specialised ones for this key.
     general: bool = True
+    # The split counts the autotune sweep offers.
+    _SPLIT_CANDIDATES = (1, 2, 4, 8, 16, 32)
+
+    @classmethod
+    def effective_num_split(cls, num_split: int, block_N: int, real_seqlen_kv: int) -> int:
+        """The split candidate the runtime uses for a KV extent of *real_seqlen_kv*.
+
+        The tuned or default ``num_split`` is only a ceiling: it shrinks until every split
+        keeps at least one full KV tile, then to a candidate. ``1`` means the sequence is too
+        short to split and the no-split kernel runs.
+        """
+        limit = max(1, min(num_split, real_seqlen_kv // block_N))
+        return max(candidate for candidate in cls._SPLIT_CANDIDATES if candidate <= limit)
 
     @classmethod
     def applies(cls, call: AttentionCall) -> bool:
@@ -551,9 +505,28 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         full_tiles = max(1, call.seqlen_kv // 64)
         return (min(32, 1 << (full_tiles.bit_length() - 1)),)
 
+    @staticmethod
+    def construction_args(call: AttentionCall) -> dict:
+        """The constructor arguments of the contiguous decode kernels, batch 1 included."""
+        return dict(
+            batch=call.batch,
+            heads=call.heads,
+            heads_kv=call.heads_kv,
+            seq_len_kv=call.seqlen_kv,
+            dim=call.dim,
+            dtype=call.dtype,
+            sm_scale=call.sm_scale,
+            softcap=call.softcap,
+            **call.rope_args,
+            device_index=call.device.index if call.device is not None else None,
+        )
+
     @classmethod
-    def entry_for(cls, call) -> Entry:
-        return dense_decode_entry(cls, call)
+    def entry_for(cls, call: AttentionCall) -> Entry:
+        """The cache length is taken at runtime: what it compiles for is its split tier."""
+        args = cls.construction_args(call)
+        identity = (*(v for k, v in args.items() if k != "seq_len_kv"), *cls.split_tier(call))
+        return identity, lambda: cls(**args)
 
     def __init__(
         self,
@@ -609,7 +582,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             and not self.fuse_rope
         )
 
-        self.no_split_jit = _gqa_decode_no_split_kernel(
+        self.no_split_jit = gqa_decode_no_split_kernel(
             self.batch,
             self.heads,
             self.groups,
@@ -723,14 +696,12 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         block_N = self.config["block_N"]
         num_stages = self.config["num_stages"]
         threads = self.config["threads"]
-        # The tuned num_split is a ceiling: shrink it until every split keeps
-        # one full KV tile. 1 means the sequence is too short to split.
-        num_split = _effective_dense_num_split(self.config["num_split"], block_N, real_seqlen_kv)
+        num_split = self.effective_num_split(self.config["num_split"], block_N, real_seqlen_kv)
 
         # Dispatch: no-split for sequences too short to give each split a tile
         if num_split == 1:
             if self.fuse_rope:
-                output = _gqa_decode_no_split_rope_run(
+                output = gqa_decode_no_split_kernel(
                     self.batch,
                     self.heads,
                     self.groups,
@@ -738,21 +709,13 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
                     self.sm_scale,
                     self.softcap,
                     self.dtype_str,
+                    True,
                     self.max_position,
                     self.rotary_dim,
                     self.rope_layout,
-                    block_H,
-                    block_N,
-                    num_stages,
-                    threads,
-                    Q,
-                    K,
-                    V,
-                    rope_cos,
-                    rope_sin,
-                )
+                )(block_H, block_N, num_stages, threads)(Q, K, V, rope_cos, rope_sin)
                 return output.unsqueeze(1)
-            output = _gqa_decode_no_split_run(
+            output = gqa_decode_no_split_run(
                 self.batch,
                 self.heads,
                 self.groups,
@@ -774,7 +737,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             # The SM90 producer/consumer kernel supports arbitrary batch
             # sizes; use it here so RoPE stays fused without replacing TMA and
             # WGMMA with scalar global-memory loads.
-            from tileops.kernels.attention.gqa_decode_bs1 import _gqa_decode_bs1_ctx_run
+            from tileops.kernels.attention.gqa_decode_bs1 import gqa_decode_bs1_ctx_kernel
 
             glse = torch.empty(
                 (self.batch, self.heads, num_split), dtype=torch.float32, device=Q.device
@@ -784,7 +747,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
                 dtype=torch.float32,
                 device=Q.device,
             )
-            output = _gqa_decode_bs1_ctx_run(
+            output = gqa_decode_bs1_ctx_kernel(
                 self.batch,
                 self.heads,
                 self.groups,
@@ -796,18 +759,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
                 self.max_position,
                 self.rotary_dim,
                 self.rope_layout,
-                64,
-                block_N,
-                num_split,
-                160,
-                Q,
-                K,
-                V,
-                rope_cos,
-                rope_sin,
-                glse,
-                Output_partial,
-            )
+            )(64, block_N, num_split, 160)(Q, K, V, rope_cos, rope_sin, glse, Output_partial)
             return output.unsqueeze(1)
 
         # Split path: the kernel partitions KV tiles from the runtime extent
@@ -816,7 +768,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             (self.batch, self.heads, num_split, self.dim), dtype=self.dtype, device=Q.device
         )
 
-        output = _gqa_decode_split_run(
+        output = gqa_decode_split_run(
             self.batch,
             self.heads,
             self.groups,

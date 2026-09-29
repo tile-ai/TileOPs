@@ -2,7 +2,7 @@
 
 import functools
 import itertools
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -10,7 +10,6 @@ import torch
 from tilelang.layout import make_swizzled_layout
 
 from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
-from tileops.kernels.attention.dense_entry import dense_sliding_window_entry, dense_ws_entry
 from tileops.kernels.attention.online_softmax import make_apply_softcap
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -666,8 +665,24 @@ class GQADenseWsKernel(Kernel, GQADenseFwdInterface):
         return call.tensor_core_dim_refusal
 
     @classmethod
-    def entry_for(cls, call) -> Entry:
-        return dense_ws_entry(cls, call)
+    def entry_for(cls, call: AttentionCall) -> Entry:
+        """Accepts its sequence extents at runtime unless RoPE compiles them in."""
+        args = dict(
+            batch=call.batch,
+            heads=call.heads,
+            heads_kv=call.heads_kv,
+            seq_len_q=call.max_seqlen_q,
+            seq_len_kv=call.seqlen_kv,
+            dim=call.dim,
+            is_causal=call.is_causal,
+            dtype=call.dtype,
+            sm_scale=call.sm_scale,
+            softcap=call.softcap,
+            **call.rope_args,
+            device_index=call.device.index if call.device is not None else None,
+        )
+        runtime = () if call.fuse_rope else ("seq_len_q", "seq_len_kv")
+        return tuple(v for k, v in args.items() if k not in runtime), lambda: cls(**args)
 
     def __init__(
         self,
@@ -926,41 +941,6 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
     return _gqa_sw_fwd_wgmma_pipelined_func
 
 
-def _gqa_sw_fwd_wgmma_pipelined_run(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    seq_len: int,
-    dim: int,
-    is_causal: bool,
-    window_size_left: int,
-    window_size_right: int,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    num_stages: int,
-    threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    return _gqa_sw_fwd_wgmma_pipelined_kernel(
-        batch,
-        heads,
-        heads_kv,
-        seq_len,
-        dim,
-        is_causal,
-        window_size_left,
-        window_size_right,
-        sm_scale,
-        softcap,
-        dtype,
-    )(block_m, block_n, num_stages, threads)(q, k, v)
-
-
 class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
     """SM90 Dense sliding-window kernel with a native BSHD ABI."""
 
@@ -980,8 +960,24 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
         return call.tensor_core_dim_refusal
 
     @classmethod
-    def entry_for(cls, call) -> Entry:
-        return dense_sliding_window_entry(cls, call)
+    def entry_for(cls, call: AttentionCall) -> Entry:
+        """Compiles exact extents, so the query length is in the identity."""
+        args = dict(
+            batch=call.batch,
+            heads=call.heads,
+            heads_kv=call.heads_kv,
+            seq_len=call.max_seqlen_q,
+            dim=call.dim,
+            is_causal=call.is_causal,
+            window_size_left=call.window_size_left,
+            window_size_right=call.window_size_right,
+            dtype=call.dtype,
+            sm_scale=call.sm_scale,
+            softcap=call.softcap,
+            **call.rope_args,
+            device_index=call.device.index if call.device is not None else None,
+        )
+        return tuple(args.values()), lambda: cls(**args)
 
     def __init__(
         self,
@@ -1077,7 +1073,7 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
         self._require_cuda(q=q, k=k, v=v)
         if self.rope is not None:
             q, k = self.rope(q, k, rope_cos, rope_sin)
-        output, _ = _gqa_sw_fwd_wgmma_pipelined_run(
+        output, _ = _gqa_sw_fwd_wgmma_pipelined_kernel(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -1089,12 +1085,10 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+        )(
             self.config["block_m"],
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-            q,
-            k,
-            v,
-        )
+        )(q, k, v)
         return output

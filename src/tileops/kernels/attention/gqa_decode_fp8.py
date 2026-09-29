@@ -8,9 +8,8 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
-from tileops.kernels.attention.dense_entry import dense_fp8_decode_entry
 from tileops.kernels.attention.gqa_decode_bs1_common import COMPILE_FLAGS
-from tileops.kernels.attention.gqa_fwd_fp8 import _validate_fa3_gqa_descales
+from tileops.kernels.attention.gqa_fwd_fp8 import validate_fa3_gqa_descales
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
@@ -236,39 +235,6 @@ def _gqa_dense_fp8_decode_ctx_kernel(
     return build
 
 
-def _gqa_dense_fp8_decode_ctx_run(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    dim: int,
-    out_dtype: str,
-    sm_scale: float,
-    softcap: float,
-    block_m: int,
-    block_n: int,
-    ctx_splits: int,
-    threads: int,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    q_descale: torch.Tensor,
-    k_descale: torch.Tensor,
-    v_descale: torch.Tensor,
-    glse: torch.Tensor,
-    output_partial: torch.Tensor,
-) -> torch.Tensor:
-    kernel = _gqa_dense_fp8_decode_ctx_kernel(
-        batch,
-        heads,
-        heads_kv,
-        dim,
-        out_dtype,
-        sm_scale,
-        softcap,
-    )(block_m, block_n, ctx_splits, threads)
-    return kernel(q, k, v, q_descale, k_descale, v_descale, glse, output_partial)
-
-
 class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
     """Context-split native-FP8 Dense decode specialization."""
 
@@ -303,8 +269,19 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
         return None
 
     @classmethod
-    def entry_for(cls, call) -> Entry:
-        return dense_fp8_decode_entry(cls, call)
+    def entry_for(cls, call: AttentionCall) -> Entry:
+        """Skv is dynamic in this program, so one object serves every cache length."""
+        args = dict(
+            batch=call.batch,
+            heads=call.heads,
+            heads_kv=call.heads_kv,
+            dim=call.dim,
+            dtype=call.dtype,
+            sm_scale=call.sm_scale,
+            softcap=call.softcap,
+            device_index=call.device.index if call.device is not None else None,
+        )
+        return tuple(args.values()), lambda: cls(**args)
 
     def __init__(
         self,
@@ -366,7 +343,7 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
             raise ValueError("GQADenseFP8DecodeKernel does not support RoPE")
         if q_scale is None or k_scale is None or v_scale is None:
             raise ValueError("FP8 decode requires q_scale, k_scale, and v_scale")
-        _validate_fa3_gqa_descales(
+        validate_fa3_gqa_descales(
             q_scale,
             k_scale,
             v_scale,
@@ -384,7 +361,7 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
             device=q.device,
         )
         c = self.config
-        return _gqa_dense_fp8_decode_ctx_run(
+        return _gqa_dense_fp8_decode_ctx_kernel(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -392,16 +369,6 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
             self.dtype_str,
             self.sm_scale,
             self.softcap,
-            c["block_m"],
-            c["block_n"],
-            ctx_splits,
-            c["threads"],
-            q,
-            k,
-            v,
-            q_scale,
-            k_scale,
-            v_scale,
-            glse,
-            output_partial,
+        )(c["block_m"], c["block_n"], ctx_splits, c["threads"])(
+            q, k, v, q_scale, k_scale, v_scale, glse, output_partial
         )

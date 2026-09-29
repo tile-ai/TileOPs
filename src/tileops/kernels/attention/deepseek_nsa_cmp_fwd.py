@@ -150,32 +150,6 @@ def _nsa_cmp_fwd_varlen_kernel(
     return _nsa_cmp_fwd_varlen_func
 
 
-def _nsa_cmp_fwd_varlen_run(
-    seq_num: int,
-    c_seq_len: int,
-    heads: int,
-    dim_k: int,
-    dim_v: int,
-    chunk_num: int,
-    group: int,
-    scale: float,
-    bc: int,
-    bs: int,
-    dtype: str,
-    accum_dtype: str,
-    threads: int,
-    q: torch.Tensor,
-    k_cmp: torch.Tensor,
-    v_cmp: torch.Tensor,
-    offsets: torch.Tensor,
-    chunk_offsets: torch.Tensor,
-    token_indices: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    return _nsa_cmp_fwd_varlen_kernel(
-        seq_num, c_seq_len, heads, dim_k, dim_v, chunk_num, group, scale, bc, bs, dtype, accum_dtype
-    )(threads)(q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
-
-
 class NSACmpFwdVarlenKernel(Kernel, NSACmpFwdInterface):
     supported_archs: list[int] = [90]
     # Chunks one tile holds.
@@ -251,7 +225,7 @@ class NSACmpFwdVarlenKernel(Kernel, NSACmpFwdInterface):
         chunk_offsets: torch.Tensor,
         token_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _nsa_cmp_fwd_varlen_run(
+        return _nsa_cmp_fwd_varlen_kernel(
             self.seq_num,
             self.c_seq_len,
             self.heads,
@@ -264,7 +238,7 @@ class NSACmpFwdVarlenKernel(Kernel, NSACmpFwdInterface):
             self.bs,
             self.dtype_str,
             self.accum_dtype_str,
-            self.config["threads"],
+        )(self.config["threads"])(
             q.to(self.dtype),
             k_cmp.to(self.dtype),
             v_cmp.to(self.dtype),

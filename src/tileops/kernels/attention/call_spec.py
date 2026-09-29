@@ -70,6 +70,16 @@ class AttentionCall(CallSpec):
     rope_layout: str = "neox"
 
     @property
+    def rope_args(self) -> dict:
+        """The fused-RoPE construction arguments the contiguous kernels take."""
+        return {
+            "fuse_rope": self.fuse_rope,
+            "max_position": self.max_position if self.max_position is not None else 1,
+            "rotary_dim": self.rotary_dim if self.rotary_dim is not None else 0,
+            "rope_layout": self.rope_layout,
+        }
+
+    @property
     def uses_sliding_window(self) -> bool:
         """Whether either window bound is set, which restricts what may serve the call."""
         return self.window_size_left != -1 or self.window_size_right != -1

@@ -53,8 +53,8 @@ def _make_apply_softcap_no_mask_guard(score_scale, softcap, accum_dtype, block_r
     return apply_softcap
 
 
-# old KV is addressed by block_table. The kernel reads current KV directly from
-# k_new/v_new and appends it into k_pages/v_pages in-place.
+# The cached KV is addressed by block_table. The kernel reads the new KV directly from
+# k_new/v_new and appends it into k_pages/v_pages in place.
 
 
 @functools.lru_cache(maxsize=32)
@@ -322,51 +322,6 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(
     return _gqa_prefill_paged_with_kv_cache_fwd_func
 
 
-def _gqa_prefill_paged_with_kv_cache_fwd_run(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    total_q: int,
-    physical_tokens: int,
-    max_pages_per_req: int,
-    page_size: int,
-    dim: int,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    num_stages: int,
-    threads: int,
-    max_seqlen_q: int,
-    q: torch.Tensor,
-    k_new: torch.Tensor,
-    v_new: torch.Tensor,
-    k_pages: torch.Tensor,
-    v_pages: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
-    cache_seqlens: torch.Tensor,
-    block_table: torch.Tensor,
-) -> torch.Tensor:
-    return _gqa_prefill_paged_with_kv_cache_fwd_kernel(
-        batch,
-        heads,
-        heads_kv,
-        total_q,
-        physical_tokens,
-        max_pages_per_req,
-        page_size,
-        dim,
-        is_causal,
-        sm_scale,
-        softcap,
-        dtype,
-    )(block_m, block_n, num_stages, threads)(
-        q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table, max_seqlen_q
-    )
-
-
 class GQAPrefillPagedWithKVCacheFwdKernel(PagedPrefillKernel):
     """Paged prefill against a cache whose element type matches the attention type."""
 
@@ -409,7 +364,7 @@ class GQAPrefillPagedWithKVCacheFwdKernel(PagedPrefillKernel):
         cos_table: Optional[torch.Tensor] = None,
         sin_table: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return _gqa_prefill_paged_with_kv_cache_fwd_run(
+        return _gqa_prefill_paged_with_kv_cache_fwd_kernel(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -422,20 +377,12 @@ class GQAPrefillPagedWithKVCacheFwdKernel(PagedPrefillKernel):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+        )(
             self.config["block_m"],
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-            max_seqlen_q,
-            q,
-            k_new,
-            v_new,
-            k_pages,
-            v_pages,
-            cu_seqlens_q,
-            cache_seqlens,
-            block_table,
-        )
+        )(q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table, max_seqlen_q)
 
 
 @functools.lru_cache(maxsize=32)
@@ -742,63 +689,6 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
     return _gqa_prefill_paged_with_fp8_kv_cache_fwd_func
 
 
-def _gqa_prefill_paged_with_fp8_kv_cache_fwd_run(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    total_q: int,
-    physical_tokens: int,
-    max_pages_per_req: int,
-    page_size: int,
-    dim: int,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    num_stages: int,
-    threads: int,
-    max_seqlen_q: int,
-    q: torch.Tensor,
-    k_new: torch.Tensor,
-    v_new: torch.Tensor,
-    k_pages: torch.Tensor,
-    v_pages: torch.Tensor,
-    k_scale: torch.Tensor,
-    v_scale: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
-    cache_seqlens: torch.Tensor,
-    block_table: torch.Tensor,
-) -> torch.Tensor:
-    return _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
-        batch,
-        heads,
-        heads_kv,
-        total_q,
-        physical_tokens,
-        max_pages_per_req,
-        page_size,
-        dim,
-        is_causal,
-        sm_scale,
-        softcap,
-        dtype,
-    )(block_m, block_n, num_stages, threads)(
-        q,
-        k_new,
-        v_new,
-        k_pages,
-        v_pages,
-        k_scale,
-        v_scale,
-        cu_seqlens_q,
-        cache_seqlens,
-        block_table,
-        max_seqlen_q,
-    )
-
-
 class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
     """Paged prefill against an FP8 cache, dequantized by the stored descales."""
 
@@ -841,7 +731,7 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
         cos_table: Optional[torch.Tensor] = None,
         sin_table: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return _gqa_prefill_paged_with_fp8_kv_cache_fwd_run(
+        return _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -854,11 +744,12 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+        )(
             self.config["block_m"],
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-            max_seqlen_q,
+        )(
             q,
             k_new,
             v_new,
@@ -869,6 +760,7 @@ class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
             cu_seqlens_q,
             cache_seqlens,
             block_table,
+            max_seqlen_q,
         )
 
 
@@ -1275,67 +1167,6 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
     return _gqa_prefill_paged_with_kv_cache_rope_fwd_func
 
 
-def _gqa_prefill_paged_with_kv_cache_rope_fwd_run(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    total_q: int,
-    physical_tokens: int,
-    max_pages_per_req: int,
-    page_size: int,
-    dim: int,
-    max_position: int,
-    rotary_dim: int,
-    is_causal: bool,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_m: int,
-    block_n: int,
-    num_stages: int,
-    threads: int,
-    max_seqlen_q: int,
-    q: torch.Tensor,
-    k_new: torch.Tensor,
-    v_new: torch.Tensor,
-    k_pages: torch.Tensor,
-    v_pages: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
-    cache_seqlens: torch.Tensor,
-    block_table: torch.Tensor,
-    cos_table: torch.Tensor,
-    sin_table: torch.Tensor,
-) -> torch.Tensor:
-    return _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
-        batch,
-        heads,
-        heads_kv,
-        total_q,
-        physical_tokens,
-        max_pages_per_req,
-        page_size,
-        dim,
-        max_position,
-        rotary_dim,
-        is_causal,
-        sm_scale,
-        softcap,
-        dtype,
-    )(block_m, block_n, num_stages, threads)(
-        q,
-        k_new,
-        v_new,
-        k_pages,
-        v_pages,
-        cu_seqlens_q,
-        cache_seqlens,
-        block_table,
-        cos_table,
-        sin_table,
-        max_seqlen_q,
-    )
-
-
 class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
     """Paged prefill that rotates and appends the new keys before attending.
 
@@ -1419,7 +1250,7 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
             sin_table,
             max_seqlen_q,
         )
-        return _gqa_prefill_paged_with_kv_cache_rope_fwd_run(
+        return _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -1434,11 +1265,12 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+        )(
             self.config["block_m"],
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-            max_seqlen_q,
+        )(
             q,
             k_new,
             v_new,
@@ -1449,4 +1281,5 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
             block_table,
             cos_table,
             sin_table,
+            max_seqlen_q,
         )

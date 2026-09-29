@@ -215,42 +215,6 @@ def _nsa_topk_varlen_kernel(
     return _nsa_topk_varlen_func
 
 
-def _nsa_topk_varlen_run(
-    seq_num: int,
-    c_seq_len: int,
-    heads: int,
-    dim: int,
-    chunk_num: int,
-    group: int,
-    scale: float,
-    selected_block_num: int,
-    bc: int,
-    bs: int,
-    dtype: str,
-    accum_dtype: str,
-    threads: int,
-    q: torch.Tensor,
-    k_cmp: torch.Tensor,
-    offsets: torch.Tensor,
-    chunk_offsets: torch.Tensor,
-    token_indices: torch.Tensor,
-) -> torch.Tensor:
-    return _nsa_topk_varlen_kernel(
-        seq_num,
-        c_seq_len,
-        heads,
-        dim,
-        chunk_num,
-        group,
-        scale,
-        selected_block_num,
-        bc,
-        bs,
-        dtype,
-        accum_dtype,
-    )(threads)(q, k_cmp, offsets, chunk_offsets, token_indices)
-
-
 class NSATopkVarlenKernel(Kernel, NSATopkFwdInterface):
     supported_archs: list[int] = [90]
 
@@ -325,7 +289,7 @@ class NSATopkVarlenKernel(Kernel, NSATopkFwdInterface):
         chunk_offsets: torch.Tensor,
         token_indices: torch.Tensor,
     ) -> torch.Tensor:
-        return _nsa_topk_varlen_run(
+        return _nsa_topk_varlen_kernel(
             self.seq_num,
             self.c_seq_len,
             self.heads,
@@ -338,7 +302,7 @@ class NSATopkVarlenKernel(Kernel, NSATopkFwdInterface):
             self.bs,
             self.dtype_str,
             self.accum_dtype_str,
-            self.config["threads"],
+        )(self.config["threads"])(
             q.to(self.dtype),
             k_cmp.to(self.dtype),
             offsets.to(torch.int32),

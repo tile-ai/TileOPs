@@ -46,20 +46,6 @@ __all__ = [
 ]
 
 
-def _dense_decode_split_capacity(seq_len_kv: int) -> int:
-    """Bucket a runtime KV extent by the largest feasible split tier."""
-    full_tiles = max(1, seq_len_kv // 64)
-    return min(32, 1 << (full_tiles.bit_length() - 1))
-
-
-def _validate_positive(**values: int) -> None:
-    """Raise for the first named value that is not positive; the name appears
-    in the message, so pass the caller's own parameter name."""
-    for name, value in values.items():
-        if value <= 0:
-            raise ValueError(f"{name} must be positive")
-
-
 def _attention_scale(dim: int, sm_scale: Optional[float]) -> float:
     return dim**-0.5 if sm_scale is None else sm_scale
 
@@ -74,7 +60,8 @@ def _score_softcap(softcap: Optional[float]) -> float:
 
 def _rope_rotary_dim(dim: int, rotary_dim: Optional[int]) -> int:
     rotary_dim = dim if rotary_dim is None else rotary_dim
-    _validate_positive(rotary_dim=rotary_dim)
+    if rotary_dim <= 0:
+        raise ValueError("rotary_dim must be positive")
     if rotary_dim % 2 != 0:
         raise ValueError("rotary_dim must be even")
     if rotary_dim > dim:
