@@ -5,10 +5,14 @@ import torch
 
 from tests.test_base import TestBase, allclose_compare, exact_compare
 from tileops.backend import OpNotAvailableError
-from tileops.kernels.quantization import INT8QuantPerTensorFwdKernel
+from tileops.kernels.quantization import (
+    INT8QuantPerChannelFwdKernel,
+    INT8QuantPerTensorFwdKernel,
+)
 from tileops.quantization import (
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,
+    INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
     INT8QuantPerBlockFwdOp,
     INT8QuantPerChannelFwdOp,
@@ -82,6 +86,84 @@ def test_quantize_matches_reference(op_cls, rows, cols, dtype) -> None:
         test.check(op_cls(), *test.gen_inputs(), compare=compare)
     except OpNotAvailableError as e:
         pytest.skip(str(e))
+
+
+class _DefaultPolicyLoads(INT8QuantPerChannelFwdKernel):
+    """The default-policy loads the launch policy takes only above 96 MB of ``w``."""
+
+    @property
+    def default_config(self) -> dict:
+        return {**super().default_config, "evict_first": False}
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "rows, cols, dtype, make, kernel",
+    [
+        # The manifest's convention for an all-zero row: scale 1.0, q all zero.
+        pytest.param(
+            64,
+            1024,
+            torch.float16,
+            lambda w: w * (torch.arange(64, device=w.device) % 2 == 0)[:, None],
+            None,
+            id="zero-rows",
+        ),
+        # A copy of w in a view that starts one element into its storage, off the 16-byte
+        # vector boundary.
+        pytest.param(
+            64,
+            1024,
+            torch.bfloat16,
+            lambda w: (
+                torch.empty(w.numel() + 1, dtype=w.dtype, device=w.device)[1:]
+                .view(w.shape)
+                .copy_(w)
+            ),
+            None,
+            id="misaligned-start",
+        ),
+        # An odd K: rows start inside a vector, and the storage ends inside the last one.
+        pytest.param(37, 999, torch.bfloat16, lambda w: w, None, id="odd-k"),
+        # A K shorter than a vector, which then holds codes of several rows.
+        pytest.param(37, 3, torch.float16, lambda w: w, None, id="k-below-vector"),
+        # Whole vectors that do not split evenly over the threads: the last ones idle.
+        pytest.param(37, 264, torch.bfloat16, lambda w: w, None, id="aligned-inexact"),
+        # Subnormal rows and scales, which the quotient is scaled out of before dividing.
+        pytest.param(64, 1024, torch.float32, lambda w: w * 1e-40, None, id="subnormal-scale"),
+        pytest.param(
+            64, 1024, torch.bfloat16, lambda w: w, _DefaultPolicyLoads, id="default-policy-loads"
+        ),
+    ],
+)
+def test_int8_quant_per_channel_edge_inputs(rows, cols, dtype, make, kernel) -> None:
+    test = type("QuantizeTest", (INT8QuantPerChannelWorkload, TestBase), {})(rows, cols, dtype)
+    (w,) = test.gen_inputs()
+    kernel_map = {"int8_quant_per_channel_fwd": kernel} if kernel else None
+    op = INT8QuantPerChannelFwdOp(kernel_map=kernel_map)
+    test.check(op, make(w), compare=[exact_compare, exact_compare])
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_int8_per_channel_round_trip(dtype: torch.dtype) -> None:
+    """Quantizing then dequantizing moves ``x`` by at most half a step of its row's 8-bit grid.
+
+    ``|x[m, k]| <= amax[m] = 127 * scale[m]``, so each element rounds to its nearest code
+    without clamping and lands within ``scale[m] / 2``. The float32 divide and multiply add
+    ``2^-24`` each: ``2^-23 * |x| <= eps(dtype) * |x|`` and ``2^-25 * scale[m]``, which the
+    ``2^-20 * scale[m]`` slack covers. The cast to ``dtype`` adds half an ulp of
+    ``|x| + scale[m] / 2``; a nonzero code has ``|x| >= scale[m] / 2``, so ``eps(dtype) * |x|``
+    covers it, and a zero code dequantizes exactly to 0.
+    """
+    # Rows of different magnitude, so each row has its own grid.
+    magnitude = torch.logspace(-2, 2, 256, device=run_device())[:, None]
+    x = (torch.randn(256, 1024, device=run_device()) * magnitude).to(dtype)
+    q, scale = INT8QuantPerChannelFwdOp()(x)
+    x_hat = INT8DequantPerChannelFwdOp(dtype)(q, scale)
+    bound = scale[:, None] * (0.5 + 2**-20) + torch.finfo(dtype).eps * x.float().abs()
+    err = (x_hat.float() - x.float()).abs()
+    assert (err <= bound).all(), f"max excess {(err - bound).max().item()}"
 
 
 class _OneTileHeldEach(INT8QuantPerTensorFwdKernel):
