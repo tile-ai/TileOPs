@@ -265,7 +265,7 @@ def test_a_channel_length_no_tile_divides_matches_torch(shape) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "op_cls, role, n, c, spatial, dtype, key",
+    "op_cls, interface, n, c, spatial, dtype, key",
     [
         (BatchNormFwdOp, "batch_norm_fwd_train", 32, 64, 1, torch.float16, "fwd_train_whole"),
         (BatchNormFwdOp, "batch_norm_fwd_train", 4, 256, 784, torch.float32, "fwd_train_wide"),
@@ -276,11 +276,13 @@ def test_a_channel_length_no_tile_divides_matches_torch(shape) -> None:
         (BatchNormBwdOp, "batch_norm_bwd", 8192, 1024, 9, torch.float16, "bwd_kernel"),
     ],
 )
-def test_each_region_selects_its_one_candidate(op_cls, role, n, c, spatial, dtype, key) -> None:
-    """Exactly one specialised candidate, or else the general one, serves each shape."""
+def test_each_region_selects_its_one_implementation(
+    op_cls, interface, n, c, spatial, dtype, key
+) -> None:
+    """Exactly one non-general implementation, or else the general one, serves each shape."""
     op = op_cls()
     call = BatchNormCall(arch=90, sm_count=132, n=n, c=c, spatial=spatial, dtype=dtype)
-    assert op.select_implementation(role, call) == key
+    assert op.select_implementation(interface, call) == key
 
 
 # Input validation and torch.compile.
